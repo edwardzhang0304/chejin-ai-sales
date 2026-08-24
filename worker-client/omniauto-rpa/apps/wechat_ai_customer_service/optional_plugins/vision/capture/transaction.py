@@ -242,10 +242,10 @@ def _acquire_current_image_via_ports(
     action_phase = str(
         data.get("_prior_action_phase") or "not_attempted"
     )
-    retry_attempt = max(
-        0,
-        min(1, int(data.get("_clipboard_fingerprint_retry_attempt") or 0)),
-    )
+    # v0.9.33 permits one physical image action only. A copied bitmap whose
+    # result cannot be confirmed is journaled for recovery; it is never
+    # acquired again in the same or a nested transaction.
+    retry_attempt = 0
     terminal_result: dict[str, Any] | None = None
 
     def fail(reason: str, **extra: Any) -> dict[str, Any]:
@@ -362,6 +362,57 @@ def _acquire_current_image_via_ports(
             image_size = getattr(surface, "size", None) or tuple(frame.get("image_size") or ())
             if surface is None or len(image_size) != 2:
                 return fail("vision_window_frame_invalid")
+            expected_viewport_digest = str(
+                data.get("expected_message_viewport_change_digest") or ""
+            ).strip()
+            current_viewport_digest = str(
+                frame.get("message_viewport_change_digest") or ""
+            ).strip()
+            viewport_guard_required = bool(
+                data.get("message_viewport_guard_required")
+                or expected_viewport_digest
+            )
+            if viewport_guard_required and (
+                not expected_viewport_digest
+                or not current_viewport_digest
+            ):
+                return fail(
+                    "C2_PRE_SEND_LAYOUT_INVALID",
+                    state="worker_environment_failed",
+                    transaction={
+                        "expected_message_viewport_change_digest": (
+                            expected_viewport_digest
+                        ),
+                        "current_message_viewport_change_digest": (
+                            current_viewport_digest
+                        ),
+                        "message_viewport_change_evidence": dict(
+                            frame.get("message_viewport_change_evidence") or {}
+                        ),
+                    },
+                )
+            if (
+                viewport_guard_required
+                and current_viewport_digest != expected_viewport_digest
+            ):
+                return fail(
+                    "C2_IMAGE_REIDENTIFICATION_REQUIRED",
+                    state="image_reidentification_required",
+                    transaction={
+                        "expected_message_viewport_change_digest": (
+                            expected_viewport_digest
+                        ),
+                        "current_message_viewport_change_digest": (
+                            current_viewport_digest
+                        ),
+                        "message_viewport_change_evidence": dict(
+                            frame.get("message_viewport_change_evidence") or {}
+                        ),
+                        "candidate_count": len(
+                            frame.get("messages") or []
+                        ),
+                    },
+                )
             target_proof = ports.conversation_target.confirm_target(
                 {**data, "candidate_frame": frame}
             )
@@ -378,9 +429,29 @@ def _acquire_current_image_via_ports(
                 ).strip().lower()
                 == "image"
             ]
+            expected_candidate_group_count = int(
+                data.get("expected_image_candidate_group_count") or 0
+            )
+            if "expected_image_candidate_group_count" in data and (
+                expected_candidate_group_count <= 0
+                or len(current_candidates)
+                != expected_candidate_group_count
+            ):
+                return fail(
+                    "C2_IMAGE_REIDENTIFICATION_REQUIRED",
+                    state="image_reidentification_required",
+                    transaction={
+                        "expected_candidate_group_count": (
+                            expected_candidate_group_count
+                        ),
+                        "current_candidate_group_count": len(
+                            current_candidates
+                        ),
+                    },
+                )
             if not current_candidates:
                 return fail(
-                    "image_bubble_not_visible_after_refresh",
+                    "C2_PRE_SEND_IMAGE_TARGET_NOT_FOUND",
                     state="image_not_visible",
                 )
             match_evidence = _bubble_match_evidence(
@@ -391,7 +462,7 @@ def _acquire_current_image_via_ports(
             )
             if match_evidence.get("state") == "not_visible":
                 return fail(
-                    "image_bubble_not_visible_after_refresh",
+                    "C2_PRE_SEND_IMAGE_TARGET_NOT_FOUND",
                     state="image_not_visible",
                     transaction={
                         "slot_identity_evidence": match_evidence,
@@ -399,8 +470,15 @@ def _acquire_current_image_via_ports(
                 )
             bubble = dict(match_evidence.get("bubble") or {})
             if not bubble:
+                match_state = str(
+                    match_evidence.get("state") or ""
+                ).strip()
                 return fail(
-                    "C2_IMAGE_SLOT_RECONFIRM_FAILED",
+                    (
+                        "C2_PRE_SEND_MESSAGE_ROLE_UNCONFIRMED"
+                        if match_state == "role_mismatch"
+                        else "C2_PRE_SEND_IMAGE_TARGET_AMBIGUOUS"
+                    ),
                     state="image_identity_failed",
                     transaction={
                         "slot_identity_evidence": match_evidence,
@@ -715,35 +793,9 @@ def _acquire_current_image_via_ports(
             if not clipboard_matches_target:
                 payload.release()
                 acquired_payload = None
-                if retry_attempt < 1:
-                    _dismiss_menu_safely(ports.ui_action)
-                    menu_opened = False
-                    retry_data = {
-                        **data,
-                        "_clipboard_fingerprint_retry_attempt": 1,
-                        "_prior_action_phase": "trigger_attempted",
-                    }
-                    retry_result = _acquire_current_image_via_ports(
-                        ports,
-                        retry_data,
-                        lease_already_held=True,
-                    )
-                    retry_transaction = (
-                        dict(retry_result.get("transaction") or {})
-                        if isinstance(retry_result, dict)
-                        else {}
-                    )
-                    retry_transaction[
-                        "clipboard_fingerprint_retry_count"
-                    ] = 1
-                    retry_transaction[
-                        "clipboard_fingerprint_first_attempt_mismatch"
-                    ] = True
-                    if isinstance(retry_result, dict):
-                        retry_result["transaction"] = retry_transaction
-                    return retry_result
                 return fail(
                     "clipboard_image_fingerprint_mismatch",
+                    state="image_action_result_unconfirmed",
                     transaction={
                         "status": "clipboard_rejected",
                         "right_click_ok": True,
@@ -752,6 +804,8 @@ def _acquire_current_image_via_ports(
                         "clipboard_content_read": True,
                         "clipboard_image_valid": True,
                         "clipboard_image_matches_target": False,
+                        "physical_action_may_have_occurred": True,
+                        "automatic_retry_allowed": False,
                     },
                 )
             # Clearing is permitted only after the copied bitmap is proven to

@@ -54,6 +54,12 @@ def generated_payload(contract: dict) -> dict:
         "voice_action_binding_contract": dict(
             contract["voice_action_binding_contract"]
         ),
+        "frame_action_binding_contract": dict(
+            contract["frame_action_binding_contract"]
+        ),
+        "pre_send_message_viewport_contract": dict(
+            contract["pre_send_message_viewport_contract"]
+        ),
         "target_location_recovery_contract": dict(
             contract["target_location_recovery_contract"]
         ),

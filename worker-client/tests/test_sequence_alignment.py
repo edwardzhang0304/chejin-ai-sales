@@ -286,6 +286,15 @@ class SequenceAlignmentTests(unittest.TestCase):
             before,
             committed_ids={"text-1": "worker-message-1"},
         )
+        self.assertEqual(
+            [item["identity_state"] for item in pre],
+            ["committed", "frame_local_unselected", "frame_local_unselected"],
+        )
+        for item in pre[1:]:
+            self.assertNotIn("worker_stable_id", item)
+            self.assertNotIn("reserved_worker_stable_id", item)
+            self.assertNotIn("provisional_worker_stable_id", item)
+            self.assertNotIn("canonical_action_id", item)
         post = build_post_action_observation_sequence(before)
 
         result = self.align(pre, post)
@@ -296,6 +305,65 @@ class SequenceAlignmentTests(unittest.TestCase):
             inherited_worker_ids(result),
             {"text-1": "worker-message-1"},
         )
+
+    def test_only_selected_media_may_carry_current_action_reservation(self):
+        selected = {
+            **observation("voice-selected", "voice"),
+            "_worker_stable_id": "worker-message-2",
+            "_worker_identity_scope": "current_read_provisional",
+        }
+        unselected = observation("image-unselected", "image")
+
+        pre = build_pre_action_identity_sequence(
+            [selected, unselected],
+            selected_observation_id="voice-selected",
+            canonical_action_id="voice-action-1",
+            reserved_worker_stable_id="worker-message-2",
+        )
+
+        self.assertEqual(pre[0]["identity_state"], "selected_action")
+        self.assertEqual(
+            pre[0]["reserved_worker_stable_id"],
+            "worker-message-2",
+        )
+        self.assertEqual(pre[1]["identity_state"], "frame_local_unselected")
+        self.assertNotIn("reserved_worker_stable_id", pre[1])
+        self.assertNotIn("provisional_worker_stable_id", pre[1])
+
+    def test_unselected_media_provisional_reservation_is_rejected(self):
+        selected = observation("voice-selected", "voice")
+        unselected = {
+            **observation("image-unselected", "image"),
+            "_worker_stable_id": "worker-message-3",
+            "_worker_identity_scope": "current_read_provisional",
+        }
+
+        with self.assertRaisesRegex(
+            ValueError,
+            "MESSAGE_IDENTITY_CONTRACT_INVALID",
+        ):
+            build_pre_action_identity_sequence(
+                [selected, unselected],
+                selected_observation_id="voice-selected",
+                canonical_action_id="voice-action-1",
+                reserved_worker_stable_id="worker-message-2",
+            )
+
+    def test_post_action_alignment_cannot_inherit_unselected_reservation(self):
+        unselected = {
+            **observation("voice-unselected", "voice"),
+            "_worker_stable_id": "worker-message-8",
+            "_worker_identity_scope": "current_read_provisional",
+        }
+
+        with self.assertRaisesRegex(
+            ValueError,
+            "MESSAGE_IDENTITY_CONTRACT_INVALID",
+        ):
+            task_runner_module.align_post_action_observations(
+                [unselected],
+                [observation("voice-current", "voice")],
+            )
 
     def test_confirmed_voice_action_commits_reserved_id(self):
         before = [

@@ -1,5 +1,5 @@
 @startuml
-' 文档版本：v0.9.28；灰度目标版本：0.9.28（入库幂等批次代码、合同与定向测试已完成并通过复审，ZIP和Windows UAT待完成）；最后更新：2026-08-22
+' 文档版本：v0.9.33；灰度目标版本：0.9.33（本地实现已完成，待架构复审；正式提交、推送、打包和Windows UAT未完成）；最后更新：2026-08-24
 title AI智能客服售前跟进系统 全流程图（C0-C4、媒体、回复、转人工与恢复）
 
 skinparam monochrome true
@@ -25,14 +25,21 @@ actor "销售" as Sales
 actor "客户" as Customer
 
 box "商家侧 Windows Worker（同一 Worker 严格串行）"
-participant "Worker主进程\n单会话Flow调度器" as W
+participant "Worker主进程\n单会话Flow调度器 + 唯一消息身份决策者" as W
 database "Worker本地SQLite\n已处理清单 + Outbox" as L
 participant "Local WeChat UI Lock\n可续租租约" as Lock
-participant "OmniAuto RPA Sidecar\n由Worker重新编排" as OA
+participant "OmniAuto RPA Sidecar\nUI观察/本帧目标/物理动作证据" as OA
 participant "OmniAuto BuiltinVisionPlugin\nWorker进程内调用" as VG
 participant "C2统一角色解析器\nsender_role" as Role
 participant "销售微信桌面客户端" as WX
 end box
+
+note over W,OA
+权限边界：Sidecar只返回帧内观察、一次性操作票证据和动作回执；
+Worker唯一决定消息身份、顺序、动作准入及worker_stable_id提交；
+后端只保存/校验/去重Worker已提交身份，不根据截图重新猜测。
+frame_action_binding不是跨轮身份证，首次动作不得要求本次confirmed mapping。
+end note
 
 box "外部图片理解模型服务"
 participant "图片理解大模型\nVision Model" as VM
@@ -66,28 +73,33 @@ note over W,Reply
 8. 缺少Product Master只禁止具体车源事实；低风险需求澄清仍由Brain生成并经Guard发送，不得被审稿层一律清空。
 9. 确需人工时优先由Brain生成一次边界承接并reply_then_handoff；只有无法安全生成可见文字时才静默handoff。
 10. C2身份只有四类对象：frame_observation、pending_media_action、committed_message、quarantine_record；只有committed_message可生成source key、查Ledger/Outbox、入库或进入Brain。
-11. 新文字/系统消息可由完整new_suffix直接提交；新语音/图片必须先落ActionJournal并经confirmed action提交。属于new_suffix、Vision成功或已有预留号都不等于正式消息。
+11. 新文字/系统消息可由完整new_suffix直接提交；新语音/图片首先全部保持frame_local_unselected，每次只为Worker当前唯一选中的一条建立action ID、预留号和ActionJournal，经confirmed action后才提交。属于new_suffix、Vision成功或已有预留号都不等于正式消息。
 12. 媒体动作只能终止为cancelled_before_trigger、committed_completed、committed_failed或identity_unresolved；identity_unresolved只做无UI恢复，仍不明确则幂等handoff，不得长期挂起或重复点击。
 13. 客户端启动按DPI/工作区选择唯一微信窗口档位：100%=800×852、125%=1000×1065、150%=1200×1278；放不下时宽高等比例缩小，实测客户区不小于700×720。
 14. 窗口归位后只对精确微信客户区截图一次，用原图几何+同尺寸增强OCR建立startup_layout_calibration，C0—C4共用该全局区域地图。
 15. 会话行重排、红点、新消息和聊天滚动不重建全局标定；具体会话行/消息/弹窗/表单仍由0.9.20原流程的当前必要业务帧定位。
 16. 标定只确定导航栏、侧栏、标题、消息视口和输入区；不代替private+短码、角色、媒体回执和S0/S1/S2业务证据。
-17. 不在运行中增加窗口变换恢复流程；已有证据确认HWND/窗口变化时停止新UI动作并提示人工重启客户端。
+17. 普通业务Flow内不增加窗口变换恢复；已有证据确认HWND/窗口变化时停止新UI动作。C2_PRE_SEND_LAYOUT_INVALID固定按代码缺陷收口：当前任务/Flow技术失败、释放UI锁、Worker故障停止新接单，不转人工、不自动归位/重标定/重试。
 18. 同一单会话Flow/read_run可先后产生任意多个逻辑入库批次；每组不同正式消息事实使用独立确定性的Worker本地outbox_batch_key和Outbox，相同事实重试复用原本地ID。该键不进入后端合同，read_run_id不得直接充当本地Outbox唯一键。
+19. 文字、语音、图片共用同一完整消息序列对齐器；单条消息的目标或身份指纹禁止包含整张微信画面摘要。无关区域变化不使目标失效，当前会话新消息导致气泡移位时必须先按最新序列重新投影。
+20. pre_send_refresh发现新customer消息或相关消息区变化时立即关闭旧回复发送门。变化后只允许对最新不可变帧完整重识别一次；成功继续，失败返回目标/序列/角色/正文/布局/再次变化的具体错误并终止。本阶段无recoverable_hold、无多轮时间重试。
+21. 媒体UI动作固定语音优先、图片随后，且每次只操作一条；每次动作后废弃旧帧未选候选并从新帧重新仲裁。图片阶段如出现新语音，先完成当前图片终态，再回到语音阶段，不得开始下一张图片。
+22. 媒体UI动作顺序不代表消息入库顺序；所有动作结束后，文字/语音/图片必须按最后权威完整画面的screen_order统一入库。
 end note
 
 note over W,WX
-0.9.24启动标定兼容口径（适用于add_friend、authorized_read、pre_send_refresh和send）：
+0.9.33启动标定兼容口径（适用于add_friend、authorized_read、pre_send_refresh和send）：
 启动按DPI/工作区选择唯一默认外框档位，归位后用一张精确HWND客户区截图建立startup_layout_calibration。
 原图几何确定导航/侧栏/标题/消息/输入边界；同尺寸增强OCR只补文字锚点，不直接产生点击坐标。
 0.9.20参考点按所属区域分段映射到当前标定；禁止整窗口单比例缩放或各模块自行加偏移。
 会话行、消息、弹窗和表单继续使用0.9.20原有必要业务帧，不在启动时伪造不存在的页面定位。
 会话重排和消息变化不使全局标定失效；只有已标定微信主HWND消失/被替换或客户区/DPI变化才使地图失效。
-微信自有菜单/弹窗HWND成为前台不等于主HWND变化，不使地图失效；真正失效时不自动重标定，提示人工重启。
+微信自有菜单/弹窗HWND成为前台不等于主HWND变化，不使地图失效；真正失效时在当前业务Flow内不自动重标定。
+C2_PRE_SEND_LAYOUT_INVALID同样不自动归位/重标定：记录完整Bug证据，当前任务/Flow技术失败并释放UI锁，Worker进入faulted且停止新接单。
 不新增业务截图/OCR，不改变0.9.20点击顺序、重试、失败处理和状态机。
 status/capabilities/calibration-status/sessions保持被动探测，不抢前台。
 add_friend/open-chat/messages/voice-transcribe/recover-render/send直接复用0.9.20可见窗口选择和activate_window(hwnd)，不新建统一前台门禁。
-0.9.24只在消费启动坐标地图前确认selected_visible_hwnd==calibration.hwnd；不一致表示地图失效，停止新UI动作并提示人工重启客户端。
+0.9.33只在消费启动坐标地图前确认selected_visible_hwnd==calibration.hwnd；不一致表示地图失效，当前业务Flow内立即停止新UI动作。
 事务内部不存在新的主HWND前台等值检查；微信自身菜单/弹窗按0.9.20原流程继续。
 共享点击底层只校验快照ID、目标边界和坐标映射；禁止新增主HWND等值门禁，也禁止为添加朋友增加特例白名单。
 end note
@@ -411,8 +423,9 @@ loop Worker运行中；每次循环最多完成一个会话事务
             else initial_read明确存在可执行未转写语音
               loop 最新帧仍有可执行新语音
               W -> OA: voice-transcribe(stage=prepare)\n只观察、零UI动作
-              OA --> W: 真实pre_frame + selected_pre_observation_id\n+ selected_action_token + fingerprint
-              W -> W: 只验合同与授权，不重选物理目标\n此时才创建canonical_voice_action_id
+              OA --> W: 真实pre_frame + frame-local唯一候选观察\n+ selected_action_token + fingerprint\n不含业务消息身份结论
+              W -> W: 用完整序列/checkpoint/授权/本地事务\n决定是否接受候选；身份决策不下放Sidecar
+              W -> W: 接受后才创建canonical_voice_action_id\n预留号仍不是正式worker_stable_id
               W -> L: 仅用checkpoint/本地正式状态查历史worker_stable_id
               alt 历史身份唯一恢复且已completed或failed
                 L --> W: terminal cache hit
@@ -424,8 +437,8 @@ loop Worker运行中；每次循环最多完成一个会话事务
                 W -> W: aliases必须恰好匹配一个对象\n零匹配或多匹配均零点击
                 W -> L: 原子保存pre frame、selected observation和token
                 W -> OA: voice-transcribe(stage=execute + action/reserved/token)\n一次只操作一个action，保持同一UI锁
-                OA -> OA: 点击前重验token未消费、同一会话和同一物理目标
-                alt token/目标重验失败且确认零点击
+                OA -> OA: 点击前只重验frame_action_binding：\ntoken未消费、同一会话、唯一局部目标、相关序列未变化\n不得要求native ID/本次confirmed mapping
+                alt 操作票/目标重验失败且确认零点击
                   OA --> W: cancelled_before_trigger + not_attempted
                   W -> L: 预留号作废不复用\n从最新帧重新prepare，不形成客户失败事实
                 else 重验唯一
@@ -433,11 +446,11 @@ loop Worker运行中；每次循环最多完成一个会话事务
                 OA -> WX: 点击语音转文字入口
                 OA -> WX: 点击后自动滚动属正常路径\n立即废弃旧坐标并取post_frame
                 WX --> OA: 转写后的新画面
-                OA -> OA: 将action/reserved/token/pre/post观察映射\n保存在本execute内存frame_action_binding\n不写入正式source_message
+                OA -> OA: 将action/reserved/token/pre/post观察映射\n保存在本execute内存frame_action_binding\n仅为动作证据，不写入正式source_message/长期身份
                 OA -> OA: native ID / >=3帧逐相邻帧tracking_edges / >=2可信邻居滚动对齐\n边链从selected pre observation到最终观察且每边唯一
                 OA -> OA: 将本次完整截图和OCR结果\n更新为current_valid_frame
                 W -> W: 先将confirmed action的转写衍生行\n折叠回selected_action，不当新消息
-                W -> W: 对pre_action_identity_sequence与post_frame\n执行唯一单调一对一对齐
+                W -> W: 用动作回执对pre_action_identity_sequence与post_frame\n执行长期身份唯一提交；不得让Sidecar局部判断代替
                 alt 转写成功且binding唯一confirmed
                   OA -> OA: 帧内binding唯一命中post observation\n生成confirmed_action_mapping后删除帧内binding
                   OA --> W: 回显原action_id/reserved/token/pre/post\nbinding=confirmed + candidate_count=1\n前后帧 + 邻居证据
@@ -554,9 +567,9 @@ loop Worker运行中；每次循环最多完成一个会话事务
                 W -> W: 无UI恢复；仍不明确则幂等handoff
               else new_suffix中的未处理语音
                 W -> W: 保持frame_observation\n返回唯一语音编排器逐条处理
-              else new_suffix中的新图片
-                W -> W: 建立pending_media_action\n预留号只写ActionJournal
-                W -> W: 不生成source key、不查Ledger/Outbox\n进入逐张图片动作
+              else new_suffix中的未处理图片
+                W -> W: 保持frame_local_unselected\n只进入最新帧图片候选集
+                W -> W: 此时不分配action ID/预留号/Journal\n不生成source key、不查Ledger/Outbox
               end
             end
 
@@ -588,7 +601,9 @@ loop Worker运行中；每次循环最多完成一个会话事务
             历史checkpoint或本次confirmed action receipt才可提交正式身份。
             指纹只参与本次action receipt一致性，不单独生成身份。
             end note
-            loop final_read中每个pending_media_action按screen_order逐张处理
+            W -> W: 确认当前最新帧已无可执行未转写语音
+            W -> W: 从最新帧图片候选中唯一选中一张\n此时才创建action ID/预留号/ActionJournal
+            loop 每次只处理当前唯一pending_media_action
               W -> Auth: 图片动作前再次校验authorization_revision
               alt 授权失效
                 Auth --> W: authorization_invalid
@@ -601,11 +616,16 @@ loop Worker运行中；每次循环最多完成一个会话事务
                   OA --> W: current_frame_absent
                   W -> L: cancelled_before_trigger\n烧毁预留号，不形成图片事实
                   W -> W: 不追踪、不上滚；从最新画面重新仲裁
-                else 图片仍可见但身份无法唯一确认
+                else 图片仍可见但本帧操作目标无法唯一确认
                   OA --> W: slot_reconfirm_failed
                   W -> L: cancelled_before_trigger\n烧毁预留号，不形成failed图片事实
                   W -> W: 不右键、不调用Vision\n稳定重读仍不明确则走身份门禁
-                else 图片仍可见且身份唯一
+                else 图片仍可见且本帧操作目标唯一
+                  note over W,OA
+                  这里只允许证明当前操作票可执行，
+                  不代表图片已取得跨轮业务身份。
+                  正式身份必须等待confirmed receipt后由Worker提交。
+                  end note
                   OA -> Role: 对最新画面再次执行C2同行头像规则
                   alt 刷新C2角色与初始角色不同或为unknown
                     Role --> W: role_reconfirm_failed
@@ -689,10 +709,17 @@ loop Worker运行中；每次循环最多完成一个会话事务
               else 全程零微信UI动作
                 W -> W: 允许复用当前有效帧
               end
+              W -> W: 本条图片结算后检查最新帧\n旧帧其他未选候选继续零预留
+              alt 最新帧出现可执行未转写语音
+                W -> W: 结束当前图片选择\n先回到唯一语音编排器
+              else 无可执行新语音且仍有新图片
+                W -> W: 从最新帧再唯一选中一张\n选中后才创建新action/预留号/Journal
+              end
             end
           end
 
           group 7. 收齐终态并构建一次V3增量批次
+            W -> W: 以最后权威完整画面重建统一序列\n文字/语音/图片按screen_order排序，不按媒体UI动作先后排序
             W -> L: 结果收口器原子写四种媒体动作终态\n只有committed_completed/failed可推进Ledger/Outbox
             note right of L
             cancelled_before_trigger烧毁预留号但不形成消息；
@@ -880,14 +907,47 @@ loop Worker运行中；每次循环最多完成一个会话事务
               OA --> W: refresh observations
               W -> L: 与已处理清单比较
 
-              alt pre_send_refresh失败或目标不确认
-                W -> Reply: 在原UI锁内fail pending chat_reply\nC2_REPLY_CONTEXT_RECOVERY_FAILED
-                Reply -> DB: 取消未发送action/batch并创建handoff
-                alt 结算结果无法确认
-                  W -> W: 暂停接单\n禁止释放锁后由扫描抢跑
+              alt 物理动作前发现相关消息区变化
+                W -> W: 立即关闭旧回复发送门\n结算原action=cancelled_before_trigger\n作废原预留号，零UI动作
+                W -> OA: 只获取1张最新不可变帧\n完整标题/消息视口/OCR/角色/全序列重识别一次
+                OA --> W: unique / target_missing / ambiguous / sequence_failed\nrole_unconfirmed / text_unreadable / layout_invalid
+                alt 目标在最新帧唯一确认
+                  W -> L: 以新action_id+新预留号继续\n原预留号永不复用
+                  alt 物理触发前相关消息区再次变化
+                    W -> Reply: 取消/作废旧reply_action
+                    W -> Handoff: C2_PRE_SEND_MESSAGE_VIEWPORT_CHANGED_AGAIN\n当前会话幂等handoff一次
+                  else 目标仍一致
+                    W -> W: 媒体物理动作至多一次\n继续同一会话收敛
+                  end
+                else 是微信基本layout无法建立
+                  W -> Reply: 取消/作废旧reply_action
+                  W -> W: 持久化C2_PRE_SEND_LAYOUT_INVALID\n版本、frame_id、原始/增强截图、OCR与布局证据
+                  W -> W: 当前task/Flow=technical_failed\n释放UI锁\nrun_status=faulted\ncan_pull_tasks=false
+                  note over W,Backend
+                  这是客户端代码Bug，不是客户业务状态：
+                  零HandoffEvent、零飞书、零自动移窗/重标定/重试；
+                  后台必须显示客户端故障，不得显示在线空闲。
+                  end note
+                else 是当前会话内具体消息错误
+                  W -> Reply: 取消/作废旧reply_action
+                  W -> Handoff: 保留具体source_error+类型+序列+帧证据\n当前会话幂等handoff一次
                 end
-              else 等待期间出现新customer文字/语音/图片
-                W -> W: 保持同一UI锁、Flow和read_run\n完成新增媒体动作、final_read和身份提交
+              else 等待期间出现新customer文字/语音/图片或混合序列
+                W -> W: 立即关闭旧回复发送门\n保持同一UI锁、Flow和read_run
+                W -> W: 文字直接统一身份提交\n语音/图片按顺序每次只操作最早1条
+                W -> OA: 每次媒体UI动作后重读完整消息视口\n用局部目标+必要邻居重做序列投影
+                note over W,OA
+                侧栏、其他会话、工具栏或目标外像素变化不得让目标失效。
+                新消息使气泡上移时取消旧候选，只对最新帧完整重识别一次；成功继续，失败返回具体错误。
+                禁止使用整张微信画面摘要作为单条文字/语音/图片的身份或稳定性指纹。
+                selected_target_fingerprint只绑单条目标；message_viewport_change_digest只对规范化消息序列做变化检测，禁止混为一个指纹。
+                输入框光标、工具栏、侧栏与其他会话变化必须排除。
+                GIF/动画表情帧、滚动条淡入淡出、悬停效果、语音播放动画/进度、红点与选中外框不得进入摘要。
+                禁止直接哈希消息区原始RGB像素；必须哈希生产解析器的有序规范化observation列表。
+                布局无效直接C2_PRE_SEND_LAYOUT_INVALID，不回退整屏哈希。
+                pre_send_refresh不得创建recoverable_hold，不得套四次prepare或120秒时间重试。
+                end note
+                W -> W: 吸收动作期间新到达对象\n以final_read确认当前已观察尾部全部终态
                 W -> W: 按新增后的正式source_message_key集合\n生成不同于首次读取的本地outbox_batch_key
                 W -> L: 先可靠保存新的独立Outbox\n不得覆盖已确认旧Outbox
                 W -> Ingest: 按原合同POST messages/ingest\nread_run_id保持不变
@@ -895,6 +955,24 @@ loop Worker运行中；每次循环最多完成一个会话事务
                 Ingest --> W: 返回新message_batch及逐消息结果
                 W -> W: 校验新事实与新批次均已确认\n禁止发送旧回复
                 W -> W: 只按最新完整尾部重新调用Brain一次\n随后再次执行pre_send_refresh
+              else 当前customer语音/图片对象已唯一，但内容处理确定失败
+                W -> L: 失败事实按原reserved ID先可靠落盘/入库\n零重复媒体动作
+                W -> Reply: 取消/作废旧reply_action
+                W -> Handoff: 按L1幂等handoff一次\n不调用Brain
+              else 检测到新system行
+                alt system正文完整/增强OCR后仍不可读
+                  W -> Reply: 取消/作废旧reply_action
+                  W -> Handoff: C2_PRE_SEND_SYSTEM_CONTENT_UNREADABLE\n当前会话幂等handoff一次
+                else system正文可读但无法归类
+                  W -> Reply: 取消/作废旧reply_action
+                  W -> Handoff: C2_PRE_SEND_SYSTEM_CLASSIFICATION_UNRESOLVED\n当前会话幂等handoff一次
+                else system证明拒收/关闭/其他硬状态
+                  W -> Ingest: 先按正式顺序入库system事实
+                  W -> Reply: 禁止旧reply_action发送\n按原硬门禁结算
+                else 普通system状态
+                  W -> Ingest: 先按正式顺序入库system事实
+                  W -> W: 不单独启动Brain\n再取新帧确认无其他新customer事实
+                end
               else 检测到新的self消息/销售手机端已回复
                 W -> Reply: cancel旧reply_action
                 W -> W: 按新self正式source_message_key集合\n确定性生成新的本地outbox_batch_key
@@ -902,6 +980,9 @@ loop Worker运行中；每次循环最多完成一个会话事务
                 W -> Ingest: 按原合同增量上报self事实\n本地outbox_batch_key不出Worker
                 Ingest -> DB: 记录销售人工回复\nstatus=sales_replied_waiting_user
                 W -> W: 当前AI回复终止；等待客户\n到期仍可进入recall_precheck
+              else 授权撤销/目标客户或private无法确认/拒收/会话关闭/发送结果可能已发生但未知
+                W -> Reply: 禁止旧reply_action发送\n按原L3硬门禁可审计结算
+                W -> W: 不使用本节技术恢复放宽硬门禁
               else 没有新增消息且reply_action仍current
                 W -> Reply: POST tasks/{task_id}/claim\nclaim_source=c2_conversation_flow + conversation_id
                 Reply -> Reply: 校验任务只能由当前C2会话Flow领取

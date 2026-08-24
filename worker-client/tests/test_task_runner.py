@@ -60,6 +60,7 @@ from chejin_worker_client.storage import (
     list_c2_action_journal,
     list_c2_ledger_entries,
     list_c2_outbox_waiting,
+    load_binding,
     load_c2_state,
     load_legacy_media_recovery,
     load_runtime_control,
@@ -79,9 +80,11 @@ from chejin_worker_client.task_runner import (
     TaskLeaseGuard,
     TaskRunner,
     _executable_untranscribed_voice_observations,
+    _same_frame_voice_action_evidence_matches,
     align_post_action_observations,
     collapse_same_frame_voice_aliases,
     _freeze_phase_metadata,
+    pre_send_new_suffix_validation,
 )
 from chejin_worker_client.transaction_outcomes import (
     FlowOutcomeAccumulator,
@@ -261,6 +264,7 @@ def initialize_confirmed_voice_recovery_journal(
             "selected_pre_observation_id": pre_observation_id,
             "selected_action_token": f"token:{action_id}",
             "selected_target_fingerprint": f"fingerprint:{action_id}",
+            "message_viewport_change_digest": "a" * 64,
         },
         items=[
             {
@@ -1133,6 +1137,7 @@ class FakeBridge:
                 "send_context_guard",
                 self._send_context_guard(payload.get("observations") or []),
             )
+            self._attach_image_frame_action_bindings(payload)
             return payload
 
         observations: list[dict] = []
@@ -1184,33 +1189,159 @@ class FakeBridge:
             observations.append(observation)
         payload["observations"] = observations
         payload["send_context_guard"] = self._send_context_guard(observations)
+        self._attach_image_frame_action_bindings(payload)
         return payload
+
+    @staticmethod
+    def _attach_image_frame_action_bindings(payload: dict) -> None:
+        if isinstance(payload.get("image_frame_action_bindings"), dict):
+            return
+        all_observations = [
+            dict(item)
+            for item in (payload.get("observations") or [])
+            if isinstance(item, dict)
+        ]
+        if not isinstance(payload.get("send_context_guard"), dict):
+            payload["send_context_guard"] = (
+                FakeBridge._send_context_guard(all_observations)
+            )
+        observations = [
+            item
+            for item in all_observations
+            if str(item.get("row_kind") or "") == "image_bubble"
+            and str(item.get("sender_role") or "")
+            in {"customer", "self"}
+            and isinstance(item.get("image_physical_anchor"), dict)
+            and str(
+                item.get("image_physical_anchor", {}).get(
+                    "bubble_visual_fingerprint"
+                )
+                or ""
+            ).strip()
+        ]
+        if not observations:
+            payload["image_frame_action_bindings"] = {}
+            return
+        guard = (
+            payload.get("send_context_guard")
+            if isinstance(payload.get("send_context_guard"), dict)
+            else {}
+        )
+        digest = str(
+            guard.get("message_viewport_change_digest") or ""
+        ).strip()
+        payload.setdefault(
+            "message_viewport_change_evidence",
+            {
+                "schema_version": 2,
+                "sequence": list(guard.get("sequence") or []),
+                "message_count": int(guard.get("message_count") or 0),
+                "message_viewport_change_digest": digest,
+                "raw_rgb_hash_used": False,
+            },
+        )
+        frame_id = str(
+            payload.get("frame_id")
+            or payload.get("sidecar_run_id")
+            or "fixture-image-frame"
+        )
+        bindings = {}
+        for item in observations:
+            observation_id = str(item.get("observation_id") or "").strip()
+            target_fingerprint = hashlib.sha256(
+                json.dumps(
+                    {
+                        "observation_id": observation_id,
+                        "sender_role": item.get("sender_role"),
+                        "message_type": "image",
+                        "bubble_rect": item.get("bubble_rect"),
+                        "image_physical_anchor": item.get(
+                            "image_physical_anchor"
+                        ),
+                    },
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ).encode("utf-8")
+            ).hexdigest()
+            bindings[observation_id] = {
+                "schema_version": 1,
+                "status": "prepared",
+                "selected_action_token": hashlib.sha256(
+                    (
+                        "fixture-image-token:"
+                        + frame_id
+                        + ":"
+                        + observation_id
+                    ).encode("utf-8")
+                ).hexdigest(),
+                "pre_frame_id": frame_id,
+                "selected_pre_observation_id": observation_id,
+                "selected_target_fingerprint": target_fingerprint,
+                "candidate_group_count": len(observations),
+                "ordered_frame_observations": list(
+                    guard.get("sequence") or []
+                ),
+                "message_viewport_change_digest": digest,
+                "sender_role": str(item.get("sender_role") or ""),
+                "message_type": "image",
+            }
+        payload["image_frame_action_bindings"] = bindings
 
     @staticmethod
     def _send_context_guard(observations: list[dict]) -> dict:
         context_sequence = [
             {
+                "screen_order": index,
                 "row_kind": str(item.get("row_kind") or ""),
                 "sender_role": str(item.get("sender_role") or ""),
-                "content_normalized": "".join(
-                    str(item.get("content_clean") or "").split()
+                "message_type": str(item.get("message_type") or ""),
+                "relative_quantized_bounds": list(
+                    item.get("bubble_rect") or []
                 ),
-                "voice_anchor": str(
-                    item.get("parent_voice_anchor_key")
-                    or item.get("voice_anchor_key")
-                    or ""
+                "stable_content_signature": hashlib.sha256(
+                    "".join(
+                        str(item.get("content_clean") or "").split()
+                    ).encode("utf-8")
+                ).hexdigest(),
+                "media_state": (
+                    "transcribed"
+                    if str(item.get("row_kind") or "")
+                    == "voice_transcript"
+                    else "untranscribed"
+                    if str(item.get("row_kind") or "")
+                    == "voice_bubble"
+                    else "image"
+                    if str(item.get("row_kind") or "")
+                    == "image_bubble"
+                    else ""
                 ),
-                "image_anchor": "",
             }
-            for item in observations
+            for index, item in enumerate(observations)
             if str(item.get("row_kind") or "")
-            in {"text_bubble", "voice_transcript", "image_bubble", "system_message"}
+            in {
+                "text_bubble",
+                "voice_bubble",
+                "voice_transcript",
+                "image_bubble",
+                "system_message",
+            }
         ]
+        digest = hashlib.sha256(
+            json.dumps(
+                context_sequence,
+                ensure_ascii=True,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        ).hexdigest()
         return {
-            "schema_version": 1,
+            "schema_version": 2,
             "sequence": context_sequence,
             "message_count": len(context_sequence),
             "bottom": dict(context_sequence[-1]) if context_sequence else None,
+            "message_viewport_change_digest": digest,
+            "sequence_sha256": digest,
+            "raw_rgb_hash_used": False,
         }
 
     def locate_chat(self, *, display_name: str, rpa_session_key: str, **kwargs):
@@ -1255,27 +1386,43 @@ class FakeBridge:
             not in excluded
         ]
         if not candidates:
+            viewport_digest = str(
+                (self.last_message_payload.get("send_context_guard") or {}).get(
+                    "message_viewport_change_digest"
+                )
+                or ""
+            )
             return self._contractual_message_payload({
                 **self.last_message_payload,
                 "observations": observations,
                 "ok": True,
+                "error_code": "",
                 "state": "voice_action_prepare_empty",
                 "voice_action_stage": "prepare",
                 "pre_frame_id": "fixture-empty-frame",
+                "message_viewport_change_digest": viewport_digest,
                 "ui_action_performed": False,
             })
         selected = candidates[0]
         selected_id = str(selected.get("observation_id") or "")
+        viewport_digest = str(
+            (self.last_message_payload.get("send_context_guard") or {}).get(
+                "message_viewport_change_digest"
+            )
+            or ""
+        )
         return self._contractual_message_payload({
             **self.last_message_payload,
             "observations": observations,
             "ok": True,
+            "error_code": "",
             "state": "voice_action_prepared",
             "voice_action_stage": "prepare",
             "pre_frame_id": f"fixture-pre:{selected_id}",
             "selected_pre_observation_id": selected_id,
             "selected_action_token": f"fixture-token:{selected_id}",
             "selected_target_fingerprint": f"fixture-fingerprint:{selected_id}",
+            "message_viewport_change_digest": viewport_digest,
             "selected_voice_observation": dict(selected),
             "selected_physical_anchor_keys": sorted({
                 str(value).strip()
@@ -1301,6 +1448,10 @@ class FakeBridge:
         payload.setdefault("contract_revision", contract_revision())
         payload.setdefault("contract_sha256", contract_sha256())
         payload.setdefault("observation_schema_version", 3)
+        payload.setdefault(
+            "message_viewport_change_digest",
+            str(kwargs.get("message_viewport_change_digest") or ""),
+        )
         action_id = str(
             kwargs.get("canonical_voice_action_id") or ""
         ).strip()
@@ -1548,6 +1699,9 @@ class FakeBridge:
                 future_payload.get("observations") or []
             )
             payload["messages"] = list(future_payload.get("messages") or [])
+            payload["send_context_guard"] = dict(
+                future_payload.get("send_context_guard") or {}
+            )
             payload["target_confirmation"] = {"ok": True}
             payload["final_frame_reusable"] = True
             payload.setdefault("action_phase", "confirmed")
@@ -1700,6 +1854,9 @@ class FakeBridge:
                 payload["messages"] = list(
                     future_payload.get("messages") or []
                 )
+                payload["send_context_guard"] = dict(
+                    future_payload.get("send_context_guard") or {}
+                )
                 self.last_message_payload = dict(payload)
             journal_path_value = kwargs.get("action_journal")
             if journal_path_value:
@@ -1801,6 +1958,46 @@ class FakeBridge:
 
 
 class TaskRunnerTest(unittest.TestCase):
+    def test_v0932_new_suffix_system_errors_remain_specific(self):
+        alignment = {
+            "alignment_status": "unique",
+            "new_suffix_observation_ids": ["system-new"],
+        }
+        common = {
+            "observation_id": "system-new",
+            "row_kind": "system_message",
+            "sender_role": "system",
+            "sender_role_source": "system",
+            "message_type": "system",
+        }
+        cases = [
+            (
+                {**common, "content_clean": "", "system_classification": "unreadable"},
+                "C2_PRE_SEND_SYSTEM_CONTENT_UNREADABLE",
+            ),
+            (
+                {**common, "content_clean": "可读系统消息", "system_classification": "unresolved"},
+                "C2_PRE_SEND_SYSTEM_CLASSIFICATION_UNRESOLVED",
+            ),
+            (
+                {
+                    **common,
+                    "sender_role": "unknown",
+                    "sender_role_source": "",
+                    "content_clean": "角色不明",
+                    "system_classification": "ordinary",
+                },
+                "C2_PRE_SEND_MESSAGE_ROLE_UNCONFIRMED",
+            ),
+        ]
+        for observation, error_code in cases:
+            with self.subTest(error_code=error_code):
+                result = pre_send_new_suffix_validation(
+                    [observation], alignment
+                )
+                self.assertFalse(result["ok"])
+                self.assertEqual(result["error_code"], error_code)
+
     @staticmethod
     def _ai_send_observation(
         observation_id: str,
@@ -2382,6 +2579,7 @@ class TaskRunnerTest(unittest.TestCase):
                 "selected_target_fingerprint": (
                     "fingerprint-voice-before-crash"
                 ),
+                "message_viewport_change_digest": "a" * 64,
                 "ui_action_performed": False,
             },
             items=[
@@ -2526,6 +2724,7 @@ class TaskRunnerTest(unittest.TestCase):
                     "selected_target_fingerprint": (
                         "fingerprint-before-crash"
                     ),
+                    "message_viewport_change_digest": "a" * 64,
                     "candidate_group_count": 1,
                 },
             )
@@ -3404,6 +3603,49 @@ class TaskRunnerTest(unittest.TestCase):
         self.assertIsNone(runner.run_status_sync_error)
         self.assertEqual(api.run_status_updates[-1], "paused")
 
+    def test_faulted_is_persisted_locally_before_backend_sync(self):
+        api = FakeApi(None)
+        api.run_status_error = RuntimeError("offline")
+        runner, _ = self.make_runner(
+            api,
+            FakeBridge(
+                RpaResult(ok=True, result_code="unused", message="unused")
+            ),
+        )
+        binding = Binding(
+            worker_id="worker-1",
+            worker_token="token",
+            client_instance_id="client-1",
+            run_status="running",
+        )
+        runner.binding = binding
+
+        self.assertFalse(runner.set_run_status("faulted"))
+        self.assertEqual(binding.run_status, "faulted")
+        self.assertEqual(runner._pending_run_status_sync, "faulted")
+        self.assertEqual(load_binding().run_status, "faulted")
+
+        restarted, _ = self.make_runner(
+            api,
+            FakeBridge(
+                RpaResult(ok=True, result_code="unused", message="unused")
+            ),
+        )
+        with patch(
+            "chejin_worker_client.task_runner.threading.Thread"
+        ) as thread_factory:
+            thread_factory.return_value.is_alive.return_value = False
+            restarted.start(load_binding())
+
+        self.assertEqual(
+            restarted._pending_run_status_sync,
+            "faulted",
+        )
+        api.heartbeat_run_status = "running"
+        restarted.tick_once()
+        self.assertEqual(restarted.binding.run_status, "faulted")
+        self.assertNotIn("pull", api.events)
+
     def test_pause_drains_registered_flow_but_emergency_stop_cancels_it(self):
         api = FakeApi(None)
         runner, _ = self.make_runner(
@@ -3500,6 +3742,7 @@ class TaskRunnerTest(unittest.TestCase):
                 }
             ],
         }
+        FakeBridge._attach_image_frame_action_bindings(sidecar_payload)
 
         def settle_image(*_args, **kwargs):
             self.assertFalse(kwargs["cancel_check"]())
@@ -3533,6 +3776,9 @@ class TaskRunnerTest(unittest.TestCase):
                 cancel_check=lambda: not runner._can_continue_inflight_flow(
                     read_run_id
                 ),
+                allowed_new_observation_ids={
+                    "image-observation-drain"
+                },
                 flow_outcomes=FlowOutcomeAccumulator(
                     origin_read_run_id=read_run_id
                 ),
@@ -3664,6 +3910,7 @@ class TaskRunnerTest(unittest.TestCase):
                 "selected_target_fingerprint": (
                     "voice-fingerprint-before-restart"
                 ),
+                "message_viewport_change_digest": "a" * 64,
                 "candidate_group_count": 1,
             },
             items=[
@@ -4431,6 +4678,7 @@ class TaskRunnerTest(unittest.TestCase):
                 "selected_pre_observation_id": "voice-before-orphan",
                 "selected_action_token": "voice-token-orphan",
                 "selected_target_fingerprint": "voice-fingerprint-orphan",
+                "message_viewport_change_digest": "a" * 64,
                 "candidate_group_count": 1,
             },
             items=[
@@ -5067,6 +5315,7 @@ class TaskRunnerTest(unittest.TestCase):
                 "selected_target_fingerprint": (
                     "voice-restart-confirmed-fingerprint"
                 ),
+                "message_viewport_change_digest": "a" * 64,
             },
             items=[
                 {
@@ -7651,6 +7900,143 @@ class TaskRunnerTest(unittest.TestCase):
         self.assertEqual(binding.run_status, "paused")
         self.assertIn("paused", api.run_status_updates)
 
+    def test_layout_invalid_settlement_faults_worker_and_preserves_error(self):
+        task = self.make_chat_reply_task(task_id="task-layout-invalid")
+        api = FakeApi(task)
+        runner, _ = self.make_runner(
+            api,
+            FakeBridge(
+                RpaResult(ok=True, result_code="unused", message="unused")
+            ),
+        )
+        binding = Binding(
+            worker_id="worker-1",
+            worker_token="token",
+            client_instance_id="client-1",
+            run_status="running",
+        )
+        runner.binding = binding
+
+        settled = runner._settle_chat_reply_context_failure_before_unlock(
+            binding,
+            task_id=task.id,
+            source_error_code="C2_PRE_SEND_LAYOUT_INVALID",
+        )
+
+        self.assertTrue(settled)
+        self.assertEqual(binding.run_status, "faulted")
+        self.assertIn("faulted", api.run_status_updates)
+        self.assertEqual(
+            api.events.count(
+                "fail:C2_PRE_SEND_LAYOUT_INVALID:pre_send_refresh"
+            ),
+            1,
+        )
+
+    def test_layout_invalid_without_reply_task_still_faults_worker(self):
+        api = FakeApi(None)
+        runner, _ = self.make_runner(
+            api,
+            FakeBridge(
+                RpaResult(ok=True, result_code="unused", message="unused")
+            ),
+        )
+        binding = Binding(
+            worker_id="worker-1",
+            worker_token="token",
+            client_instance_id="client-1",
+            run_status="running",
+        )
+        runner.binding = binding
+
+        settled = runner._settle_chat_reply_context_failure_before_unlock(
+            binding,
+            task_id="",
+            source_error_code="C2_PRE_SEND_LAYOUT_INVALID",
+        )
+
+        self.assertFalse(settled)
+        self.assertEqual(binding.run_status, "faulted")
+        self.assertIn("faulted", api.run_status_updates)
+
+    def test_specific_reidentification_error_is_not_rewritten(self):
+        task = self.make_chat_reply_task(task_id="task-role-unconfirmed")
+        api = FakeApi(task)
+        runner, _ = self.make_runner(
+            api,
+            FakeBridge(
+                RpaResult(ok=True, result_code="unused", message="unused")
+            ),
+        )
+        binding = Binding(
+            worker_id="worker-1",
+            worker_token="token",
+            client_instance_id="client-1",
+            run_status="running",
+        )
+
+        settled = runner._settle_chat_reply_context_failure_before_unlock(
+            binding,
+            task_id=task.id,
+            source_error_code=(
+                "C2_PRE_SEND_MESSAGE_ROLE_UNCONFIRMED"
+            ),
+        )
+
+        self.assertTrue(settled)
+        self.assertEqual(binding.run_status, "running")
+        self.assertEqual(
+            api.events.count(
+                "fail:C2_PRE_SEND_MESSAGE_ROLE_UNCONFIRMED:pre_send_refresh"
+            ),
+            1,
+        )
+
+    def test_pre_send_layout_failure_uploads_nested_durable_evidence(self):
+        task = self.make_chat_reply_task(
+            task_id="task-layout-evidence-upload"
+        )
+        api = FakeApi(task)
+        runner, _ = self.make_runner(
+            api,
+            FakeBridge(
+                RpaResult(ok=True, result_code="unused", message="unused")
+            ),
+        )
+        binding = Binding(
+            worker_id="worker-1",
+            worker_token="token",
+            client_instance_id="client-1",
+            run_status="running",
+        )
+        evidence = {
+            "error_code": "C2_PRE_SEND_LAYOUT_INVALID",
+            "layout_evidence": {
+                "message_viewport_bounds": [],
+                "ocr_evidence": [{"text": "CJTEST01"}],
+                "screenshot_path": "C:/artifacts/layout-invalid.png",
+            },
+        }
+
+        settled = runner._settle_chat_reply_context_failure_before_unlock(
+            binding,
+            task_id=task.id,
+            source_error_code="C2_PRE_SEND_LAYOUT_INVALID",
+            evidence=evidence,
+        )
+
+        self.assertTrue(settled)
+        self.assertEqual(len(api.evidence_payloads), 1)
+        uploaded = api.evidence_payloads[0]
+        self.assertEqual(
+            uploaded["evidence_path"],
+            "C:/artifacts/layout-invalid.png",
+        )
+        self.assertEqual(
+            uploaded["metadata"]["pre_send_failure_evidence"],
+            evidence,
+        )
+
     def test_c2_visible_scan_reports_first_screen_sessions(self):
         api = FakeApi(None)
         bridge = FakeBridge(RpaResult(ok=True, result_code="invite_sent", message="unused"))
@@ -8254,12 +8640,16 @@ class TaskRunnerTest(unittest.TestCase):
                 "messages": [
                     {
                         "id": "wx-msg-text-before-voice",
+                        "source_adapter": "win32_ocr",
+                        "native_source_message_id": "",
                         "type": "text",
                         "sender_role": "customer",
                         "content": "在？",
                     },
                     {
                         "id": "wx-msg-voice-raw",
+                        "source_adapter": "win32_ocr",
+                        "native_source_message_id": "",
                         "type": "voice",
                         "sender_role": "customer",
                         "voice_duration": 2,
@@ -8276,12 +8666,16 @@ class TaskRunnerTest(unittest.TestCase):
                 "messages": [
                     {
                         "id": "wx-msg-text-before-voice",
+                        "source_adapter": "win32_ocr",
+                        "native_source_message_id": "",
                         "type": "text",
                         "sender_role": "customer",
                         "content": "在？",
                     },
                     {
                         "id": "wx-msg-voice-text",
+                        "source_adapter": "win32_ocr",
+                        "native_source_message_id": "",
                         "type": "voice",
                         "sender_role": "customer",
                         "content": "你好",
@@ -8336,6 +8730,7 @@ class TaskRunnerTest(unittest.TestCase):
             ],
         )
         self.assertEqual(bridge.voice_transcribes[0]["target_mode"], "current")
+        self.assertEqual(len(bridge.voice_transcribes), 1)
         self.assertEqual(bridge.voice_transcribes[0]["max_duration_seconds"], 240)
         self.assertEqual(bridge.message_reads[0]["target_mode"], "current")
         self.assertIn(
@@ -9142,14 +9537,12 @@ class TaskRunnerTest(unittest.TestCase):
             "voice_anchor_key": "voice:customer:2:bottom:1",
             "native_source_message_id": "native-voice-old",
             "source_message": {"voice_anchor_stable_key": "voice:customer:2:bottom:1"},
-            "_worker_stable_id": "worker-message-1",
         }
-        voice_observation = attach_native_committed_identity(
-            voice_observation,
-            worker_stable_id="worker-message-1",
-            native_source_message_id="native-voice-old",
+        old_source_key = worker_source_message_key(
+            target,
+            identity_kind="worker_sequence",
+            identity="worker-message-1",
         )
-        old_source_key = voice_observation_source_key(target, voice_observation)
         old_read_run_id = "read-confirmed-old-voice"
         target.raw["identity_checkpoint"] = {
             "version": 2,
@@ -9780,18 +10173,19 @@ class TaskRunnerTest(unittest.TestCase):
                     {
                         "schema_version": 3,
                         "observation_id": "stable-text-before-media",
+                        "source_adapter": "win32_ocr",
                         "row_kind": "text_bubble",
                         "sender_role": "customer",
                         "sender_role_source": "same_row_avatar",
                         "message_type": "text",
                         "voice_state": "not_voice",
                         "content_clean": "稳定上下文",
-                        "native_source_message_id": (
-                            "native-stable-text-before-media"
-                        ),
+                        "native_source_message_id": "",
                         "bubble_rect": [400, 40, 600, 80],
                         "source_message": {
                             "id": "stable-text-before-media",
+                            "source_adapter": "win32_ocr",
+                            "native_source_message_id": "",
                             "type": "text",
                             "sender_role": "customer",
                             "content": "稳定上下文",
@@ -9800,6 +10194,8 @@ class TaskRunnerTest(unittest.TestCase):
                     {
                         "schema_version": 3,
                         "observation_id": "voice-customer-failed",
+                        "source_adapter": "win32_ocr",
+                        "native_source_message_id": "",
                         "row_kind": "voice_bubble",
                         "sender_role": "customer",
                         "sender_role_source": "same_row_avatar",
@@ -9807,9 +10203,11 @@ class TaskRunnerTest(unittest.TestCase):
                         "voice_state": "untranscribed",
                         "item_state": "discovered",
                         "voice_anchor_key": "voice-customer-failed",
-                        "bubble_rect": [400, 100, 600, 140],
+                        "bubble_rect": [400, 260, 600, 300],
                         "source_message": {
                             "id": "voice-customer-failed",
+                            "source_adapter": "win32_ocr",
+                            "native_source_message_id": "",
                             "type": "voice",
                             "sender_role": "customer",
                             "content": '[语音] 6"',
@@ -9819,6 +10217,8 @@ class TaskRunnerTest(unittest.TestCase):
                     {
                         "schema_version": 3,
                         "observation_id": "image-customer-ready",
+                        "source_adapter": "win32_ocr",
+                        "native_source_message_id": "",
                         "row_kind": "image_bubble",
                         "sender_role": "customer",
                         "sender_role_source": "same_row_avatar",
@@ -9827,16 +10227,22 @@ class TaskRunnerTest(unittest.TestCase):
                         "item_state": "discovered",
                         "image_physical_anchor": {
                             "sender_role": "customer",
-                            "preceding_stable_message": "voice-customer-failed",
-                            "following_stable_message": "",
+                            "preceding_stable_message": (
+                                "stable-text-before-media"
+                            ),
+                            "following_stable_message": (
+                                "voice-customer-failed"
+                            ),
                             "occurrence_index": 0,
                             "bubble_visual_fingerprint": (
                                 "dhash64:1111111111111111"
                             ),
                         },
-                        "bubble_rect": [420, 180, 650, 320],
+                        "bubble_rect": [420, 100, 650, 230],
                         "source_message": {
                             "id": "image-customer-ready",
+                            "source_adapter": "win32_ocr",
+                            "native_source_message_id": "",
                             "type": "image",
                             "sender_role": "customer",
                         },
@@ -9845,6 +10251,7 @@ class TaskRunnerTest(unittest.TestCase):
             }
 
         bridge.get_messages_payloads = [
+            frame_payload(),
             frame_payload(),
             frame_payload(),
             frame_payload(),
@@ -9931,6 +10338,68 @@ class TaskRunnerTest(unittest.TestCase):
             item
             for item in payload["messages"]
             if item["message_type"] == "image"
+        )
+        reservations = load_c2_state(
+            f"message_identity:{target.conversation_id}"
+        )["sequence_reservations"]
+        self.assertEqual(
+            sorted(
+                reservations.values(),
+                key=lambda value: int(value.rsplit("-", 1)[1]),
+            ),
+            [
+                "worker-message-1",
+                "worker-message-2",
+                "worker-message-3",
+            ],
+        )
+        self.assertEqual(
+            sum(
+                str(key).startswith("selected-action:")
+                for key in reservations
+            ),
+            2,
+        )
+        self.assertFalse(
+            any(str(key).startswith("media-action:") for key in reservations)
+        )
+        self.assertEqual(
+            [item["message_position"]["screen_order"] for item in payload["messages"]],
+            [1, 2, 3],
+        )
+        self.assertEqual(
+            [item["message_type"] for item in payload["messages"]],
+            ["text", "image", "voice"],
+        )
+        self.assertEqual(
+            next(
+                value
+                for key, value in reservations.items()
+                if str(key).startswith("selected-action:voice:")
+            ),
+            "worker-message-2",
+        )
+        self.assertEqual(
+            next(
+                value
+                for key, value in reservations.items()
+                if str(key).startswith(
+                    "selected-action:image-action-candidate:"
+                )
+            ),
+            "worker-message-3",
+        )
+        self.assertTrue(
+            all(
+                item["raw_payload"].get("source_adapter")
+                == "win32_ocr"
+                and not (
+                    item["raw_payload"].get("observation") or {}
+                ).get(
+                    "native_source_message_id"
+                )
+                for item in payload["messages"]
+            )
         )
         self.assertEqual(failed_voice["item_state"], "failed")
         self.assertEqual(completed_image_message["item_state"], "completed")
@@ -10274,6 +10743,9 @@ class TaskRunnerTest(unittest.TestCase):
                     ),
                     "selected_target_fingerprint": str(
                         kwargs["selected_target_fingerprint"]
+                    ),
+                    "message_viewport_change_digest": str(
+                        kwargs["message_viewport_change_digest"]
                     ),
                     "transcript_binding_status": binding_status,
                     "transcript_binding_method": (
@@ -10986,10 +11458,19 @@ class TaskRunnerTest(unittest.TestCase):
         bridge.last_message_payload = dict(initial)
 
         def prepare_wrong_historical_voice(**_kwargs):
-            historical = dict(initial["observations"][0])
+            sidecar_observations = [
+                {
+                    key: value
+                    for key, value in observation.items()
+                    if not str(key).startswith("_worker_")
+                }
+                for observation in initial["observations"]
+            ]
+            historical = dict(sidecar_observations[0])
             return bridge._contractual_message_payload(
                 {
                     **initial,
+                    "observations": sidecar_observations,
                     "ok": True,
                     "state": "voice_action_prepared",
                     "voice_action_stage": "prepare",
@@ -10999,6 +11480,7 @@ class TaskRunnerTest(unittest.TestCase):
                     "selected_target_fingerprint": (
                         "prepare-history-fingerprint"
                     ),
+                    "message_viewport_change_digest": "a" * 64,
                     "selected_voice_observation": historical,
                     "selected_physical_anchor_keys": [
                         "historical-anchor"
@@ -11045,7 +11527,6 @@ class TaskRunnerTest(unittest.TestCase):
             ),
             [],
         )
-
     def test_voice_prepare_empty_page_change_adopts_complete_final_read(self):
         api = FakeApi(None)
         target = WechatReadTarget(
@@ -11167,6 +11648,674 @@ class TaskRunnerTest(unittest.TestCase):
             ["existing-context", "voice-disappeared"],
         )
         self.assertEqual(bridge.voice_transcribes, [])
+
+    def test_pre_send_first_win32_voice_without_native_id_executes_once(self):
+        api = FakeApi(None)
+        target = WechatReadTarget(
+            conversation_id="conv-pre-send-first-win32-voice",
+            rpa_session_key="wx:pre-send-first-win32-voice",
+            display_name="CJWINV33",
+            remark_code="CJWINV33",
+            authorization_revision="revision-pre-send-first-win32-voice",
+            raw={"identity_checkpoint": identity_checkpoint()},
+        )
+        bridge = FakeBridge(
+            RpaResult(ok=True, result_code="unused", message="unused")
+        )
+        initial = bridge._contractual_message_payload(
+            {
+                "messages": [
+                    {
+                        "id": "win32-voice-before",
+                        "source_adapter": "win32_ocr",
+                        "native_source_message_id": "",
+                        "type": "voice",
+                        "sender_role": "customer",
+                        "content": '[语音] 4"',
+                        "voice_duration": 4,
+                        "voice_anchor_stable_key": "win32-voice-anchor",
+                    }
+                ]
+            }
+        )
+        bridge.last_message_payload = dict(initial)
+        bridge.get_messages_payloads = [
+            {
+                "messages": [
+                    {
+                        "id": "win32-voice-after",
+                        "source_adapter": "win32_ocr",
+                        "native_source_message_id": "",
+                        "type": "voice",
+                        "sender_role": "customer",
+                        "content": "我想买一辆二手车",
+                        "voice_anchor_stable_key": "win32-voice-anchor",
+                    }
+                ]
+            }
+        ]
+        bridge.voice_payload = {
+            "ok": True,
+            "state": "voice_transcribe_completed",
+            "processed_voice_anchor_keys": ["win32-voice-anchor"],
+            "failed_voice_anchor_keys": [],
+            "transcribed_messages": [
+                {
+                    "content": "我想买一辆二手车",
+                    "sender_role": "customer",
+                    "voice_anchor_stable_key": "win32-voice-anchor",
+                }
+            ],
+            "item_action_outcomes": [
+                {
+                    "physical_anchor_keys": ["win32-voice-anchor"],
+                    "action_phase": "confirmed",
+                    "business_state": "completed",
+                    "business_result_confirmed": True,
+                }
+            ],
+        }
+        runner, _ = self.make_runner(api, bridge)
+
+        result = runner._finish_new_visible_voices_in_current_chat(
+            binding=Binding(
+                worker_id="worker-1",
+                worker_token="token",
+                client_instance_id="client-1",
+                run_status="running",
+            ),
+            target=target,
+            target_label="CJWINV33",
+            sidecar_payload=initial,
+            lease=unittest.mock.Mock(),
+            action_cancel_requested=lambda: False,
+            enforce_read_targets=False,
+            read_run_id="read-pre-send-first-win32-voice",
+            excluded_voice_anchor_keys=set(),
+            flow_outcomes=FlowOutcomeAccumulator(
+                origin_read_run_id="read-pre-send-first-win32-voice"
+            ),
+            operation_phase="pre_send_refresh",
+        )
+
+        self.assertTrue(result["ok"], result)
+        self.assertEqual(len(bridge.voice_transcribes), 1)
+        committed = [
+            item
+            for item in result["payload"]["observations"]
+            if isinstance(item, dict)
+            and item.get("message_type") == "voice"
+        ]
+        self.assertEqual(len(committed), 1)
+        self.assertEqual(
+            committed[0].get("_worker_identity_scope"),
+            "committed",
+        )
+        self.assertEqual(
+            committed[0]["source_message"].get(
+                "native_source_message_id"
+            ),
+            "",
+        )
+
+    def test_pre_send_same_duration_voice_replacement_is_zero_click_ambiguous(
+        self,
+    ):
+        api = FakeApi(None)
+        target = WechatReadTarget(
+            conversation_id="conv-fixed-capacity-voice-replacement",
+            rpa_session_key="wx:fixed-capacity-voice-replacement",
+            display_name="CJREPL32",
+            remark_code="CJREPL32",
+            authorization_revision="revision-fixed-capacity-replacement",
+            raw={"identity_checkpoint": identity_checkpoint()},
+        )
+        bridge = FakeBridge(RpaResult(ok=True, result_code="unused"))
+        old_voice = {
+            "schema_version": 3,
+            "observation_id": "win32_ocr:same-frame-local-voice-id",
+            "row_kind": "voice_bubble",
+            "sender_role": "customer",
+            "sender_role_source": "same_row_avatar",
+            "message_type": "voice",
+            "voice_state": "untranscribed",
+            "voice_duration": 4,
+            "voice_duration_text": '4"',
+            "voice_anchor_key": "old-voice-anchor",
+            "bubble_rect": [480, 280, 540, 310],
+            "source_message": {
+                "id": "win32_ocr:same-frame-local-voice-id",
+                "source_adapter": "win32_ocr",
+                "type": "voice",
+                "sender_role": "customer",
+            },
+        }
+        initial = bridge._contractual_message_payload(
+            {"observations": [old_voice]}
+        )
+        initial["observations"][0]["_worker_stable_id"] = (
+            "worker-message-8"
+        )
+        initial["observations"][0]["_worker_identity_scope"] = (
+            "current_read_provisional"
+        )
+        new_voice = {
+            **old_voice,
+            "voice_anchor_key": "new-voice-anchor",
+        }
+
+        def replacement_prepare(**_kwargs):
+            prepared = bridge._contractual_message_payload(
+                {"observations": [new_voice]}
+            )
+            return {
+                **prepared,
+                "ok": True,
+                "state": "voice_action_prepared",
+                "voice_action_stage": "prepare",
+                "pre_frame_id": "replacement-frame",
+                "selected_pre_observation_id": (
+                    "win32_ocr:same-frame-local-voice-id"
+                ),
+                "selected_action_token": "replacement-token",
+                "selected_target_fingerprint": (
+                    "same-duration-position-fingerprint"
+                ),
+                "message_viewport_change_digest": str(
+                    initial["send_context_guard"][
+                        "message_viewport_change_digest"
+                    ]
+                ),
+                "selected_voice_observation": new_voice,
+                "selected_physical_anchor_keys": [
+                    "new-voice-anchor"
+                ],
+                "candidate_group_count": 1,
+                "ui_action_performed": False,
+            }
+
+        bridge.prepare_voice_action = replacement_prepare  # type: ignore[method-assign]
+        runner, _ = self.make_runner(api, bridge)
+        result = runner._finish_new_visible_voices_in_current_chat(
+            binding=Binding(
+                worker_id="worker-1",
+                worker_token="token",
+                client_instance_id="client-1",
+                run_status="running",
+            ),
+            target=target,
+            target_label="CJREPL32",
+            sidecar_payload=initial,
+            lease=unittest.mock.Mock(),
+            action_cancel_requested=lambda: False,
+            enforce_read_targets=False,
+            read_run_id="read-fixed-capacity-replacement",
+            excluded_voice_anchor_keys=set(),
+            flow_outcomes=FlowOutcomeAccumulator(
+                origin_read_run_id=(
+                    "read-fixed-capacity-replacement"
+                )
+            ),
+            operation_phase="pre_send_refresh",
+        )
+
+        self.assertFalse(result["ok"], result)
+        self.assertEqual(
+            result["error_code"],
+            "C2_PRE_SEND_VOICE_TARGET_AMBIGUOUS",
+        )
+        self.assertEqual(bridge.voice_transcribes, [])
+        self.assertEqual(
+            list_action_journals(
+                conversation_id=target.conversation_id,
+                action_kinds=("voice",),
+            ),
+            [],
+        )
+        authorized_result = (
+            runner._finish_new_visible_voices_in_current_chat(
+                binding=Binding(
+                    worker_id="worker-1",
+                    worker_token="token",
+                    client_instance_id="client-1",
+                    run_status="running",
+                ),
+                target=target,
+                target_label="CJREPL32",
+                sidecar_payload=initial,
+                lease=unittest.mock.Mock(),
+                action_cancel_requested=lambda: False,
+                enforce_read_targets=False,
+                read_run_id="read-authorized-fixed-capacity",
+                excluded_voice_anchor_keys=set(),
+                flow_outcomes=FlowOutcomeAccumulator(
+                    origin_read_run_id=(
+                        "read-authorized-fixed-capacity"
+                    )
+                ),
+                operation_phase="authorized_read",
+            )
+        )
+        self.assertFalse(authorized_result["ok"], authorized_result)
+        self.assertEqual(
+            authorized_result["error_code"],
+            "MESSAGE_CROSS_ROUND_IDENTITY_AMBIGUOUS",
+        )
+        self.assertNotIn(
+            "pre_send_reidentification_attempts",
+            authorized_result.get("payload") or {},
+        )
+
+    def test_frame_local_voice_evidence_rejects_same_slot_neighbor_replacement(
+        self,
+    ):
+        previous = {
+            "sender_role": "customer",
+            "message_type": "voice",
+            "voice_state": "untranscribed",
+            "voice_duration": 4,
+            "voice_duration_text": '4"',
+            "screen_order": 2,
+            "neighbor_before_signature": "old-before",
+            "neighbor_after_signature": "same-after",
+            "bubble_rect": [480, 280, 540, 310],
+        }
+        replacement = {
+            **previous,
+            "neighbor_before_signature": "new-before",
+        }
+
+        self.assertFalse(
+            _same_frame_voice_action_evidence_matches(
+                previous,
+                replacement,
+            )
+        )
+        self.assertTrue(
+            _same_frame_voice_action_evidence_matches(
+                previous,
+                dict(previous),
+            )
+        )
+
+    def test_pre_send_fixed_capacity_target_and_neighbor_replacements_are_zero_click(
+        self,
+    ):
+        for replacement_type in ("text", "voice", "image"):
+            with self.subTest(replacement_type=replacement_type):
+                api = FakeApi(None)
+                target = WechatReadTarget(
+                    conversation_id=(
+                        "conv-fixed-neighbor-" + replacement_type
+                    ),
+                    rpa_session_key=(
+                        "wx:fixed-neighbor-" + replacement_type
+                    ),
+                    display_name="CJREPLN2",
+                    remark_code="CJREPLN2",
+                    authorization_revision=(
+                        "revision-fixed-neighbor-" + replacement_type
+                    ),
+                    raw={"identity_checkpoint": identity_checkpoint()},
+                )
+                bridge = FakeBridge(
+                    RpaResult(ok=True, result_code="unused")
+                )
+
+                def row(
+                    observation_id: str,
+                    message_type: str,
+                    *,
+                    native_id: str = "",
+                ) -> dict:
+                    row_kind = {
+                        "text": "text_bubble",
+                        "voice": "voice_bubble",
+                        "image": "image_bubble",
+                    }[message_type]
+                    item = {
+                        "schema_version": 3,
+                        "observation_id": observation_id,
+                        "row_kind": row_kind,
+                        "sender_role": "customer",
+                        "sender_role_source": "same_row_avatar",
+                        "message_type": message_type,
+                        "voice_state": (
+                            "untranscribed"
+                            if message_type == "voice"
+                            else "not_voice"
+                        ),
+                        "content_clean": (
+                            "完全相同的文字"
+                            if message_type == "text"
+                            else ""
+                        ),
+                        "voice_duration": (
+                            4 if message_type == "voice" else None
+                        ),
+                        "source_message": {
+                            "id": (
+                                native_id
+                                or "win32_ocr:same-weak-neighbor"
+                            ),
+                            "source_adapter": (
+                                "native_fixture"
+                                if native_id
+                                else "win32_ocr"
+                            ),
+                            "type": message_type,
+                            "sender_role": "customer",
+                        },
+                    }
+                    if native_id:
+                        item["native_source_message_id"] = native_id
+                    return item
+
+                before = [
+                    row("old-neighbor", replacement_type),
+                    row("before", "text", native_id="native-before"),
+                    row(
+                        "target-voice",
+                        "voice",
+                        native_id="native-target-voice",
+                    ),
+                    row("after", "text", native_id="native-after"),
+                ]
+                after = [
+                    row(
+                        "before-next",
+                        "text",
+                        native_id="native-before",
+                    ),
+                    row(
+                        "target-voice-next",
+                        "voice",
+                        native_id="native-target-voice",
+                    ),
+                    row(
+                        "after-next",
+                        "text",
+                        native_id="native-after",
+                    ),
+                    row("new-neighbor", replacement_type),
+                ]
+                for index, item in enumerate(before, start=1):
+                    item["_worker_stable_id"] = (
+                        f"worker-message-{index}"
+                    )
+                    item["_worker_identity_scope"] = (
+                        "current_read_provisional"
+                        if item["message_type"] in {"voice", "image"}
+                        else "committed"
+                    )
+                initial = bridge._contractual_message_payload(
+                    {"observations": before}
+                )
+
+                def replacement_prepare(**_kwargs):
+                    prepared = bridge._contractual_message_payload(
+                        {"observations": after}
+                    )
+                    # Reproduce the original P0 boundary: the weak normalized
+                    # digest collides even though the frame-local target and a
+                    # fixed-capacity neighbor were replaced.  The action must
+                    # still be rejected by the physical target binding.
+                    prepared["send_context_guard"] = {
+                        **prepared["send_context_guard"],
+                        "message_viewport_change_digest": str(
+                            initial["send_context_guard"][
+                                "message_viewport_change_digest"
+                            ]
+                        ),
+                    }
+                    return {
+                        **prepared,
+                        "ok": True,
+                        "state": "voice_action_prepared",
+                        "voice_action_stage": "prepare",
+                        "pre_frame_id": (
+                            "fixed-neighbor-frame-" + replacement_type
+                        ),
+                        "selected_pre_observation_id": (
+                            "target-voice-next"
+                        ),
+                        "selected_action_token": (
+                            "fixed-neighbor-token-" + replacement_type
+                        ),
+                        "selected_target_fingerprint": (
+                            "fixed-neighbor-fingerprint-"
+                            + replacement_type
+                        ),
+                        "message_viewport_change_digest": str(
+                            initial["send_context_guard"][
+                                "message_viewport_change_digest"
+                            ]
+                        ),
+                        "selected_voice_observation": after[1],
+                        "selected_physical_anchor_keys": [
+                            "fixed-neighbor-target-anchor"
+                        ],
+                        "candidate_group_count": 1,
+                        "ui_action_performed": False,
+                    }
+
+                bridge.prepare_voice_action = replacement_prepare  # type: ignore[method-assign]
+                runner, _ = self.make_runner(api, bridge)
+                result = (
+                    runner._finish_new_visible_voices_in_current_chat(
+                        binding=Binding(
+                            worker_id="worker-1",
+                            worker_token="token",
+                            client_instance_id="client-1",
+                            run_status="running",
+                        ),
+                        target=target,
+                        target_label="CJREPLN2",
+                        sidecar_payload=initial,
+                        lease=unittest.mock.Mock(),
+                        action_cancel_requested=lambda: False,
+                        enforce_read_targets=False,
+                        read_run_id=(
+                            "read-fixed-neighbor-" + replacement_type
+                        ),
+                        excluded_voice_anchor_keys=set(),
+                        flow_outcomes=FlowOutcomeAccumulator(
+                            origin_read_run_id=(
+                                "read-fixed-neighbor-"
+                                + replacement_type
+                            )
+                        ),
+                        operation_phase="pre_send_refresh",
+                    )
+                )
+
+                self.assertFalse(result["ok"], result)
+                self.assertEqual(
+                    result["error_code"],
+                    "C2_PRE_SEND_VOICE_TARGET_AMBIGUOUS",
+                )
+                self.assertEqual(bridge.voice_transcribes, [])
+
+    def test_first_viewport_change_consumes_only_reidentification_budget(self):
+        api = FakeApi(None)
+        target = WechatReadTarget(
+            conversation_id="conv-v0932-one-reidentification",
+            rpa_session_key="wx:v0932-one-reidentification",
+            display_name="CJREID32",
+            remark_code="CJREID32",
+            authorization_revision="revision-v0932-one-reidentification",
+            raw={"identity_checkpoint": identity_checkpoint()},
+        )
+        bridge = FakeBridge(
+            RpaResult(ok=True, result_code="unused")
+        )
+        existing_text = {
+            "schema_version": 3,
+            "observation_id": "existing-text-v0932",
+            "row_kind": "text_bubble",
+            "sender_role": "customer",
+            "sender_role_source": "same_row_avatar",
+            "message_type": "text",
+            "voice_state": "not_voice",
+            "content_clean": "原有文字",
+            "native_source_message_id": "native-existing-v0932",
+            "_worker_stable_id": "worker-message-1",
+            "source_message": {
+                "id": "existing-text-v0932",
+                "type": "text",
+                "sender_role": "customer",
+                "content": "原有文字",
+            },
+            "bubble_rect": [480, 210, 650, 250],
+        }
+        voice = {
+            "schema_version": 3,
+            "observation_id": "voice-v0932",
+            "row_kind": "voice_bubble",
+            "sender_role": "customer",
+            "sender_role_source": "same_row_avatar",
+            "message_type": "voice",
+            "voice_state": "untranscribed",
+            "voice_anchor_key": "voice-anchor-v0932",
+            "voice_duration": 4,
+            "native_source_message_id": "native-voice-v0932",
+            "source_message": {
+                "id": "voice-v0932",
+                "type": "voice",
+                "sender_role": "customer",
+            },
+            "bubble_rect": [480, 280, 540, 310],
+        }
+        initial = bridge._contractual_message_payload(
+            {"observations": [existing_text, voice]}
+        )
+        new_text = {
+            "schema_version": 3,
+            "observation_id": "new-text-v0932",
+            "row_kind": "text_bubble",
+            "sender_role": "customer",
+            "sender_role_source": "same_row_avatar",
+            "message_type": "text",
+            "voice_state": "not_voice",
+            "content_clean": "语音期间新增文字",
+            "source_message": {
+                "id": "new-text-v0932",
+                "type": "text",
+                "sender_role": "customer",
+                "content": "语音期间新增文字",
+            },
+            "bubble_rect": [480, 350, 720, 395],
+        }
+        prepare_calls = 0
+        execute_calls = 0
+
+        def changed_prepare(**_kwargs):
+            nonlocal prepare_calls
+            prepare_calls += 1
+            prepared = bridge._contractual_message_payload(
+                {"observations": [existing_text, voice, new_text]}
+            )
+            bridge.last_message_payload = dict(prepared)
+            viewport_digest = str(
+                prepared["send_context_guard"][
+                    "message_viewport_change_digest"
+                ]
+            )
+            return {
+                **prepared,
+                "ok": True,
+                "state": "voice_action_prepared",
+                "voice_action_stage": "prepare",
+                "pre_frame_id": "v0932-reidentified-frame",
+                "selected_pre_observation_id": "voice-v0932",
+                "selected_action_token": "v0932-action-token",
+                "selected_target_fingerprint": "v0932-target-fingerprint",
+                "message_viewport_change_digest": viewport_digest,
+                "selected_voice_observation": dict(voice),
+                "selected_physical_anchor_keys": ["voice-anchor-v0932"],
+                "candidate_group_count": 1,
+                "ui_action_performed": False,
+            }
+
+        def changed_again_execute(**kwargs):
+            nonlocal execute_calls
+            execute_calls += 1
+            base = bridge._contractual_message_payload(
+                {"observations": [existing_text, voice, new_text]}
+            )
+            return {
+                **base,
+                "ok": False,
+                "state": "voice_action_cancelled_before_trigger",
+                "error_code": "C2_VOICE_ACTION_CANCELLED",
+                "voice_action_stage": "execute",
+                "action_phase": "cancelled_before_trigger",
+                "business_state": "not_attempted",
+                "business_result_confirmed": False,
+                "ui_action_performed": False,
+                "canonical_voice_action_id": kwargs[
+                    "canonical_voice_action_id"
+                ],
+                "reserved_worker_stable_id": kwargs[
+                    "reserved_worker_stable_id"
+                ],
+                "pre_frame_id": kwargs["pre_frame_id"],
+                "selected_pre_observation_id": kwargs[
+                    "selected_pre_observation_id"
+                ],
+                "selected_action_token": kwargs["selected_action_token"],
+                "selected_target_fingerprint": kwargs[
+                    "selected_target_fingerprint"
+                ],
+                "message_viewport_change_digest": kwargs[
+                    "message_viewport_change_digest"
+                ],
+                "candidate_count": 1,
+                "matched_candidate_count": 1,
+                "post_frame_id": "v0932-changed-again-frame",
+            }
+
+        bridge.prepare_voice_action = changed_prepare  # type: ignore[method-assign]
+        bridge.execute_voice_action = changed_again_execute  # type: ignore[method-assign]
+        runner, _ = self.make_runner(api, bridge)
+        result = runner._finish_new_visible_voices_in_current_chat(
+            binding=Binding(
+                worker_id="worker-1",
+                worker_token="token",
+                client_instance_id="client-1",
+                run_status="running",
+            ),
+            target=target,
+            target_label="CJREID32",
+            sidecar_payload=initial,
+            lease=unittest.mock.Mock(),
+            action_cancel_requested=lambda: False,
+            enforce_read_targets=False,
+            read_run_id="read-v0932-one-reidentification",
+            excluded_voice_anchor_keys=set(),
+            flow_outcomes=FlowOutcomeAccumulator(
+                origin_read_run_id="read-v0932-one-reidentification"
+            ),
+            operation_phase="pre_send_refresh",
+        )
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(
+            result["error_code"],
+            "C2_PRE_SEND_MESSAGE_VIEWPORT_CHANGED_AGAIN",
+        )
+        self.assertEqual(prepare_calls, 1)
+        self.assertEqual(execute_calls, 1)
+        journals = list_action_journals(
+            conversation_id=target.conversation_id,
+            action_kinds=("voice",),
+        )
+        self.assertEqual(len(journals), 1)
+        journal_item = next(iter(journals[0][1]["items"].values()))
+        self.assertEqual(
+            journal_item["action_phase"],
+            "cancelled_before_trigger",
+        )
 
     def test_c2_failed_voice_waiting_is_reassembled_without_repeating_rpa(self):
         api = FakeApi(None)
@@ -13134,16 +14283,22 @@ class TaskRunnerTest(unittest.TestCase):
             )
             raise RuntimeError("adapter_crashed_after_trigger")
 
+        action_payload = {
+            "frame_id": f"frame-image-adapter-{unique}",
+            "observations": [observation],
+        }
+        action_payload["send_context_guard"] = (
+            FakeBridge._send_context_guard([observation])
+        )
+        FakeBridge._attach_image_frame_action_bindings(action_payload)
+
         with patch(
             "chejin_worker_client.omniauto_vision.process_image_slot",
             side_effect=crash_after_trigger,
         ):
             result = runner._execute_one_image_slot_vision(
                 target=target,
-                payload={
-                    "frame_id": f"frame-image-adapter-{unique}",
-                    "observations": [observation],
-                },
+                payload=action_payload,
                 observation=observation,
                 action_local_id=source_key,
                 cancel_check=None,
@@ -15703,6 +16858,87 @@ class TaskRunnerTest(unittest.TestCase):
         self.assertEqual(api.message_payloads, [])
         self.assertEqual(bridge.voice_transcribes, [])
 
+    def test_sidecar_message_identity_claim_is_rejected_before_media_or_ingest(self):
+        api = FakeApi(None)
+        target = WechatReadTarget(
+            conversation_id="conv-sidecar-identity-overreach",
+            rpa_session_key="wx:rpa:v1:sidecar-identity-overreach",
+            display_name="CJSIDE01",
+            remark_code="CJSIDE01",
+            row_fingerprint={"title_text": "CJSIDE01"},
+            read_reason="waiting_user_reply",
+            authorization_revision="revision-sidecar-identity-overreach",
+        )
+        api.read_targets = [target]
+        bridge = FakeBridge(
+            RpaResult(ok=True, result_code="unused", message="unused")
+        )
+        bridge.locate_payloads = [
+            {
+                "ok": True,
+                "state": "chat_target_confirmed",
+                "conversation_type": "private",
+                "conversation_type_evidence": {
+                    "matched": True,
+                    "short_code_confirmed": True,
+                    "admission_allowed": True,
+                    "conversation_type": "private",
+                    "raw_title": "CJSIDE01",
+                },
+            }
+        ]
+        bridge.get_messages_payloads = [
+            {
+                "ok": True,
+                "observations": [
+                    {
+                        "schema_version": 3,
+                        "observation_id": "win32_ocr:voice-1",
+                        "row_kind": "voice_bubble",
+                        "sender_role": "customer",
+                        "sender_role_source": "same_row_avatar",
+                        "message_type": "voice",
+                        "voice_state": "untranscribed",
+                        "worker_stable_id": "worker-message-forged",
+                        "source_message": {
+                            "id": "win32_ocr:voice-1",
+                            "source_adapter": "win32_ocr",
+                            "native_source_message_id": "",
+                        },
+                    }
+                ],
+            }
+        ]
+        runner, _ = self.make_runner(api, bridge)
+        binding = Binding(
+            worker_id="worker-1",
+            worker_token="token",
+            client_instance_id="client-1",
+            run_status="running",
+        )
+
+        with patch.object(
+            runner, "_finish_new_visible_voices_in_current_chat"
+        ) as voice_actions, patch.object(
+            runner, "_process_final_image_slots"
+        ) as image_actions:
+            result = runner._read_one_wechat_target(
+                binding,
+                target,
+                current_step="state_target_message_read",
+                enforce_read_targets=True,
+            )
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(
+            result["error_code"],
+            "C2_SIDECAR_IDENTITY_CONTRACT_INVALID",
+        )
+        voice_actions.assert_not_called()
+        image_actions.assert_not_called()
+        self.assertEqual(api.message_payloads, [])
+        self.assertEqual(bridge.voice_transcribes, [])
+
     def test_c2_read_cancelled_before_locating_when_read_targets_empty_after_lock(self):
         api = FakeApi(None)
         bridge = FakeBridge(RpaResult(ok=True, result_code="invite_sent", message="unused"))
@@ -16782,6 +18018,7 @@ class TaskRunnerTest(unittest.TestCase):
                 }
             ]
         }
+        FakeBridge._attach_image_frame_action_bindings(sidecar_payload)
         completed = {
             "state": "completed",
             "action_phase": "confirmed",
@@ -16832,6 +18069,9 @@ class TaskRunnerTest(unittest.TestCase):
                 target=target,
                 sidecar_payload=sidecar_payload,
                 enforce_read_targets=False,
+                allowed_new_observation_ids={
+                    f"image-observation-{unique}"
+                },
                 flow_outcomes=FlowOutcomeAccumulator(
                     origin_read_run_id="read-image-cache"
                 ),
@@ -16911,6 +18151,7 @@ class TaskRunnerTest(unittest.TestCase):
             "authoritative_frame_source": "initial_read",
             "observations": [observation],
         }
+        FakeBridge._attach_image_frame_action_bindings(sidecar_payload)
         completed_without_identity = {
             "state": "completed",
             "action_phase": "confirmed",
@@ -17386,6 +18627,7 @@ class TaskRunnerTest(unittest.TestCase):
             "authoritative_frame_source": "final_read",
             "observations": reconciled,
         }
+        FakeBridge._attach_image_frame_action_bindings(initial_payload)
         completed = {
             "state": "completed",
             "action_phase": "confirmed",
@@ -17427,9 +18669,21 @@ class TaskRunnerTest(unittest.TestCase):
                 target=target,
                 sidecar_payload=initial_payload,
                 enforce_read_targets=False,
+                allowed_new_observation_ids={
+                    observation["observation_id"]
+                },
                 flow_outcomes=FlowOutcomeAccumulator(
                     origin_read_run_id="read-image-pushed-out"
                 ),
+            )
+            processed_image = next(
+                item
+                for item in processed["observations"]
+                if item.get("row_kind") == "image_bubble"
+            )
+            self.assertEqual(
+                processed_image.get("_worker_identity_scope"),
+                "committed",
             )
             shifted_context = {
                 **context_text,
@@ -17458,7 +18712,7 @@ class TaskRunnerTest(unittest.TestCase):
             }
             current_observations, sequence_evidence = (
                 align_post_action_observations(
-                    reconciled,
+                    list(processed["observations"]),
                     [shifted_context, new_text],
                 )
             )
@@ -17597,6 +18851,7 @@ class TaskRunnerTest(unittest.TestCase):
             "authoritative_frame_source": "final_read",
             "observations": reconciled,
         }
+        FakeBridge._attach_image_frame_action_bindings(initial_payload)
         completed = {
             "state": "completed",
             "action_phase": "confirmed",
@@ -17627,6 +18882,11 @@ class TaskRunnerTest(unittest.TestCase):
         def vision_completes_with_identity_receipt(**kwargs):
             journal_path = Path(kwargs["action_journal_path"])
             journal = read_action_journal(journal_path)
+            frame_binding = kwargs["frame_action_binding"]
+            self.assertEqual(
+                frame_binding,
+                journal["prepare_evidence"]["frame_action_binding"],
+            )
             selected = [
                 item
                 for item in journal["pre_action_identity_sequence"]
@@ -17658,6 +18918,9 @@ class TaskRunnerTest(unittest.TestCase):
                     "confirmed_action_mapping": {
                         "canonical_action_id": action_id,
                         "reserved_worker_stable_id": reserved_id,
+                        "selected_action_token": frame_binding[
+                            "selected_action_token"
+                        ],
                         "pre_observation_id": observation[
                             "observation_id"
                         ],
@@ -17691,6 +18954,9 @@ class TaskRunnerTest(unittest.TestCase):
                 target=target,
                 sidecar_payload=initial_payload,
                 enforce_read_targets=False,
+                allowed_new_observation_ids={
+                    observation["observation_id"]
+                },
                 flow_outcomes=FlowOutcomeAccumulator(
                     origin_read_run_id="read-image-preflight"
                 ),
@@ -18603,6 +19869,8 @@ class TaskRunnerTest(unittest.TestCase):
         observation = {
             "schema_version": 3,
             "observation_id": f"image-journal-{unique}",
+            "source_adapter": "win32_ocr",
+            "native_source_message_id": "",
             "row_kind": "image_bubble",
             "sender_role": "customer",
             "sender_role_source": "same_row_avatar",
@@ -18621,6 +19889,8 @@ class TaskRunnerTest(unittest.TestCase):
             "bubble_rect": [420, 180, 650, 320],
             "source_message": {
                 "id": f"image-message-{unique}",
+                "source_adapter": "win32_ocr",
+                "native_source_message_id": "",
                 "frame_visual_id": f"canonical-image-{unique}",
                 "type": "image",
                 "sender_role": "customer",
@@ -18680,6 +19950,18 @@ class TaskRunnerTest(unittest.TestCase):
             reserved_id = str(
                 journal_payload["reserved_worker_stable_id"]
             )
+            selected_action_token = str(
+                journal_payload["prepare_evidence"][
+                    "frame_action_binding"
+                ]["selected_action_token"]
+            )
+            self.assertEqual(
+                kwargs["frame_action_binding"],
+                journal_payload["prepare_evidence"][
+                    "frame_action_binding"
+                ],
+            )
+            self.assertTrue(selected_action_token)
             journal_observations.append(
                 dict(
                     journal_payload["items"][journal_item_id][
@@ -18714,6 +19996,9 @@ class TaskRunnerTest(unittest.TestCase):
                     "confirmed_action_mapping": {
                         "canonical_action_id": action_id,
                         "reserved_worker_stable_id": reserved_id,
+                        "selected_action_token": (
+                            selected_action_token
+                        ),
                         "pre_observation_id": observation[
                             "observation_id"
                         ],
@@ -18761,7 +20046,7 @@ class TaskRunnerTest(unittest.TestCase):
         ), patch(
             "chejin_worker_client.omniauto_vision.process_image_slot",
             side_effect=vision_boundary,
-        ):
+        ) as process_image:
             result = runner._read_one_wechat_target(
                 binding,
                 target,
@@ -18778,6 +20063,7 @@ class TaskRunnerTest(unittest.TestCase):
             },
         )
         self.assertNotIn("voice_prepare", bridge.c2_operation_order)
+        self.assertEqual(process_image.call_count, 1)
         self.assertEqual(
             observed_phases,
             ["not_attempted", "trigger_attempted", "confirmed"],
@@ -18906,6 +20192,11 @@ class TaskRunnerTest(unittest.TestCase):
         def vision_finishes_then_process_exits(**kwargs):
             journal_path = Path(kwargs["action_journal_path"])
             journal = read_action_journal(journal_path)
+            frame_binding = kwargs["frame_action_binding"]
+            self.assertEqual(
+                frame_binding,
+                journal["prepare_evidence"]["frame_action_binding"],
+            )
             selected = [
                 item
                 for item in journal["pre_action_identity_sequence"]
@@ -18944,6 +20235,9 @@ class TaskRunnerTest(unittest.TestCase):
                     "confirmed_action_mapping": {
                         "canonical_action_id": action_id,
                         "reserved_worker_stable_id": reserved_id,
+                        "selected_action_token": frame_binding[
+                            "selected_action_token"
+                        ],
                         "pre_observation_id": observation[
                             "observation_id"
                         ],
@@ -18959,6 +20253,19 @@ class TaskRunnerTest(unittest.TestCase):
             )
             raise SystemExit("simulated hard process exit")
 
+        action_payload = {
+            "frame_id": f"frame-image-journal-{unique}",
+            "observations": reconciled,
+            "window_context": {
+                "hwnd": 100,
+                "capture_source": "confirmed_c2_window",
+            },
+        }
+        action_payload["send_context_guard"] = (
+            FakeBridge._send_context_guard(reconciled)
+        )
+        FakeBridge._attach_image_frame_action_bindings(action_payload)
+
         with patch(
             "chejin_worker_client.omniauto_vision.process_image_slot",
             side_effect=vision_finishes_then_process_exits,
@@ -18966,14 +20273,7 @@ class TaskRunnerTest(unittest.TestCase):
             with self.assertRaises(SystemExit):
                 runner._execute_one_image_slot_vision(
                     target=target,
-                    payload={
-                        "frame_id": f"frame-image-journal-{unique}",
-                        "observations": reconciled,
-                        "window_context": {
-                            "hwnd": 100,
-                            "capture_source": "confirmed_c2_window",
-                        }
-                    },
+                    payload=action_payload,
                     observation=reconciled[0],
                     action_local_id=action_key,
                     cancel_check=lambda: False,
@@ -19444,6 +20744,9 @@ class TaskRunnerTest(unittest.TestCase):
                 target=target,
                 sidecar_payload=sidecar_payload,
                 enforce_read_targets=False,
+                allowed_new_observation_ids={
+                    observation["observation_id"]
+                },
                 flow_outcomes=FlowOutcomeAccumulator(
                     origin_read_run_id="read-image-window-failure"
                 ),
@@ -19512,6 +20815,7 @@ class TaskRunnerTest(unittest.TestCase):
             "frame_id": f"frame-image-moved-{unique}",
             "observations": [observation],
         }
+        FakeBridge._attach_image_frame_action_bindings(sidecar_payload)
         with patch(
             "chejin_worker_client.omniauto_vision.vision_configuration_status",
             return_value={
@@ -19535,6 +20839,9 @@ class TaskRunnerTest(unittest.TestCase):
                 target=target,
                 sidecar_payload=sidecar_payload,
                 enforce_read_targets=False,
+                allowed_new_observation_ids={
+                    observation["observation_id"]
+                },
                 flow_outcomes=FlowOutcomeAccumulator(
                     origin_read_run_id="read-image-removed"
                 ),
@@ -19669,6 +20976,11 @@ class TaskRunnerTest(unittest.TestCase):
             },
             "diagnostics": {"events": [], "image_persisted": False},
         }
+        mixed_payload = {
+            "sidecar_run_id": f"image-refresh-{unique}",
+            "observations": [old_failed, new_image],
+        }
+        FakeBridge._attach_image_frame_action_bindings(mixed_payload)
         with patch(
             "chejin_worker_client.omniauto_vision."
             "vision_configuration_status",
@@ -19685,11 +20997,11 @@ class TaskRunnerTest(unittest.TestCase):
             _, phase_result = runner._process_final_image_slots(
                 binding=binding,
                 target=target,
-                sidecar_payload={
-                    "sidecar_run_id": f"image-refresh-{unique}",
-                    "observations": [old_failed, new_image]
-                },
+                sidecar_payload=mixed_payload,
                 enforce_read_targets=False,
+                allowed_new_observation_ids={
+                    new_image["observation_id"]
+                },
                 flow_outcomes=FlowOutcomeAccumulator(
                     origin_read_run_id="read-image-mixed-cache"
                 ),
@@ -20474,6 +21786,10 @@ class TaskRunnerTest(unittest.TestCase):
                 for item in payload["observations"]
             ],
         }
+        payload.pop("image_frame_action_bindings", None)
+        payload.pop("send_context_guard", None)
+        payload.pop("message_viewport_change_evidence", None)
+        FakeBridge._attach_image_frame_action_bindings(payload)
         current_read_run_id = f"read-history-gap-{unique}"
         first_plan = runner._build_final_slot_incremental_plan(
             target=target,
@@ -21809,16 +23125,25 @@ class TaskRunnerTest(unittest.TestCase):
         ) as vision:
             stats_by_frame = []
             for observation in payload["observations"]:
+                frame_payload = {
+                    **payload,
+                    "sidecar_run_id": (
+                        f"image-frame-{observation['observation_id']}"
+                    ),
+                    "observations": [observation],
+                }
+                frame_payload.pop("image_frame_action_bindings", None)
+                frame_payload.pop("send_context_guard", None)
+                frame_payload.pop(
+                    "message_viewport_change_evidence", None
+                )
+                FakeBridge._attach_image_frame_action_bindings(
+                    frame_payload
+                )
                 _, frame_stats = runner._process_final_image_slots(
                     binding=binding,
                     target=target,
-                    sidecar_payload={
-                        **payload,
-                        "sidecar_run_id": (
-                            f"image-frame-{observation['observation_id']}"
-                        ),
-                        "observations": [observation],
-                    },
+                    sidecar_payload=frame_payload,
                     enforce_read_targets=False,
                     allowed_new_observation_ids={
                         str(observation["observation_id"])
@@ -21940,6 +23265,7 @@ class TaskRunnerTest(unittest.TestCase):
                 }
             ]
         }
+        FakeBridge._attach_image_frame_action_bindings(sidecar_payload)
         with patch(
             "chejin_worker_client.omniauto_vision.process_image_slot",
             return_value={
@@ -21954,6 +23280,13 @@ class TaskRunnerTest(unittest.TestCase):
                 target=target,
                 sidecar_payload=sidecar_payload,
                 enforce_read_targets=False,
+                allowed_new_observation_ids={
+                    str(
+                        sidecar_payload["observations"][0][
+                            "observation_id"
+                        ]
+                    )
+                },
                 flow_outcomes=FlowOutcomeAccumulator(
                     origin_read_run_id="read-image-preflight-bypass"
                 ),
@@ -21963,6 +23296,13 @@ class TaskRunnerTest(unittest.TestCase):
                 target=target,
                 sidecar_payload=sidecar_payload,
                 enforce_read_targets=False,
+                allowed_new_observation_ids={
+                    str(
+                        sidecar_payload["observations"][0][
+                            "observation_id"
+                        ]
+                    )
+                },
                 flow_outcomes=FlowOutcomeAccumulator(
                     origin_read_run_id="read-image-preflight-bypass"
                 ),
@@ -23652,6 +24992,102 @@ class TaskRunnerTest(unittest.TestCase):
         self.assertEqual(second, "worker-message-12")
         self.assertEqual(retried_first, first)
 
+    def test_new_media_with_native_id_stays_unreserved_until_selected(self):
+        runner, _ = self.make_runner(
+            FakeApi(None),
+            FakeBridge(RpaResult(ok=True, result_code="ok", message="unused")),
+        )
+        target = WechatReadTarget(
+            conversation_id=f"conv-native-media-{time.time_ns()}",
+            rpa_session_key="wx:rpa:v1:native-media",
+            display_name="CJNATIVE1",
+            remark_code="CJNATIVE1",
+            authorization_revision="revision-native-media",
+            raw={"identity_checkpoint": identity_checkpoint(next_sequence_floor=31)},
+        )
+        observations = [
+            {
+                "observation_id": "native-voice-candidate",
+                "row_kind": "voice_bubble",
+                "message_type": "voice",
+                "sender_role": "customer",
+                "sender_role_source": "same_row_avatar",
+                "native_source_message_id": "wx-native-voice-1",
+            },
+            {
+                "observation_id": "native-image-candidate",
+                "row_kind": "image_bubble",
+                "message_type": "image",
+                "sender_role": "customer",
+                "sender_role_source": "same_row_avatar",
+                "native_source_message_id": "wx-native-image-1",
+            },
+        ]
+
+        assigned = runner._assign_sequence_new_suffix_identities(
+            target=target,
+            observations=observations,
+            evidence={
+                "alignment_status": "unique",
+                "old_tail_fully_consumed": True,
+                "new_suffix_observation_ids": [
+                    "native-voice-candidate",
+                    "native-image-candidate",
+                ],
+            },
+            read_run_id="read-native-media",
+        )
+
+        for item in assigned:
+            self.assertNotIn("_worker_stable_id", item)
+            self.assertNotIn("_worker_identity_scope", item)
+            self.assertNotIn("_worker_committed_message", item)
+        first_selected_id = runner._reserve_worker_sequence(
+            target,
+            reservation_key="selected-action:voice-native-media",
+        )
+        self.assertEqual(first_selected_id, "worker-message-31")
+
+    def test_new_suffix_rejects_pre_reserved_unselected_media(self):
+        runner, _ = self.make_runner(
+            FakeApi(None),
+            FakeBridge(RpaResult(ok=True, result_code="ok", message="unused")),
+        )
+        target = WechatReadTarget(
+            conversation_id=f"conv-pre-reserved-media-{time.time_ns()}",
+            rpa_session_key="wx:rpa:v1:pre-reserved-media",
+            display_name="CJRESV33",
+            remark_code="CJRESV33",
+            authorization_revision="revision-pre-reserved-media",
+        )
+
+        with self.assertRaisesRegex(
+            ValueError,
+            "MESSAGE_IDENTITY_CONTRACT_INVALID",
+        ):
+            runner._assign_sequence_new_suffix_identities(
+                target=target,
+                observations=[
+                    {
+                        "observation_id": "unselected-voice",
+                        "row_kind": "voice_bubble",
+                        "message_type": "voice",
+                        "sender_role": "customer",
+                        "sender_role_source": "same_row_avatar",
+                        "_worker_stable_id": "worker-message-41",
+                        "_worker_identity_scope": (
+                            "current_read_provisional"
+                        ),
+                    }
+                ],
+                evidence={
+                    "alignment_status": "unique",
+                    "old_tail_fully_consumed": True,
+                    "new_suffix_observation_ids": ["unselected-voice"],
+                },
+                read_run_id="read-pre-reserved-media",
+            )
+
     def test_new_suffix_gets_next_sequence_without_reordering_existing_outbox_ids(self):
         runner, _ = self.make_runner(
             FakeApi(None),
@@ -23725,7 +25161,7 @@ class TaskRunnerTest(unittest.TestCase):
             authorization_revision="revision-one-image",
         )
 
-        def image(observation_id: str, sequence: int, top: int) -> dict:
+        def image(observation_id: str, top: int) -> dict:
             return {
                 "schema_version": 3,
                 "observation_id": observation_id,
@@ -23737,12 +25173,13 @@ class TaskRunnerTest(unittest.TestCase):
                 "item_state": "discovered",
                 "frame_visual_id": f"visual-{observation_id}",
                 "bubble_rect": [420, top, 650, top + 80],
-                "_worker_stable_id": f"worker-message-{sequence}",
-                "_worker_identity_scope": "current_read_provisional",
                 "image_physical_anchor": {
                     "sender_role": "customer",
                     "bubble_visual_fingerprint": (
-                        f"dhash64:{sequence:016x}"
+                        "dhash64:"
+                        + hashlib.sha256(
+                            observation_id.encode("utf-8")
+                        ).hexdigest()[:16]
                     ),
                 },
                 "source_message": {
@@ -23753,29 +25190,50 @@ class TaskRunnerTest(unittest.TestCase):
                 },
             }
 
-        first = image("image-first", 41, 100)
-        second = image("image-second", 42, 220)
+        first = image("image-first", 100)
+        second = image("image-second", 220)
         allowed = {
             str(first["observation_id"]),
             str(second["observation_id"]),
         }
         terminal = {
-            "state": "failed",
-            "action_phase": "trigger_attempted",
-            "business_state": "failed",
-            "business_result_confirmed": False,
-            "reason": "menu_panel_unconfirmed",
+            "state": "completed",
+            "action_phase": "confirmed",
+            "business_state": "completed",
+            "business_result_confirmed": True,
+            "reason": "vision_ready",
+            "customer_image_understanding": {
+                "schema_version": 1,
+                "vision_summary": "第一张图片已处理",
+            },
+            "visual_bridge_input": {"summary": "第一张图片"},
             "transaction": {
-                "action_phase": "trigger_attempted",
-                "status": "menu_panel_unconfirmed",
+                "action_phase": "confirmed",
+                "slot_identity_confirmed": True,
+                "image_sha256": "e" * 64,
             },
             "diagnostics": {"events": [], "image_persisted": False},
         }
-        with patch.object(
-            runner,
-            "_execute_one_image_slot_vision",
+        sidecar_payload = {
+            "authoritative_frame_source": "final_read",
+            "sidecar_run_id": "frame-two-images",
+            "frame_id": "frame-two-images",
+            "observations": [first, second],
+        }
+        FakeBridge._attach_image_frame_action_bindings(sidecar_payload)
+        with patch(
+            "chejin_worker_client.omniauto_vision."
+            "vision_configuration_status",
+            return_value={
+                "ready": True,
+                "config": {
+                    "customer_image_understanding": {"enabled": True}
+                },
+            },
+        ), patch(
+            "chejin_worker_client.omniauto_vision.process_image_slot",
             return_value=terminal,
-        ) as execute:
+        ) as vision:
             payload, stats = runner._process_final_image_slots(
                 binding=Binding(
                     worker_id="worker-1",
@@ -23784,11 +25242,7 @@ class TaskRunnerTest(unittest.TestCase):
                     run_status="running",
                 ),
                 target=target,
-                sidecar_payload={
-                    "authoritative_frame_source": "final_read",
-                    "sidecar_run_id": "frame-two-images",
-                    "observations": [first, second],
-                },
+                sidecar_payload=sidecar_payload,
                 enforce_read_targets=False,
                 allowed_new_observation_ids=allowed,
                 flow_outcomes=FlowOutcomeAccumulator(
@@ -23796,19 +25250,24 @@ class TaskRunnerTest(unittest.TestCase):
                 ),
             )
 
-        self.assertEqual(execute.call_count, 1)
+        self.assertEqual(vision.call_count, 1)
         self.assertEqual(stats["failed"], 0)
-        self.assertEqual(stats["completed"], 0)
+        self.assertEqual(stats["completed"], 1)
+        result_by_id = {
+            item["observation_id"]: item
+            for item in payload["observations"]
+        }
         self.assertEqual(
-            [
-                item.get("observation_id")
-                for item in payload["observations"]
-            ],
-            ["image-second"],
+            result_by_id["image-first"].get("_worker_identity_scope"),
+            "committed",
         )
-        self.assertEqual(
-            stats["terminal_gate"]["error_code"],
-            "C2_IMAGE_IDENTITY_CONTRACT_INVALID",
+        self.assertNotIn(
+            "_worker_stable_id",
+            result_by_id["image-second"],
+        )
+        self.assertNotIn(
+            "_worker_identity_scope",
+            result_by_id["image-second"],
         )
 
     def test_zero_ui_image_cancellation_defers_next_image_to_fresh_frame(self):
@@ -23824,7 +25283,7 @@ class TaskRunnerTest(unittest.TestCase):
             authorization_revision="revision-zero-ui-images",
         )
 
-        def image(observation_id: str, sequence: int, top: int) -> dict:
+        def image(observation_id: str, top: int) -> dict:
             return {
                 "schema_version": 3,
                 "observation_id": observation_id,
@@ -23836,12 +25295,13 @@ class TaskRunnerTest(unittest.TestCase):
                 "item_state": "discovered",
                 "frame_visual_id": f"visual-{observation_id}",
                 "bubble_rect": [420, top, 650, top + 80],
-                "_worker_stable_id": f"worker-message-{sequence}",
-                "_worker_identity_scope": "current_read_provisional",
                 "image_physical_anchor": {
                     "sender_role": "customer",
                     "bubble_visual_fingerprint": (
-                        f"dhash64:{sequence:016x}"
+                        "dhash64:"
+                        + hashlib.sha256(
+                            observation_id.encode("utf-8")
+                        ).hexdigest()[:16]
                     ),
                 },
                 "source_message": {
@@ -23852,8 +25312,8 @@ class TaskRunnerTest(unittest.TestCase):
                 },
             }
 
-        first = image("image-zero-ui", 51, 100)
-        second = image("image-with-ui", 52, 220)
+        first = image("image-zero-ui", 100)
+        second = image("image-with-ui", 220)
         allowed = {
             str(first["observation_id"]),
             str(second["observation_id"]),
@@ -23958,6 +25418,7 @@ class TaskRunnerTest(unittest.TestCase):
                 "selected_pre_observation_id": "voice-before-crash",
                 "selected_action_token": "token-before-crash",
                 "selected_target_fingerprint": "fingerprint-before-crash",
+                "message_viewport_change_digest": "a" * 64,
                 "candidate_group_count": 1,
                 "ui_action_performed": False,
             },
@@ -24041,6 +25502,7 @@ class TaskRunnerTest(unittest.TestCase):
                 "selected_pre_observation_id": "voice-pretrigger",
                 "selected_action_token": "token-pretrigger",
                 "selected_target_fingerprint": "fingerprint-pretrigger",
+                "message_viewport_change_digest": "a" * 64,
                 "candidate_group_count": 1,
                 "ui_action_performed": False,
             },
@@ -24107,6 +25569,7 @@ class TaskRunnerTest(unittest.TestCase):
                 "selected_pre_observation_id": "voice-before-post",
                 "selected_action_token": "token-before-post",
                 "selected_target_fingerprint": "fingerprint-before-post",
+                "message_viewport_change_digest": "a" * 64,
                 "candidate_group_count": 1,
                 "ui_action_performed": False,
             },

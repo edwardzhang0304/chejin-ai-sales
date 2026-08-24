@@ -988,6 +988,9 @@ class WorkerWindow(QMainWindow):
     def toggle_run_status(self) -> None:
         if not self.binding:
             return
+        if self.binding.run_status == "faulted":
+            self.on_error("客户端处于故障状态，本次运行禁止继续接单。")
+            return
         next_status = "paused" if self.binding.run_status == "running" else "running"
         self.runner.set_run_status(next_status)
         self.refresh_view()
@@ -1099,13 +1102,16 @@ class WorkerWindow(QMainWindow):
     def refresh_view(self) -> None:
         run_status = self.binding.run_status if self.binding else "paused"
         is_running = run_status == "running"
+        is_faulted = run_status == "faulted"
         online = self.connection_status == "online"
         offline = self.connection_status == "offline"
         profile = self.profile
         active_task = self.current_task
         display_task = active_task or self.last_task
         result = self.last_result
-        if self.runner.run_status_sync_error and not is_running:
+        if is_faulted:
+            headline = "客户端故障，已停止接单"
+        elif self.runner.run_status_sync_error and not is_running:
             headline = "已在本机暂停，后端同步失败"
         elif offline:
             headline = "服务端不可达"
@@ -1133,10 +1139,12 @@ class WorkerWindow(QMainWindow):
         self.connection_label.style().polish(self.connection_label)
 
         self.sales_tile.set_value(profile.bound_sales_name if profile and profile.bound_sales_name else "未绑定")
-        run_status_kind = "paused" if offline else ("accepting" if is_running else "paused")
+        run_status_kind = "paused" if offline else ("danger" if is_faulted else "accepting" if is_running else "paused")
         self.run_status_tile.set_value(
             (
-                "接单中"
+                "客户端故障"
+                if is_faulted
+                else "接单中"
                 if is_running
                 else "暂停接单 · 同步失败"
                 if self.runner.run_status_sync_error

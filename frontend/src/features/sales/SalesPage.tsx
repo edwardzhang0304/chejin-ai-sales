@@ -48,6 +48,7 @@ function statusClass(enabled: boolean) {
 function formatWorkerRunning(worker?: SalesItem["current_worker"] | null) {
   if (!worker) return "-";
   if (worker.online_status !== "online") return "离线";
+  if (worker.run_status === "faulted") return "客户端故障";
   const running = worker.running_status === "idle" ? "空闲" : "忙碌";
   return `在线 / ${running}`;
 }

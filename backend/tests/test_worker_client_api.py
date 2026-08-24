@@ -398,6 +398,39 @@ def test_pause_drains_only_exact_registered_flow_and_rejects_new_work():
     assert finished.json()["data"]["finished"] is True
 
 
+def test_faulted_worker_drains_current_flow_and_cannot_pull_new_work():
+    worker = _create_worker("v0.9.32 布局故障 Worker")
+    _bind_worker(worker)
+    assert _heartbeat(worker).status_code == 200
+    headers = {
+        "X-Worker-Token": worker["worker_token"],
+        "X-Client-Instance-Id": "client-a",
+    }
+    started = client.post(
+        f"/api/workers/{worker['id']}/inflight-flow/start",
+        json={"flow_id": "pre-send-layout-flow", "flow_kind": "c2_read"},
+        headers=headers,
+    )
+    assert started.status_code == 200
+
+    faulted = client.post(
+        f"/api/workers/{worker['id']}/run-status",
+        json={"run_status": "faulted", "client_instance_id": "client-a"},
+        headers=headers,
+    )
+
+    assert faulted.status_code == 200, faulted.text
+    data = faulted.json()["data"]
+    assert data["run_status"] == "faulted"
+    assert data["inflight_flow_state"]["status"] == "draining"
+    pulled = client.get(
+        f"/api/workers/{worker['id']}/tasks/pull",
+        headers=headers,
+    )
+    assert pulled.status_code == 409
+    assert pulled.json()["code"] == "WORKER_NEW_FLOW_NOT_ALLOWED"
+
+
 def test_c2_inflight_finish_requires_backend_read_completion_proof():
     worker = _create_worker("C2 结算证明 Worker")
     _bind_worker(worker)

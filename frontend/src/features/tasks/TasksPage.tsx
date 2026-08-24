@@ -241,6 +241,7 @@ function taskWorkerStatus(task: TaskListItem | TaskDetail) {
   if (!worker) return null;
   const online = worker.online_status ? formatCode(worker.online_status) : null;
   if (worker.online_status === "offline") return online;
+  if (worker.run_status === "faulted") return "在线 / 客户端故障";
   const running = worker.running_status ? formatCode(worker.running_status) : null;
   return [online, running].filter(Boolean).join(" / ") || null;
 }

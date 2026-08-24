@@ -4,7 +4,10 @@ from __future__ import annotations
 
 from typing import Any
 
-from .wechat import image_visual_fingerprint_distance
+from .wechat import (
+    image_visual_fingerprint_distance,
+    image_visual_static_content_matches,
+)
 
 
 IMAGE_FINGERPRINT_MAX_DISTANCE = 6
@@ -103,6 +106,10 @@ def match_image_slot(
             expected_fingerprint,
             current_anchor.get("bubble_visual_fingerprint"),
         )
+        static_content_matches = image_visual_static_content_matches(
+            expected_fingerprint,
+            current_anchor.get("bubble_visual_fingerprint"),
+        )
         if (
             fingerprint_distance is None
             or fingerprint_distance > IMAGE_FINGERPRINT_MAX_DISTANCE
@@ -119,6 +126,7 @@ def match_image_slot(
                     ),
                     "visual_side": current_visual_side,
                     "fingerprint_distance": fingerprint_distance,
+                    "static_content_matches": static_content_matches,
                 }
             )
             continue
@@ -131,6 +139,7 @@ def match_image_slot(
                     "visual_side": current_visual_side,
                     "visual_side_consistent": current_visual_side == current_role,
                     "fingerprint_distance": fingerprint_distance,
+                    "static_content_matches": static_content_matches,
                     "preceding_stable_message": str(
                         current_anchor.get("preceding_stable_message") or ""
                     ),
@@ -176,6 +185,26 @@ def match_image_slot(
                 and current_following == expected_following,
             )
         )
+        explicit_neighbor_conflict = bool(
+            (
+                expected_preceding
+                and current_preceding
+                and current_preceding != expected_preceding
+            )
+            or (
+                expected_following
+                and current_following
+                and current_following != expected_following
+            )
+        )
+        evidence["explicit_neighbor_conflict"] = (
+            explicit_neighbor_conflict
+        )
+        # A neighbour proves sequence context, not the image pixels themselves.
+        # Distinct pictures can share the same perceptual dHash and slot, so a
+        # v0.9.33 image action also requires the strict local thumbnail proof.
+        if not bool(evidence.get("static_content_matches")):
+            continue
         if expected_neighbors and matching_neighbor_count == 0:
             continue
         contextual_matches.append(bubble)
@@ -189,14 +218,28 @@ def match_image_slot(
             "fingerprint_match_count": len(fingerprint_matches),
             "contextual_match_count": 1,
         }
-    if len(occurrence_matches) == 1 and not contextual_matches:
+    stable_slot_matches = [
+        item
+        for item in occurrence_matches
+        if bool(
+            (item.get("identity_match_evidence") or {}).get(
+                "static_content_matches"
+            )
+        )
+        and not bool(
+            (item.get("identity_match_evidence") or {}).get(
+                "explicit_neighbor_conflict"
+            )
+        )
+    ]
+    if len(stable_slot_matches) == 1 and not contextual_matches:
         geometry_iou = _bounds_iou(
             expected_bounds,
-            occurrence_matches[0].get("bounds")
-            or occurrence_matches[0].get("bubble_rect"),
+            stable_slot_matches[0].get("bounds")
+            or stable_slot_matches[0].get("bubble_rect"),
         )
         if geometry_iou >= IMAGE_STABLE_SLOT_MIN_IOU:
-            occurrence_matches[0]["identity_match_evidence"].update(
+            stable_slot_matches[0]["identity_match_evidence"].update(
                 {
                     "match_mode": "stable_slot_with_neighbor_ocr_drift",
                     "stable_slot_iou": round(geometry_iou, 6),
@@ -204,7 +247,7 @@ def match_image_slot(
             )
             return {
                 "state": "matched",
-                "bubble": occurrence_matches[0],
+                "bubble": stable_slot_matches[0],
                 "fingerprint_match_count": len(fingerprint_matches),
                 "contextual_match_count": 0,
                 "occurrence_match_count": 1,

@@ -242,6 +242,11 @@ class WechatVoiceActionEvidence(BaseModel):
     selected_pre_observation_id: str = Field(min_length=1, max_length=255)
     selected_action_token: str = Field(min_length=1, max_length=255)
     selected_target_fingerprint: str = Field(min_length=1, max_length=255)
+    message_viewport_change_digest: str = Field(
+        min_length=64,
+        max_length=64,
+        pattern="^[0-9a-f]{64}$",
+    )
     transcript_binding_status: str = Field(
         pattern="^(confirmed|failed|ambiguous)$"
     )

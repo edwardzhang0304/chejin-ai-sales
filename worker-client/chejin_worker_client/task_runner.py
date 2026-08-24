@@ -142,6 +142,7 @@ from .sequence_alignment import (
     apply_inherited_worker_ids,
     build_post_action_observation_sequence,
     build_pre_action_identity_sequence,
+    require_selected_only_media_reservation,
 )
 from .transaction_outcomes import (
     FlowOutcomeAccumulator,
@@ -211,6 +212,152 @@ ENV_STOP_ERRORS = {
     "OTHER",
 }
 
+PRE_SEND_REIDENTIFICATION_ERRORS = {
+    "C2_PRE_SEND_TEXT_CONTENT_UNREADABLE",
+    "C2_PRE_SEND_MESSAGE_SEQUENCE_ALIGNMENT_FAILED",
+    "C2_PRE_SEND_MESSAGE_ROLE_UNCONFIRMED",
+    "C2_PRE_SEND_VOICE_TARGET_NOT_FOUND",
+    "C2_PRE_SEND_VOICE_TARGET_AMBIGUOUS",
+    "C2_PRE_SEND_IMAGE_TARGET_NOT_FOUND",
+    "C2_PRE_SEND_IMAGE_TARGET_AMBIGUOUS",
+    "C2_PRE_SEND_MESSAGE_VIEWPORT_CHANGED_AGAIN",
+    "C2_PRE_SEND_SYSTEM_CONTENT_UNREADABLE",
+    "C2_PRE_SEND_SYSTEM_CLASSIFICATION_UNRESOLVED",
+}
+PRE_SEND_LAYOUT_ERROR = "C2_PRE_SEND_LAYOUT_INVALID"
+
+
+def pre_send_new_suffix_validation(
+    observations: list[Any] | None,
+    alignment_evidence: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Validate only newly exposed rows after one complete reidentification."""
+
+    evidence = (
+        alignment_evidence
+        if isinstance(alignment_evidence, dict)
+        else {}
+    )
+    new_ids = {
+        str(value).strip()
+        for value in (evidence.get("new_suffix_observation_ids") or [])
+        if str(value).strip()
+    }
+    for screen_order, observation in enumerate(observations or [], start=1):
+        if not isinstance(observation, dict):
+            continue
+        observation_id = str(
+            observation.get("observation_id") or ""
+        ).strip()
+        if observation_id not in new_ids:
+            continue
+        row_kind = str(
+            observation.get("row_kind") or ""
+        ).strip().lower()
+        if not observation_role_is_trusted(observation):
+            return {
+                "ok": False,
+                "error_code": "C2_PRE_SEND_MESSAGE_ROLE_UNCONFIRMED",
+                "source_message_type": str(
+                    observation.get("message_type") or "unknown"
+                ),
+                "min_screen_order": screen_order,
+                "max_screen_order": screen_order,
+                "candidate_count": 1,
+                "observation_id": observation_id,
+            }
+        content = str(
+            observation.get("content_clean") or ""
+        ).strip()
+        if row_kind == "text_bubble" and not content:
+            return {
+                "ok": False,
+                "error_code": "C2_PRE_SEND_TEXT_CONTENT_UNREADABLE",
+                "source_message_type": "text",
+                "min_screen_order": screen_order,
+                "max_screen_order": screen_order,
+                "candidate_count": 1,
+                "observation_id": observation_id,
+            }
+        if row_kind == "system_message":
+            classification = str(
+                observation.get("system_classification") or ""
+            ).strip().lower()
+            if not content or classification == "unreadable":
+                return {
+                    "ok": False,
+                    "error_code": "C2_PRE_SEND_SYSTEM_CONTENT_UNREADABLE",
+                    "source_message_type": "system",
+                    "min_screen_order": screen_order,
+                    "max_screen_order": screen_order,
+                    "candidate_count": 1,
+                    "observation_id": observation_id,
+                }
+            if classification not in {"ordinary", "hard_stop"}:
+                return {
+                    "ok": False,
+                    "error_code": (
+                        "C2_PRE_SEND_SYSTEM_CLASSIFICATION_UNRESOLVED"
+                    ),
+                    "source_message_type": "system",
+                    "min_screen_order": screen_order,
+                    "max_screen_order": screen_order,
+                    "candidate_count": 1,
+                    "observation_id": observation_id,
+                }
+    return {
+        "ok": True,
+        "new_suffix_count": len(new_ids),
+    }
+
+
+def pre_send_incremental_validation(
+    sidecar_payload: dict[str, Any],
+    incremental_plan: dict[str, Any],
+) -> dict[str, Any]:
+    validation = pre_send_new_suffix_validation(
+        list(sidecar_payload.get("observations") or []),
+        (
+            sidecar_payload.get("sequence_alignment_evidence")
+            if isinstance(
+                sidecar_payload.get("sequence_alignment_evidence"), dict
+            )
+            else {}
+        ),
+    )
+    if validation.get("ok") is not True:
+        return validation
+    identity_errors = [
+        dict(item)
+        for item in (incremental_plan.get("identity_errors") or [])
+        if isinstance(item, dict)
+    ]
+    if not identity_errors:
+        return validation
+    role_failed = any(
+        str(item.get("error_code") or "")
+        == "MESSAGE_IDENTITY_UNCONFIRMED"
+        for item in identity_errors
+    )
+    orders = sorted(
+        int(item.get("screen_order") or 0)
+        for item in identity_errors
+        if int(item.get("screen_order") or 0) > 0
+    )
+    return {
+        "ok": False,
+        "error_code": (
+            "C2_PRE_SEND_MESSAGE_ROLE_UNCONFIRMED"
+            if role_failed
+            else "C2_PRE_SEND_MESSAGE_SEQUENCE_ALIGNMENT_FAILED"
+        ),
+        "source_message_type": "unknown",
+        "candidate_count": len(identity_errors),
+        "min_screen_order": orders[0] if orders else 0,
+        "max_screen_order": orders[-1] if orders else 0,
+        "identity_errors": identity_errors,
+    }
+
 
 def _ui_lock_cancel_reason(lease: UiLockLease | None) -> bool | str:
     if lease is None or not lease.cancel_requested():
@@ -244,6 +391,26 @@ def _freeze_phase_metadata(metadata: dict[str, Any]) -> dict[str, Any]:
     """Snapshot diagnostics so later phase merges cannot rewrite history."""
 
     return copy.deepcopy(metadata)
+
+
+def _first_persistable_evidence_path(value: Any) -> str:
+    """Find one durable screenshot/review path in nested failure evidence."""
+
+    if isinstance(value, dict):
+        for key in ("evidence_path", "review_path", "screenshot_path"):
+            candidate = str(value.get(key) or "").strip()
+            if candidate:
+                return candidate
+        for nested in value.values():
+            candidate = _first_persistable_evidence_path(nested)
+            if candidate:
+                return candidate
+    elif isinstance(value, list):
+        for nested in value:
+            candidate = _first_persistable_evidence_path(nested)
+            if candidate:
+                return candidate
+    return ""
 
 
 def _reuse_initial_snapshot_with_locate_evidence(
@@ -317,6 +484,123 @@ def _same_frame_voice_rect_matches(
     )
 
 
+def _same_frame_voice_action_evidence_matches(
+    previous: dict[str, Any],
+    prepared: dict[str, Any],
+) -> bool:
+    """Compare action-local evidence without claiming durable identity."""
+
+    def material(item: dict[str, Any]) -> tuple[str, ...]:
+        return (
+            str(item.get("sender_role") or "").strip().lower(),
+            str(item.get("message_type") or "").strip().lower(),
+            str(item.get("voice_state") or "").strip().lower(),
+            str(item.get("voice_duration") or "").strip(),
+            str(item.get("voice_duration_text") or "").strip(),
+            str(item.get("screen_order") or "").strip(),
+            str(item.get("neighbor_before_signature") or "").strip(),
+            str(item.get("neighbor_after_signature") or "").strip(),
+        )
+
+    if material(previous) != material(prepared):
+        return False
+    previous_rect = message_rect(
+        {"bubble_rect": previous.get("bubble_rect")}
+    )
+    prepared_rect = message_rect(
+        {"bubble_rect": prepared.get("bubble_rect")}
+    )
+    if previous_rect and prepared_rect:
+        return _same_frame_voice_rect_matches(previous, prepared)
+    return previous_rect is None and prepared_rect is None
+
+
+def _validated_image_frame_action_binding(
+    payload: dict[str, Any],
+    observation: dict[str, Any],
+) -> dict[str, Any]:
+    """Validate one Sidecar image operation ticket without inferring identity."""
+
+    observation_id = str(
+        observation.get("observation_id") or ""
+    ).strip()
+    bindings = (
+        payload.get("image_frame_action_bindings")
+        if isinstance(payload.get("image_frame_action_bindings"), dict)
+        else {}
+    )
+    binding = (
+        dict(bindings.get(observation_id) or {})
+        if observation_id
+        and isinstance(bindings.get(observation_id), dict)
+        else {}
+    )
+    required_text = (
+        "selected_action_token",
+        "pre_frame_id",
+        "selected_pre_observation_id",
+        "selected_target_fingerprint",
+        "message_viewport_change_digest",
+    )
+    if (
+        int(binding.get("schema_version") or 0) != 1
+        or binding.get("status") != "prepared"
+        or any(not str(binding.get(key) or "").strip() for key in required_text)
+        or str(binding.get("selected_pre_observation_id") or "").strip()
+        != observation_id
+        or str(binding.get("message_type") or "").strip().lower()
+        != "image"
+        or str(binding.get("sender_role") or "").strip().lower()
+        != str(observation.get("sender_role") or "").strip().lower()
+        or not isinstance(binding.get("ordered_frame_observations"), list)
+        or not binding.get("ordered_frame_observations")
+    ):
+        return {}
+    expected_digest = str(
+        (
+            payload.get("message_viewport_change_evidence") or {}
+        ).get("message_viewport_change_digest")
+        if isinstance(
+            payload.get("message_viewport_change_evidence"), dict
+        )
+        else ""
+    ).strip()
+    if not expected_digest:
+        expected_digest = str(
+            (payload.get("send_context_guard") or {}).get(
+                "message_viewport_change_digest"
+            )
+            if isinstance(payload.get("send_context_guard"), dict)
+            else ""
+        ).strip()
+    current_candidates = [
+        item
+        for item in (payload.get("observations") or [])
+        if isinstance(item, dict)
+        and str(item.get("row_kind") or "").strip().lower()
+        == "image_bubble"
+        and str(item.get("sender_role") or "").strip().lower()
+        in {"customer", "self"}
+        and isinstance(item.get("image_physical_anchor"), dict)
+        and str(
+            item.get("image_physical_anchor", {}).get(
+                "bubble_visual_fingerprint"
+            )
+            or ""
+        ).strip()
+    ]
+    if (
+        not expected_digest
+        or str(binding.get("message_viewport_change_digest") or "").strip()
+        != expected_digest
+        or int(binding.get("candidate_group_count") or 0)
+        != len(current_candidates)
+        or len(current_candidates) <= 0
+    ):
+        return {}
+    return binding
+
+
 def collapse_same_frame_voice_aliases(
     observations: list[Any],
 ) -> list[Any]:
@@ -378,39 +662,21 @@ def align_post_action_observations(
     """Use the unified sequence aligner after a frame-changing UI action."""
 
     committed_ids: dict[str, str] = {}
-    provisional_ids: dict[str, str] = {}
+    selected_pre_observation_id = str(
+        (confirmed_action_mapping or {}).get("pre_observation_id") or ""
+    ).strip()
+    require_selected_only_media_reservation(
+        pre_observations,
+        selected_observation_id=selected_pre_observation_id,
+    )
     for item in pre_observations:
         if not isinstance(item, dict):
             continue
         observation_id = str(item.get("observation_id") or "").strip()
         stable_id = str(item.get("_worker_stable_id") or "").strip()
-        row_kind = str(item.get("row_kind") or "").strip().lower()
-        item_state = str(item.get("item_state") or "").strip().lower()
-        voice_action_summary = (
-            item.get("_worker_voice_action_summary")
-            if isinstance(item.get("_worker_voice_action_summary"), dict)
-            else {}
-        )
-        prior_action_confirmed = bool(
-            isinstance(
-                voice_action_summary.get("confirmed_action_mapping"), dict
-            )
-            and voice_action_summary["confirmed_action_mapping"].get(
-                "binding_confirmed"
-            )
-            is True
-        )
         if not observation_id or not stable_id:
             continue
-        # A newly numbered but still-unprocessed media row is only a
-        # frame-local candidate across a UI action.  Treating that provisional
-        # number as committed would let a replacement media row inherit it.
-        # Text/system rows and terminal media facts are already durable.
-        if row_kind in {"voice_bubble", "image_bubble"} and item_state not in {
-            "completed",
-            "failed",
-        } and not prior_action_confirmed:
-            provisional_ids[observation_id] = stable_id
+        if observation_id == selected_pre_observation_id:
             continue
         committed_ids[observation_id] = stable_id
     mapping = (
@@ -421,7 +687,6 @@ def align_post_action_observations(
     pre_sequence = build_pre_action_identity_sequence(
         pre_observations,
         committed_ids=committed_ids,
-        provisional_ids=provisional_ids,
         selected_observation_id=str(
             mapping.get("pre_observation_id") or ""
         ),
@@ -482,6 +747,114 @@ def align_post_action_observations(
             carried.append(observation)
         aligned = carried
     return aligned, evidence
+
+
+def inherit_same_frame_worker_annotations(
+    pre_observations: list[Any],
+    post_observations: list[Any],
+) -> tuple[list[Any], dict[str, Any]]:
+    """Carry Worker-only annotations across one unchanged normalized frame.
+
+    This is deliberately not a cross-frame identity decision.  The Sidecar's
+    normalized viewport digest has already established that the ordered
+    business observation did not change between read and prepare.  We only
+    retain Worker metadata for the corresponding row so a first media action
+    does not need a native id or a receipt that can only exist after it runs.
+    """
+
+    business_kinds = {
+        "text_bubble",
+        "voice_bubble",
+        "voice_transcript",
+        "image_bubble",
+        "system_message",
+        "system_row",
+    }
+    worker_fields = {
+        "_worker_ai_reply_receipt",
+        "_worker_committed_message",
+        "_worker_identity_scope",
+        "_worker_image_action_summary",
+        "_worker_sequence_number",
+        "_worker_stable_id",
+        "_worker_voice_action_summary",
+    }
+    pre_rows = [
+        item
+        for item in pre_observations
+        if isinstance(item, dict)
+        and str(item.get("row_kind") or "").strip().lower()
+        in business_kinds
+    ]
+    post_indexes = [
+        index
+        for index, item in enumerate(post_observations)
+        if isinstance(item, dict)
+        and str(item.get("row_kind") or "").strip().lower()
+        in business_kinds
+    ]
+    if len(pre_rows) != len(post_indexes):
+        return list(post_observations), {
+            "alignment_status": "invalid",
+            "alignment_scope": "same_normalized_frame",
+            "reason": "business_row_count_changed_under_equal_digest",
+            "old_tail_fully_consumed": False,
+            "new_suffix_observation_ids": [],
+            "matched_pairs": [],
+        }
+
+    aligned = list(post_observations)
+    matched_pairs: list[dict[str, Any]] = []
+    for screen_order, (pre_item, post_index) in enumerate(
+        zip(pre_rows, post_indexes, strict=True)
+    ):
+        post_item = post_observations[post_index]
+        assert isinstance(post_item, dict)
+        pre_shape = (
+            str(pre_item.get("row_kind") or "").strip().lower(),
+            str(pre_item.get("sender_role") or "").strip().lower(),
+            str(pre_item.get("message_type") or "").strip().lower(),
+        )
+        post_shape = (
+            str(post_item.get("row_kind") or "").strip().lower(),
+            str(post_item.get("sender_role") or "").strip().lower(),
+            str(post_item.get("message_type") or "").strip().lower(),
+        )
+        if pre_shape != post_shape:
+            return list(post_observations), {
+                "alignment_status": "invalid",
+                "alignment_scope": "same_normalized_frame",
+                "reason": "business_row_shape_changed_under_equal_digest",
+                "old_tail_fully_consumed": False,
+                "new_suffix_observation_ids": [],
+                "matched_pairs": [],
+            }
+        inherited = dict(post_item)
+        for key in worker_fields:
+            if key in pre_item:
+                inherited[key] = copy.deepcopy(pre_item[key])
+        aligned[post_index] = inherited
+        matched_pairs.append(
+            {
+                "pre_index": screen_order,
+                "post_index": screen_order,
+                "pre_observation_id": str(
+                    pre_item.get("observation_id") or ""
+                ).strip(),
+                "post_observation_id": str(
+                    post_item.get("observation_id") or ""
+                ).strip(),
+                "match_basis": "same_normalized_frame_order",
+            }
+        )
+    return aligned, {
+        "alignment_status": "not_required",
+        "alignment_scope": "same_normalized_frame",
+        "candidate_alignment_count": 1,
+        "matched_pairs": matched_pairs,
+        "old_tail_fully_consumed": True,
+        "new_suffix_observation_ids": [],
+    }
 
 
 def confirmed_voice_action_mapping(
@@ -1066,6 +1439,21 @@ def _confirmed_image_receipt_from_journal(
     reserved_id = str(
         payload.get("reserved_worker_stable_id") or ""
     ).strip()
+    prepare_evidence = (
+        payload.get("prepare_evidence")
+        if isinstance(payload.get("prepare_evidence"), dict)
+        else {}
+    )
+    frame_action_binding = (
+        prepare_evidence.get("frame_action_binding")
+        if isinstance(
+            prepare_evidence.get("frame_action_binding"), dict
+        )
+        else {}
+    )
+    selected_action_token = str(
+        frame_action_binding.get("selected_action_token") or ""
+    ).strip()
     selected_rows = [
         item
         for item in (payload.get("pre_action_identity_sequence") or [])
@@ -1120,6 +1508,13 @@ def _confirmed_image_receipt_from_journal(
             == observation_id
             and str(mapping.get("post_observation_id") or "").strip()
             == observation_id
+            and (
+                not selected_action_token
+                or str(
+                    mapping.get("selected_action_token") or ""
+                ).strip()
+                == selected_action_token
+            )
             and mapping.get("binding_confirmed") is True
             and str(
                 terminal.get("image_visual_fingerprint") or ""
@@ -1131,6 +1526,15 @@ def _confirmed_image_receipt_from_journal(
                     {
                         "canonical_action_id": action_id,
                         "reserved_worker_stable_id": reserved_id,
+                        **(
+                            {
+                                "selected_action_token": (
+                                    selected_action_token
+                                )
+                            }
+                            if selected_action_token
+                            else {}
+                        ),
                         "pre_observation_id": observation_id,
                         "post_observation_id": observation_id,
                         "binding_confirmed": True,
@@ -2154,6 +2558,12 @@ class TaskRunner:
 
     def start(self, binding: Binding) -> None:
         self.binding = binding
+        if binding.run_status == "faulted":
+            # A technical fault is a durable local safety decision.  If the
+            # original backend status update was interrupted, a new Runner
+            # must resume that update instead of accepting a stale remote
+            # ``running`` heartbeat and silently reopening task intake.
+            self._pending_run_status_sync = "faulted"
         persisted_flow_id = str(
             load_runtime_control().get("inflight_flow_id") or ""
         ).strip()
@@ -2296,7 +2706,7 @@ class TaskRunner:
     def _monitor_background_threads(self) -> None:
         while not self.stop_event.wait(0.25):
             if (
-                self._pending_run_status_sync == "paused"
+                self._pending_run_status_sync in {"paused", "faulted"}
                 and not (self.thread and self.thread.is_alive())
             ):
                 self._sync_pending_run_status()
@@ -3825,7 +4235,7 @@ class TaskRunner:
     def _apply_local_run_status(self, run_status: str) -> None:
         if not self.binding:
             return
-        if run_status == "paused":
+        if run_status in {"paused", "faulted"}:
             request_runtime_pause()
         else:
             clear_runtime_pause()
@@ -3871,16 +4281,16 @@ class TaskRunner:
     def set_run_status(self, run_status: str) -> bool:
         if not self.binding:
             return False
-        if run_status not in {"running", "paused"}:
+        if run_status not in {"running", "paused", "faulted"}:
             self.on_error("接单状态无效。")
             return False
         if run_status == "running" and emergency_stop_requested():
             self.on_error("客户端已触发紧急停止，请重启后再开始接单。")
             return False
-        if run_status == "paused":
+        if run_status in {"paused", "faulted"}:
             # Pause drains the registered flow. Emergency stop remains the
             # separate fail-safe for not-yet-started physical actions.
-            self._apply_local_run_status("paused")
+            self._apply_local_run_status(run_status)
         try:
             profile = self.api.set_run_status(self.binding, run_status)
             if profile.run_status != run_status:
@@ -3898,11 +4308,21 @@ class TaskRunner:
                 self._request_task_wake_if_safe(
                     reason="backend_run_status_running"
                 )
-            append_log("INFO", "run_status_changed", "开始接单。" if run_status == "running" else "暂停接单。")
+            append_log(
+                "ERROR" if run_status == "faulted" else "INFO",
+                "run_status_changed",
+                (
+                    "开始接单。"
+                    if run_status == "running"
+                    else "客户端故障，已停止接单。"
+                    if run_status == "faulted"
+                    else "暂停接单。"
+                ),
+            )
             return True
         except Exception as exc:
-            if run_status == "paused":
-                self._pending_run_status_sync = "paused"
+            if run_status in {"paused", "faulted"}:
+                self._pending_run_status_sync = run_status
                 self.run_status_sync_error = str(exc)
                 self.on_error(
                     "本地已停止接收新工作；暂停状态尚未同步到后端，"
@@ -4023,12 +4443,13 @@ class TaskRunner:
                 current_step=self.current_step,
                 local_lock_summary=local_lock,
             )
-            if self._pending_run_status_sync == "paused":
-                if profile.run_status == "paused":
+            if self._pending_run_status_sync in {"paused", "faulted"}:
+                pending_run_status = self._pending_run_status_sync
+                if profile.run_status == pending_run_status:
                     self._pending_run_status_sync = None
                     self.run_status_sync_error = None
                 else:
-                    profile.run_status = "paused"
+                    profile.run_status = pending_run_status
             elif profile.run_status != binding.run_status:
                 # The run-status endpoint is authoritative. In particular, an
                 # operator pause must not be overwritten by the next heartbeat
@@ -4389,6 +4810,7 @@ class TaskRunner:
         *,
         task_id: str,
         source_error_code: str,
+        evidence: dict[str, Any] | None = None,
     ) -> bool:
         """Make a pre-send read failure durable before C2 may scan again."""
 
@@ -4400,18 +4822,28 @@ class TaskRunner:
             append_log(
                 "ERROR",
                 "c3_pre_send_failure_task_missing",
-                "发送前复读失败，但批次没有可结算的 chat_reply 任务；已暂停接单，禁止 C2 扫描重新介入。",
+                "发送前复读失败，但批次没有可结算的 chat_reply 任务；已停止接单，禁止 C2 扫描重新介入。",
                 error_code="C3_REPLY_TASK_MISSING",
                 metadata={"source_error_code": normalized_source_error},
                 force_incident=True,
             )
-            self.set_run_status("paused")
+            self.set_run_status(
+                "faulted"
+                if normalized_source_error == PRE_SEND_LAYOUT_ERROR
+                else "paused"
+            )
             return False
+        final_error_code = (
+            normalized_source_error
+            if normalized_source_error
+            in {*PRE_SEND_REIDENTIFICATION_ERRORS, PRE_SEND_LAYOUT_ERROR}
+            else "C2_REPLY_CONTEXT_RECOVERY_FAILED"
+        )
         try:
             self.api.fail_task(
                 binding,
                 normalized_task_id,
-                "C2_REPLY_CONTEXT_RECOVERY_FAILED",
+                final_error_code,
                 "pre_send_refresh",
                 normalized_source_error,
             )
@@ -4428,15 +4860,46 @@ class TaskRunner:
                 },
                 force_incident=True,
             )
-            self.set_run_status("paused")
+            self.set_run_status(
+                "faulted"
+                if final_error_code == PRE_SEND_LAYOUT_ERROR
+                else "paused"
+            )
             return False
+        durable_evidence = (
+            _freeze_phase_metadata(evidence)
+            if isinstance(evidence, dict)
+            else {}
+        )
+        self._upload_evidence_best_effort(
+            binding,
+            normalized_task_id,
+            "发送前复读失败证据",
+            error_code=final_error_code,
+            evidence_path=(
+                _first_persistable_evidence_path(durable_evidence)
+                or None
+            ),
+            metadata={
+                "source_error_code": normalized_source_error,
+                "pre_send_failure_evidence": durable_evidence,
+            },
+        )
+        if final_error_code == PRE_SEND_LAYOUT_ERROR:
+            self.set_run_status("faulted")
+            self.on_error(
+                "微信基本布局无法建立，客户端已进入故障状态并停止接单。"
+            )
         append_log(
-            "INFO",
+            "ERROR" if final_error_code == PRE_SEND_LAYOUT_ERROR else "INFO",
             "c3_pre_send_failure_settled",
             "发送前复读失败已在原 C2 单会话流程内结算，释放 UI 锁后不会留下待领取回复任务。",
             task_id=normalized_task_id,
-            error_code="C2_REPLY_CONTEXT_RECOVERY_FAILED",
-            metadata={"source_error_code": normalized_source_error},
+            error_code=final_error_code,
+            metadata={
+                "source_error_code": normalized_source_error,
+                "worker_faulted": final_error_code == PRE_SEND_LAYOUT_ERROR,
+            },
         )
         return True
 
@@ -4565,6 +5028,7 @@ class TaskRunner:
                     calibration.get("error_code")
                     or "WECHAT_UI_STARTUP_CALIBRATION_FAILED"
                 ),
+                evidence={"startup_layout_calibration": calibration},
             )
             self.on_result(
                 RpaResult(
@@ -4610,6 +5074,7 @@ class TaskRunner:
                         refresh.get("error_code")
                         or "恢复回复任务时未能安全重建当前会话"
                     ),
+                    evidence={"pre_send_refresh": refresh},
                 )
                 self.on_result(
                     RpaResult(
@@ -5149,8 +5614,8 @@ class TaskRunner:
             "context_validation": payload.get("context_validation"),
             "send_baseline": {
                 "screenshot_path": send_baseline.get("screenshot_path"),
-                "message_region_sha256": baseline_guard.get(
-                    "message_region_sha256"
+                "message_viewport_change_digest": baseline_guard.get(
+                    "message_viewport_change_digest"
                 ),
                 "sequence_sha256": baseline_guard.get("sequence_sha256"),
                 "message_count": baseline_guard.get("message_count"),
@@ -6085,12 +6550,28 @@ class TaskRunner:
                     or source_message.get("native_message_id")
                     or ""
                 ).strip()
-                if native_source_message_id and message_type in {
-                    "text",
-                    "system",
-                    "voice",
-                    "image",
-                }:
+                terminal_native_media = (
+                    message_type == "voice"
+                    and str(
+                        observation.get("voice_state") or ""
+                    ).strip().lower()
+                    == "transcribed"
+                    and bool(
+                        str(
+                            observation.get("content_clean") or ""
+                        ).strip()
+                    )
+                ) or (
+                    message_type == "image"
+                    and str(
+                        observation.get("item_state") or ""
+                    ).strip().lower()
+                    in {"completed", "failed"}
+                )
+                if native_source_message_id and (
+                    message_type in {"text", "system"}
+                    or terminal_native_media
+                ):
                     stable_id = self._reserve_worker_sequence(
                         target,
                         reservation_key=(
@@ -6154,26 +6635,13 @@ class TaskRunner:
                             },
                         )
                     )
-                elif message_type == "image":
-                    observation["_worker_stable_id"] = (
-                        self._reserve_worker_sequence(
-                            target,
-                            reservation_key=(
-                                f"media-action:{read_run_id}:"
-                                f"{observation_id}"
-                            ),
-                        )
-                    )
-                    observation["_worker_identity_scope"] = (
-                        "current_read_provisional"
-                    )
-                    observation.pop("_worker_committed_message", None)
                 else:
-                    # A voice, including a transcript produced by Sidecar,
-                    # becomes durable only through its confirmed prepare/
-                    # execute mapping.  new_suffix alone is not identity.
+                    # Unselected media remains a frame observation. Only the
+                    # one candidate admitted for the next physical action may
+                    # receive a reserved sequence number and ActionJournal.
                     observation.pop("_worker_committed_message", None)
             assigned.append(observation)
+        require_selected_only_media_reservation(assigned)
         return assigned
 
     def _retry_identity_from_backend_checkpoint_once(
@@ -10135,6 +10603,28 @@ class TaskRunner:
                 canonical_by_observation_id[observation_id] = message
 
         observations = sidecar_payload.get("observations") if isinstance(sidecar_payload.get("observations"), list) else []
+        alignment_evidence = (
+            sidecar_payload.get("sequence_alignment_evidence")
+            if isinstance(
+                sidecar_payload.get("sequence_alignment_evidence"), dict
+            )
+            else {}
+        )
+        frame_local_unselected_ids = {
+            str(item.get("post_observation_id") or "").strip()
+            for item in (alignment_evidence.get("matched_pairs") or [])
+            if isinstance(item, dict)
+            and item.get("identity_state") == "frame_local_unselected"
+            and not str(item.get("worker_stable_id") or "").strip()
+            and str(item.get("post_observation_id") or "").strip()
+        }
+        new_suffix_ids = {
+            str(value or "").strip()
+            for value in (
+                alignment_evidence.get("new_suffix_observation_ids") or []
+            )
+            if str(value or "").strip()
+        }
 
         slots = [
             {
@@ -10188,8 +10678,10 @@ class TaskRunner:
             ).strip().lower()
             if (
                 row_kind == "image_bubble"
-                and identity_scope == "current_read_provisional"
+                and identity_scope != "committed"
                 and item_state == "discovered"
+                and observation_id
+                in (frame_local_unselected_ids | new_suffix_ids)
             ):
                 if observation_id:
                     new_image_observation_ids.add(observation_id)
@@ -10202,6 +10694,23 @@ class TaskRunner:
                     provisional_continuity_states.append(
                         {
                             "observation_id": observation_id,
+                            "message_viewport_change_digest": str(
+                                (
+                                    sidecar_payload.get(
+                                        "message_viewport_change_evidence"
+                                    )
+                                    or {}
+                                ).get(
+                                    "message_viewport_change_digest"
+                                )
+                                if isinstance(
+                                    sidecar_payload.get(
+                                        "message_viewport_change_evidence"
+                                    ),
+                                    dict,
+                                )
+                                else ""
+                            ),
                             "screen_order": screen_order,
                             "order_source": frame_order_source,
                             "row_kind": row_kind,
@@ -10221,10 +10730,9 @@ class TaskRunner:
                             "error_code": "MESSAGE_IDENTITY_UNCONFIRMED",
                         }
                     )
-                # A provisional image is an action candidate, not a message
-                # fact.  Do not derive a source key or consult any cross-run
-                # Ledger, Outbox or backend checkpoint until its confirmed
-                # action receipt commits the reserved sequence number.
+                # A frame-local unselected image is an action candidate, not
+                # a message fact. It stays unnumbered until the Worker admits
+                # this exact candidate as the next physical action.
                 continue
             if row_kind == "image_bubble":
                 try:
@@ -10637,27 +11145,75 @@ class TaskRunner:
         action_local_id: str,
         cancel_check: Callable[[], bool | str] | None,
         flow_outcomes: FlowOutcomeAccumulator | None,
+        operation_phase: C2ReadOperationPhase = C2_AUTHORIZED_READ_PHASE,
     ) -> dict[str, Any]:
         image_action_journal: Path | None = None
         image_action_id = ""
+        pre_frame_id = ""
+        selected_observation_id = str(
+            observation.get("observation_id") or ""
+        ).strip()
+        frame_action_binding = _validated_image_frame_action_binding(
+            payload,
+            observation,
+        )
+        if not frame_action_binding:
+            return {
+                "state": "failed",
+                "reason": "C2_IMAGE_EXECUTE_CONTRACT_INVALID",
+                "action_phase": "not_attempted",
+                "business_state": "not_attempted",
+                "business_result_confirmed": False,
+                "ui_action_performed": False,
+                "diagnostics": {
+                    "events": [],
+                    "image_persisted": False,
+                },
+            }
         if flow_outcomes is not None:
             payload_observations = list(payload.get("observations") or [])
             image_action_id = str(action_local_id or "").strip() or (
                 f"image:{target.conversation_id}:{uuid.uuid4()}"
             )
-            selected_observation_id = str(
-                observation.get("observation_id") or ""
-            ).strip()
+            try:
+                require_selected_only_media_reservation(
+                    payload_observations,
+                    selected_observation_id=selected_observation_id,
+                )
+            except ValueError:
+                return {
+                    "state": "failed",
+                    "reason": "C2_IMAGE_IDENTITY_CONTRACT_INVALID",
+                    "action_phase": "not_attempted",
+                    "diagnostics": {
+                        "events": [],
+                        "image_persisted": False,
+                    },
+                }
             reserved_worker_stable_id = str(
                 observation.get("_worker_stable_id") or ""
             ).strip()
-            if not selected_observation_id or not reserved_worker_stable_id:
+            if not selected_observation_id:
                 return {
                     "state": "failed",
                     "reason": "C2_IMAGE_IDENTITY_CONTRACT_INVALID",
                     "action_phase": "not_attempted",
                     "diagnostics": {"events": [], "image_persisted": False},
                 }
+            if not re.fullmatch(
+                r"worker-message-[1-9]\d*",
+                reserved_worker_stable_id,
+            ):
+                reserved_worker_stable_id = self._reserve_worker_sequence(
+                    target,
+                    reservation_key=f"selected-action:{image_action_id}",
+                )
+                observation["_worker_stable_id"] = (
+                    reserved_worker_stable_id
+                )
+                observation["_worker_identity_scope"] = (
+                    "current_read_provisional"
+                )
             committed_ids: dict[str, str] = {}
             for item in payload_observations:
                 if not isinstance(item, dict):
@@ -10683,29 +11239,16 @@ class TaskRunner:
                     except ValueError:
                         continue
                 committed_ids[item_observation_id] = item_worker_stable_id
-            provisional_ids = {
-                str(item.get("observation_id") or "").strip(): str(
-                    item.get("_worker_stable_id") or ""
-                ).strip()
-                for item in payload_observations
-                if isinstance(item, dict)
-                and str(item.get("observation_id") or "").strip()
-                and str(item.get("_worker_stable_id") or "").strip()
-                and str(item.get("observation_id") or "").strip()
-                != selected_observation_id
-                and str(item.get("_worker_identity_scope") or "").strip()
-                == "current_read_provisional"
-            }
             pre_action_sequence = build_pre_action_identity_sequence(
                 payload_observations,
                 committed_ids=committed_ids,
-                provisional_ids=provisional_ids,
                 selected_observation_id=selected_observation_id,
                 canonical_action_id=image_action_id,
                 reserved_worker_stable_id=reserved_worker_stable_id,
             )
             pre_frame_id = str(
-                payload.get("frame_id")
+                frame_action_binding.get("pre_frame_id")
+                or payload.get("frame_id")
                 or payload.get("sidecar_run_id")
                 or payload.get("run_id")
                 or ""
@@ -10742,6 +11285,19 @@ class TaskRunner:
                 pre_frame_id=pre_frame_id,
                 reserved_worker_stable_id=reserved_worker_stable_id,
                 prepare_evidence={
+                    "frame_action_binding": frame_action_binding,
+                    "selected_action_token": str(
+                        frame_action_binding.get(
+                            "selected_action_token"
+                        )
+                        or ""
+                    ),
+                    "candidate_group_count": int(
+                        frame_action_binding.get(
+                            "candidate_group_count"
+                        )
+                        or 0
+                    ),
                     "authorization_revision": str(
                         target.authorization_revision or ""
                     ),
@@ -10757,7 +11313,32 @@ class TaskRunner:
             from .omniauto_vision import process_image_slot
 
             result = process_image_slot(
-                observation=observation,
+                observation={
+                    **observation,
+                    "_c2_operation_phase": operation_phase,
+                    "_expected_message_viewport_change_digest": str(
+                        (
+                            payload.get(
+                                "message_viewport_change_evidence"
+                            )
+                            or {}
+                        ).get("message_viewport_change_digest")
+                        if isinstance(
+                            payload.get("message_viewport_change_evidence"),
+                            dict,
+                        )
+                        else (
+                            (
+                                payload.get("send_context_guard")
+                                or {}
+                            ).get("message_viewport_change_digest")
+                            if isinstance(
+                                payload.get("send_context_guard"), dict
+                            )
+                            else ""
+                        )
+                    ).strip(),
+                },
                 remark_code=str(target.remark_code or ""),
                 session_key=str(target.rpa_session_key or ""),
                 window_context=(
@@ -10770,6 +11351,7 @@ class TaskRunner:
                 action_journal_path=image_action_journal,
                 action_local_id=image_action_id,
                 artifact_dir=str(payload.get("artifact_dir") or "") or None,
+                frame_action_binding=frame_action_binding,
             )
         except Exception as exc:
             result = {
@@ -10924,6 +11506,10 @@ class TaskRunner:
             result["_confirmed_image_action_receipt"] = {
                 "canonical_action_id": image_action_id,
                 "reserved_worker_stable_id": reserved_worker_stable_id,
+                "selected_action_token": str(
+                    frame_action_binding.get("selected_action_token")
+                    or ""
+                ),
                 "pre_observation_id": selected_observation_id,
                 "post_observation_id": selected_observation_id,
                 "binding_confirmed": True,
@@ -11031,6 +11617,7 @@ class TaskRunner:
                         for key in (
                             "canonical_action_id",
                             "reserved_worker_stable_id",
+                            "selected_action_token",
                             "pre_observation_id",
                             "post_observation_id",
                             "binding_confirmed",
@@ -11558,14 +12145,33 @@ class TaskRunner:
         cancel_check: Callable[[], bool | str] | None = None,
         allowed_new_observation_ids: set[str] | None = None,
         flow_outcomes: FlowOutcomeAccumulator | None = None,
+        operation_phase: C2ReadOperationPhase = C2_AUTHORIZED_READ_PHASE,
     ) -> tuple[dict[str, Any], dict[str, Any]]:
         observations = sidecar_payload.get("observations")
         stats = new_image_phase_result()
+        is_pre_send_refresh = (
+            operation_phase == C2_PRE_SEND_REFRESH_PHASE
+        )
         if not isinstance(observations, list):
             return sidecar_payload, stats
         payload = dict(sidecar_payload)
         enriched_observations = [dict(item) if isinstance(item, dict) else item for item in observations]
         payload["observations"] = enriched_observations
+        viewport_evidence = (
+            payload.get("message_viewport_change_evidence")
+            if isinstance(
+                payload.get("message_viewport_change_evidence"), dict
+            )
+            else payload.get("send_context_guard")
+            if isinstance(payload.get("send_context_guard"), dict)
+            else {}
+        )
+        current_viewport_digest = str(
+            (viewport_evidence or {}).get(
+                "message_viewport_change_digest"
+            )
+            or ""
+        ).strip()
 
         def visual_top(item: dict[str, Any]) -> float:
             rect = item.get("bubble_rect")
@@ -11612,9 +12218,11 @@ class TaskRunner:
             item_state = str(
                 observation.get("item_state") or "discovered"
             ).strip().lower()
-            provisional = (
-                identity_scope == "current_read_provisional"
-                and item_state == "discovered"
+            provisional = bool(
+                item_state == "discovered"
+                and identity_scope != "committed"
+                and allowed_new_observation_ids is not None
+                and observation_id in allowed_new_observation_ids
             )
             source_key = ""
             if not provisional:
@@ -11681,6 +12289,9 @@ class TaskRunner:
                                 else ""
                             ),
                             "observation_id": observation_id,
+                            "message_viewport_change_digest": (
+                                current_viewport_digest
+                            ),
                         },
                         ensure_ascii=False,
                         sort_keys=True,
@@ -11806,16 +12417,11 @@ class TaskRunner:
                 "C2 在最终权威画面发现图片槽位。",
                 metadata=common_metadata,
             )
-            if provisional and (
-                not observation_id
-                or not str(
-                    observation.get("_worker_stable_id") or ""
-                ).strip()
-            ):
+            if provisional and not observation_id:
                 append_log(
                     "WARN",
                     "c2_image_identity_rejected",
-                    "C2 图片临时身份合同不完整；本轮不调用 Vision。",
+                    "C2 图片本帧动作候选缺少观察编号；本轮不调用 Vision。",
                     error_code="C2_IMAGE_IDENTITY_CONTRACT_INVALID",
                     metadata=common_metadata,
                 )
@@ -11918,6 +12524,7 @@ class TaskRunner:
                     action_local_id=action_local_key,
                     cancel_check=cancel_check,
                     flow_outcomes=flow_outcomes,
+                    operation_phase=operation_phase,
                 )
             normalized = self._normalize_one_image_slot_result(
                 result,
@@ -11929,6 +12536,84 @@ class TaskRunner:
             result_action_phase = normalized["action_phase"]
             if normalized["removed_from_final_screen"]:
                 image_action_started = True
+                if result_reason == "C2_PRE_SEND_LAYOUT_INVALID":
+                    stats["terminal_gate"] = {
+                        "error_code": "C2_PRE_SEND_LAYOUT_INVALID",
+                        "identity_errors": [],
+                        "authoritative_frame_source": str(
+                            payload.get("authoritative_frame_source")
+                            or "final_read"
+                        ),
+                        "ui_frame_invalidated": False,
+                        "action_journal_path": str(
+                            result.get("_image_action_journal_path") or ""
+                        ),
+                        "layout_evidence": dict(
+                            (transaction or {}).get(
+                                "message_viewport_change_evidence"
+                            )
+                            or {}
+                        ),
+                    }
+                    enriched_observations[index] = None
+                    break
+                if (
+                    result_reason in PRE_SEND_REIDENTIFICATION_ERRORS
+                    and is_pre_send_refresh
+                ):
+                    stats["terminal_gate"] = {
+                        "error_code": result_reason,
+                        "identity_errors": [],
+                        "authoritative_frame_source": str(
+                            payload.get("authoritative_frame_source")
+                            or "final_read"
+                        ),
+                        "ui_frame_invalidated": False,
+                        "action_journal_path": str(
+                            result.get("_image_action_journal_path") or ""
+                        ),
+                    }
+                    enriched_observations[index] = None
+                    break
+                if result_reason == "C2_IMAGE_REIDENTIFICATION_REQUIRED":
+                    if is_pre_send_refresh and int(
+                        payload.get(
+                            "pre_send_reidentification_attempts"
+                        )
+                        or 0
+                    ) >= 1:
+                        stats["terminal_gate"] = {
+                            "error_code": (
+                                "C2_PRE_SEND_MESSAGE_VIEWPORT_CHANGED_AGAIN"
+                            ),
+                            "identity_errors": [],
+                            "authoritative_frame_source": str(
+                                payload.get("authoritative_frame_source")
+                                or "final_read"
+                            ),
+                            "ui_frame_invalidated": False,
+                            "action_journal_path": str(
+                                result.get(
+                                    "_image_action_journal_path"
+                                )
+                                or ""
+                            ),
+                            "message_viewport_change_evidence": dict(
+                                (transaction or {}).get(
+                                    "message_viewport_change_evidence"
+                                )
+                                or {}
+                            ),
+                        }
+                        enriched_observations[index] = None
+                        break
+                    if is_pre_send_refresh:
+                        stats["reidentification_required"] = int(
+                            stats.get("reidentification_required") or 0
+                        ) + 1
+                        payload[
+                            "pre_send_reidentification_attempts"
+                        ] = 1
                 stats["removed_from_final_screen"] += 1
                 mark_image_removed_from_final_screen(
                     stats,
@@ -12394,6 +13079,7 @@ class TaskRunner:
                             refresh_read.get("error_code")
                             or "PRE_SEND_REFRESH_FAILED"
                         ),
+                        evidence={"pre_send_refresh": refresh_read},
                     )
                 )
                 return {
@@ -12430,7 +13116,7 @@ class TaskRunner:
                 else {}
             )
             if (
-                int(expected_context_guard.get("schema_version") or 0) != 1
+                int(expected_context_guard.get("schema_version") or 0) != 2
                 or not isinstance(expected_context_guard.get("sequence"), list)
             ):
                 return {
@@ -12915,6 +13601,7 @@ class TaskRunner:
         read_run_id: str,
         excluded_voice_anchor_keys: set[str],
         flow_outcomes: FlowOutcomeAccumulator | None = None,
+        operation_phase: C2ReadOperationPhase = C2_AUTHORIZED_READ_PHASE,
     ) -> dict[str, Any]:
         """The only production voice orchestrator: prepare, persist, execute."""
 
@@ -12928,14 +13615,47 @@ class TaskRunner:
         current_payload["ui_frame_invalidated"] = bool(
             current_payload.get("ui_frame_invalidated")
         )
+        is_pre_send_refresh = (
+            operation_phase == C2_PRE_SEND_REFRESH_PHASE
+        )
         item_outcomes: list[dict[str, Any]] = []
         failure_code = ""
         terminal_gate: dict[str, Any] | None = None
-        cancelled_prepares = 0
+        reidentification_used = bool(
+            is_pre_send_refresh
+            and
+            int(
+                current_payload.get("pre_send_reidentification_attempts")
+                or 0
+            )
+        )
         remaining_actions = 32
         attempted_fingerprints: set[str] = set()
 
+        def viewport_digest(payload: dict[str, Any]) -> str:
+            for key in (
+                "message_viewport_change_evidence",
+                "send_context_guard",
+            ):
+                evidence = (
+                    payload.get(key)
+                    if isinstance(payload.get(key), dict)
+                    else {}
+                )
+                digest = str(
+                    evidence.get("message_viewport_change_digest") or ""
+                ).strip()
+                if digest:
+                    return digest
+            return str(
+                payload.get("message_viewport_change_digest") or ""
+            ).strip()
+
         def result() -> dict[str, Any]:
+            if reidentification_used:
+                current_payload[
+                    "pre_send_reidentification_attempts"
+                ] = 1
             payload = {
                 "ok": True,
                 "payload": current_payload,
@@ -13028,6 +13748,60 @@ class TaskRunner:
             if contract_error:
                 return {"ok": False, "error_code": contract_error, "payload": current_payload}
             prepare_state = str(prepared.get("state") or "")
+            previous_viewport_digest = viewport_digest(current_payload)
+            prepared_viewport_digest = viewport_digest(prepared)
+            if not previous_viewport_digest or not prepared_viewport_digest:
+                return {
+                    "ok": False,
+                    "error_code": PRE_SEND_LAYOUT_ERROR,
+                    "payload": current_payload,
+                    "before_frame_id": str(
+                        current_payload.get("frame_id")
+                        or (current_payload.get("frame_observation") or {}).get(
+                            "frame_id"
+                        )
+                        or ""
+                    ),
+                    "after_frame_id": str(prepared.get("pre_frame_id") or ""),
+                    "evidence_refs": [
+                        str(prepared.get("screenshot_path") or "")
+                    ],
+                }
+            if (
+                is_pre_send_refresh
+                and previous_viewport_digest != prepared_viewport_digest
+            ):
+                if reidentification_used:
+                    return {
+                        "ok": False,
+                        "error_code": (
+                            "C2_PRE_SEND_MESSAGE_VIEWPORT_CHANGED_AGAIN"
+                        ),
+                        "payload": current_payload,
+                        "reidentification_attempts": 1,
+                        "before_frame_id": str(
+                            current_payload.get("frame_id")
+                            or (
+                                current_payload.get("frame_observation")
+                                or {}
+                            ).get("frame_id")
+                            or ""
+                        ),
+                        "after_frame_id": str(
+                            prepared.get("pre_frame_id") or ""
+                        ),
+                        "evidence_refs": [
+                            str(prepared.get("screenshot_path") or "")
+                        ],
+                    }
+                # This prepare frame is the one complete latest-frame
+                # reidentification allowed by v0.9.33. Consume the global
+                # budget before creating a replacement action/reservation so
+                # any second viewport change fails closed without another
+                # prepare loop.
+                reidentification_used = True
+                current_payload["pre_send_reidentification_attempts"] = 1
+                prepared["pre_send_reidentification_attempts"] = 1
             if prepare_state == "voice_action_prepare_empty":
                 if not isinstance(prepared.get("observations"), list):
                     return {
@@ -13070,7 +13844,9 @@ class TaskRunner:
                     return {
                         "ok": False,
                         "error_code": (
-                            "MESSAGE_CROSS_ROUND_IDENTITY_AMBIGUOUS"
+                            "C2_PRE_SEND_MESSAGE_SEQUENCE_ALIGNMENT_FAILED"
+                            if is_pre_send_refresh
+                            else "MESSAGE_CROSS_ROUND_IDENTITY_AMBIGUOUS"
                         ),
                         "payload": current_payload,
                     }
@@ -13080,6 +13856,73 @@ class TaskRunner:
                     evidence=alignment_evidence,
                     read_run_id=flow_outcomes.origin_read_run_id,
                 )
+                if is_pre_send_refresh:
+                    reidentification_validation = (
+                        pre_send_new_suffix_validation(
+                            aligned,
+                            alignment_evidence,
+                        )
+                    )
+                    if reidentification_validation.get("ok") is not True:
+                        return {
+                            "ok": False,
+                            "error_code": str(
+                                reidentification_validation.get(
+                                    "error_code"
+                                )
+                                or "C2_PRE_SEND_MESSAGE_SEQUENCE_ALIGNMENT_FAILED"
+                            ),
+                            "payload": current_payload,
+                            "pre_send_error_evidence": (
+                                reidentification_validation
+                            ),
+                            "reidentification_attempts": 1,
+                            "after_frame_id": str(
+                                prepared.get("pre_frame_id") or ""
+                            ),
+                            "evidence_refs": [
+                                str(prepared.get("screenshot_path") or "")
+                            ],
+                        }
+                    matched_post_ids = {
+                        str(pair.get("post_observation_id") or "").strip()
+                        for pair in (
+                            alignment_evidence.get("matched_pairs") or []
+                        )
+                        if isinstance(pair, dict)
+                        and str(
+                            pair.get("pre_observation_id") or ""
+                        ).strip()
+                        in current_candidate_ids
+                    }
+                    resolved_as_transcript = any(
+                        isinstance(observation, dict)
+                        and str(
+                            observation.get("observation_id") or ""
+                        ).strip()
+                        in matched_post_ids
+                        and str(
+                            observation.get("row_kind") or ""
+                        ).strip().lower()
+                        == "voice_transcript"
+                        for observation in aligned
+                    )
+                    if not resolved_as_transcript:
+                        return {
+                            "ok": False,
+                            "error_code": (
+                                "C2_PRE_SEND_VOICE_TARGET_NOT_FOUND"
+                            ),
+                            "payload": current_payload,
+                            "reidentification_attempts": 1,
+                            "candidate_count": 0,
+                            "after_frame_id": str(
+                                prepared.get("pre_frame_id") or ""
+                            ),
+                            "evidence_refs": [
+                                str(prepared.get("screenshot_path") or "")
+                            ],
+                        }
                 completed_voice_summary = current_payload.get(
                     "voice_transcription"
                 )
@@ -13106,6 +13949,7 @@ class TaskRunner:
                     "selected_pre_observation_id",
                     "selected_action_token",
                     "selected_target_fingerprint",
+                    "message_viewport_change_digest",
                 )
             }
             if (
@@ -13127,109 +13971,183 @@ class TaskRunner:
                 current_payload.get("observations") or []
             )
             pre_observations = list(prepared.get("observations") or [])
-            current_has_committed_identity = any(
-                isinstance(item, dict)
-                and str(item.get("_worker_stable_id") or "").strip()
-                for item in current_observations
+            selected_id = prepare_fields["selected_pre_observation_id"]
+            physical_anchor_keys = sorted({
+                str(value).strip()
+                for value in (
+                    prepared.get("selected_physical_anchor_keys") or []
+                )
+                if str(value).strip()
+            })
+            if not physical_anchor_keys:
+                return {
+                    "ok": False,
+                    "error_code": "C2_VOICE_PREPARE_CONTRACT_INVALID",
+                    "payload": current_payload,
+                }
+            prepare_frame_changed = (
+                previous_viewport_digest != prepared_viewport_digest
             )
-            current_ids = [
-                str(item.get("observation_id") or "").strip()
-                for item in current_observations
-                if isinstance(item, dict)
-            ]
-            prepared_ids = [
-                str(item.get("observation_id") or "").strip()
-                for item in pre_observations
-                if isinstance(item, dict)
-            ]
-            exact_read_only_frame = bool(
-                current_ids
-                and current_ids == prepared_ids
-                and len(set(current_ids)) == len(current_ids)
-                and all(current_ids)
-            )
-            if exact_read_only_frame:
-                committed_by_id = {
-                    str(item.get("observation_id") or "").strip(): str(
-                        item.get("_worker_stable_id") or ""
-                    ).strip()
-                    for item in current_observations
-                    if isinstance(item, dict)
-                    and str(item.get("observation_id") or "").strip()
-                    and str(item.get("_worker_stable_id") or "").strip()
-                }
-                voice_action_summary_by_id = {
-                    str(item.get("observation_id") or "").strip(): dict(
-                        item.get("_worker_voice_action_summary") or {}
-                    )
-                    for item in current_observations
-                    if isinstance(item, dict)
-                    and str(item.get("observation_id") or "").strip()
-                    and isinstance(
-                        item.get("_worker_voice_action_summary"), dict
-                    )
-                    and item.get("_worker_voice_action_summary")
-                }
-                inherited_pre_observations: list[Any] = []
-                for raw_observation in pre_observations:
-                    if not isinstance(raw_observation, dict):
-                        inherited_pre_observations.append(raw_observation)
-                        continue
-                    observation = dict(raw_observation)
-                    observation_id = str(
-                        observation.get("observation_id") or ""
-                    ).strip()
-                    committed_id = committed_by_id.get(observation_id)
-                    if committed_id:
-                        observation["_worker_stable_id"] = committed_id
-                    voice_action_summary = (
-                        voice_action_summary_by_id.get(observation_id)
-                    )
-                    if voice_action_summary:
-                        observation["_worker_voice_action_summary"] = dict(
-                            voice_action_summary
-                        )
-                    inherited_pre_observations.append(observation)
-                pre_observations = inherited_pre_observations
-                prepared = {
-                    **prepared,
-                    "observations": pre_observations,
-                }
-            elif current_has_committed_identity:
+            if prepare_frame_changed:
                 pre_observations, prepare_alignment_evidence = (
                     align_post_action_observations(
                         current_observations,
                         pre_observations,
                     )
                 )
-                if prepare_alignment_evidence.get(
-                    "alignment_status"
-                ) not in {"unique", "not_required"}:
+            else:
+                prepared_anchor_set = set(physical_anchor_keys)
+                prepared_selected_rows = [
+                    item
+                    for item in pre_observations
+                    if isinstance(item, dict)
+                    and str(item.get("observation_id") or "").strip()
+                    == selected_id
+                ]
+                prepared_selected_row = (
+                    prepared_selected_rows[0]
+                    if len(prepared_selected_rows) == 1
+                    else None
+                )
+                current_selected_rows = [
+                    item
+                    for item in current_observations
+                    if isinstance(item, dict)
+                    and str(item.get("observation_id") or "").strip()
+                    == selected_id
+                ]
+                if (
+                    len(current_selected_rows) == 1
+                    and str(
+                        current_selected_rows[0].get(
+                            "_worker_identity_scope"
+                        )
+                        or ""
+                    ).strip()
+                    == "committed"
+                ):
+                    return {
+                        "ok": False,
+                        "error_code": "C2_VOICE_PREPARE_CONTRACT_INVALID",
+                        "payload": current_payload,
+                    }
+                current_frame_matches = [
+                    item
+                    for item in current_executable_voices
+                    if prepared_anchor_set
+                    & set(voice_action_journal_anchor_keys(item))
+                    and prepared_selected_row is not None
+                    and _same_frame_voice_action_evidence_matches(
+                        item,
+                        prepared_selected_row,
+                    )
+                ]
+                if len(current_frame_matches) != 1:
                     return {
                         "ok": False,
                         "error_code": (
-                            "MESSAGE_CROSS_ROUND_IDENTITY_AMBIGUOUS"
+                            "C2_PRE_SEND_VOICE_TARGET_AMBIGUOUS"
+                            if is_pre_send_refresh
+                            else "MESSAGE_CROSS_ROUND_IDENTITY_AMBIGUOUS"
                         ),
                         "payload": current_payload,
+                        "pre_send_error_evidence": {
+                            "reason": (
+                                "same_frame_physical_target_not_unique"
+                            ),
+                            "prepared_physical_anchor_keys": (
+                                physical_anchor_keys
+                            ),
+                            "candidate_count": len(
+                                current_frame_matches
+                            ),
+                        },
+                        "candidate_count": len(current_frame_matches),
+                        "before_frame_id": str(
+                            current_payload.get("frame_id")
+                            or (
+                                current_payload.get("frame_observation")
+                                or {}
+                            ).get("frame_id")
+                            or ""
+                        ),
+                        "after_frame_id": prepare_fields["pre_frame_id"],
+                        "evidence_refs": [
+                            str(prepared.get("screenshot_path") or "")
+                        ],
                     }
+                pre_observations, prepare_alignment_evidence = (
+                    inherit_same_frame_worker_annotations(
+                        current_observations,
+                        pre_observations,
+                    )
+                )
+            if prepare_alignment_evidence.get("alignment_status") not in {
+                "unique",
+                "not_required",
+            }:
+                return {
+                    "ok": False,
+                    "error_code": (
+                        "C2_PRE_SEND_VOICE_TARGET_AMBIGUOUS"
+                        if is_pre_send_refresh
+                        else "MESSAGE_CROSS_ROUND_IDENTITY_AMBIGUOUS"
+                    ),
+                    "payload": current_payload,
+                    "pre_send_error_evidence": (
+                        prepare_alignment_evidence
+                    ),
+                    "candidate_count": int(
+                        prepared.get("candidate_group_count") or 0
+                    ),
+                    "before_frame_id": str(
+                        current_payload.get("frame_id")
+                        or (current_payload.get("frame_observation") or {}).get(
+                            "frame_id"
+                        )
+                        or ""
+                    ),
+                    "after_frame_id": prepare_fields["pre_frame_id"],
+                    "evidence_refs": [
+                        str(prepared.get("screenshot_path") or "")
+                    ],
+                }
+            if prepare_frame_changed:
                 pre_observations = (
                     self._assign_sequence_new_suffix_identities(
                         target=target,
                         observations=pre_observations,
                         evidence=prepare_alignment_evidence,
-                        read_run_id=(
-                            flow_outcomes.origin_read_run_id
-                        ),
+                        read_run_id=flow_outcomes.origin_read_run_id,
                     )
                 )
-                prepared = {
-                    **prepared,
-                    "observations": pre_observations,
-                    "sequence_alignment_evidence": (
-                        prepare_alignment_evidence
-                    ),
-                }
-            selected_id = prepare_fields["selected_pre_observation_id"]
+            prepared = {
+                **prepared,
+                "observations": pre_observations,
+                "sequence_alignment_evidence": prepare_alignment_evidence,
+            }
+            if is_pre_send_refresh and prepare_frame_changed:
+                reidentification_validation = pre_send_new_suffix_validation(
+                    pre_observations,
+                    prepare_alignment_evidence,
+                )
+                if reidentification_validation.get("ok") is not True:
+                    return {
+                        "ok": False,
+                        "error_code": str(
+                            reidentification_validation.get("error_code")
+                            or "C2_PRE_SEND_MESSAGE_SEQUENCE_ALIGNMENT_FAILED"
+                        ),
+                        "payload": current_payload,
+                        "pre_send_error_evidence": (
+                            reidentification_validation
+                        ),
+                        "reidentification_attempts": 1,
+                        "after_frame_id": prepare_fields["pre_frame_id"],
+                        "evidence_refs": [
+                            str(prepared.get("screenshot_path") or "")
+                        ],
+                    }
             selected_observations = [
                 item
                 for item in pre_observations
@@ -13280,27 +14198,86 @@ class TaskRunner:
                 != str(
                     selected_observation.get("sender_role") or ""
                 ).strip().lower()
+                or str(
+                    selected_observation.get(
+                        "_worker_identity_scope"
+                    )
+                    or ""
+                ).strip()
+                == "committed"
             ):
+                if is_pre_send_refresh:
+                    candidate_count = int(
+                        prepared.get("candidate_group_count") or 0
+                    )
+                    if candidate_count <= 0 or not selected_observations:
+                        prepare_error = (
+                            "C2_PRE_SEND_VOICE_TARGET_NOT_FOUND"
+                        )
+                    elif len(selected_observations) > 1 or candidate_count > 1:
+                        prepare_error = (
+                            "C2_PRE_SEND_VOICE_TARGET_AMBIGUOUS"
+                        )
+                    elif not observation_role_is_trusted(
+                        selected_observation
+                    ):
+                        prepare_error = (
+                            "C2_PRE_SEND_MESSAGE_ROLE_UNCONFIRMED"
+                        )
+                    else:
+                        prepare_error = (
+                            "C2_PRE_SEND_MESSAGE_SEQUENCE_ALIGNMENT_FAILED"
+                        )
+                    return {
+                        "ok": False,
+                        "error_code": prepare_error,
+                        "payload": current_payload,
+                        "reidentification_attempts": 1,
+                        "candidate_count": candidate_count,
+                        "after_frame_id": prepare_fields["pre_frame_id"],
+                        "evidence_refs": [
+                            str(prepared.get("screenshot_path") or "")
+                        ],
+                    }
                 return {"ok": False, "error_code": "C2_VOICE_PREPARE_CONTRACT_INVALID", "payload": current_payload}
-            physical_anchor_keys = sorted({
-                str(value).strip()
-                for value in (prepared.get("selected_physical_anchor_keys") or [])
-                if str(value).strip()
-            })
-            if not physical_anchor_keys:
-                return {"ok": False, "error_code": "C2_VOICE_PREPARE_CONTRACT_INVALID", "payload": current_payload}
-
             action_id = f"voice:{target.conversation_id}:{uuid.uuid4()}"
-            reserved_id = self._reserve_worker_sequence(
-                target,
-                reservation_key=f"selected-action:{action_id}",
+            try:
+                require_selected_only_media_reservation(
+                    pre_observations,
+                    selected_observation_id=selected_id,
+                )
+            except ValueError:
+                return {
+                    "ok": False,
+                    "error_code": "C2_VOICE_IDENTITY_CONTRACT_INVALID",
+                    "payload": current_payload,
+                }
+            reserved_id = (
+                str(
+                    selected_observation.get("_worker_stable_id")
+                    or ""
+                ).strip()
+                if str(
+                    selected_observation.get(
+                        "_worker_identity_scope"
+                    )
+                    or ""
+                ).strip()
+                == "current_read_provisional"
+                else ""
             )
+            if not re.fullmatch(r"worker-message-[1-9]\d*", reserved_id):
+                reserved_id = self._reserve_worker_sequence(
+                    target,
+                    reservation_key=f"selected-action:{action_id}",
+                )
             committed_ids = {
                 str(item.get("observation_id") or ""): str(item.get("_worker_stable_id") or "")
                 for item in pre_observations
                 if isinstance(item, dict)
                 and str(item.get("observation_id") or "")
                 and str(item.get("_worker_stable_id") or "")
+                and str(item.get("observation_id") or "") != selected_id
             }
             pre_sequence = build_pre_action_identity_sequence(
                 pre_observations,
@@ -13311,6 +14288,31 @@ class TaskRunner:
             )
             prepare_evidence = {
                 **prepare_fields,
+                # A prepare result is a one-frame action capability, not a
+                # committed message identity.  The Sidecar revalidates this
+                # exact frame/token/target immediately before the trigger;
+                # only its confirmed receipt may later commit reserved_id.
+                "frame_action_binding": {
+                    "schema_version": 1,
+                    "status": "prepared",
+                    "pre_frame_id": prepare_fields["pre_frame_id"],
+                    "selected_pre_observation_id": selected_id,
+                    "selected_action_token": prepare_fields[
+                        "selected_action_token"
+                    ],
+                    "selected_target_fingerprint": fingerprint,
+                    "message_viewport_change_digest": prepare_fields[
+                        "message_viewport_change_digest"
+                    ],
+                    "candidate_group_count": int(
+                        prepared.get("candidate_group_count") or 0
+                    ),
+                    "sender_role": str(
+                        selected_observation.get("sender_role") or ""
+                    ).strip().lower(),
+                    "message_type": "voice",
+                },
+                "operation_phase": operation_phase,
                 "selected_physical_anchor_keys": physical_anchor_keys,
                 "candidate_group_count": int(
                     prepared.get("candidate_group_count") or 0
@@ -13426,6 +14428,9 @@ class TaskRunner:
                     selected_pre_observation_id=selected_id,
                     selected_action_token=prepare_fields["selected_action_token"],
                     selected_target_fingerprint=fingerprint,
+                    message_viewport_change_digest=prepare_fields[
+                        "message_viewport_change_digest"
+                    ],
                     remark_code=target.remark_code or "",
                     target_mode="current",
                     expected_confirmed_self_text=(
@@ -13494,9 +14499,53 @@ class TaskRunner:
                         "error_code": "C2_TARGET_NOT_ALLOWED_BY_READ_TARGETS",
                         "payload": current_payload,
                     }
-                cancelled_prepares += 1
-                if cancelled_prepares >= 4:
-                    return {"ok": False, "error_code": "C2_VOICE_PREPARE_TARGET_UNSTABLE", "payload": current_payload}
+                if is_pre_send_refresh and reidentification_used:
+                    candidate_count = int(
+                        executed.get("candidate_count") or 0
+                    )
+                    matched_count = int(
+                        executed.get("matched_candidate_count") or 0
+                    )
+                    if candidate_count <= 0:
+                        terminal_error = (
+                            "C2_PRE_SEND_VOICE_TARGET_NOT_FOUND"
+                        )
+                    elif matched_count > 1 or candidate_count > 1:
+                        terminal_error = (
+                            "C2_PRE_SEND_VOICE_TARGET_AMBIGUOUS"
+                        )
+                    else:
+                        terminal_error = (
+                            "C2_PRE_SEND_MESSAGE_VIEWPORT_CHANGED_AGAIN"
+                        )
+                    return {
+                        "ok": False,
+                        "error_code": terminal_error,
+                        "payload": current_payload,
+                        "reidentification_attempts": 1,
+                        "candidate_count": candidate_count,
+                        "before_frame_id": prepare_fields["pre_frame_id"],
+                        "after_frame_id": str(
+                            executed.get("post_frame_id")
+                            or executed.get("execute_frame_id")
+                            or ""
+                        ),
+                        "evidence_refs": [
+                            str(
+                                executed.get("screenshot_path")
+                                or executed.get("evidence_path")
+                                or ""
+                            )
+                        ],
+                    }
+                # The cancelled action and its reserved worker-message-N are
+                # burned. The next loop obtains exactly one latest immutable
+                # frame and creates a new action/reservation from it.
+                if is_pre_send_refresh:
+                    reidentification_used = True
+                    current_payload[
+                        "pre_send_reidentification_attempts"
+                    ] = 1
                 continue
 
             binding_status = str(
@@ -13542,6 +14591,10 @@ class TaskRunner:
                     executed.get("selected_target_fingerprint") or ""
                 ).strip()
                 == fingerprint
+                and str(
+                    executed.get("message_viewport_change_digest") or ""
+                ).strip()
+                == prepare_fields["message_viewport_change_digest"]
                 and
                 str(
                     executed.get("canonical_voice_action_id") or ""
@@ -14002,6 +15055,8 @@ class TaskRunner:
         action_cancel_requested: Callable[[], bool],
         enforce_read_targets: bool,
         flow_outcomes: FlowOutcomeAccumulator,
+        reidentification_already_used: bool = False,
+        operation_phase: C2ReadOperationPhase = C2_AUTHORIZED_READ_PHASE,
     ) -> dict[str, Any]:
         """Finish media that arrived while Vision held the current chat.
 
@@ -14019,6 +15074,18 @@ class TaskRunner:
         failed_voice_source_keys: set[str] = set()
         failed_voice_roles: dict[str, str] = {}
         seen_pending_image_sets: set[tuple[str, ...]] = set()
+        image_reidentification_used = bool(
+            operation_phase == C2_PRE_SEND_REFRESH_PHASE
+            and (
+                reidentification_already_used
+                or int(
+                current_payload.get(
+                    "pre_send_reidentification_attempts"
+                )
+                or 0
+            )
+            )
+        )
 
         def add_image_stats(values: dict[str, Any]) -> None:
             merge_image_phase_results(aggregate_image_stats, values)
@@ -14097,9 +15164,14 @@ class TaskRunner:
                             sequence_alignment_evidence,
                         )
             if identity_errors:
+                alignment_error_code = (
+                    "C2_PRE_SEND_MESSAGE_SEQUENCE_ALIGNMENT_FAILED"
+                    if operation_phase == C2_PRE_SEND_REFRESH_PHASE
+                    else "MESSAGE_CROSS_ROUND_IDENTITY_AMBIGUOUS"
+                )
                 return {
                     "ok": False,
-                    "error_code": "MESSAGE_CROSS_ROUND_IDENTITY_AMBIGUOUS",
+                    "error_code": alignment_error_code,
                     "payload": current_payload,
                     "image_stats": aggregate_image_stats,
                     "sequence_alignment_evidence": (
@@ -14130,6 +15202,10 @@ class TaskRunner:
             refreshed["ui_frame_invalidated"] = bool(
                 current_payload.get("ui_frame_invalidated")
             )
+            if image_reidentification_used:
+                refreshed[
+                    "pre_send_reidentification_attempts"
+                ] = 1
             current_payload = refreshed
 
             failed_ledger_groups: dict[str, set[str]] = {}
@@ -14200,6 +15276,7 @@ class TaskRunner:
                         read_run_id=flow_outcomes.origin_read_run_id,
                         excluded_voice_anchor_keys=set(),
                         flow_outcomes=flow_outcomes,
+                        operation_phase=operation_phase,
                     )
                 )
                 if not voice_result.get("ok"):
@@ -14345,12 +15422,38 @@ class TaskRunner:
                         allowed_image_observation_ids
                     ),
                     flow_outcomes=flow_outcomes,
+                    operation_phase=operation_phase,
                 )
             )
+            if (
+                operation_phase == C2_PRE_SEND_REFRESH_PHASE
+                and int(
+                    image_stats.get("reidentification_required") or 0
+                )
+                > 0
+            ):
+                if image_reidentification_used:
+                    return {
+                        "ok": False,
+                        "error_code": (
+                            "C2_PRE_SEND_MESSAGE_VIEWPORT_CHANGED_AGAIN"
+                        ),
+                        "payload": current_payload,
+                        "image_stats": aggregate_image_stats,
+                        "failed_voice_source_keys": sorted(
+                            failed_voice_source_keys
+                        ),
+                        "failed_voice_roles": failed_voice_roles,
+                    }
+                image_reidentification_used = True
             if isinstance(image_stats.get("terminal_gate"), dict):
+                gate_error = str(
+                    image_stats["terminal_gate"].get("error_code")
+                    or "C2_IMAGE_IDENTITY_CONTRACT_INVALID"
+                )
                 return {
                     "ok": False,
-                    "error_code": "C2_IMAGE_IDENTITY_CONTRACT_INVALID",
+                    "error_code": gate_error,
                     "terminal_gate": dict(image_stats["terminal_gate"]),
                     "payload": current_payload,
                     "image_stats": aggregate_image_stats,
@@ -15981,6 +17084,42 @@ class TaskRunner:
                 return {"ok": False, "error_code": code}
             initial_contract_error = sidecar_contract_error(sidecar_payload)
             if initial_contract_error:
+                if operation_phase == C2_PRE_SEND_REFRESH_PHASE:
+                    contract_observations = list(
+                        sidecar_payload.get("observations") or []
+                    )
+                    contract_validation = (
+                        pre_send_new_suffix_validation(
+                            contract_observations,
+                            {
+                                "new_suffix_observation_ids": [
+                                    str(
+                                        item.get("observation_id") or ""
+                                    )
+                                    for item in contract_observations
+                                    if isinstance(item, dict)
+                                ]
+                            },
+                        )
+                    )
+                    if contract_validation.get("ok") is not True:
+                        code = str(
+                            contract_validation.get("error_code")
+                            or initial_contract_error
+                        )
+                        settle_message_read_phase(
+                            succeeded=False,
+                            error_code=code,
+                        )
+                        return {
+                            "ok": False,
+                            "error_code": code,
+                            "pre_send_error_evidence": (
+                                contract_validation
+                            ),
+                            "target_confirmation": locate_payload,
+                            "initial_messages": sidecar_payload,
+                        }
                 settle_message_read_phase(
                     succeeded=False,
                     error_code=initial_contract_error,
@@ -16020,9 +17159,17 @@ class TaskRunner:
                 )
             )
             if initial_identity_errors:
-                code = str(
+                original_code = str(
                     initial_identity_errors[0].get("error_code")
                     or "MESSAGE_CROSS_ROUND_IDENTITY_AMBIGUOUS"
+                )
+                code = (
+                    "C2_PRE_SEND_MESSAGE_ROLE_UNCONFIRMED"
+                    if operation_phase == C2_PRE_SEND_REFRESH_PHASE
+                    and original_code == "MESSAGE_IDENTITY_UNCONFIRMED"
+                    else "C2_PRE_SEND_MESSAGE_SEQUENCE_ALIGNMENT_FAILED"
+                    if operation_phase == C2_PRE_SEND_REFRESH_PHASE
+                    else original_code
                 )
                 self.c2_stats["last_error"] = code
                 settle_message_read_phase(succeeded=False, error_code=code)
@@ -16040,18 +17187,72 @@ class TaskRunner:
                     },
                     force_incident=True,
                 )
-                self._report_identity_failure_gate(
-                    binding=binding,
-                    target=target,
-                    read_run_id=read_run_id,
-                    error_code=code,
-                    identity_errors=initial_identity_errors,
-                )
+                if operation_phase != C2_PRE_SEND_REFRESH_PHASE:
+                    self._report_identity_failure_gate(
+                        binding=binding,
+                        target=target,
+                        read_run_id=read_run_id,
+                        error_code=code,
+                        identity_errors=initial_identity_errors,
+                    )
                 return {
                     "ok": False,
                     "error_code": code,
+                    "pre_send_error_evidence": {
+                        "source_message_type": "unknown",
+                        "candidate_count": len(initial_identity_errors),
+                        "before_frame_id": str(
+                            (
+                                sidecar_payload.get(
+                                    "sequence_alignment_evidence"
+                                )
+                                or {}
+                            ).get("pre_frame_id")
+                            or ""
+                        ),
+                        "after_frame_id": str(
+                            (
+                                sidecar_payload.get(
+                                    "sequence_alignment_evidence"
+                                )
+                                or {}
+                            ).get("post_frame_id")
+                            or ""
+                        ),
+                        "identity_errors": initial_identity_errors,
+                    },
                     "initial_messages": sidecar_payload,
                 }
+            if operation_phase == C2_PRE_SEND_REFRESH_PHASE:
+                pre_send_validation = pre_send_new_suffix_validation(
+                    list(sidecar_payload.get("observations") or []),
+                    (
+                        sidecar_payload.get("sequence_alignment_evidence")
+                        if isinstance(
+                            sidecar_payload.get(
+                                "sequence_alignment_evidence"
+                            ),
+                            dict,
+                        )
+                        else {}
+                    ),
+                )
+                if pre_send_validation.get("ok") is not True:
+                    code = str(
+                        pre_send_validation.get("error_code")
+                        or "C2_PRE_SEND_MESSAGE_SEQUENCE_ALIGNMENT_FAILED"
+                    )
+                    settle_message_read_phase(
+                        succeeded=False,
+                        error_code=code,
+                    )
+                    return {
+                        "ok": False,
+                        "error_code": code,
+                        "pre_send_error_evidence": pre_send_validation,
+                        "target_confirmation": locate_payload,
+                        "initial_messages": sidecar_payload,
+                    }
             settle_message_read_phase(succeeded=True)
             voice_binding_guard_key = (
                 f"{target_cache_key}:{str(target.authorization_revision).strip()}"
@@ -16100,6 +17301,7 @@ class TaskRunner:
                     read_run_id=read_run_id,
                     excluded_voice_anchor_keys=excluded_voice_anchor_keys,
                     flow_outcomes=flow_outcomes,
+                    operation_phase=operation_phase,
                 )
                 voice_phase_error_code = str(
                     voice_result.get("failure_code")
@@ -16206,6 +17408,28 @@ class TaskRunner:
                     cancel_check=action_cancel_requested,
                 )
             )
+            if operation_phase == C2_PRE_SEND_REFRESH_PHASE:
+                incremental_validation = (
+                    pre_send_incremental_validation(
+                        sidecar_payload,
+                        incremental_plan,
+                    )
+                )
+                if incremental_validation.get("ok") is not True:
+                    code = str(
+                        incremental_validation.get("error_code")
+                        or "C2_PRE_SEND_MESSAGE_SEQUENCE_ALIGNMENT_FAILED"
+                    )
+                    return {
+                        "ok": False,
+                        "error_code": code,
+                        "pre_send_error_evidence": (
+                            incremental_validation
+                        ),
+                        "target_confirmation": locate_payload,
+                        "initial_observations": initial_read_observations,
+                        "final_messages": sidecar_payload,
+                    }
             gate_projection = project_final_slot_flow_gates(
                 incremental_plan,
                 failed_voice_source_roles=partial_failed_voice_roles,
@@ -16252,9 +17476,26 @@ class TaskRunner:
                         allowed_new_image_observation_ids
                     ),
                     flow_outcomes=flow_outcomes,
+                    operation_phase=operation_phase,
                 )
                 image_terminal_gate = image_stats.get("terminal_gate")
                 if isinstance(image_terminal_gate, dict):
+                    image_gate_error = str(
+                        image_terminal_gate.get("error_code")
+                        or "C2_IMAGE_IDENTITY_CONTRACT_INVALID"
+                    )
+                    if image_gate_error in {
+                        *PRE_SEND_REIDENTIFICATION_ERRORS,
+                        PRE_SEND_LAYOUT_ERROR,
+                    }:
+                        return {
+                            "ok": False,
+                            "error_code": image_gate_error,
+                            "terminal_gate": dict(image_terminal_gate),
+                            "target_confirmation": locate_payload,
+                            "initial_observations": initial_read_observations,
+                            "final_messages": sidecar_payload,
+                        }
                     return settle_identity_terminal_gate(
                         image_terminal_gate,
                         final_payload=sidecar_payload,
@@ -16309,6 +17550,10 @@ class TaskRunner:
                         action_cancel_requested=action_cancel_requested,
                         enforce_read_targets=enforce_read_targets,
                         flow_outcomes=flow_outcomes,
+                        operation_phase=operation_phase,
+                        reidentification_already_used=bool(
+                            image_stats.get("reidentification_required")
+                        ),
                     )
                     if image_actions_completed
                     else {
@@ -16323,6 +17568,29 @@ class TaskRunner:
                     "terminal_gate"
                 )
                 if isinstance(convergence_terminal_gate, dict):
+                    convergence_gate_error = str(
+                        convergence_terminal_gate.get("error_code")
+                        or "C2_IMAGE_IDENTITY_CONTRACT_INVALID"
+                    )
+                    if convergence_gate_error in {
+                        *PRE_SEND_REIDENTIFICATION_ERRORS,
+                        PRE_SEND_LAYOUT_ERROR,
+                    }:
+                        return {
+                            "ok": False,
+                            "error_code": convergence_gate_error,
+                            "terminal_gate": dict(
+                                convergence_terminal_gate
+                            ),
+                            "target_confirmation": locate_payload,
+                            "initial_observations": (
+                                initial_read_observations
+                            ),
+                            "final_messages": dict(
+                                convergence.get("payload")
+                                or sidecar_payload
+                            ),
+                        }
                     return settle_identity_terminal_gate(
                         convergence_terminal_gate,
                         final_payload=dict(
@@ -16416,6 +17684,28 @@ class TaskRunner:
                 sidecar_payload["failed_voice_source_keys"] = (
                     partial_failed_voice_source_keys
                 )
+            if operation_phase == C2_PRE_SEND_REFRESH_PHASE:
+                final_incremental_validation = (
+                    pre_send_incremental_validation(
+                        sidecar_payload,
+                        incremental_plan,
+                    )
+                )
+                if final_incremental_validation.get("ok") is not True:
+                    code = str(
+                        final_incremental_validation.get("error_code")
+                        or "C2_PRE_SEND_MESSAGE_SEQUENCE_ALIGNMENT_FAILED"
+                    )
+                    return {
+                        "ok": False,
+                        "error_code": code,
+                        "pre_send_error_evidence": (
+                            final_incremental_validation
+                        ),
+                        "target_confirmation": locate_payload,
+                        "initial_observations": initial_read_observations,
+                        "final_messages": sidecar_payload,
+                    }
             phase_started_at = time.perf_counter()
             try:
                 payload = build_message_ingest_payload(

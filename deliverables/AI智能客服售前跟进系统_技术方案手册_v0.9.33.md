@@ -1,14 +1,14 @@
 # AI智能客服售前跟进系统 技术方案
 
-版本：v0.9.28
+版本：v0.9.33
 
 日期：2026-07-21
 
-最后更新：2026-08-22
+最后更新：2026-08-24
 
 适用范围：运营后台、车金后端、Windows Worker、OmniAuto Sidecar、C0—C4、车辆 Product Master、人工接管与飞书通知。
 
-当前唯一架构口径：服务端负责授权、状态机、事实持久化、Brain/Guard、任务和通知；OmniAuto 负责微信 UI 观察、物理目标判定和动作证据；Worker 只负责调度、合同校验、事务持久化与执行。C2 使用固定八位短码和 private 单聊门禁；文字、语音、图片按同一最终画面顺序入库，一条物理媒体只形成一个业务对象，所有已触发媒体动作必须有限终态。C2 消息身份只允许沿“帧内观察 -> 待处理媒体动作 -> 正式消息或隔离记录”单向推进；只有正式消息可以生成 source key、查询 Ledger/Outbox、上报后端或进入 Brain。Brain 只在最新待回复尾部完整且证据足够时生成回复；当前客户媒体失败、高意向及必须人工批准的业务硬风险进入人工接管。人工接管以未关闭 `HandoffEvent` 为权威事实并投影 `waiting_sales_reply`，服务端按同一事件通过车金统一飞书应用立即且至多通知一次所属销售。微信列表在截图与点击之间重排时，点击后的短码校验仍是硬门禁，但明确点到其他会话时允许丢弃旧坐标并在同一授权内完整重新定位一次。添加朋友流程无论“邀请已发送”还是“已经是好友”，都只对已经证明的添加朋友 HWND 执行一次右上角关窗并验证结果。启动时基于真实微信客户区截图建立一次区域坐标地图，之后只替换 `0.9.20` 中依赖主窗口固定几何的区域边界和点位计算；会话行、消息、菜单、弹窗和表单仍由 `0.9.20` 原必要业务帧与原判断流程决定。同一个单会话事务允许在首次读取和发送前复读中形成任意多次逻辑入库；Worker 本地每组不同正式消息事实必须生成独立、确定性的 `outbox_batch_key` 并形成独立 Outbox，相同事实重试复用原本地 ID，不得因为沿用外层 `read_run_id` 而复用已确认 Outbox、丢弃新消息或继续发送旧回复。`outbox_batch_key` 绝不进入 HTTP 请求、后端 Schema 或业务状态机。`0.9.28` 只收口 Worker 本地 Outbox 幂等键，不改变 C0—C4 业务状态机、后端消息接口、UI 锁、暂停语义、媒体编排、Brain 或发送前复读规则；当前代码、`contract_revision=0.9.28` 及规范化 SHA `e0c13e862bf90a1c959d8755228800b7fb141263f807be6257ea382ddcb2d871`、生成 Schema 和定向测试已完成并通过架构复审，Fast UAT ZIP 与 Windows 实机 UAT 仍待完成。
+当前唯一架构口径：服务端负责授权、状态机、事实持久化、Brain/Guard、任务和通知；OmniAuto Sidecar 只负责微信 UI 观察、本帧物理目标定位、鼠标/键盘动作和动作证据，不得生成或继承业务消息身份；Worker 是消息身份、顺序、连续性和 `worker_stable_id` 的唯一决策者；后端只保存、校验不可变身份、去重和结算，不得根据截图、坐标或正文重新猜身份。C2 使用固定八位短码和 private 单聊门禁；文字、语音、图片按同一最终画面顺序入库，一条物理媒体只形成一个业务对象，所有已触发媒体动作必须有限终态。C2 消息身份只允许沿“帧内观察 -> 本帧动作绑定/待处理媒体动作 -> Worker 正式提交或隔离记录”单向推进；只有 Worker 已提交的正式消息可以生成 source key、查询 Ledger/Outbox、上报后端或进入 Brain。Brain 只在最新待回复尾部完整且证据足够时生成回复；当前客户媒体确定失败、高意向及必须人工批准的业务硬风险进入人工接管。人工接管以未关闭 `HandoffEvent` 为权威事实并投影 `waiting_sales_reply`，服务端按同一事件通过车金统一飞书应用立即且至多通知一次所属销售。发送前出现新文字、语音、图片或组合消息时，必须立即禁止旧回复外发。只要相关消息区域发生变化，OmniAuto 只返回最新观察和“本帧动作目标已变化/消失/冲突”的证据，Worker 必须取消旧动作计划并对最新画面执行一次完整、确定性重新仲裁；成功则下发新的本帧动作计划，失败则返回能说明“对象消失、多候选、序列无法对齐、角色无法确认、正文无法读取、布局无效或再次变化”的具体错误，零点击结束当前仲裁；不存在“暂时看不清”、`recoverable_uncertain`、发送前 `recoverable_hold`、多轮时间重试或笼统 `C2_REPLY_CONTEXT_RECOVERY_FAILED` 出口。消息视口变化摘要必须基于排除光标、工具栏、侧栏、GIF/动画帧、滚动条、悬停/播放效果和红点的规范化有序消息观察，禁止直接哈希原始 RGB 像素。本帧动作绑定只证明“当前唯一操作目标仍满足 Worker 本次动作计划”，不是跨轮业务身份；不得要求新媒体在第一次点击前已经具有 `native_source_message_id`、本次 `confirmed_action_mapping` 或正式 `worker_stable_id`。若连标题区、消息视口和输入区这些微信基本布局都无法建立，该现象固定按代码缺陷收口：禁止旧回复、记录 `C2_PRE_SEND_LAYOUT_INVALID` 及完整证据、将当前任务/Flow 结算为技术失败并释放 UI 锁，Worker 进入故障状态且停止新接单；不创建 HandoffEvent，不自动移窗/重标定/重试，不设人工解锁或清数据流程。微信列表在截图与点击之间重排时，点击后的短码校验仍是硬门禁，但明确点到其他会话时允许丢弃旧坐标并在同一授权内完整重新定位一次。添加朋友流程无论“邀请已发送”还是“已经是好友”，都只对已经证明的添加朋友 HWND 执行一次右上角关窗并验证结果。启动时基于真实微信客户区截图建立一次区域坐标地图，之后只替换 `0.9.20` 中依赖主窗口固定几何的区域边界和点位计算；会话行、消息、菜单、弹窗和表单仍由 `0.9.20` 原必要业务帧与原判断流程决定。同一个单会话事务允许在首次读取和发送前复读中形成任意多次逻辑入库；Worker 本地每组不同正式消息事实必须生成独立、确定性的 `outbox_batch_key` 并形成独立 Outbox，相同事实重试复用原本地 ID，不得因为沿用外层 `read_run_id` 而复用已确认 Outbox、丢弃新消息或继续发送旧回复。`outbox_batch_key` 绝不进入 HTTP 请求、后端 Schema 或业务状态机。`0.9.33` 只纠正“本帧动作绑定与长期消息身份”的权限边界，并保持本章发送前统一仲裁的唯一业务规则；不改变 C0、C1、C4、Brain/Guard 业务决策、UI 锁语义、销售接管硬门禁或发送回执规则。当前本地代码已按 `0.9.33` 口径完成实现，状态为“待架构复审”；尚未形成正式提交、推送、标签、安装包或 Windows 实机 UAT 结论，不得写成已发布或已交付。
 
 ## 文档治理规则
 
@@ -32,12 +32,12 @@
    字段和领域对象字段使用 snake_case，两者不得被误认为两个接口。新增、改名或废弃
    接口必须先修改本文的权威目录和接口编号，不允许在代码、聊天记录或派生合同中另起
    同义名称。
-7. 灰度版本使用唯一 `0.9.x` 序列：`0.9.0` 至 `0.9.27` 已冻结，当前目标候选为 `0.9.28`；
+7. 灰度版本使用唯一 `0.9.x` 序列：`0.9.0` 至 `0.9.31` 已冻结，当前目标候选为 `0.9.33`；
    后续任何内容不同且进入测试的候选必须继续升版。PRD（仅有产品变化时）、技术方案、全流程图、版本记录、客户端、
    后端、OmniAuto 合同 `contract_revision`、生成 Schema、manifest 和安装包必须写入同一个
    精确版本，禁止各自升版、复用旧号覆盖新内容或把占位符 `0.9.X` 写入运行产物。
    `contract_version=3`、`observation_schema_version=3` 和文中 V3 仅是协议结构代号，不属于
-   灰度发布版本；本次实现完成后，客户端、后端、OmniAuto、生成 Schema、manifest 与打包入口必须同步为 `contract_revision=0.9.28`，并重新实算唯一规范化 SHA。当前文档阶段不得预填 SHA、提交或包信息。真实 Windows 验收、发布来源固定和正式包仍是后续门禁，不得把未通过复审或未完成 UAT 的本地 SHA 伪报为已发布候选。
+   灰度发布版本；当前本地实现已将客户端、后端、OmniAuto、生成 Schema、manifest 与打包入口同步为 `contract_revision=0.9.33`，但尚未通过架构复审，不得预填候选 SHA、提交或包信息。真实 Windows 验收、发布来源固定和正式包仍是后续门禁，不得把未通过复审或未完成 UAT 的本地实现伪报为已发布候选。
    版本车道固定为：`0.9.x` 仅用于正式上线前灰度验证，`1.0.x` 用于正式上线及其稳定性修复，
    `1.1.x` 用于下一期优化。三个 `x` 都只表示版本系列，任何提交、合同、Schema、manifest、
    安装包和运行日志必须写入 `0.9.15`、`1.0.0`、`1.1.0` 等精确版本，不得写入字面占位符。
@@ -69,8 +69,9 @@ Windows Worker -> OmniAuto Sidecar -> 微信桌面端
 ```
 
 - 服务端是业务决策和数据权威：负责销售分配、读取授权、会话状态机、事实入库、Brain/Guard、`reply_action`、`chat_reply`、`HandoffEvent`、飞书通知和幂等。
-- OmniAuto 是微信观察和物理目标判定权威：负责 OCR、会话类型、正式短码、消息结构、媒体目标、点击和动作证据。
-- Worker 不重复做身份或业务决策：只校验 Sidecar 合同和后端授权，串行执行微信动作，维护 ActionJournal/Ledger/Outbox 并上报事实。
+- OmniAuto 是微信观察和本帧 UI 动作证据权威：负责 OCR、会话类型、正式短码、消息结构、本帧候选及局部几何、点击和动作回执；它可以拒绝不安全点击，但不得输出“与历史是同一条业务消息”、`worker_stable_id`、`source_message_key` 或任何跨轮身份结论。
+- Worker 是消息身份与动作准入的唯一决策者：校验后端授权和 Sidecar 原始证据，完成消息顺序/连续性仲裁，生成动作 ID 与不可复用预留号，决定是否允许本帧动作，并且只有在有效动作回执或正式历史检查点成立后提交 `worker_stable_id`；同时维护 ActionJournal/Ledger/Outbox 并上报事实。
+- 后端只接受 Worker 已提交的稳定身份，校验不可变字段、幂等保存、去重和结算；不得根据截图、OCR 正文、坐标、时长或媒体相似度重新生成、修复或覆盖消息身份。
 - 前端只做运营控制面；不持有 Worker Token、模型密钥、飞书 `app_secret` 或 `tenant_access_token`。
 - 飞书通知是服务端基于 `HandoffEvent` 的内部副作用，不进入统一 `Task.task_type`，不由 Worker 参与。
 - 当前不使用 Kubernetes、复杂微服务、RBAC、多商户 SaaS 或大风车 API。
@@ -1623,6 +1624,18 @@ Worker 必须保留已经读取完成的原 Outbox，刷新检查点，为冲突
 anchor、`frame_visual_id`、`canonical_visual_id/canonical_input_id`、Vision 成功或“当前只有一个候选”
 均不能单独或组合把观察/预留号升级为正式消息。
 
+文字、语音和图片共用同一个“当前会话消息序列对齐器”。全窗口截图可用于一次性裁剪
+标题、消息视口和输入区 ROI，但全微信画面摘要不得作为某条消息或媒体动作目标的稳定性
+指纹。一条消息的动作前后证明只允许包含：当前 conversation/remark_code、private 标题结果、
+完整消息视口序列、目标气泡的角色/类型/局部 ROI 特征、已确认历史邻居和原生 ID 或已确认
+action mapping（如存在）。侧栏会话排序、其他客户红点、聊天顶部/工具栏和当前目标外的窗口像素
+变化必须被忽略。
+
+当前会话内新增文字、语音或图片导致旧气泡上移或滚动时，不得因坐标、整帧摘要或观察 ID
+变化直接判断目标失效。OmniAuto 必须先把动作前目标投影到最新完整消息序列：唯一投影成功时
+使用最新帧内边界继续；出现零候选或多候选时必须保证零点击，并分别返回“目标消失”或“目标多候选”的具体错误，禁止返回笼统“暂时不稳定”。相同正文、
+相同语音时长或相似图片不能依靠单一局部特征继承旧身份，必须结合完整序列中的唯一投影。
+
 媒体动作的终态必须恰好是以下四种之一：
 
 | 终态 | 前提 | 后续处理 |
@@ -1723,6 +1736,10 @@ ActionJournal 恢复、Outbox 恢复逐一执行上述矩阵。至少覆盖：
 | `frame_visual_id` | 可包含坐标，只用于本帧点击确认和排障；不是跨轮身份 |
 | `pre_observation_id / pre_sequence_index` | 动作前帧内观察与顺序位置；不进入 source key |
 
+以下正式对齐算法只用于跨读取轮次恢复已提交历史身份、动作后根据正式回执提交预留号，以及
+判断 `new_suffix`；不得直接作为新媒体第一次物理动作的点击前准入条件。第一次动作准入只使用
+6.0.4.3.1 的 `frame_action_binding`，真实 Win32 OCR 没有原生消息 ID 时仍是正式支持路径。
+
 正式对齐算法固定为：
 
 ```text
@@ -1733,7 +1750,7 @@ ActionJournal 恢复、Outbox 恢复逐一执行上述矩阵。至少覆盖：
 5. 本轮刚分配但尚未结算的语音/图片属于 `pending_media_action`，只能携带不可复用预留号；不得用该号查询跨轮 Ledger/Outbox，也不得因命中历史终态跳过本次动作。
 6. 已确认的语音/图片 action receipt 只能证明相邻动作帧中的精确 `post_observation_id`；不得使用坐标、正文或时长回挂。图片还必须同时命中稳定图像指纹，指纹缺失或变化必须失败关闭。
 7. 已确认 `recent_ai_sent` 的 AI 气泡可作为“最新未回复尾部”边界；它只证明边界之后的新消息，不得顺带为边界上方缺乏证据的历史弱媒体恢复身份。
-8. 弱身份媒体只有在同一最新完整稳定画面中，被前后两个已唯一对齐的历史上下文夹住，且中间连续业务观察无缺失时，才可继承原编号。只有前侧或只有后侧证据均不充分。
+8. 弱身份媒体只有在同一最新完整稳定画面中，被前后两个已唯一对齐的已提交历史上下文夹住，且中间连续业务观察无缺失时，才可继承原编号。历史文字/system 上下文可以通过其已提交 `worker_stable_id`、角色、类型、规范化正文和全序列单调唯一对齐成为两侧边界，不要求微信额外提供原生消息 ID；但单个文字、单侧边界或仅正文相同均不充分。
 9. 旧媒体本帧消失、同角色同类型新媒体占据原尾部位置时，必须 `ambiguous/unresolved`；禁止继承旧 ID、生成旧 source key、按历史 Ledger 跳过或进入 Brain。
 10. 微信消息只能在已有序列尾部追加。新业务消息不得插入两条已确认历史消息之间。
 11. 同一个有效对齐片段内，两个已匹配历史项之间不允许遗漏未匹配的业务观察。
@@ -1742,9 +1759,12 @@ ActionJournal 恢复、Outbox 恢复逐一执行上述矩阵。至少覆盖：
 14. 两个或以上对齐结果同时满足上述规则时，alignment_status=ambiguous；禁止“取第一个”或“取坐标最近”。
    零个合法对齐时 `alignment_status=unresolved`，同样不得产生 `new_suffix`。
 15. 对齐唯一时，只有已由正式提交门确认的历史 `committed_message` 继承旧 `worker_stable_id`；`selected_action` 只能经本次 confirmed action 映射提交预留号；`frame_local_unselected` 只用于证明序列连续性，动作后必须重新仲裁，不继承身份。
-16. `new_suffix` 中的新文字/系统消息可以直接提交新序号；未转写语音和新图片只能建立 `pending_media_action` 并预留永不复用的序号，不能在仲裁阶段直接提交正式身份。
+16. `new_suffix` 中的新文字/系统消息可以直接提交新序号；未转写语音和新图片首先全部保持 `frame_local_unselected`，不得批量分配 action ID、预留号或 ActionJournal。Worker 只能从当前最新帧唯一选中一条可执行媒体；选中后才为该条建立唯一 `pending_media_action`、分配不可复用预留号并原子写入 ActionJournal。其余媒体仍是未选观察；本次动作终结且获得新帧后，才能重新仲裁下一条。
 17. 图片预留号只能作为 ActionJournal 的当次动作键。只有同一份已落盘的 confirmed receipt 同时严格证明 `canonical_action_id、reserved_worker_stable_id、pre/post_observation_id、binding_confirmed=true` 和稳定图片指纹，才能经唯一提交门升级为正式消息。缺少或矛盾时必须上报幂等 `C2_IMAGE_IDENTITY_CONTRACT_INVALID` 空消息门禁；不得查询历史 Ledger/Outbox、不得生成正式 source key、不得写入 Ledger/Outbox、不得生成 completed/failed 图片消息，也不得进入 Brain。
 18. 语音与图片的正式消费者必须使用同一个白名单准入：缺失、空白、未知、临时、隔离或提交依据不完整全部拒绝。不得出现“图片校验完整回执、语音只校验存在 worker_stable_id”的媒体不对称旁路。
+19. 禁止循环证明：新媒体第一次动作前不得要求本次动作产生的 `confirmed_action_mapping`，也不得因 `native_source_message_id` 为空而拒绝合法 `frame_action_binding`；动作前只预留编号，动作后才允许通过正式回执提交长期身份。
+20. 媒体 UI 动作优先级固定为“语音优先、图片随后”：每次只执行一条已选语音，动作后用新帧重新仲裁；当前帧仍有可执行未转写语音时不得开始新图片动作。语音收敛后每次只选中一张图片；图片动作后新帧如出现可执行新语音，必须先回到语音阶段，再处理其余图片。
+21. 媒体的 UI 动作顺序不是最终消息入库顺序。全部媒体动作终结后，Worker 必须以最后一张权威完整画面重建文字/语音/图片统一序列，最终 ingest 按该画面 `screen_order` 排序；不得因“语音先执行、图片后执行”改写客户真实发送顺序。
 ```
 
 初次打开会话也使用同一算法：将本地/后端 checkpoint 中最近已提交尾部作为 pre 序列，将当前最新帧作为 post 序列。
@@ -1947,7 +1967,7 @@ Outbox 的唯一键，本地 `outbox_batch_key` 也不得发送给服务端。
 `fact_scope=current_read_run + delivery_state=not_enqueued`；历史图片和已进入 Outbox
 的图片不得重复处理。
 
-机器合同 revision `0.9.28` 必须完整包含媒体和读取轮次字段，同时表达读取轮次与传输状态、语音动作身份与业务身份分离、
+当前机器合同必须完整包含媒体和读取轮次字段，同时表达读取轮次与传输状态、语音动作身份与业务身份分离、
 选中目标两阶段握手和逐相邻帧同对象证明。`identity_checkpoint.recent_messages[]` 回传
 `origin_read_run_id`；`ledger_state` 只允许作为诊断投影，业务门禁不得读取。
 
@@ -2033,9 +2053,9 @@ outbox_batch_key = SHA256(canonical).hexdigest()
    MessageBatch 创建或复用。本地键不得成为第二套后端业务身份。
 8. 同一 Flow 结束前继续使用现有 `has_pending_c2_outbox_for_read_run_id` 检查该
    `read_run_id` 关联的全部 Outbox；任一尚未结算时均不得结束 Flow、开始下一个客户或发送旧回复。
-9. 升级到 `0.9.28` 前必须暂停 `0.9.27` Worker，并确认消息 Outbox、媒体 Journal、Ledger
+9. 升级任何新合同前必须暂停旧 Worker，并确认消息 Outbox、媒体 Journal、Ledger
    和 sent_ack 均无未结算事实；如仍有 pending，只能先使用原版本完成结算，不得删除或改写。
-   本期不增加新旧本地键双轨兼容。
+   不增加新旧本地键双轨兼容。
 
 发送前新增消息的唯一处理顺序为：
 
@@ -2145,7 +2165,7 @@ handoff 并进入 `waiting_sales_reply`，不生成请求重发或改发文字�
 |---|---|---|
 | L0：不阻断 AI | reply-safe boundary 之前的旧缺口；已被服务端确认的旧消息；`self` 侧媒体失败；普通寒暄/澄清问题没有 RAG 证据 | 记录 warning，继续使用完整 `reply_safe_suffix` 进入 Brain。 |
 | L1：单条媒体人工接管 | 当前客户消息命中 `C2_VOICE_TRANSCRIBE_FAILED/EMPTY/CLICK_FAILED/RESULT_UNKNOWN`，或 customer 图片理解、菜单、剪贴板失败 | 失败事实照常入库且不重复媒体动作；随后直接创建 handoff、通知销售并进入 `waiting_sales_reply`。不得调用 Brain 回答同批文字，也不得生成“请重发/改发文字”等澄清回复。 |
-| L2：可自动恢复暂停 | `MESSAGE_CROSS_ROUND_IDENTITY_AMBIGUOUS`、`C2_MESSAGE_HISTORY_GAP`、`MESSAGE_IDENTITY_UNCONFIRMED`、`C2_IMAGE_IDENTITY_CONTRACT_INVALID`、`C2_VOICE_IDENTITY_CONTRACT_INVALID`、`C2_VOICE_RESULT_AMBIGUOUS`；回复上下文、授权、续行批次、任务租约或 AI Provider 的暂时技术失败 | 首次只创建 `recoverable_hold` 且次数记 0，不得创建长期 handoff。先用后端检查点和数据库事实纯数据合并，不操作微信且不计次数；仍未恢复时，最多做两次不同 `read_run_id` 的被动稳定重读，次数依次记 1、2。中途确认清楚立即关闭 hold 并继续 Brain；两次后或从建立 hold 起超过 120 秒仍不明确，才幂等 handoff 一次。重复请求、相同 `read_run_id`、暂停和网络重试均不计次数，也不得重复创建事件或通知。 |
+| L2：可自动恢复暂停 | 普通读取的 `MESSAGE_CROSS_ROUND_IDENTITY_AMBIGUOUS`、`C2_MESSAGE_HISTORY_GAP`、`MESSAGE_IDENTITY_UNCONFIRMED`、`C2_IMAGE_IDENTITY_CONTRACT_INVALID`、`C2_VOICE_IDENTITY_CONTRACT_INVALID`、`C2_VOICE_RESULT_AMBIGUOUS`；非 6.0.4.4 新消息重新识别的回复上下文、授权、续行批次、任务租约或 AI Provider 暂时技术失败 | 首次只创建 `recoverable_hold` 且次数记 0，不得创建长期 handoff。先用后端检查点和数据库事实纯数据合并，不操作微信且不计次数；仍未恢复时，最多做两次不同 `read_run_id` 的被动稳定重读。中途确认清楚立即关闭 hold 并继续当前最新批次；两次后或从建立 hold 起超过 120 秒仍不明确，才幂等 handoff 一次。本行明确不适用于 `pre_send_refresh` 中因相关消息区变化触发的文字/语音/图片重新识别；该场景只允许一次确定性重新识别或具体错误终态。 |
 | L3：硬停止或人工接管 | 高意向；明确 `hard_opt_out`、会话关闭/拒绝/黑名单、人工关闭 AI、销售已实际接管、目标客户或 private 会话无法确认、发送结果可能已触发但未知、违法/支付/合同/审批/赔付等必须由权威人员决定且无法形成安全边界回复 | 禁止自由回答。高意向直接 handoff 并通知销售；除拒收、关闭、目标不明和发送结果未知等必须静默的场景外，其他业务硬风险优先使用 `reply_then_handoff`：先发送 Guard 通过的边界说明，再创建人工接管；禁止编造价格、库存、审批或承诺。 |
 
 两个身份门禁的固定恢复规则：
@@ -2455,43 +2475,186 @@ recall_precheck_queue 如果对应会话刚在 visible_hit_queue 或 state_targe
 去重键使用 conversation_id + remark_code。rpa_session_key / display_name 仅用于第一屏可见会话快速定位和排查证据；remark_code 是非第一屏微信搜索定位和身份确认的主锚点。
 ```
 
-#### 6.0.4.4 发送前 pre_send_refresh
+#### 6.0.4.3.1 本帧动作绑定与长期消息身份的唯一权限边界
 
-`chat_reply` 发送前必须做短读取，避免把旧上下文生成的回复发出去。
+本节同时适用于 `authorized_read`、`pre_send_refresh`、语音和图片，不允许各入口、各媒体类型
+重新定义一套“是不是同一条消息”的算法。必须先区分两个互不替代的对象：
 
-`pre_send_refresh` 是 Worker 当前执行阶段，不是后端 `read_reason`。正常链路和崩溃恢复
-都必须保留批次续行票中的原始 `authorization_read_reason`，继续校验同一 Worker、
-同一会话、正式短码、`private`、授权版本和批次；但不得根据该原始原因重复执行首次好友
-激活、召回前状态转换或其他只属于 `authorized_read` 的业务动作。
+| 对象 | 生命周期 | 唯一用途 | 所有者 | 明确禁止 |
+|---|---|---|---|---|
+| `frame_action_binding` | 同一 UI 事务中，从 prepare 最新帧到本次物理触发前；动作结束、取消或画面相关变化后立即失效 | 证明“Worker 选中的本帧唯一目标仍可安全操作” | Sidecar 产生原始观察与 token，Worker 校验并决定是否准入 | 生成/继承 `worker_stable_id`、生成 source key、查询历史 Ledger/Outbox、声称跨轮是同一条业务消息 |
+| `committed_message_identity` | Worker 正式提交后跨读取轮次长期存在 | 消息去重、顺序、Ledger、Outbox、后端 ingest 和 Brain | Worker 唯一决策；后端只校验和保存 | Sidecar 或后端根据外观、坐标、正文、时长重新判断、修复或覆盖 |
 
-流程：
+`frame_action_binding` 不是“临时身份证”，而是一张只对本次 UI 动作有效的操作票。其输入只允许来自
+同一已确认 private 会话的最新帧：`selected_action_token + pre_frame_id +
+selected_pre_observation_id + selected_target_fingerprint + candidate_group_count +
+当前有序观察摘要`。其中目标指纹只能描述本帧局部目标、角色/类型、必要邻接结构和局部几何，
+不得写入 `source_message`，不得参与跨轮 source key。
+
+职责和调用顺序固定为：
 
 ```text
-正常链路：C2已持有目标会话和UI锁
--> 等待当前batch的Brain/Guard终态
--> Brain批准send_reply
--> 在原会话执行pre_send_refresh，不重新搜索或切换客户
--> 服务端按dedupe_key入库，并判断旧reply_action是否已被新消息作废
--> 没有上下文变化时，claim当前chat_reply/reply_action和claim-send
--> 把pre_send_refresh消息序列和当前 private 会话消息视口指纹传入Sidecar
--> 输入前和点击前各复核一次当前会话消息视口；视口变化时再严格比较消息序列
--> 发送并上报sent_ack
-
-崩溃恢复链路：确认原C2 Flow已不存在
--> 获取UI锁
--> 按conversation_id + remark_code重建并严格确认原会话
--> 执行完整pre_send_refresh
--> 后续复用上述唯一发送流程
+Sidecar prepare：观察最新画面，返回候选、局部目标证据和一次性 token，零 UI 动作
+-> Worker：结合完整序列、历史 checkpoint、授权和本地事务状态选定唯一候选
+-> Worker：创建 action_id、不可复用 reserved_worker_stable_id 和 ActionJournal
+-> Sidecar execute：只核验原 token 未消费、仍是同一会话、当前唯一局部目标仍满足本帧动作绑定
+-> 无相关变化且目标唯一：执行一次物理动作并返回动作回执
+-> 相关变化/目标消失/多候选：零点击返回原始观察和具体原因，不输出身份结论
+-> Worker：按当前 operation_phase 决定重新仲裁或具体失败终态
+-> 有效 confirmed/failed 动作回执：Worker 经唯一身份提交门提交预留号
+-> ambiguous/可能已触发：只走 ActionJournal 隔离恢复，严禁重复动作
+-> 后端：只按 Worker 已提交的 source_message_key 保存、去重和结算
 ```
 
-判断分支：
+首次动作准入不得形成循环依赖：
 
-| 结果 | 处理 |
-|---|---|
-| 没有新客户消息，且输入前/点击前消息序列均未变化 | 允许 Worker 发送原 reply_action。 |
-| 有新客户消息 | 原 reply_action 置为 `superseded`，不发送；新消息进入 message_batch 重新生成回复。 |
-| 读取失败/目标不确认 | 不发送；在原 UI 锁内将待处理 `chat_reply` 以 `C2_REPLY_CONTEXT_RECOVERY_FAILED` 结算，后端取消未发送 action/batch 并创建人工接管；结算无法确认时本地暂停接单，禁止扫描抢跑。 |
-| 输入前或点击前当前会话消息视口变化，且消息序列变化 | 返回 `C3_CONTEXT_CHANGED_BEFORE_SEND`；只允许清理能证明属于本次程序的草稿，不点击发送，新事实进入下一轮读取和 batch。侧栏未读红点、其他会话或无关窗口区域变化不得作为当前会话上下文变化。 |
+1. 新语音/图片第一次物理动作前没有本次 `confirmed_action_mapping` 是正常状态，不得因此拒绝动作。
+2. Win32 OCR 没有真实 `native_source_message_id` 是正式支持路径，不得因此拒绝正常首次动作。
+3. `reserved_worker_stable_id` 只是不可复用预留号，不是正式消息身份，不得用于历史去重。
+4. Worker 只能在 Sidecar 本帧目标证据唯一、授权有效、当前消息序列不存在可见冲突时允许动作；
+   不能用“角色 + 类型 + 时长 + 位置”生成长期身份，也不能要求正式长期身份反过来作为首次点击前提。
+5. Sidecar 可以返回 `cancelled_before_trigger`、目标消失、多候选或画面相关变化，但不得返回
+   `same_business_message=true/false` 等业务身份结论；Worker 不得把 Sidecar 的局部目标相似结果
+   直接转换成跨轮身份。
+6. 后端必须拒绝 Sidecar 命名空间直接携带 `worker_stable_id/source_message_key/commit_basis`
+   的正式消息身份结论；正式 ingest 只接受 Worker 身份提交门的输出。
+
+本帧动作准入矩阵固定为：
+
+| 最新帧情况 | Sidecar输出 | Worker处理 | 是否允许动作 |
+|---|---|---|---|
+| 会话、相关消息序列和唯一局部目标均未变化 | 原 token、唯一候选、局部指纹一致 | 校验 ActionJournal 与授权后继续 | 是，且只能一次 |
+| 只有光标、侧栏红点、悬停、滚动条淡入淡出、GIF 帧等已排除动态像素变化 | 规范化序列不变 | 视为无相关业务变化 | 是，且只能一次 |
+| 出现新文字/语音/图片、消息滚动或相关序列变化 | `frame_changed` 语义及最新原始观察；零点击 | 作废旧操作票；`pre_send_refresh` 只完整重识别一次，普通读取从最新帧继续原串行编排 | 否，旧计划禁止动作 |
+| 目标消失或存在多个等价候选 | 具体 not_found/ambiguous 证据；零点击 | 返回对应具体错误或按普通读取原身份门禁结算 | 否 |
+| 布局无法建立 | `C2_PRE_SEND_LAYOUT_INVALID` 或对应普通读取布局错误；零点击 | 按代码缺陷/环境错误既定终态结算 | 否 |
+| 动作已触发、结果无法确认 | 原 action receipt + `identity_unresolved` 证据 | 保留 Journal，纯数据恢复，不得再次点击 | 不得重试动作 |
+
+特别禁止把跨轮长期身份算法直接用作首次点击门禁。`align_committed_message_sequence` 负责
+checkpoint、动作后回执与长期身份提交；它不能要求“新媒体必须在第一次点击前已具有真实原生 ID
+或本次 confirmed action”。Sidecar 的 execute 复核也不能再次发明一套身份算法，只能执行
+Worker 已批准的本帧操作票并返回事实证据。
+
+#### 6.0.4.4 发送前新消息统一仲裁（`pre_send_refresh`）
+
+`chat_reply` 发送前必须重新读取当前会话，避免把旧上下文生成的回复发出去。本节是
+文字、语音、图片及任意组合在“Brain 已产生旧回复后又到达”场景的唯一处理流程，禁止再按
+媒体类型建立互相冲突的局部分支。
+
+`pre_send_refresh` 是 Worker 当前执行阶段，不是后端 `read_reason`。正常链路和崩溃恢复
+都必须保留原始 `authorization_read_reason`，继续校验同一 Worker、同一会话、正式短码、
+`private`、授权版本和批次；但不得重复执行首次好友激活、召回状态转换或其他只属于
+`authorized_read` 的业务动作。
+
+统一流程：
+
+```text
+C2保持当前单会话Flow和UI锁等待Brain/Guard
+-> Brain批准旧reply_action
+-> 对当前会话取一张新物理帧执行pre_send_refresh
+-> 一旦发现新客户候选或相关消息区变化，立即关闭旧回复的本地发送门
+-> 如完整/增强OCR后仍不能判定具体原因，直接返回对应的正文/序列/角色/布局错误，不进入等待
+-> 不claim-send、不输入、不点击发送，保持原Flow/UI锁/任务租约
+-> 按完整消息序列从上到下收敛新文字、语音、图片、self和system消息
+-> 文字直接走统一身份提交门；语音/图片每次只操作最早的一条可执行对象
+-> 每次媒体UI动作后重新读取完整消息视口并重做统一序列对齐
+-> 把动作期间新到达的文字/语音/图片加入同一最新顺序，不丢弃、不重排已确认旧身份
+-> 当前已观察尾部全部形成正式消息/确定失败事实时生成final_read；命中reidentification_failed/worker_environment_failed/hard_stop则直接按该终态结算，不伪造final_read
+-> 新正式事实先落本地Outbox，再按原messages/ingest合同上报
+-> 后端在同一事务内作废旧reply_action，以最新未回复连续尾部创建或复用唯一当前batch
+-> 只有当前有效batch可进入Brain；过时Brain结果一律不得发送
+-> 新reply_action再完整执行pre_send_refresh
+```
+
+“收敛”不要求等待固定的无消息时间窗。一张最终权威帧已覆盖当前完整消息视口、序列对齐成功且已观察
+新对象均有终态，即可结算本次复读。之后到达的新消息仍会被下一次 `pre_send_refresh` 或 S1 发现，不能用无限等待追求
+不存在的“绝对静止”。
+
+一次重识别成功不是业务终态；它只是把新目标送回同一收敛器。收敛器的最终判断必须且只能进入下表一行：
+
+| 统一结果 | 证据条件 | 旧 reply_action | 后续处理 |
+|---|---|---|---|
+| `unchanged_sendable` | private+短码+授权有效，当前消息序列与已入库尾部一致，无新 customer/self，也无无法排除的候选 | 保持 current | 允许进入 claim-send；S0/S1/S2 仍各自取新帧。 |
+| `new_customer_facts_committed` | 一条或多条新客户文字/语音/图片均已形成按画面顺序排列的正式事实 | 后端入库事务原子置 `superseded` | 根据最新完整尾部创建/复用新 batch 并调用 Brain；禁止发送旧回复。 |
+| `new_self_fact_committed` | 出现能证明是销售人工发送、且不属于本系统 AI sent_ack 的新 self 文字/语音/图片事实 | 取消/作废 | 入库 self 事实，按销售已接管处理，不调用 Brain；只要角色和新旧已确认，不需为了理解 self 媒体内容再做转写/Vision。 |
+| `new_system_fact_committed` | 已唯一确认新 system 行的身份、顺序和类型 | 立即禁止发送 | 先入库并重做一次仲裁；能证明拒收/关闭/硬状态则进 `hard_stop`，否则不单独启动 Brain，重读确认无其他新 customer 事实后才可恢复原发送判断。 |
+| `reidentification_failed` | 唯一一次重识别明确得到目标消失、多候选、序列无法对齐、角色无法确认、文字无法读取或点击前再次变化 | 取消/作废 | 零点击、零 Brain，保留具体 source error 和证据；当前 private+短码仍可证明时，只对当前会话幂等 handoff 一次。 |
+| `worker_environment_failed` | 最新帧无法建立合法微信基本布局 | 取消/作废 | 按代码缺陷收口：上报 `C2_PRE_SEND_LAYOUT_INVALID` 和完整证据，将当前任务/Flow 结算为技术失败，释放 UI 锁，Worker 进入故障状态并停止新接单。不 handoff、不自动移窗/重标定/重试。 |
+| `customer_media_committed_failed` | 已唯一确认客户语音/图片对象，且转写、复制、Vision 或正式内容处理已得到确定失败终态 | 取消/作废 | 失败事实先入库，再按现有 L1 规则幂等 handoff 一次；不调用 Brain。 |
+| `hard_stop` | 授权明确撤销、客户/短码/private 无法确认、销售已接管、客户拒绝联系、会话关闭或发送可能已发生但结果未知 | 禁止发送并按原硬门禁结算 | 保持原 L3 处理；本节不放宽任何安全硬门禁。 |
+
+类型化收敛规则：
+
+| 新对象 | 首次识别确定时 | 相关消息区变化时 | 一次重识别失败时 |
+|---|---|---|---|
+| customer 文字 | 按完整 `new_suffix` 和统一序列提交；相同正文的两条消息仍依赖序列位置与邻居分开 | 对最新帧仅完整 OCR/序列对齐一次 | 返回文字无法读取、序列无法对齐或角色无法确认的具体错误；不伪造正文。 |
+| 语音 | 按最新序列唯一投影目标，落 ActionJournal 后只点击一次，再用 confirmed action mapping 提交 | 立即取消旧点击候选，在最新帧完整重建消息序列并唯一投影一次 | 返回语音目标消失、多候选、序列无法对齐或再次变化的具体错误；对象已唯一但转写确定失败则形成 `committed_failed`。 |
+| 图片 | 按最新序列唯一投影目标，落 ActionJournal，复制/Vision 后以 confirmed receipt 提交 | 与语音使用同一次最新帧序列重建，不得使用旧坐标或整窗口摘要 | 返回图片目标消失、多候选、序列无法对齐或再次变化的具体错误；对象已唯一但复制/Vision 确定失败则形成 `committed_failed`。 |
+| self 文字/语音/图片 | 确认为新销售人工 self 且排除 AI sent_ack 后直接作废旧回复 | 使用同一次最新帧重识别 | 角色仍无法确认时返回具体角色错误；已确认 self 则无需理解媒体内容。 |
+| system 行 | 先入库，按已定义的拒收/关闭/普通系统状态分类 | 使用同一次最新帧重识别 | 身份或语义仍无法确认时返回具体 system 错误；不伪装为 customer 正文。 |
+| 混合或连续新消息 | UI 动作固定语音优先、图片随后且每次只操作一条；每次动作后重读并吸收新到达对象。全部动作终结后，最终入库才按最新权威完整画面的 `screen_order` 排序 | 一次重识别必须同时重建整个最新序列，禁止只重试某一种媒体；图片阶段发现新语音时，当前图片终态后先回到语音阶段 | 返回第一个阻断收敛的具体对象、类型、顺序范围和错误；已提交事实不回滚。 |
+
+唯一重识别规则：
+
+1. 整张微信画面或完整消息视口摘要只能用来发现“相关消息区是否变化”，不能作为单条文字、语音或图片的长期身份或最终目标证明。
+2. 工具栏、输入框、闪烁光标、侧栏和其他会话变化必须从该变化判定中排除。消息视口内的 GIF/动画表情帧、滚动条淡入淡出、鼠标悬停效果、语音播放动画、播放进度、红点和选中外框也必须排除。单条目标证明只能绑定当前会话、消息类型/角色、目标气泡、必要上下邻居、序列位置与 confirmed action receipt。
+   Sidecar 必须将两类证据分开：`selected_target_fingerprint` 只包含前述单条目标局部材料；`message_viewport_change_digest` 只表示标准化消息序列是否变化。禁止把后者塞入前者后再用“目标指纹不一致”代替重识别。
+   `message_viewport_change_digest` 禁止直接哈希消息区原始 RGB 像素。必须对生产解析器输出的有序观察列表做规范化 JSON 后计算摘要；每项只包含 `screen_order + sender_role + message_type + 相对消息视口量化边界 + 稳定内容签名 + media_state`。文字/system 使用规范化正文摘要，语音使用时长/转写状态/气泡结构，静态图片可使用排除角标/选中框后的稳定缩略特征；GIF/动画表情只使用气泡容器、类型和顺序，不得将当前动画帧原像素纳入。
+   无法建立消息视口布局时必须返回 `C2_PRE_SEND_LAYOUT_INVALID`；不得回退到整张微信画面哈希。
+3. 物理动作尚未触发时发现相关消息区变化：必须将当前 action 结算为 `cancelled_before_trigger`，作废且不复用原预留号，然后只获取一张最新不可变帧。
+4. 在该最新帧上只执行一次完整当前会话解析、OCR、角色判定和全序列对齐。唯一映射成功才可以新 action_id/新预留号继续；不得再嵌套 prepare 循环、四次取消、多个 20 秒等待、`recoverable_hold` 或 120 秒定时恢复。
+5. 新目标在物理触发前再次变化，必须返回 `C2_PRE_SEND_MESSAGE_VIEWPORT_CHANGED_AGAIN`，零 UI 动作终止；不得开启第二次重识别。
+6. 物理动作已触发或可能已触发后才发现结果无法确认，不属于本节“重识别”；必须保留 ActionJournal `identity_unresolved`，只用已持久化证据执行原事务恢复，严禁重复点击。
+7. 第 4 点的“禁止 120 秒定时恢复”只针对动作前目标重识别。语音已完成唯一一次物理点击后，原有的有界多帧正文等待可以保留；它只能读取画面，不得再次点击，且必须结算为 `committed_completed / committed_failed / identity_unresolved` 之一。图片已触发复制后的结果确认同理。
+
+错误分类硬约束：
+
+| 错误码 | 唯一含义 | 结算 |
+|---|---|---|
+| `C2_PRE_SEND_TEXT_CONTENT_UNREADABLE` | 最新帧中新文字存在，但正文经完整/增强 OCR 仍不可读 | 当前会话 handoff 一次 |
+| `C2_PRE_SEND_MESSAGE_SEQUENCE_ALIGNMENT_FAILED` | 最新完整序列无法与已提交尾部唯一对齐 | 当前会话 handoff 一次 |
+| `C2_PRE_SEND_MESSAGE_ROLE_UNCONFIRMED` | 阻断尾部的新对象无法唯一确认为 customer/self/system | 当前会话 handoff 一次 |
+| `C2_PRE_SEND_VOICE_TARGET_NOT_FOUND` / `C2_PRE_SEND_IMAGE_TARGET_NOT_FOUND` | 最新帧中找不到原待处理媒体的唯一投影 | 当前会话 handoff 一次 |
+| `C2_PRE_SEND_VOICE_TARGET_AMBIGUOUS` / `C2_PRE_SEND_IMAGE_TARGET_AMBIGUOUS` | 最新帧中存在多个等价媒体候选 | 当前会话 handoff 一次 |
+| `C2_PRE_SEND_MESSAGE_VIEWPORT_CHANGED_AGAIN` | 唯一重识别成功后、物理触发前相关消息区再次变化 | 当前会话 handoff 一次 |
+| `C2_PRE_SEND_SYSTEM_CONTENT_UNREADABLE` | 已唯一确认为 system 行，但完整/增强 OCR 后正文仍不可读 | 当前会话 handoff 一次 |
+| `C2_PRE_SEND_SYSTEM_CLASSIFICATION_UNRESOLVED` | system 正文已读取，但无法唯一归类为普通状态或已定义的拒收/关闭/硬状态 | 当前会话 handoff 一次 |
+| `C2_PRE_SEND_LAYOUT_INVALID` | 最新帧无法建立完整标题/消息视口/输入区布局 | 禁止旧回复，记录代码 Bug 证据，当前任务/Flow 技术失败终态，释放 UI 锁，Worker 故障停止新接单；零 HandoffEvent，零自动恢复 |
+
+`C2_VOICE_PREPARE_TARGET_UNSTABLE` 以及文字/图片同类“暂时不稳定”错误从
+`pre_send_refresh` 正式链路退出；当前本地实现的生产调用点必须为零，架构复审必须通过静态扫描和定向链路验证该约束。
+`C2_REPLY_CONTEXT_RECOVERY_FAILED` 不得包装本表任一文字/语音/图片错误；它只保留给
+6.0.4.4 之外真正的会话/批次/授权上下文恢复失败。上报必须同时携带
+`source_message_type + min/max_screen_order + candidate_count + before/after_frame_id + evidence_refs`，
+不得先改成笼统错误再结算。
+
+后端边界：
+
+- 本节不创建 `recoverable_hold`，不增加新前端 Task 或 Worker 补发任务。
+- 新客户事实成功入库时，在不存在其他未关闭硬 `HandoffEvent` 的前提下，同一事务作废旧回复并创建/复用最新 batch。
+- 具体消息重识别错误只能使用 `conversation_id + reply_action_id + source_error_code`
+  幂等创建当前会话的一个 HandoffEvent；重放、重启和状态重算不得重复创建或重复发飞书。
+- `C2_PRE_SEND_LAYOUT_INVALID` 是代码缺陷终态，不是客户业务 Handoff 原因；后端禁止因该错误创建 HandoffEvent 或发飞书。
+- 已经因高意向、客户拒收、销售实际接管、当前 customer 媒体确定失败或其他 L3 原因建立的开放 HandoffEvent，不得仅因迟到消息入库而自动关闭或重启 Brain。
+- 由旧缺陷错误创建的 `C2_REPLY_CONTEXT_RECOVERY_FAILED` handoff 必须经人工确认无销售接管/拒收/关闭后做一次数据修复；禁止新增“所有迟到消息自动关闭 handoff”的全局兼容旁路。
+
+崩溃恢复不能重启本节的一次重识别预算。动作未触发而已有具体错误终态时，
+重启后只重传原结算；动作已触发或可能已触发时，只恢复原 ActionJournal/Outbox 事实，
+不得直接发送、再做一次媒体 UI 动作或生成新错误决策。
+
+`C2_PRE_SEND_LAYOUT_INVALID` 的唯一收口为：
+
+```text
+禁止旧reply_action发送
+-> 持久化错误码、版本、frame_id、原始/增强截图、OCR与布局证据
+-> 将当前task/Flow结算为technical_failed
+-> 释放UI锁
+-> Worker进入faulted，can_pull_tasks=false，后台明确显示客户端故障
+```
+
+到此结束。不转人工、不创建 HandoffEvent、不发飞书、不自动移窗/重标定/重试，
+不新增人工解锁、清数据或旧 Flow 恢复功能。修复后通过新客户端版本的正常启动流程重新建立标定；
+不为这个未修复 Bug 设计运行时补偿状态机。
 
 #### 6.0.4.4.1 AI 回复成功后的 `recent_ai_sent` 监控读取
 
@@ -2682,9 +2845,10 @@ identity_quarantined`。`sequence_reserved` 不是已结算历史消息，不得
    Worker 为该计划创建 `canonical_voice_action_id`、原子预留 `reserved_worker_stable_id`，并将
    完整 prepare 响应与 `pre_action_identity_sequence` 一起写入 ActionJournal。
 3. `execute_voice_action` 请求必须原样携带 action ID、预留号、`pre_frame_id`、
-   `selected_pre_observation_id` 和 `selected_action_token`。OmniAuto 在任何点击前重新确认令牌
-   尚未使用、会话/短码未变，并证明当前目标仍是该选中观察；不得重新选择“当前最下面一条”或
-   把 Worker action ID 盖到另一个现场候选上。
+   `selected_pre_observation_id` 和 `selected_action_token`。OmniAuto 在任何点击前只确认令牌
+   尚未使用、会话/短码未变、当前唯一局部目标仍满足本次 `frame_action_binding`；这只是本帧
+   操作票复核，不得输出跨轮“同一条业务消息”结论，不得要求目标已具有长期身份，也不得重新
+   选择“当前最下面一条”或把 Worker action ID 盖到另一个现场候选上。
 4. 令牌过期、目标消失、会话变化或重验无法唯一时，必须零点击返回
    `action_phase=cancelled_before_trigger + transcript_binding_status=not_attempted`。该 action/预留号
    形成持久化取消终态且预留号作废不复用；Worker 从最新帧重新 prepare，不得把它伪装成客户
@@ -2760,10 +2924,11 @@ Worker C2 读取某个会话时，执行顺序固定为：
 -> 定位目标会话：第一屏 visible 或 remark_code 搜索
 -> 调用 OmniAuto messages 做首次读取/消息类型探测
 -> 检查initial_read权威观察：没有当前可执行且未结算的未转写语音时跳过整个语音编排器，原样保留initial_read payload
--> 只有存在上述语音时才调用唯一生产语音编排器；由 OmniAuto prepare 在新鲜帧中合并 aliases、零操作选中一条物理语音并返回 action token
+-> 只有存在上述语音时才调用唯一生产语音编排器；OmniAuto prepare 在新鲜帧中合并 frame-local aliases、零操作提出一个唯一物理候选并返回 action token和原始观察
 -> 只用本地已提交身份 + 后端 checkpoint 恢复已知历史语音；已结算历史语音零点击
--> Worker 不重选物理目标；只为 prepare 已选目标创建 canonical_voice_action_id，预留 reserved_worker_stable_id，并把 selected token/观察/真实pre frame写入ActionJournal
--> execute请求原样携带 action ID、预留号、pre frame、selected observation和token；点击前重验不通过则零点击取消并从最新帧重新prepare
+-> Worker 不重新解释 OCR 几何，但必须用完整序列、历史checkpoint、授权和本地事务状态决定是否接受prepare候选；Sidecar不能代替Worker作消息身份结论
+-> Worker接受唯一候选后才创建 canonical_voice_action_id，预留 reserved_worker_stable_id，并把 selected token/观察/真实pre frame写入ActionJournal；此时仍无正式身份
+-> execute请求原样携带 action ID、预留号、pre frame、selected observation和token；点击前只复核frame_action_binding，不得要求native ID/本次confirmed mapping；复核不通过则零点击取消并从最新帧重新prepare
 -> 点击后微信自动滚动属于正常路径；OmniAuto 使用同一调用的 before/after 帧产生唯一 binding 结论
 -> 只有 binding confirmed 才绑定正文并提交 worker_stable_id；failed/ambiguous 按上述唯一转移结算
 -> 动作后立即作废旧帧其他未执行候选；对最新帧的未转写语音和新文字重新仲裁，禁止继承旧 action/anchor/内容对应的 Worker ID
@@ -2786,7 +2951,7 @@ Worker C2 读取某个会话时，执行顺序固定为：
 上述顺序是唯一合法流程。禁止在右键前提交正式 Worker 身份，禁止用 voice anchor 直接生成
 source key，禁止在动作后用相同正文、相同 anchor 或坐标找回编号。
 
-机器合同 revision `0.9.24` 在 Sidecar 请求/返回、ActionJournal、Worker 本地身份预留和最终 V3 evidence 中使用以下唯一媒体字段，禁止新增同义字段；规范化 SHA 必须在最终代码与 Schema 同步后实算：
+机器合同 revision `0.9.33` 在 Sidecar 请求/返回、ActionJournal、Worker 本地身份预留和最终 V3 evidence 中使用以下唯一媒体字段，禁止新增同义字段；规范化 SHA 必须在最终代码与 Schema 同步后实算：
 
 | 字段 | 所有者 | 必填规则 |
 |---|---|---|
@@ -2797,8 +2962,8 @@ source key，禁止在动作后用相同正文、相同 anchor 或坐标找回�
 | `selected_pre_observation_id` | OmniAuto | prepare/execute/响应必须完全一致；continuous tracking 的首条边必须从该观察出发 |
 | `selected_target_fingerprint` | OmniAuto | 仅作 execute 前同一物理目标重验，不得作为跨轮业务身份或 source key |
 | `identity_phase` | Worker | 只允许 `historical_restored / sequence_reserved / business_committed / identity_quarantined` |
-| `transcript_binding_status` | OmniAuto 生产证据，Worker 校验 | 只允许 `not_attempted / confirmed / failed / ambiguous` |
-| `transcript_binding_method` | OmniAuto | `confirmed/failed` 且目标身份已唯一证明时只允许 `native_source_id / continuous_target_tracking / neighbor_scroll_alignment`；`not_attempted/ambiguous` 必须为 `none` |
+| `transcript_binding_status` | OmniAuto 生产动作结果证据，Worker 校验并决定是否提交身份 | 只允许 `not_attempted / confirmed / failed / ambiguous`；不是跨轮业务身份结论 |
+| `transcript_binding_method` | OmniAuto | `confirmed/failed` 且“本次实际操作对象 -> 动作后结果”映射已唯一证明时只允许 `native_source_id / continuous_target_tracking / neighbor_scroll_alignment`；`not_attempted/ambiguous` 必须为 `none` |
 | `binding_candidate_count` | OmniAuto | 非负整数；`confirmed/failed` 且形成正式成功/失败事实时必须为 `1` |
 | `pre_frame_id / post_frame_id` | OmniAuto | 发生点击后必须同时存在且不得相等 |
 | `native_source_message_id` | OmniAuto | 当且仅当 method=`native_source_id` 必填；before/post 取值必须完全一致 |
@@ -2869,7 +3034,7 @@ prepare/execute 的 action ID、预留号、pre frame、selected observation 和
 `tracking_candidate_counts[]` 禁止作为 `tracking_edges[]` 的兼容或兜底字段。
 三类 binding 证据字段互斥：只允许当前 `transcript_binding_method` 对应的证据字段非空，
 另外两类必须缺省或为空。`not_attempted/ambiguous` 时 method 必须为 `none`，三类正式
-binding 证据字段不得声称已绑定；`failed` 只有在目标身份已由 prepare、触发和连续证据唯一证明时，
+binding 证据字段不得声称已绑定；`failed` 只有在本次实际操作对象已由 prepare、触发和连续动作证据唯一证明时，
 才允许保留对应 method 并以预留号形成无正文失败事实。
 
 Worker 必须对上述逻辑矛盾失败关闭。例如 `identity_phase=sequence_reserved` 同时存在
@@ -2889,7 +3054,7 @@ Worker 必须对上述逻辑矛盾失败关闭。例如 `identity_phase=sequence
 | `sidecar_new_message_occurrences` 及内容 multiset 比较 | 只可用于发现“画面可能新增了什么”，结果必须再进入新观察仲裁 | 用来证明正文属于被点击语音，或认定相同内容是旧消息 |
 | `storage.py` 消息序号状态 | 原子落盘 action ID、reserved ID、identity phase、trigger phase 和 terminal；预留号单调且永不复用 | 崩溃后回收预留号；新动作重用旧 action ID；`trigger_attempted` 后再点击 |
 | `storage.py` 动作前画面状态 | 与 ActionJournal 原子保存 `pre_action_identity_sequence`，覆盖 `committed/selected_action/frame_local_unselected`；动作终态后补齐 `sequence_alignment_evidence` | 只保存已编号项；崩溃后用新截图或相同内容伪造动作前序列 |
-| `contracts/c2_contract_v3.json` 及生成 schema | 本候选必须将 `contract_revision`、客户端、后端、Sidecar、生成 Schema、样例和 manifest 统一为 `0.9.24`；保留本节对象分类、允许的 commit basis、四种媒体终态、统一消费者白名单、独立帧内语音 action binding、`authoritative_frame_source=initial_read/final_read/action_journal_recovery` 和安全误点语义；布局改为启动 `calibration_id` 与业务 `frame_id` 分离 | 使用独立合同版本号；在已发布版本下静默改语义；产生 `voice_execute_final` 等临时值；保留 `tracking_candidate_counts` 兼容；新增同义字段、双字段兼容或 Worker 本地兜底重判 |
+| `contracts/c2_contract_v3.json` 及生成 schema | 本候选必须将 `contract_revision`、客户端、后端、Sidecar、生成 Schema、样例和 manifest 统一为 `0.9.33`；保留本节对象分类、允许的 commit basis、四种媒体终态、统一消费者白名单、独立帧内语音 action binding、`authoritative_frame_source=initial_read/final_read/action_journal_recovery` 和安全误点语义；布局改为启动 `calibration_id` 与业务 `frame_id` 分离 | 使用独立合同版本号；在已发布版本下静默改语义；产生 `voice_execute_final` 等临时值；保留 `tracking_candidate_counts` 兼容；新增同义字段、双字段兼容或 Worker 本地兜底重判 |
 
 新流程的唯一落库时点为：预留表/ActionJournal 在点击前落盘；正式 identity catalog、
 Ledger、Outbox 和 `source_message_key` 只在 `historical_restored` 或 `business_committed` 后落盘。
@@ -3227,7 +3392,7 @@ POST /api/workers/{worker_id}/wechat/messages/ingest
 
 | 字段 | 类型 | 必填 | 说明 |
 |---|---|---|---|
-| `contract_version` | integer | 是 | 协议结构代号固定为 `3`，不是发布版本；当前灰度目标由 `contract_revision=0.9.28` 表达，并同时校验实现完成后实算的规范化 `contract_sha256` 和 `observation_schema_version`。 |
+| `contract_version` | integer | 是 | 协议结构代号固定为 `3`，不是发布版本；当前灰度目标由 `contract_revision=0.9.33` 表达，并同时校验架构复审固定合同内容后实算的规范化 `contract_sha256` 和 `observation_schema_version`。 |
 | `read_run_id` | string | 是 | 本次读取运行 ID。 |
 | `conversation_id` | string | 是 | 服务端已绑定会话 ID。 |
 | `remark_code` | string | 是 | 本轮已确认的客户短码。 |
@@ -3288,9 +3453,9 @@ POST /api/workers/{worker_id}/wechat/messages/ingest
 `next_sequence_floor`。该响应不得消费未读事实、不得更新读取完成退避、不得推进
 Conversation 或创建 Brain 批次。
 
-`0.9.28` 按灰度版本规则同步升级 `contract_revision` 与实现完成后实算的规范化 SHA；
+`0.9.33` 按灰度版本规则同步升级 `contract_revision`；规范化 SHA 只允许在架构复审固定最终合同内容后实算并同步；
 `API-C2-05` 请求和响应字段保持不变，严禁新增 `ingest_batch_id`、`outbox_batch_key` 或同义字段。
-旧 `0.9.27` 新请求固定按 `MESSAGE_CONTRACT_REVISION_MISMATCH` 拒绝，不允许双 revision 混跑。
+旧 `0.9.31` 请求固定按 `MESSAGE_CONTRACT_REVISION_MISMATCH` 拒绝，不允许双 revision 混跑。
 C2-C3 单会话串行链路继续使用可选 `message_batch={batch_id,batch_status}`；派生接口合同只可
 细化本手册字段，不得修改 `API-C2-05` 的方法、路径或另建同义消息上报接口。
 
@@ -4389,6 +4554,20 @@ identity_unresolved 只写隔离记录并启动无 UI 恢复。若进程在任�
 40. 初读首条语音、图片后新增语音、continuation 和崩溃恢复必须命中同一个生产语音编排器；
     AST 门禁禁止第二套 inline prepare/execute、旧 `_reconcile_message_identities`、
     `reconcile_v16104_identity_transition` 或 anchor/内容/坐标身份回挂代码进入正式链路。
+41. 正向测试必须使用真实 Win32 observation 形状：每项明确
+    `source_adapter=win32_ocr`、`id/observation_id=win32_ocr:*` 且
+    `native_source_message_id` 为空。普通最新尾部新语音即使只有前侧历史文字、普通新图片即使没有
+    原生 ID，也必须通过 `frame_action_binding` 各执行一次并在有效回执后提交长期身份；不得为了让
+    测试通过省略 `source_adapter` 或人工注入 `native-*`。
+42. 同一真实 Win32 数据分别覆盖：未变化画面正常语音恰好一次 execute、未变化画面正常图片恰好
+    一次复制/Vision、同秒数新语音占据旧位置零点击、相似新图片替换零点击、媒体期间新增文字由
+    Worker 最新帧重新仲裁。正向和反向必须调用同一生产入口，不得只测试内部 helper。
+43. 权限反例必须证明：Sidecar 返回 `worker_stable_id/source_message_key/commit_basis` 或
+    “same_business_message”结论时 Worker 合同校验在任何持久消费者前拒绝；Worker 未经有效回执
+    提交预留号时后端正式 ingest 拒绝；后端不得根据 OCR/坐标自行补齐身份。
+44. 测试至少贯穿生产 TaskRunner、真实 SQLite ActionJournal/Ledger/Outbox、正式 Worker 消息
+    构建器和后端 ingest 路由。允许在非 Windows 自动化中替换截图/OCR/物理鼠标边界，但替身只能
+    返回真实形状的原始观察和动作回执，不能直接返回“身份已确认”或伪造最终业务成功。
 
 后续构建必须先形成唯一 Git 提交并确认工作区干净，再由该提交构建
 Windows UAT 包；不得先用 dirty 包测试、UAT 后再修改来源文件重打同版本包。
@@ -4923,7 +5102,10 @@ Brain 终态后必须重新截图建立 `pre_send_refresh_frame`。同一张新�
 
 只有同时满足以下条件才接受 ROI 结果：标题精确确认 `private + remark_code`；消息视口边界
 完整且序列对齐成功；OCR 未截断、未低置信、未出现 unknown；后端授权仍有效。任一不足必须
-对同一张新截图补做原完整 OCR，仍不明确则按原 `pre_send_refresh` 失败语义结束，禁止发送。
+对同一张新截图补做原完整 OCR。完整 OCR 仍无法排除最新尾部有新文字、语音或图片时，
+必须按 6.0.4.4 使用一张最新不可变帧执行唯一一次完整重识别，同时禁止旧回复发送。
+重识别成功才继续收敛；失败必须返回目标消失、多候选、顺序、角色、正文、布局或再次变化的具体错误并按表中终态结算。
+本阶段不得创建 `recoverable_hold`、多次被动重读或按固定时间等待“自己变清楚”。
 
 `pre_send_refresh_frame` 不能直接充当 S0：两个阶段之间存在任务领取、claim-send、Sidecar
 启动或任何可观察时间间隔时，S0 必须重新截图。不得用“UI 锁仍在”推断客户不可能发新消息。
@@ -4992,13 +5174,29 @@ frame_digest_equal, ocr_call_count, ocr_total_duration_ms
    发生列表重排仍由点击后的标题复核拦截并最多重新定位一次。
 3. 当前标题正确、错误、空、低置信、群聊、多短码和 unknown 全覆盖；只有明确 private + 精确
    短码进入快速路径。
-4. Brain 等待期间客户新增文字、语音或图片；`pre_send_refresh` 必须从新截图发现并阻止旧回复，
-   测试不得把 Brain 前帧注入成成功结果。
-5. 客户分别在 S0 前、S0 与 S1 之间、发送触发后到 S2 前新增消息；各时点仍必须独立取帧并按
+4. Brain 等待期间客户分别新增文字、语音、图片，以及“语音期间新增文字”、“图片期间新增语音”、
+   “文字+语音+图片连续到达”；`pre_send_refresh` 必须从新截图发现并阻止旧回复，以最新完整顺序入库并且只让
+   当前有效 batch 生成可发送回复。测试不得把 Brain 前帧注入成成功结果。
+5. 新消息导致当前会话气泡上移、滚动、新旧消息正文相同、语音时长相同、图片相似，以及侧栏/其他会话、工具栏/输入框光标变化；
+   无关区域变化不得取消动作。相关消息区变化必须取消旧候选、废弃原预留号，并在最新帧对完整消息序列仅重新投影一次。
+6. 文字、语音、图片分别覆盖“首次发现 -> 相关区域变化 -> 一次最新帧完整重识别成功”。
+   必须断言旧回复 `superseded`、新事实按顺序入库、新 batch/Brain/回复建立、HandoffEvent 为 0、每个媒体物理动作至多一次。
+   反向用例必须分别证明目标消失、多候选、序列无法对齐、角色不明、正文不可读、布局无效和再次变化均返回指定错误，不进入通用 hold，不重复识别或点击。
+7. 使用生产解析器对同一消息序列构造 GIF/动画帧、滚动条、悬停、语音播放动画/进度、红点、选中外框和光标变化；
+   `message_viewport_change_digest` 必须保持一致。分别新增相同正文、相同时长语音和相似图片时，摘要必须因数量/顺序/结构变化而不同。测试必须断言计算材料中不存在原始整视口 RGB 哈希。
+8. `C2_PRE_SEND_LAYOUT_INVALID` 必须穿过生产结算链验证：旧回复不可发送，错误码、版本、frame_id、原始/增强截图、OCR 与布局证据完整持久化，当前任务/Flow 进入 `technical_failed`，UI 锁释放，Worker 进入 `faulted` 且 `can_pull_tasks=false`，后台不得显示在线空闲。
+   必须断言 HandoffEvent 和飞书通知均为 0，且没有自动移窗、重标定、重试、人工解锁、清数据或恢复旧 Flow 的调用。
+9. system 行分别验证：角色未确认使用 `C2_PRE_SEND_MESSAGE_ROLE_UNCONFIRMED`；已确认 system 但正文不可读使用 `C2_PRE_SEND_SYSTEM_CONTENT_UNREADABLE`；正文可读但无法归类使用 `C2_PRE_SEND_SYSTEM_CLASSIFICATION_UNRESOLVED`；序列无法对齐使用统一序列错误。禁止一个模糊 system 错误覆盖全部分支。
+10. 客户分别在 S0 前、S0 与 S1 之间、发送触发后到 S2 前新增消息；各时点仍必须独立取帧并按
    原规则处理，测试必须断言 S0/S1/S2 不能共用帧 ID 或截图摘要。
-6. 发送成功、发送失败、正文 OCR 格式差异、长文字结构候选和结果 ambiguous/unknown；成功只
+11. 发送成功、发送失败、正文 OCR 格式差异、长文字结构候选和结果 ambiguous/unknown；成功只
    确认一次，unknown 不补发，ActionJournal 和 sent_ack 终态不变。
-7. 四个开关逐一关闭及全部关闭；业务结果、UI 动作顺序、错误码、Handoff、Brain 次数和
+12. 上述核心组合测试必须调用生产 `TaskRunner` 入口、真实 SQLite/Journal/Outbox、正式 HTTP 路由和后端数据库服务；
+   禁止 mock `_read_one_wechat_target`、语音/图片编排函数、messages/ingest、batch 查询或 fail_task 来伪造业务终态。只允许在
+   Windows 截图/OCR/鼠标边界用可控替身，且替身必须返回原始帧/OCR items/动作回执，不得直接返回“读取成功”。
+13. 合法硬 handoff 后迟到文字/语音/图片只入库不自动重启 Brain；本节一次重识别成功时必须继续入库并以最新尾部重建 Brain。
+    两类状态必须同时作反向验收，禁止用“迟到事实一律恢复 AI”的全局补丁。
+14. 四个开关逐一关闭及全部关闭；业务结果、UI 动作顺序、错误码、Handoff、Brain 次数和
    ActionJournal/Outbox/sent_ack 必须与原完整路径一致。
 
 Windows 固定环境至少执行 10 轮成功样本，按场景分组报告中位数和 P95，同时比较错误会话读取
@@ -5078,7 +5276,7 @@ revision mismatch，不得静默兼容或覆盖旧包。
 合同 revision、OmniAuto 生成 Schema、来源清单、manifest 和 ZIP 文件名必须一致；旧 `0.9.14` 请求必须
 明确 revision mismatch，既有 `gray-v0.9.14` 标签和 ZIP 不得覆盖。
 
-### 16.11 0.9.24 启动一次布局标定与坐标地图兼容性整改
+### 16.11 0.9.33 启动一次布局标定与坐标地图兼容性整改
 
 #### 16.11.1 范围与不变量
 
@@ -5093,7 +5291,7 @@ Guard、Handoff、S0/S1/S2、sent_ack 及各自终态必须与 `0.9.20` 一致�
 若输入引起窗口、表单尺寸、页面、滚动或控件布局变化，则例外立即失效。正常 C1 画面节点仍为主界面、加号菜单、搜索弹窗、
 手机号输入后、搜索结果、邀请表单、表单填写后和提交结果共八类。
 
-`0.9.24` 的唯一方法是：启动时用当前微信客户区真实截图建立一份
+`0.9.33` 的唯一方法是：启动时用当前微信客户区真实截图建立一份
 `startup_layout_calibration`，将原 `0.9.20` 参考坐标映射到本次运行的实际导航栏、侧栏、
 会话区和输入区。OmniAuto 是该标定和坐标的唯一决策者；Worker 只调用、校验并串行执行，
 后端不接收、不推断也不保存 UI 坐标决策。不允许 Worker 和各业务模块再各自解释布局。
@@ -5166,7 +5364,7 @@ y_current = round(current_region.top  + v * current_region.height)
    `current_region` 和该目标的已知安全子区域内；越界时不点击，不允许回退到旧屏幕绝对坐标。
 2. 坐标产生方式必须按下表唯一化；“业务逻辑不变”不等于“坐标代码不变”：
 
-   | 目标/区域 | `0.9.20` 坐标来源 | `0.9.24` 唯一坐标来源 | 必须保持的 `0.9.20` 业务规则 |
+   | 目标/区域 | `0.9.20` 坐标来源 | `0.9.33` 唯一坐标来源 | 必须保持的 `0.9.20` 业务规则 |
    |---|---|---|---|
    | 侧栏顶部“+” | `0.9.20` 参考窗口中的固定参考点 | 用上述公式将该点从 `0.9.20 ref_sidebar_header_bounds` 映射到启动标定的 `sidebar_header_bounds`；不要求 OCR 识别“+” | 点击后必须按原菜单截图/OCR 确认“添加朋友”，确认失败不进入后续页面 |
    | 侧栏搜索框/返回入口 | 主窗口固定参考位置 | 按各自 `0.9.20` 所属的侧栏头部子区域映射到当前 `sidebar_header_bounds` | 搜索文字、搜索状态、结果短码及退出搜索验证全部不变 |
@@ -5207,20 +5405,20 @@ y_current = round(current_region.top  + v * current_region.height)
 HWND 处理，不增加截图、OCR 或整套布局重算，也不得将事务入口检查下沉为每次内部点击的新门禁。
 9. 窗口选择与激活必须直接继承 `0.9.20` 的生产语义，不得用新的统一前台门禁替代：
    `status/capabilities/sessions` 按 `0.9.20` 保持只读被动探测，`calibration-status` 作为
-   `0.9.24` 保留的只读动作同样不得抢前台；其余主动业务动作仍使用 `0.9.20`
+   `0.9.33` 保留的只读动作同样不得抢前台；其余主动业务动作仍使用 `0.9.20`
    的 `select_primary_visible_main_window(probe)` 选择可见微信主窗口，并调用原
    `activate_window(hwnd)` 后进入原业务分发。不得强制保留或新建
    `activate_calibrated_business_window()`、全局“激活成功”布尔门禁、统一
    `WECHAT_WINDOW_NOT_READY` 失败分支或其他 `0.9.20` 不存在的前台状态机。
-10. `0.9.24` 因启动坐标地图新增的唯一主窗口条件是：在一笔新主动 UI 事务开始、消费
+10. `0.9.33` 因启动坐标地图新增的唯一主窗口条件是：在一笔新主动 UI 事务开始、消费
    `startup_layout_calibration` 前，用上述 `0.9.20` 可见窗口选择结果确认
    `selected_visible_hwnd == calibration.hwnd`。这是“坐标地图归属检查”，不是
    “前台激活成功门禁”。`main_windows` 中不可见的后台 `Weixin` 窗口只保留为
    诊断信息，不得参与选择或数量门禁。找不到可见窗口时按 `0.9.20`
    原有窗口不可用语义结束；选中 HWND 与标定 HWND 不一致时只能判定旧坐标地图
    失效，不得继续用旧地图点击，按本节已有 `WECHAT_UI_STARTUP_CALIBRATION_FAILED`
-   技术失败停止新的 UI 动作并提示人工重启车金客户端。运行中不自动移窗、恢复、
-   重新标定或继续原业务；不得新增前台错误码或业务 Handoff。
+   技术失败停止新的 UI 动作。运行期间不自动移窗、恢复、重新标定或继续原业务。
+   `pre_send_refresh` 若连微信基本布局都无法建立，固定按 6.0.4.4 的 `C2_PRE_SEND_LAYOUT_INVALID` 代码缺陷终态收口，不是自动移窗/重标定例外。
 11. 事务开始后，不存在新的“主 HWND 前台等值检查”。
    事务开始后，微信自身可以打开另一个顶层 HWND，例如“添加朋友”菜单、
    添加朋友页、邀请表单、语音/图片右键菜单。这些页面必须完整继承 `0.9.20`
@@ -5240,17 +5438,18 @@ HWND 处理，不增加截图、OCR 或整套布局重算，也不得将事务�
 
 1. `startup_layout_calibration` 在同一客户端运行周期内由 C0—C4 共用。会话行重排、红点、
    新消息、聊天滚动、菜单开关和页面文字变化不改变微信外壳区域，不得因此重建全局标定。
-2. 本期不设计运行中的微信窗口变换恢复流程。不得为“看看有没有变”增加点击前截图、OCR、
+2. 本期不设计普通业务 Flow 运行中的微信窗口变换恢复流程。不得为“看看有没有变”增加点击前截图、OCR、
    外框/DPI 轮询或新的业务状态。运营规程必须告知用户：客户端开始接单后不得拖动、缩放、
    切换 DPI 或重启微信；确需改变时先暂停接单，等当前事务安全结算后人工重启车金客户端。
 3. 如果既有 Windows 事件、原流程本来就需要的业务帧或坐标地图归属检查已经确认
-   已标定微信主 HWND 消失/被替换，或主窗口客户区尺寸/DPI 已变化，必须废弃旧地图、停止后续新的微信 UI 动作并提示人工重启客户端；
-   不自动恢复默认档位、不自动重标定、不在当前 C0—C4 流程中增加窗口分支。
+   已标定微信主 HWND 消失/被替换，或主窗口客户区尺寸/DPI 已变化，必须废弃旧地图、停止后续新的微信 UI 动作；
+   当前业务 Flow 内不自动恢复默认档位、不自动重标定、不增加窗口分支。
+   `C2_PRE_SEND_LAYOUT_INVALID` 同样只报告代码缺陷并结束当前 Flow，不开启自动归位/重标定。
    微信自有菜单/弹窗 HWND 出现、消失或成为前台不属于本条的主窗口变化。
    已形成的 ActionJournal、Outbox 和 sent_ack 仍按既有无 UI 事实恢复规则保留/结算，不得重复点击。
 4. 只在客户端本次初始启动、尚未开始接单且零点击时，启动标定允许重取一帧。只有当当前客户区尺寸与 `0.9.20` 参考帧完全一致，
    且主结构锚点通过时，才允许直接使用参考坐标地图；这是精确匹配，不是任意分辨率的盲点兜底。
-5. 仍无法标定时返回唯一技术错误 `WECHAT_UI_STARTUP_CALIBRATION_FAILED`，不点击微信，
+5. 客户端首次启动时仍无法标定，返回唯一启动技术错误 `WECHAT_UI_STARTUP_CALIBRATION_FAILED`，不点击微信，
    不入库消息、不调用 Brain、不创建业务 Handoff。不得按模块新增同义错误码。
 6. 已打开非目标会话但尚未读取消息区或触发媒体/发送时，仍只使用既有
    `C2_VISIBLE_TARGET_STALE_AFTER_CLICK` 一次有限重新定位规则，不新增恢复状态。
@@ -5261,16 +5460,16 @@ HWND 处理，不增加截图、OCR 或整套布局重算，也不得将事务�
    业务帧对当前会话行、消息、弹窗和表单的原有观察。两者不得混为一个“每帧全局布局”。
 2. 删除无条件 `980×860` 统一窗口策略，替换为本节按 DPI/工作区确定的唯一档位。保留最小客户区、最小化/离屏判断、
    OCR 置信阈值、已确认目标内部点击余量和诊断证据。
-3. 不保留 `0.9.23` 与 `0.9.24` 两套可运行布局/前台决策、开关或双字段兜底。回滚只能整体回到
+3. 不保留 `0.9.23` 与 `0.9.33` 两套可运行布局/前台决策、开关或双字段兜底。回滚只能整体回到
    不可变 `0.9.20` 分支/包，不改写业务数据。
-4. 机器合同统一升为 `contract_revision=0.9.24`，Sidecar/Worker 至少交换
+4. 机器合同统一升为 `contract_revision=0.9.33`，Sidecar/Worker 至少交换
    `calibration_id/schema_version/hwnd/client_rect/dpi_scale/regions/executable`。旧的每帧
    `layout_snapshot_id` 不得继续伪装成全局标定 ID；如果业务帧仍需帧 ID，必须与 `calibration_id`
    分字段、分职责表达，不得一字段双语义。合同 SHA 必须由最终实现实算。
 
 #### 16.11.6 验收矩阵
 
-`0.9.24` 本期支持边界固定为：单显示器、Windows 系统显示缩放 `100%/125%/150%`、
+`0.9.33` 本期支持边界固定为：单显示器、Windows 系统显示缩放 `100%/125%/150%`、
 本候选 UAT 锁定的微信版本、浅色模式和系统默认字体缩放。多显示器/混合 DPI、
 其他微信版本、深色模式和额外字体缩放本期不承诺兼容，不得用合成图或 mock 宣称已支持。
 
@@ -5289,7 +5488,7 @@ HWND 处理，不增加截图、OCR 或整套布局重算，也不得将事务�
    对比必须检查真实生产函数调用次数和动作序列，
    不得只检查源码字符串或自己构造的模拟结果。
    还必须分别证明：只读探测不会抢前台；C1/C2/C3 真实生产入口的窗口选择、
-   `activate_window(hwnd)` 调用次序和后续原流程必须与 `0.9.20` 对照一致；`0.9.24`
+   `activate_window(hwnd)` 调用次序和后续原流程必须与 `0.9.20` 对照一致；`0.9.33`
    只能在消费坐标地图前多一次 `selected_visible_hwnd == calibration.hwnd` 归属断言。
    测试必须断言未调用 `activate_calibrated_business_window`，未新增统一前台失败分支，
    且不得通过永久伪造前台检查结果绕过真实生产链。
@@ -5305,12 +5504,14 @@ HWND 处理，不增加截图、OCR 或整套布局重算，也不得将事务�
    C4 复用同一标定的直接受影响链路；本阶段不跑无关全量。只在正式打包门禁再跑全量。
 8. 至少在两台单显示器 Windows 上覆盖 100%/125%/150% DPI、不同分辨率、同一 DPI 档位启动结果稳定不漂移、
    客户区过小时启动最小调整、会话列表重排和页面切换。另需验证 HWND/窗口真实改变时
-   不自动移窗、不自动重标定、不继续新 UI 动作，而是提示人工重启客户端。
+   业务 Flow 内不自动移窗、不自动重标定、不继续新 UI 动作。`C2_PRE_SEND_LAYOUT_INVALID` 实机用例只验证零发送、零 HandoffEvent、完整 Bug 证据、任务/Flow 技术失败终态、UI 锁释放和 Worker 故障停止新接单；
+   不测试自动归位、重标定或恢复拉单，因为这些功能不存在。
    未完成前不得声称已兼容所有分辨率。
 
-`0.9.24` 当前只完成方案与流程图收口。实现完成后必须依次同步 Worker、独立 OmniAuto
-固定提交、`.chejin-source.json`、机器合同 revision、生成 Schema、manifest 和版本记录，
-并实算新合同 SHA。Windows 实机验收和打包门禁未通过前，不得声称 `0.9.24` 已可交付。
+`0.9.33` 当前已形成 Worker、OmniAuto、后端、机器合同、生成 Schema 和 manifest 的本地实现，
+状态为“待架构复审”。复审通过后必须先形成独立 OmniAuto 固定提交，再更新
+`.chejin-source.json`，随后形成车金功能与来源治理提交，并实算、同步唯一合同 SHA。
+Windows 实机验收和打包门禁未通过前，不得声称 `0.9.33` 已发布、已交付或可替代现网版本。
 
 ## 17. 剩余上线前确认清单
 

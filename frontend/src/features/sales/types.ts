@@ -38,6 +38,7 @@ export type SalesWorkerSummary = {
   platform: string;
   enabled: boolean;
   online_status: string;
+  run_status: string;
   running_status: string;
   current_task: string | null;
   last_heartbeat_at: string | null;

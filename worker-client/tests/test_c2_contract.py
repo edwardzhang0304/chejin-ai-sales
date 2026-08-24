@@ -18,6 +18,7 @@ from chejin_worker_client.c2_contract import (
     formal_image_failure_code,
     image_contract,
     observation_role_is_trusted,
+    sidecar_contract_error,
     temporary_capability_gate_codes,
     validate_slot_ledger_states,
 )
@@ -46,6 +47,120 @@ from chejin_worker_client.wechat_c2 import (
 
 
 class C2ContractTests(unittest.TestCase):
+    def test_media_reservation_lifecycle_is_selected_action_only(self):
+        lifecycle = c2_contract_v3()[
+            "message_identity_lifecycle_contract"
+        ]
+        self.assertEqual(
+            lifecycle["media_reservation_scope"],
+            "selected_current_action_only",
+        )
+        self.assertEqual(
+            lifecycle["unselected_media_state"],
+            (
+                "frame_local_unselected_without_action_id_reserved_id_or_"
+                "action_journal"
+            ),
+        )
+        self.assertTrue(lifecycle["bulk_media_reservation_forbidden"])
+        self.assertEqual(
+            lifecycle["media_ui_action_priority"],
+            "voice_then_image",
+        )
+        self.assertEqual(
+            lifecycle["new_voice_during_image_phase"],
+            (
+                "finish_current_image_terminal_then_return_to_voice_before_"
+                "selecting_next_image"
+            ),
+        )
+        self.assertEqual(
+            lifecycle["final_ingest_order"],
+            (
+                "authoritative_final_frame_screen_order_independent_of_"
+                "media_ui_action_order"
+            ),
+        )
+
+    def test_sidecar_cannot_return_worker_owned_message_identity(self):
+        base_observation = {
+            "schema_version": 3,
+            "observation_id": "win32_ocr:voice-1",
+            "row_kind": "voice_bubble",
+            "sender_role": "customer",
+            "sender_role_source": "same_row_avatar",
+            "message_type": "voice",
+            "voice_state": "untranscribed",
+            "source_message": {
+                "id": "win32_ocr:voice-1",
+                "source_adapter": "win32_ocr",
+                "native_source_message_id": "",
+            },
+        }
+        base_payload = {
+            "observation_schema_version": 3,
+            "observations": [base_observation],
+        }
+        self.assertEqual(sidecar_contract_error(base_payload), "")
+
+        for field in c2_contract_v3()[
+            "frame_action_binding_contract"
+        ]["sidecar_must_not_return"]:
+            with self.subTest(field=field, location="observation"):
+                payload = {
+                    **base_payload,
+                    "observations": [
+                        {**base_observation, field: "forbidden"}
+                    ],
+                }
+                self.assertEqual(
+                    sidecar_contract_error(payload),
+                    "C2_SIDECAR_IDENTITY_CONTRACT_INVALID",
+                )
+            with self.subTest(field=field, location="source_message"):
+                payload = {
+                    **base_payload,
+                    "observations": [
+                        {
+                            **base_observation,
+                            "source_message": {
+                                **base_observation["source_message"],
+                                field: "forbidden",
+                            },
+                        }
+                    ],
+                }
+                self.assertEqual(
+                    sidecar_contract_error(payload),
+                    "C2_SIDECAR_IDENTITY_CONTRACT_INVALID",
+                )
+            with self.subTest(field=field, location="selected_action"):
+                payload = {
+                    **base_payload,
+                    "selected_voice_observation": {
+                        "observation_id": "win32_ocr:voice-1",
+                        field: "forbidden",
+                    },
+                }
+                self.assertEqual(
+                    sidecar_contract_error(payload),
+                    "C2_SIDECAR_IDENTITY_CONTRACT_INVALID",
+                )
+
+        allowed_action_evidence = {
+            **base_observation,
+            "frame_action_binding": {
+                "reserved_worker_stable_id": "worker-message-1",
+                "selected_action_token": "token-1",
+            },
+        }
+        self.assertEqual(
+            sidecar_contract_error(
+                {**base_payload, "observations": [allowed_action_evidence]}
+            ),
+            "",
+        )
+
     def test_performance_fast_path_flags_can_be_disabled_independently(self):
         env_names = [
             "CHEJIN_TASK_SAFE_WAKE_ENABLED",
@@ -78,7 +193,18 @@ class C2ContractTests(unittest.TestCase):
 
     def test_slot_ledger_contract_separates_fact_scope_from_delivery(self):
         schema = c2_contract_v3()["slot_ledger_state_schema"]
-        self.assertEqual(c2_contract_v3()["contract_revision"], "0.9.31")
+        self.assertEqual(c2_contract_v3()["contract_revision"], "0.9.33")
+        viewport_contract = c2_contract_v3()[
+            "pre_send_message_viewport_contract"
+        ]
+        self.assertTrue(viewport_contract["raw_rgb_hash_forbidden"])
+        self.assertTrue(
+            viewport_contract["full_screen_hash_fallback_forbidden"]
+        )
+        self.assertEqual(
+            viewport_contract["maximum_full_reidentification_count"],
+            1,
+        )
         startup_layout = c2_contract_v3()["startup_layout_calibration_contract"]
         self.assertIn("full_calibrated_input_bounds", startup_layout["input_click_surface_rule"])
         self.assertIn("excludes_the_bottom_toolbar", startup_layout["input_text_detection_rule"])
@@ -218,7 +344,14 @@ class C2ContractTests(unittest.TestCase):
         )
         self.assertEqual(
             identity_contract["frame_local_action_inputs"],
-            ["physical_anchor"],
+            [
+                "physical_anchor",
+                "selected_action_token",
+                "pre_frame_id",
+                "selected_pre_observation_id",
+                "selected_target_fingerprint",
+                "candidate_group_count",
+            ],
         )
         self.assertNotIn(
             "physical_anchor",
