@@ -1935,6 +1935,87 @@ def test_pending_reply_context_recovery_failure_closes_task_and_hands_off():
         assert handoff.status == "created"
 
 
+@pytest.mark.parametrize(
+    "error_code",
+    [
+        "C2_PRE_SEND_TEXT_CONTENT_UNREADABLE",
+        "C2_PRE_SEND_MESSAGE_SEQUENCE_ALIGNMENT_FAILED",
+        "C2_PRE_SEND_MESSAGE_ROLE_UNCONFIRMED",
+        "C2_PRE_SEND_VOICE_TARGET_NOT_FOUND",
+        "C2_PRE_SEND_VOICE_TARGET_AMBIGUOUS",
+        "C2_PRE_SEND_IMAGE_TARGET_NOT_FOUND",
+        "C2_PRE_SEND_IMAGE_TARGET_AMBIGUOUS",
+        "C2_PRE_SEND_MESSAGE_VIEWPORT_CHANGED_AGAIN",
+        "C2_PRE_SEND_SYSTEM_CONTENT_UNREADABLE",
+        "C2_PRE_SEND_SYSTEM_CLASSIFICATION_UNRESOLVED",
+    ],
+)
+def test_exact_pre_send_reidentification_error_hands_off_once(error_code):
+    worker, binding = _setup_bound_conversation()
+    message_id = _ingest(
+        worker,
+        binding["conversation_id"],
+        f"msg-{error_code.lower()}",
+        "发送前消息需要重新识别",
+    )
+    generated = _generate(_collect(binding["conversation_id"], message_id)["batch_id"])
+
+    failed = client.post(
+        f"/api/tasks/{generated['task_id']}/fail",
+        json={
+            "error_code": error_code,
+            "failure_step": "pre_send_refresh",
+            "failure_remark": "完整重识别一次后仍无法确认具体消息",
+        },
+        headers=_worker_headers(worker),
+    )
+
+    assert failed.status_code == 200
+    assert failed.json()["data"]["error_code"] == error_code
+    with SessionLocal() as db:
+        action = db.get(ReplyAction, generated["reply_action_id"])
+        batch = db.get(MessageBatch, generated["batch"]["id"])
+        handoffs = db.query(HandoffEvent).filter(
+            HandoffEvent.batch_id == batch.id,
+            HandoffEvent.handoff_reason_code == error_code,
+        ).all()
+        assert action.status == "cancelled"
+        assert batch.status == "handoff_created"
+        assert len(handoffs) == 1
+
+
+def test_pre_send_layout_invalid_cancels_reply_without_customer_handoff():
+    worker, binding = _setup_bound_conversation()
+    message_id = _ingest(
+        worker,
+        binding["conversation_id"],
+        "msg-pre-send-layout-invalid",
+        "布局不可用时禁止猜测客户",
+    )
+    generated = _generate(_collect(binding["conversation_id"], message_id)["batch_id"])
+
+    failed = client.post(
+        f"/api/tasks/{generated['task_id']}/fail",
+        json={
+            "error_code": "C2_PRE_SEND_LAYOUT_INVALID",
+            "failure_step": "pre_send_refresh",
+            "failure_remark": "无法建立合法消息视口",
+        },
+        headers=_worker_headers(worker),
+    )
+
+    assert failed.status_code == 200
+    assert failed.json()["data"]["error_code"] == "C2_PRE_SEND_LAYOUT_INVALID"
+    with SessionLocal() as db:
+        action = db.get(ReplyAction, generated["reply_action_id"])
+        batch = db.get(MessageBatch, generated["batch"]["id"])
+        assert action.status == "cancelled"
+        assert batch.status == "cancelled"
+        assert db.query(HandoffEvent).filter(
+            HandoffEvent.batch_id == batch.id
+        ).count() == 0
+
+
 def test_running_chat_reply_failure_cancels_unsent_action_and_batch():
     worker, binding = _setup_bound_conversation()
     message_id = _ingest(

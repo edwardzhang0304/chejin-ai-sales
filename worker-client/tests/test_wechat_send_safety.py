@@ -1202,28 +1202,37 @@ class WechatSendSafetyTest(unittest.TestCase):
         key_press.assert_called_once_with(0x27)
 
     def test_send_context_guard_blocks_new_message_after_final_refresh(self):
+        frame = Image.new("RGB", (981, 860), "white")
         expected = sidecar.build_send_context_guard(
             [
                 {
                     "row_kind": "text_bubble",
                     "sender_role": "customer",
+                    "message_type": "text",
                     "content_clean": "在吗",
+                    "bubble_rect": [480, 260, 620, 310],
                 }
-            ]
+            ],
+            screenshot=frame,
         )
         current = sidecar.build_send_context_guard(
             [
                 {
                     "row_kind": "text_bubble",
                     "sender_role": "customer",
+                    "message_type": "text",
                     "content_clean": "在吗",
+                    "bubble_rect": [480, 260, 620, 310],
                 },
                 {
                     "row_kind": "text_bubble",
                     "sender_role": "customer",
+                    "message_type": "text",
                     "content_clean": "补充一句",
+                    "bubble_rect": [480, 330, 650, 380],
                 },
-            ]
+            ],
+            screenshot=frame,
         )
 
         result = sidecar.validate_send_context_guard(expected, current)
@@ -1233,28 +1242,33 @@ class WechatSendSafetyTest(unittest.TestCase):
         self.assertEqual(result["expected_message_count"], 1)
         self.assertEqual(result["current_message_count"], 2)
 
-    def test_send_context_guard_accepts_same_structure_without_coordinates(self):
+    def test_send_context_guard_absorbs_small_ocr_bounds_jitter(self):
+        frame = Image.new("RGB", (981, 860), "white")
         expected = sidecar.build_send_context_guard(
             [
                 {
                     "row_kind": "voice_transcript",
                     "sender_role": "customer",
+                    "message_type": "voice",
                     "content_clean": "我下午有空",
                     "parent_voice_anchor_key": "voice:customer:4",
-                    "bubble_rect": {"left": 100, "top": 200},
+                    "bubble_rect": [480, 260, 720, 310],
                 }
-            ]
+            ],
+            screenshot=frame,
         )
         current = sidecar.build_send_context_guard(
             [
                 {
                     "row_kind": "voice_transcript",
                     "sender_role": "customer",
+                    "message_type": "voice",
                     "content_clean": "我下午有空",
                     "parent_voice_anchor_key": "voice:customer:4",
-                    "bubble_rect": {"left": 100, "top": 260},
+                    "bubble_rect": [481, 261, 721, 311],
                 }
-            ]
+            ],
+            screenshot=frame,
         )
 
         result = sidecar.validate_send_context_guard(expected, current)
@@ -1266,20 +1280,17 @@ class WechatSendSafetyTest(unittest.TestCase):
         after = before.copy()
         ImageDraw.Draw(before).rectangle((40, 210, 75, 235), fill="red")
         ImageDraw.Draw(after).rectangle((40, 210, 88, 235), fill="red")
-        before_region = sidecar.send_context_message_region_fingerprint(before)
-        after_region = sidecar.send_context_message_region_fingerprint(after)
-        self.assertEqual(before_region["sha256"], after_region["sha256"])
-
         expected = sidecar.build_send_context_guard(
             [
                 {
                     "row_kind": "text_bubble",
                     "sender_role": "customer",
+                    "message_type": "text",
                     "content_clean": "明天继续磨，有点烦了",
+                    "bubble_rect": [480, 260, 760, 310],
                 }
             ],
-            message_region_sha256=before_region["sha256"],
-            message_region_bounds=before_region["bounds"],
+            screenshot=before,
         )
         # Full-window OCR can vary when an unrelated sidebar badge changes.
         current = sidecar.build_send_context_guard(
@@ -1287,56 +1298,141 @@ class WechatSendSafetyTest(unittest.TestCase):
                 {
                     "row_kind": "text_bubble",
                     "sender_role": "customer",
+                    "message_type": "text",
                     "content_clean": "明天继续磨有点烦了",
+                    "bubble_rect": [480, 260, 760, 310],
                 }
             ],
-            message_region_sha256=after_region["sha256"],
-            message_region_bounds=after_region["bounds"],
+            screenshot=after,
         )
 
         result = sidecar.validate_send_context_guard(expected, current)
 
         self.assertTrue(result["ok"])
-        self.assertEqual(result["reason"], "message_region_unchanged")
+        self.assertEqual(result["reason"], "message_sequence_unchanged")
+        self.assertFalse(expected["raw_rgb_hash_used"])
+        self.assertEqual(
+            expected["message_viewport_change_digest"],
+            current["message_viewport_change_digest"],
+        )
 
-    def test_send_context_guard_still_blocks_current_chat_visual_change(self):
+    def test_send_context_guard_blocks_new_message_without_raw_pixel_hash(self):
         before = Image.new("RGB", (981, 860), "white")
         after = before.copy()
         ImageDraw.Draw(after).rectangle((520, 520, 800, 570), fill="gray")
-        before_region = sidecar.send_context_message_region_fingerprint(before)
-        after_region = sidecar.send_context_message_region_fingerprint(after)
-        self.assertNotEqual(before_region["sha256"], after_region["sha256"])
 
         expected = sidecar.build_send_context_guard(
             [
                 {
                     "row_kind": "text_bubble",
                     "sender_role": "customer",
+                    "message_type": "text",
                     "content_clean": "在吗",
+                    "bubble_rect": [480, 260, 620, 310],
                 }
             ],
-            message_region_sha256=before_region["sha256"],
+            screenshot=before,
         )
         current = sidecar.build_send_context_guard(
             [
                 {
                     "row_kind": "text_bubble",
                     "sender_role": "customer",
+                    "message_type": "text",
                     "content_clean": "在吗",
+                    "bubble_rect": [480, 260, 620, 310],
                 },
                 {
                     "row_kind": "text_bubble",
                     "sender_role": "customer",
+                    "message_type": "text",
                     "content_clean": "补充一句",
+                    "bubble_rect": [480, 330, 650, 380],
                 },
             ],
-            message_region_sha256=after_region["sha256"],
+            screenshot=after,
         )
 
         result = sidecar.validate_send_context_guard(expected, current)
 
         self.assertFalse(result["ok"])
         self.assertEqual(result["error_code"], "C3_CONTEXT_CHANGED_BEFORE_SEND")
+        self.assertFalse(expected["raw_rgb_hash_used"])
+        self.assertFalse(current["raw_rgb_hash_used"])
+
+    def test_viewport_digest_collapses_transient_visual_voice_hint(self):
+        frame = Image.new("RGB", (981, 860), "white")
+        ocr_voice = {
+            "observation_id": "win32_ocr:voice-1",
+            "row_kind": "voice_bubble",
+            "sender_role": "customer",
+            "message_type": "voice",
+            "voice_state": "untranscribed",
+            "voice_duration": 4,
+            "voice_duration_text": '4"',
+            "bubble_rect": [479, 403, 523, 425],
+            "quality_flags": ["untranscribed_voice_placeholder"],
+            "source_message": {"id": "win32_ocr:voice-1"},
+        }
+        visual_hint = {
+            "observation_id": "voice-hint:voice-stable:one",
+            "row_kind": "voice_bubble",
+            "sender_role": "customer",
+            "message_type": "voice",
+            "voice_state": "playing",
+            "bubble_rect": [479, 403, 523, 425],
+            "quality_flags": ["visual_voice_hint"],
+            "source_message": {},
+        }
+
+        without_hint = sidecar.build_message_viewport_change_evidence(
+            [ocr_voice], screenshot=frame
+        )
+        with_hint = sidecar.build_message_viewport_change_evidence(
+            [visual_hint, ocr_voice], screenshot=frame
+        )
+
+        self.assertEqual(without_hint["message_count"], 1)
+        self.assertEqual(with_hint["message_count"], 1)
+        self.assertEqual(
+            without_hint["message_viewport_change_digest"],
+            with_hint["message_viewport_change_digest"],
+        )
+
+    def test_viewport_digest_orders_facts_by_screen_not_detector_order(self):
+        frame = Image.new("RGB", (981, 860), "white")
+        first = {
+            "observation_id": "row-first",
+            "row_kind": "text_bubble",
+            "sender_role": "customer",
+            "message_type": "text",
+            "content_clean": "第一条",
+            "bubble_rect": [480, 260, 620, 310],
+        }
+        second = {
+            "observation_id": "row-second",
+            "row_kind": "voice_bubble",
+            "sender_role": "customer",
+            "message_type": "voice",
+            "voice_duration": 4,
+            "bubble_rect": [480, 330, 650, 380],
+        }
+
+        expected = sidecar.build_message_viewport_change_evidence(
+            [first, second], screenshot=frame
+        )
+        reversed_detector_output = sidecar.build_message_viewport_change_evidence(
+            [second, first], screenshot=frame
+        )
+
+        self.assertEqual(
+            expected["message_viewport_change_digest"],
+            reversed_detector_output["message_viewport_change_digest"],
+        )
+        self.assertEqual(
+            [row["message_type"] for row in expected["sequence"]],
+            ["text", "voice"],
+        )
 
     def test_pre_enter_target_switch_blocks_even_when_message_region_is_identical(self):
         geometry = {
@@ -1348,11 +1444,13 @@ class WechatSendSafetyTest(unittest.TestCase):
             "height": 860,
         }
         context_guard = {
-            "schema_version": 1,
+            "schema_version": 2,
             "sequence": [],
             "message_count": 0,
             "bottom": None,
-            "message_region_sha256": "a" * 64,
+            "message_viewport_change_digest": "a" * 64,
+            "sequence_sha256": "a" * 64,
+            "raw_rgb_hash_used": False,
         }
         strict_target = {
             "ok": True,
@@ -1905,23 +2003,30 @@ class WechatSendSafetyTest(unittest.TestCase):
         self.assertFalse(reordered["accepted"])
 
     def test_send_context_sequence_ignores_ocr_format_only_differences(self):
+        frame = Image.new("RGB", (981, 860), "white")
         expected = sidecar.build_send_context_guard(
             [
                 {
                     "row_kind": "text_bubble",
                     "sender_role": "customer",
+                    "message_type": "text",
                     "content_clean": "请看【车型Ａ】……",
+                    "bubble_rect": [480, 260, 720, 310],
                 }
-            ]
+            ],
+            screenshot=frame,
         )
         current = sidecar.build_send_context_guard(
             [
                 {
                     "row_kind": "text_bubble",
                     "sender_role": "customer",
+                    "message_type": "text",
                     "content_clean": "请看[车型a]...",
+                    "bubble_rect": [480, 260, 720, 310],
                 }
-            ]
+            ],
+            screenshot=frame,
         )
 
         result = sidecar.validate_send_context_guard(expected, current)
@@ -2088,11 +2193,6 @@ class WechatSendSafetyTest(unittest.TestCase):
                 sidecar,
                 "enhanced_ocr_items_for_structural_chat_candidate",
                 return_value=enhanced_items,
-            ),
-            patch.object(
-                sidecar,
-                "send_context_message_region_fingerprint",
-                return_value={"sha256": "post-send-frame", "bounds": [390, 100, 980, 690]},
             ),
             patch.object(
                 sidecar,
@@ -2577,11 +2677,6 @@ class WechatSendSafetyTest(unittest.TestCase):
                 sidecar,
                 "enhanced_ocr_items_for_structural_chat_candidate",
                 return_value=enhanced_items,
-            ),
-            patch.object(
-                sidecar,
-                "send_context_message_region_fingerprint",
-                return_value={"sha256": "frame-sha", "bounds": [390, 100, 980, 720]},
             ),
             patch.object(
                 sidecar,

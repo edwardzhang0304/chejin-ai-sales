@@ -254,4 +254,38 @@ def sidecar_contract_error(payload: dict[str, Any], *, require_observations: boo
         return "C2_OBSERVATIONS_REQUIRED"
     if require_observations and payload.get("observation_validation_errors"):
         return "OMNIAUTO_OBSERVATION_CONTRACT_INVALID"
+    frame_binding = c2_contract_v3().get(
+        "frame_action_binding_contract"
+    )
+    forbidden_identity_fields = (
+        frame_binding.get("sidecar_must_not_return")
+        if isinstance(frame_binding, dict)
+        else None
+    )
+    if not isinstance(forbidden_identity_fields, list):
+        raise RuntimeError(
+            "Invalid C2 frame_action_binding_contract.sidecar_must_not_return"
+        )
+    forbidden = {
+        str(field).strip()
+        for field in forbidden_identity_fields
+        if str(field).strip()
+    }
+
+    def contains_forbidden_identity(value: Any) -> bool:
+        if isinstance(value, dict):
+            if forbidden.intersection(str(key) for key in value):
+                return True
+            return any(
+                contains_forbidden_identity(child)
+                for child in value.values()
+            )
+        if isinstance(value, list):
+            return any(
+                contains_forbidden_identity(child) for child in value
+            )
+        return False
+
+    if contains_forbidden_identity(payload):
+        return "C2_SIDECAR_IDENTITY_CONTRACT_INVALID"
     return ""

@@ -6,7 +6,7 @@ import re
 from typing import Any, Literal
 
 
-RunStatus = Literal["running", "paused"]
+RunStatus = Literal["running", "paused", "faulted"]
 RpaStatus = Literal["ready", "unavailable"]
 WechatStatus = Literal["logged_in", "not_found", "logged_out", "unknown"]
 

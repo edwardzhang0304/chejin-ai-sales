@@ -164,6 +164,7 @@ def initialize_action_journal(
             "selected_pre_observation_id",
             "selected_action_token",
             "selected_target_fingerprint",
+            "message_viewport_change_digest",
         }
         if not isinstance(normalized_prepare_evidence, dict) or any(
             not str(normalized_prepare_evidence.get(field) or "").strip()

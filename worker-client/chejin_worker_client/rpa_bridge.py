@@ -32,7 +32,7 @@ def startup_probe_geometry(payload: dict[str, Any] | None) -> tuple[dict[str, An
     """Expose the authoritative post-normalization WeChat rectangle to the UI.
 
     ``status`` historically returned ``geometry`` at the top level.  The
-    v0.9.31 startup path intentionally reuses the successful
+    v0.9.33 startup path intentionally reuses the successful
     ``normalize-window`` observation, whose final rectangle is nested under
     ``window_normalization.after``.  Keep one stable Worker-facing contract
     without taking another screenshot or running OCR.
@@ -393,6 +393,7 @@ class RpaBridge:
         selected_pre_observation_id: str = "",
         selected_action_token: str = "",
         selected_target_fingerprint: str = "",
+        message_viewport_change_digest: str = "",
         remark_code: str = "",
         target_mode: str = "",
         expected_confirmed_self_text: str = "",
@@ -413,6 +414,7 @@ class RpaBridge:
                 selected_pre_observation_id,
                 selected_action_token,
                 selected_target_fingerprint,
+                message_viewport_change_digest,
             )
         ):
             raise ValueError("C2_VOICE_EXECUTE_CONTRACT_INCOMPLETE")
@@ -464,6 +466,8 @@ class RpaBridge:
                 str(selected_action_token).strip(),
                 "--selected-target-fingerprint",
                 str(selected_target_fingerprint).strip(),
+                "--message-viewport-change-digest",
+                str(message_viewport_change_digest).strip(),
             ]
         if str(display_name or "").strip():
             args[1:1] = ["--target", display_name]
@@ -937,7 +941,7 @@ class RpaBridge:
         # OmniAuto owns the map. Worker supplies only a durable location so
         # independent Sidecar processes use the same calibration_id.
         sidecar_env["CHEJIN_WECHAT_STARTUP_CALIBRATION_PATH"] = str(
-            CONFIG.app_dir / "wechat_startup_layout_calibration_v0.9.31.json"
+            CONFIG.app_dir / "wechat_startup_layout_calibration_v0.9.33.json"
         )
         try:
             if cancel_check is None:

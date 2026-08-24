@@ -677,6 +677,17 @@ def confirmed_image_identity_receipt(
     return {
         "canonical_action_id": action_id,
         "reserved_worker_stable_id": stable_id,
+        **(
+            {
+                "selected_action_token": str(
+                    receipt.get("selected_action_token") or ""
+                ).strip()
+            }
+            if str(
+                receipt.get("selected_action_token") or ""
+            ).strip()
+            else {}
+        ),
         "pre_observation_id": str(
             receipt.get("pre_observation_id") or ""
         ).strip(),
@@ -730,17 +741,24 @@ def apply_image_terminal_result(observation: dict[str, Any], result: dict[str, A
             }
         else:
             enriched["_worker_identity_scope"] = "committed"
+            confirmed_mapping = {
+                key: receipt[key]
+                for key in (
+                    "canonical_action_id",
+                    "reserved_worker_stable_id",
+                    "pre_observation_id",
+                    "post_observation_id",
+                    "binding_confirmed",
+                )
+            }
+            if str(
+                receipt.get("selected_action_token") or ""
+            ).strip():
+                confirmed_mapping["selected_action_token"] = str(
+                    receipt["selected_action_token"]
+                )
             enriched["_worker_image_action_summary"] = {
-                "confirmed_action_mapping": {
-                    key: receipt[key]
-                    for key in (
-                        "canonical_action_id",
-                        "reserved_worker_stable_id",
-                        "pre_observation_id",
-                        "post_observation_id",
-                        "binding_confirmed",
-                    )
-                },
+                "confirmed_action_mapping": confirmed_mapping,
                 "image_visual_fingerprint": receipt[
                     "image_visual_fingerprint"
                 ],
@@ -948,6 +966,9 @@ def voice_transcription_meta(
         ),
         "selected_target_fingerprint": voice_transcription_summary.get(
             "selected_target_fingerprint"
+        ),
+        "message_viewport_change_digest": voice_transcription_summary.get(
+            "message_viewport_change_digest"
         ),
         "reserved_worker_stable_id": voice_transcription_summary.get(
             "reserved_worker_stable_id"

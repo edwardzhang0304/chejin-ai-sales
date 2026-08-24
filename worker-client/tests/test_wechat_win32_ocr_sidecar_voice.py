@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import hashlib
 import os
 import sys
 import tempfile
@@ -64,6 +65,8 @@ def unified_voice_observation(anchor: dict | None, visible_button: dict | None =
 
 
 class WechatWin32OcrVoiceSelectionTest(unittest.TestCase):
+    EMPTY_VIEWPORT_DIGEST = hashlib.sha256(b"[]").hexdigest()
+
     def setUp(self) -> None:
         super().setUp()
         self._semantic_layouts: dict[int, dict] = {}
@@ -232,7 +235,28 @@ class WechatWin32OcrVoiceSelectionTest(unittest.TestCase):
                     "selected_pre_observation_id": candidate["observation_id"],
                     "selected_action_token": "token-a",
                     "selected_target_fingerprint": fingerprint,
+                    "message_viewport_change_digest": (
+                        self.EMPTY_VIEWPORT_DIGEST
+                    ),
                     "candidate_group_count": 1,
+                    "frame_action_binding": {
+                        "schema_version": 1,
+                        "status": "prepared",
+                        "pre_frame_id": "frame-prepare",
+                        "selected_pre_observation_id": candidate[
+                            "observation_id"
+                        ],
+                        "selected_action_token": "token-a",
+                        "selected_target_fingerprint": fingerprint,
+                        "message_viewport_change_digest": (
+                            self.EMPTY_VIEWPORT_DIGEST
+                        ),
+                        "candidate_group_count": 1,
+                        "sender_role": candidate.get(
+                            "sender_role", "customer"
+                        ),
+                        "message_type": "voice",
+                    },
                 },
             )
 
@@ -241,7 +265,7 @@ class WechatWin32OcrVoiceSelectionTest(unittest.TestCase):
                 builder_patch = patch.object(
                     sidecar,
                     "build_message_observations_v3",
-                    return_value=[
+                    side_effect=[[], [
                         {
                             "observation_id": "voice-failed-post",
                             "row_kind": "voice_bubble",
@@ -255,9 +279,8 @@ class WechatWin32OcrVoiceSelectionTest(unittest.TestCase):
                                 "type": "voice",
                             },
                         }
-                    ],
+                    ]],
                 )
-
             with patch.object(
                 sidecar,
                 "capture_wechat",
@@ -324,9 +347,61 @@ class WechatWin32OcrVoiceSelectionTest(unittest.TestCase):
                     selected_pre_observation_id=candidate["observation_id"],
                     selected_action_token="token-a",
                     selected_target_fingerprint=fingerprint,
+                    message_viewport_change_digest=(
+                        self.EMPTY_VIEWPORT_DIGEST
+                    ),
                 )
             phase = action_journal_phase(journal_path)
         return result, click, menu, phase
+
+    def test_frame_action_binding_does_not_require_native_message_id(
+        self,
+    ) -> None:
+        anchor = {
+            "source": "parser_voice_message_context_menu_anchor",
+            "click_bounds": [488, 500, 535, 526],
+            "item": {
+                "text": '5"',
+                "voice_duration_text": '5"',
+                "left": 488,
+                "top": 500,
+                "right": 535,
+                "bottom": 526,
+                "center_x": 511.5,
+                "center_y": 513,
+                "sender_role": "customer",
+                "message_id": "win32_ocr:same-weak-slot",
+                "parser_bubble_rect": [488, 500, 535, 526],
+            },
+        }
+        anchor = sidecar.mark_voice_context_anchor_keys(
+            anchor, (965, 852)
+        )
+        candidate = unified_voice_observation(anchor)
+        assert candidate is not None
+        candidate["observation_id"] = "win32_ocr:same-weak-slot"
+        candidate["source_adapter"] = "win32_ocr"
+        candidate["native_source_message_id"] = ""
+
+        result, click, menu, phase = self._execute_prepared_voice(
+            candidate=candidate,
+            bound_message={
+                "type": "text",
+                "sender": "customer",
+                "sender_role": "customer",
+                "content": "您好我想咨询车辆",
+                "bubble_rect": [488, 536, 700, 570],
+                "avatar_alignment": {"role": ""},
+            },
+        )
+
+        self.assertEqual(
+            result["state"], "voice_transcribe_completed", result
+        )
+        self.assertEqual(result["transcript_binding_status"], "confirmed")
+        self.assertEqual(phase, "confirmed")
+        self.assertEqual(click.call_count, 1)
+        self.assertEqual(menu.call_count, 1)
 
     def test_frame_action_binding_survives_real_observation_builder_only_in_memory(
         self,

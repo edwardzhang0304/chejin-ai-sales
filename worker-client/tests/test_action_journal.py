@@ -27,6 +27,8 @@ from chejin_worker_client.storage import (
 
 
 class ActionJournalTest(unittest.TestCase):
+    VIEWPORT_DIGEST = "a" * 64
+
     def setUp(self) -> None:
         self.tmp = tempfile.TemporaryDirectory()
         self.path = Path(self.tmp.name) / "action.json"
@@ -51,6 +53,7 @@ class ActionJournalTest(unittest.TestCase):
                 "selected_pre_observation_id": "voice-observation-1",
                 "selected_action_token": "voice-token-1",
                 "selected_target_fingerprint": "voice-fingerprint-1",
+                "message_viewport_change_digest": self.VIEWPORT_DIGEST,
             },
         )
 
@@ -209,6 +212,7 @@ class ActionJournalTest(unittest.TestCase):
                 "selected_pre_observation_id": "voice-before",
                 "selected_action_token": "voice-token-8",
                 "selected_target_fingerprint": "voice-fingerprint-8",
+                "message_viewport_change_digest": self.VIEWPORT_DIGEST,
             },
             pre_frame_id="frame-before",
             pre_action_identity_sequence=pre_sequence,

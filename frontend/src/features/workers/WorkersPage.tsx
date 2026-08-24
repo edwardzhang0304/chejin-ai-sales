@@ -46,6 +46,7 @@ function runningMeta(status: string, currentTask?: string | null) {
 
 function currentStatus(worker: WorkerItem) {
   if (worker.online_status !== "online") return { label: "离线", className: "unassigned" };
+  if (worker.run_status === "faulted") return { label: "客户端故障", className: "invalid" };
   const running = runningMeta(worker.running_status, worker.current_task);
   return { label: `在线 / ${running.label}`, className: running.className };
 }

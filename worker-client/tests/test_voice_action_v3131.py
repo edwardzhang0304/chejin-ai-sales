@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import hashlib
 import sys
 import tempfile
 import unittest
@@ -43,6 +44,161 @@ def _post_observation(observation_id: str = "voice-post") -> dict:
 
 
 class VoiceActionV3132Test(unittest.TestCase):
+    def test_public_voice_observation_strips_worker_owned_identity_namespace(self):
+        public = sidecar._public_voice_observation(
+            {
+                "observation_id": "win32_ocr:voice-1",
+                "sender_role": "customer",
+                "source_message_key": "forbidden-top-level",
+                "_worker_stable_id": "forbidden-private",
+                "source_message": {
+                    "id": "win32_ocr:voice-1",
+                    "source_message_key": "forbidden-nested",
+                    "commit_basis": "forbidden-nested",
+                },
+                "action_target": {"click_bounds": [1, 2, 3, 4]},
+            }
+        )
+
+        self.assertEqual(public["observation_id"], "win32_ocr:voice-1")
+        self.assertNotIn("source_message_key", public)
+        self.assertNotIn("_worker_stable_id", public)
+        self.assertNotIn("source_message_key", public["source_message"])
+        self.assertNotIn("commit_basis", public["source_message"])
+        self.assertNotIn("action_target", public)
+
+    EMPTY_VIEWPORT_DIGEST = hashlib.sha256(b"[]").hexdigest()
+
+    def setUp(self):
+        self._layout_patcher = patch.object(
+            sidecar,
+            "layout_snapshot_for_image",
+            return_value=self._uat_message_viewport_snapshot(),
+        )
+        self._layout_patcher.start()
+
+    def tearDown(self):
+        self._layout_patcher.stop()
+
+    @staticmethod
+    def _voice_fingerprint_observation() -> dict:
+        return {
+            "observation_id": "voice-a",
+            "voice_state": "untranscribed",
+            "sender_role": "customer",
+            "voice_duration": 4,
+            "voice_duration_text": '4"',
+            "bubble_rect": [479, 403, 523, 425],
+            "evidence_sources": ["parser", "ocr_duration"],
+            "source_message": {},
+            "action_target": {
+                "anchor_stable_key": "voice-stable:uat-caret-regression",
+                "avatar_alignment": {"role": "customer"},
+            },
+        }
+
+    @staticmethod
+    def _uat_message_viewport_snapshot() -> dict:
+        # Exact message viewport recorded by the 2026-08-23 Windows UAT.
+        # The blinking input caret was at x=399..400, y=849..871, below it.
+        return {
+            "valid": True,
+            "layout_snapshot_id": "uat-layout",
+            "chat_header_bounds": [374, 0, 920, 114],
+            "message_viewport_bounds": [374, 114, 920, 835],
+            "input_bounds": [374, 835, 920, 991],
+        }
+
+    def test_voice_fingerprint_ignores_only_blinking_input_caret(self):
+        without_caret = Image.new("RGB", (920, 991), (250, 250, 250))
+        with_caret = without_caret.copy()
+        for x in range(399, 401):
+            for y in range(849, 872):
+                with_caret.putpixel((x, y), (0, 195, 117))
+
+        observation = self._voice_fingerprint_observation()
+        snapshot = self._uat_message_viewport_snapshot()
+        with patch.object(
+            sidecar,
+            "layout_snapshot_for_image",
+            return_value=snapshot,
+        ):
+            without_caret_fingerprint = sidecar._voice_observation_fingerprint(
+                without_caret,
+                observation,
+            )
+            with_caret_fingerprint = sidecar._voice_observation_fingerprint(
+                with_caret,
+                observation,
+            )
+
+        self.assertEqual(
+            with_caret_fingerprint,
+            without_caret_fingerprint,
+        )
+
+    def test_voice_fingerprint_ignores_unrelated_viewport_pixels(self):
+        before = Image.new("RGB", (920, 991), (250, 250, 250))
+        after = before.copy()
+        after.putpixel((600, 500), (0, 195, 117))
+
+        observation = self._voice_fingerprint_observation()
+        snapshot = self._uat_message_viewport_snapshot()
+        with patch.object(
+            sidecar,
+            "layout_snapshot_for_image",
+            return_value=snapshot,
+        ):
+            before_fingerprint = sidecar._voice_observation_fingerprint(
+                before,
+                observation,
+            )
+            after_fingerprint = sidecar._voice_observation_fingerprint(
+                after,
+                observation,
+            )
+
+        self.assertEqual(after_fingerprint, before_fingerprint)
+
+    def test_normalized_viewport_digest_changes_for_a_new_message(self):
+        layout = {
+            "ok": True,
+            "layout_snapshot_id": "uat-layout",
+            "message_viewport_bounds": [374, 114, 920, 835],
+        }
+        before = sidecar.build_message_viewport_change_evidence(
+            [
+                {
+                    "row_kind": "voice_bubble",
+                    "message_type": "voice",
+                    "sender_role": "customer",
+                    "voice_state": "untranscribed",
+                    "voice_duration": 4,
+                    "bubble_rect": [479, 403, 523, 425],
+                }
+            ],
+            layout_evidence=layout,
+        )
+        after = sidecar.build_message_viewport_change_evidence(
+            [
+                *before["sequence"],
+                {
+                    "row_kind": "text_bubble",
+                    "message_type": "text",
+                    "sender_role": "customer",
+                    "content_clean": "新消息",
+                    "bubble_rect": [470, 450, 620, 490],
+                },
+            ],
+            layout_evidence=layout,
+        )
+
+        self.assertNotEqual(
+            before["message_viewport_change_digest"],
+            after["message_viewport_change_digest"],
+        )
+        self.assertFalse(before["raw_rgb_hash_used"])
+
     def test_two_frame_tracking_cannot_claim_continuous_binding(self):
         payload = {
             "canonical_voice_action_id": "action-1",
@@ -158,7 +314,12 @@ class VoiceActionV3132Test(unittest.TestCase):
                 selected_anchor_keys=set(),
             )
 
-    def _journal(self, directory: str) -> Path:
+    def _journal(
+        self,
+        directory: str,
+        *,
+        selected_target_fingerprint: str = "fingerprint-a",
+    ) -> Path:
         path = Path(directory) / "voice-action.json"
         initialize_action_journal(
             path,
@@ -180,11 +341,211 @@ class VoiceActionV3132Test(unittest.TestCase):
                 "pre_frame_id": "frame-a",
                 "selected_pre_observation_id": "voice-a",
                 "selected_action_token": "token-a",
-                "selected_target_fingerprint": "fingerprint-a",
+                "selected_target_fingerprint": selected_target_fingerprint,
+                "message_viewport_change_digest": self.EMPTY_VIEWPORT_DIGEST,
                 "candidate_group_count": 1,
+                "frame_action_binding": {
+                    "schema_version": 1,
+                    "status": "prepared",
+                    "pre_frame_id": "frame-a",
+                    "selected_pre_observation_id": "voice-a",
+                    "selected_action_token": "token-a",
+                    "selected_target_fingerprint": (
+                        selected_target_fingerprint
+                    ),
+                    "message_viewport_change_digest": (
+                        self.EMPTY_VIEWPORT_DIGEST
+                    ),
+                    "candidate_group_count": 1,
+                    "sender_role": "customer",
+                    "message_type": "voice",
+                },
             },
         )
         return path
+
+    def test_execute_reaches_one_click_when_only_input_caret_blinks(self):
+        without_caret = Image.new("RGB", (920, 991), (250, 250, 250))
+        with_caret = without_caret.copy()
+        for x in range(399, 401):
+            for y in range(849, 872):
+                with_caret.putpixel((x, y), (0, 195, 117))
+
+        candidate = {
+            **self._voice_fingerprint_observation(),
+            "visible_button_target": {
+                "click_bounds": [479, 403, 523, 425],
+                "layout_snapshot_id": "uat-layout",
+            },
+        }
+        snapshot = self._uat_message_viewport_snapshot()
+        click = Mock(return_value={"ok": False, "reason": "click_failed"})
+        wait_result = {
+            "screenshot": with_caret,
+            "screenshot_path": "execute-after.png",
+            "ocr_items": [],
+            "messages": [],
+            "image_size": with_caret.size,
+            "bound": [],
+            "read_count": 1,
+            "elapsed_seconds": 0.0,
+        }
+        with patch.object(
+            sidecar,
+            "layout_snapshot_for_image",
+            return_value=snapshot,
+        ):
+            fingerprint = sidecar._voice_observation_fingerprint(
+                without_caret,
+                candidate,
+            )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            journal = self._journal(
+                tmp,
+                selected_target_fingerprint=fingerprint,
+            )
+            with patch.object(
+                sidecar,
+                "capture_wechat",
+                return_value=(with_caret, "execute-before.png"),
+            ), patch.object(
+                sidecar,
+                "layout_snapshot_for_image",
+                return_value=snapshot,
+            ), patch.object(
+                sidecar,
+                "run_ocr",
+                return_value=[],
+            ), patch.object(
+                sidecar,
+                "parse_current_chat_frame_messages",
+                return_value=[],
+            ), patch.object(
+                sidecar,
+                "build_unified_voice_observations_v3",
+                return_value=[candidate],
+            ), patch.object(
+                sidecar,
+                "voice_context_anchor_exclusion_keys",
+                return_value={"anchor-a"},
+            ), patch.object(
+                sidecar,
+                "human_window_image_click_in_bounds",
+                click,
+            ), patch.object(
+                sidecar,
+                "_wait_for_voice_transcript_evidence",
+                return_value=wait_result,
+            ), patch.object(
+                sidecar,
+                "build_message_observations_v3",
+                return_value=[],
+            ):
+                result = sidecar.execute_voice_action_payload(
+                    1,
+                    {},
+                    target="CJKANFRK",
+                    artifact_dir=None,
+                    confirm_target="",
+                    confirm_exact=False,
+                    action_journal_path=str(journal),
+                    canonical_voice_action_id="action-1",
+                    reserved_worker_stable_id="worker-message-1",
+                    pre_frame_id="frame-a",
+                    selected_pre_observation_id="voice-a",
+                    selected_action_token="token-a",
+                    selected_target_fingerprint=fingerprint,
+                    message_viewport_change_digest=self.EMPTY_VIEWPORT_DIGEST,
+                )
+
+        self.assertNotEqual(
+            result["state"],
+            "voice_action_cancelled_before_trigger",
+        )
+        self.assertEqual(click.call_count, 1)
+
+    def test_execute_zero_clicks_when_same_slot_voice_neighbor_changes(self):
+        """The real execute gate must not trust the colliding viewport digest."""
+
+        screenshot = Image.new("RGB", (920, 991), (250, 250, 250))
+        prepared = {
+            **self._voice_fingerprint_observation(),
+            "source_adapter": "win32_ocr",
+            "native_source_message_id": "",
+            "screen_order": 1,
+            "neighbor_before_signature": "old-neighbor",
+            "neighbor_after_signature": "stable-neighbor",
+            "visible_button_target": {
+                "click_bounds": [479, 403, 523, 425],
+                "layout_snapshot_id": "uat-layout",
+            },
+        }
+        replacement = {
+            **prepared,
+            "neighbor_before_signature": "new-neighbor",
+        }
+        fingerprint = sidecar._voice_observation_fingerprint(
+            screenshot,
+            prepared,
+        )
+        click = Mock(return_value={"ok": True})
+
+        with tempfile.TemporaryDirectory() as tmp:
+            journal = self._journal(
+                tmp,
+                selected_target_fingerprint=fingerprint,
+            )
+            with patch.object(
+                sidecar,
+                "capture_wechat",
+                return_value=(screenshot, "execute-replacement.png"),
+            ), patch.object(
+                sidecar,
+                "run_ocr",
+                return_value=[],
+            ), patch.object(
+                sidecar,
+                "parse_current_chat_frame_messages",
+                return_value=[],
+            ), patch.object(
+                sidecar,
+                "build_unified_voice_observations_v3",
+                return_value=[replacement],
+            ), patch.object(
+                sidecar,
+                "build_message_observations_v3",
+                return_value=[],
+            ), patch.object(
+                sidecar,
+                "human_window_image_click_in_bounds",
+                click,
+            ):
+                result = sidecar.execute_voice_action_payload(
+                    1,
+                    {},
+                    target="CJREPL33",
+                    artifact_dir=None,
+                    confirm_target="",
+                    confirm_exact=False,
+                    action_journal_path=str(journal),
+                    canonical_voice_action_id="action-1",
+                    reserved_worker_stable_id="worker-message-1",
+                    pre_frame_id="frame-a",
+                    selected_pre_observation_id="voice-a",
+                    selected_action_token="token-a",
+                    selected_target_fingerprint=fingerprint,
+                    message_viewport_change_digest=(
+                        self.EMPTY_VIEWPORT_DIGEST
+                    ),
+                )
+
+        self.assertEqual(
+            result["state"],
+            "voice_action_cancelled_before_trigger",
+        )
+        self.assertEqual(result["action_phase"], "cancelled_before_trigger")
+        self.assertEqual(click.call_count, 0)
 
     def test_sidecar_stale_phase_write_cannot_overwrite_success_fact(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -265,6 +626,7 @@ class VoiceActionV3132Test(unittest.TestCase):
                     selected_pre_observation_id="voice-a",
                     selected_action_token="token-a",
                     selected_target_fingerprint="fingerprint-a",
+                    message_viewport_change_digest=self.EMPTY_VIEWPORT_DIGEST,
                 )
 
             self.assertEqual(
@@ -329,6 +691,7 @@ class VoiceActionV3132Test(unittest.TestCase):
                     selected_pre_observation_id="voice-a",
                     selected_action_token="token-a",
                     selected_target_fingerprint="fingerprint-a",
+                    message_viewport_change_digest=self.EMPTY_VIEWPORT_DIGEST,
                 )
 
             self.assertEqual(
@@ -394,6 +757,7 @@ class VoiceActionV3132Test(unittest.TestCase):
                     selected_pre_observation_id="voice-a",
                     selected_action_token="token-a",
                     selected_target_fingerprint="fingerprint-a",
+                    message_viewport_change_digest=self.EMPTY_VIEWPORT_DIGEST,
                 )
 
             self.assertEqual(result["state"], "voice_transcribe_ambiguous")
@@ -449,7 +813,7 @@ class VoiceActionV3132Test(unittest.TestCase):
             ), patch.object(
                 sidecar,
                 "build_message_observations_v3",
-                return_value=[failed_observation],
+                side_effect=[[], [failed_observation]],
             ), patch.object(
                 sidecar,
                 "_voice_observation_fingerprint",
@@ -481,6 +845,7 @@ class VoiceActionV3132Test(unittest.TestCase):
                     selected_pre_observation_id="voice-a",
                     selected_action_token="token-a",
                     selected_target_fingerprint="fingerprint-a",
+                    message_viewport_change_digest=self.EMPTY_VIEWPORT_DIGEST,
                 )
 
             self.assertEqual(result["state"], "voice_transcribe_ambiguous")

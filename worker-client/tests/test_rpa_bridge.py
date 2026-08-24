@@ -484,6 +484,7 @@ class RpaBridgeTest(unittest.TestCase):
                 selected_pre_observation_id="voice-observation-1",
                 selected_action_token="single-use-token",
                 selected_target_fingerprint="target-fingerprint",
+                message_viewport_change_digest="a" * 64,
                 remark_code="CJK7M4Q2",
                 target_mode="current",
                 expected_confirmed_self_text="已确认的 AI 回复",
@@ -521,6 +522,12 @@ class RpaBridgeTest(unittest.TestCase):
                 execute_args.index("--selected-target-fingerprint") + 1
             ],
             "target-fingerprint",
+        )
+        self.assertEqual(
+            execute_args[
+                execute_args.index("--message-viewport-change-digest") + 1
+            ],
+            "a" * 64,
         )
 
     def test_mock_bridge_emits_add_friend_steps_and_result(self):

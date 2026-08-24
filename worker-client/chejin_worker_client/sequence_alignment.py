@@ -25,6 +25,32 @@ IDENTITY_STATES = {
 }
 
 
+def require_selected_only_media_reservation(
+    observations: list[Any],
+    *,
+    selected_observation_id: str = "",
+) -> None:
+    """Reject a reserved identity on every unselected media candidate."""
+
+    selected_id = _token(selected_observation_id)
+    for observation in observations:
+        if not isinstance(observation, dict):
+            continue
+        observation_id = _token(observation.get("observation_id"))
+        if observation_id == selected_id:
+            continue
+        if _message_type(observation) not in {"voice", "image"}:
+            continue
+        stable_id = _token(observation.get("_worker_stable_id"))
+        identity_scope = _token(
+            observation.get("_worker_identity_scope")
+        )
+        if identity_scope == "current_read_provisional" or (
+            stable_id and identity_scope != "committed"
+        ):
+            raise ValueError("MESSAGE_IDENTITY_CONTRACT_INVALID")
+
+
 def normalized_content_hash(value: Any) -> str:
     normalized = canonical_message_identity_text(value)
     return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
@@ -57,6 +83,45 @@ def _source_value(item: dict[str, Any], key: str) -> str:
         nested = _token(source.get(key))
         if nested:
             return nested
+    return ""
+
+
+def _native_source_message_id(item: dict[str, Any]) -> str:
+    explicit = _source_value(item, "native_source_message_id")
+    if explicit:
+        return explicit
+    source = (
+        item.get("source_message")
+        if isinstance(item.get("source_message"), dict)
+        else {}
+    )
+    adapter = _token(
+        item.get("source_adapter") or source.get("source_adapter")
+    ).lower()
+    raw_id = _token(
+        source.get("id")
+        or source.get("message_id")
+        or item.get("source_message_id")
+    )
+    if (
+        raw_id
+        and adapter not in {
+            "win32_ocr",
+            "wechat_win32_ocr",
+            "rpa_ocr",
+            "ocr_rpa",
+        }
+        and not raw_id.lower().startswith(
+            (
+                "win32_ocr:",
+                "wechat_win32_ocr:",
+                "ocr:",
+                "screen_ocr:",
+                "uia_ocr:",
+            )
+        )
+    ):
+        return raw_id
     return ""
 
 
@@ -100,8 +165,8 @@ def observation_sequence_item(
         "sender_role": _token(observation.get("sender_role")).lower(),
         "message_type": message_type,
         "normalized_content_hash": normalized_content_hash(content),
-        "native_source_message_id": _source_value(
-            observation, "native_source_message_id"
+        "native_source_message_id": _native_source_message_id(
+            observation
         ),
         # Frame visual ids are diagnostic/click-local evidence only.  Keep
         # them in the sequence report so an incident can be reconstructed,
@@ -178,7 +243,6 @@ def build_pre_action_identity_sequence(
     observations: list[Any],
     *,
     committed_ids: dict[str, str] | None = None,
-    provisional_ids: dict[str, str] | None = None,
     selected_observation_id: str = "",
     canonical_action_id: str = "",
     reserved_worker_stable_id: str = "",
@@ -188,16 +252,40 @@ def build_pre_action_identity_sequence(
         for key, value in (committed_ids or {}).items()
         if _token(key) and _token(value)
     }
-    provisional = {
-        _token(key): _token(value)
-        for key, value in (provisional_ids or {}).items()
-        if _token(key) and _token(value)
-    }
     selected_id = _token(selected_observation_id)
     action_id = _token(canonical_action_id)
     reserved_id = _token(reserved_worker_stable_id)
     if selected_id and (not action_id or not reserved_id):
         raise ValueError("C2_SELECTED_ACTION_IDENTITY_MISSING")
+
+    # v0.9.33: only the one media row selected for the current physical
+    # action may carry a provisional Worker identity.
+    require_selected_only_media_reservation(
+        observations,
+        selected_observation_id=selected_id,
+    )
+    selected_observation = next(
+        (
+            observation
+            for observation in observations
+            if isinstance(observation, dict)
+            and _token(observation.get("observation_id")) == selected_id
+        ),
+        None,
+    )
+    if isinstance(selected_observation, dict):
+        selected_stable_id = _token(
+            selected_observation.get("_worker_stable_id")
+        )
+        selected_scope = _token(
+            selected_observation.get("_worker_identity_scope")
+        )
+        if (
+            selected_scope == "current_read_provisional"
+            and selected_stable_id
+            and selected_stable_id != reserved_id
+        ):
+            raise ValueError("MESSAGE_IDENTITY_CONTRACT_INVALID")
 
     sequence: list[dict[str, Any]] = []
     for observation in observations:
@@ -234,10 +322,6 @@ def build_pre_action_identity_sequence(
             )
         else:
             item["identity_state"] = "frame_local_unselected"
-            if observation_id in provisional:
-                item["provisional_worker_stable_id"] = provisional[
-                    observation_id
-                ]
         sequence.append(item)
     return sequence
 
@@ -303,7 +387,12 @@ def _compatible(
     )
     pre_native = _token(pre.get("native_source_message_id"))
     post_native = _token(post.get("native_source_message_id"))
-    if pre_native and post_native and pre_native != post_native:
+    if (
+        pre_native
+        and post_native
+        and pre_native != post_native
+        and strong_basis not in {"confirmed_action"}
+    ):
         return False, ""
     if pre.get("identity_state") == "selected_action" and not strong_basis:
         return False, ""
@@ -609,12 +698,6 @@ def align_committed_message_sequence(
             ),
             "match_basis": candidate["bases"][offset],
         }
-        if state == "frame_local_unselected":
-            provisional_id = _token(
-                pre_item.get("provisional_worker_stable_id")
-            )
-            if provisional_id:
-                pair["provisional_worker_stable_id"] = provisional_id
         pairs.append(pair)
     suffix_start = post_start + length
     evidence.update(
@@ -702,16 +785,6 @@ def apply_inherited_worker_ids(
         if isinstance(pair, dict)
         and _token(pair.get("post_observation_id"))
     }
-    provisional_identities = {
-        _token(pair.get("post_observation_id")): _token(
-            pair.get("provisional_worker_stable_id")
-        )
-        for pair in (evidence.get("matched_pairs") or [])
-        if isinstance(pair, dict)
-        and pair.get("identity_state") == "frame_local_unselected"
-        and _token(pair.get("post_observation_id"))
-        and _token(pair.get("provisional_worker_stable_id"))
-    }
     result: list[Any] = []
     for raw in observations:
         if not isinstance(raw, dict):
@@ -770,13 +843,6 @@ def apply_inherited_worker_ids(
                     message_type=str(observation.get("message_type") or ""),
                     proof=proof,
                 )
-            )
-        elif observation_id in provisional_identities:
-            observation["_worker_stable_id"] = provisional_identities[
-                observation_id
-            ]
-            observation["_worker_identity_scope"] = (
-                "current_read_provisional"
             )
         result.append(observation)
     return result

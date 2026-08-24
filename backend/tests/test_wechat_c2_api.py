@@ -270,6 +270,7 @@ def _voice_action_evidence(
         "selected_pre_observation_id": observations[0],
         "selected_action_token": "voice-token-test",
         "selected_target_fingerprint": "voice-fingerprint-test",
+        "message_viewport_change_digest": "d" * 64,
         "transcript_binding_status": "confirmed",
         "transcript_binding_method": "continuous_target_tracking",
         "binding_candidate_count": 1,
@@ -3933,7 +3934,7 @@ def test_message_batch_status_rejects_other_worker_and_returns_terminal_state():
 
 
 def test_v3_ingest_uses_canonical_content_and_rejects_expired_authorization_revision():
-    assert contract_revision() == "0.9.31"
+    assert contract_revision() == "0.9.33"
     location_recovery = c2_contract_v3()[
         "target_location_recovery_contract"
     ]

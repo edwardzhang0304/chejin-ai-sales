@@ -1620,6 +1620,7 @@ _OUTBOX_STABLE_VOICE_META_FIELDS = (
     "selected_pre_observation_id",
     "selected_action_token",
     "selected_target_fingerprint",
+    "message_viewport_change_digest",
     "reserved_worker_stable_id",
     "transcript_binding_status",
     "transcript_binding_method",

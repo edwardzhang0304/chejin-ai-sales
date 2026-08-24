@@ -35,6 +35,10 @@ from .subprocess_protocol import (
     require_unicode_protocol,
     subprocess_utf8_environment,
 )
+from .sequence_alignment import (
+    align_committed_message_sequence,
+    build_post_action_observation_sequence,
+)
 from .vision_credentials import (
     OFFICIAL_VISION_BASE_URL,
     OFFICIAL_VISION_MODEL,
@@ -621,7 +625,13 @@ class _WindowFrame:
                 else []
             )
             if not bool((layout_snapshot or {}).get("executable")) or len(message_viewport_bounds) != 4:
-                raise RuntimeError("WECHAT_UI_LAYOUT_UNRESOLVED")
+                image.close()
+                return {
+                    "ok": False,
+                    "reason": "C2_PRE_SEND_LAYOUT_INVALID",
+                    "reason_detail": "required_chat_layout_unavailable",
+                    "layout_evidence": dict(layout_snapshot or {}),
+                }
             self.state.current_frame_hwnd = hwnd
             self.state.current_layout_snapshot_id = str((layout_snapshot or {}).get("layout_snapshot_id") or "")
             self.state.current_frame_screen_origin = list(screen_origin)
@@ -689,6 +699,55 @@ class _WindowFrame:
                     str(item.get("id") or ""),
                 )
             )
+            build_observations = getattr(
+                self.state.host,
+                "build_message_observations_v3",
+                None,
+            )
+            build_viewport_evidence = getattr(
+                self.state.host,
+                "build_message_viewport_change_evidence",
+                None,
+            )
+            if not callable(build_observations) or not callable(
+                build_viewport_evidence
+            ):
+                image.close()
+                return {
+                    "ok": False,
+                    "reason": "C2_PRE_SEND_LAYOUT_INVALID",
+                    "reason_detail": "normalized_viewport_parser_missing",
+                }
+            normalized_observations = build_observations(messages)
+            viewport_change_evidence = build_viewport_evidence(
+                normalized_observations,
+                layout_evidence={
+                    "ok": True,
+                    "layout_snapshot_id": str(
+                        (layout_snapshot or {}).get("layout_snapshot_id")
+                        or ""
+                    ),
+                    "chat_header_bounds": list(
+                        (layout_snapshot or {}).get("chat_header_bounds")
+                        or []
+                    ),
+                    "message_viewport_bounds": message_viewport_bounds,
+                    "input_bounds": list(
+                        (layout_snapshot or {}).get("input_bounds") or []
+                    ),
+                },
+            )
+            if viewport_change_evidence.get("ok") is not True:
+                image.close()
+                return {
+                    "ok": False,
+                    "reason": "C2_PRE_SEND_LAYOUT_INVALID",
+                    "reason_detail": str(
+                        viewport_change_evidence.get("reason")
+                        or "normalized_viewport_digest_unavailable"
+                    ),
+                    "layout_evidence": viewport_change_evidence,
+                }
             time_markers = extract_chat_time_markers(
                 ocr_items,
                 image.size,
@@ -736,6 +795,16 @@ class _WindowFrame:
                 "image_size": image.size,
                 "ocr_items": ocr_items,
                 "messages": messages,
+                "observations": normalized_observations,
+                "message_viewport_change_evidence": (
+                    viewport_change_evidence
+                ),
+                "message_viewport_change_digest": str(
+                    viewport_change_evidence.get(
+                        "message_viewport_change_digest"
+                    )
+                    or ""
+                ),
                 "time_markers": time_markers,
                 "screen_origin": screen_origin,
                 "frame_hwnd": self.state.current_frame_hwnd,
@@ -1084,11 +1153,17 @@ def process_image_slot(
     action_journal_path: str | Path | None = None,
     action_local_id: str = "",
     artifact_dir: str | None = None,
+    frame_action_binding: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Run one authorized image slot through OmniAuto Vision in memory."""
 
     resolved_trace_id = str(trace_id or observation.get("observation_id") or "")
     normalized_action_local_id = str(action_local_id or "").strip()
+    normalized_frame_action_binding = (
+        dict(frame_action_binding)
+        if isinstance(frame_action_binding, dict)
+        else {}
+    )
 
     def journal_update(
         *,
@@ -1211,6 +1286,12 @@ def process_image_slot(
                 terminal_payload["confirmed_action_mapping"] = {
                     "canonical_action_id": action_id,
                     "reserved_worker_stable_id": reserved_id,
+                    "selected_action_token": str(
+                        normalized_frame_action_binding.get(
+                            "selected_action_token"
+                        )
+                        or ""
+                    ),
                     "pre_observation_id": observation_id,
                     "post_observation_id": observation_id,
                     "binding_confirmed": True,
@@ -1253,6 +1334,128 @@ def process_image_slot(
                 "image_persisted": False,
             },
         })
+
+    if normalized_frame_action_binding:
+        journal_payload = (
+            read_action_journal(action_journal_path)
+            if action_journal_path is not None
+            else {}
+        )
+        prepare_evidence = (
+            journal_payload.get("prepare_evidence")
+            if isinstance(journal_payload.get("prepare_evidence"), dict)
+            else {}
+        )
+        persisted_binding = (
+            prepare_evidence.get("frame_action_binding")
+            if isinstance(
+                prepare_evidence.get("frame_action_binding"), dict
+            )
+            else {}
+        )
+        items = (
+            journal_payload.get("items")
+            if isinstance(journal_payload.get("items"), dict)
+            else {}
+        )
+        journal_item = (
+            items.get(normalized_action_local_id)
+            if isinstance(items.get(normalized_action_local_id), dict)
+            else {}
+        )
+        observation_id = str(
+            observation.get("observation_id") or ""
+        ).strip()
+        required_text = (
+            "selected_action_token",
+            "pre_frame_id",
+            "selected_pre_observation_id",
+            "selected_target_fingerprint",
+            "message_viewport_change_digest",
+        )
+        binding_invalid = bool(
+            action_journal_path is None
+            or not normalized_action_local_id
+            or int(
+                normalized_frame_action_binding.get("schema_version")
+                or 0
+            )
+            != 1
+            or normalized_frame_action_binding.get("status")
+            != "prepared"
+            or any(
+                not str(normalized_frame_action_binding.get(key) or "").strip()
+                for key in required_text
+            )
+            or str(
+                normalized_frame_action_binding.get(
+                    "selected_pre_observation_id"
+                )
+                or ""
+            ).strip()
+            != observation_id
+            or str(
+                normalized_frame_action_binding.get("message_type") or ""
+            ).strip().lower()
+            != "image"
+            or str(
+                normalized_frame_action_binding.get("sender_role") or ""
+            ).strip().lower()
+            != str(observation.get("sender_role") or "").strip().lower()
+            or not isinstance(
+                normalized_frame_action_binding.get(
+                    "ordered_frame_observations"
+                ),
+                list,
+            )
+            or not normalized_frame_action_binding.get(
+                "ordered_frame_observations"
+            )
+            or persisted_binding != normalized_frame_action_binding
+            or str(journal_payload.get("action_kind") or "") != "image"
+            or not str(
+                journal_payload.get("canonical_action_id") or ""
+            ).strip()
+            or not str(
+                journal_payload.get("reserved_worker_stable_id") or ""
+            ).strip()
+            or str(journal_item.get("action_phase") or "not_attempted")
+            != "not_attempted"
+        )
+        if binding_invalid:
+            current_phase = str(
+                journal_item.get("action_phase") or "not_attempted"
+            ).strip()
+            return {
+                "state": "failed",
+                "reason": "C2_IMAGE_EXECUTE_CONTRACT_INVALID",
+                "action_phase": current_phase,
+                "business_state": (
+                    str(journal_item.get("business_state") or "failed")
+                    if current_phase != "not_attempted"
+                    else "not_attempted"
+                ),
+                "business_result_confirmed": False,
+                "ui_action_performed": False,
+                "diagnostics": {
+                    "schema_version": 1,
+                    "trace_id": resolved_trace_id,
+                    "total_duration_ms": 0,
+                    "events": [
+                        {
+                            "sequence": 1,
+                            "stage": "image_frame_action_binding",
+                            "status": "failed",
+                            "offset_ms": 0,
+                            "reason": (
+                                "C2_IMAGE_EXECUTE_CONTRACT_INVALID"
+                            ),
+                            "image_persisted": False,
+                        }
+                    ],
+                    "image_persisted": False,
+                },
+            }
 
     role = str(observation.get("sender_role") or "").strip().lower()
     role_source = str(
@@ -1421,6 +1624,35 @@ def process_image_slot(
                 "bubble_rect": bubble_rect,
                 "image_physical_anchor": dict(image_physical_anchor),
                 "message_id": str(observation.get("observation_id") or ""),
+                "expected_message_viewport_change_digest": str(
+                    observation.get(
+                        "_expected_message_viewport_change_digest"
+                    )
+                    or ""
+                ),
+                **(
+                    {
+                        "expected_image_candidate_group_count": int(
+                            normalized_frame_action_binding.get(
+                                "candidate_group_count"
+                            )
+                            or 0
+                        ),
+                        "selected_action_token": str(
+                            normalized_frame_action_binding.get(
+                                "selected_action_token"
+                            )
+                            or ""
+                        ),
+                    }
+                    if normalized_frame_action_binding
+                    else {}
+                ),
+                "c2_operation_phase": str(
+                    observation.get("_c2_operation_phase")
+                    or "authorized_read"
+                ),
+                "message_viewport_guard_required": True,
                 "customer_text": "客户发送了一张图片" if role == "customer" else "销售发送了一张图片",
                 "config": runtime_config,
                 "cancel_check": cancel_check,

@@ -1,8 +1,8 @@
 {
   "generated_file": true,
   "source": "contracts/c2_contract_v3.json",
-  "contract_revision": "0.9.31",
-  "contract_sha256": "74b66af403e007a8739a4b22c18bbfa4d9ba0a38838150a15144e0337a5f7f26",
+  "contract_revision": "0.9.33",
+  "contract_sha256": "44fd053283d6af73fb945759db5f1ccb6d91ea479954d27990e24b485bed2b8e",
   "observation_schema_version": 3,
   "action_phases": [
     "not_attempted",
@@ -316,7 +316,10 @@
       "C2_IMAGE_CLIPBOARD_CLEAR_FAILED",
       "C2_IMAGE_VISION_CONFIG_INVALID",
       "C2_IMAGE_UNDERSTANDING_SCHEMA_INVALID",
-      "C2_IMAGE_UNDERSTANDING_FAILED"
+      "C2_IMAGE_UNDERSTANDING_FAILED",
+      "C2_IMAGE_REIDENTIFICATION_REQUIRED",
+      "C2_PRE_SEND_IMAGE_TARGET_NOT_FOUND",
+      "C2_PRE_SEND_LAYOUT_INVALID"
     ],
     "default_failure_error_code": "C2_IMAGE_UNDERSTANDING_FAILED",
     "failure_reason_to_error_code": {
@@ -330,6 +333,9 @@
       "vision_window_frame_unavailable": "C2_IMAGE_OBSERVATION_FAILED",
       "vision_window_frame_invalid": "C2_IMAGE_OBSERVATION_FAILED",
       "vision_window_message_parse_failed": "C2_IMAGE_OBSERVATION_FAILED",
+      "C2_PRE_SEND_LAYOUT_INVALID": "C2_PRE_SEND_LAYOUT_INVALID",
+      "C2_PRE_SEND_IMAGE_TARGET_NOT_FOUND": "C2_PRE_SEND_IMAGE_TARGET_NOT_FOUND",
+      "C2_IMAGE_REIDENTIFICATION_REQUIRED": "C2_IMAGE_REIDENTIFICATION_REQUIRED",
       "C2_IMAGE_SLOT_RECONFIRM_FAILED": "C2_IMAGE_SLOT_RECONFIRM_FAILED",
       "MESSAGE_IDENTITY_UNCONFIRMED": "C2_IMAGE_SLOT_RECONFIRM_FAILED",
       "image_sender_role_untrusted": "C2_IMAGE_SLOT_RECONFIRM_FAILED",
@@ -891,6 +897,7 @@
       "selected_pre_observation_id",
       "selected_action_token",
       "selected_target_fingerprint",
+      "message_viewport_change_digest",
       "candidate_group_count",
       "ui_action_performed"
     ],
@@ -900,7 +907,8 @@
       "pre_frame_id",
       "selected_pre_observation_id",
       "selected_action_token",
-      "selected_target_fingerprint"
+      "selected_target_fingerprint",
+      "message_viewport_change_digest"
     ],
     "required_response_fields": [
       "voice_action_stage",
@@ -911,6 +919,7 @@
       "selected_pre_observation_id",
       "selected_action_token",
       "selected_target_fingerprint",
+      "message_viewport_change_digest",
       "transcript_binding_status",
       "transcript_binding_method",
       "binding_candidate_count",
@@ -969,6 +978,120 @@
     "worker_behavior": "validate_and_forward_sidecar_mapping_without_anchor_content_or_coordinate_reconstruction",
     "invalid_behavior": "C2_VOICE_IDENTITY_CONTRACT_INVALID"
   },
+  "frame_action_binding_contract": {
+    "release": "0.9.33",
+    "purpose": "prove_only_that_the_worker_selected_unique_frame_local_target_is_still_safe_to_operate_inside_the_current_ui_transaction",
+    "durable_identity": false,
+    "observation_owner": "sidecar",
+    "admission_owner": "worker",
+    "required_prepare_evidence": [
+      "selected_action_token",
+      "pre_frame_id",
+      "selected_pre_observation_id",
+      "selected_target_fingerprint",
+      "candidate_group_count",
+      "ordered_frame_observations"
+    ],
+    "sidecar_execute_checks": [
+      "token_unconsumed",
+      "same_authorized_private_conversation",
+      "one_unique_current_local_target",
+      "local_target_matches_frame_action_binding",
+      "no_relevant_message_sequence_change"
+    ],
+    "sidecar_may_return": [
+      "raw_current_observations",
+      "frame_changed",
+      "target_not_found",
+      "target_ambiguous",
+      "cancelled_before_trigger",
+      "action_receipt"
+    ],
+    "sidecar_must_not_return": [
+      "same_business_message",
+      "worker_stable_id",
+      "source_message_key",
+      "commit_basis"
+    ],
+    "worker_rules": {
+      "normal_unchanged_unique_target": "allow_exactly_one_physical_action",
+      "relevant_frame_change": "invalidate_old_binding_and_rearbitrate_from_latest_frame_according_to_operation_phase",
+      "not_found_or_ambiguous": "zero_click_and_return_specific_error",
+      "confirmed_or_uniquely_failed_receipt": "commit_reserved_identity_through_the_single_worker_commit_gate",
+      "triggered_result_unresolved": "preserve_action_journal_and_forbid_reclick"
+    },
+    "absence_of_native_id_behavior": "supported_and_not_a_standalone_reason_to_block_first_action",
+    "forbidden_shortcuts": [
+      "sidecar_business_identity_decision",
+      "backend_identity_reconstruction",
+      "role_type_duration_position_as_durable_identity",
+      "current_confirmed_action_mapping_required_before_current_action",
+      "worker_stable_id_required_before_current_action"
+    ]
+  },
+  "pre_send_message_viewport_contract": {
+    "release": "0.9.33",
+    "selected_target_fingerprint_scope": "one_selected_message_type_role_relative_quantized_bounds_required_neighbors_and_sequence_position_only",
+    "selected_target_forbidden_inputs": [
+      "message_viewport_change_digest",
+      "raw_message_viewport_rgb",
+      "raw_full_wechat_rgb",
+      "input_caret_pixels",
+      "toolbar_pixels",
+      "sidebar_pixels",
+      "hover_or_selection_pixels",
+      "voice_playback_animation_pixels",
+      "gif_animation_frame_pixels"
+    ],
+    "message_viewport_change_digest_schema_version": 2,
+    "message_viewport_change_digest_fields": [
+      "screen_order",
+      "sender_role",
+      "message_type",
+      "relative_quantized_bounds",
+      "stable_content_signature",
+      "media_state"
+    ],
+    "message_viewport_change_digest_rule": "sha256_of_canonical_json_from_the_ordered_normalized_production_observation_sequence_only",
+    "ignored_dynamic_visuals": [
+      "input_caret",
+      "bottom_toolbar",
+      "sidebar",
+      "other_conversation_activity",
+      "gif_or_animated_emoji_frame",
+      "scrollbar",
+      "hover_effect",
+      "voice_playback_or_progress_animation",
+      "red_dot",
+      "selection_border"
+    ],
+    "raw_rgb_hash_forbidden": true,
+    "full_screen_hash_fallback_forbidden": true,
+    "layout_required_regions": [
+      "chat_header_bounds",
+      "message_viewport_bounds",
+      "input_bounds"
+    ],
+    "layout_invalid_error": "C2_PRE_SEND_LAYOUT_INVALID",
+    "layout_invalid_terminal_rule": "cancel_old_reply_set_task_and_flow_technical_failed_release_ui_lock_set_worker_faulted_and_forbid_handoff_or_automatic_retry",
+    "maximum_full_reidentification_count": 1,
+    "changed_again_error": "C2_PRE_SEND_MESSAGE_VIEWPORT_CHANGED_AGAIN",
+    "pre_send_specific_errors": [
+      "C2_PRE_SEND_TEXT_CONTENT_UNREADABLE",
+      "C2_PRE_SEND_MESSAGE_SEQUENCE_ALIGNMENT_FAILED",
+      "C2_PRE_SEND_MESSAGE_ROLE_UNCONFIRMED",
+      "C2_PRE_SEND_VOICE_TARGET_NOT_FOUND",
+      "C2_PRE_SEND_VOICE_TARGET_AMBIGUOUS",
+      "C2_PRE_SEND_IMAGE_TARGET_NOT_FOUND",
+      "C2_PRE_SEND_IMAGE_TARGET_AMBIGUOUS",
+      "C2_PRE_SEND_SYSTEM_CONTENT_UNREADABLE",
+      "C2_PRE_SEND_SYSTEM_CLASSIFICATION_UNRESOLVED",
+      "C2_PRE_SEND_MESSAGE_VIEWPORT_CHANGED_AGAIN",
+      "C2_PRE_SEND_LAYOUT_INVALID"
+    ],
+    "obsolete_production_error": "C2_VOICE_PREPARE_TARGET_UNSTABLE",
+    "physical_media_action_rule": "each_voice_or_image_action_may_trigger_at_most_once_and_post_trigger_waits_are_passive_evidence_reads_only"
+  },
   "target_location_recovery_contract": {
     "owner": "omniauto_observation_worker_execution",
     "error_code": "C2_VISIBLE_TARGET_STALE_AFTER_CLICK",
@@ -1011,7 +1134,7 @@
     }
   },
   "startup_layout_calibration_contract": {
-    "schema_version": "0.9.31",
+    "schema_version": "0.9.33",
     "owner": "omniauto",
     "worker_role": "persist_path_transport_contract_validation_and_execution_only",
     "single_runtime_path": true,

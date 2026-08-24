@@ -32,7 +32,7 @@ from app.services.worker_token_service import (
 
 ONLINE_TIMEOUT_SECONDS = 120
 OFFLINE_TASK_NOTICE_SECONDS = 600
-RUN_STATUS_VALUES = {"running", "paused"}
+RUN_STATUS_VALUES = {"running", "paused", "faulted"}
 RPA_COMPONENT_STATUS_VALUES = {"ready", "unavailable"}
 RUNNING_TASK_STATUSES = {"running"}
 RUNNING_STATUS_VALUES = {"idle", "running"}
@@ -290,7 +290,7 @@ def set_worker_run_status(
     if payload.run_status not in RUN_STATUS_VALUES:
         raise AppError("WORKER_RUN_STATUS_INVALID", "Worker 接单状态不合法", 400)
     worker.run_status = payload.run_status
-    if payload.run_status == "paused":
+    if payload.run_status in {"paused", "faulted"}:
         current = dict(worker.inflight_flow_state or {})
         if current.get("status") == "active" and current.get("flow_id"):
             current["status"] = "draining"

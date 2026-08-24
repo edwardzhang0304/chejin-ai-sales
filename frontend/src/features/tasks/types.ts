@@ -82,6 +82,7 @@ export type TaskListItem = {
       device_name: string | null;
       enabled: boolean;
       online_status: string | null;
+      run_status: string | null;
       running_status: string | null;
       current_task: string | null;
       last_heartbeat_at: string | null;

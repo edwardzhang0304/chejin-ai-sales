@@ -785,7 +785,15 @@ def image_bubble_visual_fingerprint(
     screenshot: Image.Image,
     bounds: Any,
 ) -> str:
-    """Return the one shared movement-stable fingerprint for an image bubble."""
+    """Return local, current-frame evidence for one image bubble.
+
+    The perceptual dHash keeps the existing tolerant comparison available for
+    diagnostics.  The second component is deliberately stricter: it hashes a
+    quantized inset thumbnail so two different pictures that happen to share a
+    dHash cannot inherit the same frame-action ticket merely because they
+    occupy the same slot.  This value is action evidence only; it is never a
+    durable message identity.
+    """
 
     rect = _visual_bounds(bounds)
     if rect is None:
@@ -810,7 +818,31 @@ def image_bubble_visual_fingerprint(
             for column in range(8)
         ]
         value = sum(bit << index for index, bit in enumerate(bits))
-        return f"dhash64:{value:016x}"
+        width, height = crop.size
+        inset_x = max(2, int(width * 0.04))
+        inset_y = max(2, int(height * 0.04))
+        if width - inset_x * 2 >= 24 and height - inset_y * 2 >= 24:
+            content = crop.crop(
+                (inset_x, inset_y, width - inset_x, height - inset_y)
+            )
+        else:
+            content = crop.copy()
+        try:
+            normalized = content.convert("RGB").resize((24, 24), resampling)
+            try:
+                # Four bits per channel absorb tiny capture noise while still
+                # separating visually similar but physically different media.
+                quantized = bytes(
+                    int(channel) & 0xF0
+                    for pixel in normalized.getdata()
+                    for channel in pixel[:3]
+                )
+            finally:
+                normalized.close()
+        finally:
+            content.close()
+        content_digest = hashlib.sha256(quantized).hexdigest()
+        return f"imagev2:{value:016x}:{content_digest}"
     finally:
         crop.close()
 
@@ -820,15 +852,37 @@ def image_visual_fingerprint_distance(left: Any, right: Any) -> int | None:
 
     left_text = str(left or "").strip().lower()
     right_text = str(right or "").strip().lower()
-    if not left_text.startswith("dhash64:") or not right_text.startswith("dhash64:"):
+    def dhash_value(value: str) -> str:
+        if value.startswith("dhash64:"):
+            return value.split(":", 1)[1]
+        if value.startswith("imagev2:"):
+            parts = value.split(":", 2)
+            return parts[1] if len(parts) == 3 else ""
+        return ""
+
+    left_hash = dhash_value(left_text)
+    right_hash = dhash_value(right_text)
+    if not left_hash or not right_hash:
         return None
     try:
-        return (
-            int(left_text.split(":", 1)[1], 16)
-            ^ int(right_text.split(":", 1)[1], 16)
-        ).bit_count()
+        return (int(left_hash, 16) ^ int(right_hash, 16)).bit_count()
     except (TypeError, ValueError):
         return None
+
+
+def image_visual_static_content_matches(left: Any, right: Any) -> bool:
+    """Return whether both current-frame fingerprints prove identical content."""
+
+    left_parts = str(left or "").strip().lower().split(":", 2)
+    right_parts = str(right or "").strip().lower().split(":", 2)
+    return bool(
+        len(left_parts) == 3
+        and len(right_parts) == 3
+        and left_parts[0] == "imagev2"
+        and right_parts[0] == "imagev2"
+        and len(left_parts[2]) == 64
+        and left_parts[2] == right_parts[2]
+    )
 
 
 def stable_image_neighbor_signature(message: dict[str, Any]) -> str:

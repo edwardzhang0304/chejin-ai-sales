@@ -504,6 +504,8 @@ class WorkerWebWindow(QMainWindow):
                 or self.last_result
             )
             return "offline" if has_local_process else "offline-empty"
+        if self.binding.run_status == "faulted":
+            return "automation-unavailable"
         schedule_active = self.is_accept_schedule_active()
         if self.current_task and (self.binding.run_status == "paused" or not schedule_active):
             return "paused-running"
@@ -556,7 +558,13 @@ class WorkerWebWindow(QMainWindow):
         profile = self.profile
         offline = self.connection_status == "offline"
         schedule_active = self.is_accept_schedule_active()
-        receive_state = "接单中" if run_status == "running" and schedule_active else "暂停接单"
+        receive_state = (
+            "客户端故障"
+            if run_status == "faulted"
+            else "接单中"
+            if run_status == "running" and schedule_active
+            else "暂停接单"
+        )
         return {
             "workerId": self.binding.worker_id if self.binding else "",
             "workerToken": self.binding.worker_token if self.binding else "",
@@ -622,6 +630,12 @@ class WorkerWebWindow(QMainWindow):
                     model["metaText"] = "正在暂停，当前客户处理完后停止"
                 else:
                     model["statusText"] = "已暂停接单"
+            return model
+        if run_status == "faulted":
+            model["statusText"] = "客户端故障"
+            model["metaText"] = (
+                "微信基本布局无法建立，已停止领取新任务。"
+            )
             return model
         if offline:
             model["statusText"] = "离线"
@@ -821,6 +835,10 @@ class WorkerWebWindow(QMainWindow):
 
     def set_accepting(self, accepting: bool) -> None:
         if not self.binding:
+            return
+        if accepting and self.binding.run_status == "faulted":
+            self.notice = "客户端处于故障状态，本次运行禁止继续接单。"
+            self._publish()
             return
         next_status = "running" if accepting else "paused"
         self.runner.set_run_status(next_status)
