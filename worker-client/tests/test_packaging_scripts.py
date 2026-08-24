@@ -506,7 +506,7 @@ class PackagingScriptsTest(unittest.TestCase):
             [
                 {
                     "source_commit": (
-                        "3fd52f4e3088acdf5af63eff818fbbfdf9d7aa6e"
+                        "61606d645de2c575ad3113de577e0f90d87a41f0"
                     ),
                     "scope": [
                         "exact_wechat_context_menu_classification",
@@ -534,7 +534,7 @@ class PackagingScriptsTest(unittest.TestCase):
                         "source_message_transport_allowlist",
                         "typed_committed_media_identity_contract",
                         "media_action_four_terminal_contract",
-                        "c2_contract_0_9_31_generated_schema",
+                        "c2_contract_0_9_33_generated_schema",
                         (
                             "voice_frame_action_binding_observation_"
                             "projection_contract"
@@ -636,6 +636,17 @@ class PackagingScriptsTest(unittest.TestCase):
                             "contract"
                         ),
                         "legacy_media_owner_unknown_audit_contract",
+                        (
+                            "normalized_message_viewport_dynamic_noise_"
+                            "exclusion_contract"
+                        ),
+                        "frame_action_binding_not_durable_identity_contract",
+                        "sidecar_worker_identity_fields_forbidden_contract",
+                        "selected_current_media_reservation_only_contract",
+                        "voice_then_image_single_action_per_frame_contract",
+                        "authoritative_final_frame_screen_order_contract",
+                        "pre_send_single_full_reidentification_contract",
+                        "layout_invalid_faulted_worker_evidence_contract",
                     ],
                 }
             ],
@@ -657,10 +668,18 @@ class PackagingScriptsTest(unittest.TestCase):
             provenance["chejin_overlays"],
         )
         self.assertIn(
-            "3fd52f4e3088acdf5af63eff818fbbfdf9d7aa6e",
+            "61606d645de2c575ad3113de577e0f90d87a41f0",
             provenance["integration_note"],
         )
-        self.assertIn("0.9.31", provenance["integration_note"])
+        self.assertIn("0.9.33", provenance["integration_note"])
+        self.assertIn(
+            "worker_owned_message_identity_sequence_and_commit_gate_contract",
+            provenance["chejin_overlays"],
+        )
+        self.assertIn(
+            "selected_current_media_reservation_only_contract",
+            provenance["chejin_overlays"],
+        )
         self.assertIn("不重复点击", provenance["integration_note"])
         self.assertIn("旧剪贴板不能形成图片事实", provenance["integration_note"])
         self.assertIn("无界面的语音/图片 ActionJournal 恢复", provenance["integration_note"])
