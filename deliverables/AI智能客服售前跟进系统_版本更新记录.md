@@ -29,11 +29,11 @@
 | 下一期优化版本系列 | `1.1.x`；承接本记录第 8 节清单，不反向覆盖 `1.0.x` 正式产物 |
 | 灰度分支 | `codex/gray-release-0.9.x`；从完整候选收口后建立，禁止混入下一期功能 |
 | 当前机器合同 | Worker、Sidecar、后端和生成 Schema 已在本地统一为 `contract_revision=0.9.35`，规范化 SHA `7f6144fe1bf57c9a32f4f7c797f1b03a8e52f1e5c62f52f381f65b0001b0aaf2`；禁止与 `0.9.34` 混跑 |
-| 来源治理 | `.chejin-source.json` 已绑定 `0.9.35` 真实功能提交 `8474780697a8566468ba33472f01295327e7c751`；当前待形成来源治理提交 |
+| 来源治理 | `.chejin-source.json` 已绑定 `0.9.35` 真实功能提交 `8474780697a8566468ba33472f01295327e7c751`；来源治理提交已固定为 `f6ddc1fc049287ba61906a8d9fd1c1c88da27b2f` |
 | PRD | v0.9.10 |
 | 技术方案 | v0.9.35 是当前唯一技术口径；保留 v0.9.34 身份边界，只收口 Windows 发布门禁和连接释放 |
 | 全流程图 | v0.9.35 为当前唯一流程图；Sidecar → Worker → 后端的权限、顺序和业务状态机不变 |
-| 发布状态 | `0.9.34` 已有标签和 ZIP，本次修复不得覆盖。`0.9.35` 功能提交和来源绑定已完成；尚未形成来源治理提交、推送、标签、ZIP、GitHub Windows 完整门禁或 Windows 实机 UAT |
+| 发布状态 | `0.9.34` 已有标签和 ZIP，本次修复不得覆盖。`0.9.35` 功能提交、来源绑定和来源治理提交已完成；尚未推送、打标签、生成 ZIP、通过 GitHub Windows 完整门禁或完成 Windows 实机 UAT |
 
 ### 2.0.34 2026-08-25：Windows 完整发布门禁收口升为 0.9.35
 
@@ -41,7 +41,7 @@
 - CI/测试基础设施修正包括：未安装 `pytest` 时跳过仅依赖外部截图的可选证据模块；测试 Journal 使用 Windows 合法文件名；临时 SQLite 删除前显式停止事故上报线程；遥测 SQLite 连接离开事务后强制关闭。
 - 受影响夹具统一使用真实生产形状：显式声明 `source_adapter=win32_ocr`，补齐本帧动作绑定、当前允许的新图片集合和已提交历史媒体范围，并严格分开 Sidecar 原始观察与 Worker 增强身份。
 - 错误码职责不变：Sidecar 原始返回泄漏 Worker 身份字段时仍返回 `C2_SIDECAR_IDENTITY_CONTRACT_INVALID`；Sidecar 合法、但 Worker 图片身份对象非法时仍返回 `C2_IMAGE_IDENTITY_CONTRACT_INVALID`。测试不得跨层注入字段制造不真实合同冲突。
-- 本轮不修改 C0—C4、媒体动作顺序、Brain/Guard、Handoff、UI 锁、后端接口或发送回执流程；真实功能提交已固定为 `8474780697a8566468ba33472f01295327e7c751` 并完成来源绑定，来源治理提交、推送、标签、ZIP、GitHub Windows 完整门禁和 Windows 实机 UAT 均未完成。
+- 本轮不修改 C0—C4、媒体动作顺序、Brain/Guard、Handoff、UI 锁、后端接口或发送回执流程；真实功能提交已固定为 `8474780697a8566468ba33472f01295327e7c751` 并完成来源绑定，来源治理提交已固定为 `f6ddc1fc049287ba61906a8d9fd1c1c88da27b2f`；推送、标签、ZIP、GitHub Windows 完整门禁和 Windows 实机 UAT 均未完成。
 
 ### 2.0.33 2026-08-25：Sidecar 身份输出边界修正升为 0.9.34
 
