@@ -213,7 +213,10 @@ class WechatWin32OcrVoiceSelectionTest(unittest.TestCase):
             }
         )
         with tempfile.TemporaryDirectory() as tmp:
-            journal_path = Path(tmp) / f"{action_id}.json"
+            # The production ActionJournal path hashes the action id.  This
+            # helper only needs an isolated file and must not place an OCR id
+            # containing ':' directly in a Windows filename.
+            journal_path = Path(tmp) / "voice-action-journal.json"
             initialize_action_journal(
                 journal_path,
                 action_kind="voice",

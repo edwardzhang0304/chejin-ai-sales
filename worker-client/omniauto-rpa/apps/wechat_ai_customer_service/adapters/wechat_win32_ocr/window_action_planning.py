@@ -29,7 +29,7 @@ def plan_normalize_wechat_window(
     minimum_client_width: int = 700,
     minimum_client_height: int = 720,
 ) -> dict[str, Any]:
-    """Plan the single v0.9.34 startup placement on the HWND monitor.
+    """Plan the single v0.9.35 startup placement on the HWND monitor.
 
     The values are outer-window targets.  Actual client geometry is read and
     validated only after MoveWindow; the planner never guesses it from screen

@@ -190,7 +190,7 @@ _LAYOUT_SNAPSHOT_ID_BY_IMAGE_ID: dict[int, str] = {}
 _DPI_AWARENESS_STATUS: dict[str, Any] = {}
 STARTUP_CALIBRATION_PATH = Path(
     os.getenv("CHEJIN_WECHAT_STARTUP_CALIBRATION_PATH")
-    or (PROJECT_ROOT / "runtime" / "wechat_startup_layout_calibration_v0.9.34.json")
+    or (PROJECT_ROOT / "runtime" / "wechat_startup_layout_calibration_v0.9.35.json")
 )
 RENDER_RECOVERY_GUARD_PATH = PROJECT_ROOT / "runtime" / "wechat_win32_ocr_render_recovery_guard.json"
 MIN_SEND_CLIENT_WIDTH = 700
@@ -1325,7 +1325,7 @@ def run_action(args: argparse.Namespace) -> dict[str, Any]:
                     or "startup_calibration_missing_or_stale"
                 ),
             )
-    # v0.9.34 has exactly one geometry owner: the startup normalize action.
+    # v0.9.35 has exactly one geometry owner: the startup normalize action.
     # C1-C4 must never move, resize, restore, or re-normalize the window.
     if action == "normalize-window":
         blocking_windows: list[dict[str, Any]] = []
@@ -6500,7 +6500,7 @@ def classify_pre_send_system_message(value: Any) -> str:
     """Classify only explicitly known WeChat system semantics.
 
     An unfamiliar readable row stays unresolved.  This is deliberately
-    fail-closed: v0.9.34 forbids pretending that every readable system row is
+    fail-closed: v0.9.35 forbids pretending that every readable system row is
     an ordinary status.
     """
 
@@ -18108,7 +18108,7 @@ def build_and_store_startup_calibration(
     *,
     artifact_dir: str | None = None,
 ) -> dict[str, Any]:
-    """Capture one exact client frame and build the sole v0.9.34 shell map."""
+    """Capture one exact client frame and build the sole v0.9.35 shell map."""
 
     dpi_awareness = ensure_dpi_awareness_status()
     if not dpi_awareness.get("per_monitor_aware"):

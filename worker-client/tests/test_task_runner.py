@@ -2011,6 +2011,7 @@ class TaskRunnerTest(unittest.TestCase):
         observation = {
             "schema_version": 3,
             "observation_id": observation_id,
+            "source_adapter": "win32_ocr",
             "row_kind": "text_bubble",
             "sender_role": sender_role,
             "sender_role_source": "same_row_avatar",
@@ -2021,6 +2022,7 @@ class TaskRunnerTest(unittest.TestCase):
                 "id": observation_id,
                 "type": "text",
                 "sender_role": sender_role,
+                "source_adapter": "win32_ocr",
             },
         }
         if stable_id:
@@ -4363,41 +4365,50 @@ class TaskRunnerTest(unittest.TestCase):
                 "chejin_worker_client.storage.DB_FILE",
                 database_path,
             ):
-                api = FakeApi(None)
-                bridge = FakeBridge(
-                    RpaResult(
-                        ok=True,
-                        result_code="unused",
-                        message="unused",
+                try:
+                    api = FakeApi(None)
+                    bridge = FakeBridge(
+                        RpaResult(
+                            ok=True,
+                            result_code="unused",
+                            message="unused",
+                        )
                     )
-                )
-                runner, _ = self.make_runner(api, bridge)
-                binding = Binding(
-                    worker_id="worker-legacy-owner-unknown",
-                    worker_token="token",
-                    client_instance_id="client-legacy-owner-unknown",
-                    run_status="running",
-                )
-                runner.binding = binding
-                flow_id = "read-legacy-sqlite-owner-unknown"
-                runner._restart_recovery_flow_id = flow_id
+                    runner, _ = self.make_runner(api, bridge)
+                    binding = Binding(
+                        worker_id="worker-legacy-owner-unknown",
+                        worker_token="token",
+                        client_instance_id="client-legacy-owner-unknown",
+                        run_status="running",
+                    )
+                    runner.binding = binding
+                    flow_id = "read-legacy-sqlite-owner-unknown"
+                    runner._restart_recovery_flow_id = flow_id
 
-                runner.tick_once()
+                    runner.tick_once()
 
-                state = load_legacy_media_recovery(flow_id)
-                self.assertEqual(
-                    state["decision"],
-                    "legacy_owner_unknown_incident",
-                )
-                self.assertEqual(state["status"], "archived")
-                self.assertIsNone(load_runtime_control()["inflight_flow_id"])
-                self.assertEqual(len(api.legacy_recovery_payloads), 1)
-                self.assertIsNone(
-                    api.legacy_recovery_payloads[0]["conversation_id"]
-                )
-                self.assertEqual(api.message_payloads, [])
-                self.assertIn("pull", api.events)
-                self.assertEqual(bridge.voice_transcribes, [])
+                    state = load_legacy_media_recovery(flow_id)
+                    self.assertEqual(
+                        state["decision"],
+                        "legacy_owner_unknown_incident",
+                    )
+                    self.assertEqual(state["status"], "archived")
+                    self.assertIsNone(
+                        load_runtime_control()["inflight_flow_id"]
+                    )
+                    self.assertEqual(len(api.legacy_recovery_payloads), 1)
+                    self.assertIsNone(
+                        api.legacy_recovery_payloads[0]["conversation_id"]
+                    )
+                    self.assertEqual(api.message_payloads, [])
+                    self.assertIn("pull", api.events)
+                    self.assertEqual(bridge.voice_transcribes, [])
+                finally:
+                    from chejin_worker_client.incident_evidence import (
+                        stop_incident_worker,
+                    )
+
+                    stop_incident_worker(wait=True)
 
     def test_legacy_backend_retry_keeps_running_and_reuses_decision(self):
         api = FakeApi(None)
@@ -18375,12 +18386,17 @@ class TaskRunnerTest(unittest.TestCase):
                 observation["_worker_committed_message"]["object_type"] = (
                     object_type
                 )
+                sidecar_observation = {
+                    key: value
+                    for key, value in observation.items()
+                    if not str(key).startswith("_worker")
+                }
                 frame = {
                     "ok": True,
                     "frame_id": f"frame-object-{unique}",
                     "observation_schema_version": 3,
                     "authoritative_frame_source": "initial_read",
-                    "observations": [observation],
+                    "observations": [sidecar_observation],
                     "sequence_alignment_evidence": {
                         "pre_sequence_source": "empty_checkpoint",
                         "pre_frame_id": "checkpoint:none",
@@ -18391,6 +18407,10 @@ class TaskRunnerTest(unittest.TestCase):
                         "old_tail_fully_consumed": True,
                         "new_suffix_observation_ids": [],
                     },
+                }
+                aligned_frame = {
+                    **frame,
+                    "observations": [observation],
                 }
                 bridge = FakeBridge(
                     RpaResult(ok=True, result_code="ok", message="unused")
@@ -18414,7 +18434,7 @@ class TaskRunnerTest(unittest.TestCase):
                 with patch.object(
                     runner,
                     "_align_initial_identity_frame",
-                    return_value=(frame, []),
+                    return_value=(aligned_frame, []),
                 ), patch(
                     "chejin_worker_client.task_runner.load_c2_ledger_entry",
                     side_effect=AssertionError(
@@ -20612,6 +20632,7 @@ class TaskRunnerTest(unittest.TestCase):
             "frame_id": f"frame-image-cancel-{unique}",
             "observations": [observation],
         }
+        FakeBridge._attach_image_frame_action_bindings(sidecar_payload)
 
         with patch(
             "chejin_worker_client.omniauto_vision.vision_configuration_status",
@@ -20632,6 +20653,9 @@ class TaskRunnerTest(unittest.TestCase):
                 target=target,
                 sidecar_payload=sidecar_payload,
                 enforce_read_targets=False,
+                allowed_new_observation_ids={
+                    observation["observation_id"]
+                },
                 cancel_check=lambda: True,
                 flow_outcomes=FlowOutcomeAccumulator(
                     origin_read_run_id="read-image-cancelled"
@@ -20708,6 +20732,7 @@ class TaskRunnerTest(unittest.TestCase):
             "window_context": window_context,
             "observations": [observation],
         }
+        FakeBridge._attach_image_frame_action_bindings(sidecar_payload)
         failed = {
             "state": "failed",
             "reason": "capture_wechat_failed",
@@ -24058,6 +24083,7 @@ class TaskRunnerTest(unittest.TestCase):
                 "message_type": "image",
                 "sender_role": "customer",
                 "_worker_stable_id": "worker-message-70",
+                "_worker_identity_scope": "committed",
             },
             {
                 "observation_id": "old-voice-1",
@@ -24066,6 +24092,7 @@ class TaskRunnerTest(unittest.TestCase):
                 "sender_role": "customer",
                 "content_clean": "第一条语音",
                 "_worker_stable_id": "worker-message-71",
+                "_worker_identity_scope": "committed",
             },
             {
                 "observation_id": "old-voice-2",
@@ -24074,6 +24101,7 @@ class TaskRunnerTest(unittest.TestCase):
                 "sender_role": "customer",
                 "content_clean": "第二条语音",
                 "_worker_stable_id": "worker-message-72",
+                "_worker_identity_scope": "committed",
             },
         ]
         runner, _bridge, target, action_id, reserved_id, state_key = (
