@@ -1,6 +1,6 @@
 # AI智能客服售前跟进系统 技术方案
 
-版本：v0.9.36
+版本：v0.9.37
 
 日期：2026-07-21
 
@@ -10,7 +10,11 @@
 
 当前唯一架构口径：服务端负责授权、状态机、事实持久化、Brain/Guard、任务和通知；OmniAuto Sidecar 只负责微信 UI 观察、本帧物理目标定位、鼠标/键盘动作和动作证据，不得生成或继承业务消息身份；Worker 是消息身份、顺序、连续性和 `worker_stable_id` 的唯一决策者；后端只保存、校验不可变身份、去重和结算，不得根据截图、坐标或正文重新猜身份。C2 使用固定八位短码和 private 单聊门禁；文字、语音、图片按同一最终画面顺序入库，一条物理媒体只形成一个业务对象，所有已触发媒体动作必须有限终态。C2 消息身份只允许沿“帧内观察 -> 本帧动作绑定/待处理媒体动作 -> Worker 正式提交或隔离记录”单向推进；只有 Worker 已提交的正式消息可以生成 source key、查询 Ledger/Outbox、上报后端或进入 Brain。Brain 只在最新待回复尾部完整且证据足够时生成回复；当前客户媒体确定失败、高意向及必须人工批准的业务硬风险进入人工接管。人工接管以未关闭 `HandoffEvent` 为权威事实并投影 `waiting_sales_reply`，服务端按同一事件通过车金统一飞书应用立即且至多通知一次所属销售。发送前出现新文字、语音、图片或组合消息时，必须立即禁止旧回复外发。只要相关消息区域发生变化，OmniAuto 只返回最新观察和“本帧动作目标已变化/消失/冲突”的证据，Worker 必须取消旧动作计划并对最新画面执行一次完整、确定性重新仲裁；成功则下发新的本帧动作计划，失败则返回能说明“对象消失、多候选、序列无法对齐、角色无法确认、正文无法读取、布局无效或再次变化”的具体错误，零点击结束当前仲裁；不存在“暂时看不清”、`recoverable_uncertain`、发送前 `recoverable_hold`、多轮时间重试或笼统 `C2_REPLY_CONTEXT_RECOVERY_FAILED` 出口。消息视口变化摘要必须基于排除光标、工具栏、侧栏、GIF/动画帧、滚动条、悬停/播放效果和红点的规范化有序消息观察，禁止直接哈希原始 RGB 像素。本帧动作绑定只证明“当前唯一操作目标仍满足 Worker 本次动作计划”，不是跨轮业务身份；不得要求新媒体在第一次点击前已经具有 `native_source_message_id`、本次 `confirmed_action_mapping` 或正式 `worker_stable_id`。若连标题区、消息视口和输入区这些微信基本布局都无法建立，该现象固定按代码缺陷收口：禁止旧回复、记录 `C2_PRE_SEND_LAYOUT_INVALID` 及完整证据、将当前任务/Flow 结算为技术失败并释放 UI 锁，Worker 进入故障状态且停止新接单；不创建 HandoffEvent，不自动移窗/重标定/重试，不设人工解锁或清数据流程。微信列表在截图与点击之间重排时，点击后的短码校验仍是硬门禁，但明确点到其他会话时允许丢弃旧坐标并在同一授权内完整重新定位一次。添加朋友流程无论“邀请已发送”还是“已经是好友”，都只对已经证明的添加朋友 HWND 执行一次右上角关窗并验证结果。启动时基于真实微信客户区截图建立一次区域坐标地图，之后只替换 `0.9.20` 中依赖主窗口固定几何的区域边界和点位计算；会话行、消息、菜单、弹窗和表单仍由 `0.9.20` 原必要业务帧与原判断流程决定。同一个单会话事务允许在首次读取和发送前复读中形成任意多次逻辑入库；Worker 本地每组不同正式消息事实必须生成独立、确定性的 `outbox_batch_key` 并形成独立 Outbox，相同事实重试复用原本地 ID，不得因为沿用外层 `read_run_id` 而复用已确认 Outbox、丢弃新消息或继续发送旧回复。`outbox_batch_key` 绝不进入 HTTP 请求、后端 Schema 或业务状态机。`0.9.35` 在既有“本帧动作绑定与长期消息身份”权限边界上，补齐四类 Sidecar 公开输出的递归清理与 Worker 拒绝门禁；不改变 C0—C4、Brain/Guard、UI 锁、销售接管或发送回执等业务流程。`0.9.35` 已形成真实功能提交 `8474780697a8566468ba33472f01295327e7c751`，`.chejin-source.json` 已绑定该来源；来源治理提交 `f6ddc1fc049287ba61906a8d9fd1c1c88da27b2f` 已完成，候选已推送、标签且生成 ZIP。当前 Windows 实机 UAT 发现 Brain 硬超时内部阶段丢失问题，不得把 `0.9.35` 写成已通过最终验收或已完成交付。
 
-`0.9.36` 仅补齐 Brain 隔离进程的分阶段可观测性，不改变 Brain 生成、备用模型、语义审核、Guard、重试次数、超时时间或 C0—C4 业务流程。主模型、备用模型、同帧重试、JSON 修复、质量返修和语义审核必须写入不含提示词、回复正文、API Key 与服务地址的结构化进度事件；父进程无论正常完成、子进程异常还是达到硬超时强制终止，都必须读取并持久化已形成事件以及最后阶段。Brain 运行期间新消息导致旧批次 `superseded` 时，旧 Brain 结果仍必须丢弃且零回复，但返回 `MESSAGE_BATCH_GENERATION_CLAIM_STALE` 前必须幂等追加本次只读诊断历史，不得覆盖 `superseded` 状态、错误码或当前快照投影。运行时只接受固定字段白名单和 `progress_id` 匹配的事件，诊断写入失败不得改变业务结果；单条事件只 `flush`，不执行同步 `fsync`。当前本地候选已同步为 `contract_revision=0.9.36`，规范化合同 SHA 为 `8154dafe703bd9685e9b96f15675a71ba8cd8e117fa57cfe317365ae5e8f377f`；OmniAuto 真实功能提交已固定为 `d3e5993045226f68481a09a39d6bc4b38595d483` 并完成 `.chejin-source.json` 来源绑定，车金候选提交、推送、标签、安装包和配套后端部署待完成。
+`0.9.36` 仅补齐 Brain 隔离进程的分阶段可观测性，不改变 Brain 生成、备用模型、语义审核、Guard、重试次数、超时时间或 C0—C4 业务流程。主模型、备用模型、同帧重试、JSON 修复、质量返修和语义审核必须写入不含提示词、回复正文、API Key 与服务地址的结构化进度事件；父进程无论正常完成、子进程异常还是达到硬超时强制终止，都必须读取并持久化已形成事件以及最后阶段。Brain 运行期间新消息导致旧批次 `superseded` 时，旧 Brain 结果仍必须丢弃且零回复，但返回 `MESSAGE_BATCH_GENERATION_CLAIM_STALE` 前必须幂等追加本次只读诊断历史，不得覆盖 `superseded` 状态、错误码或当前快照投影。运行时只接受固定字段白名单和 `progress_id` 匹配的事件，诊断写入失败不得改变业务结果；单条事件只 `flush`，不执行同步 `fsync`。该版本已冻结为提交 `061b641` 和标签 `gray-v0.9.36`，规范化合同 SHA 为 `8154dafe703bd9685e9b96f15675a71ba8cd8e117fa57cfe317365ae5e8f377f`；OmniAuto 真实功能提交为 `d3e5993045226f68481a09a39d6bc4b38595d483`，并已完成 `.chejin-source.json` 来源绑定。
+
+`0.9.37` 冻结发送前事实比较职责：文字、语音或图片一旦经正式提交门入库，其长期身份已经确定，`pre_send_refresh` 不得重新给这些历史消息分配、继承或复核 `worker_stable_id`。发送前只把“本次旧回复实际使用的已提交事实 checkpoint”与当前最新完整尾部作事实连续性比较：完全一致为 `unchanged_sendable`；checkpoint 是当前序列唯一完整前缀且存在非空连续后缀时，立即作废旧回复并只把后缀送入原消息处理链；缺行、替换、滚动截断、未知业务行或存在多个前缀解释时，禁止发送并只允许一次完整被动重读，仍不唯一则以具体序列错误结算。合法的 `initial_read` 与 `final_read` 都可冻结可见尾部，禁止退回整段数据库历史；`friend_welcome` 使用显式空基线，当前出现任何客户消息即作废欢迎回复。真实 Win32 缺少原生消息 ID 且已提交末尾媒体天然没有后侧邻居时，不得伪称已证明它仍是原物理消息；但若旧事实具有正式提交回执，当前完整未截断序列的前缀唯一一致，且末尾媒体的角色、类型、终态及回复相关完整事实证据精确相等，可以只判定为“业务事实等价”并允许原回复继续，但必须记录 `physical_identity_confirmed=false`，不得给当前对象继承旧 `worker_stable_id`，不得用于 Ledger/Outbox/ingest 或普通读取身份判定。该规则只是发送门的事实等价判定，不是“末尾媒体身份例外”，不得放宽普通读取、媒体动作、历史恢复或跨轮身份对齐的双侧/强证据门禁。`0.9.37` 本地实现已补齐本段末尾媒体事实等价、同帧 guard 绑定与被动重读布局复查并通过代码层架构复审；`contract_revision=0.9.37`，当前规范化合同 SHA 为 `3157d37b8047ef3b39c53d4eab323e87ff7568c442372b08afc22cb1e2c9b9dc`。OmniAuto 真实功能提交已固定为 `1a541c9eb330e83077c7bdffa0bb003a1c47d525` 并完成来源绑定，车金本地候选也已形成；推送、标签、安装包和 Windows 实机 UAT 结论待形成，当前 `0.9.36` 包与标签不得覆盖。
+
+**本地实现状态更新：** 末尾媒体事实等价发送门、checkpoint revision 3、guard 与 observations 同帧绑定及真实后端到 Worker 的语音/图片正反组合门禁已完成并通过代码层架构复审；当前规范化合同为 `0.9.37 / 3157d37b8047ef3b39c53d4eab323e87ff7568c442372b08afc22cb1e2c9b9dc`。OmniAuto 来源提交 `1a541c9eb330e83077c7bdffa0bb003a1c47d525` 及车金本地候选均已形成；推送、标签、安装包或 Windows 实机 UAT 结论待完成。
 
 ## 文档治理规则
 
@@ -34,12 +38,12 @@
    字段和领域对象字段使用 snake_case，两者不得被误认为两个接口。新增、改名或废弃
    接口必须先修改本文的权威目录和接口编号，不允许在代码、聊天记录或派生合同中另起
    同义名称。
-7. 灰度版本使用唯一 `0.9.x` 序列：`0.9.0` 至 `0.9.35` 已冻结，当前目标候选为 `0.9.36`；
+7. 灰度版本使用唯一 `0.9.x` 序列：`0.9.0` 至 `0.9.36` 已冻结，当前目标候选为 `0.9.37`；
    后续任何内容不同且进入测试的候选必须继续升版。PRD（仅有产品变化时）、技术方案、全流程图、版本记录、客户端、
    后端、OmniAuto 合同 `contract_revision`、生成 Schema、manifest 和安装包必须写入同一个
    精确版本，禁止各自升版、复用旧号覆盖新内容或把占位符 `0.9.X` 写入运行产物。
    `contract_version=3`、`observation_schema_version=3` 和文中 V3 仅是协议结构代号，不属于
-   灰度发布版本；客户端、后端、OmniAuto、生成 Schema、manifest 与打包入口已在本地同步为 `contract_revision=0.9.36`，规范化合同 SHA 为 `8154dafe703bd9685e9b96f15675a71ba8cd8e117fa57cfe317365ae5e8f377f`。OmniAuto 真实功能提交 `d3e5993045226f68481a09a39d6bc4b38595d483` 及 `.chejin-source.json` 来源绑定已完成；车金候选提交、推送、标签、GitHub Windows 完整门禁、Windows 实机 UAT 和正式包均未完成，不得伪报为已发布或已交付。
+   灰度发布版本。`0.9.36` 已形成不可覆盖的标签、代码和合同基线；当前目标为 `0.9.37`。客户端、后端、OmniAuto、生成 Schema、manifest 与打包入口的本地实现已统一升级为 `contract_revision=0.9.37`，当前 SHA 为 `3157d37b8047ef3b39c53d4eab323e87ff7568c442372b08afc22cb1e2c9b9dc`。`terminal_committed_fact_equivalence`、checkpoint revision 3、同帧 guard 绑定和真实后端到 Worker 组合门禁已通过代码层架构复审，OmniAuto 来源提交、来源绑定及车金本地候选均已形成。推送、标签、GitHub Windows 完整门禁、Windows 实机 UAT 和正式包仍待完成，不得伪报为已发布或已交付。
    版本车道固定为：`0.9.x` 仅用于正式上线前灰度验证，`1.0.x` 用于正式上线及其稳定性修复，
    `1.1.x` 用于下一期优化。三个 `x` 都只表示版本系列，任何提交、合同、Schema、manifest、
    安装包和运行日志必须写入 `0.9.15`、`1.0.0`、`1.1.0` 等精确版本，不得写入字面占位符。
@@ -2557,13 +2561,77 @@ Worker 已批准的本帧操作票并返回事实证据。
 `private`、授权版本和批次；但不得重复执行首次好友激活、召回状态转换或其他只属于
 `authorized_read` 的业务动作。
 
+发送前比较的对象是“事实是否新增”，不是“历史消息身份是否重新成立”。后端必须在本次 MessageBatch 的 Brain 输入冻结时，
+从该输入实际使用的有序正式 MessageEvent 构造唯一不可变 `pre_send_fact_checkpoint`，写入现有
+`MessageBatch.ai_request_snapshot.pre_send_fact_checkpoint`；不得新增数据库同义列。生成 reply_action 后，后端在现有 batch/reply
+查询响应中只读返回同一 checkpoint，并用 `conversation_id + batch_id + reply_action_id` 绑定。Worker 在第一次取得该响应时原样校验并
+持久化到本地 SQLite，后续重试复用原副本；重启恢复只能重新读取后端同一 batch 的已冻结 checkpoint 并核对摘要，禁止用当前截图、
+当前数据库最新尾部或新的 `identity_checkpoint` 重建旧 checkpoint。缺失、摘要不一致或 batch/reply 绑定不一致必须在任何微信操作前以
+`C2_PRE_SEND_FACT_CHECKPOINT_INVALID` 失败关闭，禁止发送、禁止猜测。该对象只用于发送前连续性比较，不新增第二套业务消息身份，
+不得作为 source key、Ledger、Outbox 或 ingest 的提交依据；Sidecar 永远不接收或返回该对象。`messages/ingest` 请求和其他现有请求
+不得新增 `pre_send_fact_checkpoint` 顶层字段。checkpoint 至少包含：
+
+| 字段 | 固定语义 |
+|---|---|
+| `conversation_id / batch_id` | checkpoint 内容身份；创建后不可修改。 |
+| `reply_action_id` | 只属于后端响应和 Worker 本地绑定外壳，不进入 checkpoint 内容摘要；证明当前待发送回复确实引用该 checkpoint。 |
+| `checkpoint_revision` | 本次不可变事实快照版本；同一回复重试必须复用，不得读取当前画面后改写。 |
+| `baseline_kind` | 普通消息固定为 `message_tail`；从未包含客户业务消息的首次欢迎语固定为 `friend_welcome_empty`。禁止用“空且不完整”冒充欢迎语基线。 |
+| `authoritative_frame_source` | 普通消息只允许来自合法完整 `initial_read` 或 `final_read`；欢迎语空基线固定为 `control_empty`。纯文字没有媒体 UI 动作时，`initial_read` 是合法权威画面。 |
+| `committed_tail[]` | 按客户真实时间顺序保存最近完整尾部的 `worker_stable_id + sender_role + message_type + item_state + stable_fact_signature + continuity_basis + continuity_signature`；已提交媒体还必须冻结 `commit_basis + action_receipt_digest + reply_fact_evidence`，ID 只来自已提交事实。 |
+| `tail_complete=true` | 该尾部在生成 Brain 输入时已完成顺序、角色和媒体终态结算；否则不得生成可发送回复。 |
+
+事实比较前和进入 claim-send 前的两处 Worker 检查都必须先验证同一份生产
+`build_send_context_guard()` 快照：`ok=true`、`layout_snapshot_id` 非空、消息视口边界合法、
+`message_count` 与有序 `sequence` 数量一致、序号连续、两个摘要都等于该序列的规范化
+SHA-256、`bottom` 与序列末项一致，且不得使用原始整屏像素哈希。Worker 还必须使用与
+Sidecar 相同的共享纯投影规则，从本次响应的 `observations` 和 guard 内消息视口边界重新生成
+有序 `sequence`，逐项核对数量、角色、类型、正文摘要、媒体状态和相对位置；两者必须完全一致，
+不得只分别验证 guard 和 observations。该投影只绑定同一物理帧，不生成、继承或判断长期消息身份。
+唯一一次被动重读返回后必须重新执行全部布局及同帧绑定校验，不能把重读布局错误降级成序列错误。任一项不成立均是
+`C2_PRE_SEND_LAYOUT_INVALID`：不消耗被动重读预算，零 Handoff、零 claim-send、零输入、零媒体动作和零发送，
+原 reply task/Flow 按技术故障结算、释放 UI 锁并将 Worker 置为 `faulted`。
+
+`stable_fact_signature` 只用于 checkpoint 与当前观察的事实连续性比较：文字/system 使用规范化正文摘要；已转写语音使用角色、类型、完成状态、规范化转写和可获得时的规范化时长；图片使用已确认回执中的精确内容/ROI 摘要和完成状态，禁止只用 dHash/pHash 等感知相似摘要宣布等价。坐标、时长单值、`frame_visual_id`、OCR observation ID、Sidecar 临时 anchor 或正文相同本身均不能充当业务身份。当前观察不得预先携带或生成历史 `worker_stable_id`；Worker 只能在完整序列比较成功后决定是否存在新后缀。
+
+语音/图片的“物理身份连续”与“发送所依赖的业务事实等价”必须分开：
+
+1. 真实原生消息 ID，或前后静态事实与稳定媒体局部证据形成的唯一双侧连续性，可记录 `physical_identity_confirmed=true`。
+2. 已提交末尾媒体无原生 ID 且无后侧邻居时，任何实现都不能根据完全相同的 Win32 画面证明物理身份，不得伪造这种结论。只有同时满足以下全部条件，才允许使用 `continuity_basis=terminal_committed_fact_equivalence`：该 checkpoint 项位于冻结尾部；原事实是 `confirmed_action/prior_confirmed_action` 正式提交且 action receipt 摘要完整；当前帧是未截断的最新完整尾部；其前全部 checkpoint 事实按顺序唯一匹配；当前对象的角色、类型、终态与 `reply_fact_evidence` 精确一致；不存在 unknown、缺行、前部插入或多个匹配解释。该结果只证明“旧 AI 回复所依赖的业务事实没有可观测变化”，必须返回 `physical_identity_confirmed=false + match_basis=terminal_committed_fact_equivalence`。
+3. 上述事实等价结果只能用于本 reply_action 的 `pre_send_refresh` 发送门；不得给当前 observation 回填旧 ID，不得产生 source key、Ledger、Outbox 或 ingest，不得进入普通 `authorized_read`、媒体提交或崩溃恢复。
+4. 任一条件缺失，必须返回具体 `checkpoint_not_continuous` 原因；不使用“暂时看不清”、时间等待或自动猜测。
+
+后端冻结普通 checkpoint 时，只能把最新合法完整 `initial_read/final_read` 的 observations 通过该帧
+`slot_ledger_states.source_message_key` 或正式 `worker_stable_id` 唯一投影到本次 Brain 实际使用的 MessageEvent。
+无法唯一投影时 checkpoint 必须不完整；严禁静默使用数据库整段历史补齐。`friend_welcome_empty` 则必须明确保存
+空 `committed_tail + tail_complete=true + control_empty`；发送前当前帧仍无业务消息才允许发送，出现任意消息即
+按唯一新后缀作废欢迎语并进入正常消息链。
+
+比较结果必须 MECE 且只能进入以下一项：
+
+| 比较结果 | 必要条件 | 处理 |
+|---|---|---|
+| `checkpoint_equal` | private、短码、授权、批次均有效；当前帧已确认是最新完整尾部；全部 checkpoint 项按顺序唯一匹配，数量相同且无未知业务行；媒体要么具有物理身份强证据，要么仅在上述全部条件成立时以 `terminal_committed_fact_equivalence` 匹配 | 不重新提交或改写任何历史身份，直接得到 `unchanged_sendable`。事实等价匹配必须同时保留 `physical_identity_confirmed=false`。 |
+| `checkpoint_unique_prefix_with_suffix` | 全部 checkpoint 项按顺序形成当前完整尾部的唯一前缀，且其后存在非空、连续、无缺口的新 observation 后缀 | 立即关闭旧发送门并将旧 reply_action 置为 superseded；只把新后缀送回既有文字/语音/图片统一处理链。历史项不重复入库。 |
+| `checkpoint_not_continuous` | 发生缺行、替换、前缀插入、滚动截断、未知业务行、签名冲突，或存在零个/多个完整前缀解释 | 禁止旧回复；只允许一次完整被动重读。重读后重新执行本表且不得追加第二次重读；仍不唯一时返回 `C2_PRE_SEND_MESSAGE_SEQUENCE_ALIGNMENT_FAILED`，保留具体 reason 和帧证据。 |
+
+若 checkpoint 为 `文字1 -> 文字2 -> 已转写语音A`，当前为 `文字1 -> 文字2 -> 语音A -> 新语音B`，则新后缀 B 使旧回复立即作废。若当前仍只是 `文字1 -> 文字2 -> 末尾语音`，Win32 无法区分“原 A 仍在”与“物理上新 B 以完全相同事实占据原位置”时，不宣布它们物理身份相同。若 `terminal_committed_fact_equivalence` 的全部条件成立，因旧 AI 回复依赖的角色、完整转写/精确图片事实和有序上下文均未发生可观测变化，可允许原回复继续；该分支不会点击媒体、不会让当前对象继承 A 的编号。只要转写、精确图片证据、序列、完整性或回执任一不一致，即固定进入 `checkpoint_not_continuous`。
+
+普通 `authorized_read`、媒体动作后正式提交、跨轮 checkpoint 恢复和历史弱媒体身份仍执行 6.0.4.3 的原强证据/
+双侧规则。禁止通过修改 `_compatible()` 全局放行末尾媒体、把“位于最后一条”作为身份依据，或新增
+`tail_media_identity_exception`。Sidecar 只返回当前有序观察、完整尾部/截断证据和布局事实；Worker 独占上述比较
+与发送门决策；后端只保存既有正式事实和结算 superseded，不根据截图重新判断身份。
+
 统一流程：
 
 ```text
 C2保持当前单会话Flow和UI锁等待Brain/Guard
 -> Brain批准旧reply_action
 -> 对当前会话取一张新物理帧执行pre_send_refresh
--> 一旦发现新客户候选或相关消息区变化，立即关闭旧回复的本地发送门
+-> 先将当前最新完整尾部与本reply_action的pre_send_fact_checkpoint比较
+-> 完全一致：不重判历史身份；有强物理证据时记录physical_identity_confirmed=true，无原生ID的已提交末尾媒体只有在terminal_committed_fact_equivalence全部条件成立时可以physical_identity_confirmed=false进入unchanged_sendable
+-> checkpoint为当前序列唯一完整前缀且有新后缀：立即关闭旧回复发送门，只处理新后缀
+-> 缺行/替换/截断/未知/多解释：禁止发送，只完整被动重读一次；仍不唯一返回具体序列错误
 -> 如完整/增强OCR后仍不能判定具体原因，直接返回对应的正文/序列/角色/布局错误，不进入等待
 -> 不claim-send、不输入、不点击发送，保持原Flow/UI锁/任务租约
 -> 按完整消息序列从上到下收敛新文字、语音、图片、self和system消息
@@ -2585,11 +2653,11 @@ C2保持当前单会话Flow和UI锁等待Brain/Guard
 
 | 统一结果 | 证据条件 | 旧 reply_action | 后续处理 |
 |---|---|---|---|
-| `unchanged_sendable` | private+短码+授权有效，当前消息序列与已入库尾部一致，无新 customer/self，也无无法排除的候选 | 保持 current | 允许进入 claim-send；S0/S1/S2 仍各自取新帧。 |
+| `unchanged_sendable` | private+短码+授权有效，`pre_send_fact_checkpoint` 与当前最新完整尾部唯一完全一致，无新 customer/self，也无未知、截断或多解释；已提交历史身份不重判 | 保持 current | 允许进入 claim-send；S0/S1/S2 仍各自取新帧。 |
 | `new_customer_facts_committed` | 一条或多条新客户文字/语音/图片均已形成按画面顺序排列的正式事实 | 后端入库事务原子置 `superseded` | 根据最新完整尾部创建/复用新 batch 并调用 Brain；禁止发送旧回复。 |
 | `new_self_fact_committed` | 出现能证明是销售人工发送、且不属于本系统 AI sent_ack 的新 self 文字/语音/图片事实 | 取消/作废 | 入库 self 事实，按销售已接管处理，不调用 Brain；只要角色和新旧已确认，不需为了理解 self 媒体内容再做转写/Vision。 |
 | `new_system_fact_committed` | 已唯一确认新 system 行的身份、顺序和类型 | 立即禁止发送 | 先入库并重做一次仲裁；能证明拒收/关闭/硬状态则进 `hard_stop`，否则不单独启动 Brain，重读确认无其他新 customer 事实后才可恢复原发送判断。 |
-| `reidentification_failed` | 唯一一次重识别明确得到目标消失、多候选、序列无法对齐、角色无法确认、文字无法读取或点击前再次变化 | 取消/作废 | 零点击、零 Brain，保留具体 source error 和证据；当前 private+短码仍可证明时，只对当前会话幂等 handoff 一次。 |
+| `reidentification_failed` | checkpoint 既非完全一致也非当前序列唯一完整前缀，或唯一一次重读后仍得到目标消失、多候选、序列无法对齐、角色无法确认、文字无法读取或点击前再次变化 | 取消/作废 | 零点击、零 Brain，保留具体 source error 和证据；当前 private+短码仍可证明时，只对当前会话幂等 handoff 一次。 |
 | `worker_environment_failed` | 最新帧无法建立合法微信基本布局 | 取消/作废 | 按代码缺陷收口：上报 `C2_PRE_SEND_LAYOUT_INVALID` 和完整证据，将当前任务/Flow 结算为技术失败，释放 UI 锁，Worker 进入故障状态并停止新接单。不 handoff、不自动移窗/重标定/重试。 |
 | `customer_media_committed_failed` | 已唯一确认客户语音/图片对象，且转写、复制、Vision 或正式内容处理已得到确定失败终态 | 取消/作废 | 失败事实先入库，再按现有 L1 规则幂等 handoff 一次；不调用 Brain。 |
 | `hard_stop` | 授权明确撤销、客户/短码/private 无法确认、销售已接管、客户拒绝联系、会话关闭或发送可能已发生但结果未知 | 禁止发送并按原硬门禁结算 | 保持原 L3 处理；本节不放宽任何安全硬门禁。 |
@@ -2622,6 +2690,7 @@ C2保持当前单会话Flow和UI锁等待Brain/Guard
 
 | 错误码 | 唯一含义 | 结算 |
 |---|---|---|
+| `C2_PRE_SEND_FACT_CHECKPOINT_INVALID` | 当前 reply_action 缺少后端冻结 checkpoint，或本地副本与同一 conversation/batch/reply 的内容摘要矛盾 | 在任何微信操作前禁止发送；当前 task/Flow 结算为技术失败并释放 UI 锁，Worker 进入 faulted 且停止新接单；零 HandoffEvent、零媒体动作、零身份猜测。网络暂时取不到 checkpoint 属原可重试网络错误，不得冒充本错误。 |
 | `C2_PRE_SEND_TEXT_CONTENT_UNREADABLE` | 最新帧中新文字存在，但正文经完整/增强 OCR 仍不可读 | 当前会话 handoff 一次 |
 | `C2_PRE_SEND_MESSAGE_SEQUENCE_ALIGNMENT_FAILED` | 最新完整序列无法与已提交尾部唯一对齐 | 当前会话 handoff 一次 |
 | `C2_PRE_SEND_MESSAGE_ROLE_UNCONFIRMED` | 阻断尾部的新对象无法唯一确认为 customer/self/system | 当前会话 handoff 一次 |
@@ -2666,6 +2735,23 @@ C2保持当前单会话Flow和UI锁等待Brain/Guard
 到此结束。不转人工、不创建 HandoffEvent、不发飞书、不自动移窗/重标定/重试，
 不新增人工解锁、清数据或旧 Flow 恢复功能。修复后通过新客户端版本的正常启动流程重新建立标定；
 不为这个未修复 Bug 设计运行时补偿状态机。
+
+`0.9.37` 提交前必须通过以下发送前事实比较组合门禁。测试必须从正式 `pre_send_refresh` 生产入口进入，使用真实持久化
+checkpoint、Worker 正式比较器、正式 reply_action 结算和后端数据库，不得直接伪造比较结果或只调用内部对齐函数自证成功：
+
+1. checkpoint 为“文字 1、已提交语音 A、文字 2”，当前完整尾部完全相同，且 A 具有原生 ID 或双侧静态连续性证据：结果必须为 `unchanged_sendable + physical_identity_confirmed=true`，零重复入库、零媒体 UI 动作、零新 Brain、零 handoff，并允许原 reply_action 进入 claim-send。
+2. checkpoint 以已经 `confirmed_action/prior_confirmed_action` 提交的语音 A 结尾，无原生 ID 且无后侧邻居：当前完整未截断序列的全部前缀唯一一致、action receipt 摘要完整、角色/类型/终态/规范化转写/可获得时的时长全部精确相等时，必须以 `terminal_committed_fact_equivalence + physical_identity_confirmed=false` 得到 `unchanged_sendable`；同时断言零 ID 继承、零 Ledger/Outbox/ingest、零媒体 UI 动作。
+3. 将第 2 项换成已提交末尾图片：只有精确内容/ROI 摘要一致时可以事实等价放行；dHash/pHash 相似、截图位置、OCR observation ID 或帧 ID 相同均不足以放行。
+4. 当前尾部在 checkpoint 后追加新文字、未处理语音、未处理图片或其任意组合：必须先原子作废旧 reply_action，只处理唯一新后缀，最终按最新权威 `screen_order` 入库并创建/复用新 batch。
+5. 新语音占据旧语音 A 的位置或新图片外观相似：只要完整前缀、角色、类型、终态、精确回复事实或 action receipt 任一不一致，必须禁止发送；若所有可观测业务事实精确等价，只能按第 2/3 项的事实等价分支允许发送，仍断言 `physical_identity_confirmed=false`并禁止继承 A 的 `worker_stable_id`。
+6. 当前完整序列在 checkpoint 后追加第二条同正文文字、同转写正文语音或相同图片：必须保留两个有序事实，新后缀获得自己的正式身份，不得被旧事实去重吞掉。
+7. 当前帧发生缺行、历史替换、前部插入、滚动截断、unknown 业务行或多个前缀解释：只能完整被动重读一次；仍不唯一时固定返回 `C2_PRE_SEND_MESSAGE_SEQUENCE_ALIGNMENT_FAILED`，零输入、零发送。
+8. `authorized_read`、媒体动作正式提交、崩溃恢复和跨轮历史对齐继续执行原强证据门禁；单侧弱媒体不得因本节通过。生产代码和静态门禁中不得出现 `tail_media_identity_exception` 或等价身份特殊放行；`terminal_committed_fact_equivalence` 只是发送门的事实等价分支。
+9. 发送前完全一致路径必须证明历史 `worker_stable_id` 没有被当前观察重新生成、改写或挂载；Sidecar 返回包仍不得携带 Worker 专属身份结论，后端也不得根据截图重判身份。
+10. checkpoint 本地副本缺失时必须从同一 batch 的后端冻结快照恢复；缺失、内容摘要矛盾、conversation/batch/reply 绑定错误或试图用最新 identity checkpoint 代替时，必须在零微信操作下返回 `C2_PRE_SEND_FACT_CHECKPOINT_INVALID`。同一 checkpoint 重试和重启结果必须一致。
+11. 无媒体 UI 动作的纯文字 `initial_read` 与媒体操作后的 `final_read` 都必须经过正式后端冻结、batch/reply 查询和 Worker 比较；不得只测试 `final_read`，也不得在投影失败时使用整段数据库历史补齐。
+12. `friend_welcome` 必须经正式 control batch、Brain、空 checkpoint、Worker pre-send 和 claim-send：当前仍空允许欢迎语发送；发送前首次客户消息到达则原子作废欢迎语，只处理新消息。
+13. 普通回复、无原生 ID 的已提交末尾媒体和 `friend_welcome` 空基线都必须使用生产 `build_send_context_guard()` 构造布局无效反例；`ok=false`、快照缺失、数量/序列/摘要任一矛盾都必须结算为 `C2_PRE_SEND_LAYOUT_INVALID`，并断言只读一帧、零 Handoff、零入库、零媒体动作、零 claim-send 和零发送。
 
 #### 6.0.4.4.1 AI 回复成功后的 `recent_ai_sent` 监控读取
 
@@ -2962,7 +3048,7 @@ Worker C2 读取某个会话时，执行顺序固定为：
 上述顺序是唯一合法流程。禁止在右键前提交正式 Worker 身份，禁止用 voice anchor 直接生成
 source key，禁止在动作后用相同正文、相同 anchor 或坐标找回编号。
 
-机器合同 revision `0.9.36` 在 Sidecar 请求/返回、ActionJournal、Worker 本地身份预留和最终 V3 evidence 中使用以下唯一媒体字段，禁止新增同义字段；规范化 SHA 必须在最终代码与 Schema 同步后实算：
+目标机器合同 revision `0.9.37` 在 Sidecar 请求/返回、ActionJournal、Worker 本地身份预留和最终 V3 evidence 中使用以下唯一媒体字段，禁止新增同义字段；本地实现、生成 Schema 与规范化合同 SHA 已统一为 `3157d37b8047ef3b39c53d4eab323e87ff7568c442372b08afc22cb1e2c9b9dc`，代码层架构复审已通过：
 
 | 字段 | 所有者 | 必填规则 |
 |---|---|---|
@@ -3065,7 +3151,7 @@ Worker 必须对上述逻辑矛盾失败关闭。例如 `identity_phase=sequence
 | `sidecar_new_message_occurrences` 及内容 multiset 比较 | 只可用于发现“画面可能新增了什么”，结果必须再进入新观察仲裁 | 用来证明正文属于被点击语音，或认定相同内容是旧消息 |
 | `storage.py` 消息序号状态 | 原子落盘 action ID、reserved ID、identity phase、trigger phase 和 terminal；预留号单调且永不复用 | 崩溃后回收预留号；新动作重用旧 action ID；`trigger_attempted` 后再点击 |
 | `storage.py` 动作前画面状态 | 与 ActionJournal 原子保存 `pre_action_identity_sequence`，覆盖 `committed/selected_action/frame_local_unselected`；动作终态后补齐 `sequence_alignment_evidence` | 只保存已编号项；崩溃后用新截图或相同内容伪造动作前序列 |
-| `contracts/c2_contract_v3.json` 及生成 schema | 本候选必须将 `contract_revision`、客户端、后端、Sidecar、生成 Schema、样例和 manifest 统一为 `0.9.36`；保留本节对象分类、允许的 commit basis、四种媒体终态、统一消费者白名单、独立帧内语音 action binding、`authoritative_frame_source=initial_read/final_read/action_journal_recovery` 和安全误点语义；布局改为启动 `calibration_id` 与业务 `frame_id` 分离 | 使用独立合同版本号；在已发布版本下静默改语义；产生 `voice_execute_final` 等临时值；保留 `tracking_candidate_counts` 兼容；新增同义字段、双字段兼容或 Worker 本地兜底重判 |
+| `contracts/c2_contract_v3.json` 及生成 schema | `0.9.37` 实现候选必须将 `contract_revision`、客户端、后端、Sidecar、生成 Schema、样例和 manifest 一次性统一；定义 batch/reply 响应中的只读 `pre_send_fact_checkpoint`、绑定摘要、三种 MECE 比较结果和 `C2_PRE_SEND_FACT_CHECKPOINT_INVALID`，明确 Sidecar 与 `messages/ingest` 请求不携带该对象；同时保留本节对象分类、允许的 commit basis、四种媒体终态、统一消费者白名单、独立帧内语音 action binding、`authoritative_frame_source=initial_read/final_read/action_journal_recovery` 和安全误点语义 | 使用独立合同版本号；在 `0.9.36` 下静默改语义；产生 `voice_execute_final` 等临时值；保留 `tracking_candidate_counts` 兼容；新增尾部媒体身份例外、同义字段、双字段兼容、HTTP 请求侧 checkpoint 或 Worker 本地兜底重判 |
 
 新流程的唯一落库时点为：预留表/ActionJournal 在点击前落盘；正式 identity catalog、
 Ledger、Outbox 和 `source_message_key` 只在 `historical_restored` 或 `business_committed` 后落盘。
@@ -3403,7 +3489,7 @@ POST /api/workers/{worker_id}/wechat/messages/ingest
 
 | 字段 | 类型 | 必填 | 说明 |
 |---|---|---|---|
-| `contract_version` | integer | 是 | 协议结构代号固定为 `3`，不是发布版本；当前灰度目标由 `contract_revision=0.9.36` 表达，并同时校验架构复审固定合同内容后实算的规范化 `contract_sha256` 和 `observation_schema_version`。 |
+| `contract_version` | integer | 是 | 协议结构代号固定为 `3`，不是发布版本；当前灰度目标由 `contract_revision=0.9.37` 表达，并同时校验规范化 `contract_sha256=3157d37b8047ef3b39c53d4eab323e87ff7568c442372b08afc22cb1e2c9b9dc` 和 `observation_schema_version`。当前为本地实现候选，尚未发布。 |
 | `read_run_id` | string | 是 | 本次读取运行 ID。 |
 | `conversation_id` | string | 是 | 服务端已绑定会话 ID。 |
 | `remark_code` | string | 是 | 本轮已确认的客户短码。 |
@@ -3464,7 +3550,7 @@ POST /api/workers/{worker_id}/wechat/messages/ingest
 `next_sequence_floor`。该响应不得消费未读事实、不得更新读取完成退避、不得推进
 Conversation 或创建 Brain 批次。
 
-`0.9.36` 按灰度版本规则同步升级 `contract_revision`；规范化 SHA 只允许在架构复审固定最终合同内容后实算并同步；
+`0.9.37` 本地实现已按灰度版本规则同步升级 `contract_revision`；当前代码、Schema、样例和测试同步后的规范化 SHA 为 `3157d37b8047ef3b39c53d4eab323e87ff7568c442372b08afc22cb1e2c9b9dc`；末尾媒体事实等价、同帧 guard 绑定和被动重读布局复查已完成并通过代码层架构复审；
 `API-C2-05` 请求和响应字段保持不变，严禁新增 `ingest_batch_id`、`outbox_batch_key` 或同义字段。
 旧 `0.9.31` 请求固定按 `MESSAGE_CONTRACT_REVISION_MISMATCH` 拒绝，不允许双 revision 混跑。
 C2-C3 单会话串行链路继续使用可选 `message_batch={batch_id,batch_status}`；派生接口合同只可
@@ -5519,11 +5605,11 @@ HWND 处理，不增加截图、OCR 或整套布局重算，也不得将事务�
    不测试自动归位、重标定或恢复拉单，因为这些功能不存在。
    未完成前不得声称已兼容所有分辨率。
 
-`0.9.36` 的 Worker、Sidecar、后端、机器合同、生成 Schema 和 manifest
-已完成本地整改，规范化合同 SHA 为
-`8154dafe703bd9685e9b96f15675a71ba8cd8e117fa57cfe317365ae5e8f377f`。OmniAuto 真实功能提交已固定为 `d3e5993045226f68481a09a39d6bc4b38595d483`，
-`.chejin-source.json` 已绑定该来源；架构复审和来源绑定已完成，车金候选提交、推送、标签、GitHub Windows 完整门禁、Windows 实机验收和打包
-门禁未通过前，不得声称 `0.9.36` 已发布、已交付或可替代现网版本。
+`0.9.36` 是本轮设计变更前的已冻结代码、合同与来源基线，规范化合同 SHA 为
+`8154dafe703bd9685e9b96f15675a71ba8cd8e117fa57cfe317365ae5e8f377f`，OmniAuto 来源提交为
+`d3e5993045226f68481a09a39d6bc4b38595d483`。`0.9.37` 的本地 Worker、后端、合同和生成 Schema 已补齐无原生 ID 末尾媒体的 `terminal_committed_fact_equivalence`、checkpoint revision 3、guard 与 observations 同帧绑定及真实后端到 Worker 正反组合门禁，规范化合同 SHA 为 `3157d37b8047ef3b39c53d4eab323e87ff7568c442372b08afc22cb1e2c9b9dc`；代码层架构复审通过，OmniAuto 真实来源提交 `1a541c9eb330e83077c7bdffa0bb003a1c47d525` 已形成并完成来源绑定，车金本地候选也已形成。推送、标签、Windows 实机验收和打包待完成。在全部发布门禁通过前不得声称 `0.9.37` 已发布、已交付或可替代 `0.9.36`。
+
+**实现状态补充：** 本节所述 `terminal_committed_fact_equivalence`、同帧 guard 绑定和被动重读布局复查已形成本地实现、定向组合测试及代码层架构复审，规范化合同 SHA 为 `3157d37b8047ef3b39c53d4eab323e87ff7568c442372b08afc22cb1e2c9b9dc`；OmniAuto 来源提交和车金本地候选均已形成，发布产物待完成。
 
 ## 17. 剩余上线前确认清单
 

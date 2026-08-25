@@ -4,7 +4,7 @@
   "upstream_base_commit": "a563e6688c47a8922510794101967823fe1389d7",
   "selective_integrations": [
     {
-      "source_commit": "d3e5993045226f68481a09a39d6bc4b38595d483",
+      "source_commit": "1a541c9eb330e83077c7bdffa0bb003a1c47d525",
       "scope": [
         "exact_wechat_context_menu_classification",
         "same_popup_menu_panel_evidence_contract",
@@ -23,6 +23,8 @@
         "typed_committed_media_identity_contract",
         "media_action_four_terminal_contract",
         "c2_contract_0_9_36_generated_schema",
+        "c2_contract_0_9_37_generated_schema",
+        "shared_message_viewport_projection_contract",
         "brain_provider_progress_markers_contract",
         "brain_provider_primary_fallback_repair_reviewer_stage_contract",
         "brain_provider_progress_secret_free_contract",
@@ -111,7 +113,9 @@
     "add_friend_preclick_layout_failure_non_pausing_contract",
     "worker_owned_message_identity_sequence_and_commit_gate_contract",
     "selected_current_media_reservation_only_contract",
-    "final_authoritative_frame_screen_order_contract"
+    "final_authoritative_frame_screen_order_contract",
+    "pre_send_guard_exact_observation_frame_binding_contract",
+    "pre_send_passive_reread_layout_recheck_contract"
   ],
   "historical_integrations": [
     {
@@ -126,5 +130,5 @@
       ]
     }
   ],
-  "integration_note": "0.9.36 OmniAuto 独立候选固定于 d3e5993045226f68481a09a39d6bc4b38595d483；本轮新增 Brain 主模型、备用模型、同帧重试、JSON 修复、质量返修和语义审核的无敏感字段进度标记，诊断失败不改变 Brain 结果，不修改主备模型、重试、超时或 C0-C4 业务流程；0.9.35 历史能力继续保留：本轮关闭 Windows 完整门禁的生产夹具、可选证据依赖、Windows 合法临时文件名、事故线程清理和遥测 SQLite 连接释放；同时继续对普通 CLI、常驻 daemon、冻结 Windows 客户端和旧 main() 四类 Sidecar 公开输出递归删除 Worker 专属身份字段并保留合法 reserved_worker_stable_id；继续固定 Sidecar 只观察和执行本帧动作、Worker 唯一判断消息身份、未选媒体零预留、每次只处理一条媒体且最终按权威画面 screen_order 入库。继续以 gray-v0.9.20 业务流程为基线：启动时先确认 per-monitor DPI awareness，再只用一张可见客户区截图建立 startup_layout_calibration；C1-C4 业务帧只引用 calibration_id，OmniAuto 独占区域映射和坐标决策。业务入口继续使用可见主 HWND 和原 activate_window 顺序，删除统一激活成功布尔门禁、逐点击前台等值门禁和逐事务几何门禁；C1 保留八类真实变化画面。C3 输入框点击面和文字 ROI 继续沿用 0.9.25 已复审实现。C2 语音点击后无论菜单关闭校验成功或状态未知，都进入同一套最多 24 帧或 120 秒的被动画面等待，不重复点击；Windows 查询菜单 HWND 异常明确返回 popup_window_state_unknown，唯一转写正文仍必须通过正式 action binding 才能入库，超时后隔离。C2 图片在剪贴板确认证据形成前持续把右键菜单视为打开，所有无进展、异常和重试出口都安全收尾，旧剪贴板不能形成图片事实。Windows 兼容测试的搜索框焦点截图显式绑定生产布局快照，不再依赖 Python 对象 ID 偶然复用缓存。添加朋友“+”点击的纵坐标只允许落在已标定搜索框高度内，缺少搜索锚点时零点击失败关闭。Worker 本地 C2 Outbox 继续使用确定性批次身份：同一 read_run_id 的不同正式消息事实形成不同 Outbox，相同事实重试复用原 ID，不发送 outbox_batch_key 到后端；enqueue、授权刷新和运输准备入口都对已落盘消息事实执行不可变摘要碰撞保护。重启发现旧 Flow 时，Worker 先执行无界面的语音/图片 ActionJournal 恢复，完整接通 C2 ActionJournal、Ledger、Outbox 与物理 Journal：未点击结算为取消，已形成事实使用现有后端授权原样上报，无法确认的媒体动作进入有限 legacy 终态，结束旧 Flow 后继续拉取其他任务；全程不打开微信、不重复点击、不重复语音转写、不重复 Vision、不发送消息。升级前媒体记录只分类一次：可证原身份时幂等迁移，只能确认客户时转人工，客户也无法确认时记录 Worker 级待审核事故，明确未触发时取消。连接失败、超时、HTTP 5xx 或明确 retryable=true 退避重试；HTTP 4xx、幂等冲突或确认内容矛盾持久化 manual_review_required 并明确暂停，不得伪装 running 无限重试。多条语音及语音+图片只按 worker-message-N 数字序号统一恢复，禁止按文件名、创建时间或字符串猜测。后端为 LEGACY_MEDIA_OWNER_UNKNOWN 生成独立失败审计事件，后台明确显示待人工检查。后端 Brain、回复作废、发送前复读、UI 锁和 C0-C4 主状态机不变，sent_ack 语义不变。Windows 原故障 SQLite 重启验收仍是现场交付门禁，自动化通过不代表实机已验收。"
+  "integration_note": "0.9.37 OmniAuto 独立候选固定于 1a541c9eb330e83077c7bdffa0bb003a1c47d525；本轮将消息视口纯投影抽成 Sidecar 与 Worker 共用的唯一实现，并生成 0.9.37 Schema；Worker 用同一规则绑定 guard 与本次 observations，禁止跨帧拼接，且被动重读后重新检查布局，不改变消息身份、媒体动作顺序、Brain 或 C0-C4 主流程。0.9.36 的 Brain 主模型、备用模型、同帧重试、JSON 修复、质量返修和语义审核无敏感字段进度标记继续保留，诊断失败不改变 Brain 结果，不修改主备模型、重试或超时。0.9.35 历史能力继续保留：Windows 完整门禁的生产夹具、可选证据依赖、Windows 合法临时文件名、事故线程清理和遥测 SQLite 连接释放；普通 CLI、常驻 daemon、冻结 Windows 客户端和旧 main() 四类 Sidecar 公开输出递归删除 Worker 专属身份字段并保留合法 reserved_worker_stable_id；Sidecar 只观察和执行本帧动作、Worker 唯一判断消息身份、未选媒体零预留、每次只处理一条媒体且最终按权威画面 screen_order 入库。继续以 gray-v0.9.20 业务流程为基线：启动时先确认 per-monitor DPI awareness，再只用一张可见客户区截图建立 startup_layout_calibration；C1-C4 业务帧只引用 calibration_id，OmniAuto 独占区域映射和坐标决策。业务入口继续使用可见主 HWND 和原 activate_window 顺序，删除统一激活成功布尔门禁、逐点击前台等值门禁和逐事务几何门禁；C1 保留八类真实变化画面。C3 输入框点击面和文字 ROI 继续沿用 0.9.25 已复审实现。C2 语音点击后无论菜单关闭校验成功或状态未知，都进入同一套最多 24 帧或 120 秒的被动画面等待，不重复点击；Windows 查询菜单 HWND 异常明确返回 popup_window_state_unknown，唯一转写正文仍必须通过正式 action binding 才能入库，超时后隔离。C2 图片在剪贴板确认证据形成前持续把右键菜单视为打开，所有无进展、异常和重试出口都安全收尾，旧剪贴板不能形成图片事实。Windows 兼容测试的搜索框焦点截图显式绑定生产布局快照，不再依赖 Python 对象 ID 偶然复用缓存。添加朋友“+”点击的纵坐标只允许落在已标定搜索框高度内，缺少搜索锚点时零点击失败关闭。Worker 本地 C2 Outbox 继续使用确定性批次身份：同一 read_run_id 的不同正式消息事实形成不同 Outbox，相同事实重试复用原 ID，不发送 outbox_batch_key 到后端；enqueue、授权刷新和运输准备入口都对已落盘消息事实执行不可变摘要碰撞保护。重启发现旧 Flow 时，Worker 先执行无界面的语音/图片 ActionJournal 恢复，完整接通 C2 ActionJournal、Ledger、Outbox 与物理 Journal：未点击结算为取消，已形成事实使用现有后端授权原样上报，无法确认的媒体动作进入有限 legacy 终态，结束旧 Flow 后继续拉取其他任务；全程不打开微信、不重复点击、不重复语音转写、不重复 Vision、不发送消息。升级前媒体记录只分类一次：可证原身份时幂等迁移，只能确认客户时转人工，客户也无法确认时记录 Worker 级待审核事故，明确未触发时取消。连接失败、超时、HTTP 5xx 或明确 retryable=true 退避重试；HTTP 4xx、幂等冲突或确认内容矛盾持久化 manual_review_required 并明确暂停，不得伪装 running 无限重试。多条语音及语音+图片只按 worker-message-N 数字序号统一恢复，禁止按文件名、创建时间或字符串猜测。后端为 LEGACY_MEDIA_OWNER_UNKNOWN 生成独立失败审计事件，后台明确显示待人工检查。后端 Brain、回复作废、发送前复读、UI 锁和 C0-C4 主状态机不变，sent_ack 语义不变。Windows 原故障 SQLite 重启验收仍是现场交付门禁，自动化通过不代表实机已验收。"
 }

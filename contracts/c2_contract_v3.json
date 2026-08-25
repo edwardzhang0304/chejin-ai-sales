@@ -1,10 +1,10 @@
 {
   "contract_version": 3,
-  "contract_revision": "0.9.36",
+  "contract_revision": "0.9.37",
   "observation_schema_version": 3,
   "control_schema_version": 1,
   "performance_fast_path_contract": {
-    "release": "0.9.36",
+    "release": "0.9.37",
     "business_semantics_unchanged": true,
     "flags": [
       "CHEJIN_TASK_SAFE_WAKE_ENABLED",
@@ -26,7 +26,7 @@
     "fallback_rule": "missing, conflicting, or unequal evidence executes the 0.9.10 full path without changing business state"
   },
   "startup_layout_calibration_contract": {
-    "schema_version": "0.9.36",
+    "schema_version": "0.9.37",
     "owner": "omniauto",
     "worker_role": "persist_path_transport_contract_validation_and_execution_only",
     "single_runtime_path": true,
@@ -1490,7 +1490,7 @@
     ]
   },
   "frame_action_binding_contract": {
-    "release": "0.9.36",
+    "release": "0.9.37",
     "purpose": "prove_only_that_the_worker_selected_unique_frame_local_target_is_still_safe_to_operate_inside_the_current_ui_transaction",
     "durable_identity": false,
     "observation_owner": "sidecar",
@@ -1541,7 +1541,7 @@
     ]
   },
   "pre_send_message_viewport_contract": {
-    "release": "0.9.36",
+    "release": "0.9.37",
     "selected_target_fingerprint_scope": "one_selected_message_type_role_relative_quantized_bounds_required_neighbors_and_sequence_position_only",
     "selected_target_forbidden_inputs": [
       "message_viewport_change_digest",
@@ -1583,6 +1583,21 @@
       "message_viewport_bounds",
       "input_bounds"
     ],
+    "pre_send_context_guard_required_fields": [
+      "ok",
+      "schema_version",
+      "layout_snapshot_id",
+      "message_viewport_bounds",
+      "sequence",
+      "message_count",
+      "message_viewport_change_digest",
+      "sequence_sha256",
+      "bottom",
+      "raw_rgb_hash_used"
+    ],
+    "pre_send_context_guard_integrity_rule": "both_worker_pre_send_checks_require_ok_true_and_one_nonempty_layout_snapshot_id; message_count_must_equal_the_ordered_sequence_length; screen_order_must_be_contiguous; both_digests_must_equal_sha256_of_the_canonical_sequence; bottom_must_equal_the_last_sequence_item_or_null_for_an_empty_sequence; raw_rgb_hash_used_must_be_false; worker_must_recompute_the_same_shared_pure_projection_from_the_exact_response_observations_using_the_guard_viewport_bounds_and_require_ordered_equality_for_count_role_type_content_signature_media_state_and_relative_position; this_projection_is_frame_binding_only_and_must_not_decide_or_inherit_message_identity",
+    "pre_send_passive_reread_layout_rule": "after_the_single_allowed_passive_reread_worker_must_repeat_the_full_context_guard_and_exact_observations_binding_check_before_any_sequence_result_is_used; an_invalid_or_cross_frame_guard_returns_C2_PRE_SEND_LAYOUT_INVALID_instead_of_a_sequence_error",
+    "pre_send_context_guard_invalid_rule": "return_C2_PRE_SEND_LAYOUT_INVALID_without_passive_reread_handoff_claim_send_text_input_or_any_media_action; settle_the_original_reply_task_and_flow_as_technical_failed_release_the_ui_lock_and_set_the_worker_faulted",
     "layout_invalid_error": "C2_PRE_SEND_LAYOUT_INVALID",
     "layout_invalid_terminal_rule": "cancel_old_reply_set_task_and_flow_technical_failed_release_ui_lock_set_worker_faulted_and_forbid_handoff_or_automatic_retry",
     "maximum_full_reidentification_count": 1,
@@ -1598,10 +1613,117 @@
       "C2_PRE_SEND_SYSTEM_CONTENT_UNREADABLE",
       "C2_PRE_SEND_SYSTEM_CLASSIFICATION_UNRESOLVED",
       "C2_PRE_SEND_MESSAGE_VIEWPORT_CHANGED_AGAIN",
-      "C2_PRE_SEND_LAYOUT_INVALID"
+      "C2_PRE_SEND_LAYOUT_INVALID",
+      "C2_PRE_SEND_FACT_CHECKPOINT_INVALID"
     ],
     "obsolete_production_error": "C2_VOICE_PREPARE_TARGET_UNSTABLE",
     "physical_media_action_rule": "each_voice_or_image_action_may_trigger_at_most_once_and_post_trigger_waits_are_passive_evidence_reads_only"
+  },
+  "pre_send_fact_checkpoint_contract": {
+    "release": "0.9.37",
+    "checkpoint_revision": 3,
+    "checkpoint_owner": "backend",
+    "comparison_and_decision_owner": "worker",
+    "sidecar_access": "forbidden",
+    "purpose": "compare_the_facts_used_by_one_brain_reply_with_one_fresh_complete_ordered_wechat_tail_without_reidentifying_committed_messages",
+    "storage": "MessageBatch.ai_request_snapshot.pre_send_fact_checkpoint",
+    "required_checkpoint_fields": [
+      "checkpoint_revision",
+      "conversation_id",
+      "batch_id",
+      "baseline_kind",
+      "authoritative_frame_source",
+      "committed_tail",
+      "tail_complete"
+    ],
+    "committed_tail_item_fields": [
+      "worker_stable_id",
+      "sender_role",
+      "message_type",
+      "item_state",
+      "stable_fact_signature",
+      "continuity_basis",
+      "continuity_signature",
+      "commit_basis",
+      "action_receipt_digest",
+      "reply_fact_evidence",
+      "physical_identity_confirmed"
+    ],
+    "baseline_kinds": {
+      "message_tail": "requires_a_nonempty_tail_from_one_complete_initial_read_or_final_read_frame",
+      "friend_welcome_empty": "requires_an_empty_tail_and_control_empty_source; send_is_allowed_only_while_the_fresh_current_frame_still_has_zero_business_messages"
+    },
+    "authoritative_frame_sources": [
+      "initial_read",
+      "final_read",
+      "control_empty"
+    ],
+    "media_continuity_rule": "native_source_message_id_or_unique_two_sided_static_context_may_confirm_physical_identity; a_committed_terminal_media_item_without_native_id_may_only_pass_this_reply_actions_pre_send_gate_by_terminal_committed_fact_equivalence_when_its_formal_action_receipt_complete_tail_unique_prefix_and_exact_reply_fact_evidence_all_match",
+    "terminal_committed_fact_equivalence_rule": "returns_physical_identity_confirmed_false_and_match_basis_terminal_committed_fact_equivalence; proves_only_that_the_old_reply_depends_on_the_same_observable_business_facts_and_never_that_the_fresh_observation_is_the_same_physical_message",
+    "terminal_committed_fact_evidence": {
+      "required_checkpoint_position": "last_item_of_the_frozen_committed_tail",
+      "required_commit_bases": [
+        "confirmed_voice_action",
+        "confirmed_image_action"
+      ],
+      "required_common_fields": [
+        "action_receipt_digest",
+        "sender_role",
+        "message_type",
+        "item_state"
+      ],
+      "voice_exact_facts": [
+        "normalized_transcript_sha256",
+        "normalized_voice_duration_when_available"
+      ],
+      "image_exact_facts": [
+        "exact_image_content_sha256"
+      ],
+      "perceptual_hash_alone_forbidden": true,
+      "current_tail_complete_required": true,
+      "all_preceding_facts_unique_and_equal_required": true
+    },
+    "terminal_fact_equivalence_forbidden_outputs": [
+      "inherit_old_worker_stable_id",
+      "source_message_key",
+      "ledger_entry",
+      "outbox_entry",
+      "messages_ingest",
+      "media_ui_action"
+    ],
+    "binding_fields": [
+      "conversation_id",
+      "batch_id",
+      "reply_action_id",
+      "checkpoint_digest"
+    ],
+    "binding_digest_rule": "sha256_of_canonical_checkpoint_json_without_reply_action_id",
+    "backend_freeze_rule": "build_once_from_the_latest_complete_initial_read_or_final_read_tail_resolved_only_to_formal_message_events_actually_used_by_the_brain_request; never_fall_back_to_entire_database_history_and_never_rebuild_from_current_state",
+    "worker_persistence_rule": "validate_and_persist_the_first_bound_copy_in_local_sqlite_then_require_every_retry_and_claim_send_response_to_match_exactly",
+    "comparison_results": [
+      "checkpoint_equal",
+      "checkpoint_unique_prefix_with_suffix",
+      "checkpoint_not_continuous"
+    ],
+    "equal_rule": "allow_unchanged_sendable_without_reidentifying_reingesting_or_reprocessing_any_committed_prefix_item",
+    "unique_suffix_rule": "supersede_the_old_reply_and_route_only_the_nonempty_new_suffix_through_the_existing_text_voice_image_pipeline",
+    "not_continuous_rule": "allow_exactly_one_passive_full_reread_then_return_C2_PRE_SEND_MESSAGE_SEQUENCE_ALIGNMENT_FAILED_if_still_not_unique",
+    "invalid_error": "C2_PRE_SEND_FACT_CHECKPOINT_INVALID",
+    "invalid_terminal_rule": "zero_wechat_operation_zero_handoff_cancel_task_flow_as_technical_failure_release_ui_lock_and_set_worker_faulted",
+    "forbidden_requests": [
+      "messages_ingest.pre_send_fact_checkpoint",
+      "sidecar_request.pre_send_fact_checkpoint",
+      "sidecar_response.pre_send_fact_checkpoint"
+    ],
+    "forbidden_shortcuts": [
+      "rejudge_committed_worker_stable_id_during_pre_send_refresh",
+      "rebuild_checkpoint_from_current_screenshot",
+      "rebuild_checkpoint_from_latest_identity_checkpoint",
+      "tail_voice_or_image_identity_exception",
+      "global_compatible_relaxation",
+      "treat_terminal_fact_equivalence_as_physical_identity",
+      "copy_frozen_worker_stable_id_to_fresh_observation"
+    ]
   },
   "voice_action_binding_contract": {
     "owner": "omniauto",

@@ -34,12 +34,16 @@ from chejin_worker_client.c2_outbox_recovery import (
 )
 from chejin_worker_client.wechat_c2 import (
     build_message_ingest_payload as build_worker_message_ingest_payload,
+    image_observation_source_key,
     voice_observation_source_key,
 )
 from chejin_worker_client.task_runner import should_submit_c2_ingest_payload
 import chejin_worker_client.storage as worker_storage
 from chejin_worker_client.sequence_alignment import (
     normalized_content_hash as worker_normalized_content_hash,
+)
+from chejin_worker_client.pre_send_checkpoint import (
+    compare_checkpoint_to_observations as worker_compare_checkpoint,
 )
 
 from app.contracts.c2 import c2_contract_v3, contract_revision, contract_sha256
@@ -3934,7 +3938,7 @@ def test_message_batch_status_rejects_other_worker_and_returns_terminal_state():
 
 
 def test_v3_ingest_uses_canonical_content_and_rejects_expired_authorization_revision():
-    assert contract_revision() == "0.9.36"
+    assert contract_revision() == "0.9.37"
     location_recovery = c2_contract_v3()[
         "target_location_recovery_contract"
     ]
@@ -4247,6 +4251,12 @@ def test_worker_v3_five_second_voice_transcript_is_accepted_by_backend():
     assert worker_message["content"] == transcript
     assert worker_message["raw_payload"]["observation"]["row_kind"] == "voice_transcript"
     assert worker_message["raw_payload"]["observation"]["sender_role_source"] == "parent_voice"
+    commit_evidence = worker_message["raw_payload"][
+        "message_commit_evidence"
+    ]
+    assert commit_evidence["commit_basis"] == "confirmed_voice_action"
+    assert commit_evidence["action_receipt"]["binding_confirmed"] is True
+    assert commit_evidence["reply_fact_evidence"]["voice_duration"] == "5"
 
     response = client.post(
         f"/api/workers/{worker['id']}/wechat/messages/ingest",
@@ -4255,8 +4265,64 @@ def test_worker_v3_five_second_voice_transcript_is_accepted_by_backend():
     )
 
     assert response.status_code == 200
-    assert response.json()["data"]["ingested_count"] == 1
-    assert response.json()["data"]["ignored_count"] == 0
+    response_data = response.json()["data"]
+    assert response_data["ingested_count"] == 1
+    assert response_data["ignored_count"] == 0
+    batch_id = response_data["message_batch"]["batch_id"]
+    status = client.get(
+        f"/api/workers/{worker['id']}/wechat/message-batches/{batch_id}",
+        headers=_worker_headers(worker),
+    )
+    assert status.status_code == 200, status.text
+    checkpoint = status.json()["data"]["pre_send_fact_checkpoint"]
+    frozen_voice = checkpoint["committed_tail"][0]
+    assert checkpoint["checkpoint_revision"] == 3
+    assert frozen_voice["continuity_basis"] == (
+        "terminal_committed_fact_equivalence"
+    )
+    assert frozen_voice["physical_identity_confirmed"] is False
+    assert frozen_voice["commit_basis"] == "confirmed_voice_action"
+    assert len(frozen_voice["action_receipt_digest"]) == 64
+    fresh_same_transcript = copy.deepcopy(observations[0])
+    fresh_same_transcript.pop("_worker_stable_id", None)
+    fresh_same_transcript.pop("_worker_identity_scope", None)
+    fresh_same_transcript.pop("_worker_voice_action_summary", None)
+    fresh_same_transcript.pop("_worker_committed_message", None)
+    fresh_same_transcript["observation_id"] = (
+        "new-physical-voice-same-transcript"
+    )
+    fresh_same_transcript["parent_voice_anchor_key"] = (
+        "voice:customer:5:new-physical"
+    )
+    comparison = worker_compare_checkpoint(
+        checkpoint,
+        [fresh_same_transcript],
+        before_frame_id="checkpoint:backend-voice",
+        after_frame_id="frame:worker-new-physical-voice",
+        current_tail_complete=True,
+    )
+    assert comparison["comparison_result"] == "checkpoint_equal"
+    assert comparison["physical_identity_confirmed"] is False
+    assert comparison["terminal_fact_equivalence_count"] == 1
+    assert comparison["matched_pairs"][0]["worker_stable_id"] == ""
+    assert comparison["matched_pairs"][0]["match_basis"] == (
+        "terminal_committed_fact_equivalence"
+    )
+    assert "_worker_stable_id" not in fresh_same_transcript
+    assert "_worker_committed_message" not in fresh_same_transcript
+
+    changed_fact = copy.deepcopy(fresh_same_transcript)
+    changed_fact["observation_id"] = "changed-terminal-voice"
+    changed_fact["content_clean"] = "我想看看另一辆车"
+    changed = worker_compare_checkpoint(
+        checkpoint,
+        [changed_fact],
+        before_frame_id="checkpoint:backend-voice",
+        after_frame_id="frame:worker-changed-voice",
+        current_tail_complete=True,
+    )
+    assert changed["comparison_result"] == "checkpoint_not_continuous"
+    assert changed["reason"] == "checkpoint_prefix_fact_mismatch"
 
     untrusted_message = {
         **worker_message,
@@ -4302,6 +4368,186 @@ def test_worker_v3_five_second_voice_transcript_is_accepted_by_backend():
         assert event.content == transcript
         assert event.raw_payload["observation"]["row_kind"] == "voice_transcript"
         assert event.raw_payload["voice_transcription_meta"]["message"]["voice_duration"] == 5
+
+
+def test_worker_committed_terminal_image_exact_fact_roundtrips_without_identity_inheritance():
+    worker = _create_worker()
+    _create_sales(worker["id"])
+    _create_lead("末尾图片客户", "13896676683")
+    remark_code = _pull_remark_code(worker)
+    scan = client.post(
+        f"/api/workers/{worker['id']}/wechat/sessions/scan-result",
+        json=_scan_payload(remark_code),
+        headers=_worker_headers(worker),
+    )
+    binding = scan.json()["data"]["bindings"][0]
+    with SessionLocal() as db:
+        conversation = db.get(Conversation, binding["conversation_id"])
+        conversation.status = "waiting_user_reply"
+        db.commit()
+    targets = client.get(
+        f"/api/workers/{worker['id']}/wechat/sessions/read-targets",
+        headers=_worker_headers(worker),
+    )
+    worker_target = WorkerWechatReadTarget.from_api(
+        targets.json()["data"]["targets"][0]
+    )
+    read_run_id = "read-worker-v3-terminal-image"
+    stable_id = "worker-message-1"
+    exact_digest = "a" * 64
+    fingerprint = f"imagev2:0123456789abcdef:{exact_digest}"
+    template = _v3_message(
+        "terminal-image-template",
+        role="customer",
+        message_type="image",
+        content="客户发送了一张车辆图片",
+        screen_order=1,
+    )
+    observation = copy.deepcopy(template["raw_payload"]["observation"])
+    observation.update(
+        {
+            "observation_id": "terminal-image-observation",
+            "source_adapter": "win32_ocr",
+            "item_state": "completed",
+            "image_physical_anchor": {
+                "sender_role": "customer",
+                "bubble_visual_fingerprint": fingerprint,
+                "preceding_stable_message": "",
+                "following_stable_message": "",
+                "occurrence_index": 0,
+                "occurrence_count": 1,
+            },
+            "source_message": {
+                **observation["source_message"],
+                "id": "ocr-frame-local-terminal-image",
+                "source_adapter": "win32_ocr",
+                "image_physical_anchor": {
+                    "bubble_visual_fingerprint": fingerprint,
+                },
+            },
+            "_worker_stable_id": stable_id,
+            "_worker_identity_scope": "committed",
+        }
+    )
+    action_mapping = {
+        "canonical_action_id": "image-action-terminal",
+        "reserved_worker_stable_id": stable_id,
+        "pre_observation_id": "image-pre-terminal",
+        "post_observation_id": observation["observation_id"],
+        "binding_confirmed": True,
+        "image_visual_fingerprint": fingerprint,
+    }
+    observation["_worker_image_action_summary"] = {
+        "confirmed_action_mapping": dict(action_mapping),
+        "image_visual_fingerprint": fingerprint,
+    }
+    observation["_worker_committed_message"] = committed_identity_record(
+        worker_stable_id=stable_id,
+        commit_basis=MessageCommitBasis.CONFIRMED_IMAGE_ACTION,
+        observation_id=observation["observation_id"],
+        sender_role="customer",
+        message_type="image",
+        proof=action_mapping,
+    )
+    source_key = image_observation_source_key(worker_target, observation)
+    worker_payload = build_worker_message_ingest_payload(
+        worker_target,
+        {
+            "ok": True,
+            **_v3_contract_fields(),
+            "authoritative_frame_source": "final_read",
+            "observations": [observation],
+            "slot_ledger_states": [
+                {
+                    "observation_id": observation["observation_id"],
+                    "screen_order": 1,
+                    "order_source": "observation_index_fallback",
+                    "row_kind": observation["row_kind"],
+                    "source_message_key": source_key,
+                    "origin_read_run_id": read_run_id,
+                    "fact_scope": "current_read_run",
+                    "delivery_state": "not_enqueued",
+                    "item_state": "completed",
+                }
+            ],
+            "sequence_alignment_evidence": {
+                "pre_sequence_source": "empty_checkpoint",
+                "pre_frame_id": f"checkpoint:none:{binding['conversation_id']}",
+                "post_frame_id": f"frame:{read_run_id}",
+                "alignment_status": "not_required",
+                "candidate_alignment_count": 0,
+                "matched_pairs": [],
+                "old_tail_fully_consumed": True,
+                "new_suffix_observation_ids": [
+                    observation["observation_id"]
+                ],
+            },
+        },
+        read_run_id=read_run_id,
+    )
+    assert len(worker_payload["messages"]) == 1
+    evidence = worker_payload["messages"][0]["raw_payload"][
+        "message_commit_evidence"
+    ]
+    assert evidence["commit_basis"] == "confirmed_image_action"
+    assert evidence["reply_fact_evidence"][
+        "exact_image_content_sha256"
+    ] == exact_digest
+
+    response = client.post(
+        f"/api/workers/{worker['id']}/wechat/messages/ingest",
+        json=worker_payload,
+        headers=_worker_headers(worker),
+    )
+    assert response.status_code == 200, response.text
+    batch_id = response.json()["data"]["message_batch"]["batch_id"]
+    status = client.get(
+        f"/api/workers/{worker['id']}/wechat/message-batches/{batch_id}",
+        headers=_worker_headers(worker),
+    )
+    assert status.status_code == 200, status.text
+    checkpoint = status.json()["data"]["pre_send_fact_checkpoint"]
+    frozen_image = checkpoint["committed_tail"][0]
+    assert frozen_image["continuity_basis"] == (
+        "terminal_committed_fact_equivalence"
+    )
+    assert frozen_image["physical_identity_confirmed"] is False
+
+    fresh = copy.deepcopy(observation)
+    for key in (
+        "_worker_stable_id",
+        "_worker_identity_scope",
+        "_worker_image_action_summary",
+        "_worker_committed_message",
+    ):
+        fresh.pop(key, None)
+    fresh["observation_id"] = "fresh-terminal-image-no-native-id"
+    comparison = worker_compare_checkpoint(
+        checkpoint,
+        [fresh],
+        before_frame_id="checkpoint:backend-image",
+        after_frame_id="frame:worker-same-image",
+        current_tail_complete=True,
+    )
+    assert comparison["comparison_result"] == "checkpoint_equal"
+    assert comparison["physical_identity_confirmed"] is False
+    assert comparison["matched_pairs"][0]["worker_stable_id"] == ""
+    assert "_worker_stable_id" not in fresh
+
+    similar = copy.deepcopy(fresh)
+    similar["observation_id"] = "fresh-similar-but-not-exact-image"
+    similar["image_physical_anchor"]["bubble_visual_fingerprint"] = (
+        f"imagev2:0123456789abcdef:{'b' * 64}"
+    )
+    changed = worker_compare_checkpoint(
+        checkpoint,
+        [similar],
+        before_frame_id="checkpoint:backend-image",
+        after_frame_id="frame:worker-similar-image",
+        current_tail_complete=True,
+    )
+    assert changed["comparison_result"] == "checkpoint_not_continuous"
+    assert changed["reason"] == "checkpoint_prefix_fact_mismatch"
 
 
 def test_message_ingest_rejects_v2_before_any_source_processing():

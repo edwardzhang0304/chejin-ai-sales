@@ -184,7 +184,7 @@ class PackagingScriptsTest(unittest.TestCase):
         self.assertIn("delivery ZIP does not contain the packaged runtime directory", workflow)
         self.assertIn("app_name = [string]$manifest.app_name", workflow)
         self.assertIn("delivery ZIP executable SHA256 mismatch", workflow)
-        self.assertIn("chejin-worker-v0.9.36-windows-x64.delivery.json", workflow)
+        self.assertIn("chejin-worker-v0.9.37-windows-x64.delivery.json", workflow)
         self.assertIn("CHEJIN_VISION_CLIENT_API_KEY", workflow)
         self.assertIn("vision_credential_embedded", workflow)
         self.assertIn("vision_configuration_locked", workflow)
@@ -506,7 +506,7 @@ class PackagingScriptsTest(unittest.TestCase):
             [
                 {
                     "source_commit": (
-                        "d3e5993045226f68481a09a39d6bc4b38595d483"
+                        "1a541c9eb330e83077c7bdffa0bb003a1c47d525"
                     ),
                     "scope": [
                         "exact_wechat_context_menu_classification",
@@ -535,6 +535,8 @@ class PackagingScriptsTest(unittest.TestCase):
                         "typed_committed_media_identity_contract",
                         "media_action_four_terminal_contract",
                         "c2_contract_0_9_36_generated_schema",
+                        "c2_contract_0_9_37_generated_schema",
+                        "shared_message_viewport_projection_contract",
                         "brain_provider_progress_markers_contract",
                         (
                             "brain_provider_primary_fallback_repair_"
@@ -692,10 +694,10 @@ class PackagingScriptsTest(unittest.TestCase):
             provenance["chejin_overlays"],
         )
         self.assertIn(
-            "d3e5993045226f68481a09a39d6bc4b38595d483",
+            "1a541c9eb330e83077c7bdffa0bb003a1c47d525",
             provenance["integration_note"],
         )
-        self.assertIn("0.9.36", provenance["integration_note"])
+        self.assertIn("0.9.37", provenance["integration_note"])
         self.assertIn(
             "四类 Sidecar 公开输出递归删除 Worker 专属身份字段",
             provenance["integration_note"],
@@ -706,6 +708,14 @@ class PackagingScriptsTest(unittest.TestCase):
         )
         self.assertIn(
             "selected_current_media_reservation_only_contract",
+            provenance["chejin_overlays"],
+        )
+        self.assertIn(
+            "pre_send_guard_exact_observation_frame_binding_contract",
+            provenance["chejin_overlays"],
+        )
+        self.assertIn(
+            "pre_send_passive_reread_layout_recheck_contract",
             provenance["chejin_overlays"],
         )
         self.assertIn("不重复点击", provenance["integration_note"])
@@ -1052,7 +1062,7 @@ class PackagingScriptsTest(unittest.TestCase):
         self.assertIn('$packageDir = [string]$manifest.package_dir', workflow)
         self.assertIn('$exePath = [string]$manifest.exe_path', workflow)
         self.assertNotIn('dist\\车金Worker客户端', workflow)
-        self.assertIn('version -ne "0.9.36"', workflow)
+        self.assertIn('version -ne "0.9.37"', workflow)
         self.assertIn('tests_status -ne "passed"', workflow)
         self.assertIn('@("--omniauto-sidecar", "--help")', workflow)
         self.assertIn('@("--omniauto-ocr-probe")', workflow)

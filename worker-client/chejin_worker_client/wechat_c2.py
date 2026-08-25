@@ -26,6 +26,10 @@ from .c2_contract import (
     validate_slot_ledger_states,
 )
 from .storage import save_c2_state
+from .pre_send_checkpoint import (
+    canonical_sha256 as pre_send_canonical_sha256,
+    reply_fact_evidence_for_observation,
+)
 
 
 IMAGE_PERSISTENCE_POLICY = dict(c2_contract_v3().get("image_persistence_policy") or {})
@@ -39,6 +43,85 @@ IMAGE_RUNTIME_FIELD_PREFIXES = (
 )
 
 FORMAL_C2_REMARK_CODE_RE = re.compile(r"CJ[A-Z0-9]{6}")
+
+
+def _media_message_commit_evidence(
+    committed: CommittedMessage,
+    observation: dict[str, Any],
+    *,
+    item_state: str,
+) -> dict[str, Any]:
+    """Project the already-validated action receipt without leaking identity."""
+
+    if committed.commit_basis not in {
+        MessageCommitBasis.CONFIRMED_VOICE_ACTION,
+        MessageCommitBasis.CONFIRMED_IMAGE_ACTION,
+    }:
+        return {}
+    proof = dict(committed.proof or {})
+    action_receipt = {
+        "canonical_action_id": str(
+            proof.get("canonical_action_id") or ""
+        ).strip(),
+        "reserved_worker_stable_id": str(
+            proof.get("reserved_worker_stable_id") or ""
+        ).strip(),
+        "pre_observation_id": str(
+            proof.get("pre_observation_id") or ""
+        ).strip(),
+        "post_observation_id": str(
+            proof.get("post_observation_id") or ""
+        ).strip(),
+        "binding_confirmed": proof.get("binding_confirmed") is True,
+        "selected_action_token_sha256": (
+            hashlib.sha256(
+                str(proof.get("selected_action_token") or "").encode(
+                    "utf-8"
+                )
+            ).hexdigest()
+            if str(proof.get("selected_action_token") or "").strip()
+            else ""
+        ),
+    }
+    if committed.message_type == "image":
+        action_receipt["image_visual_fingerprint"] = str(
+            proof.get("image_visual_fingerprint") or ""
+        ).strip().lower()
+    required_values = [
+        action_receipt["canonical_action_id"],
+        action_receipt["reserved_worker_stable_id"],
+        action_receipt["pre_observation_id"],
+        action_receipt["post_observation_id"],
+    ]
+    if (
+        not all(required_values)
+        or action_receipt["binding_confirmed"] is not True
+        or action_receipt["reserved_worker_stable_id"]
+        != committed.worker_stable_id
+        or action_receipt["post_observation_id"]
+        != committed.observation_id
+        or (
+            committed.message_type == "voice"
+            and not action_receipt["selected_action_token_sha256"]
+        )
+    ):
+        raise ValueError("MESSAGE_ACTION_RECEIPT_INCOMPLETE")
+    reply_fact_evidence = reply_fact_evidence_for_observation(
+        observation,
+        item_state=item_state,
+    )
+    return {
+        "schema_version": 1,
+        "commit_basis": committed.commit_basis.value,
+        "action_receipt": action_receipt,
+        "action_receipt_digest": pre_send_canonical_sha256(
+            action_receipt
+        ),
+        "reply_fact_evidence": reply_fact_evidence,
+        "reply_fact_digest": pre_send_canonical_sha256(
+            reply_fact_evidence
+        ),
+    }
 
 
 def project_final_slot_flow_gates(
@@ -1322,6 +1405,14 @@ def _build_message_ingest_payload_v3(
             # coordinates must never change dedupe or source identity.
             "message_position": message_position,
         }
+        if msg_type in {"voice", "image"}:
+            commit_evidence = _media_message_commit_evidence(
+                committed,
+                identity_observation,
+                item_state=item_state,
+            )
+            if commit_evidence:
+                raw_payload["message_commit_evidence"] = commit_evidence
         if voice_meta:
             raw_payload["voice_transcription"] = content
             raw_payload["voice_transcription_meta"] = voice_meta

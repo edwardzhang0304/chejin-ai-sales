@@ -5,10 +5,12 @@ import base64
 import copy
 import gzip
 import inspect
+import importlib.util
 import json
 import hashlib
 import os
 import shutil
+import sys
 import tempfile
 import textwrap
 import threading
@@ -43,6 +45,11 @@ from chejin_worker_client.message_identity_commit import (
     MessageCommitBasis,
     committed_identity_record,
     require_committed_message,
+)
+from chejin_worker_client.pre_send_checkpoint import (
+    canonical_sha256 as pre_send_checkpoint_sha256,
+    reply_fact_evidence_for_observation,
+    stable_fact_signature,
 )
 from chejin_worker_client.rpa_bridge import RpaBridge
 from chejin_worker_client.sequence_alignment import (
@@ -84,6 +91,7 @@ from chejin_worker_client.task_runner import (
     align_post_action_observations,
     collapse_same_frame_voice_aliases,
     _freeze_phase_metadata,
+    _validate_pre_send_context_guard,
     pre_send_new_suffix_validation,
 )
 from chejin_worker_client.transaction_outcomes import (
@@ -101,6 +109,58 @@ from chejin_worker_client.wechat_c2 import (
 
 
 LEGACY_FIXTURE_ROOT = Path(__file__).resolve().parent / "fixtures"
+OMNIAUTO_ROOT = Path(__file__).resolve().parents[1] / "omniauto-rpa"
+PRODUCTION_SIDECAR_PATH = (
+    OMNIAUTO_ROOT
+    / "apps"
+    / "wechat_ai_customer_service"
+    / "adapters"
+    / "wechat_win32_ocr_sidecar.py"
+)
+_PRODUCTION_SIDECAR = None
+
+
+def production_send_context_guard(
+    observations: list[dict],
+    *,
+    layout_ok: bool,
+) -> dict:
+    """Call the real Sidecar builder; do not fabricate its final result."""
+
+    global _PRODUCTION_SIDECAR
+    if _PRODUCTION_SIDECAR is None:
+        if str(OMNIAUTO_ROOT) not in sys.path:
+            sys.path.insert(0, str(OMNIAUTO_ROOT))
+        module_name = "task_runner_production_wechat_win32_sidecar"
+        spec = importlib.util.spec_from_file_location(
+            module_name,
+            PRODUCTION_SIDECAR_PATH,
+        )
+        assert spec is not None and spec.loader is not None
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[module_name] = module
+        spec.loader.exec_module(module)
+        _PRODUCTION_SIDECAR = module
+    layout_evidence = (
+        {
+            "ok": True,
+            "layout_snapshot_id": "production-layout-fixture",
+            "chat_header_bounds": [0, 0, 1000, 100],
+            "message_viewport_bounds": [0, 100, 1000, 800],
+            "input_bounds": [0, 800, 1000, 1000],
+        }
+        if layout_ok
+        else {
+            "ok": False,
+            "error_code": "C2_PRE_SEND_LAYOUT_INVALID",
+            "reason": "layout_snapshot_missing_or_invalid",
+            "layout_snapshot": {"valid": False},
+        }
+    )
+    return _PRODUCTION_SIDECAR.build_send_context_guard(
+        observations,
+        layout_evidence=layout_evidence,
+    )
 
 
 def install_legacy_action_journal(
@@ -171,6 +231,163 @@ def identity_checkpoint(
     }
 
 
+def pre_send_fact_checkpoint_response(
+    *,
+    conversation_id: str,
+    batch_id: str,
+    reply_action_id: str,
+    facts: list[dict] | None = None,
+    baseline_kind: str = "message_tail",
+    authoritative_frame_source: str = "final_read",
+) -> dict:
+    committed_tail = facts if facts is not None else [
+        {
+            "worker_stable_id": "worker-message-1",
+            "sender_role": "customer",
+            "message_type": "text",
+            "item_state": "completed",
+            "stable_fact_signature": stable_fact_signature(
+                sender_role="customer",
+                message_type="text",
+                item_state="completed",
+                content="你好",
+            ),
+            "continuity_basis": "ordered_fact",
+            "continuity_signature": stable_fact_signature(
+                sender_role="customer",
+                message_type="text",
+                item_state="completed",
+                content="你好",
+            ),
+            "commit_basis": "",
+            "action_receipt_digest": "",
+            "reply_fact_evidence": {},
+            "physical_identity_confirmed": True,
+        }
+    ]
+    checkpoint = {
+        "checkpoint_revision": 3,
+        "conversation_id": conversation_id,
+        "batch_id": batch_id,
+        "baseline_kind": baseline_kind,
+        "authoritative_frame_source": authoritative_frame_source,
+        "committed_tail": committed_tail,
+        "tail_complete": True,
+    }
+    return {
+        "pre_send_fact_checkpoint": checkpoint,
+        "pre_send_fact_checkpoint_binding": {
+            "conversation_id": conversation_id,
+            "batch_id": batch_id,
+            "reply_action_id": reply_action_id,
+            "checkpoint_digest": pre_send_checkpoint_sha256(checkpoint),
+        },
+    }
+
+
+def pre_send_fact(
+    stable_id: str,
+    *,
+    sender_role: str,
+    message_type: str,
+    content: str = "",
+    image_fingerprint: str = "",
+    native_source_message_id: str = "",
+    voice_duration: str = "",
+    terminal_action_receipt: bool = False,
+) -> dict:
+    signature = stable_fact_signature(
+        sender_role=sender_role,
+        message_type=message_type,
+        item_state="completed",
+        content=content,
+        voice_duration=voice_duration,
+        image_visual_fingerprint=image_fingerprint,
+    )
+    media = message_type in {"voice", "image"}
+    continuity_basis = (
+        "native_source_message_id"
+        if media and native_source_message_id
+        else "terminal_committed_fact_equivalence"
+        if media and terminal_action_receipt
+        else "unproven_media_continuity"
+        if media
+        else "ordered_fact"
+    )
+    continuity_signature = (
+        pre_send_checkpoint_sha256(
+            {
+                "message_type": message_type,
+                "native_source_message_id": native_source_message_id,
+            }
+        )
+        if media and native_source_message_id
+        else pre_send_checkpoint_sha256(
+            reply_fact_evidence_for_observation(
+                {
+                    "row_kind": (
+                        "voice_transcript"
+                        if message_type == "voice"
+                        else "image_bubble"
+                    ),
+                    "sender_role": sender_role,
+                    "message_type": message_type,
+                    "voice_state": "transcribed",
+                    "content_clean": content,
+                    "voice_duration": voice_duration,
+                    "image_physical_anchor": {
+                        "bubble_visual_fingerprint": image_fingerprint,
+                    },
+                },
+                item_state="completed",
+            )
+        )
+        if media and terminal_action_receipt
+        else ""
+        if media
+        else signature
+    )
+    reply_fact_evidence = reply_fact_evidence_for_observation(
+        {
+            "row_kind": (
+                "voice_transcript"
+                if message_type == "voice"
+                else "image_bubble"
+                if message_type == "image"
+                else "text_bubble"
+            ),
+            "sender_role": sender_role,
+            "message_type": message_type,
+            "voice_state": "transcribed",
+            "content_clean": content,
+            "voice_duration": voice_duration,
+            "image_physical_anchor": {
+                "bubble_visual_fingerprint": image_fingerprint,
+            },
+        },
+        item_state="completed",
+    )
+    return {
+        "worker_stable_id": stable_id,
+        "sender_role": sender_role,
+        "message_type": message_type,
+        "item_state": "completed",
+        "stable_fact_signature": signature,
+        "continuity_basis": continuity_basis,
+        "continuity_signature": continuity_signature,
+        "commit_basis": (
+            f"confirmed_{message_type}_action"
+            if terminal_action_receipt
+            else ""
+        ),
+        "action_receipt_digest": (
+            "a" * 64 if terminal_action_receipt else ""
+        ),
+        "reply_fact_evidence": reply_fact_evidence,
+        "physical_identity_confirmed": bool(
+            not media or native_source_message_id
+        ),
+    }
 def committed_voice_recovery_observation(
     conversation_id: str,
     *,
@@ -541,6 +758,9 @@ class FakeApi:
         self.friend_activation_payloads: list[dict] = []
         self.message_batch_statuses: list[dict] = []
         self.message_batch_result: dict | None = None
+        self.pre_send_checkpoint_facts: list[dict] | None = None
+        self.pre_send_checkpoint_baseline_kind = "message_tail"
+        self.pre_send_checkpoint_frame_source = "final_read"
         self.heartbeat_payloads: list[dict] = []
         self.heartbeat_run_status: str | None = None
         self.message_ingest_error: Exception | None = None
@@ -674,6 +894,16 @@ class FakeApi:
             raise self.claim_send_error
         from chejin_worker_client.models import ReplySendClaim
 
+        checkpoint_fields = pre_send_fact_checkpoint_response(
+            conversation_id="conv-1",
+            batch_id="batch-1",
+            reply_action_id=task.reply_action_id or "reply-action-1",
+            facts=self.pre_send_checkpoint_facts,
+            baseline_kind=self.pre_send_checkpoint_baseline_kind,
+            authoritative_frame_source=(
+                self.pre_send_checkpoint_frame_source
+            ),
+        )
         return ReplySendClaim(
             reply_action_id=task.reply_action_id or "reply-action-1",
             task_id=task.id,
@@ -688,6 +918,7 @@ class FakeApi:
                 "display_name": "CJTEST01 许聪",
                 "authorization_revision": "revision-conv-1",
                 "duplicated": self.claim_send_duplicated,
+                **checkpoint_fields,
             },
         )
 
@@ -936,6 +1167,11 @@ class FakeApi:
                 "processing": False,
                 "decision": "send_reply",
                 "updated_at": "ready",
+                "reply_action": (
+                    {"id": task.reply_action_id}
+                    if task and task.reply_action_id
+                    else {"id": "reply-action-1"}
+                ),
                 "task": dict(task.raw) if task else None,
             }
         target = self.read_targets[0] if self.read_targets else None
@@ -962,6 +1198,36 @@ class FakeApi:
                     "sales_id": target.sales_id,
                 },
             )
+        reply_action = (
+            result.get("reply_action")
+            if isinstance(result.get("reply_action"), dict)
+            else {}
+        )
+        reply_action_id = str(
+            reply_action.get("id")
+            or (
+                self.task.reply_action_id
+                if self.task is not None
+                else "reply-action-1"
+            )
+            or "reply-action-1"
+        )
+        conversation_id = str(
+            result.get("conversation_id")
+            or (target.conversation_id if target is not None else "conv-1")
+        )
+        result.update(
+            pre_send_fact_checkpoint_response(
+                conversation_id=conversation_id,
+                batch_id=str(result.get("batch_id") or batch_id),
+                reply_action_id=reply_action_id,
+                facts=self.pre_send_checkpoint_facts,
+                baseline_kind=self.pre_send_checkpoint_baseline_kind,
+                authoritative_frame_source=(
+                    self.pre_send_checkpoint_frame_source
+                ),
+            )
+        )
         return result
 
 
@@ -1289,60 +1555,10 @@ class FakeBridge:
 
     @staticmethod
     def _send_context_guard(observations: list[dict]) -> dict:
-        context_sequence = [
-            {
-                "screen_order": index,
-                "row_kind": str(item.get("row_kind") or ""),
-                "sender_role": str(item.get("sender_role") or ""),
-                "message_type": str(item.get("message_type") or ""),
-                "relative_quantized_bounds": list(
-                    item.get("bubble_rect") or []
-                ),
-                "stable_content_signature": hashlib.sha256(
-                    "".join(
-                        str(item.get("content_clean") or "").split()
-                    ).encode("utf-8")
-                ).hexdigest(),
-                "media_state": (
-                    "transcribed"
-                    if str(item.get("row_kind") or "")
-                    == "voice_transcript"
-                    else "untranscribed"
-                    if str(item.get("row_kind") or "")
-                    == "voice_bubble"
-                    else "image"
-                    if str(item.get("row_kind") or "")
-                    == "image_bubble"
-                    else ""
-                ),
-            }
-            for index, item in enumerate(observations)
-            if str(item.get("row_kind") or "")
-            in {
-                "text_bubble",
-                "voice_bubble",
-                "voice_transcript",
-                "image_bubble",
-                "system_message",
-            }
-        ]
-        digest = hashlib.sha256(
-            json.dumps(
-                context_sequence,
-                ensure_ascii=True,
-                sort_keys=True,
-                separators=(",", ":"),
-            ).encode("utf-8")
-        ).hexdigest()
-        return {
-            "schema_version": 2,
-            "sequence": context_sequence,
-            "message_count": len(context_sequence),
-            "bottom": dict(context_sequence[-1]) if context_sequence else None,
-            "message_viewport_change_digest": digest,
-            "sequence_sha256": digest,
-            "raw_rgb_hash_used": False,
-        }
+        return production_send_context_guard(
+            observations,
+            layout_ok=True,
+        )
 
     def locate_chat(self, *, display_name: str, rpa_session_key: str, **kwargs):
         self.c2_operation_order.append("locate_chat")
@@ -4906,6 +5122,10 @@ class TaskRunnerTest(unittest.TestCase):
         ledger = load_c2_ledger_entry(conversation_id, source_key)
         self.assertEqual(ledger["ingest_state"], "confirmed")
         self.assertEqual(len(api.message_payloads), 1)
+        self.assertNotIn(
+            "pre_send_fact_checkpoint",
+            api.message_payloads[0],
+        )
         self.assertEqual(
             api.message_payloads[0]["messages"][0]["content"],
             observation["content_clean"],
@@ -7804,12 +8024,18 @@ class TaskRunnerTest(unittest.TestCase):
             "processing": False,
             "decision": "send_reply",
             "updated_at": "ready",
+            "reply_action": {"id": "reply-action-1"},
             "authorization": {
                 "allowed": True,
                 "conversation_id": "conv-pre-send",
                 "authorization_revision": "revision-pre-send",
                 "read_reason": "waiting_user_reply",
             },
+            **pre_send_fact_checkpoint_response(
+                conversation_id="conv-pre-send",
+                batch_id="batch-send",
+                reply_action_id="reply-action-1",
+            ),
         }
         runner, _ = self.make_runner(api, FakeBridge(RpaResult(ok=True, result_code="unused", message="unused")))
         binding = Binding(worker_id="worker-1", worker_token="token", client_instance_id="client-1", run_status="running")
@@ -7821,11 +8047,32 @@ class TaskRunnerTest(unittest.TestCase):
             read_reason="waiting_user_reply",
             authorization_revision="revision-pre-send",
         )
+        self_observation = {
+            "observation_id": "fresh-self-reply",
+            "row_kind": "text_bubble",
+            "sender_role": "self",
+            "message_type": "text",
+            "content_clean": "销售已回复",
+            "bubble_rect": [400, 200, 700, 250],
+        }
 
         with patch.object(
             runner,
             "_read_one_wechat_target",
-            return_value={"ok": True, "new_self_message_count": 1, "new_customer_message_count": 0, "result": {}},
+            return_value={
+                "ok": True,
+                "new_self_message_count": 1,
+                "new_customer_message_count": 0,
+                "result": {},
+                "send_context_guard": FakeBridge._send_context_guard(
+                    [self_observation]
+                ),
+                "send_identity_frame": {
+                    "contract_revision": contract_revision(),
+                    "frame_id": "send-pre:fresh-self-frame",
+                    "observations": [self_observation],
+                },
+            },
         ) as refresh:
             result = runner._wait_and_send_current_c3_batch(
                 binding=binding,
@@ -7842,6 +8089,1560 @@ class TaskRunnerTest(unittest.TestCase):
         assert kwargs["enforce_read_targets"] is True
         assert kwargs["allow_during_current_task"] is True
         assert kwargs["operation_phase"] == "pre_send_refresh"
+
+    def test_pre_send_checkpoint_terminal_voice_uses_production_flow_and_sends_once(self):
+        task = self.make_chat_reply_task(task_id="task-checkpoint-voice")
+        api = FakeApi(task)
+        self.authorize_chat_reply_target(api)
+        api.pre_send_checkpoint_facts = [
+            pre_send_fact(
+                "worker-message-17",
+                sender_role="customer",
+                message_type="voice",
+                content="10万块钱的二手车有什么推荐的？",
+                native_source_message_id="wx-native-terminal-voice",
+            )
+        ]
+        bridge = FakeBridge(
+            RpaResult(ok=True, result_code="unused", message="unused")
+        )
+        bridge.get_messages_payloads = [
+            {
+                "frame_id": "frame-pre-send-voice",
+                "observations": [
+                    {
+                        "schema_version": 3,
+                        "observation_id": "fresh-terminal-voice",
+                        "row_kind": "voice_transcript",
+                        "sender_role": "customer",
+                        "sender_role_source": "parent_voice",
+                        "message_type": "voice",
+                        "voice_state": "transcribed",
+                        "native_source_message_id": (
+                            "wx-native-terminal-voice"
+                        ),
+                        "content_clean": (
+                            "10万块钱的二手车\n有什么推荐的？"
+                        ),
+                        "parent_voice_anchor_key": "fresh-voice-anchor",
+                        "source_message": {
+                            "id": "fresh-terminal-voice",
+                            "type": "voice",
+                            "sender_role": "customer",
+                            "content": (
+                                "10万块钱的二手车"
+                                "有什么推荐的？"
+                            ),
+                        },
+                    }
+                ],
+            }
+        ]
+        runner, _ = self.make_runner(api, bridge)
+        binding = Binding(
+            worker_id="worker-1",
+            worker_token="token",
+            client_instance_id="client-1",
+            run_status="running",
+        )
+        runner.binding = binding
+        self.assertTrue(
+            runner._start_inflight_flow(
+                binding,
+                flow_id="flow-checkpoint-voice",
+                flow_kind="c2_read",
+            )
+        )
+
+        result = runner._wait_and_send_current_c3_batch(
+            binding=binding,
+            target=api.read_targets[0],
+            batch_id="batch-1",
+            cancel_check=lambda: False,
+        )
+
+        self.assertTrue(result["ok"], result)
+        self.assertTrue(result["sent"])
+        self.assertEqual(len(bridge.sent_replies), 1)
+        self.assertEqual(bridge.voice_transcribes, [])
+        self.assertEqual(api.message_payloads, [])
+        self.assertEqual(
+            api.events.count("sent_ack:sent:None"),
+            1,
+        )
+
+    def _assert_invalid_pre_send_layout_faults_without_action(
+        self,
+        *,
+        checkpoint_facts: list[dict],
+        observations: list[dict],
+        baseline_kind: str = "message_tail",
+        frame_source: str = "final_read",
+        guard_observations: list[dict] | None = None,
+        guard_layout_ok: bool = False,
+        reread_payload: dict | None = None,
+        expected_message_reads: int = 1,
+    ) -> dict:
+        task = self.make_chat_reply_task(
+            task_id="task-pre-send-invalid-layout"
+        )
+        api = FakeApi(task)
+        self.authorize_chat_reply_target(api)
+        api.pre_send_checkpoint_facts = checkpoint_facts
+        api.pre_send_checkpoint_baseline_kind = baseline_kind
+        api.pre_send_checkpoint_frame_source = frame_source
+        supplied_guard = production_send_context_guard(
+            (
+                guard_observations
+                if guard_observations is not None
+                else observations
+            ),
+            layout_ok=guard_layout_ok,
+        )
+        self.assertIs(supplied_guard.get("ok"), guard_layout_ok)
+        bridge = FakeBridge(
+            RpaResult(ok=True, result_code="unused", message="unused")
+        )
+        bridge.get_messages_payloads = [
+            {
+                "frame_id": "frame-invalid-pre-send-layout",
+                # The Sidecar command completed, but its independent layout
+                # evidence explicitly says the chat viewport is invalid.
+                "ok": True,
+                "observations": observations,
+                "send_context_guard": supplied_guard,
+            }
+        ]
+        if reread_payload is not None:
+            bridge.get_messages_payloads.append(dict(reread_payload))
+        runner, _ = self.make_runner(api, bridge)
+        binding = Binding(
+            worker_id="worker-1",
+            worker_token="token",
+            client_instance_id="client-1",
+            run_status="running",
+        )
+        runner.binding = binding
+        self.assertTrue(
+            runner._start_inflight_flow(
+                binding,
+                flow_id="flow-pre-send-invalid-layout",
+                flow_kind="c2_read",
+            )
+        )
+
+        result = runner._wait_and_send_current_c3_batch(
+            binding=binding,
+            target=api.read_targets[0],
+            batch_id="batch-1",
+            cancel_check=lambda: False,
+        )
+
+        self.assertFalse(result["ok"], result)
+        self.assertEqual(
+            result["error_code"],
+            "C2_PRE_SEND_LAYOUT_INVALID",
+        )
+        self.assertTrue(result["reply_task_settled"])
+        self.assertEqual(
+            len(bridge.message_reads),
+            expected_message_reads,
+        )
+        self.assertEqual(bridge.sent_replies, [])
+        self.assertEqual(bridge.voice_transcribes, [])
+        self.assertEqual(api.message_payloads, [])
+        self.assertEqual(list_c2_action_journal("conv-1"), [])
+        self.assertEqual(
+            api.events.count(
+                "fail:C2_PRE_SEND_LAYOUT_INVALID:pre_send_refresh"
+            ),
+            1,
+        )
+        self.assertIn("faulted", api.run_status_updates)
+        self.assertFalse(
+            any(event.startswith("claim:") for event in api.events)
+        )
+        self.assertFalse(
+            any("handoff" in event.lower() for event in api.events)
+        )
+        return result
+
+    def test_pre_send_context_guard_requires_one_coherent_production_snapshot(self):
+        observation = {
+            "schema_version": 3,
+            "observation_id": "guard-integrity-text",
+            "row_kind": "text_bubble",
+            "sender_role": "customer",
+            "message_type": "text",
+            "content_clean": "你好",
+            "bubble_rect": [420, 200, 700, 250],
+        }
+        valid = production_send_context_guard(
+            [observation],
+            layout_ok=True,
+        )
+        self.assertTrue(
+            _validate_pre_send_context_guard(valid, [observation])["ok"],
+            valid,
+        )
+        corruptions = {
+            "sidecar_not_ok": {**valid, "ok": False},
+            "layout_snapshot_missing": {
+                **valid,
+                "layout_snapshot_id": "",
+            },
+            "message_count_mismatch": {
+                **valid,
+                "message_count": 2,
+            },
+            "sequence_order_mismatch": {
+                **valid,
+                "sequence": [
+                    {
+                        **valid["sequence"][0],
+                        "screen_order": 7,
+                    }
+                ],
+            },
+            "digest_mismatch": {
+                **valid,
+                "sequence_sha256": "0" * 64,
+            },
+            "bottom_mismatch": {
+                **valid,
+                "bottom": None,
+            },
+        }
+        for name, guard in corruptions.items():
+            with self.subTest(name=name):
+                result = _validate_pre_send_context_guard(
+                    guard,
+                    [observation],
+                )
+                self.assertFalse(result["ok"])
+                self.assertEqual(
+                    result["error_code"],
+                    "C2_PRE_SEND_LAYOUT_INVALID",
+                )
+
+    def test_pre_send_valid_guard_from_another_frame_is_rejected_before_send(self):
+        current_observation = {
+            "schema_version": 3,
+            "observation_id": "current-frame-text",
+            "source_adapter": "win32_ocr",
+            "row_kind": "text_bubble",
+            "sender_role": "customer",
+            "sender_role_source": "same_row_avatar",
+            "message_type": "text",
+            "voice_state": "not_voice",
+            "content_clean": "新内容",
+            "bubble_rect": [420, 200, 700, 250],
+        }
+        old_guard_observation = {
+            **current_observation,
+            "observation_id": "old-frame-text",
+            "content_clean": "旧内容",
+        }
+        result = self._assert_invalid_pre_send_layout_faults_without_action(
+            checkpoint_facts=[
+                pre_send_fact(
+                    "worker-message-cross-frame",
+                    sender_role="customer",
+                    message_type="text",
+                    content="新内容",
+                )
+            ],
+            observations=[current_observation],
+            guard_observations=[old_guard_observation],
+            guard_layout_ok=True,
+        )
+        self.assertIn(
+            "send_context_guard_observations_mismatch",
+            json.dumps(result, ensure_ascii=False),
+        )
+
+    def test_pre_send_passive_reread_rechecks_invalid_layout(self):
+        initial_observation = {
+            "schema_version": 3,
+            "observation_id": "initial-old-text",
+            "source_adapter": "win32_ocr",
+            "row_kind": "text_bubble",
+            "sender_role": "customer",
+            "sender_role_source": "same_row_avatar",
+            "message_type": "text",
+            "voice_state": "not_voice",
+            "content_clean": "旧内容",
+            "bubble_rect": [420, 200, 700, 250],
+        }
+        reread_observation = {
+            **initial_observation,
+            "observation_id": "reread-new-text",
+            "content_clean": "新内容",
+        }
+        invalid_reread_guard = production_send_context_guard(
+            [reread_observation],
+            layout_ok=False,
+        )
+        result = self._assert_invalid_pre_send_layout_faults_without_action(
+            checkpoint_facts=[
+                pre_send_fact(
+                    "worker-message-reread-layout",
+                    sender_role="customer",
+                    message_type="text",
+                    content="新内容",
+                )
+            ],
+            observations=[initial_observation],
+            guard_observations=[initial_observation],
+            guard_layout_ok=True,
+            reread_payload={
+                "frame_id": "frame-invalid-passive-reread-layout",
+                "ok": True,
+                "observations": [reread_observation],
+                "send_context_guard": invalid_reread_guard,
+            },
+            expected_message_reads=2,
+        )
+        serialized = json.dumps(result, ensure_ascii=False)
+        self.assertIn("send_context_guard_not_ok", serialized)
+        self.assertNotIn(
+            "C2_PRE_SEND_MESSAGE_SEQUENCE_ALIGNMENT_FAILED",
+            serialized,
+        )
+
+    def test_pre_send_invalid_layout_blocks_ordinary_reply(self):
+        self._assert_invalid_pre_send_layout_faults_without_action(
+            checkpoint_facts=[
+                pre_send_fact(
+                    "worker-message-layout-text",
+                    sender_role="customer",
+                    message_type="text",
+                    content="你好",
+                )
+            ],
+            observations=[
+                {
+                    "schema_version": 3,
+                    "observation_id": "layout-text",
+                    "source_adapter": "win32_ocr",
+                    "row_kind": "text_bubble",
+                    "sender_role": "customer",
+                    "sender_role_source": "same_row_avatar",
+                    "message_type": "text",
+                    "voice_state": "not_voice",
+                    "content_clean": "你好",
+                    "bubble_rect": [420, 200, 700, 250],
+                }
+            ],
+        )
+
+    def test_pre_send_invalid_layout_blocks_terminal_media_equivalence(self):
+        self._assert_invalid_pre_send_layout_faults_without_action(
+            checkpoint_facts=[
+                pre_send_fact(
+                    "worker-message-layout-voice",
+                    sender_role="customer",
+                    message_type="voice",
+                    content="想看10万左右的车",
+                    voice_duration="4秒",
+                    terminal_action_receipt=True,
+                )
+            ],
+            observations=[
+                {
+                    "schema_version": 3,
+                    "observation_id": "layout-terminal-voice",
+                    "source_adapter": "win32_ocr",
+                    "row_kind": "voice_transcript",
+                    "sender_role": "customer",
+                    "sender_role_source": "parent_voice",
+                    "message_type": "voice",
+                    "voice_state": "transcribed",
+                    "voice_duration": "4s",
+                    "content_clean": "想看10万左右的车",
+                    "bubble_rect": [420, 200, 700, 250],
+                }
+            ],
+        )
+
+    def test_pre_send_invalid_layout_blocks_empty_friend_welcome(self):
+        self._assert_invalid_pre_send_layout_faults_without_action(
+            checkpoint_facts=[],
+            observations=[],
+            baseline_kind="friend_welcome_empty",
+            frame_source="control_empty",
+        )
+
+    def test_pre_send_terminal_committed_voice_fact_equivalence_sends_without_reidentity(self):
+        task = self.make_chat_reply_task(
+            task_id="task-checkpoint-terminal-voice-facts"
+        )
+        api = FakeApi(task)
+        self.authorize_chat_reply_target(api)
+        api.pre_send_checkpoint_facts = [
+            pre_send_fact(
+                "worker-message-171",
+                sender_role="customer",
+                message_type="voice",
+                content="10万块钱的二手车有什么推荐的？",
+                voice_duration="4秒",
+                terminal_action_receipt=True,
+            )
+        ]
+        bridge = FakeBridge(
+            RpaResult(ok=True, result_code="unused", message="unused")
+        )
+        bridge.get_messages_payloads = [
+            {
+                "frame_id": "frame-terminal-voice-fact-equivalence",
+                "observations": [
+                    {
+                        "schema_version": 3,
+                        "observation_id": "fresh-terminal-voice-no-id",
+                        "row_kind": "voice_transcript",
+                        "sender_role": "customer",
+                        "sender_role_source": "parent_voice",
+                        "message_type": "voice",
+                        "voice_state": "transcribed",
+                        "voice_duration": "4s",
+                        "content_clean": (
+                            "10万块钱的二手车\n有什么推荐的？"
+                        ),
+                        "source_adapter": "win32_ocr",
+                        "source_message": {
+                            "id": "ocr-frame-local-voice",
+                            "source_adapter": "win32_ocr",
+                            "type": "voice",
+                            "sender_role": "customer",
+                        },
+                    }
+                ],
+            }
+        ]
+        runner, _ = self.make_runner(api, bridge)
+        binding = Binding(
+            worker_id="worker-1",
+            worker_token="token",
+            client_instance_id="client-1",
+            run_status="running",
+        )
+        runner.binding = binding
+        self.assertTrue(
+            runner._start_inflight_flow(
+                binding,
+                flow_id="flow-terminal-voice-fact-equivalence",
+                flow_kind="c2_read",
+            )
+        )
+
+        result = runner._wait_and_send_current_c3_batch(
+            binding=binding,
+            target=api.read_targets[0],
+            batch_id="batch-1",
+            cancel_check=lambda: False,
+        )
+
+        self.assertTrue(result["ok"], result)
+        self.assertTrue(result["sent"])
+        self.assertEqual(len(bridge.sent_replies), 1)
+        self.assertEqual(bridge.voice_transcribes, [])
+        self.assertEqual(api.message_payloads, [])
+        self.assertEqual(list_c2_action_journal("conv-1"), [])
+        serialized_guard = json.dumps(
+            bridge.sent_replies[0]["expected_context_guard"],
+            ensure_ascii=False,
+        )
+        self.assertNotIn("worker-message-171", serialized_guard)
+        self.assertNotIn("worker_stable_id", serialized_guard)
+
+    def test_pre_send_checkpoint_pure_text_initial_read_uses_production_flow(self):
+        task = self.make_chat_reply_task(task_id="task-checkpoint-initial-text")
+        api = FakeApi(task)
+        self.authorize_chat_reply_target(api)
+        api.pre_send_checkpoint_frame_source = "initial_read"
+        api.pre_send_checkpoint_facts = [
+            pre_send_fact(
+                "worker-message-18",
+                sender_role="customer",
+                message_type="text",
+                content="想看10万左右的SUV",
+            )
+        ]
+        bridge = FakeBridge(
+            RpaResult(ok=True, result_code="unused", message="unused")
+        )
+        bridge.get_messages_payloads = [
+            {
+                "frame_id": "frame-pre-send-initial-text",
+                "observations": [
+                    {
+                        "schema_version": 3,
+                        "observation_id": "fresh-initial-text",
+                        "row_kind": "text_bubble",
+                        "sender_role": "customer",
+                        "sender_role_source": "same_row_avatar",
+                        "message_type": "text",
+                        "content_clean": "想看10万左右的SUV",
+                        "source_message": {
+                            "id": "fresh-initial-text",
+                            "source_adapter": "win32_ocr",
+                            "type": "text",
+                            "sender_role": "customer",
+                            "content": "想看10万左右的SUV",
+                        },
+                    }
+                ],
+            }
+        ]
+        runner, _ = self.make_runner(api, bridge)
+        binding = Binding(
+            worker_id="worker-1",
+            worker_token="token",
+            client_instance_id="client-1",
+            run_status="running",
+        )
+        runner.binding = binding
+        self.assertTrue(
+            runner._start_inflight_flow(
+                binding,
+                flow_id="flow-checkpoint-initial-text",
+                flow_kind="c2_read",
+            )
+        )
+
+        with patch(
+            "chejin_worker_client.omniauto_vision.process_image_slot"
+        ) as vision:
+            result = runner._wait_and_send_current_c3_batch(
+                binding=binding,
+                target=api.read_targets[0],
+                batch_id="batch-1",
+                cancel_check=lambda: False,
+            )
+
+        self.assertTrue(result["ok"], result)
+        self.assertTrue(result["sent"])
+        self.assertEqual(len(bridge.sent_replies), 1)
+        self.assertEqual(api.message_payloads, [])
+        self.assertEqual(api.events.count("sent_ack:sent:None"), 1)
+
+    def test_pre_send_checkpoint_terminal_image_is_not_reprocessed(self):
+        task = self.make_chat_reply_task(task_id="task-checkpoint-image")
+        api = FakeApi(task)
+        self.authorize_chat_reply_target(api)
+        fingerprint = "dhash64:0123456789abcdef"
+        api.pre_send_checkpoint_facts = [
+            pre_send_fact(
+                "worker-message-23",
+                sender_role="customer",
+                message_type="image",
+                image_fingerprint=fingerprint,
+                native_source_message_id="wx-native-terminal-image",
+            )
+        ]
+        bridge = FakeBridge(
+            RpaResult(ok=True, result_code="unused", message="unused")
+        )
+        bridge.get_messages_payloads = [
+            {
+                "frame_id": "frame-pre-send-image",
+                "observations": [
+                    {
+                        "schema_version": 3,
+                        "observation_id": "fresh-terminal-image",
+                        "row_kind": "image_bubble",
+                        "sender_role": "customer",
+                        "sender_role_source": "same_row_avatar",
+                        "message_type": "image",
+                        "voice_state": "not_voice",
+                        "item_state": "discovered",
+                        "native_source_message_id": (
+                            "wx-native-terminal-image"
+                        ),
+                        "bubble_rect": [420, 180, 650, 320],
+                        "image_physical_anchor": {
+                            "sender_role": "customer",
+                            "bubble_visual_fingerprint": fingerprint,
+                            "preceding_stable_message": "",
+                            "following_stable_message": "",
+                            "occurrence_index": 0,
+                            "occurrence_count": 1,
+                        },
+                        "source_message": {
+                            "id": "fresh-terminal-image",
+                            "type": "image",
+                            "sender_role": "customer",
+                        },
+                    }
+                ],
+            }
+        ]
+        runner, _ = self.make_runner(api, bridge)
+        binding = Binding(
+            worker_id="worker-1",
+            worker_token="token",
+            client_instance_id="client-1",
+            run_status="running",
+        )
+        runner.binding = binding
+        self.assertTrue(
+            runner._start_inflight_flow(
+                binding,
+                flow_id="flow-checkpoint-image",
+                flow_kind="c2_read",
+            )
+        )
+
+        result = runner._wait_and_send_current_c3_batch(
+            binding=binding,
+            target=api.read_targets[0],
+            batch_id="batch-1",
+            cancel_check=lambda: False,
+        )
+
+        self.assertTrue(result["ok"], result)
+        self.assertTrue(result["sent"])
+        self.assertEqual(len(bridge.sent_replies), 1)
+        self.assertEqual(api.message_payloads, [])
+        self.assertEqual(list_c2_action_journal("conv-1"), [])
+
+    def test_pre_send_terminal_committed_image_exact_fact_sends_without_vision(self):
+        task = self.make_chat_reply_task(
+            task_id="task-checkpoint-terminal-image-facts"
+        )
+        api = FakeApi(task)
+        self.authorize_chat_reply_target(api)
+        fingerprint = f"imagev2:0123456789abcdef:{'a' * 64}"
+        api.pre_send_checkpoint_facts = [
+            pre_send_fact(
+                "worker-message-231",
+                sender_role="customer",
+                message_type="image",
+                image_fingerprint=fingerprint,
+                terminal_action_receipt=True,
+            )
+        ]
+        bridge = FakeBridge(
+            RpaResult(ok=True, result_code="unused", message="unused")
+        )
+        bridge.get_messages_payloads = [
+            {
+                "frame_id": "frame-terminal-image-fact-equivalence",
+                "observations": [
+                    {
+                        "schema_version": 3,
+                        "observation_id": "fresh-terminal-image-no-id",
+                        "row_kind": "image_bubble",
+                        "sender_role": "customer",
+                        "sender_role_source": "same_row_avatar",
+                        "message_type": "image",
+                        "item_state": "completed",
+                        "bubble_rect": [420, 180, 650, 320],
+                        "image_physical_anchor": {
+                            "sender_role": "customer",
+                            "bubble_visual_fingerprint": fingerprint,
+                            "preceding_stable_message": "",
+                            "following_stable_message": "",
+                            "occurrence_index": 0,
+                            "occurrence_count": 1,
+                        },
+                        "source_adapter": "win32_ocr",
+                        "source_message": {
+                            "id": "ocr-frame-local-image",
+                            "source_adapter": "win32_ocr",
+                            "type": "image",
+                            "sender_role": "customer",
+                        },
+                    }
+                ],
+            }
+        ]
+        runner, _ = self.make_runner(api, bridge)
+        binding = Binding(
+            worker_id="worker-1",
+            worker_token="token",
+            client_instance_id="client-1",
+            run_status="running",
+        )
+        runner.binding = binding
+        self.assertTrue(
+            runner._start_inflight_flow(
+                binding,
+                flow_id="flow-terminal-image-fact-equivalence",
+                flow_kind="c2_read",
+            )
+        )
+
+        with patch(
+            "chejin_worker_client.omniauto_vision.process_image_slot"
+        ) as vision:
+            result = runner._wait_and_send_current_c3_batch(
+                binding=binding,
+                target=api.read_targets[0],
+                batch_id="batch-1",
+                cancel_check=lambda: False,
+            )
+
+        self.assertTrue(result["ok"], result)
+        self.assertTrue(result["sent"])
+        self.assertEqual(len(bridge.sent_replies), 1)
+        self.assertEqual(api.message_payloads, [])
+        self.assertEqual(list_c2_action_journal("conv-1"), [])
+        vision.assert_not_called()
+        self.assertNotIn(
+            "worker-message-231",
+            json.dumps(
+                bridge.sent_replies[0]["expected_context_guard"],
+                ensure_ascii=False,
+            ),
+        )
+
+    def test_friend_welcome_empty_baseline_sends_only_while_chat_is_empty(self):
+        task = self.make_chat_reply_task(task_id="task-welcome-empty")
+        api = FakeApi(task)
+        self.authorize_chat_reply_target(api)
+        api.pre_send_checkpoint_facts = []
+        api.pre_send_checkpoint_baseline_kind = "friend_welcome_empty"
+        api.pre_send_checkpoint_frame_source = "control_empty"
+        bridge = FakeBridge(
+            RpaResult(ok=True, result_code="unused", message="unused")
+        )
+        bridge.get_messages_payloads = [
+            {
+                "frame_id": "frame-welcome-still-empty",
+                "observations": [],
+            }
+        ]
+        runner, _ = self.make_runner(api, bridge)
+        binding = Binding(
+            worker_id="worker-1",
+            worker_token="token",
+            client_instance_id="client-1",
+            run_status="running",
+        )
+        runner.binding = binding
+        self.assertTrue(
+            runner._start_inflight_flow(
+                binding,
+                flow_id="flow-welcome-empty",
+                flow_kind="c2_read",
+            )
+        )
+
+        result = runner._wait_and_send_current_c3_batch(
+            binding=binding,
+            target=api.read_targets[0],
+            batch_id="batch-1",
+            cancel_check=lambda: False,
+        )
+
+        self.assertTrue(result["ok"], result)
+        self.assertTrue(result["sent"])
+        self.assertEqual(len(bridge.sent_replies), 1)
+        self.assertEqual(
+            bridge.sent_replies[0]["expected_context_guard"]["sequence"],
+            [],
+        )
+        self.assertEqual(api.message_payloads, [])
+
+    def test_friend_welcome_empty_baseline_is_superseded_by_first_customer_message(self):
+        task = self.make_chat_reply_task(task_id="task-welcome-superseded")
+        api = FakeApi(task)
+        self.authorize_chat_reply_target(api)
+        api.pre_send_checkpoint_facts = []
+        api.pre_send_checkpoint_baseline_kind = "friend_welcome_empty"
+        api.pre_send_checkpoint_frame_source = "control_empty"
+        api.message_batch_result = {
+            "batch_id": "batch-first-customer-message",
+            "batch_status": "generating",
+            "continuation": {
+                "batch_id": "batch-first-customer-message",
+                "token": "continuation-batch-first-customer-message",
+                "authorization_revision": "revision-conv-1",
+                "read_reason": "waiting_sales_reply",
+            },
+        }
+        api.message_batch_statuses = [
+            {
+                "batch_id": "batch-1",
+                "batch_status": "reply_action_created",
+                "processing": False,
+                "decision": "send_reply",
+                "updated_at": "welcome-ready",
+                "reply_action": {"id": "reply-action-1"},
+                "task": dict(task.raw),
+            },
+            {
+                "batch_id": "batch-first-customer-message",
+                "batch_status": "handoff",
+                "processing": False,
+                "decision": "handoff",
+                "updated_at": "replacement-terminal",
+            },
+        ]
+        bridge = FakeBridge(
+            RpaResult(ok=True, result_code="unused", message="unused")
+        )
+        bridge.get_messages_payloads = [
+            {
+                "frame_id": "frame-welcome-first-message",
+                "messages": [
+                    {
+                        "id": "first-customer-message",
+                        "sender_role": "customer",
+                        "type": "text",
+                        "content": "10万左右有什么车？",
+                    }
+                ],
+            }
+        ]
+        runner, _ = self.make_runner(api, bridge)
+        binding = Binding(
+            worker_id="worker-1",
+            worker_token="token",
+            client_instance_id="client-1",
+            run_status="running",
+        )
+        runner.binding = binding
+        self.assertTrue(
+            runner._start_inflight_flow(
+                binding,
+                flow_id="flow-welcome-superseded",
+                flow_kind="c2_read",
+            )
+        )
+
+        result = runner._wait_and_send_current_c3_batch(
+            binding=binding,
+            target=api.read_targets[0],
+            batch_id="batch-1",
+            cancel_check=lambda: False,
+        )
+
+        self.assertTrue(result["ok"], result)
+        self.assertFalse(result["sent"])
+        self.assertEqual(bridge.sent_replies, [])
+        self.assertEqual(len(api.message_payloads), 1)
+        self.assertEqual(
+            api.message_payloads[0]["messages"][0]["content"],
+            "10万左右有什么车？",
+        )
+
+    def test_claim_send_checkpoint_mismatch_faults_before_wechat_send(self):
+        task = self.make_chat_reply_task(task_id="task-checkpoint-claim-mismatch")
+        api = FakeApi(task)
+        self.authorize_chat_reply_target(api)
+        api.pre_send_checkpoint_facts = [
+            pre_send_fact(
+                "worker-message-29",
+                sender_role="customer",
+                message_type="text",
+                content="你好",
+            )
+        ]
+
+        def replace_claim_checkpoint(_task):
+            api.pre_send_checkpoint_facts = [
+                pre_send_fact(
+                    "worker-message-29",
+                    sender_role="customer",
+                    message_type="text",
+                    content="被篡改的事实",
+                )
+            ]
+
+        api.claim_send_callback = replace_claim_checkpoint
+        bridge = FakeBridge(
+            RpaResult(ok=True, result_code="unused", message="unused")
+        )
+        runner, _ = self.make_runner(api, bridge)
+        binding = Binding(
+            worker_id="worker-1",
+            worker_token="token",
+            client_instance_id="client-1",
+            run_status="running",
+        )
+        runner.binding = binding
+        self.assertTrue(
+            runner._start_inflight_flow(
+                binding,
+                flow_id="flow-checkpoint-claim-mismatch",
+                flow_kind="c2_read",
+            )
+        )
+
+        result = runner._wait_and_send_current_c3_batch(
+            binding=binding,
+            target=api.read_targets[0],
+            batch_id="batch-1",
+            cancel_check=lambda: False,
+        )
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(
+            result["error_code"],
+            "C2_PRE_SEND_FACT_CHECKPOINT_INVALID",
+        )
+        self.assertEqual(bridge.sent_replies, [])
+        self.assertIn(
+            "sent_ack:failed:C2_PRE_SEND_FACT_CHECKPOINT_INVALID",
+            api.events,
+        )
+        self.assertEqual(binding.run_status, "faulted")
+
+    def test_pre_send_same_transcript_physical_voice_replacement_rereads_once_then_zero_send(self):
+        task = self.make_chat_reply_task(task_id="task-checkpoint-replaced")
+        api = FakeApi(task)
+        self.authorize_chat_reply_target(api)
+        api.pre_send_checkpoint_facts = [
+            pre_send_fact(
+                "worker-message-31",
+                sender_role="customer",
+                message_type="voice",
+                content="原来的语音",
+            )
+        ]
+        bridge = FakeBridge(
+            RpaResult(ok=True, result_code="unused", message="unused")
+        )
+        replacement = {
+            "observations": [
+                {
+                    "schema_version": 3,
+                    "observation_id": "replacement-voice",
+                    "row_kind": "voice_transcript",
+                    "sender_role": "customer",
+                    "sender_role_source": "parent_voice",
+                    "message_type": "voice",
+                    "voice_state": "transcribed",
+                    "content_clean": "原来的语音",
+                    "parent_voice_anchor_key": "replacement-anchor",
+                    "source_message": {
+                        "id": "replacement-voice",
+                        "type": "voice",
+                        "sender_role": "customer",
+                        "content": "原来的语音",
+                    },
+                }
+            ],
+        }
+        bridge.get_messages_payloads = [
+            {**replacement, "frame_id": "frame-replaced-1"},
+            {**replacement, "frame_id": "frame-replaced-2"},
+        ]
+        runner, _ = self.make_runner(api, bridge)
+        binding = Binding(
+            worker_id="worker-1",
+            worker_token="token",
+            client_instance_id="client-1",
+            run_status="running",
+        )
+        runner.binding = binding
+        self.assertTrue(
+            runner._start_inflight_flow(
+                binding,
+                flow_id="flow-checkpoint-replaced",
+                flow_kind="c2_read",
+            )
+        )
+
+        result = runner._wait_and_send_current_c3_batch(
+            binding=binding,
+            target=api.read_targets[0],
+            batch_id="batch-1",
+            cancel_check=lambda: False,
+        )
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(
+            result["error_code"],
+            "C2_PRE_SEND_MESSAGE_SEQUENCE_ALIGNMENT_FAILED",
+        )
+        self.assertEqual(len(bridge.message_reads), 2)
+        self.assertEqual(bridge.sent_replies, [])
+        self.assertEqual(bridge.voice_transcribes, [])
+        self.assertNotIn("claim_send:reply-action-1", api.events)
+
+    def test_pre_send_similar_physical_image_replacement_rereads_once_then_zero_send(self):
+        task = self.make_chat_reply_task(task_id="task-checkpoint-image-replaced")
+        api = FakeApi(task)
+        self.authorize_chat_reply_target(api)
+        fingerprint = "dhash64:0123456789abcdef"
+        api.pre_send_checkpoint_facts = [
+            pre_send_fact(
+                "worker-message-32",
+                sender_role="customer",
+                message_type="image",
+                image_fingerprint=fingerprint,
+            )
+        ]
+        bridge = FakeBridge(
+            RpaResult(ok=True, result_code="unused", message="unused")
+        )
+        replacement = {
+            "observations": [
+                {
+                    "schema_version": 3,
+                    "observation_id": "replacement-image",
+                    "row_kind": "image_bubble",
+                    "sender_role": "customer",
+                    "sender_role_source": "same_row_avatar",
+                    "message_type": "image",
+                    "item_state": "completed",
+                    "bubble_rect": [420, 180, 650, 320],
+                    "image_physical_anchor": {
+                        "sender_role": "customer",
+                        "bubble_visual_fingerprint": fingerprint,
+                        "preceding_stable_message": "",
+                        "following_stable_message": "",
+                        "occurrence_index": 0,
+                        "occurrence_count": 1,
+                    },
+                    "source_message": {
+                        "id": "replacement-image",
+                        "source_adapter": "win32_ocr",
+                        "type": "image",
+                        "sender_role": "customer",
+                    },
+                }
+            ],
+        }
+        bridge.get_messages_payloads = [
+            {**replacement, "frame_id": "frame-image-replaced-1"},
+            {**replacement, "frame_id": "frame-image-replaced-2"},
+        ]
+        runner, _ = self.make_runner(api, bridge)
+        binding = Binding(
+            worker_id="worker-1",
+            worker_token="token",
+            client_instance_id="client-1",
+            run_status="running",
+        )
+        runner.binding = binding
+        self.assertTrue(
+            runner._start_inflight_flow(
+                binding,
+                flow_id="flow-checkpoint-image-replaced",
+                flow_kind="c2_read",
+            )
+        )
+
+        result = runner._wait_and_send_current_c3_batch(
+            binding=binding,
+            target=api.read_targets[0],
+            batch_id="batch-1",
+            cancel_check=lambda: False,
+        )
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(
+            result["error_code"],
+            "C2_PRE_SEND_MESSAGE_SEQUENCE_ALIGNMENT_FAILED",
+        )
+        self.assertEqual(len(bridge.message_reads), 2)
+        self.assertEqual(bridge.sent_replies, [])
+        self.assertEqual(api.message_payloads, [])
+        self.assertEqual(list_c2_action_journal("conv-1"), [])
+        self.assertNotIn("claim_send:reply-action-1", api.events)
+
+    def test_pre_send_checkpoint_unique_text_suffix_ingests_only_new_fact(self):
+        task = self.make_chat_reply_task(task_id="task-checkpoint-suffix")
+        api = FakeApi(task)
+        self.authorize_chat_reply_target(api)
+        api.pre_send_checkpoint_facts = [
+            pre_send_fact(
+                "worker-message-41",
+                sender_role="customer",
+                message_type="text",
+                content="原来的问题",
+            )
+        ]
+        api.message_batch_result = {
+            "batch_id": "batch-replacement",
+            "batch_status": "generating",
+            "continuation": {
+                "batch_id": "batch-replacement",
+                "token": "continuation-batch-replacement",
+                "authorization_revision": "revision-conv-1",
+                "read_reason": "waiting_sales_reply",
+            },
+        }
+        api.message_batch_statuses = [
+            {
+                "batch_id": "batch-1",
+                "batch_status": "reply_action_created",
+                "processing": False,
+                "decision": "send_reply",
+                "updated_at": "old-ready",
+                "reply_action": {"id": "reply-action-1"},
+                "task": dict(task.raw),
+            },
+            {
+                "batch_id": "batch-replacement",
+                "batch_status": "handoff",
+                "processing": False,
+                "decision": "handoff",
+                "updated_at": "replacement-terminal",
+            },
+        ]
+        bridge = FakeBridge(
+            RpaResult(ok=True, result_code="unused", message="unused")
+        )
+        bridge.get_messages_payloads = [
+            {
+                "frame_id": "frame-pre-send-suffix",
+                "messages": [
+                    {
+                        "id": "old-current-observation",
+                        "sender_role": "customer",
+                        "type": "text",
+                        "content": "原来的问题",
+                    },
+                    {
+                        "id": "new-suffix-observation",
+                        "sender_role": "customer",
+                        "type": "text",
+                        "content": "又补充了一个新问题",
+                    },
+                ],
+            }
+        ]
+        runner, _ = self.make_runner(api, bridge)
+        binding = Binding(
+            worker_id="worker-1",
+            worker_token="token",
+            client_instance_id="client-1",
+            run_status="running",
+        )
+        runner.binding = binding
+        self.assertTrue(
+            runner._start_inflight_flow(
+                binding,
+                flow_id="flow-checkpoint-suffix",
+                flow_kind="c2_read",
+            )
+        )
+
+        result = runner._wait_and_send_current_c3_batch(
+            binding=binding,
+            target=api.read_targets[0],
+            batch_id="batch-1",
+            cancel_check=lambda: False,
+        )
+
+        self.assertTrue(result["ok"], result)
+        self.assertFalse(result["sent"])
+        self.assertEqual(result["batch"]["decision"], "handoff")
+        self.assertEqual(len(api.message_payloads), 1)
+        self.assertEqual(
+            [
+                item["content"]
+                for item in api.message_payloads[0]["messages"]
+            ],
+            ["又补充了一个新问题"],
+        )
+        self.assertEqual(bridge.sent_replies, [])
+
+    def test_pre_send_checkpoint_new_voice_suffix_transcribes_once_and_replaces_reply(self):
+        task = self.make_chat_reply_task(task_id="task-checkpoint-voice-suffix")
+        api = FakeApi(task)
+        self.authorize_chat_reply_target(api)
+        api.pre_send_checkpoint_facts = [
+            pre_send_fact(
+                "worker-message-51",
+                sender_role="customer",
+                message_type="text",
+                content="原来的问题",
+            )
+        ]
+        api.message_batch_result = {
+            "batch_id": "batch-voice-replacement",
+            "batch_status": "generating",
+            "continuation": {
+                "batch_id": "batch-voice-replacement",
+                "token": "continuation-batch-voice-replacement",
+                "authorization_revision": "revision-conv-1",
+                "read_reason": "waiting_sales_reply",
+            },
+        }
+        api.message_batch_statuses = [
+            {
+                "batch_id": "batch-1",
+                "batch_status": "reply_action_created",
+                "processing": False,
+                "decision": "send_reply",
+                "updated_at": "old-ready",
+                "reply_action": {"id": "reply-action-1"},
+                "task": dict(task.raw),
+            },
+            {
+                "batch_id": "batch-voice-replacement",
+                "batch_status": "handoff",
+                "processing": False,
+                "decision": "handoff",
+                "updated_at": "replacement-terminal",
+            },
+        ]
+        raw_voice = {
+            "id": "new-voice-suffix",
+            "source_adapter": "win32_ocr",
+            "native_source_message_id": "",
+            "type": "voice",
+            "sender_role": "customer",
+            "voice_duration": 4,
+            "content": '[语音] 4"',
+            "voice_anchor_stable_key": "new-voice-suffix-anchor",
+            "frame_visual_id": "new-voice-suffix-frame",
+        }
+        old_text = {
+            "id": "old-text-current-frame",
+            "source_adapter": "win32_ocr",
+            "native_source_message_id": "",
+            "type": "text",
+            "sender_role": "customer",
+            "content": "原来的问题",
+        }
+        bridge = FakeBridge(
+            RpaResult(ok=True, result_code="unused", message="unused")
+        )
+        bridge.get_messages_payloads = [
+            {
+                "frame_id": "frame-new-voice-before",
+                "messages": [old_text, raw_voice],
+            },
+            {
+                "frame_id": "frame-new-voice-after",
+                "messages": [
+                    old_text,
+                    {
+                        **raw_voice,
+                        "id": "new-voice-suffix-transcript",
+                        "content": "我想看10万元左右的SUV",
+                    },
+                ],
+            },
+        ]
+        bridge.voice_payload = {
+            "ok": True,
+            "adapter": "mock",
+            "state": "voice_transcribe_completed",
+            "action_phase": "confirmed",
+            "business_state": "completed",
+            "business_result_confirmed": True,
+            "ui_action_performed": True,
+            "sidecar_run_id": "new-voice-suffix-action",
+            "processed_voice_anchor_keys": ["new-voice-suffix-anchor"],
+            "failed_voice_anchor_keys": [],
+            "transcribed_messages": [
+                {
+                    "content": "我想看10万元左右的SUV",
+                    "sender_role": "customer",
+                    "voice_anchor_stable_key": "new-voice-suffix-anchor",
+                }
+            ],
+            "item_action_outcomes": [
+                {
+                    "action_phase": "confirmed",
+                    "business_state": "completed",
+                    "business_result_confirmed": True,
+                    "physical_anchor_keys": ["new-voice-suffix-anchor"],
+                }
+            ],
+        }
+        runner, _ = self.make_runner(api, bridge)
+        binding = Binding(
+            worker_id="worker-1",
+            worker_token="token",
+            client_instance_id="client-1",
+            run_status="running",
+        )
+        runner.binding = binding
+        self.assertTrue(
+            runner._start_inflight_flow(
+                binding,
+                flow_id="flow-checkpoint-voice-suffix",
+                flow_kind="c2_read",
+            )
+        )
+
+        result = runner._wait_and_send_current_c3_batch(
+            binding=binding,
+            target=api.read_targets[0],
+            batch_id="batch-1",
+            cancel_check=lambda: False,
+        )
+
+        self.assertTrue(result["ok"], result)
+        self.assertFalse(result["sent"])
+        self.assertEqual(len(bridge.voice_transcribes), 1)
+        self.assertEqual(len(api.message_payloads), 1)
+        self.assertNotIn(
+            "pre_send_fact_checkpoint",
+            api.message_payloads[0],
+        )
+        self.assertNotIn(
+            "pre_send_fact_checkpoint",
+            bridge.message_reads[0],
+        )
+        self.assertNotIn(
+            "pre_send_fact_checkpoint",
+            bridge.voice_transcribes[0],
+        )
+        self.assertEqual(
+            [
+                (item["message_type"], item["content"])
+                for item in api.message_payloads[0]["messages"]
+            ],
+            [("voice", "我想看10万元左右的SUV")],
+        )
+        self.assertEqual(bridge.sent_replies, [])
+
+    def test_pre_send_checkpoint_mixed_voice_image_suffix_uses_full_production_flow(self):
+        task = self.make_chat_reply_task(
+            task_id="task-checkpoint-mixed-media-suffix"
+        )
+        api = FakeApi(task)
+        self.authorize_chat_reply_target(api)
+        api.pre_send_checkpoint_facts = [
+            pre_send_fact(
+                "worker-message-61",
+                sender_role="customer",
+                message_type="text",
+                content="原来的问题",
+            )
+        ]
+        api.message_batch_result = {
+            "batch_id": "batch-mixed-replacement",
+            "batch_status": "generating",
+            "continuation": {
+                "batch_id": "batch-mixed-replacement",
+                "token": "continuation-batch-mixed-replacement",
+                "authorization_revision": "revision-conv-1",
+                "read_reason": "waiting_sales_reply",
+            },
+        }
+        api.message_batch_statuses = [
+            {
+                "batch_id": "batch-1",
+                "batch_status": "reply_action_created",
+                "processing": False,
+                "decision": "send_reply",
+                "updated_at": "old-ready",
+                "reply_action": {"id": "reply-action-1"},
+                "task": dict(task.raw),
+            },
+            {
+                "batch_id": "batch-mixed-replacement",
+                "batch_status": "handoff",
+                "processing": False,
+                "decision": "handoff",
+                "updated_at": "replacement-terminal",
+            },
+        ]
+        old_text = {
+            "schema_version": 3,
+            "observation_id": "mixed-old-text",
+            "row_kind": "text_bubble",
+            "sender_role": "customer",
+            "sender_role_source": "same_row_avatar",
+            "message_type": "text",
+            "voice_state": "not_voice",
+            "content_clean": "原来的问题",
+            "bubble_rect": [420, 100, 650, 150],
+            "source_message": {
+                "id": "mixed-old-text",
+                "type": "text",
+                "sender_role": "customer",
+                "content": "原来的问题",
+            },
+        }
+        raw_voice = {
+            "schema_version": 3,
+            "observation_id": "mixed-new-voice",
+            "row_kind": "voice_bubble",
+            "sender_role": "customer",
+            "sender_role_source": "same_row_avatar",
+            "message_type": "voice",
+            "voice_state": "untranscribed",
+            "voice_anchor_key": "mixed-new-voice-anchor",
+            "bubble_rect": [420, 180, 650, 230],
+            "source_message": {
+                "id": "mixed-new-voice",
+                "source_adapter": "win32_ocr",
+                "native_source_message_id": "",
+                "type": "voice",
+                "sender_role": "customer",
+                "voice_duration": 4,
+                "content": "[语音] 4秒",
+                "voice_anchor_stable_key": "mixed-new-voice-anchor",
+            },
+        }
+        transcript_voice = {
+            **raw_voice,
+            "observation_id": "mixed-new-voice-transcript",
+            "row_kind": "voice_transcript",
+            "sender_role_source": "parent_voice",
+            "voice_state": "transcribed",
+            "parent_voice_anchor_key": "mixed-new-voice-anchor",
+            "content_clean": "想看看这张车的情况",
+            "source_message": {
+                **raw_voice["source_message"],
+                "id": "mixed-new-voice-transcript",
+                "content": "想看看这张车的情况",
+            },
+        }
+        image_fingerprint = "dhash64:1122334455667788"
+        raw_image = {
+            "schema_version": 3,
+            "observation_id": "mixed-new-image",
+            "row_kind": "image_bubble",
+            "sender_role": "customer",
+            "sender_role_source": "same_row_avatar",
+            "message_type": "image",
+            "voice_state": "not_voice",
+            "item_state": "discovered",
+            "frame_visual_id": "mixed-new-image-frame",
+            "bubble_rect": [420, 260, 650, 400],
+            "image_physical_anchor": {
+                "sender_role": "customer",
+                "bubble_visual_fingerprint": image_fingerprint,
+                "preceding_stable_message": "mixed-new-voice-anchor",
+                "following_stable_message": "",
+                "occurrence_index": 0,
+                "occurrence_count": 1,
+            },
+            "source_message": {
+                "id": "mixed-new-image",
+                "source_adapter": "win32_ocr",
+                "native_source_message_id": "",
+                "type": "image",
+                "sender_role": "customer",
+                "frame_visual_id": "mixed-new-image-frame",
+            },
+        }
+        bridge = FakeBridge(
+            RpaResult(ok=True, result_code="unused", message="unused")
+        )
+        bridge.get_messages_payloads = [
+            {
+                "frame_id": "frame-mixed-before",
+                "observations": [old_text, raw_voice, raw_image],
+            },
+            {
+                "frame_id": "frame-mixed-after-voice",
+                "observations": [old_text, transcript_voice, raw_image],
+            },
+            {
+                "frame_id": "frame-mixed-after-image",
+                "observations": [old_text, transcript_voice, raw_image],
+            },
+            {
+                "frame_id": "frame-mixed-final",
+                "observations": [old_text, transcript_voice, raw_image],
+            },
+        ]
+        bridge.voice_payload = {
+            "ok": True,
+            "adapter": "mock",
+            "state": "voice_transcribe_completed",
+            "action_phase": "confirmed",
+            "business_state": "completed",
+            "business_result_confirmed": True,
+            "ui_action_performed": True,
+            "sidecar_run_id": "mixed-voice-action",
+            "processed_voice_anchor_keys": ["mixed-new-voice-anchor"],
+            "failed_voice_anchor_keys": [],
+            "transcribed_messages": [
+                {
+                    "content": "想看看这张车的情况",
+                    "sender_role": "customer",
+                    "voice_anchor_stable_key": "mixed-new-voice-anchor",
+                }
+            ],
+            "item_action_outcomes": [
+                {
+                    "action_phase": "confirmed",
+                    "business_state": "completed",
+                    "business_result_confirmed": True,
+                    "physical_anchor_keys": ["mixed-new-voice-anchor"],
+                }
+            ],
+        }
+        completed_image = {
+            "state": "completed",
+            "action_phase": "confirmed",
+            "business_state": "completed",
+            "business_result_confirmed": True,
+            "ui_action_performed": True,
+            "reason": "vision_ready",
+            "customer_image_understanding": {
+                "schema_version": 1,
+                "vision_summary": "客户发来一张车辆外观图",
+            },
+            "visual_bridge_input": {"summary": "车辆外观图"},
+            "transaction": {
+                "action_phase": "confirmed",
+                "slot_identity_confirmed": True,
+                "clipboard_image_matches_target": True,
+                "ui_action_performed": True,
+                "image_sha256": "a" * 64,
+            },
+            "diagnostics": {
+                "events": [],
+                "image_persisted": False,
+            },
+        }
+        runner, _ = self.make_runner(api, bridge)
+        binding = Binding(
+            worker_id="worker-1",
+            worker_token="token",
+            client_instance_id="client-1",
+            run_status="running",
+        )
+        runner.binding = binding
+        self.assertTrue(
+            runner._start_inflight_flow(
+                binding,
+                flow_id="flow-checkpoint-mixed-suffix",
+                flow_kind="c2_read",
+            )
+        )
+        with patch(
+            "chejin_worker_client.omniauto_vision.vision_configuration_status",
+            return_value={
+                "ready": True,
+                "config": {
+                    "customer_image_understanding": {"enabled": True}
+                },
+            },
+        ), patch(
+            "chejin_worker_client.omniauto_vision.process_image_slot",
+            return_value=completed_image,
+        ) as vision:
+            result = runner._wait_and_send_current_c3_batch(
+                binding=binding,
+                target=api.read_targets[0],
+                batch_id="batch-1",
+                cancel_check=lambda: False,
+            )
+
+        self.assertTrue(result["ok"], result)
+        self.assertFalse(result["sent"])
+        self.assertEqual(len(bridge.voice_transcribes), 1)
+        self.assertEqual(vision.call_count, 1)
+        self.assertEqual(len(api.message_payloads), 1)
+        self.assertEqual(
+            [
+                item["message_type"]
+                for item in api.message_payloads[0]["messages"]
+            ],
+            ["voice", "image"],
+        )
+        self.assertEqual(
+            api.message_payloads[0]["messages"][0]["content"],
+            "想看看这张车的情况",
+        )
+        self.assertEqual(bridge.sent_replies, [])
 
     def test_c3_pre_send_refresh_failure_settles_pending_reply_before_return(self):
         task = self.make_chat_reply_task(task_id="task-pre-send-failed")
