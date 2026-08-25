@@ -226,6 +226,23 @@ def _compat_layout_snapshot(
     )
 
 
+def _empty_send_context_guard(
+    sidecar_mod: object,
+    image_size: tuple[int, int] = (980, 860),
+) -> dict[str, object]:
+    layout_snapshot = _compat_layout_snapshot(image_size)
+    return sidecar_mod.build_send_context_guard(
+        [],
+        layout_evidence={
+            "ok": True,
+            "layout_snapshot_id": layout_snapshot["layout_snapshot_id"],
+            "message_viewport_bounds": list(
+                layout_snapshot["message_viewport_bounds"]
+            ),
+        },
+    )
+
+
 def _register_compat_image_layout(sidecar_mod: object, image: object, *, hwnd: int = 1001) -> dict[str, object]:
     image_size = tuple(getattr(image, "size", (0, 0))[:2])
     snapshot = _compat_layout_snapshot(
@@ -1703,6 +1720,7 @@ def test_reused_frame_title_roi_still_blocks_wrong_target() -> None:
 def test_voice_prepare_frame_blocks_action_when_target_is_wrong() -> None:
     sidecar_mod = sys.modules["apps.wechat_ai_customer_service.adapters.wechat_win32_ocr_sidecar"]
     image = Image.new("RGB", (965, 852), (247, 247, 247))
+    _register_compat_image_layout(sidecar_mod, image, hwnd=101)
     guard = {"ok": False, "online": True, "reason": "target_title_not_confirmed"}
     with patch.object(sidecar_mod, "capture_wechat", return_value=(image, "voice_before.png")) as capture, patch.object(
         sidecar_mod,
@@ -6070,6 +6088,7 @@ def test_target_ready_switch_validation_cache_respects_target_and_geometry() -> 
 def test_send_payload_uses_single_fresh_baseline_before_typing() -> None:
     sidecar_mod = sys.modules["apps.wechat_ai_customer_service.adapters.wechat_win32_ocr_sidecar"]
     geometry = {"left": 0, "top": 0, "right": 980, "bottom": 860, "width": 980, "height": 860}
+    empty_context_guard = _empty_send_context_guard(sidecar_mod)
     originals = {
         "validate_active_send_target": sidecar_mod.validate_active_send_target,
         "recover_send_window_guard": sidecar_mod.recover_send_window_guard,
@@ -6110,12 +6129,7 @@ def test_send_payload_uses_single_fresh_baseline_before_typing() -> None:
                 "validation": pass_validate(),
                 "input_region": {"has_visible_text": False},
                 "matching_self_message_count": 0,
-                "send_context_guard": {
-                    "schema_version": 1,
-                    "sequence": [],
-                    "message_count": 0,
-                    "bottom": None,
-                },
+                "send_context_guard": dict(empty_context_guard),
             }
 
         sidecar_mod.capture_send_fact_snapshot = capture_snapshot
@@ -6145,12 +6159,7 @@ def test_send_payload_uses_single_fresh_baseline_before_typing() -> None:
             target="新数据测试",
             text="您好",
             exact=True,
-            expected_context_guard={
-                "schema_version": 1,
-                "sequence": [],
-                "message_count": 0,
-                "bottom": None,
-            },
+            expected_context_guard=dict(empty_context_guard),
             validated_guard={
                 "ok": True,
                 "online": True,
@@ -6177,6 +6186,7 @@ def test_send_payload_uses_single_fresh_baseline_before_typing() -> None:
 def test_send_payload_exposes_optional_timing_without_contract_changes() -> None:
     sidecar_mod = sys.modules["apps.wechat_ai_customer_service.adapters.wechat_win32_ocr_sidecar"]
     geometry = {"left": 0, "top": 0, "right": 980, "bottom": 860, "width": 980, "height": 860}
+    empty_context_guard = _empty_send_context_guard(sidecar_mod)
     originals = {
         "validate_active_send_target": sidecar_mod.validate_active_send_target,
         "recover_send_window_guard": sidecar_mod.recover_send_window_guard,
@@ -6212,12 +6222,7 @@ def test_send_payload_exposes_optional_timing_without_contract_changes() -> None
             },
             "input_region": {"has_visible_text": False},
             "matching_self_message_count": 0,
-            "send_context_guard": {
-                "schema_version": 1,
-                "sequence": [],
-                "message_count": 0,
-                "bottom": None,
-            },
+            "send_context_guard": dict(empty_context_guard),
         }
         sidecar_mod.reserve_send_rate = lambda **_kwargs: {"ok": True, "reason": "rate_ok"}
         sidecar_mod.send_with_visual_input = lambda *_args, **_kwargs: {
@@ -6256,12 +6261,7 @@ def test_send_payload_exposes_optional_timing_without_contract_changes() -> None
             target="新数据测试",
             text="您好",
             exact=True,
-            expected_context_guard={
-                "schema_version": 1,
-                "sequence": [],
-                "message_count": 0,
-                "bottom": None,
-            },
+            expected_context_guard=dict(empty_context_guard),
         )
         assert_true(payload.get("ok") is True, f"send payload should still succeed: {payload}")
         timing = payload.get("timing") if isinstance(payload.get("timing"), dict) else {}
@@ -6294,6 +6294,7 @@ def test_send_payload_exposes_optional_timing_without_contract_changes() -> None
 def test_send_payload_reuses_strict_guard_input_region_seed_for_before_check() -> None:
     sidecar_mod = sys.modules["apps.wechat_ai_customer_service.adapters.wechat_win32_ocr_sidecar"]
     geometry = {"left": 0, "top": 0, "right": 980, "bottom": 860, "width": 980, "height": 860}
+    empty_context_guard = _empty_send_context_guard(sidecar_mod)
     originals = {
         "validate_active_send_target": sidecar_mod.validate_active_send_target,
         "recover_send_window_guard": sidecar_mod.recover_send_window_guard,
@@ -6346,12 +6347,7 @@ def test_send_payload_reuses_strict_guard_input_region_seed_for_before_check() -
             },
             "input_region": {"has_visible_text": False, "reason": "input_region_blank"},
             "matching_self_message_count": 0,
-            "send_context_guard": {
-                "schema_version": 1,
-                "sequence": [],
-                "message_count": 0,
-                "bottom": None,
-            },
+            "send_context_guard": dict(empty_context_guard),
         }
         sidecar_mod.reserve_send_rate = lambda **_kwargs: {"ok": True, "reason": "rate_ok"}
 
@@ -6388,12 +6384,7 @@ def test_send_payload_reuses_strict_guard_input_region_seed_for_before_check() -
             target="新数据测试",
             text="您好",
             exact=True,
-            expected_context_guard={
-                "schema_version": 1,
-                "sequence": [],
-                "message_count": 0,
-                "bottom": None,
-            },
+            expected_context_guard=dict(empty_context_guard),
         )
         assert_true(payload.get("ok") is True, f"send payload should pass: {payload}")
         seed = calls["seed"]
