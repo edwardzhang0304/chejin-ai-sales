@@ -506,7 +506,7 @@ class PackagingScriptsTest(unittest.TestCase):
             [
                 {
                     "source_commit": (
-                        "61606d645de2c575ad3113de577e0f90d87a41f0"
+                        "11d43d5bb9dd83831e0bbba8ed84b5eba700cb2c"
                     ),
                     "scope": [
                         "exact_wechat_context_menu_classification",
@@ -534,7 +534,7 @@ class PackagingScriptsTest(unittest.TestCase):
                         "source_message_transport_allowlist",
                         "typed_committed_media_identity_contract",
                         "media_action_four_terminal_contract",
-                        "c2_contract_0_9_33_generated_schema",
+                        "c2_contract_0_9_34_generated_schema",
                         (
                             "voice_frame_action_binding_observation_"
                             "projection_contract"
@@ -647,6 +647,14 @@ class PackagingScriptsTest(unittest.TestCase):
                         "authoritative_final_frame_screen_order_contract",
                         "pre_send_single_full_reidentification_contract",
                         "layout_invalid_faulted_worker_evidence_contract",
+                        (
+                            "recursive_sidecar_public_output_identity_"
+                            "sanitization_contract"
+                        ),
+                        (
+                            "four_sidecar_production_entry_identity_"
+                            "boundary_regression_contract"
+                        ),
                     ],
                 }
             ],
@@ -668,10 +676,14 @@ class PackagingScriptsTest(unittest.TestCase):
             provenance["chejin_overlays"],
         )
         self.assertIn(
-            "61606d645de2c575ad3113de577e0f90d87a41f0",
+            "11d43d5bb9dd83831e0bbba8ed84b5eba700cb2c",
             provenance["integration_note"],
         )
-        self.assertIn("0.9.33", provenance["integration_note"])
+        self.assertIn("0.9.34", provenance["integration_note"])
+        self.assertIn(
+            "四类 Sidecar 公开输出递归删除 Worker 专属身份字段",
+            provenance["integration_note"],
+        )
         self.assertIn(
             "worker_owned_message_identity_sequence_and_commit_gate_contract",
             provenance["chejin_overlays"],
