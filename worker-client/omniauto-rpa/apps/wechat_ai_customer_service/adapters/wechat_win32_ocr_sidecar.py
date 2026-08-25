@@ -79,6 +79,11 @@ from apps.wechat_ai_customer_service.adapters.add_friend_artifacts import (
     ADD_FRIEND_ENTRY_CLICK_PLAN_JSON,
     add_friend_route_artifact_root,
 )
+from apps.wechat_ai_customer_service.adapters.message_viewport_projection import (
+    MESSAGE_VIEWPORT_DIGEST_SCHEMA_VERSION,
+    normalized_message_viewport_sequence as _shared_message_viewport_sequence,
+    normalized_relative_message_bounds as _shared_relative_message_bounds,
+)
 from apps.wechat_ai_customer_service.adapters.add_friend_contract import (
     normalize_add_friend_query,
     validate_add_friend_entry_click_contract,
@@ -15931,18 +15936,6 @@ def _send_ocr_text_correspondence(
     return result
 
 
-SEND_CONTEXT_ROW_KINDS = {
-    "text_bubble",
-    "voice_bubble",
-    "voice_transcript",
-    "image_bubble",
-    "system_message",
-}
-
-MESSAGE_VIEWPORT_DIGEST_SCHEMA_VERSION = 2
-MESSAGE_VIEWPORT_BOUNDS_QUANTIZATION = 64
-
-
 def basic_chat_layout_evidence(screenshot: Any) -> dict[str, Any]:
     """Return the three mandatory chat regions or one explicit layout error."""
 
@@ -15981,247 +15974,15 @@ def basic_chat_layout_evidence(screenshot: Any) -> dict[str, Any]:
     }
 
 
-def _message_rect_values(value: Any) -> list[float] | None:
-    if isinstance(value, dict):
-        raw = [
-            value.get("left"),
-            value.get("top"),
-            value.get("right"),
-            value.get("bottom"),
-        ]
-    elif isinstance(value, (list, tuple)) and len(value) >= 4:
-        raw = list(value[:4])
-    else:
-        return None
-    try:
-        left, top, right, bottom = [float(item) for item in raw]
-    except (TypeError, ValueError):
-        return None
-    if right <= left or bottom <= top:
-        return None
-    return [left, top, right, bottom]
-
-
 def normalized_relative_message_bounds(
     value: Any,
     *,
     viewport_bounds: Any,
 ) -> list[int]:
-    """Quantize a bubble relative to the viewport to absorb OCR pixel jitter."""
-
-    rect = _message_rect_values(value)
-    viewport = _message_rect_values(viewport_bounds)
-    if rect is None or viewport is None:
-        return []
-    left, top, right, bottom = rect
-    view_left, view_top, view_right, view_bottom = viewport
-    width = max(1.0, view_right - view_left)
-    height = max(1.0, view_bottom - view_top)
-    scale = MESSAGE_VIEWPORT_BOUNDS_QUANTIZATION
-
-    def bucket(current: float, origin: float, extent: float) -> int:
-        return max(0, min(scale, int(round((current - origin) / extent * scale))))
-
-    return [
-        bucket(left, view_left, width),
-        bucket(top, view_top, height),
-        bucket(right, view_left, width),
-        bucket(bottom, view_top, height),
-    ]
-
-
-def _message_viewport_content_signature(
-    observation: dict[str, Any],
-) -> str:
-    row_kind = str(observation.get("row_kind") or "").strip().lower()
-    if row_kind in {"text_bubble", "voice_transcript", "system_message"}:
-        normalized = _normalized_send_ocr_correspondence_text(
-            observation.get("content_clean")
-        )
-        # Punctuation is the least stable part of WeChat OCR (notably Chinese
-        # comma/full stop and ellipsis).  It cannot identify a message row, so
-        # exclude it from the viewport-change signature while preserving all
-        # readable letters, numbers and CJK content.  Message count/order and
-        # bounds still detect an actually appended message.
-        normalized = "".join(
-            character
-            for character in normalized
-            if not unicodedata.category(character).startswith("P")
-        )
-        return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
-    if row_kind == "voice_bubble":
-        duration = str(observation.get("voice_duration") or "").strip()
-        if not duration:
-            duration_match = re.search(
-                r"\d{1,3}",
-                voice_transcribe_compact_text(
-                    observation.get("voice_duration_text")
-                ),
-            )
-            duration = duration_match.group(0) if duration_match else ""
-        return hashlib.sha256(
-            json.dumps(
-                {
-                    "duration": duration,
-                    "row_kind": row_kind,
-                },
-                ensure_ascii=True,
-                sort_keys=True,
-                separators=(",", ":"),
-            ).encode("utf-8")
-        ).hexdigest()
-    # Static pictures, GIF frames and animated emoji deliberately use only
-    # their structural slot. Raw pixels, selection borders and animation
-    # frames are not part of viewport-change identity.
-    return hashlib.sha256(row_kind.encode("utf-8")).hexdigest()
-
-
-def _normalized_message_viewport_media_state(
-    observation: dict[str, Any],
-) -> str:
-    """Keep only semantic media state, never transient WeChat paint state.
-
-    Voice playback/progress, GIF frames, hover and selection are visual-only
-    state.  A transcript row is semantically transcribed and a voice bubble is
-    semantically pending transcription regardless of those transient pixels.
-    Images remain one structural image slot; their local processing state is
-    deliberately not a message-viewport fact.
-    """
-
-    row_kind = str(observation.get("row_kind") or "").strip().lower()
-    if row_kind == "voice_transcript":
-        return "transcribed"
-    if row_kind == "voice_bubble":
-        return "untranscribed"
-    if row_kind == "image_bubble":
-        return "image"
-    return ""
-
-
-def _message_viewport_observation_rect(
-    observation: dict[str, Any],
-) -> list[float] | None:
-    return _message_rect_values(observation.get("bubble_rect"))
-
-
-def _is_visual_voice_hint(observation: dict[str, Any]) -> bool:
-    quality_flags = {
-        str(value or "").strip().lower()
-        for value in (observation.get("quality_flags") or [])
-    }
-    observation_id = str(observation.get("observation_id") or "").lower()
-    return "visual_voice_hint" in quality_flags or observation_id.startswith(
-        "voice-hint:"
+    return _shared_relative_message_bounds(
+        value,
+        viewport_bounds=viewport_bounds,
     )
-
-
-def _same_voice_row_geometry(
-    first: dict[str, Any],
-    second: dict[str, Any],
-) -> bool:
-    """Return whether OCR and visual-hint records describe one voice row.
-
-    WeChat can expose the same untranscribed voice twice: once through OCR and
-    once through the visual context-menu detector.  The visual hint can blink
-    in and out with playback/hover paint and must not create a phantom new
-    message in the normalized viewport sequence.
-    """
-
-    first_rect = _message_viewport_observation_rect(first)
-    second_rect = _message_viewport_observation_rect(second)
-    if first_rect is None or second_rect is None:
-        return False
-    first_left, first_top, first_right, first_bottom = first_rect
-    second_left, second_top, second_right, second_bottom = second_rect
-    first_center_y = (first_top + first_bottom) / 2.0
-    second_center_y = (second_top + second_bottom) / 2.0
-    first_height = first_bottom - first_top
-    second_height = second_bottom - second_top
-    allowed_y = max(8.0, min(first_height, second_height) * 0.6)
-    horizontal_overlap = min(first_right, second_right) - max(
-        first_left, second_left
-    )
-    return (
-        abs(first_center_y - second_center_y) <= allowed_y
-        and horizontal_overlap > 0
-    )
-
-
-def _prefer_message_viewport_observation(
-    first: dict[str, Any],
-    second: dict[str, Any],
-) -> dict[str, Any]:
-    """Choose stable OCR evidence over a transient visual-only voice hint."""
-
-    def score(value: dict[str, Any]) -> tuple[int, int, int]:
-        source_message = (
-            value.get("source_message")
-            if isinstance(value.get("source_message"), dict)
-            else {}
-        )
-        return (
-            0 if _is_visual_voice_hint(value) else 1,
-            1 if str(value.get("voice_duration") or "").strip() else 0,
-            1 if str(source_message.get("id") or "").strip() else 0,
-        )
-
-    return second if score(second) > score(first) else first
-
-
-def canonical_message_viewport_observations(
-    observations: list[dict[str, Any]] | None,
-) -> list[dict[str, Any]]:
-    """Order message facts geometrically and collapse duplicate voice hints."""
-
-    eligible = [
-        observation
-        for observation in (observations or [])
-        if isinstance(observation, dict)
-        and str(observation.get("row_kind") or "").strip().lower()
-        in SEND_CONTEXT_ROW_KINDS
-    ]
-    eligible.sort(
-        key=lambda observation: (
-            ((_message_viewport_observation_rect(observation) or [0, 0, 0, 0])[1]),
-            ((_message_viewport_observation_rect(observation) or [0, 0, 0, 0])[0]),
-            ((_message_viewport_observation_rect(observation) or [0, 0, 0, 0])[3]),
-            str(observation.get("observation_id") or ""),
-        )
-    )
-    canonical: list[dict[str, Any]] = []
-    for observation in eligible:
-        row_kind = str(observation.get("row_kind") or "").strip().lower()
-        role = str(observation.get("sender_role") or "unknown").strip().lower()
-        duplicate_index: int | None = None
-        if row_kind == "voice_bubble":
-            for index, existing in enumerate(canonical):
-                if (
-                    str(existing.get("row_kind") or "").strip().lower()
-                    == "voice_bubble"
-                    and str(
-                        existing.get("sender_role") or "unknown"
-                    ).strip().lower()
-                    == role
-                    and (_is_visual_voice_hint(existing) or _is_visual_voice_hint(observation))
-                    and _same_voice_row_geometry(existing, observation)
-                ):
-                    duplicate_index = index
-                    break
-        if duplicate_index is None:
-            canonical.append(observation)
-        else:
-            canonical[duplicate_index] = _prefer_message_viewport_observation(
-                canonical[duplicate_index], observation
-            )
-    canonical.sort(
-        key=lambda observation: (
-            ((_message_viewport_observation_rect(observation) or [0, 0, 0, 0])[1]),
-            ((_message_viewport_observation_rect(observation) or [0, 0, 0, 0])[0]),
-            ((_message_viewport_observation_rect(observation) or [0, 0, 0, 0])[3]),
-            str(observation.get("observation_id") or ""),
-        )
-    )
-    return canonical
 
 
 def normalized_message_viewport_sequence(
@@ -16229,33 +15990,10 @@ def normalized_message_viewport_sequence(
     *,
     message_viewport_bounds: Any,
 ) -> list[dict[str, Any]]:
-    sequence: list[dict[str, Any]] = []
-    for observation in canonical_message_viewport_observations(observations):
-        row_kind = str(observation.get("row_kind") or "").strip().lower()
-        sequence.append(
-            {
-                "screen_order": len(sequence),
-                "sender_role": str(
-                    observation.get("sender_role") or "unknown"
-                ).strip().lower(),
-                "message_type": str(
-                    observation.get("message_type") or "unknown"
-                ).strip().lower(),
-                "relative_quantized_bounds": (
-                    normalized_relative_message_bounds(
-                        observation.get("bubble_rect"),
-                        viewport_bounds=message_viewport_bounds,
-                    )
-                ),
-                "stable_content_signature": (
-                    _message_viewport_content_signature(observation)
-                ),
-                "media_state": _normalized_message_viewport_media_state(
-                    observation
-                ),
-            }
-        )
-    return sequence
+    return _shared_message_viewport_sequence(
+        observations,
+        message_viewport_bounds=message_viewport_bounds,
+    )
 
 
 def build_message_viewport_change_evidence(

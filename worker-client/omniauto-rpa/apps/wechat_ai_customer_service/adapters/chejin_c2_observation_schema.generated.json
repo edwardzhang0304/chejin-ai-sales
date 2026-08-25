@@ -1,8 +1,8 @@
 {
   "generated_file": true,
   "source": "contracts/c2_contract_v3.json",
-  "contract_revision": "0.9.36",
-  "contract_sha256": "8154dafe703bd9685e9b96f15675a71ba8cd8e117fa57cfe317365ae5e8f377f",
+  "contract_revision": "0.9.37",
+  "contract_sha256": "3157d37b8047ef3b39c53d4eab323e87ff7568c442372b08afc22cb1e2c9b9dc",
   "observation_schema_version": 3,
   "action_phases": [
     "not_attempted",
@@ -979,7 +979,7 @@
     "invalid_behavior": "C2_VOICE_IDENTITY_CONTRACT_INVALID"
   },
   "frame_action_binding_contract": {
-    "release": "0.9.36",
+    "release": "0.9.37",
     "purpose": "prove_only_that_the_worker_selected_unique_frame_local_target_is_still_safe_to_operate_inside_the_current_ui_transaction",
     "durable_identity": false,
     "observation_owner": "sidecar",
@@ -1030,7 +1030,7 @@
     ]
   },
   "pre_send_message_viewport_contract": {
-    "release": "0.9.36",
+    "release": "0.9.37",
     "selected_target_fingerprint_scope": "one_selected_message_type_role_relative_quantized_bounds_required_neighbors_and_sequence_position_only",
     "selected_target_forbidden_inputs": [
       "message_viewport_change_digest",
@@ -1072,6 +1072,21 @@
       "message_viewport_bounds",
       "input_bounds"
     ],
+    "pre_send_context_guard_required_fields": [
+      "ok",
+      "schema_version",
+      "layout_snapshot_id",
+      "message_viewport_bounds",
+      "sequence",
+      "message_count",
+      "message_viewport_change_digest",
+      "sequence_sha256",
+      "bottom",
+      "raw_rgb_hash_used"
+    ],
+    "pre_send_context_guard_integrity_rule": "both_worker_pre_send_checks_require_ok_true_and_one_nonempty_layout_snapshot_id; message_count_must_equal_the_ordered_sequence_length; screen_order_must_be_contiguous; both_digests_must_equal_sha256_of_the_canonical_sequence; bottom_must_equal_the_last_sequence_item_or_null_for_an_empty_sequence; raw_rgb_hash_used_must_be_false; worker_must_recompute_the_same_shared_pure_projection_from_the_exact_response_observations_using_the_guard_viewport_bounds_and_require_ordered_equality_for_count_role_type_content_signature_media_state_and_relative_position; this_projection_is_frame_binding_only_and_must_not_decide_or_inherit_message_identity",
+    "pre_send_passive_reread_layout_rule": "after_the_single_allowed_passive_reread_worker_must_repeat_the_full_context_guard_and_exact_observations_binding_check_before_any_sequence_result_is_used; an_invalid_or_cross_frame_guard_returns_C2_PRE_SEND_LAYOUT_INVALID_instead_of_a_sequence_error",
+    "pre_send_context_guard_invalid_rule": "return_C2_PRE_SEND_LAYOUT_INVALID_without_passive_reread_handoff_claim_send_text_input_or_any_media_action; settle_the_original_reply_task_and_flow_as_technical_failed_release_the_ui_lock_and_set_the_worker_faulted",
     "layout_invalid_error": "C2_PRE_SEND_LAYOUT_INVALID",
     "layout_invalid_terminal_rule": "cancel_old_reply_set_task_and_flow_technical_failed_release_ui_lock_set_worker_faulted_and_forbid_handoff_or_automatic_retry",
     "maximum_full_reidentification_count": 1,
@@ -1087,7 +1102,8 @@
       "C2_PRE_SEND_SYSTEM_CONTENT_UNREADABLE",
       "C2_PRE_SEND_SYSTEM_CLASSIFICATION_UNRESOLVED",
       "C2_PRE_SEND_MESSAGE_VIEWPORT_CHANGED_AGAIN",
-      "C2_PRE_SEND_LAYOUT_INVALID"
+      "C2_PRE_SEND_LAYOUT_INVALID",
+      "C2_PRE_SEND_FACT_CHECKPOINT_INVALID"
     ],
     "obsolete_production_error": "C2_VOICE_PREPARE_TARGET_UNSTABLE",
     "physical_media_action_rule": "each_voice_or_image_action_may_trigger_at_most_once_and_post_trigger_waits_are_passive_evidence_reads_only"
@@ -1134,7 +1150,7 @@
     }
   },
   "startup_layout_calibration_contract": {
-    "schema_version": "0.9.36",
+    "schema_version": "0.9.37",
     "owner": "omniauto",
     "worker_role": "persist_path_transport_contract_validation_and_execution_only",
     "single_runtime_path": true,
