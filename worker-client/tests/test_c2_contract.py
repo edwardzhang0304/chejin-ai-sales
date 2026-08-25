@@ -1,9 +1,13 @@
 from __future__ import annotations
 
 import ast
+from contextlib import redirect_stdout
+import io
 import inspect
+import json
 import os
 from pathlib import Path
+import sys
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -47,6 +51,71 @@ from chejin_worker_client.wechat_c2 import (
 
 
 class C2ContractTests(unittest.TestCase):
+    def _real_legacy_sidecar_identity_fixture(self):
+        omniauto_root = Path(__file__).resolve().parents[1] / "omniauto-rpa"
+        if str(omniauto_root) not in sys.path:
+            sys.path.insert(0, str(omniauto_root))
+
+        from apps.wechat_ai_customer_service.adapters import (  # noqa: PLC0415
+            wechat_win32_ocr_sidecar as sidecar,
+        )
+        from apps.wechat_ai_customer_service.wechat_message_envelope import (  # noqa: PLC0415
+            apply_message_envelope_to_record,
+            build_message_envelope,
+        )
+
+        record = {
+            "id": "win32_ocr:real-envelope-text",
+            "type": "text",
+            "sender_role": "customer",
+            "content": "测试消息",
+            "source_adapter": "win32_ocr",
+            "bubble_rect": {
+                "left": 100,
+                "top": 100,
+                "right": 240,
+                "bottom": 145,
+            },
+        }
+        envelope = build_message_envelope(
+            record,
+            source_adapter="win32_ocr",
+            conversation={
+                "target_name": "CJTEST01",
+                "conversation_type": "private",
+            },
+            ocr_items=[],
+            bubble_rect=record["bubble_rect"],
+        )
+        legacy_message = apply_message_envelope_to_record(record, envelope)
+        observations = sidecar.build_message_observations_v3(
+            [legacy_message]
+        )
+        raw_payload = {
+            "ok": True,
+            "observation_schema_version": (
+                sidecar.C2_OBSERVATION_SCHEMA_VERSION
+            ),
+            "messages": [legacy_message],
+            "observations": observations,
+            "frame_action_binding": {
+                "reserved_worker_stable_id": "worker-message-1",
+            },
+        }
+        return sidecar, legacy_message, raw_payload
+
+    def _assert_public_sidecar_identity_payload(self, payload):
+        self.assertNotIn("source_message_key", payload["messages"][0])
+        self.assertNotIn(
+            "source_message_key",
+            payload["messages"][0]["message_envelope"],
+        )
+        self.assertEqual(
+            payload["frame_action_binding"]["reserved_worker_stable_id"],
+            "worker-message-1",
+        )
+        self.assertEqual(sidecar_contract_error(payload), "")
+
     def test_media_reservation_lifecycle_is_selected_action_only(self):
         lifecycle = c2_contract_v3()[
             "message_identity_lifecycle_contract"
@@ -146,6 +215,20 @@ class C2ContractTests(unittest.TestCase):
                     sidecar_contract_error(payload),
                     "C2_SIDECAR_IDENTITY_CONTRACT_INVALID",
                 )
+            with self.subTest(field=field, location="legacy_messages"):
+                payload = {
+                    **base_payload,
+                    "messages": [
+                        {
+                            "id": "legacy-message-1",
+                            "message_envelope": {field: "forbidden"},
+                        }
+                    ],
+                }
+                self.assertEqual(
+                    sidecar_contract_error(payload),
+                    "C2_SIDECAR_IDENTITY_CONTRACT_INVALID",
+                )
 
         allowed_action_evidence = {
             **base_observation,
@@ -159,6 +242,91 @@ class C2ContractTests(unittest.TestCase):
                 {**base_payload, "observations": [allowed_action_evidence]}
             ),
             "",
+        )
+
+    def test_real_legacy_message_envelope_is_sanitized_before_worker_contract(self):
+        sidecar, legacy_message, raw_payload = (
+            self._real_legacy_sidecar_identity_fixture()
+        )
+
+        self.assertIn("source_message_key", legacy_message)
+        self.assertIn(
+            "source_message_key",
+            legacy_message["message_envelope"],
+        )
+        self.assertEqual(
+            sidecar_contract_error(raw_payload),
+            "C2_SIDECAR_IDENTITY_CONTRACT_INVALID",
+        )
+
+        with patch.object(sidecar, "run_action", return_value=raw_payload):
+            public_payload = sidecar.run_sidecar_cli(["messages"])
+
+        self._assert_public_sidecar_identity_payload(public_payload)
+
+    def test_daemon_entry_sanitizes_legacy_message_identity(self):
+        sidecar, _, raw_payload = self._real_legacy_sidecar_identity_fixture()
+        daemon_input = io.StringIO(
+            '{"action":"messages"}\n{"action":"exit"}\n'
+        )
+        daemon_output = io.StringIO()
+
+        with (
+            patch.object(sidecar, "run_action", return_value=raw_payload),
+            patch.object(sidecar.sys, "stdin", daemon_input),
+            redirect_stdout(daemon_output),
+        ):
+            exit_code = sidecar.run_daemon_loop()
+
+        output_lines = daemon_output.getvalue().splitlines()
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(len(output_lines), 2)
+        self._assert_public_sidecar_identity_payload(
+            json.loads(output_lines[0])
+        )
+        self.assertEqual(
+            json.loads(output_lines[1]),
+            {"ok": True, "state": "daemon_exit"},
+        )
+
+    def test_legacy_main_entry_sanitizes_legacy_message_identity(self):
+        sidecar, _, raw_payload = self._real_legacy_sidecar_identity_fixture()
+        cli_output = io.StringIO()
+
+        with (
+            patch.object(sidecar, "run_action", return_value=raw_payload),
+            patch.object(sidecar.sys, "argv", ["sidecar", "messages"]),
+            redirect_stdout(cli_output),
+        ):
+            exit_code = sidecar.main()
+
+        self.assertEqual(exit_code, 0)
+        self._assert_public_sidecar_identity_payload(
+            json.loads(cli_output.getvalue())
+        )
+
+    def test_frozen_windows_entry_sanitizes_legacy_message_identity(self):
+        sidecar, _, raw_payload = self._real_legacy_sidecar_identity_fixture()
+        from chejin_worker_client import main as frozen_entry  # noqa: PLC0415
+
+        cli_output = io.StringIO()
+        with (
+            patch.object(sidecar, "run_action", return_value=raw_payload),
+            patch.object(
+                frozen_entry.sys,
+                "_MEIPASS",
+                tempfile.gettempdir(),
+                create=True,
+            ),
+            redirect_stdout(cli_output),
+        ):
+            exit_code = frozen_entry.run_bundled_omniauto_sidecar(
+                ["messages"]
+            )
+
+        self.assertEqual(exit_code, 0)
+        self._assert_public_sidecar_identity_payload(
+            json.loads(cli_output.getvalue())
         )
 
     def test_performance_fast_path_flags_can_be_disabled_independently(self):
@@ -193,7 +361,7 @@ class C2ContractTests(unittest.TestCase):
 
     def test_slot_ledger_contract_separates_fact_scope_from_delivery(self):
         schema = c2_contract_v3()["slot_ledger_state_schema"]
-        self.assertEqual(c2_contract_v3()["contract_revision"], "0.9.33")
+        self.assertEqual(c2_contract_v3()["contract_revision"], "0.9.34")
         viewport_contract = c2_contract_v3()[
             "pre_send_message_viewport_contract"
         ]

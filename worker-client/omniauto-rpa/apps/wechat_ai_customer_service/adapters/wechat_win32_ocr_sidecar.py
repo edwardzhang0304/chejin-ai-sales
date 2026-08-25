@@ -190,7 +190,7 @@ _LAYOUT_SNAPSHOT_ID_BY_IMAGE_ID: dict[int, str] = {}
 _DPI_AWARENESS_STATUS: dict[str, Any] = {}
 STARTUP_CALIBRATION_PATH = Path(
     os.getenv("CHEJIN_WECHAT_STARTUP_CALIBRATION_PATH")
-    or (PROJECT_ROOT / "runtime" / "wechat_startup_layout_calibration_v0.9.33.json")
+    or (PROJECT_ROOT / "runtime" / "wechat_startup_layout_calibration_v0.9.34.json")
 )
 RENDER_RECOVERY_GUARD_PATH = PROJECT_ROOT / "runtime" / "wechat_win32_ocr_render_recovery_guard.json"
 MIN_SEND_CLIENT_WIDTH = 700
@@ -264,6 +264,29 @@ C2_SIDECAR_FORBIDDEN_MESSAGE_IDENTITY_FIELDS = frozenset(
         "sidecar_must_not_return"
     ]
 )
+
+
+def sanitize_sidecar_contract_output(value: Any) -> Any:
+    """Remove Worker-owned durable identity fields at the Sidecar boundary.
+
+    OmniAuto still builds a legacy ``messages`` projection for internal OCR
+    compatibility. That projection may contain its historical frame-local
+    ``source_message_key`` inside both the record and ``message_envelope``.
+    Those values are not business identities and must never cross the formal
+    Sidecar -> Worker boundary. Sanitize the complete JSON result so every
+    action route enforces the same ownership rule without weakening Worker's
+    contract validator.
+    """
+
+    if isinstance(value, dict):
+        return {
+            str(key): sanitize_sidecar_contract_output(child)
+            for key, child in value.items()
+            if str(key) not in C2_SIDECAR_FORBIDDEN_MESSAGE_IDENTITY_FIELDS
+        }
+    if isinstance(value, list):
+        return [sanitize_sidecar_contract_output(child) for child in value]
+    return value
 C2_FRAME_ACTION_BINDING_CONTAINER = str(
     C2_VOICE_ACTION_BINDING_CONTRACT["frame_binding_container"]
 )
@@ -596,6 +619,7 @@ def main() -> int:
         payload = run_action(args)
     except Exception as exc:
         payload = exception_payload_for_sidecar(exc, state="win32_ocr_failed")
+    payload = sanitize_sidecar_contract_output(payload)
 
     logs = captured.getvalue().strip()
     if logs:
@@ -1301,7 +1325,7 @@ def run_action(args: argparse.Namespace) -> dict[str, Any]:
                     or "startup_calibration_missing_or_stale"
                 ),
             )
-    # v0.9.33 has exactly one geometry owner: the startup normalize action.
+    # v0.9.34 has exactly one geometry owner: the startup normalize action.
     # C1-C4 must never move, resize, restore, or re-normalize the window.
     if action == "normalize-window":
         blocking_windows: list[dict[str, Any]] = []
@@ -6476,7 +6500,7 @@ def classify_pre_send_system_message(value: Any) -> str:
     """Classify only explicitly known WeChat system semantics.
 
     An unfamiliar readable row stays unresolved.  This is deliberately
-    fail-closed: v0.9.33 forbids pretending that every readable system row is
+    fail-closed: v0.9.34 forbids pretending that every readable system row is
     an ordinary status.
     """
 
@@ -18084,7 +18108,7 @@ def build_and_store_startup_calibration(
     *,
     artifact_dir: str | None = None,
 ) -> dict[str, Any]:
-    """Capture one exact client frame and build the sole v0.9.33 shell map."""
+    """Capture one exact client frame and build the sole v0.9.34 shell map."""
 
     dpi_awareness = ensure_dpi_awareness_status()
     if not dpi_awareness.get("per_monitor_aware"):
@@ -20785,6 +20809,7 @@ def run_daemon_loop() -> int:
                         os.environ.pop(key, None)
                     else:
                         os.environ[key] = old_value
+        payload = sanitize_sidecar_contract_output(payload)
         print(json.dumps(payload, ensure_ascii=True), flush=True)
     return 0
 
@@ -20870,7 +20895,7 @@ def run_sidecar_cli(argv: list[str] | None = None) -> dict[str, Any]:
     if args.daemon:
         return {"ok": False, "state": "daemon_reentry_not_supported"}
     configure_dpi_awareness()
-    return run_action(args)
+    return sanitize_sidecar_contract_output(run_action(args))
 
 
 if __name__ == "__main__":
@@ -20880,5 +20905,6 @@ if __name__ == "__main__":
         payload = run_sidecar_cli()
     except Exception as exc:
         payload = exception_payload_for_sidecar(exc, state="win32_ocr_failed")
+    payload = sanitize_sidecar_contract_output(payload)
     print(json.dumps(payload, ensure_ascii=True))
     raise SystemExit(0 if bool(payload.get("ok")) else 1)

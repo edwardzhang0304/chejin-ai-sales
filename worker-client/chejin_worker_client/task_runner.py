@@ -13795,7 +13795,7 @@ class TaskRunner:
                         ],
                     }
                 # This prepare frame is the one complete latest-frame
-                # reidentification allowed by v0.9.33. Consume the global
+                # reidentification allowed by v0.9.34. Consume the global
                 # budget before creating a replacement action/reservation so
                 # any second viewport change fails closed without another
                 # prepare loop.
