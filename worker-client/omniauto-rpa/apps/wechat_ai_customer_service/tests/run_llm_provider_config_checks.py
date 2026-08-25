@@ -44,6 +44,7 @@ class FakeResponse:
 
     def __init__(self, body: dict[str, Any] | None = None) -> None:
         self.body = body or {"choices": [{"message": {"content": "OK"}}]}
+        self.headers = {"x-request-id": "fake-provider-request-1"}
 
     def __enter__(self) -> "FakeResponse":
         return self
@@ -99,11 +100,13 @@ def run_checks() -> dict[str, Any]:
             check_stage_can_disallow_fallback(calls)
             check_failover_preserves_actual_fallback_route(calls)
             check_wall_timeout_primary_activates_fallback()
+            check_provider_progress_survives_primary_failure_and_fallback(calls)
+            check_progress_writer_failure_does_not_change_provider_result()
             check_llm_config_permissions_allow_all_authenticated_users()
         finally:
             llm_config_module.urllib.request.urlopen = old_urlopen
             llm_config_module._LLM_CONFIG_PATH = old_path
-    return {"ok": True, "checks": 10}
+    return {"ok": True, "checks": 12}
 
 
 def check_legacy_deepseek_defaults() -> None:
@@ -458,6 +461,99 @@ def check_wall_timeout_primary_activates_fallback() -> None:
     assert_equal(result.get("provider"), "deepseek", "fallback result should report DeepSeek after wall timeout")
     assert_true(elapsed < 1.5, f"wall timeout should not wait for slow primary to finish, elapsed={elapsed:.3f}")
     assert_true(len(calls) >= 2, f"primary and fallback calls should both be attempted: {calls}")
+
+
+def check_provider_progress_survives_primary_failure_and_fallback(
+    calls: list[dict[str, Any]],
+) -> None:
+    before = len(calls)
+    old_path = os.environ.get("CHEJIN_AI_PROGRESS_PATH")
+    old_id = os.environ.get("CHEJIN_AI_PROGRESS_ID")
+    with tempfile.TemporaryDirectory(prefix="omniauto-llm-progress-") as temp_dir:
+        progress_path = Path(temp_dir) / "progress.ndjson"
+        progress_path.touch()
+        os.environ["CHEJIN_AI_PROGRESS_PATH"] = str(progress_path)
+        os.environ["CHEJIN_AI_PROGRESS_ID"] = "progress-check-1"
+        try:
+            result = llm_config_module.call_llm_request_with_failover(
+                provider="openai",
+                api_key="sk-primary-must-not-leak",
+                base_url="https://openai.invalid/v1",
+                model="gpt-5.5",
+                messages=[{"role": "user", "content": "private prompt must not leak"}],
+                timeout=1,
+                max_tokens=8,
+                fallback_timeout=30,
+                progress_stage="brain_llm",
+                config={
+                    "LLM_FALLBACK_ENABLED": "1",
+                    "LLM_FALLBACK_PROVIDER": "deepseek",
+                    "LLM_FALLBACK_BASE_URL": "https://aiself.vip/v1",
+                    "LLM_FALLBACK_FLASH_MODEL": "deepseek-v4-flash",
+                    "LLM_FALLBACK_API_KEY": "sk-fallback-must-not-leak",
+                },
+            )
+            events = [
+                json.loads(line)
+                for line in progress_path.read_text(encoding="utf-8").splitlines()
+                if line.strip()
+            ]
+        finally:
+            if old_path is None:
+                os.environ.pop("CHEJIN_AI_PROGRESS_PATH", None)
+            else:
+                os.environ["CHEJIN_AI_PROGRESS_PATH"] = old_path
+            if old_id is None:
+                os.environ.pop("CHEJIN_AI_PROGRESS_ID", None)
+            else:
+                os.environ["CHEJIN_AI_PROGRESS_ID"] = old_id
+
+    assert_true(result.get("ok"), "fallback should still succeed with progress enabled")
+    assert_equal(
+        [(item.get("route"), item.get("event")) for item in events],
+        [
+            ("primary", "started"),
+            ("primary", "finished"),
+            ("fallback", "started"),
+            ("fallback", "finished"),
+        ],
+        "progress must preserve primary/fallback order",
+    )
+    assert_equal(events[1].get("result_class"), "transient_error", "primary timeout class")
+    assert_equal(events[-1].get("result_class"), "succeeded", "fallback success class")
+    assert_equal(
+        events[-1].get("provider_request_id"),
+        "fake-provider-request-1",
+        "provider request id should be retained when available",
+    )
+    serialized = json.dumps(events, ensure_ascii=False)
+    assert_true("private prompt" not in serialized, "progress must not expose prompt text")
+    assert_true("must-not-leak" not in serialized, "progress must not expose API keys")
+    assert_true(
+        len(calls) >= before + 2,
+        "progress check must use the real provider routing function",
+    )
+
+
+def check_progress_writer_failure_does_not_change_provider_result() -> None:
+    def fail_writer(**_kwargs: Any) -> None:
+        raise OSError("diagnostic write failed")
+
+    original = llm_config_module._emit_llm_progress_event
+    llm_config_module._emit_llm_progress_event = fail_writer
+    try:
+        result = llm_config_module.call_llm_request_with_failover(
+            provider="openai",
+            api_key="sk-test",
+            base_url="https://openai.invalid/v1",
+            model="gpt-5.5",
+            messages=[{"role": "user", "content": "diagnostic failure must be neutral"}],
+            timeout=1,
+            max_tokens=8,
+        )
+    finally:
+        llm_config_module._emit_llm_progress_event = original
+    assert_true(result.get("ok"), "diagnostic failure must not alter provider success")
 
 
 def check_llm_config_permissions_allow_all_authenticated_users() -> None:

@@ -6,8 +6,10 @@ import json
 import os
 import ssl
 import threading
+import time
 import urllib.error
 import urllib.request
+import uuid
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -64,6 +66,137 @@ GATEWAY_FAILOVERABLE_LLM_ERROR_MARKERS = (
     "upstream request failed",
     "upstream_error",
 )
+
+LLM_PROGRESS_PATH_ENV = "CHEJIN_AI_PROGRESS_PATH"
+LLM_PROGRESS_ID_ENV = "CHEJIN_AI_PROGRESS_ID"
+
+
+def _safe_progress_label(value: Any, *, fallback: str) -> str:
+    text = str(value or "").strip()[:96]
+    normalized = "".join(
+        character
+        if character.isalnum() or character in {"_", "-", "."}
+        else "_"
+        for character in text
+    ).strip("_")
+    return normalized or fallback
+
+
+def _llm_progress_result_class(result: dict[str, Any]) -> str:
+    if result.get("ok") is True:
+        return "succeeded"
+    if result.get("wall_timeout") is True:
+        return "wall_timeout"
+    status = int(result.get("status") or 0)
+    if status:
+        return f"http_{status}"
+    if is_failoverable_llm_failure(result):
+        return "transient_error"
+    return "provider_error"
+
+
+def _emit_llm_progress_event(
+    *,
+    stage: str,
+    route: str,
+    event: str,
+    provider: Any,
+    model: Any,
+    timeout_seconds: int | float,
+    call_id: str,
+    elapsed_ms: int | None = None,
+    result: dict[str, Any] | None = None,
+) -> None:
+    """Persist one secret-free LLM progress marker outside captured stdio.
+
+    The backend may terminate the isolated Brain process at its hard timeout.
+    Writing bounded structured markers to a parent-owned file preserves the
+    last completed stage without logging prompts, replies, endpoints or keys.
+    """
+
+    raw_path = str(os.environ.get(LLM_PROGRESS_PATH_ENV) or "").strip()
+    progress_id = _safe_progress_label(
+        os.environ.get(LLM_PROGRESS_ID_ENV),
+        fallback="unbound",
+    )
+    if not raw_path:
+        return
+    path = Path(raw_path)
+    if not path.is_absolute() or not path.parent.is_dir():
+        return
+    payload: dict[str, Any] = {
+        "schema_version": 1,
+        "progress_id": progress_id,
+        "stage": _safe_progress_label(stage, fallback="llm_request"),
+        "route": _safe_progress_label(route, fallback="primary"),
+        "event": _safe_progress_label(event, fallback="unknown"),
+        "provider": _safe_progress_label(provider, fallback="unknown"),
+        "model": _safe_progress_label(model, fallback="unknown"),
+        "timeout_seconds": max(1.0, float(timeout_seconds)),
+        "call_id": _safe_progress_label(call_id, fallback="unknown"),
+        "occurred_at_unix_ms": int(round(time.time() * 1000)),
+    }
+    if elapsed_ms is not None:
+        payload["elapsed_ms"] = max(0, int(elapsed_ms))
+    if isinstance(result, dict):
+        payload["result_class"] = _llm_progress_result_class(result)
+        payload["status"] = int(result.get("status") or 0)
+        provider_request_id = _safe_progress_label(
+            result.get("provider_request_id"),
+            fallback="",
+        )
+        if provider_request_id:
+            payload["provider_request_id"] = provider_request_id
+    try:
+        with path.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(payload, ensure_ascii=False, separators=(",", ":")) + "\n")
+            handle.flush()
+    except OSError:
+        return
+
+
+def emit_llm_progress_event(
+    *,
+    stage: str,
+    route: str,
+    event: str,
+    provider: Any,
+    model: Any,
+    timeout_seconds: int | float,
+    call_id: str,
+    elapsed_ms: int | None = None,
+    result: dict[str, Any] | None = None,
+) -> None:
+    """Best-effort wrapper: diagnostics can never change the LLM result."""
+
+    try:
+        _emit_llm_progress_event(
+            stage=stage,
+            route=route,
+            event=event,
+            provider=provider,
+            model=model,
+            timeout_seconds=timeout_seconds,
+            call_id=call_id,
+            elapsed_ms=elapsed_ms,
+            result=result,
+        )
+    except Exception:  # noqa: BLE001 - diagnostics must be behavior-neutral
+        return
+
+
+def _provider_request_id_from_response(response: Any) -> str:
+    headers = getattr(response, "headers", None)
+    if headers is None:
+        return ""
+    for key in ("x-request-id", "request-id", "x-trace-id"):
+        try:
+            value = str(headers.get(key) or "").strip()
+        except Exception:
+            value = ""
+        if value:
+            return value[:128]
+    return ""
 
 
 LLM_PROVIDER_PRESETS: dict[str, dict[str, Any]] = {
@@ -841,7 +974,7 @@ def call_llm_request_once(
         ) as response:
             raw = response.read().decode("utf-8", errors="replace")
             data = json.loads(raw)
-            return {
+            result = {
                 "ok": True,
                 "provider": provider_id,
                 "provider_label": llm_route_display_label(provider=provider_id, model=model, request_style=request_style),
@@ -852,9 +985,13 @@ def call_llm_request_once(
                 "usage": data.get("usage", {}) if isinstance(data, dict) else {},
                 "request_style": request_style,
             }
+            provider_request_id = _provider_request_id_from_response(response)
+            if provider_request_id:
+                result["provider_request_id"] = provider_request_id
+            return result
     except urllib.error.HTTPError as exc:
         body = exc.read().decode("utf-8", errors="replace")
-        return {
+        result = {
             "ok": False,
             "provider": provider_id,
             "provider_label": llm_route_display_label(provider=provider_id, model=model, request_style=request_style),
@@ -864,6 +1001,10 @@ def call_llm_request_once(
             "error": body[:1000],
             "request_style": request_style,
         }
+        provider_request_id = _provider_request_id_from_response(exc)
+        if provider_request_id:
+            result["provider_request_id"] = provider_request_id
+        return result
     except Exception as exc:  # noqa: BLE001 - caller converts to user-visible diagnostics
         return {
             "ok": False,
@@ -928,7 +1069,20 @@ def call_llm_request_with_failover(
     wall_timeout: int | float | None = None,
     fallback_wall_timeout: int | float | None = None,
     config: dict[str, str] | None = None,
+    progress_stage: str | None = None,
 ) -> dict[str, Any]:
+    stage = _safe_progress_label(progress_stage, fallback="llm_request")
+    primary_call_id = uuid.uuid4().hex
+    primary_started = time.monotonic()
+    emit_llm_progress_event(
+        stage=stage,
+        route="primary",
+        event="started",
+        provider=provider,
+        model=model,
+        timeout_seconds=wall_timeout if wall_timeout is not None else timeout,
+        call_id=primary_call_id,
+    )
     primary = call_llm_request_once_with_wall_timeout(
         provider=provider,
         api_key=api_key,
@@ -943,6 +1097,17 @@ def call_llm_request_with_failover(
         explicit_reasoning_effort=explicit_reasoning_effort,
         allow_insecure_tls=allow_insecure_tls,
         wall_timeout=wall_timeout,
+    )
+    emit_llm_progress_event(
+        stage=stage,
+        route="primary",
+        event="finished",
+        provider=provider,
+        model=model,
+        timeout_seconds=wall_timeout if wall_timeout is not None else timeout,
+        call_id=primary_call_id,
+        elapsed_ms=int(round((time.monotonic() - primary_started) * 1000)),
+        result=primary,
     )
     if primary.get("ok"):
         primary["failover"] = {"attempted": False, "activated": False, "reason": "primary_ok"}
@@ -972,6 +1137,22 @@ def call_llm_request_with_failover(
     ):
         primary["failover"] = {"attempted": False, "activated": False, "reason": "fallback_same_as_primary"}
         return primary
+    fallback_call_id = uuid.uuid4().hex
+    fallback_started = time.monotonic()
+    fallback_budget = max(1, fallback_timeout if fallback_timeout is not None else timeout)
+    emit_llm_progress_event(
+        stage=stage,
+        route="fallback",
+        event="started",
+        provider=fallback_provider,
+        model=fallback_model,
+        timeout_seconds=(
+            fallback_wall_timeout
+            if fallback_wall_timeout is not None
+            else fallback_budget
+        ),
+        call_id=fallback_call_id,
+    )
     fallback_result = call_llm_request_once_with_wall_timeout(
         provider=fallback_provider,
         api_key=fallback_api_key,
@@ -990,6 +1171,21 @@ def call_llm_request_with_failover(
         ),
         allow_insecure_tls=fallback.get("allow_insecure_tls"),
         wall_timeout=fallback_wall_timeout if fallback_wall_timeout is not None else fallback_timeout,
+    )
+    emit_llm_progress_event(
+        stage=stage,
+        route="fallback",
+        event="finished",
+        provider=fallback_provider,
+        model=fallback_model,
+        timeout_seconds=(
+            fallback_wall_timeout
+            if fallback_wall_timeout is not None
+            else fallback_budget
+        ),
+        call_id=fallback_call_id,
+        elapsed_ms=int(round((time.monotonic() - fallback_started) * 1000)),
+        result=fallback_result,
     )
     if fallback_result.get("ok"):
         fallback_result["failover"] = {

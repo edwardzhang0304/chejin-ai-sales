@@ -2216,6 +2216,7 @@ def run_brain_llm(*, settings: dict[str, Any], brain_input: dict[str, Any]) -> d
         temperature=float(settings.get("temperature") or DEFAULT_TEMPERATURE),
         tier=str(settings.get("model_tier") or "flash"),
         json_mode=True,
+        progress_stage="brain_llm",
     )
     response["primary_provider"] = provider
     response["primary_model"] = model
@@ -2343,6 +2344,7 @@ def maybe_retry_brain_llm_after_unavailable_response(
         temperature=float(settings.get("temperature") or DEFAULT_TEMPERATURE),
         tier=str(settings.get("model_tier") or "flash"),
         json_mode=True,
+        progress_stage="brain_llm_unavailable_retry",
     )
     retry["attempted"] = True
     retry["retry_reason"] = "brain_llm_unavailable"
@@ -2595,6 +2597,7 @@ def maybe_retry_brain_llm_after_unparseable_response(
         temperature=float(settings.get("temperature") or DEFAULT_TEMPERATURE),
         tier=str(settings.get("model_tier") or "flash"),
         json_mode=True,
+        progress_stage="brain_llm_parse_retry",
     )
     retry["attempted"] = True
     retry["retry_reason"] = "brain_unparseable_or_empty_response"
@@ -2715,6 +2718,7 @@ def maybe_repair_brain_json_structure(
         temperature=0.0,
         tier=str(settings.get("model_tier") or "flash"),
         json_mode=True,
+        progress_stage=f"{stage}_json_structure_repair",
     )
     response["attempted"] = True
     response["primary_provider"] = provider
@@ -3113,6 +3117,7 @@ def run_brain_repair_llm(
         temperature=float(settings.get("temperature") or DEFAULT_TEMPERATURE),
         tier=str(settings.get("model_tier") or "flash"),
         json_mode=True,
+        progress_stage="brain_quality_repair",
     )
     response["primary_provider"] = provider
     response["primary_model"] = model

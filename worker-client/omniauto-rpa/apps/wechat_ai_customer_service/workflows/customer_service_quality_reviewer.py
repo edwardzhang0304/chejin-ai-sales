@@ -928,6 +928,7 @@ def run_quality_reviewer_llm(*, settings: dict[str, Any], request: dict[str, Any
         temperature=float(settings.get("temperature") or DEFAULT_REVIEWER_TEMPERATURE),
         tier=str(settings.get("model_tier") or "flash"),
         json_mode=True,
+        progress_stage="semantic_reviewer",
     )
     response["elapsed_ms"] = int((time.time() - started_at) * 1000)
     response["primary_provider"] = provider
