@@ -16,10 +16,16 @@ import os
 from pathlib import Path
 import sqlite3
 import sys
+import unittest
 import zipfile
 
 from PIL import Image, ImageChops, ImageDraw
-import pytest
+try:
+    import pytest
+except ModuleNotFoundError as exc:
+    raise unittest.SkipTest(
+        "pytest is required only when external Windows evidence is supplied"
+    ) from exc
 
 
 OMNIAUTO_ROOT = Path(__file__).resolve().parents[1] / "omniauto-rpa"

@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import sqlite3
+import tempfile
 import time
+import unittest
 import uuid
+from pathlib import Path
 from types import SimpleNamespace
 
 import chejin_worker_client.telemetry as telemetry
@@ -17,6 +20,19 @@ from chejin_worker_client.telemetry import (
     pending_stage_events,
     remember_process_run,
 )
+
+
+class TelemetryConnectionLifecycleTest(unittest.TestCase):
+    def test_connection_context_closes_sqlite_handle(self):
+        with tempfile.TemporaryDirectory(
+            prefix="chejin-telemetry-close-"
+        ) as temporary_directory:
+            path = Path(temporary_directory) / "telemetry.sqlite3"
+            with telemetry._connect(path) as connection:
+                connection.execute("SELECT 1").fetchone()
+
+            with self.assertRaises(sqlite3.ProgrammingError):
+                connection.execute("SELECT 1")
 
 
 def _process_run_id() -> str:

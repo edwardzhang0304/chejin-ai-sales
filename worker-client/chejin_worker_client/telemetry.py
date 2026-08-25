@@ -5,10 +5,11 @@ import sqlite3
 import threading
 import time
 import uuid
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Iterator
 
 from .config import CONFIG
 from .models import Binding
@@ -57,45 +58,49 @@ def telemetry_db_path() -> Path:
     return CONFIG.app_dir / "worker_telemetry.sqlite3"
 
 
-def _connect(path: Path) -> sqlite3.Connection:
+@contextmanager
+def _connect(path: Path) -> Iterator[sqlite3.Connection]:
     path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(path, timeout=0.2)
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA journal_mode=WAL")
-    conn.execute("PRAGMA busy_timeout=200")
-    conn.execute(
-        """
-        CREATE TABLE IF NOT EXISTS telemetry_stage_events (
-            stage_run_id TEXT PRIMARY KEY,
-            payload_json TEXT NOT NULL,
-            created_at TEXT NOT NULL,
-            upload_attempt_count INTEGER NOT NULL DEFAULT 0,
-            next_attempt_at REAL NOT NULL DEFAULT 0
+    try:
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA busy_timeout=200")
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS telemetry_stage_events (
+                stage_run_id TEXT PRIMARY KEY,
+                payload_json TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                upload_attempt_count INTEGER NOT NULL DEFAULT 0,
+                next_attempt_at REAL NOT NULL DEFAULT 0
+            )
+            """
         )
-        """
-    )
-    conn.execute(
-        """
-        CREATE TABLE IF NOT EXISTS telemetry_process_links (
-            local_run_id TEXT PRIMARY KEY,
-            process_run_id TEXT NOT NULL,
-            conversation_id TEXT,
-            created_at TEXT NOT NULL
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS telemetry_process_links (
+                local_run_id TEXT PRIMARY KEY,
+                process_run_id TEXT NOT NULL,
+                conversation_id TEXT,
+                created_at TEXT NOT NULL
+            )
+            """
         )
-        """
-    )
-    conn.execute(
-        """
-        CREATE TABLE IF NOT EXISTS telemetry_stage_attempts (
-            process_run_id TEXT NOT NULL,
-            stage_name TEXT NOT NULL,
-            last_attempt INTEGER NOT NULL,
-            updated_at TEXT NOT NULL,
-            PRIMARY KEY (process_run_id, stage_name)
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS telemetry_stage_attempts (
+                process_run_id TEXT NOT NULL,
+                stage_name TEXT NOT NULL,
+                last_attempt INTEGER NOT NULL,
+                updated_at TEXT NOT NULL,
+                PRIMARY KEY (process_run_id, stage_name)
+            )
+            """
         )
-        """
-    )
-    return conn
+        yield conn
+    finally:
+        conn.close()
 
 
 def remember_process_run(

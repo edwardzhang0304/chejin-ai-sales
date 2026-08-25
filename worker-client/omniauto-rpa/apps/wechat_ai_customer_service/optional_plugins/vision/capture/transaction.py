@@ -242,7 +242,7 @@ def _acquire_current_image_via_ports(
     action_phase = str(
         data.get("_prior_action_phase") or "not_attempted"
     )
-    # v0.9.34 permits one physical image action only. A copied bitmap whose
+    # v0.9.35 permits one physical image action only. A copied bitmap whose
     # result cannot be confirmed is journaled for recovery; it is never
     # acquired again in the same or a nested transaction.
     retry_attempt = 0

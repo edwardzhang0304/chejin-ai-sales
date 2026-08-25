@@ -1,5 +1,5 @@
 @startuml
-' 文档版本：v0.9.34；灰度目标版本：0.9.34（代码与文档架构复审已通过；真实功能提交已固定为11d43d5bb9dd83831e0bbba8ed84b5eba700cb2c并完成来源绑定；来源治理提交、推送、打包和Windows UAT均未完成）；最后更新：2026-08-25
+' 文档版本：v0.9.35；灰度目标版本：0.9.35（本地整改候选；尚未形成真实功能提交；来源仍绑定0.9.34；推送、打包、GitHub Windows完整门禁和Windows实机UAT均未完成）；最后更新：2026-08-25
 title AI智能客服售前跟进系统 全流程图（C0-C4、媒体、回复、转人工与恢复）
 
 skinparam monochrome true
@@ -97,7 +97,7 @@ note over W,Reply
 end note
 
 note over W,WX
-0.9.34启动标定兼容口径（适用于add_friend、authorized_read、pre_send_refresh和send）：
+0.9.35启动标定兼容口径（适用于add_friend、authorized_read、pre_send_refresh和send）：
 启动按DPI/工作区选择唯一默认外框档位，归位后用一张精确HWND客户区截图建立startup_layout_calibration。
 原图几何确定导航/侧栏/标题/消息/输入边界；同尺寸增强OCR只补文字锚点，不直接产生点击坐标。
 0.9.20参考点按所属区域分段映射到当前标定；禁止整窗口单比例缩放或各模块自行加偏移。
@@ -108,7 +108,7 @@ C2_PRE_SEND_LAYOUT_INVALID同样不自动归位/重标定：记录完整Bug证�
 不新增业务截图/OCR，不改变0.9.20点击顺序、重试、失败处理和状态机。
 status/capabilities/calibration-status/sessions保持被动探测，不抢前台。
 add_friend/open-chat/messages/voice-transcribe/recover-render/send直接复用0.9.20可见窗口选择和activate_window(hwnd)，不新建统一前台门禁。
-0.9.34只在消费启动坐标地图前确认selected_visible_hwnd==calibration.hwnd；不一致表示地图失效，当前业务Flow内立即停止新UI动作。
+0.9.35只在消费启动坐标地图前确认selected_visible_hwnd==calibration.hwnd；不一致表示地图失效，当前业务Flow内立即停止新UI动作。
 事务内部不存在新的主HWND前台等值检查；微信自身菜单/弹窗按0.9.20原流程继续。
 共享点击底层只校验快照ID、目标边界和坐标映射；禁止新增主HWND等值门禁，也禁止为添加朋友增加特例白名单。
 end note
