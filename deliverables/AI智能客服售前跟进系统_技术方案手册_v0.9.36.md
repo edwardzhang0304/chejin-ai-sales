@@ -1,6 +1,6 @@
 # AI智能客服售前跟进系统 技术方案
 
-版本：v0.9.35
+版本：v0.9.36
 
 日期：2026-07-21
 
@@ -8,7 +8,9 @@
 
 适用范围：运营后台、车金后端、Windows Worker、OmniAuto Sidecar、C0—C4、车辆 Product Master、人工接管与飞书通知。
 
-当前唯一架构口径：服务端负责授权、状态机、事实持久化、Brain/Guard、任务和通知；OmniAuto Sidecar 只负责微信 UI 观察、本帧物理目标定位、鼠标/键盘动作和动作证据，不得生成或继承业务消息身份；Worker 是消息身份、顺序、连续性和 `worker_stable_id` 的唯一决策者；后端只保存、校验不可变身份、去重和结算，不得根据截图、坐标或正文重新猜身份。C2 使用固定八位短码和 private 单聊门禁；文字、语音、图片按同一最终画面顺序入库，一条物理媒体只形成一个业务对象，所有已触发媒体动作必须有限终态。C2 消息身份只允许沿“帧内观察 -> 本帧动作绑定/待处理媒体动作 -> Worker 正式提交或隔离记录”单向推进；只有 Worker 已提交的正式消息可以生成 source key、查询 Ledger/Outbox、上报后端或进入 Brain。Brain 只在最新待回复尾部完整且证据足够时生成回复；当前客户媒体确定失败、高意向及必须人工批准的业务硬风险进入人工接管。人工接管以未关闭 `HandoffEvent` 为权威事实并投影 `waiting_sales_reply`，服务端按同一事件通过车金统一飞书应用立即且至多通知一次所属销售。发送前出现新文字、语音、图片或组合消息时，必须立即禁止旧回复外发。只要相关消息区域发生变化，OmniAuto 只返回最新观察和“本帧动作目标已变化/消失/冲突”的证据，Worker 必须取消旧动作计划并对最新画面执行一次完整、确定性重新仲裁；成功则下发新的本帧动作计划，失败则返回能说明“对象消失、多候选、序列无法对齐、角色无法确认、正文无法读取、布局无效或再次变化”的具体错误，零点击结束当前仲裁；不存在“暂时看不清”、`recoverable_uncertain`、发送前 `recoverable_hold`、多轮时间重试或笼统 `C2_REPLY_CONTEXT_RECOVERY_FAILED` 出口。消息视口变化摘要必须基于排除光标、工具栏、侧栏、GIF/动画帧、滚动条、悬停/播放效果和红点的规范化有序消息观察，禁止直接哈希原始 RGB 像素。本帧动作绑定只证明“当前唯一操作目标仍满足 Worker 本次动作计划”，不是跨轮业务身份；不得要求新媒体在第一次点击前已经具有 `native_source_message_id`、本次 `confirmed_action_mapping` 或正式 `worker_stable_id`。若连标题区、消息视口和输入区这些微信基本布局都无法建立，该现象固定按代码缺陷收口：禁止旧回复、记录 `C2_PRE_SEND_LAYOUT_INVALID` 及完整证据、将当前任务/Flow 结算为技术失败并释放 UI 锁，Worker 进入故障状态且停止新接单；不创建 HandoffEvent，不自动移窗/重标定/重试，不设人工解锁或清数据流程。微信列表在截图与点击之间重排时，点击后的短码校验仍是硬门禁，但明确点到其他会话时允许丢弃旧坐标并在同一授权内完整重新定位一次。添加朋友流程无论“邀请已发送”还是“已经是好友”，都只对已经证明的添加朋友 HWND 执行一次右上角关窗并验证结果。启动时基于真实微信客户区截图建立一次区域坐标地图，之后只替换 `0.9.20` 中依赖主窗口固定几何的区域边界和点位计算；会话行、消息、菜单、弹窗和表单仍由 `0.9.20` 原必要业务帧与原判断流程决定。同一个单会话事务允许在首次读取和发送前复读中形成任意多次逻辑入库；Worker 本地每组不同正式消息事实必须生成独立、确定性的 `outbox_batch_key` 并形成独立 Outbox，相同事实重试复用原本地 ID，不得因为沿用外层 `read_run_id` 而复用已确认 Outbox、丢弃新消息或继续发送旧回复。`outbox_batch_key` 绝不进入 HTTP 请求、后端 Schema 或业务状态机。`0.9.35` 在既有“本帧动作绑定与长期消息身份”权限边界上，补齐四类 Sidecar 公开输出的递归清理与 Worker 拒绝门禁；不改变 C0—C4、Brain/Guard、UI 锁、销售接管或发送回执等业务流程。当前 `0.9.35` 真实功能提交已固定为 `8474780697a8566468ba33472f01295327e7c751`，`.chejin-source.json` 已绑定该来源；来源治理提交 `f6ddc1fc049287ba61906a8d9fd1c1c88da27b2f` 已完成；推送、标签、安装包、GitHub Windows 完整门禁和 Windows 实机 UAT 均未完成，不得写成已发布或已交付。
+当前唯一架构口径：服务端负责授权、状态机、事实持久化、Brain/Guard、任务和通知；OmniAuto Sidecar 只负责微信 UI 观察、本帧物理目标定位、鼠标/键盘动作和动作证据，不得生成或继承业务消息身份；Worker 是消息身份、顺序、连续性和 `worker_stable_id` 的唯一决策者；后端只保存、校验不可变身份、去重和结算，不得根据截图、坐标或正文重新猜身份。C2 使用固定八位短码和 private 单聊门禁；文字、语音、图片按同一最终画面顺序入库，一条物理媒体只形成一个业务对象，所有已触发媒体动作必须有限终态。C2 消息身份只允许沿“帧内观察 -> 本帧动作绑定/待处理媒体动作 -> Worker 正式提交或隔离记录”单向推进；只有 Worker 已提交的正式消息可以生成 source key、查询 Ledger/Outbox、上报后端或进入 Brain。Brain 只在最新待回复尾部完整且证据足够时生成回复；当前客户媒体确定失败、高意向及必须人工批准的业务硬风险进入人工接管。人工接管以未关闭 `HandoffEvent` 为权威事实并投影 `waiting_sales_reply`，服务端按同一事件通过车金统一飞书应用立即且至多通知一次所属销售。发送前出现新文字、语音、图片或组合消息时，必须立即禁止旧回复外发。只要相关消息区域发生变化，OmniAuto 只返回最新观察和“本帧动作目标已变化/消失/冲突”的证据，Worker 必须取消旧动作计划并对最新画面执行一次完整、确定性重新仲裁；成功则下发新的本帧动作计划，失败则返回能说明“对象消失、多候选、序列无法对齐、角色无法确认、正文无法读取、布局无效或再次变化”的具体错误，零点击结束当前仲裁；不存在“暂时看不清”、`recoverable_uncertain`、发送前 `recoverable_hold`、多轮时间重试或笼统 `C2_REPLY_CONTEXT_RECOVERY_FAILED` 出口。消息视口变化摘要必须基于排除光标、工具栏、侧栏、GIF/动画帧、滚动条、悬停/播放效果和红点的规范化有序消息观察，禁止直接哈希原始 RGB 像素。本帧动作绑定只证明“当前唯一操作目标仍满足 Worker 本次动作计划”，不是跨轮业务身份；不得要求新媒体在第一次点击前已经具有 `native_source_message_id`、本次 `confirmed_action_mapping` 或正式 `worker_stable_id`。若连标题区、消息视口和输入区这些微信基本布局都无法建立，该现象固定按代码缺陷收口：禁止旧回复、记录 `C2_PRE_SEND_LAYOUT_INVALID` 及完整证据、将当前任务/Flow 结算为技术失败并释放 UI 锁，Worker 进入故障状态且停止新接单；不创建 HandoffEvent，不自动移窗/重标定/重试，不设人工解锁或清数据流程。微信列表在截图与点击之间重排时，点击后的短码校验仍是硬门禁，但明确点到其他会话时允许丢弃旧坐标并在同一授权内完整重新定位一次。添加朋友流程无论“邀请已发送”还是“已经是好友”，都只对已经证明的添加朋友 HWND 执行一次右上角关窗并验证结果。启动时基于真实微信客户区截图建立一次区域坐标地图，之后只替换 `0.9.20` 中依赖主窗口固定几何的区域边界和点位计算；会话行、消息、菜单、弹窗和表单仍由 `0.9.20` 原必要业务帧与原判断流程决定。同一个单会话事务允许在首次读取和发送前复读中形成任意多次逻辑入库；Worker 本地每组不同正式消息事实必须生成独立、确定性的 `outbox_batch_key` 并形成独立 Outbox，相同事实重试复用原本地 ID，不得因为沿用外层 `read_run_id` 而复用已确认 Outbox、丢弃新消息或继续发送旧回复。`outbox_batch_key` 绝不进入 HTTP 请求、后端 Schema 或业务状态机。`0.9.35` 在既有“本帧动作绑定与长期消息身份”权限边界上，补齐四类 Sidecar 公开输出的递归清理与 Worker 拒绝门禁；不改变 C0—C4、Brain/Guard、UI 锁、销售接管或发送回执等业务流程。`0.9.35` 已形成真实功能提交 `8474780697a8566468ba33472f01295327e7c751`，`.chejin-source.json` 已绑定该来源；来源治理提交 `f6ddc1fc049287ba61906a8d9fd1c1c88da27b2f` 已完成，候选已推送、标签且生成 ZIP。当前 Windows 实机 UAT 发现 Brain 硬超时内部阶段丢失问题，不得把 `0.9.35` 写成已通过最终验收或已完成交付。
+
+`0.9.36` 仅补齐 Brain 隔离进程的分阶段可观测性，不改变 Brain 生成、备用模型、语义审核、Guard、重试次数、超时时间或 C0—C4 业务流程。主模型、备用模型、同帧重试、JSON 修复、质量返修和语义审核必须写入不含提示词、回复正文、API Key 与服务地址的结构化进度事件；父进程无论正常完成、子进程异常还是达到硬超时强制终止，都必须读取并持久化已形成事件以及最后阶段。Brain 运行期间新消息导致旧批次 `superseded` 时，旧 Brain 结果仍必须丢弃且零回复，但返回 `MESSAGE_BATCH_GENERATION_CLAIM_STALE` 前必须幂等追加本次只读诊断历史，不得覆盖 `superseded` 状态、错误码或当前快照投影。运行时只接受固定字段白名单和 `progress_id` 匹配的事件，诊断写入失败不得改变业务结果；单条事件只 `flush`，不执行同步 `fsync`。当前本地候选已同步为 `contract_revision=0.9.36`，规范化合同 SHA 为 `8154dafe703bd9685e9b96f15675a71ba8cd8e117fa57cfe317365ae5e8f377f`；OmniAuto 真实功能提交已固定为 `d3e5993045226f68481a09a39d6bc4b38595d483` 并完成 `.chejin-source.json` 来源绑定，车金候选提交、推送、标签、安装包和配套后端部署待完成。
 
 ## 文档治理规则
 
@@ -32,12 +34,12 @@
    字段和领域对象字段使用 snake_case，两者不得被误认为两个接口。新增、改名或废弃
    接口必须先修改本文的权威目录和接口编号，不允许在代码、聊天记录或派生合同中另起
    同义名称。
-7. 灰度版本使用唯一 `0.9.x` 序列：`0.9.0` 至 `0.9.34` 已冻结，当前目标候选为 `0.9.35`；
+7. 灰度版本使用唯一 `0.9.x` 序列：`0.9.0` 至 `0.9.35` 已冻结，当前目标候选为 `0.9.36`；
    后续任何内容不同且进入测试的候选必须继续升版。PRD（仅有产品变化时）、技术方案、全流程图、版本记录、客户端、
    后端、OmniAuto 合同 `contract_revision`、生成 Schema、manifest 和安装包必须写入同一个
    精确版本，禁止各自升版、复用旧号覆盖新内容或把占位符 `0.9.X` 写入运行产物。
    `contract_version=3`、`observation_schema_version=3` 和文中 V3 仅是协议结构代号，不属于
-   灰度发布版本；客户端、后端、OmniAuto、生成 Schema、manifest 与打包入口已在本地同步为 `contract_revision=0.9.35`，规范化合同 SHA 为 `7f6144fe1bf57c9a32f4f7c797f1b03a8e52f1e5c62f52f381f65b0001b0aaf2`。当前 `0.9.35` 真实功能提交已固定为 `8474780697a8566468ba33472f01295327e7c751`，`.chejin-source.json` 已绑定该来源；来源治理提交 `f6ddc1fc049287ba61906a8d9fd1c1c88da27b2f` 已完成；推送、标签、GitHub Windows 完整门禁、Windows 实机 UAT 和正式包均未完成，不得伪报为已发布或已交付。
+   灰度发布版本；客户端、后端、OmniAuto、生成 Schema、manifest 与打包入口已在本地同步为 `contract_revision=0.9.36`，规范化合同 SHA 为 `8154dafe703bd9685e9b96f15675a71ba8cd8e117fa57cfe317365ae5e8f377f`。OmniAuto 真实功能提交 `d3e5993045226f68481a09a39d6bc4b38595d483` 及 `.chejin-source.json` 来源绑定已完成；车金候选提交、推送、标签、GitHub Windows 完整门禁、Windows 实机 UAT 和正式包均未完成，不得伪报为已发布或已交付。
    版本车道固定为：`0.9.x` 仅用于正式上线前灰度验证，`1.0.x` 用于正式上线及其稳定性修复，
    `1.1.x` 用于下一期优化。三个 `x` 都只表示版本系列，任何提交、合同、Schema、manifest、
    安装包和运行日志必须写入 `0.9.15`、`1.0.0`、`1.1.0` 等精确版本，不得写入字面占位符。
@@ -2960,7 +2962,7 @@ Worker C2 读取某个会话时，执行顺序固定为：
 上述顺序是唯一合法流程。禁止在右键前提交正式 Worker 身份，禁止用 voice anchor 直接生成
 source key，禁止在动作后用相同正文、相同 anchor 或坐标找回编号。
 
-机器合同 revision `0.9.35` 在 Sidecar 请求/返回、ActionJournal、Worker 本地身份预留和最终 V3 evidence 中使用以下唯一媒体字段，禁止新增同义字段；规范化 SHA 必须在最终代码与 Schema 同步后实算：
+机器合同 revision `0.9.36` 在 Sidecar 请求/返回、ActionJournal、Worker 本地身份预留和最终 V3 evidence 中使用以下唯一媒体字段，禁止新增同义字段；规范化 SHA 必须在最终代码与 Schema 同步后实算：
 
 | 字段 | 所有者 | 必填规则 |
 |---|---|---|
@@ -3063,7 +3065,7 @@ Worker 必须对上述逻辑矛盾失败关闭。例如 `identity_phase=sequence
 | `sidecar_new_message_occurrences` 及内容 multiset 比较 | 只可用于发现“画面可能新增了什么”，结果必须再进入新观察仲裁 | 用来证明正文属于被点击语音，或认定相同内容是旧消息 |
 | `storage.py` 消息序号状态 | 原子落盘 action ID、reserved ID、identity phase、trigger phase 和 terminal；预留号单调且永不复用 | 崩溃后回收预留号；新动作重用旧 action ID；`trigger_attempted` 后再点击 |
 | `storage.py` 动作前画面状态 | 与 ActionJournal 原子保存 `pre_action_identity_sequence`，覆盖 `committed/selected_action/frame_local_unselected`；动作终态后补齐 `sequence_alignment_evidence` | 只保存已编号项；崩溃后用新截图或相同内容伪造动作前序列 |
-| `contracts/c2_contract_v3.json` 及生成 schema | 本候选必须将 `contract_revision`、客户端、后端、Sidecar、生成 Schema、样例和 manifest 统一为 `0.9.35`；保留本节对象分类、允许的 commit basis、四种媒体终态、统一消费者白名单、独立帧内语音 action binding、`authoritative_frame_source=initial_read/final_read/action_journal_recovery` 和安全误点语义；布局改为启动 `calibration_id` 与业务 `frame_id` 分离 | 使用独立合同版本号；在已发布版本下静默改语义；产生 `voice_execute_final` 等临时值；保留 `tracking_candidate_counts` 兼容；新增同义字段、双字段兼容或 Worker 本地兜底重判 |
+| `contracts/c2_contract_v3.json` 及生成 schema | 本候选必须将 `contract_revision`、客户端、后端、Sidecar、生成 Schema、样例和 manifest 统一为 `0.9.36`；保留本节对象分类、允许的 commit basis、四种媒体终态、统一消费者白名单、独立帧内语音 action binding、`authoritative_frame_source=initial_read/final_read/action_journal_recovery` 和安全误点语义；布局改为启动 `calibration_id` 与业务 `frame_id` 分离 | 使用独立合同版本号；在已发布版本下静默改语义；产生 `voice_execute_final` 等临时值；保留 `tracking_candidate_counts` 兼容；新增同义字段、双字段兼容或 Worker 本地兜底重判 |
 
 新流程的唯一落库时点为：预留表/ActionJournal 在点击前落盘；正式 identity catalog、
 Ledger、Outbox 和 `source_message_key` 只在 `historical_restored` 或 `business_committed` 后落盘。
@@ -3401,7 +3403,7 @@ POST /api/workers/{worker_id}/wechat/messages/ingest
 
 | 字段 | 类型 | 必填 | 说明 |
 |---|---|---|---|
-| `contract_version` | integer | 是 | 协议结构代号固定为 `3`，不是发布版本；当前灰度目标由 `contract_revision=0.9.35` 表达，并同时校验架构复审固定合同内容后实算的规范化 `contract_sha256` 和 `observation_schema_version`。 |
+| `contract_version` | integer | 是 | 协议结构代号固定为 `3`，不是发布版本；当前灰度目标由 `contract_revision=0.9.36` 表达，并同时校验架构复审固定合同内容后实算的规范化 `contract_sha256` 和 `observation_schema_version`。 |
 | `read_run_id` | string | 是 | 本次读取运行 ID。 |
 | `conversation_id` | string | 是 | 服务端已绑定会话 ID。 |
 | `remark_code` | string | 是 | 本轮已确认的客户短码。 |
@@ -3462,7 +3464,7 @@ POST /api/workers/{worker_id}/wechat/messages/ingest
 `next_sequence_floor`。该响应不得消费未读事实、不得更新读取完成退避、不得推进
 Conversation 或创建 Brain 批次。
 
-`0.9.35` 按灰度版本规则同步升级 `contract_revision`；规范化 SHA 只允许在架构复审固定最终合同内容后实算并同步；
+`0.9.36` 按灰度版本规则同步升级 `contract_revision`；规范化 SHA 只允许在架构复审固定最终合同内容后实算并同步；
 `API-C2-05` 请求和响应字段保持不变，严禁新增 `ingest_batch_id`、`outbox_batch_key` 或同义字段。
 旧 `0.9.31` 请求固定按 `MESSAGE_CONTRACT_REVISION_MISMATCH` 拒绝，不允许双 revision 混跑。
 C2-C3 单会话串行链路继续使用可选 `message_batch={batch_id,batch_status}`；派生接口合同只可
@@ -5517,12 +5519,11 @@ HWND 处理，不增加截图、OCR 或整套布局重算，也不得将事务�
    不测试自动归位、重标定或恢复拉单，因为这些功能不存在。
    未完成前不得声称已兼容所有分辨率。
 
-`0.9.35` 的 Worker、Sidecar、后端、机器合同、生成 Schema 和 manifest
+`0.9.36` 的 Worker、Sidecar、后端、机器合同、生成 Schema 和 manifest
 已完成本地整改，规范化合同 SHA 为
-`7f6144fe1bf57c9a32f4f7c797f1b03a8e52f1e5c62f52f381f65b0001b0aaf2`。当前真实 `0.9.35` OmniAuto 功能提交已固定为
-`8474780697a8566468ba33472f01295327e7c751`，`.chejin-source.json` 已绑定该来源。来源治理提交已固定为 `f6ddc1fc049287ba61906a8d9fd1c1c88da27b2f`。下一步推送候选并执行
-GitHub Windows 完整门禁；Windows 实机验收和打包
-门禁未通过前，不得声称 `0.9.35` 已发布、已交付或可替代现网版本。
+`8154dafe703bd9685e9b96f15675a71ba8cd8e117fa57cfe317365ae5e8f377f`。OmniAuto 真实功能提交已固定为 `d3e5993045226f68481a09a39d6bc4b38595d483`，
+`.chejin-source.json` 已绑定该来源；架构复审和来源绑定已完成，车金候选提交、推送、标签、GitHub Windows 完整门禁、Windows 实机验收和打包
+门禁未通过前，不得声称 `0.9.36` 已发布、已交付或可替代现网版本。
 
 ## 17. 剩余上线前确认清单
 

@@ -123,7 +123,7 @@ jobs:
       - name: Upload Fast UAT ZIP
         uses: actions/upload-artifact@v4
         with:
-          name: chejin-worker-fast-uat-v0.9.35-${{ github.sha }}
+          name: chejin-worker-fast-uat-v0.9.36-${{ github.sha }}
           path: worker-client/dist/fast-uat-release/chejin-worker-fast-uat-*.zip
           if-no-files-found: error
           retention-days: 14

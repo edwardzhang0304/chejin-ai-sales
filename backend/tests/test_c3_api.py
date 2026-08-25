@@ -1,8 +1,10 @@
 from fastapi.testclient import TestClient
 import hashlib
 import pytest
+import threading
 import time
 from datetime import timedelta
+from pathlib import Path
 from types import SimpleNamespace
 from sqlalchemy import select
 
@@ -815,7 +817,26 @@ def test_real_adapter_provider_hard_timeout_kills_isolated_process(monkeypatch, 
     monkeypatch.setattr(adapter, "_load_config", lambda: {"customer_service_brain": {"provider": "test", "model": "test", "api_key": "test-only"}})
     monkeypatch.setattr(adapter, "_load_brain", lambda: object())
     sleeper = tmp_path / "brain_sleeper.py"
-    sleeper.write_text("import time\ntime.sleep(30)\n", encoding="utf-8")
+    sleeper.write_text(
+        "import json, os, time\n"
+        "path = os.environ['CHEJIN_AI_PROGRESS_PATH']\n"
+        "event = {"
+        "'schema_version': 1, "
+        "'progress_id': os.environ['CHEJIN_AI_PROGRESS_ID'], "
+        "'stage': 'semantic_reviewer', "
+        "'route': 'primary', "
+        "'event': 'started', "
+        "'provider': 'openai', "
+        "'model': 'gpt-5.5', "
+        "'timeout_seconds': 45, "
+        "'call_id': 'timeout-call', "
+        "'occurred_at_unix_ms': 1}\n"
+        "with open(path, 'a', encoding='utf-8') as handle:\n"
+        "    handle.write(json.dumps(event) + '\\n')\n"
+        "    handle.flush()\n"
+        "time.sleep(30)\n",
+        encoding="utf-8",
+    )
     monkeypatch.setattr(adapter, "_provider_worker_script", sleeper)
     monkeypatch.setattr(
         "app.services.ai_adapter.get_settings",
@@ -832,6 +853,113 @@ def test_real_adapter_provider_hard_timeout_kills_isolated_process(monkeypatch, 
     assert time.monotonic() - started_at < 1.5
     assert exc.value.code == "AI_ENGINE_PROVIDER_TIMEOUT"
     assert exc.value.data["suggested_action"] == "retry_later"
+    assert exc.value.data["last_provider_progress"]["stage"] == "semantic_reviewer"
+    assert exc.value.data["last_provider_progress"]["event"] == "started"
+    assert exc.value.data["provider_progress"][0]["call_id"] == "timeout-call"
+
+
+def test_real_adapter_success_preserves_isolated_provider_progress(monkeypatch, tmp_path):
+    adapter = RealOmniAutoAIEngineAdapter()
+    worker = tmp_path / "brain_success.py"
+    worker.write_text(
+        "import json, os, sys\n"
+        "json.loads(sys.stdin.read())\n"
+        "path = os.environ['CHEJIN_AI_PROGRESS_PATH']\n"
+        "progress_id = os.environ['CHEJIN_AI_PROGRESS_ID']\n"
+        "events = [\n"
+        "  {'schema_version': 1, 'progress_id': progress_id, 'stage': 'brain_llm', 'route': 'primary', 'event': 'started', 'provider': 'openai', 'model': 'gpt-5.5', 'timeout_seconds': 150, 'call_id': 'success-call', 'occurred_at_unix_ms': 1, 'api_key': 'must-not-survive', 'prompt': 'must-not-survive'},\n"
+        "  {'schema_version': 1, 'progress_id': progress_id, 'stage': 'brain_llm', 'route': 'primary', 'event': 'finished', 'provider': 'openai', 'model': 'gpt-5.5', 'timeout_seconds': 150, 'call_id': 'success-call', 'occurred_at_unix_ms': 2, 'elapsed_ms': 25, 'result_class': 'succeeded', 'status': 200}\n"
+        "]\n"
+        "with open(path, 'a', encoding='utf-8') as handle:\n"
+        "    for event in events:\n"
+        "        handle.write(json.dumps(event) + '\\n')\n"
+        "    handle.flush()\n"
+        "sys.stdout.write(json.dumps({'ok': True, 'result': {'rule_name': 'test'}}))\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(adapter, "_provider_worker_script", worker)
+
+    result = adapter._run_brain_isolated(
+        config={"customer_service_brain": {}},
+        invocation={},
+        timeout_seconds=2.0,
+    )
+
+    assert result["rule_name"] == "test"
+    assert [item["event"] for item in result["provider_progress"]] == [
+        "started",
+        "finished",
+    ]
+    assert result["provider_progress"][-1]["result_class"] == "succeeded"
+    assert "api_key" not in str(result["provider_progress"]).lower()
+    assert "must-not-survive" not in str(result["provider_progress"])
+
+
+def test_real_provider_worker_records_runtime_and_workflow_boundaries(monkeypatch):
+    omniauto_root = (
+        Path(__file__).resolve().parents[2]
+        / "worker-client"
+        / "omniauto-rpa"
+    )
+    monkeypatch.setenv("C3_OMNIAUTO_ROOT", str(omniauto_root))
+    adapter = RealOmniAutoAIEngineAdapter()
+    config = {
+        "customer_service_brain": {
+            "enabled": True,
+            "mode": "brain_first",
+            "provider": "manual_json",
+            "brain_plan": {
+                "schema_version": 1,
+                "recommended_action": "send_reply",
+                "reply_segments": ["您好，请问您主要关注什么车型？"],
+                "confidence": 0.9,
+                "risk_flags": [],
+                "evidence_refs": [],
+                "facts_claimed": [],
+            },
+            "quality_verifier_enabled": False,
+            "semantic_reviewer_enabled": False,
+        }
+    }
+    invocation = {
+        "target_name": "CJPROGRESS",
+        "target_state": {},
+        "batch": [{"id": "message-1", "content": "你好"}],
+        "combined": "你好",
+        "decision": {},
+        "reply_text": "",
+        "intent_assist": {},
+        "rag_reply": {},
+        "llm_reply": {},
+        "product_knowledge": {},
+        "data_capture": {},
+        "raw_capture": {
+            "messages": [{"id": "message-1", "content": "你好"}],
+            "conversation": {
+                "conversation_id": "conv-progress",
+                "chat_type": "private",
+            },
+        },
+        "customer_profile": {},
+    }
+
+    result = adapter._run_brain_isolated(
+        config=config,
+        invocation=invocation,
+        timeout_seconds=5.0,
+    )
+
+    boundaries = [
+        (item["stage"], item["event"])
+        for item in result["provider_progress"]
+        if item.get("route") == "local"
+    ]
+    assert boundaries == [
+        ("runtime_import", "started"),
+        ("runtime_import", "finished"),
+        ("brain_workflow", "started"),
+        ("brain_workflow", "finished"),
+    ]
 
 
 def test_real_adapter_maps_brain_no_visible_provider_result_to_retry_later(monkeypatch):
@@ -1129,6 +1257,84 @@ def test_due_brain_retry_is_reclaimed_and_exhaustion_creates_handoff(monkeypatch
         assert db.query(HandoffEvent).filter(
             HandoffEvent.batch_id == batch["batch_id"]
         ).count() == 1
+
+
+def test_provider_timeout_progress_is_persisted_in_generation_history(
+    monkeypatch,
+    tmp_path,
+):
+    sleeper = tmp_path / "brain_persistence_timeout.py"
+    sleeper.write_text(
+        "import json, os, sys, time\n"
+        "json.loads(sys.stdin.read())\n"
+        "path = os.environ['CHEJIN_AI_PROGRESS_PATH']\n"
+        "event = {"
+        "'schema_version': 1, "
+        "'progress_id': os.environ['CHEJIN_AI_PROGRESS_ID'], "
+        "'stage': 'brain_llm', "
+        "'route': 'primary', "
+        "'event': 'started', "
+        "'provider': 'openai', "
+        "'model': 'gpt-5.5', "
+        "'timeout_seconds': 150, "
+        "'call_id': 'db-timeout-call', "
+        "'occurred_at_unix_ms': 1, "
+        "'api_key': 'must-not-survive', "
+        "'prompt': 'must-not-survive'}\n"
+        "with open(path, 'a', encoding='utf-8') as handle:\n"
+        "    handle.write(json.dumps(event) + '\\n')\n"
+        "    handle.flush()\n"
+        "time.sleep(30)\n",
+        encoding="utf-8",
+    )
+    adapter = RealOmniAutoAIEngineAdapter()
+    monkeypatch.setattr(adapter, "_provider_worker_script", sleeper)
+    monkeypatch.setattr(adapter, "_load_brain", lambda: object())
+    monkeypatch.setattr(
+        adapter,
+        "_load_config",
+        lambda: {
+            "customer_service_brain": {
+                "provider": "openai",
+                "model": "gpt-5.5",
+                "api_key": "test-only",
+            }
+        },
+    )
+    monkeypatch.setattr(
+        "app.services.ai_adapter.get_settings",
+        lambda: SimpleNamespace(c3_brain_provider_timeout_seconds=0.1),
+    )
+    monkeypatch.setattr(
+        c3_service,
+        "get_ai_engine_adapter",
+        lambda: adapter,
+    )
+    worker, binding = _setup_bound_conversation()
+    message_event_id = _ingest(
+        worker,
+        binding["conversation_id"],
+        "msg-provider-progress-timeout",
+        "请推荐十万元左右的二手车",
+    )
+    batch_id = _collect(
+        binding["conversation_id"],
+        message_event_id,
+    )["batch_id"]
+
+    generated = _generate(batch_id)
+
+    assert generated["decision"] == "retry_later"
+    assert generated["error_code"] == "AI_ENGINE_PROVIDER_TIMEOUT"
+    with SessionLocal() as db:
+        row = db.get(MessageBatch, batch_id)
+        history = row.ai_response_snapshot["generation_attempt_history"]
+        provider_error = history[0]["response"]["raw_payload"]["provider_error"]
+        assert provider_error["provider_progress"][0]["call_id"] == "db-timeout-call"
+        assert provider_error["last_provider_progress"]["stage"] == "brain_llm"
+        assert provider_error["last_provider_progress"]["event"] == "started"
+        assert "api_key" not in str(provider_error).lower()
+        assert "must-not-survive" not in str(provider_error)
 
 
 def test_brain_retry_and_terminal_handoff_preserve_each_attempt_evidence(
@@ -2433,6 +2639,23 @@ def test_brain_provider_does_not_hold_batch_lock_and_stale_result_is_discarded(
                 decision="send_reply",
                 reply_text="这条旧回复不能发送",
                 guard_result="pass",
+                raw_payload={
+                    "omniauto_brain_result": {
+                        "provider_progress": [
+                            {
+                                "schema_version": 1,
+                                "progress_id": "stale-success-progress",
+                                "stage": "semantic_reviewer",
+                                "route": "primary",
+                                "event": "started",
+                            }
+                        ],
+                        "last_provider_progress": {
+                            "stage": "semantic_reviewer",
+                            "event": "started",
+                        },
+                    }
+                },
             )
 
     monkeypatch.setattr(
@@ -2448,6 +2671,122 @@ def test_brain_provider_does_not_hold_batch_lock_and_stale_result_is_discarded(
     with SessionLocal() as db:
         row = db.get(MessageBatch, batch["batch_id"])
         assert row.status == "superseded"
+        history = row.ai_response_snapshot["generation_attempt_history"]
+        stale_attempts = [item for item in history if item["attempt"] == 0]
+        assert len(stale_attempts) == 1
+        assert stale_attempts[0]["response"]["decision"] == "discarded_stale"
+        assert stale_attempts[0]["response"]["reply_text"] is None
+        assert "这条旧回复不能发送" not in str(stale_attempts[0])
+        assert stale_attempts[0]["response"]["raw_payload"][
+            "omniauto_brain_result"
+        ]["last_provider_progress"]["stage"] == "semantic_reviewer"
+        assert db.query(ReplyAction).filter(
+            ReplyAction.batch_id == batch["batch_id"]
+        ).count() == 0
+
+
+def test_hard_timeout_and_concurrent_supersede_persist_progress_without_reply(
+    monkeypatch,
+    tmp_path,
+):
+    worker, binding = _setup_bound_conversation()
+    message_id = _ingest(
+        worker,
+        binding["conversation_id"],
+        "msg-c3-timeout-concurrent-supersede",
+        "模型审核期间又有新消息",
+    )
+    batch = _collect(binding["conversation_id"], message_id)
+    _reset_batch_to_generation_state(
+        batch["batch_id"],
+        status="collecting",
+        generation_attempt_count=2,
+    )
+
+    sleeper = tmp_path / "semantic_reviewer_timeout.py"
+    sleeper.write_text(
+        "import json, os, sys, time\n"
+        "json.loads(sys.stdin.read())\n"
+        "path = os.environ['CHEJIN_AI_PROGRESS_PATH']\n"
+        "event = {"
+        "'schema_version': 1, "
+        "'progress_id': os.environ['CHEJIN_AI_PROGRESS_ID'], "
+        "'stage': 'semantic_reviewer', "
+        "'route': 'primary', "
+        "'event': 'started', "
+        "'provider': 'openai', "
+        "'model': 'gpt-5.5', "
+        "'timeout_seconds': 45, "
+        "'call_id': 'stale-timeout-call', "
+        "'occurred_at_unix_ms': 1}\n"
+        "with open(path, 'a', encoding='utf-8') as handle:\n"
+        "    handle.write(json.dumps(event) + '\\n')\n"
+        "    handle.flush()\n"
+        "time.sleep(30)\n",
+        encoding="utf-8",
+    )
+    real_adapter = RealOmniAutoAIEngineAdapter()
+    monkeypatch.setattr(real_adapter, "_provider_worker_script", sleeper)
+    monkeypatch.setattr(real_adapter, "_load_brain", lambda: object())
+    monkeypatch.setattr(
+        real_adapter,
+        "_load_config",
+        lambda: {
+            "customer_service_brain": {
+                "provider": "openai",
+                "model": "gpt-5.5",
+                "api_key": "test-only",
+            }
+        },
+    )
+    monkeypatch.setattr(
+        "app.services.ai_adapter.get_settings",
+        lambda: SimpleNamespace(c3_brain_provider_timeout_seconds=0.1),
+    )
+
+    class ConcurrentSupersedingTimeoutAdapter:
+        def generate_reply_decision(self, **kwargs):
+            def supersede_batch() -> None:
+                time.sleep(0.15)
+                with SessionLocal() as other_db:
+                    row = other_db.get(MessageBatch, batch["batch_id"])
+                    row.status = "superseded"
+                    row.active = False
+                    row.error_code = "MESSAGE_BATCH_SUPERSEDED"
+                    row.ai_response_snapshot = {"superseded_marker": "keep"}
+                    other_db.commit()
+
+            thread = threading.Thread(target=supersede_batch)
+            thread.start()
+            try:
+                return real_adapter.generate_reply_decision(**kwargs)
+            finally:
+                thread.join(timeout=2.0)
+
+    monkeypatch.setattr(
+        c3_service,
+        "get_ai_engine_adapter",
+        lambda: ConcurrentSupersedingTimeoutAdapter(),
+    )
+    with SessionLocal() as db:
+        result = c3_service.generate_for_batch(db, batch_id=batch["batch_id"])
+        db.commit()
+
+    assert result["error_code"] == "MESSAGE_BATCH_GENERATION_CLAIM_STALE"
+    with SessionLocal() as db:
+        row = db.get(MessageBatch, batch["batch_id"])
+        assert row.status == "superseded"
+        assert row.active is False
+        assert row.error_code == "MESSAGE_BATCH_SUPERSEDED"
+        assert row.ai_response_snapshot["superseded_marker"] == "keep"
+        history = row.ai_response_snapshot["generation_attempt_history"]
+        timeout_attempts = [item for item in history if item["attempt"] == 2]
+        assert len(timeout_attempts) == 1
+        provider_error = timeout_attempts[0]["response"]["raw_payload"][
+            "provider_error"
+        ]
+        assert provider_error["last_provider_progress"]["stage"] == "semantic_reviewer"
+        assert provider_error["last_provider_progress"]["event"] == "started"
         assert db.query(ReplyAction).filter(
             ReplyAction.batch_id == batch["batch_id"]
         ).count() == 0
