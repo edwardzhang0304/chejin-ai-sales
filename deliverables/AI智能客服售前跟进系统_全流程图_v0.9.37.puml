@@ -1,5 +1,5 @@
 @startuml
-' 文档版本：v0.9.36；灰度目标版本：0.9.36（Brain分阶段诊断已实现；业务状态机不变；OmniAuto真实功能提交 d3e5993045226f68481a09a39d6bc4b38595d483 和来源绑定已完成；车金候选提交、推送、打包和配套后端部署待完成）；最后更新：2026-08-25
+' 文档版本：v0.9.37；灰度目标版本：0.9.37（末尾媒体 terminal_committed_fact_equivalence、checkpoint revision 3、guard 与 observations 同帧绑定及真实后端到 Worker 正反组合门禁已通过代码层架构复审；合同 SHA 为 3157d37b8047ef3b39c53d4eab323e87ff7568c442372b08afc22cb1e2c9b9dc，OmniAuto 来源提交 1a541c9eb330e83077c7bdffa0bb003a1c47d525 已形成并完成来源绑定，车金本地候选已形成，推送、打包和配套部署待完成）；最后更新：2026-08-25
 title AI智能客服售前跟进系统 全流程图（C0-C4、媒体、回复、转人工与恢复）
 
 skinparam monochrome true
@@ -75,7 +75,7 @@ note over W,Reply
 1. 同一个Worker、同一个微信实例，同一时间只处理一个会话。
 2. 从打开目标会话到 send_reply / no_action / handoff / technical_failed 终态，全程持有同一UI锁并自动续租。
 3. 不设置正常业务Flow固定总时限；保留单步骤watchdog、Worker失联租约回收和finally释放。
-4. 每轮重新观察最终画面，但只处理本地已处理清单中不存在的新消息。
+4. 每轮重新观察最终画面；普通读取只处理本地已处理清单中不存在的新消息，pre_send_refresh 则只把当前完整尾部与本 reply_action 的不可变事实 checkpoint 比较。
 5. 语音由Worker重新编排OmniAuto RPA完成；图片候选和同行头像角色先由最终画面定案，Vision只处理已授权的pending_media_action。
 6. 图片理解模型与回复Brain是两个独立模型阶段，不能合并或互相越权。
 7. 历史事务恢复先于能力预检；Vision只门禁新的C2 UI流程；pending_media_action只是瞬时动作对象，不得成为会话终态。
@@ -91,7 +91,7 @@ note over W,Reply
 17. 普通业务Flow内不增加窗口变换恢复；已有证据确认HWND/窗口变化时停止新UI动作。C2_PRE_SEND_LAYOUT_INVALID固定按代码缺陷收口：当前任务/Flow技术失败、释放UI锁、Worker故障停止新接单，不转人工、不自动归位/重标定/重试。
 18. 同一单会话Flow/read_run可先后产生任意多个逻辑入库批次；每组不同正式消息事实使用独立确定性的Worker本地outbox_batch_key和Outbox，相同事实重试复用原本地ID。该键不进入后端合同，read_run_id不得直接充当本地Outbox唯一键。
 19. 文字、语音、图片共用同一完整消息序列对齐器；单条消息的目标或身份指纹禁止包含整张微信画面摘要。无关区域变化不使目标失效，当前会话新消息导致气泡移位时必须先按最新序列重新投影。
-20. pre_send_refresh发现新customer消息或相关消息区变化时立即关闭旧回复发送门。变化后只允许对最新不可变帧完整重识别一次；成功继续，失败返回目标/序列/角色/正文/布局/再次变化的具体错误并终止。本阶段无recoverable_hold、无多轮时间重试。
+20. pre_send_refresh不得重新认定已提交消息身份：checkpoint与当前完整尾部相等则允许继续发送；checkpoint是当前序列唯一完整前缀且有非空后缀则立即关闭旧回复发送门并只处理后缀；缺行、替换、截断、unknown或多解释只允许完整被动重读一次，仍不唯一则返回具体序列错误。无原生ID的已提交末尾媒体无法证明物理身份时，只有完整前缀、正式动作回执与精确回复事实全部一致时，可以terminal_committed_fact_equivalence + physical_identity_confirmed=false通过本回复发送门；不继承ID，不用于入库或普通身份判定。本阶段无末尾媒体身份例外、无recoverable_hold、无多轮时间重试。
 21. 媒体UI动作固定语音优先、图片随后，且每次只操作一条；每次动作后废弃旧帧未选候选并从新帧重新仲裁。图片阶段如出现新语音，先完成当前图片终态，再回到语音阶段，不得开始下一张图片。
 22. 媒体UI动作顺序不代表消息入库顺序；所有动作结束后，文字/语音/图片必须按最后权威完整画面的screen_order统一入库。
 end note
@@ -875,6 +875,7 @@ loop Worker运行中；每次循环最多完成一个会话事务
                 C3 -> Brain: 构建完整上下文\n历史message_events + 本轮文字\n语音转写 + Vision图片事实
                 C3 -> C3: 历史图片保留item_state/error_code\n摘要/OCR/实体/中性查询\n服务端确认product_id
               end
+              C3 -> DB: 从本次Brain实际使用的有序正式事实\n冻结pre_send_fact_checkpoint到ai_request_snapshot\n创建后不可改写
               Brain -> Brain: Context Builder
               Brain -> Brain: RAG / 车辆事实 / Evidence Pack
               Brain -> Brain: 回复生成与策略判断
@@ -882,7 +883,7 @@ loop Worker运行中；每次循环最多完成一个会话事务
               alt 允许自动回复
                 Brain --> C3: send_reply + approved reply_text
                 C3 -> Reply: 创建当前batch唯一reply_action\nstatus=queued
-                C3 --> W: batch terminal=reply_action_created\nreply_action_id
+                C3 --> W: batch terminal=reply_action_created\nreply_action_id + 只读checkpoint及绑定摘要
               else 高风险/低置信/Guard阻断原文
                 Brain --> C3: handoff / handoff_for_approval + reason\n可选安全边界文本
                 alt 边界文本通过Guard且不是必须静默
@@ -913,10 +914,34 @@ loop Worker运行中；每次循环最多完成一个会话事务
               WX --> OA: 最新画面
               OA -> Role: 对新增候选继续使用统一角色边界
               Role --> OA: customer/self/system/unknown
-              OA --> W: refresh observations
-              W -> L: 与已处理清单比较
+              OA --> W: 当前有序观察 + 完整尾部/截断证据
+              W -> L: 读取本reply_action本地不可变checkpoint副本
+              opt 本地副本缺失或重启恢复
+                W -> C3: 只读取同一batch已冻结checkpoint\n不得用当前画面或最新identity_checkpoint重建
+                C3 --> W: 原checkpoint + conversation/batch/reply绑定摘要
+              end
+              W -> W: 只比较事实连续性
+              note over W,L
+              已提交文字/语音/图片的worker_stable_id不在此处重判：
+              普通尾部只允许来自完整initial_read/final_read，禁止回退整段历史；
+              friend_welcome使用control_empty空基线，当前出现任何业务消息即作废欢迎语；
+              无原生ID的已提交末尾媒体不得伪称物理身份已确认；
+              但完整前缀+正式action receipt+精确reply fact全部一致时，
+              可以terminal_committed_fact_equivalence + physical_identity_confirmed=false通过发送门；
+              事实比较前与claim-send前都必须send_context_guard.ok=true，
+              并校验布局快照/数量/顺序/摘要/末项自洽；Worker使用与Sidecar相同的共享纯投影，
+              从本响应observations复算数量/角色/类型/正文摘要/媒体状态/相对位置并要求与guard逐项一致；
+              唯一一次被动重读后再次执行完整布局和同帧绑定校验；任一无效直接C2_PRE_SEND_LAYOUT_INVALID，不重读、不Handoff、零微信动作；
+              该分支零ID继承、零Ledger/Outbox/ingest、零媒体UI动作；
+              checkpoint缺失或绑定/摘要矛盾 -> C2_PRE_SEND_FACT_CHECKPOINT_INVALID，零微信操作，task/Flow技术失败，Worker=faulted；
+              1. checkpoint_equal -> unchanged_sendable；
+              2. checkpoint_unique_prefix_with_suffix -> 作废旧回复，只处理唯一新后缀；
+              3. checkpoint_not_continuous -> 禁止发送，只完整被动重读一次，仍不唯一返回具体序列错误。
+              “位于末尾”不是媒体身份例外；事实等价只影响本reply_action的发送门；
+              普通读取、媒体提交和历史恢复仍执行原强证据门禁。
+              end note
 
-              alt 物理动作前发现相关消息区变化
+              alt checkpoint不连续或物理动作前发现相关消息区变化
                 W -> W: 立即关闭旧回复发送门\n结算原action=cancelled_before_trigger\n作废原预留号，零UI动作
                 W -> OA: 只获取1张最新不可变帧\n完整标题/消息视口/OCR/角色/全序列重识别一次
                 OA --> W: unique / target_missing / ambiguous / sequence_failed\nrole_unconfirmed / text_unreadable / layout_invalid
@@ -941,7 +966,7 @@ loop Worker运行中；每次循环最多完成一个会话事务
                   W -> Reply: 取消/作废旧reply_action
                   W -> Handoff: 保留具体source_error+类型+序列+帧证据\n当前会话幂等handoff一次
                 end
-              else 等待期间出现新customer文字/语音/图片或混合序列
+              else checkpoint是唯一完整前缀，等待期间出现新customer文字/语音/图片或混合序列
                 W -> W: 立即关闭旧回复发送门\n保持同一UI锁、Flow和read_run
                 W -> W: 文字直接统一身份提交\n语音/图片按顺序每次只操作最早1条
                 W -> OA: 每次媒体UI动作后重读完整消息视口\n用局部目标+必要邻居重做序列投影
@@ -992,7 +1017,7 @@ loop Worker运行中；每次循环最多完成一个会话事务
               else 授权撤销/目标客户或private无法确认/拒收/会话关闭/发送结果可能已发生但未知
                 W -> Reply: 禁止旧reply_action发送\n按原L3硬门禁可审计结算
                 W -> W: 不使用本节技术恢复放宽硬门禁
-              else 没有新增消息且reply_action仍current
+              else checkpoint与当前完整尾部唯一完全相等，且reply_action仍current
                 W -> Reply: POST tasks/{task_id}/claim\nclaim_source=c2_conversation_flow + conversation_id
                 Reply -> Reply: 校验任务只能由当前C2会话Flow领取
                 W -> Reply: claim-send(reply_action_id, task_id)

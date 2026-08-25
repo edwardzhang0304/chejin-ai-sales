@@ -63,6 +63,14 @@ from .message_identity_commit import (
     commit_message_identity,
     require_committed_message,
 )
+from .message_viewport_projection import (
+    normalized_message_viewport_sequence,
+)
+from .pre_send_checkpoint import (
+    canonical_sha256 as pre_send_checkpoint_sha256,
+    checkpoint_binding_error,
+    compare_checkpoint_to_observations,
+)
 from .models import Binding, ReplySendClaim, RpaResult, RpaStep, Task, WechatReadTarget, WorkerProfile
 from .rpa_bridge import RpaBridge
 from .storage import (
@@ -225,6 +233,151 @@ PRE_SEND_REIDENTIFICATION_ERRORS = {
     "C2_PRE_SEND_SYSTEM_CLASSIFICATION_UNRESOLVED",
 }
 PRE_SEND_LAYOUT_ERROR = "C2_PRE_SEND_LAYOUT_INVALID"
+PRE_SEND_FACT_CHECKPOINT_ERROR = "C2_PRE_SEND_FACT_CHECKPOINT_INVALID"
+
+
+def _validate_pre_send_context_guard(
+    value: object,
+    observations: object,
+) -> dict[str, Any]:
+    """Bind one immutable Sidecar guard to its observations before fact use.
+
+    A syntactically present ``sequence`` is not evidence that Sidecar had a
+    valid chat layout.  This check intentionally validates the fields emitted
+    by the production ``build_send_context_guard()`` as one coherent object,
+    then recomputes the same pure projection from this frame's observations.
+    It does not create or compare durable message identity.
+    """
+
+    guard = value if isinstance(value, dict) else {}
+
+    def invalid(reason: str) -> dict[str, Any]:
+        return {
+            "ok": False,
+            "error_code": PRE_SEND_LAYOUT_ERROR,
+            "reason": reason,
+            "sidecar_error_code": str(
+                guard.get("error_code") or ""
+            ).strip(),
+            "sidecar_reason": str(guard.get("reason") or "").strip(),
+            "layout_snapshot_id": str(
+                guard.get("layout_snapshot_id") or ""
+            ).strip(),
+        }
+
+    if guard.get("ok") is not True:
+        return invalid("send_context_guard_not_ok")
+    try:
+        schema_version = int(guard.get("schema_version") or 0)
+    except (TypeError, ValueError):
+        schema_version = 0
+    if schema_version != 2:
+        return invalid("send_context_guard_schema_invalid")
+    if not str(guard.get("layout_snapshot_id") or "").strip():
+        return invalid("send_context_guard_layout_snapshot_missing")
+    viewport = guard.get("message_viewport_bounds")
+    if not isinstance(viewport, list) or len(viewport) != 4:
+        return invalid("send_context_guard_viewport_bounds_invalid")
+    try:
+        left, top, right, bottom = [float(item) for item in viewport]
+    except (TypeError, ValueError):
+        return invalid("send_context_guard_viewport_bounds_invalid")
+    if right <= left or bottom <= top:
+        return invalid("send_context_guard_viewport_bounds_invalid")
+    sequence = guard.get("sequence")
+    if not isinstance(sequence, list) or any(
+        not isinstance(item, dict) for item in sequence
+    ):
+        return invalid("send_context_guard_sequence_invalid")
+    if any(
+        isinstance(item.get("screen_order"), bool)
+        or not isinstance(item.get("screen_order"), int)
+        or item.get("screen_order") != index
+        for index, item in enumerate(sequence)
+    ):
+        return invalid("send_context_guard_sequence_order_invalid")
+    message_count = guard.get("message_count")
+    if (
+        isinstance(message_count, bool)
+        or not isinstance(message_count, int)
+        or message_count != len(sequence)
+    ):
+        return invalid("send_context_guard_message_count_mismatch")
+    digest = hashlib.sha256(
+        json.dumps(
+            sequence,
+            ensure_ascii=True,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
+    if (
+        str(guard.get("message_viewport_change_digest") or "")
+        .strip()
+        .lower()
+        != digest
+        or str(guard.get("sequence_sha256") or "").strip().lower()
+        != digest
+    ):
+        return invalid("send_context_guard_digest_mismatch")
+    expected_bottom = dict(sequence[-1]) if sequence else None
+    if guard.get("bottom") != expected_bottom:
+        return invalid("send_context_guard_bottom_mismatch")
+    if guard.get("raw_rgb_hash_used") is not False:
+        return invalid("send_context_guard_raw_rgb_hash_forbidden")
+    if not isinstance(observations, list) or any(
+        not isinstance(item, dict) for item in observations
+    ):
+        return invalid("send_context_observations_invalid")
+    projected_sequence = normalized_message_viewport_sequence(
+        observations,
+        message_viewport_bounds=viewport,
+    )
+    if projected_sequence != sequence:
+        return invalid("send_context_guard_observations_mismatch")
+    return {
+        "ok": True,
+        "error_code": "",
+        "reason": "send_context_guard_valid",
+        "layout_snapshot_id": str(guard["layout_snapshot_id"]),
+        "message_count": message_count,
+        "sequence_sha256": digest,
+    }
+
+
+def _pre_send_suffix_only_payload(
+    payload: dict[str, Any],
+) -> dict[str, Any]:
+    """Exclude the already-frozen historical prefix from ingest consumers."""
+
+    prefix_count = max(
+        0,
+        int(payload.get("pre_send_fact_checkpoint_prefix_count") or 0),
+    )
+    if prefix_count <= 0:
+        return dict(payload)
+    business_kinds = {
+        "text_bubble",
+        "voice_bubble",
+        "voice_transcript",
+        "image_bubble",
+        "system_message",
+    }
+    seen_business = 0
+    suffix: list[Any] = []
+    for raw in payload.get("observations") or []:
+        if not isinstance(raw, dict):
+            suffix.append(raw)
+            continue
+        if str(raw.get("row_kind") or "").strip().lower() in business_kinds:
+            seen_business += 1
+            if seen_business <= prefix_count:
+                continue
+        suffix.append(raw)
+    result = dict(payload)
+    result["observations"] = suffix
+    result["pre_send_historical_prefix_excluded_from_ingest"] = prefix_count
+    return result
 
 
 def pre_send_new_suffix_validation(
@@ -4829,14 +4982,19 @@ class TaskRunner:
             )
             self.set_run_status(
                 "faulted"
-                if normalized_source_error == PRE_SEND_LAYOUT_ERROR
+                if normalized_source_error
+                in {PRE_SEND_LAYOUT_ERROR, PRE_SEND_FACT_CHECKPOINT_ERROR}
                 else "paused"
             )
             return False
         final_error_code = (
             normalized_source_error
             if normalized_source_error
-            in {*PRE_SEND_REIDENTIFICATION_ERRORS, PRE_SEND_LAYOUT_ERROR}
+            in {
+                *PRE_SEND_REIDENTIFICATION_ERRORS,
+                PRE_SEND_LAYOUT_ERROR,
+                PRE_SEND_FACT_CHECKPOINT_ERROR,
+            }
             else "C2_REPLY_CONTEXT_RECOVERY_FAILED"
         )
         try:
@@ -4862,7 +5020,8 @@ class TaskRunner:
             )
             self.set_run_status(
                 "faulted"
-                if final_error_code == PRE_SEND_LAYOUT_ERROR
+                if final_error_code
+                in {PRE_SEND_LAYOUT_ERROR, PRE_SEND_FACT_CHECKPOINT_ERROR}
                 else "paused"
             )
             return False
@@ -4885,20 +5044,32 @@ class TaskRunner:
                 "pre_send_failure_evidence": durable_evidence,
             },
         )
-        if final_error_code == PRE_SEND_LAYOUT_ERROR:
+        if final_error_code in {
+            PRE_SEND_LAYOUT_ERROR,
+            PRE_SEND_FACT_CHECKPOINT_ERROR,
+        }:
             self.set_run_status("faulted")
             self.on_error(
-                "微信基本布局无法建立，客户端已进入故障状态并停止接单。"
+                (
+                    "发送前事实 checkpoint 绑定无效，"
+                    "客户端已进入故障状态并停止接单。"
+                    if final_error_code == PRE_SEND_FACT_CHECKPOINT_ERROR
+                    else "微信基本布局无法建立，客户端已进入故障状态并停止接单。"
+                )
             )
         append_log(
-            "ERROR" if final_error_code == PRE_SEND_LAYOUT_ERROR else "INFO",
+            "ERROR"
+            if final_error_code
+            in {PRE_SEND_LAYOUT_ERROR, PRE_SEND_FACT_CHECKPOINT_ERROR}
+            else "INFO",
             "c3_pre_send_failure_settled",
             "发送前复读失败已在原 C2 单会话流程内结算，释放 UI 锁后不会留下待领取回复任务。",
             task_id=normalized_task_id,
             error_code=final_error_code,
             metadata={
                 "source_error_code": normalized_source_error,
-                "worker_faulted": final_error_code == PRE_SEND_LAYOUT_ERROR,
+                "worker_faulted": final_error_code
+                in {PRE_SEND_LAYOUT_ERROR, PRE_SEND_FACT_CHECKPOINT_ERROR},
             },
         )
         return True
@@ -5638,6 +5809,8 @@ class TaskRunner:
     def _send_identity_frame(
         self,
         sidecar_payload: dict[str, Any],
+        *,
+        allow_empty: bool = False,
     ) -> dict[str, Any]:
         frame_token = str(
             sidecar_payload.get("frame_id")
@@ -5650,7 +5823,7 @@ class TaskRunner:
             for item in (sidecar_payload.get("observations") or [])
             if isinstance(item, dict)
         ]
-        if not frame_token or not observations:
+        if not frame_token or (not observations and not allow_empty):
             return {}
         return {
             "contract_revision": contract_revision(),
@@ -6220,6 +6393,254 @@ class TaskRunner:
         return update_c2_state_atomic(
             f"message_identity:{target.conversation_id}", reserve
         )
+
+    def _bind_pre_send_fact_checkpoint(
+        self,
+        *,
+        status: dict[str, Any],
+        target: WechatReadTarget,
+    ) -> dict[str, Any]:
+        """Validate and durably bind one backend-frozen reply checkpoint."""
+
+        checkpoint = (
+            dict(status.get("pre_send_fact_checkpoint") or {})
+            if isinstance(status.get("pre_send_fact_checkpoint"), dict)
+            else {}
+        )
+        binding = (
+            dict(status.get("pre_send_fact_checkpoint_binding") or {})
+            if isinstance(
+                status.get("pre_send_fact_checkpoint_binding"), dict
+            )
+            else {}
+        )
+        reply_action = (
+            status.get("reply_action")
+            if isinstance(status.get("reply_action"), dict)
+            else {}
+        )
+        reply_action_id = str(reply_action.get("id") or "").strip()
+        batch_id = str(status.get("batch_id") or "").strip()
+        reason = checkpoint_binding_error(
+            checkpoint,
+            binding,
+            conversation_id=target.conversation_id,
+            batch_id=batch_id,
+            reply_action_id=reply_action_id,
+        )
+        if reason:
+            return {
+                "ok": False,
+                "error_code": PRE_SEND_FACT_CHECKPOINT_ERROR,
+                "reason": reason,
+            }
+        candidate = {
+            "schema_version": 1,
+            "checkpoint": checkpoint,
+            "binding": binding,
+        }
+
+        def persist(previous: dict[str, Any]):
+            if not previous:
+                return candidate, {"ok": True, "restored": False}
+            if pre_send_checkpoint_sha256(previous) != pre_send_checkpoint_sha256(
+                candidate
+            ):
+                return previous, {
+                    "ok": False,
+                    "error_code": PRE_SEND_FACT_CHECKPOINT_ERROR,
+                    "reason": "local_checkpoint_binding_collision",
+                }
+            return previous, {"ok": True, "restored": True}
+
+        result = update_c2_state_atomic(
+            f"pre_send_fact_checkpoint:{reply_action_id}",
+            persist,
+        )
+        if result.get("ok") is not True:
+            return result
+        if not isinstance(target.raw, dict):
+            target.raw = {}
+        target.raw["pre_send_fact_checkpoint_context"] = candidate
+        return {
+            **result,
+            "reply_action_id": reply_action_id,
+            "batch_id": batch_id,
+            "checkpoint_digest": str(
+                binding.get("checkpoint_digest") or ""
+            ).strip(),
+        }
+
+    def _compare_pre_send_fact_checkpoint_frame(
+        self,
+        *,
+        target: WechatReadTarget,
+        sidecar_payload: dict[str, Any],
+        read_run_id: str,
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
+        """Compare facts without re-running committed-message identity."""
+
+        prepared = dict(sidecar_payload)
+        context = (
+            target.raw.get("pre_send_fact_checkpoint_context")
+            if isinstance(target.raw, dict)
+            and isinstance(
+                target.raw.get("pre_send_fact_checkpoint_context"), dict
+            )
+            else {}
+        )
+        checkpoint = (
+            context.get("checkpoint")
+            if isinstance(context.get("checkpoint"), dict)
+            else {}
+        )
+        frame_id = str(
+            prepared.get("frame_id")
+            or prepared.get("sidecar_run_id")
+            or prepared.get("run_id")
+            or ""
+        ).strip()
+        send_context_guard = (
+            prepared.get("send_context_guard")
+            if isinstance(prepared.get("send_context_guard"), dict)
+            else {}
+        )
+        send_context_guard_validation = (
+            _validate_pre_send_context_guard(
+                send_context_guard,
+                prepared.get("observations"),
+            )
+        )
+        current_tail_complete = bool(
+            prepared.get("ok") is True
+            and frame_id
+            and str(
+                prepared.get("authoritative_frame_source") or ""
+            ).strip()
+            in {"initial_read", "final_read"}
+            and prepared.get("ui_frame_invalidated") is not True
+            and not bool(prepared.get("history_gap"))
+            and not list(prepared.get("flow_gate_errors") or [])
+            and not list(
+                prepared.get("observation_validation_errors") or []
+            )
+            and send_context_guard_validation.get("ok") is True
+        )
+        comparison = compare_checkpoint_to_observations(
+            checkpoint,
+            list(prepared.get("observations") or []),
+            before_frame_id=(
+                "pre-send-checkpoint:"
+                + str(
+                    (context.get("binding") or {}).get(
+                        "checkpoint_digest"
+                    )
+                    if isinstance(context.get("binding"), dict)
+                    else ""
+                ).strip()
+            ),
+            after_frame_id=f"frame:{frame_id}",
+            current_tail_complete=current_tail_complete,
+        )
+        comparison["send_context_guard_validation"] = (
+            send_context_guard_validation
+        )
+        prepared["pre_send_fact_checkpoint_comparison"] = comparison
+        if comparison.get("comparison_result") not in {
+            "checkpoint_equal",
+            "checkpoint_unique_prefix_with_suffix",
+        }:
+            return prepared, comparison
+
+        prefix_count = int(comparison.get("checkpoint_count") or 0)
+        prepared["pre_send_fact_checkpoint_prefix_count"] = prefix_count
+        evidence = {
+            "pre_sequence_source": "checkpoint",
+            "pre_frame_id": comparison.get("before_frame_id"),
+            "post_frame_id": comparison.get("after_frame_id"),
+            "alignment_status": "unique",
+            "candidate_alignment_count": 1,
+            # Historical IDs deliberately remain only in the frozen
+            # checkpoint. They are not attached to this fresh Sidecar frame.
+            "matched_pairs": [],
+            "old_tail_fully_consumed": True,
+            "new_suffix_observation_ids": list(
+                comparison.get("new_suffix_observation_ids") or []
+            ),
+            "comparison_result": comparison.get("comparison_result"),
+        }
+        prepared["sequence_alignment_evidence"] = evidence
+        if comparison.get("comparison_result") == (
+            "checkpoint_unique_prefix_with_suffix"
+        ):
+            prepared["observations"] = (
+                self._assign_sequence_new_suffix_identities(
+                    target=target,
+                    observations=list(prepared.get("observations") or []),
+                    evidence=evidence,
+                    read_run_id=read_run_id,
+                )
+            )
+        return prepared, comparison
+
+    def _validate_claim_pre_send_fact_checkpoint(
+        self,
+        *,
+        claim: ReplySendClaim,
+        target: WechatReadTarget,
+        batch_id: str,
+    ) -> dict[str, Any]:
+        """Require claim-send to repeat the exact checkpoint already bound."""
+
+        context = (
+            target.raw.get("pre_send_fact_checkpoint_context")
+            if isinstance(target.raw, dict)
+            and isinstance(
+                target.raw.get("pre_send_fact_checkpoint_context"), dict
+            )
+            else {}
+        )
+        checkpoint = (
+            claim.raw.get("pre_send_fact_checkpoint")
+            if isinstance(claim.raw, dict)
+            and isinstance(
+                claim.raw.get("pre_send_fact_checkpoint"), dict
+            )
+            else {}
+        )
+        binding = (
+            claim.raw.get("pre_send_fact_checkpoint_binding")
+            if isinstance(claim.raw, dict)
+            and isinstance(
+                claim.raw.get("pre_send_fact_checkpoint_binding"), dict
+            )
+            else {}
+        )
+        reason = checkpoint_binding_error(
+            checkpoint,
+            binding,
+            conversation_id=target.conversation_id,
+            batch_id=batch_id,
+            reply_action_id=claim.reply_action_id,
+        )
+        candidate = {
+            "schema_version": 1,
+            "checkpoint": checkpoint,
+            "binding": binding,
+        }
+        if not reason and (
+            not context
+            or pre_send_checkpoint_sha256(context)
+            != pre_send_checkpoint_sha256(candidate)
+        ):
+            reason = "claim_checkpoint_differs_from_local_binding"
+        return {
+            "ok": not bool(reason),
+            "error_code": (
+                None if not reason else PRE_SEND_FACT_CHECKPOINT_ERROR
+            ),
+            "reason": reason,
+        }
 
     def _align_initial_identity_frame(
         self,
@@ -10587,9 +11008,40 @@ class TaskRunner:
         clean_read_run_id = str(read_run_id or "").strip()
         if not clean_read_run_id:
             raise ValueError("C2_READ_RUN_ID_MISSING")
+        checkpoint_prefix_count = max(
+            0,
+            int(
+                sidecar_payload.get(
+                    "pre_send_fact_checkpoint_prefix_count"
+                )
+                or 0
+            ),
+        )
+        if checkpoint_prefix_count <= 0 and isinstance(target.raw, dict):
+            checkpoint_context = target.raw.get(
+                "pre_send_fact_checkpoint_context"
+            )
+            checkpoint = (
+                checkpoint_context.get("checkpoint")
+                if isinstance(checkpoint_context, dict)
+                and isinstance(
+                    checkpoint_context.get("checkpoint"), dict
+                )
+                else {}
+            )
+            committed_tail = checkpoint.get("committed_tail")
+            if isinstance(committed_tail, list) and committed_tail:
+                checkpoint_prefix_count = len(committed_tail)
+                # Media execute/final-read payloads are fresh Sidecar objects.
+                # Restore only this Worker-owned phase marker; no historical
+                # identity is copied into the observations themselves.
+                sidecar_payload[
+                    "pre_send_fact_checkpoint_prefix_count"
+                ] = checkpoint_prefix_count
+        preliminary_source = _pre_send_suffix_only_payload(sidecar_payload)
         preliminary_payload = build_preliminary_slot_payload(
             target,
-            sidecar_payload,
+            preliminary_source,
             read_run_id=clean_read_run_id,
         )
         canonical_by_observation_id: dict[str, dict[str, Any]] = {}
@@ -10648,6 +11100,7 @@ class TaskRunner:
         seen_source_keys: set[str] = set()
         backend_confirmed_origins: dict[str, str] | None = None
         outbox_origins: dict[str, str] | None = None
+        business_screen_order = 0
         for screen_order, (index, observation) in enumerate(ordered, start=1):
             row_kind = str(observation.get("row_kind") or "").strip().lower()
             voice_state = str(observation.get("voice_state") or "").strip().lower()
@@ -10655,6 +11108,13 @@ class TaskRunner:
                 continue
             if row_kind not in {"text_bubble", "voice_bubble", "voice_transcript", "image_bubble", "system_message"}:
                 continue
+            business_screen_order += 1
+            if business_screen_order <= checkpoint_prefix_count:
+                # v0.9.37 already proved this immutable historical prefix as
+                # fact-continuous. It must not be re-identified, re-numbered,
+                # sent to Ledger/Outbox, or reconsidered as a media action.
+                continue
+            screen_order = business_screen_order
             observation_id = str(observation.get("observation_id") or "").strip()
             trusted_role = observation_role_is_trusted(observation)
             if not trusted_role:
@@ -13020,6 +13480,11 @@ class TaskRunner:
                     "error_code": "C2_TARGET_NOT_ALLOWED_BY_BATCH_AUTHORIZATION",
                     "batch_id": current_batch_id,
                 }
+            task_payload = (
+                status.get("task")
+                if isinstance(status.get("task"), dict)
+                else {}
+            )
             status_fingerprint = json.dumps(
                 {
                     "batch_id": status.get("batch_id"),
@@ -13047,11 +13512,31 @@ class TaskRunner:
                     self.current_ui_lock.update_step("c3_brain_waiting")
                 time.sleep(max(0.1, CONFIG.c3_brain_poll_interval_seconds))
                 continue
-            task_payload = (
-                status.get("task")
-                if isinstance(status.get("task"), dict)
-                else {}
+            checkpoint_binding = self._bind_pre_send_fact_checkpoint(
+                status=status,
+                target=target,
             )
+            if checkpoint_binding.get("ok") is not True:
+                reply_task_id = str(task_payload.get("id") or "").strip()
+                reply_task_settled = (
+                    self._settle_chat_reply_context_failure_before_unlock(
+                        binding,
+                        task_id=reply_task_id,
+                        source_error_code=PRE_SEND_FACT_CHECKPOINT_ERROR,
+                        evidence={
+                            "checkpoint_binding": checkpoint_binding,
+                            "batch_id": current_batch_id,
+                        },
+                    )
+                )
+                return {
+                    "ok": False,
+                    "error_code": PRE_SEND_FACT_CHECKPOINT_ERROR,
+                    "failure_step": "pre_send_checkpoint",
+                    "batch": status,
+                    "checkpoint_binding": checkpoint_binding,
+                    "reply_task_settled": reply_task_settled,
+                }
             reply_task_id = str(task_payload.get("id") or "").strip()
             self._emit_runtime_process(
                 {"event": "reply_ready", **self._runtime_process_context}
@@ -13089,6 +13574,55 @@ class TaskRunner:
                     "pre_send_refresh": refresh_read,
                     "reply_task_settled": reply_task_settled,
                 }
+            expected_context_guard = (
+                refresh_read.get("send_context_guard")
+                if isinstance(refresh_read.get("send_context_guard"), dict)
+                else {}
+            )
+            send_identity_frame = (
+                refresh_read.get("send_identity_frame")
+                if isinstance(refresh_read.get("send_identity_frame"), dict)
+                else {}
+            )
+            raw_pre_send_observations = send_identity_frame.get(
+                "observations"
+            )
+            pre_send_observations = [
+                dict(item)
+                for item in (raw_pre_send_observations or [])
+                if isinstance(item, dict)
+            ]
+            expected_guard_validation = (
+                _validate_pre_send_context_guard(
+                    expected_context_guard,
+                    raw_pre_send_observations,
+                )
+            )
+            if expected_guard_validation.get("ok") is not True:
+                reply_task_settled = (
+                    self._settle_chat_reply_context_failure_before_unlock(
+                        binding,
+                        task_id=reply_task_id,
+                        source_error_code=PRE_SEND_LAYOUT_ERROR,
+                        evidence={
+                            "pre_send_refresh": refresh_read,
+                            "send_context_guard_validation": (
+                                expected_guard_validation
+                            ),
+                        },
+                    )
+                )
+                return {
+                    "ok": False,
+                    "error_code": PRE_SEND_LAYOUT_ERROR,
+                    "failure_step": "pre_send_refresh",
+                    "batch": status,
+                    "pre_send_refresh": refresh_read,
+                    "send_context_guard_validation": (
+                        expected_guard_validation
+                    ),
+                    "reply_task_settled": reply_task_settled,
+                }
             if int(refresh_read.get("new_self_message_count") or 0) > 0:
                 return {
                     "ok": True,
@@ -13110,39 +13644,21 @@ class TaskRunner:
                     "batch": status,
                     "pre_send_refresh": refresh_read,
                 }
-            expected_context_guard = (
-                refresh_read.get("send_context_guard")
-                if isinstance(refresh_read.get("send_context_guard"), dict)
-                else {}
-            )
-            if (
-                int(expected_context_guard.get("schema_version") or 0) != 2
-                or not isinstance(expected_context_guard.get("sequence"), list)
-            ):
-                return {
-                    "ok": False,
-                    "error_code": "C3_SEND_CONTEXT_GUARD_MISSING",
-                    "batch": status,
-                    "pre_send_refresh": refresh_read,
-                }
-            send_identity_frame = (
-                refresh_read.get("send_identity_frame")
-                if isinstance(refresh_read.get("send_identity_frame"), dict)
-                else {}
-            )
-            pre_send_observations = [
-                dict(item)
-                for item in (send_identity_frame.get("observations") or [])
-                if isinstance(item, dict)
-            ]
             pre_send_frame_id = str(
                 send_identity_frame.get("frame_id") or ""
             ).strip()
+            empty_welcome_baseline = bool(
+                refresh_read.get("pre_send_empty_welcome_baseline")
+                is True
+            )
             if (
                 send_identity_frame.get("contract_revision")
                 != contract_revision()
                 or not pre_send_frame_id
-                or not pre_send_observations
+                or (
+                    not pre_send_observations
+                    and not empty_welcome_baseline
+                )
             ):
                 return {
                     "ok": False,
@@ -13237,6 +13753,40 @@ class TaskRunner:
                 send_token=claim.send_token,
                 reply_text_hash=claim.reply_text_hash,
             )
+            claim_checkpoint = (
+                self._validate_claim_pre_send_fact_checkpoint(
+                    claim=claim,
+                    target=target,
+                    batch_id=current_batch_id,
+                )
+            )
+            if claim_checkpoint.get("ok") is not True:
+                self._queue_and_submit_reply_send_ack(
+                    binding,
+                    claim,
+                    send_result="failed",
+                    action_phase="not_attempted",
+                    reply_text_hash=claim.reply_text_hash,
+                    evidence={
+                        "claim_pre_send_fact_checkpoint": claim_checkpoint,
+                    },
+                    error_code=PRE_SEND_FACT_CHECKPOINT_ERROR,
+                    remark=(
+                        "claim-send 返回的事实 checkpoint 与发送前已绑定副本"
+                        "不一致，未操作微信。"
+                    ),
+                )
+                self.set_run_status("faulted")
+                self.on_error(
+                    "发送票事实 checkpoint 无效，客户端已进入故障状态并停止接单。"
+                )
+                return {
+                    "ok": False,
+                    "error_code": PRE_SEND_FACT_CHECKPOINT_ERROR,
+                    "failure_step": "claim_send_checkpoint",
+                    "batch": status,
+                    "claim_checkpoint": claim_checkpoint,
+                }
             send_journal_path = (
                 self.bridge.send_transaction_journal_path(
                     claim.reply_action_id
@@ -13320,7 +13870,10 @@ class TaskRunner:
                 pre_send_observations,
                 committed_ids=committed_pre_ids,
             )
-            if not pre_send_identity_sequence:
+            if (
+                not pre_send_identity_sequence
+                and not empty_welcome_baseline
+            ):
                 self._queue_and_submit_reply_send_ack(
                     binding,
                     claim,
@@ -17151,13 +17704,247 @@ class TaskRunner:
                     error_code="C2_TARGET_NOT_ALLOWED_BY_READ_TARGETS",
                 )
                 return {"ok": False, "error_code": "C2_TARGET_NOT_ALLOWED_BY_READ_TARGETS", "target_confirmation": locate_payload, "initial_messages": sidecar_payload}
-            sidecar_payload, initial_identity_errors = (
-                self._align_initial_identity_frame(
-                    target=target,
-                    sidecar_payload=sidecar_payload,
-                    read_run_id=read_run_id,
+            initial_identity_errors: list[dict[str, Any]] = []
+            if operation_phase == C2_PRE_SEND_REFRESH_PHASE:
+                sidecar_payload, checkpoint_comparison = (
+                    self._compare_pre_send_fact_checkpoint_frame(
+                        target=target,
+                        sidecar_payload=sidecar_payload,
+                        read_run_id=read_run_id,
+                    )
                 )
-            )
+                guard_validation = (
+                    checkpoint_comparison.get(
+                        "send_context_guard_validation"
+                    )
+                    if isinstance(
+                        checkpoint_comparison.get(
+                            "send_context_guard_validation"
+                        ),
+                        dict,
+                    )
+                    else {}
+                )
+                if guard_validation.get("ok") is not True:
+                    settle_message_read_phase(
+                        succeeded=False,
+                        error_code=PRE_SEND_LAYOUT_ERROR,
+                    )
+                    return {
+                        "ok": False,
+                        "error_code": PRE_SEND_LAYOUT_ERROR,
+                        "pre_send_error_evidence": {
+                            "checkpoint_comparison": (
+                                checkpoint_comparison
+                            ),
+                            "send_context_guard_validation": (
+                                guard_validation
+                            ),
+                        },
+                        "target_confirmation": locate_payload,
+                        "initial_messages": sidecar_payload,
+                    }
+                if checkpoint_comparison.get("comparison_result") == (
+                    "checkpoint_not_continuous"
+                ):
+                    initial_checkpoint_comparison = dict(
+                        checkpoint_comparison
+                    )
+                    # v0.9.37 permits exactly one passive reread.  This call
+                    # only captures/OCRs the current chat; it cannot execute a
+                    # media action or allocate a durable message identity.
+                    reread = self.bridge.get_messages(
+                        display_name=target_label,
+                        rpa_session_key="",
+                        remark_code=effective_target.remark_code or "",
+                        target_mode="current",
+                        expected_confirmed_self_text=(
+                            expected_confirmed_self_text
+                        ),
+                        max_duration_seconds=20,
+                        cancel_check=action_cancel_requested,
+                    )
+                    reread["target_confirmation"] = locate_payload
+                    reread["authoritative_frame_source"] = "initial_read"
+                    reread["ui_frame_invalidated"] = False
+                    reread["pre_send_checkpoint_reread_count"] = 1
+                    if not reread.get("ok"):
+                        code = str(
+                            reread.get("error_code")
+                            or reread.get("state")
+                            or "C2_PRE_SEND_MESSAGE_SEQUENCE_ALIGNMENT_FAILED"
+                        )
+                        settle_message_read_phase(
+                            succeeded=False,
+                            error_code=code,
+                        )
+                        return {
+                            "ok": False,
+                            "error_code": code,
+                            "pre_send_error_evidence": {
+                                "checkpoint_comparison": checkpoint_comparison,
+                                "reread": reread,
+                            },
+                            "target_confirmation": locate_payload,
+                            "initial_messages": sidecar_payload,
+                        }
+                    reread_contract_error = sidecar_contract_error(reread)
+                    if reread_contract_error:
+                        settle_message_read_phase(
+                            succeeded=False,
+                            error_code=reread_contract_error,
+                        )
+                        return {
+                            "ok": False,
+                            "error_code": reread_contract_error,
+                            "pre_send_error_evidence": {
+                                "checkpoint_comparison": checkpoint_comparison,
+                                "reread_contract_error": reread_contract_error,
+                            },
+                            "target_confirmation": locate_payload,
+                            "initial_messages": sidecar_payload,
+                        }
+                    sidecar_payload, checkpoint_comparison = (
+                        self._compare_pre_send_fact_checkpoint_frame(
+                            target=target,
+                            sidecar_payload=reread,
+                            read_run_id=read_run_id,
+                        )
+                    )
+                    sidecar_payload[
+                        "pre_send_checkpoint_reread_count"
+                    ] = 1
+                    reread_guard_validation = (
+                        checkpoint_comparison.get(
+                            "send_context_guard_validation"
+                        )
+                        if isinstance(
+                            checkpoint_comparison.get(
+                                "send_context_guard_validation"
+                            ),
+                            dict,
+                        )
+                        else {}
+                    )
+                    if reread_guard_validation.get("ok") is not True:
+                        settle_message_read_phase(
+                            succeeded=False,
+                            error_code=PRE_SEND_LAYOUT_ERROR,
+                        )
+                        return {
+                            "ok": False,
+                            "error_code": PRE_SEND_LAYOUT_ERROR,
+                            "pre_send_error_evidence": {
+                                "checkpoint_comparison": (
+                                    checkpoint_comparison
+                                ),
+                                "send_context_guard_validation": (
+                                    reread_guard_validation
+                                ),
+                                "initial_checkpoint_comparison": (
+                                    initial_checkpoint_comparison
+                                ),
+                            },
+                            "target_confirmation": locate_payload,
+                            "initial_messages": sidecar_payload,
+                        }
+                if checkpoint_comparison.get("comparison_result") == (
+                    "checkpoint_not_continuous"
+                ):
+                    code = (
+                        "C2_PRE_SEND_MESSAGE_ROLE_UNCONFIRMED"
+                        if str(checkpoint_comparison.get("reason") or "")
+                        == "sender_role_unconfirmed"
+                        else "C2_PRE_SEND_MESSAGE_SEQUENCE_ALIGNMENT_FAILED"
+                    )
+                    initial_identity_errors = [
+                        {
+                            "error_code": code,
+                            "reason": str(
+                                checkpoint_comparison.get("reason") or ""
+                            ),
+                            "pre_send_fact_checkpoint_comparison": (
+                                checkpoint_comparison
+                            ),
+                        }
+                    ]
+                elif checkpoint_comparison.get("comparison_result") == (
+                    "checkpoint_equal"
+                ):
+                    checkpoint_context = (
+                        target.raw.get(
+                            "pre_send_fact_checkpoint_context"
+                        )
+                        if isinstance(target.raw, dict)
+                        and isinstance(
+                            target.raw.get(
+                                "pre_send_fact_checkpoint_context"
+                            ),
+                            dict,
+                        )
+                        else {}
+                    )
+                    bound_checkpoint = (
+                        checkpoint_context.get("checkpoint")
+                        if isinstance(
+                            checkpoint_context.get("checkpoint"), dict
+                        )
+                        else {}
+                    )
+                    empty_welcome_baseline = bool(
+                        bound_checkpoint.get("baseline_kind")
+                        == "friend_welcome_empty"
+                        and bound_checkpoint.get("committed_tail") == []
+                    )
+                    settle_message_read_phase(succeeded=True)
+                    return {
+                        "ok": True,
+                        "result": {
+                            "ingested_count": 0,
+                            "ignored_count": 0,
+                            "results": [],
+                        },
+                        "payload": {
+                            "messages": [],
+                            "pre_send_fact_checkpoint_comparison": (
+                                checkpoint_comparison
+                            ),
+                        },
+                        "new_customer_message_count": 0,
+                        "new_self_message_count": 0,
+                        "brain_result": None,
+                        "fact_ingest_ok": True,
+                        "conversation_flow_ok": True,
+                        "conversation_terminal_state": (
+                            "unchanged_sendable"
+                        ),
+                        "pre_send_fact_checkpoint_result": (
+                            "checkpoint_equal"
+                        ),
+                        "pre_send_empty_welcome_baseline": (
+                            empty_welcome_baseline
+                        ),
+                        "send_context_guard": (
+                            sidecar_payload.get("send_context_guard")
+                            if isinstance(
+                                sidecar_payload.get("send_context_guard"),
+                                dict,
+                            )
+                            else {}
+                        ),
+                        "send_identity_frame": self._send_identity_frame(
+                            sidecar_payload,
+                            allow_empty=empty_welcome_baseline,
+                        ),
+                    }
+            else:
+                sidecar_payload, initial_identity_errors = (
+                    self._align_initial_identity_frame(
+                        target=target,
+                        sidecar_payload=sidecar_payload,
+                        read_run_id=read_run_id,
+                    )
+                )
             if initial_identity_errors:
                 original_code = str(
                     initial_identity_errors[0].get("error_code")
@@ -17708,9 +18495,14 @@ class TaskRunner:
                     }
             phase_started_at = time.perf_counter()
             try:
+                ingest_sidecar_payload = (
+                    _pre_send_suffix_only_payload(sidecar_payload)
+                    if operation_phase == C2_PRE_SEND_REFRESH_PHASE
+                    else sidecar_payload
+                )
                 payload = build_message_ingest_payload(
                     target,
-                    sidecar_payload,
+                    ingest_sidecar_payload,
                     read_run_id=read_run_id,
                 )
             except ValueError as exc:

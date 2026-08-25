@@ -6,6 +6,7 @@ import time
 from datetime import timedelta
 from pathlib import Path
 from types import SimpleNamespace
+import sys
 from sqlalchemy import select
 
 from app.contracts.c2 import c2_contract_v3, contract_revision, contract_sha256
@@ -32,6 +33,16 @@ from app.services.c3_recovery import (
 from app.services.ai_adapter import RealOmniAutoAIEngineAdapter
 from app.services.message_contract import canonical_reply_text, reply_text_hash
 from app.models.base import utcnow
+
+
+WORKER_CLIENT_ROOT = Path(__file__).resolve().parents[2] / "worker-client"
+if str(WORKER_CLIENT_ROOT) not in sys.path:
+    sys.path.insert(0, str(WORKER_CLIENT_ROOT))
+
+from chejin_worker_client.pre_send_checkpoint import (
+    checkpoint_binding_error as worker_checkpoint_binding_error,
+    compare_checkpoint_to_observations as worker_compare_checkpoint,
+)
 
 
 client = TestClient(app)
@@ -173,11 +184,33 @@ def _setup_bound_conversation() -> tuple[dict, dict]:
     return worker, binding
 
 
-def _ingest(worker: dict, conversation_id: str, dedupe_key: str, content: str) -> str:
-    return _ingest_with_role(worker, conversation_id, dedupe_key, content, "customer")
+def _ingest(
+    worker: dict,
+    conversation_id: str,
+    dedupe_key: str,
+    content: str,
+    *,
+    authoritative_frame_source: str = "final_read",
+) -> str:
+    return _ingest_with_role(
+        worker,
+        conversation_id,
+        dedupe_key,
+        content,
+        "customer",
+        authoritative_frame_source=authoritative_frame_source,
+    )
 
 
-def _ingest_with_role(worker: dict, conversation_id: str, dedupe_key: str, content: str, role: str) -> str:
+def _ingest_with_role(
+    worker: dict,
+    conversation_id: str,
+    dedupe_key: str,
+    content: str,
+    role: str,
+    *,
+    authoritative_frame_source: str = "final_read",
+) -> str:
     continuation: dict[str, str] = {}
     with SessionLocal() as db:
         binding = db.query(WechatSessionBinding).filter(WechatSessionBinding.conversation_id == conversation_id).one()
@@ -216,6 +249,17 @@ def _ingest_with_role(worker: dict, conversation_id: str, dedupe_key: str, conte
         }
     read_run_id = f"read-{dedupe_key}"
     observation_id = f"observation:{dedupe_key}"
+    worker_stable_id = (
+        "worker-message-"
+        + str(
+            int(
+                hashlib.sha256(dedupe_key.encode("utf-8")).hexdigest()[
+                    :12
+                ],
+                16,
+            )
+        )
+    )
     raw_payload = {
         "contract_version": 3,
         "contract_revision": contract_revision(),
@@ -224,10 +268,7 @@ def _ingest_with_role(worker: dict, conversation_id: str, dedupe_key: str, conte
         "source_message_key": dedupe_key,
         "dedupe_basis": {
             "source": "worker_cross_round_sequence",
-            "worker_stable_id": (
-                "worker-message-"
-                + str(int(hashlib.sha256(dedupe_key.encode("utf-8")).hexdigest()[:12], 16))
-            ),
+            "worker_stable_id": worker_stable_id,
         },
         "observation": {
             "schema_version": 3,
@@ -238,6 +279,8 @@ def _ingest_with_role(worker: dict, conversation_id: str, dedupe_key: str, conte
             "message_type": "text",
             "voice_state": "not_voice",
             "content_clean": content,
+            "_worker_stable_id": worker_stable_id,
+            "_worker_identity_scope": "committed",
             "source_message": {"id": dedupe_key, "type": "text", "sender_role": role, "content": content},
         },
     }
@@ -265,7 +308,7 @@ def _ingest_with_role(worker: dict, conversation_id: str, dedupe_key: str, conte
                     "flow_state": "completed",
                     "message_position": {
                         "screen_order": 1,
-                        "frame_source": "final_read",
+                        "frame_source": authoritative_frame_source,
                         "order_source": "observation_index_fallback",
                     },
                     "raw_payload": raw_payload,
@@ -275,7 +318,7 @@ def _ingest_with_role(worker: dict, conversation_id: str, dedupe_key: str, conte
                 "contract_revision": contract_revision(),
                 "contract_sha256": contract_sha256(),
                 "observation_schema_version": int(c2_contract_v3()["observation_schema_version"]),
-                "authoritative_frame_source": "final_read",
+                "authoritative_frame_source": authoritative_frame_source,
                 "observations": [raw_payload["observation"]],
                 "read_reason": authorization_read_reason,
                 "authorization_read_reason": authorization_read_reason,
@@ -2222,6 +2265,46 @@ def test_pre_send_layout_invalid_cancels_reply_without_customer_handoff():
         ).count() == 0
 
 
+def test_pre_send_checkpoint_invalid_cancels_reply_without_customer_handoff():
+    worker, binding = _setup_bound_conversation()
+    message_id = _ingest(
+        worker,
+        binding["conversation_id"],
+        "msg-pre-send-checkpoint-invalid",
+        "checkpoint 无效时必须技术失败",
+    )
+    generated = _generate(
+        _collect(binding["conversation_id"], message_id)["batch_id"]
+    )
+
+    failed = client.post(
+        f"/api/tasks/{generated['task_id']}/fail",
+        json={
+            "error_code": "C2_PRE_SEND_FACT_CHECKPOINT_INVALID",
+            "failure_step": "pre_send_checkpoint",
+            "failure_remark": "checkpoint 缺失或绑定摘要矛盾",
+        },
+        headers=_worker_headers(worker),
+    )
+
+    assert failed.status_code == 200, failed.text
+    assert (
+        failed.json()["data"]["error_code"]
+        == "C2_PRE_SEND_FACT_CHECKPOINT_INVALID"
+    )
+    with SessionLocal() as db:
+        action = db.get(ReplyAction, generated["reply_action_id"])
+        batch = db.get(MessageBatch, generated["batch"]["id"])
+        assert action.status == "cancelled"
+        assert batch.status == "cancelled"
+        assert (
+            db.query(HandoffEvent)
+            .filter(HandoffEvent.batch_id == batch.id)
+            .count()
+            == 0
+        )
+
+
 def test_running_chat_reply_failure_cancels_unsent_action_and_batch():
     worker, binding = _setup_bound_conversation()
     message_id = _ingest(
@@ -3000,6 +3083,304 @@ def test_claim_send_is_single_owner_and_sent_ack_is_idempotent():
     assert duplicated.status_code == 200
     assert duplicated.json()["data"]["duplicated"] is True
     assert duplicated.json()["data"]["error_code"] == "SEND_ACK_DUPLICATED"
+
+
+def test_pre_send_fact_checkpoint_is_frozen_in_batch_and_repeated_on_claim_send():
+    worker, binding = _setup_bound_conversation()
+    event_id = _ingest(
+        worker,
+        binding["conversation_id"],
+        "msg-checkpoint-frozen-001",
+        "10万块钱的二手车有什么推荐的？",
+    )
+    generated = _generate(
+        _collect(binding["conversation_id"], event_id)["batch_id"]
+    )
+    batch_id = generated["batch"]["id"]
+    action_id = generated["reply_action_id"]
+    task_id = generated["task_id"]
+
+    status_response = client.get(
+        f"/api/workers/{worker['id']}/wechat/message-batches/{batch_id}",
+        headers=_worker_headers(worker),
+    )
+    assert status_response.status_code == 200, status_response.text
+    status = status_response.json()["data"]
+    checkpoint = status["pre_send_fact_checkpoint"]
+    checkpoint_binding = status["pre_send_fact_checkpoint_binding"]
+    assert checkpoint["checkpoint_revision"] == 3
+    assert checkpoint["conversation_id"] == binding["conversation_id"]
+    assert checkpoint["batch_id"] == batch_id
+    assert checkpoint["tail_complete"] is True
+    assert checkpoint["baseline_kind"] == "message_tail"
+    assert checkpoint["authoritative_frame_source"] == "final_read"
+    assert checkpoint["committed_tail"][-1]["message_type"] == "text"
+    assert checkpoint["committed_tail"][-1]["worker_stable_id"]
+    assert checkpoint_binding == {
+        "conversation_id": binding["conversation_id"],
+        "batch_id": batch_id,
+        "reply_action_id": action_id,
+        "checkpoint_digest": c3_service._canonical_sha256(checkpoint),
+    }
+
+    with SessionLocal() as db:
+        batch = db.get(MessageBatch, batch_id)
+        assert batch.ai_request_snapshot["pre_send_fact_checkpoint"] == checkpoint
+
+    claimed_task = client.post(
+        f"/api/tasks/{task_id}/claim",
+        json={
+            "worker_id": worker["id"],
+            "current_step": "chat_reply_claimed",
+            "claim_source": "c2_conversation_flow",
+            "conversation_id": binding["conversation_id"],
+        },
+        headers=_worker_headers(worker),
+    )
+    assert claimed_task.status_code == 200, claimed_task.text
+    claim_send = client.post(
+        f"/api/reply-actions/{action_id}/claim-send",
+        json={"task_id": task_id, "worker_id": worker["id"]},
+        headers=_task_lease_headers(worker, claimed_task),
+    )
+    assert claim_send.status_code == 200, claim_send.text
+    claim_data = claim_send.json()["data"]
+    assert claim_data["pre_send_fact_checkpoint"] == checkpoint
+    assert claim_data["pre_send_fact_checkpoint_binding"] == checkpoint_binding
+
+
+def test_pure_text_initial_read_freezes_the_authoritative_visible_tail():
+    worker, binding = _setup_bound_conversation()
+    event_id = _ingest(
+        worker,
+        binding["conversation_id"],
+        "msg-checkpoint-initial-read-001",
+        "想看10万左右的SUV",
+        authoritative_frame_source="initial_read",
+    )
+
+    generated = _generate(
+        _collect(binding["conversation_id"], event_id)["batch_id"]
+    )
+    status = client.get(
+        (
+            f"/api/workers/{worker['id']}/wechat/message-batches/"
+            f"{generated['batch']['id']}"
+        ),
+        headers=_worker_headers(worker),
+    ).json()["data"]
+    checkpoint = status["pre_send_fact_checkpoint"]
+
+    assert checkpoint["tail_complete"] is True
+    assert checkpoint["baseline_kind"] == "message_tail"
+    assert checkpoint["authoritative_frame_source"] == "initial_read"
+    assert len(checkpoint["committed_tail"]) == 1
+    assert checkpoint["committed_tail"][0]["message_type"] == "text"
+    assert worker_checkpoint_binding_error(
+        checkpoint,
+        status["pre_send_fact_checkpoint_binding"],
+        conversation_id=binding["conversation_id"],
+        batch_id=generated["batch"]["id"],
+        reply_action_id=generated["reply_action_id"],
+    ) == ""
+    comparison = worker_compare_checkpoint(
+        checkpoint,
+        [
+            {
+                "observation_id": "fresh-initial-read-text",
+                "row_kind": "text_bubble",
+                "sender_role": "customer",
+                "message_type": "text",
+                "content_clean": "想看10万左右的SUV",
+            }
+        ],
+        before_frame_id="checkpoint:backend-initial-read",
+        after_frame_id="frame:worker-pre-send",
+        current_tail_complete=True,
+    )
+    assert comparison["comparison_result"] == "checkpoint_equal"
+
+
+def test_friend_welcome_freezes_an_explicit_complete_empty_baseline():
+    worker, binding = _setup_bound_conversation()
+    with SessionLocal() as db:
+        conversation = db.get(Conversation, binding["conversation_id"])
+        conversation.status = "ai_active"
+        created = c3_service.create_control_message_batch(
+            db,
+            conversation_id=binding["conversation_id"],
+            trigger_type="friend_welcome",
+            trigger_key="friend_welcome",
+            trace_id="trace-welcome-checkpoint",
+        )
+        db.commit()
+        generated = c3_service.generate_for_batch(
+            db,
+            batch_id=created["batch_id"],
+        )
+        db.commit()
+
+    status = client.get(
+        (
+            f"/api/workers/{worker['id']}/wechat/message-batches/"
+            f"{generated['batch']['id']}"
+        ),
+        headers=_worker_headers(worker),
+    ).json()["data"]
+    checkpoint = status["pre_send_fact_checkpoint"]
+
+    assert checkpoint == {
+        "checkpoint_revision": 3,
+        "conversation_id": binding["conversation_id"],
+        "batch_id": generated["batch"]["id"],
+        "baseline_kind": "friend_welcome_empty",
+        "authoritative_frame_source": "control_empty",
+        "committed_tail": [],
+        "tail_complete": True,
+    }
+    binding_payload = status["pre_send_fact_checkpoint_binding"]
+    assert worker_checkpoint_binding_error(
+        checkpoint,
+        binding_payload,
+        conversation_id=binding["conversation_id"],
+        batch_id=generated["batch"]["id"],
+        reply_action_id=generated["reply_action_id"],
+    ) == ""
+    unchanged = worker_compare_checkpoint(
+        checkpoint,
+        [],
+        before_frame_id="checkpoint:backend-welcome",
+        after_frame_id="frame:worker-empty",
+        current_tail_complete=True,
+    )
+    superseded = worker_compare_checkpoint(
+        checkpoint,
+        [
+            {
+                "observation_id": "first-customer-message",
+                "row_kind": "text_bubble",
+                "sender_role": "customer",
+                "message_type": "text",
+                "content_clean": "想看10万左右的SUV",
+            }
+        ],
+        before_frame_id="checkpoint:backend-welcome",
+        after_frame_id="frame:worker-first-message",
+        current_tail_complete=True,
+    )
+    assert unchanged["comparison_result"] == "checkpoint_equal"
+    assert superseded["comparison_result"] == (
+        "checkpoint_unique_prefix_with_suffix"
+    )
+
+
+@pytest.mark.parametrize(
+    "authoritative_frame_source",
+    ["initial_read", "final_read"],
+)
+def test_checkpoint_tail_uses_latest_complete_frame_not_entire_long_history(
+    authoritative_frame_source,
+):
+    def message(index: int, content: str) -> SimpleNamespace:
+        return SimpleNamespace(
+            id=f"event-{index}",
+            sender_role="customer",
+            message_type="text",
+            content=content,
+            raw_payload={
+                "dedupe_basis": {
+                    "worker_stable_id": f"worker-message-{index}"
+                }
+            },
+            evidence={},
+        )
+
+    first = message(1, "已移出当前完整尾部")
+    second = message(2, "当前可见的第一条")
+    third = message(3, "当前可见的第二条")
+    third.evidence = {
+        "authoritative_frame_source": authoritative_frame_source,
+        "observation_validation_errors": [],
+        "observations": [
+            {
+                "row_kind": "text_bubble",
+                "sender_role": "customer",
+                "message_type": "text",
+                "_worker_stable_id": "worker-message-2",
+            },
+            {
+                "row_kind": "text_bubble",
+                "sender_role": "customer",
+                "message_type": "text",
+                "_worker_stable_id": "worker-message-3",
+            },
+        ],
+    }
+
+    projected = c3_service._checkpoint_tail_from_latest_complete_frame(
+        [first, second, third]
+    )
+
+    assert [item.id for item in projected] == ["event-2", "event-3"]
+
+
+def test_checkpoint_invalid_failed_ack_is_technical_and_creates_no_handoff():
+    worker, binding = _setup_bound_conversation()
+    event_id = _ingest(
+        worker,
+        binding["conversation_id"],
+        "msg-checkpoint-invalid-001",
+        "想了解 15 万 SUV",
+    )
+    generated = _generate(
+        _collect(binding["conversation_id"], event_id)["batch_id"]
+    )
+    task_id = generated["task_id"]
+    action_id = generated["reply_action_id"]
+
+    claimed_task = client.post(
+        f"/api/tasks/{task_id}/claim",
+        json={
+            "worker_id": worker["id"],
+            "current_step": "chat_reply_claimed",
+            "claim_source": "c2_conversation_flow",
+            "conversation_id": binding["conversation_id"],
+        },
+        headers=_worker_headers(worker),
+    )
+    assert claimed_task.status_code == 200, claimed_task.text
+    claim_send = client.post(
+        f"/api/reply-actions/{action_id}/claim-send",
+        json={"task_id": task_id, "worker_id": worker["id"]},
+        headers=_task_lease_headers(worker, claimed_task),
+    )
+    assert claim_send.status_code == 200, claim_send.text
+    send_data = claim_send.json()["data"]
+
+    ack = client.post(
+        f"/api/reply-actions/{action_id}/sent-ack",
+        json={
+            "send_token": send_data["send_token"],
+            "task_id": task_id,
+            "worker_id": worker["id"],
+            "client_instance_id": "client-c3",
+            "send_result": "failed",
+            "action_phase": "not_attempted",
+            "reply_text_hash": send_data["reply_text_hash"],
+            "error_code": "C2_PRE_SEND_FACT_CHECKPOINT_INVALID",
+            "remark": "checkpoint binding mismatch; zero wechat operation",
+        },
+        headers=_worker_headers(worker),
+    )
+    assert ack.status_code == 200, ack.text
+    assert ack.json()["data"]["task"]["status"] == "failed"
+    with SessionLocal() as db:
+        assert (
+            db.query(HandoffEvent)
+            .filter(HandoffEvent.batch_id == generated["batch"]["id"])
+            .count()
+            == 0
+        )
 
 
 def test_new_customer_message_during_sending_keeps_original_ack_valid():
