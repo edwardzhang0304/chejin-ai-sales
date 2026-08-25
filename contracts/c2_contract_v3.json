@@ -1,10 +1,10 @@
 {
   "contract_version": 3,
-  "contract_revision": "0.9.35",
+  "contract_revision": "0.9.36",
   "observation_schema_version": 3,
   "control_schema_version": 1,
   "performance_fast_path_contract": {
-    "release": "0.9.35",
+    "release": "0.9.36",
     "business_semantics_unchanged": true,
     "flags": [
       "CHEJIN_TASK_SAFE_WAKE_ENABLED",
@@ -26,7 +26,7 @@
     "fallback_rule": "missing, conflicting, or unequal evidence executes the 0.9.10 full path without changing business state"
   },
   "startup_layout_calibration_contract": {
-    "schema_version": "0.9.35",
+    "schema_version": "0.9.36",
     "owner": "omniauto",
     "worker_role": "persist_path_transport_contract_validation_and_execution_only",
     "single_runtime_path": true,
@@ -1490,7 +1490,7 @@
     ]
   },
   "frame_action_binding_contract": {
-    "release": "0.9.35",
+    "release": "0.9.36",
     "purpose": "prove_only_that_the_worker_selected_unique_frame_local_target_is_still_safe_to_operate_inside_the_current_ui_transaction",
     "durable_identity": false,
     "observation_owner": "sidecar",
@@ -1541,7 +1541,7 @@
     ]
   },
   "pre_send_message_viewport_contract": {
-    "release": "0.9.35",
+    "release": "0.9.36",
     "selected_target_fingerprint_scope": "one_selected_message_type_role_relative_quantized_bounds_required_neighbors_and_sequence_position_only",
     "selected_target_forbidden_inputs": [
       "message_viewport_change_digest",

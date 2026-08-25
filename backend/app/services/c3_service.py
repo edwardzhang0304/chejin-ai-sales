@@ -1331,6 +1331,87 @@ def _record_generation_attempt(
     return result
 
 
+def _record_stale_generation_attempt_diagnostics(
+    batch: MessageBatch,
+    *,
+    attempt: int,
+    payload: dict[str, Any],
+) -> dict[str, Any]:
+    """Append stale-attempt evidence without changing the batch projection.
+
+    A new message may supersede the batch while its provider call is running.
+    The provider result must never revive that batch, but its bounded attempt
+    history is still immutable diagnostic evidence and must survive the stale
+    claim return.
+    """
+
+    current = (
+        dict(batch.ai_response_snapshot)
+        if isinstance(batch.ai_response_snapshot, dict)
+        else {}
+    )
+    recorded = _record_generation_attempt(
+        batch,
+        attempt=attempt,
+        payload=payload,
+    )
+    current["generation_attempt_history"] = recorded[
+        "generation_attempt_history"
+    ]
+    return current
+
+
+def _stale_generation_diagnostics_payload(
+    decision: AIEngineDecision,
+) -> dict[str, Any]:
+    """Keep only provider progress; never retain a stale customer reply."""
+
+    raw_payload = (
+        decision.raw_payload
+        if isinstance(decision.raw_payload, dict)
+        else {}
+    )
+    diagnostics: dict[str, Any] = {}
+    for container_name in ("provider_error", "omniauto_brain_result"):
+        source = raw_payload.get(container_name)
+        if not isinstance(source, dict):
+            continue
+        container = {
+            key: source[key]
+            for key in (
+                "provider_progress_id",
+                "provider_progress",
+                "last_provider_progress",
+            )
+            if key in source
+        }
+        progress = container.get("provider_progress")
+        if (
+            "last_provider_progress" not in container
+            and isinstance(progress, list)
+            and progress
+            and isinstance(progress[-1], dict)
+        ):
+            container["last_provider_progress"] = dict(progress[-1])
+        if container:
+            diagnostics[container_name] = container
+    return {
+        "decision": "discarded_stale",
+        "reply_text": None,
+        "confidence": None,
+        "handoff_reason_code": None,
+        "risk_flags": [],
+        "evidence_refs": [],
+        "guard_result": None,
+        "rewrite_required": False,
+        "error_code": decision.error_code
+        or "MESSAGE_BATCH_GENERATION_CLAIM_STALE",
+        "suggested_action": "use_current_batch_state",
+        "hard_opt_out_evidence": {},
+        "raw_payload": diagnostics,
+    }
+
+
 def open_handoff_events_for_conversation(
     db: Session,
     conversation_id: str,
@@ -2313,6 +2394,12 @@ def generate_for_batch(
         batch.status != "generating"
         or int(batch.generation_attempt_count or 0) != generation_attempt
     ):
+        batch.ai_response_snapshot = _record_stale_generation_attempt_diagnostics(
+            batch,
+            attempt=generation_attempt,
+            payload=_stale_generation_diagnostics_payload(decision),
+        )
+        db.flush()
         return {
             "decision": batch.decision,
             "batch": _batch_to_dict(batch),

@@ -3,13 +3,92 @@ from __future__ import annotations
 from dataclasses import dataclass
 import importlib
 import json
+import os
 import subprocess
 from pathlib import Path
 import sys
+import tempfile
 from typing import Protocol
+import uuid
 
 from app.core.config import get_settings
 from app.errors import AppError
+
+
+_PROVIDER_PROGRESS_STRING_FIELDS = {
+    "progress_id",
+    "stage",
+    "route",
+    "event",
+    "provider",
+    "model",
+    "call_id",
+    "result_class",
+    "provider_request_id",
+}
+
+
+def _safe_progress_value(value: object) -> str:
+    text = str(value or "").strip()[:128]
+    return "".join(
+        character
+        if character.isalnum() or character in {"_", "-", "."}
+        else "_"
+        for character in text
+    ).strip("_")
+
+
+def _read_provider_progress(path: Path, *, progress_id: str) -> list[dict]:
+    try:
+        if not path.is_file() or path.stat().st_size > 256 * 1024:
+            return []
+        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        return []
+    events: list[dict] = []
+    for line in lines[-96:]:
+        try:
+            raw = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(raw, dict) or str(raw.get("progress_id") or "") != progress_id:
+            continue
+        try:
+            schema_version = int(raw.get("schema_version") or 0)
+        except (TypeError, ValueError):
+            continue
+        if schema_version != 1:
+            continue
+        event: dict = {"schema_version": 1}
+        for key in _PROVIDER_PROGRESS_STRING_FIELDS:
+            if key not in raw:
+                continue
+            value = _safe_progress_value(raw[key])
+            if value:
+                event[key] = value
+        for key in (
+            "occurred_at_unix_ms",
+            "elapsed_ms",
+            "status",
+        ):
+            if key not in raw:
+                continue
+            try:
+                event[key] = max(0, int(raw[key]))
+            except (TypeError, ValueError):
+                continue
+        if "timeout_seconds" in raw:
+            try:
+                event["timeout_seconds"] = max(
+                    1.0,
+                    float(raw["timeout_seconds"]),
+                )
+            except (TypeError, ValueError):
+                pass
+        if not all(event.get(key) for key in ("progress_id", "stage", "route", "event")):
+            continue
+        events.append(event)
+    return events
 
 
 @dataclass(frozen=True)
@@ -309,54 +388,100 @@ class RealOmniAutoAIEngineAdapter:
             ensure_ascii=False,
             separators=(",", ":"),
         )
-        process = subprocess.Popen(
-            [sys.executable, str(self._provider_worker_script)],
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-        )
-        try:
-            stdout, _stderr = process.communicate(input=request, timeout=timeout_seconds)
-        except subprocess.TimeoutExpired as exc:
-            process.kill()
-            process.communicate()
-            raise AppError(
-                "AI_ENGINE_PROVIDER_TIMEOUT",
-                "OmniAuto Brain 提供商调用长时间无响应",
-                503,
-                {"timeout_seconds": timeout_seconds, "suggested_action": "retry_later"},
-            ) from exc
-        try:
-            envelope = json.loads(stdout or "{}")
-        except json.JSONDecodeError as exc:
-            raise AppError(
-                "AI_ENGINE_PROVIDER_FAILED",
-                "OmniAuto Brain 隔离进程返回非法结果",
-                503,
-                {
-                    "process_exit_code": process.returncode,
-                    "suggested_action": "retry_later",
-                },
-            ) from exc
-        if process.returncode != 0 or envelope.get("ok") is not True:
-            error_code = str(envelope.get("error_code") or "AI_ENGINE_PROVIDER_FAILED")
-            raise AppError(
-                error_code,
-                "OmniAuto Brain 调用失败",
-                503,
-                {
-                    "exception_type": str(envelope.get("exception_type") or ""),
-                    "process_exit_code": process.returncode,
-                    "suggested_action": "retry_later",
-                },
+        progress_id = uuid.uuid4().hex
+        with tempfile.TemporaryDirectory(prefix="chejin-ai-progress-") as temp_dir:
+            progress_path = Path(temp_dir) / "provider-progress.ndjson"
+            progress_path.touch(mode=0o600)
+            child_env = os.environ.copy()
+            child_env["CHEJIN_AI_PROGRESS_PATH"] = str(progress_path)
+            child_env["CHEJIN_AI_PROGRESS_ID"] = progress_id
+            process = subprocess.Popen(
+                [sys.executable, str(self._provider_worker_script)],
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                env=child_env,
             )
-        result = envelope.get("result")
-        if not isinstance(result, dict):
-            raise AppError("AI_ENGINE_CONTRACT_INVALID", "OmniAuto Brain 返回值不是对象", 503)
-        return result
+            try:
+                stdout, _stderr = process.communicate(
+                    input=request,
+                    timeout=timeout_seconds,
+                )
+            except subprocess.TimeoutExpired as exc:
+                process.kill()
+                process.communicate()
+                progress = _read_provider_progress(
+                    progress_path,
+                    progress_id=progress_id,
+                )
+                raise AppError(
+                    "AI_ENGINE_PROVIDER_TIMEOUT",
+                    "OmniAuto Brain 提供商调用长时间无响应",
+                    503,
+                    {
+                        "timeout_seconds": timeout_seconds,
+                        "suggested_action": "retry_later",
+                        "provider_progress_id": progress_id,
+                        "provider_progress": progress,
+                        "last_provider_progress": progress[-1] if progress else None,
+                    },
+                ) from exc
+            progress = _read_provider_progress(
+                progress_path,
+                progress_id=progress_id,
+            )
+            try:
+                envelope = json.loads(stdout or "{}")
+            except json.JSONDecodeError as exc:
+                raise AppError(
+                    "AI_ENGINE_PROVIDER_FAILED",
+                    "OmniAuto Brain 隔离进程返回非法结果",
+                    503,
+                    {
+                        "process_exit_code": process.returncode,
+                        "suggested_action": "retry_later",
+                        "provider_progress_id": progress_id,
+                        "provider_progress": progress,
+                        "last_provider_progress": progress[-1] if progress else None,
+                    },
+                ) from exc
+            if process.returncode != 0 or envelope.get("ok") is not True:
+                error_code = str(
+                    envelope.get("error_code") or "AI_ENGINE_PROVIDER_FAILED"
+                )
+                raise AppError(
+                    error_code,
+                    "OmniAuto Brain 调用失败",
+                    503,
+                    {
+                        "exception_type": str(
+                            envelope.get("exception_type") or ""
+                        ),
+                        "process_exit_code": process.returncode,
+                        "suggested_action": "retry_later",
+                        "provider_progress_id": progress_id,
+                        "provider_progress": progress,
+                        "last_provider_progress": progress[-1] if progress else None,
+                    },
+                )
+            result = envelope.get("result")
+            if not isinstance(result, dict):
+                raise AppError(
+                    "AI_ENGINE_CONTRACT_INVALID",
+                    "OmniAuto Brain 返回值不是对象",
+                    503,
+                    {
+                        "provider_progress_id": progress_id,
+                        "provider_progress": progress,
+                        "last_provider_progress": progress[-1] if progress else None,
+                    },
+                )
+            result["provider_progress_id"] = progress_id
+            result["provider_progress"] = progress
+            return result
 
     def generate_reply_decision(self, *, conversation_context: dict, message_batch: dict) -> AIEngineDecision:
         self._load_brain()
