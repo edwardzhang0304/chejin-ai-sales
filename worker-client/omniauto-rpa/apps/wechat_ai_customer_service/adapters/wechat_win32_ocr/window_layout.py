@@ -1,4 +1,4 @@
-"""v0.9.33 startup calibration, business-frame facts and coordinate mapping."""
+"""v0.9.34 startup calibration, business-frame facts and coordinate mapping."""
 
 from __future__ import annotations
 
@@ -30,7 +30,7 @@ ERROR_LAYOUT_UNRESOLVED = "WECHAT_UI_LAYOUT_UNRESOLVED"
 ERROR_LAYOUT_STALE = "WECHAT_UI_LAYOUT_STALE"
 ERROR_COORDINATE_MAPPING_INVALID = "WECHAT_UI_COORDINATE_MAPPING_INVALID"
 ERROR_STARTUP_CALIBRATION_FAILED = "WECHAT_UI_STARTUP_CALIBRATION_FAILED"
-STARTUP_CALIBRATION_SCHEMA_VERSION = "0.9.33"
+STARTUP_CALIBRATION_SCHEMA_VERSION = "0.9.34"
 
 REQUIRED_LAYOUT_REGION_NAMES = (
     "left_nav_bounds",

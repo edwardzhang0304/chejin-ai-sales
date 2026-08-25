@@ -15,7 +15,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 
-ENTRY_VERSION = "0.9.33"
+ENTRY_VERSION = "0.9.34"
 _REDACTED = "[REDACTED]"
 _SECRET_PATTERNS = (
     re.compile(r"(?i)(bearer\s+)[^\s'\"]+"),

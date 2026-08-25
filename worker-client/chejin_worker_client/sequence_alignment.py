@@ -258,7 +258,7 @@ def build_pre_action_identity_sequence(
     if selected_id and (not action_id or not reserved_id):
         raise ValueError("C2_SELECTED_ACTION_IDENTITY_MISSING")
 
-    # v0.9.33: only the one media row selected for the current physical
+    # v0.9.34: only the one media row selected for the current physical
     # action may carry a provisional Worker identity.
     require_selected_only_media_reservation(
         observations,

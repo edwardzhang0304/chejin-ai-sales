@@ -202,7 +202,7 @@ def match_image_slot(
         )
         # A neighbour proves sequence context, not the image pixels themselves.
         # Distinct pictures can share the same perceptual dHash and slot, so a
-        # v0.9.33 image action also requires the strict local thumbnail proof.
+        # v0.9.34 image action also requires the strict local thumbnail proof.
         if not bool(evidence.get("static_content_matches")):
             continue
         if expected_neighbors and matching_neighbor_count == 0:
