@@ -506,7 +506,7 @@ class PackagingScriptsTest(unittest.TestCase):
             [
                 {
                     "source_commit": (
-                        "11d43d5bb9dd83831e0bbba8ed84b5eba700cb2c"
+                        "e97ca89613ca8478e626e06fd8a42a13f8c96747"
                     ),
                     "scope": [
                         "exact_wechat_context_menu_classification",
@@ -534,7 +534,7 @@ class PackagingScriptsTest(unittest.TestCase):
                         "source_message_transport_allowlist",
                         "typed_committed_media_identity_contract",
                         "media_action_four_terminal_contract",
-                        "c2_contract_0_9_34_generated_schema",
+                        "c2_contract_0_9_35_generated_schema",
                         (
                             "voice_frame_action_binding_observation_"
                             "projection_contract"
@@ -655,6 +655,16 @@ class PackagingScriptsTest(unittest.TestCase):
                             "four_sidecar_production_entry_identity_"
                             "boundary_regression_contract"
                         ),
+                        (
+                            "windows_full_gate_production_fixture_"
+                            "alignment_contract"
+                        ),
+                        "telemetry_sqlite_connection_close_contract",
+                        (
+                            "windows_test_artifact_filename_and_incident_"
+                            "worker_cleanup_contract"
+                        ),
+                        "optional_windows_evidence_pytest_skip_contract",
                     ],
                 }
             ],
@@ -676,7 +686,7 @@ class PackagingScriptsTest(unittest.TestCase):
             provenance["chejin_overlays"],
         )
         self.assertIn(
-            "11d43d5bb9dd83831e0bbba8ed84b5eba700cb2c",
+            "e97ca89613ca8478e626e06fd8a42a13f8c96747",
             provenance["integration_note"],
         )
         self.assertIn("0.9.35", provenance["integration_note"])
