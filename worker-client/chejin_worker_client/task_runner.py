@@ -582,7 +582,7 @@ def _reuse_initial_snapshot_with_locate_evidence(
 def voice_action_journal_anchor_keys(
     observation: dict[str, Any],
 ) -> list[str]:
-    """Carry every OmniAuto-provided stable alias into the pre-click journal."""
+    """Carry Sidecar's action-local aliases into the pre-click journal."""
 
     source = (
         observation.get("source_message")
@@ -594,8 +594,19 @@ def voice_action_journal_anchor_keys(
         if isinstance(source.get("voice_anchor"), dict)
         else {}
     )
+    observation_aliases = (
+        observation.get("anchor_aliases")
+        if isinstance(observation.get("anchor_aliases"), list)
+        else []
+    )
+    source_aliases = (
+        source.get("anchor_aliases")
+        if isinstance(source.get("anchor_aliases"), list)
+        else []
+    )
     values = [
         *(observation.get("_voice_action_anchor_keys") or []),
+        *observation_aliases,
         observation.get("parent_voice_anchor_key"),
         observation.get("voice_anchor_key"),
         observation.get("voice_anchor_stable_key"),
@@ -604,6 +615,7 @@ def voice_action_journal_anchor_keys(
         source.get("voice_anchor_key"),
         source.get("voice_anchor_stable_key"),
         source.get("voice_anchor_structural_key"),
+        *source_aliases,
         anchor.get("anchor_key"),
         anchor.get("anchor_stable_key"),
         anchor.get("anchor_structural_key"),
@@ -615,57 +627,6 @@ def voice_action_journal_anchor_keys(
             if str(value or "").strip()
         }
     )
-
-
-def _same_frame_voice_rect_matches(
-    left: dict[str, Any],
-    right: dict[str, Any],
-) -> bool:
-    """Use geometry only to prove aliases in one captured frame."""
-
-    left_rect = message_rect({"bubble_rect": left.get("bubble_rect")})
-    right_rect = message_rect({"bubble_rect": right.get("bubble_rect")})
-    if not left_rect or not right_rect:
-        return False
-    if str(left.get("sender_role") or "").strip().lower() != str(
-        right.get("sender_role") or ""
-    ).strip().lower():
-        return False
-    return all(
-        abs(float(left_rect[key]) - float(right_rect[key])) <= 3.0
-        for key in ("left", "top", "right", "bottom")
-    )
-
-
-def _same_frame_voice_action_evidence_matches(
-    previous: dict[str, Any],
-    prepared: dict[str, Any],
-) -> bool:
-    """Compare action-local evidence without claiming durable identity."""
-
-    def material(item: dict[str, Any]) -> tuple[str, ...]:
-        return (
-            str(item.get("sender_role") or "").strip().lower(),
-            str(item.get("message_type") or "").strip().lower(),
-            str(item.get("voice_state") or "").strip().lower(),
-            str(item.get("voice_duration") or "").strip(),
-            str(item.get("voice_duration_text") or "").strip(),
-            str(item.get("screen_order") or "").strip(),
-            str(item.get("neighbor_before_signature") or "").strip(),
-            str(item.get("neighbor_after_signature") or "").strip(),
-        )
-
-    if material(previous) != material(prepared):
-        return False
-    previous_rect = message_rect(
-        {"bubble_rect": previous.get("bubble_rect")}
-    )
-    prepared_rect = message_rect(
-        {"bubble_rect": prepared.get("bubble_rect")}
-    )
-    if previous_rect and prepared_rect:
-        return _same_frame_voice_rect_matches(previous, prepared)
-    return previous_rect is None and prepared_rect is None
 
 
 def _validated_image_frame_action_binding(
@@ -752,58 +713,6 @@ def _validated_image_frame_action_binding(
     ):
         return {}
     return binding
-
-
-def collapse_same_frame_voice_aliases(
-    observations: list[Any],
-) -> list[Any]:
-    """Collapse OCR/visual aliases before allocating a business identity."""
-
-    result: list[Any] = []
-    voice_indexes: list[int] = []
-    for raw in observations:
-        if not isinstance(raw, dict):
-            result.append(raw)
-            continue
-        observation = dict(raw)
-        if not (
-            str(observation.get("row_kind") or "").strip().lower()
-            == "voice_bubble"
-            and str(observation.get("voice_state") or "").strip().lower()
-            == "untranscribed"
-        ):
-            result.append(observation)
-            continue
-        aliases = set(voice_action_journal_anchor_keys(observation))
-        matching_index = next(
-            (
-                index
-                for index in voice_indexes
-                if aliases
-                & set(
-                    result[index].get("_voice_action_anchor_keys")
-                    or voice_action_journal_anchor_keys(result[index])
-                )
-                or _same_frame_voice_rect_matches(
-                    result[index], observation
-                )
-            ),
-            None,
-        )
-        if matching_index is None:
-            observation["_voice_action_anchor_keys"] = sorted(aliases)
-            result.append(observation)
-            voice_indexes.append(len(result) - 1)
-            continue
-        existing = dict(result[matching_index])
-        existing["_voice_action_anchor_keys"] = sorted(
-            {
-                *voice_action_journal_anchor_keys(existing),
-                *aliases,
-            }
-        )
-        result[matching_index] = existing
-    return result
 
 
 def align_post_action_observations(
@@ -1867,15 +1776,11 @@ def _executable_untranscribed_voice_observations(
     A trusted untranscribed row is not automatically actionable.  A stable
     identity already present in the backend checkpoint, or any local terminal
     ledger fact, proves that the physical message was settled previously.
-    Frame-local anchors may suppress a voice only inside the current
-    orchestrator run; they never become a cross-round identity.
+    Frame-local aliases are transported to Sidecar for its own action-local
+    exclusion. Worker does not compare them or infer physical UI identity.
     """
 
-    excluded = {
-        str(value).strip()
-        for value in (excluded_anchor_keys or set())
-        if str(value).strip()
-    }
+    del excluded_anchor_keys
     checkpoint = (
         target.raw.get("identity_checkpoint")
         if isinstance(target.raw, dict)
@@ -1896,16 +1801,6 @@ def _executable_untranscribed_voice_observations(
     }
     executable: list[dict[str, Any]] = []
     for observation in _untranscribed_voice_observations(sidecar_payload):
-        aliases = set(voice_action_journal_anchor_keys(observation))
-        aliases.update(
-            str(value).strip()
-            for value in (
-                observation.get("_voice_action_anchor_keys") or []
-            )
-            if str(value).strip()
-        )
-        if aliases & excluded:
-            continue
         identity = commit_message_identity(
             conversation_id=target.conversation_id,
             observation=observation,
@@ -6652,9 +6547,10 @@ class TaskRunner:
         """Align the first frame with the authoritative backend checkpoint."""
 
         prepared = dict(sidecar_payload)
-        observations = collapse_same_frame_voice_aliases(
-            list(prepared.get("observations") or [])
-        )
+        # Sidecar owns same-frame UI target normalization. Worker consumes
+        # the canonical observations as-is and only establishes durable
+        # message identity after the action receipt is confirmed.
+        observations = list(prepared.get("observations") or [])
         checkpoint = (
             target.raw.get("identity_checkpoint")
             if isinstance(target.raw, dict)
@@ -14352,17 +14248,6 @@ class TaskRunner:
                     for item in current_executable_voices
                     if str(item.get("observation_id") or "").strip()
                 }
-                prepared_voice_ids = {
-                    str(item.get("observation_id") or "").strip()
-                    for item in _untranscribed_voice_observations(prepared)
-                    if str(item.get("observation_id") or "").strip()
-                }
-                if current_candidate_ids & prepared_voice_ids:
-                    return {
-                        "ok": False,
-                        "error_code": "C2_AUTHORITATIVE_FRAME_SOURCE_INVALID",
-                        "payload": current_payload,
-                    }
                 aligned, alignment_evidence = (
                     align_post_action_observations(
                         current_observations,
@@ -14473,7 +14358,11 @@ class TaskRunner:
                     current_payload["voice_transcription"] = (
                         completed_voice_summary
                     )
-                continue
+                # Sidecar owns action-local exclusion and has authoritatively
+                # reported that no selectable voice remains in this frame.
+                # Return the updated frame to the caller instead of comparing
+                # aliases in Worker or preparing the same frame again.
+                return result()
             prepare_fields = {
                 key: str(prepared.get(key) or "").strip()
                 for key in (
@@ -14528,86 +14417,11 @@ class TaskRunner:
                     )
                 )
             else:
-                prepared_anchor_set = set(physical_anchor_keys)
-                prepared_selected_rows = [
-                    item
-                    for item in pre_observations
-                    if isinstance(item, dict)
-                    and str(item.get("observation_id") or "").strip()
-                    == selected_id
-                ]
-                prepared_selected_row = (
-                    prepared_selected_rows[0]
-                    if len(prepared_selected_rows) == 1
-                    else None
-                )
-                current_selected_rows = [
-                    item
-                    for item in current_observations
-                    if isinstance(item, dict)
-                    and str(item.get("observation_id") or "").strip()
-                    == selected_id
-                ]
-                if (
-                    len(current_selected_rows) == 1
-                    and str(
-                        current_selected_rows[0].get(
-                            "_worker_identity_scope"
-                        )
-                        or ""
-                    ).strip()
-                    == "committed"
-                ):
-                    return {
-                        "ok": False,
-                        "error_code": "C2_VOICE_PREPARE_CONTRACT_INVALID",
-                        "payload": current_payload,
-                    }
-                current_frame_matches = [
-                    item
-                    for item in current_executable_voices
-                    if prepared_anchor_set
-                    & set(voice_action_journal_anchor_keys(item))
-                    and prepared_selected_row is not None
-                    and _same_frame_voice_action_evidence_matches(
-                        item,
-                        prepared_selected_row,
-                    )
-                ]
-                if len(current_frame_matches) != 1:
-                    return {
-                        "ok": False,
-                        "error_code": (
-                            "C2_PRE_SEND_VOICE_TARGET_AMBIGUOUS"
-                            if is_pre_send_refresh
-                            else "MESSAGE_CROSS_ROUND_IDENTITY_AMBIGUOUS"
-                        ),
-                        "payload": current_payload,
-                        "pre_send_error_evidence": {
-                            "reason": (
-                                "same_frame_physical_target_not_unique"
-                            ),
-                            "prepared_physical_anchor_keys": (
-                                physical_anchor_keys
-                            ),
-                            "candidate_count": len(
-                                current_frame_matches
-                            ),
-                        },
-                        "candidate_count": len(current_frame_matches),
-                        "before_frame_id": str(
-                            current_payload.get("frame_id")
-                            or (
-                                current_payload.get("frame_observation")
-                                or {}
-                            ).get("frame_id")
-                            or ""
-                        ),
-                        "after_frame_id": prepare_fields["pre_frame_id"],
-                        "evidence_refs": [
-                            str(prepared.get("screenshot_path") or "")
-                        ],
-                    }
+                # Equal normalized viewport means the Sidecar prepare frame
+                # has the same ordered business rows. Worker only carries its
+                # annotations by order and validates the returned operation
+                # ticket below; it must not compare aliases or coordinates to
+                # select the voice a second time.
                 pre_observations, prepare_alignment_evidence = (
                     inherit_same_frame_worker_annotations(
                         current_observations,
