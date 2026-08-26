@@ -3338,15 +3338,52 @@ def prepare_voice_action_payload(
                 require_correspondence=True,
             )
         )
+    unified_observations = build_unified_voice_observations_v3(
+        screenshot,
+        ocr_items,
+        image_size,
+        excluded_anchor_keys=excluded_voice_anchor_keys,
+        parsed_messages=messages,
+    )
+    same_row_validation_errors = [
+        {
+            "observation_id": str(
+                observation.get("observation_id") or ""
+            ),
+            "row_kind": str(observation.get("row_kind") or ""),
+            "error_codes": [
+                str(error)
+                for error in (observation.get("contract_errors") or [])
+                if str(error).startswith(
+                    "OBSERVATION_VOICE_SAME_ROW_"
+                )
+                or str(error)
+                == "OBSERVATION_VOICE_FRAME_TARGET_AMBIGUOUS"
+            ],
+        }
+        for observation in unified_observations
+        if any(
+            str(error).startswith("OBSERVATION_VOICE_SAME_ROW_")
+            or str(error)
+            == "OBSERVATION_VOICE_FRAME_TARGET_AMBIGUOUS"
+            for error in (observation.get("contract_errors") or [])
+        )
+    ]
+    if same_row_validation_errors:
+        return {
+            "ok": False,
+            "state": "voice_action_prepare_observation_invalid",
+            "error_code": "OMNIAUTO_OBSERVATION_CONTRACT_INVALID",
+            "observation_validation_errors": (
+                same_row_validation_errors
+            ),
+            "screenshot_path": screenshot_path,
+            "ocr_evidence": list(ocr_items),
+            "ui_action_performed": False,
+        }
     candidates = [
         observation
-        for observation in build_unified_voice_observations_v3(
-            screenshot,
-            ocr_items,
-            image_size,
-            excluded_anchor_keys=excluded_voice_anchor_keys,
-            parsed_messages=messages,
-        )
+        for observation in unified_observations
         if observation.get("voice_state") == "untranscribed"
         and not observation.get("contract_errors")
         and not observation.get("excluded")
@@ -5788,31 +5825,6 @@ def unified_voice_observation_rect(observation: dict[str, Any]) -> list[float] |
     return [left, top, right, bottom] if right > left and bottom > top else None
 
 
-def voice_target_matches_unified_observation(
-    target: dict[str, Any],
-    observation: dict[str, Any],
-    image_size: tuple[int, int],
-) -> bool:
-    source_message = observation.get("source_message")
-    if isinstance(source_message, dict) and source_message:
-        return voice_target_matches_parsed_message(target, source_message, image_size)
-
-    target_rect = voice_context_anchor_rect_bounds(target)
-    observation_rect = unified_voice_observation_rect(observation)
-    if not target_rect or not observation_rect or not rects_overlap_or_near(target_rect, observation_rect, pad=18.0):
-        return False
-    target_role = normalized_voice_sender_role(voice_anchor_sender_role(target, image_size))
-    observation_role = normalized_voice_sender_role(observation.get("sender_role"))
-    if target_role != "unknown" and observation_role != "unknown" and target_role != observation_role:
-        return False
-    target_duration = voice_anchor_duration_number(target)
-    observation_duration = str(observation.get("voice_duration") or "")
-    if not observation_duration:
-        match = re.search(r"\d{1,3}", voice_transcribe_compact_text(observation.get("voice_duration_text")))
-        observation_duration = match.group(0) if match else ""
-    return not (target_duration and observation_duration and target_duration != observation_duration)
-
-
 def normalize_voice_evidence_target(
     image: Image.Image,
     target: dict[str, Any],
@@ -5911,27 +5923,6 @@ def build_unified_voice_observations_v3(
             }
         )
 
-    def matching_observation(target: dict[str, Any]) -> dict[str, Any] | None:
-        matches = [
-            observation
-            for observation in observations
-            if voice_target_matches_unified_observation(target, observation, image_size)
-        ]
-        if not matches:
-            return None
-        target_y = voice_target_center_y(target)
-        return min(
-            matches,
-            key=lambda observation: abs(
-                target_y
-                - (
-                    (float((observation.get("bubble_rect") or {}).get("top") or 0) + float((observation.get("bubble_rect") or {}).get("bottom") or 0)) / 2.0
-                    if isinstance(observation.get("bubble_rect"), dict)
-                    else target_y
-                )
-            ),
-        )
-
     def merge_evidence(target: dict[str, Any] | None, source: str, *, inferred_state: str = "untranscribed") -> None:
         if not isinstance(target, dict):
             return
@@ -5945,8 +5936,35 @@ def build_unified_voice_observations_v3(
         actual_role = avatar_role
         if expected_role and actual_role and expected_role != actual_role:
             return
-        matched = matching_observation(normalized)
-        if matched is not None:
+        rect = voice_context_anchor_rect_bounds(normalized)
+        item = normalized.get("item") if isinstance(normalized.get("item"), dict) else {}
+        handled, matched = _merge_same_frame_voice_hint(
+            observations,
+            {
+                "detected": True,
+                "sender_role": actual_role,
+                "anchor_key": normalized.get("anchor_key"),
+                "anchor_stable_key": normalized.get(
+                    "anchor_stable_key"
+                ),
+                "anchor_structural_key": normalized.get(
+                    "anchor_structural_key"
+                ),
+                "anchor_aliases": sorted(
+                    voice_context_anchor_exclusion_keys(
+                        normalized, image_size
+                    )
+                ),
+                "bubble_rect": rect,
+                "voice_duration": voice_anchor_duration_number(normalized),
+                "voice_duration_text": item.get("text"),
+                "voice_state": inferred_state,
+                "evidence_quality_flag": source,
+            },
+        )
+        if handled:
+            if matched is None or matched.get("contract_errors"):
+                return
             matched["sender_role"] = normalized_voice_sender_role(actual_role)
             matched["sender_role_source"] = "same_row_avatar"
             if source not in matched["evidence_sources"]:
@@ -5954,10 +5972,8 @@ def build_unified_voice_observations_v3(
             if matched.get("voice_state") == "untranscribed" and not matched.get("action_target"):
                 matched["action_target"] = normalized
             return
-        rect = voice_context_anchor_rect_bounds(normalized)
         if not rect:
             return
-        item = normalized.get("item") if isinstance(normalized.get("item"), dict) else {}
         observations.append(
             {
                 "schema_version": C2_OBSERVATION_SCHEMA_VERSION,
@@ -6261,7 +6277,23 @@ def visible_untranscribed_voice_hint(
         "anchor_key": str(anchor.get("anchor_key") or ""),
         "anchor_stable_key": str(anchor.get("anchor_stable_key") or ""),
         "anchor_structural_key": str(anchor.get("anchor_structural_key") or ""),
+        "anchor_aliases": sorted(
+            {
+                str(value).strip()
+                for value in (
+                    anchor.get("anchor_key"),
+                    anchor.get("anchor_stable_key"),
+                    anchor.get("anchor_structural_key"),
+                )
+                if str(value or "").strip()
+            }
+        ),
         "bubble_rect": [int(round(float(value))) for value in bounds[:4]],
+        "voice_duration": observation.get("voice_duration"),
+        "voice_duration_text": observation.get("voice_duration_text"),
+        "parent_voice_anchor_key": observation.get(
+            "parent_voice_anchor_key"
+        ),
         "center_y": float(item.get("center_y") or 0),
         "avatar_alignment": avatar_alignment,
         "evidence_sources": list(observation.get("evidence_sources") or []),
@@ -6306,6 +6338,209 @@ def validate_message_observation_v3(observation: dict[str, Any]) -> list[str]:
     }:
         errors.append("OBSERVATION_VOICE_STATE_INVALID")
     return errors
+
+
+def _voice_observation_frame_aliases(
+    observation: dict[str, Any],
+) -> set[str]:
+    """Return Sidecar-owned aliases for one voice target in one frame."""
+
+    source = (
+        observation.get("source_message")
+        if isinstance(observation.get("source_message"), dict)
+        else {}
+    )
+    return {
+        str(value).strip()
+        for value in (
+            *(observation.get("anchor_aliases") or []),
+            observation.get("voice_anchor_key"),
+            observation.get("voice_anchor_stable_key"),
+            observation.get("voice_anchor_structural_key"),
+            *(source.get("anchor_aliases") or []),
+            source.get("voice_anchor_key"),
+            source.get("voice_anchor_stable_key"),
+            source.get("voice_anchor_structural_key"),
+        )
+        if str(value or "").strip()
+    }
+
+
+def _voice_hint_frame_aliases(hint: dict[str, Any]) -> set[str]:
+    return {
+        str(value).strip()
+        for value in (
+            *(hint.get("anchor_aliases") or []),
+            hint.get("anchor_key"),
+            hint.get("anchor_stable_key"),
+            hint.get("anchor_structural_key"),
+        )
+        if str(value or "").strip()
+    }
+
+
+def _same_frame_voice_row(
+    observation: dict[str, Any],
+    hint: dict[str, Any],
+) -> bool:
+    """Require real vertical intersection for one physical message row.
+
+    Horizontal ranges may differ because OCR text and visual bubble detectors
+    legitimately cover different widths.  Vertical proximity is not identity:
+    adjacent message rows must never merge, even when separated by one pixel.
+    """
+
+    observation_rect = unified_voice_observation_rect(observation)
+    hint_rect = unified_voice_observation_rect(
+        {"bubble_rect": hint.get("bubble_rect")}
+    )
+    if not observation_rect or not hint_rect:
+        return False
+    return bool(
+        min(observation_rect[3], hint_rect[3])
+        > max(observation_rect[1], hint_rect[1])
+    )
+
+
+def _same_frame_voice_conflicts(
+    observation: dict[str, Any],
+    hint: dict[str, Any],
+) -> list[str]:
+    """Return material contradictions for two views of one physical row."""
+
+    conflicts: list[str] = []
+    observation_role = normalized_voice_sender_role(
+        observation.get("sender_role")
+    )
+    hint_role = normalized_voice_sender_role(hint.get("sender_role"))
+    if (
+        observation_role not in {"customer", "self"}
+        or hint_role not in {"customer", "self"}
+        or observation_role != hint_role
+    ):
+        conflicts.append("OBSERVATION_VOICE_SAME_ROW_ROLE_CONFLICT")
+
+    observation_duration = message_voice_duration_number(observation)
+    hint_duration = message_voice_duration_number(hint)
+    if (
+        observation_duration
+        and hint_duration
+        and observation_duration != hint_duration
+    ):
+        conflicts.append("OBSERVATION_VOICE_SAME_ROW_DURATION_CONFLICT")
+
+    observation_state = str(
+        observation.get("voice_state") or ""
+    ).strip().lower()
+    hint_state = str(hint.get("voice_state") or "untranscribed").strip().lower()
+    if observation_state and hint_state and observation_state != hint_state:
+        conflicts.append("OBSERVATION_VOICE_SAME_ROW_STATE_CONFLICT")
+
+    source = (
+        observation.get("source_message")
+        if isinstance(observation.get("source_message"), dict)
+        else {}
+    )
+    observation_parent = str(
+        observation.get("parent_voice_anchor_key")
+        or source.get("parent_voice_anchor_key")
+        or ""
+    ).strip()
+    hint_parent = str(hint.get("parent_voice_anchor_key") or "").strip()
+    if (
+        observation_parent
+        and hint_parent
+        and observation_parent != hint_parent
+    ):
+        conflicts.append("OBSERVATION_VOICE_SAME_ROW_PARENT_CONFLICT")
+    return conflicts
+
+
+def _merge_same_frame_voice_hint(
+    observations: list[dict[str, Any]],
+    hint: dict[str, Any],
+) -> tuple[bool, dict[str, Any] | None]:
+    """Sidecar's only OCR/visual voice merge for one immutable frame.
+
+    Physical row geometry chooses the candidate.  Anchor names never choose
+    whether two observations are the same bubble; all names are retained as
+    action-local aliases and never become durable business identity.
+    """
+
+    same_row = [
+        observation
+        for observation in observations
+        if str(observation.get("row_kind") or "").strip().lower()
+        in {"voice_bubble", "voice_transcript"}
+        and _same_frame_voice_row(observation, hint)
+    ]
+    if not same_row:
+        return False, None
+    if len(same_row) != 1:
+        for observation in same_row:
+            errors = list(observation.get("contract_errors") or [])
+            if "OBSERVATION_VOICE_FRAME_TARGET_AMBIGUOUS" not in errors:
+                errors.append("OBSERVATION_VOICE_FRAME_TARGET_AMBIGUOUS")
+            observation["contract_errors"] = errors
+        return True, None
+
+    observation = same_row[0]
+    aliases = sorted(
+        _voice_observation_frame_aliases(observation)
+        | _voice_hint_frame_aliases(hint)
+    )
+    observation["anchor_aliases"] = aliases
+    conflicts = _same_frame_voice_conflicts(observation, hint)
+    if conflicts:
+        errors = list(observation.get("contract_errors") or [])
+        observation["contract_errors"] = list(
+            dict.fromkeys([*errors, *conflicts])
+        )
+        return True, observation
+
+    # Singular legacy fields remain compatibility projections.  Fill only a
+    # missing value; never overwrite evidence supplied by another observer.
+    stable_key = str(hint.get("anchor_stable_key") or "").strip()
+    structural_key = str(hint.get("anchor_structural_key") or "").strip()
+    if stable_key and not str(
+        observation.get("voice_anchor_stable_key") or ""
+    ).strip():
+        observation["voice_anchor_stable_key"] = stable_key
+    if structural_key and not str(
+        observation.get("voice_anchor_structural_key") or ""
+    ).strip():
+        observation["voice_anchor_structural_key"] = structural_key
+
+    hint_role = normalized_voice_sender_role(hint.get("sender_role"))
+    evidence_flag = str(
+        hint.get("evidence_quality_flag") or "visual_voice_hint"
+    ).strip()
+    quality_flags = list(observation.get("quality_flags") or [])
+    if evidence_flag and evidence_flag not in quality_flags:
+        quality_flags.append(evidence_flag)
+    observation["quality_flags"] = quality_flags
+    source = (
+        observation.get("source_message")
+        if isinstance(observation.get("source_message"), dict)
+        else {}
+    )
+    if stable_key and not str(
+        source.get("voice_anchor_stable_key") or ""
+    ).strip():
+        source["voice_anchor_stable_key"] = stable_key
+    if structural_key and not str(
+        source.get("voice_anchor_structural_key") or ""
+    ).strip():
+        source["voice_anchor_structural_key"] = structural_key
+    if hint_role in {"customer", "self"}:
+        source["sender_role"] = hint_role
+        source["sender_role_source"] = "same_row_avatar"
+    source_flags = list(source.get("quality_flags") or [])
+    if evidence_flag and evidence_flag not in source_flags:
+        source_flags.append(evidence_flag)
+    source["quality_flags"] = source_flags
+    observation["source_message"] = source
+    return True, observation
 
 
 def build_message_observations_v3(
@@ -6419,6 +6654,10 @@ def build_message_observations_v3(
             "quality_flags": quality_flags,
             "source_message": source_message,
         }
+        if row_kind in {"voice_bubble", "voice_transcript"}:
+            observation["anchor_aliases"] = sorted(
+                _voice_observation_frame_aliases(observation)
+            )
         if row_kind == "system_message":
             observation["system_classification"] = (
                 classify_pre_send_system_message(
@@ -6447,14 +6686,16 @@ def build_message_observations_v3(
         observations.append(observation)
     hint = visible_voice_hint if isinstance(visible_voice_hint, dict) else {}
     if hint.get("detected"):
-        hint_key = str(hint.get("anchor_stable_key") or hint.get("anchor_key") or "")
-        already_seen = any(
-            item.get("row_kind") == "voice_bubble"
-            and item.get("voice_state") == "untranscribed"
-            and (not hint_key or item.get("voice_anchor_key") == hint_key)
-            for item in observations
+        hint_key = str(
+            hint.get("anchor_stable_key")
+            or hint.get("anchor_structural_key")
+            or hint.get("anchor_key")
+            or ""
         )
-        if not already_seen:
+        handled, _merged_observation = _merge_same_frame_voice_hint(
+            observations, hint
+        )
+        if not handled:
             observation = {
                     "schema_version": C2_OBSERVATION_SCHEMA_VERSION,
                     "observation_id": f"voice-hint:{hint_key or len(observations)}",
@@ -6463,13 +6704,34 @@ def build_message_observations_v3(
                     "sender_role_source": "same_row_avatar",
                     "message_type": "voice",
                     "voice_state": "untranscribed",
-                    "voice_anchor_key": hint_key or None,
-                    "parent_voice_anchor_key": None,
+                    "voice_anchor_key": str(
+                        hint.get("anchor_structural_key")
+                        or hint_key
+                        or ""
+                    )
+                    or None,
+                    "voice_anchor_stable_key": str(
+                        hint.get("anchor_stable_key") or ""
+                    )
+                    or None,
+                    "voice_anchor_structural_key": str(
+                        hint.get("anchor_structural_key") or ""
+                    )
+                    or None,
+                    "anchor_aliases": sorted(
+                        _voice_hint_frame_aliases(hint)
+                    ),
+                    "parent_voice_anchor_key": str(
+                        hint.get("parent_voice_anchor_key") or ""
+                    )
+                    or None,
                     "content_clean": "",
                     "content_raw": "",
                     "bubble_rect": hint.get("bubble_rect"),
-                    "voice_duration": None,
-                    "voice_duration_text": None,
+                    "voice_duration": hint.get("voice_duration"),
+                    "voice_duration_text": hint.get(
+                        "voice_duration_text"
+                    ),
                     "ocr_confidence": None,
                     "quality_flags": ["visual_voice_hint"],
                     "source_message": {},

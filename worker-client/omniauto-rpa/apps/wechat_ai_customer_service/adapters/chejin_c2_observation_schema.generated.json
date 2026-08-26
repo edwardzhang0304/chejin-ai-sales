@@ -1,8 +1,8 @@
 {
   "generated_file": true,
   "source": "contracts/c2_contract_v3.json",
-  "contract_revision": "0.9.38",
-  "contract_sha256": "6e1b0ab219c7effdb380170c452cd0e18c42522cd95870f24034af69c6b51143",
+  "contract_revision": "0.9.39",
+  "contract_sha256": "33eb5790a6a629818e7d8e29671374b0a03ca203dc74e742bbd9151de87356ba",
   "observation_schema_version": 3,
   "action_phases": [
     "not_attempted",
@@ -847,6 +847,7 @@
       "item_state",
       "action_phase",
       "voice_anchor_key",
+      "anchor_aliases",
       "parent_voice_anchor_key",
       "error_code",
       "reason_detail",
@@ -981,7 +982,7 @@
     "invalid_behavior": "C2_VOICE_IDENTITY_CONTRACT_INVALID"
   },
   "frame_action_binding_contract": {
-    "release": "0.9.38",
+    "release": "0.9.39",
     "purpose": "prove_only_that_the_worker_selected_unique_frame_local_target_is_still_safe_to_operate_inside_the_current_ui_transaction",
     "durable_identity": false,
     "observation_owner": "sidecar",
@@ -1032,7 +1033,7 @@
     ]
   },
   "pre_send_message_viewport_contract": {
-    "release": "0.9.38",
+    "release": "0.9.39",
     "selected_target_fingerprint_scope": "one_selected_message_type_role_relative_quantized_bounds_required_neighbors_and_sequence_position_only",
     "selected_target_forbidden_inputs": [
       "message_viewport_change_digest",
@@ -1152,7 +1153,7 @@
     }
   },
   "startup_layout_calibration_contract": {
-    "schema_version": "0.9.38",
+    "schema_version": "0.9.39",
     "owner": "omniauto",
     "worker_role": "persist_path_transport_contract_validation_and_execution_only",
     "single_runtime_path": true,
