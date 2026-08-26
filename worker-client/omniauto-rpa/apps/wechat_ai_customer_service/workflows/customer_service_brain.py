@@ -161,6 +161,40 @@ LOW_AUTHORITY_FAST_PRODUCT_CONTEXT_TERMS = (
     "省油",
     "耐用",
 )
+LOW_AUTHORITY_FAST_STRONG_PRODUCT_CONTEXT_TERMS = (
+    "二手车",
+    "电车",
+    "纯电",
+    "混动",
+    "油车",
+    "车型",
+    "车源",
+    "库存",
+    "现车",
+    "轿车",
+    "suv",
+    "mpv",
+    "商务车",
+    "代步车",
+    "家用车",
+)
+LOW_AUTHORITY_FAST_PURCHASE_NEED_TERMS = (
+    "想买",
+    "想找",
+    "找个",
+    "找一台",
+    "找辆",
+    "帮我找",
+    "买个",
+    "买一台",
+    "便宜",
+    "合适的",
+    "有合适",
+    "有哪些车",
+    "有哪些款",
+    "有什么车",
+    "有什么款",
+)
 LOW_AUTHORITY_FAST_DECISION_TERMS = (
     "挑",
     "选",
@@ -332,9 +366,29 @@ def low_authority_fast_business_decision_signal(clean_text: str) -> bool:
     if not clean:
         return False
     has_product_context = text_contains_any(clean, LOW_AUTHORITY_FAST_PRODUCT_CONTEXT_TERMS)
+    has_strong_product_context = text_contains_any(
+        clean,
+        LOW_AUTHORITY_FAST_STRONG_PRODUCT_CONTEXT_TERMS,
+    )
+    has_purchase_need = text_contains_any(clean, LOW_AUTHORITY_FAST_PURCHASE_NEED_TERMS)
     has_decision = text_contains_any(clean, LOW_AUTHORITY_FAST_DECISION_TERMS)
     has_delegation = text_contains_any(clean, LOW_AUTHORITY_FAST_DELEGATION_TERMS)
-    return bool(has_product_context and has_decision and (has_delegation or "哪" in clean or "推荐" in clean or "建议" in clean))
+    return bool(
+        (
+            has_strong_product_context
+            and has_purchase_need
+        )
+        or (
+            has_product_context
+            and has_decision
+            and (
+                has_delegation
+                or "哪" in clean
+                or "推荐" in clean
+                or "建议" in clean
+            )
+        )
+    )
 
 
 def target_context_has_active_business_state(target_state: dict[str, Any]) -> bool:

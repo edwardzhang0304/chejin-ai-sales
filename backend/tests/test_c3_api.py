@@ -1898,6 +1898,145 @@ def test_reply_then_handoff_sends_one_brain_boundary_and_keeps_handoff_open(monk
         assert db.query(ReplyAction).filter(ReplyAction.batch_id == batch.id).count() == 1
 
 
+def test_reply_then_handoff_stays_authoritative_when_new_message_arrives_before_send(
+    monkeypatch,
+):
+    class BoundaryHandoffAdapter:
+        def generate_reply_decision(self, **_kwargs):
+            return c3_service.AIEngineDecision(
+                decision="reply_then_handoff",
+                reply_text="这个需要结合可核实资料确认，我先为您保留需求。",
+                confidence=0.92,
+                handoff_reason_code="FORMAL_POLICY_REQUIRES_MANUAL_CONFIRMATION",
+                risk_flags=["manual_confirmation"],
+                guard_result="handoff",
+                suggested_action="reply_then_handoff",
+            )
+
+    monkeypatch.setattr(c3_service, "get_ai_engine_adapter", lambda: BoundaryHandoffAdapter())
+    worker, binding = _setup_bound_conversation()
+    first_message = _ingest(
+        worker,
+        binding["conversation_id"],
+        "msg-reply-then-handoff-superseded-001",
+        "这个情况能保证吗",
+    )
+    generated = _generate(
+        _collect(binding["conversation_id"], first_message)["batch_id"]
+    )
+    old_action_id = generated["reply_action_id"]
+    second_message = _ingest(
+        worker,
+        binding["conversation_id"],
+        "msg-reply-then-handoff-superseded-002",
+        "我再补充一个问题",
+    )
+
+    old_task = client.get(
+        f"/api/tasks/{generated['task_id']}",
+        headers=HEADERS,
+    ).json()["data"]
+    assert old_task["status"] == "pending"
+    assert old_task["reply_action_id"] == old_action_id
+    assert second_message != first_message
+
+    with SessionLocal() as db:
+        conversation = db.get(Conversation, binding["conversation_id"])
+        handoffs = db.query(HandoffEvent).filter(
+            HandoffEvent.conversation_id == binding["conversation_id"],
+            HandoffEvent.closed_at.is_(None),
+            HandoffEvent.deleted_at.is_(None),
+        ).all()
+        assert conversation.status == "waiting_sales_reply"
+        assert len(handoffs) == 1
+        assert handoffs[0].status == "created"
+
+
+@pytest.mark.parametrize(
+    ("send_result", "action_phase", "error_code"),
+    [
+        ("failed", "not_attempted", "RPA_SEND_REPLY_FAILED"),
+        ("unknown", "trigger_attempted", "SEND_RESULT_UNKNOWN"),
+    ],
+)
+def test_reply_then_handoff_keeps_formal_handoff_after_boundary_send_failure(
+    monkeypatch,
+    send_result,
+    action_phase,
+    error_code,
+):
+    class BoundaryHandoffAdapter:
+        def generate_reply_decision(self, **_kwargs):
+            return c3_service.AIEngineDecision(
+                decision="reply_then_handoff",
+                reply_text="这个需要结合可核实资料确认，我先为您保留需求。",
+                confidence=0.92,
+                handoff_reason_code="FORMAL_POLICY_REQUIRES_MANUAL_CONFIRMATION",
+                risk_flags=["manual_confirmation"],
+                guard_result="handoff",
+                suggested_action="reply_then_handoff",
+            )
+
+    monkeypatch.setattr(c3_service, "get_ai_engine_adapter", lambda: BoundaryHandoffAdapter())
+    worker, binding = _setup_bound_conversation()
+    message_event_id = _ingest(
+        worker,
+        binding["conversation_id"],
+        f"msg-reply-then-handoff-{send_result}",
+        "这个情况能保证吗",
+    )
+    generated = _generate(
+        _collect(binding["conversation_id"], message_event_id)["batch_id"]
+    )
+    claimed_task = client.post(
+        f"/api/tasks/{generated['task_id']}/claim",
+        json={
+            "worker_id": worker["id"],
+            "current_step": "chat_reply_claimed",
+            "claim_source": "c2_conversation_flow",
+            "conversation_id": binding["conversation_id"],
+        },
+        headers=_worker_headers(worker),
+    )
+    assert claimed_task.status_code == 200, claimed_task.text
+    claim_send = client.post(
+        f"/api/reply-actions/{generated['reply_action_id']}/claim-send",
+        json={
+            "task_id": generated["task_id"],
+            "worker_id": worker["id"],
+        },
+        headers=_task_lease_headers(worker, claimed_task),
+    )
+    assert claim_send.status_code == 200, claim_send.text
+    send_data = claim_send.json()["data"]
+    ack = client.post(
+        f"/api/reply-actions/{generated['reply_action_id']}/sent-ack",
+        json={
+            "send_token": send_data["send_token"],
+            "task_id": generated["task_id"],
+            "worker_id": worker["id"],
+            "client_instance_id": "client-c3-boundary-failure",
+            "send_result": send_result,
+            "action_phase": action_phase,
+            "reply_text_hash": send_data["reply_text_hash"],
+            "error_code": error_code,
+        },
+        headers=_worker_headers(worker),
+    )
+    assert ack.status_code == 200, ack.text
+
+    with SessionLocal() as db:
+        conversation = db.get(Conversation, binding["conversation_id"])
+        handoffs = db.query(HandoffEvent).filter(
+            HandoffEvent.conversation_id == binding["conversation_id"],
+            HandoffEvent.closed_at.is_(None),
+            HandoffEvent.deleted_at.is_(None),
+        ).all()
+        assert conversation.status == "waiting_sales_reply"
+        assert len(handoffs) == 1
+        assert handoffs[0].status == "created"
+
+
 def test_recall_counts_only_after_confirmed_send_and_ack_is_idempotent():
     worker, binding = _setup_bound_conversation()
     message_event_id = _ingest(

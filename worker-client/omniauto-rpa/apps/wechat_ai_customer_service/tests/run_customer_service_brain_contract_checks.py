@@ -2035,6 +2035,34 @@ def check_low_authority_fast_profile_rejects_authority_or_context_turns() -> Cas
         casual_car_word_decision.get("enabled"),
         f"casual small talk containing the character car should not be forced into full authority path: {casual_car_word_decision}",
     )
+    short_business_decision = brain_module.low_authority_fast_profile_decision(
+        settings=settings,
+        combined="我想找个便宜点的电车，有合适的吗",
+        batch=[{"id": "msg-short-business", "sender": "许聪", "content": "我想找个便宜点的电车，有合适的吗"}],
+        target_state={},
+    )
+    assert_true(
+        not short_business_decision.get("enabled")
+        and short_business_decision.get("reason") == "business_decision_needs_context",
+        f"short product recommendation must use context-rich Brain path: {short_business_decision}",
+    )
+    ordinary_short_messages = {
+        "traffic": "今天路上堵车了，我需要早点出门",
+        "ride": "我希望明天坐车别堵",
+        "photo": "这台车我觉得适合拍照",
+    }
+    ordinary_short_decisions = {}
+    for label, text in ordinary_short_messages.items():
+        ordinary_short_decisions[label] = brain_module.low_authority_fast_profile_decision(
+            settings=settings,
+            combined=text,
+            batch=[{"id": f"msg-short-{label}", "sender": "许聪", "content": text}],
+            target_state={},
+        )
+        assert_true(
+            ordinary_short_decisions[label].get("enabled"),
+            f"ordinary short message must not be treated as a vehicle purchase decision ({label}): {ordinary_short_decisions[label]}",
+        )
     generic_vehicle_intent_decision = brain_module.low_authority_fast_profile_decision(
         settings=settings,
         combined="有车吗",
@@ -2062,6 +2090,8 @@ def check_low_authority_fast_profile_rejects_authority_or_context_turns() -> Cas
             "product": product_decision,
             "ambiguous": ambiguous_decision,
             "casual_car_word": casual_car_word_decision,
+            "short_business": short_business_decision,
+            "ordinary_short": ordinary_short_decisions,
             "generic_vehicle_intent": generic_vehicle_intent_decision,
             "direct_choice": direct_choice_decision,
         },
