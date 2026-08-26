@@ -1588,6 +1588,13 @@ def test_reply_then_handoff_sends_one_brain_boundary_and_keeps_handoff_open(monk
     assert generated["handoff_event"]["handoff_reason_code"] == (
         "FORMAL_POLICY_REQUIRES_MANUAL_CONFIRMATION"
     )
+    assert generated["handoff_event"]["status"] == "pending_visible_reply"
+    with SessionLocal() as db:
+        conversation = db.get(Conversation, binding["conversation_id"])
+        assert conversation.status == "ai_active"
+        assert db.query(SentAck).filter(
+            SentAck.reply_action_id == generated["reply_action_id"]
+        ).count() == 0
 
     action_id = generated["reply_action_id"]
     task_id = generated["task_id"]
@@ -1642,10 +1649,11 @@ def test_reply_then_handoff_sends_one_brain_boundary_and_keeps_handoff_open(monk
         assert action.status == "sent"
         assert action.decision == "reply_then_handoff"
         assert batch.decision == "reply_then_handoff"
-        assert db.query(HandoffEvent).filter(
+        handoff = db.query(HandoffEvent).filter(
             HandoffEvent.batch_id == batch.id,
             HandoffEvent.closed_at.is_(None),
-        ).count() == 1
+        ).one()
+        assert handoff.status == "created"
         assert db.query(ReplyAction).filter(ReplyAction.batch_id == batch.id).count() == 1
 
 

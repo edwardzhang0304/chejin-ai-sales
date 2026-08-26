@@ -184,6 +184,19 @@ LOW_AUTHORITY_FAST_DELEGATION_TERMS = (
     "不用问",
     "少问",
 )
+LOW_AUTHORITY_FAST_BUSINESS_NEED_TERMS = (
+    "找",
+    "买",
+    "想要",
+    "想找",
+    "便宜",
+    "合适",
+    "适合",
+    "需要",
+    "希望",
+    "用途",
+    "预算",
+)
 
 NO_VISIBLE_REASON_CLASS_MAP = {
     "customer_service_brain_llm_unavailable": "llm_unavailable",
@@ -334,7 +347,14 @@ def low_authority_fast_business_decision_signal(clean_text: str) -> bool:
     has_product_context = text_contains_any(clean, LOW_AUTHORITY_FAST_PRODUCT_CONTEXT_TERMS)
     has_decision = text_contains_any(clean, LOW_AUTHORITY_FAST_DECISION_TERMS)
     has_delegation = text_contains_any(clean, LOW_AUTHORITY_FAST_DELEGATION_TERMS)
-    return bool(has_product_context and has_decision and (has_delegation or "哪" in clean or "推荐" in clean or "建议" in clean))
+    has_business_need = text_contains_any(clean, LOW_AUTHORITY_FAST_BUSINESS_NEED_TERMS)
+    return bool(
+        has_product_context
+        and (
+            has_business_need
+            or (has_decision and (has_delegation or "哪" in clean or "推荐" in clean or "建议" in clean))
+        )
+    )
 
 
 def target_context_has_active_business_state(target_state: dict[str, Any]) -> bool:

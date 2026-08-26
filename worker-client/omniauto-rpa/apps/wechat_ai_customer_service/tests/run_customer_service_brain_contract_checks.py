@@ -2018,6 +2018,25 @@ def check_low_authority_fast_profile_rejects_authority_or_context_turns() -> Cas
         target_state={},
     )
     assert_true(not product_decision.get("enabled"), f"explicit product/price question must use full authority path: {product_decision}")
+    short_product_recommendation = brain_module.low_authority_fast_profile_decision(
+        settings=settings,
+        combined="我想找个便宜点的电车，有合适的吗",
+        batch=[
+            {
+                "id": "msg-short-product-recommendation",
+                "sender": "许聪",
+                "content": "我想找个便宜点的电车，有合适的吗",
+            }
+        ],
+        target_state={},
+    )
+    assert_true(
+        not short_product_recommendation.get("enabled")
+        and short_product_recommendation.get("reason")
+        == "business_decision_needs_context",
+        "short vehicle recommendation requests must not use the social-only Brain profile: "
+        f"{short_product_recommendation}",
+    )
     ambiguous_decision = brain_module.low_authority_fast_profile_decision(
         settings=settings,
         combined="要",
@@ -2060,6 +2079,7 @@ def check_low_authority_fast_profile_rejects_authority_or_context_turns() -> Cas
         True,
         {
             "product": product_decision,
+            "short_product_recommendation": short_product_recommendation,
             "ambiguous": ambiguous_decision,
             "casual_car_word": casual_car_word_decision,
             "generic_vehicle_intent": generic_vehicle_intent_decision,

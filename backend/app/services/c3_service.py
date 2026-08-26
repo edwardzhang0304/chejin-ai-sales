@@ -38,6 +38,7 @@ from app.services.task_service import _write_event, finish_task_and_release_work
 
 ACTIVE_BATCH_STATUSES = {"collecting", "generating", "retry_wait"}
 OPEN_ACTION_STATUSES = {"draft", "guarding", "queued", "sending"}
+PENDING_VISIBLE_REPLY_HANDOFF_STATUS = "pending_visible_reply"
 SUPERSEDABLE_ACTION_STATUSES = {"draft", "guarding", "queued"}
 TERMINAL_ACTION_STATUSES = {
     "sent",
@@ -452,17 +453,33 @@ def _ensure_reply_action_send_eligible(
             {"suggested_action": "do_not_send"},
         )
     handoff = db.scalar(
-        select(HandoffEvent.id).where(
+        select(HandoffEvent).where(
             HandoffEvent.conversation_id == action.conversation_id,
             HandoffEvent.batch_id == action.batch_id,
             HandoffEvent.closed_at.is_(None),
             HandoffEvent.deleted_at.is_(None),
         )
     )
+    pending_visible_reply = bool(
+        handoff
+        and handoff.status == PENDING_VISIBLE_REPLY_HANDOFF_STATUS
+    )
+    handoff_state_valid = bool(
+        handoff
+        and (
+            (
+                pending_visible_reply
+                and conversation.status == "ai_active"
+            )
+            or (
+                not pending_visible_reply
+                and conversation.status == "waiting_sales_reply"
+            )
+        )
+    )
     if (
         not conversation.ai_enabled
-        or conversation.status != "waiting_sales_reply"
-        or not handoff
+        or not handoff_state_valid
     ):
         raise AppError(
             "REPLY_THEN_HANDOFF_NOT_ELIGIBLE",
@@ -1345,6 +1362,7 @@ def open_handoff_events_for_conversation(
             HandoffEvent.conversation_id == conversation_id,
             HandoffEvent.closed_at.is_(None),
             HandoffEvent.deleted_at.is_(None),
+            HandoffEvent.status != PENDING_VISIBLE_REPLY_HANDOFF_STATUS,
         )
         .order_by(HandoffEvent.created_at.asc(), HandoffEvent.id.asc())
     )
@@ -1600,6 +1618,7 @@ def _create_handoff(
     batch: MessageBatch,
     decision: AIEngineDecision,
     handoff_reason_code: str,
+    visible_reply_pending: bool = False,
 ) -> HandoffEvent:
     handoff_payload = _preserve_generation_attempt_history(
         batch,
@@ -1615,18 +1634,25 @@ def _create_handoff(
         risk_flags=decision.risk_flags or [],
         evidence_refs=decision.evidence_refs or [],
         ai_payload=handoff_payload,
+        status=(
+            PENDING_VISIBLE_REPLY_HANDOFF_STATUS
+            if visible_reply_pending
+            else "created"
+        ),
+        enqueue_notification=not visible_reply_pending,
     )
-    conversation.status = "waiting_sales_reply"
-    conversation.recall_origin_status = None
-    conversation.recall_cycle_id = None
-    conversation.handoff_reason_code = handoff_reason_code
-    conversation.handoff_at = utcnow()
-    batch.status = "handoff_created"
-    batch.active = False
-    batch.retryable = False
-    batch.decision = "handoff"
-    batch.error_code = handoff_reason_code
-    batch.suggested_action = "handoff"
+    if not visible_reply_pending:
+        conversation.status = "waiting_sales_reply"
+        conversation.recall_origin_status = None
+        conversation.recall_cycle_id = None
+        conversation.handoff_reason_code = handoff_reason_code
+        conversation.handoff_at = utcnow()
+        batch.status = "handoff_created"
+        batch.active = False
+        batch.retryable = False
+        batch.decision = "handoff"
+        batch.error_code = handoff_reason_code
+        batch.suggested_action = "handoff"
     batch.ai_response_snapshot = handoff_payload
     batch.generated_at = utcnow()
     batch.generation_started_at = None
@@ -1644,6 +1670,8 @@ def _create_or_reuse_open_handoff(
     risk_flags: list[str],
     evidence_refs: list[str],
     ai_payload: dict[str, Any],
+    status: str = "created",
+    enqueue_notification: bool = True,
 ) -> tuple[HandoffEvent, bool]:
     # PostgreSQL serializes concurrent handoff creation on the conversation
     # row. The partial unique index remains the final database guard.
@@ -1683,14 +1711,24 @@ def _create_or_reuse_open_handoff(
                 dict.fromkeys(list(existing.evidence_refs or []) + evidence_refs)
             )
             existing.ai_payload = ai_payload
-        if conversation.status not in {"closed", "rejected"}:
+        if (
+            existing.status == PENDING_VISIBLE_REPLY_HANDOFF_STATUS
+            and status != PENDING_VISIBLE_REPLY_HANDOFF_STATUS
+        ):
+            existing.status = status
+            if enqueue_notification:
+                enqueue_handoff_notification(db, handoff_event_id=existing.id)
+        if (
+            existing.status != PENDING_VISIBLE_REPLY_HANDOFF_STATUS
+            and conversation.status not in {"closed", "rejected"}
+        ):
             conversation.status = "waiting_sales_reply"
         return existing, False
 
     event = HandoffEvent(
         conversation_id=conversation.conversation_id,
         batch_id=batch_id,
-        status="created",
+        status=status,
         handoff_reason_code=handoff_reason_code,
         reason_detail=reason_detail,
         trigger_message_event_ids=trigger_message_event_ids,
@@ -1731,7 +1769,8 @@ def _create_or_reuse_open_handoff(
         trace_id=handoff_trace_id,
         stable_key=event.id,
     )
-    enqueue_handoff_notification(db, handoff_event_id=event.id)
+    if enqueue_notification:
+        enqueue_handoff_notification(db, handoff_event_id=event.id)
     return event, True
 
 
@@ -2469,9 +2508,11 @@ def generate_for_batch(
                         batch=batch,
                         decision=decision,
                         handoff_reason_code=handoff_reason_code,
+                        visible_reply_pending=True,
                     )
-                    # The handoff is already authoritative, but its one approved
-                    # boundary reply must remain claimable and sendable.
+                    # Keep the handoff non-authoritative until the Brain-owned
+                    # boundary reply has a confirmed sent_ack. This preserves
+                    # the visible reply when the Worker is paused or delayed.
                     batch.status = "reply_action_created"
                     batch.active = False
                     batch.retryable = False
@@ -2822,12 +2863,35 @@ def sent_ack(db: Session, *, reply_action_id: str, payload: Any) -> dict[str, An
             claim_boundary and last_sales and last_sales > claim_boundary
         )
         if action.decision == "reply_then_handoff":
-            open_handoffs = open_handoff_events_for_conversation(
+            pending_handoff = db.scalar(
+                select(HandoffEvent)
+                .where(
+                    HandoffEvent.conversation_id == action.conversation_id,
+                    HandoffEvent.batch_id == action.batch_id,
+                    HandoffEvent.status == PENDING_VISIBLE_REPLY_HANDOFF_STATUS,
+                    HandoffEvent.closed_at.is_(None),
+                    HandoffEvent.deleted_at.is_(None),
+                )
+                .with_for_update()
+            )
+            if pending_handoff:
+                pending_handoff.status = "created"
+                conversation.status = "waiting_sales_reply"
+                conversation.handoff_reason_code = (
+                    pending_handoff.handoff_reason_code
+                )
+                conversation.handoff_at = action.sent_at
+                conversation.recall_origin_status = None
+                conversation.recall_cycle_id = None
+                enqueue_handoff_notification(
+                    db,
+                    handoff_event_id=pending_handoff.id,
+                )
+            if pending_handoff or open_handoff_events_for_conversation(
                 db,
                 action.conversation_id,
                 for_update=True,
-            )
-            if open_handoffs:
+            ):
                 conversation.status = "waiting_sales_reply"
                 conversation.next_recall_at = None
         elif not newer_customer_turn and not newer_sales_turn:
