@@ -109,6 +109,10 @@ RECOVERABLE_IDENTITY_UNRESOLVED_GATE_CODES = {
     "C2_VOICE_IDENTITY_CONTRACT_INVALID",
     "C2_VOICE_RESULT_AMBIGUOUS",
 }
+UNKNOWN_FACT_IDENTITY_GATE_CODES = (
+    RECOVERABLE_IDENTITY_UNRESOLVED_GATE_CODES
+    - {"C2_MESSAGE_HISTORY_GAP"}
+)
 IDENTITY_UNRESOLVED_MAX_PASSIVE_REREADS = 2
 IDENTITY_UNRESOLVED_MAX_ELAPSED_SECONDS = 120
 PERMANENT_BINDING_DISABLE_REASONS = {
@@ -2942,12 +2946,189 @@ def _validate_v3_request_contract(payload: WechatMessageIngestRequest) -> None:
                     _media_error_data(item.source_message_key),
                 )
 
-    if mapped_observation_ids != ingestible_observation_ids:
-        missing = sorted(ingestible_observation_ids - mapped_observation_ids)
-        unexpected = sorted(mapped_observation_ids - ingestible_observation_ids)
+    unmapped_observation_ids = (
+        ingestible_observation_ids - mapped_observation_ids
+    )
+    slots_by_observation_id = {
+        str(slot.observation_id or "").strip(): slot
+        for slot in payload.evidence.slot_ledger_states
+        if str(slot.observation_id or "").strip()
+    }
+    gate_error_codes = {
+        str(value or "").strip()
+        for value in payload.evidence.flow_gate_errors
+        if str(value or "").strip()
+    }
+
+    def has_explicit_identity_gate(slot) -> bool:
+        for detail in payload.evidence.flow_gate_details:
+            code = str(detail.error_code or "").strip()
+            if (
+                code not in gate_error_codes
+                or code not in UNKNOWN_FACT_IDENTITY_GATE_CODES
+                or detail.gate_scope
+                not in {"conversation_identity", "reply_suffix"}
+            ):
+                continue
+            minimum = int(detail.min_screen_order or 0)
+            maximum = int(detail.max_screen_order or 0)
+            if minimum > 0 and maximum >= minimum:
+                if minimum <= int(slot.screen_order) <= maximum:
+                    return True
+                continue
+            if (
+                str(detail.position_source or "").strip()
+                == "position_unavailable"
+                and detail.boundary_relation == "unknown"
+            ):
+                return True
+        return False
+
+    partition = payload.evidence.ingest_partition
+    final_partition_source_keys = (
+        {
+            str(value or "").strip()
+            for value in partition.expected_source_message_keys
+            if str(value or "").strip()
+        }
+        if partition is not None and partition.index == partition.count
+        else set()
+    )
+
+    def unmapped_slot_is_allowed(observation_id: str) -> bool:
+        slot = slots_by_observation_id.get(observation_id)
+        if slot is None:
+            return False
+        if (
+            slot.fact_scope == "historical"
+            and slot.delivery_state == "backend_confirmed"
+        ):
+            return True
+        if slot.fact_scope == "unknown":
+            return has_explicit_identity_gate(slot)
+        return bool(
+            slot.fact_scope == "current_read_run"
+            and str(slot.source_message_key or "").strip()
+            in final_partition_source_keys
+        )
+
+    invalid_unmapped = sorted(
+        observation_id
+        for observation_id in unmapped_observation_ids
+        if not unmapped_slot_is_allowed(observation_id)
+    )
+    if invalid_unmapped:
         raise AppError(
             "MESSAGE_OBSERVATION_MAPPING_INCOMPLETE",
-            f"V3 observation 与最终消息不是一一对应: missing={missing}, unexpected={unexpected}",
+            (
+                "V3 完整画面中未入库的 observation 缺少已确认历史事实、"
+                "明确身份门禁或最终分片归属: "
+                f"invalid={invalid_unmapped}"
+            ),
+            409,
+        )
+
+
+def _validate_non_delivered_frame_observations(
+    db: Session,
+    payload: WechatMessageIngestRequest,
+) -> None:
+    """Prove every non-delivered settled frame row is already persisted.
+
+    ``messages`` is an incremental delivery set.  The authoritative frame may
+    also contain historical rows needed for the pre-send checkpoint, but a
+    Worker declaration alone must never be enough to suppress a new fact.
+    """
+
+    mapped_observation_ids = {
+        str(
+            (item.raw_payload or {}).get("observation", {}).get(
+                "observation_id"
+            )
+            or ""
+        ).strip()
+        for item in payload.messages
+        if isinstance(item.raw_payload, dict)
+        and isinstance(item.raw_payload.get("observation"), dict)
+    }
+    observations_by_id = {
+        str(observation.get("observation_id") or "").strip(): observation
+        for observation in payload.evidence.observations
+        if isinstance(observation, dict)
+        and str(observation.get("observation_id") or "").strip()
+    }
+    partition = payload.evidence.ingest_partition
+    is_final_partition = bool(
+        partition is not None and partition.index == partition.count
+    )
+    settled_slots = []
+    for slot in payload.evidence.slot_ledger_states:
+        observation_id = str(slot.observation_id or "").strip()
+        observation = observations_by_id.get(observation_id)
+        if observation_id in mapped_observation_ids or not isinstance(
+            observation, dict
+        ):
+            continue
+        _validated_id, rule = _validate_v3_observation(observation)
+        if not bool(rule.get("ingestible")):
+            continue
+        if slot.fact_scope == "historical" or (
+            is_final_partition and slot.fact_scope == "current_read_run"
+        ):
+            settled_slots.append(slot)
+    if not settled_slots:
+        return
+
+    source_keys = {
+        str(slot.source_message_key or "").strip()
+        for slot in settled_slots
+        if str(slot.source_message_key or "").strip()
+    }
+    existing_by_source_key = {
+        str(event.source_message_key or "").strip(): event
+        for event in db.scalars(
+            select(MessageEvent).where(
+                MessageEvent.conversation_id == payload.conversation_id,
+                MessageEvent.source_message_key.in_(source_keys),
+            )
+        ).all()
+        if str(event.source_message_key or "").strip()
+    }
+    invalid: list[str] = []
+    for slot in settled_slots:
+        observation_id = str(slot.observation_id or "").strip()
+        observation = observations_by_id.get(observation_id)
+        event = existing_by_source_key.get(
+            str(slot.source_message_key or "").strip()
+        )
+        observed_type = str(
+            (observation or {}).get("message_type") or ""
+        ).strip().lower()
+        content_mismatch = bool(
+            event is not None
+            and observed_type in {"text", "voice", "system"}
+            and _normalized_contract_text(event.content)
+            != _normalized_contract_text(
+                (observation or {}).get("content_clean")
+            )
+        )
+        if (
+            not isinstance(observation, dict)
+            or event is None
+            or str(event.sender_role or "").strip().lower()
+            != str(observation.get("sender_role") or "").strip().lower()
+            or str(event.message_type or "").strip().lower()
+            != str(observation.get("message_type") or "").strip().lower()
+            or content_mismatch
+        ):
+            invalid.append(observation_id)
+    if invalid:
+        raise AppError(
+            "MESSAGE_OBSERVATION_MAPPING_INCOMPLETE",
+            (
+                "V3 完整画面的非本分片 observation 无法绑定到已入库事实: "
+                f"invalid={sorted(invalid)}"
+            ),
             409,
         )
 
@@ -3406,6 +3587,7 @@ def ingest_messages(db: Session, worker: Worker, payload: WechatMessageIngestReq
             409,
         )
     _validate_v3_request_contract(payload)
+    _validate_non_delivered_frame_observations(db, payload)
     ordered_messages = _ordered_v3_messages(payload)
     evidence_payload = payload.evidence.model_dump(mode="json")
     slot_origin_read_run_ids = _slot_origin_read_run_ids(

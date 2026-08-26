@@ -1,10 +1,10 @@
 {
   "contract_version": 3,
-  "contract_revision": "0.9.37",
+  "contract_revision": "0.9.38",
   "observation_schema_version": 3,
   "control_schema_version": 1,
   "performance_fast_path_contract": {
-    "release": "0.9.37",
+    "release": "0.9.38",
     "business_semantics_unchanged": true,
     "flags": [
       "CHEJIN_TASK_SAFE_WAKE_ENABLED",
@@ -26,7 +26,7 @@
     "fallback_rule": "missing, conflicting, or unequal evidence executes the 0.9.10 full path without changing business state"
   },
   "startup_layout_calibration_contract": {
-    "schema_version": "0.9.37",
+    "schema_version": "0.9.38",
     "owner": "omniauto",
     "worker_role": "persist_path_transport_contract_validation_and_execution_only",
     "single_runtime_path": true,
@@ -335,7 +335,9 @@
       "item_state",
       "voice_state"
     ],
-    "preflight_rule": "persist the original complete outbox before compaction, size validation, or partitioning; transport compaction may remove only fields outside these allowlists"
+    "preflight_rule": "persist the original complete outbox before compaction, size validation, or partitioning; transport compaction may remove only fields outside these allowlists",
+    "incremental_delivery_rule": "messages contains only facts not already settled while evidence.observations and slot_ledger_states retain the complete authoritative frame",
+    "partition_commit_rule": "nonfinal transport partitions may carry only their owned observations but the final partition must carry every authoritative frame observation; if that complete final evidence cannot fit the transport limit the worker must fail before sending any partition"
   },
   "row_rules": {
     "text_bubble": {
@@ -603,6 +605,7 @@
     "delivery_independence_rule": "delivery_state and item_state must never determine fact_scope or history continuity",
     "legacy_display_rule": "legacy ledger_state may be emitted only for logs and compatibility display; business gates must not read it",
     "history_gap_rule": "only a historical slot below a current_read_run slot is C2_MESSAGE_HISTORY_GAP; unknown is an identity gate",
+    "unknown_fact_gate_rule": "an ingestible unknown observation omitted from messages is accepted only with an explicit identity-unresolved flow gate covering that slot; a missing gate or C2_MESSAGE_HISTORY_GAP alone must be rejected",
     "safety_rule": "only visual_top is strong physical-order evidence; observation_index_fallback must never clear a flow gate or handoff",
     "uniqueness_rule": "source_message_key and screen_order must each be unique inside one authoritative frame"
   },
@@ -1490,7 +1493,7 @@
     ]
   },
   "frame_action_binding_contract": {
-    "release": "0.9.37",
+    "release": "0.9.38",
     "purpose": "prove_only_that_the_worker_selected_unique_frame_local_target_is_still_safe_to_operate_inside_the_current_ui_transaction",
     "durable_identity": false,
     "observation_owner": "sidecar",
@@ -1541,7 +1544,7 @@
     ]
   },
   "pre_send_message_viewport_contract": {
-    "release": "0.9.37",
+    "release": "0.9.38",
     "selected_target_fingerprint_scope": "one_selected_message_type_role_relative_quantized_bounds_required_neighbors_and_sequence_position_only",
     "selected_target_forbidden_inputs": [
       "message_viewport_change_digest",
@@ -1620,7 +1623,7 @@
     "physical_media_action_rule": "each_voice_or_image_action_may_trigger_at_most_once_and_post_trigger_waits_are_passive_evidence_reads_only"
   },
   "pre_send_fact_checkpoint_contract": {
-    "release": "0.9.37",
+    "release": "0.9.38",
     "checkpoint_revision": 3,
     "checkpoint_owner": "backend",
     "comparison_and_decision_owner": "worker",

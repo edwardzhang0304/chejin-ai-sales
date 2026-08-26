@@ -23483,7 +23483,7 @@ class TaskRunnerTest(unittest.TestCase):
                 item["observation_id"]
                 for item in filtered["evidence"]["observations"]
             ],
-            ["observation-new-sales"],
+            ["observation-old-trigger", "observation-new-sales"],
         )
         self.assertEqual(
             [
@@ -23525,7 +23525,10 @@ class TaskRunnerTest(unittest.TestCase):
             filtered = runner._filter_confirmed_messages(payload)
 
         self.assertEqual(filtered["messages"], [])
-        self.assertEqual(filtered["evidence"]["observations"], [])
+        self.assertEqual(
+            filtered["evidence"]["observations"],
+            [{"observation_id": "terminal-observation"}],
+        )
 
     def test_c2_history_gap_blocks_brain_but_still_terminalizes_image(self):
         api = FakeApi(None)

@@ -1,5 +1,5 @@
 @startuml
-' 文档版本：v0.9.37；灰度目标版本：0.9.37（末尾媒体 terminal_committed_fact_equivalence、checkpoint revision 3、guard 与 observations 同帧绑定及真实后端到 Worker 正反组合门禁已通过代码层架构复审；合同 SHA 为 3157d37b8047ef3b39c53d4eab323e87ff7568c442372b08afc22cb1e2c9b9dc，OmniAuto 来源提交 1a541c9eb330e83077c7bdffa0bb003a1c47d525 已形成并完成来源绑定，车金本地候选已形成，推送、打包和配套部署待完成）；最后更新：2026-08-25
+' 文档版本：v0.9.38；灰度目标版本：0.9.38（完整画面 observations 与增量 messages 分离、拆包最后一片完整证据、unknown 显式身份门禁及 5 对 5 checkpoint 比较已通过代码层架构复审；合同 SHA 为 6e1b0ab219c7effdb380170c452cd0e18c42522cd95870f24034af69c6b51143，OmniAuto 生成 Schema 来源提交 715450bc55117cb5ac7c3fc4f574f4721c00b538 已形成并完成来源绑定，车金候选、推送、打包和配套部署待完成）；最后更新：2026-08-26
 title AI智能客服售前跟进系统 全流程图（C0-C4、媒体、回复、转人工与恢复）
 
 skinparam monochrome true
@@ -772,7 +772,12 @@ loop Worker运行中；每次循环最多完成一个会话事务
             else 存在新消息
               W -> W: 按完整正式source_message_key集合\n确定性生成本地outbox_batch_key
               W -> L: 先可靠保存不可变Outbox\nc2-outbox:{read_run_id}:batch-{outbox_batch_key}
-              W -> Ingest: 按原合同POST messages/ingest一次\ncontract_version=3 + read_run_id\n按screen_order发送增量消息
+              W -> Ingest: 按原合同POST messages/ingest一次\ncontract_version=3 + read_run_id\nmessages仅发送未结算增量事实\nobservations/slot ledger保留完整权威画面
+              note over W,Ingest
+                大载荷非末尾分片可只带本片 observations；最后一片必须带完整画面。
+                完整证据装不进上限时，Worker 在发送任何分片前失败，后端零残缺 checkpoint。
+                historical observation 必须由后端正式 MessageEvent 验真；unknown 仅接受明确身份异常门禁。
+              end note
               Ingest -> Ingest: 校验Worker/绑定/短码/private/revision\n校验row_kind/sender_role_source/item_state\n不接收或重算本地outbox_batch_key
               Ingest -> DB: unique(conversation_id,dedupe_key)
               DB --> Ingest: 每条ingested / duplicated / ignored\nfailed语音/图片事实也返回ingested
