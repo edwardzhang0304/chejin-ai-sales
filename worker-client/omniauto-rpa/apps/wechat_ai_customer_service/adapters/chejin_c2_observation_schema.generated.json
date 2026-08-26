@@ -1,8 +1,8 @@
 {
   "generated_file": true,
   "source": "contracts/c2_contract_v3.json",
-  "contract_revision": "0.9.37",
-  "contract_sha256": "3157d37b8047ef3b39c53d4eab323e87ff7568c442372b08afc22cb1e2c9b9dc",
+  "contract_revision": "0.9.38",
+  "contract_sha256": "6e1b0ab219c7effdb380170c452cd0e18c42522cd95870f24034af69c6b51143",
   "observation_schema_version": 3,
   "action_phases": [
     "not_attempted",
@@ -883,7 +883,9 @@
       "item_state",
       "voice_state"
     ],
-    "preflight_rule": "persist the original complete outbox before compaction, size validation, or partitioning; transport compaction may remove only fields outside these allowlists"
+    "preflight_rule": "persist the original complete outbox before compaction, size validation, or partitioning; transport compaction may remove only fields outside these allowlists",
+    "incremental_delivery_rule": "messages contains only facts not already settled while evidence.observations and slot_ledger_states retain the complete authoritative frame",
+    "partition_commit_rule": "nonfinal transport partitions may carry only their owned observations but the final partition must carry every authoritative frame observation; if that complete final evidence cannot fit the transport limit the worker must fail before sending any partition"
   },
   "voice_action_binding_contract": {
     "owner": "omniauto",
@@ -979,7 +981,7 @@
     "invalid_behavior": "C2_VOICE_IDENTITY_CONTRACT_INVALID"
   },
   "frame_action_binding_contract": {
-    "release": "0.9.37",
+    "release": "0.9.38",
     "purpose": "prove_only_that_the_worker_selected_unique_frame_local_target_is_still_safe_to_operate_inside_the_current_ui_transaction",
     "durable_identity": false,
     "observation_owner": "sidecar",
@@ -1030,7 +1032,7 @@
     ]
   },
   "pre_send_message_viewport_contract": {
-    "release": "0.9.37",
+    "release": "0.9.38",
     "selected_target_fingerprint_scope": "one_selected_message_type_role_relative_quantized_bounds_required_neighbors_and_sequence_position_only",
     "selected_target_forbidden_inputs": [
       "message_viewport_change_digest",
@@ -1150,7 +1152,7 @@
     }
   },
   "startup_layout_calibration_contract": {
-    "schema_version": "0.9.37",
+    "schema_version": "0.9.38",
     "owner": "omniauto",
     "worker_role": "persist_path_transport_contract_validation_and_execution_only",
     "single_runtime_path": true,
