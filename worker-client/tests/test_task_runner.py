@@ -14455,7 +14455,6 @@ class TaskRunnerTest(unittest.TestCase):
                 "messages",
                 "voice_prepare",
                 "voice_transcribe",
-                "voice_prepare",
             ],
         )
         self.assertEqual(
