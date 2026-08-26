@@ -1,8 +1,8 @@
 # AI智能客服售前跟进系统 版本更新记录
 
-版本：v0.9.37
+版本：v0.9.38
 
-最后更新：2026-08-25
+最后更新：2026-08-26
 
 ## 1. 文档职责
 
@@ -10,9 +10,9 @@
 项目级权威文档固定为四份：
 
 1. `AI智能客服售前跟进系统_PRD_运营后台统一版_v0.9.10.md`
-2. `AI智能客服售前跟进系统_技术方案手册_v0.9.37.md`
+2. `AI智能客服售前跟进系统_技术方案手册_v0.9.38.md`
 3. 本版本更新记录
-4. `AI智能客服售前跟进系统_全流程图_v0.9.37.puml`
+4. `AI智能客服售前跟进系统_全流程图_v0.9.38.puml`
 
 接口合同、事务恢复架构、场景矩阵、专项测试报告、交接文档、一致性检查、文档目录和子流程图
 已合并进上述四份，不再作为独立开发依据。代码目录 README、第三方声明、测试夹具和提示词属于
@@ -22,18 +22,29 @@
 
 | 项目 | 当前值 |
 |---|---|
-| 候选工作区 | `codex/gray-release-0.9.x`；`0.9.36` 已形成不可覆盖提交 `061b641` 和标签 `gray-v0.9.36`，并与 `origin/codex/gray-release-0.9.x` 对齐；`0.9.37` 代码层架构复审已通过，OmniAuto 真实功能提交及车金本地候选均已形成 |
+| 候选工作区 | `codex/gray-release-0.9.x`；`0.9.37` 已形成不可覆盖提交 `a3c7d86`、标签 `gray-v0.9.37` 和 Windows Fast UAT ZIP；`0.9.38` 代码层架构复审已通过，OmniAuto 生成 Schema 提交已形成，车金候选待提交 |
 | 本轮整改父基线 | `4ae792b`（`gray-v0.9.15`） |
-| 灰度版本 | 目标候选 `0.9.37`；`0.9.0` 至 `0.9.36` 均不得被同名覆盖；本轮冻结发送前不可变事实 checkpoint 比较方案，不增加末尾媒体身份例外 |
+| 灰度版本 | 目标候选 `0.9.38`；`0.9.0` 至 `0.9.37` 均不得被同名覆盖；本轮只修完整画面证据与增量入库旁路，不放宽发送前 checkpoint 比较 |
 | 正式上线版本系列 | `1.0.x`；只接收通过灰度验收的正式上线能力和上线后的稳定性修复，不混入下一期优化 |
 | 下一期优化版本系列 | `1.1.x`；承接本记录第 8 节清单，不反向覆盖 `1.0.x` 正式产物 |
 | 灰度分支 | `codex/gray-release-0.9.x`；从完整候选收口后建立，禁止混入下一期功能 |
-| 当前机器合同 | 本地实现为 `contract_revision=0.9.37`，规范化 SHA 为 `3157d37b8047ef3b39c53d4eab323e87ff7568c442372b08afc22cb1e2c9b9dc`；checkpoint revision 3、`terminal_committed_fact_equivalence` 及真实后端到 Worker 正反组合门禁已完成并通过代码层架构复审，车金本地候选已形成，发布产物待形成 |
-| 来源治理 | `.chejin-source.json` 已绑定 `0.9.37` 真实 OmniAuto 功能提交 `1a541c9eb330e83077c7bdffa0bb003a1c47d525`；车金本地候选已形成，推送、标签和打包仍待完成 |
+| 当前机器合同 | 本地实现为 `contract_revision=0.9.38`，规范化 SHA 为 `6e1b0ab219c7effdb380170c452cd0e18c42522cd95870f24034af69c6b51143`；完整画面与增量消息分离、最终分片完整证据、unknown 显式身份门禁及正式跨端正反门禁已通过复审 |
+| 来源治理 | `.chejin-source.json` 已绑定 `0.9.38` OmniAuto 生成 Schema 提交 `715450bc55117cb5ac7c3fc4f574f4721c00b538`；本轮未修改 Sidecar OCR、鼠标或媒体动作逻辑 |
 | PRD | v0.9.10 |
-| 技术方案 | v0.9.37 是当前唯一技术口径；已提交事实在 `pre_send_refresh` 不重判身份，只做 checkpoint 的相等/唯一前缀/不连续三分仲裁 |
-| 全流程图 | v0.9.37 为当前唯一流程图；Sidecar 只提供观察，Worker 独占事实连续性比较，后端只保存和结算 |
-| 发布状态 | `0.9.36` 是已冻结回退基线；`0.9.37` 代码层架构复审已通过，OmniAuto 真实功能提交、来源绑定及车金本地候选均已形成；推送、标签、ZIP、Windows UAT 和配套后端部署待完成 |
+| 技术方案 | v0.9.38 是当前唯一技术口径；已提交事实仍不重判身份，新增完整画面证据、分片提交及 unknown 合同闭环 |
+| 全流程图 | v0.9.38 为当前唯一流程图；messages 是增量事实，observations/slot ledger 是完整权威画面，发送前仍完整 N 对 N |
+| 发布状态 | `0.9.37` 是已冻结回退基线；`0.9.38` 代码层架构复审通过，OmniAuto Schema 来源已绑定；车金提交、推送、标签、ZIP 和配套后端部署待完成 |
+
+### 2.0.37 2026-08-26：完整画面证据与增量入库闭环升为 0.9.38
+
+- 第二轮会话现场出现“当前画面 5 条、只新增 2 条”，旧 Worker 在过滤已确认历史消息时同时删除了完整画面 observations，导致后端冻结的 checkpoint 只有 2 条，发送前与当前 5 条画面必然对齐失败。
+- 正确职责固定为：`messages` 只携带本轮未结算事实，避免重复入库；`evidence.observations` 与 `slot_ledger_states` 必须保留同一张完整权威画面，供后端冻结 checkpoint 和 Worker 发送前完整 N 对 N 比较。严禁通过放宽比较或补数据库整段历史解决。
+- 大载荷拆包时，非末尾分片可只运输本片 observation，但最后一片必须携带完整权威 observations；若完整证据本身超过运输上限，Worker 在发送任何分片前明确失败，后端零入库、零残缺 checkpoint。
+- 后端对不随 `messages` 重复提交的 historical observation 必须查询正式 `MessageEvent` 校验会话、source key、角色、类型和正文，伪造历史事实返回 409。
+- `fact_scope=unknown` 只有被明确身份异常 flow gate 覆盖时才能进入既有恢复/转人工流程；缺门禁或错误使用 `C2_MESSAGE_HISTORY_GAP` 均返回 409，不能在合同校验前静默丢失，也不能借普通历史缺口绕过身份门禁。
+- 本轮不修改 Sidecar OCR、鼠标、语音/图片动作、Brain、回复作废、媒体处理顺序、UI 锁或 C0—C4 状态机。正常第二轮保持“完整 5 条证据、只入库新增 2 条、发送前 5 对 5”。
+- 架构复审确认无功能性 P0/P1；关键验证经过生产 Worker 过滤/拆包、真实 SQLite、正式 HTTP 路由、后端数据库、checkpoint 生成和 Worker 比较函数，不是伪造最终成功。后端 C2 路由 `183 passed + 1 skipped`、Worker 定向 `36 passed`、C3 checkpoint/预发送 `16 passed`，编译和 `git diff --check` 通过。
+- `gray-v0.9.37` 与其 ZIP 不得覆盖。本轮合同为 `0.9.38 / 6e1b0ab219c7effdb380170c452cd0e18c42522cd95870f24034af69c6b51143`；OmniAuto 生成 Schema 来源提交为 `715450bc55117cb5ac7c3fc4f574f4721c00b538`。Windows 整体 UAT 和配套后端部署仍按发布流程执行。
 
 ### 2.0.36 2026-08-25：发送前不可变事实 checkpoint 方案升为 0.9.37
 
@@ -47,7 +58,7 @@
 - 真实 Win32 无原生 ID、已提交末尾媒体无后侧邻居且前后画面证据完全相同时，系统无法证明物理上是否仍为原消息，不得伪造该身份结论。冻结方案改为区分“物理身份”与“回复依赖的业务事实”：只有正式 action receipt、完整未截断序列、唯一前缀及精确回复事实全部一致时，允许 `terminal_committed_fact_equivalence + physical_identity_confirmed=false` 通过本 reply_action 发送门；不继承旧 ID，不进入 Ledger/Outbox/ingest，不放宽普通身份门禁。
 - 提交门禁必须真实经过正式 `pre_send_refresh`、持久化 checkpoint、reply_action 与后端数据库，覆盖末尾语音、末尾图片、完全相等、追加重复内容、同位置替换、截断/多解释和普通读取不得被放宽等正反场景；禁止只测内部比较函数或伪造最终成功。
 
-- **实现状态更新：** `terminal_committed_fact_equivalence`、checkpoint revision 3、不继承旧身份门禁及语音/图片的真实后端到 Worker 正反组合测试已补齐，guard 与 observations 同帧绑定和被动重读布局复查也已关闭；当前合同为 `0.9.37 / 3157d37b8047ef3b39c53d4eab323e87ff7568c442372b08afc22cb1e2c9b9dc`，代码层架构复审通过。OmniAuto 真实功能提交已固定为 `1a541c9eb330e83077c7bdffa0bb003a1c47d525` 并完成来源绑定，车金本地候选也已形成；推送、标签、ZIP、Windows 实机 UAT 和配套后端部署待完成。
+- **实现状态更新：** `terminal_committed_fact_equivalence`、checkpoint revision 3、不继承旧身份门禁及语音/图片的真实后端到 Worker 正反组合测试已补齐，guard 与 observations 同帧绑定和被动重读布局复查也已关闭；合同为 `0.9.37 / 3157d37b8047ef3b39c53d4eab323e87ff7568c442372b08afc22cb1e2c9b9dc`。OmniAuto 功能提交固定为 `1a541c9eb330e83077c7bdffa0bb003a1c47d525`，车金提交固定为 `a3c7d86`，标签 `gray-v0.9.37` 和 GitHub Windows Fast UAT ZIP 已形成；后续现场暴露完整画面证据被增量过滤的问题，因此该 ZIP 仅作为 `0.9.38` 回退与故障复现基线，不得覆盖。
 - **布局门禁整改：** 发送前事实比较和 claim-send 前两处生产检查均必须验证 `send_context_guard.ok=true`及布局快照、消息数量、顺序、摘要和末项一致性；Sidecar 与 Worker 现共用唯一纯投影规则，Worker 必须从同一响应的 observations 复算并逐项匹配 guard，禁止“合法旧 guard + 合法新 observations”跨帧拼接；唯一一次被动重读后必须再次执行完整布局检查。无效时直接按 `C2_PRE_SEND_LAYOUT_INVALID` 技术故障结算，不消耗重读次数，不转人工且零微信动作。普通回复、末尾媒体、空欢迎语、跨帧混配和重读布局失效反例均已通过生产 `build_send_context_guard()` 固化。
 
 ### 2.0.35 2026-08-25：Brain 强制超时分阶段证据升为 0.9.36
@@ -480,7 +491,7 @@
 
 ## 5. 版本与合同规则
 
-- 灰度系列固定为 `0.9.x`。`0.9.0` 至 `0.9.36` 已冻结且不得同名覆盖，当前目标候选为 `0.9.37`；后续每个内容不同且进入测试的
+- 灰度系列固定为 `0.9.x`。`0.9.0` 至 `0.9.37` 已冻结且不得同名覆盖，当前目标候选为 `0.9.38`；后续每个内容不同且进入测试的
   不可变候选继续顺序升版，不得跳回旧号或覆盖同号内容。
 - PRD、技术方案、全流程图、版本记录、客户端、后端、OmniAuto 合同 `contract_revision`、
   生成 Schema、manifest 和安装包必须使用同一个精确灰度版本，不再各自维护版本号。

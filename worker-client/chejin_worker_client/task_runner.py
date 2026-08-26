@@ -10560,7 +10560,6 @@ class TaskRunner:
     def _filter_confirmed_messages(self, payload: dict[str, Any]) -> dict[str, Any]:
         filtered = dict(payload)
         messages: list[dict[str, Any]] = []
-        removed_observation_ids: set[str] = set()
         evidence = (
             dict(payload.get("evidence"))
             if isinstance(payload.get("evidence"), dict)
@@ -10589,35 +10588,15 @@ class TaskRunner:
             if already_settled or (
                 ledger and ledger.get("ingest_state") == "not_required"
             ):
-                raw_payload = (
-                    item.get("raw_payload")
-                    if isinstance(item.get("raw_payload"), dict)
-                    else {}
-                )
-                observation = (
-                    raw_payload.get("observation")
-                    if isinstance(raw_payload.get("observation"), dict)
-                    else {}
-                )
-                observation_id = str(
-                    observation.get("observation_id") or ""
-                ).strip()
-                if observation_id:
-                    removed_observation_ids.add(observation_id)
                 continue
             messages.append(item)
         filtered["messages"] = messages
-        observations = evidence.get("observations")
-        if removed_observation_ids and isinstance(observations, list):
-            evidence["observations"] = [
-                observation
-                for observation in observations
-                if not (
-                    isinstance(observation, dict)
-                    and str(observation.get("observation_id") or "").strip()
-                    in removed_observation_ids
-                )
-            ]
+        # ``messages`` is the incremental delivery set, while
+        # ``evidence.observations`` and ``slot_ledger_states`` describe the
+        # complete authoritative WeChat frame.  Historical facts must not be
+        # re-enqueued, but removing their frame observations would turn a
+        # complete five-row view into a two-row delta.  The backend freezes the
+        # pre-send checkpoint from this full-frame evidence, so keep it intact.
         filtered["evidence"] = evidence
         return filtered
 

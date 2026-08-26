@@ -219,6 +219,8 @@ def _message_observation_id(message: dict[str, Any]) -> str:
 def _partition_payload(
     payload: dict[str, Any],
     messages: list[dict[str, Any]],
+    *,
+    include_complete_observations: bool = False,
 ) -> dict[str, Any]:
     result = copy.deepcopy(payload)
     result["messages"] = copy.deepcopy(messages)
@@ -232,13 +234,14 @@ def _partition_payload(
         for message in messages
         if _message_observation_id(message)
     }
-    evidence["observations"] = [
-        item
-        for item in (evidence.get("observations") or [])
-        if isinstance(item, dict)
-        and str(item.get("observation_id") or "").strip()
-        in observation_ids
-    ]
+    if not include_complete_observations:
+        evidence["observations"] = [
+            item
+            for item in (evidence.get("observations") or [])
+            if isinstance(item, dict)
+            and str(item.get("observation_id") or "").strip()
+            in observation_ids
+        ]
     result["evidence"] = evidence
     return result
 
@@ -284,7 +287,33 @@ def split_ingest_payload(
     if current:
         chunks.append(current)
     if len(chunks) <= 1:
+        if encoded_payload_size(prepared) > target_bytes:
+            raise ValueError("C2_INGEST_SINGLE_ITEM_TOO_LARGE")
         return [copy.deepcopy(prepared)]
+
+    # The final request is the commit point for one authoritative frame.  It
+    # must carry every observation, including already-confirmed history and
+    # identity-unknown rows.  Reserve the smallest possible message chunk for
+    # that request instead of silently shrinking the frame evidence again.
+    if encoded_payload_size(
+        _partition_payload(
+            prepared,
+            chunks[-1],
+            include_complete_observations=True,
+        )
+    ) > target_bytes and len(chunks[-1]) > 1:
+        preceding = chunks[-1][:-1]
+        final_message = chunks[-1][-1:]
+        chunks[-1] = preceding
+        chunks.append(final_message)
+    if encoded_payload_size(
+        _partition_payload(
+            prepared,
+            chunks[-1],
+            include_complete_observations=True,
+        )
+    ) > target_bytes:
+        raise ValueError("C2_INGEST_SINGLE_ITEM_TOO_LARGE")
 
     source_keys = [
         str(item.get("source_message_key") or "").strip()
@@ -294,7 +323,11 @@ def split_ingest_payload(
     read_run_id = str(prepared.get("read_run_id") or "").strip()
     result: list[dict[str, Any]] = []
     for index, chunk in enumerate(chunks, start=1):
-        part = _partition_payload(prepared, chunk)
+        part = _partition_payload(
+            prepared,
+            chunk,
+            include_complete_observations=index == len(chunks),
+        )
         evidence = part["evidence"]
         evidence["ingest_partition"] = {
             "group_id": read_run_id,
