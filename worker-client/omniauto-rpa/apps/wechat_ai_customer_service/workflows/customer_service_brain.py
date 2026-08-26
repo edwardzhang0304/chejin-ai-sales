@@ -334,7 +334,27 @@ def low_authority_fast_business_decision_signal(clean_text: str) -> bool:
     has_product_context = text_contains_any(clean, LOW_AUTHORITY_FAST_PRODUCT_CONTEXT_TERMS)
     has_decision = text_contains_any(clean, LOW_AUTHORITY_FAST_DECISION_TERMS)
     has_delegation = text_contains_any(clean, LOW_AUTHORITY_FAST_DELEGATION_TERMS)
-    return bool(has_product_context and has_decision and (has_delegation or "哪" in clean or "推荐" in clean or "建议" in clean))
+    return bool(
+        has_product_context
+        and (
+            (
+                has_decision
+                and (
+                    has_delegation
+                    or "哪" in clean
+                    or "推荐" in clean
+                    or "建议" in clean
+                )
+            )
+            or (
+                text_contains_any(clean, ("想找", "有合适"))
+                and text_contains_any(
+                    clean,
+                    ("电车", "纯电", "混动", "轿车", "suv", "mpv"),
+                )
+            )
+        )
+    )
 
 
 def target_context_has_active_business_state(target_state: dict[str, Any]) -> bool:

@@ -2035,6 +2035,32 @@ def check_low_authority_fast_profile_rejects_authority_or_context_turns() -> Cas
         casual_car_word_decision.get("enabled"),
         f"casual small talk containing the character car should not be forced into full authority path: {casual_car_word_decision}",
     )
+    short_business_decision = brain_module.low_authority_fast_profile_decision(
+        settings=settings,
+        combined="我想找个便宜点的电车，有合适的吗",
+        batch=[{"id": "msg-short-business", "sender": "许聪", "content": "我想找个便宜点的电车，有合适的吗"}],
+        target_state={},
+    )
+    assert_true(
+        not short_business_decision.get("enabled")
+        and short_business_decision.get("reason") == "business_decision_needs_context",
+        f"short electric-vehicle shopping request must use context-rich Brain path: {short_business_decision}",
+    )
+    for short_message in (
+        "今天路上堵车了，我需要早点出门",
+        "我希望明天坐车别堵",
+        "这台车我觉得适合拍照",
+    ):
+        short_decision = brain_module.low_authority_fast_profile_decision(
+            settings=settings,
+            combined=short_message,
+            batch=[{"id": "msg-short-negative", "sender": "许聪", "content": short_message}],
+            target_state={},
+        )
+        assert_true(
+            short_decision.get("enabled"),
+            f"ordinary short message must stay on the fast path: {short_message!r} -> {short_decision}",
+        )
     generic_vehicle_intent_decision = brain_module.low_authority_fast_profile_decision(
         settings=settings,
         combined="有车吗",
@@ -2062,6 +2088,7 @@ def check_low_authority_fast_profile_rejects_authority_or_context_turns() -> Cas
             "product": product_decision,
             "ambiguous": ambiguous_decision,
             "casual_car_word": casual_car_word_decision,
+            "short_business": short_business_decision,
             "generic_vehicle_intent": generic_vehicle_intent_decision,
             "direct_choice": direct_choice_decision,
         },
