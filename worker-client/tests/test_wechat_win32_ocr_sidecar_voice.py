@@ -693,6 +693,296 @@ class WechatWin32OcrVoiceSelectionTest(unittest.TestCase):
         self.assertEqual(observation["sender_role_source"], "unknown")
         self.assertIsNone(observation["parent_voice_anchor_key"])
 
+    def test_same_frame_ocr_voice_and_visual_hint_emit_one_action_target(
+        self,
+    ) -> None:
+        observations = sidecar.build_message_observations_v3(
+            [
+                {
+                    "id": "win32_ocr:b461252a399f8044",
+                    "source_adapter": "win32_ocr",
+                    "type": "voice",
+                    "sender_role": "customer",
+                    "content": "",
+                    "content_raw_ocr": '5"',
+                    "voice_duration": 5,
+                    "voice_duration_text": '5"',
+                    "voice_anchor_key": (
+                        "voice-structural:2adfd2091d7c3c488055"
+                    ),
+                    "voice_anchor_structural_key": (
+                        "voice-structural:2adfd2091d7c3c488055"
+                    ),
+                    "bubble_rect": {
+                        "left": 478,
+                        "top": 402,
+                        "right": 524,
+                        "bottom": 427,
+                    },
+                    "avatar_alignment": {"role": "customer"},
+                    "quality_flags": [
+                        "ocr_low_confidence",
+                        "untranscribed_voice_placeholder",
+                    ],
+                }
+            ],
+            {
+                "detected": True,
+                "sender_role": "customer",
+                "anchor_key": "frame-anchor",
+                "anchor_stable_key": (
+                    "voice-stable:afedc9adc90cd16f6a59"
+                ),
+                "anchor_structural_key": (
+                    "voice-structural:2adfd2091d7c3c488055"
+                ),
+                "bubble_rect": [478, 402, 524, 427],
+            },
+        )
+
+        self.assertEqual(len(observations), 1)
+        observation = observations[0]
+        self.assertEqual(
+            observation["observation_id"],
+            "win32_ocr:b461252a399f8044",
+        )
+        self.assertEqual(
+            observation["voice_anchor_stable_key"],
+            "voice-stable:afedc9adc90cd16f6a59",
+        )
+        self.assertEqual(
+            set(observation["anchor_aliases"]),
+            {
+                "frame-anchor",
+                "voice-stable:afedc9adc90cd16f6a59",
+                "voice-structural:2adfd2091d7c3c488055",
+            },
+        )
+        self.assertIn("visual_voice_hint", observation["quality_flags"])
+        self.assertFalse(observation.get("contract_errors"))
+
+    def test_same_row_conflicting_voice_evidence_is_contract_error(
+        self,
+    ) -> None:
+        cases = (
+            (
+                {"sender_role": "self"},
+                "OBSERVATION_VOICE_SAME_ROW_ROLE_CONFLICT",
+            ),
+            (
+                {"sender_role": "customer", "voice_duration": 4},
+                "OBSERVATION_VOICE_SAME_ROW_DURATION_CONFLICT",
+            ),
+            (
+                {
+                    "sender_role": "customer",
+                    "parent_voice_anchor_key": "parent:visual",
+                },
+                "OBSERVATION_VOICE_SAME_ROW_PARENT_CONFLICT",
+            ),
+            (
+                {
+                    "sender_role": "customer",
+                    "voice_state": "transcribed",
+                },
+                "OBSERVATION_VOICE_SAME_ROW_STATE_CONFLICT",
+            ),
+        )
+        for hint_overrides, expected_error in cases:
+            with self.subTest(expected_error=expected_error):
+                observations = sidecar.build_message_observations_v3(
+                    [
+                        {
+                            "id": "win32_ocr:customer-voice",
+                            "type": "voice",
+                            "sender_role": "customer",
+                            "content": "",
+                            "voice_duration": 5,
+                            "voice_duration_text": '5"',
+                            "voice_anchor_key": (
+                                "voice-structural:customer"
+                            ),
+                            "parent_voice_anchor_key": "parent:ocr",
+                            "bubble_rect": [478, 402, 524, 427],
+                            "avatar_alignment": {"role": "customer"},
+                            "quality_flags": [
+                                "untranscribed_voice_placeholder"
+                            ],
+                        }
+                    ],
+                    {
+                        "detected": True,
+                        "anchor_stable_key": "voice-stable:visual",
+                        "bubble_rect": [478, 402, 524, 427],
+                        **hint_overrides,
+                    },
+                )
+
+                self.assertEqual(len(observations), 1)
+                self.assertIn(
+                    expected_error,
+                    observations[0].get("contract_errors") or [],
+                )
+
+    def test_same_row_different_rect_ranges_merge_without_overwriting_aliases(
+        self,
+    ) -> None:
+        observations = sidecar.build_message_observations_v3(
+            [
+                {
+                    "id": "win32_ocr:wide-row",
+                    "type": "voice",
+                    "sender_role": "customer",
+                    "content": "",
+                    "voice_duration": 3,
+                    "voice_duration_text": '3"',
+                    "voice_anchor_stable_key": "voice-stable:ocr",
+                    "voice_anchor_structural_key": (
+                        "voice-structural:ocr"
+                    ),
+                    "bubble_rect": [478, 402, 524, 427],
+                    "avatar_alignment": {"role": "customer"},
+                    "quality_flags": [
+                        "untranscribed_voice_placeholder"
+                    ],
+                }
+            ],
+            {
+                "detected": True,
+                "sender_role": "customer",
+                "voice_duration": 3,
+                "anchor_stable_key": "voice-stable:visual",
+                "anchor_structural_key": "voice-structural:visual",
+                "bubble_rect": [430, 397, 650, 432],
+            },
+        )
+
+        self.assertEqual(len(observations), 1)
+        observation = observations[0]
+        self.assertEqual(
+            observation["source_message"]["voice_anchor_stable_key"],
+            "voice-stable:ocr",
+        )
+        self.assertEqual(
+            observation["voice_anchor_key"],
+            "voice-structural:ocr",
+        )
+        self.assertEqual(
+            set(observation["anchor_aliases"]),
+            {
+                "voice-stable:ocr",
+                "voice-stable:visual",
+                "voice-structural:ocr",
+                "voice-structural:visual",
+            },
+        )
+
+    def test_same_anchor_on_different_message_rows_must_not_merge(
+        self,
+    ) -> None:
+        observations = sidecar.build_message_observations_v3(
+            [
+                {
+                    "id": "win32_ocr:upper-voice",
+                    "type": "voice",
+                    "sender_role": "customer",
+                    "content": "",
+                    "voice_duration": 5,
+                    "voice_duration_text": '5"',
+                    "voice_anchor_structural_key": (
+                        "voice-structural:same-name"
+                    ),
+                    "bubble_rect": [478, 200, 524, 225],
+                    "avatar_alignment": {"role": "customer"},
+                    "quality_flags": [
+                        "untranscribed_voice_placeholder"
+                    ],
+                }
+            ],
+            {
+                "detected": True,
+                "sender_role": "customer",
+                "anchor_stable_key": "voice-stable:lower-voice",
+                "anchor_structural_key": (
+                    "voice-structural:same-name"
+                ),
+                "bubble_rect": [478, 402, 524, 427],
+            },
+        )
+
+        self.assertEqual(len(observations), 2)
+        self.assertEqual(
+            observations[0].get("voice_anchor_stable_key"),
+            None,
+        )
+        self.assertEqual(
+            observations[1].get("voice_anchor_stable_key"),
+            "voice-stable:lower-voice",
+        )
+        self.assertEqual(
+            set(observations[0]["anchor_aliases"]),
+            {"voice-structural:same-name"},
+        )
+        self.assertEqual(
+            set(observations[1]["anchor_aliases"]),
+            {
+                "voice-stable:lower-voice",
+                "voice-structural:same-name",
+            },
+        )
+
+    def test_adjacent_voice_rows_never_merge_without_vertical_overlap(
+        self,
+    ) -> None:
+        for gap in (1, 8, 17):
+            with self.subTest(gap=gap):
+                observations = sidecar.build_message_observations_v3(
+                    [
+                        {
+                            "id": f"win32_ocr:upper-voice-{gap}",
+                            "type": "voice",
+                            "sender_role": "customer",
+                            "content": "",
+                            "voice_duration": 3,
+                            "voice_duration_text": '3"',
+                            "voice_anchor_structural_key": (
+                                "voice-structural:same-name"
+                            ),
+                            "bubble_rect": [478, 200, 524, 225],
+                            "avatar_alignment": {"role": "customer"},
+                            "quality_flags": [
+                                "untranscribed_voice_placeholder"
+                            ],
+                        }
+                    ],
+                    {
+                        "detected": True,
+                        "sender_role": "customer",
+                        "voice_duration": 3,
+                        "anchor_stable_key": (
+                            f"voice-stable:lower-voice-{gap}"
+                        ),
+                        "anchor_structural_key": (
+                            "voice-structural:same-name"
+                        ),
+                        "bubble_rect": [
+                            430,
+                            225 + gap,
+                            650,
+                            250 + gap,
+                        ],
+                    },
+                )
+
+                self.assertEqual(len(observations), 2)
+                self.assertIsNone(
+                    observations[0].get("voice_anchor_stable_key")
+                )
+                self.assertEqual(
+                    observations[1].get("voice_anchor_stable_key"),
+                    f"voice-stable:lower-voice-{gap}",
+                )
+
     def test_final_message_parse_attaches_parent_anchor_to_every_visible_transcript(self) -> None:
         image = Image.new("RGB", (981, 860), (247, 247, 247))
         items = [

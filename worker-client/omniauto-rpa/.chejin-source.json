@@ -4,7 +4,7 @@
   "upstream_base_commit": "a563e6688c47a8922510794101967823fe1389d7",
   "selective_integrations": [
     {
-      "source_commit": "715450bc55117cb5ac7c3fc4f574f4721c00b538",
+      "source_commit": "88a10cb6160e3552ef6abd02b3fb4d517cbfcab9",
       "scope": [
         "exact_wechat_context_menu_classification",
         "same_popup_menu_panel_evidence_contract",
@@ -94,7 +94,9 @@
         "windows_full_gate_production_fixture_alignment_contract",
         "telemetry_sqlite_connection_close_contract",
         "windows_test_artifact_filename_and_incident_worker_cleanup_contract",
-        "optional_windows_evidence_pytest_skip_contract"
+        "optional_windows_evidence_pytest_skip_contract",
+        "same_frame_voice_physical_row_merge_contract",
+        "low_authority_fast_short_vehicle_purchase_intent_contract"
       ]
     }
   ],
@@ -136,5 +138,5 @@
       ]
     }
   ],
-  "integration_note": "0.9.38 OmniAuto 生成 Schema 独立提交固定于 715450bc55117cb5ac7c3fc4f574f4721c00b538；本轮没有修改 Sidecar 的 OCR、鼠标、媒体动作或消息身份逻辑，只同步 0.9.38 机器合同：messages 仅运输本轮未结算事实，observations 与 slot ledger 保留完整权威画面；拆包最后一片必须携带完整 observations，完整证据无法装入上限时在发送任何分片前失败。Worker 与后端同时补齐已确认历史事实校验及 unknown 必须携带明确身份异常门禁的合同，不改变 Brain、回复作废、发送前 5 对 5、安全点击、媒体处理顺序或 C0-C4 状态机。0.9.37 历史能力继续保留：四类 Sidecar 公开输出递归删除 Worker 专属身份字段；消息视口纯投影由 Sidecar 与 Worker 共用，guard 与本次 observations 同帧绑定，被动重读后重新检查布局；0.9.36 的 Brain 主模型、备用模型、同帧重试、JSON 修复、质量返修和语义审核无敏感字段进度标记继续保留，诊断失败不改变 Brain 结果，不修改主备模型、重试或超时。继续以 gray-v0.9.20 业务流程为基线：启动时确认 per-monitor DPI awareness 并建立一次 startup_layout_calibration；C1-C4 业务帧只引用 calibration_id，业务动作不自动移动或重设微信窗口。历史安全语义仍包括不重复点击、旧剪贴板不能形成图片事实、无界面的语音/图片 ActionJournal 恢复、结束旧 Flow 后继续拉取其他任务、OmniAuto 独占区域映射和坐标决策、删除统一激活成功布尔门禁、C1 保留八类真实变化画面、sent_ack 语义不变、manual_review_required 和 LEGACY_MEDIA_OWNER_UNKNOWN，OmniAuto 独立候选固定于上述真实提交。C3 输入框点击面和文字 ROI、C2 语音被动等待、图片弹窗收尾、添加朋友“+”纵向搜索框约束、确定性 Outbox、重启 ActionJournal 恢复、legacy 有限终态及临时网络退避规则全部保持不变。Windows 原故障 SQLite 重启和整体 Windows UAT 仍是现场交付门禁，自动化通过不代表实机已验收。"
+  "integration_note": "0.9.39 OmniAuto 独立来源提交固定于 88a10cb6160e3552ef6abd02b3fb4d517cbfcab9；本轮 Sidecar 只收口同一不可变截图内 OCR 与图形语音观察的物理行归并：纵向范围必须真实相交，横向范围可以不同，相邻消息行即使只隔 1px 也不得合并；锚点别名只保留证据，不作为跨轮消息身份；同一行的角色、时长、父子或转写状态矛盾返回合同错误并零点击。PR #11 的低权威快速短句购车意图判断同步纳入该来源树，只收窄现有业务信号表达，不修改 Handoff 流程、C3 服务或状态机。机器合同保持 0.9.39 / 33eb5790a6a629818e7d8e29671374b0a03ca203dc74e742bbd9151de87356ba。0.9.38 历史能力继续保留：messages 仅运输本轮未结算事实，observations 与 slot ledger 保留完整权威画面；拆包最后一片必须携带完整 observations，完整证据无法装入上限时在发送任何分片前失败。Worker 与后端已确认历史事实校验及 unknown 明确身份异常门禁的合同保持不变，不改变 Brain 回复作废、发送前 5 对 5、安全点击、媒体处理顺序或 C0-C4 状态机。0.9.37 历史能力继续保留：四类 Sidecar 公开输出递归删除 Worker 专属身份字段；消息视口纯投影由 Sidecar 与 Worker 共用，guard 与本次 observations 同帧绑定，被动重读后重新检查布局；0.9.36 的 Brain 主模型、备用模型、同帧重试、JSON 修复、质量返修和语义审核无敏感字段进度标记继续保留，诊断失败不改变 Brain 结果，不修改主备模型、重试或超时。继续以 gray-v0.9.20 业务流程为基线：启动时确认 per-monitor DPI awareness 并建立一次 startup_layout_calibration；C1-C4 业务帧只引用 calibration_id，业务动作不自动移动或重设微信窗口。历史安全语义仍包括不重复点击、旧剪贴板不能形成图片事实、无界面的语音/图片 ActionJournal 恢复、结束旧 Flow 后继续拉取其他任务、OmniAuto 独占区域映射和坐标决策、删除统一激活成功布尔门禁、C1 保留八类真实变化画面、sent_ack 语义不变、manual_review_required 和 LEGACY_MEDIA_OWNER_UNKNOWN，OmniAuto 独立候选固定于上述真实提交。C3 输入框点击面和文字 ROI、C2 语音被动等待、图片弹窗收尾、添加朋友“+”纵向搜索框约束、确定性 Outbox、重启 ActionJournal 恢复、legacy 有限终态及临时网络退避规则全部保持不变。Windows 原故障 SQLite 重启和整体 Windows UAT 仍是现场交付门禁，自动化通过不代表实机已验收。"
 }

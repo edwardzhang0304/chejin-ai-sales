@@ -37,7 +37,11 @@ from chejin_worker_client.action_journal import (
     remove_action_journal,
     update_action_journal_item,
 )
-from chejin_worker_client.c2_contract import contract_revision, contract_sha256
+from chejin_worker_client.c2_contract import (
+    contract_revision,
+    contract_sha256,
+    sidecar_contract_error,
+)
 from chejin_worker_client.config import CONFIG
 from chejin_worker_client.models import Binding, RpaResult, RpaStep, Task, WechatReadTarget, WorkerProfile
 from chejin_worker_client.incident_evidence import wait_for_incident
@@ -87,12 +91,11 @@ from chejin_worker_client.task_runner import (
     TaskLeaseGuard,
     TaskRunner,
     _executable_untranscribed_voice_observations,
-    _same_frame_voice_action_evidence_matches,
     align_post_action_observations,
-    collapse_same_frame_voice_aliases,
     _freeze_phase_metadata,
     _validate_pre_send_context_guard,
     pre_send_new_suffix_validation,
+    voice_action_journal_anchor_keys,
 )
 from chejin_worker_client.transaction_outcomes import (
     FlowOutcomeAccumulator,
@@ -120,13 +123,7 @@ PRODUCTION_SIDECAR_PATH = (
 _PRODUCTION_SIDECAR = None
 
 
-def production_send_context_guard(
-    observations: list[dict],
-    *,
-    layout_ok: bool,
-) -> dict:
-    """Call the real Sidecar builder; do not fabricate its final result."""
-
+def production_sidecar_module():
     global _PRODUCTION_SIDECAR
     if _PRODUCTION_SIDECAR is None:
         if str(OMNIAUTO_ROOT) not in sys.path:
@@ -141,6 +138,17 @@ def production_send_context_guard(
         sys.modules[module_name] = module
         spec.loader.exec_module(module)
         _PRODUCTION_SIDECAR = module
+    return _PRODUCTION_SIDECAR
+
+
+def production_send_context_guard(
+    observations: list[dict],
+    *,
+    layout_ok: bool,
+) -> dict:
+    """Call the real Sidecar builder; do not fabricate its final result."""
+
+    sidecar = production_sidecar_module()
     layout_evidence = (
         {
             "ok": True,
@@ -157,7 +165,7 @@ def production_send_context_guard(
             "layout_snapshot": {"valid": False},
         }
     )
-    return _PRODUCTION_SIDECAR.build_send_context_guard(
+    return sidecar.build_send_context_guard(
         observations,
         layout_evidence=layout_evidence,
     )
@@ -1582,8 +1590,11 @@ class FakeBridge:
 
     def prepare_voice_action(self, *, display_name: str, rpa_session_key: str, **kwargs):
         self.c2_operation_order.append("voice_prepare")
-        observations = collapse_same_frame_voice_aliases(
-            list(self.last_message_payload.get("observations") or [])
+        # Production Sidecar must already provide one canonical action target
+        # per physical voice. The test bridge must not hide duplicate-output
+        # bugs by performing a Worker-side merge that production does not own.
+        observations = list(
+            self.last_message_payload.get("observations") or []
         )
         candidates = [
             item for item in observations
@@ -1640,14 +1651,10 @@ class FakeBridge:
             "selected_target_fingerprint": f"fixture-fingerprint:{selected_id}",
             "message_viewport_change_digest": viewport_digest,
             "selected_voice_observation": dict(selected),
-            "selected_physical_anchor_keys": sorted({
-                str(value).strip()
-                for value in (
-                    selected.get("_voice_action_anchor_keys")
-                    or [selected.get("voice_anchor_key") or selected_id]
-                )
-                if str(value or "").strip()
-            }),
+            "selected_physical_anchor_keys": (
+                voice_action_journal_anchor_keys(selected)
+                or [selected_id]
+            ),
             "candidate_group_count": len(candidates),
             "ui_action_performed": False,
         })
@@ -2402,68 +2409,53 @@ class TaskRunnerTest(unittest.TestCase):
         self.assertEqual(frozen["terminal_source_keys"], [source_key])
         self.assertEqual(frozen["cached_source_keys"], [])
 
-    def test_physical_voice_aliases_merge_before_journal_creation(self):
-        observations = [
-            {
-                "observation_id": "voice-alias-a",
-                "row_kind": "voice_bubble",
-                "message_type": "voice",
-                "voice_state": "untranscribed",
-                "sender_role": "customer",
-                "voice_anchor_structural_key": "voice-structural:a",
-                "parent_voice_anchor_key": "voice-parent:shared",
-            },
-            {
-                "observation_id": "voice-alias-b",
-                "row_kind": "voice_bubble",
-                "message_type": "voice",
-                "voice_state": "untranscribed",
-                "sender_role": "customer",
-                "voice_anchor_structural_key": "voice-structural:b",
-                "parent_voice_anchor_key": "voice-parent:shared",
-            },
-        ]
-
-        collapsed = collapse_same_frame_voice_aliases(
-            observations,
-        )
-
-        self.assertEqual(len(collapsed), 1)
-        self.assertEqual(
-            collapsed[0]["_voice_action_anchor_keys"],
-            [
-                "voice-parent:shared",
-                "voice-structural:a",
-                "voice-structural:b",
+    def test_voice_journal_uses_sidecar_canonical_frame_aliases(self):
+        observation = {
+            "observation_id": "voice-canonical",
+            "row_kind": "voice_bubble",
+            "message_type": "voice",
+            "voice_state": "untranscribed",
+            "sender_role": "customer",
+            "voice_anchor_stable_key": "voice-stable:one",
+            "voice_anchor_structural_key": "voice-structural:one",
+            "anchor_aliases": [
+                "voice-ocr:one",
+                "voice-visual:one",
             ],
-        )
-        self.assertEqual(collapsed[0]["sender_role"], "customer")
+        }
 
-    def test_distinct_physical_voices_remain_distinct(self):
-        observations = [
+        self.assertEqual(
+            set(voice_action_journal_anchor_keys(observation)),
             {
-                "observation_id": "voice-distinct-a",
-                "row_kind": "voice_bubble",
-                "message_type": "voice",
-                "voice_state": "untranscribed",
-                "sender_role": "customer",
-                "voice_anchor_structural_key": "voice-structural:a",
+                "voice-ocr:one",
+                "voice-visual:one",
+                "voice-stable:one",
+                "voice-structural:one",
             },
-            {
-                "observation_id": "voice-distinct-b",
-                "row_kind": "voice_bubble",
-                "message_type": "voice",
-                "voice_state": "untranscribed",
-                "sender_role": "customer",
-                "voice_anchor_structural_key": "voice-structural:b",
-            },
-        ]
-
-        collapsed = collapse_same_frame_voice_aliases(
-            observations,
         )
 
-        self.assertEqual(len(collapsed), 2)
+    def test_worker_contract_accepts_distinct_sidecar_frame_targets(self):
+        payload = {
+            "observation_schema_version": 3,
+            "observations": [
+                {
+                    "observation_id": "voice-distinct-a",
+                    "row_kind": "voice_bubble",
+                    "message_type": "voice",
+                    "voice_state": "untranscribed",
+                    "voice_anchor_stable_key": "voice-stable:a",
+                },
+                {
+                    "observation_id": "voice-distinct-b",
+                    "row_kind": "voice_bubble",
+                    "message_type": "voice",
+                    "voice_state": "untranscribed",
+                    "voice_anchor_stable_key": "voice-stable:b",
+                },
+            ],
+        }
+
+        self.assertEqual(sidecar_contract_error(payload), "")
 
     def test_original_and_later_voice_failures_are_merged_not_overwritten(self):
         outcomes = merge_item_outcomes(
@@ -9290,9 +9282,13 @@ class TaskRunnerTest(unittest.TestCase):
             "type": "voice",
             "sender_role": "customer",
             "voice_duration": 4,
-            "content": '[语音] 4"',
+            "voice_duration_text": '4"',
+            "content": "",
             "voice_anchor_stable_key": "new-voice-suffix-anchor",
             "frame_visual_id": "new-voice-suffix-frame",
+            "bubble_rect": [478, 402, 524, 427],
+            "avatar_alignment": {"role": "customer"},
+            "quality_flags": ["untranscribed_voice_placeholder"],
         }
         old_text = {
             "id": "old-text-current-frame",
@@ -9301,7 +9297,33 @@ class TaskRunnerTest(unittest.TestCase):
             "type": "text",
             "sender_role": "customer",
             "content": "原来的问题",
+            "bubble_rect": [478, 320, 650, 360],
+            "avatar_alignment": {"role": "customer"},
         }
+        sidecar = production_sidecar_module()
+        initial_observations = sidecar.build_message_observations_v3(
+            [old_text, raw_voice],
+            {
+                "detected": True,
+                "sender_role": "customer",
+                "anchor_key": "new-voice-frame-anchor",
+                "anchor_stable_key": "new-voice-suffix-anchor",
+                "anchor_structural_key": (
+                    "new-voice-suffix-structural-anchor"
+                ),
+                "bubble_rect": [478, 402, 524, 427],
+            },
+        )
+        self.assertEqual(
+            len(
+                [
+                    item
+                    for item in initial_observations
+                    if item.get("row_kind") == "voice_bubble"
+                ]
+            ),
+            1,
+        )
         bridge = FakeBridge(
             RpaResult(ok=True, result_code="unused", message="unused")
         )
@@ -9309,6 +9331,7 @@ class TaskRunnerTest(unittest.TestCase):
             {
                 "frame_id": "frame-new-voice-before",
                 "messages": [old_text, raw_voice],
+                "observations": initial_observations,
             },
             {
                 "frame_id": "frame-new-voice-after",
@@ -10879,8 +10902,10 @@ class TaskRunnerTest(unittest.TestCase):
             visual_id: str,
             top: int,
         ) -> dict:
-            return {
+            untranscribed = content.startswith("[语音]")
+            result = {
                 "id": message_id,
+                "source_adapter": "win32_ocr",
                 "type": "voice",
                 "sender_role": "customer",
                 "voice_duration": 3,
@@ -10888,7 +10913,14 @@ class TaskRunnerTest(unittest.TestCase):
                 "voice_anchor_stable_key": anchor,
                 "frame_visual_id": visual_id,
                 "bubble_rect": [420, top, 620, top + 44],
+                "avatar_alignment": {"role": "customer"},
             }
+            if untranscribed:
+                result["voice_duration_text"] = '3"'
+                result["quality_flags"] = [
+                    "untranscribed_voice_placeholder"
+                ]
+            return result
 
         upper_pre = voice(
             "same-duration-upper-pre",
@@ -10918,10 +10950,20 @@ class TaskRunnerTest(unittest.TestCase):
             visual_id="visual-lower-expanded-transcript",
             top=320,
         )
+        sidecar = production_sidecar_module()
+
+        def production_frame(messages: list[dict]) -> dict:
+            return {
+                "messages": messages,
+                "observations": sidecar.build_message_observations_v3(
+                    messages
+                ),
+            }
+
         bridge.get_messages_payloads = [
-            {"messages": [upper_pre, lower_pre]},
-            {"messages": [upper_post, lower_pre]},
-            {"messages": [upper_post, lower_post]},
+            production_frame([upper_pre, lower_pre]),
+            production_frame([upper_post, lower_pre]),
+            production_frame([upper_post, lower_post]),
         ]
         bridge.voice_payloads = [
             {
@@ -11138,7 +11180,7 @@ class TaskRunnerTest(unittest.TestCase):
             [],
         )
 
-    def test_same_physical_voice_has_one_journal_item_before_sidecar_action(self):
+    def test_sidecar_canonical_voice_has_one_journal_item_before_action(self):
         api = FakeApi(None)
         target = WechatReadTarget(
             conversation_id="conv-voice-alias-journal",
@@ -11187,7 +11229,7 @@ class TaskRunnerTest(unittest.TestCase):
                     "ui_action_performed": True,
                     "sidecar_run_id": "voice-alias-run",
                     "processed_voice_anchor_keys": [
-                        "voice-parent:shared"
+                        "voice-stable:a"
                     ],
                     "failed_voice_anchor_keys": [],
                     "item_action_outcomes": [
@@ -11197,10 +11239,7 @@ class TaskRunnerTest(unittest.TestCase):
                             "business_result_confirmed": True,
                             "physical_anchor_keys": [
                                 "voice-stable:a",
-                                "voice-stable:b",
                                 "voice-structural:a",
-                                "voice-structural:b",
-                                "voice-parent:shared",
                             ],
                         }
                     ],
@@ -11208,9 +11247,7 @@ class TaskRunnerTest(unittest.TestCase):
                         {
                             "content": "同一条语音只结算一次。",
                             "sender_role": "customer",
-                            "parent_voice_anchor_key": (
-                                "voice-parent:shared"
-                            ),
+                            "parent_voice_anchor_key": "voice-stable:a",
                             "voice_anchor_stable_key": "voice-stable:a",
                         }
                     ],
@@ -11224,37 +11261,39 @@ class TaskRunnerTest(unittest.TestCase):
         bridge = AliasVoiceBridge(
             RpaResult(ok=True, result_code="unused", message="unused")
         )
+        sidecar = production_sidecar_module()
+        raw_voice = {
+            "id": "voice-alias-a",
+            "source_adapter": "win32_ocr",
+            "type": "voice",
+            "sender_role": "customer",
+            "content": "",
+            "content_raw_ocr": '5"',
+            "voice_duration": 5,
+            "voice_duration_text": '5"',
+            "voice_anchor_structural_key": "voice-structural:a",
+            "bubble_rect": [478, 402, 524, 427],
+            "avatar_alignment": {"role": "customer"},
+            "quality_flags": ["untranscribed_voice_placeholder"],
+        }
+        canonical_observations = sidecar.build_message_observations_v3(
+            [raw_voice],
+            {
+                "detected": True,
+                "sender_role": "customer",
+                "anchor_key": "voice-frame:a",
+                "anchor_stable_key": "voice-stable:a",
+                "anchor_structural_key": "voice-structural:a",
+                "bubble_rect": [478, 402, 524, 427],
+            },
+        )
+        self.assertEqual(len(canonical_observations), 1)
         initial = bridge._contractual_message_payload(
             {
-                "messages": [
-                    {
-                        "id": "voice-alias-a",
-                        "type": "voice",
-                        "sender_role": "customer",
-                        "content": '[语音] 5"',
-                        "voice_anchor_stable_key": "voice-stable:a",
-                        "voice_anchor_structural_key": (
-                            "voice-structural:a"
-                        ),
-                    }
-                ]
+                "messages": [raw_voice],
+                "observations": canonical_observations,
             }
         )
-        first = initial["observations"][0]
-        first["parent_voice_anchor_key"] = "voice-parent:shared"
-        first["voice_anchor_structural_key"] = "voice-structural:a"
-        second = json.loads(json.dumps(first))
-        second["observation_id"] = "voice-alias-b"
-        second["voice_anchor_key"] = "voice-stable:b"
-        second["voice_anchor_structural_key"] = "voice-structural:b"
-        second["source_message"]["id"] = "voice-alias-b"
-        second["source_message"]["voice_anchor_stable_key"] = (
-            "voice-stable:b"
-        )
-        second["source_message"]["voice_anchor_structural_key"] = (
-            "voice-structural:b"
-        )
-        initial["observations"].append(second)
         bridge.get_messages_payloads = [
             initial,
             {
@@ -11301,6 +11340,7 @@ class TaskRunnerTest(unittest.TestCase):
                 ),
             },
         )
+        self.assertEqual(len(bridge.voice_transcribes), 1)
         self.assertEqual(len(observed_journals), 1)
         journal_items = observed_journals[0]["items"]
         self.assertEqual(len(journal_items), 1)
@@ -11308,11 +11348,9 @@ class TaskRunnerTest(unittest.TestCase):
         self.assertEqual(
             set(only_item["physical_anchor_keys"]),
             {
+                "voice-frame:a",
                 "voice-stable:a",
-                "voice-stable:b",
                 "voice-structural:a",
-                "voice-structural:b",
-                "voice-parent:shared",
             },
         )
         voice_ledger = list_c2_ledger_entries(
@@ -11776,6 +11814,7 @@ class TaskRunnerTest(unittest.TestCase):
                 "voice_transcribe",
                 "voice_prepare",
                 "voice_transcribe",
+                "voice_prepare",
             ],
         )
         self.assertIn("ingest:2", api.events)
@@ -12632,7 +12671,10 @@ class TaskRunnerTest(unittest.TestCase):
             bridge.voice_transcribes[1]["selected_pre_observation_id"],
             "new-in-old-seat",
         )
-        self.assertEqual(len(prepare_calls), 2)
+        # The final passive prepare is Sidecar's authoritative statement that
+        # no action-local candidate remains. Worker does not infer that from
+        # the previous frame's aliases.
+        self.assertEqual(len(prepare_calls), 3)
         self.assertIn(
             "seat-shifted-up",
             prepare_calls[1]["excluded_voice_anchor_keys"],
@@ -13102,7 +13144,7 @@ class TaskRunnerTest(unittest.TestCase):
         )
         self.assertEqual([call["selected_pre_observation_id"] for call in bridge.voice_transcribes], ["voice-first-failed", "voice-second-success"])
 
-    def test_voice_prepare_empty_cannot_overwrite_same_authoritative_voice(self):
+    def test_worker_accepts_sidecar_authoritative_empty_without_rejudging_rows(self):
         api = FakeApi(None)
         target = WechatReadTarget(
             conversation_id="conv-prepare-empty-same-voice",
@@ -13133,7 +13175,7 @@ class TaskRunnerTest(unittest.TestCase):
             }],
         })
 
-        def invalid_empty_prepare(**_kwargs):
+        def authoritative_empty_prepare(**_kwargs):
             bridge.c2_operation_order.append("voice_prepare")
             return bridge._contractual_message_payload({
                 **initial,
@@ -13144,7 +13186,7 @@ class TaskRunnerTest(unittest.TestCase):
                 "ui_action_performed": False,
             })
 
-        bridge.prepare_voice_action = invalid_empty_prepare  # type: ignore[method-assign]
+        bridge.prepare_voice_action = authoritative_empty_prepare  # type: ignore[method-assign]
         runner, _ = self.make_runner(api, bridge)
         result = runner._finish_new_visible_voices_in_current_chat(
             binding=Binding(
@@ -13166,11 +13208,7 @@ class TaskRunnerTest(unittest.TestCase):
             ),
         )
 
-        self.assertFalse(result["ok"])
-        self.assertEqual(
-            result["error_code"],
-            "C2_AUTHORITATIVE_FRAME_SOURCE_INVALID",
-        )
+        self.assertTrue(result["ok"], result)
         self.assertEqual(bridge.voice_transcribes, [])
 
     def test_voice_prepare_cannot_select_backend_confirmed_historical_voice(
@@ -13570,7 +13608,7 @@ class TaskRunnerTest(unittest.TestCase):
             "",
         )
 
-    def test_pre_send_same_duration_voice_replacement_is_zero_click_ambiguous(
+    def test_worker_does_not_rejudge_valid_sidecar_ticket_by_anchor_name(
         self,
     ):
         api = FakeApi(None)
@@ -13674,81 +13712,15 @@ class TaskRunnerTest(unittest.TestCase):
         self.assertFalse(result["ok"], result)
         self.assertEqual(
             result["error_code"],
-            "C2_PRE_SEND_VOICE_TARGET_AMBIGUOUS",
+            "C2_VOICE_IDENTITY_CONTRACT_INVALID",
         )
-        self.assertEqual(bridge.voice_transcribes, [])
-        self.assertEqual(
-            list_action_journals(
-                conversation_id=target.conversation_id,
-                action_kinds=("voice",),
-            ),
-            [],
+        self.assertEqual(len(bridge.voice_transcribes), 1)
+        journals = list_action_journals(
+            conversation_id=target.conversation_id,
+            action_kinds=("voice",),
         )
-        authorized_result = (
-            runner._finish_new_visible_voices_in_current_chat(
-                binding=Binding(
-                    worker_id="worker-1",
-                    worker_token="token",
-                    client_instance_id="client-1",
-                    run_status="running",
-                ),
-                target=target,
-                target_label="CJREPL32",
-                sidecar_payload=initial,
-                lease=unittest.mock.Mock(),
-                action_cancel_requested=lambda: False,
-                enforce_read_targets=False,
-                read_run_id="read-authorized-fixed-capacity",
-                excluded_voice_anchor_keys=set(),
-                flow_outcomes=FlowOutcomeAccumulator(
-                    origin_read_run_id=(
-                        "read-authorized-fixed-capacity"
-                    )
-                ),
-                operation_phase="authorized_read",
-            )
-        )
-        self.assertFalse(authorized_result["ok"], authorized_result)
-        self.assertEqual(
-            authorized_result["error_code"],
-            "MESSAGE_CROSS_ROUND_IDENTITY_AMBIGUOUS",
-        )
-        self.assertNotIn(
-            "pre_send_reidentification_attempts",
-            authorized_result.get("payload") or {},
-        )
-
-    def test_frame_local_voice_evidence_rejects_same_slot_neighbor_replacement(
-        self,
-    ):
-        previous = {
-            "sender_role": "customer",
-            "message_type": "voice",
-            "voice_state": "untranscribed",
-            "voice_duration": 4,
-            "voice_duration_text": '4"',
-            "screen_order": 2,
-            "neighbor_before_signature": "old-before",
-            "neighbor_after_signature": "same-after",
-            "bubble_rect": [480, 280, 540, 310],
-        }
-        replacement = {
-            **previous,
-            "neighbor_before_signature": "new-before",
-        }
-
-        self.assertFalse(
-            _same_frame_voice_action_evidence_matches(
-                previous,
-                replacement,
-            )
-        )
-        self.assertTrue(
-            _same_frame_voice_action_evidence_matches(
-                previous,
-                dict(previous),
-            )
-        )
+        self.assertEqual(len(journals), 1)
+        self.assertEqual(journals[0][1]["action_phase"], "quarantined")
 
     def test_pre_send_fixed_capacity_target_and_neighbor_replacements_are_zero_click(
         self,
@@ -14483,6 +14455,7 @@ class TaskRunnerTest(unittest.TestCase):
                 "messages",
                 "voice_prepare",
                 "voice_transcribe",
+                "voice_prepare",
             ],
         )
         self.assertEqual(
@@ -15285,6 +15258,7 @@ class TaskRunnerTest(unittest.TestCase):
                 "messages",
                 "voice_prepare",
                 "voice_transcribe",
+                "voice_prepare",
             ],
         )
         self.assertEqual(len(bridge.locate_chats), 1)
@@ -18670,6 +18644,100 @@ class TaskRunnerTest(unittest.TestCase):
         self.assertEqual(api.message_payloads, [])
         self.assertEqual(bridge.voice_transcribes, [])
 
+    def test_sidecar_same_row_voice_conflict_is_zero_click_and_zero_ingest(
+        self,
+    ):
+        api = FakeApi(None)
+        target = WechatReadTarget(
+            conversation_id="conv-voice-row-conflict",
+            rpa_session_key="wx:rpa:v1:voice-row-conflict",
+            display_name="CJVOICECF",
+            remark_code="CJVOICECF",
+            row_fingerprint={"title_text": "CJVOICECF"},
+            read_reason="waiting_user_reply",
+            authorization_revision="revision-voice-row-conflict",
+        )
+        api.read_targets = [target]
+        bridge = FakeBridge(
+            RpaResult(ok=True, result_code="unused", message="unused")
+        )
+        bridge.locate_payloads = [
+            {
+                "ok": True,
+                "state": "chat_target_confirmed",
+                "conversation_type": "private",
+                "conversation_type_evidence": {
+                    "matched": True,
+                    "short_code_confirmed": True,
+                    "admission_allowed": True,
+                    "conversation_type": "private",
+                    "raw_title": "CJVOICECF",
+                },
+            }
+        ]
+        sidecar = production_sidecar_module()
+        observations = sidecar.build_message_observations_v3(
+            [
+                {
+                    "id": "voice-row-conflict",
+                    "type": "voice",
+                    "sender_role": "customer",
+                    "voice_duration": 3,
+                    "voice_duration_text": '3"',
+                    "bubble_rect": [478, 402, 524, 427],
+                    "avatar_alignment": {"role": "customer"},
+                    "quality_flags": [
+                        "untranscribed_voice_placeholder"
+                    ],
+                }
+            ],
+            {
+                "detected": True,
+                "sender_role": "self",
+                "voice_duration": 3,
+                "anchor_stable_key": "voice-stable:conflict",
+                "bubble_rect": [478, 402, 524, 427],
+            },
+        )
+        observation_errors = [
+            {
+                "observation_id": item["observation_id"],
+                "row_kind": item["row_kind"],
+                "error_codes": list(item.get("contract_errors") or []),
+            }
+            for item in observations
+            if item.get("contract_errors")
+        ]
+        bridge.get_messages_payloads = [
+            {
+                "ok": True,
+                "observations": observations,
+                "observation_validation_errors": observation_errors,
+            }
+        ]
+        runner, _ = self.make_runner(api, bridge)
+        binding = Binding(
+            worker_id="worker-1",
+            worker_token="token",
+            client_instance_id="client-1",
+            run_status="running",
+        )
+
+        result = runner._read_one_wechat_target(
+            binding,
+            target,
+            current_step="state_target_message_read",
+            enforce_read_targets=True,
+        )
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(
+            result["error_code"],
+            "OMNIAUTO_OBSERVATION_CONTRACT_INVALID",
+        )
+        self.assertEqual(bridge.voice_transcribes, [])
+        self.assertEqual(api.message_payloads, [])
+
     def test_sidecar_message_identity_claim_is_rejected_before_media_or_ingest(self):
         api = FakeApi(None)
         target = WechatReadTarget(
@@ -19085,7 +19153,7 @@ class TaskRunnerTest(unittest.TestCase):
         self.assertTrue(runner._replay_c2_outbox(binding))
         self.assertEqual(attempts, 1)
 
-    def test_same_frame_ocr_and_visual_voice_aliases_collapse_once(self):
+    def test_worker_contract_does_not_rejudge_sidecar_anchor_categories(self):
         common = {
             "row_kind": "voice_bubble",
             "sender_role": "customer",
@@ -19094,27 +19162,31 @@ class TaskRunnerTest(unittest.TestCase):
             "voice_state": "untranscribed",
             "bubble_rect": [400, 100, 600, 140],
         }
-        collapsed = collapse_same_frame_voice_aliases(
-            [
+        payload = {
+            "observation_schema_version": 3,
+            "observations": [
                 {
                     **common,
                     "observation_id": "ocr-voice",
-                    "voice_anchor_stable_key": "stable-anchor",
+                    "voice_anchor_structural_key": (
+                        "voice-structural:shared"
+                    ),
                 },
                 {
                     **common,
                     "observation_id": "visual-voice",
-                    "voice_anchor_structural_key": "structural-anchor",
+                    "voice_anchor_stable_key": "voice-stable:visual",
+                    "voice_anchor_structural_key": (
+                        "voice-structural:shared"
+                    ),
                     "quality_flags": ["visual_voice_hint"],
                 },
-            ]
-        )
+            ],
+        }
 
-        self.assertEqual(len(collapsed), 1)
-        self.assertEqual(
-            set(collapsed[0]["_voice_action_anchor_keys"]),
-            {"stable-anchor", "structural-anchor"},
-        )
+        # Worker validates the Sidecar envelope and action ticket only. It
+        # must not choose between stable/structural aliases or merge rows.
+        self.assertEqual(sidecar_contract_error(payload), "")
 
     def test_identity_quarantine_skips_only_affected_conversation(self):
         api = FakeApi(None)
