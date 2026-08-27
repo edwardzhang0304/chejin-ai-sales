@@ -1,5 +1,6 @@
 from fastapi.testclient import TestClient
 import hashlib
+import importlib
 import pytest
 import threading
 import time
@@ -899,6 +900,67 @@ def test_real_adapter_provider_hard_timeout_kills_isolated_process(monkeypatch, 
     assert exc.value.data["last_provider_progress"]["stage"] == "semantic_reviewer"
     assert exc.value.data["last_provider_progress"]["event"] == "started"
     assert exc.value.data["provider_progress"][0]["call_id"] == "timeout-call"
+
+
+def test_llm_total_budget_caps_fallback_to_remaining_time(monkeypatch):
+    omniauto_root = Path(__file__).resolve().parents[2] / "worker-client" / "omniauto-rpa"
+    if str(omniauto_root) not in sys.path:
+        sys.path.insert(0, str(omniauto_root))
+    llm_config = importlib.import_module(
+        "apps.wechat_ai_customer_service.llm_config"
+    )
+    calls: list[dict] = []
+
+    def fake_request_once_with_wall_timeout(**kwargs):
+        calls.append(dict(kwargs))
+        if len(calls) == 1:
+            time.sleep(0.12)
+            return {
+                "ok": False,
+                "status": 0,
+                "error": "llm_wall_timeout_after_0.1s",
+                "wall_timeout": True,
+            }
+        return {
+            "ok": True,
+            "status": 200,
+            "provider": "deepseek",
+            "model": "deepseek-chat",
+            "response_text": "{}",
+        }
+
+    monkeypatch.setattr(
+        llm_config,
+        "call_llm_request_once_with_wall_timeout",
+        fake_request_once_with_wall_timeout,
+    )
+    with llm_config.llm_total_time_budget(0.18):
+        result = llm_config.call_llm_request_with_failover(
+            provider="openai",
+            api_key="test-primary",
+            base_url="https://primary.invalid/v1",
+            model="gpt-test",
+            messages=[{"role": "user", "content": "test"}],
+            timeout=0.12,
+            wall_timeout=0.12,
+            fallback_timeout=0.12,
+            fallback_wall_timeout=0.12,
+            max_tokens=8,
+            config={
+                "LLM_FALLBACK_ENABLED": "1",
+                "LLM_FALLBACK_PROVIDER": "deepseek",
+                "LLM_FALLBACK_BASE_URL": "https://fallback.invalid/v1",
+                "LLM_FALLBACK_FLASH_MODEL": "deepseek-chat",
+                "LLM_FALLBACK_API_KEY": "test-fallback",
+            },
+        )
+
+    assert result["ok"] is True
+    assert len(calls) == 2
+    assert 0.05 <= float(calls[0]["wall_timeout"]) <= 0.12
+    assert 0.0 < float(calls[1]["wall_timeout"]) < 0.09
+    assert float(calls[1]["timeout"]) <= float(calls[1]["wall_timeout"])
+    assert llm_config.llm_total_time_budget_remaining_seconds() is None
 
 
 def test_real_adapter_success_preserves_isolated_provider_progress(monkeypatch, tmp_path):

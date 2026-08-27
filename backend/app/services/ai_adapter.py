@@ -332,6 +332,24 @@ class RealOmniAutoAIEngineAdapter:
                 503,
                 {"required": ["provider", "model"]},
             )
+        provider = str(brain.get("provider") or "").strip().lower()
+        model = str(brain.get("model") or "").strip().lower()
+        base_url = str(brain.get("base_url") or "").strip().rstrip("/").lower()
+        if (
+            provider != "deepseek"
+            or not model.startswith("deepseek-")
+            or base_url not in {"https://api.deepseek.com", "https://api.deepseek.com/v1"}
+        ):
+            raise AppError(
+                "AI_ENGINE_PROVIDER_FORBIDDEN",
+                "车金正式 Brain 只允许使用 DeepSeek",
+                503,
+                {
+                    "required_provider": "deepseek",
+                    "required_base_url": "https://api.deepseek.com",
+                    "suggested_action": "restore_formal_deepseek_route",
+                },
+            )
         config["customer_service_brain"] = brain
         return config
 
