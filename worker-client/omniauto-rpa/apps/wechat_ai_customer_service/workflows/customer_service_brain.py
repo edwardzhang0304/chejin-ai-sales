@@ -20,6 +20,7 @@ from typing import Any
 from apps.wechat_ai_customer_service.llm_config import (
     call_llm_request_with_failover,
     is_failoverable_llm_failure,
+    llm_total_time_budget,
     read_secret,
     resolve_effective_llm_provider,
     resolve_llm_api_key,
@@ -62,6 +63,8 @@ except Exception:  # pragma: no cover - workflow import fallback for script mode
 
 
 DEFAULT_TIMEOUT_SECONDS = 35
+DEFAULT_TOTAL_TIME_BUDGET_SECONDS = 175
+DEFAULT_PRIMARY_ATTEMPT_TIMEOUT_SECONDS = 90
 DEFAULT_LARGE_PROMPT_TIMEOUT_SECONDS = 60
 DEFAULT_VERY_LARGE_PROMPT_TIMEOUT_SECONDS = 90
 DEFAULT_FALLBACK_TIMEOUT_SECONDS = 45
@@ -751,7 +754,7 @@ def validate_hard_opt_out_evidence(
     return {"ok": not errors, "errors": errors}
 
 
-def maybe_run_customer_service_brain(
+def _maybe_run_customer_service_brain_within_time_budget(
     *,
     config: dict[str, Any],
     target_name: str,
@@ -1739,6 +1742,51 @@ def maybe_run_customer_service_brain(
     return finish(payload)
 
 
+def maybe_run_customer_service_brain(
+    *,
+    config: dict[str, Any],
+    target_name: str,
+    target_state: dict[str, Any],
+    batch: list[dict[str, Any]],
+    combined: str,
+    decision: Any,
+    reply_text: str,
+    intent_assist: dict[str, Any],
+    rag_reply: dict[str, Any],
+    llm_reply: dict[str, Any],
+    product_knowledge: dict[str, Any] | None,
+    data_capture: dict[str, Any],
+    raw_capture: dict[str, Any],
+    customer_profile: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Run one Brain turn under a single budget shared by every LLM stage."""
+
+    settings = effective_brain_settings(config)
+    total_time_budget_seconds = positive_int_setting(
+        settings,
+        "total_time_budget_seconds",
+        DEFAULT_TOTAL_TIME_BUDGET_SECONDS,
+        minimum=1,
+    )
+    with llm_total_time_budget(total_time_budget_seconds):
+        return _maybe_run_customer_service_brain_within_time_budget(
+            config=config,
+            target_name=target_name,
+            target_state=target_state,
+            batch=batch,
+            combined=combined,
+            decision=decision,
+            reply_text=reply_text,
+            intent_assist=intent_assist,
+            rag_reply=rag_reply,
+            llm_reply=llm_reply,
+            product_knowledge=product_knowledge,
+            data_capture=data_capture,
+            raw_capture=raw_capture,
+            customer_profile=customer_profile,
+        )
+
+
 def effective_brain_settings(config: dict[str, Any]) -> dict[str, Any]:
     settings = dict(config.get("customer_service_brain", {}) or {})
     llm_synthesis = config.get("llm_reply_synthesis") if isinstance(config.get("llm_reply_synthesis"), dict) else {}
@@ -1749,6 +1797,14 @@ def effective_brain_settings(config: dict[str, Any]) -> dict[str, Any]:
     settings.setdefault("provider", llm_synthesis.get("provider", "manual_json"))
     settings.setdefault("model_tier", llm_synthesis.get("model_tier", "flash"))
     settings.setdefault("timeout_seconds", DEFAULT_TIMEOUT_SECONDS)
+    settings.setdefault(
+        "total_time_budget_seconds",
+        DEFAULT_TOTAL_TIME_BUDGET_SECONDS,
+    )
+    settings.setdefault(
+        "primary_attempt_timeout_seconds",
+        DEFAULT_PRIMARY_ATTEMPT_TIMEOUT_SECONDS,
+    )
     settings.setdefault("large_prompt_timeout_seconds", DEFAULT_LARGE_PROMPT_TIMEOUT_SECONDS)
     settings.setdefault("very_large_prompt_timeout_seconds", DEFAULT_VERY_LARGE_PROMPT_TIMEOUT_SECONDS)
     settings.setdefault("fallback_timeout_seconds", DEFAULT_FALLBACK_TIMEOUT_SECONDS)
@@ -2203,7 +2259,15 @@ def run_brain_llm(*, settings: dict[str, Any], brain_input: dict[str, Any]) -> d
     model = resolve_llm_tier_model(provider=provider, tier=str(settings.get("model_tier") or "flash"), explicit_model=str(settings.get("model") or ""), read_secret_fn=read_secret)
     base_url = resolve_llm_base_url(provider=provider, explicit_base_url=str(settings.get("base_url") or ""), read_secret_fn=read_secret)
     prompt_pack, user_content, prompt_estimate = build_sized_brain_prompt(settings=settings, brain_input=brain_input)
-    timeout_seconds = resolve_brain_llm_timeout(settings, prompt_estimate)
+    timeout_seconds = min(
+        resolve_brain_llm_timeout(settings, prompt_estimate),
+        positive_int_setting(
+            settings,
+            "primary_attempt_timeout_seconds",
+            DEFAULT_PRIMARY_ATTEMPT_TIMEOUT_SECONDS,
+            minimum=3,
+        ),
+    )
     fallback_timeout_seconds = resolve_brain_fallback_timeout(settings, timeout_seconds)
     prompt_estimate["prompt_pressure_chars"] = brain_prompt_pressure_chars(prompt_estimate)
     prompt_estimate["timeout_seconds"] = timeout_seconds
@@ -2342,13 +2406,17 @@ def maybe_retry_brain_llm_after_unavailable_response(
     if delay_seconds > 0:
         time.sleep(min(delay_seconds, 3.0))
     retry_tokens = max(max_tokens, positive_int_setting(settings, "same_capture_brain_unavailable_retry_max_tokens", max_tokens, minimum=512))
-    retry_timeout = max(
+    retry_timeout = positive_int_setting(
+        settings,
+        "same_capture_brain_unavailable_retry_timeout_seconds",
         timeout_seconds,
-        positive_int_setting(settings, "same_capture_brain_unavailable_retry_timeout_seconds", timeout_seconds, minimum=3),
+        minimum=3,
     )
-    retry_fallback_timeout = max(
+    retry_fallback_timeout = positive_int_setting(
+        settings,
+        "same_capture_brain_unavailable_retry_fallback_timeout_seconds",
         fallback_timeout_seconds,
-        positive_int_setting(settings, "same_capture_brain_unavailable_retry_fallback_timeout_seconds", fallback_timeout_seconds, minimum=3),
+        minimum=3,
     )
     retry = call_llm_request_with_failover(
         provider=provider,

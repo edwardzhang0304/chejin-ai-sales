@@ -2378,6 +2378,13 @@ def check_brain_same_capture_retry_recovers_unavailable_response() -> CaseResult
         {
             "provider": "openai",
             "mode": "shadow",
+            "total_time_budget_seconds": 175,
+            "primary_attempt_timeout_seconds": 90,
+            "timeout_seconds": 150,
+            "large_prompt_timeout_seconds": 150,
+            "very_large_prompt_timeout_seconds": 150,
+            "same_capture_brain_unavailable_retry_timeout_seconds": 60,
+            "same_capture_brain_unavailable_retry_fallback_timeout_seconds": 60,
             "same_capture_brain_unavailable_retry_delay_seconds": 0,
         }
     )
@@ -2409,8 +2416,11 @@ def check_brain_same_capture_retry_recovers_unavailable_response() -> CaseResult
                 config=config,
                 target_name="许聪",
                 target_state={"conversation_context": {}},
-                batch=[{"id": "msg-unavailable", "sender": "许聪", "content": "秦plus多少钱"}],
-                combined="秦plus多少钱",
+                batch=[
+                    {"id": "msg-unavailable-social", "sender": "许聪", "content": "你好"},
+                    {"id": "msg-unavailable", "sender": "许聪", "content": "秦plus多少钱"},
+                ],
+                combined="你好\n秦plus多少钱",
                 decision=ReplyDecision("", "", False, False, ""),
                 reply_text="",
                 intent_assist={},
@@ -2429,6 +2439,8 @@ def check_brain_same_capture_retry_recovers_unavailable_response() -> CaseResult
     assert_true(status.get("same_capture_retry") is True, f"retry audit should be visible on recovered status: {status}")
     assert_true(previous.get("error"), f"previous failed Brain status should be retained: {status}")
     assert_true(len(calls) == 2, f"expected one same-capture retry call, got {len(calls)}")
+    assert_true(calls[0].get("timeout") == 90, f"primary attempt must reserve time for retry and review: {calls}")
+    assert_true(calls[1].get("timeout") == 60, f"same-capture retry must use its own bounded allocation: {calls}")
     return CaseResult(
         "brain_same_capture_retry_recovers_unavailable_response",
         True,

@@ -11,8 +11,10 @@ import urllib.error
 import urllib.request
 import uuid
 from collections.abc import Callable
+from contextlib import contextmanager
+from contextvars import ContextVar
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterator
 
 
 DEFAULT_DEEPSEEK_BASE_URL = "https://api.deepseek.com"
@@ -69,6 +71,50 @@ GATEWAY_FAILOVERABLE_LLM_ERROR_MARKERS = (
 
 LLM_PROGRESS_PATH_ENV = "CHEJIN_AI_PROGRESS_PATH"
 LLM_PROGRESS_ID_ENV = "CHEJIN_AI_PROGRESS_ID"
+_LLM_TOTAL_DEADLINE_MONOTONIC: ContextVar[float | None] = ContextVar(
+    "llm_total_deadline_monotonic",
+    default=None,
+)
+
+
+@contextmanager
+def llm_total_time_budget(total_seconds: int | float) -> Iterator[None]:
+    """Apply one shared wall-clock budget to every LLM call in this context."""
+
+    seconds = max(0.05, float(total_seconds))
+    token = _LLM_TOTAL_DEADLINE_MONOTONIC.set(time.monotonic() + seconds)
+    try:
+        yield
+    finally:
+        _LLM_TOTAL_DEADLINE_MONOTONIC.reset(token)
+
+
+def llm_total_time_budget_remaining_seconds() -> float | None:
+    deadline = _LLM_TOTAL_DEADLINE_MONOTONIC.get()
+    if deadline is None:
+        return None
+    return max(0.0, deadline - time.monotonic())
+
+
+def _budgeted_llm_timeout(requested_seconds: int | float) -> float:
+    requested = max(0.05, float(requested_seconds))
+    remaining = llm_total_time_budget_remaining_seconds()
+    if remaining is None:
+        return requested
+    if remaining < 0.05:
+        return 0.0
+    return max(0.0, min(requested, remaining))
+
+
+def _llm_total_budget_exhausted_result() -> dict[str, Any]:
+    return {
+        "ok": False,
+        "status": 0,
+        "error": "llm_total_time_budget_exhausted",
+        "wall_timeout": True,
+        "total_time_budget_exhausted": True,
+        "wall_timeout_seconds": 0.0,
+    }
 
 
 def _safe_progress_label(value: Any, *, fallback: str) -> str:
@@ -1038,15 +1084,16 @@ def call_llm_request_once_with_wall_timeout(
 
     thread = threading.Thread(target=worker, name="llm-wall-timeout", daemon=True)
     thread.start()
-    if finished.wait(max(1, float(wall_timeout))):
+    wait_seconds = max(0.05, float(wall_timeout))
+    if finished.wait(wait_seconds):
         result = result_holder.get("result")
         return result if isinstance(result, dict) else {"ok": False, "status": 0, "error": "llm_wall_timeout_missing_result"}
     return {
         "ok": False,
         "status": 0,
-        "error": f"llm_wall_timeout_after_{max(1, float(wall_timeout)):.1f}s",
+        "error": f"llm_wall_timeout_after_{wait_seconds:.1f}s",
         "wall_timeout": True,
-        "wall_timeout_seconds": max(1, float(wall_timeout)),
+        "wall_timeout_seconds": wait_seconds,
     }
 
 
@@ -1072,6 +1119,18 @@ def call_llm_request_with_failover(
     progress_stage: str | None = None,
 ) -> dict[str, Any]:
     stage = _safe_progress_label(progress_stage, fallback="llm_request")
+    requested_primary_wall_timeout = wall_timeout if wall_timeout is not None else timeout
+    remaining_total_budget = llm_total_time_budget_remaining_seconds()
+    if remaining_total_budget is None:
+        primary_wall_timeout = wall_timeout
+        primary_progress_timeout = requested_primary_wall_timeout
+        primary_request_timeout = timeout
+    else:
+        primary_wall_timeout = _budgeted_llm_timeout(requested_primary_wall_timeout)
+        if primary_wall_timeout <= 0:
+            return _llm_total_budget_exhausted_result()
+        primary_progress_timeout = primary_wall_timeout
+        primary_request_timeout = min(max(0.05, float(timeout)), primary_wall_timeout)
     primary_call_id = uuid.uuid4().hex
     primary_started = time.monotonic()
     emit_llm_progress_event(
@@ -1080,7 +1139,7 @@ def call_llm_request_with_failover(
         event="started",
         provider=provider,
         model=model,
-        timeout_seconds=wall_timeout if wall_timeout is not None else timeout,
+        timeout_seconds=primary_progress_timeout,
         call_id=primary_call_id,
     )
     primary = call_llm_request_once_with_wall_timeout(
@@ -1089,14 +1148,14 @@ def call_llm_request_with_failover(
         base_url=base_url,
         model=model,
         messages=messages,
-        timeout=timeout,
+        timeout=primary_request_timeout,
         max_tokens=max_tokens,
         temperature=temperature,
         tier=tier,
         json_mode=json_mode,
         explicit_reasoning_effort=explicit_reasoning_effort,
         allow_insecure_tls=allow_insecure_tls,
-        wall_timeout=wall_timeout,
+        wall_timeout=primary_wall_timeout,
     )
     emit_llm_progress_event(
         stage=stage,
@@ -1104,7 +1163,7 @@ def call_llm_request_with_failover(
         event="finished",
         provider=provider,
         model=model,
-        timeout_seconds=wall_timeout if wall_timeout is not None else timeout,
+        timeout_seconds=primary_progress_timeout,
         call_id=primary_call_id,
         elapsed_ms=int(round((time.monotonic() - primary_started) * 1000)),
         result=primary,
@@ -1139,18 +1198,38 @@ def call_llm_request_with_failover(
         return primary
     fallback_call_id = uuid.uuid4().hex
     fallback_started = time.monotonic()
-    fallback_budget = max(1, fallback_timeout if fallback_timeout is not None else timeout)
+    fallback_budget = max(0.05, float(fallback_timeout if fallback_timeout is not None else timeout))
+    requested_fallback_wall_timeout = (
+        fallback_wall_timeout
+        if fallback_wall_timeout is not None
+        else fallback_budget
+    )
+    remaining_total_budget = llm_total_time_budget_remaining_seconds()
+    if remaining_total_budget is None:
+        effective_fallback_wall_timeout = fallback_wall_timeout
+        fallback_progress_timeout = requested_fallback_wall_timeout
+        fallback_request_timeout = fallback_timeout if fallback_timeout is not None else timeout
+    else:
+        effective_fallback_wall_timeout = _budgeted_llm_timeout(
+            requested_fallback_wall_timeout
+        )
+        if effective_fallback_wall_timeout <= 0:
+            primary["failover"] = {
+                "attempted": False,
+                "activated": False,
+                "reason": "total_time_budget_exhausted_before_fallback",
+            }
+            primary["total_time_budget_exhausted"] = True
+            return primary
+        fallback_progress_timeout = effective_fallback_wall_timeout
+        fallback_request_timeout = min(fallback_budget, effective_fallback_wall_timeout)
     emit_llm_progress_event(
         stage=stage,
         route="fallback",
         event="started",
         provider=fallback_provider,
         model=fallback_model,
-        timeout_seconds=(
-            fallback_wall_timeout
-            if fallback_wall_timeout is not None
-            else fallback_budget
-        ),
+        timeout_seconds=fallback_progress_timeout,
         call_id=fallback_call_id,
     )
     fallback_result = call_llm_request_once_with_wall_timeout(
@@ -1159,7 +1238,7 @@ def call_llm_request_with_failover(
         base_url=fallback_base_url,
         model=fallback_model,
         messages=messages,
-        timeout=max(1, fallback_timeout if fallback_timeout is not None else timeout),
+        timeout=fallback_request_timeout,
         max_tokens=max_tokens,
         temperature=temperature,
         tier=tier,
@@ -1170,7 +1249,7 @@ def call_llm_request_with_failover(
             else fallback.get("flash_reasoning_effort")
         ),
         allow_insecure_tls=fallback.get("allow_insecure_tls"),
-        wall_timeout=fallback_wall_timeout if fallback_wall_timeout is not None else fallback_timeout,
+        wall_timeout=effective_fallback_wall_timeout,
     )
     emit_llm_progress_event(
         stage=stage,
@@ -1178,11 +1257,7 @@ def call_llm_request_with_failover(
         event="finished",
         provider=fallback_provider,
         model=fallback_model,
-        timeout_seconds=(
-            fallback_wall_timeout
-            if fallback_wall_timeout is not None
-            else fallback_budget
-        ),
+        timeout_seconds=fallback_progress_timeout,
         call_id=fallback_call_id,
         elapsed_ms=int(round((time.monotonic() - fallback_started) * 1000)),
         result=fallback_result,

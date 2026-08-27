@@ -86,6 +86,51 @@ def test_real_brain_readiness_accepts_explicit_runtime_key_without_exposing_it()
     )
 
 
+@pytest.mark.parametrize(
+    ("provider", "model", "base_url"),
+    [
+        ("openai", "gpt-5.5", "https://api.deepseek.com"),
+        ("deepseek", "gpt-5.5", "https://api.deepseek.com"),
+        ("openai", "deepseek-v4-flash", "https://api.deepseek.com"),
+        ("deepseek", "deepseek-v4-flash", "https://third-party.invalid/v1"),
+    ],
+)
+def test_formal_brain_rejects_non_deepseek_runtime_override(
+    tmp_path,
+    monkeypatch,
+    provider,
+    model,
+    base_url,
+):
+    config_path = tmp_path / "brain.json"
+    config_path.write_text(
+        json.dumps(
+            {
+                "customer_service_brain": {
+                    "provider": "deepseek",
+                    "model": "deepseek-v4-flash",
+                    "base_url": "https://api.deepseek.com",
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        "app.services.ai_adapter.get_settings",
+        lambda: SimpleNamespace(
+            c3_omniauto_config_path=str(config_path),
+            c3_omniauto_provider=provider,
+            c3_omniauto_model=model,
+            c3_omniauto_base_url=base_url,
+        ),
+    )
+
+    with pytest.raises(AppError) as exc:
+        RealOmniAutoAIEngineAdapter._load_config()
+
+    assert exc.value.code == "AI_ENGINE_PROVIDER_FORBIDDEN"
+
+
 def test_packaged_brain_config_uses_runtime_secret_only():
     config = json.loads(
         (PROJECT_ROOT / "backend" / "configs" / "chejin_c3_brain.json").read_text(
@@ -96,12 +141,22 @@ def test_packaged_brain_config_uses_runtime_secret_only():
 
     assert brain["enabled"] is True
     assert brain["mode"] == "brain_first"
-    assert brain["provider"] == "openai"
-    assert brain["model"] == "gpt-5.5"
-    assert brain["base_url"] == "https://aiself.vip/v1"
+    assert brain["provider"] == "deepseek"
+    assert brain["model"] == "deepseek-v4-flash"
+    assert brain["base_url"] == "https://api.deepseek.com"
+    assert brain["total_time_budget_seconds"] == 175
+    assert brain["primary_attempt_timeout_seconds"] == 90
+    assert brain["same_capture_brain_unavailable_retry_timeout_seconds"] == 60
+    assert brain["semantic_reviewer_timeout_seconds"] == 25
+    assert (
+        brain["primary_attempt_timeout_seconds"]
+        + brain["same_capture_brain_unavailable_retry_timeout_seconds"]
+        + brain["semantic_reviewer_timeout_seconds"]
+        <= brain["total_time_budget_seconds"]
+    )
     assert brain["low_authority_fast_timeout_seconds"] >= 30
     assert brain["quality_repair_timeout_seconds"] >= 30
-    assert brain["semantic_reviewer_timeout_seconds"] >= 30
+    assert brain["semantic_reviewer_timeout_seconds"] >= 20
     assert (
         brain["same_capture_brain_unavailable_retry_timeout_seconds"]
         >= brain["low_authority_fast_timeout_seconds"]
@@ -117,9 +172,9 @@ def test_settings_env_file_allows_provider_owned_variables(tmp_path, monkeypatch
         "\n".join(
             [
                 "C3_AI_ADAPTER_MODE=real",
-                "OPENAI_API_KEY=test-only-token",
-                "OPENAI_BASE_URL=https://aiself.vip/v1",
-                "OPENAI_MODEL=gpt-5.5",
+                "DEEPSEEK_API_KEY=test-only-token",
+                "DEEPSEEK_BASE_URL=https://api.deepseek.com",
+                "DEEPSEEK_MODEL=deepseek-v4-flash",
             ]
         ),
         encoding="utf-8",
@@ -138,11 +193,20 @@ def test_env_example_declares_one_formal_brain_route_and_compose_injects_env_fil
         if line.strip() and not line.lstrip().startswith("#") and "=" in line
     ]
     keys = [line.split("=", 1)[0] for line in assignments]
+    values = dict(line.split("=", 1) for line in assignments)
 
     assert len(keys) == len(set(keys))
-    assert "OPENAI_API_KEY" in keys
-    assert "OPENAI_MODEL" in keys
-    assert "OPENAI_FLASH_REASONING_EFFORT" in keys
+    assert "LLM_PROVIDER" in keys
+    assert "LLM_FALLBACK_ENABLED" in keys
+    assert "DEEPSEEK_API_KEY" in keys
+    assert "DEEPSEEK_MODEL" in keys
+    assert "DEEPSEEK_FLASH_REASONING_EFFORT" in keys
+    assert "OPENAI_API_KEY" not in keys
+    assert "OPENAI_MODEL" not in keys
+    assert values["LLM_PROVIDER"] == "deepseek"
+    assert values["LLM_FALLBACK_ENABLED"] == "false"
+    assert values["DEEPSEEK_MODEL"] == "deepseek-v4-flash"
+    assert values["DEEPSEEK_BASE_URL"] == "https://api.deepseek.com"
     assert "ANTHROPIC_AUTH_TOKEN" not in keys
     assert "ADMIN_API_TOKEN" not in keys
     assert "OPERATOR_API_CREDENTIALS" not in keys
