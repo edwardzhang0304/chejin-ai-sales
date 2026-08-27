@@ -1,5 +1,5 @@
 @startuml
-' 文档版本：v0.9.38；灰度目标版本：0.9.38（完整画面 observations 与增量 messages 分离、拆包最后一片完整证据、unknown 显式身份门禁及 5 对 5 checkpoint 比较已通过代码层架构复审；合同 SHA 为 6e1b0ab219c7effdb380170c452cd0e18c42522cd95870f24034af69c6b51143，OmniAuto 生成 Schema 来源提交 715450bc55117cb5ac7c3fc4f574f4721c00b538 已形成并完成来源绑定，车金候选、推送、打包和配套部署待完成）；最后更新：2026-08-26
+' 文档版本：v0.9.42；灰度目标版本：0.9.42（同帧 ROI 证据不足时整窗 OCR 回退已覆盖 pre_send_refresh 与发送 S0/S1/S2；非首屏定位复用同一次 Sidecar 事务，侧栏候选与整窗安全证据分离；合同 SHA 为 9dcab8759b3f2a0611027cccda0044cd24e182e50418c33b88d997007a5c4305，真实 OmniAuto 来源提交为 307241810963c2e649ba04483a898687d06ba9f4，车金候选、推送、打包和配套部署待完成）；最后更新：2026-08-27
 title AI智能客服售前跟进系统 全流程图（C0-C4、媒体、回复、转人工与恢复）
 
 skinparam monochrome true
@@ -94,6 +94,7 @@ note over W,Reply
 20. pre_send_refresh不得重新认定已提交消息身份：checkpoint与当前完整尾部相等则允许继续发送；checkpoint是当前序列唯一完整前缀且有非空后缀则立即关闭旧回复发送门并只处理后缀；缺行、替换、截断、unknown或多解释只允许完整被动重读一次，仍不唯一则返回具体序列错误。无原生ID的已提交末尾媒体无法证明物理身份时，只有完整前缀、正式动作回执与精确回复事实全部一致时，可以terminal_committed_fact_equivalence + physical_identity_confirmed=false通过本回复发送门；不继承ID，不用于入库或普通身份判定。本阶段无末尾媒体身份例外、无recoverable_hold、无多轮时间重试。
 21. 媒体UI动作固定语音优先、图片随后，且每次只操作一条；每次动作后废弃旧帧未选候选并从新帧重新仲裁。图片阶段如出现新语音，先完成当前图片终态，再回到语音阶段，不得开始下一张图片。
 22. 媒体UI动作顺序不代表消息入库顺序；所有动作结束后，文字/语音/图片必须按最后权威完整画面的screen_order统一入库。
+23. 0.9.42只优化同一物理帧内部OCR与非首屏定位调用：pre_send_refresh及S0/S1/S2各自仍取独立截图；每帧ROI的标题、消息数量、角色、正文、顺序或发送回执任一不足，先对同一内存截图补一次整窗OCR。整窗仍不足时，S0/S1零Enter停止；S2不得再次按Enter并结算为发送结果unknown。禁止新增截图冒充回退、放宽比较或改变发送状态机。
 end note
 
 note over W,WX
@@ -343,7 +344,10 @@ loop Worker运行中；每次循环最多完成一个会话事务
             alt 目标仍在第一屏且同码唯一
               OA -> WX: 点击实时首屏唯一会话行
             else 授权目标第一屏没有命中
-              OA -> WX: 打开搜索框、粘贴短码\n等待结果稳定、唯一命中后点击
+              OA -> OA: 保持同一次Sidecar定位事务\n复用刚取得画面建立搜索入口
+              OA -> WX: 打开搜索框、粘贴短码\n侧栏ROI识别唯一候选
+              OA -> OA: 对同帧执行整窗安全检查\n登录/遮挡/中央弹窗不得由侧栏证据代替
+              OA -> WX: 安全检查通过后点击唯一候选
             else 第一屏同码多条/候选歧义
               OA --> W: C2_VISIBLE_TARGET_AMBIGUOUS
             end
@@ -917,6 +921,7 @@ loop Worker运行中；每次循环最多完成一个会话事务
               W -> OA: pre_send_refresh current conversation\n保持原窗口，只做最新截图读取
               OA -> WX: 截图并读取当前底部消息
               WX --> OA: 最新画面
+              OA -> OA: 同帧先做标题/完整消息区/输入区ROI\n任一证据不足则对同一内存截图整窗OCR一次\n仍不足按原错误安全停止
               OA -> Role: 对新增候选继续使用统一角色边界
               Role --> OA: customer/self/system/unknown
               OA --> W: 当前有序观察 + 完整尾部/截断证据
@@ -1030,6 +1035,11 @@ loop Worker运行中；每次循环最多完成一个会话事务
                 Reply --> W: send_token + approved reply_text
                 W -> L: 持久化possible_ai_send\naction_phase=not_attempted
                 W -> OA: send approved reply\n禁止Worker自行改写
+                note over W,OA
+                S0发送基线、S1输入后点击前复核、S2发送结果仍是三张独立时点截图。
+                每张截图内部先做标题/完整消息区/输入区ROI；标题、消息数量、角色、正文、顺序或发送回执任一不足，
+                只对该张同一内存截图补一次整窗OCR。整窗仍不足则按原门禁停止；不新增截图、不降低阈值、不改变ActionJournal/sent_ack。
+                end note
                 OA -> WX: 输入并触发发送
                 OA -> OA: 发送物理点击前先落盘\naction_phase=trigger_attempted\n落盘失败则禁止点击
                 OA -> WX: 截图校验

@@ -15454,6 +15454,10 @@ class TaskRunner:
                 expected_confirmed_self_text=(
                     self._confirmed_ai_reply_text_for_read(target)
                 ),
+                chat_fact_roi_ocr=(
+                    operation_phase == C2_PRE_SEND_REFRESH_PHASE
+                    and CONFIG.c3_pre_send_roi_reuse_enabled
+                ),
                 max_duration_seconds=20,
                 cancel_check=action_cancel_requested,
             )
@@ -17117,6 +17121,10 @@ class TaskRunner:
                     expected_confirmed_self_text=(
                         expected_confirmed_self_text
                     ),
+                    chat_fact_roi_ocr=(
+                        operation_phase == C2_PRE_SEND_REFRESH_PHASE
+                        and CONFIG.c3_pre_send_roi_reuse_enabled
+                    ),
                     max_duration_seconds=20 if locate_mode == "current" else 30 if visible_target else 90,
                     cancel_check=action_cancel_requested,
                 )
@@ -17165,6 +17173,26 @@ class TaskRunner:
                 locate_error_code = str(
                     locate_payload.get("error_code") or ""
                 )
+                open_chat_timing = (
+                    locate_payload.get("open_chat_timing")
+                    if isinstance(
+                        locate_payload.get("open_chat_timing"), dict
+                    )
+                    else {}
+                )
+                if (
+                    locate_mode == "visible"
+                    and open_chat_timing.get(
+                        "open_chat_merged_remark_search_attempted"
+                    )
+                    is True
+                ):
+                    # The visible Sidecar transaction already reused its
+                    # baseline and completed the one allowed short-code
+                    # search. Starting a second Sidecar would repeat the
+                    # baseline OCR and could act on a newer, unrelated frame.
+                    locate_payload["search_fallback_already_consumed"] = True
+                    break
                 location_recovery_contract = (
                     target_location_recovery_contract()
                 )
@@ -17389,6 +17417,10 @@ class TaskRunner:
                     expected_confirmed_self_text=(
                         expected_confirmed_self_text
                     ),
+                    chat_fact_roi_ocr=(
+                        operation_phase == C2_PRE_SEND_REFRESH_PHASE
+                        and CONFIG.c3_pre_send_roi_reuse_enabled
+                    ),
                     max_duration_seconds=20,
                     cancel_check=action_cancel_requested,
                 )
@@ -17428,7 +17460,102 @@ class TaskRunner:
                     force_incident=True,
                 )
                 return {"ok": False, "error_code": code}
+            same_frame_full_ocr_attempted: set[str] = set()
+
+            def replay_same_frame_with_full_ocr(
+                candidate: dict[str, Any],
+                *,
+                fallback_reason: str,
+            ) -> dict[str, Any] | None:
+                """Resolve insufficient ROI evidence before any recapture."""
+
+                if (
+                    operation_phase != C2_PRE_SEND_REFRESH_PHASE
+                    or not CONFIG.c3_pre_send_roi_reuse_enabled
+                ):
+                    return None
+                reuse = (
+                    candidate.get("pre_send_frame_reuse")
+                    if isinstance(
+                        candidate.get("pre_send_frame_reuse"), dict
+                    )
+                    else {}
+                )
+                ocr_plan = (
+                    reuse.get("ocr_plan")
+                    if isinstance(reuse.get("ocr_plan"), dict)
+                    else {}
+                )
+                if str(ocr_plan.get("source") or "") != "chat_fact_roi":
+                    return None
+                evidence = (
+                    dict(candidate.get("frame_observation") or {})
+                    if isinstance(candidate.get("frame_observation"), dict)
+                    else {}
+                )
+                frame_id = str(evidence.get("frame_id") or "").strip()
+                if (
+                    not frame_id
+                    or frame_id in same_frame_full_ocr_attempted
+                    or not str(evidence.get("screenshot_path") or "").strip()
+                ):
+                    return None
+                same_frame_full_ocr_attempted.add(frame_id)
+                evidence["fallback_reason"] = str(fallback_reason or "")
+                replay = self.bridge.get_messages(
+                    display_name=target_label,
+                    rpa_session_key="",
+                    remark_code=effective_target.remark_code or "",
+                    target_mode="current",
+                    expected_confirmed_self_text=(
+                        expected_confirmed_self_text
+                    ),
+                    chat_fact_roi_ocr=False,
+                    same_frame_full_ocr_evidence=evidence,
+                    max_duration_seconds=20,
+                    cancel_check=action_cancel_requested,
+                )
+                replay["target_confirmation"] = locate_payload
+                replay["authoritative_frame_source"] = "initial_read"
+                replay["ui_frame_invalidated"] = False
+                replay["same_frame_full_ocr_fallback_attempted"] = True
+                replay["same_frame_full_ocr_fallback_reason"] = str(
+                    fallback_reason or ""
+                )
+                replay["same_frame_full_ocr_source_frame_id"] = frame_id
+                return replay
+
             initial_contract_error = sidecar_contract_error(sidecar_payload)
+            if initial_contract_error:
+                replay = replay_same_frame_with_full_ocr(
+                    sidecar_payload,
+                    fallback_reason=f"contract:{initial_contract_error}",
+                )
+                if replay is not None:
+                    sidecar_payload = replay
+                    if not sidecar_payload.get("ok"):
+                        code = str(
+                            sidecar_payload.get("error_code")
+                            or sidecar_payload.get("state")
+                            or initial_contract_error
+                        )
+                        settle_message_read_phase(
+                            succeeded=False,
+                            error_code=code,
+                        )
+                        return {
+                            "ok": False,
+                            "error_code": code,
+                            "pre_send_error_evidence": {
+                                "same_frame_full_ocr_replay": sidecar_payload,
+                                "initial_contract_error": initial_contract_error,
+                            },
+                            "target_confirmation": locate_payload,
+                            "initial_messages": sidecar_payload,
+                        }
+                    initial_contract_error = sidecar_contract_error(
+                        sidecar_payload
+                    )
             if initial_contract_error:
                 if operation_phase == C2_PRE_SEND_REFRESH_PHASE:
                     contract_observations = list(
@@ -17519,6 +17646,40 @@ class TaskRunner:
                     else {}
                 )
                 if guard_validation.get("ok") is not True:
+                    replay = replay_same_frame_with_full_ocr(
+                        sidecar_payload,
+                        fallback_reason="send_context_guard_invalid",
+                    )
+                    if replay is not None and replay.get("ok") is True:
+                        replay_contract_error = sidecar_contract_error(replay)
+                        if replay_contract_error:
+                            settle_message_read_phase(
+                                succeeded=False,
+                                error_code=replay_contract_error,
+                            )
+                            return {
+                                "ok": False,
+                                "error_code": replay_contract_error,
+                                "pre_send_error_evidence": {
+                                    "same_frame_full_ocr_replay": replay,
+                                },
+                                "target_confirmation": locate_payload,
+                                "initial_messages": replay,
+                            }
+                        sidecar_payload, checkpoint_comparison = (
+                            self._compare_pre_send_fact_checkpoint_frame(
+                                target=target,
+                                sidecar_payload=replay,
+                                read_run_id=read_run_id,
+                            )
+                        )
+                        guard_validation = dict(
+                            checkpoint_comparison.get(
+                                "send_context_guard_validation"
+                            )
+                            or {}
+                        )
+                if guard_validation.get("ok") is not True:
                     settle_message_read_phase(
                         succeeded=False,
                         error_code=PRE_SEND_LAYOUT_ERROR,
@@ -17540,6 +17701,81 @@ class TaskRunner:
                 if checkpoint_comparison.get("comparison_result") == (
                     "checkpoint_not_continuous"
                 ):
+                    replay = replay_same_frame_with_full_ocr(
+                        sidecar_payload,
+                        fallback_reason=(
+                            "checkpoint_not_continuous:"
+                            + str(checkpoint_comparison.get("reason") or "")
+                        ),
+                    )
+                    if replay is not None:
+                        if not replay.get("ok"):
+                            code = str(
+                                replay.get("error_code")
+                                or replay.get("state")
+                                or "C2_PRE_SEND_MESSAGE_SEQUENCE_ALIGNMENT_FAILED"
+                            )
+                            settle_message_read_phase(
+                                succeeded=False,
+                                error_code=code,
+                            )
+                            return {
+                                "ok": False,
+                                "error_code": code,
+                                "pre_send_error_evidence": {
+                                    "checkpoint_comparison": checkpoint_comparison,
+                                    "same_frame_full_ocr_replay": replay,
+                                },
+                                "target_confirmation": locate_payload,
+                                "initial_messages": replay,
+                            }
+                        replay_contract_error = sidecar_contract_error(replay)
+                        if replay_contract_error:
+                            settle_message_read_phase(
+                                succeeded=False,
+                                error_code=replay_contract_error,
+                            )
+                            return {
+                                "ok": False,
+                                "error_code": replay_contract_error,
+                                "pre_send_error_evidence": {
+                                    "checkpoint_comparison": checkpoint_comparison,
+                                    "same_frame_full_ocr_replay": replay,
+                                },
+                                "target_confirmation": locate_payload,
+                                "initial_messages": replay,
+                            }
+                        sidecar_payload, checkpoint_comparison = (
+                            self._compare_pre_send_fact_checkpoint_frame(
+                                target=target,
+                                sidecar_payload=replay,
+                                read_run_id=read_run_id,
+                            )
+                        )
+                        replay_guard_validation = dict(
+                            checkpoint_comparison.get(
+                                "send_context_guard_validation"
+                            )
+                            or {}
+                        )
+                        if replay_guard_validation.get("ok") is not True:
+                            settle_message_read_phase(
+                                succeeded=False,
+                                error_code=PRE_SEND_LAYOUT_ERROR,
+                            )
+                            return {
+                                "ok": False,
+                                "error_code": PRE_SEND_LAYOUT_ERROR,
+                                "pre_send_error_evidence": {
+                                    "checkpoint_comparison": checkpoint_comparison,
+                                    "same_frame_full_ocr_replay": replay,
+                                },
+                                "target_confirmation": locate_payload,
+                                "initial_messages": replay,
+                            }
+                if checkpoint_comparison.get("comparison_result") == (
+                    "checkpoint_not_continuous"
+                ):
                     initial_checkpoint_comparison = dict(
                         checkpoint_comparison
                     )
@@ -17553,6 +17789,9 @@ class TaskRunner:
                         target_mode="current",
                         expected_confirmed_self_text=(
                             expected_confirmed_self_text
+                        ),
+                        chat_fact_roi_ocr=(
+                            CONFIG.c3_pre_send_roi_reuse_enabled
                         ),
                         max_duration_seconds=20,
                         cancel_check=action_cancel_requested,
@@ -17582,6 +17821,40 @@ class TaskRunner:
                             "initial_messages": sidecar_payload,
                         }
                     reread_contract_error = sidecar_contract_error(reread)
+                    if reread_contract_error:
+                        replay = replay_same_frame_with_full_ocr(
+                            reread,
+                            fallback_reason=(
+                                f"passive_reread_contract:"
+                                f"{reread_contract_error}"
+                            ),
+                        )
+                        if replay is not None:
+                            reread = replay
+                            reread["pre_send_checkpoint_reread_count"] = 1
+                            if not reread.get("ok"):
+                                code = str(
+                                    reread.get("error_code")
+                                    or reread.get("state")
+                                    or reread_contract_error
+                                )
+                                settle_message_read_phase(
+                                    succeeded=False,
+                                    error_code=code,
+                                )
+                                return {
+                                    "ok": False,
+                                    "error_code": code,
+                                    "pre_send_error_evidence": {
+                                        "checkpoint_comparison": checkpoint_comparison,
+                                        "same_frame_full_ocr_replay": reread,
+                                    },
+                                    "target_confirmation": locate_payload,
+                                    "initial_messages": reread,
+                                }
+                            reread_contract_error = sidecar_contract_error(
+                                reread
+                            )
                     if reread_contract_error:
                         settle_message_read_phase(
                             succeeded=False,
@@ -17619,6 +17892,82 @@ class TaskRunner:
                         )
                         else {}
                     )
+                    if (
+                        reread_guard_validation.get("ok") is not True
+                        or checkpoint_comparison.get("comparison_result")
+                        == "checkpoint_not_continuous"
+                    ):
+                        fallback_reason = (
+                            "passive_reread_guard_invalid"
+                            if reread_guard_validation.get("ok") is not True
+                            else (
+                                "passive_reread_checkpoint_not_continuous:"
+                                + str(
+                                    checkpoint_comparison.get("reason") or ""
+                                )
+                            )
+                        )
+                        replay = replay_same_frame_with_full_ocr(
+                            sidecar_payload,
+                            fallback_reason=fallback_reason,
+                        )
+                        if replay is not None:
+                            replay["pre_send_checkpoint_reread_count"] = 1
+                            if not replay.get("ok"):
+                                code = str(
+                                    replay.get("error_code")
+                                    or replay.get("state")
+                                    or PRE_SEND_LAYOUT_ERROR
+                                )
+                                settle_message_read_phase(
+                                    succeeded=False,
+                                    error_code=code,
+                                )
+                                return {
+                                    "ok": False,
+                                    "error_code": code,
+                                    "pre_send_error_evidence": {
+                                        "checkpoint_comparison": checkpoint_comparison,
+                                        "same_frame_full_ocr_replay": replay,
+                                        "initial_checkpoint_comparison": initial_checkpoint_comparison,
+                                    },
+                                    "target_confirmation": locate_payload,
+                                    "initial_messages": replay,
+                                }
+                            replay_contract_error = sidecar_contract_error(
+                                replay
+                            )
+                            if replay_contract_error:
+                                settle_message_read_phase(
+                                    succeeded=False,
+                                    error_code=replay_contract_error,
+                                )
+                                return {
+                                    "ok": False,
+                                    "error_code": replay_contract_error,
+                                    "pre_send_error_evidence": {
+                                        "checkpoint_comparison": checkpoint_comparison,
+                                        "same_frame_full_ocr_replay": replay,
+                                    },
+                                    "target_confirmation": locate_payload,
+                                    "initial_messages": replay,
+                                }
+                            sidecar_payload, checkpoint_comparison = (
+                                self._compare_pre_send_fact_checkpoint_frame(
+                                    target=target,
+                                    sidecar_payload=replay,
+                                    read_run_id=read_run_id,
+                                )
+                            )
+                            sidecar_payload[
+                                "pre_send_checkpoint_reread_count"
+                            ] = 1
+                            reread_guard_validation = dict(
+                                checkpoint_comparison.get(
+                                    "send_context_guard_validation"
+                                )
+                                or {}
+                            )
                     if reread_guard_validation.get("ok") is not True:
                         settle_message_read_phase(
                             succeeded=False,

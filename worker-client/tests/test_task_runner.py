@@ -8163,6 +8163,400 @@ class TaskRunnerTest(unittest.TestCase):
             1,
         )
 
+    def test_pre_send_roi_role_failure_uses_same_frame_full_ocr_before_send(self):
+        task = self.make_chat_reply_task(task_id="task-roi-role-fallback")
+        api = FakeApi(task)
+        self.authorize_chat_reply_target(api)
+        api.pre_send_checkpoint_facts = [
+            pre_send_fact(
+                "worker-message-roi-role",
+                sender_role="customer",
+                message_type="text",
+                content="想看家用车",
+            )
+        ]
+        invalid = {
+            "frame_id": "frame-roi-role",
+            "observations": [
+                {
+                    "schema_version": 3,
+                    "observation_id": "roi-role-unknown",
+                    "row_kind": "text_bubble",
+                    "sender_role": "unknown",
+                    "sender_role_source": "unknown",
+                    "message_type": "text",
+                    "voice_state": "not_voice",
+                    "content_clean": "想看家用车",
+                    "bubble_rect": [420, 200, 700, 250],
+                    "contract_errors": ["sender_role_unconfirmed"],
+                }
+            ],
+            "pre_send_frame_reuse": {
+                "ocr_plan": {"source": "chat_fact_roi"}
+            },
+            "observation_validation_errors": [
+                {
+                    "observation_id": "roi-role-unknown",
+                    "error_codes": ["sender_role_unconfirmed"],
+                }
+            ],
+            "frame_observation": {
+                "frame_id": "frame-roi-role",
+                "screenshot_path": "/tmp/frame-roi-role.png",
+            },
+        }
+        corrected_observation = {
+            "schema_version": 3,
+            "observation_id": "full-role-customer",
+            "row_kind": "text_bubble",
+            "sender_role": "customer",
+            "sender_role_source": "same_row_avatar",
+            "message_type": "text",
+            "voice_state": "not_voice",
+            "content_clean": "想看家用车",
+            "bubble_rect": [420, 200, 700, 250],
+        }
+        corrected = {
+            "frame_id": "frame-roi-role",
+            "observations": [corrected_observation],
+            "send_context_guard": production_send_context_guard(
+                [corrected_observation],
+                layout_ok=True,
+            ),
+            "pre_send_frame_reuse": {
+                "ocr_plan": {"source": "same_frame_full_fallback"}
+            },
+            "frame_observation": {
+                "frame_id": "frame-roi-role",
+                "screenshot_path": "/tmp/frame-roi-role.png",
+            },
+        }
+        bridge = FakeBridge(
+            RpaResult(ok=True, result_code="unused", message="unused")
+        )
+        bridge.get_messages_payloads = [invalid, corrected]
+        runner, _ = self.make_runner(api, bridge)
+        binding = Binding(
+            worker_id="worker-1",
+            worker_token="token",
+            client_instance_id="client-1",
+            run_status="running",
+        )
+        runner.binding = binding
+        self.assertTrue(
+            runner._start_inflight_flow(
+                binding,
+                flow_id="flow-roi-role-fallback",
+                flow_kind="c2_read",
+            )
+        )
+
+        result = runner._wait_and_send_current_c3_batch(
+            binding=binding,
+            target=api.read_targets[0],
+            batch_id="batch-1",
+            cancel_check=lambda: False,
+        )
+
+        self.assertTrue(result["ok"], result)
+        self.assertTrue(result["sent"])
+        self.assertEqual(len(bridge.message_reads), 2)
+        replay_call = bridge.message_reads[1]
+        self.assertFalse(replay_call["chat_fact_roi_ocr"])
+        self.assertEqual(
+            replay_call["same_frame_full_ocr_evidence"]["frame_id"],
+            "frame-roi-role",
+        )
+        self.assertIn(
+            "contract:OMNIAUTO_OBSERVATION_CONTRACT_INVALID",
+            replay_call["same_frame_full_ocr_evidence"]["fallback_reason"],
+        )
+        self.assertEqual(len(bridge.sent_replies), 1)
+
+    def test_pre_send_roi_sequence_failure_full_ocr_same_frame_precedes_reread(self):
+        task = self.make_chat_reply_task(task_id="task-roi-sequence-fallback")
+        api = FakeApi(task)
+        self.authorize_chat_reply_target(api)
+        api.pre_send_checkpoint_facts = [
+            pre_send_fact(
+                "worker-message-roi-sequence",
+                sender_role="customer",
+                message_type="text",
+                content="第二条消息",
+            )
+        ]
+        omitted_observation = {
+            "schema_version": 3,
+            "observation_id": "roi-omitted-message",
+            "row_kind": "text_bubble",
+            "sender_role": "customer",
+            "sender_role_source": "same_row_avatar",
+            "message_type": "text",
+            "voice_state": "not_voice",
+            "content_clean": "第一条消息",
+            "bubble_rect": [420, 160, 700, 210],
+        }
+        complete_observation = {
+            **omitted_observation,
+            "observation_id": "full-complete-message",
+            "content_clean": "第二条消息",
+        }
+        bridge = FakeBridge(
+            RpaResult(ok=True, result_code="unused", message="unused")
+        )
+        bridge.get_messages_payloads = [
+            {
+                "frame_id": "frame-roi-sequence",
+                "observations": [omitted_observation],
+                "send_context_guard": production_send_context_guard(
+                    [omitted_observation],
+                    layout_ok=True,
+                ),
+                "pre_send_frame_reuse": {
+                    "ocr_plan": {"source": "chat_fact_roi"}
+                },
+                "frame_observation": {
+                    "frame_id": "frame-roi-sequence",
+                    "screenshot_path": "/tmp/frame-roi-sequence.png",
+                },
+            },
+            {
+                "frame_id": "frame-roi-sequence",
+                "observations": [complete_observation],
+                "send_context_guard": production_send_context_guard(
+                    [complete_observation],
+                    layout_ok=True,
+                ),
+                "pre_send_frame_reuse": {
+                    "ocr_plan": {"source": "same_frame_full_fallback"}
+                },
+                "frame_observation": {
+                    "frame_id": "frame-roi-sequence",
+                    "screenshot_path": "/tmp/frame-roi-sequence.png",
+                },
+            },
+        ]
+        runner, _ = self.make_runner(api, bridge)
+        binding = Binding(
+            worker_id="worker-1",
+            worker_token="token",
+            client_instance_id="client-1",
+            run_status="running",
+        )
+        runner.binding = binding
+        self.assertTrue(
+            runner._start_inflight_flow(
+                binding,
+                flow_id="flow-roi-sequence-fallback",
+                flow_kind="c2_read",
+            )
+        )
+
+        result = runner._wait_and_send_current_c3_batch(
+            binding=binding,
+            target=api.read_targets[0],
+            batch_id="batch-1",
+            cancel_check=lambda: False,
+        )
+
+        self.assertTrue(result["ok"], result)
+        self.assertTrue(result["sent"])
+        self.assertEqual(len(bridge.message_reads), 2)
+        self.assertEqual(
+            bridge.message_reads[1]["same_frame_full_ocr_evidence"][
+                "frame_id"
+            ],
+            "frame-roi-sequence",
+        )
+        self.assertNotIn(
+            "pre_send_checkpoint_reread_count",
+            bridge.last_message_payload,
+        )
+        self.assertEqual(len(bridge.sent_replies), 1)
+
+    def test_formal_pre_send_roi_switch_off_keeps_worker_on_original_read(self):
+        task = self.make_chat_reply_task(task_id="task-roi-switch-off")
+        api = FakeApi(task)
+        self.authorize_chat_reply_target(api)
+        api.pre_send_checkpoint_facts = [
+            pre_send_fact(
+                "worker-message-roi-switch-off",
+                sender_role="customer",
+                message_type="text",
+                content="开关关闭",
+            )
+        ]
+        observation = {
+            "schema_version": 3,
+            "observation_id": "full-switch-off",
+            "row_kind": "text_bubble",
+            "sender_role": "customer",
+            "sender_role_source": "same_row_avatar",
+            "message_type": "text",
+            "voice_state": "not_voice",
+            "content_clean": "开关关闭",
+            "bubble_rect": [420, 200, 700, 250],
+        }
+        bridge = FakeBridge(
+            RpaResult(ok=True, result_code="unused", message="unused")
+        )
+        bridge.get_messages_payloads = [
+            {
+                "frame_id": "frame-full-switch-off",
+                "observations": [observation],
+                "send_context_guard": production_send_context_guard(
+                    [observation],
+                    layout_ok=True,
+                ),
+            }
+        ]
+        runner, _ = self.make_runner(api, bridge)
+        binding = Binding(
+            worker_id="worker-1",
+            worker_token="token",
+            client_instance_id="client-1",
+            run_status="running",
+        )
+        runner.binding = binding
+        self.assertTrue(
+            runner._start_inflight_flow(
+                binding,
+                flow_id="flow-roi-switch-off",
+                flow_kind="c2_read",
+            )
+        )
+
+        with patch(
+            "chejin_worker_client.task_runner.CONFIG",
+            replace(CONFIG, c3_pre_send_roi_reuse_enabled=False),
+        ):
+            result = runner._wait_and_send_current_c3_batch(
+                binding=binding,
+                target=api.read_targets[0],
+                batch_id="batch-1",
+                cancel_check=lambda: False,
+            )
+
+        self.assertTrue(result["ok"], result)
+        self.assertTrue(result["sent"])
+        self.assertEqual(len(bridge.message_reads), 1)
+        self.assertFalse(bridge.message_reads[0]["chat_fact_roi_ocr"])
+        self.assertNotIn(
+            "same_frame_full_ocr_evidence",
+            bridge.message_reads[0],
+        )
+
+    def test_passive_reread_roi_also_uses_its_same_frame_full_ocr_first(self):
+        task = self.make_chat_reply_task(task_id="task-reread-roi-fallback")
+        api = FakeApi(task)
+        self.authorize_chat_reply_target(api)
+        api.pre_send_checkpoint_facts = [
+            pre_send_fact(
+                "worker-message-reread-roi",
+                sender_role="customer",
+                message_type="text",
+                content="最终完整消息",
+            )
+        ]
+
+        def observation(observation_id: str, content: str) -> dict:
+            return {
+                "schema_version": 3,
+                "observation_id": observation_id,
+                "row_kind": "text_bubble",
+                "sender_role": "customer",
+                "sender_role_source": "same_row_avatar",
+                "message_type": "text",
+                "voice_state": "not_voice",
+                "content_clean": content,
+                "bubble_rect": [420, 200, 700, 250],
+            }
+
+        def frame_payload(
+            frame_id: str,
+            item: dict,
+            source: str,
+        ) -> dict:
+            return {
+                "frame_id": frame_id,
+                "observations": [item],
+                "send_context_guard": production_send_context_guard(
+                    [item],
+                    layout_ok=True,
+                ),
+                "pre_send_frame_reuse": {
+                    "ocr_plan": {"source": source}
+                },
+                "frame_observation": {
+                    "frame_id": frame_id,
+                    "screenshot_path": f"/tmp/{frame_id}.png",
+                },
+            }
+
+        first_incomplete = observation("initial-roi", "初次漏识别")
+        reread_incomplete = observation("reread-roi", "重读仍漏识别")
+        final_complete = observation("reread-full", "最终完整消息")
+        bridge = FakeBridge(
+            RpaResult(ok=True, result_code="unused", message="unused")
+        )
+        bridge.get_messages_payloads = [
+            frame_payload("frame-initial-roi", first_incomplete, "chat_fact_roi"),
+            frame_payload(
+                "frame-initial-roi",
+                first_incomplete,
+                "same_frame_full_fallback",
+            ),
+            frame_payload("frame-passive-roi", reread_incomplete, "chat_fact_roi"),
+            frame_payload(
+                "frame-passive-roi",
+                final_complete,
+                "same_frame_full_fallback",
+            ),
+        ]
+        runner, _ = self.make_runner(api, bridge)
+        binding = Binding(
+            worker_id="worker-1",
+            worker_token="token",
+            client_instance_id="client-1",
+            run_status="running",
+        )
+        runner.binding = binding
+        self.assertTrue(
+            runner._start_inflight_flow(
+                binding,
+                flow_id="flow-reread-roi-fallback",
+                flow_kind="c2_read",
+            )
+        )
+
+        result = runner._wait_and_send_current_c3_batch(
+            binding=binding,
+            target=api.read_targets[0],
+            batch_id="batch-1",
+            cancel_check=lambda: False,
+        )
+
+        self.assertTrue(result["ok"], result)
+        self.assertTrue(result["sent"])
+        self.assertEqual(len(bridge.message_reads), 4)
+        self.assertEqual(
+            bridge.message_reads[1]["same_frame_full_ocr_evidence"][
+                "frame_id"
+            ],
+            "frame-initial-roi",
+        )
+        self.assertNotIn(
+            "same_frame_full_ocr_evidence",
+            bridge.message_reads[2],
+        )
+        self.assertEqual(
+            bridge.message_reads[3]["same_frame_full_ocr_evidence"][
+                "frame_id"
+            ],
+            "frame-passive-roi",
+        )
+        self.assertEqual(len(bridge.sent_replies), 1)
+
     def _assert_invalid_pre_send_layout_faults_without_action(
         self,
         *,
@@ -8617,6 +9011,14 @@ class TaskRunnerTest(unittest.TestCase):
         self.assertEqual(len(bridge.sent_replies), 1)
         self.assertEqual(api.message_payloads, [])
         self.assertEqual(api.events.count("sent_ack:sent:None"), 1)
+        self.assertTrue(bridge.message_reads)
+        self.assertTrue(
+            bridge.message_reads[0].get("chat_fact_roi_ocr")
+        )
+        self.assertTrue(bridge.locate_chats)
+        self.assertTrue(
+            bridge.locate_chats[0].get("chat_fact_roi_ocr")
+        )
 
     def test_pre_send_checkpoint_terminal_image_is_not_reprocessed(self):
         task = self.make_chat_reply_task(task_id="task-checkpoint-image")
@@ -16820,6 +17222,62 @@ class TaskRunnerTest(unittest.TestCase):
         self.assertEqual(bridge.locate_chats[1]["rpa_session_key"], "")
         self.assertEqual(bridge.message_reads[0]["target_mode"], "current")
         self.assertIn("ingest:1", api.events)
+
+    def test_c2_visible_sidecar_consumes_merged_search_without_second_process(self):
+        api = FakeApi(None)
+        api.read_targets = [
+            WechatReadTarget(
+                conversation_id="conv-merged-search",
+                rpa_session_key="wx:rpa:v1:a",
+                display_name="CJTEST01 许聪",
+                remark_code="CJTEST01",
+                row_fingerprint={"title_text": "CJTEST01 许聪"},
+                ocr_confidence=0.98,
+                read_reason="waiting_user_reply",
+            )
+        ]
+        bridge = FakeBridge(
+            RpaResult(ok=True, result_code="invite_sent", message="unused")
+        )
+
+        def locate_chat(
+            *, display_name: str, rpa_session_key: str, **kwargs
+        ):
+            bridge.c2_operation_order.append("locate_chat")
+            bridge.locate_chats.append(
+                {
+                    "display_name": display_name,
+                    "rpa_session_key": rpa_session_key,
+                    **kwargs,
+                }
+            )
+            return {
+                "ok": False,
+                "adapter": "mock",
+                "state": "remark_code_search_no_match",
+                "error_code": "TARGET_NOT_CONFIRMED",
+                "sidecar_run_id": "locate-visible-merged-search",
+                "target_mode": "visible",
+                "open_chat_timing": {
+                    "open_chat_merged_remark_search_attempted": True,
+                    "open_chat_merged_remark_search_baseline_reused": True,
+                },
+            }
+
+        bridge.locate_chat = locate_chat  # type: ignore[method-assign]
+        runner, _ = self.make_runner(api, bridge)
+        binding = Binding(
+            worker_id="worker-1",
+            worker_token="token",
+            client_instance_id="client-1",
+            run_status="running",
+        )
+
+        runner._run_c2_scan_round(binding, reason="unit")
+
+        self.assertEqual(len(bridge.locate_chats), 1)
+        self.assertEqual(bridge.locate_chats[0]["target_mode"], "visible")
+        self.assertEqual(bridge.message_reads, [])
 
     def test_c2_visible_stale_after_click_reauthorizes_and_relocates_once(self):
         api = FakeApi(None)

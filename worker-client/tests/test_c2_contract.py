@@ -361,7 +361,7 @@ class C2ContractTests(unittest.TestCase):
 
     def test_slot_ledger_contract_separates_fact_scope_from_delivery(self):
         schema = c2_contract_v3()["slot_ledger_state_schema"]
-        self.assertEqual(c2_contract_v3()["contract_revision"], "0.9.41")
+        self.assertEqual(c2_contract_v3()["contract_revision"], "0.9.42")
         self.assertIn(
             "anchor_aliases",
             c2_contract_v3()["message_limits"][
@@ -406,6 +406,22 @@ class C2ContractTests(unittest.TestCase):
         )
         self.assertIn("sidebar pixel digest", performance["locate_reuse_rule"])
         self.assertIn("0.9.10 full path", performance["fallback_rule"])
+        self.assertIn(
+            "exact persisted screenshot",
+            performance["pre_send_same_frame_full_ocr_rule"],
+        )
+        self.assertIn(
+            "decoded pixel sha256",
+            performance["pre_send_same_frame_binding_rule"],
+        )
+        self.assertIn(
+            "full-window OCR",
+            performance["sidebar_search_safety_rule"],
+        )
+        self.assertIn(
+            "controlled only by the three declared CHEJIN flags",
+            performance["formal_flag_rule"],
+        )
         legacy_recovery = c2_contract_v3()[
             "legacy_media_upgrade_recovery_contract"
         ]
