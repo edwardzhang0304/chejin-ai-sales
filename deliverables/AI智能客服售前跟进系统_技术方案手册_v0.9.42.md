@@ -1,10 +1,10 @@
 # AI智能客服售前跟进系统 技术方案
 
-版本：v0.9.38
+版本：v0.9.42
 
 日期：2026-07-21
 
-最后更新：2026-08-26
+最后更新：2026-08-27
 
 适用范围：运营后台、车金后端、Windows Worker、OmniAuto Sidecar、C0—C4、车辆 Product Master、人工接管与飞书通知。
 
@@ -16,7 +16,11 @@
 
 `0.9.38` 只修正完整画面证据与增量入库的旁路合同：`messages` 仅保留本轮未结算事实，`evidence.observations` 与 `slot_ledger_states` 始终表示同一张完整权威画面；大载荷拆包的最后一片必须携带完整 observations，若完整证据无法装入运输上限，Worker 必须在发送任何分片前失败。后端对未随 `messages` 重复提交的历史 observation 必须查询正式 `MessageEvent` 验真；`fact_scope=unknown` 只有被明确身份异常 flow gate 覆盖时才能进入既有恢复/转人工流程，缺门禁或仅有 `C2_MESSAGE_HISTORY_GAP` 必须返回 409。发送前仍执行完整 N 对 N 比较，不放宽身份、顺序或布局安全门；不修改 Sidecar UI 动作、Brain、媒体处理顺序或 C0—C4 状态机。当前合同为 `0.9.38 / 6e1b0ab219c7effdb380170c452cd0e18c42522cd95870f24034af69c6b51143`，OmniAuto 生成 Schema 来源提交为 `715450bc55117cb5ac7c3fc4f574f4721c00b538`。
 
-**本地实现状态更新：** 完整画面与增量消息分离、最终分片完整证据、unknown 显式身份门禁及其正式拆包、HTTP、数据库、checkpoint 和 Worker 比较正反测试已完成并通过架构复审；当前规范化合同为 `0.9.38 / 6e1b0ab219c7effdb380170c452cd0e18c42522cd95870f24034af69c6b51143`。OmniAuto 生成 Schema 来源提交为 `715450bc55117cb5ac7c3fc4f574f4721c00b538`；车金候选、标签、安装包和配套后端部署待形成。
+`0.9.39`—`0.9.40` 收口同帧语音物理行归并与低权威快速短句购车意图：Sidecar 只在同一发送人、纵向范围真实相交且证据无冲突时合并 OCR/图形语音观察；上下消息行即使仅隔 1px 也不得合并。Worker 不再按锚点类别做第二次归并。`0.9.41` 将正式 Brain 提供方固定为 DeepSeek，并为一次回复建立共享总预算和逐阶段诊断；生成、备用线路、修复、返修和语义审核不得分别重获完整超时。
+
+`0.9.42` 只优化两个高频 UI 读取热点，不修改 C0—C4 状态机、消息身份、Brain 决策或 S0/S1/S2 时间点数量。C3 的同一张不可变发送画面先对标题区、完整消息区和输入区执行 ROI OCR；标题、消息数量、角色、正文、顺序或发送回执任一证据不足时，必须对同一张内存截图补做一次整窗 OCR。整窗证据仍不足时，S0/S1 必须零 Enter 停止；S2 因首次 Enter 已执行，只能记录 `SEND_RESULT_UNKNOWN`，不得再次按 Enter。禁止用新截图冒充同帧回退，禁止放宽上下文比较。非首屏 `visible -> search_by_remark_code` 在同一次 Sidecar 定位事务中复用已取得画面建立搜索入口，搜索候选只用侧栏 ROI；全局登录、弹窗和异常安全检查仍使用整窗证据，最终 private、短码和标题确认保持不变。所有快速路径统一服从既有三个正式开关，关闭后恢复原路径，不得另设第二套默认开启开关。
+
+**本地实现状态更新：** 当前合同为 `0.9.42 / 9dcab8759b3f2a0611027cccda0044cd24e182e50418c33b88d997007a5c4305`。同帧 ROI 到整窗回退已覆盖 `pre_send_refresh` 及真实发送 S0/S1/S2；正式开关回退和侧栏候选/整窗安全证据分离已完成。独立 OmniAuto 的直接生产依赖已补齐并形成真实来源提交 `307241810963c2e649ba04483a898687d06ba9f4`；车金提交、推送、标签、安装包、配套后端部署和 Windows 实机耗时验收均待形成；自动化结果不得写成实机验收通过。
 
 ## 文档治理规则
 
@@ -40,12 +44,12 @@
    字段和领域对象字段使用 snake_case，两者不得被误认为两个接口。新增、改名或废弃
    接口必须先修改本文的权威目录和接口编号，不允许在代码、聊天记录或派生合同中另起
    同义名称。
-7. 灰度版本使用唯一 `0.9.x` 序列：`0.9.0` 至 `0.9.37` 已冻结，当前目标候选为 `0.9.38`；
+7. 灰度版本使用唯一 `0.9.x` 序列：`0.9.0` 至 `0.9.41` 已冻结，当前目标候选为 `0.9.42`；
    后续任何内容不同且进入测试的候选必须继续升版。PRD（仅有产品变化时）、技术方案、全流程图、版本记录、客户端、
    后端、OmniAuto 合同 `contract_revision`、生成 Schema、manifest 和安装包必须写入同一个
    精确版本，禁止各自升版、复用旧号覆盖新内容或把占位符 `0.9.X` 写入运行产物。
    `contract_version=3`、`observation_schema_version=3` 和文中 V3 仅是协议结构代号，不属于
-   灰度发布版本。`0.9.37` 已形成不可覆盖的标签、代码、合同和 ZIP 基线；当前目标为 `0.9.38`。客户端、后端、OmniAuto 生成 Schema、manifest 与打包入口已统一升级为 `contract_revision=0.9.38`，当前 SHA 为 `6e1b0ab219c7effdb380170c452cd0e18c42522cd95870f24034af69c6b51143`。完整画面与增量消息分离、最终分片完整证据和 unknown 显式身份门禁已通过代码层架构复审。推送、标签、GitHub Windows 门禁、Windows 实机 UAT 和正式包仍待完成，不得伪报为已发布或已交付。
+   灰度发布版本。`0.9.41` 已形成不可覆盖的标签、代码、合同和 ZIP 基线；当前目标为 `0.9.42`。客户端、后端、OmniAuto 生成 Schema、manifest 与打包入口已统一升级为 `contract_revision=0.9.42`，当前 SHA 为 `9dcab8759b3f2a0611027cccda0044cd24e182e50418c33b88d997007a5c4305`。本轮只收口同帧 ROI 回退、正式开关和非首屏定位画面复用，推送、标签、GitHub Windows 门禁、Windows 实机耗时/UAT 和正式包仍待完成，不得伪报为已发布或已交付。
    版本车道固定为：`0.9.x` 仅用于正式上线前灰度验证，`1.0.x` 用于正式上线及其稳定性修复，
    `1.1.x` 用于下一期优化。三个 `x` 都只表示版本系列，任何提交、合同、Schema、manifest、
    安装包和运行日志必须写入 `0.9.15`、`1.0.0`、`1.1.0` 等精确版本，不得写入字面占位符。
@@ -2738,7 +2742,7 @@ C2保持当前单会话Flow和UI锁等待Brain/Guard
 不新增人工解锁、清数据或旧 Flow 恢复功能。修复后通过新客户端版本的正常启动流程重新建立标定；
 不为这个未修复 Bug 设计运行时补偿状态机。
 
-`0.9.38` 提交前必须通过以下发送前事实比较组合门禁。测试必须从正式 `pre_send_refresh` 生产入口进入，使用真实持久化
+`0.9.42` 提交前必须通过以下发送前事实比较组合门禁。测试必须从正式 `pre_send_refresh` 生产入口进入，使用真实持久化
 checkpoint、Worker 正式比较器、正式 reply_action 结算和后端数据库，不得直接伪造比较结果或只调用内部对齐函数自证成功：
 
 1. checkpoint 为“文字 1、已提交语音 A、文字 2”，当前完整尾部完全相同，且 A 具有原生 ID 或双侧静态连续性证据：结果必须为 `unchanged_sendable + physical_identity_confirmed=true`，零重复入库、零媒体 UI 动作、零新 Brain、零 handoff，并允许原 reply_action 进入 claim-send。
@@ -3050,7 +3054,7 @@ Worker C2 读取某个会话时，执行顺序固定为：
 上述顺序是唯一合法流程。禁止在右键前提交正式 Worker 身份，禁止用 voice anchor 直接生成
 source key，禁止在动作后用相同正文、相同 anchor 或坐标找回编号。
 
-目标机器合同 revision `0.9.38` 在 Sidecar 请求/返回、ActionJournal、Worker 本地身份预留和最终 V3 evidence 中使用以下唯一媒体字段，禁止新增同义字段；本地实现、生成 Schema 与规范化合同 SHA 已统一为 `6e1b0ab219c7effdb380170c452cd0e18c42522cd95870f24034af69c6b51143`，代码层架构复审已通过：
+目标机器合同 revision `0.9.42` 在 Sidecar 请求/返回、ActionJournal、Worker 本地身份预留和最终 V3 evidence 中使用以下唯一媒体字段，禁止新增同义字段；本地实现、生成 Schema 与规范化合同 SHA 已统一为 `9dcab8759b3f2a0611027cccda0044cd24e182e50418c33b88d997007a5c4305`，本轮代码仍待最终架构复审：
 
 | 字段 | 所有者 | 必填规则 |
 |---|---|---|
@@ -3153,7 +3157,7 @@ Worker 必须对上述逻辑矛盾失败关闭。例如 `identity_phase=sequence
 | `sidecar_new_message_occurrences` 及内容 multiset 比较 | 只可用于发现“画面可能新增了什么”，结果必须再进入新观察仲裁 | 用来证明正文属于被点击语音，或认定相同内容是旧消息 |
 | `storage.py` 消息序号状态 | 原子落盘 action ID、reserved ID、identity phase、trigger phase 和 terminal；预留号单调且永不复用 | 崩溃后回收预留号；新动作重用旧 action ID；`trigger_attempted` 后再点击 |
 | `storage.py` 动作前画面状态 | 与 ActionJournal 原子保存 `pre_action_identity_sequence`，覆盖 `committed/selected_action/frame_local_unselected`；动作终态后补齐 `sequence_alignment_evidence` | 只保存已编号项；崩溃后用新截图或相同内容伪造动作前序列 |
-| `contracts/c2_contract_v3.json` 及生成 schema | `0.9.38` 实现候选必须将 `contract_revision`、客户端、后端、Sidecar、生成 Schema、样例和 manifest 一次性统一；定义 batch/reply 响应中的只读 `pre_send_fact_checkpoint`、绑定摘要、三种 MECE 比较结果和 `C2_PRE_SEND_FACT_CHECKPOINT_INVALID`，明确 Sidecar 与 `messages/ingest` 请求不携带该对象；同时保留本节对象分类、允许的 commit basis、四种媒体终态、统一消费者白名单、独立帧内语音 action binding、`authoritative_frame_source=initial_read/final_read/action_journal_recovery` 和安全误点语义 | 使用独立合同版本号；在 `0.9.37` 下静默改语义；产生 `voice_execute_final` 等临时值；保留 `tracking_candidate_counts` 兼容；新增尾部媒体身份例外、同义字段、双字段兼容、HTTP 请求侧 checkpoint 或 Worker 本地兜底重判 |
+| `contracts/c2_contract_v3.json` 及生成 schema | `0.9.42` 实现候选必须将 `contract_revision`、客户端、后端、Sidecar、生成 Schema、样例和 manifest 一次性统一；定义 batch/reply 响应中的只读 `pre_send_fact_checkpoint`、绑定摘要、三种 MECE 比较结果和 `C2_PRE_SEND_FACT_CHECKPOINT_INVALID`，明确 Sidecar 与 `messages/ingest` 请求不携带该对象；同时保留本节对象分类、允许的 commit basis、四种媒体终态、统一消费者白名单、独立帧内语音 action binding、`authoritative_frame_source=initial_read/final_read/action_journal_recovery` 和安全误点语义 | 使用独立合同版本号；在旧 revision 下静默改语义；产生 `voice_execute_final` 等临时值；保留 `tracking_candidate_counts` 兼容；新增尾部媒体身份例外、同义字段、双字段兼容、HTTP 请求侧 checkpoint 或 Worker 本地兜底重判 |
 
 新流程的唯一落库时点为：预留表/ActionJournal 在点击前落盘；正式 identity catalog、
 Ledger、Outbox 和 `source_message_key` 只在 `historical_restored` 或 `business_committed` 后落盘。
@@ -3491,7 +3495,7 @@ POST /api/workers/{worker_id}/wechat/messages/ingest
 
 | 字段 | 类型 | 必填 | 说明 |
 |---|---|---|---|
-| `contract_version` | integer | 是 | 协议结构代号固定为 `3`，不是发布版本；当前灰度目标由 `contract_revision=0.9.38` 表达，并同时校验规范化 `contract_sha256=6e1b0ab219c7effdb380170c452cd0e18c42522cd95870f24034af69c6b51143` 和 `observation_schema_version`。当前为本地实现候选，尚未发布。 |
+| `contract_version` | integer | 是 | 协议结构代号固定为 `3`，不是发布版本；当前灰度目标由 `contract_revision=0.9.42` 表达，并同时校验规范化 `contract_sha256=9dcab8759b3f2a0611027cccda0044cd24e182e50418c33b88d997007a5c4305` 和 `observation_schema_version`。当前为本地实现候选，尚未发布。 |
 | `read_run_id` | string | 是 | 本次读取运行 ID。 |
 | `conversation_id` | string | 是 | 服务端已绑定会话 ID。 |
 | `remark_code` | string | 是 | 本轮已确认的客户短码。 |
@@ -3552,7 +3556,7 @@ POST /api/workers/{worker_id}/wechat/messages/ingest
 `next_sequence_floor`。该响应不得消费未读事实、不得更新读取完成退避、不得推进
 Conversation 或创建 Brain 批次。
 
-`0.9.38` 本地实现已按灰度版本规则同步升级 `contract_revision`；当前代码、Schema、样例和测试同步后的规范化 SHA 为 `6e1b0ab219c7effdb380170c452cd0e18c42522cd95870f24034af69c6b51143`；末尾媒体事实等价、同帧 guard 绑定和被动重读布局复查继续保留，完整画面与增量消息分离、最终分片完整证据和 unknown 显式身份门禁已完成并通过代码层架构复审；
+`0.9.42` 本地实现已按灰度版本规则同步升级 `contract_revision`；当前代码、Schema、样例和测试同步后的规范化 SHA 为 `9dcab8759b3f2a0611027cccda0044cd24e182e50418c33b88d997007a5c4305`；末尾媒体事实等价、同帧 guard 绑定、被动重读布局复查、完整画面与增量消息分离、最终分片完整证据和 unknown 显式身份门禁继续保留；
 `API-C2-05` 请求和响应字段保持不变，严禁新增 `ingest_batch_id`、`outbox_batch_key` 或同义字段。
 旧 `0.9.31` 请求固定按 `MESSAGE_CONTRACT_REVISION_MISMATCH` 拒绝，不允许双 revision 混跑。
 C2-C3 单会话串行链路继续使用可选 `message_batch={batch_id,batch_status}`；派生接口合同只可
@@ -5609,9 +5613,9 @@ HWND 处理，不增加截图、OCR 或整套布局重算，也不得将事务�
 
 `0.9.37` 是本轮修复前的已冻结代码、合同、来源与 ZIP 基线，规范化合同 SHA 为
 `3157d37b8047ef3b39c53d4eab323e87ff7568c442372b08afc22cb1e2c9b9dc`，OmniAuto 来源提交为
-`1a541c9eb330e83077c7bdffa0bb003a1c47d525`。`0.9.38` 的本地 Worker、后端、合同和生成 Schema 已补齐完整画面与增量消息分离、最终分片完整证据以及 unknown 显式身份门禁；规范化合同 SHA 为 `6e1b0ab219c7effdb380170c452cd0e18c42522cd95870f24034af69c6b51143`，代码层架构复审通过，OmniAuto 生成 Schema 来源提交 `715450bc55117cb5ac7c3fc4f574f4721c00b538` 已形成并完成来源绑定。推送、标签、Windows 实机验收和打包待完成。在全部发布门禁通过前不得声称 `0.9.38` 已发布、已交付或可替代 `0.9.37`。
+`1a541c9eb330e83077c7bdffa0bb003a1c47d525`。`0.9.42` 的本地 Worker、后端、合同和生成 Schema 已保留上述安全能力，并新增同帧 ROI 完整回退和非首屏定位复用；规范化合同 SHA 为 `9dcab8759b3f2a0611027cccda0044cd24e182e50418c33b88d997007a5c4305`，本轮真实 OmniAuto 来源提交为 `307241810963c2e649ba04483a898687d06ba9f4`。车金提交、推送、标签、Windows 实机验收和打包待完成。在全部发布门禁通过前不得声称 `0.9.42` 已发布、已交付或可替代 `0.9.41`。
 
-**实现状态补充：** 本节所述完整画面证据、分片提交门禁及 unknown 身份异常合同已形成本地实现、定向跨端组合测试及代码层架构复审，规范化合同 SHA 为 `6e1b0ab219c7effdb380170c452cd0e18c42522cd95870f24034af69c6b51143`；OmniAuto 生成 Schema 来源提交已形成，车金候选和发布产物待完成。
+**实现状态补充：** 本节所述能力及本轮同帧 OCR 回退已形成本地实现和定向测试，规范化合同 SHA 为 `9dcab8759b3f2a0611027cccda0044cd24e182e50418c33b88d997007a5c4305`；真实 OmniAuto 来源提交已固定为 `307241810963c2e649ba04483a898687d06ba9f4`，车金候选和发布产物待完成。
 
 ## 17. 剩余上线前确认清单
 

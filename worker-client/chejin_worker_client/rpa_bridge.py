@@ -249,6 +249,8 @@ class RpaBridge:
         remark_code: str = "",
         target_mode: str = "",
         expected_confirmed_self_text: str = "",
+        chat_fact_roi_ocr: bool = False,
+        same_frame_full_ocr_evidence: dict[str, Any] | None = None,
         max_duration_seconds: int = 12,
         cancel_check: CancellationCheck | None = None,
     ) -> dict[str, Any]:
@@ -265,7 +267,22 @@ class RpaBridge:
             }
         timestamp = time.strftime("%Y%m%d_%H%M%S")
         sidecar_run_id = f"message-{timestamp}-{uuid.uuid4().hex[:8]}"
-        artifact_dir = CONFIG.app_dir / "artifacts" / "wechat_c2" / "messages" / f"{timestamp}_{sidecar_run_id}"
+        replay_evidence = (
+            dict(same_frame_full_ocr_evidence)
+            if isinstance(same_frame_full_ocr_evidence, dict)
+            and CONFIG.c3_pre_send_roi_reuse_enabled
+            else {}
+        )
+        replay_path = Path(str(replay_evidence.get("screenshot_path") or ""))
+        artifact_dir = (
+            replay_path.parent
+            if replay_evidence
+            else CONFIG.app_dir
+            / "artifacts"
+            / "wechat_c2"
+            / "messages"
+            / f"{timestamp}_{sidecar_run_id}"
+        )
         artifact_dir.mkdir(parents=True, exist_ok=True)
         normalized_target_mode = str(target_mode or "").strip()
         effective_max_duration_seconds = max(1, int(max_duration_seconds))
@@ -302,6 +319,15 @@ class RpaBridge:
                 "--expected-confirmed-self-text",
                 str(expected_confirmed_self_text),
             ]
+        if chat_fact_roi_ocr and CONFIG.c3_pre_send_roi_reuse_enabled:
+            args.append("--chat-fact-roi-ocr")
+        if replay_evidence:
+            args.extend(
+                [
+                    "--same-frame-full-ocr-evidence",
+                    json.dumps(replay_evidence, ensure_ascii=True, default=str),
+                ]
+            )
         sidecar_timeout = (
             max(30, min(240, effective_max_duration_seconds + 75))
             if normalized_target_mode == "search_by_remark_code"
@@ -327,6 +353,7 @@ class RpaBridge:
         visible_session_candidate: dict[str, Any] | None = None,
         capture_initial_messages: bool = True,
         expected_confirmed_self_text: str = "",
+        chat_fact_roi_ocr: bool = False,
         max_duration_seconds: int = 75,
         cancel_check: CancellationCheck | None = None,
     ) -> dict[str, Any]:
@@ -368,6 +395,8 @@ class RpaBridge:
             ]
         if capture_initial_messages:
             args.append("--capture-initial-messages")
+        if chat_fact_roi_ocr and CONFIG.c3_pre_send_roi_reuse_enabled:
+            args.append("--chat-fact-roi-ocr")
         if normalized_target_mode == "visible" and isinstance(visible_session_candidate, dict) and visible_session_candidate:
             args.extend(["--visible-session-candidate", json.dumps(visible_session_candidate, ensure_ascii=True, default=str)])
         sidecar_timeout = max(30, min(240, int(max_duration_seconds) + 75))

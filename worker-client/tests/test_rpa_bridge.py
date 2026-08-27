@@ -6,6 +6,7 @@ import shutil
 import tempfile
 import time
 import unittest
+from dataclasses import replace
 from pathlib import Path
 import sys
 from unittest.mock import patch
@@ -740,6 +741,167 @@ class RpaBridgeTest(unittest.TestCase):
         self.assertGreaterEqual(int(captured["timeout"]), 150)
         self.assertIn("sidecar_run_id", result)
         self.assertIn(str(result["sidecar_run_id"]), str(result["artifact_dir"]))
+
+    def test_real_bridge_marks_only_requested_pre_send_read_for_chat_roi(self):
+        bridge = RpaBridge(sidecar_script=Path(__file__))
+        bridge.mode = "real"
+        calls: list[list[str]] = []
+
+        def fake_call_omniauto(args, **_kwargs):
+            calls.append(list(args))
+            return {
+                "ok": True,
+                "adapter": "win32_ocr",
+                "state": "messages_ocr",
+                "messages": [],
+            }
+
+        with patch.object(
+            bridge,
+            "_call_omniauto",
+            side_effect=fake_call_omniauto,
+        ):
+            bridge.get_messages(
+                display_name="CJTEST01",
+                rpa_session_key="",
+                remark_code="CJTEST01",
+                target_mode="current",
+                chat_fact_roi_ocr=True,
+            )
+            bridge.get_messages(
+                display_name="CJTEST01",
+                rpa_session_key="",
+                remark_code="CJTEST01",
+                target_mode="current",
+                chat_fact_roi_ocr=False,
+            )
+
+        self.assertIn("--chat-fact-roi-ocr", calls[0])
+        self.assertNotIn("--chat-fact-roi-ocr", calls[1])
+
+    def test_real_bridge_marks_only_requested_pre_send_locate_for_chat_roi(self):
+        bridge = RpaBridge(sidecar_script=Path(__file__))
+        bridge.mode = "real"
+        calls: list[list[str]] = []
+
+        def fake_call_omniauto(args, **_kwargs):
+            calls.append(list(args))
+            return {
+                "ok": True,
+                "adapter": "win32_ocr",
+                "state": "chat_target_confirmed",
+            }
+
+        with patch.object(
+            bridge,
+            "_call_omniauto",
+            side_effect=fake_call_omniauto,
+        ):
+            bridge.locate_chat(
+                display_name="CJTEST01",
+                rpa_session_key="",
+                remark_code="CJTEST01",
+                target_mode="current",
+                chat_fact_roi_ocr=True,
+            )
+            bridge.locate_chat(
+                display_name="CJTEST01",
+                rpa_session_key="",
+                remark_code="CJTEST01",
+                target_mode="current",
+                chat_fact_roi_ocr=False,
+            )
+
+        self.assertIn("--chat-fact-roi-ocr", calls[0])
+        self.assertNotIn("--chat-fact-roi-ocr", calls[1])
+
+    def test_formal_pre_send_switch_disables_bridge_roi_and_replay(self):
+        bridge = RpaBridge(sidecar_script=Path(__file__))
+        bridge.mode = "real"
+        calls: list[list[str]] = []
+
+        def fake_call_omniauto(args, **_kwargs):
+            calls.append(list(args))
+            return {
+                "ok": True,
+                "adapter": "win32_ocr",
+                "state": "messages_ocr",
+                "messages": [],
+            }
+
+        with patch(
+            "chejin_worker_client.rpa_bridge.CONFIG",
+            replace(CONFIG, c3_pre_send_roi_reuse_enabled=False),
+        ), patch.object(
+            bridge,
+            "_call_omniauto",
+            side_effect=fake_call_omniauto,
+        ):
+            bridge.get_messages(
+                display_name="CJTEST01",
+                rpa_session_key="",
+                remark_code="CJTEST01",
+                target_mode="current",
+                chat_fact_roi_ocr=True,
+                same_frame_full_ocr_evidence={
+                    "frame_id": "disabled-replay",
+                    "screenshot_path": "/tmp/disabled-replay.png",
+                },
+            )
+
+        self.assertNotIn("--chat-fact-roi-ocr", calls[0])
+        self.assertNotIn("--same-frame-full-ocr-evidence", calls[0])
+
+    def test_bridge_same_frame_replay_uses_original_artifact_directory(self):
+        bridge = RpaBridge(sidecar_script=Path(__file__))
+        bridge.mode = "real"
+        captured: dict[str, object] = {}
+        with tempfile.TemporaryDirectory() as temp_dir:
+            screenshot = Path(temp_dir) / "original-roi.png"
+            screenshot.write_bytes(b"png")
+            evidence = {
+                "frame_id": "frame-original-roi",
+                "screenshot_path": str(screenshot),
+                "screenshot_sha256": "a" * 64,
+            }
+
+            def fake_call_omniauto(args, **_kwargs):
+                captured["args"] = list(args)
+                return {
+                    "ok": True,
+                    "adapter": "win32_ocr",
+                    "state": "messages_ocr",
+                    "messages": [],
+                }
+
+            with patch(
+                "chejin_worker_client.rpa_bridge.CONFIG",
+                replace(CONFIG, c3_pre_send_roi_reuse_enabled=True),
+            ), patch.object(
+                bridge,
+                "_call_omniauto",
+                side_effect=fake_call_omniauto,
+            ):
+                result = bridge.get_messages(
+                    display_name="CJTEST01",
+                    rpa_session_key="",
+                    remark_code="CJTEST01",
+                    target_mode="current",
+                    chat_fact_roi_ocr=False,
+                    same_frame_full_ocr_evidence=evidence,
+                )
+
+            args = list(captured["args"])
+            self.assertTrue(result["ok"])
+            self.assertEqual(
+                Path(args[args.index("--artifact-dir") + 1]),
+                Path(temp_dir),
+            )
+            serialized = args[
+                args.index("--same-frame-full-ocr-evidence") + 1
+            ]
+            self.assertEqual(json.loads(serialized), evidence)
+            self.assertNotIn("--chat-fact-roi-ocr", args)
 
     def test_real_bridge_list_sessions_returns_artifact_evidence(self):
         bridge = RpaBridge(sidecar_script=Path(__file__))

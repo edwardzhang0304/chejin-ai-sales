@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import inspect
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -8,6 +9,7 @@ import sys
 from types import SimpleNamespace
 import unittest
 import tempfile
+import time
 from unittest.mock import patch
 
 from PIL import Image, ImageDraw
@@ -140,6 +142,1093 @@ class WechatSendSafetyTest(unittest.TestCase):
         self._semantic_layouts[key] = snapshot
         self._latest_semantic_layout = snapshot
         return snapshot
+
+    def test_chat_fact_roi_ocr_reads_only_three_calibrated_regions(self):
+        frame = Image.new("RGB", (980, 860), "white")
+        layout = self._semantic_layout_for_image(frame)
+        expected_sizes = {
+            tuple(
+                sidecar.win32_ocr_layout.required_region(layout, name)[2 + index]
+                - sidecar.win32_ocr_layout.required_region(layout, name)[index]
+                for index in (0, 1)
+            )
+            for name in (
+                "chat_header_bounds",
+                "message_viewport_bounds",
+                "input_bounds",
+            )
+        }
+        observed_sizes: list[tuple[int, int]] = []
+
+        def raw_ocr(image):
+            observed_sizes.append(tuple(image.size))
+            return [
+                {
+                    "text": f"roi-{len(observed_sizes)}",
+                    "left": 2,
+                    "top": 3,
+                    "right": 22,
+                    "bottom": 13,
+                    "center_x": 12,
+                    "center_y": 8,
+                    "confidence": 0.99,
+                }
+            ]
+
+        with patch.object(sidecar, "run_ocr", side_effect=raw_ocr):
+            items, plan = sidecar.run_ocr_for_chat_fact_frame(
+                frame,
+                purpose="unit_chat_fact",
+                source="unit",
+                enabled=True,
+            )
+
+        self.assertEqual(set(observed_sizes), expected_sizes)
+        self.assertNotIn(frame.size, observed_sizes)
+        self.assertEqual(plan["source"], "chat_fact_roi")
+        self.assertEqual(plan["ocr_call_count"], 3)
+        self.assertEqual(
+            {item["ocr_region_name"] for item in items},
+            {
+                "chat_header_bounds",
+                "message_viewport_bounds",
+                "input_bounds",
+            },
+        )
+        for item in items:
+            bounds = sidecar.win32_ocr_layout.required_region(
+                layout,
+                item["ocr_region_name"],
+            )
+            self.assertGreaterEqual(item["left"], bounds[0])
+            self.assertGreaterEqual(item["top"], bounds[1])
+
+    def test_formal_reuse_switches_restore_full_frame_ocr_paths(self):
+        frame = Image.new("RGB", (980, 860), "white")
+        self._semantic_layout_for_image(frame)
+        observed_sizes: list[tuple[int, int]] = []
+
+        def raw_ocr(image):
+            observed_sizes.append(tuple(image.size))
+            return []
+
+        geometry = {
+            "left": 0,
+            "top": 0,
+            "right": 980,
+            "bottom": 860,
+            "width": 980,
+            "height": 860,
+        }
+        validation = {
+            "ok": True,
+            "online": True,
+            "confirmation_confidence": "active_title_strict",
+        }
+        with (
+            patch.dict(
+                os.environ,
+                {
+                    "CHEJIN_C2_LOCATE_FRAME_REUSE_ENABLED": "0",
+                    "CHEJIN_C3_PRE_SEND_ROI_REUSE_ENABLED": "0",
+                    "CHEJIN_C3_SEND_FRAME_LOCAL_REUSE_ENABLED": "0",
+                },
+            ),
+            patch.object(
+                sidecar,
+                "capture_wechat",
+                return_value=(frame, "formal-switch-off.png"),
+            ),
+            patch.object(sidecar, "run_ocr", side_effect=raw_ocr),
+            patch.object(sidecar, "get_window_geometry", return_value=geometry),
+            patch.object(
+                sidecar,
+                "validate_active_send_target",
+                return_value=validation,
+            ),
+            patch.object(
+                sidecar,
+                "active_send_guard_is_strong",
+                return_value=True,
+            ),
+            patch.object(
+                sidecar,
+                "run_ocr_for_chat_fact_frame",
+                wraps=sidecar.run_ocr_for_chat_fact_frame,
+            ) as chat_roi,
+        ):
+            history = sidecar.capture_message_history_snapshots(
+                1,
+                target="CJTEST01",
+                history_load_times=0,
+                chat_fact_roi_ocr=True,
+            )
+            send_snapshot = sidecar.build_send_fact_snapshot_from_frame(
+                1,
+                target="CJTEST01",
+                text="回复",
+                exact=False,
+                artifact_dir=None,
+                label="formal_send_switch_off",
+                screenshot=frame,
+                screenshot_path="formal-switch-off.png",
+            )
+            _search_items, search_plan = (
+                sidecar.run_ocr_for_sidebar_search_results(
+                    frame,
+                    purpose="formal_locate_switch_off",
+                    source="unit",
+                )
+            )
+
+        self.assertEqual(history[0]["ocr_plan"]["source"], "full")
+        self.assertEqual(send_snapshot["ocr_plan"]["source"], "full")
+        self.assertEqual(search_plan["source"], "full")
+        self.assertEqual(observed_sizes, [frame.size, frame.size, frame.size])
+        chat_roi.assert_not_called()
+        self.assertNotIn(
+            "WECHAT_WIN32_OCR_CHAT_FACT_ROI_OCR",
+            inspect.getsource(sidecar),
+        )
+        self.assertNotIn(
+            "WECHAT_WIN32_OCR_SEARCH_RESULT_ROI_OCR",
+            inspect.getsource(sidecar),
+        )
+
+    def test_visible_miss_reuses_one_baseline_for_remark_search(self):
+        baseline = Image.new("RGB", (980, 860), (255, 255, 255))
+        search_results = Image.new("RGB", (980, 860), (240, 240, 240))
+        confirmed_chat = Image.new("RGB", (980, 860), (220, 255, 220))
+        for image in (baseline, search_results, confirmed_chat):
+            self._semantic_layout_for_image(image)
+        geometry = {
+            "left": 0,
+            "top": 0,
+            "right": 980,
+            "bottom": 860,
+            "width": 980,
+            "height": 860,
+        }
+        captures: list[str] = []
+        clicks: list[tuple[int, int]] = []
+
+        def row(text, left, top, right, bottom):
+            return {
+                "text": text,
+                "left": left,
+                "top": top,
+                "right": right,
+                "bottom": bottom,
+                "center_x": (left + right) / 2,
+                "center_y": (top + bottom) / 2,
+                "confidence": 0.99,
+            }
+
+        def capture(_hwnd, *, artifact_dir=None, label="capture"):
+            del artifact_dir
+            captures.append(label)
+            if label.startswith("open_chat"):
+                return baseline, f"{label}.png"
+            return confirmed_chat, f"{label}.png"
+
+        def raw_ocr(image):
+            pixel = image.convert("RGB").getpixel((0, 0))
+            width, _height = image.size
+            if pixel == (255, 255, 255):
+                left = 75 if width == 980 else 12
+                return [row("搜索", left, 35, left + 60, 60)]
+            if pixel == (240, 240, 240):
+                # Sidebar ROI coordinates are local and production code maps
+                # them back into the full screenshot before selecting a row.
+                return [
+                    row("联系人", 20, 112, 80, 136),
+                    row("CJTEST01 张三", 24, 166, 180, 194),
+                ]
+            return [
+                row("CJTEST01 张三", 470, 28, 650, 58),
+                row("发送", 850, 790, 915, 825),
+            ]
+
+        with (
+            patch.object(sidecar, "capture_wechat", side_effect=capture),
+            patch.object(
+                sidecar,
+                "capture_wechat_window_visible_screen",
+                return_value=(search_results, "search-results.png"),
+            ),
+            patch.object(sidecar, "run_ocr", side_effect=raw_ocr),
+            patch.object(sidecar, "get_window_geometry", return_value=geometry),
+            patch.object(
+                sidecar,
+                "layout_snapshot_metadata",
+                return_value={
+                    "snapshot": self._semantic_layout_for_image(
+                        search_results
+                    )
+                },
+            ),
+            patch.object(
+                sidecar,
+                "recover_send_window_guard",
+                return_value={"ok": True},
+            ),
+            patch.object(
+                sidecar,
+                "clear_sidebar_search_box_without_select_all",
+                return_value={"ok": True, "reason": "cleared"},
+            ),
+            patch.object(
+                sidecar,
+                "type_sidebar_search_query",
+                return_value={"ok": True, "reason": "typed"},
+            ),
+            patch.object(
+                sidecar,
+                "human_window_image_click_in_bounds",
+                side_effect=lambda _hwnd, x, y, **_kwargs: (
+                    clicks.append((x, y)) or {"ok": True}
+                ),
+            ),
+            patch.object(sidecar, "humanized_action_sleep"),
+        ):
+            locate_payload = sidecar.locate_chat_target_for_c2(
+                1,
+                target="CJTEST01",
+                session_key="",
+                remark_code="CJTEST01",
+                target_mode="visible",
+                visible_session_candidate=None,
+                exact=False,
+                artifact_dir=None,
+                sidecar_run_id="unit-merged-search",
+                failure_state="target_not_found",
+                failure_error_code="TARGET_NOT_FOUND",
+            )
+
+        timing = dict(sidecar._LAST_OPEN_CHAT_TIMING)
+        self.assertTrue(locate_payload["ok"])
+        self.assertEqual(captures.count("open_chat"), 1)
+        self.assertTrue(
+            timing["open_chat_merged_remark_search_attempted"]
+        )
+        self.assertTrue(
+            timing["open_chat_merged_remark_search_baseline_reused"]
+        )
+        self.assertFalse(
+            locate_payload["targeting"]["visible_postcheck"][
+                "fallback_full_ocr"
+            ]
+        )
+        self.assertEqual(len(clicks), 1)
+
+    def test_sidebar_search_candidate_cannot_hide_full_window_blocker(self):
+        frame = Image.new("RGB", (980, 860), "white")
+        layout = self._semantic_layout_for_image(frame)
+        geometry = {
+            "left": 0,
+            "top": 0,
+            "right": 980,
+            "bottom": 860,
+            "width": 980,
+            "height": 860,
+        }
+        baseline_items = [
+            {
+                "text": "搜索",
+                "left": 92,
+                "top": 35,
+                "right": 180,
+                "bottom": 62,
+                "center_x": 136,
+                "center_y": 48,
+                "confidence": 0.99,
+            }
+        ]
+        sidebar_candidate = {
+            "text": "CJTEST01 张三",
+            "left": 100,
+            "top": 166,
+            "right": 280,
+            "bottom": 194,
+            "center_x": 190,
+            "center_y": 180,
+            "confidence": 0.99,
+        }
+        central_blocker = {
+            "text": "登录异常，请重新登录",
+            "left": 430,
+            "top": 300,
+            "right": 700,
+            "bottom": 350,
+            "center_x": 565,
+            "center_y": 325,
+            "confidence": 0.99,
+        }
+
+        def surface_state(_shot, items, **_kwargs):
+            texts = {str(item.get("text") or "") for item in items}
+            if central_blocker["text"] in texts:
+                return {"ok": False, "reason": "central_login_blocker"}
+            return {"ok": True, "reason": "normal"}
+
+        with (
+            patch.object(
+                sidecar,
+                "recover_send_window_guard",
+                return_value={"ok": True},
+            ),
+            patch.object(
+                sidecar,
+                "clear_sidebar_search_box_without_select_all",
+                return_value={"ok": True},
+            ),
+            patch.object(
+                sidecar,
+                "type_sidebar_search_query",
+                return_value={"ok": True},
+            ),
+            patch.object(sidecar, "humanized_action_sleep"),
+            patch.object(
+                sidecar,
+                "capture_wechat_window_visible_screen",
+                return_value=(frame, "search-with-blocker.png"),
+            ),
+            patch.object(
+                sidecar,
+                "run_ocr_for_sidebar_search_results",
+                return_value=(
+                    [sidebar_candidate],
+                    {
+                        "source": "sidebar_roi",
+                        "regions": ["sidebar_bounds"],
+                        "ocr_call_count": 1,
+                    },
+                ),
+            ),
+            patch.object(
+                sidecar,
+                "run_ocr_traced",
+                return_value=[central_blocker],
+            ) as full_ocr,
+            patch.object(
+                sidecar,
+                "target_switch_surface_state",
+                side_effect=surface_state,
+            ),
+            patch.object(
+                sidecar,
+                "layout_snapshot_metadata",
+                return_value={"snapshot": layout},
+            ),
+            patch.object(sidecar, "get_window_geometry", return_value=geometry),
+            patch.object(
+                sidecar,
+                "human_window_image_click_in_bounds",
+            ) as click,
+        ):
+            result = sidecar.open_chat_by_remark_code_search(
+                1,
+                target="CJTEST01",
+                remark_code="CJTEST01",
+                baseline_screenshot=frame,
+                baseline_ocr_items=baseline_items,
+                baseline_geometry=geometry,
+            )
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["reason"], "central_login_blocker")
+        full_ocr.assert_called_once()
+        click.assert_not_called()
+
+    def test_chat_fact_roi_insufficient_evidence_falls_back_on_same_frame(self):
+        frame = Image.new("RGB", (980, 860), "white")
+        self._semantic_layout_for_image(frame)
+        validation_results = [
+            {"ok": False, "reason": "target_title_not_confirmed"},
+            {
+                "ok": True,
+                "reason": "target_confirmed",
+                "confirmation_confidence": "active_title_strict",
+            },
+        ]
+        full_ocr_images: list[Image.Image] = []
+
+        def full_ocr(image, *_args, **_kwargs):
+            full_ocr_images.append(image)
+            return []
+
+        with (
+            patch.object(
+                sidecar,
+                "run_ocr_for_chat_fact_frame",
+                return_value=(
+                    [],
+                    {
+                        "source": "chat_fact_roi",
+                        "regions": [
+                            "chat_header_bounds",
+                            "message_viewport_bounds",
+                            "input_bounds",
+                        ],
+                        "ocr_call_count": 3,
+                    },
+                ),
+            ),
+            patch.object(
+                sidecar,
+                "run_ocr_traced",
+                side_effect=full_ocr,
+            ),
+            patch.object(
+                sidecar,
+                "validate_active_send_target",
+                side_effect=validation_results,
+            ),
+            patch.object(
+                sidecar,
+                "active_send_guard_is_strong",
+                side_effect=lambda value: value.get("ok") is True,
+            ),
+            patch.object(
+                sidecar,
+                "get_window_geometry",
+                return_value={
+                    "left": 0,
+                    "top": 0,
+                    "right": 980,
+                    "bottom": 860,
+                    "width": 980,
+                    "height": 860,
+                },
+            ),
+            patch.object(
+                sidecar,
+                "parse_current_chat_frame_messages",
+                return_value=[],
+            ),
+        ):
+            snapshot = sidecar.build_send_fact_snapshot_from_frame(
+                1,
+                target="CJTEST01",
+                text="回复",
+                exact=False,
+                artifact_dir=None,
+                label="same_frame_fallback",
+                screenshot=frame,
+                screenshot_path="same-frame.png",
+            )
+
+        self.assertTrue(snapshot["ok"])
+        self.assertEqual(full_ocr_images, [frame])
+        self.assertEqual(snapshot["ocr_plan"]["source"], "full_fallback")
+        self.assertEqual(
+            snapshot["ocr_plan"]["fallback_reason"],
+            "target_confirmation_insufficient",
+        )
+
+    def test_send_context_roi_message_miss_falls_back_on_same_frame(self):
+        frame = Image.new("RGB", (980, 860), "white")
+        self._semantic_layout_for_image(frame)
+        geometry = {
+            "left": 0,
+            "top": 0,
+            "right": 980,
+            "bottom": 860,
+            "width": 980,
+            "height": 860,
+        }
+        message = {
+            "id": "customer-1",
+            "type": "text",
+            "message_type": "text",
+            "sender": "customer",
+            "sender_role": "customer",
+            "content": "想看十万左右的车",
+            "bubble_rect": [410, 200, 650, 240],
+            "avatar_alignment": {"role": "customer", "confirmed": True},
+        }
+        layout_evidence = {
+            "ok": True,
+            "message_viewport_bounds": [382, 86, 980, 679],
+        }
+        expected_guard = sidecar.build_send_context_guard(
+            sidecar.build_message_observations_v3([message]),
+            screenshot=frame,
+            layout_evidence=layout_evidence,
+        )
+        full_ocr_images: list[Image.Image] = []
+
+        def full_ocr(image, *_args, **_kwargs):
+            full_ocr_images.append(image)
+            return [{"source": "full"}]
+
+        def parse_messages(items, *_args, **_kwargs):
+            return [message] if items and items[0].get("source") == "full" else []
+
+        with (
+            patch.object(
+                sidecar,
+                "run_ocr_for_chat_fact_frame",
+                return_value=(
+                    [{"source": "roi"}],
+                    {
+                        "source": "chat_fact_roi",
+                        "regions": [
+                            "chat_header_bounds",
+                            "message_viewport_bounds",
+                            "input_bounds",
+                        ],
+                        "ocr_call_count": 3,
+                    },
+                ),
+            ),
+            patch.object(sidecar, "run_ocr_traced", side_effect=full_ocr),
+            patch.object(
+                sidecar,
+                "validate_active_send_target",
+                return_value={
+                    "ok": True,
+                    "reason": "target_confirmed",
+                    "confirmation_confidence": "active_title_strict",
+                    "geometry": geometry,
+                },
+            ),
+            patch.object(sidecar, "active_send_guard_is_strong", return_value=True),
+            patch.object(sidecar, "get_window_geometry", return_value=geometry),
+            patch.object(
+                sidecar,
+                "parse_current_chat_frame_messages",
+                side_effect=parse_messages,
+            ),
+            patch.object(
+                sidecar,
+                "basic_chat_layout_evidence",
+                return_value=layout_evidence,
+            ),
+            patch.object(
+                sidecar,
+                "input_text_region_state",
+                return_value={"has_visible_text": False},
+            ),
+        ):
+            snapshot = sidecar.build_send_fact_snapshot_from_frame(
+                1,
+                target="CJTEST01",
+                text="AI回复",
+                exact=False,
+                artifact_dir=None,
+                label="send_context_same_frame_fallback",
+                screenshot=frame,
+                screenshot_path="same-frame.png",
+                expected_context_guard=expected_guard,
+            )
+
+        self.assertTrue(snapshot["ok"])
+        self.assertEqual(snapshot["message_count"], 1)
+        self.assertEqual(full_ocr_images, [frame])
+        self.assertEqual(snapshot["ocr_plan"]["source"], "full_fallback")
+        self.assertEqual(
+            snapshot["ocr_plan"]["fallback_reason"],
+            "message_context_evidence_insufficient",
+        )
+        self.assertTrue(
+            sidecar.validate_send_context_guard(
+                expected_guard,
+                snapshot["send_context_guard"],
+            )["ok"]
+        )
+
+    def test_send_context_full_ocr_still_insufficient_blocks_before_enter(self):
+        frame = Image.new("RGB", (980, 860), "white")
+        self._semantic_layout_for_image(frame)
+        geometry = {
+            "left": 0,
+            "top": 0,
+            "right": 980,
+            "bottom": 860,
+            "width": 980,
+            "height": 860,
+        }
+        message = {
+            "id": "customer-1",
+            "type": "text",
+            "message_type": "text",
+            "sender": "customer",
+            "sender_role": "customer",
+            "content": "想看十万左右的车",
+            "bubble_rect": [410, 200, 650, 240],
+            "avatar_alignment": {"role": "customer", "confirmed": True},
+        }
+        layout_evidence = {
+            "ok": True,
+            "message_viewport_bounds": [382, 86, 980, 679],
+        }
+        expected_guard = sidecar.build_send_context_guard(
+            sidecar.build_message_observations_v3([message]),
+            screenshot=frame,
+            layout_evidence=layout_evidence,
+        )
+        with (
+            patch.object(
+                sidecar,
+                "capture_wechat",
+                return_value=(frame, "same-frame.png"),
+            ) as capture,
+            patch.object(
+                sidecar,
+                "run_ocr_for_chat_fact_frame",
+                return_value=(
+                    [],
+                    {
+                        "source": "chat_fact_roi",
+                        "regions": [
+                            "chat_header_bounds",
+                            "message_viewport_bounds",
+                            "input_bounds",
+                        ],
+                        "ocr_call_count": 3,
+                    },
+                ),
+            ),
+            patch.object(sidecar, "run_ocr_traced", return_value=[]) as full_ocr,
+            patch.object(
+                sidecar,
+                "validate_active_send_target",
+                return_value={
+                    "ok": True,
+                    "reason": "target_confirmed",
+                    "confirmation_confidence": "active_title_strict",
+                    "geometry": geometry,
+                },
+            ),
+            patch.object(sidecar, "active_send_guard_is_strong", return_value=True),
+            patch.object(sidecar, "get_window_geometry", return_value=geometry),
+            patch.object(sidecar, "validate_send_geometry", return_value={"ok": True}),
+            patch.object(sidecar, "recover_send_window_guard", return_value={"ok": True}),
+            patch.object(sidecar, "parse_current_chat_frame_messages", return_value=[]),
+            patch.object(
+                sidecar,
+                "basic_chat_layout_evidence",
+                return_value=layout_evidence,
+            ),
+            patch.object(
+                sidecar,
+                "input_text_region_state",
+                return_value={"has_visible_text": False},
+            ),
+            patch.object(sidecar, "send_with_visual_input") as visual_send,
+            patch.object(sidecar, "safe_send_trigger") as enter,
+        ):
+            result = sidecar.send_payload(
+                1,
+                {"ok": True},
+                target="CJTEST01",
+                text="AI回复",
+                exact=False,
+                skip_send_rate_guard=True,
+                expected_context_guard=expected_guard,
+            )
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["state"], "send_context_changed_before_input")
+        self.assertEqual(capture.call_count, 1)
+        full_ocr.assert_called_once_with(
+            frame,
+            "send_baseline_chat_fact_fallback_full",
+            source="build_send_fact_snapshot_from_frame",
+        )
+        visual_send.assert_not_called()
+        enter.assert_not_called()
+
+    def test_send_receipt_roi_miss_falls_back_on_same_post_send_frame(self):
+        frame = Image.new("RGB", (980, 860), "white")
+        self._semantic_layout_for_image(frame)
+        geometry = {
+            "left": 0,
+            "top": 0,
+            "right": 980,
+            "bottom": 860,
+            "width": 980,
+            "height": 860,
+        }
+        customer = {
+            "id": "customer-1",
+            "type": "text",
+            "message_type": "text",
+            "sender": "customer",
+            "sender_role": "customer",
+            "content": "在吗",
+            "bubble_rect": [410, 200, 520, 240],
+            "avatar_alignment": {"role": "customer", "confirmed": True},
+        }
+        sent = {
+            "id": "self-new",
+            "type": "text",
+            "message_type": "text",
+            "sender": "self",
+            "sender_role": "self",
+            "content": "AI回复",
+            "bubble_rect": [700, 270, 900, 310],
+            "avatar_alignment": {"role": "self", "confirmed": True},
+        }
+        baseline_sequence = [
+            {
+                "sequence_index": 0,
+                "observation_id": "customer-1",
+                "row_kind": "text_bubble",
+                "sender_role": "customer",
+                "content_normalized": "在吗",
+            }
+        ]
+
+        def parse_messages(items, *_args, **_kwargs):
+            return [customer, sent] if items and items[0].get("source") == "full" else [customer]
+
+        with (
+            patch.object(
+                sidecar,
+                "run_ocr_for_chat_fact_frame",
+                return_value=(
+                    [{"source": "roi"}],
+                    {
+                        "source": "chat_fact_roi",
+                        "regions": [
+                            "chat_header_bounds",
+                            "message_viewport_bounds",
+                            "input_bounds",
+                        ],
+                        "ocr_call_count": 3,
+                    },
+                ),
+            ),
+            patch.object(
+                sidecar,
+                "run_ocr_traced",
+                return_value=[{"source": "full"}],
+            ) as full_ocr,
+            patch.object(
+                sidecar,
+                "validate_active_send_target",
+                return_value={
+                    "ok": True,
+                    "reason": "target_confirmed",
+                    "confirmation_confidence": "active_title_strict",
+                    "geometry": geometry,
+                },
+            ),
+            patch.object(sidecar, "active_send_guard_is_strong", return_value=True),
+            patch.object(sidecar, "get_window_geometry", return_value=geometry),
+            patch.object(
+                sidecar,
+                "parse_current_chat_frame_messages",
+                side_effect=parse_messages,
+            ),
+            patch.object(
+                sidecar,
+                "input_text_region_state",
+                return_value={"has_visible_text": False},
+            ),
+        ):
+            snapshot = sidecar.build_send_fact_snapshot_from_frame(
+                1,
+                target="CJTEST01",
+                text="AI回复",
+                exact=False,
+                artifact_dir=None,
+                label="send_receipt_same_frame_fallback",
+                screenshot=frame,
+                screenshot_path="same-post-send-frame.png",
+                recover_expected_self_text=True,
+                receipt_baseline_message_sequence=baseline_sequence,
+                receipt_text="AI回复",
+            )
+
+        self.assertEqual(snapshot["message_count"], 2)
+        self.assertIsNotNone(
+            sidecar.find_new_matching_self_message(
+                baseline_sequence,
+                snapshot["message_sequence"],
+                "AI回复",
+            )
+        )
+        full_ocr.assert_called_once()
+        self.assertEqual(
+            snapshot["ocr_plan"]["fallback_reason"],
+            "send_receipt_evidence_insufficient",
+        )
+
+    def test_same_frame_full_ocr_replay_authenticates_saved_pixels_without_capture(self):
+        frame = Image.new("RGB", (980, 860), "white")
+        geometry = {
+            "left": 0,
+            "top": 0,
+            "right": 980,
+            "bottom": 860,
+            "width": 980,
+            "height": 860,
+        }
+        with tempfile.TemporaryDirectory() as temp_dir:
+            screenshot_path = Path(temp_dir) / "roi-frame.png"
+            frame.save(screenshot_path)
+            evidence = {
+                "frame_id": "frame-authenticated-roi",
+                "screenshot_sha256": hashlib.sha256(
+                    bytes(frame.tobytes())
+                ).hexdigest(),
+                "screenshot_path": str(screenshot_path),
+                "hwnd": 1,
+                "geometry": geometry,
+                "dpi_scale": 1.0,
+                "captured_monotonic": time.monotonic(),
+            }
+            target_validation = {
+                "ok": True,
+                "online": True,
+                "private_confirmed": True,
+                "remark_code_confirmed": True,
+                "conversation_type": "private",
+                "confirmation_confidence": "active_title_strict",
+            }
+            with (
+                patch.object(
+                    sidecar,
+                    "get_window_geometry",
+                    return_value=geometry,
+                ),
+                patch.object(
+                    sidecar,
+                    "get_window_client_geometry",
+                    return_value={"screen_left": 0, "screen_top": 0},
+                ),
+                patch.object(sidecar, "window_dpi_scale", return_value=1.0),
+                patch.object(
+                    sidecar,
+                    "_register_layout_snapshot",
+                    return_value={
+                        **self._semantic_layout_for_image(frame),
+                        "executable": True,
+                    },
+                ),
+                patch.object(
+                    sidecar,
+                    "run_ocr_traced",
+                    return_value=[],
+                ) as full_ocr,
+                patch.object(
+                    sidecar,
+                    "parse_current_chat_frame_messages",
+                    return_value=[],
+                ),
+                patch.object(
+                    sidecar,
+                    "validate_active_send_target",
+                    return_value=target_validation,
+                ),
+                patch.object(
+                    sidecar,
+                    "c2_target_activation_confirmed",
+                    return_value=True,
+                ),
+                patch.object(sidecar, "capture_wechat") as capture,
+            ):
+                result = sidecar.load_verified_same_frame_full_ocr_seed(
+                    1,
+                    json.dumps(evidence),
+                    artifact_dir=temp_dir,
+                    target="CJTEST01",
+                )
+
+            self.assertTrue(result["ok"], result)
+            self.assertEqual(result["frame_id"], "frame-authenticated-roi")
+            self.assertEqual(
+                result["seed_snapshot"]["frame_observation"]["frame_id"],
+                "frame-authenticated-roi",
+            )
+            self.assertEqual(
+                result["seed_snapshot"]["ocr_plan"]["source"],
+                "same_frame_full_fallback",
+            )
+            full_ocr.assert_called_once()
+            capture.assert_not_called()
+            with (
+                patch.object(
+                    sidecar,
+                    "get_window_geometry",
+                    return_value=geometry,
+                ),
+                patch.object(
+                    sidecar,
+                    "validate_active_send_target",
+                    return_value=target_validation,
+                ),
+                patch.object(
+                    sidecar,
+                    "c2_target_activation_confirmed",
+                    return_value=True,
+                ),
+                patch.object(
+                    sidecar,
+                    "capture_message_history_snapshots",
+                ) as history_capture,
+            ):
+                payload = sidecar.messages_payload(
+                    1,
+                    {"passive_probe": True},
+                    target="CJTEST01",
+                    history_load_times=0,
+                    artifact_dir=temp_dir,
+                    confirm_target="CJTEST01",
+                    seed_snapshot=result["seed_snapshot"],
+                )
+            self.assertTrue(payload["ok"], payload)
+            self.assertEqual(payload["frame_id"], "frame-authenticated-roi")
+            self.assertEqual(
+                payload["frame_observation"]["frame_id"],
+                "frame-authenticated-roi",
+            )
+            self.assertEqual(
+                payload["pre_send_frame_reuse"]["ocr_plan"]["source"],
+                "same_frame_full_fallback",
+            )
+            history_capture.assert_not_called()
+
+    def test_same_frame_full_ocr_replay_rejects_tampered_pixels_before_ocr(self):
+        frame = Image.new("RGB", (980, 860), "white")
+        geometry = {
+            "left": 0,
+            "top": 0,
+            "right": 980,
+            "bottom": 860,
+            "width": 980,
+            "height": 860,
+        }
+        with tempfile.TemporaryDirectory() as temp_dir:
+            screenshot_path = Path(temp_dir) / "roi-frame.png"
+            frame.save(screenshot_path)
+            evidence = {
+                "frame_id": "frame-tampered-roi",
+                "screenshot_sha256": "0" * 64,
+                "screenshot_path": str(screenshot_path),
+                "hwnd": 1,
+                "geometry": geometry,
+                "dpi_scale": 1.0,
+                "captured_monotonic": time.monotonic(),
+            }
+            with (
+                patch.object(
+                    sidecar,
+                    "get_window_geometry",
+                    return_value=geometry,
+                ),
+                patch.object(sidecar, "window_dpi_scale", return_value=1.0),
+                patch.object(sidecar, "run_ocr_traced") as full_ocr,
+                patch.object(sidecar, "capture_wechat") as capture,
+            ):
+                result = sidecar.load_verified_same_frame_full_ocr_seed(
+                    1,
+                    json.dumps(evidence),
+                    artifact_dir=temp_dir,
+                    target="CJTEST01",
+                )
+
+            self.assertFalse(result["ok"])
+            self.assertEqual(
+                result["reason"],
+                "same_frame_screenshot_digest_mismatch",
+            )
+            full_ocr.assert_not_called()
+            capture.assert_not_called()
+
+    def test_current_locate_reuses_three_roi_frame_as_message_seed(self):
+        frame = Image.new("RGB", (980, 860), "white")
+        layout = self._semantic_layout_for_image(frame)
+        header_bounds = sidecar.win32_ocr_layout.required_region(
+            layout,
+            "chat_header_bounds",
+        )
+        header_size = (
+            header_bounds[2] - header_bounds[0],
+            header_bounds[3] - header_bounds[1],
+        )
+        input_bounds = sidecar.win32_ocr_layout.required_region(
+            layout,
+            "input_bounds",
+        )
+        input_size = (
+            input_bounds[2] - input_bounds[0],
+            input_bounds[3] - input_bounds[1],
+        )
+        ocr_sizes: list[tuple[int, int]] = []
+
+        def raw_ocr(image):
+            ocr_sizes.append(tuple(image.size))
+            if tuple(image.size) == header_size:
+                return [
+                    {
+                        "text": "CJTEST01",
+                        "left": 20,
+                        "top": 22,
+                        "right": 150,
+                        "bottom": 52,
+                        "center_x": 85,
+                        "center_y": 37,
+                        "confidence": 0.99,
+                    }
+                ]
+            if tuple(image.size) == input_size:
+                return [
+                    {
+                        "text": "发送",
+                        "left": 30,
+                        "top": 20,
+                        "right": 90,
+                        "bottom": 50,
+                        "center_x": 60,
+                        "center_y": 35,
+                        "confidence": 0.99,
+                    }
+                ]
+            return []
+
+        geometry = {
+            "left": 0,
+            "top": 0,
+            "right": 980,
+            "bottom": 860,
+            "width": 980,
+            "height": 860,
+        }
+        with (
+            patch.object(
+                sidecar,
+                "capture_wechat",
+                return_value=(frame, "current-chat-fact.png"),
+            ),
+            patch.object(sidecar, "run_ocr", side_effect=raw_ocr),
+            patch.object(sidecar, "get_window_geometry", return_value=geometry),
+        ):
+            payload = sidecar.locate_chat_target_for_c2(
+                1,
+                target="CJTEST01",
+                session_key="",
+                remark_code="CJTEST01",
+                target_mode="current",
+                visible_session_candidate=None,
+                exact=False,
+                artifact_dir=None,
+                sidecar_run_id="unit-current-roi",
+                failure_state="target_not_found",
+                failure_error_code="TARGET_NOT_FOUND",
+                chat_fact_roi_ocr=True,
+            )
+
+        self.assertTrue(payload["ok"], payload)
+        self.assertEqual(
+            payload["_chat_fact_seed"]["ocr_plan"]["source"],
+            "chat_fact_roi",
+        )
+        self.assertEqual(len(ocr_sizes), 3)
+        self.assertNotIn(frame.size, ocr_sizes)
 
     def test_generic_journal_updates_matching_voice_item_before_click(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -1511,6 +2600,149 @@ class WechatSendSafetyTest(unittest.TestCase):
         self.assertEqual(result["error_code"], "SEND_TARGET_NOT_CONFIRMED")
         self.assertEqual(captured_check["reason"], "send_target_not_confirmed_before_enter")
         self.assertFalse(result["physical_send_triggered"])
+
+    def test_pre_enter_s1_roi_message_miss_uses_same_frame_full_ocr(self):
+        frame = Image.new("RGB", (980, 860), "white")
+        self._semantic_layout_for_image(frame)
+        geometry = {
+            "left": 0,
+            "top": 0,
+            "right": 980,
+            "bottom": 860,
+            "width": 980,
+            "height": 860,
+        }
+        message = {
+            "id": "customer-1",
+            "type": "text",
+            "message_type": "text",
+            "sender": "customer",
+            "sender_role": "customer",
+            "content": "想看十万左右的车",
+            "bubble_rect": [410, 200, 650, 240],
+            "avatar_alignment": {"role": "customer", "confirmed": True},
+        }
+        layout_evidence = {
+            "ok": True,
+            "message_viewport_bounds": [382, 86, 980, 679],
+        }
+        expected_guard = sidecar.build_send_context_guard(
+            sidecar.build_message_observations_v3([message]),
+            screenshot=frame,
+            layout_evidence=layout_evidence,
+        )
+        baseline = {
+            "ok": True,
+            "validation": {
+                "ok": True,
+                "online": True,
+                "reason": "target_confirmed",
+                "confirmation_confidence": "active_title_strict",
+                "geometry": geometry,
+            },
+            "input_region": {"has_visible_text": False},
+            "matching_self_message_count": 0,
+            "message_sequence": [],
+            "send_context_guard": expected_guard,
+            "frame_observation": {
+                "frame_id": "s0-frame",
+                "screenshot_sha256": "a" * 64,
+            },
+        }
+        observed_check: dict[str, object] = {}
+
+        def parse_messages(items, *_args, **_kwargs):
+            return [message] if items and items[0].get("source") == "full" else []
+
+        def stop_after_s1(*_args, **kwargs):
+            check = kwargs["before_send_trigger_check"](
+                screenshot=frame,
+                screenshot_path="s1-same-frame.png",
+            )
+            observed_check.update(check)
+            return {
+                "ok": False,
+                "reason": "test_stop_after_s1",
+                "error_code": "TEST_STOP_AFTER_S1",
+                "physical_send_triggered": False,
+                "context_check": check,
+            }
+
+        with (
+            patch.object(sidecar, "recover_send_window_guard", return_value={"ok": True}),
+            patch.object(sidecar, "active_send_guard_is_strong", return_value=True),
+            patch.object(sidecar, "validate_send_geometry", return_value={"ok": True}),
+            patch.object(sidecar, "capture_send_fact_snapshot", return_value=baseline),
+            patch.object(sidecar, "send_with_visual_input", side_effect=stop_after_s1),
+            patch.object(
+                sidecar,
+                "run_ocr_for_chat_fact_frame",
+                return_value=(
+                    [{"source": "roi"}],
+                    {
+                        "source": "chat_fact_roi",
+                        "regions": [
+                            "chat_header_bounds",
+                            "message_viewport_bounds",
+                            "input_bounds",
+                        ],
+                        "ocr_call_count": 3,
+                    },
+                ),
+            ),
+            patch.object(
+                sidecar,
+                "run_ocr_traced",
+                return_value=[{"source": "full"}],
+            ) as full_ocr,
+            patch.object(
+                sidecar,
+                "validate_active_send_target",
+                return_value={
+                    "ok": True,
+                    "reason": "target_confirmed",
+                    "confirmation_confidence": "active_title_strict",
+                    "geometry": geometry,
+                },
+            ),
+            patch.object(sidecar, "get_window_geometry", return_value=geometry),
+            patch.object(
+                sidecar,
+                "parse_current_chat_frame_messages",
+                side_effect=parse_messages,
+            ),
+            patch.object(
+                sidecar,
+                "basic_chat_layout_evidence",
+                return_value=layout_evidence,
+            ),
+            patch.object(
+                sidecar,
+                "input_text_region_state",
+                return_value={"has_visible_text": False},
+            ),
+        ):
+            result = sidecar.send_payload(
+                1,
+                {"ok": True},
+                target="CJTEST01",
+                text="AI回复",
+                exact=False,
+                skip_send_rate_guard=True,
+                expected_context_guard=expected_guard,
+            )
+
+        self.assertFalse(result["ok"])
+        self.assertTrue(observed_check["ok"])
+        self.assertEqual(
+            observed_check["snapshot"]["ocr_plan"]["fallback_reason"],
+            "message_context_evidence_insufficient",
+        )
+        full_ocr.assert_called_once_with(
+            frame,
+            "send_pre_trigger_context_reused_chat_fact_fallback_full",
+            source="build_send_fact_snapshot_from_frame",
+        )
 
     def test_send_reply_match_count_requires_self_role_and_exact_normalized_text(self):
         messages = [
