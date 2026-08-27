@@ -4,7 +4,7 @@
   "upstream_base_commit": "a563e6688c47a8922510794101967823fe1389d7",
   "selective_integrations": [
     {
-      "source_commit": "307241810963c2e649ba04483a898687d06ba9f4",
+      "source_commit": "27c59c8a0e9c85106a12f05f6f92e0193fefb5af",
       "scope": [
         "exact_wechat_context_menu_classification",
         "same_popup_menu_panel_evidence_contract",
@@ -101,7 +101,8 @@
         "c2_contract_0_9_42_generated_schema",
         "c2_locate_frame_same_sidecar_reuse_contract",
         "c3_same_frame_roi_full_ocr_fallback_contract",
-        "sidebar_candidate_full_window_safety_contract"
+        "sidebar_candidate_full_window_safety_contract",
+        "c2_contract_0_9_43_generated_schema"
       ]
     }
   ],
@@ -143,5 +144,5 @@
       ]
     }
   ],
-  "integration_note": "0.9.42 独立 OmniAuto 来源已固定为真实提交 307241810963c2e649ba04483a898687d06ba9f4；本轮同帧整窗 OCR 回退、三个正式开关统一、非首屏定位同 Sidecar 事务复用、侧栏候选与整窗安全证据分离以及直接 window_layout 依赖均包含在该来源提交中。车金候选提交、推送、标签、ZIP、配套后端部署和 Windows 实机耗时/UAT 待完成。0.9.41 历史能力：本轮只为一次 Brain 回复建立 175 秒共享总预算：首次模型调用最多 90 秒，备用线路、同画面重试、JSON 修复、质量返修和语义审核只能继续消耗同一份剩余时间，禁止各自重新获得完整超时；车金正式后端固定使用官方 DeepSeek 路由且禁用跨供应商 fallback，并保留逐阶段无密钥诊断。0.9.40 历史能力继续保留：Sidecar 在同一不可变截图内按真实纵向相交的物理消息行归并 OCR 与图形语音观察，相邻消息行即使只隔 1px 也不得合并；PR #11 的低权威快速短句购车意图判断保持不变。机器合同为 0.9.42 / 9dcab8759b3f2a0611027cccda0044cd24e182e50418c33b88d997007a5c4305。0.9.38 历史能力继续保留：messages 仅运输本轮未结算事实，observations 与 slot ledger 保留完整权威画面；拆包最后一片必须携带完整 observations，完整证据无法装入上限时在发送任何分片前失败。Worker 与后端已确认历史事实校验及 unknown 明确身份异常门禁的合同保持不变，不改变 Brain 回复作废、发送前 5 对 5、安全点击、媒体处理顺序或 C0-C4 状态机。0.9.37 历史能力继续保留：四类 Sidecar 公开输出递归删除 Worker 专属身份字段；消息视口纯投影由 Sidecar 与 Worker 共用，guard 与本次 observations 同帧绑定，被动重读后重新检查布局。继续以 gray-v0.9.20 业务流程为基线：启动时确认 per-monitor DPI awareness 并建立一次 startup_layout_calibration；C1-C4 业务帧只引用 calibration_id，业务动作不自动移动或重设微信窗口。历史安全语义仍包括不重复点击、旧剪贴板不能形成图片事实、无界面的语音/图片 ActionJournal 恢复、结束旧 Flow 后继续拉取其他任务、OmniAuto 独占区域映射和坐标决策、删除统一激活成功布尔门禁、C1 保留八类真实变化画面、sent_ack 语义不变、manual_review_required 和 LEGACY_MEDIA_OWNER_UNKNOWN，OmniAuto 独立候选固定于上述真实提交。C3 输入框点击面和文字 ROI、C2 语音被动等待、图片弹窗收尾、添加朋友“+”纵向搜索框约束、确定性 Outbox、重启 ActionJournal 恢复、legacy 有限终态及临时网络退避规则全部保持不变。Windows 原故障 SQLite 重启和整体 Windows UAT 仍是现场交付门禁，自动化通过不代表实机已验收。"
+  "integration_note": "0.9.43 独立 OmniAuto 来源已固定为真实提交 27c59c8a0e9c85106a12f05f6f92e0193fefb5af；本轮只把生成合同与 Schema 升到 0.9.43，以收口 Windows 门禁发现的一条旧测试夹具，不修改 Sidecar、Worker、后端生产逻辑。车金候选提交、推送、标签、ZIP、配套后端部署和 Windows 实机耗时/UAT 待完成。0.9.42 历史能力来源提交为 307241810963c2e649ba04483a898687d06ba9f4，包含同帧整窗 OCR 回退、三个正式开关统一、非首屏定位同 Sidecar 事务复用、侧栏候选与整窗安全证据分离以及直接 window_layout 依赖。0.9.41 历史能力：本轮只为一次 Brain 回复建立 175 秒共享总预算：首次模型调用最多 90 秒，备用线路、同画面重试、JSON 修复、质量返修和语义审核只能继续消耗同一份剩余时间，禁止各自重新获得完整超时；车金正式后端固定使用官方 DeepSeek 路由且禁用跨供应商 fallback，并保留逐阶段无密钥诊断。0.9.40 历史能力继续保留：Sidecar 在同一不可变截图内按真实纵向相交的物理消息行归并 OCR 与图形语音观察，相邻消息行即使只隔 1px 也不得合并；PR #11 的低权威快速短句购车意图判断保持不变。机器合同为 0.9.43 / a87275e55d6f25aeba3185d854f4e613a9209924ba4ac5ac4f6f49a3aeb00cef。0.9.38 历史能力继续保留：messages 仅运输本轮未结算事实，observations 与 slot ledger 保留完整权威画面；拆包最后一片必须携带完整 observations，完整证据无法装入上限时在发送任何分片前失败。Worker 与后端已确认历史事实校验及 unknown 明确身份异常门禁的合同保持不变，不改变 Brain 回复作废、发送前 5 对 5、安全点击、媒体处理顺序或 C0-C4 状态机。0.9.37 历史能力继续保留：四类 Sidecar 公开输出递归删除 Worker 专属身份字段；消息视口纯投影由 Sidecar 与 Worker 共用，guard 与本次 observations 同帧绑定，被动重读后重新检查布局。继续以 gray-v0.9.20 业务流程为基线：启动时确认 per-monitor DPI awareness 并建立一次 startup_layout_calibration；C1-C4 业务帧只引用 calibration_id，业务动作不自动移动或重设微信窗口。历史安全语义仍包括不重复点击、旧剪贴板不能形成图片事实、无界面的语音/图片 ActionJournal 恢复、结束旧 Flow 后继续拉取其他任务、OmniAuto 独占区域映射和坐标决策、删除统一激活成功布尔门禁、C1 保留八类真实变化画面、sent_ack 语义不变、manual_review_required 和 LEGACY_MEDIA_OWNER_UNKNOWN，OmniAuto 独立候选固定于上述真实提交。C3 输入框点击面和文字 ROI、C2 语音被动等待、图片弹窗收尾、添加朋友“+”纵向搜索框约束、确定性 Outbox、重启 ActionJournal 恢复、legacy 有限终态及临时网络退避规则全部保持不变。Windows 原故障 SQLite 重启和整体 Windows UAT 仍是现场交付门禁，自动化通过不代表实机已验收。"
 }

@@ -3621,6 +3621,8 @@ class WechatWin32OcrVoiceSelectionTest(unittest.TestCase):
             artifact_dir=None,
             session_key="wx:rpa:v1:stale",
             semantic_target="CJR8S5K3",
+            sidecar_run_id="run-1",
+            allow_merged_remark_search=True,
         )
         self.assertEqual(
             result["targeting"]["visible_session_candidate_activation"]["reason"],
