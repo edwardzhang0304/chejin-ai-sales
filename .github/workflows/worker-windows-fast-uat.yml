@@ -20,7 +20,6 @@ jobs:
     timeout-minutes: 45
     env:
       CHEJIN_VISION_CLIENT_API_KEY: ${{ secrets.CHEJIN_VISION_CLIENT_API_KEY }}
-      CHEJIN_WORKER_HOME: ${{ runner.temp }}\chejin-worker-tests
 
     steps:
       - name: Check out exact source
@@ -53,6 +52,7 @@ jobs:
         shell: powershell
         run: |
           $ErrorActionPreference = "Stop"
+          $env:CHEJIN_WORKER_HOME = Join-Path $env:RUNNER_TEMP "chejin-worker-affected-tests"
           $affectedFiles = @(
             "test_storage.py",
             "test_ui_contract.py",
@@ -75,6 +75,7 @@ jobs:
         shell: powershell
         run: |
           $ErrorActionPreference = "Stop"
+          $env:CHEJIN_WORKER_HOME = Join-Path $env:RUNNER_TEMP "chejin-worker-contract-tests"
           python scripts/generate-c2-observation-schema.py --check
           if ($LASTEXITCODE -ne 0) {
             throw "Generated C2 observation schema is stale"
@@ -158,7 +159,7 @@ jobs:
       - name: Upload Fast UAT ZIP
         uses: actions/upload-artifact@v4
         with:
-          name: chejin-worker-fast-uat-v0.9.47-${{ github.sha }}
+          name: chejin-worker-fast-uat-v0.9.48-${{ github.sha }}
           path: worker-client/dist/fast-uat-release/chejin-worker-fast-uat-*.zip
           if-no-files-found: error
           retention-days: 14
