@@ -1998,6 +1998,19 @@ def _build_message_ingest_payload_v3(
             "ui_frame_invalidated": bool(
                 sidecar_payload.get("ui_frame_invalidated")
             ),
+            # Preserve the Sidecar's same-frame completeness proof all the
+            # way to the backend.  An empty/new-message-free payload is only
+            # a conclusive ``no_change`` when this immutable frame proves the
+            # viewport tail was actually read; message count alone cannot do
+            # that.
+            "tail_complete": bool(sidecar_payload.get("tail_complete")),
+            "send_context_guard": (
+                dict(sidecar_payload.get("send_context_guard") or {})
+                if isinstance(
+                    sidecar_payload.get("send_context_guard"), dict
+                )
+                else {}
+            ),
             "observations": [
                 dict(item) if isinstance(item, dict) else item
                 for item in evidence_observations

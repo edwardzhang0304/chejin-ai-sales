@@ -1,8 +1,8 @@
 {
   "generated_file": true,
   "source": "contracts/c2_contract_v3.json",
-  "contract_revision": "0.9.50",
-  "contract_sha256": "d1500d91da35f92f7b37a73317e47402123b685fddafcb2e65c95fce63b84dd5",
+  "contract_revision": "0.9.51",
+  "contract_sha256": "9f831b2978707c1abb1db0b7bf0cabb45d728ff7a7f307fa2d9bb4fc232a54df",
   "observation_schema_version": 3,
   "action_phases": [
     "not_attempted",
@@ -986,7 +986,7 @@
     "invalid_behavior": "C2_VOICE_IDENTITY_CONTRACT_INVALID"
   },
   "frame_action_binding_contract": {
-    "release": "0.9.50",
+    "release": "0.9.51",
     "purpose": "carry_one_worker_approved_current_media_action_policy_and_current_frame_diagnostic_evidence_without_claiming_cross_frame_identity",
     "durable_identity": false,
     "observation_owner": "sidecar",
@@ -1043,7 +1043,7 @@
     ]
   },
   "pre_send_message_viewport_contract": {
-    "release": "0.9.50",
+    "release": "0.9.51",
     "selected_target_fingerprint_scope": "prepare_frame_diagnostic_only_and_forbidden_as_an_execute_identity_or_equality_gate",
     "selected_target_forbidden_inputs": [
       "message_viewport_change_digest",
@@ -1183,7 +1183,7 @@
     }
   },
   "startup_layout_calibration_contract": {
-    "schema_version": "0.9.50",
+    "schema_version": "0.9.51",
     "owner": "omniauto",
     "worker_role": "persist_path_transport_contract_validation_and_execution_only",
     "single_runtime_path": true,

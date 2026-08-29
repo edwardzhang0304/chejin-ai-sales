@@ -387,6 +387,52 @@ def finish_inflight_flow(
                 "后端尚未确认本次 C2 读取结算",
                 409,
             )
+    elif payload.terminal_kind == "retry_required":
+        if (
+            flow_kind != "c2_read"
+            or not payload.conversation_id
+            or payload.error_code != "C2_UNREAD_RESULT_INCONCLUSIVE"
+        ):
+            raise AppError(
+                "WORKER_INFLIGHT_FLOW_TERMINAL_KIND_INVALID",
+                "后端重读调度终态必须携带会话和标准错误码",
+                409,
+            )
+        binding = db.scalar(
+            select(WechatSessionBinding)
+            .where(
+                WechatSessionBinding.worker_id == worker.id,
+                WechatSessionBinding.conversation_id == payload.conversation_id,
+                WechatSessionBinding.deleted_at.is_(None),
+            )
+            .with_for_update()
+        )
+        if (
+            binding is None
+            or binding.last_read_run_id != payload.flow_id
+            or binding.last_read_completed_at is None
+            or binding.last_read_result != "retry_required"
+            or binding.next_read_due_at is None
+        ):
+            raise AppError(
+                "WORKER_INFLIGHT_FLOW_NOT_SETTLED",
+                "后端尚未确认本次 C2 重读调度",
+                409,
+            )
+        write_log(
+            db,
+            actor,
+            event_type="worker_inflight_read_retry_scheduled",
+            module="worker",
+            target_type="worker",
+            target_id=worker.id,
+            metadata={
+                "flow_id": payload.flow_id,
+                "conversation_id": payload.conversation_id,
+                "error_code": payload.error_code,
+                "next_read_due_at": binding.next_read_due_at.isoformat(),
+            },
+        )
     elif payload.terminal_kind == "failed_before_message_action":
         if (
             flow_kind != "c2_read"
@@ -478,6 +524,28 @@ def finish_inflight_flow(
                 "客户端进入 faulted 前不能结束技术故障流程",
                 409,
             )
+        if payload.error_code == "C2_UNREAD_RESULT_REPEATEDLY_INCONCLUSIVE":
+            binding = db.scalar(
+                select(WechatSessionBinding)
+                .where(
+                    WechatSessionBinding.worker_id == worker.id,
+                    WechatSessionBinding.conversation_id
+                    == payload.conversation_id,
+                    WechatSessionBinding.deleted_at.is_(None),
+                )
+                .with_for_update()
+            )
+            if (
+                binding is None
+                or binding.last_read_run_id != payload.flow_id
+                or binding.last_read_completed_at is None
+                or binding.last_read_result != "technical_failed"
+            ):
+                raise AppError(
+                    "WORKER_INFLIGHT_FLOW_NOT_SETTLED",
+                    "后端尚未确认同一读取流程的连续不明确技术终态",
+                    409,
+                )
         write_log(
             db,
             actor,

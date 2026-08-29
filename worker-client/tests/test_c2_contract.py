@@ -53,6 +53,43 @@ from chejin_worker_client.wechat_c2 import (
 
 
 class C2ContractTests(unittest.TestCase):
+    def test_unread_generation_contract_has_bounded_reread_terminal(self):
+        unread = c2_contract_v3()["unread_generation_contract"]
+        terminals = c2_contract_v3()["runtime_control_contract"][
+            "finish_request"
+        ]["terminal_kinds"]
+        self.assertIn("retry_required", terminals)
+        self.assertIn("technical_failed", terminals)
+        self.assertEqual(unread["inconclusive_max_authoritative_reads"], 2)
+        self.assertEqual(
+            unread["inconclusive_terminal_result"],
+            "technical_failed",
+        )
+        self.assertEqual(
+            unread["inconclusive_terminal_error_code"],
+            "C2_UNREAD_RESULT_REPEATEDLY_INCONCLUSIVE",
+        )
+        self.assertIn(
+            "complete_no_change",
+            unread["completion_rule"],
+        )
+        self.assertIn(
+            "must_not_add_the_worker_local_failure_or_success_cooldown",
+            unread["worker_retry_cooldown_rule"],
+        )
+        self.assertIn(
+            "must_not_preempt_that_state_machine",
+            unread["bounded_identity_recovery_rule"],
+        )
+        for field in (
+            "tail_complete",
+            "send_context_guard",
+            "business_projection",
+            "observation_validation_errors",
+            "history_gap",
+        ):
+            self.assertIn(field, c2_contract_v3()["optional_evidence_fields"])
+
     def test_sequence_alignment_rejects_uat_shallow_business_continuity_shape(self):
         """The 0.9.45 UAT payload reached HTTP with 21 nested errors."""
 
@@ -504,7 +541,7 @@ class C2ContractTests(unittest.TestCase):
 
     def test_slot_ledger_contract_separates_fact_scope_from_delivery(self):
         schema = c2_contract_v3()["slot_ledger_state_schema"]
-        self.assertEqual(c2_contract_v3()["contract_revision"], "0.9.50")
+        self.assertEqual(c2_contract_v3()["contract_revision"], "0.9.51")
         self.assertIn(
             "anchor_aliases",
             c2_contract_v3()["message_limits"][

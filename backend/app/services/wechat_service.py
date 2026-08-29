@@ -126,6 +126,9 @@ PERMANENT_BINDING_DISABLE_REASONS = {
 }
 READ_NO_CHANGE_BACKOFF_SECONDS = (120, 300, 600)
 READ_SUCCESS_COOLDOWN_SECONDS = 120
+READ_INCONCLUSIVE_RETRY_SECONDS = 10
+READ_INCONCLUSIVE_MAX_ATTEMPTS = 2
+READ_INCONCLUSIVE_TERMINAL_ERROR = "C2_UNREAD_RESULT_REPEATEDLY_INCONCLUSIVE"
 IDENTITY_CHECKPOINT_RECENT_LIMIT = 200
 SALES_SIDE_SENDER_ROLES = {"self", "sales", "sales_candidate"}
 SETTLEMENT_TOKEN_TTL_SECONDS = 300
@@ -1383,6 +1386,15 @@ def _read_is_due(
         # not turn that restricted monitoring loop back into an immediate
         # normal-read loop.
         return False
+    if (
+        binding.last_read_result == "retry_required"
+        and due_at is not None
+        and due_at.astimezone(timezone.utc) > utcnow().astimezone(timezone.utc)
+    ):
+        # An empty or identity-gated read did not prove that the pending
+        # unread generation was consumed. Keep it pending, but avoid a hot
+        # loop while the Worker prepares one fresh authoritative reread.
+        return False
     if int(binding.unread_generation or 0) > int(
         binding.consumed_unread_generation or 0
     ):
@@ -1398,7 +1410,7 @@ def _read_is_due(
 
 
 def _read_completion_payload(binding: WechatSessionBinding) -> dict:
-    return {
+    payload = {
         "result": binding.last_read_result,
         "completed_at": binding.last_read_completed_at,
         "no_change_read_count": int(binding.no_change_read_count or 0),
@@ -1408,6 +1420,65 @@ def _read_completion_payload(binding: WechatSessionBinding) -> dict:
             binding.consumed_unread_generation or 0
         ),
     }
+    if binding.last_read_result == "retry_required":
+        payload["error_code"] = "C2_UNREAD_RESULT_INCONCLUSIVE"
+    elif binding.last_read_result == "technical_failed":
+        payload["error_code"] = READ_INCONCLUSIVE_TERMINAL_ERROR
+        payload["inconclusive_attempt_count"] = (
+            READ_INCONCLUSIVE_MAX_ATTEMPTS
+        )
+    return payload
+
+
+def _complete_authoritative_viewport_confirmed(
+    evidence_payload: dict,
+) -> bool:
+    """Validate a same-frame complete viewport without inferring identity.
+
+    Sidecar owns the frame and Worker transports its immutable projection.
+    Backend only checks that the declared complete-frame proof is internally
+    consistent; it does not recreate visual identity or message ordering.
+    """
+
+    if (
+        str(evidence_payload.get("authoritative_frame_source") or "")
+        not in {"initial_read", "final_read"}
+        or evidence_payload.get("tail_complete") is not True
+        or evidence_payload.get("ui_frame_invalidated") is True
+        or evidence_payload.get("history_gap") is True
+        or list(evidence_payload.get("observation_validation_errors") or [])
+    ):
+        return False
+    observations = evidence_payload.get("observations")
+    projection = evidence_payload.get("business_projection")
+    guard = evidence_payload.get("send_context_guard")
+    if (
+        not isinstance(observations, list)
+        or not isinstance(projection, list)
+        or not isinstance(guard, dict)
+        or guard.get("ok") is not True
+        or guard.get("tail_complete") is not True
+        or not isinstance(guard.get("sequence"), list)
+        or guard.get("sequence") != projection
+        or int(guard.get("message_count") or 0) != len(projection)
+    ):
+        return False
+    digest = hashlib.sha256(
+        json.dumps(
+            projection,
+            ensure_ascii=True,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
+    return bool(
+        str(guard.get("sequence_sha256") or "").strip().lower()
+        == digest
+        and str(
+            guard.get("message_viewport_change_digest") or ""
+        ).strip().lower()
+        == digest
+    )
 
 
 def _settle_completed_read(
@@ -1416,12 +1487,20 @@ def _settle_completed_read(
     *,
     read_run_id: str,
     has_new_facts: bool,
+    read_conclusive: bool,
+    bounded_retry_managed: bool,
     unread_generation: int,
 ) -> dict:
     if (
         binding.last_read_run_id == read_run_id
         and binding.last_read_completed_at is not None
-        and binding.last_read_result in {"new_facts", "no_change"}
+        and binding.last_read_result
+        in {
+            "new_facts",
+            "no_change",
+            "retry_required",
+            "technical_failed",
+        }
     ):
         return _read_completion_payload(binding)
     now = utcnow()
@@ -1433,6 +1512,32 @@ def _settle_completed_read(
         0,
         int(binding.unread_generation or 0),
     )
+    pending_unread_generation = bool(
+        requested_unread_generation
+        > int(binding.consumed_unread_generation or 0)
+    )
+    if pending_unread_generation and not read_conclusive:
+        if (
+            not bounded_retry_managed
+            and binding.last_read_result == "retry_required"
+        ):
+            # Two different authorized reads have now produced fresh frames
+            # without a trustworthy conclusion.  Continuing to reopen the
+            # chat forever would be a silent availability failure, so make
+            # the technical terminal explicit and stop scheduling this
+            # binding.  The unread generation remains unconsumed evidence.
+            binding.last_read_result = "technical_failed"
+            binding.listen_status = LISTEN_STATUS_ERROR
+            binding.next_read_due_at = None
+            return _read_completion_payload(binding)
+        # Seeing an empty frame or an identity/flow-gate failure is not proof
+        # that the badge generation was read. Preserve the generation so the
+        # same conversation remains eligible for a fresh authoritative read.
+        binding.last_read_result = "retry_required"
+        binding.next_read_due_at = now + timedelta(
+            seconds=READ_INCONCLUSIVE_RETRY_SECONDS
+        )
+        return _read_completion_payload(binding)
     binding.consumed_unread_generation = max(
         int(binding.consumed_unread_generation or 0),
         min(requested_unread_generation, current_unread_generation),
@@ -4752,11 +4857,54 @@ def ingest_messages(db: Session, worker: Worker, payload: WechatMessageIngestReq
             )
     read_completion = None
     if not partitioned or partition_final:
+        complete_viewport_confirmed = (
+            _complete_authoritative_viewport_confirmed(evidence_payload)
+        )
+        terminal_media_failure_codes = {
+            "C2_VOICE_TRANSCRIBE_FAILED",
+            "C2_IMAGE_UNDERSTANDING_FAILED",
+        }
+        terminal_media_failure_settled = bool(
+            read_has_new_facts
+            and (failed_voices or failed_images)
+            and flow_gate_errors
+            and set(flow_gate_errors).issubset(
+                terminal_media_failure_codes
+            )
+            and isinstance(message_batch, dict)
+            and message_batch.get("batch_id")
+        )
+        message_batch_status = str(
+            (message_batch or {}).get("batch_status")
+            if isinstance(message_batch, dict)
+            else ""
+        ).strip()
+        bounded_retry_managed = (
+            message_batch_status == "recoverable_hold"
+        )
+        terminal_handoff_settled = message_batch_status in {
+            "handoff_created",
+            "handoff_pending",
+            "handoff",
+        }
         read_completion = _settle_completed_read(
             binding,
             conversation,
             read_run_id=payload.read_run_id,
             has_new_facts=read_has_new_facts,
+            read_conclusive=bool(
+                (
+                    not flow_gate_errors
+                    and (
+                        read_has_new_facts
+                        or ordered_messages
+                        or complete_viewport_confirmed
+                    )
+                )
+                or terminal_media_failure_settled
+                or terminal_handoff_settled
+            ),
+            bounded_retry_managed=bounded_retry_managed,
             unread_generation=payload.unread_generation,
         )
     db.flush()

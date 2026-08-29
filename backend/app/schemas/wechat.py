@@ -447,6 +447,14 @@ class WechatMessageEvidence(BaseModel):
         pattern="^(initial_read|final_read|action_journal_recovery)$",
     )
     ui_frame_invalidated: bool = False
+    tail_complete: bool = False
+    send_context_guard: dict = Field(default_factory=dict)
+    business_projection: list[dict] = Field(default_factory=list, max_length=500)
+    observation_validation_errors: list[dict] = Field(
+        default_factory=list,
+        max_length=500,
+    )
+    history_gap: bool = False
     observations: list[dict] = Field(max_length=500)
     authorization_read_reason: str = Field(min_length=1, max_length=64)
     recovery_attempt_kind: str | None = Field(
