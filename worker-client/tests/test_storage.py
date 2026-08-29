@@ -424,6 +424,94 @@ class StorageTest(unittest.TestCase):
             "original",
         )
 
+    def test_legacy_malformed_outbox_quarantine_is_atomic_and_preserves_facts(
+        self,
+    ):
+        conversation_id = "conv-legacy-malformed-atomic"
+        read_run_id = "read-legacy-malformed-atomic"
+        source_key = "source-legacy-malformed-atomic"
+        payload = {
+            "contract_revision": "0.9.45",
+            "conversation_id": conversation_id,
+            "authorization_revision": "revision-legacy-malformed",
+            "read_run_id": read_run_id,
+            "messages": [
+                {
+                    "source_message_key": source_key,
+                    "dedupe_key": f"dedupe:{source_key}",
+                    "message_type": "voice",
+                    "content": "原始语音转写事实必须完整保留",
+                }
+            ],
+            "evidence": {
+                "slot_ledger_states": [
+                    {
+                        "source_message_key": source_key,
+                        "origin_read_run_id": read_run_id,
+                    }
+                ],
+                "sequence_alignment_evidence": {
+                    "pre_frame_id": "",
+                    "post_frame_id": "",
+                },
+            },
+        }
+        self.storage.save_c2_ledger_terminal(
+            conversation_id=conversation_id,
+            source_message_key=source_key,
+            origin_read_run_id=read_run_id,
+            dedupe_key=f"dedupe:{source_key}",
+            message_type="voice",
+            terminal_state="completed",
+            ingest_state="waiting",
+            result={"state": "completed"},
+        )
+        outbox_id = self.storage.enqueue_c2_outbox(payload)
+        self.storage.mark_c2_outbox_capability_paused(
+            outbox_id,
+            "C2_SEQUENCE_ALIGNMENT_EVIDENCE_INVALID",
+        )
+
+        result = self.storage.quarantine_legacy_malformed_c2_outbox(
+            outbox_id,
+            error="C2_SEQUENCE_ALIGNMENT_EVIDENCE_INVALID",
+        )
+
+        stored = self.storage.load_c2_outbox_entry(outbox_id)
+        self.assertEqual(result["status"], "identity_quarantined")
+        self.assertEqual(result["ledger_rows_closed"], 1)
+        self.assertEqual(stored["status"], "identity_quarantined")
+        self.assertEqual(stored["payload"], payload)
+        self.assertFalse(self.storage.has_pending_c2_outbox())
+        self.assertEqual(
+            self.storage.load_c2_ledger_entry(
+                conversation_id,
+                source_key,
+            )["ingest_state"],
+            "not_required",
+        )
+        quarantine = self.storage.load_c2_state(
+            f"identity_quarantine:{conversation_id}"
+        )
+        self.assertTrue(quarantine["active"])
+        self.assertEqual(
+            quarantine["quarantine_kind"],
+            "legacy_malformed_outbox",
+        )
+        self.assertEqual(quarantine["outbox_id"], outbox_id)
+
+        # The transition is idempotent: later heartbeats cannot mutate the
+        # preserved payload or reopen the global transaction barrier.
+        repeated = self.storage.quarantine_legacy_malformed_c2_outbox(
+            outbox_id,
+            error="C2_SEQUENCE_ALIGNMENT_EVIDENCE_INVALID",
+        )
+        self.assertTrue(repeated["already_quarantined"])
+        self.assertEqual(
+            self.storage.load_c2_outbox_entry(outbox_id)["payload"],
+            payload,
+        )
+
     @staticmethod
     def _outbox_message(source_key: str, content: str) -> dict:
         return {

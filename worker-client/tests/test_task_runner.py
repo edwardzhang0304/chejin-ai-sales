@@ -6868,11 +6868,20 @@ class TaskRunnerTest(unittest.TestCase):
         self.assertEqual(api.message_payloads, [])
         self.assertEqual(
             load_c2_outbox_entry(outbox_id)["status"],
-            "capability_paused",
+            "identity_quarantined",
+        )
+        self.assertEqual(
+            load_c2_ledger_entry(
+                conversation_id,
+                source_key,
+            )["ingest_state"],
+            "not_required",
         )
         self.assertIsNone(load_runtime_control()["inflight_flow_id"])
         self.assertGreaterEqual(len(api.heartbeat_payloads), 3)
-        self.assertNotIn("pull", api.events)
+        self.assertEqual(binding.run_status, "running")
+        self.assertGreaterEqual(api.events.count("pull"), 2)
+        self.assertNotIn("run_status:paused", api.events)
         self.assertEqual(bridge.locate_chats, [])
         self.assertEqual(bridge.message_reads, [])
         self.assertEqual(bridge.voice_transcribes, [])
@@ -21852,7 +21861,7 @@ class TaskRunnerTest(unittest.TestCase):
             "capability_paused",
         )
 
-    def test_uat_malformed_persisted_alignment_never_reaches_http_and_pauses(self):
+    def test_uat_malformed_persisted_alignment_is_terminally_quarantined(self):
         api = FakeApi(None)
         runner, _ = self.make_runner(
             api,
@@ -21947,15 +21956,15 @@ class TaskRunnerTest(unittest.TestCase):
             }
         )
 
-        self.assertFalse(runner._replay_c2_outbox(binding))
+        self.assertTrue(runner._replay_c2_outbox(binding))
         stored = load_c2_outbox_entry(outbox_id)
-        self.assertEqual(stored["status"], "capability_paused")
+        self.assertEqual(stored["status"], "identity_quarantined")
         self.assertIn(
             "C2_SEQUENCE_ALIGNMENT_EVIDENCE_INVALID",
             str(stored["last_error"]),
         )
         self.assertEqual(api.message_payloads, [])
-        self.assertEqual(binding.run_status, "paused")
+        self.assertEqual(binding.run_status, "running")
 
         # The released 0.9.45 database may already be in ``draining``.  The
         # immutable malformed fact remains quarantined for diagnosis, while
@@ -21975,15 +21984,163 @@ class TaskRunnerTest(unittest.TestCase):
         )
         self.assertEqual(
             load_c2_outbox_entry(outbox_id)["status"],
-            "capability_paused",
+            "identity_quarantined",
         )
         self.assertEqual(
             load_c2_ledger_entry(
                 "conv-uat-malformed-alignment",
                 "source:uat-voice",
             )["ingest_state"],
-            "waiting",
+            "not_required",
         )
+        self.assertTrue(runner._replay_c2_outbox(binding))
+        self.assertEqual(api.message_payloads, [])
+
+    def test_uat_legacy_malformed_outbox_manual_start_stays_running_and_pulls(
+        self,
+    ):
+        api = FakeApi(None)
+        bridge = FakeBridge(
+            RpaResult(ok=True, result_code="ok", message="unused")
+        )
+        runner, _ = self.make_runner(api, bridge)
+        binding = Binding(
+            worker_id="worker-1",
+            worker_token="token",
+            client_instance_id="client-1",
+            run_status="paused",
+        )
+        runner.binding = binding
+        unique = str(time.time_ns())
+        read_run_id = f"read-uat-manual-start-{unique}"
+        conversation_id = f"conv-uat-manual-start-{unique}"
+        source_key = f"source-uat-manual-start-{unique}"
+        begin_runtime_flow(read_run_id, "c2_read")
+        runner._restart_recovery_flow_id = read_run_id
+        runner._restart_backend_probe_pending = True
+        save_c2_ledger_terminal(
+            conversation_id=conversation_id,
+            source_message_key=source_key,
+            origin_read_run_id=read_run_id,
+            dedupe_key=f"dedupe:{source_key}",
+            message_type="voice",
+            terminal_state="completed",
+            ingest_state="waiting",
+            result={"state": "completed"},
+        )
+        outbox_id = enqueue_c2_outbox(
+            {
+                "contract_version": 3,
+                "contract_revision": "0.9.45",
+                "read_run_id": read_run_id,
+                "conversation_id": conversation_id,
+                "authorization_revision": "revision-uat-manual-start",
+                "messages": [
+                    {
+                        "source_message_key": source_key,
+                        "dedupe_key": f"dedupe:{source_key}",
+                        "sender_role_hint": "customer",
+                        "message_type": "voice",
+                        "content": "有10万左右的二手车推荐吗？",
+                        "item_state": "completed",
+                        "flow_state": "completed",
+                    }
+                ],
+                "evidence": {
+                    "observations": [
+                        {
+                            "observation_id": "uat-observation-text",
+                            "row_kind": "text_bubble",
+                            "sender_role": "customer",
+                            "message_type": "text",
+                        },
+                        {
+                            "observation_id": "uat-observation-voice",
+                            "row_kind": "voice_transcript",
+                            "sender_role": "customer",
+                            "message_type": "voice",
+                        },
+                    ],
+                    "slot_ledger_states": [
+                        {
+                            "source_message_key": source_key,
+                            "screen_order": 2,
+                            "post_index": 1,
+                            "post_observation_id": (
+                                "uat-observation-voice"
+                            ),
+                        }
+                    ],
+                    "sequence_alignment_evidence": {
+                        "pre_sequence_source": (
+                            "worker_business_viewport_continuity"
+                        ),
+                        "pre_frame_id": "",
+                        "post_frame_id": "",
+                        "alignment_status": "unique",
+                        "candidate_alignment_count": 1,
+                        "matched_pairs": [
+                            {"old_index": 0, "new_index": 0},
+                            {"old_index": 1, "new_index": 1},
+                        ],
+                        "old_tail_fully_consumed": True,
+                        "new_suffix_observation_ids": [],
+                    },
+                },
+            }
+        )
+
+        # A paused restart still runs the evidence-only transaction barrier.
+        # It must settle this released immutable row once, without HTTP or UI.
+        runner.tick_once()
+        self.assertEqual(
+            load_c2_outbox_entry(outbox_id)["status"],
+            "identity_quarantined",
+        )
+        self.assertEqual(
+            load_c2_ledger_entry(
+                conversation_id,
+                source_key,
+            )["ingest_state"],
+            "not_required",
+        )
+        self.assertFalse(has_pending_c2_outbox())
+        self.assertEqual(api.message_payloads, [])
+        self.assertEqual(api.events.count("pull"), 0)
+        self.assertEqual(binding.run_status, "paused")
+        self.assertEqual(bridge.c2_operation_order, [])
+        self.assertEqual(
+            load_runtime_control().get("inflight_flow_id"),
+            read_run_id,
+        )
+
+        # This is the exact UAT boundary that was missing before: an explicit
+        # operator start must remain running across later heartbeats and reach
+        # the normal task pull branch repeatedly.
+        self.assertTrue(runner.set_run_status("running"))
+        for _ in range(3):
+            runner.tick_once()
+        self.assertEqual(binding.run_status, "running")
+        self.assertEqual(api.run_status_updates, ["running"])
+        self.assertEqual(api.events.count("pull"), 3)
+        self.assertNotIn("run_status:paused", api.events)
+        self.assertEqual(api.message_payloads, [])
+        self.assertEqual(bridge.c2_operation_order, [])
+        self.assertIsNone(load_runtime_control().get("inflight_flow_id"))
+        self.assertIsNone(runner._restart_recovery_flow_id)
+        self.assertEqual(
+            load_c2_outbox_entry(outbox_id)["status"],
+            "identity_quarantined",
+        )
+        incident_rows = [
+            row
+            for row in read_logs(limit=100)
+            if row.get("event")
+            == "c2_legacy_outbox_terminally_quarantined"
+            and (row.get("metadata") or {}).get("outbox_id")
+            == outbox_id
+        ]
+        self.assertEqual(len(incident_rows), 1)
 
     def test_c2_outbox_missing_sequence_evidence_is_quarantined_before_http(self):
         api = FakeApi(None)
@@ -22015,6 +22172,8 @@ class TaskRunnerTest(unittest.TestCase):
         )
         outbox_id = enqueue_c2_outbox(
             {
+                "contract_version": 3,
+                "contract_revision": contract_revision(),
                 "read_run_id": read_run_id,
                 "conversation_id": conversation_id,
                 "authorization_revision": "revision-current",

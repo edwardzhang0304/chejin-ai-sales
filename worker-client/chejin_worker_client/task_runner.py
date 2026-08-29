@@ -133,6 +133,7 @@ from .storage import (
     mark_reply_send_ack_confirmed,
     prepare_c2_outbox_payload,
     prune_terminal_outboxes,
+    quarantine_legacy_malformed_c2_outbox,
     refresh_c2_outbox_payload,
     reconcile_waiting_c2_ledger_from_confirmed_action,
     replace_c2_outbox_with_partitions,
@@ -3451,6 +3452,42 @@ def _legacy_media_record_digest(
             separators=(",", ":"),
         ).encode("utf-8")
     ).hexdigest()
+
+
+def _numeric_contract_revision(value: Any) -> tuple[int, int, int] | None:
+    match = re.fullmatch(
+        r"(\d+)\.(\d+)\.(\d+)",
+        str(value or "").strip(),
+    )
+    if not match:
+        return None
+    major, minor, patch = (int(part) for part in match.groups())
+    return major, minor, patch
+
+
+def _is_released_legacy_sequence_evidence_failure(
+    payload: dict[str, Any],
+    *,
+    error_code: str,
+) -> bool:
+    """Return whether immutable evidence came from an older release.
+
+    A malformed Outbox created by this running contract is a current client
+    defect and must keep the global fail-closed gate.  The same immutable
+    shape from an older released revision cannot become valid by retrying and
+    is terminally quarantined instead of permanently stopping every future
+    customer.
+    """
+
+    if str(error_code or "").strip() != (
+        "C2_SEQUENCE_ALIGNMENT_EVIDENCE_INVALID"
+    ):
+        return False
+    persisted = _numeric_contract_revision(
+        payload.get("contract_revision")
+    )
+    current = _numeric_contract_revision(contract_revision())
+    return bool(persisted and current and persisted < current)
 
 
 def _physical_journal_is_pre_cutover(
@@ -12246,6 +12283,20 @@ class TaskRunner:
                 payload=durable_payload,
             )
             if outbox_items is None:
+                prepared_state = str(
+                    (load_c2_outbox_entry(outbox_id) or {}).get("status")
+                    or ""
+                )
+                if prepared_state == "identity_quarantined":
+                    return {
+                        "ok": False,
+                        "outbox_id": outbox_id,
+                        "resolved": True,
+                        "recovery_action": "identity_quarantined",
+                        "error_code": (
+                            "C2_SEQUENCE_ALIGNMENT_EVIDENCE_INVALID"
+                        ),
+                    }
                 self._pause_for_permanent_outbox_contract_error(binding)
                 return {
                     "ok": False,
@@ -12416,6 +12467,45 @@ class TaskRunner:
             return active_items
         except Exception as exc:
             error_code = str(exc) or "C2_OUTBOX_TRANSPORT_PREPARATION_FAILED"
+            if _is_released_legacy_sequence_evidence_failure(
+                persisted_payload,
+                error_code=error_code,
+            ):
+                quarantine = quarantine_legacy_malformed_c2_outbox(
+                    outbox_id,
+                    error=error_code,
+                )
+                self._record_permanent_outbox_flow_failure(
+                    persisted_payload,
+                    error_code=error_code,
+                )
+                append_log(
+                    "ERROR",
+                    "c2_legacy_outbox_terminally_quarantined",
+                    "旧版本 C2 消息事实缺少当前合同要求的不可变序列证据；原始 Outbox 已完整保留并结算为有限隔离，不再阻断其他客户。",
+                    error_code=error_code,
+                    metadata={
+                        "outbox_id": outbox_id,
+                        "conversation_id": persisted_payload.get(
+                            "conversation_id"
+                        ),
+                        "read_run_id": persisted_payload.get(
+                            "read_run_id"
+                        ),
+                        "persisted_contract_revision": (
+                            persisted_payload.get("contract_revision")
+                        ),
+                        "current_contract_revision": contract_revision(),
+                        "ledger_rows_closed": quarantine.get(
+                            "ledger_rows_closed"
+                        ),
+                        "original_bytes": encoded_payload_size(
+                            persisted_payload
+                        ),
+                    },
+                    force_incident=True,
+                )
+                return None
             try:
                 mark_c2_outbox_capability_paused(
                     outbox_id,
@@ -12514,6 +12604,12 @@ class TaskRunner:
                 payload=payload,
             )
             if outbox_items is None:
+                prepared_state = str(
+                    (load_c2_outbox_entry(outbox_id) or {}).get("status")
+                    or ""
+                )
+                if prepared_state == "identity_quarantined":
+                    continue
                 self._pause_for_permanent_outbox_contract_error(binding)
                 return False
             delivery: dict[str, Any] = {"ok": True, "result": {}}
