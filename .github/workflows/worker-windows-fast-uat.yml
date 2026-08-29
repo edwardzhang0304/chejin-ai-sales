@@ -46,7 +46,7 @@ jobs:
       - name: Install test dependencies
         shell: powershell
         run: |
-          python -m pip install --disable-pip-version-check pytest `
+          python -m pip install --disable-pip-version-check pytest httpx2 `
             -r worker-client/requirements.txt `
             -r backend/requirements.txt
 

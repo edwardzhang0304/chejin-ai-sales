@@ -269,6 +269,7 @@ class PackagingScriptsTest(unittest.TestCase):
         )
         self.assertIn("python -m pip install", workflow)
         self.assertIn("pytest", workflow)
+        self.assertIn("httpx2", workflow)
         self.assertIn(
             "Run affected Worker recovery compatibility tests",
             workflow,
