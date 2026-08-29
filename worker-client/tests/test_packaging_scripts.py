@@ -211,7 +211,7 @@ class PackagingScriptsTest(unittest.TestCase):
         self.assertIn("delivery ZIP does not contain the packaged runtime directory", workflow)
         self.assertIn("app_name = [string]$manifest.app_name", workflow)
         self.assertIn("delivery ZIP executable SHA256 mismatch", workflow)
-        self.assertIn("chejin-worker-v0.9.46-windows-x64.delivery.json", workflow)
+        self.assertIn("chejin-worker-v0.9.47-windows-x64.delivery.json", workflow)
         self.assertIn("CHEJIN_VISION_CLIENT_API_KEY", workflow)
         self.assertIn("vision_credential_embedded", workflow)
         self.assertIn("vision_configuration_locked", workflow)
@@ -247,7 +247,20 @@ class PackagingScriptsTest(unittest.TestCase):
 
         self.assertIn("actions/cache@v4", workflow)
         self.assertIn("build-fast-uat-runtime.ps1", workflow)
-        self.assertIn("python run_checks.py", workflow)
+        self.assertNotIn("python run_checks.py", workflow)
+        self.assertIn("Run affected Worker recovery tests", workflow)
+        self.assertIn('"test_storage.py"', workflow)
+        self.assertIn(
+            'python -m unittest discover -s tests -p "test_task_runner.py"',
+            workflow,
+        )
+        self.assertIn(
+            "-k restart -k faulted_is_persisted_locally_before_backend_sync",
+            workflow,
+        )
+        self.assertIn("Run contract and packaging gates", workflow)
+        self.assertIn("scripts/generate-c2-observation-schema.py --check", workflow)
+        self.assertIn('"test_c2_contract.py"', workflow)
         self.assertIn("build-fast-uat-package.py", workflow)
         self.assertIn("debug_uat", workflow)
         self.assertIn("git_dirty", workflow)
@@ -535,7 +548,7 @@ class PackagingScriptsTest(unittest.TestCase):
             [
                 {
                     "source_commit": (
-                            "69c69a60b7e08a31f9d773864b14b35faf86754b"
+                        "6fc2b12a1c121ec747f9f7ef7123775474dff1d1"
                     ),
                     "scope": [
                         "exact_wechat_context_menu_classification",
@@ -725,6 +738,7 @@ class PackagingScriptsTest(unittest.TestCase):
                         "c2_contract_0_9_44_generated_schema",
                         "c2_contract_0_9_45_generated_schema",
                         "c2_contract_0_9_46_generated_schema",
+                        "c2_contract_0_9_47_generated_schema",
                         (
                             "business_viewport_geometry_independent_"
                             "continuity_contract"
@@ -762,9 +776,13 @@ class PackagingScriptsTest(unittest.TestCase):
             "69c69a60b7e08a31f9d773864b14b35faf86754b",
             provenance["integration_note"],
         )
-        self.assertIn("0.9.46", provenance["integration_note"])
         self.assertIn(
-            "只同步 0.9.46 生成合同/Schema",
+            "6fc2b12a1c121ec747f9f7ef7123775474dff1d1",
+            provenance["integration_note"],
+        )
+        self.assertIn("0.9.47", provenance["integration_note"])
+        self.assertIn(
+            "只同步 0.9.47 生成合同/Schema",
             provenance["integration_note"],
         )
         self.assertIn(
@@ -1140,7 +1158,7 @@ class PackagingScriptsTest(unittest.TestCase):
         self.assertIn('$packageDir = [string]$manifest.package_dir', workflow)
         self.assertIn('$exePath = [string]$manifest.exe_path', workflow)
         self.assertNotIn('dist\\车金Worker客户端', workflow)
-        self.assertIn('version -ne "0.9.46"', workflow)
+        self.assertIn('version -ne "0.9.47"', workflow)
         self.assertIn('tests_status -ne "passed"', workflow)
         self.assertIn('@("--omniauto-sidecar", "--help")', workflow)
         self.assertIn('@("--omniauto-ocr-probe")', workflow)

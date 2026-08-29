@@ -1,10 +1,10 @@
 {
   "contract_version": 3,
-  "contract_revision": "0.9.46",
+  "contract_revision": "0.9.47",
   "observation_schema_version": 3,
   "control_schema_version": 1,
   "performance_fast_path_contract": {
-    "release": "0.9.46",
+    "release": "0.9.47",
     "business_semantics_unchanged": true,
     "flags": [
       "CHEJIN_TASK_SAFE_WAKE_ENABLED",
@@ -30,7 +30,7 @@
     "sidebar_search_safety_rule": "sidebar ROI may identify a candidate only; login overlays central dialogs and whole-window blocking state must be decided from full-window OCR of the exact same screenshot"
   },
   "startup_layout_calibration_contract": {
-    "schema_version": "0.9.46",
+    "schema_version": "0.9.47",
     "owner": "omniauto",
     "worker_role": "persist_path_transport_contract_validation_and_execution_only",
     "single_runtime_path": true,
@@ -111,7 +111,11 @@
       "local_proof_rule": "every terminal kind requires the UI lock plus same-flow pending Outbox, Ledger, ActionJournal, and sent_ack to be settled; both no-fact failure terminals additionally forbid any same-flow Outbox, Ledger, or Journal artifact"
     },
     "local_atomicity_rule": "request_pause, clear_pause, begin_flow, and finish_flow must read, validate, and update runtime_control_v1 in one SQLite BEGIN IMMEDIATE transaction",
-    "row_lock_rule": "set_run_status, start_inflight_flow, and finish_inflight_flow must serialize on the same Worker row with SELECT FOR UPDATE"
+    "row_lock_rule": "set_run_status, start_inflight_flow, and finish_inflight_flow must serialize on the same Worker row with SELECT FOR UPDATE",
+    "faulted_sticky_rule": "faulted_is_a_persisted_local_authority_and_must_never_be_downgraded_to_paused_by_heartbeat_restart_reconciliation_backend_sync_failure_or_any_central_pause_helper;_only_an_explicit_successful_operator_start_transition_may_clear_it",
+    "confirmed_media_reconciliation_rule": "one_confirmed_physical_voice_or_image_action_journal_may_repair_only_the_same_origin_read_run_same_message_type_same_source_key_failed_waiting_ledger_before_backend_ack;_the_previous_failed_result_remains_nested_audit_evidence_and_confirmed_or_already_completed_facts_are_immutable",
+    "confirmed_journal_archive_retry_rule": "after_backend_or_ledger_confirmation_a_transient_windows_file_lock_while_archiving_the_exact_action_journal_keeps_the_old_flow_and_retries_archive_on_the_next_tick_with_zero_repeat_http_or_wechat_action",
+    "restart_fault_sync_rule": "a_permanent_restart_reconciliation_conflict_is_persisted_before_remote_status_or_flow_finish_calls;_network_failure_keeps_heartbeat_and_ui_faulted_while_retrying_only_remote_settlement"
   },
   "ai_reply_boundary_contract": {
     "read_reason": "recent_ai_sent",
@@ -1551,7 +1555,7 @@
     ]
   },
   "frame_action_binding_contract": {
-    "release": "0.9.46",
+    "release": "0.9.47",
     "purpose": "carry_one_worker_approved_current_media_action_policy_and_current_frame_diagnostic_evidence_without_claiming_cross_frame_identity",
     "durable_identity": false,
     "observation_owner": "sidecar",
@@ -1608,7 +1612,7 @@
     ]
   },
   "pre_send_message_viewport_contract": {
-    "release": "0.9.46",
+    "release": "0.9.47",
     "selected_target_fingerprint_scope": "prepare_frame_diagnostic_only_and_forbidden_as_an_execute_identity_or_equality_gate",
     "selected_target_forbidden_inputs": [
       "message_viewport_change_digest",
@@ -1707,7 +1711,7 @@
     "physical_media_action_rule": "each_voice_or_image_action_may_trigger_at_most_once_and_post_trigger_waits_are_passive_evidence_reads_only"
   },
   "pre_send_fact_checkpoint_contract": {
-    "release": "0.9.46",
+    "release": "0.9.47",
     "checkpoint_revision": 5,
     "checkpoint_owner": "backend",
     "comparison_and_decision_owner": "worker",

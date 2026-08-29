@@ -496,6 +496,8 @@ class WorkerWebWindow(QMainWindow):
             return "bind"
         if self.active_page in {"settings", "schedule-settings", "logs"}:
             return self.active_page
+        if self.binding.run_status == "faulted":
+            return "automation-unavailable"
         if self.connection_status == "offline":
             has_local_process = bool(
                 self.current_task
@@ -504,8 +506,6 @@ class WorkerWebWindow(QMainWindow):
                 or self.last_result
             )
             return "offline" if has_local_process else "offline-empty"
-        if self.binding.run_status == "faulted":
-            return "automation-unavailable"
         schedule_active = self.is_accept_schedule_active()
         if self.current_task and (self.binding.run_status == "paused" or not schedule_active):
             return "paused-running"
@@ -572,7 +572,13 @@ class WorkerWebWindow(QMainWindow):
             "schedule": dict(self.accept_schedule),
             "status": {
                 "sellerName": self._seller_name(profile),
-                "receiveState": "离线" if offline else receive_state,
+                "receiveState": (
+                    "客户端故障"
+                    if run_status == "faulted"
+                    else "离线"
+                    if offline
+                    else receive_state
+                ),
                 "connectionState": "连接异常" if offline else "连接正常",
                 "lastHeartbeat": _format_time(profile.last_heartbeat_at if profile else None),
                 "automationState": "可用" if profile and profile.rpa_component_status == "ready" else "不可用",
@@ -615,6 +621,15 @@ class WorkerWebWindow(QMainWindow):
 
     def _task_model_for_screen(self, task: Task | None, offline: bool, run_status: str) -> dict[str, str]:
         model = _task_model(task)
+        if run_status == "faulted":
+            model["statusText"] = "客户端故障"
+            model["metaText"] = (
+                "本地已停止领取新任务；后端故障状态未同步时会自动重试，"
+                "但不会降级显示为普通暂停。"
+                if self.runner.run_status_sync_error
+                else "客户端发生技术故障，已停止领取新任务。"
+            )
+            return model
         if self.runner.run_status_sync_error and run_status == "paused":
             model["statusText"] = "暂停接单 · 同步失败"
             model["metaText"] = (
@@ -630,12 +645,6 @@ class WorkerWebWindow(QMainWindow):
                     model["metaText"] = "正在暂停，当前客户处理完后停止"
                 else:
                     model["statusText"] = "已暂停接单"
-            return model
-        if run_status == "faulted":
-            model["statusText"] = "客户端故障"
-            model["metaText"] = (
-                "微信基本布局无法建立，已停止领取新任务。"
-            )
             return model
         if offline:
             model["statusText"] = "离线"

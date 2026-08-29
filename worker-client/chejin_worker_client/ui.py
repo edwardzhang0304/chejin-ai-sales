@@ -1139,7 +1139,7 @@ class WorkerWindow(QMainWindow):
         self.connection_label.style().polish(self.connection_label)
 
         self.sales_tile.set_value(profile.bound_sales_name if profile and profile.bound_sales_name else "未绑定")
-        run_status_kind = "paused" if offline else ("danger" if is_faulted else "accepting" if is_running else "paused")
+        run_status_kind = "danger" if is_faulted else ("paused" if offline else "accepting" if is_running else "paused")
         self.run_status_tile.set_value(
             (
                 "客户端故障"
@@ -1161,7 +1161,9 @@ class WorkerWindow(QMainWindow):
         run_text = "暂停接单" if is_running else "开始接单"
         self.run_button.setText(run_text)
         self.dock_button.setText(run_text)
-        self.dock_status.setText("接单中" if is_running else "暂停接单")
+        self.dock_status.setText(
+            "客户端故障" if is_faulted else "接单中" if is_running else "暂停接单"
+        )
         self.run_button.setObjectName("secondarySmall" if is_running else "primarySmall")
         self.dock_button.setObjectName("secondary" if is_running else "primary")
         for button in (self.run_button, self.dock_button):

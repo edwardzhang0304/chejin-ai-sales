@@ -1092,6 +1092,120 @@ def save_c2_ledger_terminal(
         conn.commit()
 
 
+def reconcile_waiting_c2_ledger_from_confirmed_action(
+    *,
+    conversation_id: str,
+    source_message_key: str,
+    origin_read_run_id: str,
+    message_type: str,
+    completed_result: dict[str, Any],
+) -> bool:
+    """Repair one pre-ack failed Ledger from a confirmed physical Journal.
+
+    This is deliberately narrower than ``save_c2_ledger_terminal``.  It is
+    only legal while the old local result is still waiting for backend ack;
+    backend-confirmed facts and every completed->failed transition remain
+    immutable.  The previous failed payload is retained inside the repaired
+    result so incident evidence is not destroyed.
+    """
+
+    clean_conversation_id = str(conversation_id or "").strip()
+    clean_source_key = str(source_message_key or "").strip()
+    clean_origin = str(origin_read_run_id or "").strip()
+    clean_message_type = str(message_type or "").strip().lower()
+    if not all(
+        (
+            clean_conversation_id,
+            clean_source_key,
+            clean_origin,
+            clean_message_type,
+        )
+    ):
+        raise ValueError("C2_LEDGER_RECONCILIATION_IDENTITY_MISSING")
+    if clean_message_type not in {"voice", "image"}:
+        raise ValueError("C2_LEDGER_RECONCILIATION_ACTION_KIND_INVALID")
+    if str(completed_result.get("state") or "").strip() != "completed":
+        raise ValueError("C2_LEDGER_RECONCILIATION_RESULT_INVALID")
+    _assert_outbox_text_only(
+        completed_result,
+        path="ledger_reconciliation_result",
+    )
+    now = utc_now_iso()
+    with db_connection() as conn:
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            row = conn.execute(
+                """
+                SELECT origin_read_run_id, message_type, terminal_state,
+                       ingest_state, result_json
+                FROM c2_message_ledger
+                WHERE conversation_id = ? AND source_message_key = ?
+                """,
+                (clean_conversation_id, clean_source_key),
+            ).fetchone()
+            if not row:
+                conn.rollback()
+                return False
+            if str(row["origin_read_run_id"] or "").strip() != clean_origin:
+                raise ValueError("C2_LEDGER_ORIGIN_READ_RUN_ID_CONFLICT")
+            if str(row["message_type"] or "").strip().lower() != clean_message_type:
+                raise ValueError("C2_LEDGER_RECONCILIATION_ACTION_KIND_CONFLICT")
+            old_terminal = str(row["terminal_state"] or "").strip()
+            old_ingest = str(row["ingest_state"] or "").strip()
+            if old_terminal != "failed" or old_ingest != "waiting":
+                raise ValueError("C2_LEDGER_RECONCILIATION_NOT_ALLOWED")
+            try:
+                previous_result = json.loads(row["result_json"] or "{}")
+            except (json.JSONDecodeError, TypeError) as exc:
+                raise ValueError("C2_LEDGER_RECONCILIATION_OLD_RESULT_INVALID") from exc
+            if not isinstance(previous_result, dict):
+                raise ValueError("C2_LEDGER_RECONCILIATION_OLD_RESULT_INVALID")
+            reconciled_result = {
+                **dict(completed_result),
+                "terminal_reconciliation": {
+                    "schema_version": 1,
+                    "basis": "confirmed_physical_action_journal",
+                    "previous_terminal_state": old_terminal,
+                    "previous_ingest_state": old_ingest,
+                    "previous_result": previous_result,
+                    "reconciled_at": now,
+                },
+            }
+            _assert_outbox_text_only(
+                reconciled_result,
+                path="ledger_reconciled_result",
+            )
+            cursor = conn.execute(
+                """
+                UPDATE c2_message_ledger
+                SET terminal_state = 'completed', result_json = ?,
+                    updated_at = ?
+                WHERE conversation_id = ? AND source_message_key = ?
+                  AND origin_read_run_id = ? AND message_type = ?
+                  AND terminal_state = 'failed' AND ingest_state = 'waiting'
+                """,
+                (
+                    json.dumps(
+                        reconciled_result,
+                        ensure_ascii=False,
+                        separators=(",", ":"),
+                    ),
+                    now,
+                    clean_conversation_id,
+                    clean_source_key,
+                    clean_origin,
+                    clean_message_type,
+                ),
+            )
+            if cursor.rowcount != 1:
+                raise ValueError("C2_LEDGER_RECONCILIATION_RACE")
+            conn.commit()
+            return True
+        except Exception:
+            conn.rollback()
+            raise
+
+
 def mark_c2_ledger_ingested(conversation_id: str, source_message_keys: list[str]) -> None:
     keys = [str(value).strip() for value in source_message_keys if str(value).strip()]
     if not keys:
