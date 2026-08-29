@@ -2556,6 +2556,167 @@ def mark_c2_outbox_identity_quarantined(
     )
 
 
+def quarantine_legacy_malformed_c2_outbox(
+    outbox_id: str,
+    *,
+    error: str,
+) -> dict[str, Any]:
+    """Terminally quarantine one released malformed Outbox and its Ledger.
+
+    Older released clients can leave immutable message facts whose sequence
+    evidence cannot satisfy the current transport contract.  Retrying those
+    bytes can never succeed.  This transition therefore preserves the exact
+    Outbox payload for audit, closes only its exact waiting Ledger rows, and
+    removes the record from the global automatic-retry barrier atomically.
+
+    The per-conversation quarantine remains visible to C2 so the Worker does
+    not silently reinterpret the malformed facts on a later scan.
+    """
+
+    clean_outbox_id = str(outbox_id or "").strip()
+    clean_error = str(error or "").strip()
+    if not clean_outbox_id or not clean_error:
+        raise ValueError("C2_OUTBOX_QUARANTINE_IDENTITY_MISSING")
+    pending_states = {
+        "waiting",
+        "retry_waiting",
+        "refresh_pending",
+        "rebuild_pending",
+        "split_pending",
+        "capability_paused",
+    }
+    now = utc_now_iso()
+    with db_connection() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        row = conn.execute(
+            """
+            SELECT conversation_id, read_run_id, payload_json, status
+            FROM c2_ingest_outbox
+            WHERE outbox_id = ?
+            """,
+            (clean_outbox_id,),
+        ).fetchone()
+        if not row:
+            conn.rollback()
+            raise ValueError("C2_OUTBOX_NOT_FOUND")
+        current_status = str(row["status"] or "").strip()
+        if current_status == "identity_quarantined":
+            conn.commit()
+            return {
+                "outbox_id": clean_outbox_id,
+                "status": current_status,
+                "ledger_rows_closed": 0,
+                "already_quarantined": True,
+            }
+        if current_status not in pending_states:
+            conn.rollback()
+            raise ValueError("C2_OUTBOX_TRANSITION_SOURCE_INVALID")
+        try:
+            payload = json.loads(str(row["payload_json"] or "{}"))
+        except (json.JSONDecodeError, TypeError) as exc:
+            conn.rollback()
+            raise ValueError("C2_OUTBOX_PAYLOAD_JSON_INVALID") from exc
+        if not isinstance(payload, dict):
+            conn.rollback()
+            raise ValueError("C2_OUTBOX_PAYLOAD_JSON_INVALID")
+        conversation_id = str(row["conversation_id"] or "").strip()
+        read_run_id = str(row["read_run_id"] or "").strip()
+        evidence = (
+            payload.get("evidence")
+            if isinstance(payload.get("evidence"), dict)
+            else {}
+        )
+        source_message_keys = {
+            str(item.get("source_message_key") or "").strip()
+            for item in (payload.get("messages") or [])
+            if isinstance(item, dict)
+            and str(item.get("source_message_key") or "").strip()
+        }
+        source_message_keys.update(
+            str(item.get("source_message_key") or "").strip()
+            for item in (evidence.get("slot_ledger_states") or [])
+            if isinstance(item, dict)
+            and str(item.get("source_message_key") or "").strip()
+        )
+        cursor = conn.execute(
+            """
+            UPDATE c2_ingest_outbox
+            SET status = 'identity_quarantined', last_error = ?,
+                next_attempt_at = NULL, updated_at = ?
+            WHERE outbox_id = ?
+              AND status IN (
+                'waiting', 'retry_waiting', 'refresh_pending',
+                'rebuild_pending', 'split_pending', 'capability_paused'
+              )
+            """,
+            (clean_error, now, clean_outbox_id),
+        )
+        if cursor.rowcount != 1:
+            conn.rollback()
+            raise ValueError("C2_OUTBOX_TRANSITION_SOURCE_INVALID")
+        ledger_rows_closed = 0
+        if conversation_id and read_run_id and source_message_keys:
+            placeholders = ",".join("?" for _ in source_message_keys)
+            cursor = conn.execute(
+                f"""
+                UPDATE c2_message_ledger
+                SET terminal_state = 'failed', ingest_state = 'not_required',
+                    updated_at = ?
+                WHERE conversation_id = ?
+                  AND origin_read_run_id = ?
+                  AND source_message_key IN ({placeholders})
+                  AND ingest_state = 'waiting'
+                """,
+                (
+                    now,
+                    conversation_id,
+                    read_run_id,
+                    *sorted(source_message_keys),
+                ),
+            )
+            ledger_rows_closed = max(0, int(cursor.rowcount or 0))
+        if conversation_id:
+            state_key = f"identity_quarantine:{conversation_id}"
+            state_value = {
+                "active": True,
+                "quarantine_kind": "legacy_malformed_outbox",
+                "error_code": clean_error,
+                "outbox_id": clean_outbox_id,
+                "conversation_id": conversation_id,
+                "read_run_id": read_run_id,
+                "source_message_keys": sorted(source_message_keys),
+                "quarantined_at": now,
+            }
+            conn.execute(
+                """
+                INSERT INTO c2_runtime_state (key, value, updated_at)
+                VALUES (?, ?, ?)
+                ON CONFLICT(key) DO UPDATE SET
+                  value = excluded.value,
+                  updated_at = excluded.updated_at
+                """,
+                (
+                    state_key,
+                    json.dumps(
+                        state_value,
+                        ensure_ascii=False,
+                        separators=(",", ":"),
+                    ),
+                    now,
+                ),
+            )
+        conn.commit()
+    return {
+        "outbox_id": clean_outbox_id,
+        "status": "identity_quarantined",
+        "ledger_rows_closed": ledger_rows_closed,
+        "already_quarantined": False,
+        "conversation_id": conversation_id,
+        "read_run_id": read_run_id,
+        "source_message_keys": sorted(source_message_keys),
+    }
+
+
 def save_reply_send_intent(
     *,
     reply_action_id: str,

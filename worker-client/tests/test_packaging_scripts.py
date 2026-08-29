@@ -211,7 +211,7 @@ class PackagingScriptsTest(unittest.TestCase):
         self.assertIn("delivery ZIP does not contain the packaged runtime directory", workflow)
         self.assertIn("app_name = [string]$manifest.app_name", workflow)
         self.assertIn("delivery ZIP executable SHA256 mismatch", workflow)
-        self.assertIn("chejin-worker-v0.9.48-windows-x64.delivery.json", workflow)
+        self.assertIn("chejin-worker-v0.9.49-windows-x64.delivery.json", workflow)
         self.assertIn("CHEJIN_VISION_CLIENT_API_KEY", workflow)
         self.assertIn("vision_credential_embedded", workflow)
         self.assertIn("vision_configuration_locked", workflow)
@@ -555,7 +555,7 @@ class PackagingScriptsTest(unittest.TestCase):
             [
                 {
                     "source_commit": (
-                        "3413c591357f6fd790f53b0f967ff6bc9c6de57f"
+                        "8100c2f8bd0cfcd80874d95d69b76e11c9c51a4f"
                     ),
                     "scope": [
                         "exact_wechat_context_menu_classification",
@@ -747,6 +747,7 @@ class PackagingScriptsTest(unittest.TestCase):
                         "c2_contract_0_9_46_generated_schema",
                         "c2_contract_0_9_47_generated_schema",
                         "c2_contract_0_9_48_generated_schema",
+                        "c2_contract_0_9_49_generated_schema",
                         (
                             "business_viewport_geometry_independent_"
                             "continuity_contract"
@@ -792,9 +793,9 @@ class PackagingScriptsTest(unittest.TestCase):
             "3413c591357f6fd790f53b0f967ff6bc9c6de57f",
             provenance["integration_note"],
         )
-        self.assertIn("0.9.48", provenance["integration_note"])
+        self.assertIn("0.9.49", provenance["integration_note"])
         self.assertIn(
-            "只同步 0.9.48 生成合同/Schema",
+            "只同步 0.9.49 生成合同/Schema",
             provenance["integration_note"],
         )
         self.assertIn(
@@ -1170,7 +1171,7 @@ class PackagingScriptsTest(unittest.TestCase):
         self.assertIn('$packageDir = [string]$manifest.package_dir', workflow)
         self.assertIn('$exePath = [string]$manifest.exe_path', workflow)
         self.assertNotIn('dist\\车金Worker客户端', workflow)
-        self.assertIn('version -ne "0.9.48"', workflow)
+        self.assertIn('version -ne "0.9.49"', workflow)
         self.assertIn('tests_status -ne "passed"', workflow)
         self.assertIn('@("--omniauto-sidecar", "--help")', workflow)
         self.assertIn('@("--omniauto-ocr-probe")', workflow)
