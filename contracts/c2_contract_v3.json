@@ -1,10 +1,10 @@
 {
   "contract_version": 3,
-  "contract_revision": "0.9.49",
+  "contract_revision": "0.9.50",
   "observation_schema_version": 3,
   "control_schema_version": 1,
   "performance_fast_path_contract": {
-    "release": "0.9.49",
+    "release": "0.9.50",
     "business_semantics_unchanged": true,
     "flags": [
       "CHEJIN_TASK_SAFE_WAKE_ENABLED",
@@ -30,7 +30,7 @@
     "sidebar_search_safety_rule": "sidebar ROI may identify a candidate only; login overlays central dialogs and whole-window blocking state must be decided from full-window OCR of the exact same screenshot"
   },
   "startup_layout_calibration_contract": {
-    "schema_version": "0.9.49",
+    "schema_version": "0.9.50",
     "owner": "omniauto",
     "worker_role": "persist_path_transport_contract_validation_and_execution_only",
     "single_runtime_path": true,
@@ -1571,7 +1571,7 @@
     ]
   },
   "frame_action_binding_contract": {
-    "release": "0.9.49",
+    "release": "0.9.50",
     "purpose": "carry_one_worker_approved_current_media_action_policy_and_current_frame_diagnostic_evidence_without_claiming_cross_frame_identity",
     "durable_identity": false,
     "observation_owner": "sidecar",
@@ -1628,7 +1628,7 @@
     ]
   },
   "pre_send_message_viewport_contract": {
-    "release": "0.9.49",
+    "release": "0.9.50",
     "selected_target_fingerprint_scope": "prepare_frame_diagnostic_only_and_forbidden_as_an_execute_identity_or_equality_gate",
     "selected_target_forbidden_inputs": [
       "message_viewport_change_digest",
@@ -1727,13 +1727,20 @@
     "physical_media_action_rule": "each_voice_or_image_action_may_trigger_at_most_once_and_post_trigger_waits_are_passive_evidence_reads_only"
   },
   "pre_send_fact_checkpoint_contract": {
-    "release": "0.9.49",
+    "release": "0.9.50",
     "checkpoint_revision": 5,
     "checkpoint_owner": "backend",
     "comparison_and_decision_owner": "worker",
-    "sidecar_access": "forbidden",
+    "sidecar_access": "forbidden_except_for_the_worker_bound_final_send_guard_that_invokes_the_exact_shared_worker_comparator_without_reconstructing_checkpoint_identity",
+    "portable_pure_comparator_module": "apps.wechat_ai_customer_service.adapters.business_viewport_continuity",
+    "portable_dependency_rule": "the_shared_pure_comparator_must_import_no_chejin_worker_client_UI_network_storage_or_durable_identity_owner; worker_and_independent_omniauto_sidecar_must_import_the_same_implementation",
+    "sidecar_verification_rule": "sidecar_may_only_verify_the_worker_bound_credential_against_the_latest_frame_through_the_shared_pure_comparator_and_must_never_define_a_second_algorithm_bind_durable_identity_or_fabricate_a_worker_comparison_result",
     "purpose": "compare_the_facts_used_by_one_brain_reply_with_one_fresh_complete_ordered_wechat_tail_without_reidentifying_committed_messages",
     "storage": "MessageBatch.ai_request_snapshot.pre_send_fact_checkpoint",
+    "worker_comparison_result_path": "pre_send_fact_checkpoint_comparison",
+    "worker_comparison_result_nested_duplicate_forbidden": true,
+    "final_send_guard_binding_rule": "worker_must_bind_the_exact_top_level_pre_send_fact_checkpoint_comparison_and_its_matched_checkpoint_boundary_tokens_before_S0_S1_S2; a_missing_or_invalid_binding_is_C3_SEND_CONTEXT_GUARD_INVALID",
+    "technical_guard_failure_rule": "C3_SEND_CONTEXT_GUARD_REQUIRED_or_C3_SEND_CONTEXT_GUARD_INVALID_is_zero_input_zero_click_zero_send_zero_handoff_zero_feishu_and_worker_faulted",
     "required_checkpoint_fields": [
       "checkpoint_revision",
       "conversation_id",

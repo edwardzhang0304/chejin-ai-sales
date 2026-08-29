@@ -4,7 +4,7 @@
   "upstream_base_commit": "a563e6688c47a8922510794101967823fe1389d7",
   "selective_integrations": [
     {
-      "source_commit": "8100c2f8bd0cfcd80874d95d69b76e11c9c51a4f",
+      "source_commit": "f6a7706c20c22d8cd176fefeccfdcf3027eaa753",
       "scope": [
         "exact_wechat_context_menu_classification",
         "same_popup_menu_panel_evidence_contract",
@@ -111,7 +111,9 @@
         "c2_contract_0_9_49_generated_schema",
         "business_viewport_geometry_independent_continuity_contract",
         "media_action_frame_receipt_binding_contract",
-        "pillow_flattened_pixel_iteration_compatibility_contract"
+        "pillow_flattened_pixel_iteration_compatibility_contract",
+        "c2_contract_0_9_50_generated_schema",
+        "portable_send_context_continuity_comparator_contract"
       ]
     }
   ],
@@ -153,5 +155,5 @@
       ]
     }
   ],
-  "integration_note": "0.9.49 独立 OmniAuto 来源已固定为真实提交 8100c2f8bd0cfcd80874d95d69b76e11c9c51a4f；该提交基于 0.9.48 来源 3413c591357f6fd790f53b0f967ff6bc9c6de57f，只同步 0.9.49 生成合同/Schema，不修改 OmniAuto 生产逻辑、Brain、媒体编排或状态机。车金 0.9.49 只为旧版本不可修复 Outbox 增加本地有限隔离终态：保留原始证据、零 HTTP、零微信操作，结算精确匹配的等待 Ledger，解除 draining 并恢复其他客户接单；当前版本同类坏证据仍故障关闭。合同为 0.9.49 / 2302479941f86d8f854dd0169716d0eb89b1ba0f8952344728fefb86d4811289。0.9.47 历史来源提交为 6fc2b12a1c121ec747f9f7ef7123775474dff1d1；0.9.46 历史来源提交为 69c69a60b7e08a31f9d773864b14b35faf86754b，其缺失或畸形证据零 HTTP 隔离、旧 Flow 有限 technical_failed 终态、解除 draining、post_index 与 new_suffix 验收以及不重复点击能力继续保留。0.9.45 历史来源提交为 53caedad5baece001659aafcb5d7f86d98933e27。继续以 gray-v0.9.20 业务流程为基线，历史 ActionJournal 恢复、确定性 Outbox、sent_ack、启动标定和区域坐标映射语义保持不变。车金候选提交、推送、标签、ZIP、配套后端部署和 Windows 实机 OCR/鼠标 UAT 待完成；自动化通过不代表实机已验收。"
+  "integration_note": "0.9.50 独立 OmniAuto 来源已固定为真实提交 f6a7706c20c22d8cd176fefeccfdcf3027eaa753；该提交基于 0.9.49 来源 8100c2f8bd0cfcd80874d95d69b76e11c9c51a4f，只新增可移植纯连续性比较器、Sidecar 无 Worker 依赖的最终发送验证、0.9.50 生成合同/Schema 及隔离回归测试。0.9.49 独立 OmniAuto 来源已固定为真实提交 8100c2f8bd0cfcd80874d95d69b76e11c9c51a4f；该提交基于 0.9.48 来源 3413c591357f6fd790f53b0f967ff6bc9c6de57f，只同步 0.9.49 生成合同/Schema，不修改 OmniAuto 生产逻辑、Brain、媒体编排或状态机。车金 0.9.49 只为旧版本不可修复 Outbox 增加本地有限隔离终态：保留原始证据、零 HTTP、零微信操作，结算精确匹配的等待 Ledger，解除 draining 并恢复其他客户接单；当前版本同类坏证据仍故障关闭。合同为 0.9.49 / 2302479941f86d8f854dd0169716d0eb89b1ba0f8952344728fefb86d4811289。0.9.47 历史来源提交为 6fc2b12a1c121ec747f9f7ef7123775474dff1d1；0.9.46 历史来源提交为 69c69a60b7e08a31f9d773864b14b35faf86754b，其缺失或畸形证据零 HTTP 隔离、旧 Flow 有限 technical_failed 终态、解除 draining、post_index 与 new_suffix 验收以及不重复点击能力继续保留。0.9.45 历史来源提交为 53caedad5baece001659aafcb5d7f86d98933e27。继续以 gray-v0.9.20 业务流程为基线，历史 ActionJournal 恢复、确定性 Outbox、sent_ack、启动标定和区域坐标映射语义保持不变。车金候选提交、推送、标签、ZIP、配套后端部署和 Windows 实机 OCR/鼠标 UAT 待完成；自动化通过不代表实机已验收。"
 }

@@ -27,6 +27,21 @@ from chejin_worker_client.rpa_bridge import (
     default_sidecar_script,
     startup_probe_geometry,
 )
+from chejin_worker_client.message_viewport_projection import (
+    boundary_tokens_for_observations,
+)
+from chejin_worker_client.task_runner import (
+    _bind_worker_continuity_contract_to_send_guard,
+)
+
+
+OMNIAUTO_ROOT = Path(__file__).resolve().parents[1] / "omniauto-rpa"
+if str(OMNIAUTO_ROOT) not in sys.path:
+    sys.path.insert(0, str(OMNIAUTO_ROOT))
+
+from apps.wechat_ai_customer_service.adapters import (  # noqa: E402
+    wechat_win32_ocr_sidecar as production_sidecar,
+)
 
 
 class RpaBridgeTest(unittest.TestCase):
@@ -703,6 +718,113 @@ class RpaBridgeTest(unittest.TestCase):
         self.assertIn("服务端批准文本", captured["args"])
         self.assertIn("--expected-context-guard", captured["args"])
         self.assertEqual(captured["timeout"], 180)
+
+    def test_real_bridge_json_round_trip_reaches_sidecar_final_guard(self):
+        observation = {
+            "schema_version": 3,
+            "observation_id": "worker-refresh-voice",
+            "row_kind": "voice_transcript",
+            "sender_role": "customer",
+            "message_type": "voice",
+            "voice_state": "transcribed",
+            "voice_duration": "4s",
+            "content_clean": "10万左右的二手车有什么推荐吗？",
+        }
+        guard = production_sidecar.build_send_context_guard(
+            [observation],
+            layout_evidence={
+                "ok": True,
+                "layout_snapshot_id": "worker-refresh-layout",
+                "message_viewport_bounds": [300, 100, 1000, 800],
+            },
+        )
+        tokens = boundary_tokens_for_observations(
+            [observation],
+            committed_only=False,
+        )
+        expected_guard = _bind_worker_continuity_contract_to_send_guard(
+            guard,
+            [observation],
+            checkpoint={
+                "committed_tail": [
+                    {
+                        "strong_boundary_tokens": sorted(tokens.get(0, set()))
+                    }
+                ]
+            },
+            checkpoint_comparison={
+                "comparison_result": "checkpoint_equal",
+                "matched_pairs": [
+                    {"pre_sequence_index": 0, "post_sequence_index": 0}
+                ],
+            },
+            empty_welcome_baseline=False,
+        )
+        bridge = RpaBridge(sidecar_script=Path(__file__))
+        bridge.mode = "real"
+        captured: dict[str, object] = {}
+
+        def fake_call_omniauto(args, timeout=30, cancel_check=None):
+            serialized = args[args.index("--expected-context-guard") + 1]
+            captured["serialized"] = serialized
+            parsed = production_sidecar.parse_expected_send_context_guard(
+                serialized
+            )
+            captured["parsed"] = parsed
+            current_observation = {
+                **observation,
+                "observation_id": "sidecar-final-frame-voice",
+            }
+            current_guard = production_sidecar.build_send_context_guard(
+                [current_observation],
+                layout_evidence={
+                    "ok": True,
+                    "layout_snapshot_id": "sidecar-final-layout",
+                    "message_viewport_bounds": [300, 100, 1000, 800],
+                },
+            )
+            validation = production_sidecar.validate_send_context_guard(
+                parsed,
+                current_guard,
+                current_observations=[current_observation],
+            )
+            captured["validation"] = validation
+            return {
+                "ok": validation.get("ok") is True,
+                "adapter": "win32_ocr",
+                "state": "send_context_validated",
+                "context_validation": validation,
+                "send_result": {
+                    "ok": validation.get("ok") is True,
+                    "confirmed": validation.get("ok") is True,
+                    "result": "sent" if validation.get("ok") else "failed",
+                },
+            }
+
+        with patch.object(
+            bridge,
+            "_call_omniauto",
+            side_effect=fake_call_omniauto,
+        ):
+            result = bridge.send_reply(
+                target="CJTEST01许聪",
+                rpa_session_key="wx:rpa:v1:a",
+                text="服务端批准文本",
+                task_id="task-send-guard-json-round-trip",
+                expected_context_guard=expected_guard,
+            )
+
+        self.assertTrue(result["ok"], result)
+        self.assertEqual(
+            json.loads(str(captured["serialized"])),
+            expected_guard,
+        )
+        self.assertEqual(captured["parsed"], expected_guard)
+        self.assertTrue(captured["validation"]["ok"])
+        self.assertEqual(
+            captured["validation"]["continuity_relation"],
+            "business_sequence_equal",
+        )
 
     def test_real_bridge_get_messages_can_search_by_remark_code(self):
         bridge = RpaBridge(sidecar_script=Path(__file__))

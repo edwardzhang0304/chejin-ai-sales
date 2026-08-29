@@ -10346,34 +10346,63 @@ class TaskRunnerTest(unittest.TestCase):
                 terminal_action_receipt=True,
             )
         ]
-        bridge = FakeBridge(
+        current_observation = {
+            "schema_version": 3,
+            "observation_id": "fresh-terminal-voice-no-id",
+            "row_kind": "voice_transcript",
+            "sender_role": "customer",
+            "sender_role_source": "parent_voice",
+            "message_type": "voice",
+            "voice_state": "transcribed",
+            "voice_duration": "4s",
+            "content_clean": (
+                "10万块钱的二手车\n有什么推荐的？"
+            ),
+            "source_adapter": "win32_ocr",
+            "source_message": {
+                "id": "ocr-frame-local-voice",
+                "source_adapter": "win32_ocr",
+                "type": "voice",
+                "sender_role": "customer",
+            },
+        }
+
+        class ProductionFinalGuardBridge(FakeBridge):
+            def send_reply(self, **kwargs):
+                expected = kwargs.get("expected_context_guard") or {}
+                current_guard = production_send_context_guard(
+                    [current_observation],
+                    layout_ok=True,
+                )
+                self.final_context_validation = (
+                    production_sidecar_module().validate_send_context_guard(
+                        expected,
+                        current_guard,
+                        current_observations=[current_observation],
+                    )
+                )
+                if self.final_context_validation.get("ok") is not True:
+                    return {
+                        "ok": False,
+                        "adapter": "win32_ocr",
+                        "state": "send_context_changed_before_input",
+                        "error_code": str(
+                            self.final_context_validation.get("error_code")
+                            or "C3_CONTEXT_CHANGED_BEFORE_SEND"
+                        ),
+                        "action_phase": "not_attempted",
+                        "physical_send_triggered": False,
+                        "context_validation": self.final_context_validation,
+                    }
+                return super().send_reply(**kwargs)
+
+        bridge = ProductionFinalGuardBridge(
             RpaResult(ok=True, result_code="unused", message="unused")
         )
         bridge.get_messages_payloads = [
             {
                 "frame_id": "frame-terminal-voice-fact-equivalence",
-                "observations": [
-                    {
-                        "schema_version": 3,
-                        "observation_id": "fresh-terminal-voice-no-id",
-                        "row_kind": "voice_transcript",
-                        "sender_role": "customer",
-                        "sender_role_source": "parent_voice",
-                        "message_type": "voice",
-                        "voice_state": "transcribed",
-                        "voice_duration": "4s",
-                        "content_clean": (
-                            "10万块钱的二手车\n有什么推荐的？"
-                        ),
-                        "source_adapter": "win32_ocr",
-                        "source_message": {
-                            "id": "ocr-frame-local-voice",
-                            "source_adapter": "win32_ocr",
-                            "type": "voice",
-                            "sender_role": "customer",
-                        },
-                    }
-                ],
+                "observations": [current_observation],
             }
         ]
         runner, _ = self.make_runner(api, bridge)
@@ -10401,6 +10430,11 @@ class TaskRunnerTest(unittest.TestCase):
 
         self.assertTrue(result["ok"], result)
         self.assertTrue(result["sent"])
+        self.assertTrue(bridge.final_context_validation["ok"])
+        self.assertEqual(
+            bridge.final_context_validation["continuity_relation"],
+            "business_sequence_equal",
+        )
         self.assertEqual(len(bridge.sent_replies), 1)
         self.assertEqual(bridge.voice_transcribes, [])
         self.assertEqual(api.message_payloads, [])
@@ -10411,6 +10445,95 @@ class TaskRunnerTest(unittest.TestCase):
         )
         self.assertNotIn("worker-message-171", serialized_guard)
         self.assertNotIn("worker_stable_id", serialized_guard)
+
+    def test_send_context_technical_failure_faults_worker_after_zero_send(self):
+        task = self.make_chat_reply_task(
+            task_id="task-send-context-technical-failure"
+        )
+        api = FakeApi(task)
+        self.authorize_chat_reply_target(api)
+        api.pre_send_checkpoint_facts = [
+            pre_send_fact(
+                "worker-message-technical-voice",
+                sender_role="customer",
+                message_type="voice",
+                content="10万左右的二手车有什么推荐吗？",
+                voice_duration="4秒",
+                terminal_action_receipt=True,
+            )
+        ]
+        observation = {
+            "schema_version": 3,
+            "observation_id": "fresh-technical-voice",
+            "row_kind": "voice_transcript",
+            "sender_role": "customer",
+            "sender_role_source": "parent_voice",
+            "message_type": "voice",
+            "voice_state": "transcribed",
+            "voice_duration": "4s",
+            "content_clean": "10万左右的二手车有什么推荐吗？",
+            "source_adapter": "win32_ocr",
+        }
+        bridge = FakeBridge(
+            RpaResult(ok=True, result_code="unused", message="unused"),
+            send_payload={
+                "ok": False,
+                "adapter": "win32_ocr",
+                "state": "send_context_guard_invalid",
+                "error_code": "C3_SEND_CONTEXT_GUARD_INVALID",
+                "action_phase": "not_attempted",
+                "physical_send_triggered": False,
+                "send_result": {
+                    "ok": False,
+                    "result": "failed",
+                    "action_phase": "not_attempted",
+                    "physical_send_triggered": False,
+                    "error_code": "C3_SEND_CONTEXT_GUARD_INVALID",
+                },
+            },
+        )
+        bridge.get_messages_payloads = [
+            {
+                "frame_id": "frame-technical-send-guard",
+                "observations": [observation],
+            }
+        ]
+        runner, _ = self.make_runner(api, bridge)
+        binding = Binding(
+            worker_id="worker-1",
+            worker_token="token",
+            client_instance_id="client-1",
+            run_status="running",
+        )
+        runner.binding = binding
+        self.assertTrue(
+            runner._start_inflight_flow(
+                binding,
+                flow_id="flow-technical-send-guard",
+                flow_kind="c2_read",
+            )
+        )
+
+        result = runner._wait_and_send_current_c3_batch(
+            binding=binding,
+            target=api.read_targets[0],
+            batch_id="batch-1",
+            cancel_check=lambda: False,
+        )
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(
+            result["error_code"],
+            "C3_SEND_CONTEXT_GUARD_INVALID",
+        )
+        self.assertIn("faulted", api.run_status_updates)
+        self.assertIn(
+            "sent_ack:failed:C3_SEND_CONTEXT_GUARD_INVALID",
+            api.events,
+        )
+        self.assertFalse(
+            bridge.send_payload["physical_send_triggered"]
+        )
 
     def test_pre_send_checkpoint_pure_text_initial_read_uses_production_flow(self):
         task = self.make_chat_reply_task(task_id="task-checkpoint-initial-text")

@@ -5,6 +5,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import subprocess
 import sys
 from types import SimpleNamespace
 import unittest
@@ -21,7 +22,7 @@ if str(OMNIAUTO_ROOT) not in sys.path:
 
 from apps.wechat_ai_customer_service.adapters import wechat_win32_ocr_sidecar as sidecar
 from apps.wechat_ai_customer_service.adapters import message_viewport_projection
-from chejin_worker_client.message_viewport_projection import (
+from apps.wechat_ai_customer_service.adapters.business_viewport_continuity import (
     boundary_tokens_for_observations,
 )
 
@@ -76,6 +77,25 @@ def incident_post_send_enhanced_ocr_items() -> list[dict[str, object]]:
 
 
 class WechatSendSafetyTest(unittest.TestCase):
+    def test_independent_omniauto_send_guard_has_no_worker_dependency(self):
+        script = (
+            OMNIAUTO_ROOT
+            / "apps"
+            / "wechat_ai_customer_service"
+            / "tests"
+            / "run_send_context_shared_continuity_checks.py"
+        )
+        completed = subprocess.run(
+            [sys.executable, "-I", str(script)],
+            cwd=OMNIAUTO_ROOT,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertIn("2 checks passed", completed.stdout)
+
     def _worker_send_guard(
         self,
         guard: dict,
@@ -145,6 +165,57 @@ class WechatSendSafetyTest(unittest.TestCase):
         self.assertIs(
             sidecar.normalized_business_message_sequence,
             message_viewport_projection.normalized_business_message_sequence,
+        )
+
+    def test_nonempty_send_guard_rejects_missing_worker_comparison_binding(self):
+        observation = {
+            "schema_version": 3,
+            "observation_id": "fresh-terminal-voice",
+            "row_kind": "voice_transcript",
+            "sender_role": "customer",
+            "message_type": "voice",
+            "voice_state": "transcribed",
+            "voice_duration": "4s",
+            "content_clean": "10万左右的二手车有什么推荐的？",
+        }
+        expected = sidecar.build_send_context_guard(
+            [observation],
+            layout_evidence={
+                "ok": True,
+                "layout_snapshot_id": "expected-layout",
+                "message_viewport_bounds": [0, 100, 1000, 800],
+            },
+        )
+        expected["worker_continuity_contract"] = {
+            "schema_version": 1,
+            "comparator": "compare_business_viewport_continuity",
+            "old_boundary_tokens": {},
+            "old_top_boundary_complete": False,
+            "binding_error": "checkpoint_comparison_missing_or_invalid",
+        }
+        current = sidecar.build_send_context_guard(
+            [observation],
+            layout_evidence={
+                "ok": True,
+                "layout_snapshot_id": "current-layout",
+                "message_viewport_bounds": [0, 100, 1000, 800],
+            },
+        )
+
+        result = sidecar.validate_send_context_guard(
+            expected,
+            current,
+            current_observations=[observation],
+        )
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(
+            result["error_code"],
+            "C3_SEND_CONTEXT_GUARD_INVALID",
+        )
+        self.assertEqual(
+            result["reason"],
+            "worker_continuity_boundary_evidence_invalid",
         )
 
     def _semantic_layout_for_image(self, image: Image.Image) -> dict:
