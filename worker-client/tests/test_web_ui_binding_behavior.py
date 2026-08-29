@@ -450,6 +450,49 @@ class WebUiBindingBehaviorTest(unittest.TestCase):
         self.assertEqual(payload["model"]["workerId"], "worker-existing")
         self.assertNotEqual(payload["screen"], "bind")
 
+    def test_faulted_state_wins_over_offline_and_sync_failure(self):
+        with _headless_web_ui_module() as module, patch.object(
+            module, "_log_rows", return_value=[]
+        ), patch.object(module, "latest_incident", return_value=None), patch.object(
+            module, "lock_summary", return_value={}
+        ):
+            binding = Binding(
+                worker_id="worker-faulted",
+                worker_token="token-faulted",
+                client_instance_id="client-faulted",
+                run_status="faulted",
+            )
+            window = self._window(module, binding)
+            window.runner.run_status_sync_error = "backend unavailable"
+            window.on_profile(
+                WorkerProfile(
+                    id=binding.worker_id,
+                    worker_name="故障状态测试 Worker",
+                    run_status="faulted",
+                )
+            )
+            window.on_status("offline")
+
+            payload = json.loads(window.bridge.initialState())
+
+        self.assertEqual(payload["screen"], "automation-unavailable")
+        self.assertEqual(
+            payload["model"]["status"]["receiveState"],
+            "客户端故障",
+        )
+        self.assertEqual(
+            payload["model"]["task"]["statusText"],
+            "客户端故障",
+        )
+        self.assertIn(
+            "后端故障状态未同步",
+            payload["model"]["task"]["metaText"],
+        )
+        self.assertNotIn(
+            "暂停接单",
+            payload["model"]["task"]["statusText"],
+        )
+
     def test_runtime_control_read_failure_does_not_project_client_offline(self):
         with _headless_web_ui_module() as module, patch.object(
             module, "_log_rows", return_value=[]

@@ -134,6 +134,7 @@ from .storage import (
     prepare_c2_outbox_payload,
     prune_terminal_outboxes,
     refresh_c2_outbox_payload,
+    reconcile_waiting_c2_ledger_from_confirmed_action,
     replace_c2_outbox_with_partitions,
     save_binding,
     save_c2_ledger_terminal,
@@ -4750,6 +4751,25 @@ class TaskRunner:
                 return media_status
 
         if self._has_physical_action_journal_for_flow(flow_id):
+            remaining_journals = self._physical_action_journals_for_flow(
+                flow_id
+            )
+            if remaining_journals and all(
+                self._action_journal_can_be_removed(payload)
+                for _path, payload in remaining_journals
+            ):
+                append_log(
+                    "WARN",
+                    "restart_action_journal_archive_retrying",
+                    "旧媒体事实已经确认，仅本地 Journal 删除暂未完成；保持心跳并在下一轮重试。",
+                    error_code="C2_ACTION_JOURNAL_ARCHIVE_RETRYABLE",
+                    metadata={
+                        "flow_id": flow_id,
+                        "conversation_id": journal_conversation_id,
+                        "journal_count": len(remaining_journals),
+                    },
+                )
+                return "retry"
             append_log(
                 "INFO",
                 "restart_action_journal_fact_settlement_pending",
@@ -4937,7 +4957,7 @@ class TaskRunner:
             )
             self._restart_flow_reconciliation_incident = signature
         self.on_error(message)
-        if binding.run_status != "paused":
+        if binding.run_status == "running":
             self.set_run_status("paused")
 
     def _restart_flow_conversation_ids(
@@ -5046,6 +5066,39 @@ class TaskRunner:
             receipt=receipt,
             journal_entries=journal_entries,
         )
+        permanent_outbox_error = (
+            c2_outbox_capability_error_for_read_run_id(flow_id)
+        )
+        if (
+            str(receipt.get("terminal_kind") or "").strip()
+            == "technical_failed"
+            and permanent_outbox_error
+        ):
+            # The immutable malformed Outbox remains quarantined for
+            # diagnosis.  With no authoritative backend Flow left, however,
+            # its already-persisted technical failure must be a finite local
+            # terminal rather than a permanent fake ``draining`` state.
+            finish_runtime_flow(flow_id)
+            clear_c2_state(self._inflight_finish_receipt_key(flow_id))
+            if self.api.inflight_flow_id == flow_id:
+                self.api.inflight_flow_id = None
+            self._backend_inflight_flow_state = {}
+            self._restart_recovery_flow_id = None
+            self._restart_backend_probe_pending = False
+            self._restart_flow_reconciliation_incident = None
+            append_log(
+                "ERROR",
+                "restart_orphaned_outbox_technical_failure_settled",
+                "旧版不兼容 Outbox 已隔离；已结束无后端所有者的旧 Flow，保留原始事实并停止接单。",
+                error_code=permanent_outbox_error,
+                metadata={
+                    "flow_id": flow_id,
+                    "conversation_ids": conversation_ids,
+                    "outbox_preserved": True,
+                    "http_retried": False,
+                },
+            )
+            return
         legacy_status = self._settle_legacy_media_recovery(
             binding,
             flow_id=flow_id,
@@ -5223,6 +5276,21 @@ class TaskRunner:
         backend_status = str(
             self._backend_inflight_flow_state.get("status") or ""
         ).strip()
+        persisted_fault = (
+            load_c2_state(
+                self._restart_recovery_fault_key(local_flow_id)
+            )
+            if local_flow_id
+            else {}
+        )
+        if persisted_fault:
+            self._settle_persisted_restart_recovery_fault(
+                binding,
+                flow_id=local_flow_id,
+                backend_flow_id=backend_flow_id,
+                fault=persisted_fault,
+            )
+            return False
         if not local_flow_id:
             if self._restart_recovery_flow_id:
                 self._pause_for_restart_flow_reconciliation(
@@ -5312,6 +5380,155 @@ class TaskRunner:
         self._restart_flow_reconciliation_incident = None
         self._finish_restart_recovery_flow_if_settled(binding)
         return True
+
+    @staticmethod
+    def _restart_recovery_fault_key(flow_id: str) -> str:
+        return f"restart_recovery_fault_v1:{str(flow_id or '').strip()}"
+
+    def _settle_persisted_restart_recovery_fault(
+        self,
+        binding: Binding,
+        *,
+        flow_id: str,
+        backend_flow_id: str,
+        fault: dict[str, Any],
+    ) -> None:
+        """Keep heartbeats alive while a permanent restart fault is terminal."""
+
+        if binding.run_status != "faulted":
+            self.set_run_status("faulted")
+        error_code = str(
+            fault.get("error_code") or "RUNTIME_INFLIGHT_RECOVERY_FAILED"
+        ).strip()
+        conversation_id = str(
+            fault.get("conversation_id") or ""
+        ).strip()
+        if not backend_flow_id:
+            finish_runtime_flow(flow_id)
+            clear_c2_state(self._inflight_finish_receipt_key(flow_id))
+            self._restart_recovery_flow_id = None
+            self._restart_backend_probe_pending = False
+            self.api.inflight_flow_id = None
+            return
+        if backend_flow_id != flow_id:
+            return
+        try:
+            self._finish_inflight_flow(
+                binding,
+                flow_id,
+                terminal_kind="technical_failed",
+                conversation_id=conversation_id or None,
+                error_code=error_code,
+            )
+        except Exception as exc:
+            append_log(
+                "WARN",
+                "restart_recovery_fault_finish_retrying",
+                "重启恢复已进入持久化技术故障，后端 Flow 终态暂未确认；心跳继续并稍后重试。",
+                error_code="RUNTIME_INFLIGHT_FINISH_FAILED",
+                metadata={
+                    "flow_id": flow_id,
+                    "source_error_code": error_code,
+                    "error_type": type(exc).__name__,
+                },
+            )
+
+    def _handle_restart_recovery_exception(
+        self,
+        binding: Binding,
+        exc: Exception,
+    ) -> None:
+        """Convert a restart reconciler exception into a finite safe state."""
+
+        control = load_runtime_control()
+        flow_id = str(
+            control.get("inflight_flow_id")
+            or self._restart_recovery_flow_id
+            or ""
+        ).strip()
+        raw_error = str(exc or "").strip()
+        candidate = raw_error.split(":", 1)[0].strip()
+        legacy_recovery = (
+            load_legacy_media_recovery(flow_id) if flow_id else {}
+        )
+        if (
+            str(legacy_recovery.get("status") or "").strip()
+            == "backend_confirmed"
+        ):
+            # The remote fact has already reached its idempotent terminal.
+            # A local archive/cleanup failure is therefore safe to retry and
+            # must neither report the fact twice nor permanently fault the
+            # Worker.  Keeping the old Flow pointer blocks new work until the
+            # next heartbeat-driven reconciliation finishes the archive.
+            append_log(
+                "WARN",
+                "restart_recovery_local_archive_retrying",
+                "旧媒体事实已由后端确认，但本地归档暂未完成；保留旧 Flow 并在下一轮重试。",
+                error_code="LEGACY_MEDIA_LOCAL_ARCHIVE_RETRYABLE",
+                metadata={
+                    "flow_id": flow_id,
+                    "error_type": type(exc).__name__,
+                    "error_detail": raw_error,
+                    "backend_fact_already_confirmed": True,
+                    "heartbeat_thread_terminated": False,
+                },
+            )
+            return
+        error_code = (
+            candidate
+            if candidate in {
+                "C2_LEDGER_TERMINAL_CONFLICT",
+                "ITEM_OUTCOME_TERMINAL_CONFLICT",
+            }
+            else "RUNTIME_INFLIGHT_RECOVERY_FAILED"
+        )
+        conversation_ids = (
+            self._restart_flow_conversation_ids(flow_id)
+            if flow_id
+            else []
+        )
+        conversation_id = (
+            conversation_ids[0] if len(conversation_ids) == 1 else ""
+        )
+        fault = {
+            "schema_version": 1,
+            "flow_id": flow_id,
+            "conversation_id": conversation_id or None,
+            "error_code": error_code,
+            "error_type": type(exc).__name__,
+            "error_detail": raw_error,
+            "technical_failed": True,
+            "wechat_action_repeated": False,
+            "created_at": self._utc_now_iso(),
+        }
+        if flow_id:
+            save_c2_state(
+                self._restart_recovery_fault_key(flow_id),
+                fault,
+            )
+            save_c2_state(
+                self._inflight_finish_receipt_key(flow_id),
+                {
+                    "terminal_kind": "technical_failed",
+                    "conversation_id": conversation_id or None,
+                    "error_code": error_code,
+                },
+            )
+        self.set_run_status("faulted")
+        append_log(
+            "ERROR",
+            "restart_recovery_technical_failed",
+            "旧流程恢复出现不可自动裁决的本地终态冲突；已停止接单但保留心跳，且未重复操作微信。",
+            error_code=error_code,
+            metadata={
+                **fault,
+                "backend_flow_id": str(
+                    self._backend_inflight_flow_state.get("flow_id") or ""
+                ).strip(),
+                "heartbeat_thread_terminated": False,
+            },
+            force_incident=True,
+        )
 
     def _finish_restart_recovery_flow_if_settled(
         self,
@@ -5505,10 +5722,15 @@ class TaskRunner:
                 )
         except Exception as exc:
             self.run_status_sync_error = str(exc)
+            pending_label = (
+                "客户端故障状态"
+                if pending == "faulted"
+                else "暂停状态"
+            )
             append_log(
                 "WARN",
                 "run_status_sync_retry_failed",
-                "本地已停止接收新工作，但暂停状态尚未同步到后端；当前在途流程仍按原凭证安全收口。",
+                f"本地已停止接收新工作，但{pending_label}尚未同步到后端；当前在途流程仍按原凭证安全收口。",
                 error_code="RUN_STATUS_SYNC_FAILED",
                 metadata={"requested_run_status": pending, "error": str(exc)},
             )
@@ -5570,16 +5792,35 @@ class TaskRunner:
             if run_status in {"paused", "faulted"}:
                 self._pending_run_status_sync = run_status
                 self.run_status_sync_error = str(exc)
+                is_faulted = run_status == "faulted"
                 self.on_error(
-                    "本地已停止接收新工作；暂停状态尚未同步到后端，"
-                    "当前客户仍会安全处理完，后端状态将自动重试同步。"
+                    (
+                        "本地已进入客户端故障状态；后端故障状态尚未同步，"
+                        "客户端保持故障并自动重试同步。"
+                    )
+                    if is_faulted
+                    else (
+                        "本地已停止接收新工作；暂停状态尚未同步到后端，"
+                        "当前客户仍会安全处理完，后端状态将自动重试同步。"
+                    )
                 )
                 append_log(
                     "WARN",
-                    "run_status_pause_sync_pending",
-                    "本地新工作门禁已生效，后端暂停同步失败并进入自动重试。",
+                    (
+                        "run_status_fault_sync_pending"
+                        if is_faulted
+                        else "run_status_pause_sync_pending"
+                    ),
+                    (
+                        "本地客户端故障门禁已生效，后端故障状态同步失败并进入自动重试。"
+                        if is_faulted
+                        else "本地新工作门禁已生效，后端暂停同步失败并进入自动重试。"
+                    ),
                     error_code="RUN_STATUS_SYNC_FAILED",
-                    metadata={"error": str(exc)},
+                    metadata={
+                        "requested_run_status": run_status,
+                        "error": str(exc),
+                    },
                 )
             else:
                 self._apply_local_run_status("paused")
@@ -5689,7 +5930,24 @@ class TaskRunner:
                 current_step=self.current_step,
                 local_lock_summary=local_lock,
             )
-            if self._pending_run_status_sync in {"paused", "faulted"}:
+            if binding.run_status == "faulted":
+                # A locally persisted technical fault is authoritative until
+                # an explicit operator transition succeeds.  Heartbeat may
+                # carry a stale remote running/paused value while the status
+                # endpoint or old-Flow finalization endpoint is unavailable;
+                # that stale projection must never downgrade the local fault.
+                if profile.run_status == "faulted":
+                    if self._pending_run_status_sync == "faulted":
+                        self._pending_run_status_sync = None
+                        self.run_status_sync_error = None
+                else:
+                    profile.run_status = "faulted"
+                    self._pending_run_status_sync = "faulted"
+                    if not self.run_status_sync_error:
+                        self.run_status_sync_error = (
+                            "后端尚未确认客户端故障状态"
+                        )
+            elif self._pending_run_status_sync in {"paused", "faulted"}:
                 pending_run_status = self._pending_run_status_sync
                 if profile.run_status == pending_run_status:
                     self._pending_run_status_sync = None
@@ -5736,7 +5994,18 @@ class TaskRunner:
         # itself part of that barrier, so checking the barrier first would make
         # the recovery entry unreachable.  This path is evidence-only and may
         # finish the old flow; it never performs a WeChat UI action.
-        if not self._reconcile_restart_inflight_flow(binding):
+        try:
+            restart_flow_ready = self._reconcile_restart_inflight_flow(
+                binding
+            )
+        except Exception as exc:
+            # Restart recovery runs after the heartbeat.  A corrupt or
+            # contradictory durable record must stop new work, but it must
+            # never terminate the background loop and therefore silently
+            # stop all future heartbeats.
+            self._handle_restart_recovery_exception(binding, exc)
+            return
+        if not restart_flow_ready:
             return
 
         # All new WeChat work shares one durable transaction barrier. Do not
@@ -9717,6 +9986,16 @@ class TaskRunner:
             return "settled"
         if has_pending_c2_outbox_for_read_run_id(flow_id):
             return "retry"
+        if (
+            self._has_physical_action_journal_for_flow(flow_id)
+            and not has_c2_ledger_for_origin_read_run_id(
+                flow_id,
+                pending_only=True,
+            )
+        ):
+            # The backend already confirmed every fact; only a retryable
+            # Windows file lock can still hold the local Journal.
+            return "retry"
         self._pause_for_restart_flow_reconciliation(
             binding,
             error_code="C2_MEDIA_FACT_RECOVERY_PENDING",
@@ -10015,13 +10294,21 @@ class TaskRunner:
             )
             return False
         removed_journal_count = 0
+        deferred_journal_count = 0
         for path, journal_payload in list_action_journals(
             conversation_id=conversation_id,
             action_kinds=tuple(sorted(entry_action_kinds)),
         ):
             if self._action_journal_can_be_removed(journal_payload):
-                remove_action_journal(path)
-                removed_journal_count += 1
+                if self._remove_confirmed_action_journal_or_defer(
+                    path,
+                    payload=journal_payload,
+                ):
+                    removed_journal_count += 1
+                else:
+                    deferred_journal_count += 1
+        if deferred_journal_count:
+            return False
         append_log(
             "WARN",
             "c2_media_fact_recovery_reported",
@@ -19495,7 +19782,11 @@ class TaskRunner:
             recovered_entries,
         )
         if recovered_outcomes:
-            self._persist_c2_flow_outcomes(target, recovered_outcomes)
+            self._persist_c2_flow_outcomes(
+                target,
+                recovered_outcomes,
+                confirmed_physical_journal_recovery=True,
+            )
             append_log(
                 "WARN",
                 "c2_physical_action_journal_recovered",
@@ -19508,8 +19799,43 @@ class TaskRunner:
             )
         for path, payload in journal_entries:
             if self._action_journal_can_be_removed(payload):
-                remove_action_journal(path)
+                self._remove_confirmed_action_journal_or_defer(
+                    path,
+                    payload=payload,
+                )
         return unresolved
+
+    @staticmethod
+    def _remove_confirmed_action_journal_or_defer(
+        path: Path,
+        *,
+        payload: dict[str, Any],
+    ) -> bool:
+        """Delete confirmed local evidence, retrying Windows file locks."""
+
+        try:
+            remove_action_journal(path)
+            return True
+        except OSError as exc:
+            append_log(
+                "WARN",
+                "confirmed_action_journal_archive_retrying",
+                "媒体动作事实已经确认，但本地 Journal 暂时无法删除；保留旧 Flow 并在下一轮重试。",
+                error_code="C2_ACTION_JOURNAL_ARCHIVE_RETRYABLE",
+                metadata={
+                    "journal_path": str(path),
+                    "conversation_id": str(
+                        payload.get("conversation_id") or ""
+                    ).strip(),
+                    "origin_read_run_id": str(
+                        payload.get("origin_read_run_id") or ""
+                    ).strip(),
+                    "error_type": type(exc).__name__,
+                    "error_detail": str(exc),
+                    "action_fact_confirmed": True,
+                },
+            )
+            return False
 
     @staticmethod
     def _action_journal_can_be_removed(payload: dict[str, Any]) -> bool:
@@ -20090,6 +20416,7 @@ class TaskRunner:
         outcomes: list[dict[str, Any]],
         *,
         origin_read_run_id: str | None = None,
+        confirmed_physical_journal_recovery: bool = False,
     ) -> None:
         for outcome in outcomes:
             source_key = str(outcome.get("source_message_key") or "").strip()
@@ -20117,18 +20444,107 @@ class TaskRunner:
                 target.conversation_id,
                 source_key,
             )
-            if (
-                existing
-                and str(existing.get("terminal_state") or "") != result
-            ):
-                raise ValueError(
-                    f"C2_LEDGER_TERMINAL_CONFLICT:{source_key}"
-                )
             existing_result = (
                 dict(existing.get("result") or {})
                 if isinstance((existing or {}).get("result"), dict)
                 else {}
             )
+            terminal_mismatch = bool(
+                existing
+                and str(existing.get("terminal_state") or "") != result
+            )
+            if (
+                confirmed_physical_journal_recovery
+                and terminal_mismatch
+                and isinstance(outcome.get("terminal_payload"), dict)
+                and not isinstance(
+                    outcome["terminal_payload"].get(
+                        "replayable_observation"
+                    ),
+                    dict,
+                )
+            ):
+                replayable = (
+                    TaskRunner._confirmed_action_replayable_from_failed_ledger(
+                        conversation_id=target.conversation_id,
+                        source_key=source_key,
+                        message_type=message_type,
+                        outcome=outcome,
+                        existing_result=existing_result,
+                    )
+                )
+                if replayable is not None:
+                    recovered_terminal_payload = {
+                        **dict(outcome["terminal_payload"]),
+                        "replayable_observation": replayable,
+                    }
+                    outcome = {
+                        **dict(outcome),
+                        "terminal_payload": recovered_terminal_payload,
+                    }
+            if terminal_mismatch:
+                authorization_revision = str(
+                    existing_result.get("authorization_revision") or ""
+                ).strip()
+                existing_success_envelope = (
+                    {"authorization_revision": authorization_revision}
+                    if authorization_revision
+                    else {}
+                )
+            else:
+                existing_success_envelope = existing_result
+            completed_result = {
+                **existing_success_envelope,
+                **(
+                    dict(outcome.get("terminal_payload") or {})
+                    if isinstance(outcome.get("terminal_payload"), dict)
+                    else {}
+                ),
+                "state": result,
+                "action_outcome": outcome,
+            }
+            if (
+                existing
+                and str(existing.get("terminal_state") or "") != result
+            ):
+                if (
+                    confirmed_physical_journal_recovery
+                    and str(existing.get("ingest_state") or "")
+                    == "waiting"
+                    and TaskRunner._confirmed_action_ledger_recovery_is_safe(
+                        source_key=source_key,
+                        message_type=message_type,
+                        outcome=outcome,
+                        completed_result=completed_result,
+                    )
+                    and reconcile_waiting_c2_ledger_from_confirmed_action(
+                        conversation_id=target.conversation_id,
+                        source_message_key=source_key,
+                        origin_read_run_id=outcome_origin_read_run_id,
+                        message_type=message_type,
+                        completed_result=completed_result,
+                    )
+                ):
+                    append_log(
+                        "WARN",
+                        "c2_ledger_terminal_reconciled_from_confirmed_action",
+                        "已确认的物理动作日志与未入库失败账本冲突；按同一动作的完整回执原子恢复成功事实。",
+                        metadata={
+                            "conversation_id": target.conversation_id,
+                            "source_message_key": source_key,
+                            "origin_read_run_id": outcome_origin_read_run_id,
+                            "message_type": message_type,
+                            "previous_terminal_state": str(
+                                existing.get("terminal_state") or ""
+                            ),
+                            "recovered_terminal_state": result,
+                            "backend_fact_previously_confirmed": False,
+                        },
+                    )
+                    continue
+                raise ValueError(
+                    f"C2_LEDGER_TERMINAL_CONFLICT:{source_key}"
+                )
             save_c2_ledger_terminal(
                 conversation_id=target.conversation_id,
                 source_message_key=source_key,
@@ -20145,17 +20561,257 @@ class TaskRunner:
                 ingest_state=str(
                     (existing or {}).get("ingest_state") or "waiting"
                 ),
-                result={
-                    **existing_result,
-                    **(
-                        dict(outcome.get("terminal_payload") or {})
-                        if isinstance(outcome.get("terminal_payload"), dict)
-                        else {}
-                    ),
-                    "state": result,
-                    "action_outcome": outcome,
-                },
+                result=completed_result,
             )
+
+    @staticmethod
+    def _confirmed_action_replayable_from_failed_ledger(
+        *,
+        conversation_id: str,
+        source_key: str,
+        message_type: str,
+        outcome: dict[str, Any],
+        existing_result: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        """Join one committed Journal receipt to its exact Ledger fact.
+
+        Some 0.9.45 Journals persisted the unique action receipt and formal
+        message identity, while the transcript itself was already stored in
+        the waiting Ledger.  Neither record alone is enough.  This gate only
+        accepts their exact action/stable/source/content intersection; it
+        never rebuilds evidence from screen position or performs UI work.
+        """
+
+        replayable = (
+            dict(existing_result.get("replayable_observation") or {})
+            if isinstance(
+                existing_result.get("replayable_observation"), dict
+            )
+            else {}
+        )
+        terminal_payload = (
+            outcome.get("terminal_payload")
+            if isinstance(outcome.get("terminal_payload"), dict)
+            else {}
+        )
+        journal_mapping = (
+            terminal_payload.get("confirmed_action_mapping")
+            if isinstance(
+                terminal_payload.get("confirmed_action_mapping"), dict
+            )
+            else {}
+        )
+        if not replayable or not journal_mapping:
+            return None
+        try:
+            committed = require_committed_message(
+                conversation_id=conversation_id,
+                observation=replayable,
+            )
+        except ValueError:
+            return None
+        clean_message_type = str(message_type or "").strip().lower()
+        if (
+            committed.source_message_key != str(source_key or "").strip()
+            or committed.message_type != clean_message_type
+            or str(replayable.get("item_state") or "").strip()
+            != "completed"
+        ):
+            return None
+        summary_key = (
+            "_worker_voice_action_summary"
+            if clean_message_type == "voice"
+            else "_worker_image_action_summary"
+            if clean_message_type == "image"
+            else ""
+        )
+        summary = (
+            replayable.get(summary_key)
+            if summary_key
+            and isinstance(replayable.get(summary_key), dict)
+            else {}
+        )
+        ledger_mapping = (
+            summary.get("confirmed_action_mapping")
+            if isinstance(
+                summary.get("confirmed_action_mapping"), dict
+            )
+            else {}
+        )
+        if not ledger_mapping:
+            return None
+        exact_mapping_fields = (
+            "canonical_action_id",
+            "reserved_worker_stable_id",
+            "post_observation_id",
+        )
+        if any(
+            not str(journal_mapping.get(field) or "").strip()
+            or str(journal_mapping.get(field) or "").strip()
+            != str(ledger_mapping.get(field) or "").strip()
+            for field in exact_mapping_fields
+        ):
+            return None
+        if (
+            journal_mapping.get("binding_confirmed") is not True
+            or ledger_mapping.get("binding_confirmed") is not True
+            or str(
+                journal_mapping.get("reserved_worker_stable_id") or ""
+            ).strip()
+            != committed.worker_stable_id
+            or str(
+                journal_mapping.get("post_observation_id") or ""
+            ).strip()
+            != str(replayable.get("observation_id") or "").strip()
+        ):
+            return None
+        if clean_message_type == "voice":
+            content = str(replayable.get("content_clean") or "").strip()
+            journal_signature = str(
+                journal_mapping.get(
+                    "stable_business_content_signature"
+                )
+                or ""
+            ).strip()
+            ledger_signature = str(
+                ledger_mapping.get(
+                    "stable_business_content_signature"
+                )
+                or ""
+            ).strip()
+            expected_signature = stable_business_content_signature(
+                replayable
+            )
+            if not (
+                content
+                and str(replayable.get("voice_state") or "")
+                == "transcribed"
+                and int(
+                    journal_mapping.get("physical_action_count") or 0
+                )
+                == 1
+                and int(
+                    journal_mapping.get("result_candidate_count") or 0
+                )
+                == 1
+                and int(
+                    ledger_mapping.get("physical_action_count") or 0
+                )
+                == 1
+                and int(
+                    ledger_mapping.get("result_candidate_count") or 0
+                )
+                == 1
+                and journal_signature
+                and journal_signature == ledger_signature
+                and journal_signature == expected_signature
+            ):
+                return None
+        elif clean_message_type == "image":
+            journal_sha = str(
+                terminal_payload.get("image_sha256") or ""
+            ).strip().lower()
+            ledger_sha = str(
+                ledger_mapping.get("image_sha256")
+                or summary.get("image_sha256")
+                or ""
+            ).strip().lower()
+            if (
+                re.fullmatch(r"[0-9a-f]{64}", journal_sha) is None
+                or ledger_sha != journal_sha
+            ):
+                return None
+        else:
+            return None
+        return replayable
+
+    @staticmethod
+    def _confirmed_action_ledger_recovery_is_safe(
+        *,
+        source_key: str,
+        message_type: str,
+        outcome: dict[str, Any],
+        completed_result: dict[str, Any],
+    ) -> bool:
+        """Accept only a complete, uniquely bound physical action receipt."""
+
+        action_outcome = (
+            completed_result.get("action_outcome")
+            if isinstance(completed_result.get("action_outcome"), dict)
+            else outcome
+        )
+        evidence = (
+            action_outcome.get("evidence")
+            if isinstance(action_outcome.get("evidence"), dict)
+            else {}
+        )
+        terminal_payload = (
+            outcome.get("terminal_payload")
+            if isinstance(outcome.get("terminal_payload"), dict)
+            else {}
+        )
+        mapping = (
+            terminal_payload.get("confirmed_action_mapping")
+            if isinstance(
+                terminal_payload.get("confirmed_action_mapping"), dict
+            )
+            else {}
+        )
+        replayable = (
+            terminal_payload.get("replayable_observation")
+            if isinstance(
+                terminal_payload.get("replayable_observation"), dict
+            )
+            else {}
+        )
+        replayable_source = (
+            replayable.get("source_message")
+            if isinstance(replayable.get("source_message"), dict)
+            else {}
+        )
+        reserved_id = str(
+            mapping.get("reserved_worker_stable_id") or ""
+        ).strip()
+        common_valid = bool(
+            str(action_outcome.get("result") or "").strip() == "completed"
+            and str(action_outcome.get("action_phase") or "").strip()
+            == "confirmed"
+            and action_outcome.get("business_result_confirmed") is True
+            and action_outcome.get("evidence_sufficient") is True
+            and action_outcome.get("contract_valid") is True
+            and evidence.get("recovered_from_action_journal") is True
+            and str(terminal_payload.get("state") or "").strip()
+            == "completed"
+            and mapping.get("binding_confirmed") is True
+            and str(mapping.get("canonical_action_id") or "").strip()
+            and reserved_id
+            and replayable
+            and str(replayable.get("_worker_stable_id") or "").strip()
+            == reserved_id
+            and str(
+                replayable_source.get("source_message_key") or ""
+            ).strip()
+            == str(source_key or "").strip()
+            and str(replayable.get("message_type") or "").strip().lower()
+            == str(message_type or "").strip().lower()
+        )
+        if not common_valid:
+            return False
+        if message_type == "voice":
+            return bool(
+                int(mapping.get("physical_action_count") or 0) == 1
+                and int(mapping.get("result_candidate_count") or 0) == 1
+                and str(replayable.get("content_clean") or "").strip()
+            )
+        if message_type == "image":
+            image_sha256 = str(
+                terminal_payload.get("image_sha256") or ""
+            ).strip().lower()
+            return bool(
+                re.fullmatch(r"[0-9a-f]{64}", image_sha256)
+                and terminal_payload.get("clipboard_image_valid") is not False
+            )
+        return False
 
     def _read_one_wechat_target_impl(
         self,

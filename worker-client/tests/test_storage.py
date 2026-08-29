@@ -59,6 +59,132 @@ class StorageTest(unittest.TestCase):
         self.assertEqual(snapshot["binding"]["worker_id"], "worker-1")
         self.assertEqual(len(snapshot["recent_logs"]), 2)
 
+    def test_confirmed_action_repairs_only_waiting_failed_c2_ledger(self):
+        conversation_id = "conversation-reconcile-waiting"
+        source_key = "source:reconcile-waiting"
+        flow_id = "read-reconcile-waiting"
+        self.storage.save_c2_ledger_terminal(
+            conversation_id=conversation_id,
+            source_message_key=source_key,
+            origin_read_run_id=flow_id,
+            dedupe_key="dedupe-reconcile-waiting",
+            message_type="voice",
+            terminal_state="failed",
+            ingest_state="waiting",
+            result={
+                "state": "failed",
+                "error_code": "C2_VOICE_TRANSCRIBE_FAILED",
+            },
+        )
+
+        repaired = (
+            self.storage.reconcile_waiting_c2_ledger_from_confirmed_action(
+                conversation_id=conversation_id,
+                source_message_key=source_key,
+                origin_read_run_id=flow_id,
+                message_type="voice",
+                completed_result={
+                    "state": "completed",
+                    "content_clean": "已唯一确认的语音正文",
+                },
+            )
+        )
+
+        self.assertTrue(repaired)
+        ledger = self.storage.load_c2_ledger_entry(
+            conversation_id,
+            source_key,
+        )
+        self.assertEqual(ledger["terminal_state"], "completed")
+        self.assertEqual(ledger["ingest_state"], "waiting")
+        self.assertEqual(
+            ledger["result"]["terminal_reconciliation"][
+                "previous_result"
+            ]["error_code"],
+            "C2_VOICE_TRANSCRIBE_FAILED",
+        )
+
+    def test_confirmed_action_never_overwrites_backend_confirmed_failure(self):
+        conversation_id = "conversation-reconcile-confirmed"
+        source_key = "source:reconcile-confirmed"
+        flow_id = "read-reconcile-confirmed"
+        original_result = {
+            "state": "failed",
+            "error_code": "C2_VOICE_TRANSCRIBE_FAILED",
+        }
+        self.storage.save_c2_ledger_terminal(
+            conversation_id=conversation_id,
+            source_message_key=source_key,
+            origin_read_run_id=flow_id,
+            dedupe_key="dedupe-reconcile-confirmed",
+            message_type="voice",
+            terminal_state="failed",
+            ingest_state="confirmed",
+            result=original_result,
+        )
+
+        with self.assertRaisesRegex(
+            ValueError,
+            "C2_LEDGER_RECONCILIATION_NOT_ALLOWED",
+        ):
+            self.storage.reconcile_waiting_c2_ledger_from_confirmed_action(
+                conversation_id=conversation_id,
+                source_message_key=source_key,
+                origin_read_run_id=flow_id,
+                message_type="voice",
+                completed_result={
+                    "state": "completed",
+                    "content_clean": "不得覆盖的正文",
+                },
+            )
+
+        ledger = self.storage.load_c2_ledger_entry(
+            conversation_id,
+            source_key,
+        )
+        self.assertEqual(ledger["terminal_state"], "failed")
+        self.assertEqual(ledger["ingest_state"], "confirmed")
+        self.assertEqual(ledger["result"], original_result)
+
+    def test_confirmed_action_repair_rejects_non_completed_result(self):
+        conversation_id = "conversation-reconcile-invalid-result"
+        source_key = "source:reconcile-invalid-result"
+        flow_id = "read-reconcile-invalid-result"
+        original_result = {
+            "state": "failed",
+            "error_code": "C2_IMAGE_PROCESS_FAILED",
+        }
+        self.storage.save_c2_ledger_terminal(
+            conversation_id=conversation_id,
+            source_message_key=source_key,
+            origin_read_run_id=flow_id,
+            dedupe_key="dedupe-reconcile-invalid-result",
+            message_type="image",
+            terminal_state="failed",
+            ingest_state="waiting",
+            result=original_result,
+        )
+
+        with self.assertRaisesRegex(
+            ValueError,
+            "C2_LEDGER_RECONCILIATION_RESULT_INVALID",
+        ):
+            self.storage.reconcile_waiting_c2_ledger_from_confirmed_action(
+                conversation_id=conversation_id,
+                source_message_key=source_key,
+                origin_read_run_id=flow_id,
+                message_type="image",
+                completed_result={"state": "failed"},
+            )
+
+        ledger = self.storage.load_c2_ledger_entry(
+            conversation_id,
+            source_key,
+        )
+        self.assertEqual(ledger["terminal_state"], "failed")
+        self.assertEqual(ledger["ingest_state"], "waiting")
+        self.assertEqual(ledger["result"], original_result)
+
     def test_accept_schedule_is_persisted_and_checks_cross_day_window(self):
         default_schedule = self.storage.load_accept_schedule()
         self.assertFalse(default_schedule["enabled"])
