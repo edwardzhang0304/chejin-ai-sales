@@ -1453,6 +1453,7 @@ class FakeApi:
         self.settlement_tokens: list[str | None] = []
         self.read_targets: list[WechatReadTarget] = []
         self.message_ingest_result = "ingested"
+        self.message_ingest_read_completion: dict | None = None
         self.friend_activation_payloads: list[dict] = []
         self.message_batch_statuses: list[dict] = []
         self.message_batch_result: dict | None = None
@@ -1853,6 +1854,10 @@ class FakeApi:
         }
         if self.message_batch_result is not None:
             response["message_batch"] = dict(self.message_batch_result)
+        if self.message_ingest_read_completion is not None:
+            response["read_completion"] = dict(
+                self.message_ingest_read_completion
+            )
         return response
 
     def get_wechat_message_batch(self, binding: Binding, batch_id: str):
@@ -12856,6 +12861,13 @@ class TaskRunnerTest(unittest.TestCase):
 
     def test_wrapped_ai_history_still_transcribes_and_ingests_new_voice(self):
         api = FakeApi(None)
+        reply_text = (
+            "你好，欢迎加上好友，很高兴认识你！"
+            "请问有什么可以帮您？"
+        )
+        reply_hash = hashlib.sha256(
+            " ".join(reply_text.split()).encode("utf-8")
+        ).hexdigest()
         target = WechatReadTarget(
             conversation_id="conv-wrapped-history-full-voice",
             rpa_session_key="wx:rpa:v1:wrapped-history-full-voice",
@@ -12874,19 +12886,15 @@ class TaskRunnerTest(unittest.TestCase):
                             "message_type": "text",
                             "content": "你好在吗",
                         },
-                        {
-                            "stable_id": "worker-message-2",
-                            "origin_read_run_id": "read-history-2",
-                            "sender_role": "self",
-                            "message_type": "text",
-                            "content": (
-                                "你好，欢迎加上好友，很高兴认识你！"
-                                "请问有什么可以帮您？"
-                            ),
-                        },
                     ],
-                    next_sequence_floor=3,
-                )
+                    next_sequence_floor=2,
+                ),
+                "ai_reply_boundary": {
+                    "reply_action_id": "reply-wrapped-history",
+                    "sent_at": "2026-08-29T14:24:00+00:00",
+                    "reply_text_hash": reply_hash,
+                    "worker_stable_id": "worker-message-2",
+                },
             },
         )
         api.read_targets = [target]
@@ -12955,6 +12963,22 @@ class TaskRunnerTest(unittest.TestCase):
                 }
             ],
         }
+        save_c2_state(
+            "message_identity:conv-wrapped-history-full-voice",
+            {
+                "version": 4,
+                "next_sequence": 3,
+                "ai_reply_receipts": [
+                    {
+                        "reply_action_id": "reply-wrapped-history",
+                        "reply_text": reply_text,
+                        "reply_text_hash": reply_hash,
+                        "worker_stable_id": "worker-message-2",
+                        "confirmed_at": "2026-08-29T14:24:00+00:00",
+                    }
+                ],
+            },
+        )
         runner, _ = self.make_runner(api, bridge)
         binding = Binding(
             worker_id="worker-wrapped-history",
@@ -12981,6 +13005,31 @@ class TaskRunnerTest(unittest.TestCase):
                 if message["message_type"] == "voice"
             ],
             ["你好，我想咨询一下"],
+        )
+        submitted_self = next(
+            message
+            for message in submitted_messages
+            if message["sender_role_hint"] == "self"
+        )
+        self.assertEqual(
+            stable_business_content_signature(
+                {
+                    "row_kind": "text_bubble",
+                    "content_clean": submitted_self["content"],
+                }
+            ),
+            stable_business_content_signature(
+                {
+                    "row_kind": "text_bubble",
+                    "content_clean": reply_text,
+                }
+            ),
+        )
+        self.assertEqual(
+            submitted_self["raw_payload"][
+                "message_identity_runtime_evidence"
+            ]["_worker_ai_reply_receipt"]["reply_text"],
+            reply_text,
         )
         self.assertEqual(
             api.message_payloads[0]["evidence"]["flow_gate_errors"],
@@ -19249,8 +19298,14 @@ class TaskRunnerTest(unittest.TestCase):
         self.assertEqual(api.message_payloads[0]["evidence"]["read_reason"], "visible_unread")
         self.assertEqual(api.message_payloads[0]["evidence"]["authorization_read_reason"], "visible_unread")
 
-    def test_c2_visible_unread_empty_result_is_reported_to_consume_backend_unread_fact(self):
+    def test_c2_visible_unread_empty_result_preserves_backend_retry_required(self):
         api = FakeApi(None)
+        api.message_ingest_read_completion = {
+            "result": "retry_required",
+            "error_code": "C2_UNREAD_RESULT_INCONCLUSIVE",
+            "unread_generation": 1,
+            "consumed_unread_generation": 0,
+        }
         target = WechatReadTarget(
             conversation_id="conv-visible-unread-empty",
             rpa_session_key="wx:rpa:v1:visible-unread-empty",
@@ -19260,7 +19315,12 @@ class TaskRunnerTest(unittest.TestCase):
             ocr_confidence=0.98,
             read_reason="visible_unread",
             authorization_revision="revision-visible-unread-empty",
-            raw={"identity_checkpoint": identity_checkpoint()},
+            unread_generation=1,
+            raw={
+                "identity_checkpoint": identity_checkpoint(),
+                "unread_generation": 1,
+                "consumed_unread_generation": 0,
+            },
         )
         api.read_targets = [target]
         bridge = FakeBridge(
@@ -19299,14 +19359,175 @@ class TaskRunnerTest(unittest.TestCase):
             enforce_read_targets=False,
         )
 
-        self.assertTrue(result.get("ok"))
+        self.assertTrue(result.get("ok"), result)
+        self.assertIsNone(result.get("error_code"))
+        self.assertEqual(
+            result["result"]["read_completion"]["result"],
+            "retry_required",
+        )
         self.assertEqual(len(api.message_payloads), 1)
         self.assertEqual(api.message_payloads[0]["messages"], [])
+        self.assertIs(
+            api.message_payloads[0]["evidence"]["tail_complete"],
+            True,
+        )
+        self.assertIs(
+            api.message_payloads[0]["evidence"]["send_context_guard"]["ok"],
+            True,
+        )
+        self.assertEqual(
+            api.message_payloads[0]["evidence"]["business_projection"],
+            [],
+        )
         self.assertEqual(
             api.message_payloads[0]["evidence"]["authorization_read_reason"],
             "visible_unread",
         )
         self.assertIn("ingest:0", api.events)
+        self.assertEqual(len(api.inflight_flow_events), 2)
+        self.assertTrue(
+            api.inflight_flow_events[0].startswith("start:c2_read:read-")
+        )
+        self.assertIn(
+            (
+                ":retry_required:conv-visible-unread-empty:"
+                "C2_UNREAD_RESULT_INCONCLUSIVE"
+            ),
+            api.inflight_flow_events[1],
+        )
+        self.assertIsNone(load_runtime_control()["inflight_flow_id"])
+
+    def test_c2_retry_required_does_not_add_local_failure_or_success_cooldown(self):
+        api = FakeApi(None)
+        bridge = FakeBridge(
+            RpaResult(ok=True, result_code="unused", message="unused")
+        )
+        runner, _ = self.make_runner(api, bridge)
+        binding = Binding(
+            worker_id="worker-1",
+            worker_token="token",
+            client_instance_id="client-1",
+            run_status="running",
+        )
+        target = WechatReadTarget(
+            conversation_id="conv-retry-scheduled-by-backend",
+            rpa_session_key="wx:rpa:v1:retry-scheduled-by-backend",
+            display_name="CJRETRY1 客户",
+            remark_code="CJRETRY1",
+            read_reason="visible_unread",
+            authorization_revision="revision-retry-scheduled-by-backend",
+            unread_generation=1,
+            raw={
+                "unread_generation": 1,
+                "consumed_unread_generation": 0,
+            },
+        )
+        dedupe_key = runner._target_dedupe_key(target)
+
+        def accepted_retry(*_args, **_kwargs):
+            return {
+                "ok": True,
+                "error_code": None,
+                "result": {
+                    "read_completion": {
+                        "result": "retry_required",
+                        "error_code": "C2_UNREAD_RESULT_INCONCLUSIVE",
+                        "next_read_due_at": "2026-08-30T00:00:10+00:00",
+                    }
+                },
+            }
+
+        runner._read_one_wechat_target = accepted_retry  # type: ignore[method-assign]
+        runner._read_state_target_queue(binding, targets=[target])
+
+        self.assertIn(
+            dedupe_key,
+            runner.c2_round_processed_conversation_ids,
+        )
+        self.assertNotIn(dedupe_key, runner.c2_read_failure_cooldowns)
+        self.assertNotIn(dedupe_key, runner.c2_read_success_cooldowns)
+
+    def test_c2_repeated_inconclusive_backend_terminal_faults_worker(self):
+        api = FakeApi(None)
+        api.message_ingest_read_completion = {
+            "result": "technical_failed",
+            "error_code": "C2_UNREAD_RESULT_REPEATEDLY_INCONCLUSIVE",
+            "inconclusive_attempt_count": 2,
+            "unread_generation": 1,
+            "consumed_unread_generation": 0,
+        }
+        target = WechatReadTarget(
+            conversation_id="conv-repeated-inconclusive",
+            rpa_session_key="wx:rpa:v1:repeated-inconclusive",
+            display_name="CJFAULT1 客户",
+            remark_code="CJFAULT1",
+            row_fingerprint={"title_text": "CJFAULT1 客户"},
+            ocr_confidence=0.98,
+            read_reason="visible_unread",
+            authorization_revision="revision-repeated-inconclusive",
+            unread_generation=1,
+            raw={
+                "identity_checkpoint": identity_checkpoint(),
+                "unread_generation": 1,
+                "consumed_unread_generation": 0,
+            },
+        )
+        api.read_targets = [target]
+        bridge = FakeBridge(
+            RpaResult(ok=True, result_code="unused", message="unused")
+        )
+        bridge.get_messages_payloads = [
+            {
+                "ok": True,
+                "frame_id": "frame-repeated-inconclusive",
+                "observation_schema_version": 3,
+                "observations": [],
+                "tail_complete": True,
+                "send_context_guard": production_send_context_guard(
+                    [],
+                    layout_ok=True,
+                ),
+                "state": "messages_ocr",
+                "sidecar_run_id": "repeated-inconclusive-run",
+            }
+        ]
+        bridge.locate_payloads = [
+            confirmed_private_target_payload("CJFAULT1")
+        ]
+        runner, seen = self.make_runner(api, bridge)
+        binding = Binding(
+            worker_id="worker-1",
+            worker_token="token",
+            client_instance_id="client-1",
+            run_status="running",
+        )
+        runner.binding = binding
+
+        result = runner._read_one_wechat_target(
+            binding,
+            target,
+            current_step="state_target_message_read",
+            enforce_read_targets=False,
+        )
+
+        self.assertFalse(result.get("ok"), result)
+        self.assertEqual(
+            result.get("error_code"),
+            "C2_UNREAD_RESULT_REPEATEDLY_INCONCLUSIVE",
+        )
+        self.assertIn("faulted", api.run_status_updates)
+        self.assertEqual(binding.run_status, "faulted")
+        self.assertTrue(seen["errors"])
+        self.assertTrue(
+            any(
+                ":technical_failed:conv-repeated-inconclusive:"
+                "C2_UNREAD_RESULT_REPEATEDLY_INCONCLUSIVE"
+                in event
+                for event in api.inflight_flow_events
+            ),
+            api.inflight_flow_events,
+        )
+        self.assertIsNone(load_runtime_control()["inflight_flow_id"])
 
     def test_c2_every_authorized_empty_read_reports_completion(self):
         api = FakeApi(None)
@@ -29449,6 +29670,7 @@ class TaskRunnerTest(unittest.TestCase):
                 "ai_reply_receipts": [
                     {
                         "reply_action_id": "reply-media-history",
+                        "reply_text": reply_text,
                         "reply_text_hash": runner._reply_text_hash(
                             reply_text
                         ),
@@ -29706,6 +29928,186 @@ class TaskRunnerTest(unittest.TestCase):
             [item["observation_id"] for item in executable],
             ["new-five-second-voice"],
         )
+
+    def test_local_sent_receipt_with_wrapped_ocr_keeps_text_voice_and_image_suffixes(self):
+        reply_text = (
+            "您好，10万左右的二手车有不少选择，方便说说您更看重轿车还是SUV？"
+            "大概几年车龄内？ 我先记下您的需求，有具体方向再帮您筛选合适的车源。"
+        )
+        wrapped_reply = (
+            "您好，10万左右的二手车有不少选择，方便说说您更看重轿车\n"
+            "还是SUV？大概几年车龄内？\n我先记下您的需求，有具体方向再帮您筛选合适的车源。"
+        )
+        text_suffix = self._ai_send_observation(
+            "new-customer-text",
+            sender_role="customer",
+            content="主要家用",
+        )
+        voice_suffix = {
+            "observation_id": "new-customer-voice",
+            "row_kind": "voice_bubble",
+            "message_type": "voice",
+            "sender_role": "customer",
+            "sender_role_source": "same_row_avatar",
+            "voice_state": "untranscribed",
+            "content_clean": "",
+            "bubble_rect": [470, 619, 586, 645],
+        }
+        image_suffix = {
+            "observation_id": "new-customer-image",
+            "row_kind": "image_bubble",
+            "message_type": "image",
+            "sender_role": "customer",
+            "sender_role_source": "same_row_avatar",
+            "voice_state": "not_voice",
+            "item_state": "discovered",
+            "content_clean": "",
+            "bubble_rect": [470, 619, 686, 745],
+        }
+        suffix_groups = {
+            "text": [text_suffix],
+            "voice": [voice_suffix],
+            "image": [image_suffix],
+            "mixed": [text_suffix, voice_suffix, image_suffix],
+        }
+
+        for case_name, suffixes in suffix_groups.items():
+            with self.subTest(case_name=case_name):
+                conversation_id = f"conv-wrapped-receipt-{case_name}"
+                runner, _ = self.make_runner(
+                    FakeApi(None),
+                    FakeBridge(
+                        RpaResult(
+                            ok=True,
+                            result_code="unused",
+                            message="unused",
+                        )
+                    ),
+                )
+                reply_hash = runner._reply_text_hash(reply_text)
+                save_c2_state(
+                    f"message_identity:{conversation_id}",
+                    {
+                        "version": 4,
+                        "next_sequence": 5,
+                        "ai_reply_receipts": [
+                            {
+                                "reply_action_id": "reply-wrapped",
+                                "reply_text": reply_text,
+                                "reply_text_hash": reply_hash,
+                                "worker_stable_id": "worker-message-4",
+                                "confirmed_at": (
+                                    "2026-08-29T14:24:00+00:00"
+                                ),
+                            }
+                        ],
+                    },
+                )
+                facts = [
+                    {
+                        "stable_id": "worker-message-1",
+                        "sender_role": "self",
+                        "message_type": "text",
+                        "content": "您好，欢迎联系我。",
+                    },
+                    {
+                        "stable_id": "worker-message-2",
+                        "sender_role": "customer",
+                        "message_type": "text",
+                        "content": "我通过了你的朋友验证请求。",
+                    },
+                    {
+                        "stable_id": "worker-message-3",
+                        "sender_role": "customer",
+                        "message_type": "voice",
+                        "content": "10万块钱的二手车有什么推荐的？",
+                    },
+                ]
+                target = WechatReadTarget(
+                    conversation_id=conversation_id,
+                    rpa_session_key="",
+                    display_name="CJMTRTMS",
+                    remark_code="CJMTRTMS",
+                    read_reason="recent_ai_sent",
+                    authorization_revision="revision-wrapped-receipt",
+                    unread_generation=2,
+                    raw={
+                        "identity_checkpoint": identity_checkpoint_for_facts(
+                            conversation_id,
+                            facts,
+                            next_sequence_floor=4,
+                        ),
+                        "ai_reply_boundary": {
+                            "reply_action_id": "reply-wrapped",
+                            "sent_at": "2026-08-29T14:24:00+00:00",
+                            "reply_text_hash": reply_hash,
+                            "worker_stable_id": "worker-message-4",
+                        },
+                    },
+                )
+                observations = [
+                    self._ai_send_observation(
+                        "current-welcome",
+                        sender_role="self",
+                        content="您好，欢迎联系我。",
+                    ),
+                    self._ai_send_observation(
+                        "current-validation",
+                        sender_role="customer",
+                        content="我通过了你的朋友验证请求。",
+                    ),
+                    {
+                        "observation_id": "current-first-voice",
+                        "row_kind": "voice_transcript",
+                        "message_type": "voice",
+                        "sender_role": "customer",
+                        "sender_role_source": "parent_voice",
+                        "voice_state": "transcribed",
+                        "content_clean": "10万块钱的二手车有什么推荐的？",
+                    },
+                    self._ai_send_observation(
+                        "current-ai-reply",
+                        sender_role="self",
+                        content=wrapped_reply,
+                    ),
+                    *(dict(suffix) for suffix in suffixes),
+                ]
+
+                aligned, errors = runner._align_initial_identity_frame(
+                    target=target,
+                    sidecar_payload={
+                        "ok": True,
+                        "frame_id": f"frame-wrapped-{case_name}",
+                        "observations": observations,
+                    },
+                    read_run_id=f"read-wrapped-{case_name}",
+                )
+
+                self.assertEqual(errors, [])
+                self.assertEqual(
+                    aligned["sequence_alignment_evidence"][
+                        "new_suffix_observation_ids"
+                    ],
+                    [suffix["observation_id"] for suffix in suffixes],
+                )
+                self.assertEqual(
+                    aligned["observations"][3]["_worker_stable_id"],
+                    "worker-message-4",
+                )
+                for offset, suffix in enumerate(suffixes, start=4):
+                    if suffix["message_type"] == "text":
+                        self.assertEqual(
+                            aligned["observations"][offset].get(
+                                "_worker_stable_id"
+                            ),
+                            "worker-message-5",
+                        )
+                    else:
+                        self.assertFalse(
+                            aligned["observations"][offset].get(
+                                "_worker_stable_id"
+                            )
+                        )
 
     def test_scrolled_transcribed_voice_does_not_block_new_voice_or_reuse_identity(self):
         runner, _ = self.make_runner(
@@ -30007,6 +30409,7 @@ class TaskRunnerTest(unittest.TestCase):
                 "sends": [
                     {
                         "reply_action_id": "reply-possible-restart",
+                        "reply_text": reply_text,
                         "reply_text_hash": reply_hash,
                         "reserved_worker_stable_id": "worker-message-42",
                         "reconciliation_state": "ai_unreconciled",

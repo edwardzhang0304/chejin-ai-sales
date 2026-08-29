@@ -1,10 +1,10 @@
 {
   "contract_version": 3,
-  "contract_revision": "0.9.50",
+  "contract_revision": "0.9.51",
   "observation_schema_version": 3,
   "control_schema_version": 1,
   "performance_fast_path_contract": {
-    "release": "0.9.50",
+    "release": "0.9.51",
     "business_semantics_unchanged": true,
     "flags": [
       "CHEJIN_TASK_SAFE_WAKE_ENABLED",
@@ -30,7 +30,7 @@
     "sidebar_search_safety_rule": "sidebar ROI may identify a candidate only; login overlays central dialogs and whole-window blocking state must be decided from full-window OCR of the exact same screenshot"
   },
   "startup_layout_calibration_contract": {
-    "schema_version": "0.9.50",
+    "schema_version": "0.9.51",
     "owner": "omniauto",
     "worker_role": "persist_path_transport_contract_validation_and_execution_only",
     "single_runtime_path": true,
@@ -102,12 +102,14 @@
       "terminal_kinds": [
         "task_terminal",
         "read_confirmed",
+        "retry_required",
         "failed_before_message_action",
-        "read_failed_no_fact"
+        "read_failed_no_fact",
+        "technical_failed"
       ],
       "conversation_id_rule": "required_for_c2_read_and_null_for_task_terminal",
-      "error_code_rule": "required_for_failed_before_message_action_and_read_failed_no_fact",
-      "backend_proof_rule": "task_terminal_requires_a_terminal_task; read_confirmed_requires_matching last_read_run_id plus completed_at and new_facts_or_no_change; failed_before_message_action requires no attempted message read and no message fact; read_failed_no_fact requires an attempted read with no trusted message fact; both failure terminals require an audit log",
+      "error_code_rule": "required_for_retry_required_failed_before_message_action_read_failed_no_fact_and_technical_failed",
+      "backend_proof_rule": "task_terminal_requires_a_terminal_task; read_confirmed_requires_matching last_read_run_id plus completed_at and new_facts_or_no_change; retry_required_requires_matching last_read_run_id plus completed_at retry_required and the backend reread schedule; failed_before_message_action requires no attempted message read and no message fact; read_failed_no_fact requires an attempted read with no trusted message fact; technical_failed requires matching backend technical_failed plus faulted Worker; every non_success terminal requires an audit log",
       "local_proof_rule": "every terminal kind requires the UI lock plus same-flow pending Outbox, Ledger, ActionJournal, and sent_ack to be settled; both no-fact failure terminals additionally forbid any same-flow Outbox, Ledger, or Journal artifact"
     },
     "local_atomicity_rule": "request_pause, clear_pause, begin_flow, and finish_flow must read, validate, and update runtime_control_v1 in one SQLite BEGIN IMMEDIATE transaction",
@@ -160,7 +162,17 @@
       "unread_badge_bounds",
       "whole_row_fingerprint"
     ],
-    "completion_rule": "consume_only_the_generation_carried_by_the_authorized_read",
+    "completion_rule": "consume_only_the_generation_carried_by_the_authorized_read_after_a_complete_no_change_new_facts_or_terminal_media_result",
+    "complete_viewport_no_change_rule": "a_same_frame_authoritative_viewport_with_valid_tail_complete_guard_observations_and_business_projection_is_conclusive_no_change_even_when_no_new_message_is_ingested",
+    "inconclusive_read_rule": "text_may_be_ingested_but_any_still_unresolved_media_or_untrusted_viewport_returns_retry_required_preserves_consumed_unread_generation_and_finishes_the_current_transport_flow_only_after_the_backend_receipt_is_confirmed",
+    "inconclusive_error_code": "C2_UNREAD_RESULT_INCONCLUSIVE",
+    "inconclusive_max_authoritative_reads": 2,
+    "inconclusive_terminal_result": "technical_failed",
+    "inconclusive_terminal_error_code": "C2_UNREAD_RESULT_REPEATEDLY_INCONCLUSIVE",
+    "bounded_identity_recovery_rule": "an_existing_recoverable_hold_keeps_its_own_distinct_reread_limit_and_terminal_handoff;_generic_inconclusive_counting_must_not_preempt_that_state_machine_and_the_terminal_handoff_consumes_the_authorized_generation",
+    "worker_retry_cooldown_rule": "retry_required_is_a_confirmed_backend_reread_schedule_and_must_not_add_the_worker_local_failure_or_success_cooldown",
+    "terminal_media_rule": "a_formally_persisted_media_success_or_failure_with_its_required_batch_or_handoff_settlement_is_conclusive_and_consumes_the_authorized_generation",
+    "conclusive_duplicate_rule": "a_non_gated_complete_message_set_may_consume_the_generation_even_when_every_message_is_an_idempotent_duplicate",
     "same_generation_rule": "a_repeated_visible_badge_for_the_same_semantic_evidence_must_not_reset_read_backoff",
     "identical_preview_rule": "when_a_new_generation_cannot_be_proven_from_stable_evidence_wait_until_the_normal_read_due_time"
   },
@@ -537,7 +549,12 @@
     "continuation_batch_id",
     "continuation_token",
     "recovery_attempt_kind",
-    "ai_reply_boundary"
+    "ai_reply_boundary",
+    "tail_complete",
+    "send_context_guard",
+    "business_projection",
+    "observation_validation_errors",
+    "history_gap"
   ],
   "recovery_attempt_kind_values": [
     "checkpoint_merge",
@@ -1555,6 +1572,7 @@
     "image_identity_consumer_gate": "without_that_valid_persisted_receipt_no_consumer_may_query_historical_ledger_or_outbox_create_a_durable_source_message_key_write_ledger_or_outbox_build_a_formal_message_or_admit_brain",
     "image_identity_failure_behavior": "preserve_the_action_journal_project_zero_formal_messages_zero_ledger_zero_outbox_zero_handoff_zero_feishu_zero_brain_calls_set_the_current_flow_technical_failed_and_set_the_worker_faulted",
     "recent_ai_boundary_rule": "a_confirmed_recent_ai_sent_boundary_may_anchor_the_latest_unreplied_tail_without_restoring_unproven_weak_media_above_that_boundary",
+    "recent_ai_receipt_projection_rule": "the_exact_reply_text_hash_validates_only_the_immutable_local_send_receipt;_cross_frame_ocr_continuity_must_project_the_verified_receipt_text_and_current_observation_through_the_single_shared_business_content_signature_so_cjk_display_wrapping_cannot_create_a_second_stricter_comparator",
     "ambiguous_behavior": "block_ingest_and_brain_for_current_conversation",
     "unresolved_behavior": "block_ingest_and_brain_for_current_conversation",
     "selected_action_commit_rule": "binding_confirmed_then_commit_reserved_worker_stable_id",
@@ -1571,7 +1589,7 @@
     ]
   },
   "frame_action_binding_contract": {
-    "release": "0.9.50",
+    "release": "0.9.51",
     "purpose": "carry_one_worker_approved_current_media_action_policy_and_current_frame_diagnostic_evidence_without_claiming_cross_frame_identity",
     "durable_identity": false,
     "observation_owner": "sidecar",
@@ -1628,7 +1646,7 @@
     ]
   },
   "pre_send_message_viewport_contract": {
-    "release": "0.9.50",
+    "release": "0.9.51",
     "selected_target_fingerprint_scope": "prepare_frame_diagnostic_only_and_forbidden_as_an_execute_identity_or_equality_gate",
     "selected_target_forbidden_inputs": [
       "message_viewport_change_digest",
@@ -1727,7 +1745,7 @@
     "physical_media_action_rule": "each_voice_or_image_action_may_trigger_at_most_once_and_post_trigger_waits_are_passive_evidence_reads_only"
   },
   "pre_send_fact_checkpoint_contract": {
-    "release": "0.9.50",
+    "release": "0.9.51",
     "checkpoint_revision": 5,
     "checkpoint_owner": "backend",
     "comparison_and_decision_owner": "worker",

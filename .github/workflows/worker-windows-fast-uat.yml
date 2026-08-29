@@ -32,7 +32,9 @@ jobs:
         with:
           python-version: 3.12.10
           cache: pip
-          cache-dependency-path: worker-client/requirements.txt
+          cache-dependency-path: |
+            worker-client/requirements.txt
+            backend/requirements.txt
 
       - name: Restore reusable portable runtime base
         id: runtime-cache
@@ -42,12 +44,31 @@ jobs:
           key: chejin-fast-uat-runtime-windows-py31210-${{ hashFiles('worker-client/requirements.txt') }}
 
       - name: Install test dependencies
-        working-directory: worker-client
         shell: powershell
         run: |
-          python -m pip install --disable-pip-version-check -r requirements.txt
+          python -m pip install --disable-pip-version-check pytest `
+            -r worker-client/requirements.txt `
+            -r backend/requirements.txt
 
-      - name: Run affected Worker recovery tests
+      - name: Run affected Worker and backend read-settlement tests
+        working-directory: .
+        shell: powershell
+        run: |
+          $ErrorActionPreference = "Stop"
+          $env:CHEJIN_WORKER_HOME = Join-Path $env:RUNNER_TEMP "chejin-worker-affected-tests"
+          $env:PYTHONPATH = "$PWD\worker-client;$PWD\backend"
+          python -m pytest worker-client/tests/test_task_runner.py -q `
+            -k "visible_unread or inconclusive or inflight_flow or confirmed_ai_reply"
+          if ($LASTEXITCODE -ne 0) {
+            throw "Affected Worker read-settlement tests failed"
+          }
+          python -m pytest backend/tests/test_wechat_c2_api.py backend/tests/test_worker_client_api.py -q `
+            -k "visible_unread or inconclusive or inflight_flow"
+          if ($LASTEXITCODE -ne 0) {
+            throw "Affected backend read-settlement tests failed"
+          }
+
+      - name: Run affected Worker recovery compatibility tests
         working-directory: worker-client
         shell: powershell
         run: |
@@ -159,7 +180,7 @@ jobs:
       - name: Upload Fast UAT ZIP
         uses: actions/upload-artifact@v4
         with:
-          name: chejin-worker-fast-uat-v0.9.50-${{ github.sha }}
+          name: chejin-worker-fast-uat-v0.9.51-${{ github.sha }}
           path: worker-client/dist/fast-uat-release/chejin-worker-fast-uat-*.zip
           if-no-files-found: error
           retention-days: 14

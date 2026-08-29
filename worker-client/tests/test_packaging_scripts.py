@@ -211,7 +211,7 @@ class PackagingScriptsTest(unittest.TestCase):
         self.assertIn("delivery ZIP does not contain the packaged runtime directory", workflow)
         self.assertIn("app_name = [string]$manifest.app_name", workflow)
         self.assertIn("delivery ZIP executable SHA256 mismatch", workflow)
-        self.assertIn("chejin-worker-v0.9.50-windows-x64.delivery.json", workflow)
+        self.assertIn("chejin-worker-v0.9.51-windows-x64.delivery.json", workflow)
         self.assertIn("CHEJIN_VISION_CLIENT_API_KEY", workflow)
         self.assertIn("vision_credential_embedded", workflow)
         self.assertIn("vision_configuration_locked", workflow)
@@ -255,7 +255,24 @@ class PackagingScriptsTest(unittest.TestCase):
             '$env:CHEJIN_WORKER_HOME = Join-Path $env:RUNNER_TEMP',
             workflow,
         )
-        self.assertIn("Run affected Worker recovery tests", workflow)
+        self.assertIn(
+            "Run affected Worker and backend read-settlement tests",
+            workflow,
+        )
+        self.assertIn(
+            "backend/tests/test_wechat_c2_api.py",
+            workflow,
+        )
+        self.assertIn(
+            "visible_unread or inconclusive or inflight_flow",
+            workflow,
+        )
+        self.assertIn("python -m pip install", workflow)
+        self.assertIn("pytest", workflow)
+        self.assertIn(
+            "Run affected Worker recovery compatibility tests",
+            workflow,
+        )
         self.assertIn('"test_storage.py"', workflow)
         self.assertIn(
             'python -m unittest discover -s tests -p "test_task_runner.py"',
@@ -555,7 +572,7 @@ class PackagingScriptsTest(unittest.TestCase):
             [
                 {
                     "source_commit": (
-                        "f6a7706c20c22d8cd176fefeccfdcf3027eaa753"
+                        "ffb17693f775c8e8ac34e529af624f84326f0e41"
                     ),
                     "scope": [
                         "exact_wechat_context_menu_classification",
@@ -762,6 +779,7 @@ class PackagingScriptsTest(unittest.TestCase):
                             "portable_send_context_continuity_"
                             "comparator_contract"
                         ),
+                        "c2_contract_0_9_51_generated_schema",
                     ],
                 }
             ],
@@ -798,7 +816,11 @@ class PackagingScriptsTest(unittest.TestCase):
             "3413c591357f6fd790f53b0f967ff6bc9c6de57f",
             provenance["integration_note"],
         )
-        self.assertIn("0.9.50", provenance["integration_note"])
+        self.assertIn("0.9.51", provenance["integration_note"])
+        self.assertIn(
+            "ffb17693f775c8e8ac34e529af624f84326f0e41",
+            provenance["integration_note"],
+        )
         self.assertIn(
             "Sidecar 无 Worker 依赖的最终发送验证",
             provenance["integration_note"],
@@ -1176,7 +1198,7 @@ class PackagingScriptsTest(unittest.TestCase):
         self.assertIn('$packageDir = [string]$manifest.package_dir', workflow)
         self.assertIn('$exePath = [string]$manifest.exe_path', workflow)
         self.assertNotIn('dist\\车金Worker客户端', workflow)
-        self.assertIn('version -ne "0.9.50"', workflow)
+        self.assertIn('version -ne "0.9.51"', workflow)
         self.assertIn('tests_status -ne "passed"', workflow)
         self.assertIn('@("--omniauto-sidecar", "--help")', workflow)
         self.assertIn('@("--omniauto-ocr-probe")', workflow)

@@ -407,6 +407,21 @@ def _confirmed_empty_business_viewport(
     )
 
 
+def _read_completion_result(result: dict[str, Any] | None) -> str:
+    payload = result if isinstance(result, dict) else {}
+    api_result = (
+        payload.get("result")
+        if isinstance(payload.get("result"), dict)
+        else {}
+    )
+    completion = (
+        api_result.get("read_completion")
+        if isinstance(api_result.get("read_completion"), dict)
+        else {}
+    )
+    return str(completion.get("result") or "").strip()
+
+
 def _bind_worker_continuity_contract_to_send_guard(
     guard: dict[str, Any],
     observations: list[dict[str, Any]],
@@ -4930,6 +4945,7 @@ class TaskRunner:
             raise RuntimeError("RUNTIME_INFLIGHT_FINISH_BEFORE_UI_UNLOCK")
         if terminal_kind in {
             "read_confirmed",
+            "retry_required",
             "failed_before_message_action",
             "read_failed_no_fact",
             "task_terminal",
@@ -5680,6 +5696,7 @@ class TaskRunner:
             terminal_kind = "task_terminal"
         elif terminal_kind not in {
             "read_confirmed",
+            "retry_required",
             "failed_before_message_action",
             "read_failed_no_fact",
             "technical_failed",
@@ -5709,6 +5726,7 @@ class TaskRunner:
         if terminal_kind not in {
             "task_terminal",
             "read_confirmed",
+            "retry_required",
             "failed_before_message_action",
             "read_failed_no_fact",
             "technical_failed",
@@ -8469,45 +8487,41 @@ class TaskRunner:
             ai_reply_boundary.get("worker_stable_id") or ""
         ).strip()
 
-        def current_reply_business_signature(
+        def confirmed_reply_business_signature(
+            reply_text: str,
             expected_reply_text_hash: str,
         ) -> str:
-            """Return the shared business signature for a sent-ack match.
+            """Project one verified send receipt with the shared C2 rule.
 
-            ``reply_text_hash`` proves that a current self text equals the
-            text covered by the Worker's formal send receipt.  The business
-            projection deliberately uses a different normalization contract,
-            so its signature must be produced by the shared projector instead
-            of copying the receipt hash into a second comparison scheme.
+            The exact reply hash protects the immutable local send receipt.
+            Cross-frame OCR continuity is deliberately decided by the shared
+            business projector, whose CJK whitespace normalization tolerates
+            display wrapping.  Do not compare the OCR text with the transport
+            hash: that would create a second, stricter continuity algorithm.
             """
 
-            signatures = {
-                stable_business_content_signature(observation)
-                for observation in observations
-                if isinstance(observation, dict)
-                and str(observation.get("sender_role") or "")
-                .strip()
-                .lower()
-                == "self"
-                and str(observation.get("message_type") or "")
-                .strip()
-                .lower()
-                == "text"
-                and str(observation.get("row_kind") or "")
-                .strip()
-                .lower()
-                == "text_bubble"
-                and self._reply_text_hash(
-                    str(observation.get("content_clean") or "")
-                )
-                == str(expected_reply_text_hash or "").strip()
-            }
-            return next(iter(signatures)) if len(signatures) == 1 else ""
+            canonical_text = self._canonical_reply_text(reply_text)
+            expected_hash = str(expected_reply_text_hash or "").strip()
+            if (
+                not canonical_text
+                or not expected_hash
+                or self._reply_text_hash(canonical_text) != expected_hash
+            ):
+                return ""
+            return stable_business_content_signature(
+                {
+                    "row_kind": "text_bubble",
+                    "sender_role": "self",
+                    "message_type": "text",
+                    "content_clean": canonical_text,
+                }
+            )
 
         def local_ai_reply_checkpoint_item(
             *,
             stable_id: str,
             reply_action_id: str,
+            reply_text: str,
             reply_text_hash: str,
             confirmed_at: str,
             pre_observation_id: str,
@@ -8552,9 +8566,12 @@ class TaskRunner:
                 conversation_id=target.conversation_id,
                 observation=identity_observation,
             )
-            signature = current_reply_business_signature(
+            signature = confirmed_reply_business_signature(
+                reply_text,
                 receipt["reply_text_hash"]
             )
+            if not signature:
+                return {}
             return {
                 "identity_state": "committed",
                 "worker_stable_id": receipt["worker_stable_id"],
@@ -8605,6 +8622,7 @@ class TaskRunner:
                 reply_action_id=str(
                     receipt.get("reply_action_id") or ""
                 ),
+                reply_text=str(receipt.get("reply_text") or ""),
                 reply_text_hash=str(
                     receipt.get("reply_text_hash") or ""
                 ),
@@ -8618,6 +8636,8 @@ class TaskRunner:
                     f"{receipt['reply_action_id']}"
                 ),
             )
+            if not item:
+                continue
             item["ai_reply_boundary"] = bool(
                 boundary_action_id
                 and boundary_hash
@@ -8641,9 +8661,13 @@ class TaskRunner:
                 r"worker-message-(\d+)", boundary_stable_id
             )
             if stable_match is not None:
+                boundary_reply_text = self._confirmed_ai_reply_text_for_read(
+                    target
+                )
                 item = local_ai_reply_checkpoint_item(
                     stable_id=boundary_stable_id,
                     reply_action_id=boundary_action_id,
+                    reply_text=boundary_reply_text,
                     reply_text_hash=boundary_hash,
                     confirmed_at=str(
                         ai_reply_boundary.get("sent_at") or ""
@@ -8652,12 +8676,13 @@ class TaskRunner:
                         f"sent-ack-boundary:{boundary_action_id}"
                     ),
                 )
-                item["ai_reply_boundary"] = True
-                item["_worker_sequence_number"] = int(
-                    stable_match.group(1)
-                )
-                pre_sequence.append(item)
-                checkpoint_stable_ids.add(boundary_stable_id)
+                if item:
+                    item["ai_reply_boundary"] = True
+                    item["_worker_sequence_number"] = int(
+                        stable_match.group(1)
+                    )
+                    pre_sequence.append(item)
+                    checkpoint_stable_ids.add(boundary_stable_id)
         possible_state = load_c2_state(
             f"possible_ai_sends:{target.conversation_id}"
         )
@@ -8686,6 +8711,7 @@ class TaskRunner:
                 item = local_ai_reply_checkpoint_item(
                     stable_id=reserved_id,
                     reply_action_id=boundary_action_id,
+                    reply_text=str(possible.get("reply_text") or ""),
                     reply_text_hash=boundary_hash,
                     confirmed_at=str(
                         ai_reply_boundary.get("sent_at") or ""
@@ -8695,6 +8721,8 @@ class TaskRunner:
                     ),
                     reconciliation_state=reconciliation_state,
                 )
+                if not item:
+                    continue
                 item["ai_reply_boundary"] = True
                 item["ai_reconciliation_state"] = reconciliation_state
                 item["_worker_sequence_number"] = int(
@@ -11225,7 +11253,14 @@ class TaskRunner:
                 continue
             self.c2_round_processed_conversation_ids.add(dedupe_key)
             read_result = self._read_one_wechat_target(binding, target, current_step="visible_hit_message_read", enforce_read_targets=True)
-            if read_result.get("ok"):
+            if _read_completion_result(read_result) == "retry_required":
+                # Backend has already accepted the transport and scheduled
+                # the one authoritative reread.  Do not misclassify that
+                # receipt as an OCR/RPA failure and add the unrelated 45s
+                # local failure cooldown.
+                self.c2_read_failure_cooldowns.pop(dedupe_key, None)
+                self.c2_read_success_cooldowns.pop(dedupe_key, None)
+            elif read_result.get("ok"):
                 self.c2_read_failure_cooldowns.pop(dedupe_key, None)
                 self._mark_c2_read_success_cooldown(dedupe_key)
             else:
@@ -11273,7 +11308,11 @@ class TaskRunner:
                 self.c2_stats["last_error"] = "SCAN_INTERRUPTED_BY_HIGH_PRIORITY_ACTION"
                 break
             read_result = self._read_one_wechat_target(binding, target, current_step="state_target_message_read", enforce_read_targets=True)
-            if read_result.get("ok"):
+            if _read_completion_result(read_result) == "retry_required":
+                self.c2_round_processed_conversation_ids.add(dedupe_key)
+                self.c2_read_failure_cooldowns.pop(dedupe_key, None)
+                self.c2_read_success_cooldowns.pop(dedupe_key, None)
+            elif read_result.get("ok"):
                 self.c2_round_processed_conversation_ids.add(dedupe_key)
                 self.c2_read_failure_cooldowns.pop(dedupe_key, None)
                 self._mark_c2_read_success_cooldown(dedupe_key)
@@ -20427,21 +20466,47 @@ class TaskRunner:
                     if isinstance(flow_result.get("result"), dict)
                     else {}
                 )
-                backend_read_confirmed = bool(
-                    isinstance(read_completion, dict)
-                    and str(read_completion.get("result") or "")
-                    in {"new_facts", "no_change"}
+                backend_read_result = (
+                    str(read_completion.get("result") or "").strip()
+                    if isinstance(read_completion, dict)
+                    else ""
                 )
+                backend_read_error = (
+                    str(read_completion.get("error_code") or "").strip()
+                    if isinstance(read_completion, dict)
+                    else ""
+                )
+                backend_read_confirmed = backend_read_result in {
+                    "new_facts",
+                    "no_change",
+                }
                 if (
                     finalization_error is not None
                     or permanent_outbox_error
                 ):
                     terminal_kind = "technical_failed"
                 elif (
-                    flow_result.get("flow_terminal_kind")
+                    backend_read_result == "technical_failed"
+                    or flow_result.get("flow_terminal_kind")
                     == "technical_failed"
                 ):
                     terminal_kind = "technical_failed"
+                    error_code = (
+                        backend_read_error
+                        or error_code
+                        or "C2_UNREAD_RESULT_REPEATEDLY_INCONCLUSIVE"
+                    )
+                elif backend_read_result == "retry_required":
+                    # The backend accepted this transport and scheduled one
+                    # fresh authoritative reread.  A confirmed empty Outbox
+                    # or other durable local artifact must not relabel that
+                    # receipt as read_confirmed: the backend deliberately has
+                    # not consumed the unread generation yet.
+                    terminal_kind = "retry_required"
+                    error_code = (
+                        backend_read_error
+                        or "C2_UNREAD_RESULT_INCONCLUSIVE"
+                    )
                 elif backend_read_confirmed or durable_read_artifact_exists:
                     terminal_kind = "read_confirmed"
                 elif inflight_activity.get("message_read_attempted") is True:
@@ -20455,6 +20520,7 @@ class TaskRunner:
                         error_code
                         if terminal_kind
                         in {
+                            "retry_required",
                             "failed_before_message_action",
                             "read_failed_no_fact",
                             "technical_failed",
@@ -23188,6 +23254,14 @@ class TaskRunner:
                 for item in (result.get("results") or [])
                 if isinstance(item, dict) and item.get("ingest_result") == "ignored"
             ]
+            read_completion = (
+                result.get("read_completion")
+                if isinstance(result.get("read_completion"), dict)
+                else {}
+            )
+            read_completion_result = str(
+                read_completion.get("result") or ""
+            ).strip()
             ingest_error_code = ""
             if local_validation_errors:
                 ingest_error_code = str(local_validation_errors[0].get("error_code") or "C2_OBSERVATION_CONTRACT_INVALID")
@@ -23195,6 +23269,20 @@ class TaskRunner:
                 ingest_error_code = str(ignored_results[0].get("error_code") or "C2_MESSAGE_INGEST_IGNORED")
             elif int(result.get("ignored_count") or 0) > 0:
                 ingest_error_code = "C2_MESSAGE_INGEST_IGNORED"
+            elif read_completion_result == "technical_failed":
+                ingest_error_code = str(
+                    read_completion.get("error_code")
+                    or "C2_UNREAD_RESULT_REPEATEDLY_INCONCLUSIVE"
+                )
+            elif read_completion_result == "retry_required":
+                # This is an accepted backend scheduling decision, not a
+                # failed OCR/RPA read.  Keep the current flow successful so
+                # the scan loop does not add its independent 45s cooldown.
+                ingest_error_code = ""
+            read_retry_required = read_completion_result == "retry_required"
+            read_technical_failed = (
+                read_completion_result == "technical_failed"
+            )
             self.c2_stats.update(
                 {
                     "last_message_read_at": (payload.get("evidence") or {}).get("finished_at") if isinstance(payload.get("evidence"), dict) else None,
@@ -23217,16 +23305,30 @@ class TaskRunner:
                     "ignored_results": ignored_results,
                 },
             )
-            read_completion = (
-                result.get("read_completion")
-                if isinstance(result.get("read_completion"), dict)
-                else {}
-            )
             if read_completion:
                 append_log(
-                    "INFO",
-                    "c2_read_completion_confirmed",
-                    "后端已确认本次完整读取结果和下次允许读取时间。",
+                    (
+                        "ERROR"
+                        if read_technical_failed
+                        else "INFO"
+                    ),
+                    (
+                        "c2_read_completion_technical_failed"
+                        if read_technical_failed
+                        else "c2_read_completion_retry_required"
+                        if read_retry_required
+                        else "c2_read_completion_confirmed"
+                    ),
+                    (
+                        "连续两次权威画面仍无法形成可信读取结论；客户端已进入故障状态并停止接单。"
+                        if read_technical_failed
+                        else "本次读取没有形成可信新消息结论；未读代次已保留，按后端时间重新读取。"
+                        if read_retry_required
+                        else "后端已确认本次完整读取结果和下次允许读取时间。"
+                    ),
+                    error_code=(
+                        str(read_completion.get("error_code") or "") or None
+                    ),
                     metadata={
                         "conversation_id": target.conversation_id,
                         "read_reason": target.read_reason,
@@ -23237,11 +23339,28 @@ class TaskRunner:
                         "next_read_due_at": read_completion.get(
                             "next_read_due_at"
                         ),
+                        "inconclusive_attempt_count": (
+                            read_completion.get(
+                                "inconclusive_attempt_count"
+                            )
+                        ),
                     },
+                    force_incident=read_technical_failed,
+                )
+            if read_technical_failed:
+                self.set_run_status("faulted")
+                self.on_error(
+                    "连续两次无法确认微信未读消息读取结果，客户端已进入故障状态。"
                 )
             brain_result = None
             message_batch = result.get("message_batch") if isinstance(result, dict) else None
-            if wait_for_brain and isinstance(message_batch, dict) and message_batch.get("batch_id"):
+            if (
+                wait_for_brain
+                and not read_retry_required
+                and not read_technical_failed
+                and isinstance(message_batch, dict)
+                and message_batch.get("batch_id")
+            ):
                 if not self._apply_ingest_batch_continuation_to_target(
                     message_batch,
                     target,
@@ -23281,7 +23400,9 @@ class TaskRunner:
                         )
                     finally:
                         self._stop_task_lease_guard()
-            fact_ingest_ok = not bool(ingest_error_code)
+            fact_ingest_ok = bool(
+                read_retry_required or not ingest_error_code
+            )
             conversation_flow_ok, conversation_terminal_state, flow_error_code = (
                 self._conversation_flow_outcome(
                     brain_result,
