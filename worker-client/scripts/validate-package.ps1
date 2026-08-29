@@ -6,10 +6,10 @@ $ErrorActionPreference = "Stop"
 
 $Root = Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path)
 if ($PackageDir -eq "") {
-  $PackageDir = Join-Path $Root "dist\车金Worker客户端"
+  $PackageDir = Join-Path $Root "dist\CheJinWorkerClient"
 }
 
-$ExePath = Join-Path $PackageDir "车金Worker客户端.exe"
+$ExePath = Join-Path $PackageDir "CheJinWorkerClient.exe"
 if (-not (Test-Path $ExePath)) {
   throw "产物校验失败：未找到 $ExePath"
 }

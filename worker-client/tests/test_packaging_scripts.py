@@ -122,7 +122,10 @@ class PackagingScriptsTest(unittest.TestCase):
     def test_build_script_writes_manifest_and_checks_sidecar(self):
         text = (ROOT / "scripts" / "build-windows.ps1").read_text(encoding="utf-8-sig")
 
-        self.assertIn("车金Worker客户端.manifest.json", text)
+        self.assertIn("CheJinWorkerClient.manifest.json", text)
+        self.assertIn('dist\\CheJinWorkerClient', text)
+        self.assertIn('CheJinWorkerClient.exe', text)
+        self.assertNotIn("车金Worker客户端", text)
         self.assertIn("Get-FileHash -Algorithm SHA256", text)
         self.assertIn('$OmniAutoSourcePath = Join-Path $Root "omniauto-rpa"', text)
         self.assertIn("omniauto_upstream_base_commit", text)
@@ -166,9 +169,33 @@ class PackagingScriptsTest(unittest.TestCase):
         self.assertIn("$LASTEXITCODE -ne 0", text)
         self.assertNotIn("git rev-parse", text)
         self.assertNotIn("git status --porcelain", text)
-        self.assertIn("OFFICIAL_BUILD_GIT_SOURCE_REQUIRED", (
-            ROOT / "scripts" / "build_source.py"
-        ).read_text(encoding="utf-8"))
+        self.assertIn(
+            "OFFICIAL_BUILD_GIT_SOURCE_REQUIRED",
+            (ROOT / "scripts" / "build_source.py").read_text(encoding="utf-8"),
+        )
+
+    def test_official_package_file_and_directory_names_are_ascii(self):
+        build_script = (ROOT / "scripts" / "build-windows.ps1").read_text(
+            encoding="utf-8-sig"
+        )
+        validate_script = (ROOT / "scripts" / "validate-package.ps1").read_text(
+            encoding="utf-8-sig"
+        )
+        spec = (ROOT / "packaging" / "chejin-worker-client.spec").read_text(
+            encoding="utf-8"
+        )
+        launcher = (ROOT / "packaging" / "start-uat.ps1").read_text(
+            encoding="utf-8-sig"
+        )
+
+        self.assertIn('dist\\CheJinWorkerClient', build_script)
+        self.assertIn('CheJinWorkerClient.manifest.json', build_script)
+        self.assertIn('app_name = "CheJinWorkerClient"', build_script)
+        self.assertIn('dist\\CheJinWorkerClient', validate_script)
+        self.assertEqual(2, spec.count('name="CheJinWorkerClient"'))
+        self.assertIn('Join-Path $PSScriptRoot "CheJinWorkerClient.exe"', launcher)
+        for production_file in (build_script, validate_script, spec, launcher):
+            self.assertNotIn("车金Worker客户端", production_file)
 
     def test_windows_ci_publishes_a_verified_portable_zip(self):
         workflow = (
@@ -184,7 +211,7 @@ class PackagingScriptsTest(unittest.TestCase):
         self.assertIn("delivery ZIP does not contain the packaged runtime directory", workflow)
         self.assertIn("app_name = [string]$manifest.app_name", workflow)
         self.assertIn("delivery ZIP executable SHA256 mismatch", workflow)
-        self.assertIn("chejin-worker-v0.9.45-windows-x64.delivery.json", workflow)
+        self.assertIn("chejin-worker-v0.9.46-windows-x64.delivery.json", workflow)
         self.assertIn("CHEJIN_VISION_CLIENT_API_KEY", workflow)
         self.assertIn("vision_credential_embedded", workflow)
         self.assertIn("vision_configuration_locked", workflow)
@@ -192,6 +219,8 @@ class PackagingScriptsTest(unittest.TestCase):
         self.assertIn("diagnostic or manifest output leaked the Vision credential", workflow)
         self.assertIn("delivery manifest leaked the Vision credential", workflow)
         self.assertIn('Join-Path $verifiedPackageRoot "start-uat.ps1"', workflow)
+        self.assertIn('must be CheJinWorkerClient', workflow)
+        self.assertIn('must be CheJinWorkerClient.exe', workflow)
         self.assertIn("powershell.exe -NoProfile -NonInteractive", workflow)
         self.assertIn("validate-uat-launcher.ps1", workflow)
         self.assertIn('uat_launcher_utf8_bom_check = "passed"', workflow)
@@ -506,7 +535,7 @@ class PackagingScriptsTest(unittest.TestCase):
             [
                 {
                     "source_commit": (
-                            "53caedad5baece001659aafcb5d7f86d98933e27"
+                            "69c69a60b7e08a31f9d773864b14b35faf86754b"
                     ),
                     "scope": [
                         "exact_wechat_context_menu_classification",
@@ -695,6 +724,7 @@ class PackagingScriptsTest(unittest.TestCase):
                         "c2_contract_0_9_43_generated_schema",
                         "c2_contract_0_9_44_generated_schema",
                         "c2_contract_0_9_45_generated_schema",
+                        "c2_contract_0_9_46_generated_schema",
                         (
                             "business_viewport_geometry_independent_"
                             "continuity_contract"
@@ -728,9 +758,13 @@ class PackagingScriptsTest(unittest.TestCase):
             "53caedad5baece001659aafcb5d7f86d98933e27",
             provenance["integration_note"],
         )
-        self.assertIn("0.9.45", provenance["integration_note"])
         self.assertIn(
-            "四类 Sidecar 公开输出递归删除 Worker 专属身份字段",
+            "69c69a60b7e08a31f9d773864b14b35faf86754b",
+            provenance["integration_note"],
+        )
+        self.assertIn("0.9.46", provenance["integration_note"])
+        self.assertIn(
+            "只同步 0.9.46 生成合同/Schema",
             provenance["integration_note"],
         )
         self.assertIn(
@@ -761,10 +795,11 @@ class PackagingScriptsTest(unittest.TestCase):
             "unknown_fact_explicit_identity_gate_contract",
             provenance["chejin_overlays"],
         )
-        self.assertIn("不重复点击", provenance["integration_note"])
-        self.assertIn("旧剪贴板不能形成图片事实", provenance["integration_note"])
-        self.assertIn("无界面的语音/图片 ActionJournal 恢复", provenance["integration_note"])
-        self.assertIn("结束旧 Flow 后继续拉取其他任务", provenance["integration_note"])
+        self.assertIn("缺失或畸形证据", provenance["integration_note"])
+        self.assertIn("零 HTTP", provenance["integration_note"])
+        self.assertIn("解除 draining", provenance["integration_note"])
+        self.assertIn("post_index", provenance["integration_note"])
+        self.assertIn("new_suffix", provenance["integration_note"])
         self.assertIn(
             "immutable_visible_scan_frame_reuse_contract",
             provenance["chejin_overlays"],
@@ -777,15 +812,13 @@ class PackagingScriptsTest(unittest.TestCase):
             "send_s0_s1_s2_distinct_frame_local_reuse_contract",
             provenance["chejin_overlays"],
         )
-        self.assertIn("startup_layout_calibration", provenance["integration_note"])
-        self.assertIn("C1-C4 业务帧", provenance["integration_note"])
-        self.assertIn("OmniAuto 独占区域映射和坐标决策", provenance["integration_note"])
-        self.assertIn("删除统一激活成功布尔门禁", provenance["integration_note"])
-        self.assertIn("C1 保留八类真实变化画面", provenance["integration_note"])
-        self.assertIn("sent_ack 语义不变", provenance["integration_note"])
-        self.assertIn("manual_review_required", provenance["integration_note"])
-        self.assertIn("LEGACY_MEDIA_OWNER_UNKNOWN", provenance["integration_note"])
-        self.assertIn("OmniAuto 独立候选固定于", provenance["integration_note"])
+        self.assertIn("不重复点击", provenance["integration_note"])
+        self.assertIn("ActionJournal 恢复", provenance["integration_note"])
+        self.assertIn("确定性 Outbox", provenance["integration_note"])
+        self.assertIn("sent_ack", provenance["integration_note"])
+        self.assertIn("启动标定", provenance["integration_note"])
+        self.assertIn("区域坐标映射", provenance["integration_note"])
+        self.assertIn("Windows 实机 OCR/鼠标 UAT", provenance["integration_note"])
         self.assertEqual(
             provenance["historical_integrations"][0][
                 "chejin_integration_commit"
@@ -1075,6 +1108,8 @@ class PackagingScriptsTest(unittest.TestCase):
         self.assertIn('"uat-preflight-$timestamp.json"', text)
         self.assertIn("if ($preflight.ExitCode -ne 0)", text)
         self.assertIn("Start-Process -FilePath $exePath", text)
+        self.assertIn('Join-Path $PSScriptRoot "CheJinWorkerClient.exe"', text)
+        self.assertNotIn("车金Worker客户端.exe", text)
 
     def test_powershell_5_1_validator_checks_bom_and_real_parser(self):
         text = (ROOT / "scripts" / "validate-uat-launcher.ps1").read_text(
@@ -1105,7 +1140,7 @@ class PackagingScriptsTest(unittest.TestCase):
         self.assertIn('$packageDir = [string]$manifest.package_dir', workflow)
         self.assertIn('$exePath = [string]$manifest.exe_path', workflow)
         self.assertNotIn('dist\\车金Worker客户端', workflow)
-        self.assertIn('version -ne "0.9.45"', workflow)
+        self.assertIn('version -ne "0.9.46"', workflow)
         self.assertIn('tests_status -ne "passed"', workflow)
         self.assertIn('@("--omniauto-sidecar", "--help")', workflow)
         self.assertIn('@("--omniauto-ocr-probe")', workflow)

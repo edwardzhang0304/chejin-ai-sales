@@ -23,6 +23,7 @@ from .c2_contract import (
     contract_sha256,
     contract_values,
     observation_role_is_trusted,
+    validate_sequence_alignment_evidence,
     validate_slot_ledger_states,
 )
 from .storage import save_c2_state
@@ -1177,6 +1178,13 @@ def _build_message_ingest_payload_v3(
     observations = sidecar_payload.get("observations")
     if not isinstance(observations, list):
         raise ValueError("C2 V3 payload is missing observations")
+    authoritative_evidence_observations = sidecar_payload.get(
+        "authoritative_evidence_observations"
+    )
+    if authoritative_evidence_observations is not None and not isinstance(
+        authoritative_evidence_observations, list
+    ):
+        raise ValueError("C2_AUTHORITATIVE_OBSERVATIONS_INVALID")
     original_ordered_observations = ordered_message_viewport_observations(
         [item for item in observations if isinstance(item, dict)]
     )
@@ -1361,8 +1369,67 @@ def _build_message_ingest_payload_v3(
                 )
         sanitized_observations.append(observation)
     observations = sanitized_observations
+    sanitized_by_observation_id = {
+        str(item.get("observation_id") or "").strip(): dict(item)
+        for item in observations
+        if isinstance(item, dict)
+        and str(item.get("observation_id") or "").strip()
+    }
+    evidence_observations: list[Any] = []
+    for raw_item in (
+        authoritative_evidence_observations
+        if isinstance(authoritative_evidence_observations, list)
+        else observations
+    ):
+        if not isinstance(raw_item, dict):
+            evidence_observations.append(raw_item)
+            continue
+        observation_id = str(
+            raw_item.get("observation_id") or ""
+        ).strip()
+        if observation_id in sanitized_by_observation_id:
+            evidence_observations.append(
+                dict(sanitized_by_observation_id[observation_id])
+            )
+            continue
+        evidence_observation = _drop_image_runtime_fields(dict(raw_item))
+        for worker_key in (
+            "_worker_stable_id",
+            "_worker_identity_scope",
+            "_worker_image_action_summary",
+            "_worker_committed_message",
+            "_worker_ai_reply_receipt",
+            "_worker_voice_action_summary",
+        ):
+            evidence_observation.pop(worker_key, None)
+        if "_worker_legacy_dedupe_key" in evidence_observation:
+            raise ValueError("C2_LEGACY_IDENTITY_FIELD_FORBIDDEN")
+        if str(
+            evidence_observation.get("row_kind") or ""
+        ).strip().lower() == "image_bubble":
+            if isinstance(
+                evidence_observation.get("customer_image_understanding"),
+                dict,
+            ):
+                evidence_observation["customer_image_understanding"] = (
+                    _project_customer_image_understanding(
+                        evidence_observation.get(
+                            "customer_image_understanding"
+                        )
+                    )
+                )
+            if isinstance(
+                evidence_observation.get("visual_bridge_input"), dict
+            ):
+                evidence_observation["visual_bridge_input"] = (
+                    _project_visual_bridge_input(
+                        evidence_observation.get("visual_bridge_input")
+                    )
+                )
+        evidence_observations.append(evidence_observation)
+
     ordered_business_observations = ordered_message_viewport_observations(
-        [item for item in observations if isinstance(item, dict)]
+        [item for item in evidence_observations if isinstance(item, dict)]
     )
     full_business_projection = normalized_business_message_sequence(
         ordered_business_observations,
@@ -1903,23 +1970,13 @@ def _build_message_ingest_payload_v3(
         list(sidecar_payload.get("slot_ledger_states") or []),
         read_run_id=clean_read_run_id,
     )
-    sequence_alignment_evidence = sidecar_payload.get(
-        "sequence_alignment_evidence"
+    sequence_alignment_evidence = validate_sequence_alignment_evidence(
+        sidecar_payload.get("sequence_alignment_evidence"),
+        post_observation_ids=[
+            str(item.get("observation_id") or "").strip()
+            for item in ordered_business_observations
+        ],
     )
-    if not isinstance(sequence_alignment_evidence, dict):
-        raise ValueError("C2_SEQUENCE_ALIGNMENT_EVIDENCE_MISSING")
-    required_alignment_fields = {
-        "pre_sequence_source",
-        "pre_frame_id",
-        "post_frame_id",
-        "alignment_status",
-        "candidate_alignment_count",
-        "matched_pairs",
-        "old_tail_fully_consumed",
-        "new_suffix_observation_ids",
-    }
-    if not required_alignment_fields.issubset(sequence_alignment_evidence):
-        raise ValueError("C2_SEQUENCE_ALIGNMENT_EVIDENCE_INVALID")
     return {
         "contract_version": 3,
         "contract_revision": contract_revision(),
@@ -1941,7 +1998,10 @@ def _build_message_ingest_payload_v3(
             "ui_frame_invalidated": bool(
                 sidecar_payload.get("ui_frame_invalidated")
             ),
-            "observations": [dict(item) if isinstance(item, dict) else item for item in observations],
+            "observations": [
+                dict(item) if isinstance(item, dict) else item
+                for item in evidence_observations
+            ],
             "business_projection": [
                 dict(item) for item in full_business_projection
             ],

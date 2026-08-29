@@ -1,5 +1,6 @@
 from datetime import datetime
 import json
+import re
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -187,11 +188,58 @@ class WechatSequenceAlignmentEvidence(BaseModel):
 
     @model_validator(mode="after")
     def validate_safe_suffix(self):
+        if self.alignment_status == "not_required" and (
+            self.candidate_alignment_count != 0 or self.matched_pairs
+        ):
+            raise ValueError("无需对齐时不得声明候选或匹配对")
+        if (
+            self.alignment_status == "unique"
+            and self.candidate_alignment_count != 1
+        ):
+            raise ValueError("唯一对齐必须且只能有一个候选")
         if self.alignment_status in {"ambiguous", "unresolved"}:
             if self.old_tail_fully_consumed or self.new_suffix_observation_ids:
                 raise ValueError("非唯一对齐不得声明新增尾部")
         if self.new_suffix_observation_ids and not self.old_tail_fully_consumed:
             raise ValueError("新增尾部必须建立在旧尾部已完整消费之上")
+        if (
+            any(not str(item or "").strip() for item in self.new_suffix_observation_ids)
+            or len(self.new_suffix_observation_ids)
+            != len(set(self.new_suffix_observation_ids))
+        ):
+            raise ValueError("新增尾部 observation ID 不能为空或重复")
+        previous_pre_index = -1
+        previous_post_index = -1
+        pre_ids: set[str] = set()
+        post_ids: set[str] = set()
+        pre_indexes: set[int] = set()
+        post_indexes: set[int] = set()
+        for pair in self.matched_pairs:
+            if pair.identity_state in {"committed", "selected_action"}:
+                if not re.fullmatch(
+                    r"worker-message-[1-9]\d*",
+                    str(pair.worker_stable_id or ""),
+                ):
+                    raise ValueError("正式匹配对缺少合法 Worker 稳定身份")
+            elif pair.worker_stable_id:
+                raise ValueError("帧内未选择对象不得携带 Worker 稳定身份")
+            if (
+                pair.pre_observation_id in pre_ids
+                or pair.post_observation_id in post_ids
+                or pair.pre_index in pre_indexes
+                or pair.post_index in post_indexes
+                or pair.pre_index <= previous_pre_index
+                or pair.post_index <= previous_post_index
+            ):
+                raise ValueError("序列匹配对必须唯一且保持严格递增顺序")
+            pre_ids.add(pair.pre_observation_id)
+            post_ids.add(pair.post_observation_id)
+            pre_indexes.add(pair.pre_index)
+            post_indexes.add(pair.post_index)
+            previous_pre_index = pair.pre_index
+            previous_post_index = pair.post_index
+        if post_ids.intersection(self.new_suffix_observation_ids):
+            raise ValueError("同一 observation 不能同时是历史匹配和新增尾部")
         return self
 
 
@@ -475,6 +523,57 @@ class WechatMessageEvidence(BaseModel):
             raise ValueError(
                 "ActionJournal 无 UI 恢复不得声明当前画面失效"
             )
+        if self.sequence_alignment_evidence is not None and (
+            self.ingest_partition is None
+            or self.ingest_partition.index == self.ingest_partition.count
+        ):
+            ordered_observation_ids = [
+                str(item.get("observation_id") or "").strip()
+                for item in self.observations
+                if isinstance(item, dict)
+            ]
+            if (
+                any(not value for value in ordered_observation_ids)
+                or len(ordered_observation_ids)
+                != len(set(ordered_observation_ids))
+            ):
+                raise ValueError(
+                    "当前完整画面 observation ID 不能为空或重复"
+                )
+            observation_ids = set(ordered_observation_ids)
+            for pair in self.sequence_alignment_evidence.matched_pairs:
+                if (
+                    pair.post_index >= len(ordered_observation_ids)
+                    or ordered_observation_ids[pair.post_index]
+                    != pair.post_observation_id
+                ):
+                    raise ValueError(
+                        "序列匹配对 post_index 与当前完整画面位置不一致"
+                    )
+            claimed_post_ids = {
+                pair.post_observation_id
+                for pair in self.sequence_alignment_evidence.matched_pairs
+            }.union(
+                self.sequence_alignment_evidence.new_suffix_observation_ids
+            )
+            if not claimed_post_ids.issubset(observation_ids):
+                raise ValueError("序列对齐证据引用了当前完整画面以外的 observation")
+            suffix_ids = list(
+                self.sequence_alignment_evidence.new_suffix_observation_ids
+            )
+            if suffix_ids:
+                matched_pairs = (
+                    self.sequence_alignment_evidence.matched_pairs
+                )
+                suffix_start = (
+                    matched_pairs[-1].post_index + 1
+                    if matched_pairs
+                    else 0
+                )
+                if suffix_ids != ordered_observation_ids[suffix_start:]:
+                    raise ValueError(
+                        "新增后缀必须与当前完整画面的连续尾部完全一致"
+                    )
         return self
 
 

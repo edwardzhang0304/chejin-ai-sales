@@ -1956,6 +1956,29 @@ def has_pending_c2_outbox_for_read_run_id(read_run_id: str) -> bool:
     return row is not None
 
 
+def c2_outbox_capability_error_for_read_run_id(
+    read_run_id: str,
+) -> str:
+    """Return one permanent local/HTTP contract error for a read flow."""
+
+    clean_id = str(read_run_id or "").strip()
+    if not clean_id:
+        return ""
+    with db_connection() as conn:
+        row = conn.execute(
+            """
+            SELECT last_error
+            FROM c2_ingest_outbox
+            WHERE read_run_id = ?
+              AND status = 'capability_paused'
+            ORDER BY updated_at DESC, created_at DESC
+            LIMIT 1
+            """,
+            (clean_id,),
+        ).fetchone()
+    return str(row["last_error"] or "").strip() if row is not None else ""
+
+
 def has_c2_outbox_for_read_run_id(read_run_id: str) -> bool:
     """Return whether the read run has created any durable Outbox artifact."""
 

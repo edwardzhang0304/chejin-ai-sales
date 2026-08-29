@@ -12,9 +12,9 @@ if (-not [Uri]::TryCreate($ApiBaseUrl, [UriKind]::Absolute, [ref]$parsedUrl) -or
 }
 
 $normalizedApiBaseUrl = $ApiBaseUrl.TrimEnd("/")
-$exePath = Join-Path $PSScriptRoot "车金Worker客户端.exe"
+$exePath = Join-Path $PSScriptRoot "CheJinWorkerClient.exe"
 if (-not (Test-Path $exePath)) {
-  throw "未找到车金Worker客户端.exe。请完整解压 ZIP，不要单独复制启动脚本或 EXE。"
+  throw "未找到 CheJinWorkerClient.exe。请完整解压 ZIP，不要单独复制启动脚本或 EXE。"
 }
 
 $localAppData = [Environment]::GetFolderPath("LocalApplicationData")
