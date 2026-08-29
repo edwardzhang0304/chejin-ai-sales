@@ -221,14 +221,50 @@ class WechatVoiceNeighborPair(BaseModel):
 
 
 class WechatVoiceConfirmedActionMapping(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     canonical_action_id: str = Field(min_length=1, max_length=255)
     reserved_worker_stable_id: str = Field(min_length=1, max_length=128)
+    selected_action_token: str = Field(min_length=1, max_length=255)
+    pre_observation_id: str = Field(min_length=1, max_length=255)
+    trigger_observation_id: str = Field(default="", max_length=255)
+    physical_identity_inherited_from_prepare: bool = False
+    physical_action_count: int = Field(default=0, ge=0, le=1)
+    result_candidate_count: int = Field(default=0, ge=0, le=1)
+    stable_business_content_signature: str = Field(
+        default="",
+        max_length=64,
+        pattern="^(|[0-9a-f]{64})$",
+    )
+    result_screen_order: int = Field(default=-1, ge=-1)
     binding_confirmed: bool
     post_observation_id: str = Field(default="", max_length=255)
     derived_observation_ids: list[str] = Field(
         default_factory=list,
         max_length=50,
     )
+
+
+class WechatVoiceActionResultReceipt(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    schema_version: int = Field(ge=1, le=1)
+    canonical_action_id: str = Field(min_length=1, max_length=255)
+    reserved_worker_stable_id: str = Field(min_length=1, max_length=128)
+    selected_action_token: str = Field(min_length=1, max_length=255)
+    pre_observation_id: str = Field(min_length=1, max_length=255)
+    trigger_observation_id: str = Field(min_length=1, max_length=255)
+    post_observation_id: str = Field(min_length=1, max_length=255)
+    physical_identity_inherited_from_prepare: bool
+    physical_action_count: int = Field(ge=1, le=1)
+    result_candidate_count: int = Field(ge=1, le=1)
+    stable_business_content_signature: str = Field(
+        min_length=64,
+        max_length=64,
+        pattern="^[0-9a-f]{64}$",
+    )
+    result_screen_order: int = Field(ge=0)
+    binding_confirmed: bool
 
 
 class WechatVoiceActionEvidence(BaseModel):
@@ -248,10 +284,10 @@ class WechatVoiceActionEvidence(BaseModel):
         pattern="^[0-9a-f]{64}$",
     )
     transcript_binding_status: str = Field(
-        pattern="^(confirmed|failed|ambiguous)$"
+        pattern="^(confirmed|ambiguous)$"
     )
     transcript_binding_method: str = Field(
-        pattern="^(native_source_id|continuous_target_tracking|neighbor_scroll_alignment|none)$"
+        pattern="^(actual_action_result|none)$"
     )
     binding_candidate_count: int = Field(ge=0)
     tracking_frame_ids: list[str] = Field(default_factory=list, max_length=20)
@@ -264,6 +300,7 @@ class WechatVoiceActionEvidence(BaseModel):
         max_length=50,
     )
     native_source_message_id: str | None = Field(default=None, max_length=255)
+    action_result_receipt: WechatVoiceActionResultReceipt | None = None
     confirmed_action_mapping: WechatVoiceConfirmedActionMapping
     ui_action_performed: bool
     action_phase: str = Field(
@@ -291,15 +328,18 @@ class WechatVoiceActionEvidence(BaseModel):
         if self.action_phase != expected_phase:
             raise ValueError("语音绑定终态与动作阶段不一致")
 
-        confirmed = self.transcript_binding_status in {
-            "confirmed",
-            "failed",
-        }
+        confirmed = self.transcript_binding_status == "confirmed"
         if confirmed:
             if (
                 self.binding_candidate_count != 1
                 or mapping.binding_confirmed is not True
                 or not mapping.post_observation_id
+                or not mapping.trigger_observation_id
+                or mapping.physical_identity_inherited_from_prepare is not False
+                or mapping.physical_action_count != 1
+                or mapping.result_candidate_count != 1
+                or len(mapping.stable_business_content_signature) != 64
+                or mapping.result_screen_order < 0
             ):
                 raise ValueError("语音已结算事实缺少唯一动作绑定")
         elif (
@@ -309,59 +349,41 @@ class WechatVoiceActionEvidence(BaseModel):
             raise ValueError("歧义语音不得绑定正式消息身份")
 
         method = self.transcript_binding_method
-        native_id = str(self.native_source_message_id or "").strip()
-        if method == "continuous_target_tracking":
-            frames = [str(value or "").strip() for value in self.tracking_frame_ids]
-            if (
-                not confirmed
-                or native_id
-                or self.matched_neighbor_pairs
-                or len(frames) < 3
-                or any(not value for value in frames)
-                or len(set(frames)) != len(frames)
-                or len(self.tracking_edges) != len(frames) - 1
-                or frames[0] != self.pre_frame_id
-                or frames[-1] != self.post_frame_id
+        if method == "actual_action_result":
+            receipt = self.action_result_receipt
+            if not confirmed or receipt is None:
+                raise ValueError("语音实际动作结果回执不完整")
+            comparable_fields = (
+                "canonical_action_id",
+                "reserved_worker_stable_id",
+                "selected_action_token",
+                "pre_observation_id",
+                "trigger_observation_id",
+                "post_observation_id",
+                "physical_identity_inherited_from_prepare",
+                "physical_action_count",
+                "result_candidate_count",
+                "stable_business_content_signature",
+                "result_screen_order",
+                "binding_confirmed",
+            )
+            if any(
+                getattr(mapping, field) != getattr(receipt, field)
+                for field in comparable_fields
             ):
-                raise ValueError("连续语音跟踪证据不完整")
-            previous_observation_id = self.selected_pre_observation_id
-            for index, edge in enumerate(self.tracking_edges):
-                if (
-                    edge.from_frame_id != frames[index]
-                    or edge.to_frame_id != frames[index + 1]
-                    or edge.from_observation_id
-                    != previous_observation_id
-                ):
-                    raise ValueError("连续语音跟踪边未首尾相接")
-                previous_observation_id = edge.to_observation_id
-            if previous_observation_id != mapping.post_observation_id:
-                raise ValueError("连续语音跟踪未连接到最终绑定观察")
-        elif method == "native_source_id":
+                raise ValueError("语音动作映射与实际动作回执不一致")
             if (
-                not confirmed
-                or not native_id
-                or self.tracking_frame_ids
-                or self.tracking_edges
-                or self.matched_neighbor_pairs
+                receipt.physical_identity_inherited_from_prepare is not False
+                or receipt.physical_action_count != 1
+                or receipt.result_candidate_count != 1
+                or receipt.binding_confirmed is not True
             ):
-                raise ValueError("语音原生身份绑定证据不合法")
-        elif method == "neighbor_scroll_alignment":
-            deltas = [pair.scroll_delta_y for pair in self.matched_neighbor_pairs]
-            if (
-                not confirmed
-                or native_id
-                or self.tracking_frame_ids
-                or self.tracking_edges
-                or len(deltas) < 2
-                or max(deltas) - min(deltas) > 8.0
-            ):
-                raise ValueError("语音邻居滚动对齐证据不合法")
+                raise ValueError("语音实际动作结果不是唯一完整回执")
         elif (
             self.transcript_binding_status != "ambiguous"
-            or native_id
-            or self.matched_neighbor_pairs
+            or self.action_result_receipt is not None
         ):
-            raise ValueError("语音无绑定方法只允许歧义终态")
+            raise ValueError("语音无动作结果只允许歧义终态")
         return self
 
 
@@ -421,9 +443,6 @@ class WechatMessageEvidence(BaseModel):
             "MESSAGE_IDENTITY_UNCONFIRMED",
             "MESSAGE_CROSS_ROUND_IDENTITY_AMBIGUOUS",
             "C2_MESSAGE_HISTORY_GAP",
-            "C2_IMAGE_IDENTITY_CONTRACT_INVALID",
-            "C2_VOICE_IDENTITY_CONTRACT_INVALID",
-            "C2_VOICE_RESULT_AMBIGUOUS",
         }
         for detail in self.flow_gate_details:
             if detail.error_code not in recoverable_identity_codes:

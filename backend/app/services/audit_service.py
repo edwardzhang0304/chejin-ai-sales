@@ -36,6 +36,7 @@ EVENT_NAMES: dict[str, str] = {
     "worker_binding_reset": "重置 Worker 绑定",
     "worker_inflight_failed_before_message_action": "读取动作前失败结算",
     "worker_inflight_read_failed_no_fact": "读取无可信事实失败结算",
+    "worker_inflight_technical_failed": "客户端技术故障结算",
     "worker_legacy_media_recovery_settled": "旧媒体恢复已结算",
     "worker_legacy_media_owner_unknown": "旧媒体归属待人工检查",
     "leads_exported": "导出选中线索",

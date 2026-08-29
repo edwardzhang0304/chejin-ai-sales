@@ -30,6 +30,11 @@ from .pre_send_checkpoint import (
     canonical_sha256 as pre_send_canonical_sha256,
     reply_fact_evidence_for_observation,
 )
+from .message_viewport_projection import (
+    boundary_tokens_for_observations,
+    normalized_business_message_sequence,
+    ordered_message_viewport_observations,
+)
 
 
 IMAGE_PERSISTENCE_POLICY = dict(c2_contract_v3().get("image_persistence_policy") or {})
@@ -43,6 +48,13 @@ IMAGE_RUNTIME_FIELD_PREFIXES = (
 )
 
 FORMAL_C2_REMARK_CODE_RE = re.compile(r"CJ[A-Z0-9]{6}")
+
+
+def _is_sha256(value: object) -> bool:
+    text = str(value or "").strip().lower()
+    return len(text) == 64 and all(
+        character in "0123456789abcdef" for character in text
+    )
 
 
 def _media_message_commit_evidence(
@@ -84,8 +96,8 @@ def _media_message_commit_evidence(
         ),
     }
     if committed.message_type == "image":
-        action_receipt["image_visual_fingerprint"] = str(
-            proof.get("image_visual_fingerprint") or ""
+        action_receipt["image_sha256"] = str(
+            proof.get("image_sha256") or ""
         ).strip().lower()
     required_values = [
         action_receipt["canonical_action_id"],
@@ -103,6 +115,10 @@ def _media_message_commit_evidence(
         or (
             committed.message_type == "voice"
             and not action_receipt["selected_action_token_sha256"]
+        )
+        or (
+            committed.message_type == "image"
+            and not _is_sha256(action_receipt.get("image_sha256"))
         )
     ):
         raise ValueError("MESSAGE_ACTION_RECEIPT_INCOMPLETE")
@@ -660,23 +676,16 @@ def validate_committed_image_identity(
         return normalized
 
     observation_id = str(observation.get("observation_id") or "").strip()
-    image_anchor = (
-        observation.get("image_physical_anchor")
-        if isinstance(observation.get("image_physical_anchor"), dict)
-        else {}
-    )
-    fingerprint = str(
-        image_anchor.get("bubble_visual_fingerprint") or ""
-    ).strip()
-    summary = observation.get("_worker_image_action_summary")
+    raw_summary = observation.get("_worker_image_action_summary")
+    summary = raw_summary if isinstance(raw_summary, dict) else {}
     mapping = (
         summary.get("confirmed_action_mapping")
-        if isinstance(summary, dict)
-        and isinstance(summary.get("confirmed_action_mapping"), dict)
+        if isinstance(summary.get("confirmed_action_mapping"), dict)
         else {}
     )
     action_id = str(mapping.get("canonical_action_id") or "").strip()
-    if not all((observation_id, fingerprint, action_id)):
+    image_sha256 = str(summary.get("image_sha256") or "").strip().lower()
+    if not all((observation_id, action_id)) or not _is_sha256(image_sha256):
         raise ValueError("C2_IMAGE_IDENTITY_CONTRACT_INVALID")
     if (
         str(mapping.get("reserved_worker_stable_id") or "").strip()
@@ -685,8 +694,17 @@ def validate_committed_image_identity(
         or str(mapping.get("post_observation_id") or "").strip()
         != observation_id
         or mapping.get("binding_confirmed") is not True
-        or str(summary.get("image_visual_fingerprint") or "").strip()
-        != fingerprint
+        or mapping.get("physical_identity_inherited_from_prepare") is not False
+        or str(mapping.get("trigger_observation_id") or "").strip()
+        != observation_id
+        or not isinstance(mapping.get("result_screen_order"), int)
+        or int(mapping.get("result_screen_order")) < 0
+        or int(
+            summary.get("result_screen_order", -1)
+            if isinstance(summary, dict)
+            else -1
+        )
+        != int(mapping.get("result_screen_order"))
     ):
         raise ValueError("C2_IMAGE_IDENTITY_CONTRACT_INVALID")
     normalized["formalization_proof"] = {
@@ -696,8 +714,11 @@ def validate_committed_image_identity(
             mapping.get("pre_observation_id") or ""
         ).strip(),
         "post_observation_id": observation_id,
+        "trigger_observation_id": observation_id,
+        "physical_identity_inherited_from_prepare": False,
+        "result_screen_order": int(mapping["result_screen_order"]),
         "binding_confirmed": True,
-        "image_visual_fingerprint": fingerprint,
+        "image_sha256": image_sha256,
     }
     return normalized
 
@@ -721,9 +742,10 @@ def confirmed_image_identity_receipt(
 ) -> dict[str, Any] | None:
     """Validate the sole provisional-to-committed image transition.
 
-    A Vision success is only business content.  It cannot commit the message
-    identity unless the exact selected action, reservation, observation and
-    stable image fingerprint are all confirmed by the same action receipt.
+    A Vision success is only business content. It can commit the reserved
+    identity only when the current-frame target, real copied bytes and exact
+    Journal action are confirmed by one receipt. The prepare-frame bubble
+    crop and observation id remain audit evidence, never identity proof.
     """
 
     if str(
@@ -735,16 +757,14 @@ def confirmed_image_identity_receipt(
         return None
     stable_id = str(observation.get("_worker_stable_id") or "").strip()
     observation_id = str(observation.get("observation_id") or "").strip()
-    image_anchor = (
-        observation.get("image_physical_anchor")
-        if isinstance(observation.get("image_physical_anchor"), dict)
-        else {}
-    )
-    fingerprint = str(
-        image_anchor.get("bubble_visual_fingerprint") or ""
-    ).strip()
     action_id = str(receipt.get("canonical_action_id") or "").strip()
-    if not all((stable_id, observation_id, fingerprint, action_id)):
+    trigger_observation_id = str(
+        receipt.get("trigger_observation_id")
+        or receipt.get("post_observation_id")
+        or ""
+    ).strip()
+    image_sha256 = str(receipt.get("image_sha256") or "").strip().lower()
+    if not all((stable_id, observation_id, action_id, trigger_observation_id)):
         return None
     if (
         str(receipt.get("reserved_worker_stable_id") or "").strip()
@@ -752,9 +772,12 @@ def confirmed_image_identity_receipt(
         or not str(receipt.get("pre_observation_id") or "").strip()
         or str(receipt.get("post_observation_id") or "").strip()
         != observation_id
+        or trigger_observation_id != observation_id
         or receipt.get("binding_confirmed") is not True
-        or str(receipt.get("image_visual_fingerprint") or "").strip()
-        != fingerprint
+        or receipt.get("physical_identity_inherited_from_prepare") is not False
+        or not isinstance(receipt.get("result_screen_order"), int)
+        or int(receipt.get("result_screen_order")) < 0
+        or not _is_sha256(image_sha256)
     ):
         return None
     return {
@@ -774,9 +797,12 @@ def confirmed_image_identity_receipt(
         "pre_observation_id": str(
             receipt.get("pre_observation_id") or ""
         ).strip(),
-        "post_observation_id": observation_id,
+        "post_observation_id": trigger_observation_id,
+        "trigger_observation_id": trigger_observation_id,
+        "physical_identity_inherited_from_prepare": False,
+        "result_screen_order": int(receipt["result_screen_order"]),
         "binding_confirmed": True,
-        "image_visual_fingerprint": fingerprint,
+        "image_sha256": image_sha256,
     }
 
 
@@ -823,6 +849,11 @@ def apply_image_terminal_result(observation: dict[str, Any], result: dict[str, A
                 "reason_detail": "confirmed_image_identity_receipt_missing_or_invalid",
             }
         else:
+            # The committed observation is the target actually selected in
+            # the execute frame, not the prepare-frame audit row.
+            enriched["observation_id"] = str(
+                receipt["post_observation_id"]
+            )
             enriched["_worker_identity_scope"] = "committed"
             confirmed_mapping = {
                 key: receipt[key]
@@ -831,6 +862,9 @@ def apply_image_terminal_result(observation: dict[str, Any], result: dict[str, A
                     "reserved_worker_stable_id",
                     "pre_observation_id",
                     "post_observation_id",
+                    "trigger_observation_id",
+                    "physical_identity_inherited_from_prepare",
+                    "result_screen_order",
                     "binding_confirmed",
                 )
             }
@@ -842,9 +876,10 @@ def apply_image_terminal_result(observation: dict[str, Any], result: dict[str, A
                 )
             enriched["_worker_image_action_summary"] = {
                 "confirmed_action_mapping": confirmed_mapping,
-                "image_visual_fingerprint": receipt[
-                    "image_visual_fingerprint"
-                ],
+                "image_sha256": receipt["image_sha256"],
+                "result_screen_order": int(
+                    receipt["result_screen_order"]
+                ),
             }
             enriched["_worker_committed_message"] = (
                 committed_identity_record(
@@ -1089,6 +1124,17 @@ def voice_transcription_meta(
         "confirmed_action_mapping": dict(
             voice_transcription_summary.get("confirmed_action_mapping") or {}
         ),
+        # Transport the exact Sidecar receipt that proved the physical action
+        # result.  The Worker must not rebuild this from text, coordinates or
+        # tracking evidence because doing so would create a second identity
+        # decision outside the Sidecar -> Worker hand-off.
+        "action_result_receipt": dict(
+            voice_transcription_summary.get("action_result_receipt") or {}
+        )
+        if isinstance(
+            voice_transcription_summary.get("action_result_receipt"), dict
+        )
+        else None,
     }
     if isinstance(message, dict):
         meta["message"] = {
@@ -1131,6 +1177,20 @@ def _build_message_ingest_payload_v3(
     observations = sidecar_payload.get("observations")
     if not isinstance(observations, list):
         raise ValueError("C2 V3 payload is missing observations")
+    original_ordered_observations = ordered_message_viewport_observations(
+        [item for item in observations if isinstance(item, dict)]
+    )
+    committed_boundary_tokens_by_index = boundary_tokens_for_observations(
+        original_ordered_observations,
+        committed_only=True,
+    )
+    committed_boundary_tokens_by_observation_id = {
+        str(observation.get("observation_id") or "").strip(): sorted(
+            committed_boundary_tokens_by_index.get(index, set())
+        )
+        for index, observation in enumerate(original_ordered_observations)
+        if str(observation.get("observation_id") or "").strip()
+    }
     worker_stable_ids: dict[str, str] = {}
     worker_committed_messages: dict[str, dict[str, Any]] = {}
     worker_ai_reply_receipts: dict[str, dict[str, Any]] = {}
@@ -1301,6 +1361,21 @@ def _build_message_ingest_payload_v3(
                 )
         sanitized_observations.append(observation)
     observations = sanitized_observations
+    ordered_business_observations = ordered_message_viewport_observations(
+        [item for item in observations if isinstance(item, dict)]
+    )
+    full_business_projection = normalized_business_message_sequence(
+        ordered_business_observations,
+        message_viewport_bounds=None,
+    )
+    business_projection_by_observation_id = {
+        str(observation.get("observation_id") or "").strip(): dict(fact)
+        for observation, fact in zip(
+            ordered_business_observations,
+            full_business_projection,
+        )
+        if str(observation.get("observation_id") or "").strip()
+    }
     allowed_roles = contract_values("sender_roles")
     allowed_types = contract_values("message_types")
     row_rules = contract_row_rules()
@@ -1404,6 +1479,73 @@ def _build_message_ingest_payload_v3(
             # Position is attached only after identity generation. Screen
             # coordinates must never change dedupe or source identity.
             "message_position": message_position,
+            # Produced by the one shared five-field projection.  Backend may
+            # freeze this value into a checkpoint, but must not recalculate a
+            # visual/identity rule of its own.
+            "business_projection": dict(
+                business_projection_by_observation_id.get(
+                    str(source_observation.get("observation_id") or "")
+                    .strip(),
+                    {},
+                )
+            ),
+            "strong_boundary_tokens": list(
+                committed_boundary_tokens_by_observation_id.get(
+                    str(source_observation.get("observation_id") or "")
+                    .strip(),
+                    [],
+                )
+            ),
+            # Persist the exact Worker-created committed identity object.
+            # Backend may return it in a later identity checkpoint, but must
+            # neither recreate nor reinterpret this proof.
+            "message_identity_commit_record": (
+                dict(source.get("_worker_committed_message") or {})
+                if isinstance(
+                    source.get("_worker_committed_message"), dict
+                )
+                else {}
+            ),
+            "message_identity_runtime_evidence": {
+                key: dict(source.get(key) or {})
+                for key in (
+                    "_worker_voice_action_summary",
+                    "_worker_image_action_summary",
+                    "_worker_ai_reply_receipt",
+                )
+                if isinstance(source.get(key), dict)
+                and source.get(key)
+            },
+            "strong_boundary_anchor": (
+                {
+                    "native_source_message_id": str(
+                        source_observation.get(
+                            "native_source_message_id"
+                        )
+                        or (
+                            source_observation.get("source_message")
+                            if isinstance(
+                                source_observation.get("source_message"),
+                                dict,
+                            )
+                            else {}
+                        ).get("native_source_message_id")
+                        or ""
+                    ).strip(),
+                    "normalized_content": str(
+                        source_observation.get("content_clean")
+                        or source_observation.get("content")
+                        or ""
+                    ).strip(),
+                    "sender_role": role,
+                    "message_type": msg_type,
+                }
+                if committed_boundary_tokens_by_observation_id.get(
+                    str(source_observation.get("observation_id") or "")
+                    .strip()
+                )
+                else {}
+            ),
         }
         if msg_type in {"voice", "image"}:
             commit_evidence = _media_message_commit_evidence(
@@ -1413,6 +1555,22 @@ def _build_message_ingest_payload_v3(
             )
             if commit_evidence:
                 raw_payload["message_commit_evidence"] = commit_evidence
+                if msg_type == "image":
+                    # Persist the exact bytes digest produced by the current
+                    # image action.  Runtime bubble fingerprints are removed
+                    # above on purpose; the backend must validate the formal
+                    # clipboard receipt, not reconstruct image identity from
+                    # pixels or coordinates.
+                    raw_payload["image_sha256"] = str(
+                        (
+                            commit_evidence.get("action_receipt")
+                            if isinstance(
+                                commit_evidence.get("action_receipt"), dict
+                            )
+                            else {}
+                        ).get("image_sha256")
+                        or ""
+                    ).strip().lower()
         if voice_meta:
             raw_payload["voice_transcription"] = content
             raw_payload["voice_transcription_meta"] = voice_meta
@@ -1784,6 +1942,9 @@ def _build_message_ingest_payload_v3(
                 sidecar_payload.get("ui_frame_invalidated")
             ),
             "observations": [dict(item) if isinstance(item, dict) else item for item in observations],
+            "business_projection": [
+                dict(item) for item in full_business_projection
+            ],
             "sidecar_run_id": message_sidecar_id,
             "artifact_dir": sidecar_payload.get("artifact_dir"),
             "review_path": sidecar_payload.get("review_path"),

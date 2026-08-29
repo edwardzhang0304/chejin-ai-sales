@@ -105,6 +105,8 @@ RECOVERABLE_IDENTITY_UNRESOLVED_GATE_CODES = {
     "MESSAGE_IDENTITY_UNCONFIRMED",
     "MESSAGE_CROSS_ROUND_IDENTITY_AMBIGUOUS",
     "C2_MESSAGE_HISTORY_GAP",
+}
+MEDIA_ACTION_TECHNICAL_FAILURE_CODES = {
     "C2_IMAGE_IDENTITY_CONTRACT_INVALID",
     "C2_VOICE_IDENTITY_CONTRACT_INVALID",
     "C2_VOICE_RESULT_AMBIGUOUS",
@@ -531,8 +533,13 @@ def _identity_checkpoint(
         )
         if match:
             max_sequence = max(max_sequence, int(match.group(1)))
-    recent_messages: list[dict[str, str]] = []
+    recent_messages: list[dict[str, object]] = []
     for message in reversed(events):
+        raw_payload = (
+            message.raw_payload
+            if isinstance(message.raw_payload, dict)
+            else {}
+        )
         stable_id = _worker_stable_id(message)
         native_source_message_id, frame_visual_id = (
             _checkpoint_identity_evidence(message)
@@ -560,10 +567,62 @@ def _identity_checkpoint(
                 ),
                 "native_source_message_id": native_source_message_id,
                 "frame_visual_id": frame_visual_id,
+                # These values were produced by the one Worker/Sidecar
+                # shared projection when the fact was committed.  Backend
+                # only freezes and returns them; it must not recalculate a
+                # visual sequence or infer cross-frame identity.
+                "business_projection": (
+                    dict(raw_payload.get("business_projection") or {})
+                    if isinstance(
+                        raw_payload.get("business_projection"), dict
+                    )
+                    else {}
+                ),
+                "strong_boundary_tokens": [
+                    str(token)
+                    for token in (
+                        raw_payload.get("strong_boundary_tokens") or []
+                    )
+                    if isinstance(token, str) and token.strip()
+                ],
+                "message_identity_commit_record": (
+                    dict(
+                        raw_payload.get(
+                            "message_identity_commit_record"
+                        )
+                        or {}
+                    )
+                    if isinstance(
+                        raw_payload.get(
+                            "message_identity_commit_record"
+                        ),
+                        dict,
+                    )
+                    else {}
+                ),
+                "message_identity_runtime_evidence": (
+                    {
+                        str(key): dict(value)
+                        for key, value in (
+                            raw_payload.get(
+                                "message_identity_runtime_evidence"
+                            )
+                            or {}
+                        ).items()
+                        if isinstance(value, dict)
+                    }
+                    if isinstance(
+                        raw_payload.get(
+                            "message_identity_runtime_evidence"
+                        ),
+                        dict,
+                    )
+                    else {}
+                ),
             }
         )
     return {
-        "version": 2,
+        "version": 3,
         "next_sequence_floor": max_sequence + 1,
         "recent_messages": recent_messages,
     }
@@ -4471,6 +4530,22 @@ def ingest_messages(db: Session, worker: Worker, payload: WechatMessageIngestReq
         if not gate_is_self_media_warning(code)
         and not gate_is_proven_before_latest_human_sales(code)
     ]
+    technical_media_failures = [
+        code
+        for code in flow_gate_errors
+        if code in MEDIA_ACTION_TECHNICAL_FAILURE_CODES
+    ]
+    if technical_media_failures:
+        # A media action invariant failed inside the client.  It is neither a
+        # customer identity ambiguity nor a business handoff condition.  The
+        # Worker must keep its Journal/evidence and fault locally; accepting an
+        # empty ingest here would incorrectly disguise a technical incident as
+        # recovery or sales handoff.
+        raise AppError(
+            technical_media_failures[0],
+            "媒体动作技术故障不得作为消息恢复或转人工门禁上报",
+            409,
+        )
     temporary_capability_gates = [
         code
         for code in flow_gate_errors

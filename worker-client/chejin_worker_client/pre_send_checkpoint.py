@@ -13,12 +13,20 @@ import json
 from typing import Any
 
 from .message_contract import canonical_message_identity_text
+from .message_viewport_projection import (
+    boundary_tokens_for_observations,
+    compare_business_viewport_continuity,
+    normalized_business_message_sequence,
+    ordered_message_viewport_observations,
+)
 
 
-CHECKPOINT_REVISION = 3
+CHECKPOINT_REVISION = 5
 CHECKPOINT_RESULTS = {
     "checkpoint_equal",
     "checkpoint_unique_prefix_with_suffix",
+    "checkpoint_unique_viewport_slide_with_suffix",
+    "checkpoint_continuity_context_expansion_required",
     "checkpoint_not_continuous",
 }
 IGNORED_NON_INGESTIBLE_ROW_KINDS = {"call_event", "system_banner"}
@@ -69,7 +77,7 @@ def stable_fact_signature(
     item_state: object,
     content: object = "",
     voice_duration: object = "",
-    image_visual_fingerprint: object = "",
+    image_content_sha256: object = "",
     error_code: object = "",
 ) -> str:
     normalized_type = str(message_type or "").strip().lower()
@@ -79,11 +87,7 @@ def stable_fact_signature(
         "message_type": normalized_type,
         "item_state": normalized_state,
     }
-    if normalized_type == "image":
-        material["image_visual_fingerprint"] = str(
-            image_visual_fingerprint or ""
-        ).strip().lower()
-    else:
+    if normalized_type != "image":
         material["normalized_content_hash"] = hashlib.sha256(
             canonical_message_identity_text(content).encode("utf-8")
         ).hexdigest()
@@ -91,6 +95,10 @@ def stable_fact_signature(
             material["voice_duration"] = _normalize_voice_duration_value(
                 voice_duration
             )
+    else:
+        # The formal image receipt remains strict. Its one-frame bubble/ROI
+        # digest is not a cross-frame business fact.
+        _ = image_content_sha256
     if normalized_state == "failed":
         material["error_code"] = str(error_code or "").strip()
     return canonical_sha256(material)
@@ -216,7 +224,7 @@ def checkpoint_binding_error(
     if not _is_sha256(digest) or digest != canonical_sha256(checkpoint):
         return "checkpoint_digest_mismatch"
     seen_stable_ids: set[str] = set()
-    for item in tail:
+    for index, item in enumerate(tail):
         if not isinstance(item, dict):
             return "checkpoint_item_invalid"
         stable_id = str(item.get("worker_stable_id") or "").strip()
@@ -224,19 +232,47 @@ def checkpoint_binding_error(
         message_type = str(item.get("message_type") or "").strip().lower()
         item_state = str(item.get("item_state") or "").strip().lower()
         signature = str(item.get("stable_fact_signature") or "").strip().lower()
-        continuity_basis = str(
-            item.get("continuity_basis") or ""
-        ).strip()
-        continuity_signature = str(
-            item.get("continuity_signature") or ""
-        ).strip().lower()
+        reply_fact_evidence = item.get("reply_fact_evidence")
+        business_projection = item.get("business_projection")
+        strong_boundary_tokens = item.get("strong_boundary_tokens")
+        commit_record = item.get("message_identity_commit_record")
+        runtime_evidence = item.get("message_identity_runtime_evidence")
         commit_basis = str(item.get("commit_basis") or "").strip()
         action_receipt_digest = str(
             item.get("action_receipt_digest") or ""
         ).strip().lower()
-        reply_fact_evidence = item.get("reply_fact_evidence")
-        physical_identity_confirmed = item.get(
-            "physical_identity_confirmed"
+        source_message_key = str(
+            item.get("source_message_key") or ""
+        ).strip()
+        business_projection_valid = bool(
+            isinstance(business_projection, dict)
+            and set(business_projection)
+            == {
+                "screen_order",
+                "sender_role",
+                "message_type",
+                "normalized_content_signature",
+                "media_state",
+            }
+            and business_projection.get("screen_order") == index
+            and str(business_projection.get("sender_role") or "")
+            .strip()
+            .lower()
+            == role
+            and str(business_projection.get("message_type") or "")
+            .strip()
+            .lower()
+            == message_type
+            and _is_sha256(
+                business_projection.get("normalized_content_signature")
+            )
+            and isinstance(strong_boundary_tokens, list)
+            and all(
+                isinstance(token, str) and bool(token.strip())
+                for token in strong_boundary_tokens
+            )
+            and len(strong_boundary_tokens)
+            == len(set(strong_boundary_tokens))
         )
         reply_fact_matches_item = bool(
             isinstance(reply_fact_evidence, dict)
@@ -253,25 +289,25 @@ def checkpoint_binding_error(
             .lower()
             == item_state
         )
-        terminal_reply_fact_valid = bool(
-            reply_fact_matches_item
-            and (
-                (
-                    message_type == "voice"
-                    and _is_sha256(
-                        reply_fact_evidence.get(
-                            "normalized_transcript_sha256"
-                        )
-                    )
-                )
-                or (
-                    message_type == "image"
-                    and _is_sha256(
-                        reply_fact_evidence.get(
-                            "exact_image_content_sha256"
-                        )
-                    )
-                )
+        commit_record_valid = bool(
+            isinstance(commit_record, dict)
+            and commit_record.get("object_type") == "committed_message"
+            and str(commit_record.get("worker_stable_id") or "").strip()
+            == stable_id
+            and str(commit_record.get("sender_role") or "").strip().lower()
+            == role
+            and str(commit_record.get("message_type") or "").strip().lower()
+            == message_type
+            and str(commit_record.get("commit_basis") or "").strip()
+            == commit_basis
+            and str(commit_record.get("observation_id") or "").strip()
+            and isinstance(commit_record.get("proof"), dict)
+        )
+        formal_media_action_valid = bool(
+            message_type not in {"voice", "image"}
+            or (
+                commit_basis == f"confirmed_{message_type}_action"
+                and _is_sha256(action_receipt_digest)
             )
         )
         if (
@@ -281,55 +317,13 @@ def checkpoint_binding_error(
             or message_type not in {"text", "voice", "image", "system"}
             or item_state not in {"completed", "failed"}
             or not _is_sha256(signature)
-            or continuity_basis not in {
-                "ordered_fact",
-                "native_source_message_id",
-                "two_sided_static_context",
-                "terminal_committed_fact_equivalence",
-                "unproven_media_continuity",
-            }
-            or (
-                continuity_basis == "unproven_media_continuity"
-                and continuity_signature
-            )
-            or (
-                continuity_basis != "unproven_media_continuity"
-                and not _is_sha256(continuity_signature)
-            )
             or not isinstance(reply_fact_evidence, dict)
-            or not isinstance(physical_identity_confirmed, bool)
-            or (
-                message_type in {"voice", "image"}
-                and continuity_basis
-                not in {
-                    "native_source_message_id",
-                    "two_sided_static_context",
-                    "terminal_committed_fact_equivalence",
-                    "unproven_media_continuity",
-                }
-            )
-            or (
-                message_type in {"text", "system"}
-                and continuity_basis != "ordered_fact"
-            )
-            or (
-                continuity_basis == "terminal_committed_fact_equivalence"
-                and (
-                    commit_basis not in TERMINAL_ACTION_COMMIT_BASES
-                    or commit_basis
-                    != f"confirmed_{message_type}_action"
-                    or not _is_sha256(action_receipt_digest)
-                    or physical_identity_confirmed is not False
-                    or not terminal_reply_fact_valid
-                )
-            )
-            or (
-                continuity_basis in {
-                    "native_source_message_id",
-                    "two_sided_static_context",
-                }
-                and physical_identity_confirmed is not True
-            )
+            or not business_projection_valid
+            or not reply_fact_matches_item
+            or not source_message_key
+            or not commit_record_valid
+            or not formal_media_action_valid
+            or not isinstance(runtime_evidence, dict)
         ):
             return "checkpoint_item_invalid"
         seen_stable_ids.add(stable_id)
@@ -354,108 +348,13 @@ def _message_type(observation: dict[str, Any]) -> str:
 
 
 def _image_fingerprint(observation: dict[str, Any]) -> str:
-    anchor = (
-        observation.get("image_physical_anchor")
-        if isinstance(observation.get("image_physical_anchor"), dict)
+    summary = (
+        observation.get("_worker_image_action_summary")
+        if isinstance(observation.get("_worker_image_action_summary"), dict)
         else {}
     )
-    return str(anchor.get("bubble_visual_fingerprint") or "").strip().lower()
-
-
-def _native_source_message_id(observation: dict[str, Any]) -> str:
-    source = (
-        observation.get("source_message")
-        if isinstance(observation.get("source_message"), dict)
-        else {}
-    )
-    explicit = str(
-        observation.get("native_source_message_id")
-        or source.get("native_source_message_id")
-        or ""
-    ).strip()
-    if explicit:
-        return explicit
-    adapter = str(
-        observation.get("source_adapter")
-        or source.get("source_adapter")
-        or ""
-    ).strip().lower()
-    raw_id = str(
-        source.get("id")
-        or source.get("message_id")
-        or observation.get("source_message_id")
-        or ""
-    ).strip()
-    if (
-        raw_id
-        and adapter not in {
-            "win32_ocr",
-            "wechat_win32_ocr",
-            "rpa_ocr",
-            "ocr_rpa",
-        }
-        and not raw_id.lower().startswith(
-            (
-                "win32_ocr:",
-                "wechat_win32_ocr:",
-                "ocr:",
-                "screen_ocr:",
-                "uia_ocr:",
-            )
-        )
-    ):
-        return raw_id
-    return ""
-
-
-def _media_continuity_anchor(
-    observation: dict[str, Any],
-    *,
-    message_type: str,
-) -> dict[str, Any]:
-    source = (
-        observation.get("source_message")
-        if isinstance(observation.get("source_message"), dict)
-        else {}
-    )
-    if message_type == "voice":
-        return {
-            "voice_anchor": str(
-                observation.get("parent_voice_anchor_key")
-                or observation.get("voice_anchor_key")
-                or source.get("parent_voice_anchor_key")
-                or source.get("voice_anchor_stable_key")
-                or source.get("voice_anchor_key")
-                or ""
-            ).strip(),
-            "voice_duration": str(
-                observation.get("voice_duration")
-                or source.get("voice_duration")
-                or observation.get("voice_duration_text")
-                or source.get("voice_duration_text")
-                or ""
-            ).strip(),
-        }
-    if message_type == "image":
-        anchor = (
-            observation.get("image_physical_anchor")
-            if isinstance(observation.get("image_physical_anchor"), dict)
-            else {}
-        )
-        return {
-            "bubble_visual_fingerprint": str(
-                anchor.get("bubble_visual_fingerprint") or ""
-            ).strip().lower(),
-            "preceding_stable_message": str(
-                anchor.get("preceding_stable_message") or ""
-            ).strip(),
-            "following_stable_message": str(
-                anchor.get("following_stable_message") or ""
-            ).strip(),
-            "occurrence_index": anchor.get("occurrence_index"),
-            "occurrence_count": anchor.get("occurrence_count"),
-        }
-    return {}
+    digest = str(summary.get("image_sha256") or "").strip().lower()
+    return f"sha256:{digest}" if _is_sha256(digest) else ""
 
 
 def observation_fact_sequence(
@@ -533,74 +432,204 @@ def observation_fact_sequence(
                     item_state=item_state,
                     content=content,
                     voice_duration=_normalized_voice_duration(raw),
-                    image_visual_fingerprint=image_fingerprint,
+                    image_content_sha256=image_fingerprint,
                     error_code=raw.get("error_code") or "",
                 ),
                 "reply_fact_evidence": reply_fact_evidence_for_observation(
                     raw,
                     item_state=item_state,
                 ),
-                "_native_source_message_id": (
-                    _native_source_message_id(raw)
-                ),
-                "_media_continuity_anchor": (
-                    _media_continuity_anchor(
-                        raw,
-                        message_type=message_type,
-                    )
-                ),
             }
         )
-    for index, item in enumerate(sequence):
-        native_id = str(
-            item.pop("_native_source_message_id", "") or ""
-        ).strip()
-        media_anchor = item.pop("_media_continuity_anchor", {})
-        signatures = {
-            "ordered_fact": str(
-                item.get("stable_fact_signature") or ""
-            )
-        }
-        if native_id:
-            signatures["native_source_message_id"] = canonical_sha256(
-                {
-                    "message_type": item.get("message_type"),
-                    "native_source_message_id": native_id,
-                }
-            )
-        if item.get("message_type") in {"voice", "image"}:
-            before = (
-                str(
-                    sequence[index - 1].get("stable_fact_signature") or ""
-                )
-                if index > 0
-                else ""
-            )
-            after = (
-                str(
-                    sequence[index + 1].get("stable_fact_signature") or ""
-                )
-                if index + 1 < len(sequence)
-                else ""
-            )
-            anchor_present = bool(
-                isinstance(media_anchor, dict)
-                and any(
-                    value not in (None, "", [], {})
-                    for value in media_anchor.values()
-                )
-            )
-            if before and after and anchor_present:
-                signatures["two_sided_static_context"] = canonical_sha256(
-                    {
-                        "message_type": item.get("message_type"),
-                        "media_anchor": media_anchor,
-                        "before_fact_signature": before,
-                        "after_fact_signature": after,
-                    }
-                )
-        item["continuity_signatures"] = signatures
     return sequence, errors
+
+
+def _compare_checkpoint_business_continuity_v5(
+    checkpoint: dict[str, Any],
+    observations: list[Any] | None,
+    *,
+    before_frame_id: str,
+    after_frame_id: str,
+    current_tail_complete: bool,
+    current_empty_viewport_confirmed: bool,
+    context_expansion_used: bool,
+    expanded_context_observations: list[Any] | None,
+) -> dict[str, Any]:
+    frozen = [
+        dict(item)
+        for item in (checkpoint.get("committed_tail") or [])
+        if isinstance(item, dict)
+    ]
+    ordered_current = ordered_message_viewport_observations(
+        [item for item in (observations or []) if isinstance(item, dict)]
+    )
+    current_projection = normalized_business_message_sequence(
+        ordered_current,
+        message_viewport_bounds=None,
+    )
+    old_projection = [
+        dict(item.get("business_projection"))
+        for item in frozen
+        if isinstance(item.get("business_projection"), dict)
+    ]
+    _current_facts, errors = observation_fact_sequence(ordered_current)
+    base = {
+        "comparison_result": "checkpoint_not_continuous",
+        "source_message_type": (
+            str(frozen[0].get("message_type") or "").strip().lower()
+            if len(frozen) == 1
+            else ""
+        ),
+        "before_frame_id": str(before_frame_id or "").strip(),
+        "after_frame_id": str(after_frame_id or "").strip(),
+        "checkpoint_count": len(frozen),
+        "current_count": len(current_projection),
+        "current_prefix_count": 0,
+        "matched_pairs": [],
+        "new_suffix_observation_ids": [],
+        "old_tail_fully_consumed": False,
+        "observation_errors": errors,
+        "physical_identity_confirmed": False,
+        "terminal_fact_equivalence_count": 0,
+        "context_expansion_used": bool(context_expansion_used),
+    }
+    if errors:
+        return {
+            **base,
+            "reason": str(errors[0].get("reason") or "observation_invalid"),
+        }
+    if not current_tail_complete:
+        return {**base, "reason": "checkpoint_current_tail_incomplete"}
+    if len(old_projection) != len(frozen):
+        return {**base, "reason": "checkpoint_business_projection_missing"}
+
+    old_tokens = {
+        index: set(item.get("strong_boundary_tokens") or [])
+        for index, item in enumerate(frozen)
+        if isinstance(item.get("strong_boundary_tokens"), list)
+        and item.get("strong_boundary_tokens")
+    }
+    current_tokens = boundary_tokens_for_observations(
+        ordered_current,
+        committed_only=False,
+    )
+    baseline_kind = str(checkpoint.get("baseline_kind") or "").strip()
+    decision = compare_business_viewport_continuity(
+        old_projection,
+        current_projection,
+        old_boundary_tokens=old_tokens,
+        new_boundary_tokens=current_tokens,
+        old_top_boundary_complete=(
+            baseline_kind == "friend_welcome_empty"
+            and not old_projection
+        ),
+        new_top_boundary_complete=bool(current_empty_viewport_confirmed),
+        context_expansion_used=context_expansion_used,
+        expanded_context_sequence=(
+            normalized_business_message_sequence(
+                ordered_message_viewport_observations(
+                    [
+                        item
+                        for item in expanded_context_observations
+                        if isinstance(item, dict)
+                    ]
+                ),
+                message_viewport_bounds=None,
+            )
+            if isinstance(expanded_context_observations, list)
+            else None
+        ),
+        expanded_context_boundary_tokens=(
+            boundary_tokens_for_observations(
+                [
+                    item
+                    for item in expanded_context_observations
+                    if isinstance(item, dict)
+                ],
+                committed_only=False,
+            )
+            if isinstance(expanded_context_observations, list)
+            else None
+        ),
+    )
+    relation = str(decision.get("relation") or "")
+    result_map = {
+        "business_sequence_equal": "checkpoint_equal",
+        "unique_tail_append": "checkpoint_unique_prefix_with_suffix",
+        "unique_viewport_slide_with_tail_append": (
+            "checkpoint_unique_viewport_slide_with_suffix"
+        ),
+        "continuity_context_expansion_required": (
+            "checkpoint_continuity_context_expansion_required"
+        ),
+        "business_sequence_not_continuous": "checkpoint_not_continuous",
+    }
+    mapped_result = result_map.get(relation, "checkpoint_not_continuous")
+    matched_pairs: list[dict[str, Any]] = []
+    for pair in decision.get("matched_pairs") or []:
+        if not isinstance(pair, dict):
+            continue
+        raw_old_index = pair.get("old_index")
+        raw_new_index = pair.get("new_index")
+        if (
+            isinstance(raw_old_index, bool)
+            or not isinstance(raw_old_index, int)
+            or isinstance(raw_new_index, bool)
+            or not isinstance(raw_new_index, int)
+        ):
+            continue
+        old_index = raw_old_index
+        new_index = raw_new_index
+        if not (
+            0 <= old_index < len(frozen)
+            and 0 <= new_index < len(ordered_current)
+        ):
+            continue
+        matched_pairs.append(
+            {
+                "pre_sequence_index": old_index,
+                "post_sequence_index": new_index,
+                "worker_stable_id": "",
+                "post_observation_id": str(
+                    ordered_current[new_index].get("observation_id") or ""
+                ).strip(),
+                "match_basis": "worker_business_viewport_continuity",
+                "physical_identity_confirmed": False,
+            }
+        )
+    suffix_indexes = [
+        int(index)
+        for index in (decision.get("new_suffix_indexes") or [])
+        if isinstance(index, int)
+        and not isinstance(index, bool)
+        and 0 <= index < len(ordered_current)
+    ]
+    suffix_ids = [
+        str(ordered_current[index].get("observation_id") or "").strip()
+        for index in suffix_indexes
+        if str(ordered_current[index].get("observation_id") or "").strip()
+    ]
+    prefix_count = min(suffix_indexes) if suffix_indexes else len(
+        ordered_current
+    )
+    return {
+        **base,
+        "comparison_result": mapped_result,
+        "reason": str(decision.get("reason") or ""),
+        "matched_pairs": matched_pairs,
+        "new_suffix_observation_ids": suffix_ids,
+        "old_tail_fully_consumed": relation
+        in {
+            "business_sequence_equal",
+            "unique_tail_append",
+            "unique_viewport_slide_with_tail_append",
+        },
+        "current_prefix_count": prefix_count,
+        "continuity_relation": relation,
+        "overlap_candidates": list(
+            decision.get("overlap_candidates") or []
+        ),
+    }
 
 
 def compare_checkpoint_to_observations(
@@ -610,203 +639,19 @@ def compare_checkpoint_to_observations(
     before_frame_id: str,
     after_frame_id: str,
     current_tail_complete: bool,
+    current_empty_viewport_confirmed: bool = False,
+    context_expansion_used: bool = False,
+    expanded_context_observations: list[Any] | None = None,
 ) -> dict[str, Any]:
-    current, errors = observation_fact_sequence(observations)
-    frozen = [
-        dict(item)
-        for item in (checkpoint.get("committed_tail") or [])
-        if isinstance(item, dict)
-    ]
-    base = {
-        "comparison_result": "checkpoint_not_continuous",
-        "before_frame_id": str(before_frame_id or "").strip(),
-        "after_frame_id": str(after_frame_id or "").strip(),
-        "checkpoint_count": len(frozen),
-        "current_count": len(current),
-        "matched_pairs": [],
-        "new_suffix_observation_ids": [],
-        "old_tail_fully_consumed": False,
-        "observation_errors": errors,
-        "physical_identity_confirmed": True,
-        "terminal_fact_equivalence_count": 0,
-    }
-    if errors:
-        base["reason"] = str(errors[0].get("reason") or "observation_invalid")
-        return base
-    if not current_tail_complete:
-        base["reason"] = "checkpoint_current_tail_incomplete"
-        return base
-    baseline_kind = str(
-        checkpoint.get("baseline_kind") or ""
-    ).strip()
-    if baseline_kind == "friend_welcome_empty":
-        if frozen:
-            base["reason"] = "empty_baseline_contains_committed_facts"
-            return base
-        suffix_ids = [
-            str(item.get("observation_id") or "").strip()
-            for item in current
-            if str(item.get("observation_id") or "").strip()
-        ]
-        base.update(
-            {
-                "comparison_result": (
-                    "checkpoint_equal"
-                    if not current
-                    else "checkpoint_unique_prefix_with_suffix"
-                ),
-                "reason": (
-                    "friend_welcome_empty_baseline_still_empty"
-                    if not current
-                    else "friend_welcome_cancelled_by_new_message_suffix"
-                ),
-                "new_suffix_observation_ids": suffix_ids,
-                "old_tail_fully_consumed": True,
-            }
-        )
-        return base
-    if len(current) < len(frozen):
-        base["reason"] = "checkpoint_rows_missing_or_viewport_truncated"
-        return base
-    matched_pairs: list[dict[str, Any]] = []
-    for index, expected in enumerate(frozen):
-        actual = current[index]
-        if (
-            str(expected.get("sender_role") or "").strip().lower()
-            != actual["sender_role"]
-            or str(expected.get("message_type") or "").strip().lower()
-            != actual["message_type"]
-            or str(expected.get("item_state") or "").strip().lower()
-            != actual["item_state"]
-            or str(expected.get("stable_fact_signature") or "").strip().lower()
-            != actual["stable_fact_signature"]
-        ):
-            base.update(
-                {
-                    "reason": "checkpoint_prefix_fact_mismatch",
-                    "mismatch_screen_order": index + 1,
-                }
-            )
-            return base
-        message_type = str(
-            expected.get("message_type") or ""
-        ).strip().lower()
-        continuity_basis = str(
-            expected.get("continuity_basis") or ""
-        ).strip()
-        expected_continuity = str(
-            expected.get("continuity_signature") or ""
-        ).strip().lower()
-        actual_continuity = str(
-            (actual.get("continuity_signatures") or {}).get(
-                continuity_basis
-            )
-            or ""
-        ).strip().lower()
-        match_basis = "pre_send_fact_checkpoint"
-        physical_identity_confirmed = True
-        if message_type in {"voice", "image"}:
-            if continuity_basis == "terminal_committed_fact_equivalence":
-                expected_reply_fact = expected.get("reply_fact_evidence")
-                actual_reply_fact = actual.get("reply_fact_evidence")
-                terminal_equivalent = bool(
-                    index == len(frozen) - 1
-                    and current_tail_complete
-                    and str(expected.get("commit_basis") or "").strip()
-                    in TERMINAL_ACTION_COMMIT_BASES
-                    and len(
-                        str(expected.get("action_receipt_digest") or "")
-                        .strip()
-                        .lower()
-                    )
-                    == 64
-                    and isinstance(expected_reply_fact, dict)
-                    and expected_reply_fact
-                    and actual_reply_fact == expected_reply_fact
-                    and expected_continuity
-                    == canonical_sha256(expected_reply_fact)
-                )
-                if not terminal_equivalent:
-                    base.update(
-                        {
-                            "reason": (
-                                "checkpoint_terminal_fact_equivalence_incomplete"
-                            ),
-                            "mismatch_screen_order": index + 1,
-                            "continuity_basis": continuity_basis,
-                        }
-                    )
-                    return base
-                match_basis = "terminal_committed_fact_equivalence"
-                physical_identity_confirmed = False
-                base["physical_identity_confirmed"] = False
-                base["terminal_fact_equivalence_count"] = int(
-                    base["terminal_fact_equivalence_count"]
-                ) + 1
-            elif (
-                continuity_basis
-                not in {
-                    "native_source_message_id",
-                    "two_sided_static_context",
-                }
-                or continuity_basis == "unproven_media_continuity"
-                or not expected_continuity
-                or actual_continuity != expected_continuity
-            ):
-                base.update(
-                    {
-                        "reason": (
-                            "checkpoint_media_continuity_unproven"
-                            if continuity_basis
-                            == "unproven_media_continuity"
-                            else "checkpoint_media_continuity_mismatch"
-                        ),
-                        "mismatch_screen_order": index + 1,
-                        "continuity_basis": continuity_basis,
-                    }
-                )
-                return base
-        matched_pairs.append(
-            {
-                "pre_sequence_index": index,
-                "post_sequence_index": index,
-                # Fact equivalence deliberately does not attach the frozen
-                # durable identity to the fresh Win32 observation.  The old
-                # stable id remains only inside the immutable checkpoint.
-                "worker_stable_id": (
-                    ""
-                    if not physical_identity_confirmed
-                    else str(
-                        expected.get("worker_stable_id") or ""
-                    ).strip()
-                ),
-                "post_observation_id": actual["observation_id"],
-                "match_basis": match_basis,
-                "physical_identity_confirmed": (
-                    physical_identity_confirmed
-                ),
-            }
-        )
-    new_suffix_ids = [
-        str(item.get("observation_id") or "").strip()
-        for item in current[len(frozen) :]
-        if str(item.get("observation_id") or "").strip()
-    ]
-    base.update(
-        {
-            "comparison_result": (
-                "checkpoint_equal"
-                if len(current) == len(frozen)
-                else "checkpoint_unique_prefix_with_suffix"
-            ),
-            "reason": (
-                "ordered_facts_equal"
-                if len(current) == len(frozen)
-                else "ordered_checkpoint_is_unique_prefix"
-            ),
-            "matched_pairs": matched_pairs,
-            "new_suffix_observation_ids": new_suffix_ids,
-            "old_tail_fully_consumed": True,
-        }
+    return _compare_checkpoint_business_continuity_v5(
+        checkpoint,
+        observations,
+        before_frame_id=before_frame_id,
+        after_frame_id=after_frame_id,
+        current_tail_complete=current_tail_complete,
+        current_empty_viewport_confirmed=(
+            current_empty_viewport_confirmed
+        ),
+        context_expansion_used=context_expansion_used,
+        expanded_context_observations=expanded_context_observations,
     )
-    return base

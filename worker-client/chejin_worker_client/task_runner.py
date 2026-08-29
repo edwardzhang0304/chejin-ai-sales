@@ -27,6 +27,7 @@ from .action_journal import (
     list_action_journals,
     remove_action_journal,
     read_action_journal,
+    record_action_business_continuity,
     record_action_sequence_alignment,
     update_action_journal_item,
 )
@@ -54,7 +55,10 @@ from .image_phase import (
     new_image_phase_result,
 )
 from .incident_evidence import mark_incident_recovered, redact_diagnostic
-from .message_contract import canonical_reply_text, reply_text_hash
+from .message_contract import (
+    canonical_reply_text,
+    reply_text_hash,
+)
 from .message_identity_commit import (
     IdentityCommitRejection,
     MediaActionTerminal,
@@ -64,7 +68,12 @@ from .message_identity_commit import (
     require_committed_message,
 )
 from .message_viewport_projection import (
-    normalized_message_viewport_sequence,
+    SEND_CONTEXT_BUSINESS_DIGEST_SCHEMA_VERSION,
+    boundary_tokens_for_observations,
+    compare_business_viewport_continuity,
+    normalized_business_message_sequence,
+    ordered_message_viewport_observations,
+    stable_business_content_signature,
 )
 from .pre_send_checkpoint import (
     canonical_sha256 as pre_send_checkpoint_sha256,
@@ -146,9 +155,6 @@ from .telemetry import (
     schedule_stage_event_upload,
 )
 from .sequence_alignment import (
-    align_committed_message_sequence,
-    apply_inherited_worker_ids,
-    build_post_action_observation_sequence,
     build_pre_action_identity_sequence,
     require_selected_only_media_reservation,
 )
@@ -271,7 +277,7 @@ def _validate_pre_send_context_guard(
         schema_version = int(guard.get("schema_version") or 0)
     except (TypeError, ValueError):
         schema_version = 0
-    if schema_version != 2:
+    if schema_version != SEND_CONTEXT_BUSINESS_DIGEST_SCHEMA_VERSION:
         return invalid("send_context_guard_schema_invalid")
     if not str(guard.get("layout_snapshot_id") or "").strip():
         return invalid("send_context_guard_layout_snapshot_missing")
@@ -329,7 +335,7 @@ def _validate_pre_send_context_guard(
         not isinstance(item, dict) for item in observations
     ):
         return invalid("send_context_observations_invalid")
-    projected_sequence = normalized_message_viewport_sequence(
+    projected_sequence = normalized_business_message_sequence(
         observations,
         message_viewport_bounds=viewport,
     )
@@ -343,6 +349,116 @@ def _validate_pre_send_context_guard(
         "message_count": message_count,
         "sequence_sha256": digest,
     }
+
+
+def _confirmed_empty_business_viewport(
+    payload: dict[str, Any],
+    target: WechatReadTarget,
+) -> bool:
+    """Require one complete, private, same-frame proof for an empty chat."""
+
+    observations = payload.get("observations")
+    guard = (
+        payload.get("send_context_guard")
+        if isinstance(payload.get("send_context_guard"), dict)
+        else {}
+    )
+    validation = _validate_pre_send_context_guard(
+        guard,
+        observations,
+    )
+    confirmation = (
+        payload.get("target_confirmation")
+        if isinstance(payload.get("target_confirmation"), dict)
+        else {}
+    )
+    type_evidence = (
+        confirmation.get("conversation_type_evidence")
+        if isinstance(
+            confirmation.get("conversation_type_evidence"), dict
+        )
+        else {}
+    )
+    return bool(
+        isinstance(observations, list)
+        and not observations
+        and validation.get("ok") is True
+        and int(guard.get("message_count") or 0) == 0
+        and guard.get("tail_complete") is True
+        and payload.get("tail_complete") is True
+        and str(payload.get("authoritative_frame_source") or "").strip()
+        in {"initial_read", "final_read"}
+        and payload.get("ui_frame_invalidated") is not True
+        and not bool(payload.get("history_gap"))
+        and not list(payload.get("flow_gate_errors") or [])
+        and not list(payload.get("observation_validation_errors") or [])
+        and str(confirmation.get("conversation_type") or "")
+        == "private"
+        and type_evidence.get("short_code_confirmed") is True
+        and str(target.remark_code or "").strip()
+    )
+
+
+def _bind_worker_continuity_contract_to_send_guard(
+    guard: dict[str, Any],
+    observations: list[dict[str, Any]],
+    *,
+    checkpoint: dict[str, Any],
+    checkpoint_comparison: dict[str, Any],
+    empty_welcome_baseline: bool,
+) -> dict[str, Any]:
+    """Attach evidence for the sole Worker comparator used by S0/S1/S2.
+
+    Sidecar remains responsible for obtaining each physical frame. It is not
+    allowed to invent a second cross-frame rule, so this guard carries only
+    the frozen Worker boundary evidence needed to call the same comparator
+    again for the new frame.
+    """
+
+    bound = dict(guard)
+    tokens_by_current_index = boundary_tokens_for_observations(
+        observations,
+        committed_only=True,
+    )
+    frozen_tail = [
+        item
+        for item in (checkpoint.get("committed_tail") or [])
+        if isinstance(item, dict)
+    ]
+    for pair in checkpoint_comparison.get("matched_pairs") or []:
+        if not isinstance(pair, dict):
+            continue
+        old_index = pair.get("pre_sequence_index")
+        current_index = pair.get("post_sequence_index")
+        if (
+            isinstance(old_index, bool)
+            or not isinstance(old_index, int)
+            or isinstance(current_index, bool)
+            or not isinstance(current_index, int)
+            or old_index < 0
+            or old_index >= len(frozen_tail)
+            or current_index < 0
+            or current_index >= len(observations)
+        ):
+            continue
+        tokens_by_current_index.setdefault(current_index, set()).update(
+            str(token or "").strip()
+            for token in (
+                frozen_tail[old_index].get("strong_boundary_tokens") or []
+            )
+            if str(token or "").strip()
+        )
+    bound["worker_continuity_contract"] = {
+        "schema_version": 1,
+        "comparator": "compare_business_viewport_continuity",
+        "old_boundary_tokens": {
+            str(index): sorted(tokens)
+            for index, tokens in sorted(tokens_by_current_index.items())
+            if tokens
+        },
+        "old_top_boundary_complete": bool(empty_welcome_baseline),
+    }
+    return bound
 
 
 def _pre_send_suffix_only_payload(
@@ -653,8 +769,6 @@ def _validated_image_frame_action_binding(
         "selected_action_token",
         "pre_frame_id",
         "selected_pre_observation_id",
-        "selected_target_fingerprint",
-        "message_viewport_change_digest",
     )
     if (
         int(binding.get("schema_version") or 0) != 1
@@ -666,257 +780,924 @@ def _validated_image_frame_action_binding(
         != "image"
         or str(binding.get("sender_role") or "").strip().lower()
         != str(observation.get("sender_role") or "").strip().lower()
-        or not isinstance(binding.get("ordered_frame_observations"), list)
-        or not binding.get("ordered_frame_observations")
-    ):
-        return {}
-    expected_digest = str(
-        (
-            payload.get("message_viewport_change_evidence") or {}
-        ).get("message_viewport_change_digest")
-        if isinstance(
-            payload.get("message_viewport_change_evidence"), dict
-        )
-        else ""
-    ).strip()
-    if not expected_digest:
-        expected_digest = str(
-            (payload.get("send_context_guard") or {}).get(
-                "message_viewport_change_digest"
-            )
-            if isinstance(payload.get("send_context_guard"), dict)
-            else ""
-        ).strip()
-    current_candidates = [
-        item
-        for item in (payload.get("observations") or [])
-        if isinstance(item, dict)
-        and str(item.get("row_kind") or "").strip().lower()
-        == "image_bubble"
-        and str(item.get("sender_role") or "").strip().lower()
-        in {"customer", "self"}
-        and isinstance(item.get("image_physical_anchor"), dict)
-        and str(
-            item.get("image_physical_anchor", {}).get(
-                "bubble_visual_fingerprint"
-            )
-            or ""
-        ).strip()
-    ]
-    if (
-        not expected_digest
-        or str(binding.get("message_viewport_change_digest") or "").strip()
-        != expected_digest
-        or int(binding.get("candidate_group_count") or 0)
-        != len(current_candidates)
-        or len(current_candidates) <= 0
+        or binding.get("physical_identity_inherited_from_prepare") is not False
+        or not isinstance(binding.get("selected_business_screen_order"), int)
+        or int(binding.get("selected_business_screen_order")) < 0
+        or str(binding.get("selection_policy") or "").strip()
+        != "worker_approved_current_business_occurrence"
     ):
         return {}
     return binding
 
 
-def align_post_action_observations(
-    pre_observations: list[Any],
-    post_observations: list[Any],
-    *,
-    confirmed_action_mapping: dict[str, Any] | None = None,
-) -> tuple[list[Any], dict[str, Any]]:
-    """Use the unified sequence aligner after a frame-changing UI action."""
+def _canonical_business_projection_digest(
+    sequence: list[dict[str, Any]],
+) -> str:
+    return hashlib.sha256(
+        json.dumps(
+            sequence,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
 
-    committed_ids: dict[str, str] = {}
-    selected_pre_observation_id = str(
-        (confirmed_action_mapping or {}).get("pre_observation_id") or ""
-    ).strip()
-    require_selected_only_media_reservation(
-        pre_observations,
-        selected_observation_id=selected_pre_observation_id,
-    )
-    for item in pre_observations:
-        if not isinstance(item, dict):
-            continue
-        observation_id = str(item.get("observation_id") or "").strip()
-        stable_id = str(item.get("_worker_stable_id") or "").strip()
-        if not observation_id or not stable_id:
-            continue
-        if observation_id == selected_pre_observation_id:
-            continue
-        committed_ids[observation_id] = stable_id
-    mapping = (
-        dict(confirmed_action_mapping)
-        if isinstance(confirmed_action_mapping, dict)
+
+def _business_projection_for_payload(
+    payload: dict[str, Any],
+    observations: list[Any] | None = None,
+) -> list[dict[str, Any]]:
+    guard = (
+        payload.get("send_context_guard")
+        if isinstance(payload.get("send_context_guard"), dict)
+        else payload.get("message_viewport_change_evidence")
+        if isinstance(payload.get("message_viewport_change_evidence"), dict)
         else {}
     )
-    pre_sequence = build_pre_action_identity_sequence(
-        pre_observations,
-        committed_ids=committed_ids,
-        selected_observation_id=str(
-            mapping.get("pre_observation_id") or ""
-        ),
-        canonical_action_id=str(mapping.get("canonical_action_id") or ""),
-        reserved_worker_stable_id=str(
-            mapping.get("reserved_worker_stable_id") or ""
-        ),
+    selected_observations = (
+        payload.get("observations") if observations is None else observations
     )
-    post_sequence = build_post_action_observation_sequence(
-        post_observations,
-        confirmed_action_mapping=mapping,
+    return normalized_business_message_sequence(
+        [
+            item
+            for item in (selected_observations or [])
+            if isinstance(item, dict)
+        ],
+        message_viewport_bounds=guard.get("message_viewport_bounds"),
     )
-    pre_digest = hashlib.sha256(
-        json.dumps(pre_sequence, sort_keys=True).encode("utf-8")
-    ).hexdigest()[:20]
-    post_digest = hashlib.sha256(
-        json.dumps(post_sequence, sort_keys=True).encode("utf-8")
-    ).hexdigest()[:20]
-    evidence = align_committed_message_sequence(
-        pre_sequence,
-        post_sequence,
-        mapping,
-        pre_sequence_source="action_frame",
-        pre_frame_id=f"action-pre:{pre_digest}",
-        post_frame_id=f"action-post:{post_digest}",
-    )
-    aligned = apply_inherited_worker_ids(post_observations, evidence)
-    action_summaries_by_stable_id: dict[str, dict[str, dict[str, Any]]] = {}
-    for item in pre_observations:
-        if not isinstance(item, dict):
-            continue
-        stable_id = str(item.get("_worker_stable_id") or "").strip()
-        if not stable_id:
-            continue
-        for key in (
-            "_worker_voice_action_summary",
-            "_worker_image_action_summary",
-        ):
-            summary = item.get(key)
-            if isinstance(summary, dict) and summary:
-                action_summaries_by_stable_id.setdefault(
-                    stable_id,
-                    {},
-                )[key] = dict(summary)
-    if action_summaries_by_stable_id:
-        carried: list[Any] = []
-        for raw in aligned:
-            if not isinstance(raw, dict):
-                carried.append(raw)
-                continue
-            observation = dict(raw)
-            stable_id = str(
-                observation.get("_worker_stable_id") or ""
-            ).strip()
-            summaries = action_summaries_by_stable_id.get(stable_id) or {}
-            for key, summary in summaries.items():
-                observation[key] = dict(summary)
-            carried.append(observation)
-        aligned = carried
-    return aligned, evidence
 
 
-def inherit_same_frame_worker_annotations(
-    pre_observations: list[Any],
-    post_observations: list[Any],
-) -> tuple[list[Any], dict[str, Any]]:
-    """Carry Worker-only annotations across one unchanged normalized frame.
+def _business_boundary_tokens_for_payload(
+    payload: dict[str, Any],
+    observations: list[Any] | None = None,
+    *,
+    committed_only: bool,
+) -> dict[int, set[str]]:
+    selected_observations = (
+        payload.get("observations") if observations is None else observations
+    )
+    return boundary_tokens_for_observations(
+        [
+            item
+            for item in (selected_observations or [])
+            if isinstance(item, dict)
+        ],
+        committed_only=committed_only,
+    )
 
-    This is deliberately not a cross-frame identity decision.  The Sidecar's
-    normalized viewport digest has already established that the ordered
-    business observation did not change between read and prepare.  We only
-    retain Worker metadata for the corresponding row so a first media action
-    does not need a native id or a receipt that can only exist after it runs.
+
+def _continuity_expansion_search_terms(
+    payload: dict[str, Any],
+) -> tuple[list[str], list[str], int]:
+    """Return the nearest uniquely observable committed boundary.
+
+    These terms only tell Sidecar where to stop its one read-only upward
+    search.  They never decide continuity or create message identity; the
+    returned expanded observations still have to pass the sole Worker
+    comparator.
     """
 
-    business_kinds = {
-        "text_bubble",
-        "voice_bubble",
-        "voice_transcript",
-        "image_bubble",
-        "system_message",
-        "system_row",
-    }
-    worker_fields = {
-        "_worker_ai_reply_receipt",
-        "_worker_committed_message",
-        "_worker_identity_scope",
-        "_worker_image_action_summary",
-        "_worker_sequence_number",
-        "_worker_stable_id",
-        "_worker_voice_action_summary",
-    }
-    pre_rows = [
-        item
-        for item in pre_observations
-        if isinstance(item, dict)
-        and str(item.get("row_kind") or "").strip().lower()
-        in business_kinds
-    ]
-    post_indexes = [
-        index
-        for index, item in enumerate(post_observations)
-        if isinstance(item, dict)
-        and str(item.get("row_kind") or "").strip().lower()
-        in business_kinds
-    ]
-    if len(pre_rows) != len(post_indexes):
-        return list(post_observations), {
-            "alignment_status": "invalid",
-            "alignment_scope": "same_normalized_frame",
-            "reason": "business_row_count_changed_under_equal_digest",
-            "old_tail_fully_consumed": False,
-            "new_suffix_observation_ids": [],
-            "matched_pairs": [],
+    ordered = ordered_message_viewport_observations(
+        [
+            item
+            for item in (payload.get("observations") or [])
+            if isinstance(item, dict)
+        ]
+    )
+    tokens_by_index = boundary_tokens_for_observations(
+        ordered,
+        committed_only=True,
+    )
+    token_counts: dict[str, int] = {}
+    for tokens in tokens_by_index.values():
+        for token in tokens:
+            token_counts[token] = token_counts.get(token, 0) + 1
+    for index in range(len(ordered) - 1, -1, -1):
+        unique_tokens = {
+            token
+            for token in tokens_by_index.get(index, set())
+            if token_counts.get(token) == 1
         }
+        if not unique_tokens:
+            continue
+        observation = ordered[index]
+        source = (
+            observation.get("source_message")
+            if isinstance(observation.get("source_message"), dict)
+            else {}
+        )
+        native_id = str(
+            observation.get("native_source_message_id")
+            or source.get("native_source_message_id")
+            or ""
+        ).strip()
+        content = str(
+            observation.get("content_clean")
+            or observation.get("content")
+            or ""
+        ).strip()
+        if native_id or content:
+            return (
+                [native_id] if native_id else [],
+                [content] if content else [],
+                max(1, len(ordered)),
+            )
+    return [], [], max(1, len(ordered))
 
-    aligned = list(post_observations)
-    matched_pairs: list[dict[str, Any]] = []
-    for screen_order, (pre_item, post_index) in enumerate(
-        zip(pre_rows, post_indexes, strict=True)
-    ):
-        post_item = post_observations[post_index]
-        assert isinstance(post_item, dict)
-        pre_shape = (
-            str(pre_item.get("row_kind") or "").strip().lower(),
-            str(pre_item.get("sender_role") or "").strip().lower(),
-            str(pre_item.get("message_type") or "").strip().lower(),
+
+def _apply_worker_identity_from_continuity(
+    old_observations: list[Any],
+    new_observations: list[Any],
+    continuity: dict[str, Any],
+    *,
+    current_flow_read_run_id: str = "",
+) -> list[Any]:
+    """Carry only Worker-owned durable annotations over verified mappings.
+
+    This function does not compare rows.  It consumes the sole comparator's
+    already-verified matched pairs and deliberately leaves all current-frame
+    geometry and observation ids untouched.
+    """
+
+    old_ordered = ordered_message_viewport_observations(
+        [item for item in old_observations if isinstance(item, dict)]
+    )
+    new_ordered = ordered_message_viewport_observations(
+        [item for item in new_observations if isinstance(item, dict)]
+    )
+    matched_indexes = [
+        (int(pair["old_index"]), int(pair["new_index"]))
+        for pair in (continuity.get("matched_pairs") or [])
+        if isinstance(pair, dict)
+        and isinstance(pair.get("old_index"), int)
+        and not isinstance(pair.get("old_index"), bool)
+        and isinstance(pair.get("new_index"), int)
+        and not isinstance(pair.get("new_index"), bool)
+    ]
+    old_boundary_tokens = boundary_tokens_for_observations(
+        old_ordered,
+        committed_only=True,
+    )
+    for index, observation in enumerate(old_ordered):
+        persisted_tokens = observation.get(
+            "_worker_strong_boundary_tokens"
         )
-        post_shape = (
-            str(post_item.get("row_kind") or "").strip().lower(),
-            str(post_item.get("sender_role") or "").strip().lower(),
-            str(post_item.get("message_type") or "").strip().lower(),
-        )
-        if pre_shape != post_shape:
-            return list(post_observations), {
-                "alignment_status": "invalid",
-                "alignment_scope": "same_normalized_frame",
-                "reason": "business_row_shape_changed_under_equal_digest",
-                "old_tail_fully_consumed": False,
-                "new_suffix_observation_ids": [],
-                "matched_pairs": [],
+        if isinstance(persisted_tokens, list):
+            normalized_tokens = {
+                str(token).strip()
+                for token in persisted_tokens
+                if isinstance(token, str) and token.strip()
             }
-        inherited = dict(post_item)
-        for key in worker_fields:
-            if key in pre_item:
-                inherited[key] = copy.deepcopy(pre_item[key])
-        aligned[post_index] = inherited
-        matched_pairs.append(
-            {
-                "pre_index": screen_order,
-                "post_index": screen_order,
-                "pre_observation_id": str(
-                    pre_item.get("observation_id") or ""
-                ).strip(),
-                "post_observation_id": str(
-                    post_item.get("observation_id") or ""
-                ).strip(),
-                "match_basis": "same_normalized_frame_order",
-            }
+            if normalized_tokens:
+                old_boundary_tokens[index] = normalized_tokens
+    new_boundary_tokens = boundary_tokens_for_observations(
+        new_ordered,
+        committed_only=False,
+    )
+
+    def native_id(observation: dict[str, Any]) -> str:
+        source = (
+            observation.get("source_message")
+            if isinstance(observation.get("source_message"), dict)
+            else {}
         )
-    return aligned, {
-        "alignment_status": "not_required",
-        "alignment_scope": "same_normalized_frame",
+        return str(
+            observation.get("native_source_message_id")
+            or source.get("native_source_message_id")
+            or ""
+        ).strip()
+
+    def has_two_sided_strong_context(
+        old_index: int,
+        new_index: int,
+    ) -> bool:
+        before = False
+        after = False
+        for mapped_old, mapped_new in matched_indexes:
+            if not old_boundary_tokens.get(mapped_old, set()).intersection(
+                new_boundary_tokens.get(mapped_new, set())
+            ):
+                continue
+            if mapped_old < old_index and mapped_new < new_index:
+                before = True
+            elif mapped_old > old_index and mapped_new > new_index:
+                after = True
+        return before and after
+
+    def has_confirmed_ai_receipt_after(
+        old_index: int,
+        new_index: int,
+    ) -> bool:
+        """Prove the media row lies before a formally sent AI boundary.
+
+        This permits a historical media row to remain visible without
+        inheriting its durable id.  It does not identify that media row: the
+        later Worker-owned sent receipt only proves the row belongs to the
+        already-replied history rather than an unbounded new tail.
+        """
+
+        for mapped_old, mapped_new in matched_indexes:
+            if mapped_old <= old_index or mapped_new <= new_index:
+                continue
+            receipt = old_ordered[mapped_old].get(
+                "_worker_ai_reply_receipt"
+            )
+            if not isinstance(receipt, dict):
+                continue
+            if not str(receipt.get("reply_action_id") or "").strip():
+                continue
+            if not str(receipt.get("reply_text_hash") or "").strip():
+                continue
+            if old_boundary_tokens.get(mapped_old, set()).intersection(
+                new_boundary_tokens.get(mapped_new, set())
+            ):
+                return True
+        return False
+
+    by_new_id: dict[str, dict[str, Any]] = {}
+    for pair in continuity.get("matched_pairs") or []:
+        if not isinstance(pair, dict):
+            continue
+        old_index = pair.get("old_index")
+        new_index = pair.get("new_index")
+        if (
+            isinstance(old_index, bool)
+            or not isinstance(old_index, int)
+            or isinstance(new_index, bool)
+            or not isinstance(new_index, int)
+            or old_index < 0
+            or new_index < 0
+            or old_index >= len(old_ordered)
+            or new_index >= len(new_ordered)
+        ):
+            raise ValueError("C2_CONTINUITY_MAPPING_INVALID")
+        old = old_ordered[old_index]
+        new = dict(new_ordered[new_index])
+        if old.get("_worker_current_flow_media_candidate") is True:
+            # This is transient action eligibility for one locked read flow,
+            # not durable identity. It may cross a frame only through the
+            # sole Worker continuity decision represented by this pair.
+            new["_worker_current_flow_media_candidate"] = True
+        stable_id = str(old.get("_worker_stable_id") or "").strip()
+        committed = (
+            old.get("_worker_committed_message")
+            if isinstance(old.get("_worker_committed_message"), dict)
+            else None
+        )
+        if stable_id and committed:
+            new["_worker_stable_id"] = stable_id
+            new["_worker_identity_scope"] = "committed"
+            old_observation_id = str(
+                old.get("observation_id")
+                or committed.get("observation_id")
+                or ""
+            ).strip()
+            new_observation_id = str(
+                new.get("observation_id") or ""
+            ).strip()
+            message_type = str(new.get("message_type") or "").strip()
+            prior_commit_basis = str(
+                committed.get("commit_basis") or ""
+            ).strip()
+            if message_type in {"voice", "image"}:
+                old_native_id = native_id(old)
+                new_native_id = native_id(new)
+                if old_native_id and old_native_id == new_native_id:
+                    historical_match_basis = "native_source_message_id"
+                elif has_two_sided_strong_context(old_index, new_index):
+                    historical_match_basis = (
+                        "two_sided_historical_context"
+                    )
+                elif message_type == "image":
+                    image_summary = (
+                        old.get("_worker_image_action_summary")
+                        if isinstance(
+                            old.get("_worker_image_action_summary"), dict
+                        )
+                        else {}
+                    )
+                    image_flow_action_slot = (
+                        image_summary.get("image_flow_action_slot")
+                        if isinstance(
+                            image_summary.get("image_flow_action_slot"),
+                            dict,
+                        )
+                        else {}
+                    )
+                    same_flow_receipt = bool(
+                        current_flow_read_run_id
+                        and str(
+                            image_flow_action_slot.get("read_run_id") or ""
+                        ).strip()
+                        == str(current_flow_read_run_id).strip()
+                        and str(
+                            image_summary.get(
+                                "image_flow_action_slot_status"
+                            )
+                            or ""
+                        ).strip()
+                        == "processed"
+                    )
+                    if not same_flow_receipt:
+                        if (
+                            not current_flow_read_run_id
+                            and has_confirmed_ai_receipt_after(
+                                old_index,
+                                new_index,
+                            )
+                        ):
+                            # The business viewport may be continuous even
+                            # when a historical image lacks enough proof to
+                            # transfer its durable identity.  Keep the current
+                            # frame observation uncommitted; do not turn an
+                            # identity non-transfer into a second continuity
+                            # decision or manufacture a replacement id.
+                            for key in (
+                                "_worker_stable_id",
+                                "_worker_identity_scope",
+                                "_worker_committed_message",
+                                "_worker_image_action_summary",
+                            ):
+                                new.pop(key, None)
+                            if (
+                                not new_observation_id
+                                or new_observation_id in by_new_id
+                            ):
+                                raise ValueError(
+                                    "C2_CONTINUITY_MAPPING_INVALID"
+                                )
+                            by_new_id[new_observation_id] = new
+                            continue
+                        raise ValueError("C2_CONTINUITY_MAPPING_INVALID")
+                    historical_match_basis = "prior_confirmed_action"
+                elif message_type == "voice":
+                    voice_summary = (
+                        old.get("_worker_voice_action_summary")
+                        if isinstance(
+                            old.get("_worker_voice_action_summary"), dict
+                        )
+                        else {}
+                    )
+                    confirmed_mapping = (
+                        voice_summary.get("confirmed_action_mapping")
+                        if isinstance(
+                            voice_summary.get("confirmed_action_mapping"),
+                            dict,
+                        )
+                        else {}
+                    )
+                    same_flow_receipt = bool(
+                        current_flow_read_run_id
+                        and str(
+                            voice_summary.get("origin_read_run_id") or ""
+                        ).strip()
+                        == str(current_flow_read_run_id).strip()
+                        and confirmed_mapping.get("binding_confirmed") is True
+                        and str(
+                            confirmed_mapping.get("canonical_action_id")
+                            or ""
+                        ).strip()
+                        and str(
+                            confirmed_mapping.get(
+                                "reserved_worker_stable_id"
+                            )
+                            or ""
+                        ).strip()
+                        == stable_id
+                    )
+                    if not same_flow_receipt:
+                        if (
+                            not current_flow_read_run_id
+                            and has_confirmed_ai_receipt_after(
+                                old_index,
+                                new_index,
+                            )
+                        ):
+                            # As with historical images, absence of a formal
+                            # voice identity transfer does not erase a proven
+                            # business viewport relation.  It only means this
+                            # row must remain an uncommitted frame observation.
+                            for key in (
+                                "_worker_stable_id",
+                                "_worker_identity_scope",
+                                "_worker_committed_message",
+                                "_worker_voice_action_summary",
+                            ):
+                                new.pop(key, None)
+                            if (
+                                not new_observation_id
+                                or new_observation_id in by_new_id
+                            ):
+                                raise ValueError(
+                                    "C2_CONTINUITY_MAPPING_INVALID"
+                                )
+                            by_new_id[new_observation_id] = new
+                            continue
+                        raise ValueError("C2_CONTINUITY_MAPPING_INVALID")
+                    historical_match_basis = "prior_confirmed_action"
+                else:
+                    raise ValueError("C2_CONTINUITY_MAPPING_INVALID")
+            else:
+                historical_match_basis = (
+                    "worker_business_viewport_continuity"
+                )
+            new["_worker_committed_message"] = committed_identity_record(
+                worker_stable_id=stable_id,
+                commit_basis=(
+                    MessageCommitBasis.HISTORICAL_CHECKPOINT_ALIGNMENT
+                ),
+                observation_id=new_observation_id,
+                sender_role=str(new.get("sender_role") or ""),
+                message_type=message_type,
+                proof={
+                    "alignment_status": "unique",
+                    "pre_observation_id": old_observation_id,
+                    "post_observation_id": new_observation_id,
+                    "worker_stable_id": stable_id,
+                    "match_basis": historical_match_basis,
+                    "prior_commit_basis": prior_commit_basis,
+                    "continuity_relation": str(
+                        continuity.get("relation") or ""
+                    ),
+                    "continuity_reason": str(
+                        continuity.get("reason") or ""
+                    ),
+                },
+            )
+            for key in (
+                "_worker_voice_action_summary",
+                "_worker_image_action_summary",
+                "_worker_ai_reply_receipt",
+            ):
+                if isinstance(old.get(key), dict):
+                    new[key] = copy.deepcopy(old[key])
+            old_source = (
+                old.get("source_message")
+                if isinstance(old.get("source_message"), dict)
+                else {}
+            )
+            source_key = str(
+                old_source.get("source_message_key") or ""
+            ).strip()
+            if source_key:
+                new_source = (
+                    dict(new.get("source_message"))
+                    if isinstance(new.get("source_message"), dict)
+                    else {}
+                )
+                new_source["source_message_key"] = source_key
+                new["source_message"] = new_source
+        observation_id = str(new.get("observation_id") or "").strip()
+        if not observation_id or observation_id in by_new_id:
+            raise ValueError("C2_CONTINUITY_MAPPING_INVALID")
+        by_new_id[observation_id] = new
+
+    result: list[Any] = []
+    for raw in new_observations:
+        if not isinstance(raw, dict):
+            result.append(raw)
+            continue
+        observation_id = str(raw.get("observation_id") or "").strip()
+        result.append(by_new_id.get(observation_id, dict(raw)))
+    return result
+
+
+def _continuity_alignment_evidence_for_suffix(
+    observations: list[Any],
+    continuity: dict[str, Any],
+) -> dict[str, Any]:
+    ordered = ordered_message_viewport_observations(
+        [item for item in observations if isinstance(item, dict)]
+    )
+    suffix_ids = [
+        str(ordered[index].get("observation_id") or "").strip()
+        for index in continuity.get("new_suffix_indexes") or []
+        if isinstance(index, int)
+        and not isinstance(index, bool)
+        and 0 <= index < len(ordered)
+        and str(ordered[index].get("observation_id") or "").strip()
+    ]
+    return {
+        "pre_sequence_source": "worker_business_viewport_continuity",
+        "pre_frame_id": str(continuity.get("pre_frame_id") or ""),
+        "post_frame_id": str(continuity.get("post_frame_id") or ""),
+        "alignment_status": "unique",
         "candidate_alignment_count": 1,
-        "matched_pairs": matched_pairs,
         "old_tail_fully_consumed": True,
-        "new_suffix_observation_ids": [],
+        "new_suffix_observation_ids": suffix_ids,
+        "matched_pairs": list(continuity.get("matched_pairs") or []),
+        "continuity_relation": str(continuity.get("relation") or ""),
     }
+
+
+def _image_flow_action_slot_continuity(
+    *,
+    pre_payload: dict[str, Any],
+    post_observations: list[Any],
+    image_flow_action_slot: dict[str, Any],
+    expanded_observations: list[Any] | None = None,
+    context_expansion_used: bool = False,
+) -> dict[str, Any]:
+    """Apply the sole Worker-owned post-image continuity decision.
+
+    Geometry orders rows inside each immutable frame, but only the shared
+    five-field business projection crosses the frame boundary.  The temporary
+    slot is action dedupe evidence for one read flow; it is never identity.
+    """
+
+    pre_sequence = _business_projection_for_payload(pre_payload)
+    post_sequence = _business_projection_for_payload(
+        pre_payload,
+        post_observations,
+    )
+    pre_digest = _canonical_business_projection_digest(pre_sequence)
+    post_digest = _canonical_business_projection_digest(post_sequence)
+    expected_digest = str(
+        image_flow_action_slot.get(
+            "pre_action_business_projection_digest"
+        )
+        or ""
+    ).strip().lower()
+    selected_ordinal = image_flow_action_slot.get(
+        "selected_sequence_ordinal"
+    )
+    invariant_ok = bool(
+        re.fullmatch(r"[0-9a-f]{64}", expected_digest)
+        and expected_digest == pre_digest
+        and isinstance(selected_ordinal, int)
+        and 0 <= selected_ordinal < len(pre_sequence)
+        and pre_sequence[selected_ordinal].get("message_type") == "image"
+    )
+    baseline_continuity = (
+        pre_payload.get("business_continuity_evidence")
+        if isinstance(
+            pre_payload.get("business_continuity_evidence"), dict
+        )
+        else {}
+    )
+    confirmed_complete_top = bool(
+        baseline_continuity.get("relation") == "unique_tail_append"
+        and baseline_continuity.get("reason")
+        == "confirmed_empty_baseline_with_new_tail"
+        and int(baseline_continuity.get("old_count") or 0) == 0
+        and int(baseline_continuity.get("new_count") or 0)
+        == len(pre_sequence)
+    )
+    if not invariant_ok:
+        decision = {
+            "relation": "business_sequence_not_continuous",
+            "reason": "slot_contract_invalid",
+            "matched_pairs": [],
+            "new_suffix_indexes": [],
+            "overlap_candidates": [],
+        }
+    else:
+        decision = compare_business_viewport_continuity(
+            pre_sequence,
+            post_sequence,
+            old_boundary_tokens=_business_boundary_tokens_for_payload(
+                pre_payload,
+                committed_only=True,
+            ),
+            new_boundary_tokens=_business_boundary_tokens_for_payload(
+                pre_payload,
+                post_observations,
+                committed_only=False,
+            ),
+            old_top_boundary_complete=confirmed_complete_top,
+            new_top_boundary_complete=confirmed_complete_top,
+            context_expansion_used=bool(context_expansion_used),
+            expanded_context_sequence=(
+                _business_projection_for_payload(
+                    pre_payload,
+                    expanded_observations,
+                )
+                if expanded_observations is not None
+                else None
+            ),
+            expanded_context_boundary_tokens=(
+                _business_boundary_tokens_for_payload(
+                    pre_payload,
+                    expanded_observations,
+                    committed_only=False,
+                )
+                if expanded_observations is not None
+                else None
+            ),
+        )
+    relation = str(decision.get("relation") or "")
+    ok = relation in {
+        "business_sequence_equal",
+        "unique_tail_append",
+        "unique_viewport_slide_with_tail_append",
+    }
+    return {
+        "schema_version": 1,
+        "ok": ok,
+        "relation": relation,
+        "pre_message_count": len(pre_sequence),
+        "post_message_count": len(post_sequence),
+        "pre_action_business_projection_digest": pre_digest,
+        "post_action_business_projection_digest": post_digest,
+        "selected_sequence_ordinal": (
+            selected_ordinal if isinstance(selected_ordinal, int) else -1
+        ),
+        "tail_append_count": (
+            len(decision.get("new_suffix_indexes") or []) if ok else 0
+        ),
+        "reason": str(decision.get("reason") or ""),
+        "matched_pairs": list(decision.get("matched_pairs") or []),
+        "new_suffix_indexes": list(
+            decision.get("new_suffix_indexes") or []
+        ),
+        "overlap_candidates": list(
+            decision.get("overlap_candidates") or []
+        ),
+        "context_expansion_used": bool(context_expansion_used),
+        "expanded_context_decision": (
+            dict(decision.get("expanded_context_decision"))
+            if isinstance(decision.get("expanded_context_decision"), dict)
+            else None
+        ),
+    }
+
+
+def _image_action_frame_to_reread_continuity(
+    *,
+    action_frame_observations: list[Any],
+    post_observations: list[Any],
+    expanded_observations: list[Any] | None = None,
+    context_expansion_used: bool = False,
+) -> dict[str, Any]:
+    """Map the actual clicked image row into the mandatory full reread.
+
+    The action-frame observation is the only possible owner of the copied
+    bytes.  The prepare-frame ordinal remains audit evidence and must never
+    be used by this mapping.
+    """
+
+    action_payload = {
+        "observations": list(action_frame_observations),
+    }
+    decision = compare_business_viewport_continuity(
+        _business_projection_for_payload(action_payload),
+        _business_projection_for_payload(
+            action_payload,
+            post_observations,
+        ),
+        old_boundary_tokens=_business_boundary_tokens_for_payload(
+            action_payload,
+            committed_only=True,
+        ),
+        new_boundary_tokens=_business_boundary_tokens_for_payload(
+            action_payload,
+            post_observations,
+            committed_only=False,
+        ),
+        context_expansion_used=bool(context_expansion_used),
+        expanded_context_sequence=(
+            _business_projection_for_payload(
+                action_payload,
+                expanded_observations,
+            )
+            if expanded_observations is not None
+            else None
+        ),
+        expanded_context_boundary_tokens=(
+            _business_boundary_tokens_for_payload(
+                action_payload,
+                expanded_observations,
+                committed_only=False,
+            )
+            if expanded_observations is not None
+            else None
+        ),
+    )
+    relation = str(decision.get("relation") or "")
+    return {
+        **decision,
+        "ok": relation
+        in {
+            "business_sequence_equal",
+            "unique_tail_append",
+            "unique_viewport_slide_with_tail_append",
+        },
+        "mapping_source": "actual_image_action_frame",
+        "context_expansion_used": bool(context_expansion_used),
+    }
+
+
+def _plan_image_flow_action_slot(
+    *,
+    conversation_id: str,
+    read_run_id: str,
+    payload: dict[str, Any],
+    selected_sequence_ordinal: int,
+) -> tuple[dict[str, Any], str]:
+    """Create or reuse one deterministic action slot inside one read flow."""
+
+    normalized_read_run_id = str(read_run_id or "").strip()
+    sequence = _business_projection_for_payload(payload)
+    if (
+        not normalized_read_run_id
+        or selected_sequence_ordinal < 0
+        or selected_sequence_ordinal >= len(sequence)
+        or sequence[selected_sequence_ordinal].get("message_type") != "image"
+    ):
+        raise ValueError("C2_IMAGE_IDENTITY_CONTRACT_INVALID")
+    digest = _canonical_business_projection_digest(sequence)
+    current_frame_id = str(
+        payload.get("frame_id")
+        or payload.get("sidecar_run_id")
+        or payload.get("run_id")
+        or ""
+    ).strip()
+    max_revision = 0
+    reusable: tuple[dict[str, Any], str] | None = None
+    for _path, journal in list_action_journals(
+        conversation_id=conversation_id,
+        action_kinds=("image",),
+    ):
+        prepare = (
+            journal.get("prepare_evidence")
+            if isinstance(journal.get("prepare_evidence"), dict)
+            else {}
+        )
+        slot = (
+            prepare.get("image_flow_action_slot")
+            if isinstance(prepare.get("image_flow_action_slot"), dict)
+            else {}
+        )
+        if str(slot.get("read_run_id") or "").strip() != normalized_read_run_id:
+            continue
+        revision = slot.get("action_plan_revision")
+        if not isinstance(revision, int) or revision <= 0:
+            raise ValueError("C2_IMAGE_IDENTITY_CONTRACT_INVALID")
+        max_revision = max(max_revision, revision)
+        same_slot = (
+            int(slot.get("selected_sequence_ordinal", -1))
+            == selected_sequence_ordinal
+            and str(
+                slot.get("pre_action_business_projection_digest") or ""
+            ).strip().lower()
+            == digest
+        )
+        if not same_slot:
+            continue
+        items = (
+            journal.get("items")
+            if isinstance(journal.get("items"), dict)
+            else {}
+        )
+        item = next(
+            (
+                value
+                for value in items.values()
+                if isinstance(value, dict)
+            ),
+            {},
+        )
+        terminal = (
+            item.get("terminal_payload")
+            if isinstance(item.get("terminal_payload"), dict)
+            else {}
+        )
+        slot_status = str(
+            terminal.get("image_flow_action_slot_status") or ""
+        ).strip()
+        journal_frame_id = str(
+            (prepare.get("frame_action_binding") or {}).get(
+                "pre_frame_id"
+            )
+            if isinstance(prepare.get("frame_action_binding"), dict)
+            else ""
+        ).strip()
+        phase = str(journal.get("action_phase") or "").strip()
+        should_reuse = bool(
+            slot_status != "processed"
+            and (
+                phase != "cancelled_before_trigger"
+                or (
+                    current_frame_id
+                    and journal_frame_id == current_frame_id
+                )
+            )
+        )
+        if should_reuse:
+            reusable = (
+                dict(slot),
+                str(journal.get("transaction_id") or "").strip(),
+            )
+    if reusable is not None and reusable[1]:
+        return reusable
+    slot = {
+        "read_run_id": normalized_read_run_id,
+        "action_plan_revision": max_revision + 1,
+        "selected_sequence_ordinal": selected_sequence_ordinal,
+        "pre_action_business_projection_digest": digest,
+    }
+    action_key = (
+        "image-action-candidate:"
+        + hashlib.sha256(
+            json.dumps(
+                {
+                    "conversation_id": str(conversation_id or "").strip(),
+                    **slot,
+                },
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        ).hexdigest()[:40]
+    )
+    return slot, action_key
+
+
+def _set_image_flow_action_slot_status(
+    *,
+    journal_path: str | Path,
+    journal_item_id: str,
+    status: str,
+    continuity_evidence: dict[str, Any],
+) -> None:
+    normalized_status = str(status or "").strip()
+    if normalized_status not in {"processed", "technical_failed"}:
+        raise ValueError("C2_IMAGE_IDENTITY_CONTRACT_INVALID")
+    journal = read_action_journal(journal_path)
+    prepare = (
+        journal.get("prepare_evidence")
+        if isinstance(journal.get("prepare_evidence"), dict)
+        else {}
+    )
+    slot = (
+        prepare.get("image_flow_action_slot")
+        if isinstance(prepare.get("image_flow_action_slot"), dict)
+        else {}
+    )
+    required = {
+        "read_run_id",
+        "action_plan_revision",
+        "selected_sequence_ordinal",
+        "pre_action_business_projection_digest",
+    }
+    if set(slot) != required:
+        raise ValueError("C2_IMAGE_IDENTITY_CONTRACT_INVALID")
+    items = journal.get("items") if isinstance(journal.get("items"), dict) else {}
+    item = items.get(journal_item_id) if isinstance(items.get(journal_item_id), dict) else {}
+    terminal_payload = (
+        dict(item.get("terminal_payload"))
+        if isinstance(item.get("terminal_payload"), dict)
+        else {}
+    )
+    terminal_payload.update(
+        {
+            "image_flow_action_slot": dict(slot),
+            "image_flow_action_slot_status": normalized_status,
+            "image_flow_action_slot_continuity": dict(
+                continuity_evidence
+            ),
+        }
+    )
+    if normalized_status == "processed":
+        terminal_payload.update(
+            {
+                "state": "completed",
+                "media_action_terminal": (
+                    MediaActionTerminal.COMMITTED_COMPLETED.value
+                ),
+                "error_code": None,
+            }
+        )
+    if normalized_status == "technical_failed":
+        terminal_payload.update(
+            {
+                "state": "technical_failed",
+                "media_action_terminal": (
+                    MediaActionTerminal.TECHNICAL_FAILED.value
+                ),
+                "error_code": "C2_IMAGE_IDENTITY_CONTRACT_INVALID",
+                "reason_detail": (
+                    "post_image_business_sequence_not_continuous"
+                ),
+            }
+        )
+    update_action_journal_item(
+        journal_path,
+        journal_item_id=journal_item_id,
+        action_phase=str(item.get("action_phase") or "confirmed"),
+        business_state=(
+            "technical_failed"
+            if normalized_status == "technical_failed"
+            else "completed"
+        ),
+        business_result_confirmed=(normalized_status == "processed"),
+        error_code=(
+            "C2_IMAGE_IDENTITY_CONTRACT_INVALID"
+            if normalized_status == "technical_failed"
+            else None
+        ),
+        terminal_payload=terminal_payload,
+    )
 
 
 def confirmed_voice_action_mapping(
@@ -931,9 +1712,15 @@ def confirmed_voice_action_mapping(
     selected_action_token: str,
     selected_anchor_keys: set[str],
 ) -> dict[str, Any]:
-    """Validate the Sidecar decision without reconstructing its binding."""
+    """Validate the sole voice identity proof: the actual action result.
 
-    del selected_anchor_keys
+    Sidecar owns the current-frame click and returns the raw receipt. Worker
+    verifies that one physical action produced one unique transcript, then
+    binds the reserved id. Old coordinates, observation ids and tracking
+    heuristics are audit evidence only and never alternate identity proofs.
+    """
+
+    del pre_observations, selected_anchor_keys
     if (
         str(voice_payload.get("canonical_voice_action_id") or "").strip()
         != canonical_action_id
@@ -941,118 +1728,69 @@ def confirmed_voice_action_mapping(
             voice_payload.get("reserved_worker_stable_id") or ""
         ).strip()
         != reserved_worker_stable_id
+        or str(voice_payload.get("pre_frame_id") or "").strip()
+        != str(expected_pre_frame_id or "").strip()
         or str(
             voice_payload.get("transcript_binding_status") or ""
         ).strip()
-        not in {"confirmed", "failed"}
+        != "confirmed"
+        or str(
+            voice_payload.get("transcript_binding_method") or ""
+        ).strip()
+        != "actual_action_result"
         or int(voice_payload.get("binding_candidate_count") or 0) != 1
     ):
         raise ValueError("C2_VOICE_IDENTITY_CONTRACT_INVALID")
 
-    method = str(
-        voice_payload.get("transcript_binding_method") or ""
-    ).strip()
-    tracking_frame_ids = [
-        str(value or "").strip()
-        for value in (voice_payload.get("tracking_frame_ids") or [])
-        if str(value or "").strip()
-    ]
-    tracking_edges = list(voice_payload.get("tracking_edges") or [])
-    neighbor_pairs = list(
-        voice_payload.get("matched_neighbor_pairs") or []
+    action_result_receipt = (
+        voice_payload.get("action_result_receipt")
+        if isinstance(voice_payload.get("action_result_receipt"), dict)
+        else {}
     )
-    native_id = str(
-        voice_payload.get("native_source_message_id") or ""
-    ).strip()
-    if method == "native_source_id":
-        evidence_valid = bool(
-            native_id
-            and not tracking_frame_ids
-            and not tracking_edges
-            and not neighbor_pairs
+    receipt_signature = str(
+        action_result_receipt.get("stable_business_content_signature")
+        or ""
+    ).strip().lower()
+    if (
+        int(action_result_receipt.get("schema_version") or 0) != 1
+        or str(
+            action_result_receipt.get("canonical_action_id") or ""
+        ).strip()
+        != canonical_action_id
+        or str(
+            action_result_receipt.get("reserved_worker_stable_id") or ""
+        ).strip()
+        != reserved_worker_stable_id
+        or str(
+            action_result_receipt.get("selected_action_token") or ""
+        ).strip()
+        != str(selected_action_token or "").strip()
+        or str(
+            action_result_receipt.get("pre_observation_id") or ""
+        ).strip()
+        != str(pre_observation_id or "").strip()
+        or not str(
+            action_result_receipt.get("trigger_observation_id") or ""
+        ).strip()
+        or not str(
+            action_result_receipt.get("post_observation_id") or ""
+        ).strip()
+        or action_result_receipt.get(
+            "physical_identity_inherited_from_prepare"
+        ) is not False
+        or int(
+            action_result_receipt.get("physical_action_count") or 0
         )
-    elif method == "continuous_target_tracking":
-        evidence_valid = bool(
-            not native_id
-            and not neighbor_pairs
-            and len(tracking_frame_ids) >= 3
-            and len(set(tracking_frame_ids))
-            == len(tracking_frame_ids)
-            and len(tracking_edges) == len(tracking_frame_ids) - 1
-            and tracking_frame_ids[0]
-            == str(expected_pre_frame_id or "").strip()
+        != 1
+        or int(
+            action_result_receipt.get("result_candidate_count") or 0
         )
-        expected_observation_id = str(pre_observation_id or "").strip()
-        previous_to_frame = ""
-        tracking_role = ""
-        for index, edge in enumerate(tracking_edges):
-            if not isinstance(edge, dict):
-                evidence_valid = False
-                continue
-            from_frame = str(edge.get("from_frame_id") or "").strip()
-            from_observation = str(
-                edge.get("from_observation_id") or ""
-            ).strip()
-            to_frame = str(edge.get("to_frame_id") or "").strip()
-            to_observation = str(
-                edge.get("to_observation_id") or ""
-            ).strip()
-            structural = edge.get("structural_evidence")
-            displacement = edge.get("displacement_evidence")
-            edge_role = str(edge.get("sender_role") or "").lower()
-            if (
-                not from_frame
-                or not from_observation
-                or not to_frame
-                or not to_observation
-                or str(edge.get("message_type") or "").lower() != "voice"
-                or edge_role not in {"customer", "self"}
-                or (tracking_role and edge_role != tracking_role)
-                or int(edge.get("edge_candidate_count") or 0) != 1
-                or not isinstance(structural, dict)
-                or not structural
-                or not isinstance(displacement, dict)
-                or not displacement
-                or from_frame != tracking_frame_ids[index]
-                or to_frame != tracking_frame_ids[index + 1]
-                or (index == 0 and from_observation != expected_observation_id)
-                or (index > 0 and from_frame != previous_to_frame)
-                or (index > 0 and from_observation != expected_observation_id)
-            ):
-                evidence_valid = False
-            tracking_role = tracking_role or edge_role
-            expected_observation_id = to_observation
-            previous_to_frame = to_frame
-    elif method == "neighbor_scroll_alignment":
-        deltas = []
-        evidence_valid = bool(
-            not native_id
-            and not tracking_frame_ids
-            and not tracking_edges
-            and len(neighbor_pairs) >= 2
-        )
-        for pair in neighbor_pairs:
-            if not isinstance(pair, dict):
-                evidence_valid = False
-                continue
-            if (
-                not str(pair.get("pre_observation_id") or "").strip()
-                or not str(
-                    pair.get("post_observation_id") or ""
-                ).strip()
-                or str(pair.get("sender_role") or "").strip().lower()
-                not in {"customer", "self"}
-            ):
-                evidence_valid = False
-            try:
-                deltas.append(float(pair["scroll_delta_y"]))
-            except (KeyError, TypeError, ValueError):
-                evidence_valid = False
-        if deltas and max(deltas) - min(deltas) > 8.0:
-            evidence_valid = False
-    else:
-        evidence_valid = False
-    if not evidence_valid:
+        != 1
+        or action_result_receipt.get("binding_confirmed") is not True
+        or len(receipt_signature) != 64
+        or any(character not in "0123456789abcdef" for character in receipt_signature)
+        or int(action_result_receipt.get("result_screen_order", -1)) < 0
+    ):
         raise ValueError("C2_VOICE_IDENTITY_CONTRACT_INVALID")
 
     mapping = voice_payload.get("confirmed_action_mapping")
@@ -1080,12 +1818,6 @@ def confirmed_voice_action_mapping(
         or mapping.get("binding_confirmed") is not True
         or not post_observation_id
         or observation_ids.count(post_observation_id) != 1
-        or (
-            method == "continuous_target_tracking"
-            and tracking_edges
-            and str(tracking_edges[-1].get("to_observation_id") or "").strip()
-            != post_observation_id
-        )
     ):
         raise ValueError("C2_VOICE_IDENTITY_CONTRACT_INVALID")
 
@@ -1102,155 +1834,56 @@ def confirmed_voice_action_mapping(
         ]
         return matches[0] if len(matches) == 1 else None
 
-    def observation_native_id(observation: dict[str, Any] | None) -> str:
-        if not isinstance(observation, dict):
-            return ""
-        source = (
-            observation.get("source_message")
-            if isinstance(observation.get("source_message"), dict)
-            else {}
+    post_observation = unique_observation(
+        post_observations,
+        post_observation_id,
+    )
+    post_content_signature = (
+        stable_business_content_signature(post_observation)
+        if post_observation
+        else ""
+    )
+    receipt_fields = (
+        "canonical_action_id",
+        "reserved_worker_stable_id",
+        "selected_action_token",
+        "pre_observation_id",
+        "trigger_observation_id",
+        "post_observation_id",
+        "physical_identity_inherited_from_prepare",
+        "physical_action_count",
+        "result_candidate_count",
+        "stable_business_content_signature",
+        "result_screen_order",
+        "binding_confirmed",
+    )
+    if (
+        not post_observation
+        or str(post_observation.get("row_kind") or "").strip().lower()
+        != "voice_transcript"
+        or str(post_observation.get("message_type") or "").strip().lower()
+        != "voice"
+        or str(post_observation.get("voice_state") or "").strip().lower()
+        != "transcribed"
+        or not observation_role_is_trusted(post_observation)
+        or post_content_signature != receipt_signature
+        or int(mapping.get("result_screen_order", -1))
+        != next(
+            (
+                index
+                for index, item in enumerate(post_observations)
+                if isinstance(item, dict)
+                and str(item.get("observation_id") or "").strip()
+                == post_observation_id
+            ),
+            -1,
         )
-        return str(
-            observation.get("native_source_message_id")
-            or source.get("native_source_message_id")
-            or source.get("native_message_id")
-            or ""
-        ).strip()
-
-    if method == "native_source_id":
-        pre_observation = unique_observation(
-            pre_observations,
-            str(pre_observation_id or "").strip(),
+        or any(
+            mapping.get(field) != action_result_receipt.get(field)
+            for field in receipt_fields
         )
-        post_observation = unique_observation(
-            post_observations,
-            post_observation_id,
-        )
-        if (
-            observation_native_id(pre_observation) != native_id
-            or observation_native_id(post_observation) != native_id
-            or str((pre_observation or {}).get("message_type") or "")
-            .strip().lower()
-            != "voice"
-            or str((post_observation or {}).get("message_type") or "")
-            .strip().lower()
-            != "voice"
-            or str((pre_observation or {}).get("sender_role") or "")
-            .strip().lower()
-            != str((post_observation or {}).get("sender_role") or "")
-            .strip().lower()
-        ):
-            raise ValueError("C2_VOICE_IDENTITY_CONTRACT_INVALID")
-    elif method == "continuous_target_tracking":
-        pre_observation = unique_observation(
-            pre_observations,
-            str(pre_observation_id or "").strip(),
-        )
-        post_observation = unique_observation(
-            post_observations,
-            post_observation_id,
-        )
-        pre_role = str(
-            (pre_observation or {}).get("sender_role") or ""
-        ).strip().lower()
-        post_role = str(
-            (post_observation or {}).get("sender_role") or ""
-        ).strip().lower()
-        if (
-            not pre_observation
-            or not post_observation
-            or pre_role not in {"customer", "self"}
-            or post_role != pre_role
-            or tracking_role != pre_role
-            or str(pre_observation.get("message_type") or "")
-            .strip().lower()
-            != "voice"
-            or str(post_observation.get("message_type") or "")
-            .strip().lower()
-            != "voice"
-        ):
-            raise ValueError("C2_VOICE_IDENTITY_CONTRACT_INVALID")
-    elif method == "neighbor_scroll_alignment":
-        pre_by_id = {
-            str(item.get("observation_id") or "").strip(): item
-            for item in (pre_observations or [])
-            if isinstance(item, dict)
-            and str(item.get("observation_id") or "").strip()
-        }
-        post_by_id = {
-            str(item.get("observation_id") or "").strip(): item
-            for item in post_observations
-            if isinstance(item, dict)
-            and str(item.get("observation_id") or "").strip()
-        }
-        measured_deltas: list[float] = []
-        used_pre_ids: set[str] = set()
-        used_post_ids: set[str] = set()
-        for pair in neighbor_pairs:
-            pre_id = str(pair.get("pre_observation_id") or "").strip()
-            post_id = str(pair.get("post_observation_id") or "").strip()
-            pre_item = pre_by_id.get(pre_id)
-            post_item = post_by_id.get(post_id)
-            pre_rect = message_rect(pre_item or {})
-            post_rect = message_rect(post_item or {})
-            role = str(pair.get("sender_role") or "").strip().lower()
-            if (
-                not pre_item
-                or not post_item
-                or not pre_rect
-                or not post_rect
-                or pre_id in used_pre_ids
-                or post_id in used_post_ids
-                or str(pre_item.get("sender_role") or "").strip().lower()
-                != role
-                or str(post_item.get("sender_role") or "").strip().lower()
-                != role
-            ):
-                raise ValueError("C2_VOICE_IDENTITY_CONTRACT_INVALID")
-            measured = float(post_rect["center_y"]) - float(
-                pre_rect["center_y"]
-            )
-            if abs(measured - float(pair["scroll_delta_y"])) > 8.0:
-                raise ValueError("C2_VOICE_IDENTITY_CONTRACT_INVALID")
-            used_pre_ids.add(pre_id)
-            used_post_ids.add(post_id)
-            measured_deltas.append(measured)
-        if (
-            len(measured_deltas) < 2
-            or max(measured_deltas) - min(measured_deltas) > 8.0
-        ):
-            raise ValueError("C2_VOICE_IDENTITY_CONTRACT_INVALID")
-        expected_delta = sum(measured_deltas) / len(measured_deltas)
-        selected_pre = unique_observation(
-            pre_observations,
-            str(pre_observation_id or "").strip(),
-        )
-        selected_pre_rect = message_rect(selected_pre or {})
-        if not selected_pre or not selected_pre_rect:
-            raise ValueError("C2_VOICE_IDENTITY_CONTRACT_INVALID")
-        selected_role = str(
-            selected_pre.get("sender_role") or ""
-        ).strip().lower()
-        projected_y = float(selected_pre_rect["center_y"]) + expected_delta
-        projected_candidates = []
-        for item in post_observations:
-            if not isinstance(item, dict):
-                continue
-            item_rect = message_rect(item)
-            if (
-                not item_rect
-                or str(item.get("message_type") or "").strip().lower()
-                != "voice"
-                or str(item.get("sender_role") or "").strip().lower()
-                != selected_role
-                or abs(float(item_rect["center_y"]) - projected_y) > 8.0
-            ):
-                continue
-            projected_candidates.append(
-                str(item.get("observation_id") or "").strip()
-            )
-        if projected_candidates != [post_observation_id]:
-            raise ValueError("C2_VOICE_IDENTITY_CONTRACT_INVALID")
+    ):
+        raise ValueError("C2_VOICE_IDENTITY_CONTRACT_INVALID")
     derived_ids = [
         str(value or "").strip()
         for value in (mapping.get("derived_observation_ids") or [])
@@ -1266,10 +1899,26 @@ def confirmed_voice_action_mapping(
         "reserved_worker_stable_id": reserved_worker_stable_id,
         "selected_action_token": selected_action_token,
         "pre_observation_id": pre_observation_id,
+        "trigger_observation_id": str(
+            mapping.get("trigger_observation_id") or ""
+        ).strip(),
+        "physical_identity_inherited_from_prepare": False,
+        "physical_action_count": int(
+            mapping.get("physical_action_count") or 0
+        ),
+        "result_candidate_count": int(
+            mapping.get("result_candidate_count") or 0
+        ),
+        "stable_business_content_signature": str(
+            mapping.get("stable_business_content_signature") or ""
+        ).strip().lower(),
+        "result_screen_order": int(
+            mapping.get("result_screen_order") or 0
+        ),
         "binding_confirmed": True,
         "post_observation_id": post_observation_id,
         "derived_observation_ids": derived_ids,
-        "binding_method": method,
+        "binding_method": "actual_action_result",
     }
 
 
@@ -1466,8 +2115,11 @@ def _safe_c2_image_transaction(value: Any) -> dict[str, Any]:
             "image_sha256",
             "image_width",
             "image_height",
-            "slot_identity_confirmed",
-            "slot_identity_evidence",
+            "current_frame_target_selected",
+            "current_frame_selection_evidence",
+            "physical_identity_inherited_from_prepare",
+            "trigger_observation_id",
+            "trigger_business_screen_order",
             "current_bubble_rect",
             "source",
         )
@@ -1495,7 +2147,7 @@ def _safe_c2_image_diagnostic_event(value: Any) -> dict[str, Any]:
 def _confirmed_image_receipt_from_journal(
     payload: dict[str, Any],
 ) -> tuple[dict[str, Any] | None, str]:
-    """Return the one exact persisted image identity receipt and item id."""
+    """Return the one exact persisted actual-image receipt and item id."""
 
     action_id = str(payload.get("canonical_action_id") or "").strip()
     reserved_id = str(
@@ -1533,10 +2185,7 @@ def _confirmed_image_receipt_from_journal(
     observation_id = str(
         selected_rows[0].get("pre_observation_id") or ""
     ).strip()
-    fingerprint = str(
-        selected_rows[0].get("image_visual_fingerprint") or ""
-    ).strip()
-    if not all((action_id, reserved_id, observation_id, fingerprint)):
+    if not all((action_id, reserved_id, observation_id)):
         return None, ""
     items = (
         payload.get("items")
@@ -1559,6 +2208,22 @@ def _confirmed_image_receipt_from_journal(
             )
             else {}
         )
+        trigger_observation_id = str(
+            mapping.get("trigger_observation_id")
+            or mapping.get("post_observation_id")
+            or ""
+        ).strip()
+        image_sha256 = str(
+            terminal.get("image_sha256") or ""
+        ).strip().lower()
+        image_sha256_valid = bool(
+            len(image_sha256) == 64
+            and all(
+                character in "0123456789abcdef"
+                for character in image_sha256
+            )
+        )
+        result_screen_order = mapping.get("result_screen_order")
         if (
             str(mapping.get("canonical_action_id") or "").strip()
             == action_id
@@ -1569,7 +2234,8 @@ def _confirmed_image_receipt_from_journal(
             and str(mapping.get("pre_observation_id") or "").strip()
             == observation_id
             and str(mapping.get("post_observation_id") or "").strip()
-            == observation_id
+            == trigger_observation_id
+            and trigger_observation_id
             and (
                 not selected_action_token
                 or str(
@@ -1578,10 +2244,12 @@ def _confirmed_image_receipt_from_journal(
                 == selected_action_token
             )
             and mapping.get("binding_confirmed") is True
-            and str(
-                terminal.get("image_visual_fingerprint") or ""
-            ).strip()
-            == fingerprint
+            and mapping.get(
+                "physical_identity_inherited_from_prepare"
+            ) is False
+            and isinstance(result_screen_order, int)
+            and int(result_screen_order) >= 0
+            and image_sha256_valid
         ):
             matches.append(
                 (
@@ -1598,9 +2266,12 @@ def _confirmed_image_receipt_from_journal(
                             else {}
                         ),
                         "pre_observation_id": observation_id,
-                        "post_observation_id": observation_id,
+                        "post_observation_id": trigger_observation_id,
+                        "trigger_observation_id": trigger_observation_id,
+                        "physical_identity_inherited_from_prepare": False,
+                        "result_screen_order": int(result_screen_order),
                         "binding_confirmed": True,
-                        "image_visual_fingerprint": fingerprint,
+                        "image_sha256": image_sha256,
                     },
                     str(item_id or "").strip(),
                 )
@@ -1646,6 +2317,41 @@ def _committed_action_identity_from_journal(
         mapping.get("post_observation_id") or ""
     ).strip()
     sender_role = str(selected.get("sender_role") or "").strip().lower()
+    if action_kind == "voice" and not mapping:
+        items = (
+            payload.get("items")
+            if isinstance(payload.get("items"), dict)
+            else {}
+        )
+        persisted_mappings = [
+            dict(terminal["confirmed_action_mapping"])
+            for item in items.values()
+            if isinstance(item, dict)
+            and isinstance(item.get("terminal_payload"), dict)
+            for terminal in [item["terminal_payload"]]
+            if isinstance(
+                terminal.get("confirmed_action_mapping"), dict
+            )
+            and str(
+                terminal["confirmed_action_mapping"].get(
+                    "canonical_action_id"
+                )
+                or ""
+            ).strip()
+            == action_id
+            and str(
+                terminal["confirmed_action_mapping"].get(
+                    "reserved_worker_stable_id"
+                )
+                or ""
+            ).strip()
+            == reserved_id
+        ]
+        if len(persisted_mappings) == 1:
+            mapping = persisted_mappings[0]
+            post_observation_id = str(
+                mapping.get("post_observation_id") or ""
+            ).strip()
     if action_kind == "voice" and not mapping:
         prepare_evidence = (
             payload.get("prepare_evidence")
@@ -1719,14 +2425,11 @@ def _committed_action_identity_from_journal(
         else MessageCommitBasis.CONFIRMED_VOICE_ACTION
     )
     if action_kind == "image":
-        fingerprint = str(
-            (image_receipt or {}).get("image_visual_fingerprint") or ""
-        ).strip()
-        observation["image_physical_anchor"] = {
-            "bubble_visual_fingerprint": fingerprint
-        }
-        summary["image_visual_fingerprint"] = fingerprint
-        proof["image_visual_fingerprint"] = fingerprint
+        image_sha256 = str(
+            (image_receipt or {}).get("image_sha256") or ""
+        ).strip().lower()
+        summary["image_sha256"] = image_sha256
+        proof["image_sha256"] = image_sha256
     observation["_worker_committed_message"] = committed_identity_record(
         worker_stable_id=reserved_id,
         commit_basis=basis,
@@ -1739,6 +2442,45 @@ def _committed_action_identity_from_journal(
         conversation_id=target.conversation_id,
         observation=observation,
     )
+
+
+def _journal_business_continuity_selected_occurrence_confirmed(
+    payload: dict[str, Any],
+) -> bool:
+    """Validate the selected occurrence using only the persisted Worker result."""
+
+    evidence = (
+        payload.get("business_continuity_evidence")
+        if isinstance(payload.get("business_continuity_evidence"), dict)
+        else {}
+    )
+    if str(evidence.get("relation") or "") not in {
+        "business_sequence_equal",
+        "unique_tail_append",
+        "unique_viewport_slide_with_tail_append",
+    }:
+        return False
+    selected_indexes = [
+        item.get("pre_sequence_index")
+        for item in (payload.get("pre_action_identity_sequence") or [])
+        if isinstance(item, dict)
+        and item.get("identity_state") == "selected_action"
+        and isinstance(item.get("pre_sequence_index"), int)
+        and not isinstance(item.get("pre_sequence_index"), bool)
+    ]
+    if len(selected_indexes) != 1:
+        return False
+    selected_index = selected_indexes[0]
+    selected_pairs = [
+        pair
+        for pair in (evidence.get("matched_pairs") or [])
+        if isinstance(pair, dict)
+        and pair.get("old_index") == selected_index
+        and isinstance(pair.get("new_index"), int)
+        and not isinstance(pair.get("new_index"), bool)
+        and int(pair["new_index"]) >= 0
+    ]
+    return len(selected_pairs) == 1
 
 
 def _c2_image_messages(payload: dict[str, Any]) -> list[dict[str, Any]]:
@@ -1852,6 +2594,7 @@ def _voice_terminal_payload(
     result: str,
     error_code: str | None,
     identity_confirmed: bool = False,
+    confirmed_action_mapping: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     aliases = {str(value).strip() for value in anchor_keys if str(value).strip()}
     matched_transcript: dict[str, Any] | None = None
@@ -1881,7 +2624,7 @@ def _voice_terminal_payload(
                 if item.get(key) is not None
             }
             break
-    return {
+    terminal_payload = {
         "state": result,
         "error_code": error_code,
         "transcribed_message": matched_transcript,
@@ -1893,6 +2636,13 @@ def _voice_terminal_payload(
             else MediaActionTerminal.IDENTITY_UNRESOLVED.value
         ),
     }
+    if isinstance(confirmed_action_mapping, dict) and (
+        confirmed_action_mapping
+    ):
+        terminal_payload["confirmed_action_mapping"] = dict(
+            confirmed_action_mapping
+        )
+    return terminal_payload
 
 
 def _replayable_voice_observation(
@@ -1966,6 +2716,9 @@ def _replayable_voice_observation(
         "_worker_voice_action_summary": {
             "confirmed_action_mapping": mapping,
         },
+        "_worker_action_screen_order": int(
+            mapping.get("result_screen_order", -1)
+        ),
         "_worker_committed_message": committed_identity_record(
             worker_stable_id=stable_id,
             commit_basis=MessageCommitBasis.CONFIRMED_VOICE_ACTION,
@@ -2000,6 +2753,171 @@ def _replayable_voice_observation(
             }
         )
     return observation
+
+
+def _legacy_proven_voice_observation(
+    *,
+    target: WechatReadTarget,
+    payload: dict[str, Any],
+    terminal_payload: dict[str, Any],
+) -> tuple[dict[str, Any] | None, IdentityCommitRejection | None]:
+    """Adapt one pre-cutover, already-proven voice fact for recovery.
+
+    This does not synthesize a current action receipt. Old releases did not
+    persist that schema. The restart classifier has already proved this
+    record from its immutable, unique historical alignment, so only this
+    migration path uses the historical checkpoint commit basis. Current and
+    new actions remain on the strict actual-result path.
+    """
+
+    action_id = str(payload.get("canonical_action_id") or "").strip()
+    reserved_id = str(
+        payload.get("reserved_worker_stable_id") or ""
+    ).strip()
+    selected = [
+        dict(item)
+        for item in (payload.get("pre_action_identity_sequence") or [])
+        if isinstance(item, dict)
+        and item.get("identity_state") == "selected_action"
+        and str(item.get("canonical_action_id") or "").strip()
+        == action_id
+        and str(
+            item.get("reserved_worker_stable_id")
+            or item.get("worker_stable_id")
+            or ""
+        ).strip()
+        == reserved_id
+    ]
+    alignment = (
+        dict(payload.get("sequence_alignment_evidence") or {})
+        if isinstance(payload.get("sequence_alignment_evidence"), dict)
+        else {}
+    )
+    matched_pairs = [
+        dict(pair)
+        for pair in (alignment.get("matched_pairs") or [])
+        if isinstance(pair, dict)
+        and pair.get("identity_state") == "selected_action"
+        and str(pair.get("worker_stable_id") or "").strip()
+        == reserved_id
+    ]
+    if (
+        not action_id
+        or not re.fullmatch(r"worker-message-[1-9][0-9]*", reserved_id)
+        or alignment.get("alignment_status") != "unique"
+        or len(selected) != 1
+        or len(matched_pairs) != 1
+    ):
+        return None, IdentityCommitRejection(
+            error_code="C2_VOICE_IDENTITY_CONTRACT_INVALID",
+            reason="legacy_historical_alignment_incomplete",
+        )
+
+    pre_observation_id = str(
+        matched_pairs[0].get("pre_observation_id")
+        or selected[0].get("pre_observation_id")
+        or ""
+    ).strip()
+    post_observation_id = str(
+        matched_pairs[0].get("post_observation_id") or ""
+    ).strip()
+    sender_role = str(selected[0].get("sender_role") or "").strip().lower()
+    match_basis = str(
+        matched_pairs[0].get("match_basis") or ""
+    ).strip()
+    if not all(
+        (pre_observation_id, post_observation_id, sender_role, match_basis)
+    ):
+        return None, IdentityCommitRejection(
+            error_code="C2_VOICE_IDENTITY_CONTRACT_INVALID",
+            reason="legacy_historical_alignment_field_missing",
+            observation_id=post_observation_id,
+        )
+
+    proof = {
+        "alignment_status": "unique",
+        "pre_observation_id": pre_observation_id,
+        "post_observation_id": post_observation_id,
+        "worker_stable_id": reserved_id,
+        "match_basis": match_basis,
+        "legacy_record_migration": True,
+    }
+    transcript = (
+        dict(terminal_payload.get("transcribed_message") or {})
+        if isinstance(terminal_payload.get("transcribed_message"), dict)
+        else {}
+    )
+    state = str(terminal_payload.get("state") or "").strip().lower()
+    content = str(
+        transcript.get("content_clean") or transcript.get("content") or ""
+    ).strip()
+    if state == "completed" and not content:
+        return None, IdentityCommitRejection(
+            error_code="C2_VOICE_IDENTITY_CONTRACT_INVALID",
+            reason="legacy_voice_transcript_missing",
+            observation_id=post_observation_id,
+        )
+
+    observation: dict[str, Any] = {
+        "schema_version": 3,
+        "observation_id": post_observation_id,
+        "row_kind": (
+            "voice_transcript" if state == "completed" else "voice_bubble"
+        ),
+        "sender_role": sender_role,
+        "sender_role_source": (
+            "parent_voice" if state == "completed" else "same_row_avatar"
+        ),
+        "message_type": "voice",
+        "voice_state": (
+            "transcribed" if state == "completed" else "untranscribed"
+        ),
+        "item_state": "completed" if state == "completed" else "failed",
+        "_worker_stable_id": reserved_id,
+        "_worker_identity_scope": "committed",
+        "_worker_committed_message": committed_identity_record(
+            worker_stable_id=reserved_id,
+            commit_basis=MessageCommitBasis.HISTORICAL_CHECKPOINT_ALIGNMENT,
+            observation_id=post_observation_id,
+            sender_role=sender_role,
+            message_type="voice",
+            proof=proof,
+        ),
+    }
+    if state == "completed":
+        observation.update(
+            {
+                "content_clean": content,
+                "parent_voice_anchor_key": str(
+                    transcript.get("parent_voice_anchor_key")
+                    or f"legacy:{action_id}"
+                ).strip(),
+            }
+        )
+    else:
+        error_code = str(
+            terminal_payload.get("error_code")
+            or "C2_VOICE_TRANSCRIBE_FAILED"
+        ).strip()
+        observation.update(
+            {
+                "voice_anchor_key": f"legacy:{action_id}",
+                "error_code": error_code,
+                "reason_detail": error_code,
+            }
+        )
+    committed = commit_message_identity(
+        conversation_id=target.conversation_id,
+        observation=observation,
+    )
+    if isinstance(committed, IdentityCommitRejection):
+        return None, committed
+    observation["source_message"] = {
+        "source_message_key": committed.source_message_key,
+        "sender_role": sender_role,
+        "type": "voice",
+    }
+    return observation, None
 
 
 def _replayable_voice_observation_from_ledger(
@@ -3453,7 +4371,7 @@ class TaskRunner:
         *,
         flow_id: str,
         conversation_id: str,
-    ) -> Literal["settled", "retry", "blocked"]:
+    ) -> Literal["settled", "retry", "blocked", "technical_failed"]:
         """Settle the old flow's physical Journal before finishing it.
 
         Recovery is evidence-only: it may read local Journal/SQLite state and
@@ -3515,57 +4433,44 @@ class TaskRunner:
         )
         unresolved = self._recover_physical_action_journals(
             recovery_target,
+            legacy_proven_identity_migration=(
+                str(
+                    load_legacy_media_recovery(flow_id).get("decision")
+                    or ""
+                ).strip()
+                == "legacy_proven_identity_migration"
+            ),
             restart_journal_entries=journal_entries,
         )
         if unresolved:
-            gate_target = self._restart_recovery_target(
-                binding,
-                flow_id=flow_id,
-                conversation_id=journal_conversation_id,
-                journal_entries=journal_entries,
-            )
-            if gate_target is None:
-                append_log(
-                    "WARN",
-                    "restart_action_journal_target_pending",
-                    "重启旧媒体动作已进入隔离，但原会话授权尚不可用；保留旧流程并稍后重试。",
-                    error_code="RUNTIME_INFLIGHT_RECOVERY_TARGET_PENDING",
-                    metadata={
-                        "flow_id": flow_id,
-                        "conversation_id": journal_conversation_id,
-                    },
-                )
-                return "retry"
             error_code = str(
                 unresolved[0].get("error_code")
                 or "MESSAGE_CROSS_ROUND_IDENTITY_AMBIGUOUS"
             ).strip()
-            reported = self._report_identity_failure_gate(
-                binding=binding,
-                target=gate_target,
-                read_run_id=flow_id,
-                error_code=error_code,
-                identity_errors=unresolved,
-                authoritative_frame_source="action_journal_recovery",
-                ui_frame_invalidated=False,
-            )
-            if not reported:
-                return "retry"
-            self._quarantine_reported_restart_journals(
-                journal_entries=journal_entries,
-                identity_errors=unresolved,
+            self.set_run_status("faulted")
+            save_c2_state(
+                self._inflight_finish_receipt_key(flow_id),
+                {
+                    "terminal_kind": "technical_failed",
+                    "conversation_id": journal_conversation_id,
+                    "error_code": error_code,
+                },
             )
             append_log(
-                "WARN",
-                "restart_action_journal_identity_gate_reported",
-                "重启旧媒体动作已无 UI 隔离并交给现有恢复门禁；释放旧流程后继续其他短码。",
+                "ERROR",
+                "restart_media_action_technical_failed",
+                "重启发现媒体动作结果无法唯一恢复；未转人工、未重复操作，客户端保持故障并保留证据。",
                 error_code=error_code,
                 metadata={
                     "flow_id": flow_id,
                     "conversation_id": journal_conversation_id,
                     "journal_count": len(journal_entries),
+                    "identity_errors": unresolved,
+                    "handoff_created": False,
                 },
+                force_incident=True,
             )
+            return "technical_failed"
 
         if self._has_physical_action_journal_for_flow(flow_id):
             media_status = self._recover_pending_media_transaction(
@@ -3654,7 +4559,7 @@ class TaskRunner:
                         **terminal_payload,
                         "state": "quarantined",
                         "media_action_terminal": (
-                            MediaActionTerminal.IDENTITY_UNRESOLVED.value
+                            MediaActionTerminal.TECHNICAL_FAILED.value
                         ),
                         "identity_gate_reported": True,
                         "reason": "restart_identity_unresolved_reported",
@@ -4190,13 +5095,26 @@ class TaskRunner:
             )
             return
         conversation_id = conversation_ids[0] if conversation_ids else ""
-        if self._recover_restart_physical_action_journals(
+        media_recovery_status = self._recover_restart_physical_action_journals(
             binding,
             flow_id=flow_id,
             conversation_id=conversation_id,
-        ) != "settled":
+        )
+        if media_recovery_status not in {"settled", "technical_failed"}:
             return
-        if self._local_restart_flow_blocker(flow_id):
+        if media_recovery_status == "technical_failed":
+            # Recovery just replaced the pre-restart success/failure receipt
+            # with the authoritative technical terminal. Reload it before
+            # choosing the backend finish kind; otherwise the stale local
+            # variable can incorrectly re-enter the normal-flow blockers and
+            # leave a faulted Worker holding the old Flow forever.
+            receipt = load_c2_state(
+                self._inflight_finish_receipt_key(flow_id)
+            )
+        if (
+            media_recovery_status != "technical_failed"
+            and self._local_restart_flow_blocker(flow_id)
+        ):
             return
         self._archive_proven_legacy_migration_if_ready(flow_id)
         terminal_kind = str(receipt.get("terminal_kind") or "").strip()
@@ -4206,6 +5124,7 @@ class TaskRunner:
             "read_confirmed",
             "failed_before_message_action",
             "read_failed_no_fact",
+            "technical_failed",
         } and flow_kind == "c2_read" and conversation_id:
             durable_read_artifact_exists = bool(
                 journal_entries
@@ -4234,6 +5153,7 @@ class TaskRunner:
             "read_confirmed",
             "failed_before_message_action",
             "read_failed_no_fact",
+            "technical_failed",
         }:
             self._pause_for_restart_flow_reconciliation(
                 binding,
@@ -5044,6 +5964,35 @@ class TaskRunner:
                 },
             },
         )
+        checkpoint_binding = self._bind_pre_send_fact_checkpoint(
+            status=batch_status,
+            target=target,
+        )
+        if checkpoint_binding.get("ok") is not True:
+            self._settle_chat_reply_context_failure_before_unlock(
+                binding,
+                task_id=task.id,
+                source_error_code=PRE_SEND_FACT_CHECKPOINT_ERROR,
+                evidence={
+                    "checkpoint_binding": checkpoint_binding,
+                    "batch_id": batch_id,
+                },
+            )
+            self.on_result(
+                RpaResult(
+                    ok=False,
+                    error_code=PRE_SEND_FACT_CHECKPOINT_ERROR,
+                    failure_step="pre_send_checkpoint",
+                    message=(
+                        "回复任务缺少后端冻结的有效事实 checkpoint，"
+                        "未打开微信或发送。"
+                    ),
+                    evidence_metadata={
+                        "checkpoint_binding": checkpoint_binding,
+                    },
+                )
+            )
+            return
         if not self._batch_authorization_allows_target(batch_status, target):
             self._handle_failed_result(
                 binding,
@@ -5972,10 +6921,6 @@ class TaskRunner:
             "binding_confirmed": True,
             "action_appended": True,
         }
-        post_sequence = build_post_action_observation_sequence(
-            observations,
-            confirmed_action_mapping=mapping,
-        )
         run_id = str(
             sidecar_result.get("sidecar_run_id")
             or sidecar_result.get("run_id")
@@ -5989,103 +6934,37 @@ class TaskRunner:
             f"send-post:{run_id or reply_action_id}:"
             f"{confirmation_attempt}"
         )
-        try:
-            evidence = align_committed_message_sequence(
-                pre_sequence,
-                post_sequence,
-                mapping,
-                pre_sequence_source="action_frame",
-                pre_frame_id=pre_frame_id,
-                post_frame_id=post_frame_id,
-            )
-        except (TypeError, ValueError) as exc:
-            evidence = {
-                "pre_sequence_source": "action_frame",
-                "pre_frame_id": pre_frame_id,
-                "post_frame_id": post_frame_id,
-                "alignment_status": "unresolved",
-                "candidate_alignment_count": 0,
-                "matched_pairs": [],
-                "old_tail_fully_consumed": False,
-                "new_suffix_observation_ids": [],
-                "error_code": "AI_REPLY_SEQUENCE_ALIGNMENT_INVALID",
-                "error": repr(exc),
-            }
-        new_suffix = [
-            str(value or "").strip()
-            for value in (evidence.get("new_suffix_observation_ids") or [])
-            if str(value or "").strip()
-        ]
-        if (
-            evidence.get("alignment_status") != "unique"
-            or evidence.get("old_tail_fully_consumed") is not True
-            or not new_suffix
-            or new_suffix[0] != confirmed_observation_id
-        ):
-            # The immediate Sidecar confirmation proves that this exact send
-            # action produced one unique bottom-most self bubble while the
-            # input became empty.  A newly appended bubble can clip the old
-            # viewport, and media-only history cannot prove full alignment.
-            # Commit only the action's reserved identity here.  Historical
-            # rows are deliberately not inherited from text, coordinates, or
-            # an old frame; the next authorized read must align them normally.
-            post_index = next(
-                index
-                for index, item in enumerate(post_sequence)
-                if str(item.get("post_observation_id") or "").strip()
-                == confirmed_observation_id
-            )
-            visible_prefix_ids = [
-                str(item.get("post_observation_id") or "").strip()
-                for item in post_sequence[:post_index]
-            ]
-            pre_observation_ids = [
-                str(item.get("pre_observation_id") or "").strip()
-                for item in pre_sequence
-            ]
-            prefix_is_unchanged_pre_suffix = bool(
-                all(visible_prefix_ids)
-                and len(visible_prefix_ids) <= len(pre_observation_ids)
-                and visible_prefix_ids
-                == pre_observation_ids[-len(visible_prefix_ids):]
-            )
-            if not prefix_is_unchanged_pre_suffix:
-                self._mark_possible_ai_send_alignment(
-                    conversation_id=target.conversation_id,
-                    reply_action_id=reply_action_id,
-                    reconciliation_state=(
-                        "identity_unconfirmed_possible_sent"
-                    ),
-                    sequence_alignment_evidence=evidence,
-                    physical_send_confirmed=True,
-                )
-                return False
-            history_alignment = dict(evidence)
-            evidence = {
-                "pre_sequence_source": "action_frame",
-                "pre_frame_id": pre_frame_id,
-                "post_frame_id": post_frame_id,
-                "alignment_status": "unique",
-                "candidate_alignment_count": 1,
-                "matched_pairs": [
-                    {
-                        "identity_state": "selected_action",
-                        "worker_stable_id": reserved_id,
-                        "pre_observation_id": reply_action_id,
-                        "post_observation_id": confirmed_observation_id,
-                        "pre_index": len(pre_sequence),
-                        "post_index": post_index,
-                        "match_basis": "confirmed_action",
-                    }
-                ],
-                "old_tail_fully_consumed": False,
-                "new_suffix_observation_ids": [
-                    confirmed_observation_id
-                ],
-                "confirmed_action_mapping": dict(mapping),
-                "action_identity_only": True,
-                "history_alignment_evidence": history_alignment,
-            }
+        post_index = next(
+            index
+            for index, item in enumerate(observations)
+            if str(item.get("observation_id") or "").strip()
+            == confirmed_observation_id
+        )
+        # The Sidecar receipt proves only the actual result of this send.
+        # It does not compare or inherit historical message identity.
+        evidence = {
+            "pre_sequence_source": "action_frame",
+            "pre_frame_id": pre_frame_id,
+            "post_frame_id": post_frame_id,
+            "alignment_status": "unique",
+            "candidate_alignment_count": 1,
+            "matched_pairs": [
+                {
+                    "identity_state": "selected_action",
+                    "worker_stable_id": reserved_id,
+                    "pre_observation_id": reply_action_id,
+                    "post_observation_id": confirmed_observation_id,
+                    "pre_index": len(pre_sequence),
+                    "post_index": post_index,
+                    "match_basis": "confirmed_action",
+                }
+            ],
+            "old_tail_fully_consumed": False,
+            "new_suffix_observation_ids": [confirmed_observation_id],
+            "confirmed_action_mapping": dict(mapping),
+            "action_identity_only": True,
+            "historical_identity_inherited": False,
+        }
         journal_path = self.bridge.send_transaction_journal_path(
             reply_action_id
         )
@@ -6100,12 +6979,7 @@ class TaskRunner:
                 physical_send_confirmed=True,
             )
             return False
-        confirmed_sequence_item = next(
-            item
-            for item in post_sequence
-            if str(item.get("post_observation_id") or "").strip()
-            == confirmed_observation_id
-        )
+        confirmed_sequence_item = confirmed_matches[0]
         receipt = {
             "reply_action_id": reply_action_id,
             "reply_text": str(possible.get("reply_text") or "").strip(),
@@ -6366,6 +7240,275 @@ class TaskRunner:
             ).strip(),
         }
 
+    def _expand_pre_send_continuity_context_once(
+        self,
+        *,
+        target: WechatReadTarget,
+        target_label: str,
+        locate_payload: dict[str, Any],
+        expected_confirmed_self_text: str,
+        cancel_check: Callable[[], bool] | None,
+    ) -> dict[str, Any]:
+        """Perform the single read-only continuity expansion transaction."""
+
+        context = (
+            target.raw.get("pre_send_fact_checkpoint_context")
+            if isinstance(target.raw, dict)
+            and isinstance(
+                target.raw.get("pre_send_fact_checkpoint_context"), dict
+            )
+            else {}
+        )
+        checkpoint = (
+            context.get("checkpoint")
+            if isinstance(context.get("checkpoint"), dict)
+            else {}
+        )
+        tail = [
+            item
+            for item in (checkpoint.get("committed_tail") or [])
+            if isinstance(item, dict)
+        ]
+        anchor_ids: list[str] = []
+        anchor_contents: list[str] = []
+        for item in reversed(tail):
+            if not list(item.get("strong_boundary_tokens") or []):
+                continue
+            anchor = (
+                item.get("strong_boundary_anchor")
+                if isinstance(item.get("strong_boundary_anchor"), dict)
+                else {}
+            )
+            native_id = str(
+                anchor.get("native_source_message_id") or ""
+            ).strip()
+            content = str(anchor.get("normalized_content") or "").strip()
+            if native_id:
+                anchor_ids.append(native_id)
+            if content:
+                anchor_contents.append(content)
+            if native_id or content:
+                break
+        if not (anchor_ids or anchor_contents):
+            return {
+                "ok": False,
+                "error_code": (
+                    "C2_PRE_SEND_MESSAGE_SEQUENCE_ALIGNMENT_FAILED"
+                ),
+                "reason": "continuity_expansion_strong_boundary_missing",
+            }
+        max_history = max(1, len(tail))
+        expanded = self.bridge.get_messages(
+            display_name=target_label,
+            rpa_session_key="",
+            remark_code=target.remark_code or "",
+            target_mode="current",
+            expected_confirmed_self_text=expected_confirmed_self_text,
+            chat_fact_roi_ocr=False,
+            history_mode="anchor_until_found",
+            anchor_ids=anchor_ids,
+            reply_content_keys=anchor_contents,
+            max_scroll_steps=min(max_history, 16),
+            max_snapshots=min(max_history + 1, 17),
+            restore_to_latest=True,
+            max_duration_seconds=20,
+            cancel_check=cancel_check,
+        )
+        history_load = (
+            expanded.get("history_load")
+            if isinstance(expanded.get("history_load"), dict)
+            else {}
+        )
+        if (
+            expanded.get("ok") is not True
+            or history_load.get("ok") is not True
+            or history_load.get("anchor_found") is not True
+            or history_load.get("restored_to_latest") is not True
+        ):
+            return {
+                "ok": False,
+                "error_code": str(
+                    expanded.get("error_code")
+                    or "C2_PRE_SEND_MESSAGE_SEQUENCE_ALIGNMENT_FAILED"
+                ),
+                "reason": str(
+                    history_load.get("stopped_reason")
+                    or expanded.get("reason")
+                    or "continuity_expansion_failed"
+                ),
+                "expanded": expanded,
+            }
+        expanded_observations = expanded.get("observations")
+        if not isinstance(expanded_observations, list):
+            return {
+                "ok": False,
+                "error_code": (
+                    "C2_PRE_SEND_MESSAGE_SEQUENCE_ALIGNMENT_FAILED"
+                ),
+                "reason": "continuity_expansion_observations_missing",
+                "expanded": expanded,
+            }
+        latest = self.bridge.get_messages(
+            display_name=target_label,
+            rpa_session_key="",
+            remark_code=target.remark_code or "",
+            target_mode="current",
+            expected_confirmed_self_text=expected_confirmed_self_text,
+            chat_fact_roi_ocr=CONFIG.c3_pre_send_roi_reuse_enabled,
+            max_duration_seconds=20,
+            cancel_check=cancel_check,
+        )
+        latest["target_confirmation"] = locate_payload
+        latest["authoritative_frame_source"] = "initial_read"
+        latest["ui_frame_invalidated"] = False
+        latest["continuity_context_expansion_used"] = True
+        latest["continuity_expanded_observations"] = [
+            dict(item) if isinstance(item, dict) else item
+            for item in expanded_observations
+        ]
+        latest["continuity_context_expansion_evidence"] = {
+            "schema_version": 1,
+            "anchor_ids": anchor_ids,
+            "anchor_content_count": len(anchor_contents),
+            "checkpoint_history_limit": max_history,
+            "history_load": dict(history_load),
+            "expanded_sidecar_run_id": str(
+                expanded.get("sidecar_run_id") or ""
+            ),
+            "latest_sidecar_run_id": str(
+                latest.get("sidecar_run_id") or ""
+            ),
+        }
+        return {
+            "ok": latest.get("ok") is True,
+            "error_code": str(
+                latest.get("error_code") or latest.get("state") or ""
+            ),
+            "reason": str(latest.get("reason") or ""),
+            "payload": latest,
+            "expanded": expanded,
+        }
+
+    def _expand_media_continuity_context_once(
+        self,
+        *,
+        target: WechatReadTarget,
+        target_label: str,
+        pre_payload: dict[str, Any],
+        cancel_check: Callable[[], bool] | None,
+        operation_phase: C2ReadOperationPhase,
+    ) -> dict[str, Any]:
+        """Run the one bounded, read-only media continuity expansion.
+
+        The Sidecar only scrolls, screenshots and OCRs.  This method always
+        obtains a second fresh bottom frame after the Sidecar reports that it
+        restored the viewport; neither returned payload is trusted until the
+        Worker continuity comparator verifies it.
+        """
+
+        anchor_ids, anchor_contents, max_history = (
+            _continuity_expansion_search_terms(pre_payload)
+        )
+        if not (anchor_ids or anchor_contents):
+            return {
+                "ok": False,
+                "error_code": "MESSAGE_CROSS_ROUND_IDENTITY_AMBIGUOUS",
+                "reason": "continuity_expansion_strong_boundary_missing",
+            }
+        expanded = self.bridge.get_messages(
+            display_name=target_label,
+            rpa_session_key="",
+            remark_code=target.remark_code or "",
+            target_mode="current",
+            expected_confirmed_self_text=(
+                self._confirmed_ai_reply_text_for_read(target)
+            ),
+            chat_fact_roi_ocr=False,
+            history_mode="anchor_until_found",
+            anchor_ids=anchor_ids,
+            reply_content_keys=anchor_contents,
+            max_scroll_steps=min(max_history, 16),
+            max_snapshots=min(max_history + 1, 17),
+            restore_to_latest=True,
+            max_duration_seconds=20,
+            cancel_check=cancel_check,
+        )
+        history_load = (
+            expanded.get("history_load")
+            if isinstance(expanded.get("history_load"), dict)
+            else {}
+        )
+        if (
+            expanded.get("ok") is not True
+            or history_load.get("ok") is not True
+            or history_load.get("anchor_found") is not True
+            or history_load.get("restored_to_latest") is not True
+            or not isinstance(expanded.get("observations"), list)
+        ):
+            return {
+                "ok": False,
+                "error_code": str(
+                    expanded.get("error_code")
+                    or "MESSAGE_CROSS_ROUND_IDENTITY_AMBIGUOUS"
+                ),
+                "reason": str(
+                    history_load.get("stopped_reason")
+                    or "continuity_expansion_failed"
+                ),
+                "expanded": expanded,
+            }
+        latest = self.bridge.get_messages(
+            display_name=target_label,
+            rpa_session_key="",
+            remark_code=target.remark_code or "",
+            target_mode="current",
+            expected_confirmed_self_text=(
+                self._confirmed_ai_reply_text_for_read(target)
+            ),
+            chat_fact_roi_ocr=(
+                operation_phase == C2_PRE_SEND_REFRESH_PHASE
+                and CONFIG.c3_pre_send_roi_reuse_enabled
+            ),
+            max_duration_seconds=20,
+            cancel_check=cancel_check,
+        )
+        if latest.get("ok") is not True or not isinstance(
+            latest.get("observations"), list
+        ):
+            return {
+                "ok": False,
+                "error_code": str(
+                    latest.get("error_code")
+                    or "MESSAGE_CROSS_ROUND_IDENTITY_AMBIGUOUS"
+                ),
+                "reason": "continuity_expansion_latest_frame_missing",
+                "expanded": expanded,
+                "latest": latest,
+            }
+        latest["continuity_context_expansion_used"] = True
+        latest["continuity_expanded_observations"] = [
+            dict(item) if isinstance(item, dict) else item
+            for item in expanded.get("observations") or []
+        ]
+        latest["continuity_context_expansion_evidence"] = {
+            "schema_version": 1,
+            "anchor_ids": anchor_ids,
+            "anchor_content_count": len(anchor_contents),
+            "checkpoint_history_limit": max_history,
+            "history_load": dict(history_load),
+            "expanded_sidecar_run_id": str(
+                expanded.get("sidecar_run_id") or ""
+            ),
+            "latest_sidecar_run_id": str(
+                latest.get("sidecar_run_id") or ""
+            ),
+        }
+        return {
+            "ok": True,
+            "payload": latest,
+            "expanded": expanded,
+        }
+
     def _compare_pre_send_fact_checkpoint_frame(
         self,
         *,
@@ -6406,9 +7549,14 @@ class TaskRunner:
                 prepared.get("observations"),
             )
         )
+        raw_observations = prepared.get("observations")
+        empty_viewport_confirmed = (
+            _confirmed_empty_business_viewport(prepared, target)
+        )
         current_tail_complete = bool(
             prepared.get("ok") is True
             and frame_id
+            and isinstance(raw_observations, list)
             and str(
                 prepared.get("authoritative_frame_source") or ""
             ).strip()
@@ -6423,7 +7571,11 @@ class TaskRunner:
         )
         comparison = compare_checkpoint_to_observations(
             checkpoint,
-            list(prepared.get("observations") or []),
+            (
+                list(raw_observations)
+                if isinstance(raw_observations, list)
+                else None
+            ),
             before_frame_id=(
                 "pre-send-checkpoint:"
                 + str(
@@ -6436,7 +7588,31 @@ class TaskRunner:
             ),
             after_frame_id=f"frame:{frame_id}",
             current_tail_complete=current_tail_complete,
+            current_empty_viewport_confirmed=empty_viewport_confirmed,
+            context_expansion_used=bool(
+                prepared.get("continuity_context_expansion_used")
+            ),
+            expanded_context_observations=(
+                list(prepared.get("continuity_expanded_observations"))
+                if isinstance(
+                    prepared.get("continuity_expanded_observations"),
+                    list,
+                )
+                else None
+            ),
         )
+        if (
+            isinstance(raw_observations, list)
+            and not raw_observations
+            and not empty_viewport_confirmed
+        ):
+            comparison.update(
+                {
+                    "comparison_result": "checkpoint_not_continuous",
+                    "reason": "authoritative_observations_missing",
+                    "old_tail_fully_consumed": False,
+                }
+            )
         comparison["send_context_guard_validation"] = (
             send_context_guard_validation
         )
@@ -6444,20 +7620,44 @@ class TaskRunner:
         if comparison.get("comparison_result") not in {
             "checkpoint_equal",
             "checkpoint_unique_prefix_with_suffix",
+            "checkpoint_unique_viewport_slide_with_suffix",
         }:
             return prepared, comparison
 
-        prefix_count = int(comparison.get("checkpoint_count") or 0)
+        prefix_count = int(comparison.get("current_prefix_count") or 0)
         prepared["pre_send_fact_checkpoint_prefix_count"] = prefix_count
+        suffix_ids = {
+            str(value or "").strip()
+            for value in (
+                comparison.get("new_suffix_observation_ids") or []
+            )
+            if str(value or "").strip()
+        }
+        if suffix_ids:
+            prepared["observations"] = [
+                {
+                    **item,
+                    "_worker_current_flow_media_candidate": True,
+                }
+                if isinstance(item, dict)
+                and str(item.get("observation_id") or "").strip()
+                in suffix_ids
+                and str(item.get("message_type") or "").strip().lower()
+                in {"voice", "image"}
+                else item
+                for item in (prepared.get("observations") or [])
+            ]
         evidence = {
             "pre_sequence_source": "checkpoint",
             "pre_frame_id": comparison.get("before_frame_id"),
             "post_frame_id": comparison.get("after_frame_id"),
             "alignment_status": "unique",
             "candidate_alignment_count": 1,
-            # Historical IDs deliberately remain only in the frozen
-            # checkpoint. They are not attached to this fresh Sidecar frame.
-            "matched_pairs": [],
+            # The checkpoint proves only the immutable historical prefix.
+            # Never copy durable identity onto a fresh OCR row here.  The
+            # prefix count keeps old facts out of media actions and ingest;
+            # only a genuinely new suffix enters the normal identity gate.
+            "matched_pairs": list(comparison.get("matched_pairs") or []),
             "old_tail_fully_consumed": True,
             "new_suffix_observation_ids": list(
                 comparison.get("new_suffix_observation_ids") or []
@@ -6465,9 +7665,10 @@ class TaskRunner:
             "comparison_result": comparison.get("comparison_result"),
         }
         prepared["sequence_alignment_evidence"] = evidence
-        if comparison.get("comparison_result") == (
-            "checkpoint_unique_prefix_with_suffix"
-        ):
+        if comparison.get("comparison_result") in {
+            "checkpoint_unique_prefix_with_suffix",
+            "checkpoint_unique_viewport_slide_with_suffix",
+        }:
             prepared["observations"] = (
                 self._assign_sequence_new_suffix_identities(
                     target=target,
@@ -6557,7 +7758,7 @@ class TaskRunner:
             and isinstance(target.raw.get("identity_checkpoint"), dict)
             else {}
         )
-        if int(checkpoint.get("version") or 0) != 2:
+        if int(checkpoint.get("version") or 0) != 3:
             return prepared, [
                 {
                     "error_code": "MESSAGE_IDENTITY_CHECKPOINT_MISSING",
@@ -6593,6 +7794,53 @@ class TaskRunner:
                     "frame_visual_id": str(
                         item.get("frame_visual_id") or ""
                     ).strip(),
+                    "source_message_key": str(
+                        item.get("source_message_key") or ""
+                    ).strip(),
+                    "business_projection": (
+                        dict(item.get("business_projection") or {})
+                        if isinstance(
+                            item.get("business_projection"), dict
+                        )
+                        else {}
+                    ),
+                    "strong_boundary_tokens": [
+                        str(token)
+                        for token in (
+                            item.get("strong_boundary_tokens") or []
+                        )
+                        if isinstance(token, str) and token.strip()
+                    ],
+                    "message_identity_commit_record": (
+                        dict(
+                            item.get("message_identity_commit_record")
+                            or {}
+                        )
+                        if isinstance(
+                            item.get("message_identity_commit_record"),
+                            dict,
+                        )
+                        else {}
+                    ),
+                    "message_identity_runtime_evidence": (
+                        {
+                            str(key): dict(value)
+                            for key, value in (
+                                item.get(
+                                    "message_identity_runtime_evidence"
+                                )
+                                or {}
+                            ).items()
+                            if isinstance(value, dict)
+                        }
+                        if isinstance(
+                            item.get(
+                                "message_identity_runtime_evidence"
+                            ),
+                            dict,
+                        )
+                        else {}
+                    ),
                 }
             )
         checkpoint_stable_ids = {
@@ -6618,6 +7866,120 @@ class TaskRunner:
         boundary_stable_id = str(
             ai_reply_boundary.get("worker_stable_id") or ""
         ).strip()
+
+        def current_reply_business_signature(
+            expected_reply_text_hash: str,
+        ) -> str:
+            """Return the shared business signature for a sent-ack match.
+
+            ``reply_text_hash`` proves that a current self text equals the
+            text covered by the Worker's formal send receipt.  The business
+            projection deliberately uses a different normalization contract,
+            so its signature must be produced by the shared projector instead
+            of copying the receipt hash into a second comparison scheme.
+            """
+
+            signatures = {
+                stable_business_content_signature(observation)
+                for observation in observations
+                if isinstance(observation, dict)
+                and str(observation.get("sender_role") or "")
+                .strip()
+                .lower()
+                == "self"
+                and str(observation.get("message_type") or "")
+                .strip()
+                .lower()
+                == "text"
+                and str(observation.get("row_kind") or "")
+                .strip()
+                .lower()
+                == "text_bubble"
+                and self._reply_text_hash(
+                    str(observation.get("content_clean") or "")
+                )
+                == str(expected_reply_text_hash or "").strip()
+            }
+            return next(iter(signatures)) if len(signatures) == 1 else ""
+
+        def local_ai_reply_checkpoint_item(
+            *,
+            stable_id: str,
+            reply_action_id: str,
+            reply_text_hash: str,
+            confirmed_at: str,
+            pre_observation_id: str,
+            reconciliation_state: str = "confirmed",
+        ) -> dict[str, Any]:
+            """Project one Worker-owned send receipt into the v3 checkpoint.
+
+            This does not compare frames or create backend facts.  It only
+            gives the sole Worker continuity comparator the same formal
+            sent-ack object that will be attached if the current frame proves
+            the reply is present.
+            """
+
+            receipt = {
+                "reply_action_id": str(reply_action_id or "").strip(),
+                "reply_text_hash": str(reply_text_hash or "").strip(),
+                "worker_stable_id": str(stable_id or "").strip(),
+                "confirmed_at": str(confirmed_at or "").strip(),
+                "reconciliation_state": str(
+                    reconciliation_state or "confirmed"
+                ).strip(),
+            }
+            record = committed_identity_record(
+                worker_stable_id=receipt["worker_stable_id"],
+                commit_basis=MessageCommitBasis.CONFIRMED_SENT_ACK,
+                observation_id=pre_observation_id,
+                sender_role="self",
+                message_type="text",
+                proof={"reply_action_id": receipt["reply_action_id"]},
+            )
+            identity_observation = {
+                "observation_id": pre_observation_id,
+                "row_kind": "text_bubble",
+                "sender_role": "self",
+                "message_type": "text",
+                "_worker_stable_id": receipt["worker_stable_id"],
+                "_worker_identity_scope": "committed",
+                "_worker_ai_reply_receipt": receipt,
+                "_worker_committed_message": record,
+            }
+            committed = require_committed_message(
+                conversation_id=target.conversation_id,
+                observation=identity_observation,
+            )
+            signature = current_reply_business_signature(
+                receipt["reply_text_hash"]
+            )
+            return {
+                "identity_state": "committed",
+                "worker_stable_id": receipt["worker_stable_id"],
+                "pre_observation_id": pre_observation_id,
+                "pre_sequence_index": len(pre_sequence),
+                "sender_role": "self",
+                "message_type": "text",
+                "normalized_content_hash": signature,
+                "native_source_message_id": "",
+                "frame_visual_id": "",
+                "source_message_key": committed.source_message_key,
+                "business_projection": {
+                    "screen_order": len(pre_sequence),
+                    "sender_role": "self",
+                    "message_type": "text",
+                    "normalized_content_signature": signature,
+                    "media_state": "",
+                },
+                "strong_boundary_tokens": [
+                    f"fact:self:text:{signature}:"
+                ],
+                "message_identity_commit_record": record,
+                "message_identity_runtime_evidence": {
+                    "_worker_ai_reply_receipt": receipt,
+                },
+            }
+
         for receipt in identity_state.get("ai_reply_receipts") or []:
             if not isinstance(receipt, dict):
                 continue
@@ -6636,39 +7998,36 @@ class TaskRunner:
                 ).strip()
             ):
                 continue
-            pre_sequence.append(
-                {
-                    "identity_state": "committed",
-                    "worker_stable_id": stable_id,
-                    "pre_observation_id": (
-                        "confirmed-ai-reply:"
-                        f"{receipt['reply_action_id']}"
-                    ),
-                    "pre_sequence_index": len(pre_sequence),
-                    "sender_role": "self",
-                    "message_type": "text",
-                    "normalized_content_hash": str(
-                        receipt.get("reply_text_hash") or ""
-                    ).strip(),
-                    "native_source_message_id": str(
-                        receipt.get("native_source_message_id") or ""
-                    ).strip(),
-                    "frame_visual_id": str(
-                        receipt.get("frame_visual_id") or ""
-                    ).strip(),
-                    "ai_reply_boundary": bool(
-                        boundary_action_id
-                        and boundary_hash
-                        and str(receipt.get("reply_action_id") or "").strip()
-                        == boundary_action_id
-                        and str(receipt.get("reply_text_hash") or "").strip()
-                        == boundary_hash
-                    ),
-                    "_worker_sequence_number": int(
-                        stable_match.group(1)
-                    ),
-                }
+            item = local_ai_reply_checkpoint_item(
+                stable_id=stable_id,
+                reply_action_id=str(
+                    receipt.get("reply_action_id") or ""
+                ),
+                reply_text_hash=str(
+                    receipt.get("reply_text_hash") or ""
+                ),
+                confirmed_at=str(
+                    receipt.get("confirmed_at")
+                    or ai_reply_boundary.get("sent_at")
+                    or ""
+                ),
+                pre_observation_id=(
+                    "confirmed-ai-reply:"
+                    f"{receipt['reply_action_id']}"
+                ),
             )
+            item["ai_reply_boundary"] = bool(
+                boundary_action_id
+                and boundary_hash
+                and str(receipt.get("reply_action_id") or "").strip()
+                == boundary_action_id
+                and str(receipt.get("reply_text_hash") or "").strip()
+                == boundary_hash
+            )
+            item["_worker_sequence_number"] = int(
+                stable_match.group(1)
+            )
+            pre_sequence.append(item)
             checkpoint_stable_ids.add(stable_id)
         if (
             boundary_action_id
@@ -6680,25 +8039,22 @@ class TaskRunner:
                 r"worker-message-(\d+)", boundary_stable_id
             )
             if stable_match is not None:
-                pre_sequence.append(
-                    {
-                        "identity_state": "committed",
-                        "worker_stable_id": boundary_stable_id,
-                        "pre_observation_id": (
-                            f"sent-ack-boundary:{boundary_action_id}"
-                        ),
-                        "pre_sequence_index": len(pre_sequence),
-                        "sender_role": "self",
-                        "message_type": "text",
-                        "normalized_content_hash": boundary_hash,
-                        "native_source_message_id": "",
-                        "frame_visual_id": "",
-                        "ai_reply_boundary": True,
-                        "_worker_sequence_number": int(
-                            stable_match.group(1)
-                        ),
-                    }
+                item = local_ai_reply_checkpoint_item(
+                    stable_id=boundary_stable_id,
+                    reply_action_id=boundary_action_id,
+                    reply_text_hash=boundary_hash,
+                    confirmed_at=str(
+                        ai_reply_boundary.get("sent_at") or ""
+                    ),
+                    pre_observation_id=(
+                        f"sent-ack-boundary:{boundary_action_id}"
+                    ),
                 )
+                item["ai_reply_boundary"] = True
+                item["_worker_sequence_number"] = int(
+                    stable_match.group(1)
+                )
+                pre_sequence.append(item)
                 checkpoint_stable_ids.add(boundary_stable_id)
         possible_state = load_c2_state(
             f"possible_ai_sends:{target.conversation_id}"
@@ -6722,28 +8078,27 @@ class TaskRunner:
                     != boundary_hash
                 ):
                     continue
-                pre_sequence.append(
-                    {
-                        "identity_state": "committed",
-                        "worker_stable_id": reserved_id,
-                        "pre_observation_id": (
-                            f"sent-ack-possible:{boundary_action_id}"
-                        ),
-                        "pre_sequence_index": len(pre_sequence),
-                        "sender_role": "self",
-                        "message_type": "text",
-                        "normalized_content_hash": boundary_hash,
-                        "native_source_message_id": "",
-                        "frame_visual_id": "",
-                        "ai_reply_boundary": True,
-                        "ai_reconciliation_state": str(
-                            possible.get("reconciliation_state") or ""
-                        ),
-                        "_worker_sequence_number": int(
-                            stable_match.group(1)
-                        ),
-                    }
+                reconciliation_state = str(
+                    possible.get("reconciliation_state") or ""
                 )
+                item = local_ai_reply_checkpoint_item(
+                    stable_id=reserved_id,
+                    reply_action_id=boundary_action_id,
+                    reply_text_hash=boundary_hash,
+                    confirmed_at=str(
+                        ai_reply_boundary.get("sent_at") or ""
+                    ),
+                    pre_observation_id=(
+                        f"sent-ack-possible:{boundary_action_id}"
+                    ),
+                    reconciliation_state=reconciliation_state,
+                )
+                item["ai_reply_boundary"] = True
+                item["ai_reconciliation_state"] = reconciliation_state
+                item["_worker_sequence_number"] = int(
+                    stable_match.group(1)
+                )
+                pre_sequence.append(item)
                 checkpoint_stable_ids.add(reserved_id)
         if any("_worker_sequence_number" in item for item in pre_sequence):
             def sequence_number(item: dict[str, Any]) -> int:
@@ -6760,7 +8115,9 @@ class TaskRunner:
             for index, item in enumerate(pre_sequence):
                 item.pop("_worker_sequence_number", None)
                 item["pre_sequence_index"] = index
-        post_sequence = build_post_action_observation_sequence(observations)
+                projection = item.get("business_projection")
+                if isinstance(projection, dict):
+                    projection["screen_order"] = index
         frame_id = str(
             prepared.get("frame_id")
             or prepared.get("sidecar_run_id")
@@ -6784,29 +8141,152 @@ class TaskRunner:
                     "reason": "checkpoint_history_not_visible",
                 }
             ]
-        evidence = align_committed_message_sequence(
-            pre_sequence,
-            post_sequence,
-            pre_sequence_source=(
-                "empty_checkpoint" if explicit_empty else "checkpoint"
+        old_projection = [
+            dict(item.get("business_projection") or {})
+            for item in pre_sequence
+        ]
+        if any(
+            set(item)
+            != {
+                "screen_order",
+                "sender_role",
+                "message_type",
+                "normalized_content_signature",
+                "media_state",
+            }
+            for item in old_projection
+        ):
+            return prepared, [
+                {
+                    "error_code": "MESSAGE_IDENTITY_CHECKPOINT_MISSING",
+                    "reason": "checkpoint_business_projection_missing",
+                }
+            ]
+        old_boundary_tokens = {
+            index: set(item.get("strong_boundary_tokens") or [])
+            for index, item in enumerate(pre_sequence)
+            if item.get("strong_boundary_tokens")
+        }
+        continuity = compare_business_viewport_continuity(
+            old_projection,
+            _business_projection_for_payload(prepared, observations),
+            old_boundary_tokens=old_boundary_tokens,
+            new_boundary_tokens=_business_boundary_tokens_for_payload(
+                prepared,
+                observations,
+                committed_only=False,
             ),
-            pre_frame_id=(
-                f"checkpoint:none:{target.conversation_id}"
-                if explicit_empty
-                else f"checkpoint:{target.authorization_revision}"
+            old_top_boundary_complete=explicit_empty,
+            new_top_boundary_complete=(
+                _confirmed_empty_business_viewport(prepared, target)
             ),
-            post_frame_id=f"frame:{frame_id}",
         )
-        if evidence.get("alignment_status") not in {"unique", "not_required"}:
-            prepared["sequence_alignment_evidence"] = evidence
+        if str(continuity.get("relation") or "") not in {
+            "business_sequence_equal",
+            "unique_tail_append",
+            "unique_viewport_slide_with_tail_append",
+        }:
+            prepared["business_continuity_evidence"] = continuity
             return prepared, [
                 {
                     "error_code": "MESSAGE_CROSS_ROUND_IDENTITY_AMBIGUOUS",
-                    "reason": str(evidence.get("alignment_status") or ""),
-                    "sequence_alignment_evidence": evidence,
+                    "reason": str(continuity.get("reason") or ""),
+                    "business_continuity_evidence": continuity,
                 }
             ]
-        observations = apply_inherited_worker_ids(observations, evidence)
+        old_identity_observations: list[dict[str, Any]] = []
+        for index, item in enumerate(pre_sequence):
+            stable_id = str(item.get("worker_stable_id") or "").strip()
+            source_key = str(
+                item.get("source_message_key") or ""
+            ).strip()
+            commit_record = item.get("message_identity_commit_record")
+            if not isinstance(commit_record, dict) or not commit_record:
+                return prepared, [
+                    {
+                        "error_code": "MESSAGE_IDENTITY_CHECKPOINT_MISSING",
+                        "reason": (
+                            "checkpoint_commit_record_missing"
+                        ),
+                    }
+                ]
+            runtime_evidence = (
+                item.get("message_identity_runtime_evidence")
+                if isinstance(
+                    item.get("message_identity_runtime_evidence"), dict
+                )
+                else {}
+            )
+            old_identity_observations.append(
+                {
+                    "observation_id": str(
+                        item.get("pre_observation_id")
+                        or f"checkpoint-{index}"
+                    ),
+                    "row_kind": {
+                        "text": "text_bubble",
+                        "system": "system_message",
+                        "voice": "voice_transcript",
+                        "image": "image_bubble",
+                    }.get(str(item.get("message_type") or ""), ""),
+                    "sender_role": str(item.get("sender_role") or ""),
+                    "message_type": str(item.get("message_type") or ""),
+                    "_worker_stable_id": stable_id,
+                    "_worker_identity_scope": "committed",
+                    "_worker_committed_message": dict(commit_record),
+                    "source_message": {
+                        "source_message_key": source_key,
+                        "native_source_message_id": str(
+                            item.get("native_source_message_id") or ""
+                        ).strip(),
+                    },
+                    "_worker_strong_boundary_tokens": list(
+                        item.get("strong_boundary_tokens") or []
+                    ),
+                    **{
+                        str(key): dict(value)
+                        for key, value in runtime_evidence.items()
+                        if key
+                        in {
+                            "_worker_voice_action_summary",
+                            "_worker_image_action_summary",
+                            "_worker_ai_reply_receipt",
+                        }
+                        and isinstance(value, dict)
+                    },
+                }
+            )
+        try:
+            observations = _apply_worker_identity_from_continuity(
+                old_identity_observations,
+                observations,
+                continuity,
+            )
+        except ValueError as exc:
+            if str(exc) != "C2_CONTINUITY_MAPPING_INVALID":
+                raise
+            prepared["business_continuity_evidence"] = continuity
+            return prepared, [
+                {
+                    "error_code": (
+                        "MESSAGE_CROSS_ROUND_IDENTITY_AMBIGUOUS"
+                    ),
+                    "reason": "media_identity_transfer_not_proven",
+                    "business_continuity_evidence": continuity,
+                }
+            ]
+        evidence = _continuity_alignment_evidence_for_suffix(
+            observations,
+            {
+                **continuity,
+                "pre_frame_id": (
+                    f"checkpoint:none:{target.conversation_id}"
+                    if explicit_empty
+                    else f"checkpoint:{target.authorization_revision}"
+                ),
+                "post_frame_id": f"frame:{frame_id}",
+            },
+        )
         observations = self._assign_sequence_new_suffix_identities(
             target=target,
             observations=observations,
@@ -6815,6 +8295,7 @@ class TaskRunner:
         )
         prepared["observations"] = observations
         prepared["sequence_alignment_evidence"] = evidence
+        prepared["business_continuity_evidence"] = continuity
         return prepared, []
 
     def _assign_sequence_new_suffix_identities(
@@ -6956,7 +8437,40 @@ class TaskRunner:
                     # Unselected media remains a frame observation. Only the
                     # one candidate admitted for the next physical action may
                     # receive a reserved sequence number and ActionJournal.
-                    observation.pop("_worker_committed_message", None)
+                    committed_record = (
+                        observation.get("_worker_committed_message")
+                        if isinstance(
+                            observation.get("_worker_committed_message"),
+                            dict,
+                        )
+                        else {}
+                    )
+                    worker_action_commit = bool(
+                        str(
+                            observation.get("_worker_identity_scope") or ""
+                        ).strip()
+                        == "committed"
+                        and committed_record.get("object_type")
+                        == "committed_message"
+                        and committed_record.get("commit_basis")
+                        in {
+                            MessageCommitBasis.CONFIRMED_VOICE_ACTION.value,
+                            MessageCommitBasis.CONFIRMED_IMAGE_ACTION.value,
+                        }
+                    )
+                    if not worker_action_commit:
+                        if str(
+                            observation.get("_worker_stable_id") or ""
+                        ).strip() or str(
+                            observation.get("_worker_identity_scope") or ""
+                        ).strip():
+                            raise ValueError(
+                                "MESSAGE_IDENTITY_CONTRACT_INVALID:"
+                                "unselected_media_pre_reserved"
+                            )
+                        observation.pop("_worker_stable_id", None)
+                        observation.pop("_worker_identity_scope", None)
+                        observation.pop("_worker_committed_message", None)
             assigned.append(observation)
         require_selected_only_media_reservation(assigned)
         return assigned
@@ -7534,67 +9048,24 @@ class TaskRunner:
         )
         if identity_errors:
             first_error = identity_errors[0]
-            prepare_evidence = (
-                first_error.get("prepare_evidence")
-                if isinstance(
-                    first_error.get("prepare_evidence"), dict
-                )
-                else {}
-            )
-            authorization_revision = str(
-                prepare_evidence.get("authorization_revision") or ""
+            error_code = str(
+                first_error.get("error_code")
+                or "C2_IMAGE_IDENTITY_CONTRACT_INVALID"
             ).strip()
-            remark_code = str(
-                prepare_evidence.get("remark_code") or ""
-            ).strip()
-            if not authorization_revision or not remark_code:
-                append_log(
-                    "ERROR",
-                    "c2_image_identity_recovery_authorization_missing",
-                    "图片身份失败恢复缺少原授权摘要；保留 Journal，禁止伪造正式图片事实。",
-                    error_code="C2_IMAGE_IDENTITY_CONTRACT_INVALID",
-                    metadata={"conversation_id": conversation_id},
-                )
-                return False
-            gate_target = WechatReadTarget(
-                conversation_id=conversation_id,
-                rpa_session_key=str(
-                    prepare_evidence.get("rpa_session_key") or ""
-                ),
-                display_name=str(
-                    prepare_evidence.get("display_name") or remark_code
-                ),
-                remark_code=remark_code,
-                read_reason=str(
-                    prepare_evidence.get("read_reason") or ""
-                ),
-                authorization_revision=authorization_revision,
+            self.set_run_status("faulted")
+            append_log(
+                "ERROR",
+                "c2_image_action_recovery_technical_failed",
+                "图片动作结果无法唯一恢复；未转人工、未重复右键或复制，客户端已停止接单并保留 Journal。",
+                error_code=error_code,
+                metadata={
+                    "conversation_id": conversation_id,
+                    "identity_errors": identity_errors,
+                    "handoff_created": False,
+                },
+                force_incident=True,
             )
-            reported = self._report_identity_failure_gate(
-                binding=binding,
-                target=gate_target,
-                read_run_id=str(
-                    first_error.get("origin_read_run_id") or ""
-                ).strip()
-                or f"recovery-{uuid.uuid4()}",
-                error_code="C2_IMAGE_IDENTITY_CONTRACT_INVALID",
-                identity_errors=identity_errors,
-                authoritative_frame_source=(
-                    "action_journal_recovery"
-                ),
-                ui_frame_invalidated=False,
-            )
-            if reported:
-                for item in identity_errors:
-                    journal_path = str(
-                        item.get("action_journal_path") or ""
-                    ).strip()
-                    if journal_path:
-                        remove_action_journal(journal_path)
-            # Even when transport is waiting, the idempotent gate Outbox now
-            # owns delivery.  No uncommitted image fact may keep the global
-            # media recovery barrier closed or force another UI action.
-            return True
+            return False
         journal_entries = list_action_journals(
             conversation_id=conversation_id,
             action_kinds=("image",),
@@ -10972,6 +12443,7 @@ class TaskRunner:
         provisional_continuity_states: list[dict[str, Any]] = []
         identity_errors: list[dict[str, Any]] = []
         new_image_observation_ids: set[str] = set()
+        new_image_observation_ids_in_screen_order: list[str] = []
         seen_source_keys: set[str] = set()
         backend_confirmed_origins: dict[str, str] | None = None
         outbox_origins: dict[str, str] | None = None
@@ -11016,10 +12488,20 @@ class TaskRunner:
                 and identity_scope != "committed"
                 and item_state == "discovered"
                 and observation_id
-                in (frame_local_unselected_ids | new_suffix_ids)
+                and (
+                    observation_id
+                    in (frame_local_unselected_ids | new_suffix_ids)
+                    or observation.get(
+                        "_worker_current_flow_media_candidate"
+                    )
+                    is True
+                )
             ):
                 if observation_id:
                     new_image_observation_ids.add(observation_id)
+                    new_image_observation_ids_in_screen_order.append(
+                        observation_id
+                    )
                     # The row is not yet a durable message and therefore has
                     # no source key or Ledger state.  Its visual order still
                     # participates in the current-frame continuity check so
@@ -11439,6 +12921,9 @@ class TaskRunner:
             "history_gap": history_gap,
             "identity_errors": identity_errors,
             "new_image_observation_ids": new_image_observation_ids,
+            "new_image_observation_ids_in_screen_order": (
+                new_image_observation_ids_in_screen_order
+            ),
             "flow_gate_details": flow_gate_details,
             "historical_warnings": historical_warnings,
             "recoverable_handoff_resolution": recovery_resolution,
@@ -11478,6 +12963,7 @@ class TaskRunner:
         payload: dict[str, Any],
         observation: dict[str, Any],
         action_local_id: str,
+        image_flow_action_slot: dict[str, Any] | None = None,
         cancel_check: Callable[[], bool | str] | None,
         flow_outcomes: FlowOutcomeAccumulator | None,
         operation_phase: C2ReadOperationPhase = C2_AUTHORIZED_READ_PHASE,
@@ -11507,6 +12993,36 @@ class TaskRunner:
             }
         if flow_outcomes is not None:
             payload_observations = list(payload.get("observations") or [])
+            resolved_image_flow_action_slot = (
+                dict(image_flow_action_slot)
+                if isinstance(image_flow_action_slot, dict)
+                else {
+                    "read_run_id": flow_outcomes.origin_read_run_id,
+                    "action_plan_revision": 1,
+                    "selected_sequence_ordinal": int(
+                        frame_action_binding[
+                            "selected_business_screen_order"
+                        ]
+                    ),
+                    "pre_action_business_projection_digest": (
+                        _canonical_business_projection_digest(
+                            _business_projection_for_payload(payload)
+                        )
+                    ),
+                }
+            )
+            if set(resolved_image_flow_action_slot) != {
+                "read_run_id",
+                "action_plan_revision",
+                "selected_sequence_ordinal",
+                "pre_action_business_projection_digest",
+            }:
+                return {
+                    "state": "failed",
+                    "reason": "C2_IMAGE_IDENTITY_CONTRACT_INVALID",
+                    "action_phase": "not_attempted",
+                    "diagnostics": {"events": [], "image_persisted": False},
+                }
             image_action_id = str(action_local_id or "").strip() or (
                 f"image:{target.conversation_id}:{uuid.uuid4()}"
             )
@@ -11621,6 +13137,9 @@ class TaskRunner:
                 reserved_worker_stable_id=reserved_worker_stable_id,
                 prepare_evidence={
                     "frame_action_binding": frame_action_binding,
+                    "image_flow_action_slot": (
+                        resolved_image_flow_action_slot
+                    ),
                     "selected_action_token": str(
                         frame_action_binding.get(
                             "selected_action_token"
@@ -11651,28 +13170,6 @@ class TaskRunner:
                 observation={
                     **observation,
                     "_c2_operation_phase": operation_phase,
-                    "_expected_message_viewport_change_digest": str(
-                        (
-                            payload.get(
-                                "message_viewport_change_evidence"
-                            )
-                            or {}
-                        ).get("message_viewport_change_digest")
-                        if isinstance(
-                            payload.get("message_viewport_change_evidence"),
-                            dict,
-                        )
-                        else (
-                            (
-                                payload.get("send_context_guard")
-                                or {}
-                            ).get("message_viewport_change_digest")
-                            if isinstance(
-                                payload.get("send_context_guard"), dict
-                            )
-                            else ""
-                        )
-                    ).strip(),
                 },
                 remark_code=str(target.remark_code or ""),
                 session_key=str(target.rpa_session_key or ""),
@@ -11763,20 +13260,41 @@ class TaskRunner:
                 "_image_action_journal_item_id": image_action_id,
             }
             return result
-        image_anchor = (
-            observation.get("image_physical_anchor")
-            if isinstance(observation.get("image_physical_anchor"), dict)
-            else {}
-        )
         selected_observation_id = str(
             observation.get("observation_id") or ""
         ).strip()
         reserved_worker_stable_id = str(
             observation.get("_worker_stable_id") or ""
         ).strip()
-        image_fingerprint = str(
-            image_anchor.get("bubble_visual_fingerprint") or ""
+        trigger_observation_id = str(
+            transaction.get("trigger_observation_id") or ""
         ).strip()
+        action_frame_observations = [
+            dict(item)
+            for item in (
+                transaction.get("action_frame_observations") or []
+            )
+            if isinstance(item, dict)
+        ]
+        actual_action_rows = [
+            item
+            for item in action_frame_observations
+            if str(item.get("observation_id") or "").strip()
+            == trigger_observation_id
+            and str(item.get("row_kind") or "").strip().lower()
+            == "image_bubble"
+            and str(item.get("sender_role") or "").strip().lower()
+            == str(observation.get("sender_role") or "").strip().lower()
+        ]
+        receipt_observation: dict[str, Any] = {}
+        if len(actual_action_rows) == 1:
+            receipt_observation = copy.deepcopy(actual_action_rows[0])
+            receipt_observation["_worker_stable_id"] = (
+                reserved_worker_stable_id
+            )
+            receipt_observation["_worker_identity_scope"] = (
+                "current_read_provisional"
+            )
         selected_rows: list[dict[str, Any]] = []
         persisted_receipt: dict[str, Any] | None = None
         if image_action_journal is not None:
@@ -11797,10 +13315,6 @@ class TaskRunner:
                 == reserved_worker_stable_id
                 and str(item.get("pre_observation_id") or "").strip()
                 == selected_observation_id
-                and str(
-                    item.get("image_visual_fingerprint") or ""
-                ).strip()
-                == image_fingerprint
             ]
             candidate_receipt, receipt_item_id = (
                 _confirmed_image_receipt_from_journal(
@@ -11811,7 +13325,7 @@ class TaskRunner:
                 receipt_item_id == image_action_id
             ):
                 if confirmed_image_identity_receipt(
-                    observation,
+                    receipt_observation,
                     {
                         "_confirmed_image_action_receipt": (
                             candidate_receipt
@@ -11823,6 +13337,13 @@ class TaskRunner:
             result["_confirmed_image_action_receipt"] = (
                 persisted_receipt
             )
+        existing_receipt = (
+            result.get("_confirmed_image_action_receipt")
+            if isinstance(
+                result.get("_confirmed_image_action_receipt"), dict
+            )
+            else None
+        )
         if (
             image_action_id
             and str(
@@ -11831,12 +13352,35 @@ class TaskRunner:
                 or ""
             )
             == "confirmed"
-            and transaction.get("slot_identity_confirmed") is True
+            and transaction.get("current_frame_target_selected") is True
+            and transaction.get(
+                "physical_identity_inherited_from_prepare"
+            ) is False
             and reserved_worker_stable_id
             and selected_observation_id
-            and image_fingerprint
+            and str(
+                transaction.get("trigger_observation_id") or ""
+            ).strip()
+            and len(actual_action_rows) == 1
+            and isinstance(
+                transaction.get("trigger_business_screen_order"),
+                int,
+            )
+            and not isinstance(
+                transaction.get("trigger_business_screen_order"),
+                bool,
+            )
+            and int(
+                transaction.get("trigger_business_screen_order")
+            )
+            >= 0
+            and len(
+                str(transaction.get("image_sha256") or "").strip()
+            )
+            == 64
             and len(selected_rows) == 1
             and persisted_receipt is None
+            and existing_receipt is None
         ):
             result["_confirmed_image_action_receipt"] = {
                 "canonical_action_id": image_action_id,
@@ -11846,13 +13390,24 @@ class TaskRunner:
                     or ""
                 ),
                 "pre_observation_id": selected_observation_id,
-                "post_observation_id": selected_observation_id,
+                "post_observation_id": trigger_observation_id,
+                "trigger_observation_id": trigger_observation_id,
+                "physical_identity_inherited_from_prepare": False,
+                "result_screen_order": int(
+                    transaction["trigger_business_screen_order"]
+                ),
                 "binding_confirmed": True,
-                "image_visual_fingerprint": image_fingerprint,
+                "image_sha256": str(
+                    transaction.get("image_sha256") or ""
+                ).strip().lower(),
             }
         if (
             str(result.get("state") or "").strip() == "completed"
-            and confirmed_image_identity_receipt(observation, result) is None
+            and confirmed_image_identity_receipt(
+                receipt_observation,
+                result,
+            )
+            is None
         ):
             # Vision success is not identity success.  Preserve that a UI
             # action may have happened, but discard all business content and
@@ -11936,15 +13491,13 @@ class TaskRunner:
                     ),
                 }
                 receipt = confirmed_image_identity_receipt(
-                    observation,
+                    receipt_observation,
                     result,
                 )
                 terminal_payload["media_action_terminal"] = (
                     MediaActionTerminal.COMMITTED_COMPLETED.value
                     if receipt is not None and completed
-                    else MediaActionTerminal.COMMITTED_FAILED.value
-                    if receipt is not None
-                    else MediaActionTerminal.IDENTITY_UNRESOLVED.value
+                    else MediaActionTerminal.TECHNICAL_FAILED.value
                 )
                 if receipt is not None:
                     terminal_payload["confirmed_action_mapping"] = {
@@ -11955,12 +13508,15 @@ class TaskRunner:
                             "selected_action_token",
                             "pre_observation_id",
                             "post_observation_id",
+                            "trigger_observation_id",
+                            "physical_identity_inherited_from_prepare",
+                            "result_screen_order",
                             "binding_confirmed",
                         )
                     }
-                    terminal_payload["image_visual_fingerprint"] = (
-                        receipt["image_visual_fingerprint"]
-                    )
+                    terminal_payload["image_sha256"] = receipt[
+                        "image_sha256"
+                    ]
                 update_action_journal_item(
                     image_action_journal,
                     journal_item_id=image_action_id,
@@ -11968,14 +13524,17 @@ class TaskRunner:
                         result.get("action_phase") or "not_attempted"
                     ),
                     business_state=(
-                        "completed" if completed else "failed"
+                        "completed" if completed else "technical_failed"
                     ),
                     business_result_confirmed=completed,
                     error_code=error_code,
                     terminal_payload=terminal_payload,
                 )
         journal_receipt_confirmed = False
-        receipt = confirmed_image_identity_receipt(observation, result)
+        receipt = confirmed_image_identity_receipt(
+            receipt_observation,
+            result,
+        )
         if image_action_journal is not None and receipt is not None:
             committed_journal = read_action_journal(image_action_journal)
             journal_receipt, receipt_item_id = (
@@ -12003,13 +13562,13 @@ class TaskRunner:
                     image_action_journal,
                     journal_item_id=image_action_id,
                     action_phase=current_phase,
-                    business_state="failed",
+                    business_state="technical_failed",
                     business_result_confirmed=False,
                     error_code="C2_IMAGE_IDENTITY_CONTRACT_INVALID",
                     terminal_payload={
-                        "state": "failed",
+                        "state": "technical_failed",
                         "media_action_terminal": (
-                            MediaActionTerminal.IDENTITY_UNRESOLVED.value
+                            MediaActionTerminal.TECHNICAL_FAILED.value
                         ),
                         "error_code": (
                             "C2_IMAGE_IDENTITY_CONTRACT_INVALID"
@@ -12036,11 +13595,19 @@ class TaskRunner:
             )
             result.pop("customer_image_understanding", None)
             result.pop("visual_bridge_input", None)
+        if receipt_observation:
+            result["_actual_image_action_observation"] = copy.deepcopy(
+                receipt_observation
+            )
         result["_image_action_id"] = image_action_id
         result["_image_action_journal_path"] = (
             str(image_action_journal) if image_action_journal else ""
         )
         result["_image_action_journal_item_id"] = image_action_id
+        if flow_outcomes is not None:
+            result["_image_flow_action_slot"] = dict(
+                resolved_image_flow_action_slot
+            )
         return result
 
     @staticmethod
@@ -12137,9 +13704,12 @@ class TaskRunner:
             raw_terminal_state != "cancelled"
             and action_outcome["result"] != "completed"
         ):
+            normalized_reason = str(
+                normalized.get("reason") or ""
+            )
             raw_reason = str(
-                action_outcome.get("error_code")
-                or normalized.get("reason")
+                normalized_reason
+                or action_outcome.get("error_code")
                 or ""
             )
             reason_detail = str(
@@ -12147,10 +13717,18 @@ class TaskRunner:
                 or normalized.get("reason_detail")
                 or raw_reason
             )
+            technical_contract_error = raw_reason in {
+                "C2_IMAGE_IDENTITY_CONTRACT_INVALID",
+                "C2_IMAGE_ACTION_RESULT_INCOMPLETE",
+            }
             normalized = {
                 **normalized,
                 "state": "failed",
-                "reason": formal_image_failure_code(raw_reason),
+                "reason": (
+                    raw_reason
+                    if technical_contract_error
+                    else formal_image_failure_code(raw_reason)
+                ),
                 "reason_detail": reason_detail,
                 "action_outcome": action_outcome,
             }
@@ -12167,6 +13745,576 @@ class TaskRunner:
             "terminal_state": str(normalized.get("state") or "failed"),
         }
 
+    def _finalize_pending_image_action_after_reread(
+        self,
+        *,
+        target: WechatReadTarget,
+        target_label: str,
+        pre_payload: dict[str, Any],
+        post_observations: list[Any],
+        flow_outcomes: FlowOutcomeAccumulator,
+        stats: dict[str, Any],
+        cancel_check: Callable[[], bool] | None,
+        operation_phase: C2ReadOperationPhase,
+    ) -> dict[str, Any]:
+        pending = (
+            pre_payload.get("_pending_image_action")
+            if isinstance(pre_payload.get("_pending_image_action"), dict)
+            else None
+        )
+        if pending is None:
+            return {
+                "ok": True,
+                "payload": pre_payload,
+                "continuity_evidence": None,
+            }
+        slot = (
+            pending.get("image_flow_action_slot")
+            if isinstance(pending.get("image_flow_action_slot"), dict)
+            else {}
+        )
+        selected_observation = (
+            copy.deepcopy(pending.get("selected_observation"))
+            if isinstance(pending.get("selected_observation"), dict)
+            else {}
+        )
+        result = (
+            copy.deepcopy(pending.get("result"))
+            if isinstance(pending.get("result"), dict)
+            else {}
+        )
+        result_transaction = (
+            result.get("transaction")
+            if isinstance(result.get("transaction"), dict)
+            else {}
+        )
+        action_frame_observations = [
+            dict(item)
+            for item in (
+                result_transaction.get("action_frame_observations") or []
+            )
+            if isinstance(item, dict)
+        ]
+        trigger_observation_id = str(
+            result_transaction.get("trigger_observation_id") or ""
+        ).strip()
+        selected_stable_id = str(
+            selected_observation.get("_worker_stable_id") or ""
+        ).strip()
+        selected_scope = str(
+            selected_observation.get("_worker_identity_scope") or ""
+        ).strip()
+        ordered_action_frame = ordered_message_viewport_observations(
+            action_frame_observations
+        )
+        action_result_raw_indexes: list[int] = []
+        action_result_indexes = [
+            index
+            for index, item in enumerate(ordered_action_frame)
+            if str(item.get("observation_id") or "").strip()
+            == trigger_observation_id
+            and str(item.get("row_kind") or "").strip().lower()
+            == "image_bubble"
+        ]
+        pre_to_action_continuity = _image_flow_action_slot_continuity(
+            pre_payload=pre_payload,
+            post_observations=action_frame_observations,
+            image_flow_action_slot=slot,
+        )
+        action_frame_identity_observations: list[Any] = []
+        if (
+            len(action_result_indexes) != 1
+            or not selected_stable_id
+            or selected_scope != "current_read_provisional"
+            or pre_to_action_continuity.get("ok") is not True
+        ):
+            continuity = {
+                "ok": False,
+                "relation": "business_sequence_not_continuous",
+                "reason": (
+                    "actual_image_action_frame_binding_invalid"
+                    if len(action_result_indexes) != 1
+                    or not selected_stable_id
+                    or selected_scope != "current_read_provisional"
+                    else "pre_to_action_frame_not_continuous"
+                ),
+                "matched_pairs": [],
+                "new_suffix_indexes": [],
+                "overlap_candidates": [],
+                "mapping_source": "actual_image_action_frame",
+                "pre_to_action_continuity": pre_to_action_continuity,
+            }
+        else:
+            try:
+                action_frame_identity_observations = (
+                    _apply_worker_identity_from_continuity(
+                        list(pre_payload.get("observations") or []),
+                        action_frame_observations,
+                        pre_to_action_continuity,
+                        current_flow_read_run_id=str(
+                            slot.get("read_run_id") or ""
+                        ).strip(),
+                    )
+                )
+                action_result_raw_indexes = [
+                    index
+                    for index, item in enumerate(
+                        action_frame_identity_observations
+                    )
+                    if isinstance(item, dict)
+                    and str(item.get("observation_id") or "").strip()
+                    == trigger_observation_id
+                ]
+                if len(action_result_raw_indexes) != 1:
+                    raise ValueError(
+                        "C2_IMAGE_IDENTITY_CONTRACT_INVALID"
+                    )
+                action_result_observation = dict(
+                    action_frame_identity_observations[
+                        action_result_raw_indexes[0]
+                    ]
+                )
+                action_result_observation["_worker_stable_id"] = (
+                    selected_stable_id
+                )
+                action_result_observation["_worker_identity_scope"] = (
+                    "current_read_provisional"
+                )
+                action_result_observation.pop(
+                    "_worker_committed_message",
+                    None,
+                )
+                action_frame_identity_observations[
+                    action_result_raw_indexes[0]
+                ] = action_result_observation
+                continuity = _image_action_frame_to_reread_continuity(
+                    action_frame_observations=(
+                        action_frame_identity_observations
+                    ),
+                    post_observations=post_observations,
+                )
+                continuity["pre_to_action_continuity"] = (
+                    pre_to_action_continuity
+                )
+                continuity["actual_action_observation_id"] = (
+                    trigger_observation_id
+                )
+            except ValueError as exc:
+                continuity = {
+                    "ok": False,
+                    "relation": "business_sequence_not_continuous",
+                    "reason": "action_frame_identity_projection_failed",
+                    "matched_pairs": [],
+                    "new_suffix_indexes": [],
+                    "overlap_candidates": [],
+                    "mapping_source": "actual_image_action_frame",
+                    "pre_to_action_continuity": (
+                        pre_to_action_continuity
+                    ),
+                    "projection_error_type": type(exc).__name__,
+                }
+        authoritative_post_observations = list(post_observations)
+        expansion_payload: dict[str, Any] | None = None
+        if (
+            continuity.get("relation")
+            == "continuity_context_expansion_required"
+        ):
+            expansion = self._expand_media_continuity_context_once(
+                target=target,
+                target_label=target_label,
+                pre_payload={
+                    **pre_payload,
+                    "observations": action_frame_identity_observations,
+                },
+                cancel_check=cancel_check,
+                operation_phase=operation_phase,
+            )
+            if expansion.get("ok") is True:
+                expansion_payload = dict(expansion.get("payload") or {})
+                authoritative_post_observations = list(
+                    expansion_payload.get("observations") or []
+                )
+                continuity = _image_action_frame_to_reread_continuity(
+                    action_frame_observations=(
+                        action_frame_identity_observations
+                    ),
+                    post_observations=authoritative_post_observations,
+                    expanded_observations=list(
+                        expansion_payload.get(
+                            "continuity_expanded_observations"
+                        )
+                        or []
+                    ),
+                    context_expansion_used=True,
+                )
+                continuity["pre_to_action_continuity"] = (
+                    pre_to_action_continuity
+                )
+                continuity["actual_action_observation_id"] = (
+                    trigger_observation_id
+                )
+            else:
+                continuity = {
+                    **continuity,
+                    "ok": False,
+                    "relation": "business_sequence_not_continuous",
+                    "reason": str(
+                        expansion.get("reason")
+                        or "continuity_context_expansion_failed"
+                    ),
+                    "context_expansion_used": True,
+                    "context_expansion_evidence": expansion,
+                }
+        journal_path = str(pending.get("journal_path") or "").strip()
+        journal_item_id = str(
+            pending.get("journal_item_id") or ""
+        ).strip()
+        if not journal_path or not journal_item_id:
+            continuity = {
+                **continuity,
+                "ok": False,
+                "relation": "business_sequence_not_continuous",
+                "reason": "image_action_journal_reference_missing",
+            }
+        else:
+            try:
+                record_action_business_continuity(
+                    journal_path,
+                    continuity,
+                )
+            except (OSError, ValueError) as exc:
+                continuity = {
+                    **continuity,
+                    "ok": False,
+                    "relation": "business_sequence_not_continuous",
+                    "reason": "image_continuity_journal_persist_failed",
+                    "journal_error_type": type(exc).__name__,
+                }
+        if continuity.get("ok") is not True:
+            if journal_path and journal_item_id:
+                _set_image_flow_action_slot_status(
+                    journal_path=journal_path,
+                    journal_item_id=journal_item_id,
+                    status="technical_failed",
+                    continuity_evidence=continuity,
+                )
+            append_log(
+                "ERROR",
+                "c2_image_flow_action_slot_continuity_failed",
+                "图片动作后的完整业务序列无法证明连续；保留动作回执并停止 Worker，不生成正式图片或转人工。",
+                error_code="C2_IMAGE_IDENTITY_CONTRACT_INVALID",
+                metadata={
+                    "conversation_id": target.conversation_id,
+                    "remark_code": target.remark_code,
+                    "journal_path": journal_path,
+                    "continuity_evidence": continuity,
+                    "image_persisted": False,
+                },
+                force_incident=True,
+            )
+            return {
+                "ok": False,
+                "error_code": "C2_IMAGE_IDENTITY_CONTRACT_INVALID",
+                "terminal_gate": {
+                    "state": "technical_failed",
+                    "error_code": "C2_IMAGE_IDENTITY_CONTRACT_INVALID",
+                    "technical_failure": True,
+                    "reason": "image_flow_action_slot_not_continuous",
+                    "physical_action_count": (
+                        1 if pending.get("action_was_attempted") else 0
+                    ),
+                    "result_candidate_count": 0,
+                    "retry_allowed": False,
+                    "handoff_required": False,
+                    "action_journal_path": journal_path,
+                    "continuity_evidence": continuity,
+                },
+                "payload": pre_payload,
+                "continuity_evidence": continuity,
+            }
+
+        image_action = (
+            copy.deepcopy(pending.get("action_outcome"))
+            if isinstance(pending.get("action_outcome"), dict)
+            else {}
+        )
+        if (
+            len(action_result_indexes) != 1
+            or len(action_result_raw_indexes) != 1
+        ):
+            if journal_path and journal_item_id:
+                _set_image_flow_action_slot_status(
+                    journal_path=journal_path,
+                    journal_item_id=journal_item_id,
+                    status="technical_failed",
+                    continuity_evidence={
+                        **continuity,
+                        "ok": False,
+                        "relation": "actual_action_row_missing",
+                    },
+                )
+            return {
+                "ok": False,
+                "error_code": "C2_IMAGE_IDENTITY_CONTRACT_INVALID",
+                "terminal_gate": {
+                    "state": "technical_failed",
+                    "error_code": "C2_IMAGE_IDENTITY_CONTRACT_INVALID",
+                    "technical_failure": True,
+                    "reason": "image_action_actual_row_missing",
+                    "physical_action_count": 1,
+                    "result_candidate_count": 0,
+                    "retry_allowed": False,
+                    "handoff_required": False,
+                    "action_journal_path": journal_path,
+                },
+                "payload": pre_payload,
+                "continuity_evidence": continuity,
+            }
+        actual_action_ordinal = action_result_indexes[0]
+        actual_action_raw_index = action_result_raw_indexes[0]
+        mapped_indexes = [
+            int(pair.get("new_index"))
+            for pair in (continuity.get("matched_pairs") or [])
+            if isinstance(pair, dict)
+            and int(pair.get("old_index", -1))
+            == actual_action_ordinal
+            and isinstance(pair.get("new_index"), int)
+        ]
+        ordered_post = ordered_message_viewport_observations(
+            [
+                item
+                for item in authoritative_post_observations
+                if isinstance(item, dict)
+            ]
+        )
+        if len(mapped_indexes) != 1:
+            if journal_path and journal_item_id:
+                _set_image_flow_action_slot_status(
+                    journal_path=journal_path,
+                    journal_item_id=journal_item_id,
+                    status="technical_failed",
+                    continuity_evidence={
+                        **continuity,
+                        "ok": False,
+                        "reason": "image_action_result_mapping_not_unique",
+                    },
+                )
+            return {
+                "ok": False,
+                "error_code": "C2_IMAGE_IDENTITY_CONTRACT_INVALID",
+                "terminal_gate": {
+                    "state": "technical_failed",
+                    "error_code": "C2_IMAGE_IDENTITY_CONTRACT_INVALID",
+                    "technical_failure": True,
+                    "reason": "image_action_result_mapping_not_unique",
+                    "physical_action_count": 1,
+                    "result_candidate_count": len(mapped_indexes),
+                    "retry_allowed": False,
+                    "handoff_required": False,
+                    "action_journal_path": journal_path,
+                },
+                "payload": pre_payload,
+                "continuity_evidence": continuity,
+            }
+        mapped_index = mapped_indexes[0]
+        if mapped_index < 0 or mapped_index >= len(ordered_post):
+            raise ValueError("C2_IMAGE_IDENTITY_CONTRACT_INVALID")
+        mapped_observation_id = str(
+            ordered_post[mapped_index].get("observation_id") or ""
+        ).strip()
+        mapped_raw_indexes = [
+            index
+            for index, item in enumerate(authoritative_post_observations)
+            if isinstance(item, dict)
+            and str(item.get("observation_id") or "").strip()
+            == mapped_observation_id
+        ]
+        if not mapped_observation_id or len(mapped_raw_indexes) != 1:
+            raise ValueError("C2_IMAGE_IDENTITY_CONTRACT_INVALID")
+        mapped_raw_index = mapped_raw_indexes[0]
+        actual_action_observation = copy.deepcopy(
+            action_frame_identity_observations[
+                actual_action_raw_index
+            ]
+        )
+        terminal_observation = apply_image_terminal_result(
+            actual_action_observation,
+            result,
+        )
+        summary = (
+            terminal_observation.get("_worker_image_action_summary")
+            if isinstance(
+                terminal_observation.get("_worker_image_action_summary"),
+                dict,
+            )
+            else {}
+        )
+        summary["image_flow_action_slot"] = dict(slot)
+        summary["image_flow_action_slot_status"] = "processed"
+        summary["image_flow_action_slot_continuity"] = dict(continuity)
+        terminal_observation["_worker_image_action_summary"] = summary
+        try:
+            validate_committed_image_identity(
+                terminal_observation,
+                conversation_id=target.conversation_id,
+                require_formalization_proof=True,
+            )
+            source_key = image_observation_source_key(
+                target,
+                terminal_observation,
+            )
+            terminal_source = (
+                terminal_observation.get("source_message")
+                if isinstance(
+                    terminal_observation.get("source_message"), dict
+                )
+                else {}
+            )
+            terminal_observation["source_message"] = {
+                **terminal_source,
+                "source_message_key": source_key,
+            }
+            _set_image_flow_action_slot_status(
+                journal_path=journal_path,
+                journal_item_id=journal_item_id,
+                status="processed",
+                continuity_evidence=continuity,
+            )
+            commit_action_journal_item_identity(
+                journal_path,
+                journal_item_id=journal_item_id,
+                source_message_key=source_key,
+            )
+        except (OSError, ValueError) as exc:
+            return {
+                "ok": False,
+                "error_code": "C2_IMAGE_IDENTITY_CONTRACT_INVALID",
+                "terminal_gate": {
+                    "state": "technical_failed",
+                    "error_code": "C2_IMAGE_IDENTITY_CONTRACT_INVALID",
+                    "technical_failure": True,
+                    "reason": "image_action_formalization_failed",
+                    "physical_action_count": 1,
+                    "result_candidate_count": 0,
+                    "retry_allowed": False,
+                    "handoff_required": False,
+                    "action_journal_path": journal_path,
+                    "error_type": type(exc).__name__,
+                },
+                "payload": pre_payload,
+                "continuity_evidence": continuity,
+            }
+
+        image_action["source_message_key"] = source_key
+        image_evidence = dict(image_action.get("evidence") or {})
+        image_evidence.update(
+            {
+                "action_kind": "image",
+                "image_flow_action_slot": dict(slot),
+                "image_flow_action_slot_continuity": dict(continuity),
+            }
+        )
+        image_action["evidence"] = image_evidence
+        image_action["terminal_payload"] = {
+            "state": "completed",
+            "media_action_terminal": (
+                MediaActionTerminal.COMMITTED_COMPLETED.value
+            ),
+            "error_code": None,
+            "reason_detail": None,
+            "customer_image_understanding": (
+                dict(result.get("customer_image_understanding") or {})
+                if isinstance(
+                    result.get("customer_image_understanding"), dict
+                )
+                else None
+            ),
+            "visual_bridge_input": (
+                dict(result.get("visual_bridge_input") or {})
+                if isinstance(result.get("visual_bridge_input"), dict)
+                else None
+            ),
+            "transaction": _safe_c2_image_transaction(
+                result.get("transaction")
+            ),
+            "image_flow_action_slot": dict(slot),
+            "image_flow_action_slot_status": "processed",
+        }
+        flow_outcomes.record(image_action)
+        (
+            terminal_observation,
+            terminal_state,
+            terminal_reason,
+        ) = self._persist_one_image_slot_terminal(
+            target=target,
+            payload=pre_payload,
+            terminal_observation=terminal_observation,
+            source_key=source_key,
+            origin_read_run_id=flow_outcomes.origin_read_run_id,
+            result=result,
+            stats=stats,
+        )
+        finalized_payload = (
+            dict(expansion_payload)
+            if isinstance(expansion_payload, dict)
+            else dict(pre_payload)
+        )
+        finalized_payload.pop("_pending_image_action", None)
+        finalized_payload["observations"] = (
+            _apply_worker_identity_from_continuity(
+                action_frame_identity_observations,
+                authoritative_post_observations,
+                continuity,
+                current_flow_read_run_id=str(
+                    slot.get("read_run_id") or ""
+                ).strip(),
+            )
+        )
+        current_row = dict(
+            finalized_payload["observations"][mapped_raw_index]
+        )
+        mapped_current = copy.deepcopy(terminal_observation)
+        # Continuity orders the actual action result in the latest viewport;
+        # it never rewrites the result's observation id or commit proof to the
+        # reread row.  Current geometry is retained only for this frame's
+        # ordering/diagnostics.
+        for geometry_field in ("bubble_rect", "bounds", "anchor"):
+            if geometry_field in current_row:
+                mapped_current[geometry_field] = copy.deepcopy(
+                    current_row[geometry_field]
+                )
+        mapped_current["_current_frame_geometry_evidence"] = {
+            "layout_snapshot_id": str(
+                finalized_payload.get("layout_snapshot_id") or ""
+            ),
+            "reread_observation_id": mapped_observation_id,
+            "current_sequence_ordinal": mapped_index,
+        }
+        finalized_payload["observations"][mapped_raw_index] = mapped_current
+        finalized_payload["committed_image_action_result"] = (
+            copy.deepcopy(terminal_observation)
+        )
+        finalized_payload["image_action_continuity"] = dict(continuity)
+        append_log(
+            "INFO",
+            "c2_image_flow_action_slot_processed",
+            "图片动作后的完整业务序列已证明连续；本次临时动作槽已结算并生成正式图片事实。",
+            metadata={
+                "conversation_id": target.conversation_id,
+                "remark_code": target.remark_code,
+                "source_message_key": source_key,
+                "terminal_state": terminal_state,
+                "terminal_reason": terminal_reason,
+                "continuity_evidence": continuity,
+                "image_persisted": False,
+            },
+        )
+        return {
+            "ok": True,
+            "payload": finalized_payload,
+            "continuity_evidence": continuity,
+        }
+
     @staticmethod
     def _persist_one_image_slot_terminal(
         *,
@@ -12179,13 +14327,8 @@ class TaskRunner:
         stats: dict[str, Any],
     ) -> tuple[dict[str, Any], str, str]:
         terminal_state = str(result.get("state") or "failed")
-        if terminal_state not in {"completed", "failed"}:
-            terminal_state = "failed"
-            result = {
-                **result,
-                "state": "failed",
-                "reason": "vision_terminal_state_invalid",
-            }
+        if terminal_state != "completed":
+            raise ValueError("C2_IMAGE_ACTION_RESULT_INCOMPLETE")
         validate_committed_image_identity(
             terminal_observation,
             conversation_id=target.conversation_id,
@@ -12199,27 +14342,14 @@ class TaskRunner:
         projected_state = str(
             terminal_observation.get("item_state") or terminal_state
         )
-        if projected_state in {"completed", "failed"}:
-            terminal_state = projected_state
+        if projected_state != "completed":
+            raise ValueError("C2_IMAGE_ACTION_RESULT_INCOMPLETE")
+        terminal_state = "completed"
         terminal_reason = str(
             terminal_observation.get("error_code")
             or result.get("reason")
             or ""
         )
-        if terminal_state == "failed":
-            artifact_dir_value = str(
-                payload.get("artifact_dir") or ""
-            ).strip()
-            if artifact_dir_value:
-                record_artifact_outcome(
-                    Path(artifact_dir_value),
-                    {
-                        "ok": False,
-                        "error_code": (
-                            terminal_reason or "C2_IMAGE_SLOT_FAILED"
-                        ),
-                    },
-                )
         ledger_result: dict[str, Any] = {
             "state": terminal_state,
             "reason": terminal_reason,
@@ -12232,21 +14362,20 @@ class TaskRunner:
                 source_message_key=source_key,
             ),
         }
-        if terminal_state == "completed":
-            ledger_result.update(
-                {
-                    "customer_image_understanding": dict(
-                        terminal_observation.get(
-                            "customer_image_understanding"
-                        )
-                        or {}
-                    ),
-                    "visual_bridge_input": dict(
-                        terminal_observation.get("visual_bridge_input")
-                        or {}
-                    ),
-                }
-            )
+        ledger_result.update(
+            {
+                "customer_image_understanding": dict(
+                    terminal_observation.get(
+                        "customer_image_understanding"
+                    )
+                    or {}
+                ),
+                "visual_bridge_input": dict(
+                    terminal_observation.get("visual_bridge_input")
+                    or {}
+                ),
+            }
+        )
         save_c2_ledger_terminal(
             conversation_id=target.conversation_id,
             source_message_key=source_key,
@@ -12254,11 +14383,7 @@ class TaskRunner:
             dedupe_key=None,
             message_type="image",
             terminal_state=terminal_state,
-            ingest_state=(
-                "waiting"
-                if terminal_state in {"completed", "failed"}
-                else "not_required"
-            ),
+            ingest_state="waiting",
             result=ledger_result,
         )
         mark_image_terminal(
@@ -12492,21 +14617,6 @@ class TaskRunner:
         payload = dict(sidecar_payload)
         enriched_observations = [dict(item) if isinstance(item, dict) else item for item in observations]
         payload["observations"] = enriched_observations
-        viewport_evidence = (
-            payload.get("message_viewport_change_evidence")
-            if isinstance(
-                payload.get("message_viewport_change_evidence"), dict
-            )
-            else payload.get("send_context_guard")
-            if isinstance(payload.get("send_context_guard"), dict)
-            else {}
-        )
-        current_viewport_digest = str(
-            (viewport_evidence or {}).get(
-                "message_viewport_change_digest"
-            )
-            or ""
-        ).strip()
 
         def visual_top(item: dict[str, Any]) -> float:
             rect = item.get("bubble_rect")
@@ -12522,7 +14632,14 @@ class TaskRunner:
         ]
         stats["discovered"] = len(indexed)
         image_action_started = False
-        for index, observation in sorted(indexed, key=lambda value: (visual_top(value[1]), value[0])):
+        # The frozen media orchestration handles the maximum current
+        # screen_order first. Geometry is used only to order rows inside this
+        # one authoritative frame; it is never copied into durable identity.
+        for index, observation in sorted(
+            indexed,
+            key=lambda value: (visual_top(value[1]), value[0]),
+            reverse=True,
+        ):
             source = observation.get("source_message") if isinstance(observation.get("source_message"), dict) else {}
             observation_id = str(
                 observation.get("observation_id") or ""
@@ -12575,6 +14692,8 @@ class TaskRunner:
                         "error_code": (
                             "C2_IMAGE_IDENTITY_CONTRACT_INVALID"
                         ),
+                        "technical_failure": True,
+                        "reason": "committed_image_identity_invalid",
                         "identity_errors": [
                             {
                                 "observation_id": observation_id,
@@ -12612,28 +14731,89 @@ class TaskRunner:
                         force_incident=True,
                     )
                     break
-            action_local_key = (
-                "image-action-candidate:"
-                + hashlib.sha256(
-                    json.dumps(
-                        {
-                            "conversation_id": target.conversation_id,
-                            "read_run_id": (
-                                flow_outcomes.origin_read_run_id
-                                if flow_outcomes is not None
-                                else ""
-                            ),
-                            "observation_id": observation_id,
-                            "message_viewport_change_digest": (
-                                current_viewport_digest
-                            ),
-                        },
-                        ensure_ascii=False,
-                        sort_keys=True,
-                        separators=(",", ":"),
-                    ).encode("utf-8")
-                ).hexdigest()[:40]
-            )
+            image_flow_action_slot: dict[str, Any] | None = None
+            action_local_key = source_key or observation_id
+            if provisional:
+                frame_action_binding = _validated_image_frame_action_binding(
+                    payload,
+                    observation,
+                )
+                ordered_current_observations = (
+                    ordered_message_viewport_observations(
+                        [
+                            item
+                            for item in payload.get("observations") or []
+                            if isinstance(item, dict)
+                        ]
+                    )
+                )
+                selected_orders = [
+                    order
+                    for order, item in enumerate(
+                        ordered_current_observations
+                    )
+                    if str(item.get("observation_id") or "").strip()
+                    == observation_id
+                ]
+                if flow_outcomes is None or len(selected_orders) != 1:
+                    stats["terminal_gate"] = {
+                        "error_code": "C2_IMAGE_IDENTITY_CONTRACT_INVALID",
+                        "technical_failure": True,
+                        "reason": "image_flow_action_slot_contract_invalid",
+                        "identity_errors": [],
+                        "authoritative_frame_source": str(
+                            payload.get("authoritative_frame_source")
+                            or "initial_read"
+                        ),
+                        "ui_frame_invalidated": False,
+                    }
+                    enriched_observations[index] = None
+                    break
+                selected_sequence_ordinal = selected_orders[0]
+                if frame_action_binding and int(
+                    frame_action_binding[
+                        "selected_business_screen_order"
+                    ]
+                ) != selected_sequence_ordinal:
+                    stats["terminal_gate"] = {
+                        "error_code": "C2_IMAGE_IDENTITY_CONTRACT_INVALID",
+                        "technical_failure": True,
+                        "reason": "image_flow_action_slot_order_conflict",
+                        "identity_errors": [],
+                        "authoritative_frame_source": str(
+                            payload.get("authoritative_frame_source")
+                            or "initial_read"
+                        ),
+                        "ui_frame_invalidated": False,
+                    }
+                    enriched_observations[index] = None
+                    break
+                try:
+                    (
+                        image_flow_action_slot,
+                        action_local_key,
+                    ) = _plan_image_flow_action_slot(
+                        conversation_id=target.conversation_id,
+                        read_run_id=flow_outcomes.origin_read_run_id,
+                        payload=payload,
+                        selected_sequence_ordinal=(
+                            selected_sequence_ordinal
+                        ),
+                    )
+                except ValueError:
+                    stats["terminal_gate"] = {
+                        "error_code": "C2_IMAGE_IDENTITY_CONTRACT_INVALID",
+                        "technical_failure": True,
+                        "reason": "image_flow_action_slot_contract_invalid",
+                        "identity_errors": [],
+                        "authoritative_frame_source": str(
+                            payload.get("authoritative_frame_source")
+                            or "initial_read"
+                        ),
+                        "ui_frame_invalidated": False,
+                    }
+                    enriched_observations[index] = None
+                    break
             common_metadata = {
                 "conversation_id": target.conversation_id,
                 "remark_code": target.remark_code,
@@ -12652,6 +14832,7 @@ class TaskRunner:
                 "review_path": payload.get("review_path"),
                 "image_persisted": False,
             }
+            recovered_pending_result: dict[str, Any] | None = None
             if provisional:
                 prior_journal_path = action_journal_path(
                     "image",
@@ -12685,6 +14866,20 @@ class TaskRunner:
                         or prior_terminal.get("error_code")
                         or ""
                     ).strip()
+                    prior_phase = str(
+                        prior_item.get("action_phase") or ""
+                    ).strip()
+                    prior_mapping = (
+                        prior_terminal.get("confirmed_action_mapping")
+                        if isinstance(
+                            prior_terminal.get("confirmed_action_mapping"),
+                            dict,
+                        )
+                        else {}
+                    )
+                    prior_image_sha256 = str(
+                        prior_terminal.get("image_sha256") or ""
+                    ).strip().lower()
                     if str(
                         prior_item.get("action_phase") or ""
                     ).strip() == "cancelled_before_trigger":
@@ -12716,6 +14911,8 @@ class TaskRunner:
                     ):
                         stats["terminal_gate"] = {
                             "error_code": prior_error,
+                            "technical_failure": True,
+                            "reason": "persisted_image_action_result_invalid",
                             "identity_errors": [
                                 {
                                     "observation_id": observation_id,
@@ -12746,6 +14943,147 @@ class TaskRunner:
                             metadata=common_metadata,
                         )
                         break
+                    if (
+                        prior_phase == "confirmed"
+                        and prior_mapping.get("binding_confirmed") is True
+                        and len(prior_image_sha256) == 64
+                        and not prior_error
+                    ):
+                        reserved_id = str(
+                            prior_journal.get("reserved_worker_stable_id")
+                            or ""
+                        ).strip()
+                        if not re.fullmatch(
+                            r"worker-message-[1-9]\d*",
+                            reserved_id,
+                        ):
+                            stats["terminal_gate"] = {
+                                "error_code": (
+                                    "C2_IMAGE_IDENTITY_CONTRACT_INVALID"
+                                ),
+                                "technical_failure": True,
+                                "reason": (
+                                    "persisted_image_action_reservation_invalid"
+                                ),
+                                "identity_errors": [],
+                                "authoritative_frame_source": (
+                                    "action_journal_recovery"
+                                ),
+                                "ui_frame_invalidated": False,
+                                "action_journal_path": str(
+                                    prior_journal_path
+                                ),
+                            }
+                            enriched_observations[index] = None
+                            break
+                        prior_action_frame_observations = [
+                            copy.deepcopy(item)
+                            for item in (
+                                prior_terminal.get(
+                                    "action_frame_observations"
+                                )
+                                or []
+                            )
+                            if isinstance(item, dict)
+                        ]
+                        prior_trigger_observation_id = str(
+                            prior_mapping.get("trigger_observation_id")
+                            or prior_mapping.get("post_observation_id")
+                            or ""
+                        ).strip()
+                        prior_actual_rows = [
+                            item
+                            for item in prior_action_frame_observations
+                            if str(
+                                item.get("observation_id") or ""
+                            ).strip()
+                            == prior_trigger_observation_id
+                            and str(
+                                item.get("row_kind") or ""
+                            ).strip().lower()
+                            == "image_bubble"
+                        ]
+                        if len(prior_actual_rows) != 1:
+                            stats["terminal_gate"] = {
+                                "error_code": (
+                                    "C2_IMAGE_IDENTITY_CONTRACT_INVALID"
+                                ),
+                                "technical_failure": True,
+                                "reason": (
+                                    "persisted_image_action_frame_missing"
+                                ),
+                                "identity_errors": [],
+                                "authoritative_frame_source": (
+                                    "action_journal_recovery"
+                                ),
+                                "ui_frame_invalidated": False,
+                                "action_journal_path": str(
+                                    prior_journal_path
+                                ),
+                            }
+                            enriched_observations[index] = None
+                            break
+                        recovered_actual_observation = copy.deepcopy(
+                            prior_actual_rows[0]
+                        )
+                        recovered_actual_observation[
+                            "_worker_stable_id"
+                        ] = reserved_id
+                        recovered_actual_observation[
+                            "_worker_identity_scope"
+                        ] = "current_read_provisional"
+                        observation["_worker_stable_id"] = reserved_id
+                        observation["_worker_identity_scope"] = (
+                            "current_read_provisional"
+                        )
+                        receipt = {
+                            **dict(prior_mapping),
+                            "image_sha256": prior_image_sha256,
+                        }
+                        recovered_pending_result = {
+                            "state": "completed",
+                            "action_phase": "confirmed",
+                            "business_state": "completed",
+                            "business_result_confirmed": True,
+                            "ui_action_performed": False,
+                            "transaction": {
+                                **dict(prior_mapping),
+                                "current_frame_target_selected": True,
+                                "image_sha256": prior_image_sha256,
+                                "action_frame_observations": (
+                                    prior_action_frame_observations
+                                ),
+                                "action_frame_layout_snapshot_id": str(
+                                    prior_terminal.get(
+                                        "action_frame_layout_snapshot_id"
+                                    )
+                                    or ""
+                                ),
+                            },
+                            "customer_image_understanding": (
+                                prior_terminal.get(
+                                    "customer_image_understanding"
+                                )
+                            ),
+                            "visual_bridge_input": prior_terminal.get(
+                                "visual_bridge_input"
+                            ),
+                            "_confirmed_image_action_receipt": receipt,
+                            "_actual_image_action_observation": (
+                                recovered_actual_observation
+                            ),
+                            "_image_identity_receipt_confirmed": True,
+                            "_image_action_id": action_local_key,
+                            "_image_action_journal_path": str(
+                                prior_journal_path
+                            ),
+                            "_image_action_journal_item_id": (
+                                action_local_key
+                            ),
+                            "_image_flow_action_slot": dict(
+                                image_flow_action_slot or {}
+                            ),
+                        }
             append_log(
                 "INFO",
                 "c2_image_slot_discovered",
@@ -12829,7 +15167,9 @@ class TaskRunner:
                 )
                 break
             else:
-                if image_action_started:
+                if recovered_pending_result is not None:
+                    result = recovered_pending_result
+                elif image_action_started:
                     # Every irreversible image operation invalidates the
                     # frame. Remaining candidates are selected only after a
                     # fresh read and sequence alignment.
@@ -12857,6 +15197,7 @@ class TaskRunner:
                     payload=payload,
                     observation=observation,
                     action_local_id=action_local_key,
+                    image_flow_action_slot=image_flow_action_slot,
                     cancel_check=cancel_check,
                     flow_outcomes=flow_outcomes,
                     operation_phase=operation_phase,
@@ -12910,45 +15251,6 @@ class TaskRunner:
                     }
                     enriched_observations[index] = None
                     break
-                if result_reason == "C2_IMAGE_REIDENTIFICATION_REQUIRED":
-                    if is_pre_send_refresh and int(
-                        payload.get(
-                            "pre_send_reidentification_attempts"
-                        )
-                        or 0
-                    ) >= 1:
-                        stats["terminal_gate"] = {
-                            "error_code": (
-                                "C2_PRE_SEND_MESSAGE_VIEWPORT_CHANGED_AGAIN"
-                            ),
-                            "identity_errors": [],
-                            "authoritative_frame_source": str(
-                                payload.get("authoritative_frame_source")
-                                or "final_read"
-                            ),
-                            "ui_frame_invalidated": False,
-                            "action_journal_path": str(
-                                result.get(
-                                    "_image_action_journal_path"
-                                )
-                                or ""
-                            ),
-                            "message_viewport_change_evidence": dict(
-                                (transaction or {}).get(
-                                    "message_viewport_change_evidence"
-                                )
-                                or {}
-                            ),
-                        }
-                        enriched_observations[index] = None
-                        break
-                    if is_pre_send_refresh:
-                        stats["reidentification_required"] = int(
-                            stats.get("reidentification_required") or 0
-                        ) + 1
-                        payload[
-                            "pre_send_reidentification_attempts"
-                        ] = 1
                 stats["removed_from_final_screen"] += 1
                 mark_image_removed_from_final_screen(
                     stats,
@@ -13022,84 +15324,43 @@ class TaskRunner:
                     metadata={**common_metadata, "image_persisted": False},
                 )
                 break
-            terminal_observation = apply_image_terminal_result(
-                observation,
-                result,
-            )
-            try:
-                validate_committed_image_identity(
-                    terminal_observation,
-                    conversation_id=target.conversation_id,
-                    require_formalization_proof=True,
-                )
-            except ValueError:
+            if terminal_state != "completed":
                 journal_path = str(
                     result.get("_image_action_journal_path") or ""
                 ).strip()
+                technical_error = str(
+                    result.get("reason")
+                    or "C2_IMAGE_ACTION_RESULT_INCOMPLETE"
+                ).strip()
                 stats["terminal_gate"] = {
-                    "error_code": "C2_IMAGE_IDENTITY_CONTRACT_INVALID",
-                    "identity_errors": [
-                        {
-                            "observation_id": observation_id,
-                            "row_kind": "image_bubble",
-                            "error_code": (
-                                "C2_IMAGE_IDENTITY_CONTRACT_INVALID"
-                            ),
-                            "reason": str(
-                                terminal_observation.get("reason_detail")
-                                or "confirmed_image_identity_receipt_missing_or_invalid"
-                            ),
-                        }
-                    ],
-                    "authoritative_frame_source": (
-                        "action_journal_recovery"
+                    "error_code": technical_error,
+                    "technical_failure": True,
+                    "reason": "image_action_did_not_produce_complete_result",
+                    "identity_errors": [],
+                    "authoritative_frame_source": "action_result",
+                    "ui_frame_invalidated": bool(
+                        normalized["ui_frame_invalidated"]
                     ),
-                    "ui_frame_invalidated": False,
                     "action_journal_path": journal_path,
                 }
                 enriched_observations[index] = None
                 append_log(
                     "ERROR",
-                    "c2_image_identity_receipt_rejected",
-                    "图片动作缺少合法身份确认回执；未生成正式消息、Ledger 或 Outbox，已转入独立身份门禁。",
-                    error_code="C2_IMAGE_IDENTITY_CONTRACT_INVALID",
+                    "c2_image_action_technical_failed",
+                    "图片动作未形成完整唯一回执；保留证据并停止 Worker，不生成正式消息或转人工。",
+                    error_code=technical_error,
                     metadata={
                         **common_metadata,
                         "action_phase": result_action_phase,
+                        "action_was_attempted": action_was_attempted,
                         "action_journal_path": journal_path,
-                        "reason": result_reason,
                         "reason_detail": str(
                             result.get("reason_detail") or ""
                         ),
-                        "diagnostics": {
-                            "events": [
-                                _safe_c2_image_diagnostic_event(item)
-                                for item in (
-                                    diagnostics.get("events") or []
-                                )
-                                if isinstance(item, dict)
-                            ],
-                            "image_persisted": False,
-                        },
                     },
                     force_incident=True,
                 )
                 break
-            source_key = image_observation_source_key(
-                target,
-                terminal_observation,
-            )
-            terminal_source = (
-                terminal_observation.get("source_message")
-                if isinstance(
-                    terminal_observation.get("source_message"), dict
-                )
-                else {}
-            )
-            terminal_observation["source_message"] = {
-                **terminal_source,
-                "source_message_key": source_key,
-            }
             journal_path = str(
                 result.get("_image_action_journal_path") or ""
             ).strip()
@@ -13107,155 +15368,127 @@ class TaskRunner:
                 result.get("_image_action_journal_item_id")
                 or action_local_key
             ).strip()
-            if journal_path:
-                try:
-                    commit_action_journal_item_identity(
-                        journal_path,
-                        journal_item_id=journal_item_id,
-                        source_message_key=source_key,
-                    )
-                except (OSError, ValueError) as exc:
-                    stats["terminal_gate"] = {
-                        "error_code": (
-                            "C2_IMAGE_IDENTITY_CONTRACT_INVALID"
-                        ),
-                        "identity_errors": [
-                            {
-                                "observation_id": observation_id,
-                                "row_kind": "image_bubble",
-                                "error_code": (
-                                    "C2_IMAGE_IDENTITY_CONTRACT_INVALID"
-                                ),
-                                "reason": "image_identity_journal_commit_failed",
-                                "signature": type(exc).__name__,
-                            }
-                        ],
-                        "authoritative_frame_source": (
-                            "action_journal_recovery"
-                        ),
-                        "ui_frame_invalidated": False,
-                        "action_journal_path": journal_path,
-                    }
-                    enriched_observations[index] = None
-                    append_log(
-                        "ERROR",
-                        "c2_image_identity_journal_commit_failed",
-                        "图片身份回执有效，但 ActionJournal 正式化失败；已禁止 Ledger、Outbox、入库和 Brain。",
-                        error_code=(
-                            "C2_IMAGE_IDENTITY_CONTRACT_INVALID"
-                        ),
-                        metadata={
-                            **common_metadata,
-                            "error_type": type(exc).__name__,
-                        },
-                        force_incident=True,
-                    )
-                    break
-            image_action["source_message_key"] = source_key
-            image_evidence = dict(image_action.get("evidence") or {})
-            image_evidence["action_kind"] = "image"
-            image_action["evidence"] = image_evidence
-            image_action["terminal_payload"] = {
-                "state": str(result.get("state") or "failed"),
-                "media_action_terminal": (
-                    MediaActionTerminal.COMMITTED_COMPLETED.value
-                    if str(result.get("state") or "") == "completed"
-                    else MediaActionTerminal.COMMITTED_FAILED.value
+            actual_action_observation = (
+                result.get("_actual_image_action_observation")
+                if isinstance(
+                    result.get("_actual_image_action_observation"),
+                    dict,
+                )
+                else {}
+            )
+            receipt = confirmed_image_identity_receipt(
+                actual_action_observation,
+                result,
+            )
+            if (
+                receipt is None
+                or not journal_path
+                or not journal_item_id
+                or not isinstance(image_flow_action_slot, dict)
+            ):
+                stats["terminal_gate"] = {
+                    "error_code": "C2_IMAGE_IDENTITY_CONTRACT_INVALID",
+                    "technical_failure": True,
+                    "reason": "image_action_result_receipt_invalid",
+                    "identity_errors": [],
+                    "authoritative_frame_source": "action_result",
+                    "ui_frame_invalidated": bool(
+                        normalized["ui_frame_invalidated"]
+                    ),
+                    "action_journal_path": journal_path,
+                }
+                enriched_observations[index] = None
+                break
+            # A successful copy/Vision receipt is still only an action result.
+            # Do not create a durable image, Ledger or Outbox until the next
+            # full frame proves one of the allowed continuity relations.
+            pending_terminal_payload = {
+                "state": "confirmed_result_pending_continuity",
+                "media_action_terminal": None,
+                "error_code": None,
+                "confirmed_action_mapping": dict(receipt),
+                "image_sha256": str(
+                    receipt.get("image_sha256") or ""
+                ).strip().lower(),
+                "customer_image_understanding": copy.deepcopy(
+                    result.get("customer_image_understanding")
                 ),
-                "error_code": (
-                    str(result.get("reason") or "")
-                    if str(result.get("state") or "") == "failed"
-                    else None
-                ),
-                "reason_detail": (
-                    str(transaction.get("status") or result_reason)
-                    if str(result.get("state") or "") == "failed"
-                    else None
-                ),
-                "customer_image_understanding": (
-                    dict(result.get("customer_image_understanding") or {})
-                    if isinstance(
-                        result.get("customer_image_understanding"), dict
-                    )
-                    else None
-                ),
-                "visual_bridge_input": (
-                    dict(result.get("visual_bridge_input") or {})
-                    if isinstance(result.get("visual_bridge_input"), dict)
-                    else None
+                "visual_bridge_input": copy.deepcopy(
+                    result.get("visual_bridge_input")
                 ),
                 "transaction": _safe_c2_image_transaction(
                     result.get("transaction")
                 ),
-            }
-            if flow_outcomes is not None and (
-                action_was_attempted
-                or raw_terminal_state in {"completed", "failed"}
-            ):
-                flow_outcomes.record(image_action)
-            append_log(
-                "INFO" if terminal_state == "completed" else "WARN",
-                "c2_image_slot_finished",
-                "C2 单张图片处理已得到明确终态。",
-                error_code=(str(result.get("reason") or "") or None)
-                if terminal_state != "completed"
-                else None,
-                metadata={
-                    **common_metadata,
-                    "terminal_state": str(result.get("state") or "failed"),
-                    "reason": str(result.get("reason") or ""),
-                    "error_type": str(result.get("error_type") or ""),
-                    "total_duration_ms": diagnostics.get("total_duration_ms"),
-                    "transaction": _safe_c2_image_transaction(result.get("transaction")),
-                    "image_persisted": False,
-                },
-            )
-            (
-                terminal_observation,
-                terminal_state,
-                terminal_reason,
-            ) = self._persist_one_image_slot_terminal(
-                target=target,
-                payload=payload,
-                terminal_observation=terminal_observation,
-                source_key=source_key,
-                origin_read_run_id=(
-                    flow_outcomes.origin_read_run_id
-                    if flow_outcomes is not None
-                    else ""
-                ),
-                result=result,
-                stats=stats,
-            )
-            enriched_observations[index] = terminal_observation
-            summary = str(terminal_observation.get("content_clean") or "") if isinstance(terminal_observation, dict) else ""
-            append_log(
-                "INFO" if terminal_state == "completed" else "WARN",
-                "c2_image_slot_terminalized",
-                "C2 图片结果已映射回统一消息槽位。",
-                error_code=(str(result.get("reason") or "") or None) if terminal_state != "completed" else None,
-                metadata={
-                    **common_metadata,
-                    "terminal_state": terminal_state,
-                    "reason": terminal_reason,
-                    "vision_summary_length": len(summary),
-                    "vision_summary_sha256": _c2_text_fingerprint(summary),
-                    "transaction": _safe_c2_image_transaction(
+                "action_frame_observations": [
+                    copy.deepcopy(item)
+                    for item in (
+                        (
+                            result.get("transaction")
+                            if isinstance(
+                                result.get("transaction"), dict
+                            )
+                            else {}
+                        ).get("action_frame_observations")
+                        or []
+                    )
+                    if isinstance(item, dict)
+                ],
+                "action_frame_layout_snapshot_id": str(
+                    (
                         result.get("transaction")
+                        if isinstance(result.get("transaction"), dict)
+                        else {}
+                    ).get("action_frame_layout_snapshot_id")
+                    or ""
+                ),
+                "image_flow_action_slot": dict(image_flow_action_slot),
+                "image_flow_action_slot_status": (
+                    "confirmed_result_pending_continuity"
+                ),
+            }
+            update_action_journal_item(
+                journal_path,
+                journal_item_id=journal_item_id,
+                action_phase=result_action_phase,
+                business_state="confirmed_result_pending_continuity",
+                business_result_confirmed=False,
+                error_code="",
+                terminal_payload=pending_terminal_payload,
+            )
+            payload["_pending_image_action"] = {
+                "schema_version": 1,
+                "action_local_key": action_local_key,
+                "journal_path": journal_path,
+                "journal_item_id": journal_item_id,
+                "selected_observation": copy.deepcopy(observation),
+                "result": copy.deepcopy(result),
+                "action_outcome": copy.deepcopy(image_action),
+                "action_was_attempted": action_was_attempted,
+                "raw_terminal_state": raw_terminal_state,
+                "image_flow_action_slot": dict(image_flow_action_slot),
+            }
+            append_log(
+                "INFO",
+                "c2_image_action_result_waiting_full_reread",
+                "图片动作回执已确认；等待同一 read flow 的完整画面连续性验证后再生成正式消息。",
+                metadata={
+                    **common_metadata,
+                    "action_plan_revision": image_flow_action_slot[
+                        "action_plan_revision"
+                    ],
+                    "selected_sequence_ordinal": image_flow_action_slot[
+                        "selected_sequence_ordinal"
+                    ],
+                    "pre_action_business_projection_digest": (
+                        image_flow_action_slot[
+                            "pre_action_business_projection_digest"
+                        ]
                     ),
-                    "diagnostics": {
-                        "trace_id": str(diagnostics.get("trace_id") or ""),
-                        "total_duration_ms": diagnostics.get("total_duration_ms"),
-                        "events": [
-                            _safe_c2_image_diagnostic_event(item)
-                            for item in (diagnostics.get("events") or [])
-                            if isinstance(item, dict)
-                        ],
-                    },
                     "image_persisted": False,
                 },
-                force_incident=terminal_state == "failed",
             )
+            enriched_observations[index] = observation
+            break
         payload["observations"] = [
             item
             for item in enriched_observations
@@ -13525,6 +15758,44 @@ class TaskRunner:
             empty_welcome_baseline = bool(
                 refresh_read.get("pre_send_empty_welcome_baseline")
                 is True
+            )
+            checkpoint_context = (
+                target.raw.get("pre_send_fact_checkpoint_context")
+                if isinstance(target.raw, dict)
+                and isinstance(
+                    target.raw.get("pre_send_fact_checkpoint_context"),
+                    dict,
+                )
+                else {}
+            )
+            expected_context_guard = (
+                _bind_worker_continuity_contract_to_send_guard(
+                    expected_context_guard,
+                    pre_send_observations,
+                    checkpoint=(
+                        dict(checkpoint_context.get("checkpoint") or {})
+                        if isinstance(
+                            checkpoint_context.get("checkpoint"), dict
+                        )
+                        else {}
+                    ),
+                    checkpoint_comparison=(
+                        dict(
+                            refresh_read.get(
+                                "pre_send_fact_checkpoint_comparison"
+                            )
+                            or {}
+                        )
+                        if isinstance(
+                            refresh_read.get(
+                                "pre_send_fact_checkpoint_comparison"
+                            ),
+                            dict,
+                        )
+                        else {}
+                    ),
+                    empty_welcome_baseline=empty_welcome_baseline,
+                )
             )
             if (
                 send_identity_frame.get("contract_revision")
@@ -14058,12 +16329,11 @@ class TaskRunner:
             )
         )
         remaining_actions = 32
-        attempted_fingerprints: set[str] = set()
 
         def viewport_digest(payload: dict[str, Any]) -> str:
             for key in (
-                "message_viewport_change_evidence",
                 "send_context_guard",
+                "message_viewport_change_evidence",
             ):
                 evidence = (
                     payload.get(key)
@@ -14079,13 +16349,158 @@ class TaskRunner:
                 payload.get("message_viewport_change_digest") or ""
             ).strip()
 
+        def reconcile_prepare_frame(
+            before_payload: dict[str, Any],
+            after_payload: dict[str, Any],
+        ) -> tuple[
+            list[Any],
+            dict[str, Any],
+            dict[str, Any] | None,
+            bool,
+        ]:
+            before_observations = list(
+                before_payload.get("observations") or []
+            )
+            after_observations = list(
+                after_payload.get("observations") or []
+            )
+            # A Sidecar prepare response is the newest immutable action
+            # frame.  It is not required to prove a provisional media row's
+            # durable identity before the first click.  When the previous
+            # frame has no committed Worker identity, adopt the fresh frame
+            # as-is and number only its non-media/new facts below.  This is
+            # deliberately not reported as a continuity success.
+            has_committed_before = any(
+                isinstance(item, dict)
+                and str(item.get("_worker_stable_id") or "").strip()
+                and (
+                    str(item.get("_worker_identity_scope") or "")
+                    .strip()
+                    .lower()
+                    == "committed"
+                    or isinstance(
+                        item.get("_worker_committed_message"), dict
+                    )
+                )
+                for item in before_observations
+            )
+            if not has_committed_before:
+                latest_frame_observations = [
+                    {
+                        **item,
+                        "_worker_current_flow_media_candidate": True,
+                    }
+                    if isinstance(item, dict)
+                    and str(item.get("message_type") or "")
+                    .strip()
+                    .lower()
+                    in {"voice", "image"}
+                    and str(item.get("_worker_identity_scope") or "")
+                    .strip()
+                    .lower()
+                    != "committed"
+                    else item
+                    for item in after_observations
+                ]
+                return (
+                    latest_frame_observations,
+                    {
+                        "relation": "continuity_context_expansion_required",
+                        "reason": (
+                            "fresh_action_frame_has_no_prior_committed_identity"
+                        ),
+                        "matched_pairs": [],
+                        "new_suffix_indexes": [],
+                        "overlap_candidates": [],
+                    },
+                    None,
+                    True,
+                )
+            continuity = compare_business_viewport_continuity(
+                _business_projection_for_payload(before_payload),
+                _business_projection_for_payload(
+                    after_payload,
+                    after_observations,
+                ),
+                old_boundary_tokens=(
+                    _business_boundary_tokens_for_payload(
+                        before_payload,
+                        committed_only=True,
+                    )
+                ),
+                new_boundary_tokens=(
+                    _business_boundary_tokens_for_payload(
+                        after_payload,
+                        after_observations,
+                        committed_only=False,
+                    )
+                ),
+                context_expansion_used=bool(
+                    before_payload.get(
+                        "continuity_context_expansion_used"
+                    )
+                ),
+            )
+            if (
+                continuity.get("relation")
+                == "continuity_context_expansion_required"
+            ):
+                expansion = self._expand_media_continuity_context_once(
+                    target=target,
+                    target_label=target_label,
+                    pre_payload=before_payload,
+                    cancel_check=action_cancel_requested,
+                    operation_phase=operation_phase,
+                )
+                if expansion.get("ok") is True:
+                    return (
+                        [],
+                        continuity,
+                        dict(expansion.get("payload") or {}),
+                        False,
+                    )
+                continuity = {
+                    **continuity,
+                    "relation": "business_sequence_not_continuous",
+                    "reason": str(
+                        expansion.get("reason")
+                        or "continuity_context_expansion_failed"
+                    ),
+                }
+            if str(continuity.get("relation") or "") not in {
+                "business_sequence_equal",
+                "unique_tail_append",
+                "unique_viewport_slide_with_tail_append",
+            }:
+                return [], continuity, None, False
+            reconciled = _apply_worker_identity_from_continuity(
+                before_observations,
+                after_observations,
+                continuity,
+                current_flow_read_run_id=(
+                    flow_outcomes.origin_read_run_id
+                ),
+            )
+            alignment = _continuity_alignment_evidence_for_suffix(
+                reconciled,
+                continuity,
+            )
+            reconciled = self._assign_sequence_new_suffix_identities(
+                target=target,
+                observations=reconciled,
+                evidence=alignment,
+                read_run_id=flow_outcomes.origin_read_run_id,
+            )
+            return reconciled, continuity, None, False
+
         def result() -> dict[str, Any]:
+            nonlocal current_payload, failure_code, terminal_gate
             if reidentification_used:
                 current_payload[
                     "pre_send_reidentification_attempts"
                 ] = 1
             payload = {
-                "ok": True,
+                "ok": terminal_gate is None,
                 "payload": current_payload,
                 "failure_code": failure_code,
                 "item_outcomes": list(item_outcomes),
@@ -14098,46 +16513,6 @@ class TaskRunner:
             if terminal_gate is not None:
                 payload["terminal_gate"] = dict(terminal_gate)
             return payload
-
-        def quarantine_voice_identity(
-            *,
-            action_id: str,
-            action_error_code: str,
-        ) -> None:
-            """Project an unbound physical result as a conversation gate.
-
-            The action id is durable audit evidence for the one physical
-            click. It is deliberately not promoted to a message identity,
-            and the reserved worker sequence remains burned and uncommitted.
-            """
-
-            nonlocal failure_code, terminal_gate
-            failure_code = str(
-                action_error_code or "C2_VOICE_RESULT_AMBIGUOUS"
-            ).strip()
-            terminal_gate = {
-                "error_code": (
-                    "MESSAGE_CROSS_ROUND_IDENTITY_AMBIGUOUS"
-                ),
-                "identity_errors": [
-                    {
-                        "observation_id": "",
-                        "row_kind": "voice_bubble",
-                        "error_code": (
-                            "MESSAGE_CROSS_ROUND_IDENTITY_AMBIGUOUS"
-                        ),
-                        "signature": action_id,
-                        "reason": (
-                            "action_triggered_without_confirmed_post_alignment"
-                        ),
-                        "screen_order": 0,
-                        "order_source": "",
-                    }
-                ],
-                "authoritative_frame_source": "final_read",
-                "ui_frame_invalidated": True,
-                "action_error_code": failure_code,
-            }
 
         while remaining_actions > 0:
             if action_cancel_requested():
@@ -14243,20 +16618,18 @@ class TaskRunner:
                 prepared_observations = list(
                     prepared.get("observations") or []
                 )
-                current_candidate_ids = {
-                    str(item.get("observation_id") or "").strip()
-                    for item in current_executable_voices
-                    if str(item.get("observation_id") or "").strip()
-                }
-                aligned, alignment_evidence = (
-                    align_post_action_observations(
-                        current_observations,
-                        prepared_observations,
-                    )
+                aligned, continuity, expanded_payload, frame_rebased = (
+                    reconcile_prepare_frame(current_payload, prepared)
                 )
-                if alignment_evidence.get("alignment_status") not in {
-                    "unique",
-                    "not_required",
+                if expanded_payload is not None:
+                    current_payload = expanded_payload
+                    continue
+                if not frame_rebased and str(
+                    continuity.get("relation") or ""
+                ) not in {
+                    "business_sequence_equal",
+                    "unique_tail_append",
+                    "unique_viewport_slide_with_tail_append",
                 }:
                     return {
                         "ok": False,
@@ -14266,12 +16639,33 @@ class TaskRunner:
                             else "MESSAGE_CROSS_ROUND_IDENTITY_AMBIGUOUS"
                         ),
                         "payload": current_payload,
+                        "business_continuity_evidence": continuity,
                     }
-                aligned = self._assign_sequence_new_suffix_identities(
-                    target=target,
-                    observations=aligned,
-                    evidence=alignment_evidence,
-                    read_run_id=flow_outcomes.origin_read_run_id,
+                alignment_evidence = (
+                    {
+                        "pre_sequence_source": "fresh_action_frame",
+                        "pre_frame_id": "",
+                        "post_frame_id": str(
+                            prepared.get("pre_frame_id") or ""
+                        ),
+                        "alignment_status": "not_required",
+                        "candidate_alignment_count": 0,
+                        "matched_pairs": [],
+                        "old_tail_fully_consumed": True,
+                        "new_suffix_observation_ids": [
+                            str(item.get("observation_id") or "").strip()
+                            for item in aligned
+                            if isinstance(item, dict)
+                            and str(
+                                item.get("observation_id") or ""
+                            ).strip()
+                        ],
+                    }
+                    if frame_rebased
+                    else _continuity_alignment_evidence_for_suffix(
+                        aligned,
+                        continuity,
+                    )
                 )
                 if is_pre_send_refresh:
                     reidentification_validation = (
@@ -14301,30 +16695,7 @@ class TaskRunner:
                                 str(prepared.get("screenshot_path") or "")
                             ],
                         }
-                    matched_post_ids = {
-                        str(pair.get("post_observation_id") or "").strip()
-                        for pair in (
-                            alignment_evidence.get("matched_pairs") or []
-                        )
-                        if isinstance(pair, dict)
-                        and str(
-                            pair.get("pre_observation_id") or ""
-                        ).strip()
-                        in current_candidate_ids
-                    }
-                    resolved_as_transcript = any(
-                        isinstance(observation, dict)
-                        and str(
-                            observation.get("observation_id") or ""
-                        ).strip()
-                        in matched_post_ids
-                        and str(
-                            observation.get("row_kind") or ""
-                        ).strip().lower()
-                        == "voice_transcript"
-                        for observation in aligned
-                    )
-                    if not resolved_as_transcript:
+                    if current_executable_voices:
                         return {
                             "ok": False,
                             "error_code": (
@@ -14349,6 +16720,7 @@ class TaskRunner:
                     "state": "messages_ocr",
                     "observations": aligned,
                     "sequence_alignment_evidence": alignment_evidence,
+                    "business_continuity_evidence": continuity,
                     "authoritative_frame_source": "final_read",
                     "ui_frame_invalidated": bool(
                         current_payload.get("ui_frame_invalidated")
@@ -14385,9 +16757,6 @@ class TaskRunner:
                     "payload": current_payload,
                 }
             fingerprint = prepare_fields["selected_target_fingerprint"]
-            if fingerprint in attempted_fingerprints:
-                failure_code = failure_code or "VOICE_TRANSCRIBE_NO_PROGRESS"
-                return result()
             current_observations = list(
                 current_payload.get("observations") or []
             )
@@ -14406,31 +16775,23 @@ class TaskRunner:
                     "error_code": "C2_VOICE_PREPARE_CONTRACT_INVALID",
                     "payload": current_payload,
                 }
-            prepare_frame_changed = (
-                previous_viewport_digest != prepared_viewport_digest
+            (
+                pre_observations,
+                prepare_continuity,
+                expanded_payload,
+                frame_rebased,
+            ) = (
+                reconcile_prepare_frame(current_payload, prepared)
             )
-            if prepare_frame_changed:
-                pre_observations, prepare_alignment_evidence = (
-                    align_post_action_observations(
-                        current_observations,
-                        pre_observations,
-                    )
-                )
-            else:
-                # Equal normalized viewport means the Sidecar prepare frame
-                # has the same ordered business rows. Worker only carries its
-                # annotations by order and validates the returned operation
-                # ticket below; it must not compare aliases or coordinates to
-                # select the voice a second time.
-                pre_observations, prepare_alignment_evidence = (
-                    inherit_same_frame_worker_annotations(
-                        current_observations,
-                        pre_observations,
-                    )
-                )
-            if prepare_alignment_evidence.get("alignment_status") not in {
-                "unique",
-                "not_required",
+            if expanded_payload is not None:
+                current_payload = expanded_payload
+                continue
+            if not frame_rebased and str(
+                prepare_continuity.get("relation") or ""
+            ) not in {
+                "business_sequence_equal",
+                "unique_tail_append",
+                "unique_viewport_slide_with_tail_append",
             }:
                 return {
                     "ok": False,
@@ -14441,7 +16802,7 @@ class TaskRunner:
                     ),
                     "payload": current_payload,
                     "pre_send_error_evidence": (
-                        prepare_alignment_evidence
+                        prepare_continuity
                     ),
                     "candidate_count": int(
                         prepared.get("candidate_group_count") or 0
@@ -14458,19 +16819,39 @@ class TaskRunner:
                         str(prepared.get("screenshot_path") or "")
                     ],
                 }
-            if prepare_frame_changed:
-                pre_observations = (
-                    self._assign_sequence_new_suffix_identities(
-                        target=target,
-                        observations=pre_observations,
-                        evidence=prepare_alignment_evidence,
-                        read_run_id=flow_outcomes.origin_read_run_id,
-                    )
+            prepare_alignment_evidence = (
+                {
+                    "pre_sequence_source": "fresh_action_frame",
+                    "pre_frame_id": "",
+                    "post_frame_id": prepare_fields["pre_frame_id"],
+                    "alignment_status": "not_required",
+                    "candidate_alignment_count": 0,
+                    "matched_pairs": [],
+                    "old_tail_fully_consumed": True,
+                    "new_suffix_observation_ids": [
+                        str(item.get("observation_id") or "").strip()
+                        for item in pre_observations
+                        if isinstance(item, dict)
+                        and str(item.get("observation_id") or "").strip()
+                    ],
+                }
+                if frame_rebased
+                else _continuity_alignment_evidence_for_suffix(
+                    pre_observations,
+                    prepare_continuity,
                 )
+            )
+            prepare_frame_changed = (
+                not frame_rebased
+                and
+                str(prepare_continuity.get("relation") or "")
+                != "business_sequence_equal"
+            )
             prepared = {
                 **prepared,
                 "observations": pre_observations,
                 "sequence_alignment_evidence": prepare_alignment_evidence,
+                "business_continuity_evidence": prepare_continuity,
             }
             if is_pre_send_refresh and prepare_frame_changed:
                 reidentification_validation = pre_send_new_suffix_validation(
@@ -14508,15 +16889,24 @@ class TaskRunner:
                 )
                 else {}
             )
-            executable_prepared_ids = {
-                str(item.get("observation_id") or "").strip()
-                for item in _executable_untranscribed_voice_observations(
-                    target,
-                    {**prepared, "observations": pre_observations},
-                    excluded_anchor_keys=excluded_voice_anchor_keys,
+            prepared_voice_candidates = (
+                _untranscribed_voice_observations(
+                    {**prepared, "observations": pre_observations}
                 )
-                if str(item.get("observation_id") or "").strip()
-            }
+            )
+            # This validates the Sidecar's declared current-frame operation
+            # policy; it is not a message-identity decision.  Worker approves
+            # one voice action at a time and Sidecar must select the last
+            # untranscribed voice in the freshly returned business sequence.
+            # No old observation id, geometry, alias or stable id participates.
+            expected_selected_id = str(
+                (
+                    prepared_voice_candidates[-1]
+                    if prepared_voice_candidates
+                    else {}
+                ).get("observation_id")
+                or ""
+            ).strip()
             selected_observation = (
                 selected_observations[0]
                 if len(selected_observations) == 1
@@ -14524,7 +16914,7 @@ class TaskRunner:
             )
             if (
                 len(selected_observations) != 1
-                or selected_id not in executable_prepared_ids
+                or selected_id != expected_selected_id
                 or not observation_role_is_trusted(selected_observation)
                 or str(
                     selected_observation.get("message_type") or ""
@@ -14653,6 +17043,10 @@ class TaskRunner:
                     "candidate_group_count": int(
                         prepared.get("candidate_group_count") or 0
                     ),
+                    "selection_policy": (
+                        "latest_frame_bottommost_untranscribed_voice"
+                    ),
+                    "physical_identity_inherited_from_prepare": False,
                     "sender_role": str(
                         selected_observation.get("sender_role") or ""
                     ).strip().lower(),
@@ -14734,22 +17128,65 @@ class TaskRunner:
                         },
                     )
                     return
-                if phase in {"cancelled_before_trigger", "quarantined"}:
+                if phase == "cancelled_before_trigger":
                     return
+                existing_terminal = (
+                    dict(item.get("terminal_payload"))
+                    if isinstance(item.get("terminal_payload"), dict)
+                    else {}
+                )
                 update_action_journal_item(
                     journal,
                     journal_item_id=action_id,
                     action_phase="quarantined",
+                    business_state="technical_failed",
+                    business_result_confirmed=False,
                     error_code=error_code,
                     terminal_payload={
-                        "state": "quarantined",
+                        **existing_terminal,
+                        "state": "technical_failed",
                         "media_action_terminal": (
-                            MediaActionTerminal.IDENTITY_UNRESOLVED.value
+                            MediaActionTerminal.TECHNICAL_FAILED.value
                         ),
                         "error_code": error_code,
                         "previous_action_phase": phase,
+                        "continuity_state": "technical_failed",
                     },
                 )
+
+            def voice_technical_failure(
+                error_code: str,
+                *,
+                reason: str,
+            ) -> dict[str, Any]:
+                """Stop this Worker when one attempted action has no result."""
+
+                terminate_created_voice_action(error_code)
+                failure_payload = {
+                    **current_payload,
+                    "voice_transcription": dict(executed),
+                    "observations": list(
+                        executed.get("observations")
+                        or current_payload.get("observations")
+                        or []
+                    ),
+                    "authoritative_frame_source": "action_result",
+                    "ui_frame_invalidated": True,
+                }
+                return {
+                    "ok": False,
+                    "error_code": error_code,
+                    "payload": failure_payload,
+                    "terminal_gate": {
+                        "error_code": error_code,
+                        "technical_failure": True,
+                        "reason": reason,
+                        "identity_errors": [],
+                        "authoritative_frame_source": "action_result",
+                        "ui_frame_invalidated": True,
+                        "action_journal_path": str(journal),
+                    },
+                }
 
             if enforce_read_targets and not self._backend_still_allows_read_target_for_voice(
                 binding,
@@ -14907,8 +17344,6 @@ class TaskRunner:
                 )
                 else {}
             )
-            tracking_edges = executed.get("tracking_edges")
-            tracking_frame_ids = executed.get("tracking_frame_ids")
             try:
                 binding_candidate_count = int(
                     executed.get("binding_candidate_count")
@@ -14934,15 +17369,6 @@ class TaskRunner:
                 ).strip()
                 == prepare_fields["selected_action_token"]
                 and str(
-                    executed.get("selected_target_fingerprint") or ""
-                ).strip()
-                == fingerprint
-                and str(
-                    executed.get("message_viewport_change_digest") or ""
-                ).strip()
-                == prepare_fields["message_viewport_change_digest"]
-                and
-                str(
                     executed.get("canonical_voice_action_id") or ""
                 ).strip()
                 == action_id
@@ -14950,11 +17376,9 @@ class TaskRunner:
                     executed.get("reserved_worker_stable_id") or ""
                 ).strip()
                 == reserved_id
-                and binding_status in {"confirmed", "ambiguous", "failed"}
-                and binding_method
-                and binding_candidate_count >= 0
-                and isinstance(tracking_frame_ids, list)
-                and isinstance(tracking_edges, list)
+                and binding_status == "confirmed"
+                and binding_method == "actual_action_result"
+                and binding_candidate_count == 1
                 and str(
                     confirmed_mapping.get("canonical_action_id") or ""
                 ).strip()
@@ -14972,276 +17396,32 @@ class TaskRunner:
                     confirmed_mapping.get("pre_observation_id") or ""
                 ).strip()
                 == selected_id
-                and isinstance(executed.get("ui_action_performed"), bool)
+                and confirmed_mapping.get("binding_confirmed") is True
+                and executed.get("ui_action_performed") is True
             )
-            if execute_state == "voice_transcribe_completed":
-                execute_identity_contract_valid = bool(
-                    execute_identity_contract_valid
-                    and binding_status == "confirmed"
-                    and binding_candidate_count == 1
-                    and confirmed_mapping.get("binding_confirmed") is True
-                )
-            elif execute_state == "voice_transcribe_ambiguous":
-                execute_identity_contract_valid = bool(
-                    execute_identity_contract_valid
-                    and binding_status == "ambiguous"
-                    and confirmed_mapping.get("binding_confirmed") is False
-                )
-            else:
-                execute_identity_contract_valid = bool(
-                    execute_identity_contract_valid
-                    and binding_status == "failed"
-                    and binding_candidate_count == 1
-                    and confirmed_mapping.get("binding_confirmed") is True
-                    and str(
-                        confirmed_mapping.get("post_observation_id") or ""
-                    ).strip()
-                    and executed.get("ui_action_performed") is True
+            if execute_state != "voice_transcribe_completed":
+                return voice_technical_failure(
+                    str(
+                        executed.get("error_code")
+                        or "C2_VOICE_RESULT_AMBIGUOUS"
+                    ),
+                    reason=(
+                        "voice_action_did_not_produce_one_unique_transcript"
+                    ),
                 )
             if not execute_identity_contract_valid:
-                terminate_created_voice_action(
+                return voice_technical_failure(
                     "C2_VOICE_IDENTITY_CONTRACT_INVALID",
-                    definitely_before_trigger=bool(
-                        executed.get("ui_action_performed") is False
-                        and action_phase
-                        in {"not_attempted", "cancelled_before_trigger"}
-                    ),
+                    reason="voice_action_result_contract_invalid",
                 )
-                return {
-                    "ok": False,
-                    "error_code": "C2_VOICE_IDENTITY_CONTRACT_INVALID",
-                    "payload": current_payload,
-                }
 
             remaining_actions -= 1
-            attempted_fingerprints.add(fingerprint)
-            sender_role = str((prepared.get("selected_voice_observation") or {}).get("sender_role") or "")
-            if execute_state == "voice_transcribe_ambiguous":
-                # Sidecar has exhausted its bounded evidence-only reads but
-                # cannot bind the result to one physical voice. This is an
-                # independent terminal gate, not a failed message slot: keep
-                # the quarantined Journal, burn the reservation, and never
-                # ask normal slot settlement for a source_message_key.
-                ambiguous_error_code = str(
-                    executed.get("error_code")
-                    or "C2_VOICE_RESULT_AMBIGUOUS"
+            sender_role = str(
+                (prepared.get("selected_voice_observation") or {}).get(
+                    "sender_role"
                 )
-                terminate_created_voice_action(ambiguous_error_code)
-                excluded_voice_anchor_keys.update(physical_anchor_keys)
-                current_payload = {
-                    **executed,
-                    "ok": True,
-                    "state": "messages_ocr",
-                    "observations": list(
-                        executed.get("observations") or []
-                    ),
-                    "voice_transcription": executed,
-                    "authoritative_frame_source": "final_read",
-                    "ui_frame_invalidated": True,
-                }
-                quarantine_voice_identity(
-                    action_id=action_id,
-                    action_error_code=ambiguous_error_code,
-                )
-                return result()
-
-            if execute_state != "voice_transcribe_completed":
-                post_observations = list(executed.get("observations") or [])
-                try:
-                    mapping = confirmed_voice_action_mapping(
-                        voice_payload=executed,
-                        pre_observations=pre_observations,
-                        post_observations=post_observations,
-                        canonical_action_id=action_id,
-                        reserved_worker_stable_id=reserved_id,
-                        expected_pre_frame_id=(
-                            prepare_fields["pre_frame_id"]
-                        ),
-                        pre_observation_id=selected_id,
-                        selected_action_token=(
-                            prepare_fields["selected_action_token"]
-                        ),
-                        selected_anchor_keys=set(physical_anchor_keys),
-                    )
-                except ValueError:
-                    terminate_created_voice_action(
-                        "C2_VOICE_IDENTITY_CONTRACT_INVALID"
-                    )
-                    return {
-                        "ok": False,
-                        "error_code": "C2_VOICE_IDENTITY_CONTRACT_INVALID",
-                        "payload": current_payload,
-                    }
-                aligned, alignment_evidence = align_post_action_observations(
-                    pre_observations,
-                    post_observations,
-                    confirmed_action_mapping=mapping,
-                )
-                record_action_sequence_alignment(journal, alignment_evidence)
-                if alignment_evidence.get("alignment_status") != "unique":
-                    terminate_created_voice_action(
-                        "MESSAGE_CROSS_ROUND_IDENTITY_AMBIGUOUS"
-                    )
-                    current_payload = {
-                        **executed,
-                        "ok": True,
-                        "state": "messages_ocr",
-                        "observations": post_observations,
-                        "sequence_alignment_evidence": alignment_evidence,
-                        "voice_transcription": executed,
-                        "authoritative_frame_source": "final_read",
-                        "ui_frame_invalidated": True,
-                    }
-                    quarantine_voice_identity(
-                        action_id=action_id,
-                        action_error_code=(
-                            "MESSAGE_CROSS_ROUND_IDENTITY_AMBIGUOUS"
-                        ),
-                    )
-                    return result()
-                aligned = self._assign_sequence_new_suffix_identities(
-                    target=target,
-                    observations=aligned,
-                    evidence=alignment_evidence,
-                    read_run_id=flow_outcomes.origin_read_run_id,
-                )
-                confirmed_post_observation_id = str(
-                    mapping.get("post_observation_id") or ""
-                ).strip()
-                confirmed_post_anchor_keys: set[str] = set()
-                committed_voice_observation: dict[str, Any] | None = None
-                for observation in aligned:
-                    if (
-                        isinstance(observation, dict)
-                        and str(
-                            observation.get("observation_id") or ""
-                        ).strip()
-                        == confirmed_post_observation_id
-                    ):
-                        observation["_worker_voice_action_summary"] = {
-                            **dict(executed),
-                            # The normalized mapping is the Worker-verified
-                            # commit proof.  Do not persist a weaker raw
-                            # Sidecar projection that omits the selected pre
-                            # observation.
-                            "confirmed_action_mapping": dict(mapping),
-                        }
-                        committed_voice_observation = observation
-                        # Exclusions are deliberately frame-local.  The
-                        # failed bubble may have moved after a new message
-                        # arrived, so carrying the pre-click seat/anchor into
-                        # the next prepare could suppress the new bubble that
-                        # now occupies that seat.  Continuous tracking has
-                        # already proved which post-action observation owns
-                        # this failure; exclude only that latest observation's
-                        # aliases during the remainder of this UI flow.
-                        confirmed_post_anchor_keys.update(
-                            voice_action_journal_anchor_keys(observation)
-                        )
-                if not confirmed_post_anchor_keys:
-                    terminate_created_voice_action(
-                        "C2_VOICE_IDENTITY_CONTRACT_INVALID"
-                    )
-                    return {
-                        "ok": False,
-                        "error_code": (
-                            "C2_VOICE_IDENTITY_CONTRACT_INVALID"
-                        ),
-                        "payload": current_payload,
-                    }
-                if committed_voice_observation is None:
-                    terminate_created_voice_action(
-                        "C2_VOICE_IDENTITY_CONTRACT_INVALID"
-                    )
-                    return {
-                        "ok": False,
-                        "error_code": "C2_VOICE_IDENTITY_CONTRACT_INVALID",
-                        "payload": current_payload,
-                    }
-                committed_voice = commit_message_identity(
-                    conversation_id=target.conversation_id,
-                    observation=committed_voice_observation,
-                )
-                if isinstance(committed_voice, IdentityCommitRejection):
-                    terminate_created_voice_action(
-                        "C2_VOICE_IDENTITY_CONTRACT_INVALID"
-                    )
-                    return {
-                        "ok": False,
-                        "error_code": "C2_VOICE_IDENTITY_CONTRACT_INVALID",
-                        "identity_rejection_reason": committed_voice.reason,
-                        "payload": current_payload,
-                    }
-                durable_source_key = committed_voice.source_message_key
-                commit_action_journal_item_identity(
-                    journal,
-                    journal_item_id=action_id,
-                    source_message_key=durable_source_key,
-                )
-                outcome = classify_action_result(
-                    "voice",
-                    executed,
-                    source_message_key=durable_source_key,
-                )
-                evidence = dict(outcome.get("evidence") or {})
-                evidence.update(
-                    {"action_kind": "voice", "sender_role": sender_role}
-                )
-                outcome["evidence"] = evidence
-                outcome["terminal_payload"] = _voice_terminal_payload(
-                    executed,
-                    anchor_keys=physical_anchor_keys,
-                    result="failed",
-                    error_code=str(
-                        executed.get("error_code")
-                        or "C2_VOICE_TRANSCRIBE_FAILED"
-                    ),
-                    identity_confirmed=True,
-                )
-                replayable_voice = _replayable_voice_observation(
-                    committed=committed_voice,
-                    terminal_payload=outcome["terminal_payload"],
-                    anchor_keys=physical_anchor_keys,
-                )
-                if replayable_voice is not None:
-                    outcome["terminal_payload"][
-                        "replayable_observation"
-                    ] = replayable_voice
-                update_action_journal_item(
-                    journal,
-                    journal_item_id=action_id,
-                    action_phase=action_phase,
-                    business_state="failed",
-                    business_result_confirmed=False,
-                    error_code=str(
-                        executed.get("error_code")
-                        or "C2_VOICE_TRANSCRIBE_FAILED"
-                    ),
-                    terminal_payload=outcome["terminal_payload"],
-                )
-                flow_outcomes.record(outcome)
-                item_outcomes = merge_item_outcomes(
-                    item_outcomes,
-                    [outcome],
-                )
-                failure_code = str(
-                    executed.get("error_code")
-                    or "C2_VOICE_TRANSCRIBE_FAILED"
-                )
-                excluded_voice_anchor_keys.update(
-                    confirmed_post_anchor_keys
-                )
-                current_payload = {
-                    **executed,
-                    "ok": True,
-                    "state": "messages_ocr",
-                    "observations": aligned,
-                    "sequence_alignment_evidence": alignment_evidence,
-                    "voice_transcription": executed,
-                    "authoritative_frame_source": "final_read",
-                    "ui_frame_invalidated": True,
-                }
-                continue
+                or ""
+            )
 
             post_observations = list(executed.get("observations") or [])
             try:
@@ -15261,82 +17441,345 @@ class TaskRunner:
                     selected_anchor_keys=set(physical_anchor_keys),
                 )
             except ValueError:
-                terminate_created_voice_action(
-                    "C2_VOICE_IDENTITY_CONTRACT_INVALID"
+                return voice_technical_failure(
+                    "C2_VOICE_IDENTITY_CONTRACT_INVALID",
+                    reason="voice_actual_result_receipt_rejected",
                 )
-                return {"ok": False, "error_code": "C2_VOICE_IDENTITY_CONTRACT_INVALID", "payload": current_payload}
-            aligned, alignment_evidence = align_post_action_observations(
-                pre_observations,
-                post_observations,
+            confirmed_post_observation_id = str(
+                mapping.get("post_observation_id") or ""
+            ).strip()
+            actual_result_matches = [
+                dict(observation)
+                for observation in post_observations
+                if isinstance(observation, dict)
+                and str(observation.get("observation_id") or "").strip()
+                == confirmed_post_observation_id
+            ]
+            ordered_pre = ordered_message_viewport_observations(
+                [
+                    item
+                    for item in pre_observations
+                    if isinstance(item, dict)
+                ]
+            )
+            selected_ordinals = [
+                index
+                for index, observation in enumerate(ordered_pre)
+                if str(observation.get("observation_id") or "").strip()
+                == selected_id
+            ]
+            if len(actual_result_matches) != 1 or len(selected_ordinals) != 1:
+                return voice_technical_failure(
+                    "C2_VOICE_IDENTITY_CONTRACT_INVALID",
+                    reason="voice_actual_transcript_observation_missing",
+                )
+            selected_ordinal = selected_ordinals[0]
+            actual_result_observation = actual_result_matches[0]
+            actual_result_observation["_worker_stable_id"] = reserved_id
+            actual_result_observation["_worker_identity_scope"] = (
+                "current_read_provisional"
+            )
+            actual_result_observation[
+                "_worker_media_result_pending_continuity"
+            ] = True
+            actual_result_observation["_worker_voice_action_summary"] = {
+                **dict(executed),
+                "confirmed_action_mapping": dict(mapping),
+                "canonical_action_id": action_id,
+                "origin_read_run_id": flow_outcomes.origin_read_run_id,
+            }
+            expected_observations = [
+                dict(item) if isinstance(item, dict) else item
+                for item in pre_observations
+            ]
+            pre_selected = ordered_pre[selected_ordinal]
+            pre_selected_id = str(
+                pre_selected.get("observation_id") or ""
+            ).strip()
+            replacement_indexes = [
+                index
+                for index, item in enumerate(expected_observations)
+                if isinstance(item, dict)
+                and str(item.get("observation_id") or "").strip()
+                == pre_selected_id
+            ]
+            if len(replacement_indexes) != 1:
+                return voice_technical_failure(
+                    "C2_VOICE_IDENTITY_CONTRACT_INVALID",
+                    reason="voice_action_frame_selected_row_missing",
+                )
+            expected_result = dict(actual_result_observation)
+            for geometry_key in (
+                "bubble_rect",
+                "bounds",
+                "geometry_evidence",
+                "frame_visual_id",
+            ):
+                if geometry_key in pre_selected:
+                    expected_result[geometry_key] = copy.deepcopy(
+                        pre_selected[geometry_key]
+                    )
+            expected_observations[replacement_indexes[0]] = expected_result
+            # Persist the already-validated actual action result before the
+            # continuity decision.  A crash in this window is recovered with
+            # zero UI actions; it must never repeat the voice click.
+            pending_terminal_payload = _voice_terminal_payload(
+                executed,
+                anchor_keys=physical_anchor_keys,
+                result="completed",
+                error_code=None,
+                identity_confirmed=False,
                 confirmed_action_mapping=mapping,
             )
-            record_action_sequence_alignment(journal, alignment_evidence)
-            if alignment_evidence.get("alignment_status") != "unique":
-                terminate_created_voice_action(
-                    "MESSAGE_CROSS_ROUND_IDENTITY_AMBIGUOUS"
-                )
-                current_payload = {
-                    **executed,
-                    "ok": True,
-                    "state": "messages_ocr",
-                    "observations": post_observations,
-                    "sequence_alignment_evidence": alignment_evidence,
-                    "voice_transcription": executed,
-                    "authoritative_frame_source": "final_read",
-                    "ui_frame_invalidated": True,
+            pending_terminal_payload.update(
+                {
+                    "state": "confirmed_result_pending_continuity",
+                    "media_action_terminal": None,
+                    "continuity_state": (
+                        "confirmed_result_pending_continuity"
+                    ),
                 }
-                quarantine_voice_identity(
-                    action_id=action_id,
-                    action_error_code=(
-                        "MESSAGE_CROSS_ROUND_IDENTITY_AMBIGUOUS"
+            )
+            update_action_journal_item(
+                journal,
+                journal_item_id=action_id,
+                action_phase=action_phase,
+                business_state="confirmed_result_pending_continuity",
+                business_result_confirmed=False,
+                error_code="",
+                terminal_payload=pending_terminal_payload,
+            )
+            continuity_payload = {
+                **prepared,
+                "observations": expected_observations,
+            }
+            continuity = compare_business_viewport_continuity(
+                _business_projection_for_payload(continuity_payload),
+                _business_projection_for_payload(
+                    executed,
+                    post_observations,
+                ),
+                old_boundary_tokens=(
+                    _business_boundary_tokens_for_payload(
+                        continuity_payload,
+                        committed_only=True,
+                    )
+                ),
+                new_boundary_tokens=(
+                    _business_boundary_tokens_for_payload(
+                        executed,
+                        post_observations,
+                        committed_only=False,
+                    )
+                ),
+            )
+            authoritative_post_observations = list(post_observations)
+            authoritative_payload = dict(executed)
+            if (
+                continuity.get("relation")
+                == "continuity_context_expansion_required"
+            ):
+                expansion = self._expand_media_continuity_context_once(
+                    target=target,
+                    target_label=target_label,
+                    pre_payload=continuity_payload,
+                    cancel_check=action_cancel_requested,
+                    operation_phase=operation_phase,
+                )
+                if expansion.get("ok") is True:
+                    authoritative_payload = dict(
+                        expansion.get("payload") or {}
+                    )
+                    authoritative_post_observations = list(
+                        authoritative_payload.get("observations") or []
+                    )
+                    expanded_observations = list(
+                        authoritative_payload.get(
+                            "continuity_expanded_observations"
+                        )
+                        or []
+                    )
+                    continuity = compare_business_viewport_continuity(
+                        _business_projection_for_payload(
+                            continuity_payload
+                        ),
+                        _business_projection_for_payload(
+                            authoritative_payload,
+                            authoritative_post_observations,
+                        ),
+                        old_boundary_tokens=(
+                            _business_boundary_tokens_for_payload(
+                                continuity_payload,
+                                committed_only=True,
+                            )
+                        ),
+                        new_boundary_tokens=(
+                            _business_boundary_tokens_for_payload(
+                                authoritative_payload,
+                                authoritative_post_observations,
+                                committed_only=False,
+                            )
+                        ),
+                        context_expansion_used=True,
+                        expanded_context_sequence=(
+                            _business_projection_for_payload(
+                                authoritative_payload,
+                                expanded_observations,
+                            )
+                        ),
+                        expanded_context_boundary_tokens=(
+                            _business_boundary_tokens_for_payload(
+                                authoritative_payload,
+                                expanded_observations,
+                                committed_only=False,
+                            )
+                        ),
+                    )
+                else:
+                    continuity = {
+                        **continuity,
+                        "relation": "business_sequence_not_continuous",
+                        "reason": str(
+                            expansion.get("reason")
+                            or "continuity_context_expansion_failed"
+                        ),
+                    }
+            try:
+                record_action_business_continuity(journal, continuity)
+            except (OSError, ValueError) as exc:
+                return voice_technical_failure(
+                    "C2_VOICE_IDENTITY_CONTRACT_INVALID",
+                    reason=(
+                        "voice_continuity_journal_persist_failed:"
+                        f"{type(exc).__name__}"
                     ),
                 )
-                return result()
+            if str(continuity.get("relation") or "") not in {
+                "business_sequence_equal",
+                "unique_tail_append",
+                "unique_viewport_slide_with_tail_append",
+            }:
+                return voice_technical_failure(
+                    "C2_VOICE_RESULT_AMBIGUOUS",
+                    reason=str(
+                        continuity.get("reason")
+                        or "voice_actual_result_continuity_failed"
+                    ),
+                )
+            mapped_result_indexes = [
+                int(pair.get("new_index"))
+                for pair in (continuity.get("matched_pairs") or [])
+                if isinstance(pair, dict)
+                and pair.get("old_index") == selected_ordinal
+                and isinstance(pair.get("new_index"), int)
+            ]
+            if len(mapped_result_indexes) != 1:
+                return voice_technical_failure(
+                    "C2_VOICE_RESULT_AMBIGUOUS",
+                    reason="voice_actual_result_mapping_missing",
+                )
+            aligned = _apply_worker_identity_from_continuity(
+                expected_observations,
+                authoritative_post_observations,
+                continuity,
+                current_flow_read_run_id=(
+                    flow_outcomes.origin_read_run_id
+                ),
+            )
+            ordered_aligned = ordered_message_viewport_observations(
+                [item for item in aligned if isinstance(item, dict)]
+            )
+            mapped_result_index = mapped_result_indexes[0]
+            if (
+                mapped_result_index < 0
+                or mapped_result_index >= len(ordered_aligned)
+            ):
+                return voice_technical_failure(
+                    "C2_VOICE_RESULT_AMBIGUOUS",
+                    reason="voice_actual_result_mapping_out_of_range",
+                )
+            current_result_id = str(
+                ordered_aligned[mapped_result_index].get("observation_id")
+                or ""
+            ).strip()
+            current_result_matches = [
+                index
+                for index, observation in enumerate(aligned)
+                if isinstance(observation, dict)
+                and str(observation.get("observation_id") or "").strip()
+                == current_result_id
+            ]
+            if not current_result_id or len(current_result_matches) != 1:
+                return voice_technical_failure(
+                    "C2_VOICE_RESULT_AMBIGUOUS",
+                    reason="voice_actual_result_current_row_missing",
+                )
+            committed_voice_observation = dict(actual_result_observation)
+            committed_voice_observation.pop(
+                "_worker_media_result_pending_continuity", None
+            )
+            committed_voice_observation["_worker_stable_id"] = reserved_id
+            committed_voice_observation["_worker_identity_scope"] = (
+                "committed"
+            )
+            committed_voice_observation[
+                "_worker_voice_action_summary"
+            ] = {
+                **dict(executed),
+                "confirmed_action_mapping": dict(mapping),
+                "origin_read_run_id": flow_outcomes.origin_read_run_id,
+            }
+            committed_voice_observation[
+                "_worker_committed_message"
+            ] = committed_identity_record(
+                worker_stable_id=reserved_id,
+                commit_basis=MessageCommitBasis.CONFIRMED_VOICE_ACTION,
+                observation_id=confirmed_post_observation_id,
+                sender_role=str(
+                    committed_voice_observation.get("sender_role") or ""
+                ),
+                message_type="voice",
+                proof=dict(mapping),
+            )
+            committed_voice = commit_message_identity(
+                conversation_id=target.conversation_id,
+                observation=committed_voice_observation,
+            )
+            if isinstance(committed_voice, IdentityCommitRejection):
+                return voice_technical_failure(
+                    "C2_VOICE_IDENTITY_CONTRACT_INVALID",
+                    reason=(
+                        "voice_worker_identity_commit_rejected:"
+                        f"{committed_voice.reason}"
+                    ),
+                )
+            durable_source_key = committed_voice.source_message_key
+            current_geometry = aligned[current_result_matches[0]]
+            for geometry_key in (
+                "bubble_rect",
+                "bounds",
+                "geometry_evidence",
+                "frame_visual_id",
+            ):
+                if geometry_key in current_geometry:
+                    committed_voice_observation[geometry_key] = (
+                        copy.deepcopy(current_geometry[geometry_key])
+                    )
+            aligned[current_result_matches[0]] = (
+                committed_voice_observation
+            )
+            alignment_evidence = (
+                _continuity_alignment_evidence_for_suffix(
+                    aligned,
+                    continuity,
+                )
+            )
             aligned = self._assign_sequence_new_suffix_identities(
                 target=target,
                 observations=aligned,
                 evidence=alignment_evidence,
                 read_run_id=flow_outcomes.origin_read_run_id,
             )
-            confirmed_post_observation_id = str(
-                mapping.get("post_observation_id") or ""
-            ).strip()
-            committed_voice_observation: dict[str, Any] | None = None
-            for observation in aligned:
-                if (
-                    isinstance(observation, dict)
-                    and str(observation.get("observation_id") or "").strip()
-                    == confirmed_post_observation_id
-                ):
-                    observation["_worker_voice_action_summary"] = {
-                        **dict(executed),
-                        "confirmed_action_mapping": dict(mapping),
-                    }
-                    committed_voice_observation = observation
-            if committed_voice_observation is None:
-                terminate_created_voice_action(
-                    "C2_VOICE_IDENTITY_CONTRACT_INVALID"
-                )
-                return {
-                    "ok": False,
-                    "error_code": "C2_VOICE_IDENTITY_CONTRACT_INVALID",
-                    "payload": current_payload,
-                }
-            committed_voice = commit_message_identity(
-                conversation_id=target.conversation_id,
-                observation=committed_voice_observation,
-            )
-            if isinstance(committed_voice, IdentityCommitRejection):
-                terminate_created_voice_action(
-                    "C2_VOICE_IDENTITY_CONTRACT_INVALID"
-                )
-                return {
-                    "ok": False,
-                    "error_code": "C2_VOICE_IDENTITY_CONTRACT_INVALID",
-                    "identity_rejection_reason": committed_voice.reason,
-                    "payload": current_payload,
-                }
-            durable_source_key = committed_voice.source_message_key
             commit_action_journal_item_identity(
                 journal,
                 journal_item_id=action_id,
@@ -15352,6 +17795,7 @@ class TaskRunner:
                 result="completed",
                 error_code=None,
                 identity_confirmed=True,
+                confirmed_action_mapping=mapping,
             )
             replayable_voice = _replayable_voice_observation(
                 committed=committed_voice,
@@ -15374,11 +17818,12 @@ class TaskRunner:
             flow_outcomes.record(outcome)
             item_outcomes = merge_item_outcomes(item_outcomes, [outcome])
             current_payload = {
-                **executed,
+                **authoritative_payload,
                 "ok": True,
                 "state": "messages_ocr",
                 "observations": aligned,
                 "sequence_alignment_evidence": alignment_evidence,
+                "business_continuity_evidence": continuity,
                 "voice_transcription": executed,
                 "authoritative_frame_source": "final_read",
                 "ui_frame_invalidated": True,
@@ -15481,60 +17926,184 @@ class TaskRunner:
                     "image_stats": aggregate_image_stats,
                 }
 
-            observations, sequence_alignment_evidence = (
-                align_post_action_observations(
-                    list(current_payload.get("observations") or []),
-                    list(refreshed.get("observations") or []),
+            raw_refreshed_observations = list(
+                refreshed.get("observations") or []
+            )
+            image_finalization = (
+                self._finalize_pending_image_action_after_reread(
+                    target=target,
+                    target_label=target_label,
+                    pre_payload=current_payload,
+                    post_observations=raw_refreshed_observations,
+                    flow_outcomes=flow_outcomes,
+                    stats=aggregate_image_stats,
+                    cancel_check=action_cancel_requested,
+                    operation_phase=operation_phase,
                 )
             )
+            if image_finalization.get("ok") is not True:
+                return {
+                    **image_finalization,
+                    "image_stats": aggregate_image_stats,
+                }
+            current_payload = dict(
+                image_finalization.get("payload") or current_payload
+            )
+            continuity = image_finalization.get("continuity_evidence")
+            refreshed_observations = list(
+                current_payload.get("observations")
+                if isinstance(current_payload.get("observations"), list)
+                else raw_refreshed_observations
+            )
+            if not isinstance(continuity, dict):
+                continuity = compare_business_viewport_continuity(
+                    _business_projection_for_payload(current_payload),
+                    _business_projection_for_payload(
+                        refreshed,
+                        raw_refreshed_observations,
+                    ),
+                    old_boundary_tokens=(
+                        _business_boundary_tokens_for_payload(
+                            current_payload,
+                            committed_only=True,
+                        )
+                    ),
+                    new_boundary_tokens=(
+                        _business_boundary_tokens_for_payload(
+                            refreshed,
+                            raw_refreshed_observations,
+                            committed_only=False,
+                        )
+                    ),
+                )
+                if (
+                    continuity.get("relation")
+                    == "continuity_context_expansion_required"
+                ):
+                    expansion = self._expand_media_continuity_context_once(
+                        target=target,
+                        target_label=target_label,
+                        pre_payload=current_payload,
+                        cancel_check=action_cancel_requested,
+                        operation_phase=operation_phase,
+                    )
+                    if expansion.get("ok") is True:
+                        expansion_payload = dict(
+                            expansion.get("payload") or {}
+                        )
+                        raw_refreshed_observations = list(
+                            expansion_payload.get("observations") or []
+                        )
+                        refreshed = expansion_payload
+                        continuity = compare_business_viewport_continuity(
+                            _business_projection_for_payload(
+                                current_payload
+                            ),
+                            _business_projection_for_payload(
+                                refreshed,
+                                raw_refreshed_observations,
+                            ),
+                            old_boundary_tokens=(
+                                _business_boundary_tokens_for_payload(
+                                    current_payload,
+                                    committed_only=True,
+                                )
+                            ),
+                            new_boundary_tokens=(
+                                _business_boundary_tokens_for_payload(
+                                    refreshed,
+                                    raw_refreshed_observations,
+                                    committed_only=False,
+                                )
+                            ),
+                            context_expansion_used=True,
+                            expanded_context_sequence=(
+                                _business_projection_for_payload(
+                                    refreshed,
+                                    list(
+                                        refreshed.get(
+                                            "continuity_expanded_observations"
+                                        )
+                                        or []
+                                    ),
+                                )
+                            ),
+                            expanded_context_boundary_tokens=(
+                                _business_boundary_tokens_for_payload(
+                                    refreshed,
+                                    list(
+                                        refreshed.get(
+                                            "continuity_expanded_observations"
+                                        )
+                                        or []
+                                    ),
+                                    committed_only=False,
+                                )
+                            ),
+                        )
+                    else:
+                        continuity = {
+                            **continuity,
+                            "relation": "business_sequence_not_continuous",
+                            "reason": str(
+                                expansion.get("reason")
+                                or "continuity_context_expansion_failed"
+                            ),
+                        }
+                if str(continuity.get("relation") or "") not in {
+                    "business_sequence_equal",
+                    "unique_tail_append",
+                    "unique_viewport_slide_with_tail_append",
+                }:
+                    error_code = (
+                        "C2_PRE_SEND_MESSAGE_SEQUENCE_ALIGNMENT_FAILED"
+                        if operation_phase == C2_PRE_SEND_REFRESH_PHASE
+                        else "MESSAGE_CROSS_ROUND_IDENTITY_AMBIGUOUS"
+                    )
+                    return {
+                        "ok": False,
+                        "error_code": error_code,
+                        "terminal_gate": {
+                            "state": "technical_failed",
+                            "error_code": error_code,
+                            "technical_failure": True,
+                            "reason": str(
+                                continuity.get("reason") or ""
+                            ),
+                            "retry_allowed": False,
+                            "handoff_required": False,
+                        },
+                        "payload": current_payload,
+                        "image_stats": aggregate_image_stats,
+                        "continuity_evidence": continuity,
+                    }
+                refreshed_observations = _apply_worker_identity_from_continuity(
+                    list(current_payload.get("observations") or []),
+                    raw_refreshed_observations,
+                    continuity,
+                    current_flow_read_run_id=(
+                        flow_outcomes.origin_read_run_id
+                    ),
+                )
+            sequence_alignment_evidence = (
+                _continuity_alignment_evidence_for_suffix(
+                    refreshed_observations,
+                    continuity,
+                )
+            )
+            refreshed_observations = (
+                self._assign_sequence_new_suffix_identities(
+                    target=target,
+                    observations=refreshed_observations,
+                    evidence=sequence_alignment_evidence,
+                    read_run_id=flow_outcomes.origin_read_run_id,
+                )
+            )
+            refreshed["observations"] = refreshed_observations
+            refreshed["business_continuity_evidence"] = dict(continuity)
             refreshed["sequence_alignment_evidence"] = (
                 sequence_alignment_evidence
             )
-            identity_errors = (
-                []
-                if sequence_alignment_evidence.get("alignment_status")
-                == "unique"
-                else [
-                    {
-                        "error_code": "MESSAGE_CROSS_ROUND_IDENTITY_AMBIGUOUS",
-                        "reason": sequence_alignment_evidence.get(
-                            "alignment_status"
-                        ),
-                    }
-                ]
-            )
-            if not identity_errors:
-                for journal_path, journal_payload in list_action_journals(
-                    conversation_id=target.conversation_id,
-                    action_kinds=("image",),
-                ):
-                    if journal_payload.get("sequence_alignment_evidence") is None:
-                        record_action_sequence_alignment(
-                            journal_path,
-                            sequence_alignment_evidence,
-                        )
-            if identity_errors:
-                alignment_error_code = (
-                    "C2_PRE_SEND_MESSAGE_SEQUENCE_ALIGNMENT_FAILED"
-                    if operation_phase == C2_PRE_SEND_REFRESH_PHASE
-                    else "MESSAGE_CROSS_ROUND_IDENTITY_AMBIGUOUS"
-                )
-                return {
-                    "ok": False,
-                    "error_code": alignment_error_code,
-                    "payload": current_payload,
-                    "image_stats": aggregate_image_stats,
-                    "sequence_alignment_evidence": (
-                        sequence_alignment_evidence
-                    ),
-                }
-            observations = self._assign_sequence_new_suffix_identities(
-                target=target,
-                observations=observations,
-                evidence=sequence_alignment_evidence,
-                read_run_id=flow_outcomes.origin_read_run_id,
-            )
-            refreshed["observations"] = observations
             refreshed = self._merge_waiting_image_facts(
                 target=target,
                 sidecar_payload=refreshed,
@@ -15629,6 +18198,25 @@ class TaskRunner:
                         operation_phase=operation_phase,
                     )
                 )
+                terminal_gate = voice_result.get("terminal_gate")
+                if isinstance(terminal_gate, dict):
+                    return {
+                        "ok": False,
+                        "error_code": str(
+                            terminal_gate.get("error_code")
+                            or "C2_VOICE_RESULT_AMBIGUOUS"
+                        ),
+                        "terminal_gate": dict(terminal_gate),
+                        "payload": dict(
+                            voice_result.get("payload")
+                            or current_payload
+                        ),
+                        "image_stats": aggregate_image_stats,
+                        "failed_voice_source_keys": sorted(
+                            failed_voice_source_keys
+                        ),
+                        "failed_voice_roles": failed_voice_roles,
+                    }
                 if not voice_result.get("ok"):
                     return {
                         **voice_result,
@@ -15637,22 +18225,6 @@ class TaskRunner:
                 current_payload = dict(
                     voice_result.get("payload") or current_payload
                 )
-                terminal_gate = voice_result.get("terminal_gate")
-                if isinstance(terminal_gate, dict):
-                    return {
-                        "ok": False,
-                        "error_code": str(
-                            terminal_gate.get("error_code")
-                            or "MESSAGE_CROSS_ROUND_IDENTITY_AMBIGUOUS"
-                        ),
-                        "terminal_gate": dict(terminal_gate),
-                        "payload": current_payload,
-                        "image_stats": aggregate_image_stats,
-                        "failed_voice_source_keys": sorted(
-                            failed_voice_source_keys
-                        ),
-                        "failed_voice_roles": failed_voice_roles,
-                    }
                 new_failed_keys = {
                     str(value)
                     for value in (
@@ -15706,13 +18278,15 @@ class TaskRunner:
                     "image_stats": aggregate_image_stats,
                 }
             pending_image_observation_ids = tuple(
-                sorted(incremental_plan["new_image_observation_ids"])
+                incremental_plan[
+                    "new_image_observation_ids_in_screen_order"
+                ]
             )
             # One image action per stable frame. The next candidate is chosen
             # only after the loop obtains and aligns a fresh authoritative
             # frame.
             allowed_image_observation_ids = (
-                {pending_image_observation_ids[0]}
+                {pending_image_observation_ids[-1]}
                 if pending_image_observation_ids
                 else set()
             )
@@ -15834,6 +18408,13 @@ class TaskRunner:
                     "payload": current_payload,
                     "image_stats": aggregate_image_stats,
                 }
+            if isinstance(current_payload.get("_pending_image_action"), dict):
+                # A successful physical image action is deliberately not a
+                # formal message yet. Obtain one new authoritative full frame
+                # so continuity can be proven before Journal/Ledger/Outbox
+                # formalization. The old immediate-terminalization guard must
+                # not short-circuit that mandatory reread.
+                continue
             if pending_image_observation_ids and not any(
                 image_stats.get(key)
                 for key in (
@@ -15889,6 +18470,7 @@ class TaskRunner:
         target: WechatReadTarget,
         *,
         image_identity_commit_only: bool = False,
+        legacy_proven_identity_migration: bool = False,
         restart_journal_entries: list[
             tuple[Path, dict[str, Any]]
         ] | None = None,
@@ -15919,6 +18501,101 @@ class TaskRunner:
             action_kind = str(payload.get("action_kind") or "").strip()
             if image_identity_commit_only and action_kind != "image":
                 continue
+            if (
+                legacy_proven_identity_migration
+                and action_kind == "voice"
+                and action_id
+                and reserved_id
+                and not committed_id
+            ):
+                legacy_item = (
+                    dict(items.get(action_id) or {})
+                    if isinstance(items.get(action_id), dict)
+                    else {}
+                )
+                legacy_terminal = (
+                    dict(legacy_item.get("terminal_payload") or {})
+                    if isinstance(legacy_item.get("terminal_payload"), dict)
+                    else {}
+                )
+                if action_journal_item_has_formed_fact(legacy_item):
+                    replayable, rejection = _legacy_proven_voice_observation(
+                        target=target,
+                        payload=payload,
+                        terminal_payload=legacy_terminal,
+                    )
+                    if rejection is not None or replayable is None:
+                        unresolved.append(
+                            {
+                                "error_code": (
+                                    rejection.error_code
+                                    if rejection is not None
+                                    else "C2_VOICE_IDENTITY_CONTRACT_INVALID"
+                                ),
+                                "reason": (
+                                    rejection.reason
+                                    if rejection is not None
+                                    else "legacy_voice_migration_failed"
+                                ),
+                                "row_kind": "voice_bubble",
+                                "signature": action_id,
+                                "transaction_id": str(
+                                    payload.get("transaction_id") or ""
+                                ),
+                                "origin_read_run_id": str(
+                                    payload.get("origin_read_run_id") or ""
+                                ),
+                                "sequence_alignment_evidence": (
+                                    payload.get("sequence_alignment_evidence")
+                                    if isinstance(
+                                        payload.get(
+                                            "sequence_alignment_evidence"
+                                        ),
+                                        dict,
+                                    )
+                                    else {}
+                                ),
+                            }
+                        )
+                        continue
+                    committed = require_committed_message(
+                        conversation_id=target.conversation_id,
+                        observation=replayable,
+                    )
+                    payload = update_action_journal_item(
+                        path,
+                        journal_item_id=action_id,
+                        action_phase=str(
+                            legacy_item.get("action_phase") or "confirmed"
+                        ),
+                        business_state=str(
+                            legacy_item.get("business_state") or "completed"
+                        ),
+                        business_result_confirmed=(
+                            legacy_item.get("business_result_confirmed") is True
+                        ),
+                        error_code=str(
+                            legacy_item.get("error_code") or ""
+                        ),
+                        terminal_payload={
+                            **legacy_terminal,
+                            "replayable_observation": replayable,
+                            "legacy_record_migration": True,
+                        },
+                    )
+                    payload = commit_action_journal_item_identity(
+                        path,
+                        journal_item_id=action_id,
+                        source_message_key=committed.source_message_key,
+                    )
+                    committed_id = str(
+                        payload.get("committed_worker_stable_id") or ""
+                    ).strip()
+                    items = (
+                        payload.get("items")
+                        if isinstance(payload.get("items"), dict)
+                        else {}
+                    )
             action_item = (
                 dict(items.get(action_id) or {})
                 if action_id and isinstance(items.get(action_id), dict)
@@ -15930,6 +18607,11 @@ class TaskRunner:
                     payload.get("sequence_alignment_evidence"), dict
                 )
                 else {}
+            )
+            continuity_selected_confirmed = (
+                _journal_business_continuity_selected_occurrence_confirmed(
+                    payload
+                )
             )
             unresolved_voice_item_ids = [
                 str(item_id or "").strip()
@@ -15958,9 +18640,11 @@ class TaskRunner:
                             path,
                             journal_item_id=item_id,
                             action_phase="quarantined",
+                            business_state="technical_failed",
+                            business_result_confirmed=False,
                             error_code="C2_VOICE_RESULT_AMBIGUOUS",
                             terminal_payload={
-                                "state": "quarantined",
+                                "state": "technical_failed",
                                 "media_action_terminal": (
                                     MediaActionTerminal.IDENTITY_UNRESOLVED.value
                                 ),
@@ -15972,9 +18656,7 @@ class TaskRunner:
                         )
                 unresolved.append(
                     {
-                        "error_code": (
-                            "MESSAGE_CROSS_ROUND_IDENTITY_AMBIGUOUS"
-                        ),
+                        "error_code": "C2_VOICE_RESULT_AMBIGUOUS",
                         "reason": (
                             "action_triggered_without_confirmed_post_alignment"
                         ),
@@ -15999,6 +18681,88 @@ class TaskRunner:
                 and action_journal_item_has_formed_fact(item)
                 for item in items.values()
             )
+            if action_kind == "image" and formed_fact:
+                prepare_evidence = (
+                    payload.get("prepare_evidence")
+                    if isinstance(payload.get("prepare_evidence"), dict)
+                    else {}
+                )
+                image_slot = (
+                    prepare_evidence.get("image_flow_action_slot")
+                    if isinstance(
+                        prepare_evidence.get("image_flow_action_slot"), dict
+                    )
+                    else None
+                )
+                image_slot_status = str(
+                    (
+                        action_item.get("terminal_payload")
+                        if isinstance(
+                            action_item.get("terminal_payload"), dict
+                        )
+                        else {}
+                    ).get("image_flow_action_slot_status")
+                    or ""
+                ).strip()
+                if (
+                    image_slot is not None
+                    and image_slot_status != "processed"
+                    and not continuity_selected_confirmed
+                ):
+                    terminal_payload = (
+                        dict(action_item.get("terminal_payload") or {})
+                        if isinstance(
+                            action_item.get("terminal_payload"), dict
+                        )
+                        else {}
+                    )
+                    if action_id:
+                        update_action_journal_item(
+                            path,
+                            journal_item_id=action_id,
+                            action_phase=str(
+                                action_item.get("action_phase") or "confirmed"
+                            ),
+                            business_state="technical_failed",
+                            business_result_confirmed=False,
+                            error_code="C2_IMAGE_IDENTITY_CONTRACT_INVALID",
+                            terminal_payload={
+                                **terminal_payload,
+                                "state": "technical_failed",
+                                "media_action_terminal": (
+                                    MediaActionTerminal.TECHNICAL_FAILED.value
+                                ),
+                                "error_code": (
+                                    "C2_IMAGE_IDENTITY_CONTRACT_INVALID"
+                                ),
+                                "identity_gate_reason": (
+                                    "post_image_full_reread_not_settled"
+                                ),
+                                "image_flow_action_slot": dict(image_slot),
+                                "image_flow_action_slot_status": (
+                                    "technical_failed"
+                                ),
+                            },
+                        )
+                    unresolved.append(
+                        {
+                            "error_code": (
+                                "C2_IMAGE_IDENTITY_CONTRACT_INVALID"
+                            ),
+                            "reason": "post_image_full_reread_not_settled",
+                            "row_kind": "image_bubble",
+                            "signature": action_id,
+                            "transaction_id": str(
+                                payload.get("transaction_id") or ""
+                            ),
+                            "origin_read_run_id": str(
+                                payload.get("origin_read_run_id") or ""
+                            ),
+                            "action_journal_path": str(path),
+                            "prepare_evidence": dict(prepare_evidence),
+                        }
+                    )
+                    continue
             if action_id and reserved_id and not committed_id and formed_fact:
                 evidence = (
                     payload.get("sequence_alignment_evidence")
@@ -16007,12 +18771,46 @@ class TaskRunner:
                     )
                     else {}
                 )
-                if action_kind == "voice" and not evidence:
+                if (
+                    action_kind == "voice"
+                    and not evidence
+                    and not continuity_selected_confirmed
+                ):
+                    pending_item = (
+                        items.get(action_id)
+                        if isinstance(items.get(action_id), dict)
+                        else {}
+                    )
+                    pending_terminal = (
+                        dict(pending_item.get("terminal_payload") or {})
+                        if isinstance(
+                            pending_item.get("terminal_payload"), dict
+                        )
+                        else {}
+                    )
+                    if action_id and pending_item:
+                        update_action_journal_item(
+                            path,
+                            journal_item_id=action_id,
+                            action_phase=str(
+                                pending_item.get("action_phase") or "confirmed"
+                            ),
+                            business_state="technical_failed",
+                            business_result_confirmed=False,
+                            error_code="C2_VOICE_RESULT_AMBIGUOUS",
+                            terminal_payload={
+                                **pending_terminal,
+                                "state": "technical_failed",
+                                "media_action_terminal": (
+                                    MediaActionTerminal.TECHNICAL_FAILED.value
+                                ),
+                                "continuity_state": "technical_failed",
+                                "error_code": "C2_VOICE_RESULT_AMBIGUOUS",
+                            },
+                        )
                     unresolved.append(
                         {
-                            "error_code": (
-                                "MESSAGE_CROSS_ROUND_IDENTITY_AMBIGUOUS"
-                            ),
+                            "error_code": "C2_VOICE_RESULT_AMBIGUOUS",
                             "reason": (
                                 "action_triggered_without_confirmed_post_alignment"
                             ),
@@ -16041,6 +18839,10 @@ class TaskRunner:
                         )
                     )
                     for pair in (evidence.get("matched_pairs") or [])
+                )
+                selected_pair_confirmed = bool(
+                    selected_pair_confirmed
+                    or continuity_selected_confirmed
                 )
                 image_receipt, image_receipt_item_id = (
                     _confirmed_image_receipt_from_journal(payload)
@@ -16172,6 +18974,44 @@ class TaskRunner:
                     )
                     and journal_item_id
                 ):
+                    if continuity_selected_confirmed:
+                        settled_item = (
+                            items.get(journal_item_id)
+                            if isinstance(items.get(journal_item_id), dict)
+                            else {}
+                        )
+                        settled_terminal = (
+                            dict(settled_item.get("terminal_payload") or {})
+                            if isinstance(
+                                settled_item.get("terminal_payload"), dict
+                            )
+                            else {}
+                        )
+                        settled_terminal.update(
+                            {
+                                "state": "completed",
+                                "media_action_terminal": (
+                                    MediaActionTerminal.COMMITTED_COMPLETED.value
+                                ),
+                                "continuity_state": "committed",
+                                "error_code": None,
+                            }
+                        )
+                        if action_kind == "image":
+                            settled_terminal[
+                                "image_flow_action_slot_status"
+                            ] = "processed"
+                        payload = update_action_journal_item(
+                            path,
+                            journal_item_id=journal_item_id,
+                            action_phase=str(
+                                settled_item.get("action_phase") or "confirmed"
+                            ),
+                            business_state="completed",
+                            business_result_confirmed=True,
+                            error_code="",
+                            terminal_payload=settled_terminal,
+                        )
                     payload = commit_action_journal_item_identity(
                         path,
                         journal_item_id=journal_item_id,
@@ -16183,7 +19023,7 @@ class TaskRunner:
                             "error_code": (
                                 "C2_IMAGE_IDENTITY_CONTRACT_INVALID"
                                 if action_kind == "image"
-                                else "MESSAGE_CROSS_ROUND_IDENTITY_AMBIGUOUS"
+                                else "C2_VOICE_RESULT_AMBIGUOUS"
                             ),
                             "reason": (
                                 "confirmed_image_identity_receipt_missing_or_invalid"
@@ -16365,12 +19205,10 @@ class TaskRunner:
                     recovered_receipt = (
                         {
                             **confirmed_mapping,
-                            "image_visual_fingerprint": str(
-                                terminal_payload.get(
-                                    "image_visual_fingerprint"
-                                )
+                            "image_sha256": str(
+                                terminal_payload.get("image_sha256")
                                 or ""
-                            ).strip(),
+                            ).strip().lower(),
                         }
                         if confirmed_mapping
                         else None
@@ -16496,17 +19334,28 @@ class TaskRunner:
                 unresolved_action_journals[0].get("error_code")
                 or "MESSAGE_CROSS_ROUND_IDENTITY_AMBIGUOUS"
             ).strip()
-            self._report_identity_failure_gate(
-                binding=binding,
-                target=target,
-                read_run_id=read_run_id,
+            self.set_run_status("faulted")
+            append_log(
+                "ERROR",
+                "c2_media_action_recovery_technical_failed",
+                "发现动作已触发但结果无法唯一恢复；未转人工、未重试动作，客户端已停止接单并保留现场。",
                 error_code=recovery_error_code,
-                identity_errors=unresolved_action_journals,
+                metadata={
+                    "conversation_id": target.conversation_id,
+                    "remark_code": target.remark_code,
+                    "read_run_id": read_run_id,
+                    "identity_errors": unresolved_action_journals,
+                    "handoff_created": False,
+                },
+                force_incident=True,
             )
             return {
                 "ok": False,
                 "error_code": recovery_error_code,
                 "identity_errors": unresolved_action_journals,
+                "flow_terminal_kind": "technical_failed",
+                "worker_faulted": True,
+                "handoff_created": False,
             }
         self._recover_c2_action_journal(target)
         existing_runtime_flow_id = str(
@@ -16659,7 +19508,12 @@ class TaskRunner:
                     and str(read_completion.get("result") or "")
                     in {"new_facts", "no_change"}
                 )
-                if backend_read_confirmed or durable_read_artifact_exists:
+                if (
+                    flow_result.get("flow_terminal_kind")
+                    == "technical_failed"
+                ):
+                    terminal_kind = "technical_failed"
+                elif backend_read_confirmed or durable_read_artifact_exists:
                     terminal_kind = "read_confirmed"
                 elif inflight_activity.get("message_read_attempted") is True:
                     terminal_kind = "read_failed_no_fact"
@@ -16674,6 +19528,7 @@ class TaskRunner:
                         in {
                             "failed_before_message_action",
                             "read_failed_no_fact",
+                            "technical_failed",
                         }
                         else None
                     ),
@@ -16927,6 +19782,45 @@ class TaskRunner:
                 for item in (terminal_gate.get("identity_errors") or [])
                 if isinstance(item, dict)
             ]
+            if terminal_gate.get("technical_failure") is True:
+                action_journal_path_value = str(
+                    terminal_gate.get("action_journal_path") or ""
+                ).strip()
+                # A broken media action invariant is a client incident, not
+                # a customer handoff. Preserve every journal/evidence file,
+                # fault the Worker and let the wrapper close only this flow.
+                self.set_run_status("faulted")
+                self.c2_stats["last_error"] = gate_error_code
+                append_log(
+                    "ERROR",
+                    "c2_media_action_technical_failed",
+                    "媒体动作未形成唯一可信结果；未入库、未调用 Brain、未转人工，客户端已停止接单。",
+                    error_code=gate_error_code,
+                    metadata={
+                        "conversation_id": target.conversation_id,
+                        "remark_code": target.remark_code,
+                        "read_run_id": read_run_id,
+                        "reason": str(
+                            terminal_gate.get("reason") or ""
+                        ),
+                        "action_journal_path": action_journal_path_value,
+                        "identity_errors": identity_errors,
+                    },
+                    force_incident=True,
+                )
+                return {
+                    "ok": False,
+                    "error_code": gate_error_code,
+                    "flow_terminal_kind": "technical_failed",
+                    "worker_faulted": True,
+                    "handoff_created": False,
+                    "brain_called": False,
+                    "identity_errors": identity_errors,
+                    "target_confirmation": target_confirmation,
+                    "initial_observations": initial_observations,
+                    "final_messages": final_payload,
+                    "action_journal_path": action_journal_path_value,
+                }
             gate_reported = self._report_identity_failure_gate(
                 binding=binding,
                 target=target,
@@ -17698,9 +20592,10 @@ class TaskRunner:
                         "target_confirmation": locate_payload,
                         "initial_messages": sidecar_payload,
                     }
-                if checkpoint_comparison.get("comparison_result") == (
-                    "checkpoint_not_continuous"
-                ):
+                if checkpoint_comparison.get("comparison_result") in {
+                    "checkpoint_not_continuous",
+                    "checkpoint_continuity_context_expansion_required",
+                }:
                     replay = replay_same_frame_with_full_ocr(
                         sidecar_payload,
                         fallback_reason=(
@@ -17774,7 +20669,124 @@ class TaskRunner:
                                 "initial_messages": replay,
                             }
                 if checkpoint_comparison.get("comparison_result") == (
-                    "checkpoint_not_continuous"
+                    "checkpoint_continuity_context_expansion_required"
+                ):
+                    expansion = (
+                        self._expand_pre_send_continuity_context_once(
+                            target=target,
+                            target_label=target_label,
+                            locate_payload=locate_payload,
+                            expected_confirmed_self_text=(
+                                expected_confirmed_self_text
+                            ),
+                            cancel_check=action_cancel_requested,
+                        )
+                    )
+                    expanded_payload = (
+                        expansion.get("payload")
+                        if isinstance(expansion.get("payload"), dict)
+                        else {}
+                    )
+                    if expansion.get("ok") is not True:
+                        checkpoint_comparison = {
+                            **checkpoint_comparison,
+                            "comparison_result": (
+                                "checkpoint_not_continuous"
+                            ),
+                            "reason": str(
+                                expansion.get("reason")
+                                or "continuity_context_expansion_failed"
+                            ),
+                            "context_expansion_evidence": expansion,
+                        }
+                    else:
+                        expansion_contract_error = sidecar_contract_error(
+                            expanded_payload
+                        )
+                        if expansion_contract_error:
+                            checkpoint_comparison = {
+                                **checkpoint_comparison,
+                                "comparison_result": (
+                                    "checkpoint_not_continuous"
+                                ),
+                                "reason": expansion_contract_error,
+                                "context_expansion_evidence": expansion,
+                            }
+                        else:
+                            (
+                                sidecar_payload,
+                                checkpoint_comparison,
+                            ) = self._compare_pre_send_fact_checkpoint_frame(
+                                target=target,
+                                sidecar_payload=expanded_payload,
+                                read_run_id=read_run_id,
+                            )
+                            checkpoint_comparison[
+                                "context_expansion_evidence"
+                            ] = expansion.get("expanded")
+                            expanded_guard_validation = dict(
+                                checkpoint_comparison.get(
+                                    "send_context_guard_validation"
+                                )
+                                or {}
+                            )
+                            if (
+                                expanded_guard_validation.get("ok")
+                                is not True
+                            ):
+                                settle_message_read_phase(
+                                    succeeded=False,
+                                    error_code=PRE_SEND_LAYOUT_ERROR,
+                                )
+                                return {
+                                    "ok": False,
+                                    "error_code": PRE_SEND_LAYOUT_ERROR,
+                                    "pre_send_error_evidence": {
+                                        "checkpoint_comparison": (
+                                            checkpoint_comparison
+                                        ),
+                                        "send_context_guard_validation": (
+                                            expanded_guard_validation
+                                        ),
+                                        "context_expansion_evidence": (
+                                            expansion
+                                        ),
+                                    },
+                                    "target_confirmation": locate_payload,
+                                    "initial_messages": expanded_payload,
+                                }
+                checkpoint_context_for_revision = (
+                    target.raw.get("pre_send_fact_checkpoint_context")
+                    if isinstance(target.raw, dict)
+                    and isinstance(
+                        target.raw.get(
+                            "pre_send_fact_checkpoint_context"
+                        ),
+                        dict,
+                    )
+                    else {}
+                )
+                checkpoint_for_revision = (
+                    checkpoint_context_for_revision.get("checkpoint")
+                    if isinstance(
+                        checkpoint_context_for_revision.get("checkpoint"),
+                        dict,
+                    )
+                    else {}
+                )
+                legacy_checkpoint_reread_allowed = bool(
+                    int(
+                        checkpoint_for_revision.get(
+                            "checkpoint_revision"
+                        )
+                        or 0
+                    )
+                    < 5
+                )
+                if (
+                    legacy_checkpoint_reread_allowed
+                    and checkpoint_comparison.get("comparison_result")
+                    == "checkpoint_not_continuous"
                 ):
                     initial_checkpoint_comparison = dict(
                         checkpoint_comparison
@@ -17993,10 +21005,23 @@ class TaskRunner:
                 if checkpoint_comparison.get("comparison_result") == (
                     "checkpoint_not_continuous"
                 ):
+                    checkpoint_reason = str(
+                        checkpoint_comparison.get("reason") or ""
+                    )
+                    checkpoint_message_type = str(
+                        checkpoint_comparison.get("source_message_type")
+                        or ""
+                    ).strip().lower()
                     code = (
                         "C2_PRE_SEND_MESSAGE_ROLE_UNCONFIRMED"
-                        if str(checkpoint_comparison.get("reason") or "")
-                        == "sender_role_unconfirmed"
+                        if checkpoint_reason == "sender_role_unconfirmed"
+                        else "C2_PRE_SEND_IMAGE_TARGET_AMBIGUOUS"
+                        if checkpoint_message_type == "image"
+                        and checkpoint_reason
+                        in {
+                            "checkpoint_image_identity_ambiguous",
+                            "continuity_expansion_strong_boundary_missing",
+                        }
                         else "C2_PRE_SEND_MESSAGE_SEQUENCE_ALIGNMENT_FAILED"
                     )
                     initial_identity_errors = [
@@ -18088,6 +21113,18 @@ class TaskRunner:
                     )
                 )
             if initial_identity_errors:
+                checkpoint_error_evidence = initial_identity_errors[0].get(
+                    "pre_send_fact_checkpoint_comparison"
+                )
+                checkpoint_error_evidence = (
+                    checkpoint_error_evidence
+                    if isinstance(checkpoint_error_evidence, dict)
+                    else {}
+                )
+                error_source_message_type = str(
+                    checkpoint_error_evidence.get("source_message_type")
+                    or "unknown"
+                ).strip().lower()
                 original_code = str(
                     initial_identity_errors[0].get("error_code")
                     or "MESSAGE_CROSS_ROUND_IDENTITY_AMBIGUOUS"
@@ -18096,6 +21133,9 @@ class TaskRunner:
                     "C2_PRE_SEND_MESSAGE_ROLE_UNCONFIRMED"
                     if operation_phase == C2_PRE_SEND_REFRESH_PHASE
                     and original_code == "MESSAGE_IDENTITY_UNCONFIRMED"
+                    else original_code
+                    if operation_phase == C2_PRE_SEND_REFRESH_PHASE
+                    and original_code in PRE_SEND_REIDENTIFICATION_ERRORS
                     else "C2_PRE_SEND_MESSAGE_SEQUENCE_ALIGNMENT_FAILED"
                     if operation_phase == C2_PRE_SEND_REFRESH_PHASE
                     else original_code
@@ -18128,7 +21168,7 @@ class TaskRunner:
                     "ok": False,
                     "error_code": code,
                     "pre_send_error_evidence": {
-                        "source_message_type": "unknown",
+                        "source_message_type": error_source_message_type,
                         "candidate_count": len(initial_identity_errors),
                         "before_frame_id": str(
                             (
@@ -18258,6 +21298,17 @@ class TaskRunner:
                     ),
                     item_count=len(voice_result.get("item_outcomes") or []),
                 )
+                terminal_gate = voice_result.get("terminal_gate")
+                if isinstance(terminal_gate, dict):
+                    sidecar_payload = dict(
+                        voice_result.get("payload") or sidecar_payload
+                    )
+                    return settle_identity_terminal_gate(
+                        terminal_gate,
+                        final_payload=sidecar_payload,
+                        target_confirmation=locate_payload,
+                        initial_observations=initial_read_observations,
+                    )
                 if not voice_result.get("ok"):
                     code = str(voice_result.get("error_code") or "C2_VOICE_ORCHESTRATION_FAILED")
                     self.c2_stats["last_error"] = code
@@ -18271,14 +21322,6 @@ class TaskRunner:
                 voice_action_failure_code = str(
                     voice_result.get("failure_code") or ""
                 )
-                terminal_gate = voice_result.get("terminal_gate")
-                if isinstance(terminal_gate, dict):
-                    return settle_identity_terminal_gate(
-                        terminal_gate,
-                        final_payload=sidecar_payload,
-                        target_confirmation=locate_payload,
-                        initial_observations=initial_read_observations,
-                    )
             partial_failed_voice_source_keys = sorted({
                 *restored_failed_voice_source_keys,
                 *{

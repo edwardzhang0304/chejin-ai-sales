@@ -1,18 +1,8 @@
-"""Pure identity matching for a refreshed image slot."""
+"""Current-frame image target selection for a Worker-approved occurrence."""
 
 from __future__ import annotations
 
 from typing import Any
-
-from .wechat import (
-    image_visual_fingerprint_distance,
-    image_visual_static_content_matches,
-)
-
-
-IMAGE_FINGERPRINT_MAX_DISTANCE = 6
-IMAGE_STABLE_SLOT_MIN_IOU = 0.85
-
 
 def valid_bounds(value: Any) -> tuple[float, float, float, float] | None:
     if isinstance(value, dict):
@@ -35,61 +25,31 @@ def valid_bounds(value: Any) -> tuple[float, float, float, float] | None:
     return left, top, right, bottom
 
 
-def _bounds_iou(first: Any, second: Any) -> float:
-    first_bounds = valid_bounds(first)
-    second_bounds = valid_bounds(second)
-    if first_bounds is None or second_bounds is None:
-        return 0.0
-    first_left, first_top, first_right, first_bottom = first_bounds
-    second_left, second_top, second_right, second_bottom = second_bounds
-    intersection_width = max(
-        0.0,
-        min(first_right, second_right) - max(first_left, second_left),
-    )
-    intersection_height = max(
-        0.0,
-        min(first_bottom, second_bottom) - max(first_top, second_top),
-    )
-    intersection_area = intersection_width * intersection_height
-    first_area = (first_right - first_left) * (first_bottom - first_top)
-    second_area = (second_right - second_left) * (
-        second_bottom - second_top
-    )
-    union_area = first_area + second_area - intersection_area
-    return intersection_area / union_area if union_area > 0 else 0.0
-
-
 def match_image_slot(
     current_candidates: list[dict[str, Any]],
     *,
     expected_anchor: Any,
     expected_role: str,
     expected_bounds: Any = None,
+    expected_business_screen_order: int | None = None,
 ) -> dict[str, Any]:
-    """Prove that one refreshed candidate is the original authorized slot."""
+    """Locate the approved occurrence in the latest frame.
 
-    anchor = expected_anchor if isinstance(expected_anchor, dict) else {}
-    expected_fingerprint = str(
-        anchor.get("bubble_visual_fingerprint") or ""
-    ).strip().lower()
+    This function never claims that the current row is the same physical
+    image seen during prepare. Old bounds, neighbours and visual fingerprints
+    are deliberately ignored. The returned row supplies only the geometry for
+    this click; clipboard bytes and the action receipt establish the result.
+    """
+
+    _ = expected_anchor, expected_bounds
     expected_role = str(expected_role or "").strip().lower()
-    if not expected_fingerprint or expected_role not in {"customer", "self"}:
-        return {"state": "identity_invalid", "bubble": {}}
     try:
-        expected_occurrence = int(anchor.get("occurrence_index") or 0)
-        expected_occurrence_count = int(anchor.get("occurrence_count") or 0)
+        expected_order = int(expected_business_screen_order)
     except (TypeError, ValueError):
-        return {"state": "identity_invalid", "bubble": {}}
-    if expected_occurrence_count <= 0:
-        return {"state": "identity_invalid", "bubble": {}}
-    expected_preceding = str(
-        anchor.get("preceding_stable_message") or ""
-    ).strip()
-    expected_following = str(
-        anchor.get("following_stable_message") or ""
-    ).strip()
-    fingerprint_matches: list[dict[str, Any]] = []
-    role_conflicts: list[dict[str, Any]] = []
+        return {"state": "action_policy_invalid", "bubble": {}}
+    if expected_role not in {"customer", "self"} or expected_order < 0:
+        return {"state": "action_policy_invalid", "bubble": {}}
+    role_matches: list[dict[str, Any]] = []
     for bubble in current_candidates:
         current_anchor = (
             bubble.get("image_physical_anchor")
@@ -97,196 +57,76 @@ def match_image_slot(
             else {}
         )
         current_role = str(
-            current_anchor.get("sender_role") or ""
+            bubble.get("sender_role")
+            or bubble.get("sender")
+            or current_anchor.get("sender_role")
+            or ""
         ).strip().lower()
-        current_visual_side = str(
-            current_anchor.get("visual_side") or bubble.get("side") or ""
-        ).strip().lower()
-        fingerprint_distance = image_visual_fingerprint_distance(
-            expected_fingerprint,
-            current_anchor.get("bubble_visual_fingerprint"),
-        )
-        static_content_matches = image_visual_static_content_matches(
-            expected_fingerprint,
-            current_anchor.get("bubble_visual_fingerprint"),
-        )
-        if (
-            fingerprint_distance is None
-            or fingerprint_distance > IMAGE_FINGERPRINT_MAX_DISTANCE
-        ):
+        try:
+            current_order = int(
+                bubble.get("_current_business_screen_order")
+            )
+        except (TypeError, ValueError):
             continue
-        if current_role != expected_role:
-            role_conflicts.append(
+        if (
+            current_role == expected_role
+            and current_order == expected_order
+        ):
+            role_matches.append(
                 {
-                    "expected_c2_sender_role": expected_role,
-                    "refreshed_c2_sender_role": (
-                        current_role
-                        if current_role in {"customer", "self"}
-                        else "unknown"
-                    ),
-                    "visual_side": current_visual_side,
-                    "fingerprint_distance": fingerprint_distance,
-                    "static_content_matches": static_content_matches,
+                    **bubble,
+                    "_current_role": current_role,
+                    "_current_order": current_order,
                 }
             )
-            continue
-        fingerprint_matches.append(
-            {
-                **bubble,
-                "identity_match_evidence": {
-                    "expected_c2_sender_role": expected_role,
-                    "refreshed_c2_sender_role": current_role,
-                    "visual_side": current_visual_side,
-                    "visual_side_consistent": current_visual_side == current_role,
-                    "fingerprint_distance": fingerprint_distance,
-                    "static_content_matches": static_content_matches,
-                    "preceding_stable_message": str(
-                        current_anchor.get("preceding_stable_message") or ""
-                    ),
-                    "following_stable_message": str(
-                        current_anchor.get("following_stable_message") or ""
-                    ),
-                    "occurrence_index": int(
-                        current_anchor.get("occurrence_index") or 0
-                    ),
-                    "occurrence_count": int(
-                        current_anchor.get("occurrence_count") or 0
-                    ),
-                },
-            }
-        )
-    occurrence_matches = []
-    contextual_matches = []
-    for bubble in fingerprint_matches:
-        evidence = (
-            bubble.get("identity_match_evidence")
-            if isinstance(bubble.get("identity_match_evidence"), dict)
-            else {}
-        )
-        if int(evidence.get("occurrence_index") or 0) != expected_occurrence:
-            continue
-        if int(evidence.get("occurrence_count") or 0) != expected_occurrence_count:
-            continue
-        occurrence_matches.append(bubble)
-        current_preceding = str(
-            evidence.get("preceding_stable_message") or ""
-        ).strip()
-        current_following = str(
-            evidence.get("following_stable_message") or ""
-        ).strip()
-        expected_neighbors = [
-            value for value in (expected_preceding, expected_following) if value
-        ]
-        matching_neighbor_count = sum(
-            (
-                bool(expected_preceding)
-                and current_preceding == expected_preceding,
-                bool(expected_following)
-                and current_following == expected_following,
-            )
-        )
-        explicit_neighbor_conflict = bool(
-            (
-                expected_preceding
-                and current_preceding
-                and current_preceding != expected_preceding
-            )
-            or (
-                expected_following
-                and current_following
-                and current_following != expected_following
-            )
-        )
-        evidence["explicit_neighbor_conflict"] = (
-            explicit_neighbor_conflict
-        )
-        # A neighbour proves sequence context, not the image pixels themselves.
-        # Distinct pictures can share the same perceptual dHash and slot, so a
-        # v0.9.35 image action also requires the strict local thumbnail proof.
-        if not bool(evidence.get("static_content_matches")):
-            continue
-        if expected_neighbors and matching_neighbor_count == 0:
-            continue
-        contextual_matches.append(bubble)
-    if len(contextual_matches) == 1:
-        contextual_matches[0]["identity_match_evidence"][
-            "match_mode"
-        ] = "stable_neighbor_context"
+    if len(role_matches) == 1:
+        selected = dict(role_matches[0])
+        selected.pop("_current_role", None)
+        selected.pop("_current_order", None)
+        selected["current_frame_selection_evidence"] = {
+            "selection_policy": (
+                "worker_approved_current_business_occurrence"
+            ),
+            "worker_planned_business_screen_order": expected_order,
+            "current_business_screen_order": expected_order,
+            "sender_role": expected_role,
+            "physical_identity_inherited_from_prepare": False,
+            "old_geometry_compared": False,
+            "old_visual_fingerprint_compared": False,
+        }
         return {
             "state": "matched",
-            "bubble": contextual_matches[0],
-            "fingerprint_match_count": len(fingerprint_matches),
-            "contextual_match_count": 1,
+            "bubble": selected,
+            "current_frame_candidate_count": 1,
         }
-    stable_slot_matches = [
-        item
-        for item in occurrence_matches
-        if bool(
-            (item.get("identity_match_evidence") or {}).get(
-                "static_content_matches"
-            )
-        )
-        and not bool(
-            (item.get("identity_match_evidence") or {}).get(
-                "explicit_neighbor_conflict"
-            )
-        )
-    ]
-    if len(stable_slot_matches) == 1 and not contextual_matches:
-        geometry_iou = _bounds_iou(
-            expected_bounds,
-            stable_slot_matches[0].get("bounds")
-            or stable_slot_matches[0].get("bubble_rect"),
-        )
-        if geometry_iou >= IMAGE_STABLE_SLOT_MIN_IOU:
-            stable_slot_matches[0]["identity_match_evidence"].update(
-                {
-                    "match_mode": "stable_slot_with_neighbor_ocr_drift",
-                    "stable_slot_iou": round(geometry_iou, 6),
-                }
-            )
-            return {
-                "state": "matched",
-                "bubble": stable_slot_matches[0],
-                "fingerprint_match_count": len(fingerprint_matches),
-                "contextual_match_count": 0,
-                "occurrence_match_count": 1,
-                "stable_slot_iou": round(geometry_iou, 6),
-            }
-    if not fingerprint_matches:
-        if role_conflicts:
-            return {
-                "state": "role_mismatch",
-                "bubble": {},
-                "fingerprint_match_count": len(role_conflicts),
-                "contextual_match_count": 0,
-                "role_conflicts": role_conflicts,
-            }
+    if current_candidates and not any(
+        str(
+            bubble.get("sender_role")
+            or bubble.get("sender")
+            or (
+                bubble.get("image_physical_anchor") or {}
+            ).get("sender_role")
+            or ""
+        ).strip().lower()
+        == expected_role
+        for bubble in current_candidates
+        if isinstance(bubble, dict)
+    ):
+        return {
+            "state": "role_mismatch",
+            "bubble": {},
+            "current_frame_candidate_count": len(current_candidates),
+        }
+    if not current_candidates:
         return {
             "state": "not_visible",
             "bubble": {},
-            "fingerprint_match_count": 0,
-            "contextual_match_count": 0,
+            "current_frame_candidate_count": 0,
         }
     return {
         "state": "ambiguous",
         "bubble": {},
-        "fingerprint_match_count": len(fingerprint_matches),
-        "contextual_match_count": len(contextual_matches),
-        "occurrence_match_count": len(occurrence_matches),
-        "stable_slot_iou": round(
-            max(
-                (
-                    _bounds_iou(
-                        expected_bounds,
-                        item.get("bounds") or item.get("bubble_rect"),
-                    )
-                    for item in occurrence_matches
-                ),
-                default=0.0,
-            ),
-            6,
-        ),
+        "current_frame_candidate_count": len(role_matches),
     }
 
 

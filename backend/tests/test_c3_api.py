@@ -44,6 +44,14 @@ from chejin_worker_client.pre_send_checkpoint import (
     checkpoint_binding_error as worker_checkpoint_binding_error,
     compare_checkpoint_to_observations as worker_compare_checkpoint,
 )
+from chejin_worker_client.message_identity_commit import (
+    MessageCommitBasis,
+    committed_identity_record,
+)
+from chejin_worker_client.message_viewport_projection import (
+    boundary_tokens_for_observations,
+    normalized_business_message_sequence,
+)
 
 
 client = TestClient(app)
@@ -261,6 +269,47 @@ def _ingest_with_role(
             )
         )
     )
+    observation = {
+        "schema_version": 3,
+        "observation_id": observation_id,
+        "row_kind": "text_bubble",
+        "sender_role": role,
+        "sender_role_source": "same_row_avatar",
+        "message_type": "text",
+        "voice_state": "not_voice",
+        "content_clean": content,
+        "_worker_stable_id": worker_stable_id,
+        "_worker_identity_scope": "committed",
+        "source_message": {
+            "id": dedupe_key,
+            "type": "text",
+            "sender_role": role,
+            "content": content,
+        },
+    }
+    commit_record = committed_identity_record(
+        worker_stable_id=worker_stable_id,
+        commit_basis=MessageCommitBasis.NEW_SUFFIX,
+        observation_id=observation_id,
+        sender_role=role,
+        message_type="text",
+        proof={
+            "alignment_status": "not_required",
+            "old_tail_fully_consumed": True,
+            "new_suffix_observation_id": observation_id,
+        },
+    )
+    observation["_worker_committed_message"] = commit_record
+    business_projection = normalized_business_message_sequence(
+        [observation],
+        message_viewport_bounds=None,
+    )[0]
+    strong_boundary_tokens = sorted(
+        boundary_tokens_for_observations(
+            [observation],
+            committed_only=True,
+        ).get(0, set())
+    )
     raw_payload = {
         "contract_version": 3,
         "contract_revision": contract_revision(),
@@ -271,19 +320,11 @@ def _ingest_with_role(
             "source": "worker_cross_round_sequence",
             "worker_stable_id": worker_stable_id,
         },
-        "observation": {
-            "schema_version": 3,
-            "observation_id": observation_id,
-            "row_kind": "text_bubble",
-            "sender_role": role,
-            "sender_role_source": "same_row_avatar",
-            "message_type": "text",
-            "voice_state": "not_voice",
-            "content_clean": content,
-            "_worker_stable_id": worker_stable_id,
-            "_worker_identity_scope": "committed",
-            "source_message": {"id": dedupe_key, "type": "text", "sender_role": role, "content": content},
-        },
+        "observation": observation,
+        "business_projection": business_projection,
+        "strong_boundary_tokens": strong_boundary_tokens,
+        "message_identity_commit_record": commit_record,
+        "message_identity_runtime_evidence": {},
     }
     response = client.post(
         f"/api/workers/{worker['id']}/wechat/messages/ingest",
@@ -934,7 +975,10 @@ def test_llm_total_budget_caps_fallback_to_remaining_time(monkeypatch):
         "call_llm_request_once_with_wall_timeout",
         fake_request_once_with_wall_timeout,
     )
-    with llm_config.llm_total_time_budget(0.18):
+    # Leave a real but bounded fallback slice.  The previous 60 ms margin was
+    # smaller than normal CI scheduler jitter and could expire before the
+    # second call even though the production budget logic was correct.
+    with llm_config.llm_total_time_budget(0.22):
         result = llm_config.call_llm_request_with_failover(
             provider="openai",
             api_key="test-primary",
@@ -958,7 +1002,7 @@ def test_llm_total_budget_caps_fallback_to_remaining_time(monkeypatch):
     assert result["ok"] is True
     assert len(calls) == 2
     assert 0.05 <= float(calls[0]["wall_timeout"]) <= 0.12
-    assert 0.0 < float(calls[1]["wall_timeout"]) < 0.09
+    assert 0.05 <= float(calls[1]["wall_timeout"]) < 0.11
     assert float(calls[1]["timeout"]) <= float(calls[1]["wall_timeout"])
     assert llm_config.llm_total_time_budget_remaining_seconds() is None
 
@@ -2293,6 +2337,13 @@ def test_exact_pre_send_reidentification_error_hands_off_once(error_code):
         assert action.status == "cancelled"
         assert batch.status == "handoff_created"
         assert len(handoffs) == 1
+        task = db.get(Task, generated["task_id"])
+        assert task is not None
+        assert task.lease_owner_worker_id is None
+        assert task.lease_owner_client_instance_id is None
+        assert task.worker is not None
+        assert task.worker.running_status == "idle"
+        assert task.worker.current_task is None
 
 
 def test_pre_send_layout_invalid_cancels_reply_without_customer_handoff():
@@ -3170,7 +3221,7 @@ def test_pre_send_fact_checkpoint_is_frozen_in_batch_and_repeated_on_claim_send(
     status = status_response.json()["data"]
     checkpoint = status["pre_send_fact_checkpoint"]
     checkpoint_binding = status["pre_send_fact_checkpoint_binding"]
-    assert checkpoint["checkpoint_revision"] == 3
+    assert checkpoint["checkpoint_revision"] == 5
     assert checkpoint["conversation_id"] == binding["conversation_id"]
     assert checkpoint["batch_id"] == batch_id
     assert checkpoint["tail_complete"] is True
@@ -3292,7 +3343,7 @@ def test_friend_welcome_freezes_an_explicit_complete_empty_baseline():
     checkpoint = status["pre_send_fact_checkpoint"]
 
     assert checkpoint == {
-        "checkpoint_revision": 3,
+        "checkpoint_revision": 5,
         "conversation_id": binding["conversation_id"],
         "batch_id": generated["batch"]["id"],
         "baseline_kind": "friend_welcome_empty",
@@ -3314,6 +3365,7 @@ def test_friend_welcome_freezes_an_explicit_complete_empty_baseline():
         before_frame_id="checkpoint:backend-welcome",
         after_frame_id="frame:worker-empty",
         current_tail_complete=True,
+        current_empty_viewport_confirmed=True,
     )
     superseded = worker_compare_checkpoint(
         checkpoint,

@@ -168,7 +168,9 @@ def analyze_ephemeral_customer_image(
                 image = ImageOps.exif_transpose(decoded).convert("RGB")
                 sample = image.copy()
                 sample.thumbnail((96, 96), Image.Resampling.LANCZOS)
-                pixels = list(sample.getdata())
+                pixels = list(
+                    getattr(sample, "get_flattened_data", sample.getdata)()
+                )
                 image.close()
                 sample.close()
     except (Image.DecompressionBombError, OSError, ValueError, Warning):

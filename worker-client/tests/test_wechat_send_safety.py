@@ -20,6 +20,10 @@ if str(OMNIAUTO_ROOT) not in sys.path:
     sys.path.insert(0, str(OMNIAUTO_ROOT))
 
 from apps.wechat_ai_customer_service.adapters import wechat_win32_ocr_sidecar as sidecar
+from apps.wechat_ai_customer_service.adapters import message_viewport_projection
+from chejin_worker_client.message_viewport_projection import (
+    boundary_tokens_for_observations,
+)
 
 
 INCIDENT_LONG_REPLY = (
@@ -72,6 +76,52 @@ def incident_post_send_enhanced_ocr_items() -> list[dict[str, object]]:
 
 
 class WechatSendSafetyTest(unittest.TestCase):
+    def _worker_send_guard(
+        self,
+        guard: dict,
+        observations: list[dict],
+        *,
+        empty_top_boundary: bool = False,
+    ) -> dict:
+        expected = dict(guard)
+        tokens = boundary_tokens_for_observations(
+            observations,
+            committed_only=False,
+        )
+        expected["worker_continuity_contract"] = {
+            "schema_version": 1,
+            "comparator": "compare_business_viewport_continuity",
+            "old_boundary_tokens": {
+                str(index): sorted(values)
+                for index, values in tokens.items()
+                if values
+            },
+            "old_top_boundary_complete": bool(empty_top_boundary),
+        }
+        return expected
+
+    def _validate_worker_send_context(
+        self,
+        expected_guard: dict,
+        current_guard: dict,
+        *,
+        expected_observations: list[dict],
+        current_observations: list[dict],
+        empty_top_boundary: bool = False,
+    ) -> dict:
+        """Exercise Sidecar through the serialized sole-Worker contract."""
+
+        expected = self._worker_send_guard(
+            expected_guard,
+            expected_observations,
+            empty_top_boundary=empty_top_boundary,
+        )
+        return sidecar.validate_send_context_guard(
+            expected,
+            current_guard,
+            current_observations=current_observations,
+        )
+
     def setUp(self) -> None:
         super().setUp()
         self._semantic_layouts: dict[int, dict] = {}
@@ -90,6 +140,12 @@ class WechatSendSafetyTest(unittest.TestCase):
         self._current_layout_patch.start()
         self.addCleanup(self._layout_for_image_patch.stop)
         self.addCleanup(self._current_layout_patch.stop)
+
+    def test_sidecar_uses_the_single_shared_business_projection_object(self):
+        self.assertIs(
+            sidecar.normalized_business_message_sequence,
+            message_viewport_projection.normalized_business_message_sequence,
+        )
 
     def _semantic_layout_for_image(self, image: Image.Image) -> dict:
         """Production snapshot shape for send semantics outside layout tests."""
@@ -651,8 +707,11 @@ class WechatSendSafetyTest(unittest.TestCase):
             "ok": True,
             "message_viewport_bounds": [382, 86, 980, 679],
         }
+        expected_observations = sidecar.build_message_observations_v3(
+            [message]
+        )
         expected_guard = sidecar.build_send_context_guard(
-            sidecar.build_message_observations_v3([message]),
+            expected_observations,
             screenshot=frame,
             layout_evidence=layout_evidence,
         )
@@ -732,9 +791,11 @@ class WechatSendSafetyTest(unittest.TestCase):
             "message_context_evidence_insufficient",
         )
         self.assertTrue(
-            sidecar.validate_send_context_guard(
+            self._validate_worker_send_context(
                 expected_guard,
                 snapshot["send_context_guard"],
+                expected_observations=expected_observations,
+                current_observations=snapshot["observations"],
             )["ok"]
         )
 
@@ -2292,110 +2353,538 @@ class WechatSendSafetyTest(unittest.TestCase):
 
     def test_send_context_guard_blocks_new_message_after_final_refresh(self):
         frame = Image.new("RGB", (981, 860), "white")
+        expected_rows = [
+            {
+                "row_kind": "text_bubble",
+                "sender_role": "customer",
+                "message_type": "text",
+                "content_clean": "在吗",
+                "bubble_rect": [480, 260, 620, 310],
+            }
+        ]
+        current_rows = [
+            *expected_rows,
+            {
+                "row_kind": "text_bubble",
+                "sender_role": "customer",
+                "message_type": "text",
+                "content_clean": "补充一句",
+                "bubble_rect": [480, 330, 650, 380],
+            },
+        ]
         expected = sidecar.build_send_context_guard(
-            [
-                {
-                    "row_kind": "text_bubble",
-                    "sender_role": "customer",
-                    "message_type": "text",
-                    "content_clean": "在吗",
-                    "bubble_rect": [480, 260, 620, 310],
-                }
-            ],
+            expected_rows,
             screenshot=frame,
         )
         current = sidecar.build_send_context_guard(
-            [
-                {
-                    "row_kind": "text_bubble",
-                    "sender_role": "customer",
-                    "message_type": "text",
-                    "content_clean": "在吗",
-                    "bubble_rect": [480, 260, 620, 310],
-                },
-                {
-                    "row_kind": "text_bubble",
-                    "sender_role": "customer",
-                    "message_type": "text",
-                    "content_clean": "补充一句",
-                    "bubble_rect": [480, 330, 650, 380],
-                },
-            ],
+            current_rows,
             screenshot=frame,
         )
 
-        result = sidecar.validate_send_context_guard(expected, current)
+        result = self._validate_worker_send_context(
+            expected,
+            current,
+            expected_observations=expected_rows,
+            current_observations=current_rows,
+        )
 
         self.assertFalse(result["ok"])
         self.assertEqual(result["error_code"], "C3_CONTEXT_CHANGED_BEFORE_SEND")
         self.assertEqual(result["expected_message_count"], 1)
         self.assertEqual(result["current_message_count"], 2)
 
+    def test_sidecar_guard_does_not_decide_cross_frame_image_identity(self):
+        layout = {
+            "ok": True,
+            "layout_snapshot_id": "same-slot-image-layout",
+            "message_viewport_bounds": [382, 86, 980, 679],
+        }
+
+        def image_observation(fingerprint: str) -> dict[str, object]:
+            return {
+                "observation_id": f"image-{fingerprint}",
+                "row_kind": "image_bubble",
+                "sender_role": "customer",
+                "message_type": "image",
+                "bubble_rect": [480, 260, 720, 410],
+                "image_physical_anchor": {
+                    "bubble_visual_fingerprint": fingerprint,
+                },
+            }
+
+        expected_rows = [image_observation("imagev2:picture-a")]
+        current_rows = [image_observation("imagev2:picture-b")]
+        expected = sidecar.build_send_context_guard(
+            expected_rows,
+            layout_evidence=layout,
+        )
+        current = sidecar.build_send_context_guard(
+            current_rows,
+            layout_evidence=layout,
+        )
+        comparison = self._validate_worker_send_context(
+            expected,
+            current,
+            expected_observations=expected_rows,
+            current_observations=current_rows,
+        )
+        # Sidecar owns the current-frame screenshot and click geometry.  It
+        # must not turn a bubble crop fingerprint into a cross-frame message
+        # identity decision.  The Worker checkpoint tests cover the separate
+        # rule that an unproven image replacement blocks the old reply.
+        self.assertFalse(comparison["ok"])
+        self.assertEqual(
+            comparison["continuity_relation"],
+            "continuity_context_expansion_required",
+        )
+        self.assertEqual(
+            expected["message_viewport_change_digest"],
+            current["message_viewport_change_digest"],
+        )
+
     def test_send_context_guard_absorbs_small_ocr_bounds_jitter(self):
         frame = Image.new("RGB", (981, 860), "white")
+        expected_rows = [
+            {
+                "row_kind": "voice_transcript",
+                "sender_role": "customer",
+                "message_type": "voice",
+                "content_clean": "我下午有空",
+                "parent_voice_anchor_key": "voice:customer:4",
+                "bubble_rect": [480, 260, 720, 310],
+            }
+        ]
+        current_rows = [
+            {**expected_rows[0], "bubble_rect": [481, 261, 721, 311]}
+        ]
         expected = sidecar.build_send_context_guard(
-            [
-                {
-                    "row_kind": "voice_transcript",
-                    "sender_role": "customer",
-                    "message_type": "voice",
-                    "content_clean": "我下午有空",
-                    "parent_voice_anchor_key": "voice:customer:4",
-                    "bubble_rect": [480, 260, 720, 310],
-                }
-            ],
+            expected_rows,
             screenshot=frame,
         )
         current = sidecar.build_send_context_guard(
-            [
-                {
-                    "row_kind": "voice_transcript",
-                    "sender_role": "customer",
-                    "message_type": "voice",
-                    "content_clean": "我下午有空",
-                    "parent_voice_anchor_key": "voice:customer:4",
-                    "bubble_rect": [481, 261, 721, 311],
-                }
-            ],
+            current_rows,
             screenshot=frame,
         )
 
-        result = sidecar.validate_send_context_guard(expected, current)
+        result = self._validate_worker_send_context(
+            expected,
+            current,
+            expected_observations=expected_rows,
+            current_observations=current_rows,
+        )
 
         self.assertTrue(result["ok"])
+
+    def test_image_guard_keeps_geometry_jitter_out_of_business_and_contradiction_checks(self):
+        layout = {
+            "ok": True,
+            "layout_snapshot_id": "same-image-jitter-layout",
+            "message_viewport_bounds": [382, 86, 980, 679],
+        }
+        anchor = {
+            "bubble_visual_fingerprint": "imagev2:same-action-evidence",
+        }
+        text_anchor = {
+            "observation_id": "text-anchor",
+            "row_kind": "text_bubble",
+            "sender_role": "customer",
+            "message_type": "text",
+            "content_clean": "这是车辆照片",
+            "bubble_rect": [480, 210, 720, 250],
+        }
+        expected_rows = [
+            text_anchor,
+            {
+                "observation_id": "image-frame-a",
+                "row_kind": "image_bubble",
+                "sender_role": "customer",
+                "message_type": "image",
+                "bubble_rect": [480, 260, 720, 410],
+                "image_physical_anchor": anchor,
+            },
+        ]
+        current_rows = [
+            text_anchor,
+            {
+                **expected_rows[1],
+                "observation_id": "image-frame-b",
+                "bubble_rect": [485, 265, 725, 415],
+            },
+        ]
+        expected = sidecar.build_send_context_guard(
+            expected_rows,
+            layout_evidence=layout,
+        )
+        current = sidecar.build_send_context_guard(
+            current_rows,
+            layout_evidence=layout,
+        )
+
+        result = self._validate_worker_send_context(
+            expected,
+            current,
+            expected_observations=expected_rows,
+            current_observations=current_rows,
+        )
+
+        self.assertTrue(result["ok"], result)
+        self.assertNotIn("bubble_rect", expected["sequence"][1])
+        self.assertNotIn(
+            "bubble_visual_fingerprint",
+            expected["sequence"][1],
+        )
+
+    def test_send_context_guard_ignores_every_legacy_64_bucket_boundary(self):
+        observation = {
+            "row_kind": "text_bubble",
+            "sender_role": "customer",
+            "message_type": "text",
+            "content_clean": "同一条好友通过消息",
+        }
+        total_crossings = 0
+        media_geometry_changed_business_digest = False
+
+        def legacy_relative_bucket(
+            rect: list[int],
+            viewport: list[int],
+        ) -> list[int]:
+            """Recreate the deleted 64-bucket rule only as test input.
+
+            Production no longer exports or consumes this geometry rule.  The
+            test enumerates every old boundary to prove none of them can alter
+            the new business digest.
+            """
+
+            width = max(1, viewport[2] - viewport[0])
+            height = max(1, viewport[3] - viewport[1])
+
+            def bucket(value: int, origin: int, extent: int) -> int:
+                return max(
+                    0,
+                    min(64, int(round((value - origin) / extent * 64))),
+                )
+
+            return [
+                bucket(rect[0], viewport[0], width),
+                bucket(rect[1], viewport[1], height),
+                bucket(rect[2], viewport[0], width),
+                bucket(rect[3], viewport[1], height),
+            ]
+
+        for viewport_width, viewport_height in (
+            (640, 480),
+            (981, 593),
+            (1600, 900),
+        ):
+            viewport = [320, 80, 320 + viewport_width, 80 + viewport_height]
+            layout = {
+                "ok": True,
+                "layout_snapshot_id": (
+                    f"layout-{viewport_width}x{viewport_height}"
+                ),
+                "message_viewport_bounds": viewport,
+            }
+            bucket_crossings: list[tuple[int, list[int], list[int]]] = []
+            for left in range(viewport[0], viewport[2] - 2):
+                before_rect = [left, 180, left + 1, 220]
+                after_rect = [left + 1, 180, left + 2, 220]
+                before_bucket = legacy_relative_bucket(
+                    before_rect,
+                    viewport,
+                )
+                after_bucket = legacy_relative_bucket(
+                    after_rect,
+                    viewport,
+                )
+                if before_bucket[0] != after_bucket[0]:
+                    bucket_crossings.append(
+                        (left, before_bucket, after_bucket)
+                    )
+            # The legacy 0..64 quantizer exposes 64 bucket transitions.  The
+            # last edge cannot hold a positive-width bubble, so at least the
+            # 63 interior transitions must be exercised at every viewport.
+            self.assertGreaterEqual(len(bucket_crossings), 63)
+            for left, before_bucket, after_bucket in bucket_crossings:
+                before = {
+                    **observation,
+                    "bubble_rect": [left, 180, left + 1, 220],
+                }
+                after = {
+                    **observation,
+                    "bubble_rect": [left + 1, 180, left + 2, 220],
+                }
+                expected = sidecar.build_send_context_guard(
+                    [before],
+                    layout_evidence=layout,
+                )
+                current = sidecar.build_send_context_guard(
+                    [after],
+                    layout_evidence=layout,
+                )
+                result = self._validate_worker_send_context(
+                    expected,
+                    current,
+                    expected_observations=[before],
+                    current_observations=[after],
+                )
+                self.assertTrue(
+                    result["ok"],
+                    (viewport, left, before_bucket, after_bucket, result),
+                )
+                self.assertNotIn(
+                    "relative_quantized_bounds",
+                    expected["sequence"][0],
+                )
+                total_crossings += 1
+
+                media_before = sidecar.build_message_viewport_change_evidence(
+                    [before],
+                    layout_evidence=layout,
+                )
+                media_after = sidecar.build_message_viewport_change_evidence(
+                    [after],
+                    layout_evidence=layout,
+                )
+                if (
+                    media_before["message_viewport_change_digest"]
+                    != media_after["message_viewport_change_digest"]
+                ):
+                    media_geometry_changed_business_digest = True
+        self.assertGreaterEqual(total_crossings, 63 * 3)
+        # The shared projection answers only whether business facts changed.
+        # Current-frame geometry remains available to Sidecar's click code,
+        # but cannot create a second cross-frame change/identity decision.
+        self.assertFalse(media_geometry_changed_business_digest)
+
+    def test_send_context_guard_still_blocks_each_business_fact_change(self):
+        layout = {
+            "ok": True,
+            "layout_snapshot_id": "business-change-layout",
+            "message_viewport_bounds": [382, 86, 980, 679],
+        }
+        baseline = {
+            "row_kind": "text_bubble",
+            "sender_role": "customer",
+            "message_type": "text",
+            "content_clean": "想看十万左右的车",
+            "bubble_rect": [480, 260, 720, 310],
+        }
+        expected = sidecar.build_send_context_guard(
+            [baseline],
+            layout_evidence=layout,
+        )
+        self.assertEqual(
+            set(expected["sequence"][0]),
+            {
+                "screen_order",
+                "sender_role",
+                "message_type",
+                "normalized_content_signature",
+                "media_state",
+            },
+        )
+        changes = {
+            "role": [{**baseline, "sender_role": "self"}],
+            "type": [
+                {
+                    **baseline,
+                    "row_kind": "voice_transcript",
+                    "message_type": "voice",
+                }
+            ],
+            "content": [{**baseline, "content_clean": "改看十五万的车"}],
+            "media_state": [
+                {
+                    **baseline,
+                    "row_kind": "voice_bubble",
+                    "message_type": "voice",
+                    "content_clean": "",
+                    "voice_duration": 3,
+                }
+            ],
+        }
+        for name, observations in changes.items():
+            with self.subTest(name=name):
+                current = sidecar.build_send_context_guard(
+                    observations,
+                    layout_evidence=layout,
+                )
+                result = self._validate_worker_send_context(
+                    expected,
+                    current,
+                    expected_observations=[baseline],
+                    current_observations=observations,
+                )
+                self.assertFalse(result["ok"])
+                self.assertEqual(
+                    result["error_code"],
+                    "C3_CONTEXT_CHANGED_BEFORE_SEND",
+                )
+
+        first = {**baseline, "content_clean": "第一条"}
+        second = {
+            **baseline,
+            "content_clean": "第二条",
+            "bubble_rect": [480, 330, 720, 380],
+        }
+        expected_order = sidecar.build_send_context_guard(
+            [first, second],
+            layout_evidence=layout,
+        )
+        current_order_rows = [
+            {**first, "bubble_rect": second["bubble_rect"]},
+            {**second, "bubble_rect": first["bubble_rect"]},
+        ]
+        current_order = sidecar.build_send_context_guard(
+            current_order_rows,
+            layout_evidence=layout,
+        )
+        order_result = self._validate_worker_send_context(
+            expected_order,
+            current_order,
+            expected_observations=[first, second],
+            current_observations=current_order_rows,
+        )
+        self.assertFalse(order_result["ok"])
+        self.assertEqual(
+            order_result["error_code"],
+            "C3_CONTEXT_CHANGED_BEFORE_SEND",
+        )
+
+    def test_send_business_order_never_uses_frame_local_observation_id(self):
+        layout = {
+            "ok": True,
+            "layout_snapshot_id": "observation-id-is-diagnostic-only",
+            "message_viewport_bounds": [382, 86, 980, 679],
+        }
+        first = {
+            "observation_id": "z-frame-a",
+            "row_kind": "text_bubble",
+            "sender_role": "customer",
+            "message_type": "text",
+            "content_clean": "第一条",
+            "bubble_rect": [480, 260, 720, 310],
+        }
+        second = {
+            "observation_id": "a-frame-a",
+            "row_kind": "text_bubble",
+            "sender_role": "customer",
+            "message_type": "text",
+            "content_clean": "第二条",
+            "bubble_rect": [480, 260, 720, 310],
+        }
+
+        expected = sidecar.build_send_context_guard(
+            [first, second],
+            layout_evidence=layout,
+        )
+        current_rows = [
+            {**first, "observation_id": "a-frame-b"},
+            {**second, "observation_id": "z-frame-b"},
+        ]
+        current = sidecar.build_send_context_guard(
+            current_rows,
+            layout_evidence=layout,
+        )
+
+        self.assertTrue(
+            self._validate_worker_send_context(
+                expected,
+                current,
+                expected_observations=[first, second],
+                current_observations=current_rows,
+            )["ok"]
+        )
+
+    def test_s0_s1_s2_share_geometry_free_business_comparison(self):
+        layout = {
+            "ok": True,
+            "layout_snapshot_id": "s0-s1-s2-layout",
+            "message_viewport_bounds": [382, 86, 980, 679],
+        }
+        business_rows = [
+            {
+                "row_kind": "system_message",
+                "sender_role": "system",
+                "message_type": "system",
+                "content_clean": "我通过了你的朋友验证请求",
+                "bubble_rect": [560, 250, 800, 280],
+            },
+            {
+                "row_kind": "voice_transcript",
+                "sender_role": "customer",
+                "message_type": "voice",
+                "content_clean": "十万左右的车有什么推荐",
+                "bubble_rect": [480, 330, 760, 380],
+            },
+        ]
+        expected = sidecar.build_send_context_guard(
+            business_rows,
+            layout_evidence=layout,
+        )
+        for stage, delta in (("S0", 0), ("S1", 1), ("S2", -2)):
+            current_rows = [
+                {
+                    **row,
+                    "bubble_rect": [
+                        int(row["bubble_rect"][0]) + delta,
+                        int(row["bubble_rect"][1]) + delta,
+                        int(row["bubble_rect"][2]) + delta,
+                        int(row["bubble_rect"][3]) + delta,
+                    ],
+                }
+                for row in business_rows
+            ]
+            current = sidecar.build_send_context_guard(
+                current_rows,
+                layout_evidence=layout,
+            )
+            with self.subTest(stage=stage):
+                self.assertTrue(
+                    self._validate_worker_send_context(
+                        expected,
+                        current,
+                        expected_observations=business_rows,
+                        current_observations=current_rows,
+                    )["ok"]
+                )
 
     def test_send_context_guard_ignores_sidebar_only_visual_change(self):
         before = Image.new("RGB", (981, 860), "white")
         after = before.copy()
         ImageDraw.Draw(before).rectangle((40, 210, 75, 235), fill="red")
         ImageDraw.Draw(after).rectangle((40, 210, 88, 235), fill="red")
+        expected_rows = [
+            {
+                "row_kind": "text_bubble",
+                "sender_role": "customer",
+                "message_type": "text",
+                "content_clean": "明天继续磨，有点烦了",
+                "bubble_rect": [480, 260, 760, 310],
+            }
+        ]
+        current_rows = [
+            {
+                **expected_rows[0],
+                "content_clean": "明天继续磨有点烦了",
+            }
+        ]
         expected = sidecar.build_send_context_guard(
-            [
-                {
-                    "row_kind": "text_bubble",
-                    "sender_role": "customer",
-                    "message_type": "text",
-                    "content_clean": "明天继续磨，有点烦了",
-                    "bubble_rect": [480, 260, 760, 310],
-                }
-            ],
+            expected_rows,
             screenshot=before,
         )
         # Full-window OCR can vary when an unrelated sidebar badge changes.
         current = sidecar.build_send_context_guard(
-            [
-                {
-                    "row_kind": "text_bubble",
-                    "sender_role": "customer",
-                    "message_type": "text",
-                    "content_clean": "明天继续磨有点烦了",
-                    "bubble_rect": [480, 260, 760, 310],
-                }
-            ],
+            current_rows,
             screenshot=after,
         )
 
-        result = sidecar.validate_send_context_guard(expected, current)
+        result = self._validate_worker_send_context(
+            expected,
+            current,
+            expected_observations=expected_rows,
+            current_observations=current_rows,
+        )
 
         self.assertTrue(result["ok"])
         self.assertEqual(result["reason"], "message_sequence_unchanged")
@@ -2410,46 +2899,48 @@ class WechatSendSafetyTest(unittest.TestCase):
         after = before.copy()
         ImageDraw.Draw(after).rectangle((520, 520, 800, 570), fill="gray")
 
+        expected_rows = [
+            {
+                "row_kind": "text_bubble",
+                "sender_role": "customer",
+                "message_type": "text",
+                "content_clean": "在吗",
+                "bubble_rect": [480, 260, 620, 310],
+            }
+        ]
+        current_rows = [
+            *expected_rows,
+            {
+                "row_kind": "text_bubble",
+                "sender_role": "customer",
+                "message_type": "text",
+                "content_clean": "补充一句",
+                "bubble_rect": [480, 330, 650, 380],
+            },
+        ]
+
         expected = sidecar.build_send_context_guard(
-            [
-                {
-                    "row_kind": "text_bubble",
-                    "sender_role": "customer",
-                    "message_type": "text",
-                    "content_clean": "在吗",
-                    "bubble_rect": [480, 260, 620, 310],
-                }
-            ],
+            expected_rows,
             screenshot=before,
         )
         current = sidecar.build_send_context_guard(
-            [
-                {
-                    "row_kind": "text_bubble",
-                    "sender_role": "customer",
-                    "message_type": "text",
-                    "content_clean": "在吗",
-                    "bubble_rect": [480, 260, 620, 310],
-                },
-                {
-                    "row_kind": "text_bubble",
-                    "sender_role": "customer",
-                    "message_type": "text",
-                    "content_clean": "补充一句",
-                    "bubble_rect": [480, 330, 650, 380],
-                },
-            ],
+            current_rows,
             screenshot=after,
         )
 
-        result = sidecar.validate_send_context_guard(expected, current)
+        result = self._validate_worker_send_context(
+            expected,
+            current,
+            expected_observations=expected_rows,
+            current_observations=current_rows,
+        )
 
         self.assertFalse(result["ok"])
         self.assertEqual(result["error_code"], "C3_CONTEXT_CHANGED_BEFORE_SEND")
         self.assertFalse(expected["raw_rgb_hash_used"])
         self.assertFalse(current["raw_rgb_hash_used"])
 
-    def test_viewport_digest_collapses_transient_visual_voice_hint(self):
+    def test_viewport_digest_does_not_repair_unmerged_visual_voice_hint(self):
         frame = Image.new("RGB", (981, 860), "white")
         ocr_voice = {
             "observation_id": "win32_ocr:voice-1",
@@ -2482,11 +2973,47 @@ class WechatSendSafetyTest(unittest.TestCase):
         )
 
         self.assertEqual(without_hint["message_count"], 1)
-        self.assertEqual(with_hint["message_count"], 1)
-        self.assertEqual(
+        self.assertEqual(with_hint["message_count"], 2)
+        self.assertNotEqual(
             without_hint["message_viewport_change_digest"],
             with_hint["message_viewport_change_digest"],
         )
+
+    def test_send_business_projection_does_not_second_merge_raw_voice_rows(self):
+        layout = {
+            "ok": True,
+            "layout_snapshot_id": "raw-duplicate-contract-fixture",
+            "message_viewport_bounds": [360, 100, 980, 800],
+        }
+        ocr_voice = {
+            "observation_id": "win32_ocr:voice-duplicate",
+            "row_kind": "voice_bubble",
+            "sender_role": "customer",
+            "message_type": "voice",
+            "voice_state": "untranscribed",
+            "voice_duration": 4,
+            "bubble_rect": [479, 403, 523, 425],
+            "quality_flags": ["untranscribed_voice_placeholder"],
+        }
+        visual_hint = {
+            "observation_id": "voice-hint:voice-duplicate",
+            "row_kind": "voice_bubble",
+            "sender_role": "customer",
+            "message_type": "voice",
+            "voice_state": "untranscribed",
+            "voice_duration": 4,
+            "bubble_rect": [479, 403, 523, 425],
+            "quality_flags": ["visual_voice_hint"],
+        }
+
+        guard = sidecar.build_send_context_guard(
+            [visual_hint, ocr_voice],
+            layout_evidence=layout,
+        )
+
+        self.assertTrue(guard["ok"])
+        self.assertEqual(guard["message_count"], 2)
+        self.assertEqual(len(guard["sequence"]), 2)
 
     def test_viewport_digest_orders_facts_by_screen_not_detector_order(self):
         frame = Image.new("RGB", (981, 860), "white")
@@ -2533,7 +3060,7 @@ class WechatSendSafetyTest(unittest.TestCase):
             "height": 860,
         }
         context_guard = {
-            "schema_version": 2,
+            "schema_version": 3,
             "sequence": [],
             "message_count": 0,
             "bottom": None,
@@ -2541,6 +3068,11 @@ class WechatSendSafetyTest(unittest.TestCase):
             "sequence_sha256": "a" * 64,
             "raw_rgb_hash_used": False,
         }
+        context_guard = self._worker_send_guard(
+            context_guard,
+            [],
+            empty_top_boundary=True,
+        )
         strict_target = {
             "ok": True,
             "online": True,
@@ -2554,6 +3086,7 @@ class WechatSendSafetyTest(unittest.TestCase):
             "input_region": {"has_visible_text": False},
             "matching_self_message_count": 0,
             "message_sequence": [],
+            "observations": [],
             "send_context_guard": context_guard,
         }
         switched_target = {
@@ -2626,10 +3159,17 @@ class WechatSendSafetyTest(unittest.TestCase):
             "ok": True,
             "message_viewport_bounds": [382, 86, 980, 679],
         }
+        expected_observations = sidecar.build_message_observations_v3(
+            [message]
+        )
         expected_guard = sidecar.build_send_context_guard(
-            sidecar.build_message_observations_v3([message]),
+            expected_observations,
             screenshot=frame,
             layout_evidence=layout_evidence,
+        )
+        expected_guard = self._worker_send_guard(
+            expected_guard,
+            expected_observations,
         )
         baseline = {
             "ok": True,
@@ -2643,6 +3183,7 @@ class WechatSendSafetyTest(unittest.TestCase):
             "input_region": {"has_visible_text": False},
             "matching_self_message_count": 0,
             "message_sequence": [],
+            "observations": expected_observations,
             "send_context_guard": expected_guard,
             "frame_observation": {
                 "frame_id": "s0-frame",
@@ -3236,32 +3777,33 @@ class WechatSendSafetyTest(unittest.TestCase):
 
     def test_send_context_sequence_ignores_ocr_format_only_differences(self):
         frame = Image.new("RGB", (981, 860), "white")
+        expected_rows = [
+            {
+                "row_kind": "text_bubble",
+                "sender_role": "customer",
+                "message_type": "text",
+                "content_clean": "请看【车型Ａ】……",
+                "bubble_rect": [480, 260, 720, 310],
+            }
+        ]
+        current_rows = [
+            {**expected_rows[0], "content_clean": "请看[车型a]..."}
+        ]
         expected = sidecar.build_send_context_guard(
-            [
-                {
-                    "row_kind": "text_bubble",
-                    "sender_role": "customer",
-                    "message_type": "text",
-                    "content_clean": "请看【车型Ａ】……",
-                    "bubble_rect": [480, 260, 720, 310],
-                }
-            ],
+            expected_rows,
             screenshot=frame,
         )
         current = sidecar.build_send_context_guard(
-            [
-                {
-                    "row_kind": "text_bubble",
-                    "sender_role": "customer",
-                    "message_type": "text",
-                    "content_clean": "请看[车型a]...",
-                    "bubble_rect": [480, 260, 720, 310],
-                }
-            ],
+            current_rows,
             screenshot=frame,
         )
 
-        result = sidecar.validate_send_context_guard(expected, current)
+        result = self._validate_worker_send_context(
+            expected,
+            current,
+            expected_observations=expected_rows,
+            current_observations=current_rows,
+        )
 
         self.assertTrue(result["ok"])
         self.assertEqual(result["reason"], "message_sequence_unchanged")

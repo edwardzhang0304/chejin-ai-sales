@@ -35,10 +35,6 @@ from .subprocess_protocol import (
     require_unicode_protocol,
     subprocess_utf8_environment,
 )
-from .sequence_alignment import (
-    align_committed_message_sequence,
-    build_post_action_observation_sequence,
-)
 from .vision_credentials import (
     OFFICIAL_VISION_BASE_URL,
     OFFICIAL_VISION_MODEL,
@@ -54,6 +50,10 @@ from .vision_credentials import (
 OMNIAUTO_ROOT = Path(__file__).resolve().parents[1] / "omniauto-rpa"
 if str(OMNIAUTO_ROOT) not in sys.path:
     sys.path.insert(0, str(OMNIAUTO_ROOT))
+
+from apps.wechat_ai_customer_service.adapters.message_viewport_projection import (
+    ordered_message_viewport_observations,
+)
 
 DEFAULT_VISION_PROVIDER = OFFICIAL_VISION_PROVIDER
 DEFAULT_VISION_BASE_URL = OFFICIAL_VISION_BASE_URL
@@ -709,9 +709,14 @@ class _WindowFrame:
                 "build_message_viewport_change_evidence",
                 None,
             )
+            build_business_guard = getattr(
+                self.state.host,
+                "build_send_context_guard",
+                None,
+            )
             if not callable(build_observations) or not callable(
                 build_viewport_evidence
-            ):
+            ) or not callable(build_business_guard):
                 image.close()
                 return {
                     "ok": False,
@@ -719,7 +724,25 @@ class _WindowFrame:
                     "reason_detail": "normalized_viewport_parser_missing",
                 }
             normalized_observations = build_observations(messages)
-            viewport_change_evidence = build_viewport_evidence(
+            geometry_evidence = build_viewport_evidence(
+                normalized_observations,
+                layout_evidence={
+                    "ok": True,
+                    "layout_snapshot_id": str(
+                        (layout_snapshot or {}).get("layout_snapshot_id")
+                        or ""
+                    ),
+                    "chat_header_bounds": list(
+                        (layout_snapshot or {}).get("chat_header_bounds")
+                        or []
+                    ),
+                    "message_viewport_bounds": message_viewport_bounds,
+                    "input_bounds": list(
+                        (layout_snapshot or {}).get("input_bounds") or []
+                    ),
+                },
+            )
+            viewport_change_evidence = build_business_guard(
                 normalized_observations,
                 layout_evidence={
                     "ok": True,
@@ -748,6 +771,23 @@ class _WindowFrame:
                     ),
                     "layout_evidence": viewport_change_evidence,
                 }
+            business_order_by_id = {
+                str(item.get("observation_id") or "").strip(): screen_order
+                for screen_order, item in enumerate(
+                    ordered_message_viewport_observations(
+                        normalized_observations
+                    )
+                )
+                if str(item.get("observation_id") or "").strip()
+            }
+            for message in messages:
+                message_id = str(
+                    message.get("id") or message.get("message_id") or ""
+                ).strip()
+                if message_id in business_order_by_id:
+                    message["_current_business_screen_order"] = (
+                        business_order_by_id[message_id]
+                    )
             time_markers = extract_chat_time_markers(
                 ocr_items,
                 image.size,
@@ -799,6 +839,7 @@ class _WindowFrame:
                 "message_viewport_change_evidence": (
                     viewport_change_evidence
                 ),
+                "geometry_evidence": geometry_evidence,
                 "message_viewport_change_digest": str(
                     viewport_change_evidence.get(
                         "message_viewport_change_digest"
@@ -1185,9 +1226,11 @@ def process_image_slot(
         state = str(result.get("state") or "").strip()
         completed = state == "completed"
         result["business_state"] = (
-            "completed" if completed else "failed"
+            "confirmed_result_pending_continuity"
+            if completed
+            else "technical_failed"
         )
-        result["business_result_confirmed"] = completed
+        result["business_result_confirmed"] = False
         if action_journal_path is None or not normalized_action_local_id:
             return result
         phase = str(
@@ -1247,16 +1290,56 @@ def process_image_slot(
             observation_id = str(
                 observation.get("observation_id") or ""
             ).strip()
-            image_anchor = (
-                observation.get("image_physical_anchor")
+            trigger_observation_id = str(
+                transaction.get("trigger_observation_id") or ""
+            ).strip()
+            action_frame_observations = [
+                dict(item)
+                for item in (
+                    transaction.get("action_frame_observations") or []
+                )
+                if isinstance(item, dict)
+            ]
+            image_sha256 = str(
+                transaction.get("image_sha256") or ""
+            ).strip().lower()
+            image_sha256_valid = bool(
+                len(image_sha256) == 64
+                and all(
+                    character in "0123456789abcdef"
+                    for character in image_sha256
+                )
+            )
+            expected_business_order = int(
+                normalized_frame_action_binding.get(
+                    "selected_business_screen_order"
+                )
+                or 0
+            )
+            trigger_business_order = transaction.get(
+                "trigger_business_screen_order"
+            )
+            selection_evidence = (
+                transaction.get("current_frame_selection_evidence")
                 if isinstance(
-                    observation.get("image_physical_anchor"), dict
+                    transaction.get("current_frame_selection_evidence"),
+                    dict,
                 )
                 else {}
             )
-            image_fingerprint = str(
-                image_anchor.get("bubble_visual_fingerprint") or ""
-            ).strip()
+            actual_action_rows = [
+                item
+                for item in action_frame_observations
+                if str(item.get("observation_id") or "").strip()
+                == trigger_observation_id
+                and str(item.get("row_kind") or "").strip().lower()
+                == "image_bubble"
+                and str(item.get("sender_role") or "").strip().lower()
+                == str(
+                    normalized_frame_action_binding.get("sender_role")
+                    or ""
+                ).strip().lower()
+            ]
             selected_rows = [
                 item
                 for item in (
@@ -1274,16 +1357,34 @@ def process_image_slot(
                 and str(item.get("pre_observation_id") or "").strip()
                 == observation_id
             ]
-            if (
+            receipt_confirmed = bool(
                 phase == "confirmed"
-                and transaction.get("slot_identity_confirmed") is True
+                and transaction.get("current_frame_target_selected") is True
+                and transaction.get(
+                    "physical_identity_inherited_from_prepare"
+                ) is False
                 and action_id
                 and reserved_id
                 and observation_id
-                and image_fingerprint
+                and trigger_observation_id
+                and image_sha256_valid
+                and isinstance(trigger_business_order, int)
+                and trigger_business_order >= 0
+                and selection_evidence.get("selection_policy")
+                == "worker_approved_current_business_occurrence"
+                and selection_evidence.get(
+                    "physical_identity_inherited_from_prepare"
+                )
+                is False
+                and selection_evidence.get(
+                    "current_business_screen_order"
+                )
+                == trigger_business_order
+                and len(actual_action_rows) == 1
                 and len(selected_rows) == 1
-            ):
-                terminal_payload["confirmed_action_mapping"] = {
+            )
+            if receipt_confirmed:
+                receipt = {
                     "canonical_action_id": action_id,
                     "reserved_worker_stable_id": reserved_id,
                     "selected_action_token": str(
@@ -1293,20 +1394,63 @@ def process_image_slot(
                         or ""
                     ),
                     "pre_observation_id": observation_id,
-                    "post_observation_id": observation_id,
+                    "post_observation_id": trigger_observation_id,
+                    "trigger_observation_id": trigger_observation_id,
+                    "physical_identity_inherited_from_prepare": False,
+                    "result_screen_order": trigger_business_order,
                     "binding_confirmed": True,
+                    "image_sha256": image_sha256,
                 }
-                terminal_payload[
-                    "image_visual_fingerprint"
-                ] = image_fingerprint
+                result["_confirmed_image_action_receipt"] = dict(receipt)
+                terminal_payload["confirmed_action_mapping"] = {
+                    key: receipt[key]
+                    for key in (
+                        "canonical_action_id",
+                        "reserved_worker_stable_id",
+                        "selected_action_token",
+                        "pre_observation_id",
+                        "post_observation_id",
+                        "trigger_observation_id",
+                        "physical_identity_inherited_from_prepare",
+                        "result_screen_order",
+                        "binding_confirmed",
+                    )
+                }
+                terminal_payload["image_sha256"] = image_sha256
+                terminal_payload["action_frame_observations"] = (
+                    action_frame_observations
+                )
+                terminal_payload["action_frame_layout_snapshot_id"] = str(
+                    transaction.get("action_frame_layout_snapshot_id")
+                    or ""
+                )
+                terminal_payload["state"] = (
+                    "confirmed_result_pending_continuity"
+                )
+                terminal_payload["media_action_terminal"] = None
+            elif completed:
+                terminal_error_code = "C2_IMAGE_IDENTITY_CONTRACT_INVALID"
+                terminal_payload.update(
+                    {
+                        "state": "technical_failed",
+                        "media_action_terminal": "technical_failed",
+                        "error_code": terminal_error_code,
+                        "reason_detail": (
+                            "confirmed_image_action_receipt_incomplete"
+                        ),
+                    }
+                )
+                result["business_state"] = "technical_failed"
             update_action_journal_item(
                 action_journal_path,
                 journal_item_id=normalized_action_local_id,
                 action_phase=phase,
-                business_state=result["business_state"],
-                business_result_confirmed=result[
-                    "business_result_confirmed"
-                ],
+                business_state=(
+                    "confirmed_result_pending_continuity"
+                    if receipt_confirmed
+                    else "technical_failed"
+                ),
+                business_result_confirmed=False,
                 error_code=terminal_error_code,
                 terminal_payload=terminal_payload,
             )
@@ -1370,8 +1514,6 @@ def process_image_slot(
             "selected_action_token",
             "pre_frame_id",
             "selected_pre_observation_id",
-            "selected_target_fingerprint",
-            "message_viewport_change_digest",
         )
         binding_invalid = bool(
             action_journal_path is None
@@ -1402,6 +1544,26 @@ def process_image_slot(
                 normalized_frame_action_binding.get("sender_role") or ""
             ).strip().lower()
             != str(observation.get("sender_role") or "").strip().lower()
+            or normalized_frame_action_binding.get(
+                "physical_identity_inherited_from_prepare"
+            ) is not False
+            or str(
+                normalized_frame_action_binding.get("selection_policy")
+                or ""
+            ).strip()
+            != "worker_approved_current_business_occurrence"
+            or not isinstance(
+                normalized_frame_action_binding.get(
+                    "selected_business_screen_order"
+                ),
+                int,
+            )
+            or int(
+                normalized_frame_action_binding.get(
+                    "selected_business_screen_order"
+                )
+            )
+            < 0
             or not isinstance(
                 normalized_frame_action_binding.get(
                     "ordered_frame_observations"
@@ -1563,9 +1725,7 @@ def process_image_slot(
             "failed",
             "vision_window_context_missing",
         )
-    if not isinstance(image_physical_anchor, dict) or not str(
-        image_physical_anchor.get("bubble_visual_fingerprint") or ""
-    ).strip():
+    if not isinstance(image_physical_anchor, dict):
         return early_result(
             "failed",
             "C2_IMAGE_SLOT_RECONFIRM_FAILED",
@@ -1624,25 +1784,18 @@ def process_image_slot(
                 "bubble_rect": bubble_rect,
                 "image_physical_anchor": dict(image_physical_anchor),
                 "message_id": str(observation.get("observation_id") or ""),
-                "expected_message_viewport_change_digest": str(
-                    observation.get(
-                        "_expected_message_viewport_change_digest"
-                    )
-                    or ""
-                ),
                 **(
                     {
-                        "expected_image_candidate_group_count": int(
-                            normalized_frame_action_binding.get(
-                                "candidate_group_count"
-                            )
-                            or 0
-                        ),
                         "selected_action_token": str(
                             normalized_frame_action_binding.get(
                                 "selected_action_token"
                             )
                             or ""
+                        ),
+                        "expected_business_screen_order": int(
+                            normalized_frame_action_binding.get(
+                                "selected_business_screen_order"
+                            )
                         ),
                     }
                     if normalized_frame_action_binding

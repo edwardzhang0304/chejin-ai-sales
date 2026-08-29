@@ -46,7 +46,9 @@ def _dhash64(image: Image.Image) -> int:
         (9, 8),
         Image.Resampling.LANCZOS,
     )
-    pixels = list(resized.getdata())
+    pixels = list(
+        getattr(resized, "get_flattened_data", resized.getdata)()
+    )
     value = 0
     for row in range(8):
         for col in range(8):
@@ -60,12 +62,17 @@ def _fingerprint_signature(normalized: Image.Image) -> dict[str, Any]:
     width, height = normalized.size
     if width <= 0 or height <= 0:
         return {}
+    color_grid_image = normalized.resize(
+        (3, 3),
+        Image.Resampling.LANCZOS,
+    )
     color_grid = [
         channel
-        for pixel in normalized.resize(
-            (3, 3),
-            Image.Resampling.LANCZOS,
-        ).getdata()
+        for pixel in getattr(
+            color_grid_image,
+            "get_flattened_data",
+            color_grid_image.getdata,
+        )()
         for channel in pixel[:3]
     ]
     return {

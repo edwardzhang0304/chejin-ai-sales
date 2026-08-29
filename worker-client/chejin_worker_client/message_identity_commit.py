@@ -29,6 +29,7 @@ class MediaActionTerminal(str, Enum):
     COMMITTED_COMPLETED = "committed_completed"
     COMMITTED_FAILED = "committed_failed"
     IDENTITY_UNRESOLVED = "identity_unresolved"
+    TECHNICAL_FAILED = "technical_failed"
 
 
 @dataclass(frozen=True, slots=True)
@@ -62,6 +63,13 @@ _ROW_KIND_TO_MESSAGE_TYPE = {
     "voice_transcript": "voice",
     "image_bubble": "image",
 }
+
+
+def _is_sha256(value: object) -> bool:
+    text = str(value or "").strip().lower()
+    return len(text) == 64 and all(
+        character in "0123456789abcdef" for character in text
+    )
 
 
 def committed_identity_record(
@@ -232,7 +240,7 @@ def _validate_basis(
             return "voice_action_type_mismatch"
         summary = observation.get("_worker_voice_action_summary")
         mapping = summary.get("confirmed_action_mapping") if isinstance(summary, Mapping) else None
-        return _validate_action_mapping(
+        reason = _validate_action_mapping(
             mapping,
             proof,
             stable_id,
@@ -240,6 +248,29 @@ def _validate_basis(
             require_fingerprint=False,
             require_action_token=True,
         )
+        if reason:
+            return reason
+        for field in (
+            "trigger_observation_id",
+            "physical_identity_inherited_from_prepare",
+            "physical_action_count",
+            "result_candidate_count",
+            "stable_business_content_signature",
+        ):
+            if proof.get(field) != mapping.get(field):
+                return "voice_actual_result_proof_mismatch"
+        if (
+            not str(mapping.get("trigger_observation_id") or "").strip()
+            or mapping.get("physical_identity_inherited_from_prepare")
+            is not False
+            or int(mapping.get("physical_action_count") or 0) != 1
+            or int(mapping.get("result_candidate_count") or 0) != 1
+            or not _is_sha256(
+                mapping.get("stable_business_content_signature")
+            )
+        ):
+            return "voice_actual_action_result_binding_invalid"
+        return ""
 
     if basis is MessageCommitBasis.CONFIRMED_IMAGE_ACTION:
         if message_type != "image":
@@ -251,17 +282,25 @@ def _validate_basis(
             proof,
             stable_id,
             observation_id,
-            require_fingerprint=True,
+            require_fingerprint=False,
             require_action_token=False,
         )
         if reason:
             return reason
-        anchor = observation.get("image_physical_anchor")
-        fingerprint = str(anchor.get("bubble_visual_fingerprint") or "").strip() if isinstance(anchor, Mapping) else ""
-        if not fingerprint or str(summary.get("image_visual_fingerprint") or "").strip() != fingerprint:
-            return "image_fingerprint_mismatch"
-        if str(proof.get("image_visual_fingerprint") or "").strip() != fingerprint:
-            return "image_commit_proof_fingerprint_mismatch"
+        image_sha256 = str(summary.get("image_sha256") or "").strip().lower()
+        if not _is_sha256(image_sha256):
+            return "image_result_sha256_missing"
+        if str(proof.get("image_sha256") or "").strip().lower() != image_sha256:
+            return "image_commit_proof_sha256_mismatch"
+        if (
+            mapping.get("physical_identity_inherited_from_prepare") is not False
+            or proof.get("physical_identity_inherited_from_prepare") is not False
+            or str(mapping.get("trigger_observation_id") or "").strip()
+            != observation_id
+            or str(proof.get("trigger_observation_id") or "").strip()
+            != observation_id
+        ):
+            return "image_actual_action_result_binding_invalid"
         return ""
 
     if basis is MessageCommitBasis.CONFIRMED_SENT_ACK:

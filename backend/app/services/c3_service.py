@@ -65,7 +65,7 @@ VEHICLE_FACT_STALE_REASON = "车辆资料或上下架状态已变化，旧回复
 logger = logging.getLogger(__name__)
 
 
-PRE_SEND_FACT_CHECKPOINT_REVISION = 3
+PRE_SEND_FACT_CHECKPOINT_REVISION = 5
 PRE_SEND_CHECKPOINT_FRAME_SOURCES = {"initial_read", "final_read"}
 PRE_SEND_TERMINAL_ACTION_COMMIT_BASES = {
     "confirmed_voice_action",
@@ -113,14 +113,9 @@ def _message_item_state(message: MessageEvent) -> str:
     return state if state in {"completed", "failed"} else "completed"
 
 
-def _message_image_visual_fingerprint(message: MessageEvent) -> str:
+def _message_image_content_sha256(message: MessageEvent) -> str:
     raw = message.raw_payload if isinstance(message.raw_payload, dict) else {}
     observation = raw.get("observation") if isinstance(raw.get("observation"), dict) else {}
-    image_anchor = (
-        observation.get("image_physical_anchor")
-        if isinstance(observation.get("image_physical_anchor"), dict)
-        else {}
-    )
     action_summary = (
         observation.get("_worker_image_action_summary")
         if isinstance(observation.get("_worker_image_action_summary"), dict)
@@ -133,10 +128,9 @@ def _message_image_visual_fingerprint(message: MessageEvent) -> str:
     )
     proof = committed.get("proof") if isinstance(committed.get("proof"), dict) else {}
     return str(
-        proof.get("image_visual_fingerprint")
-        or action_summary.get("image_visual_fingerprint")
-        or image_anchor.get("bubble_visual_fingerprint")
-        or raw.get("image_visual_fingerprint")
+        proof.get("image_sha256")
+        or action_summary.get("image_sha256")
+        or raw.get("image_sha256")
         or ""
     ).strip().lower()
 
@@ -205,6 +199,7 @@ def _reply_fact_evidence(
     observation: dict[str, Any],
     *,
     item_state: str,
+    image_content_sha256: str = "",
 ) -> dict[str, str]:
     message_type = str(
         observation.get("message_type") or ""
@@ -230,16 +225,12 @@ def _reply_fact_evidence(
             observation
         )
     elif message_type == "image" and state == "completed":
-        anchor = (
-            observation.get("image_physical_anchor")
-            if isinstance(observation.get("image_physical_anchor"), dict)
-            else {}
-        )
-        evidence["exact_image_content_sha256"] = (
-            _exact_image_content_sha256(
-                anchor.get("bubble_visual_fingerprint")
-            )
-        )
+        # The persisted clipboard-bytes digest is the formal image result.
+        # Runtime bubble summaries are deliberately stripped before ingest
+        # and must never be reconstructed into cross-frame identity here.
+        evidence["exact_image_content_sha256"] = str(
+            image_content_sha256 or ""
+        ).strip().lower()
     return evidence
 
 
@@ -299,6 +290,7 @@ def _validated_message_commit_evidence(
         or reply_fact != _reply_fact_evidence(
             observation,
             item_state=item_state,
+            image_content_sha256=_message_image_content_sha256(message),
         )
         or not _is_sha256(reply_digest)
         or reply_digest != _canonical_sha256(reply_fact)
@@ -309,14 +301,13 @@ def _validated_message_commit_evidence(
     ):
         return {}
     if commit_basis == "confirmed_image_action":
-        receipt_fingerprint = str(
-            action_receipt.get("image_visual_fingerprint") or ""
+        receipt_image_sha256 = str(
+            action_receipt.get("image_sha256") or ""
         ).strip().lower()
         if (
-            not receipt_fingerprint
-            or receipt_fingerprint
-            != _message_image_visual_fingerprint(message)
-            or not _exact_image_content_sha256(receipt_fingerprint)
+            not _is_sha256(receipt_image_sha256)
+            or receipt_image_sha256
+            != _message_image_content_sha256(message)
         ):
             return {}
     return {
@@ -326,104 +317,6 @@ def _validated_message_commit_evidence(
     }
 
 
-def _native_source_message_id(observation: dict[str, Any]) -> str:
-    source = (
-        observation.get("source_message")
-        if isinstance(observation.get("source_message"), dict)
-        else {}
-    )
-    explicit = str(
-        observation.get("native_source_message_id")
-        or source.get("native_source_message_id")
-        or ""
-    ).strip()
-    if explicit:
-        return explicit
-    adapter = str(
-        observation.get("source_adapter")
-        or source.get("source_adapter")
-        or ""
-    ).strip().lower()
-    raw_id = str(
-        source.get("id")
-        or source.get("message_id")
-        or observation.get("source_message_id")
-        or ""
-    ).strip()
-    if (
-        raw_id
-        and adapter not in {
-            "win32_ocr",
-            "wechat_win32_ocr",
-            "rpa_ocr",
-            "ocr_rpa",
-        }
-        and not raw_id.lower().startswith(
-            (
-                "win32_ocr:",
-                "wechat_win32_ocr:",
-                "ocr:",
-                "screen_ocr:",
-                "uia_ocr:",
-            )
-        )
-    ):
-        return raw_id
-    return ""
-
-
-def _media_continuity_anchor(
-    observation: dict[str, Any],
-    *,
-    message_type: str,
-) -> dict[str, Any]:
-    if message_type == "voice":
-        source = (
-            observation.get("source_message")
-            if isinstance(observation.get("source_message"), dict)
-            else {}
-        )
-        anchor = str(
-            observation.get("parent_voice_anchor_key")
-            or observation.get("voice_anchor_key")
-            or source.get("parent_voice_anchor_key")
-            or source.get("voice_anchor_stable_key")
-            or source.get("voice_anchor_key")
-            or ""
-        ).strip()
-        duration = str(
-            observation.get("voice_duration")
-            or source.get("voice_duration")
-            or observation.get("voice_duration_text")
-            or source.get("voice_duration_text")
-            or ""
-        ).strip()
-        return {
-            "voice_anchor": anchor,
-            "voice_duration": duration,
-        }
-    if message_type == "image":
-        anchor = (
-            observation.get("image_physical_anchor")
-            if isinstance(observation.get("image_physical_anchor"), dict)
-            else {}
-        )
-        return {
-            "bubble_visual_fingerprint": str(
-                anchor.get("bubble_visual_fingerprint") or ""
-            ).strip().lower(),
-            "preceding_stable_message": str(
-                anchor.get("preceding_stable_message") or ""
-            ).strip(),
-            "following_stable_message": str(
-                anchor.get("following_stable_message") or ""
-            ).strip(),
-            "occurrence_index": anchor.get("occurrence_index"),
-            "occurrence_count": anchor.get("occurrence_count"),
-        }
-    return {}
-
-
 def _stable_fact_signature(
     *,
     sender_role: object,
@@ -431,7 +324,7 @@ def _stable_fact_signature(
     item_state: object,
     content: object = "",
     voice_duration: object = "",
-    image_visual_fingerprint: object = "",
+    image_content_sha256: object = "",
     error_code: object = "",
 ) -> str:
     normalized_type = str(message_type or "").strip().lower()
@@ -441,11 +334,7 @@ def _stable_fact_signature(
         "message_type": normalized_type,
         "item_state": normalized_state,
     }
-    if normalized_type == "image":
-        material["image_visual_fingerprint"] = str(
-            image_visual_fingerprint or ""
-        ).strip().lower()
-    else:
+    if normalized_type != "image":
         material["normalized_content_hash"] = hashlib.sha256(
             canonical_message_identity_text(content).encode("utf-8")
         ).hexdigest()
@@ -453,6 +342,10 @@ def _stable_fact_signature(
             material["voice_duration"] = _normalize_voice_duration(
                 voice_duration
             )
+    else:
+        # Preserve and validate the formal image action receipt separately;
+        # its bubble/ROI digest cannot veto a later send frame.
+        _ = image_content_sha256
     if normalized_state == "failed":
         material["error_code"] = str(error_code or "").strip()
     return _canonical_sha256(material)
@@ -473,24 +366,93 @@ def _build_pre_send_fact_checkpoint(
         if message_type not in {"text", "voice", "image", "system"}:
             continue
         raw = message.raw_payload if isinstance(message.raw_payload, dict) else {}
+        business_projection = (
+            dict(raw.get("business_projection"))
+            if isinstance(raw.get("business_projection"), dict)
+            else {}
+        )
+        strong_boundary_tokens = [
+            str(token or "").strip()
+            for token in (raw.get("strong_boundary_tokens") or [])
+            if str(token or "").strip()
+        ]
+        strong_boundary_anchor = (
+            dict(raw.get("strong_boundary_anchor"))
+            if isinstance(raw.get("strong_boundary_anchor"), dict)
+            else {}
+        )
+        message_identity_commit_record = (
+            dict(raw.get("message_identity_commit_record") or {})
+            if isinstance(
+                raw.get("message_identity_commit_record"), dict
+            )
+            else {}
+        )
+        message_identity_runtime_evidence = (
+            {
+                str(key): dict(value)
+                for key, value in (
+                    raw.get("message_identity_runtime_evidence") or {}
+                ).items()
+                if isinstance(value, dict)
+            }
+            if isinstance(
+                raw.get("message_identity_runtime_evidence"), dict
+            )
+            else {}
+        )
         stable_id = _message_worker_stable_id(message)
         item_state = _message_item_state(message)
         image_fingerprint = (
-            _message_image_visual_fingerprint(message)
+            _message_image_content_sha256(message)
             if message_type == "image"
             else ""
         )
-        if not stable_id or (message_type == "image" and not image_fingerprint):
+        if (
+            not stable_id
+            or (message_type == "image" and not image_fingerprint)
+            or set(business_projection)
+            != {
+                "screen_order",
+                "sender_role",
+                "message_type",
+                "normalized_content_signature",
+                "media_state",
+            }
+            or not message_identity_commit_record
+        ):
             complete = False
         observation = _observation_for_message(message)
-        commit_evidence = _validated_message_commit_evidence(
-            message,
+        reply_fact_evidence = _reply_fact_evidence(
             observation,
             item_state=item_state,
+            image_content_sha256=image_fingerprint,
         )
+        commit_basis = str(
+            message_identity_commit_record.get("commit_basis") or ""
+        ).strip()
+        action_receipt_digest = ""
+        if message_type in {"voice", "image"}:
+            commit_evidence = _validated_message_commit_evidence(
+                message,
+                observation,
+                item_state=item_state,
+            )
+            if (
+                not commit_evidence
+                or str(commit_evidence.get("commit_basis") or "").strip()
+                != commit_basis
+            ):
+                complete = False
+            action_receipt_digest = str(
+                commit_evidence.get("action_receipt_digest") or ""
+            ).strip()
         fact_items.append(
             {
                 "worker_stable_id": stable_id,
+                "source_message_key": str(
+                    raw.get("source_message_key") or ""
+                ).strip(),
                 "sender_role": str(message.sender_role or "").strip().lower(),
                 "message_type": message_type,
                 "item_state": item_state,
@@ -502,140 +464,47 @@ def _build_pre_send_fact_checkpoint(
                     voice_duration=_observation_voice_duration(
                         observation
                     ),
-                    image_visual_fingerprint=image_fingerprint,
+                    image_content_sha256=image_fingerprint,
                     error_code=(
                         raw.get("error_code")
                         or message.error_code
                         or ""
                     ),
                 ),
-                "_native_source_message_id": (
-                    _native_source_message_id(observation)
+                "commit_basis": commit_basis,
+                "action_receipt_digest": action_receipt_digest,
+                "reply_fact_evidence": reply_fact_evidence,
+                "business_projection": business_projection,
+                "strong_boundary_tokens": strong_boundary_tokens,
+                "strong_boundary_anchor": strong_boundary_anchor,
+                "message_identity_commit_record": (
+                    message_identity_commit_record
                 ),
-                "_media_continuity_anchor": _media_continuity_anchor(
-                    observation,
-                    message_type=message_type,
-                ),
-                "commit_basis": str(
-                    commit_evidence.get("commit_basis") or ""
-                ),
-                "action_receipt_digest": str(
-                    commit_evidence.get("action_receipt_digest") or ""
-                ),
-                "reply_fact_evidence": dict(
-                    commit_evidence.get("reply_fact_evidence") or {}
+                "message_identity_runtime_evidence": (
+                    message_identity_runtime_evidence
                 ),
             }
         )
     committed_tail: list[dict[str, Any]] = []
-    for index, item in enumerate(fact_items):
-        message_type = str(item.get("message_type") or "")
-        stable_signature = str(item.get("stable_fact_signature") or "")
-        native_id = str(
-            item.pop("_native_source_message_id", "") or ""
-        ).strip()
-        media_anchor = item.pop("_media_continuity_anchor", {})
-        continuity_basis = "ordered_fact"
-        continuity_signature = stable_signature
-        physical_identity_confirmed = True
-        if message_type in {"voice", "image"}:
-            if native_id:
-                continuity_basis = "native_source_message_id"
-                continuity_signature = _canonical_sha256(
-                    {
-                        "message_type": message_type,
-                        "native_source_message_id": native_id,
-                    }
-                )
-            else:
-                before = (
-                    str(fact_items[index - 1].get("stable_fact_signature") or "")
-                    if index > 0
-                    else ""
-                )
-                after = (
-                    str(fact_items[index + 1].get("stable_fact_signature") or "")
-                    if index + 1 < len(fact_items)
-                    else ""
-                )
-                anchor_present = bool(
-                    isinstance(media_anchor, dict)
-                    and any(
-                        value not in (None, "", [], {})
-                        for value in media_anchor.values()
-                    )
-                )
-                if before and after and anchor_present:
-                    continuity_basis = "two_sided_static_context"
-                    continuity_signature = _canonical_sha256(
-                        {
-                            "message_type": message_type,
-                            "media_anchor": media_anchor,
-                            "before_fact_signature": before,
-                            "after_fact_signature": after,
-                        }
-                    )
-                elif (
-                    index == len(fact_items) - 1
-                    and str(item.get("commit_basis") or "")
-                    in PRE_SEND_TERMINAL_ACTION_COMMIT_BASES
-                    and len(
-                        str(item.get("action_receipt_digest") or "")
-                    )
-                    == 64
-                    and isinstance(item.get("reply_fact_evidence"), dict)
-                    and bool(item.get("reply_fact_evidence"))
-                    and (
-                        (
-                            message_type == "voice"
-                            and bool(
-                                item["reply_fact_evidence"].get(
-                                    "normalized_transcript_sha256"
-                                )
-                            )
-                        )
-                        or (
-                            message_type == "image"
-                            and bool(
-                                item["reply_fact_evidence"].get(
-                                    "exact_image_content_sha256"
-                                )
-                            )
-                        )
-                    )
-                ):
-                    continuity_basis = (
-                        "terminal_committed_fact_equivalence"
-                    )
-                    continuity_signature = _canonical_sha256(
-                        item["reply_fact_evidence"]
-                    )
-                    physical_identity_confirmed = False
-                else:
-                    # The fact is formally committed, but a fresh OCR frame
-                    # cannot prove that a same-looking physical media row is
-                    # still the same object.  The Worker must fail closed at
-                    # comparison time instead of treating content equality as
-                    # physical continuity.
-                    continuity_basis = "unproven_media_continuity"
-                    continuity_signature = ""
-                    physical_identity_confirmed = False
+    for item in fact_items:
         committed_tail.append(
             {
-                **{
-                    str(key): (
-                        dict(value)
-                        if key == "reply_fact_evidence"
-                        and isinstance(value, dict)
-                        else str(value)
-                    )
-                    for key, value in item.items()
-                },
-                "continuity_basis": continuity_basis,
-                "continuity_signature": continuity_signature,
-                "physical_identity_confirmed": (
-                    physical_identity_confirmed
-                ),
+                str(key): (
+                    dict(value)
+                    if key in {
+                        "reply_fact_evidence",
+                        "business_projection",
+                        "strong_boundary_anchor",
+                        "message_identity_commit_record",
+                        "message_identity_runtime_evidence",
+                    }
+                    and isinstance(value, dict)
+                    else list(value)
+                    if key == "strong_boundary_tokens"
+                    and isinstance(value, list)
+                    else str(value)
+                )
+                for key, value in item.items()
             }
         )
     normalized_baseline_kind = str(baseline_kind or "").strip()

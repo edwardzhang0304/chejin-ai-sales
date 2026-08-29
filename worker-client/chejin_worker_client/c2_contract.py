@@ -288,4 +288,42 @@ def sidecar_contract_error(payload: dict[str, Any], *, require_observations: boo
 
     if contains_forbidden_identity(payload):
         return "C2_SIDECAR_IDENTITY_CONTRACT_INVALID"
+
+    observations = payload.get("observations")
+    if isinstance(observations, list):
+        seen_observation_ids: set[str] = set()
+        stable_voice_anchor_owners: dict[str, str] = {}
+        for observation in observations:
+            if not isinstance(observation, dict):
+                continue
+            observation_id = str(
+                observation.get("observation_id") or ""
+            ).strip()
+            if observation_id:
+                if observation_id in seen_observation_ids:
+                    return "C2_SIDECAR_IDENTITY_CONTRACT_INVALID"
+                seen_observation_ids.add(observation_id)
+            source = (
+                observation.get("source_message")
+                if isinstance(observation.get("source_message"), dict)
+                else {}
+            )
+            # Sidecar is the sole same-frame voice merger.  Worker does not
+            # compare structural aliases or geometry and never tries to pick
+            # a winner.  It only rejects an explicit stable anchor that the
+            # Sidecar assigned to two different observations, which means the
+            # Sidecar contract has not converged to one observation per row.
+            stable_voice_anchors = {
+                str(value).strip()
+                for value in (
+                    observation.get("voice_anchor_stable_key"),
+                    source.get("voice_anchor_stable_key"),
+                )
+                if str(value or "").strip()
+            }
+            for anchor in stable_voice_anchors:
+                owner = stable_voice_anchor_owners.get(anchor)
+                if owner is not None and owner != observation_id:
+                    return "C2_SIDECAR_IDENTITY_CONTRACT_INVALID"
+                stable_voice_anchor_owners[anchor] = observation_id
     return ""

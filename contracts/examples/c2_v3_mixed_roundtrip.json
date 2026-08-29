@@ -59,23 +59,35 @@
           "observation_id": "fixture-voice-1",
           "sender_role": "customer",
           "message_type": "voice",
-      "proof": {
-        "canonical_action_id": "fixture-voice-action-1",
-        "reserved_worker_stable_id": "worker-message-2",
-        "pre_observation_id": "fixture-voice-1",
-        "post_observation_id": "fixture-voice-1",
-        "selected_action_token": "fixture-voice-token-1",
-        "binding_confirmed": true
+        "proof": {
+          "canonical_action_id": "fixture-voice-action-1",
+          "reserved_worker_stable_id": "worker-message-2",
+          "pre_observation_id": "fixture-voice-1",
+          "trigger_observation_id": "fixture-voice-1",
+          "post_observation_id": "fixture-voice-1",
+          "selected_action_token": "fixture-voice-token-1",
+          "physical_identity_inherited_from_prepare": false,
+          "physical_action_count": 1,
+          "result_candidate_count": 1,
+          "stable_business_content_signature": "48804e95d963300168d7340497bc273fb9171e7bc7cbe7a7e6f96587f3395d05",
+          "result_screen_order": 1,
+          "binding_confirmed": true
       }
         },
         "_worker_voice_action_summary": {
           "confirmed_action_mapping": {
             "canonical_action_id": "fixture-voice-action-1",
-            "reserved_worker_stable_id": "worker-message-2",
-            "pre_observation_id": "fixture-voice-1",
-            "post_observation_id": "fixture-voice-1",
-            "selected_action_token": "fixture-voice-token-1",
-            "binding_confirmed": true
+          "reserved_worker_stable_id": "worker-message-2",
+          "pre_observation_id": "fixture-voice-1",
+          "trigger_observation_id": "fixture-voice-1",
+          "post_observation_id": "fixture-voice-1",
+          "selected_action_token": "fixture-voice-token-1",
+          "physical_identity_inherited_from_prepare": false,
+          "physical_action_count": 1,
+          "result_candidate_count": 1,
+          "stable_business_content_signature": "48804e95d963300168d7340497bc273fb9171e7bc7cbe7a7e6f96587f3395d05",
+          "result_screen_order": 1,
+          "binding_confirmed": true
           }
         },
         "row_kind": "voice_transcript",
@@ -100,14 +112,18 @@
         "_worker_stable_id": "worker-message-3",
         "_worker_identity_scope": "committed",
         "_worker_image_action_summary": {
-          "confirmed_action_mapping": {
-            "canonical_action_id": "fixture-image-action-1",
-            "reserved_worker_stable_id": "worker-message-3",
-            "pre_observation_id": "fixture-image-1",
-            "post_observation_id": "fixture-image-1",
-            "binding_confirmed": true
-          },
-          "image_visual_fingerprint": "dhash64:0123456789abcdef"
+        "confirmed_action_mapping": {
+          "canonical_action_id": "fixture-image-action-1",
+          "reserved_worker_stable_id": "worker-message-3",
+          "pre_observation_id": "fixture-image-1",
+          "trigger_observation_id": "fixture-image-1",
+          "post_observation_id": "fixture-image-1",
+          "physical_identity_inherited_from_prepare": false,
+          "result_screen_order": 2,
+          "binding_confirmed": true
+        },
+        "image_sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "result_screen_order": 2
         },
         "_worker_committed_message": {
           "object_type": "committed_message",
@@ -118,11 +134,14 @@
           "message_type": "image",
       "proof": {
         "canonical_action_id": "fixture-image-action-1",
-        "reserved_worker_stable_id": "worker-message-3",
-        "pre_observation_id": "fixture-image-1",
-        "post_observation_id": "fixture-image-1",
-        "binding_confirmed": true,
-        "image_visual_fingerprint": "dhash64:0123456789abcdef"
+          "reserved_worker_stable_id": "worker-message-3",
+          "pre_observation_id": "fixture-image-1",
+          "trigger_observation_id": "fixture-image-1",
+          "post_observation_id": "fixture-image-1",
+          "physical_identity_inherited_from_prepare": false,
+          "result_screen_order": 2,
+          "binding_confirmed": true,
+          "image_sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
       }
         },
         "row_kind": "image_bubble",

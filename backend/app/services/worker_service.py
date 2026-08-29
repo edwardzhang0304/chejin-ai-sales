@@ -424,7 +424,7 @@ def finish_inflight_flow(
                 "error_code": payload.error_code,
             },
         )
-    else:
+    elif payload.terminal_kind == "read_failed_no_fact":
         if (
             flow_kind != "c2_read"
             or not payload.conversation_id
@@ -459,6 +459,37 @@ def finish_inflight_flow(
                 "flow_id": payload.flow_id,
                 "conversation_id": payload.conversation_id,
                 "error_code": payload.error_code,
+            },
+        )
+    else:
+        if (
+            flow_kind != "c2_read"
+            or not payload.conversation_id
+            or not payload.error_code
+        ):
+            raise AppError(
+                "WORKER_INFLIGHT_FLOW_TERMINAL_KIND_INVALID",
+                "技术故障终态必须携带会话和错误码",
+                409,
+            )
+        if worker.run_status != "faulted":
+            raise AppError(
+                "WORKER_INFLIGHT_FLOW_NOT_SETTLED",
+                "客户端进入 faulted 前不能结束技术故障流程",
+                409,
+            )
+        write_log(
+            db,
+            actor,
+            event_type="worker_inflight_technical_failed",
+            module="worker",
+            target_type="worker",
+            target_id=worker.id,
+            metadata={
+                "flow_id": payload.flow_id,
+                "conversation_id": payload.conversation_id,
+                "error_code": payload.error_code,
+                "handoff_created": False,
             },
         )
     worker.inflight_flow_state = {}

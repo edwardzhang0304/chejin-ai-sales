@@ -15,12 +15,6 @@ from ..clipboard_payload import ephemeral_image_from_memory
 from ..ports import VisionHostPorts
 from .wechat import (
     find_copy_menu_item,
-    image_visual_fingerprint_distance,
-)
-from .visual_fingerprint import (
-    clipboard_payload_fingerprint,
-    crop_fingerprint,
-    fingerprints_match,
 )
 from .slot_identity import (
     match_image_slot as _bubble_match_evidence,
@@ -276,12 +270,16 @@ def _acquire_current_image_via_ports(
     if sender_role not in {"customer", "self"}:
         return fail("image_sender_role_untrusted")
     expected_anchor = data.get("image_physical_anchor")
-    if not isinstance(expected_anchor, dict) or not str(
-        expected_anchor.get("bubble_visual_fingerprint") or ""
-    ).strip():
-        return fail("image_slot_identity_missing")
-    if _bounds(data.get("bubble_rect")) is None:
-        return fail("image_bubble_rect_missing")
+    if not isinstance(expected_anchor, dict):
+        expected_anchor = {}
+    try:
+        expected_business_screen_order = int(
+            data.get("expected_business_screen_order")
+        )
+    except (TypeError, ValueError):
+        return fail("image_action_policy_missing")
+    if expected_business_screen_order < 0:
+        return fail("image_action_policy_missing")
     side_filter = "all"
     if str(data.get("side_filter") or "all").strip().lower() not in {"customer", "self", "all"}:
         return fail("image_clipboard_side_filter_invalid")
@@ -362,57 +360,6 @@ def _acquire_current_image_via_ports(
             image_size = getattr(surface, "size", None) or tuple(frame.get("image_size") or ())
             if surface is None or len(image_size) != 2:
                 return fail("vision_window_frame_invalid")
-            expected_viewport_digest = str(
-                data.get("expected_message_viewport_change_digest") or ""
-            ).strip()
-            current_viewport_digest = str(
-                frame.get("message_viewport_change_digest") or ""
-            ).strip()
-            viewport_guard_required = bool(
-                data.get("message_viewport_guard_required")
-                or expected_viewport_digest
-            )
-            if viewport_guard_required and (
-                not expected_viewport_digest
-                or not current_viewport_digest
-            ):
-                return fail(
-                    "C2_PRE_SEND_LAYOUT_INVALID",
-                    state="worker_environment_failed",
-                    transaction={
-                        "expected_message_viewport_change_digest": (
-                            expected_viewport_digest
-                        ),
-                        "current_message_viewport_change_digest": (
-                            current_viewport_digest
-                        ),
-                        "message_viewport_change_evidence": dict(
-                            frame.get("message_viewport_change_evidence") or {}
-                        ),
-                    },
-                )
-            if (
-                viewport_guard_required
-                and current_viewport_digest != expected_viewport_digest
-            ):
-                return fail(
-                    "C2_IMAGE_REIDENTIFICATION_REQUIRED",
-                    state="image_reidentification_required",
-                    transaction={
-                        "expected_message_viewport_change_digest": (
-                            expected_viewport_digest
-                        ),
-                        "current_message_viewport_change_digest": (
-                            current_viewport_digest
-                        ),
-                        "message_viewport_change_evidence": dict(
-                            frame.get("message_viewport_change_evidence") or {}
-                        ),
-                        "candidate_count": len(
-                            frame.get("messages") or []
-                        ),
-                    },
-                )
             target_proof = ports.conversation_target.confirm_target(
                 {**data, "candidate_frame": frame}
             )
@@ -429,26 +376,6 @@ def _acquire_current_image_via_ports(
                 ).strip().lower()
                 == "image"
             ]
-            expected_candidate_group_count = int(
-                data.get("expected_image_candidate_group_count") or 0
-            )
-            if "expected_image_candidate_group_count" in data and (
-                expected_candidate_group_count <= 0
-                or len(current_candidates)
-                != expected_candidate_group_count
-            ):
-                return fail(
-                    "C2_IMAGE_REIDENTIFICATION_REQUIRED",
-                    state="image_reidentification_required",
-                    transaction={
-                        "expected_candidate_group_count": (
-                            expected_candidate_group_count
-                        ),
-                        "current_candidate_group_count": len(
-                            current_candidates
-                        ),
-                    },
-                )
             if not current_candidates:
                 return fail(
                     "C2_PRE_SEND_IMAGE_TARGET_NOT_FOUND",
@@ -459,13 +386,16 @@ def _acquire_current_image_via_ports(
                 expected_anchor=expected_anchor,
                 expected_role=sender_role,
                 expected_bounds=data.get("bubble_rect"),
+                expected_business_screen_order=(
+                    expected_business_screen_order
+                ),
             )
             if match_evidence.get("state") == "not_visible":
                 return fail(
                     "C2_PRE_SEND_IMAGE_TARGET_NOT_FOUND",
                     state="image_not_visible",
                     transaction={
-                        "slot_identity_evidence": match_evidence,
+                        "current_frame_selection_evidence": match_evidence,
                     },
                 )
             bubble = dict(match_evidence.get("bubble") or {})
@@ -479,13 +409,42 @@ def _acquire_current_image_via_ports(
                         if match_state == "role_mismatch"
                         else "C2_PRE_SEND_IMAGE_TARGET_AMBIGUOUS"
                     ),
-                    state="image_identity_failed",
+                    state="image_target_selection_failed",
                     transaction={
-                        "slot_identity_evidence": match_evidence,
+                        "current_frame_selection_evidence": match_evidence,
                     },
                 )
             if _cancelled(data):
                 return fail("vision_cancelled")
+            action_frame_observations = [
+                dict(item)
+                for item in (frame.get("observations") or [])
+                if isinstance(item, dict)
+            ]
+            try:
+                actual_business_screen_order = int(
+                    bubble.get("_current_business_screen_order")
+                )
+            except (TypeError, ValueError):
+                return fail(
+                    "C2_IMAGE_SLOT_RECONFIRM_FAILED",
+                    state="image_target_selection_failed",
+                    transaction={
+                        "current_frame_selection_evidence": (
+                            match_evidence
+                        ),
+                    },
+                )
+            if not action_frame_observations:
+                return fail(
+                    "C2_IMAGE_SLOT_RECONFIRM_FAILED",
+                    state="image_target_selection_failed",
+                    transaction={
+                        "current_frame_selection_evidence": (
+                            match_evidence
+                        ),
+                    },
+                )
             # Message ownership is decided by C2's same-row avatar contract.
             # Vision geometry is used only to click the already-authorized slot.
             direction = sender_role
@@ -496,15 +455,6 @@ def _acquire_current_image_via_ports(
             ]
             if len(current_bounds) != 4 or _bounds(current_bounds) is None:
                 return fail("image_bubble_current_bounds_missing")
-            try:
-                expected_clipboard_fingerprint = crop_fingerprint(
-                    surface,
-                    current_bounds,
-                )
-            except Exception:
-                expected_clipboard_fingerprint = {}
-            if not expected_clipboard_fingerprint:
-                return fail("image_bubble_clipboard_fingerprint_missing")
             sequence_before = ports.clipboard.sequence_number()
             right_click_result = ports.ui_action.right_click(
                 int(anchor.get("x") or 0),
@@ -783,34 +733,10 @@ def _acquire_current_image_via_ports(
                 payload.release()
                 acquired_payload = None
                 return fail("vision_cancelled")
-            actual_clipboard_fingerprint = clipboard_payload_fingerprint(
-                payload
-            )
-            clipboard_matches_target = fingerprints_match(
-                expected_clipboard_fingerprint,
-                actual_clipboard_fingerprint,
-            )
-            if not clipboard_matches_target:
-                payload.release()
-                acquired_payload = None
-                return fail(
-                    "clipboard_image_fingerprint_mismatch",
-                    state="image_action_result_unconfirmed",
-                    transaction={
-                        "status": "clipboard_rejected",
-                        "right_click_ok": True,
-                        "menu_copy_confirmed": True,
-                        "clipboard_sequence_changed": True,
-                        "clipboard_content_read": True,
-                        "clipboard_image_valid": True,
-                        "clipboard_image_matches_target": False,
-                        "physical_action_may_have_occurred": True,
-                        "automatic_retry_allowed": False,
-                    },
-                )
-            # Clearing is permitted only after the copied bitmap is proven to
-            # match the target slot. A stable but mismatched generation may
-            # belong to a concurrent user clipboard action.
+            # The new clipboard generation was produced after this verified
+            # menu action and stayed stable during the bitmap read.  That is
+            # the action result. A crop of the chat bubble is never compared
+            # with the copied bytes and never acts as image identity.
             owned_clipboard_sequence = int(sequence_after)
             clear_result = clear_owned_clipboard()
             if clear_result.get("ok") is not True:
@@ -832,7 +758,7 @@ def _acquire_current_image_via_ports(
                         "clipboard_sequence_changed": True,
                         "clipboard_content_read": True,
                         "clipboard_image_valid": True,
-                        "clipboard_image_matches_target": True,
+                        "clipboard_bound_to_action": True,
                         "clipboard_cleared": False,
                         "clipboard_clear_reason": str(
                             clear_result.get("reason") or ""
@@ -841,12 +767,14 @@ def _acquire_current_image_via_ports(
                 )
             image_sha256 = hashlib.sha256(bytes(payload.image_bytes)).hexdigest()
             visual_side = str(
-                (bubble.get("identity_match_evidence") or {}).get(
-                    "visual_side"
-                )
+                bubble.get("sender_role")
+                or bubble.get("sender")
                 or bubble.get("side")
                 or "unknown"
             ).strip().lower()
+            trigger_observation_id = str(
+                bubble.get("id") or bubble.get("message_id") or ""
+            ).strip()
             if callable(journal_update):
                 journal_update(
                     action_phase="confirmed",
@@ -876,7 +804,7 @@ def _acquire_current_image_via_ports(
                     "clipboard_sequence_changed": True,
                     "clipboard_content_read": True,
                     "clipboard_image_valid": True,
-                    "clipboard_image_matches_target": True,
+                    "clipboard_bound_to_action": True,
                     "clipboard_cleared": bool(
                         clear_result.get(
                             "cleared",
@@ -892,9 +820,20 @@ def _acquire_current_image_via_ports(
                         visual_side in {"customer", "self"}
                         and visual_side == direction
                     ),
-                    "slot_identity_confirmed": True,
-                    "slot_identity_evidence": dict(
-                        bubble.get("identity_match_evidence") or {}
+                    "current_frame_target_selected": True,
+                    "current_frame_selection_evidence": dict(
+                        bubble.get("current_frame_selection_evidence") or {}
+                    ),
+                    "physical_identity_inherited_from_prepare": False,
+                    "trigger_observation_id": trigger_observation_id,
+                    "trigger_business_screen_order": (
+                        actual_business_screen_order
+                    ),
+                    "action_frame_observations": (
+                        action_frame_observations
+                    ),
+                    "action_frame_layout_snapshot_id": str(
+                        frame.get("layout_snapshot_id") or ""
                     ),
                     "current_bubble_rect": list(bubble.get("bounds") or []),
                     "image_sha256": image_sha256,

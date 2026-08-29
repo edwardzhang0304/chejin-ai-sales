@@ -3,12 +3,14 @@ from __future__ import annotations
 import json
 import os
 import io
+import hashlib
 import random
 import sys
 import tempfile
 import threading
 import unittest
 from contextlib import nullcontext
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -132,11 +134,10 @@ from chejin_worker_client.action_journal import (
 from chejin_worker_client.wechat_c2 import (
     apply_image_terminal_result,
 )
-from chejin_worker_client.sequence_alignment import (
-    align_committed_message_sequence,
-    build_post_action_observation_sequence,
-    build_pre_action_identity_sequence,
-    inherited_worker_ids,
+from chejin_worker_client.message_viewport_projection import (
+    compare_business_viewport_continuity,
+    normalized_business_message_sequence,
+    ordered_message_viewport_observations,
 )
 from apps.wechat_ai_customer_service.optional_plugins.vision.capture import transaction
 from apps.wechat_ai_customer_service.optional_plugins.vision.capture import wechat as wechat_capture
@@ -243,7 +244,7 @@ class C2VisionIntegrationTests(unittest.TestCase):
             bubbles,
             list(messages or []),
         )
-        for item in observed:
+        for screen_order, item in enumerate(observed):
             bounds = list(
                 item.get("bounds") or item.get("bubble_rect") or []
             )
@@ -252,13 +253,149 @@ class C2VisionIntegrationTests(unittest.TestCase):
             item["bubble_rect"] = bounds
             item["bounds"] = bounds
             item.setdefault(
+                "_current_business_screen_order",
+                screen_order,
+            )
+            item.setdefault(
                 "anchor",
                 {
                     "x": int((bounds[0] + bounds[2]) / 2),
                     "y": int((bounds[1] + bounds[3]) / 2),
                 },
             )
+            item.setdefault(
+                "id",
+                f"current-frame-image-{screen_order}",
+            )
+            item.setdefault("message_id", item["id"])
+            item.setdefault("observation_id", item["id"])
+            item.setdefault("row_kind", "image_bubble")
+            item.setdefault(
+                "sender_role_source",
+                "same_row_avatar",
+            )
         return observed
+
+    @staticmethod
+    def acquire_approved_current_image(
+        ports: VisionHostPorts,
+        request: dict,
+    ) -> dict:
+        """Run the real image transaction with a Worker action policy.
+
+        The older port-level tests predate the rule that only a Worker-
+        approved current business occurrence may reach the image plugin.  The
+        helper supplies that production prerequisite; it does not stub target
+        matching, clicks, clipboard reads, receipts or Vision results.
+        """
+
+        raw_window_frame = ports.window_frame
+        if raw_window_frame is None:
+            raise AssertionError("window_frame_port_missing")
+
+        def capture_normalized_frame(context):
+            frame = raw_window_frame.capture_frame(context)
+            if (
+                context.get("phase") != "image_candidate"
+                or not isinstance(frame, dict)
+                or frame.get("ok") is not True
+                or isinstance(frame.get("observations"), list)
+            ):
+                return frame
+            image = frame.get("image")
+            if image is None:
+                raise AssertionError("candidate_frame_image_missing")
+            messages = [
+                dict(item)
+                for item in (frame.get("messages") or [])
+                if isinstance(item, dict)
+            ]
+            layout = _test_layout_snapshot(image)
+            layout_evidence = {
+                "ok": True,
+                "layout_snapshot_id": str(
+                    layout.get("layout_snapshot_id") or ""
+                ),
+                "chat_header_bounds": list(
+                    layout.get("chat_header_bounds") or []
+                ),
+                "message_viewport_bounds": list(
+                    layout.get("message_viewport_bounds") or []
+                ),
+                "input_bounds": list(layout.get("input_bounds") or []),
+            }
+            observations = (
+                wechat_win32_ocr_sidecar.build_message_observations_v3(
+                    messages
+                )
+            )
+            geometry_evidence = (
+                wechat_win32_ocr_sidecar
+                .build_message_viewport_change_evidence(
+                    observations,
+                    layout_evidence=layout_evidence,
+                )
+            )
+            business_guard = (
+                wechat_win32_ocr_sidecar.build_send_context_guard(
+                    observations,
+                    layout_evidence=layout_evidence,
+                )
+            )
+            if business_guard.get("ok") is not True:
+                raise AssertionError(
+                    "candidate_frame_production_normalization_failed:"
+                    + str(business_guard.get("reason") or "unknown")
+                )
+            business_order_by_id = {
+                str(item.get("observation_id") or "").strip(): order
+                for order, item in enumerate(
+                    ordered_message_viewport_observations(observations)
+                )
+                if str(item.get("observation_id") or "").strip()
+            }
+            # Use the same observation ordering produced by the formal
+            # parser. Raw test messages remain the geometry-bearing rows that
+            # the image action uses in this one frame.
+            for order, message in enumerate(messages):
+                message_id = str(
+                    message.get("id")
+                    or message.get("message_id")
+                    or message.get("observation_id")
+                    or ""
+                ).strip()
+                message["_current_business_screen_order"] = int(
+                    business_order_by_id.get(message_id, order)
+                )
+            return {
+                **frame,
+                "messages": messages,
+                "observations": observations,
+                "geometry_evidence": geometry_evidence,
+                "message_viewport_change_evidence": business_guard,
+                "message_viewport_change_digest": str(
+                    business_guard.get(
+                        "message_viewport_change_digest"
+                    )
+                    or ""
+                ),
+                "layout_snapshot_id": str(
+                    layout.get("layout_snapshot_id") or ""
+                ),
+            }
+
+        normalized_ports = replace(
+            ports,
+            window_frame=SimpleNamespace(
+                capture_frame=capture_normalized_frame
+            ),
+        )
+        approved_request = dict(request)
+        approved_request.setdefault("expected_business_screen_order", 0)
+        return transaction.acquire_current_image_via_ports(
+            normalized_ports,
+            approved_request,
+        )
 
     def test_c2_role_remains_authoritative_when_visual_side_conflicts(self):
         screenshot = Image.new("RGB", (800, 700), "white")
@@ -284,27 +421,22 @@ class C2VisionIntegrationTests(unittest.TestCase):
                 "occurrence_index": 0,
                 "occurrence_count": 1,
             },
+            "_current_business_screen_order": 0,
         }
         match = transaction._bubble_match_evidence(
             [current_candidate],
             expected_anchor=expected_anchor,
             expected_role="customer",
+            expected_business_screen_order=0,
         )
 
         self.assertEqual(match["state"], "matched")
         matched = match["bubble"]
         self.assertTrue(matched)
-        evidence = matched["identity_match_evidence"]
-        self.assertEqual(
-            evidence["expected_c2_sender_role"],
-            "customer",
-        )
-        self.assertEqual(
-            evidence["refreshed_c2_sender_role"],
-            "customer",
-        )
-        self.assertEqual(evidence["visual_side"], "self")
-        self.assertFalse(evidence["visual_side_consistent"])
+        evidence = matched["current_frame_selection_evidence"]
+        self.assertEqual(evidence["sender_role"], "customer")
+        self.assertFalse(evidence["physical_identity_inherited_from_prepare"])
+        self.assertEqual(matched["side"], "self")
         screenshot.close()
 
     def test_refreshed_c2_role_change_blocks_image_click(self):
@@ -330,19 +462,17 @@ class C2VisionIntegrationTests(unittest.TestCase):
                 "occurrence_index": 0,
                 "occurrence_count": 1,
             },
+            "_current_business_screen_order": 0,
         }
         match = transaction._bubble_match_evidence(
             [current_candidate],
             expected_anchor=expected_anchor,
             expected_role="customer",
+            expected_business_screen_order=0,
         )
 
         self.assertEqual(match["state"], "role_mismatch")
         self.assertEqual(match["bubble"], {})
-        self.assertEqual(
-            match["role_conflicts"][0]["refreshed_c2_sender_role"],
-            "self",
-        )
         screenshot.close()
 
     def test_refreshed_unknown_c2_role_blocks_image_click(self):
@@ -366,19 +496,17 @@ class C2VisionIntegrationTests(unittest.TestCase):
                 "occurrence_index": 0,
                 "occurrence_count": 1,
             },
+            "_current_business_screen_order": 0,
         }
         match = transaction._bubble_match_evidence(
             [current_candidate],
             expected_anchor=expected_anchor,
             expected_role="customer",
+            expected_business_screen_order=0,
         )
 
         self.assertEqual(match["state"], "role_mismatch")
         self.assertEqual(match["bubble"], {})
-        self.assertEqual(
-            match["role_conflicts"][0]["refreshed_c2_sender_role"],
-            "unknown",
-        )
         screenshot.close()
 
     def test_refreshed_c2_role_mismatch_never_right_clicks(self):
@@ -408,6 +536,7 @@ class C2VisionIntegrationTests(unittest.TestCase):
                         "sender_role": refreshed_role,
                         "visual_side": "customer",
                     },
+                    "_current_business_screen_order": 0,
                 }
                 ports = VisionHostPorts(
                     rpa_lease=SimpleNamespace(
@@ -428,7 +557,7 @@ class C2VisionIntegrationTests(unittest.TestCase):
                     ui_action=actions,
                     clipboard=SimpleNamespace(),
                 )
-                result = transaction.acquire_current_image_via_ports(
+                result = self.acquire_approved_current_image(
                     ports,
                     {
                         "sender_role": "customer",
@@ -745,6 +874,10 @@ class C2VisionIntegrationTests(unittest.TestCase):
                     "messages": [
                         dict(item) for item in observed_images
                     ],
+                    "observations": [
+                        dict(item) for item in observed_images
+                    ],
+                    "layout_snapshot_id": "layout-candidate-reuse",
                     "time_markers": [],
                 }
 
@@ -783,7 +916,7 @@ class C2VisionIntegrationTests(unittest.TestCase):
             "find_copy_menu_item",
             return_value={"x": 620, "y": 320, "bounds": [600, 300, 650, 340]},
         ):
-            result = transaction.acquire_current_image_via_ports(
+            result = self.acquire_approved_current_image(
                 ports,
                 {
                     "sender_role": "customer",
@@ -874,7 +1007,7 @@ class C2VisionIntegrationTests(unittest.TestCase):
             "find_copy_menu_item",
             return_value={"x": 620, "y": 320, "bounds": [600, 300, 650, 340]},
         ):
-            result = transaction.acquire_current_image_via_ports(
+            result = self.acquire_approved_current_image(
                 ports,
                 {
                     "sender_role": "customer",
@@ -1069,7 +1202,7 @@ class C2VisionIntegrationTests(unittest.TestCase):
                 "bounds": [600, 300, 650, 340],
             },
         ):
-            result = transaction.acquire_current_image_via_ports(
+            result = self.acquire_approved_current_image(
                 ports,
                 {
                     "sender_role": "customer",
@@ -1569,7 +1702,7 @@ class C2VisionIntegrationTests(unittest.TestCase):
                 "bounds": [600, 300, 650, 340],
             },
         ):
-            result = transaction.acquire_current_image_via_ports(
+            result = self.acquire_approved_current_image(
                 ports,
                 {
                     "sender_role": "customer",
@@ -1622,7 +1755,7 @@ class C2VisionIntegrationTests(unittest.TestCase):
                 "bounds": [600, 300, 650, 340],
             },
         ):
-            failed = transaction.acquire_current_image_via_ports(
+            failed = self.acquire_approved_current_image(
                 failed_ports,
                 {
                     "sender_role": "customer",
@@ -1718,7 +1851,7 @@ class C2VisionIntegrationTests(unittest.TestCase):
                 "bounds": [600, 300, 680, 340],
             },
         ):
-            result = transaction.acquire_current_image_via_ports(
+            result = self.acquire_approved_current_image(
                 VisionHostPorts(
                     rpa_lease=SimpleNamespace(
                         lease=lambda *_args, **_kwargs: nullcontext()
@@ -1855,7 +1988,7 @@ class C2VisionIntegrationTests(unittest.TestCase):
             "find_copy_menu_item",
             return_value=copy_item,
         ):
-            result = transaction.acquire_current_image_via_ports(
+            result = self.acquire_approved_current_image(
                 VisionHostPorts(
                     rpa_lease=SimpleNamespace(
                         lease=lambda *_args, **_kwargs: nullcontext()
@@ -1941,7 +2074,7 @@ class C2VisionIntegrationTests(unittest.TestCase):
             "find_copy_menu_item",
             return_value=copy_item,
         ):
-            result = transaction.acquire_current_image_via_ports(
+            result = self.acquire_approved_current_image(
                 VisionHostPorts(
                     rpa_lease=SimpleNamespace(
                         lease=lambda *_args, **_kwargs: nullcontext()
@@ -2026,7 +2159,7 @@ class C2VisionIntegrationTests(unittest.TestCase):
             "find_copy_menu_item",
             return_value=copy_item,
         ):
-            result = transaction.acquire_current_image_via_ports(
+            result = self.acquire_approved_current_image(
                 VisionHostPorts(
                     rpa_lease=SimpleNamespace(
                         lease=lambda *_args, **_kwargs: nullcontext()
@@ -2120,6 +2253,8 @@ class C2VisionIntegrationTests(unittest.TestCase):
                     "image": image.copy(),
                     "image_size": image.size,
                     "messages": [dict(observed)],
+                    "observations": [dict(observed)],
+                    "layout_snapshot_id": "layout-menu-negative",
                     "time_markers": [],
                     "ocr_items": [],
                     "screen_origin": [0, 0],
@@ -2140,7 +2275,7 @@ class C2VisionIntegrationTests(unittest.TestCase):
                 "find_copy_menu_item",
                 return_value=copy_item,
             ):
-                result = transaction.acquire_current_image_via_ports(
+                result = self.acquire_approved_current_image(
                     VisionHostPorts(
                         rpa_lease=SimpleNamespace(
                             lease=lambda *_args, **_kwargs: nullcontext()
@@ -2261,7 +2396,7 @@ class C2VisionIntegrationTests(unittest.TestCase):
                 "bounds": [600, 300, 650, 340],
             },
         ):
-            result = transaction.acquire_current_image_via_ports(
+            result = self.acquire_approved_current_image(
                 ports,
                 {
                     "sender_role": "customer",
@@ -2371,7 +2506,7 @@ class C2VisionIntegrationTests(unittest.TestCase):
                 "bounds": [600, 300, 650, 340],
             },
         ):
-            result = transaction.acquire_current_image_via_ports(
+            result = self.acquire_approved_current_image(
                 ports,
                 {
                     "sender_role": "customer",
@@ -2484,7 +2619,7 @@ class C2VisionIntegrationTests(unittest.TestCase):
                 side_effect=tracked_ephemeral,
             ),
         ):
-            result = transaction.acquire_current_image_via_ports(
+            result = self.acquire_approved_current_image(
                 ports,
                 {
                     "sender_role": "customer",
@@ -2566,6 +2701,13 @@ class C2VisionIntegrationTests(unittest.TestCase):
             image,
             bubbles,
         )
+        for screen_order, observed in enumerate(observed_images):
+            observed["_current_business_screen_order"] = screen_order
+            observed["id"] = f"current-image-{screen_order}"
+            observed["message_id"] = observed["id"]
+            observed["observation_id"] = observed["id"]
+            observed["row_kind"] = "image_bubble"
+            observed["sender_role_source"] = "same_row_avatar"
         ports = VisionHostPorts(
             rpa_lease=SimpleNamespace(
                 lease=lambda *_args, **_kwargs: nullcontext()
@@ -2581,6 +2723,10 @@ class C2VisionIntegrationTests(unittest.TestCase):
                     "messages": [
                         dict(item) for item in observed_images
                     ],
+                    "observations": [
+                        dict(item) for item in observed_images
+                    ],
+                    "layout_snapshot_id": "layout-two-images",
                     "time_markers": [],
                     "ocr_items": [],
                     "menu_panel_bounds": [580, 280, 680, 360],
@@ -2602,7 +2748,7 @@ class C2VisionIntegrationTests(unittest.TestCase):
         ):
             for occurrence_index, bubble in enumerate(observed_images):
                 results.append(
-                    transaction.acquire_current_image_via_ports(
+                    self.acquire_approved_current_image(
                         ports,
                         {
                             "sender_role": "customer",
@@ -2610,6 +2756,9 @@ class C2VisionIntegrationTests(unittest.TestCase):
                             "image_physical_anchor": bubble[
                                 "image_physical_anchor"
                             ],
+                            "expected_business_screen_order": (
+                                occurrence_index
+                            ),
                         },
                     )
                 )
@@ -2787,6 +2936,8 @@ class C2VisionIntegrationTests(unittest.TestCase):
             current_bubbles,
             messages=current_messages,
         )
+        current_observed_images[0]["_current_business_screen_order"] = 1
+        current_observed_images[1]["_current_business_screen_order"] = 3
         def capture_current_frame(context):
             if str((context or {}).get("phase") or "") == "image_context_menu":
                 action_state.current_frame_hwnd = 27182
@@ -2802,6 +2953,10 @@ class C2VisionIntegrationTests(unittest.TestCase):
                     *current_messages,
                     *(dict(item) for item in current_observed_images),
                 ],
+                "observations": [
+                    dict(item) for item in current_observed_images
+                ],
+                "layout_snapshot_id": "main-layout-1",
                 "time_markers": [],
                 "ocr_items": [],
                 "menu_panel_bounds": [580, 280, 680, 360],
@@ -2818,12 +2973,13 @@ class C2VisionIntegrationTests(unittest.TestCase):
                 "bounds": [600, 300, 650, 340],
             },
         ):
-            result = transaction.acquire_current_image_via_ports(
+            result = self.acquire_approved_current_image(
                 ports,
                 {
                     "sender_role": "customer",
                     "bubble_rect": old_bounds,
                     "image_physical_anchor": expected,
+                    "expected_business_screen_order": 1,
                 },
             )
 
@@ -2845,7 +3001,18 @@ class C2VisionIntegrationTests(unittest.TestCase):
         self.assertEqual(click_screen_calls[0]["hwnd"], 27182)
         self.assertEqual(click_screen_calls[0]["layout_snapshot_id"], "popup-layout-1")
         self.assertEqual(click_screen_calls[0]["bounds"], [600, 300, 650, 340])
-        self.assertTrue(result["transaction"]["slot_identity_confirmed"])
+        self.assertTrue(
+            result["transaction"]["current_frame_target_selected"]
+        )
+        self.assertFalse(
+            result["transaction"][
+                "physical_identity_inherited_from_prepare"
+            ]
+        )
+        self.assertEqual(
+            result["transaction"]["trigger_business_screen_order"],
+            1,
+        )
         self.assertEqual(
             result["transaction"]["current_bubble_rect"],
             shifted_bounds,
@@ -2856,7 +3023,7 @@ class C2VisionIntegrationTests(unittest.TestCase):
         initial.close()
         current.close()
 
-    def test_image_at_old_coordinates_is_not_clicked_when_identity_differs(self):
+    def test_old_image_pixels_do_not_override_current_worker_action_order(self):
         initial = Image.new("RGB", (800, 700), "white")
         current = Image.new("RGB", (800, 700), "white")
         target_pattern = Image.new("RGB", (200, 150), "white")
@@ -2922,13 +3089,18 @@ class C2VisionIntegrationTests(unittest.TestCase):
                         dict(item)
                         for item in current_observed_images
                     ],
+                    "observations": [
+                        dict(item)
+                        for item in current_observed_images
+                    ],
+                    "layout_snapshot_id": "layout-old-image-pixels",
                     "time_markers": [],
                 }
             ),
             ui_action=actions,
             clipboard=SimpleNamespace(sequence_number=lambda: 40),
         )
-        result = transaction.acquire_current_image_via_ports(
+        result = self.acquire_approved_current_image(
             ports,
             {
                 "sender_role": "customer",
@@ -2938,13 +3110,14 @@ class C2VisionIntegrationTests(unittest.TestCase):
         )
 
         self.assertFalse(result["ok"])
-        self.assertEqual(
+        self.assertNotIn(
             result["reason"],
-            "C2_PRE_SEND_IMAGE_TARGET_NOT_FOUND",
+            {
+                "C2_PRE_SEND_IMAGE_TARGET_NOT_FOUND",
+                "C2_PRE_SEND_IMAGE_TARGET_AMBIGUOUS",
+            },
         )
-        self.assertEqual(result["state"], "image_not_visible")
-        self.assertEqual(result["action_phase"], "not_attempted")
-        self.assertEqual(actions.right_click_count, 0)
+        self.assertEqual(actions.right_click_count, 1)
         target_pattern.close()
         replacement_pattern.close()
         initial.close()
@@ -2955,7 +3128,7 @@ class C2VisionIntegrationTests(unittest.TestCase):
         "_classify_context_menu",
         new=confirmed_image_menu_for_downstream_test,
     )
-    def test_clipboard_fingerprint_mismatch_never_reclicks_even_if_next_read_would_match(self):
+    def test_clipboard_bytes_are_the_receipt_without_bubble_pixel_comparison(self):
         frame_image = Image.new("RGB", (800, 600), "white")
         bubble_image = Image.new("RGB", (200, 140), (30, 120, 210))
         draw = ImageDraw.Draw(bubble_image)
@@ -3063,7 +3236,7 @@ class C2VisionIntegrationTests(unittest.TestCase):
                 "bounds": [600, 300, 650, 340],
             },
         ):
-            result = transaction.acquire_current_image_via_ports(
+            result = self.acquire_approved_current_image(
                 ports,
                 {
                     "sender_role": "customer",
@@ -3072,27 +3245,23 @@ class C2VisionIntegrationTests(unittest.TestCase):
                 },
             )
 
-        self.assertFalse(result["ok"], result)
-        self.assertEqual(
-            result["reason"],
-            "clipboard_image_fingerprint_mismatch",
-        )
-        self.assertEqual(result["action_phase"], "trigger_attempted")
+        self.assertTrue(result["ok"], result)
+        self.assertEqual(result["action_phase"], "confirmed")
         self.assertEqual(frames.candidate_count, 1)
         self.assertEqual(actions.right_click_count, 1)
         self.assertEqual(clipboard.reads, 1)
-        self.assertEqual(clipboard.cleared_sequences, [])
-        self.assertFalse(
-            result["transaction"]["clipboard_image_matches_target"]
-        )
+        self.assertEqual(clipboard.cleared_sequences, [11])
         self.assertEqual(
             result["transaction"]["clipboard_fingerprint_retry_count"],
             0,
         )
-        self.assertFalse(
-            result["transaction"]["automatic_retry_allowed"]
+        self.assertEqual(
+            result["transaction"]["image_sha256"],
+            hashlib.sha256(
+                bytes(result["_ephemeral_clipboard_image"].image_bytes)
+            ).hexdigest(),
         )
-        self.assertNotIn("_ephemeral_clipboard_image", result)
+        result["_ephemeral_clipboard_image"].release()
         wrong_image.close()
         bubble_image.close()
         frame_image.close()
@@ -3102,7 +3271,7 @@ class C2VisionIntegrationTests(unittest.TestCase):
         "_classify_context_menu",
         new=confirmed_image_menu_for_downstream_test,
     )
-    def test_clipboard_fingerprint_mismatch_twice_never_reaches_vision(self):
+    def test_clipboard_action_never_retries_to_match_bubble_pixels(self):
         frame_image = Image.new("RGB", (800, 600), "white")
         bubble_image = Image.new("RGB", (200, 140), (30, 120, 210))
         bounds = [430, 180, 630, 320]
@@ -3200,7 +3369,7 @@ class C2VisionIntegrationTests(unittest.TestCase):
                 "bounds": [600, 300, 650, 340],
             },
         ):
-            result = transaction.acquire_current_image_via_ports(
+            result = self.acquire_approved_current_image(
                 ports,
                 {
                     "sender_role": "customer",
@@ -3209,21 +3378,15 @@ class C2VisionIntegrationTests(unittest.TestCase):
                 },
             )
 
-        self.assertFalse(result["ok"])
-        self.assertEqual(
-            result["reason"],
-            "clipboard_image_fingerprint_mismatch",
-        )
-        self.assertEqual(result["action_phase"], "trigger_attempted")
+        self.assertTrue(result["ok"], result)
+        self.assertEqual(result["action_phase"], "confirmed")
         self.assertEqual(actions.right_click_count, 1)
-        self.assertEqual(clipboard.cleared_sequences, [])
-        self.assertFalse(
-            result["transaction"]["clipboard_image_matches_target"]
+        self.assertEqual(clipboard.cleared_sequences, [11])
+        self.assertEqual(
+            result["transaction"]["clipboard_fingerprint_retry_count"],
+            0,
         )
-        self.assertFalse(
-            result["transaction"]["automatic_retry_allowed"]
-        )
-        self.assertNotIn("_ephemeral_clipboard_image", result)
+        result["_ephemeral_clipboard_image"].release()
         wrong_image.close()
         bubble_image.close()
         frame_image.close()
@@ -3319,7 +3482,7 @@ class C2VisionIntegrationTests(unittest.TestCase):
             actual_image.close()
             expected_image.close()
 
-    def test_identical_image_is_not_clicked_when_duplicate_group_shrinks(self):
+    def test_duplicate_group_history_does_not_override_current_action_order(self):
         initial = Image.new("RGB", (800, 700), "white")
         current = Image.new("RGB", (800, 700), "white")
         first_bounds = [430, 180, 630, 320]
@@ -3386,7 +3549,7 @@ class C2VisionIntegrationTests(unittest.TestCase):
             ui_action=actions,
             clipboard=SimpleNamespace(sequence_number=lambda: 50),
         )
-        result = transaction.acquire_current_image_via_ports(
+        result = self.acquire_approved_current_image(
             ports,
             {
                 "sender_role": "customer",
@@ -3396,16 +3559,18 @@ class C2VisionIntegrationTests(unittest.TestCase):
         )
 
         self.assertFalse(result["ok"])
-        self.assertEqual(
+        self.assertNotIn(
             result["reason"],
-            "C2_PRE_SEND_IMAGE_TARGET_AMBIGUOUS",
+            {
+                "C2_PRE_SEND_IMAGE_TARGET_NOT_FOUND",
+                "C2_PRE_SEND_IMAGE_TARGET_AMBIGUOUS",
+            },
         )
-        self.assertEqual(result["action_phase"], "not_attempted")
-        self.assertEqual(actions.right_click_count, 0)
+        self.assertEqual(actions.right_click_count, 1)
         initial.close()
         current.close()
 
-    def test_changed_viewport_blocks_image_before_right_click(
+    def test_changed_viewport_digest_does_not_block_current_image_target(
         self,
     ):
         image = Image.new("RGB", (800, 700), "white")
@@ -3424,6 +3589,7 @@ class C2VisionIntegrationTests(unittest.TestCase):
         expected_anchor = dict(
             candidates[0]["image_physical_anchor"]
         )
+        candidates[0]["_current_business_screen_order"] = 0
 
         class Actions:
             right_click_count = 0
@@ -3448,6 +3614,8 @@ class C2VisionIntegrationTests(unittest.TestCase):
                     "image": image.copy(),
                     "image_size": image.size,
                     "messages": [dict(candidates[0])],
+                    "observations": [dict(candidates[0])],
+                    "layout_snapshot_id": "layout-changed-digest",
                     "message_viewport_change_digest": changed_digest,
                     "time_markers": [],
                 }
@@ -3456,7 +3624,7 @@ class C2VisionIntegrationTests(unittest.TestCase):
             clipboard=SimpleNamespace(sequence_number=lambda: 50),
         )
 
-        result = transaction.acquire_current_image_via_ports(
+        result = self.acquire_approved_current_image(
             ports,
             {
                 "sender_role": "customer",
@@ -3465,16 +3633,16 @@ class C2VisionIntegrationTests(unittest.TestCase):
                 "expected_message_viewport_change_digest": expected_digest,
                 "message_viewport_guard_required": True,
                 "c2_operation_phase": "pre_send_refresh",
+                "expected_business_screen_order": 0,
             },
         )
 
         self.assertFalse(result["ok"])
-        self.assertEqual(
+        self.assertNotEqual(
             result["reason"],
             "C2_IMAGE_REIDENTIFICATION_REQUIRED",
         )
-        self.assertEqual(result["action_phase"], "not_attempted")
-        self.assertEqual(actions.right_click_count, 0)
+        self.assertEqual(actions.right_click_count, 1)
         image.close()
 
     def test_static_unique_image_survives_neighbor_ocr_drift(self):
@@ -3506,22 +3674,30 @@ class C2VisionIntegrationTests(unittest.TestCase):
                 "occurrence_index": 0,
                 "occurrence_count": 1,
             },
+            "_current_business_screen_order": 0,
         }
         match = transaction._bubble_match_evidence(
             [current_candidate],
             expected_anchor=expected,
             expected_role="customer",
             expected_bounds=bounds,
+            expected_business_screen_order=0,
         )
 
         self.assertEqual(match["state"], "matched")
         self.assertEqual(
-            match["bubble"]["identity_match_evidence"]["match_mode"],
-            "stable_slot_with_neighbor_ocr_drift",
+            match["bubble"]["current_frame_selection_evidence"][
+                "current_business_screen_order"
+            ],
+            0,
         )
-        self.assertEqual(match["stable_slot_iou"], 1.0)
+        self.assertFalse(
+            match["bubble"]["current_frame_selection_evidence"][
+                "old_geometry_compared"
+            ]
+        )
 
-    def test_same_slot_same_dhash_different_static_image_is_ambiguous(self):
+    def test_same_slot_different_pixels_do_not_override_worker_action_order(self):
         bounds = [430, 220, 630, 360]
         expected = {
             "sender_role": "customer",
@@ -3551,6 +3727,7 @@ class C2VisionIntegrationTests(unittest.TestCase):
                 "occurrence_index": 0,
                 "occurrence_count": 1,
             },
+            "_current_business_screen_order": 0,
         }
 
         match = transaction._bubble_match_evidence(
@@ -3558,12 +3735,17 @@ class C2VisionIntegrationTests(unittest.TestCase):
             expected_anchor=expected,
             expected_role="customer",
             expected_bounds=bounds,
+            expected_business_screen_order=0,
         )
 
-        self.assertEqual(match["state"], "ambiguous")
-        self.assertEqual(match["bubble"], {})
+        self.assertEqual(match["state"], "matched")
+        self.assertFalse(
+            match["bubble"]["current_frame_selection_evidence"][
+                "old_visual_fingerprint_compared"
+            ]
+        )
 
-    def test_same_position_similar_image_with_neighbor_conflict_is_ambiguous(
+    def test_neighbor_drift_does_not_override_worker_action_order(
         self,
     ):
         bounds = [430, 220, 630, 360]
@@ -3591,6 +3773,7 @@ class C2VisionIntegrationTests(unittest.TestCase):
                 "occurrence_index": 0,
                 "occurrence_count": 1,
             },
+            "_current_business_screen_order": 0,
         }
 
         match = transaction._bubble_match_evidence(
@@ -3598,13 +3781,17 @@ class C2VisionIntegrationTests(unittest.TestCase):
             expected_anchor=expected,
             expected_role="customer",
             expected_bounds=bounds,
+            expected_business_screen_order=0,
         )
 
-        self.assertEqual(match["state"], "ambiguous")
-        self.assertEqual(match["bubble"], {})
-        self.assertEqual(match["stable_slot_iou"], 1.0)
+        self.assertEqual(match["state"], "matched")
+        self.assertFalse(
+            match["bubble"]["current_frame_selection_evidence"][
+                "old_geometry_compared"
+            ]
+        )
 
-    def test_moved_image_without_neighbor_match_remains_ambiguous(self):
+    def test_moved_image_uses_current_bounds_for_worker_action_order(self):
         original_bounds = [430, 220, 630, 360]
         moved_bounds = [430, 80, 630, 220]
         expected = {
@@ -3627,6 +3814,7 @@ class C2VisionIntegrationTests(unittest.TestCase):
                 "occurrence_index": 0,
                 "occurrence_count": 1,
             },
+            "_current_business_screen_order": 0,
         }
 
         match = transaction._bubble_match_evidence(
@@ -3634,12 +3822,16 @@ class C2VisionIntegrationTests(unittest.TestCase):
             expected_anchor=expected,
             expected_role="customer",
             expected_bounds=original_bounds,
+            expected_business_screen_order=0,
         )
 
-        self.assertEqual(match["state"], "ambiguous")
-        self.assertEqual(match["bubble"], {})
-        self.assertEqual(match["occurrence_match_count"], 1)
-        self.assertLess(match["stable_slot_iou"], 0.85)
+        self.assertEqual(match["state"], "matched")
+        self.assertEqual(match["bubble"]["bounds"], moved_bounds)
+        self.assertFalse(
+            match["bubble"]["current_frame_selection_evidence"][
+                "old_geometry_compared"
+            ]
+        )
 
     def test_capability_preflight_reports_missing_key_without_touching_plugin(self):
         status = vision_configuration_status()
@@ -3781,7 +3973,7 @@ class C2VisionIntegrationTests(unittest.TestCase):
                 "image-source-1"
             ]
             self.assertEqual(item["action_phase"], "confirmed")
-            self.assertEqual(item["business_state"], "failed")
+            self.assertEqual(item["business_state"], "technical_failed")
             self.assertFalse(item["business_result_confirmed"])
 
     def test_consumed_image_frame_action_binding_cannot_execute_again(self):
@@ -3886,6 +4078,33 @@ class C2VisionIntegrationTests(unittest.TestCase):
             action_id = "image-action-confirmed-receipt"
             reserved_id = "worker-message-1"
             source_key = "image-source-confirmed-receipt"
+            frame_binding = {
+                "schema_version": 1,
+                "status": "prepared",
+                "selection_policy": (
+                    "worker_approved_current_business_occurrence"
+                ),
+                "selected_action_token": "image-action-token",
+                "pre_frame_id": "frame-image-confirmed-receipt",
+                "selected_pre_observation_id": observation[
+                    "observation_id"
+                ],
+                "selected_target_fingerprint": "business-only",
+                "candidate_group_count": 1,
+                "ordered_frame_observations": [
+                    {
+                        "screen_order": 0,
+                        "sender_role": "customer",
+                        "message_type": "image",
+                        "normalized_content_signature": "a" * 64,
+                        "media_state": "image",
+                    }
+                ],
+                "selected_business_screen_order": 0,
+                "physical_identity_inherited_from_prepare": False,
+                "sender_role": "customer",
+                "message_type": "image",
+            }
             initialize_action_journal(
                 journal_path,
                 action_kind="image",
@@ -3913,6 +4132,9 @@ class C2VisionIntegrationTests(unittest.TestCase):
                         ),
                     }
                 ],
+                prepare_evidence={
+                    "frame_action_binding": frame_binding,
+                },
                 items=[
                     {
                         "journal_item_id": source_key,
@@ -3983,7 +4205,26 @@ class C2VisionIntegrationTests(unittest.TestCase):
                         },
                         "clipboard_transaction": {
                             "action_phase": "confirmed",
-                            "slot_identity_confirmed": True,
+                            "current_frame_target_selected": True,
+                            "physical_identity_inherited_from_prepare": False,
+                            "current_frame_selection_evidence": {
+                                "selection_policy": (
+                                    "worker_approved_current_business_occurrence"
+                                ),
+                                "current_business_screen_order": 0,
+                                "physical_identity_inherited_from_prepare": False,
+                            },
+                            "trigger_observation_id": observation[
+                                "observation_id"
+                            ],
+                            "trigger_business_screen_order": 0,
+                            "action_frame_observations": [
+                                dict(observation)
+                            ],
+                            "action_frame_layout_snapshot_id": (
+                                "layout-image-confirmed-receipt"
+                            ),
+                            "image_sha256": "a" * 64,
                         },
                     }
 
@@ -4002,6 +4243,7 @@ class C2VisionIntegrationTests(unittest.TestCase):
                     },
                     action_journal_path=journal_path,
                     action_local_id=source_key,
+                    frame_action_binding=frame_binding,
                 )
 
             self.assertEqual(result["state"], "completed")
@@ -4021,11 +4263,12 @@ class C2VisionIntegrationTests(unittest.TestCase):
                 reserved_id,
             )
             self.assertEqual(
-                terminal["image_visual_fingerprint"],
-                observation["image_physical_anchor"][
-                    "bubble_visual_fingerprint"
+                terminal["confirmed_action_mapping"][
+                    "result_screen_order"
                 ],
+                0,
             )
+            self.assertEqual(terminal["image_sha256"], "a" * 64)
 
     def test_not_attempted_menu_failure_is_terminalized_by_production_result_path(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -4080,7 +4323,7 @@ class C2VisionIntegrationTests(unittest.TestCase):
                 "image-source-menu-failure"
             ]
             self.assertEqual(item["action_phase"], "not_attempted")
-            self.assertEqual(item["business_state"], "failed")
+            self.assertEqual(item["business_state"], "technical_failed")
             self.assertFalse(item["business_result_confirmed"])
             self.assertEqual(
                 item["error_code"],
@@ -4196,7 +4439,7 @@ class C2VisionIntegrationTests(unittest.TestCase):
             item = read_action_journal(journal_path)["items"][
                 "image-source-empty"
             ]
-            self.assertEqual(item["business_state"], "failed")
+            self.assertEqual(item["business_state"], "technical_failed")
             self.assertFalse(item["business_result_confirmed"])
 
     def test_worker_adapter_calls_official_plugin_once_with_omniauto_role(self):
@@ -4682,6 +4925,12 @@ class C2VisionIntegrationTests(unittest.TestCase):
                 )
                 build_message_viewport_change_evidence = staticmethod(
                     wechat_win32_ocr_sidecar.build_message_viewport_change_evidence
+                )
+                build_send_context_guard = staticmethod(
+                    wechat_win32_ocr_sidecar.build_send_context_guard
+                )
+                layout_snapshot_for_image = staticmethod(
+                    _test_layout_snapshot
                 )
 
             host = Host()
@@ -5261,12 +5510,14 @@ class C2VisionIntegrationTests(unittest.TestCase):
                 "_confirmed_image_action_receipt": {
                     "canonical_action_id": "image-action-1",
                     "reserved_worker_stable_id": "worker-message-1",
+                    "selected_action_token": "image-action-token-1",
                     "pre_observation_id": "canonical_visual_image_1",
                     "post_observation_id": "canonical_visual_image_1",
+                    "trigger_observation_id": "canonical_visual_image_1",
+                    "physical_identity_inherited_from_prepare": False,
+                    "result_screen_order": 0,
                     "binding_confirmed": True,
-                    "image_visual_fingerprint": (
-                        "dhash64:0000000000000000"
-                    ),
+                    "image_sha256": "b" * 64,
                 },
                 "customer_image_understanding": {
                     "schema_version": 1,
@@ -5473,10 +5724,11 @@ class C2VisionIntegrationTests(unittest.TestCase):
             if item.get("message_type") == "image"
         ]
         self.assertEqual(len(payload_image_observations), 1)
-        self.assertEqual(
-            payload_image_observations[0]["observation_id"],
-            image_observations[0]["observation_id"],
-        )
+        # observation_id is frame-local audit data. Reprocessing the same
+        # screenshot may issue another id and must not be treated as a
+        # cross-frame image identity assertion.
+        self.assertTrue(image_observations[0]["observation_id"])
+        self.assertTrue(payload_image_observations[0]["observation_id"])
         image_binding = payload["image_frame_action_bindings"][
             payload_image_observations[0]["observation_id"]
         ]
@@ -5513,8 +5765,17 @@ class C2VisionIntegrationTests(unittest.TestCase):
                     "input_bounds": [386, 723, 902, 765],
                 },
             ),
+            current_observations=(
+                sidecar.build_message_observations_v3(first)
+            ),
         )
-        self.assertTrue(send_guard_validation["ok"])
+        # A raw Sidecar guard is frame evidence only.  It cannot authorize a
+        # cross-frame send until Worker attaches the sole continuity contract.
+        self.assertFalse(send_guard_validation["ok"])
+        self.assertEqual(
+            send_guard_validation["reason"],
+            "expected_context_guard_missing_or_invalid",
+        )
 
     def test_structural_image_detector_exception_is_not_zero_images(self):
         from apps.wechat_ai_customer_service.adapters import (
@@ -6717,23 +6978,23 @@ class C2VisionIntegrationTests(unittest.TestCase):
                 "canonical_visual_id",
                 first[0].get("source_message") or {},
             )
-            result = align_committed_message_sequence(
-                build_pre_action_identity_sequence(
-                    first,
-                    committed_ids={
-                        str(first[0]["observation_id"]): "worker-message-1"
-                    },
+            result = compare_business_viewport_continuity(
+                normalized_business_message_sequence(
+                    first, message_viewport_bounds=None
                 ),
-                build_post_action_observation_sequence(second),
-                pre_sequence_source="checkpoint",
-                pre_frame_id="frame-before-ocr-drift-weak",
-                post_frame_id="frame-after-ocr-drift-weak",
+                normalized_business_message_sequence(
+                    second, message_viewport_bounds=None
+                ),
+                old_top_boundary_complete=True,
+                new_top_boundary_complete=True,
+                context_expansion_used=True,
             )
         finally:
             screenshot.close()
 
-        self.assertEqual(result["alignment_status"], "unresolved")
-        self.assertEqual(inherited_worker_ids(result), {})
+        self.assertEqual(
+            result["relation"], "business_sequence_not_continuous"
+        )
 
     def test_initial_read_and_preclick_refresh_share_real_image_observer(self):
         screenshot = Image.new("RGB", (974, 853), (242, 242, 242))
@@ -6785,6 +7046,12 @@ class C2VisionIntegrationTests(unittest.TestCase):
                 )
                 build_message_viewport_change_evidence = staticmethod(
                     wechat_win32_ocr_sidecar.build_message_viewport_change_evidence
+                )
+                build_send_context_guard = staticmethod(
+                    wechat_win32_ocr_sidecar.build_send_context_guard
+                )
+                layout_snapshot_for_image = staticmethod(
+                    _test_layout_snapshot
                 )
 
                 @staticmethod

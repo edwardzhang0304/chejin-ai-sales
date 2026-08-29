@@ -190,6 +190,7 @@ def initialize_action_journal(
             "pre_action_identity_sequence": pre_sequence,
             "prepare_evidence": normalized_prepare_evidence,
             "sequence_alignment_evidence": None,
+            "business_continuity_evidence": None,
             "action_phase": "not_attempted",
             "items": normalized_items,
             "created_at": now,
@@ -215,6 +216,38 @@ def record_action_sequence_alignment(
     if status not in {"unique", "ambiguous", "unresolved", "not_required"}:
         raise ValueError("ACTION_JOURNAL_ALIGNMENT_STATUS_INVALID")
     payload["sequence_alignment_evidence"] = json.loads(
+        json.dumps(evidence, ensure_ascii=False)
+    )
+    payload["updated_at"] = _now_iso()
+    _atomic_write(target, payload)
+    return payload
+
+
+def record_action_business_continuity(
+    path: str | Path,
+    evidence: dict[str, Any],
+) -> dict[str, Any]:
+    """Persist the sole Worker business-continuity decision.
+
+    This field is intentionally separate from the legacy identity-sequence
+    aligner.  New voice/image actions may be formalized only from one of the
+    three allowed relations returned by ``compare_business_viewport_continuity``.
+    """
+
+    target = Path(path)
+    payload = read_action_journal(target)
+    if not payload:
+        raise ValueError("ACTION_JOURNAL_NOT_FOUND")
+    relation = str(evidence.get("relation") or "").strip()
+    if relation not in {
+        "business_sequence_equal",
+        "unique_tail_append",
+        "unique_viewport_slide_with_tail_append",
+        "continuity_context_expansion_required",
+        "business_sequence_not_continuous",
+    }:
+        raise ValueError("ACTION_JOURNAL_CONTINUITY_RELATION_INVALID")
+    payload["business_continuity_evidence"] = json.loads(
         json.dumps(evidence, ensure_ascii=False)
     )
     payload["updated_at"] = _now_iso()
