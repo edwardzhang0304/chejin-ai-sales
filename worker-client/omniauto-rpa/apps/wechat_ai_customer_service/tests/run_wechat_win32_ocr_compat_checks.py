@@ -18,6 +18,12 @@ from PIL import Image, ImageDraw
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
+WORKER_CLIENT_ROOT = PROJECT_ROOT.parent
+if (
+    (WORKER_CLIENT_ROOT / "chejin_worker_client").is_dir()
+    and str(WORKER_CLIENT_ROOT) not in sys.path
+):
+    sys.path.insert(0, str(WORKER_CLIENT_ROOT))
 SIDECAR_SCRIPT = PROJECT_ROOT / "apps" / "wechat_ai_customer_service" / "adapters" / "wechat_win32_ocr_sidecar.py"
 
 from apps.wechat_ai_customer_service.adapters.wechat_connector import (  # noqa: E402
@@ -231,7 +237,7 @@ def _empty_send_context_guard(
     image_size: tuple[int, int] = (980, 860),
 ) -> dict[str, object]:
     layout_snapshot = _compat_layout_snapshot(image_size)
-    return sidecar_mod.build_send_context_guard(
+    raw_guard = sidecar_mod.build_send_context_guard(
         [],
         layout_evidence={
             "ok": True,
@@ -240,6 +246,17 @@ def _empty_send_context_guard(
                 layout_snapshot["message_viewport_bounds"]
             ),
         },
+    )
+    from chejin_worker_client.task_runner import (
+        _bind_worker_continuity_contract_to_send_guard,
+    )
+
+    return _bind_worker_continuity_contract_to_send_guard(
+        raw_guard,
+        [],
+        checkpoint={"committed_tail": []},
+        checkpoint_comparison={"matched_pairs": []},
+        empty_welcome_baseline=True,
     )
 
 
@@ -6365,6 +6382,7 @@ def test_send_payload_uses_single_fresh_baseline_before_typing() -> None:
                 "validation": pass_validate(),
                 "input_region": {"has_visible_text": False},
                 "matching_self_message_count": 0,
+                "observations": [],
                 "send_context_guard": dict(empty_context_guard),
             }
 
@@ -6458,6 +6476,7 @@ def test_send_payload_exposes_optional_timing_without_contract_changes() -> None
             },
             "input_region": {"has_visible_text": False},
             "matching_self_message_count": 0,
+            "observations": [],
             "send_context_guard": dict(empty_context_guard),
         }
         sidecar_mod.reserve_send_rate = lambda **_kwargs: {"ok": True, "reason": "rate_ok"}
@@ -6583,6 +6602,7 @@ def test_send_payload_reuses_strict_guard_input_region_seed_for_before_check() -
             },
             "input_region": {"has_visible_text": False, "reason": "input_region_blank"},
             "matching_self_message_count": 0,
+            "observations": [],
             "send_context_guard": dict(empty_context_guard),
         }
         sidecar_mod.reserve_send_rate = lambda **_kwargs: {"ok": True, "reason": "rate_ok"}

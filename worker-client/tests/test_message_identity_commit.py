@@ -118,9 +118,20 @@ def _observation(
             "pre_observation_id": "pre-observation-7",
             "post_observation_id": observation_id,
             "binding_confirmed": True,
+            "trigger_observation_id": observation_id,
+            "physical_identity_inherited_from_prepare": False,
         }
         if message_type == "voice":
-            mapping["selected_action_token"] = "voice-token-7"
+            mapping.update(
+                {
+                    "selected_action_token": "voice-token-7",
+                    "physical_action_count": 1,
+                    "result_candidate_count": 1,
+                    "stable_business_content_signature": hashlib.sha256(
+                        b"voice-transcript-7"
+                    ).hexdigest(),
+                }
+            )
         proof = dict(mapping)
         if message_type == "voice":
             item["_worker_voice_action_summary"] = {
@@ -128,13 +139,15 @@ def _observation(
             }
         else:
             fingerprint = "dhash64:0123456789abcdef"
-            proof["image_visual_fingerprint"] = fingerprint
+            image_sha256 = hashlib.sha256(b"image-bytes-7").hexdigest()
+            proof["image_sha256"] = image_sha256
             item["image_physical_anchor"] = {
                 "bubble_visual_fingerprint": fingerprint,
             }
             item["_worker_image_action_summary"] = {
                 "confirmed_action_mapping": mapping,
                 "image_visual_fingerprint": fingerprint,
+                "image_sha256": image_sha256,
             }
     elif basis is MessageCommitBasis.CONFIRMED_SENT_ACK:
         proof = {"reply_action_id": "reply-action-7"}
@@ -312,6 +325,7 @@ def test_media_terminal_states_are_mece():
         "committed_completed",
         "committed_failed",
         "identity_unresolved",
+        "technical_failed",
     }
 
 
