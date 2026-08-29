@@ -71,6 +71,11 @@ PRE_SEND_TERMINAL_ACTION_COMMIT_BASES = {
     "confirmed_voice_action",
     "confirmed_image_action",
 }
+TECHNICAL_SEND_FAILURE_NO_HANDOFF_CODES = {
+    "C2_PRE_SEND_FACT_CHECKPOINT_INVALID",
+    "C3_SEND_CONTEXT_GUARD_REQUIRED",
+    "C3_SEND_CONTEXT_GUARD_INVALID",
+}
 
 
 def _canonical_sha256(value: object) -> str:
@@ -3633,7 +3638,7 @@ def sent_ack(db: Session, *, reply_action_id: str, payload: Any) -> dict[str, An
         task.failed_at = utcnow()
         finish_task_and_release_worker(task)
         _write_event(db, task, TaskEventType.failed, from_status=before, to_status=task.status, worker_id=payload.worker_id, remark=payload.remark)
-        if action.error_code != "C2_PRE_SEND_FACT_CHECKPOINT_INVALID":
+        if action.error_code not in TECHNICAL_SEND_FAILURE_NO_HANDOFF_CODES:
             _create_send_failure_handoff(
                 db,
                 action=action,

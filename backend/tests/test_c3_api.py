@@ -1816,6 +1816,86 @@ def test_c2_ingest_to_c3_sent_ack_complete_closure():
         assert conversation.reply_count == 1
 
 
+@pytest.mark.parametrize(
+    "error_code",
+    [
+        "C3_SEND_CONTEXT_GUARD_REQUIRED",
+        "C3_SEND_CONTEXT_GUARD_INVALID",
+    ],
+)
+def test_send_context_technical_failure_never_creates_handoff(error_code):
+    worker, binding = _setup_bound_conversation()
+    message_event_id = _ingest(
+        worker,
+        binding["conversation_id"],
+        f"msg-technical-send-guard-{error_code.lower()}",
+        "请推荐一辆十万元左右的二手车",
+    )
+    generated = _generate(
+        _collect(binding["conversation_id"], message_event_id)["batch_id"]
+    )
+    action_id = generated["reply_action_id"]
+    task_id = generated["task_id"]
+    claimed_task = client.post(
+        f"/api/tasks/{task_id}/claim",
+        json={
+            "worker_id": worker["id"],
+            "current_step": "chat_reply_claimed",
+            "claim_source": "c2_conversation_flow",
+            "conversation_id": binding["conversation_id"],
+        },
+        headers=_worker_headers(worker),
+    )
+    assert claimed_task.status_code == 200, claimed_task.text
+    send_claim = client.post(
+        f"/api/reply-actions/{action_id}/claim-send",
+        json={"task_id": task_id, "worker_id": worker["id"]},
+        headers=_task_lease_headers(worker, claimed_task),
+    )
+    assert send_claim.status_code == 200, send_claim.text
+    send_data = send_claim.json()["data"]
+
+    failed_ack = client.post(
+        f"/api/reply-actions/{action_id}/sent-ack",
+        json={
+            "send_token": send_data["send_token"],
+            "task_id": task_id,
+            "worker_id": worker["id"],
+            "client_instance_id": "client-c3",
+            "send_result": "failed",
+            "action_phase": "not_attempted",
+            "reply_text_hash": send_data["reply_text_hash"],
+            "sidecar_run_id": "sidecar-technical-guard",
+            "error_code": error_code,
+            "evidence": {
+                "physical_send_triggered": False,
+                "context_validation": {
+                    "ok": False,
+                    "error_code": error_code,
+                },
+            },
+        },
+        headers=_worker_headers(worker),
+    )
+
+    assert failed_ack.status_code == 200, failed_ack.text
+    with SessionLocal() as db:
+        action = db.get(ReplyAction, action_id)
+        task = db.get(Task, task_id)
+        conversation = db.get(Conversation, binding["conversation_id"])
+        handoffs = db.scalars(
+            select(HandoffEvent).where(
+                HandoffEvent.conversation_id == binding["conversation_id"]
+            )
+        ).all()
+        assert action.status == "failed"
+        assert action.error_code == error_code
+        assert task.status == "failed"
+        assert task.error_code == error_code
+        assert conversation.status != "waiting_sales_reply"
+        assert handoffs == []
+
+
 def test_pause_after_brain_allows_exact_c2_flow_to_claim_send_and_ack():
     worker, binding = _setup_bound_conversation()
     _ingest(

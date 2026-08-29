@@ -244,6 +244,10 @@ PRE_SEND_REIDENTIFICATION_ERRORS = {
 }
 PRE_SEND_LAYOUT_ERROR = "C2_PRE_SEND_LAYOUT_INVALID"
 PRE_SEND_FACT_CHECKPOINT_ERROR = "C2_PRE_SEND_FACT_CHECKPOINT_INVALID"
+SEND_CONTEXT_TECHNICAL_ERRORS = {
+    "C3_SEND_CONTEXT_GUARD_REQUIRED",
+    "C3_SEND_CONTEXT_GUARD_INVALID",
+}
 
 
 def _validate_pre_send_context_guard(
@@ -429,7 +433,24 @@ def _bind_worker_continuity_contract_to_send_guard(
         for item in (checkpoint.get("committed_tail") or [])
         if isinstance(item, dict)
     ]
-    for pair in checkpoint_comparison.get("matched_pairs") or []:
+    matched_pairs = checkpoint_comparison.get("matched_pairs")
+    comparison_result = str(
+        checkpoint_comparison.get("comparison_result") or ""
+    ).strip()
+    comparison_binding_error = ""
+    if frozen_tail and (
+        comparison_result
+        not in {
+            "checkpoint_equal",
+            "checkpoint_unique_prefix_with_suffix",
+            "checkpoint_unique_viewport_slide_with_suffix",
+        }
+        or not isinstance(matched_pairs, list)
+    ):
+        comparison_binding_error = (
+            "checkpoint_comparison_missing_or_invalid"
+        )
+    for pair in matched_pairs or []:
         if not isinstance(pair, dict):
             continue
         old_index = pair.get("pre_sequence_index")
@@ -461,6 +482,11 @@ def _bind_worker_continuity_contract_to_send_guard(
             if tokens
         },
         "old_top_boundary_complete": bool(empty_welcome_baseline),
+        **(
+            {"binding_error": comparison_binding_error}
+            if comparison_binding_error
+            else {}
+        ),
     }
     return bound
 
@@ -17087,6 +17113,11 @@ class TaskRunner:
                 sidecar_run_id=run_id, evidence=evidence, error_code=error_code,
                 remark="发送结果未知，禁止自动补发。" if send_result == "unknown" else "发送失败。",
             )
+            if error_code in SEND_CONTEXT_TECHNICAL_ERRORS:
+                self.set_run_status("faulted")
+                self.on_error(
+                    "发送上下文技术凭证无效，客户端已进入故障状态并停止接单。"
+                )
             return {"ok": False, "error_code": error_code, "batch": status, "sent": False}
 
     def _finish_new_visible_voices_in_current_chat(
@@ -22305,6 +22336,13 @@ class TaskRunner:
                     settle_message_read_phase(succeeded=True)
                     return {
                         "ok": True,
+                        # The final S0/S1/S2 guard consumes this one public
+                        # comparison result.  Keeping it nested under
+                        # ``payload`` made the next stage silently drop the
+                        # checkpoint's strong-boundary evidence.
+                        "pre_send_fact_checkpoint_comparison": (
+                            checkpoint_comparison
+                        ),
                         "result": {
                             "ingested_count": 0,
                             "ignored_count": 0,
@@ -22312,9 +22350,6 @@ class TaskRunner:
                         },
                         "payload": {
                             "messages": [],
-                            "pre_send_fact_checkpoint_comparison": (
-                                checkpoint_comparison
-                            ),
                         },
                         "new_customer_message_count": 0,
                         "new_self_message_count": 0,

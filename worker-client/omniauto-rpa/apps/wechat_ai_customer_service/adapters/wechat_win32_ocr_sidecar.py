@@ -89,6 +89,10 @@ from apps.wechat_ai_customer_service.adapters.message_viewport_projection import
     stable_business_content_signature as _shared_business_content_signature,
     business_media_state as _shared_business_media_state,
 )
+from apps.wechat_ai_customer_service.adapters.business_viewport_continuity import (
+    boundary_tokens_for_observations as _shared_boundary_tokens_for_observations,
+    compare_business_viewport_continuity as _shared_compare_business_viewport_continuity,
+)
 from apps.wechat_ai_customer_service.adapters.add_friend_contract import (
     normalize_add_friend_query,
     validate_add_friend_entry_click_contract,
@@ -17333,12 +17337,12 @@ def validate_send_context_guard(
     *,
     current_observations: list[dict[str, Any]] | None,
 ) -> dict[str, Any]:
-    """Delegate S0/S1/S2 continuity to the sole Worker comparator.
+    """Verify S0/S1/S2 through the shared pure continuity comparator.
 
-    This Sidecar adapter validates that both guards carry a projected
-    sequence, but it deliberately owns no cross-frame comparison algorithm.
-    Missing Worker code/evidence fails closed instead of falling back to a
-    local equality shortcut.
+    Worker remains the only owner that generates and binds the continuity
+    credential.  Sidecar only validates the transported credential against
+    its latest observations using the dependency-free shared implementation;
+    it never imports Worker or invents another identity decision.
     """
 
     expected_payload = expected if isinstance(expected, dict) else {}
@@ -17376,21 +17380,18 @@ def validate_send_context_guard(
             "reason": "current_context_guard_invalid",
             "error_code": "C3_SEND_CONTEXT_GUARD_INVALID",
         }
-    try:
-        from chejin_worker_client.message_viewport_projection import (
-            boundary_tokens_for_observations as worker_boundary_tokens,
-            compare_business_viewport_continuity as worker_compare,
-        )
-    except Exception as exc:
-        return {
-            "ok": False,
-            "reason": "worker_continuity_comparator_unavailable",
-            "error_code": "C3_SEND_CONTEXT_GUARD_INVALID",
-            "worker_import_error_type": type(exc).__name__,
-        }
     serialized_old_tokens = continuity_contract.get(
         "old_boundary_tokens"
     )
+    if str(continuity_contract.get("binding_error") or "").strip():
+        return {
+            "ok": False,
+            "reason": "worker_continuity_boundary_evidence_invalid",
+            "error_code": "C3_SEND_CONTEXT_GUARD_INVALID",
+            "worker_binding_error": str(
+                continuity_contract.get("binding_error") or ""
+            ).strip(),
+        }
     if not isinstance(serialized_old_tokens, dict):
         return {
             "ok": False,
@@ -17418,11 +17419,11 @@ def validate_send_context_guard(
             for token in raw_tokens
             if str(token or "").strip()
         }
-    decision = worker_compare(
+    decision = _shared_compare_business_viewport_continuity(
         expected_sequence,
         current_sequence,
         old_boundary_tokens=old_tokens,
-        new_boundary_tokens=worker_boundary_tokens(
+        new_boundary_tokens=_shared_boundary_tokens_for_observations(
             current_observations,
             committed_only=False,
         ),

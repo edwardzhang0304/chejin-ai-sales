@@ -18,7 +18,11 @@ OMNIAUTO_ROOT = WORKER_CLIENT_ROOT / "omniauto-rpa"
 if str(OMNIAUTO_ROOT) not in sys.path:
     sys.path.insert(0, str(OMNIAUTO_ROOT))
 
-from apps.wechat_ai_customer_service.adapters.wechat_win32_ocr_sidecar import build_message_observations_v3
+from apps.wechat_ai_customer_service.adapters.wechat_win32_ocr_sidecar import (
+    build_message_observations_v3,
+    build_send_context_guard,
+    validate_send_context_guard,
+)
 from chejin_worker_client.models import WechatReadTarget as WorkerWechatReadTarget
 from chejin_worker_client.message_identity_commit import (
     MessageCommitBasis,
@@ -44,6 +48,7 @@ from chejin_worker_client.wechat_c2 import (
 )
 from chejin_worker_client.task_runner import (
     TaskRunner as WorkerTaskRunner,
+    _bind_worker_continuity_contract_to_send_guard,
     _continuity_alignment_evidence_for_suffix,
     should_submit_c2_ingest_payload,
 )
@@ -4749,7 +4754,7 @@ def test_message_batch_status_rejects_other_worker_and_returns_terminal_state():
 
 
 def test_v3_ingest_uses_canonical_content_and_rejects_expired_authorization_revision():
-    assert contract_revision() == "0.9.49"
+    assert contract_revision() == "0.9.50"
     location_recovery = c2_contract_v3()[
         "target_location_recovery_contract"
     ]
@@ -5147,6 +5152,98 @@ def test_worker_v3_five_second_voice_transcript_is_accepted_by_backend():
     )
     assert "_worker_stable_id" not in fresh_same_transcript
     assert "_worker_committed_message" not in fresh_same_transcript
+
+    expected_guard = build_send_context_guard(
+        [fresh_same_transcript],
+        layout_evidence={
+            "ok": True,
+            "layout_snapshot_id": "worker-pre-send-frame",
+            "message_viewport_bounds": [300, 100, 1000, 800],
+        },
+    )
+    expected_guard = _bind_worker_continuity_contract_to_send_guard(
+        expected_guard,
+        [fresh_same_transcript],
+        checkpoint=checkpoint,
+        checkpoint_comparison=comparison,
+        empty_welcome_baseline=False,
+    )
+    final_send_observation = copy.deepcopy(fresh_same_transcript)
+    final_send_observation["observation_id"] = "sidecar-final-send-voice"
+    current_guard = build_send_context_guard(
+        [final_send_observation],
+        layout_evidence={
+            "ok": True,
+            "layout_snapshot_id": "sidecar-final-send-frame",
+            "message_viewport_bounds": [300, 100, 1000, 800],
+        },
+    )
+    final_validation = validate_send_context_guard(
+        expected_guard,
+        current_guard,
+        current_observations=[final_send_observation],
+    )
+    assert final_validation["ok"] is True, final_validation
+    assert final_validation["continuity_relation"] == (
+        "business_sequence_equal"
+    )
+
+    status_data = status.json()["data"]
+    action_id = status_data["reply_action"]["id"]
+    task_id = status_data["task"]["id"]
+    claimed_task = client.post(
+        f"/api/tasks/{task_id}/claim",
+        json={
+            "worker_id": worker["id"],
+            "current_step": "chat_reply_claimed",
+            "claim_source": "c2_conversation_flow",
+            "conversation_id": binding["conversation_id"],
+        },
+        headers=_worker_headers(worker),
+    )
+    assert claimed_task.status_code == 200, claimed_task.text
+    lease_headers = {
+        **_worker_headers(worker),
+        "X-Task-Lease-Fencing-Token": str(
+            int(claimed_task.json()["data"]["lease_fencing_token"])
+        ),
+    }
+    send_claim = client.post(
+        f"/api/reply-actions/{action_id}/claim-send",
+        json={"task_id": task_id, "worker_id": worker["id"]},
+        headers=lease_headers,
+    )
+    assert send_claim.status_code == 200, send_claim.text
+    send_data = send_claim.json()["data"]
+    sent_ack = client.post(
+        f"/api/reply-actions/{action_id}/sent-ack",
+        json={
+            "send_token": send_data["send_token"],
+            "task_id": task_id,
+            "worker_id": worker["id"],
+            "client_instance_id": "client-a",
+            "send_result": "sent",
+            "action_phase": "confirmed",
+            "reply_text_hash": send_data["reply_text_hash"],
+            "sidecar_run_id": "sidecar-final-send-voice",
+            "evidence": {"context_validation": final_validation},
+        },
+        headers=_worker_headers(worker),
+    )
+    assert sent_ack.status_code == 200, sent_ack.text
+    with SessionLocal() as db:
+        action = db.get(ReplyAction, action_id)
+        task = db.get(Task, task_id)
+        conversation = db.get(Conversation, binding["conversation_id"])
+        handoffs = db.scalars(
+            select(HandoffEvent).where(
+                HandoffEvent.conversation_id == binding["conversation_id"]
+            )
+        ).all()
+        assert action.status == "sent"
+        assert task.status == "completed"
+        assert conversation.status == "waiting_user_reply"
+        assert handoffs == []
 
     changed_fact = copy.deepcopy(fresh_same_transcript)
     changed_fact["observation_id"] = "changed-terminal-voice"
