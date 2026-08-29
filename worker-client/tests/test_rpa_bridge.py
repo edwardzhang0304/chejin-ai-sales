@@ -66,14 +66,14 @@ class RpaBridgeTest(unittest.TestCase):
         with patch.object(sys, "frozen", True, create=True), patch.object(
             sys,
             "executable",
-            "C:\\Program Files\\CheJin\\车金Worker客户端.exe",
+            "C:\\Program Files\\CheJin\\CheJinWorkerClient.exe",
         ):
             command = bridge._sidecar_command(["status"])
 
         self.assertEqual(
             command,
             [
-                "C:\\Program Files\\CheJin\\车金Worker客户端.exe",
+                "C:\\Program Files\\CheJin\\CheJinWorkerClient.exe",
                 "--omniauto-sidecar",
                 "status",
             ],

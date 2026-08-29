@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import re
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
@@ -153,6 +154,205 @@ def validate_slot_ledger_states(
         screen_orders.add(screen_order)
         normalized.append(item)
     return normalized
+
+
+def validate_sequence_alignment_evidence(
+    value: Any,
+    *,
+    post_observation_ids: list[str] | None = None,
+) -> dict[str, Any]:
+    """Validate the complete Worker-owned alignment envelope.
+
+    The backend validates this same envelope with Pydantic.  Keeping this
+    deep Worker-side gate prevents an Outbox from being frozen with a shape
+    that can only fail after the HTTP request.  This is intentionally more
+    than a top-level presence check: every pair, frame, index and suffix id is
+    validated before the payload is allowed to reach durable transport.
+    """
+
+    contract = c2_contract_v3().get("sequence_alignment_contract")
+    if not isinstance(contract, dict) or not isinstance(value, dict):
+        raise ValueError("C2_SEQUENCE_ALIGNMENT_EVIDENCE_INVALID")
+    required = {
+        str(field)
+        for field in (contract.get("required_evidence_fields") or [])
+        if str(field).strip()
+    }
+    if not required or not required.issubset(value):
+        raise ValueError("C2_SEQUENCE_ALIGNMENT_EVIDENCE_INVALID")
+
+    source = str(value.get("pre_sequence_source") or "").strip()
+    status = str(value.get("alignment_status") or "").strip()
+    sources = {
+        str(item)
+        for item in (contract.get("pre_sequence_sources") or [])
+    }
+    statuses = {
+        str(item)
+        for item in (contract.get("alignment_statuses") or [])
+    }
+    identity_states = {
+        str(item)
+        for item in (contract.get("identity_states") or [])
+    }
+    pre_frame_id = str(value.get("pre_frame_id") or "").strip()
+    post_frame_id = str(value.get("post_frame_id") or "").strip()
+    candidate_count = value.get("candidate_alignment_count")
+    matched_pairs = value.get("matched_pairs")
+    suffix_ids = value.get("new_suffix_observation_ids")
+    old_tail_fully_consumed = value.get("old_tail_fully_consumed")
+    if (
+        source not in sources
+        or status not in statuses
+        or not pre_frame_id
+        or not post_frame_id
+        or len(pre_frame_id) > 255
+        or len(post_frame_id) > 255
+        or isinstance(candidate_count, bool)
+        or not isinstance(candidate_count, int)
+        or candidate_count < 0
+        or not isinstance(matched_pairs, list)
+        or len(matched_pairs) > 500
+        or not isinstance(suffix_ids, list)
+        or len(suffix_ids) > 500
+        or not isinstance(old_tail_fully_consumed, bool)
+    ):
+        raise ValueError("C2_SEQUENCE_ALIGNMENT_EVIDENCE_INVALID")
+
+    normalized_suffix_ids = [str(item or "").strip() for item in suffix_ids]
+    if (
+        any(not item for item in normalized_suffix_ids)
+        or len(normalized_suffix_ids) != len(set(normalized_suffix_ids))
+    ):
+        raise ValueError("C2_SEQUENCE_ALIGNMENT_EVIDENCE_INVALID")
+
+    required_pair_fields = {
+        str(field)
+        for field in (contract.get("required_pair_fields") or [])
+        if str(field).strip()
+    }
+    if not required_pair_fields:
+        raise ValueError("C2_SEQUENCE_ALIGNMENT_EVIDENCE_INVALID")
+    seen_pre_ids: set[str] = set()
+    seen_post_ids: set[str] = set()
+    seen_pre_indexes: set[int] = set()
+    seen_post_indexes: set[int] = set()
+    normalized_pairs: list[dict[str, Any]] = []
+    previous_pre_index = -1
+    previous_post_index = -1
+    for raw_pair in matched_pairs:
+        if (
+            not isinstance(raw_pair, dict)
+            or not required_pair_fields.issubset(raw_pair)
+        ):
+            raise ValueError("C2_SEQUENCE_ALIGNMENT_PAIR_INVALID")
+        pair = dict(raw_pair)
+        identity_state = str(pair.get("identity_state") or "").strip()
+        pre_observation_id = str(
+            pair.get("pre_observation_id") or ""
+        ).strip()
+        post_observation_id = str(
+            pair.get("post_observation_id") or ""
+        ).strip()
+        match_basis = str(pair.get("match_basis") or "").strip()
+        pre_index = pair.get("pre_index")
+        post_index = pair.get("post_index")
+        stable_id = str(pair.get("worker_stable_id") or "").strip()
+        if (
+            identity_state not in identity_states
+            or not pre_observation_id
+            or not post_observation_id
+            or not match_basis
+            or len(pre_observation_id) > 255
+            or len(post_observation_id) > 255
+            or len(match_basis) > 64
+            or isinstance(pre_index, bool)
+            or not isinstance(pre_index, int)
+            or pre_index < 0
+            or isinstance(post_index, bool)
+            or not isinstance(post_index, int)
+            or post_index < 0
+        ):
+            raise ValueError("C2_SEQUENCE_ALIGNMENT_PAIR_INVALID")
+        if identity_state in {"committed", "selected_action"} and not (
+            len(stable_id) <= 128
+            and re.fullmatch(r"worker-message-[1-9]\d*", stable_id)
+        ):
+            raise ValueError("C2_SEQUENCE_ALIGNMENT_PAIR_INVALID")
+        if identity_state == "frame_local_unselected" and stable_id:
+            raise ValueError("C2_SEQUENCE_ALIGNMENT_PAIR_INVALID")
+        if (
+            pre_observation_id in seen_pre_ids
+            or post_observation_id in seen_post_ids
+            or pre_index in seen_pre_indexes
+            or post_index in seen_post_indexes
+            or pre_index <= previous_pre_index
+            or post_index <= previous_post_index
+        ):
+            raise ValueError("C2_SEQUENCE_ALIGNMENT_PAIR_INVALID")
+        seen_pre_ids.add(pre_observation_id)
+        seen_post_ids.add(post_observation_id)
+        seen_pre_indexes.add(pre_index)
+        seen_post_indexes.add(post_index)
+        previous_pre_index = pre_index
+        previous_post_index = post_index
+        normalized_pairs.append(pair)
+
+    if status == "not_required" and (
+        candidate_count != 0 or normalized_pairs
+    ):
+        raise ValueError("C2_SEQUENCE_ALIGNMENT_EVIDENCE_INVALID")
+    if status == "unique" and candidate_count != 1:
+        raise ValueError("C2_SEQUENCE_ALIGNMENT_EVIDENCE_INVALID")
+    if status in {"ambiguous", "unresolved"} and (
+        old_tail_fully_consumed or normalized_suffix_ids
+    ):
+        raise ValueError("C2_SEQUENCE_ALIGNMENT_EVIDENCE_INVALID")
+    if normalized_suffix_ids and not old_tail_fully_consumed:
+        raise ValueError("C2_SEQUENCE_ALIGNMENT_EVIDENCE_INVALID")
+    if set(normalized_suffix_ids).intersection(seen_post_ids):
+        raise ValueError("C2_SEQUENCE_ALIGNMENT_EVIDENCE_INVALID")
+
+    if post_observation_ids is not None:
+        normalized_post_ids = [
+            str(item or "").strip() for item in post_observation_ids
+        ]
+        if (
+            any(not item for item in normalized_post_ids)
+            or len(normalized_post_ids) != len(set(normalized_post_ids))
+        ):
+            raise ValueError("C2_SEQUENCE_ALIGNMENT_POST_FRAME_INVALID")
+        for pair in normalized_pairs:
+            post_index = int(pair["post_index"])
+            if (
+                post_index >= len(normalized_post_ids)
+                or normalized_post_ids[post_index]
+                != pair["post_observation_id"]
+            ):
+                raise ValueError("C2_SEQUENCE_ALIGNMENT_POST_FRAME_INVALID")
+        # Every claimed alignment target must belong to this authoritative
+        # frame.  The reverse is intentionally not required: an invalid or
+        # unselected frame-local media row may be present so the normal
+        # identity/action gate can reject it without pretending it was part
+        # of the successful alignment.
+        claimed_post_ids = {
+            str(pair["post_observation_id"])
+            for pair in normalized_pairs
+        }.union(normalized_suffix_ids)
+        if not claimed_post_ids.issubset(set(normalized_post_ids)):
+            raise ValueError("C2_SEQUENCE_ALIGNMENT_POST_FRAME_INVALID")
+
+    return {
+        **value,
+        "pre_sequence_source": source,
+        "pre_frame_id": pre_frame_id,
+        "post_frame_id": post_frame_id,
+        "alignment_status": status,
+        "candidate_alignment_count": candidate_count,
+        "matched_pairs": normalized_pairs,
+        "old_tail_fully_consumed": old_tail_fully_consumed,
+        "new_suffix_observation_ids": normalized_suffix_ids,
+    }
 
 
 def observation_role_is_trusted(observation: dict[str, Any]) -> bool:

@@ -13,9 +13,9 @@ $Root = Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path)
 Set-Location $Root
 
 $ReportsDir = Join-Path $Root "dist\reports"
-$PackageDir = Join-Path $Root "dist\车金Worker客户端"
-$ExePath = Join-Path $PackageDir "车金Worker客户端.exe"
-$ManifestPath = Join-Path $ReportsDir "车金Worker客户端.manifest.json"
+$PackageDir = Join-Path $Root "dist\CheJinWorkerClient"
+$ExePath = Join-Path $PackageDir "CheJinWorkerClient.exe"
+$ManifestPath = Join-Path $ReportsDir "CheJinWorkerClient.manifest.json"
 $PreflightReportPath = Join-Path $ReportsDir "preflight-build-report.json"
 $PackagingDiagnosticPath = Join-Path $ReportsDir "packaging-runtime-diagnostics.jsonl"
 $UatLauncherSourcePath = Join-Path $Root "packaging\start-uat.ps1"
@@ -365,7 +365,7 @@ if ($SourceContractHash.Hash -ne $PackagedContractHash.Hash) {
 }
 
 $Manifest = [ordered]@{
-  app_name = "车金Worker客户端"
+  app_name = "CheJinWorkerClient"
   version = $Version.Trim()
   built_at = (Get-Date).ToUniversalTime().ToString("o")
   package_dir = $PackageDir

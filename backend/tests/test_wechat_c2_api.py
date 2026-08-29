@@ -25,6 +25,8 @@ from chejin_worker_client.message_identity_commit import (
     committed_identity_record,
 )
 from chejin_worker_client.message_viewport_projection import (
+    compare_business_viewport_continuity,
+    normalized_business_message_sequence,
     stable_business_content_signature,
 )
 from chejin_worker_client.message_contract import (
@@ -42,6 +44,7 @@ from chejin_worker_client.wechat_c2 import (
 )
 from chejin_worker_client.task_runner import (
     TaskRunner as WorkerTaskRunner,
+    _continuity_alignment_evidence_for_suffix,
     should_submit_c2_ingest_payload,
 )
 import chejin_worker_client.storage as worker_storage
@@ -1333,20 +1336,10 @@ def _simulate_worker_incremental_filter(
         for item in all_messages
         if str(item.get("source_message_key") or "") in keep_source_keys
     ]
-    kept_observation_ids = {
-        str(
-            ((item.get("raw_payload") or {}).get("observation") or {}).get(
-                "observation_id"
-            )
-            or ""
-        )
-        for item in payload["messages"]
-    }
-    payload["evidence"]["observations"] = [
-        observation
-        for observation in payload["evidence"].get("observations") or []
-        if str(observation.get("observation_id") or "") in kept_observation_ids
-    ]
+    # Production filters only the incremental delivery set.  The complete
+    # authoritative frame and its slot ledger remain intact so handoff order,
+    # checkpoint construction and later pre-send alignment all see the same
+    # text/voice/image sequence.
     return payload
 
 
@@ -2301,6 +2294,177 @@ def test_shared_mixed_roundtrip_fixture_crosses_worker_and_backend_without_secon
             ("image", "self"),
         ]
         assert db.query(MessageBatch).count() == 1
+
+
+def test_worker_generated_text_voice_image_alignment_crosses_official_route():
+    """Exercise the exact nested envelope that failed Windows UAT."""
+
+    fixture_path = (
+        Path(__file__).resolve().parents[2]
+        / "contracts"
+        / "examples"
+        / "c2_v3_mixed_roundtrip.json"
+    )
+    fixture = json.loads(fixture_path.read_text(encoding="utf-8"))
+    worker = _create_worker()
+    _create_sales(worker["id"])
+    _create_lead("混合消息合同客户", "13896676696")
+    remark_code = _pull_remark_code(worker)
+    scan = client.post(
+        f"/api/workers/{worker['id']}/wechat/sessions/scan-result",
+        json=_scan_payload(remark_code),
+        headers=_worker_headers(worker),
+    )
+    binding = scan.json()["data"]["bindings"][0]
+    _seed_open_handoff(binding, paused=False)
+    target = WorkerWechatReadTarget(
+        conversation_id=binding["conversation_id"],
+        remark_code=remark_code,
+        rpa_session_key=binding["rpa_session_key"],
+        display_name=f"混合消息合同客户-{remark_code}",
+        read_reason="waiting_sales_reply",
+        authorization_revision=_binding_authorization_revision(binding["id"]),
+    )
+    read_run_id = "read-worker-generated-mixed-alignment"
+    post_observations = copy.deepcopy(
+        fixture["omniauto_output"]["observations"]
+    )
+    pre_observations = copy.deepcopy(post_observations)
+    for item in pre_observations:
+        item["observation_id"] = "pre-" + str(item["observation_id"])
+    continuity = compare_business_viewport_continuity(
+        normalized_business_message_sequence(
+            pre_observations,
+            message_viewport_bounds=None,
+        ),
+        normalized_business_message_sequence(
+            post_observations,
+            message_viewport_bounds=None,
+        ),
+        old_top_boundary_complete=True,
+        new_top_boundary_complete=True,
+    )
+    assert continuity["relation"] == "business_sequence_equal"
+    generated_alignment = _continuity_alignment_evidence_for_suffix(
+        pre_observations,
+        post_observations,
+        continuity,
+        pre_sequence_source="action_frame",
+        pre_frame_id="frame:mixed-before",
+        post_frame_id="frame:mixed-after",
+    )
+    assert len(generated_alignment["matched_pairs"]) == 3
+    assert all(
+        {
+            "identity_state",
+            "pre_observation_id",
+            "post_observation_id",
+            "pre_index",
+            "post_index",
+            "match_basis",
+        }.issubset(pair)
+        for pair in generated_alignment["matched_pairs"]
+    )
+
+    sidecar = copy.deepcopy(fixture["omniauto_output"])
+    sidecar["observations"] = post_observations
+    sidecar["sequence_alignment_evidence"] = generated_alignment
+    stable_ids = {
+        str(item["observation_id"]): str(item["_worker_stable_id"])
+        for item in post_observations
+    }
+    for state in sidecar["slot_ledger_states"]:
+        state["origin_read_run_id"] = read_run_id
+        state["source_message_key"] = worker_source_message_key(
+            target,
+            identity_kind="worker_sequence",
+            identity=stable_ids[state["observation_id"]],
+        )
+    payload = build_worker_message_ingest_payload(
+        target,
+        sidecar,
+        read_run_id=read_run_id,
+    )
+    # Validate with the backend request model before using the real route;
+    # both consume the exact Worker-produced payload, not separate fixtures.
+    WechatMessageIngestRequest.model_validate(payload)
+
+    response = client.post(
+        f"/api/workers/{worker['id']}/wechat/messages/ingest",
+        json=payload,
+        headers=_worker_headers(worker),
+    )
+
+    assert response.status_code == 200, response.text
+    assert [item["message_type"] for item in payload["messages"]] == [
+        "text",
+        "voice",
+        "image",
+    ]
+    with SessionLocal() as db:
+        rows = (
+            db.query(MessageEvent)
+            .filter(
+                MessageEvent.conversation_id == binding["conversation_id"]
+            )
+            .order_by(MessageEvent.ingested_at.asc())
+            .all()
+        )
+        assert [item.message_type for item in rows] == [
+            "text",
+            "voice",
+            "image",
+        ]
+
+
+def test_uat_shallow_alignment_is_rejected_atomically_by_official_route():
+    worker = _create_worker()
+    _create_sales(worker["id"])
+    _create_lead("旧版浅层对齐合同客户", "13896676697")
+    remark_code = _pull_remark_code(worker)
+    scan = client.post(
+        f"/api/workers/{worker['id']}/wechat/sessions/scan-result",
+        json=_scan_payload(remark_code),
+        headers=_worker_headers(worker),
+    )
+    binding = scan.json()["data"]["bindings"][0]
+    payload = _v3_ingest_payload(
+        binding,
+        remark_code,
+        read_run_id="read-uat-shallow-alignment-route",
+        messages=[
+            _v3_message(
+                "uat-shallow-voice",
+                role="customer",
+                message_type="voice",
+                content="有10万左右的二手车推荐吗？",
+                screen_order=1,
+            )
+        ],
+    )
+    payload["evidence"]["sequence_alignment_evidence"] = {
+        "pre_sequence_source": "worker_business_viewport_continuity",
+        "pre_frame_id": "",
+        "post_frame_id": "",
+        "alignment_status": "unique",
+        "candidate_alignment_count": 1,
+        "matched_pairs": [{"old_index": 0, "new_index": 0}],
+        "old_tail_fully_consumed": True,
+        "new_suffix_observation_ids": [],
+    }
+
+    response = client.post(
+        f"/api/workers/{worker['id']}/wechat/messages/ingest",
+        json=payload,
+        headers=_worker_headers(worker),
+    )
+
+    assert response.status_code == 400, response.text
+    assert response.json()["code"] == "VALIDATION_ERROR"
+    assert response.json()["data"]["retryable"] is False
+    with SessionLocal() as db:
+        assert db.query(MessageEvent).count() == 0
+        assert db.query(MessageBatch).count() == 0
 
 
 def test_same_worker_read_run_uses_distinct_local_outboxes_for_new_voice_and_supersedes_old_batch(
@@ -3804,6 +3968,9 @@ def test_v3_rejects_ingestible_observation_omitted_by_worker():
         messages=[included],
     )
     payload["evidence"]["observations"].append(omitted["raw_payload"]["observation"])
+    payload["evidence"]["sequence_alignment_evidence"][
+        "new_suffix_observation_ids"
+    ].append(omitted["raw_payload"]["observation"]["observation_id"])
 
     response = client.post(
         f"/api/workers/{worker['id']}/wechat/messages/ingest",
@@ -3867,6 +4034,32 @@ def test_v3_rejects_forged_historical_observation_not_found_in_backend():
             "item_state": "completed",
         },
     )
+    payload["evidence"]["sequence_alignment_evidence"] = {
+        "pre_sequence_source": "checkpoint",
+        "pre_frame_id": "checkpoint:forged-history",
+        "post_frame_id": "frame:read-forged-historical-observation",
+        "alignment_status": "unique",
+        "candidate_alignment_count": 1,
+        "matched_pairs": [
+            {
+                "identity_state": "committed",
+                "worker_stable_id": "worker-message-999",
+                "pre_observation_id": forged["raw_payload"][
+                    "observation"
+                ]["observation_id"],
+                "post_observation_id": forged["raw_payload"][
+                    "observation"
+                ]["observation_id"],
+                "pre_index": 0,
+                "post_index": 0,
+                "match_basis": "worker_stable_identity",
+            }
+        ],
+        "old_tail_fully_consumed": True,
+        "new_suffix_observation_ids": [
+            included["raw_payload"]["observation"]["observation_id"]
+        ],
+    }
 
     response = client.post(
         f"/api/workers/{worker['id']}/wechat/messages/ingest",
@@ -4556,7 +4749,7 @@ def test_message_batch_status_rejects_other_worker_and_returns_terminal_state():
 
 
 def test_v3_ingest_uses_canonical_content_and_rejects_expired_authorization_revision():
-    assert contract_revision() == "0.9.45"
+    assert contract_revision() == "0.9.46"
     location_recovery = c2_contract_v3()[
         "target_location_recovery_contract"
     ]
@@ -6722,6 +6915,125 @@ def test_ingest_rejects_message_fact_without_sequence_alignment_evidence():
     assert response.json()["code"] == "VALIDATION_ERROR"
 
 
+def test_ingest_rejects_alignment_post_index_that_points_to_another_observation():
+    worker = _create_worker()
+    _create_sales(worker["id"])
+    _create_lead("序列位置错配客户", "13896676694")
+    remark_code = _pull_remark_code(worker)
+    scan = client.post(
+        f"/api/workers/{worker['id']}/wechat/sessions/scan-result",
+        json=_scan_payload(remark_code),
+        headers=_worker_headers(worker),
+    )
+    binding = scan.json()["data"]["bindings"][0]
+    messages = [
+        _v3_message(
+            "post-index-a",
+            role="customer",
+            message_type="text",
+            content="第一条",
+            screen_order=1,
+        ),
+        _v3_message(
+            "post-index-b",
+            role="customer",
+            message_type="text",
+            content="第二条",
+            screen_order=2,
+        ),
+    ]
+    payload = _v3_ingest_payload(
+        binding,
+        remark_code,
+        read_run_id="read-post-index-mismatch",
+        messages=messages,
+    )
+    observation_ids = [
+        item["observation_id"]
+        for item in payload["evidence"]["observations"]
+    ]
+    payload["evidence"]["sequence_alignment_evidence"] = {
+        "pre_sequence_source": "checkpoint",
+        "pre_frame_id": "checkpoint:post-index-mismatch",
+        "post_frame_id": "frame:post-index-mismatch",
+        "alignment_status": "unique",
+        "candidate_alignment_count": 1,
+        "matched_pairs": [
+            {
+                "identity_state": "frame_local_unselected",
+                "worker_stable_id": None,
+                "pre_observation_id": "pre-observation-b",
+                "post_observation_id": observation_ids[1],
+                "pre_index": 0,
+                "post_index": 0,
+                "match_basis": "business_sequence",
+            }
+        ],
+        "old_tail_fully_consumed": True,
+        "new_suffix_observation_ids": [],
+    }
+
+    response = client.post(
+        f"/api/workers/{worker['id']}/wechat/messages/ingest",
+        json=payload,
+        headers=_worker_headers(worker),
+    )
+
+    assert response.status_code == 400, response.text
+    assert response.json()["code"] == "VALIDATION_ERROR"
+
+
+def test_ingest_rejects_new_suffix_that_is_not_the_complete_contiguous_tail():
+    worker = _create_worker()
+    _create_sales(worker["id"])
+    _create_lead("新增后缀断裂客户", "13896676695")
+    remark_code = _pull_remark_code(worker)
+    scan = client.post(
+        f"/api/workers/{worker['id']}/wechat/sessions/scan-result",
+        json=_scan_payload(remark_code),
+        headers=_worker_headers(worker),
+    )
+    binding = scan.json()["data"]["bindings"][0]
+    messages = [
+        _v3_message(
+            "suffix-a",
+            role="customer",
+            message_type="text",
+            content="新增一",
+            screen_order=1,
+        ),
+        _v3_message(
+            "suffix-b",
+            role="customer",
+            message_type="text",
+            content="新增二",
+            screen_order=2,
+        ),
+    ]
+    payload = _v3_ingest_payload(
+        binding,
+        remark_code,
+        read_run_id="read-broken-new-suffix",
+        messages=messages,
+    )
+    observation_ids = [
+        item["observation_id"]
+        for item in payload["evidence"]["observations"]
+    ]
+    payload["evidence"]["sequence_alignment_evidence"][
+        "new_suffix_observation_ids"
+    ] = [observation_ids[1]]
+
+    response = client.post(
+        f"/api/workers/{worker['id']}/wechat/messages/ingest",
+        json=payload,
+        headers=_worker_headers(worker),
+    )
+
+    assert response.status_code == 400, response.text
+    assert response.json()["code"] == "VALIDATION_ERROR"
+
+
 def test_ingest_rejects_ambiguous_alignment_that_declares_new_suffix():
     worker = _create_worker()
     _create_sales(worker["id"])
@@ -7744,6 +8056,7 @@ def test_human_sales_reply_closes_pause_handoff_and_restores_ai():
         binding,
         paused=True,
         trigger_source_key=trigger_source_key,
+        trigger_content="触发暂停的客户消息",
     )
     sales_payload = _v3_ingest_payload(
         binding,
@@ -8015,6 +8328,7 @@ def test_sales_message_without_occurred_at_keeps_handoff_when_order_is_only_ocr_
         binding,
         paused=False,
         trigger_source_key=trigger_source_key,
+        trigger_content="OCR 顺序里的客户消息",
     )
     payload = _v3_ingest_payload(
         binding,
@@ -8072,6 +8386,7 @@ def test_open_handoff_same_frame_respects_customer_sales_customer_order():
         binding,
         paused=False,
         trigger_source_key="handoff-customer-before-sales",
+        trigger_content="这条发生在销售接管前",
     )
     payload = _v3_ingest_payload(
         binding,

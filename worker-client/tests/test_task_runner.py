@@ -41,6 +41,7 @@ from chejin_worker_client.c2_contract import (
     contract_revision,
     contract_sha256,
     sidecar_contract_error,
+    validate_sequence_alignment_evidence,
 )
 from chejin_worker_client.config import CONFIG
 from chejin_worker_client.models import Binding, RpaResult, RpaStep, Task, WechatReadTarget, WorkerProfile
@@ -175,6 +176,110 @@ def production_send_context_guard(
         observations,
         layout_evidence=layout_evidence,
     )
+
+
+def with_valid_outbox_sequence_evidence(
+    payload: dict,
+) -> dict:
+    """Attach a production-shaped empty-checkpoint alignment to unit facts.
+
+    Outbox behavior tests often exercise persistence/retry concerns with a
+    compact message fixture.  They must still cross the same mandatory
+    sequence-proof boundary as production instead of relying on FakeApi to
+    accept an HTTP-invalid payload.
+    """
+
+    result = copy.deepcopy(payload)
+    read_run_id = str(result.get("read_run_id") or "test-read")
+    observations: list[dict] = []
+    slot_states: list[dict] = []
+    row_kind_by_type = {
+        "text": "text_bubble",
+        "voice": "voice_transcript",
+        "image": "image_bubble",
+        "system": "system_message",
+    }
+    for index, message in enumerate(result.get("messages") or []):
+        if not isinstance(message, dict):
+            continue
+        source_key = str(
+            message.get("source_message_key") or f"source-{index}"
+        )
+        raw_payload = (
+            message.get("raw_payload")
+            if isinstance(message.get("raw_payload"), dict)
+            else {}
+        )
+        raw_observation = (
+            raw_payload.get("observation")
+            if isinstance(raw_payload.get("observation"), dict)
+            else {}
+        )
+        observation_id = str(
+            raw_observation.get("observation_id")
+            or "test-outbox-observation-"
+            + hashlib.sha256(source_key.encode("utf-8")).hexdigest()[:16]
+        )
+        message_type = str(message.get("message_type") or "text")
+        observation = {
+            **raw_observation,
+            "observation_id": observation_id,
+            "row_kind": str(
+                raw_observation.get("row_kind")
+                or row_kind_by_type.get(message_type, "text_bubble")
+            ),
+            "sender_role": str(
+                raw_observation.get("sender_role")
+                or message.get("sender_role_hint")
+                or "customer"
+            ),
+            "message_type": message_type,
+            "source_message": {
+                **(
+                    raw_observation.get("source_message")
+                    if isinstance(
+                        raw_observation.get("source_message"), dict
+                    )
+                    else {}
+                ),
+                "source_message_key": source_key,
+            },
+        }
+        observations.append(observation)
+        slot_states.append(
+            {
+                "observation_id": observation_id,
+                "screen_order": index + 1,
+                "order_source": "observation_index_fallback",
+                "row_kind": observation["row_kind"],
+                "source_message_key": source_key,
+                "origin_read_run_id": read_run_id,
+                "fact_scope": "current_read_run",
+                "delivery_state": "outbox_waiting",
+                "item_state": str(message.get("item_state") or "completed"),
+            }
+        )
+    evidence = (
+        copy.deepcopy(result.get("evidence"))
+        if isinstance(result.get("evidence"), dict)
+        else {}
+    )
+    evidence["observations"] = observations
+    evidence["slot_ledger_states"] = slot_states
+    evidence["sequence_alignment_evidence"] = {
+        "pre_sequence_source": "empty_checkpoint",
+        "pre_frame_id": f"checkpoint:none:{read_run_id}",
+        "post_frame_id": f"frame:{read_run_id}",
+        "alignment_status": "not_required",
+        "candidate_alignment_count": 0,
+        "matched_pairs": [],
+        "old_tail_fully_consumed": True,
+        "new_suffix_observation_ids": [
+            item["observation_id"] for item in observations
+        ],
+    }
+    result["evidence"] = evidence
+    return result
 
 
 def confirmed_private_target_payload(remark_code: str) -> dict:
@@ -3257,6 +3362,66 @@ class TaskRunnerTest(unittest.TestCase):
         self.assertEqual(
             list_c2_action_journal(target.conversation_id),
             [],
+        )
+
+    def test_c2_flow_finalizer_failure_still_releases_draining_flow(self):
+        api = FakeApi(None)
+        runner, _ = self.make_runner(
+            api,
+            FakeBridge(
+                RpaResult(ok=True, result_code="unused", message="unused")
+            ),
+        )
+        binding = Binding(
+            worker_id="worker-finalizer-failure",
+            worker_token="token",
+            client_instance_id="client-finalizer-failure",
+            run_status="running",
+        )
+        target = WechatReadTarget(
+            conversation_id="conv-finalizer-failure",
+            rpa_session_key="wx:rpa:v1:finalizer-failure",
+            display_name="CJFINERR1",
+            remark_code="CJFINERR1",
+            authorization_revision="revision-finalizer-failure",
+        )
+
+        with patch.object(
+            runner,
+            "_read_one_wechat_target_impl",
+            return_value={"ok": False, "error_code": "VALIDATION_ERROR"},
+        ), patch.object(
+            runner,
+            "_finalize_c2_flow_outcomes",
+            side_effect=ValueError(
+                "ITEM_OUTCOME_TERMINAL_CONFLICT:source:uat-voice"
+            ),
+        ), self.assertRaisesRegex(
+            ValueError,
+            "ITEM_OUTCOME_TERMINAL_CONFLICT",
+        ):
+            runner._read_one_wechat_target(binding, target)
+
+        self.assertIn(
+            "finish:",
+            "\n".join(api.inflight_flow_events),
+        )
+        self.assertIn(
+            "technical_failed",
+            "\n".join(api.inflight_flow_events),
+        )
+        self.assertEqual(
+            load_runtime_control().get("inflight_flow_id"),
+            None,
+        )
+        finish_event = next(
+            item
+            for item in api.inflight_flow_events
+            if item.startswith("finish:")
+        )
+        self.assertIn(":technical_failed:", finish_event)
+        self.assertTrue(
+            finish_event.endswith(":C2_FLOW_OUTCOME_FINALIZE_FAILED")
         )
 
     def test_pre_send_refresh_exception_finishes_telemetry_as_failed(self):
@@ -7995,7 +8160,7 @@ class TaskRunnerTest(unittest.TestCase):
             ingest_state="waiting",
             result={"state": "completed"},
         )
-        outbox_id = enqueue_c2_outbox(
+        outbox_id = enqueue_c2_outbox(with_valid_outbox_sequence_evidence(
             {
                 "read_run_id": f"read-outbox-single-flight-{time.time_ns()}",
                 "conversation_id": "conv-outbox-single-flight",
@@ -8007,7 +8172,7 @@ class TaskRunnerTest(unittest.TestCase):
                     }
                 ],
             }
-        )
+        ))
         results: list[bool] = []
         first = threading.Thread(
             target=lambda: results.append(runner._replay_c2_outbox(binding)),
@@ -8334,7 +8499,7 @@ class TaskRunnerTest(unittest.TestCase):
         self.authorize_chat_reply_target(api)
         api.pre_send_checkpoint_facts = [
             pre_send_fact(
-                "worker-message-existing",
+                "worker-message-1",
                 sender_role="customer",
                 message_type="text",
                 content="原来的问题",
@@ -10371,6 +10536,24 @@ class TaskRunnerTest(unittest.TestCase):
             ],
             ["又补充了一个新问题"],
         )
+        self.assertEqual(
+            [
+                item["observation_id"]
+                for item in api.message_payloads[0]["evidence"][
+                    "observations"
+                ]
+            ],
+            ["old-current-observation", "new-suffix-observation"],
+        )
+        validate_sequence_alignment_evidence(
+            api.message_payloads[0]["evidence"][
+                "sequence_alignment_evidence"
+            ],
+            post_observation_ids=[
+                "old-current-observation",
+                "new-suffix-observation",
+            ],
+        )
         self.assertEqual(bridge.sent_replies, [])
 
     def test_pre_send_checkpoint_new_voice_suffix_transcribes_once_and_replaces_reply(self):
@@ -10488,8 +10671,10 @@ class TaskRunnerTest(unittest.TestCase):
             "adapter": "mock",
             "state": "voice_transcribe_completed",
             "action_phase": "confirmed",
-            "business_state": "completed",
-            "business_result_confirmed": True,
+            # This is the real Sidecar boundary: the UI action result exists,
+            # while only Worker may settle continuity and final identity.
+            "business_state": "confirmed_result_pending_continuity",
+            "business_result_confirmed": False,
             "ui_action_performed": True,
             "sidecar_run_id": "new-voice-suffix-action",
             "processed_voice_anchor_keys": ["new-voice-suffix-anchor"],
@@ -10555,6 +10740,21 @@ class TaskRunnerTest(unittest.TestCase):
                 for item in api.message_payloads[0]["messages"]
             ],
             [("voice", "我想看10万元左右的SUV")],
+        )
+        self.assertEqual(
+            len(api.message_payloads[0]["evidence"]["observations"]),
+            2,
+        )
+        validate_sequence_alignment_evidence(
+            api.message_payloads[0]["evidence"][
+                "sequence_alignment_evidence"
+            ],
+            post_observation_ids=[
+                item["observation_id"]
+                for item in api.message_payloads[0]["evidence"][
+                    "observations"
+                ]
+            ],
         )
         self.assertEqual(bridge.sent_replies, [])
 
@@ -10725,8 +10925,10 @@ class TaskRunnerTest(unittest.TestCase):
             "adapter": "mock",
             "state": "voice_transcribe_completed",
             "action_phase": "confirmed",
-            "business_state": "completed",
-            "business_result_confirmed": True,
+            # Sidecar reports only the physical result. Worker is solely
+            # responsible for continuity and durable identity settlement.
+            "business_state": "confirmed_result_pending_continuity",
+            "business_result_confirmed": False,
             "ui_action_performed": True,
             "sidecar_run_id": "mixed-voice-action",
             "processed_voice_anchor_keys": ["mixed-new-voice-anchor"],
@@ -10804,6 +11006,62 @@ class TaskRunnerTest(unittest.TestCase):
         self.assertEqual(
             api.message_payloads[0]["messages"][0]["content"],
             "想看看这张车的情况",
+        )
+        self.assertEqual(
+            [
+                item["observation_id"]
+                for item in api.message_payloads[0]["evidence"][
+                    "observations"
+                ]
+            ],
+            [
+                "mixed-old-text",
+                "mixed-new-voice-transcript",
+                "mixed-new-image",
+            ],
+        )
+        evidence = validate_sequence_alignment_evidence(
+            api.message_payloads[0]["evidence"][
+                "sequence_alignment_evidence"
+            ],
+            post_observation_ids=[
+                "mixed-old-text",
+                "mixed-new-voice-transcript",
+                "mixed-new-image",
+            ],
+        )
+        self.assertTrue(evidence["pre_frame_id"])
+        self.assertTrue(evidence["post_frame_id"])
+        self.assertTrue(evidence["matched_pairs"])
+        for pair in evidence["matched_pairs"]:
+            self.assertEqual(
+                set(pair).intersection(
+                    {
+                        "identity_state",
+                        "pre_observation_id",
+                        "post_observation_id",
+                        "pre_index",
+                        "post_index",
+                        "match_basis",
+                    }
+                ),
+                {
+                    "identity_state",
+                    "pre_observation_id",
+                    "post_observation_id",
+                    "pre_index",
+                    "post_index",
+                    "match_basis",
+                },
+            )
+        self.assertFalse(
+            any(
+                item.get("terminal_state") == "failed"
+                for item in list_c2_ledger_entries(
+                    conversation_id="conv-1"
+                )
+                if item.get("message_type") == "voice"
+            )
         )
         self.assertEqual(bridge.sent_replies, [])
 
@@ -15771,6 +16029,7 @@ class TaskRunnerTest(unittest.TestCase):
                 "observations": [raw_payload["observation"]],
             },
         }
+        payload = with_valid_outbox_sequence_evidence(payload)
 
         from chejin_worker_client.c2_outbox_recovery import (
             split_ingest_payload as real_split_ingest_payload,
@@ -15914,6 +16173,101 @@ class TaskRunnerTest(unittest.TestCase):
         self.assertEqual(stored["payload"]["messages"], messages)
         self.assertEqual(api.message_payloads, [])
 
+    def test_c2_outbox_restart_prepares_incomplete_partition_without_requiring_final_frame(self):
+        api = FakeApi(None)
+        runner, _ = self.make_runner(
+            api,
+            FakeBridge(
+                RpaResult(
+                    ok=True,
+                    result_code="invite_sent",
+                    message="unused",
+                )
+            ),
+        )
+        unique = str(time.time_ns())
+        read_run_id = f"read-split-restart-{unique}"
+        observations = []
+        messages = []
+        for index in range(1, 31):
+            observation_id = f"split-restart-observation-{index}-{unique}"
+            observation = {
+                "schema_version": 3,
+                "observation_id": observation_id,
+                "row_kind": "text_bubble",
+                "sender_role": "customer",
+                "sender_role_source": "same_row_avatar",
+                "message_type": "text",
+                "voice_state": "not_voice",
+                "content_clean": f"第 {index} 条混合链路拆包事实",
+                "screen_order": index,
+            }
+            observations.append(observation)
+            messages.append(
+                {
+                    "source_message_key": f"split-restart-source-{index}-{unique}",
+                    "dedupe_key": f"split-restart-dedupe-{index}-{unique}",
+                    "sender_role_hint": "customer",
+                    "message_type": "text",
+                    "content": observation["content_clean"],
+                    "item_state": "completed",
+                    "flow_state": "completed",
+                    "raw_payload": {
+                        "observation": copy.deepcopy(observation),
+                        "voice_transcription_meta": {
+                            "transport_padding": "x" * 80_000,
+                        },
+                    },
+                }
+            )
+        payload = {
+            "read_run_id": read_run_id,
+            "conversation_id": f"conv-split-restart-{unique}",
+            "authorization_revision": f"revision-split-restart-{unique}",
+            "messages": messages,
+            "evidence": {
+                "observations": observations,
+                "sequence_alignment_evidence": {
+                    "pre_sequence_source": "empty_checkpoint",
+                    "pre_frame_id": f"checkpoint:none:{unique}",
+                    "post_frame_id": f"frame:split-restart:{unique}",
+                    "alignment_status": "not_required",
+                    "candidate_alignment_count": 0,
+                    "matched_pairs": [],
+                    "old_tail_fully_consumed": True,
+                    "new_suffix_observation_ids": [
+                        item["observation_id"] for item in observations
+                    ],
+                },
+            },
+        }
+        parent_id = enqueue_c2_outbox(payload)
+
+        prepared = runner._prepare_persisted_c2_outbox(
+            outbox_id=parent_id,
+            payload=payload,
+        )
+
+        self.assertIsNotNone(prepared)
+        self.assertGreater(len(prepared), 1)
+        first_child_id, first_partition = prepared[0]
+        partition_meta = first_partition["evidence"]["ingest_partition"]
+        self.assertLess(partition_meta["index"], partition_meta["count"])
+        self.assertLess(
+            len(first_partition["evidence"]["observations"]),
+            len(observations),
+        )
+
+        restarted = runner._prepare_persisted_c2_outbox(
+            outbox_id=first_child_id,
+            payload=first_partition,
+        )
+
+        self.assertEqual(restarted, [(first_child_id, first_partition)])
+        child = load_c2_outbox_entry(first_child_id)
+        self.assertNotEqual(child["status"], "capability_paused")
+        self.assertEqual(api.message_payloads, [])
+
     def test_same_read_run_submits_each_new_fact_set_through_a_new_outbox(self):
         api = FakeApi(None)
         runner, _ = self.make_runner(
@@ -15963,8 +16317,12 @@ class TaskRunnerTest(unittest.TestCase):
                 }
             },
         }
-        first_payload = {**base, "messages": [message_a]}
-        second_payload = {**base, "messages": [message_a, message_b]}
+        first_payload = with_valid_outbox_sequence_evidence(
+            {**base, "messages": [message_a]}
+        )
+        second_payload = with_valid_outbox_sequence_evidence(
+            {**base, "messages": [message_a, message_b]}
+        )
 
         first = runner._submit_c2_outbox_payload(
             binding=binding,
@@ -16032,6 +16390,7 @@ class TaskRunnerTest(unittest.TestCase):
             "messages": [message],
             "evidence": {"observations": []},
         }
+        payload = with_valid_outbox_sequence_evidence(payload)
         first = runner._submit_c2_outbox_payload(
             binding=binding,
             payload=payload,
@@ -16096,6 +16455,7 @@ class TaskRunnerTest(unittest.TestCase):
                 "timing": {"elapsed": 1.0},
             },
         }
+        payload = with_valid_outbox_sequence_evidence(payload)
         first = runner._submit_c2_outbox_payload(
             binding=binding,
             payload=payload,
@@ -20036,7 +20396,7 @@ class TaskRunnerTest(unittest.TestCase):
         original_read_run_id = (
             f"read-outbox-expired-{time.time_ns()}"
         )
-        outbox_id = enqueue_c2_outbox(
+        outbox_id = enqueue_c2_outbox(with_valid_outbox_sequence_evidence(
             {
                 "read_run_id": original_read_run_id,
                 "conversation_id": "conv-outbox-expired",
@@ -20048,7 +20408,7 @@ class TaskRunnerTest(unittest.TestCase):
                     }
                 ],
             }
-        )
+        ))
 
         assert runner._replay_c2_outbox(binding) is False
         waiting = next(
@@ -20123,7 +20483,7 @@ class TaskRunnerTest(unittest.TestCase):
             ingest_state="waiting",
             result={"state": "completed"},
         )
-        outbox_id = enqueue_c2_outbox(
+        outbox_id = enqueue_c2_outbox(with_valid_outbox_sequence_evidence(
             {
                 "read_run_id": f"read-collision-{time.time_ns()}",
                 "conversation_id": "conv-collision",
@@ -20145,7 +20505,7 @@ class TaskRunnerTest(unittest.TestCase):
                     }
                 ],
             }
-        )
+        ))
 
         self.assertFalse(runner._replay_c2_outbox(binding))
         quarantined = load_c2_outbox_entry(outbox_id)
@@ -20194,7 +20554,7 @@ class TaskRunnerTest(unittest.TestCase):
             run_status="running",
         )
         conversation_id = f"conv-nonrekeyable-{time.time_ns()}"
-        outbox_id = enqueue_c2_outbox(
+        outbox_id = enqueue_c2_outbox(with_valid_outbox_sequence_evidence(
             {
                 "read_run_id": f"read-{time.time_ns()}",
                 "conversation_id": conversation_id,
@@ -20209,7 +20569,7 @@ class TaskRunnerTest(unittest.TestCase):
                     }
                 ],
             }
-        )
+        ))
 
         self.assertFalse(runner._replay_c2_outbox(binding))
         self.assertEqual(attempts, 1)
@@ -20647,7 +21007,7 @@ class TaskRunnerTest(unittest.TestCase):
             ingest_state="waiting",
             result={"state": "completed"},
         )
-        outbox_id = enqueue_c2_outbox(
+        outbox_id = enqueue_c2_outbox(with_valid_outbox_sequence_evidence(
             {
                 "read_run_id": original_read_run_id,
                 "conversation_id": "conv-outbox-invalid",
@@ -20714,7 +21074,7 @@ class TaskRunnerTest(unittest.TestCase):
                     ],
                 },
             }
-        )
+        ))
 
         original_payload = copy.deepcopy(
             load_c2_outbox_entry(outbox_id)["payload"]
@@ -20854,7 +21214,7 @@ class TaskRunnerTest(unittest.TestCase):
             ingest_state="waiting",
             result={"state": "completed"},
         )
-        outbox_id = enqueue_c2_outbox(
+        outbox_id = enqueue_c2_outbox(with_valid_outbox_sequence_evidence(
             {
                 "read_run_id": f"read-validation-paused-{time.time_ns()}",
                 "conversation_id": conversation_id,
@@ -20866,7 +21226,7 @@ class TaskRunnerTest(unittest.TestCase):
                     }
                 ],
             }
-        )
+        ))
 
         self.assertFalse(runner._replay_c2_outbox(binding))
         self.assertEqual(
@@ -20880,6 +21240,7 @@ class TaskRunnerTest(unittest.TestCase):
             )["ingest_state"],
             "waiting",
         )
+        self.assertEqual(binding.run_status, "paused")
         incident_log = next(
             row
             for row in read_logs(limit=50)
@@ -20898,16 +21259,161 @@ class TaskRunnerTest(unittest.TestCase):
             "capability_paused",
         )
 
-    def test_c2_outbox_replay_confirms_exact_source_key_without_rerunning_rpa(self):
+    def test_uat_malformed_persisted_alignment_never_reaches_http_and_pauses(self):
+        api = FakeApi(None)
+        runner, _ = self.make_runner(
+            api,
+            FakeBridge(
+                RpaResult(ok=True, result_code="ok", message="unused")
+            ),
+        )
+        binding = Binding(
+            worker_id="worker-1",
+            worker_token="token",
+            client_instance_id="client-1",
+            run_status="running",
+        )
+        runner.binding = binding
+        read_run_id = f"read-uat-malformed-{time.time_ns()}"
+        begin_runtime_flow(read_run_id, "c2_read")
+        runner._restart_recovery_flow_id = read_run_id
+        api.inflight_flow_id = read_run_id
+        api.inflight_flow_state = {
+            "status": "draining",
+            "flow_id": read_run_id,
+            "flow_kind": "c2_read",
+        }
+        runner._backend_inflight_flow_state = dict(api.inflight_flow_state)
+        save_c2_ledger_terminal(
+            conversation_id="conv-uat-malformed-alignment",
+            source_message_key="source:uat-voice",
+            origin_read_run_id=read_run_id,
+            dedupe_key="dedupe:uat-voice",
+            message_type="voice",
+            terminal_state="completed",
+            ingest_state="waiting",
+            result={"state": "completed"},
+        )
+        outbox_id = enqueue_c2_outbox(
+            {
+                "contract_version": 3,
+                # Preserve the exact released client revision from the
+                # Windows incident.  Local preflight must quarantine this
+                # persisted row before any HTTP/version negotiation.
+                "contract_revision": "0.9.45",
+                "read_run_id": read_run_id,
+                "conversation_id": "conv-uat-malformed-alignment",
+                "authorization_revision": "revision-uat-malformed",
+                "messages": [
+                    {
+                        "source_message_key": "source:uat-voice",
+                        "dedupe_key": "dedupe:uat-voice",
+                        "sender_role_hint": "customer",
+                        "message_type": "voice",
+                        "content": "有10万左右的二手车推荐吗？",
+                        "item_state": "completed",
+                        "flow_state": "completed",
+                    }
+                ],
+                "evidence": {
+                    "observations": [
+                        {
+                            "observation_id": f"uat-observation-{index}",
+                            "row_kind": row_kind,
+                            "sender_role": "customer",
+                            "message_type": message_type,
+                        }
+                        for index, (row_kind, message_type) in enumerate(
+                            (
+                                ("text_bubble", "text"),
+                                ("voice_transcript", "voice"),
+                                ("image_bubble", "image"),
+                            )
+                        )
+                    ],
+                    # Exact malformed shape captured in the Windows 0.9.45
+                    # Outbox: top-level keys existed, nested HTTP fields did
+                    # not, and both frame ids were empty.
+                    "sequence_alignment_evidence": {
+                        "pre_sequence_source": (
+                            "worker_business_viewport_continuity"
+                        ),
+                        "pre_frame_id": "",
+                        "post_frame_id": "",
+                        "alignment_status": "unique",
+                        "candidate_alignment_count": 1,
+                        "matched_pairs": [
+                            {"old_index": 0, "new_index": 0},
+                            {"old_index": 1, "new_index": 1},
+                            {"old_index": 2, "new_index": 2},
+                        ],
+                        "old_tail_fully_consumed": True,
+                        "new_suffix_observation_ids": [],
+                    },
+                },
+            }
+        )
+
+        self.assertFalse(runner._replay_c2_outbox(binding))
+        stored = load_c2_outbox_entry(outbox_id)
+        self.assertEqual(stored["status"], "capability_paused")
+        self.assertIn(
+            "C2_SEQUENCE_ALIGNMENT_EVIDENCE_INVALID",
+            str(stored["last_error"]),
+        )
+        self.assertEqual(api.message_payloads, [])
+        self.assertEqual(binding.run_status, "paused")
+
+        # The released 0.9.45 database may already be in ``draining``.  The
+        # immutable malformed fact remains quarantined for diagnosis, while
+        # the old backend/local Flow is explicitly closed as technical_failed
+        # so the UI no longer lies about an in-progress operation.
+        runner._finish_restart_recovery_flow_if_settled(binding)
+        self.assertIsNone(load_runtime_control().get("inflight_flow_id"))
+        self.assertIsNone(runner._restart_recovery_flow_id)
+        self.assertTrue(
+            any(
+                event.startswith(
+                    f"finish:{read_run_id}:technical_failed:"
+                    "conv-uat-malformed-alignment:"
+                )
+                for event in api.inflight_flow_events
+            )
+        )
+        self.assertEqual(
+            load_c2_outbox_entry(outbox_id)["status"],
+            "capability_paused",
+        )
+        self.assertEqual(
+            load_c2_ledger_entry(
+                "conv-uat-malformed-alignment",
+                "source:uat-voice",
+            )["ingest_state"],
+            "waiting",
+        )
+
+    def test_c2_outbox_missing_sequence_evidence_is_quarantined_before_http(self):
         api = FakeApi(None)
         bridge = FakeBridge(RpaResult(ok=True, result_code="ok", message="unused"))
         runner, _ = self.make_runner(api, bridge)
         binding = Binding(worker_id="worker-1", worker_token="token", client_instance_id="client-1", run_status="running")
+        runner.binding = binding
         source_key = f"source-outbox-{time.time_ns()}"
         conversation_id = f"conv-outbox-{time.time_ns()}"
+        read_run_id = f"read-outbox-{time.time_ns()}"
+        begin_runtime_flow(read_run_id, "c2_read")
+        runner._restart_recovery_flow_id = read_run_id
+        api.inflight_flow_id = read_run_id
+        api.inflight_flow_state = {
+            "status": "draining",
+            "flow_id": read_run_id,
+            "flow_kind": "c2_read",
+        }
+        runner._backend_inflight_flow_state = dict(api.inflight_flow_state)
         save_c2_ledger_terminal(
             conversation_id=conversation_id,
             source_message_key=source_key,
+            origin_read_run_id=read_run_id,
             dedupe_key=f"dedupe:{source_key}",
             message_type="image",
             terminal_state="completed",
@@ -20916,7 +21422,7 @@ class TaskRunnerTest(unittest.TestCase):
         )
         outbox_id = enqueue_c2_outbox(
             {
-                "read_run_id": f"read-outbox-{time.time_ns()}",
+                "read_run_id": read_run_id,
                 "conversation_id": conversation_id,
                 "authorization_revision": "revision-current",
                 "messages": [
@@ -20929,11 +21435,104 @@ class TaskRunnerTest(unittest.TestCase):
             }
         )
 
-        assert runner._replay_c2_outbox(binding) is True
+        assert runner._replay_c2_outbox(binding) is False
 
-        assert load_c2_ledger_entry(conversation_id, source_key)["ingest_state"] == "confirmed"
-        assert all(item["outbox_id"] != outbox_id for item in list_c2_outbox_waiting(limit=100))
+        stored = load_c2_outbox_entry(outbox_id)
+        assert stored["status"] == "capability_paused"
+        assert "C2_SEQUENCE_ALIGNMENT_EVIDENCE_INVALID" in str(
+            stored["last_error"]
+        )
+        assert api.message_payloads == []
+        assert binding.run_status == "paused"
+        assert load_c2_ledger_entry(
+            conversation_id,
+            source_key,
+        )["ingest_state"] == "waiting"
         assert bridge.c2_operation_order == []
+
+        runner._finish_restart_recovery_flow_if_settled(binding)
+        assert load_runtime_control().get("inflight_flow_id") is None
+        assert runner._restart_recovery_flow_id is None
+        assert any(
+            event.startswith(
+                f"finish:{read_run_id}:technical_failed:{conversation_id}:"
+            )
+            for event in api.inflight_flow_events
+        )
+
+    def test_c2_outbox_with_only_waiting_ledger_still_requires_sequence_evidence(self):
+        api = FakeApi(None)
+        bridge = FakeBridge(
+            RpaResult(ok=True, result_code="ok", message="unused")
+        )
+        runner, _ = self.make_runner(api, bridge)
+        binding = Binding(
+            worker_id="worker-1",
+            worker_token="token",
+            client_instance_id="client-1",
+            run_status="running",
+        )
+        runner.binding = binding
+        unique = str(time.time_ns())
+        read_run_id = f"read-ledger-only-{unique}"
+        conversation_id = f"conv-ledger-only-{unique}"
+        source_key = f"source-ledger-only-{unique}"
+        begin_runtime_flow(read_run_id, "c2_read")
+        runner._restart_recovery_flow_id = read_run_id
+        api.inflight_flow_id = read_run_id
+        api.inflight_flow_state = {
+            "status": "draining",
+            "flow_id": read_run_id,
+            "flow_kind": "c2_read",
+        }
+        runner._backend_inflight_flow_state = dict(api.inflight_flow_state)
+        save_c2_ledger_terminal(
+            conversation_id=conversation_id,
+            source_message_key=source_key,
+            origin_read_run_id=read_run_id,
+            dedupe_key=f"dedupe:{source_key}",
+            message_type="voice",
+            terminal_state="completed",
+            ingest_state="waiting",
+            result={"state": "completed"},
+        )
+        outbox_id = enqueue_c2_outbox(
+            {
+                "read_run_id": read_run_id,
+                "conversation_id": conversation_id,
+                "authorization_revision": "revision-ledger-only",
+                "messages": [],
+                "evidence": {
+                    "observations": [],
+                    "slot_ledger_states": [],
+                },
+            }
+        )
+
+        assert runner._replay_c2_outbox(binding) is False
+
+        stored = load_c2_outbox_entry(outbox_id)
+        assert stored["status"] == "capability_paused"
+        assert "C2_SEQUENCE_ALIGNMENT_EVIDENCE_INVALID" in str(
+            stored["last_error"]
+        )
+        assert api.message_payloads == []
+        assert binding.run_status == "paused"
+        assert load_c2_ledger_entry(
+            conversation_id,
+            source_key,
+        )["ingest_state"] == "waiting"
+        assert bridge.c2_operation_order == []
+
+        runner._finish_restart_recovery_flow_if_settled(binding)
+        assert load_runtime_control().get("inflight_flow_id") is None
+        assert runner._restart_recovery_flow_id is None
+        assert any(
+            event.startswith(
+                f"finish:{read_run_id}:technical_failed:{conversation_id}:"
+            )
+            for event in api.inflight_flow_events
+        )
 
     def test_c2_image_terminal_result_is_cached_without_second_vision_call(self):
         api = FakeApi(None)
@@ -25205,10 +25804,12 @@ class TaskRunnerTest(unittest.TestCase):
         }
         refreshed_payload = {
             "ok": True,
+            "frame_id": "frame-post-image-new-voice",
             "observations": [existing_text, voice],
         }
         transcribed_payload = {
             "ok": True,
+            "frame_id": "frame-post-image-new-voice-transcribed",
             "observations": [
                 existing_text,
                 {
@@ -25254,6 +25855,7 @@ class TaskRunnerTest(unittest.TestCase):
                 target_label="CJPOST02",
                 sidecar_payload={
                     "ok": True,
+                    "frame_id": "frame-before-post-image-new-voice",
                     "observations": [existing_text],
                 },
                 lease=unittest.mock.Mock(),
@@ -25311,6 +25913,7 @@ class TaskRunnerTest(unittest.TestCase):
         }
         refreshed_payload = {
             "ok": True,
+            "frame_id": "frame-post-image-voice-gate",
             "observations": [existing_text, new_voice],
         }
         terminal_gate = {
@@ -25354,6 +25957,7 @@ class TaskRunnerTest(unittest.TestCase):
                 target_label="CJPOST04",
                 sidecar_payload={
                     "ok": True,
+                    "frame_id": "frame-before-post-image-voice-gate",
                     "observations": [existing_text],
                 },
                 lease=unittest.mock.Mock(),
@@ -26105,7 +26709,7 @@ class TaskRunnerTest(unittest.TestCase):
                     "pre_frame_id": f"checkpoint:none:{unique}",
                     "post_frame_id": f"frame:{unique}",
                     "alignment_status": "not_required",
-                    "candidate_alignment_count": 1,
+                    "candidate_alignment_count": 0,
                     "matched_pairs": [],
                     "old_tail_fully_consumed": True,
                     "new_suffix_observation_ids": [

@@ -38,6 +38,7 @@ from .c2_contract import (
     observation_role_is_trusted,
     sidecar_contract_error,
     target_location_recovery_contract,
+    validate_sequence_alignment_evidence,
 )
 from .c2_outbox_recovery import (
     encoded_payload_size,
@@ -92,6 +93,7 @@ from .storage import (
     enqueue_c2_outbox,
     begin_runtime_flow,
     clear_runtime_pause,
+    c2_outbox_capability_error_for_read_run_id,
     c2_outbox_id,
     finish_runtime_flow,
     flow_has_pre_cutover_media_records,
@@ -464,7 +466,13 @@ def _bind_worker_continuity_contract_to_send_guard(
 def _pre_send_suffix_only_payload(
     payload: dict[str, Any],
 ) -> dict[str, Any]:
-    """Exclude the already-frozen historical prefix from ingest consumers."""
+    """Separate new ingest facts from the complete authoritative frame.
+
+    ``observations`` is narrowed to the suffix because only new facts may be
+    mapped into ``messages``.  The immutable complete frame is carried beside
+    it so the transport evidence, alignment proof, backend checkpoint and
+    later pre-send comparison all describe the same screenshot.
+    """
 
     prefix_count = max(
         0,
@@ -491,6 +499,10 @@ def _pre_send_suffix_only_payload(
                 continue
         suffix.append(raw)
     result = dict(payload)
+    result["authoritative_evidence_observations"] = [
+        dict(item) if isinstance(item, dict) else item
+        for item in (payload.get("observations") or [])
+    ]
     result["observations"] = suffix
     result["pre_send_historical_prefix_excluded_from_ingest"] = prefix_count
     return result
@@ -1262,32 +1274,288 @@ def _apply_worker_identity_from_continuity(
     return result
 
 
-def _continuity_alignment_evidence_for_suffix(
-    observations: list[Any],
-    continuity: dict[str, Any],
-) -> dict[str, Any]:
-    ordered = ordered_message_viewport_observations(
-        [item for item in observations if isinstance(item, dict)]
+def _payload_frame_id(payload: dict[str, Any]) -> str:
+    """Return one immutable frame token already emitted by production code."""
+
+    frame_observation = (
+        payload.get("frame_observation")
+        if isinstance(payload.get("frame_observation"), dict)
+        else {}
     )
+    viewport = (
+        payload.get("message_viewport_change_evidence")
+        if isinstance(
+            payload.get("message_viewport_change_evidence"), dict
+        )
+        else {}
+    )
+    guard = (
+        payload.get("send_context_guard")
+        if isinstance(payload.get("send_context_guard"), dict)
+        else {}
+    )
+    return str(
+        payload.get("frame_id")
+        or payload.get("post_frame_id")
+        or payload.get("pre_frame_id")
+        or frame_observation.get("frame_id")
+        or viewport.get("layout_snapshot_id")
+        or guard.get("layout_snapshot_id")
+        or payload.get("sidecar_run_id")
+        or payload.get("run_id")
+        or ""
+    ).strip()
+
+
+def _continuity_alignment_evidence_for_suffix(
+    pre_observations: list[Any],
+    post_observations: list[Any],
+    continuity: dict[str, Any],
+    *,
+    pre_sequence_source: str,
+    pre_frame_id: str,
+    post_frame_id: str,
+    selected_action_mapping: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Serialize one Worker continuity result into the formal HTTP shape.
+
+    ``compare_business_viewport_continuity`` owns the mapping decision.  This
+    function does not compare a second time; it binds every accepted index
+    pair to the exact pre/post observations and Worker-owned identity already
+    present after that decision.  The returned value is deep-validated before
+    it can enter an Outbox.
+    """
+
+    pre_ordered = ordered_message_viewport_observations(
+        [item for item in pre_observations if isinstance(item, dict)]
+    )
+    post_ordered = ordered_message_viewport_observations(
+        [item for item in post_observations if isinstance(item, dict)]
+    )
+    selected = (
+        dict(selected_action_mapping)
+        if isinstance(selected_action_mapping, dict)
+        else {}
+    )
+    pairs: list[dict[str, Any]] = []
+    for raw_pair in continuity.get("matched_pairs") or []:
+        if not isinstance(raw_pair, dict):
+            raise ValueError("C2_SEQUENCE_ALIGNMENT_PAIR_INVALID")
+        old_index = raw_pair.get("old_index")
+        new_index = raw_pair.get("new_index")
+        if (
+            isinstance(old_index, bool)
+            or not isinstance(old_index, int)
+            or isinstance(new_index, bool)
+            or not isinstance(new_index, int)
+            or old_index < 0
+            or new_index < 0
+            or old_index >= len(pre_ordered)
+            or new_index >= len(post_ordered)
+        ):
+            raise ValueError("C2_SEQUENCE_ALIGNMENT_PAIR_INVALID")
+        old = pre_ordered[old_index]
+        new = post_ordered[new_index]
+        pre_observation_id = str(
+            old.get("observation_id") or ""
+        ).strip()
+        post_observation_id = str(
+            new.get("observation_id") or ""
+        ).strip()
+        stable_id = str(
+            new.get("_worker_stable_id")
+            or old.get("_worker_stable_id")
+            or ""
+        ).strip()
+        selected_pair = bool(
+            selected
+            and str(selected.get("pre_observation_id") or "").strip()
+            == pre_observation_id
+            and str(selected.get("post_observation_id") or "").strip()
+            == post_observation_id
+            and str(
+                selected.get("reserved_worker_stable_id") or ""
+            ).strip()
+            == stable_id
+            and selected.get("binding_confirmed") is True
+        )
+        committed = next(
+            (
+                item.get("_worker_committed_message")
+                for item in (new, old)
+                if isinstance(item.get("_worker_committed_message"), dict)
+            ),
+            {},
+        )
+        if selected_pair:
+            identity_state = "selected_action"
+            match_basis = "confirmed_action"
+        elif stable_id and committed:
+            identity_state = "committed"
+            proof = (
+                committed.get("proof")
+                if isinstance(committed.get("proof"), dict)
+                else {}
+            )
+            message_type = str(new.get("message_type") or "").strip()
+            match_basis = str(proof.get("match_basis") or "").strip()
+            if not match_basis:
+                match_basis = (
+                    "prior_confirmed_action"
+                    if message_type in {"voice", "image"}
+                    else "worker_business_viewport_continuity"
+                )
+        else:
+            identity_state = "frame_local_unselected"
+            stable_id = ""
+            match_basis = "worker_business_viewport_continuity"
+        pair = {
+            "identity_state": identity_state,
+            "pre_observation_id": pre_observation_id,
+            "post_observation_id": post_observation_id,
+            "pre_index": old_index,
+            "post_index": new_index,
+            "match_basis": match_basis,
+        }
+        if stable_id:
+            pair["worker_stable_id"] = stable_id
+        pairs.append(pair)
+
     suffix_ids = [
-        str(ordered[index].get("observation_id") or "").strip()
+        str(post_ordered[index].get("observation_id") or "").strip()
         for index in continuity.get("new_suffix_indexes") or []
         if isinstance(index, int)
         and not isinstance(index, bool)
-        and 0 <= index < len(ordered)
-        and str(ordered[index].get("observation_id") or "").strip()
+        and 0 <= index < len(post_ordered)
+        and str(post_ordered[index].get("observation_id") or "").strip()
     ]
-    return {
-        "pre_sequence_source": "worker_business_viewport_continuity",
-        "pre_frame_id": str(continuity.get("pre_frame_id") or ""),
-        "post_frame_id": str(continuity.get("post_frame_id") or ""),
+    return validate_sequence_alignment_evidence({
+        "pre_sequence_source": str(pre_sequence_source or "").strip(),
+        "pre_frame_id": str(pre_frame_id or "").strip(),
+        "post_frame_id": str(post_frame_id or "").strip(),
         "alignment_status": "unique",
         "candidate_alignment_count": 1,
         "old_tail_fully_consumed": True,
         "new_suffix_observation_ids": suffix_ids,
-        "matched_pairs": list(continuity.get("matched_pairs") or []),
+        "matched_pairs": pairs,
         "continuity_relation": str(continuity.get("relation") or ""),
-    }
+    })
+
+
+def _empty_checkpoint_alignment_evidence(
+    observations: list[Any],
+    *,
+    pre_frame_id: str,
+    post_frame_id: str,
+) -> dict[str, Any]:
+    ordered = ordered_message_viewport_observations(
+        [item for item in observations if isinstance(item, dict)]
+    )
+    return validate_sequence_alignment_evidence(
+        {
+            "pre_sequence_source": "empty_checkpoint",
+            "pre_frame_id": str(pre_frame_id or "").strip(),
+            "post_frame_id": str(post_frame_id or "").strip(),
+            "alignment_status": "not_required",
+            "candidate_alignment_count": 0,
+            "matched_pairs": [],
+            "old_tail_fully_consumed": True,
+            "new_suffix_observation_ids": [
+                str(item.get("observation_id") or "").strip()
+                for item in ordered
+                if str(item.get("observation_id") or "").strip()
+            ],
+        }
+    )
+
+
+def _checkpoint_alignment_evidence(
+    checkpoint: dict[str, Any],
+    observations: list[Any],
+    comparison: dict[str, Any],
+) -> dict[str, Any]:
+    """Serialize an accepted checkpoint comparison without re-deciding it."""
+
+    frozen = [
+        dict(item)
+        for item in (checkpoint.get("committed_tail") or [])
+        if isinstance(item, dict)
+    ]
+    current = ordered_message_viewport_observations(
+        [item for item in observations if isinstance(item, dict)]
+    )
+    pairs: list[dict[str, Any]] = []
+    for raw_pair in comparison.get("matched_pairs") or []:
+        if not isinstance(raw_pair, dict):
+            raise ValueError("C2_SEQUENCE_ALIGNMENT_PAIR_INVALID")
+        old_index = raw_pair.get("pre_sequence_index")
+        new_index = raw_pair.get("post_sequence_index")
+        if (
+            isinstance(old_index, bool)
+            or not isinstance(old_index, int)
+            or isinstance(new_index, bool)
+            or not isinstance(new_index, int)
+            or old_index < 0
+            or new_index < 0
+            or old_index >= len(frozen)
+            or new_index >= len(current)
+        ):
+            raise ValueError("C2_SEQUENCE_ALIGNMENT_PAIR_INVALID")
+        frozen_item = frozen[old_index]
+        commit_record = (
+            frozen_item.get("message_identity_commit_record")
+            if isinstance(
+                frozen_item.get("message_identity_commit_record"), dict
+            )
+            else {}
+        )
+        stable_id = str(
+            frozen_item.get("worker_stable_id") or ""
+        ).strip()
+        pre_observation_id = str(
+            commit_record.get("observation_id")
+            or frozen_item.get("pre_observation_id")
+            or (f"checkpoint:{stable_id}" if stable_id else "")
+        ).strip()
+        post_observation_id = str(
+            raw_pair.get("post_observation_id")
+            or current[new_index].get("observation_id")
+            or ""
+        ).strip()
+        pairs.append(
+            {
+                # Fact equivalence proves the historical prefix used by the
+                # reply, not physical identity of a newly rebuilt OCR row.
+                "identity_state": "frame_local_unselected",
+                "pre_observation_id": pre_observation_id,
+                "post_observation_id": post_observation_id,
+                "pre_index": old_index,
+                "post_index": new_index,
+                "match_basis": str(
+                    raw_pair.get("match_basis")
+                    or "worker_business_viewport_continuity"
+                ).strip(),
+            }
+        )
+    return validate_sequence_alignment_evidence(
+        {
+            "pre_sequence_source": "checkpoint",
+            "pre_frame_id": str(
+                comparison.get("before_frame_id") or ""
+            ).strip(),
+            "post_frame_id": str(
+                comparison.get("after_frame_id") or ""
+            ).strip(),
+            "alignment_status": "unique",
+            "candidate_alignment_count": 1,
+            "matched_pairs": pairs,
+            "old_tail_fully_consumed": True,
+            "new_suffix_observation_ids": list(
+                comparison.get("new_suffix_observation_ids") or []
+            ),
+            "comparison_result": comparison.get("comparison_result"),
+        }
+    )
 
 
 def _image_flow_action_slot_continuity(
@@ -4589,7 +4857,13 @@ class TaskRunner:
                 raise RuntimeError("RUNTIME_INFLIGHT_C2_ACTION_JOURNAL_PENDING")
             if self._has_physical_action_journal_for_flow(flow_id):
                 raise RuntimeError("RUNTIME_INFLIGHT_ACTION_JOURNAL_PENDING")
-        if has_c2_ledger_for_origin_read_run_id(flow_id, pending_only=True):
+        if (
+            terminal_kind != "technical_failed"
+            and has_c2_ledger_for_origin_read_run_id(
+                flow_id,
+                pending_only=True,
+            )
+        ):
             raise RuntimeError("RUNTIME_INFLIGHT_C2_LEDGER_PENDING")
         if terminal_kind == "read_confirmed" and has_pending_reply_send_ack_outbox():
             raise RuntimeError("RUNTIME_INFLIGHT_SENT_ACK_PENDING")
@@ -5111,8 +5385,12 @@ class TaskRunner:
             receipt = load_c2_state(
                 self._inflight_finish_receipt_key(flow_id)
             )
+        receipt_terminal_kind = str(
+            receipt.get("terminal_kind") or ""
+        ).strip()
         if (
             media_recovery_status != "technical_failed"
+            and receipt_terminal_kind != "technical_failed"
             and self._local_restart_flow_blocker(flow_id)
         ):
             return
@@ -7647,23 +7925,15 @@ class TaskRunner:
                 else item
                 for item in (prepared.get("observations") or [])
             ]
-        evidence = {
-            "pre_sequence_source": "checkpoint",
-            "pre_frame_id": comparison.get("before_frame_id"),
-            "post_frame_id": comparison.get("after_frame_id"),
-            "alignment_status": "unique",
-            "candidate_alignment_count": 1,
-            # The checkpoint proves only the immutable historical prefix.
-            # Never copy durable identity onto a fresh OCR row here.  The
-            # prefix count keeps old facts out of media actions and ingest;
-            # only a genuinely new suffix enters the normal identity gate.
-            "matched_pairs": list(comparison.get("matched_pairs") or []),
-            "old_tail_fully_consumed": True,
-            "new_suffix_observation_ids": list(
-                comparison.get("new_suffix_observation_ids") or []
-            ),
-            "comparison_result": comparison.get("comparison_result"),
-        }
+        # The checkpoint proves only the immutable historical prefix.  Never
+        # copy durable identity onto a fresh OCR row here.  The serializer
+        # below consumes the already-made comparison decision and emits the
+        # one formal HTTP evidence shape shared by text, voice and image.
+        evidence = _checkpoint_alignment_evidence(
+            checkpoint,
+            list(prepared.get("observations") or []),
+            comparison,
+        )
         prepared["sequence_alignment_evidence"] = evidence
         if comparison.get("comparison_result") in {
             "checkpoint_unique_prefix_with_suffix",
@@ -8275,17 +8545,21 @@ class TaskRunner:
                     "business_continuity_evidence": continuity,
                 }
             ]
-        evidence = _continuity_alignment_evidence_for_suffix(
-            observations,
-            {
-                **continuity,
-                "pre_frame_id": (
-                    f"checkpoint:none:{target.conversation_id}"
-                    if explicit_empty
-                    else f"checkpoint:{target.authorization_revision}"
-                ),
-                "post_frame_id": f"frame:{frame_id}",
-            },
+        evidence = (
+            _empty_checkpoint_alignment_evidence(
+                observations,
+                pre_frame_id=f"checkpoint:none:{target.conversation_id}",
+                post_frame_id=f"frame:{frame_id}",
+            )
+            if explicit_empty
+            else _continuity_alignment_evidence_for_suffix(
+                old_identity_observations,
+                observations,
+                continuity,
+                pre_sequence_source="checkpoint",
+                pre_frame_id=f"checkpoint:{target.authorization_revision}",
+                post_frame_id=f"frame:{frame_id}",
+            )
         )
         observations = self._assign_sequence_new_suffix_identities(
             target=target,
@@ -11182,6 +11456,19 @@ class TaskRunner:
                 sorted(value for value in rejected if value),
             )
 
+    def _pause_for_permanent_outbox_contract_error(
+        self,
+        binding: Binding,
+    ) -> None:
+        """Make a permanent local/HTTP contract failure visible and durable."""
+
+        request_runtime_pause()
+        binding.run_status = "paused"
+        save_binding(binding)
+        if self.binding is not None:
+            self.binding.run_status = "paused"
+        self._pending_run_status_sync = "paused"
+
     def _attempt_c2_outbox_delivery(
         self,
         *,
@@ -11413,6 +11700,11 @@ class TaskRunner:
                     outbox_id,
                     error_code,
                 )
+                # A permanent request-contract rejection is not a transient
+                # network retry.  Keep the immutable Outbox, but make the
+                # Worker state truthful instead of remaining ``running``
+                # while the transaction barrier can never pass.
+                self._pause_for_permanent_outbox_contract_error(binding)
                 append_log(
                     "ERROR",
                     "c2_outbox_capability_paused",
@@ -11667,6 +11959,7 @@ class TaskRunner:
                 payload=durable_payload,
             )
             if outbox_items is None:
+                self._pause_for_permanent_outbox_contract_error(binding)
                 return {
                     "ok": False,
                     "outbox_id": outbox_id,
@@ -11726,6 +12019,89 @@ class TaskRunner:
             else copy.deepcopy(payload)
         )
         try:
+            persisted_evidence = (
+                persisted_payload.get("evidence")
+                if isinstance(persisted_payload.get("evidence"), dict)
+                else {}
+            )
+            persisted_alignment = persisted_evidence.get(
+                "sequence_alignment_evidence"
+            )
+            persisted_messages = (
+                persisted_payload.get("messages")
+                if isinstance(persisted_payload.get("messages"), list)
+                else []
+            )
+            persisted_slot_states = (
+                persisted_evidence.get("slot_ledger_states")
+                if isinstance(
+                    persisted_evidence.get("slot_ledger_states"), list
+                )
+                else []
+            )
+            persisted_read_run_id = str(
+                persisted_payload.get("read_run_id") or ""
+            ).strip()
+            has_persisted_ledger = (
+                has_c2_ledger_for_origin_read_run_id(
+                    persisted_read_run_id
+                )
+                if persisted_read_run_id
+                else False
+            )
+            if (
+                persisted_messages
+                or persisted_slot_states
+                or has_persisted_ledger
+            ) and persisted_alignment is None:
+                # A released Outbox is immutable evidence.  Missing sequence
+                # proof cannot be reconstructed locally without guessing at
+                # message order, so quarantine it before any HTTP request.
+                raise ValueError(
+                    "C2_SEQUENCE_ALIGNMENT_EVIDENCE_INVALID"
+                )
+            if persisted_alignment is not None:
+                persisted_observations = (
+                    persisted_evidence.get("observations")
+                    if isinstance(
+                        persisted_evidence.get("observations"), list
+                    )
+                    else []
+                )
+                ordered_persisted_observations = (
+                    ordered_message_viewport_observations(
+                        [
+                            item
+                            for item in persisted_observations
+                            if isinstance(item, dict)
+                        ]
+                    )
+                )
+                persisted_partition = (
+                    persisted_evidence.get("ingest_partition")
+                    if isinstance(
+                        persisted_evidence.get("ingest_partition"), dict
+                    )
+                    else {}
+                )
+                is_incomplete_partition = bool(
+                    persisted_partition
+                    and int(persisted_partition.get("index") or 0)
+                    < int(persisted_partition.get("count") or 0)
+                )
+                validate_sequence_alignment_evidence(
+                    persisted_alignment,
+                    post_observation_ids=(
+                        None
+                        if is_incomplete_partition
+                        else [
+                            str(
+                                item.get("observation_id") or ""
+                            ).strip()
+                            for item in ordered_persisted_observations
+                        ]
+                    ),
+                )
             partitions = split_ingest_payload(persisted_payload)
             if len(partitions) == 1:
                 prepare_c2_outbox_payload(outbox_id, partitions[0])
@@ -11760,6 +12136,10 @@ class TaskRunner:
                 )
             except ValueError:
                 pass
+            self._record_permanent_outbox_flow_failure(
+                persisted_payload,
+                error_code=error_code,
+            )
             append_log(
                 "ERROR",
                 "c2_outbox_transport_preparation_failed",
@@ -11773,6 +12153,44 @@ class TaskRunner:
                 },
             )
             return None
+
+    def _record_permanent_outbox_flow_failure(
+        self,
+        payload: dict[str, Any],
+        *,
+        error_code: str,
+    ) -> None:
+        """Close the flow truth without rewriting a malformed fact.
+
+        A released client may restart with an immutable Outbox that cannot
+        satisfy the current transport contract.  The evidence must remain
+        quarantined, but the backend Flow must not stay ``draining`` forever.
+        This receipt is only written for the exact active local C2 read flow;
+        it neither mutates the message/ledger nor authorizes another action.
+        """
+
+        read_run_id = str(payload.get("read_run_id") or "").strip()
+        conversation_id = str(
+            payload.get("conversation_id") or ""
+        ).strip()
+        control = load_runtime_control()
+        if (
+            not read_run_id
+            or str(control.get("inflight_flow_id") or "").strip()
+            != read_run_id
+            or str(control.get("inflight_flow_kind") or "").strip()
+            != "c2_read"
+        ):
+            return
+        save_c2_state(
+            self._inflight_finish_receipt_key(read_run_id),
+            {
+                "terminal_kind": "technical_failed",
+                "conversation_id": conversation_id or None,
+                "error_code": str(error_code or "").strip()
+                or "C2_OUTBOX_TRANSPORT_PREPARATION_FAILED",
+            },
+        )
 
     def _replay_c2_outbox(self, binding: Binding) -> bool:
         with self.c2_outbox_lock:
@@ -11809,6 +12227,7 @@ class TaskRunner:
                 payload=payload,
             )
             if outbox_items is None:
+                self._pause_for_permanent_outbox_contract_error(binding)
                 return False
             delivery: dict[str, Any] = {"ok": True, "result": {}}
             for prepared_id, prepared_payload in outbox_items:
@@ -16482,8 +16901,12 @@ class TaskRunner:
                 ),
             )
             alignment = _continuity_alignment_evidence_for_suffix(
+                before_observations,
                 reconciled,
                 continuity,
+                pre_sequence_source="action_frame",
+                pre_frame_id=_payload_frame_id(before_payload),
+                post_frame_id=_payload_frame_id(after_payload),
             )
             reconciled = self._assign_sequence_new_suffix_identities(
                 target=target,
@@ -16642,29 +17065,25 @@ class TaskRunner:
                         "business_continuity_evidence": continuity,
                     }
                 alignment_evidence = (
-                    {
-                        "pre_sequence_source": "fresh_action_frame",
-                        "pre_frame_id": "",
-                        "post_frame_id": str(
+                    _empty_checkpoint_alignment_evidence(
+                        aligned,
+                        pre_frame_id=(
+                            f"checkpoint:none:{target.conversation_id}"
+                        ),
+                        post_frame_id=str(
                             prepared.get("pre_frame_id") or ""
                         ),
-                        "alignment_status": "not_required",
-                        "candidate_alignment_count": 0,
-                        "matched_pairs": [],
-                        "old_tail_fully_consumed": True,
-                        "new_suffix_observation_ids": [
-                            str(item.get("observation_id") or "").strip()
-                            for item in aligned
-                            if isinstance(item, dict)
-                            and str(
-                                item.get("observation_id") or ""
-                            ).strip()
-                        ],
-                    }
+                    )
                     if frame_rebased
                     else _continuity_alignment_evidence_for_suffix(
+                        current_observations,
                         aligned,
                         continuity,
+                        pre_sequence_source="action_frame",
+                        pre_frame_id=_payload_frame_id(current_payload),
+                        post_frame_id=str(
+                            prepared.get("pre_frame_id") or ""
+                        ),
                     )
                 )
                 if is_pre_send_refresh:
@@ -16820,25 +17239,21 @@ class TaskRunner:
                     ],
                 }
             prepare_alignment_evidence = (
-                {
-                    "pre_sequence_source": "fresh_action_frame",
-                    "pre_frame_id": "",
-                    "post_frame_id": prepare_fields["pre_frame_id"],
-                    "alignment_status": "not_required",
-                    "candidate_alignment_count": 0,
-                    "matched_pairs": [],
-                    "old_tail_fully_consumed": True,
-                    "new_suffix_observation_ids": [
-                        str(item.get("observation_id") or "").strip()
-                        for item in pre_observations
-                        if isinstance(item, dict)
-                        and str(item.get("observation_id") or "").strip()
-                    ],
-                }
+                _empty_checkpoint_alignment_evidence(
+                    pre_observations,
+                    pre_frame_id=(
+                        f"checkpoint:none:{target.conversation_id}"
+                    ),
+                    post_frame_id=prepare_fields["pre_frame_id"],
+                )
                 if frame_rebased
                 else _continuity_alignment_evidence_for_suffix(
+                    list(current_payload.get("observations") or []),
                     pre_observations,
                     prepare_continuity,
+                    pre_sequence_source="action_frame",
+                    pre_frame_id=_payload_frame_id(current_payload),
+                    post_frame_id=prepare_fields["pre_frame_id"],
                 )
             )
             prepare_frame_changed = (
@@ -17770,8 +18185,15 @@ class TaskRunner:
             )
             alignment_evidence = (
                 _continuity_alignment_evidence_for_suffix(
+                    pre_observations,
                     aligned,
                     continuity,
+                    pre_sequence_source="action_frame",
+                    pre_frame_id=prepare_fields["pre_frame_id"],
+                    post_frame_id=str(
+                        executed.get("post_frame_id") or ""
+                    ),
+                    selected_action_mapping=mapping,
                 )
             )
             aligned = self._assign_sequence_new_suffix_identities(
@@ -17785,7 +18207,23 @@ class TaskRunner:
                 journal_item_id=action_id,
                 source_message_key=durable_source_key,
             )
-            outcome = classify_action_result("voice", executed, source_message_key=durable_source_key)
+            # Sidecar truthfully returns ``confirmed_result_pending_continuity``:
+            # the physical transcription exists, but only Worker may settle
+            # it after the post-action full-frame continuity and identity
+            # commit above both succeed.  Classifying the raw Sidecar state as
+            # terminal here used to record ``failed`` while the ActionJournal
+            # was subsequently committed as ``completed``.  That created two
+            # terminal truths for one source key and crashed Flow cleanup.
+            settled_execution = {
+                **executed,
+                "business_state": "completed",
+                "business_result_confirmed": True,
+            }
+            outcome = classify_action_result(
+                "voice",
+                settled_execution,
+                source_message_key=durable_source_key,
+            )
             evidence = dict(outcome.get("evidence") or {})
             evidence.update({"action_kind": "voice", "sender_role": sender_role})
             outcome["evidence"] = evidence
@@ -18087,8 +18525,12 @@ class TaskRunner:
                 )
             sequence_alignment_evidence = (
                 _continuity_alignment_evidence_for_suffix(
+                    list(current_payload.get("observations") or []),
                     refreshed_observations,
                     continuity,
+                    pre_sequence_source="action_frame",
+                    pre_frame_id=_payload_frame_id(current_payload),
+                    post_frame_id=_payload_frame_id(refreshed),
                 )
             )
             refreshed_observations = (
@@ -19472,25 +19914,54 @@ class TaskRunner:
                 )
             return result
         finally:
-            current_journal_entries = [
-                (path, payload)
-                for path in flow_outcomes.action_journal_paths()
-                if (payload := read_action_journal(path))
-            ]
-            flow_outcomes.extend(
-                self._physical_action_journal_outcomes(
-                    current_journal_entries,
+            # Flow cleanup is itself fallible.  A journal/ledger collision must
+            # never skip the inflight-flow finish call and leave the worker in
+            # a permanent draining state.  Preserve the evidence on cleanup
+            # failure, finish the flow as technical_failed, then re-raise.
+            current_journal_entries: list[tuple[Any, dict[str, Any]]] = []
+            finalization_error: Exception | None = None
+            try:
+                current_journal_entries = [
+                    (path, payload)
+                    for path in flow_outcomes.action_journal_paths()
+                    if (payload := read_action_journal(path))
+                ]
+                flow_outcomes.extend(
+                    self._physical_action_journal_outcomes(
+                        current_journal_entries,
+                    )
                 )
-            )
-            self._finalize_c2_flow_outcomes(target, flow_outcomes)
-            clear_c2_action_journal(flow_id)
-            for path, payload in current_journal_entries:
-                if self._action_journal_can_be_removed(payload):
-                    remove_action_journal(path)
-            self._runtime_process_context = previous_runtime_context
+                self._finalize_c2_flow_outcomes(target, flow_outcomes)
+                clear_c2_action_journal(flow_id)
+                for path, payload in current_journal_entries:
+                    if self._action_journal_can_be_removed(payload):
+                        remove_action_journal(path)
+            except Exception as exc:
+                finalization_error = exc
+                append_log(
+                    "ERROR",
+                    "c2_flow_outcome_finalize_failed",
+                    "C2 动作事实结算失败，保留 Journal 并按技术故障结束在途流程。",
+                    error_code="C2_FLOW_OUTCOME_FINALIZE_FAILED",
+                    metadata={"flow_id": read_run_id, "error": str(exc)},
+                )
+            finally:
+                self._runtime_process_context = previous_runtime_context
+
             if owns_inflight_flow:
+                permanent_outbox_error = (
+                    c2_outbox_capability_error_for_read_run_id(
+                        read_run_id
+                    )
+                )
                 error_code = str(
-                    flow_result.get("error_code") or "C2_READ_STOPPED"
+                    (
+                        "C2_FLOW_OUTCOME_FINALIZE_FAILED"
+                        if finalization_error is not None
+                        else permanent_outbox_error
+                        or flow_result.get("error_code")
+                    )
+                    or "C2_READ_STOPPED"
                 ).strip()
                 durable_read_artifact_exists = bool(
                     has_c2_outbox_for_read_run_id(read_run_id)
@@ -19509,6 +19980,11 @@ class TaskRunner:
                     in {"new_facts", "no_change"}
                 )
                 if (
+                    finalization_error is not None
+                    or permanent_outbox_error
+                ):
+                    terminal_kind = "technical_failed"
+                elif (
                     flow_result.get("flow_terminal_kind")
                     == "technical_failed"
                 ):
@@ -19533,9 +20009,18 @@ class TaskRunner:
                         else None
                     ),
                 }
-                save_c2_state(
-                    self._inflight_finish_receipt_key(read_run_id), receipt
-                )
+                try:
+                    save_c2_state(
+                        self._inflight_finish_receipt_key(read_run_id), receipt
+                    )
+                except Exception as exc:
+                    append_log(
+                        "ERROR",
+                        "inflight_flow_finish_receipt_failed",
+                        "C2 在途流程结束回执保存失败，仍继续请求结束流程。",
+                        error_code="RUNTIME_INFLIGHT_FINISH_RECEIPT_FAILED",
+                        metadata={"flow_id": read_run_id, "error": str(exc)},
+                    )
                 try:
                     self._finish_inflight_flow(
                         binding,
@@ -19552,6 +20037,8 @@ class TaskRunner:
                         error_code="RUNTIME_INFLIGHT_FINISH_FAILED",
                         metadata={"flow_id": read_run_id, "error": str(exc)},
                     )
+            if finalization_error is not None:
+                raise finalization_error
 
     def _recover_c2_action_journal(
         self,

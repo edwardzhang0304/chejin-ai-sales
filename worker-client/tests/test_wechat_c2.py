@@ -106,6 +106,14 @@ def build_v3_message_ingest_payload(
             for item in observations
             if isinstance(item, dict)
             and str(item.get("observation_id") or "")
+            and str(item.get("row_kind") or "").strip().lower()
+            in {
+                "text_bubble",
+                "voice_bubble",
+                "voice_transcript",
+                "image_bubble",
+                "system_message",
+            }
         ],
     }
     slot_origins = {

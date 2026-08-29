@@ -24,6 +24,7 @@ from chejin_worker_client.c2_contract import (
     observation_role_is_trusted,
     sidecar_contract_error,
     temporary_capability_gate_codes,
+    validate_sequence_alignment_evidence,
     validate_slot_ledger_states,
 )
 from chejin_worker_client.config import ClientConfig
@@ -52,6 +53,83 @@ from chejin_worker_client.wechat_c2 import (
 
 
 class C2ContractTests(unittest.TestCase):
+    def test_sequence_alignment_rejects_uat_shallow_business_continuity_shape(self):
+        """The 0.9.45 UAT payload reached HTTP with 21 nested errors."""
+
+        with self.assertRaisesRegex(
+            ValueError,
+            "C2_SEQUENCE_ALIGNMENT_EVIDENCE_INVALID",
+        ):
+            validate_sequence_alignment_evidence(
+                {
+                    "pre_sequence_source": (
+                        "worker_business_viewport_continuity"
+                    ),
+                    "pre_frame_id": "",
+                    "post_frame_id": "",
+                    "alignment_status": "unique",
+                    "candidate_alignment_count": 1,
+                    "matched_pairs": [
+                        {"old_index": 0, "new_index": 0},
+                        {"old_index": 1, "new_index": 1},
+                        {"old_index": 2, "new_index": 2},
+                    ],
+                    "old_tail_fully_consumed": True,
+                    "new_suffix_observation_ids": [],
+                }
+            )
+
+    def test_sequence_alignment_validates_every_text_voice_image_pair(self):
+        evidence = validate_sequence_alignment_evidence(
+            {
+                "pre_sequence_source": "action_frame",
+                "pre_frame_id": "frame:mixed-before",
+                "post_frame_id": "frame:mixed-after",
+                "alignment_status": "unique",
+                "candidate_alignment_count": 1,
+                "matched_pairs": [
+                    {
+                        "identity_state": "committed",
+                        "worker_stable_id": "worker-message-1",
+                        "pre_observation_id": "text-before",
+                        "post_observation_id": "text-after",
+                        "pre_index": 0,
+                        "post_index": 0,
+                        "match_basis": "worker_business_viewport_continuity",
+                    },
+                    {
+                        "identity_state": "selected_action",
+                        "worker_stable_id": "worker-message-2",
+                        "pre_observation_id": "voice-before",
+                        "post_observation_id": "voice-after",
+                        "pre_index": 1,
+                        "post_index": 1,
+                        "match_basis": "confirmed_action",
+                    },
+                    {
+                        "identity_state": "committed",
+                        "worker_stable_id": "worker-message-3",
+                        "pre_observation_id": "image-before",
+                        "post_observation_id": "image-after",
+                        "pre_index": 2,
+                        "post_index": 2,
+                        "match_basis": "prior_confirmed_action",
+                    },
+                ],
+                "old_tail_fully_consumed": True,
+                "new_suffix_observation_ids": ["text-new-tail"],
+            }
+        )
+
+        self.assertEqual(len(evidence["matched_pairs"]), 3)
+        broken = json.loads(json.dumps(evidence))
+        del broken["matched_pairs"][1]["post_observation_id"]
+        with self.assertRaisesRegex(
+            ValueError,
+            "C2_SEQUENCE_ALIGNMENT_PAIR_INVALID",
+        ):
+            validate_sequence_alignment_evidence(broken)
+
     def test_worker_projection_surface_exposes_business_rules_only(self):
         self.assertTrue(
             callable(worker_projection.normalized_business_message_sequence)
@@ -426,7 +504,7 @@ class C2ContractTests(unittest.TestCase):
 
     def test_slot_ledger_contract_separates_fact_scope_from_delivery(self):
         schema = c2_contract_v3()["slot_ledger_state_schema"]
-        self.assertEqual(c2_contract_v3()["contract_revision"], "0.9.45")
+        self.assertEqual(c2_contract_v3()["contract_revision"], "0.9.46")
         self.assertIn(
             "anchor_aliases",
             c2_contract_v3()["message_limits"][

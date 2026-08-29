@@ -70,7 +70,7 @@ jobs:
           $exePath = [string]$manifest.exe_path
 
           .\scripts\validate-package.ps1 -PackageDir $packageDir
-          if ($manifest.version -ne "0.9.45") {
+          if ($manifest.version -ne "0.9.46") {
             throw "unexpected version: $($manifest.version)"
           }
           if ($manifest.git_commit -ne $env:GITHUB_SHA) {
@@ -154,7 +154,7 @@ jobs:
             throw "packaged startup crash did not create the default diagnostic"
           }
           $startupCrash = Get-Content -Encoding UTF8 $defaultStartupDiagnostic | Select-Object -Last 1 | ConvertFrom-Json
-          if ($startupCrash.version -ne "0.9.45" -or $startupCrash.build_commit -ne $env:GITHUB_SHA) {
+          if ($startupCrash.version -ne "0.9.46" -or $startupCrash.build_commit -ne $env:GITHUB_SHA) {
             throw "startup crash diagnostic build identity mismatch"
           }
           foreach ($requiredField in @("timestamp", "windows_version", "exception_type", "traceback")) {
@@ -190,10 +190,10 @@ jobs:
           $manifest = Get-Content -Raw -Encoding UTF8 $manifestPath | ConvertFrom-Json
           $packageDir = [string]$manifest.package_dir
           $releaseDir = Join-Path $PWD "dist\release"
-          $zipName = "chejin-worker-v0.9.45-windows-x64.zip"
+          $zipName = "chejin-worker-v0.9.46-windows-x64.zip"
           $zipPath = Join-Path $releaseDir $zipName
-          $deliveryManifestPath = Join-Path $releaseDir "chejin-worker-v0.9.45-windows-x64.delivery.json"
-          $sha256Path = Join-Path $releaseDir "chejin-worker-v0.9.45-windows-x64.sha256.txt"
+          $deliveryManifestPath = Join-Path $releaseDir "chejin-worker-v0.9.46-windows-x64.delivery.json"
+          $sha256Path = Join-Path $releaseDir "chejin-worker-v0.9.46-windows-x64.sha256.txt"
 
           New-Item -ItemType Directory -Force -Path $releaseDir | Out-Null
           Compress-Archive -Path $packageDir -DestinationPath $zipPath -CompressionLevel Optimal -Force
@@ -212,6 +212,12 @@ jobs:
           }
           $verifiedExePath = $verifiedExeCandidates[0].FullName
           $verifiedPackageRoot = Split-Path -Parent $verifiedExePath
+          if ((Split-Path -Leaf $verifiedPackageRoot) -ne "CheJinWorkerClient") {
+            throw "delivery ZIP root directory must be CheJinWorkerClient"
+          }
+          if ((Split-Path -Leaf $verifiedExePath) -ne "CheJinWorkerClient.exe") {
+            throw "delivery ZIP executable must be CheJinWorkerClient.exe"
+          }
           $verifiedInternalPath = Join-Path $verifiedPackageRoot "_internal"
           if (-not (Test-Path $verifiedInternalPath)) {
             throw "delivery ZIP does not contain the packaged runtime directory"
@@ -291,11 +297,11 @@ jobs:
       - name: Upload verified Windows client
         uses: actions/upload-artifact@v4
         with:
-          name: chejin-worker-v0.9.45-windows-x64-${{ github.sha }}
+          name: chejin-worker-v0.9.46-windows-x64-${{ github.sha }}
           path: |
-            worker-client/dist/release/chejin-worker-v0.9.45-windows-x64.zip
-            worker-client/dist/release/chejin-worker-v0.9.45-windows-x64.delivery.json
-            worker-client/dist/release/chejin-worker-v0.9.45-windows-x64.sha256.txt
+            worker-client/dist/release/chejin-worker-v0.9.46-windows-x64.zip
+            worker-client/dist/release/chejin-worker-v0.9.46-windows-x64.delivery.json
+            worker-client/dist/release/chejin-worker-v0.9.46-windows-x64.sha256.txt
           if-no-files-found: error
           compression-level: 0
           retention-days: 14

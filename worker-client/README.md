@@ -1,6 +1,6 @@
 # 车金 Worker 客户端
 
-这是 P1a Windows 单应用客户端工程，最终交付物是 `车金Worker客户端.exe`。
+这是 P1a Windows 单应用客户端工程，最终交付物是 `CheJinWorkerClient.exe`。
 
 当前状态：
 
@@ -49,7 +49,7 @@ cd worker-client
 - 直接打包当前源码树中的 `omniauto-rpa`
 - 使用 PyInstaller 生成 Windows 单应用目录
 - 校验当前 OmniAuto 完整源码树与安装包内完整目录一致
-- 生成 `dist\reports\车金Worker客户端.manifest.json`，记录 Worker 提交、分支、合同版本和 SHA、OmniAuto 基础提交、选择性来源、车金集成提交和 tree SHA、测试/预检结果及安装包 SHA
+- 生成 `dist\reports\CheJinWorkerClient.manifest.json`，记录 Worker 提交、分支、合同版本和 SHA、OmniAuto 基础提交、选择性来源、车金集成提交和 tree SHA、测试/预检结果及安装包 SHA
 
 正式打包要求 Git 工作区干净，且不允许跳过测试或预检。调试包必须显式执行：
 
@@ -79,7 +79,7 @@ Python，也不需要手工配置 Vision 环境变量。
 产物：
 
 ```text
-worker-client\dist\车金Worker客户端\车金Worker客户端.exe
+worker-client\dist\CheJinWorkerClient\CheJinWorkerClient.exe
 ```
 
 校验已有产物：
@@ -166,4 +166,4 @@ Windows 实机验收前置项：
 - Worker 领取的 `add_friend` 任务必须包含正式 RPA 字段：`verify_message`、`remark_name`、`remark_code`，且 `remark_name` 必须包含 `remark_code`。缺任一字段时客户端返回 `TASK_PAYLOAD_INVALID`，不触达微信 UI。
 - Windows 机器已登录微信桌面客户端，且同一时间只允许一个 Worker 控制微信窗口。
 - `CHEJIN_RPA_MODE=real` 下完成 add_friend 全链路：领取任务、调用 OmniAuto `add-friend-entry-click-plan-windows`、搜索客户、发送添加通讯录邀请、上报 `invite_sent` 或 `already_friend`，失败时上报 PRD 约定 `error_code` 和取证。
-- 使用 `.\scripts\build-windows.ps1` 产出 `worker-client\dist\车金Worker客户端\车金Worker客户端.exe`，并在干净 Windows 机器启动验证。
+- 使用 `.\scripts\build-windows.ps1` 产出 `worker-client\dist\CheJinWorkerClient\CheJinWorkerClient.exe`，并在干净 Windows 机器启动验证。
