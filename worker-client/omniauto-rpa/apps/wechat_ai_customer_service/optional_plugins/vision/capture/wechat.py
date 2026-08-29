@@ -664,6 +664,28 @@ def _media_surface_cell_active(
     )
 
 
+def _photo_like_media_surface(
+    image: Image.Image,
+    bounds: tuple[int, int, int, int],
+) -> bool:
+    """Identify photographic detail that OCR row geometry cannot explain.
+
+    A car photo may contain plate/text OCR aligned with the row avatar.  Mean
+    local colour variation is independent of the OCR text and lets that weak
+    row evidence yield to the actual image surface, while solid WeChat text
+    bubbles remain protected by the typed-row veto.
+    """
+
+    left, top, right, bottom = bounds
+    if right <= left or bottom <= top:
+        return False
+    crop = image.crop((left, top, right, bottom))
+    crop.thumbnail((180, 180), Image.Resampling.BILINEAR)
+    stat = ImageStat.Stat(crop.convert("RGB"))
+    spread = sum(float(value) for value in (stat.stddev or [0.0] * 3)) / 3.0
+    return spread >= 45.0
+
+
 def _fine_grid_confirms_separate_stacked_surfaces(
     small: Image.Image,
     *,
@@ -1258,6 +1280,20 @@ def detect_visual_image_bubbles(
             # particular, role-facing edge continuity cannot distinguish a
             # solid WeChat text bubble from an image surface.
             reliable_type_veto = typed_conflict is not None
+            photo_like_surface = _photo_like_media_surface(image, bounds)
+            if (
+                reliable_type_veto
+                and photo_like_surface
+                and text_overlap_ratio < 0.30
+            ):
+                # Same-row avatar evidence can be inherited by OCR detected
+                # inside a photograph (for example a vehicle plate).  The
+                # independent photo texture is stronger type evidence.
+                reliable_type_veto = False
+                structure_evidence = [
+                    *structure_evidence,
+                    "photo_texture_overrides_embedded_ocr_row",
+                ]
             if reliable_type_veto:
                 if diagnostics is not None:
                     diagnostics.append(
@@ -1288,6 +1324,7 @@ def detect_visual_image_bubbles(
                                 role_edge_continuity,
                                 6,
                             ),
+                            "photo_like_surface": photo_like_surface,
                         }
                     )
                 continue
@@ -1325,6 +1362,7 @@ def detect_visual_image_bubbles(
                         role_edge_continuity,
                         6,
                     ),
+                    "photo_like_surface": photo_like_surface,
                     "structure_evidence": structure_evidence,
                     "auxiliary_visual_evidence": [
                         "colour_texture_or_background_surface_component"

@@ -6857,6 +6857,62 @@ class C2VisionIntegrationTests(unittest.TestCase):
                 )
                 self.assertEqual(merged[0]["sender_role"], role)
 
+    def test_real_vehicle_photo_plate_ocr_does_not_veto_image_message(self):
+        """A plate OCR row inside a real vehicle photo must reach Vision."""
+        asset = (
+            Path(__file__).resolve().parents[2]
+            / "website"
+            / "assets"
+            / "vehicles"
+            / "vehicle-02.jpg"
+        )
+        with Image.open(asset) as source:
+            photo = source.convert("RGB")
+            photo.thumbnail((300, 220), Image.Resampling.LANCZOS)
+            screenshot = Image.new("RGB", (980, 860), (250, 250, 250))
+            screenshot.paste(photo, (464, 300))
+            draw = ImageDraw.Draw(screenshot)
+            # Customer avatar on the role-facing edge of the photo row.
+            draw.rectangle((408, 300, 452, 344), fill=(70, 120, 170))
+            plate = {
+                "left": 560,
+                "top": 390,
+                "right": 680,
+                "bottom": 425,
+            }
+            messages = [
+                {
+                    "id": "plate-ocr-false-text",
+                    "type": "text",
+                    "sender_role": "customer",
+                    "sender_role_source": "same_row_avatar",
+                    "sender_role_evidence": ["avatar_row_structure_confirmed"],
+                    "avatar_alignment": {"role": "customer"},
+                    "content": "粤B·A1234",
+                    "bubble_rect": plate,
+                }
+            ]
+            try:
+                candidates = detect_visual_image_bubbles(
+                    screenshot,
+                    messages=messages,
+                    side_filter="customer",
+                    message_viewport_bounds=_test_message_viewport(screenshot),
+                )
+                merged = wechat_win32_ocr_sidecar.merge_structural_image_messages(
+                    screenshot,
+                    [],
+                    messages,
+                    target="CJTEST01",
+                    layout_snapshot=_test_layout_snapshot(screenshot),
+                )
+            finally:
+                screenshot.close()
+        self.assertEqual(len(candidates), 1, candidates)
+        self.assertTrue(candidates[0]["photo_like_surface"])
+        self.assertIn("photo_texture_overrides_embedded_ocr_row", candidates[0]["structure_evidence"])
+        self.assertEqual([item["type"] for item in merged], ["image"], merged)
+
     def test_genuine_long_text_bubbles_do_not_become_images(self):
         variants = {
             "customer": {

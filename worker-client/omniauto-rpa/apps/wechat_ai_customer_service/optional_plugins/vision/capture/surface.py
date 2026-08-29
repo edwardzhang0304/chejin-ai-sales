@@ -102,7 +102,12 @@ def image_candidates_without_reliable_typed_message_conflicts(
             # normal WeChat text bubble also has a continuous role-facing edge;
             # it is therefore not evidence capable of overturning a reliable
             # message type.
-        if typed_conflict is None:
+        # A detector-confirmed photo surface outranks OCR text that merely
+        # inherited same-row avatar evidence (e.g. a vehicle plate).
+        if typed_conflict is None or (
+            bool(candidate.get("photo_like_surface"))
+            and float(candidate.get("text_overlap_ratio") or 1.0) < 0.30
+        ):
             kept.append(dict(candidate))
         elif diagnostics is not None:
             diagnostics.append(
@@ -161,7 +166,21 @@ def messages_outside_image_bubbles(
         # inside a real image do not pass explained_non_image_regions() unless
         # they also carry trusted chat-row role/type evidence.
         if explained_non_image_regions([item]):
-            kept.append(dict(item))
+            # Photo-level texture is independent evidence that this OCR row
+            # is embedded image text (plate/sign), not a chat bubble.
+            if not any(
+                bool(image_item.get("photo_like_surface"))
+                and float(image_item.get("text_overlap_ratio") or 1.0) < 0.30
+                and _contained_area_ratio(
+                    _surface_bounds(item.get("bubble_rect")) or (0, 0, 0, 0),
+                    image_rect,
+                ) >= 0.80
+                for image_item, image_rect in zip(
+                    image_messages,
+                    image_bounds,
+                )
+            ):
+                kept.append(dict(item))
             continue
         rect = _surface_bounds(item.get("bubble_rect"))
         if rect is None:
@@ -306,6 +325,10 @@ def visual_image_envelopes_from_bubbles(
                 "bubble_rect": [int(float(value)) for value in (bounds or [])[:4]],
                 "time": observed_time,
                 "source_adapter": "win32_ocr_structural_image_observer",
+                "photo_like_surface": bool(bubble.get("photo_like_surface")),
+                "text_overlap_ratio": float(
+                    bubble.get("text_overlap_ratio") or 0.0
+                ),
                 **(
                     {"_vision_preceding_text_id": preceding_text_id}
                     if preceding_text_id
