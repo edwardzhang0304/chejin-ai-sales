@@ -92,6 +92,20 @@ def test_unique_strong_boundary_proves_normal_viewport_slide() -> None:
     assert result["new_suffix_indexes"] == [2]
 
 
+def test_equal_text_sequence_without_boundary_is_equal() -> None:
+    old = sequence(fact("你好"), fact("我在的"))
+    new = sequence(fact("你好"), fact("我在的"))
+
+    result = compare_business_viewport_continuity(old, new)
+
+    assert result["relation"] == "business_sequence_equal"
+    assert result["reason"] == "same_text_sequence"
+    assert result["matched_pairs"] == [
+        {"old_index": 0, "new_index": 0},
+        {"old_index": 1, "new_index": 1},
+    ]
+
+
 def test_equal_weak_full_viewport_requires_context() -> None:
     image = fact("image", message_type="image", media_state="image")
 

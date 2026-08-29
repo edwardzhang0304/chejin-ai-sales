@@ -340,6 +340,26 @@ def _compare_business_viewport_continuity_direct(
         }
 
     if old_keys == new_keys:
+        # OCR-ingested text/system rows may have no durable boundary token.
+        # An exact non-media sequence is still enough to prove that the
+        # visible context did not change; keep strict identity checks for
+        # media rows whose repeated appearance can be ambiguous.
+        if old and all(
+            item["message_type"] in {"text", "system"}
+            for item in old
+        ):
+            return {
+                **base,
+                "relation": "business_sequence_equal",
+                "reason": "same_text_sequence",
+                "matched_pairs": [
+                    {
+                        "old_index": index,
+                        "new_index": index,
+                    }
+                    for index in range(len(old))
+                ],
+            }
         identity_chain_confirmed = overlap_has_unique_boundary(
             0, 0, len(old)
         )

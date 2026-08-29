@@ -5562,14 +5562,14 @@ def test_foreground_guard_zero_hwnd_blocks_when_disabled() -> None:
             os.environ["WECHAT_WIN32_OCR_ALLOW_UNKNOWN_FOREGROUND"] = previous
 
 
-def test_recover_send_window_guard_does_not_activate_foreground_mismatch() -> None:
+def test_recover_send_window_guard_recovers_foreground_mismatch() -> None:
     sidecar_mod = sys.modules["apps.wechat_ai_customer_service.adapters.wechat_win32_ocr_sidecar"]
     originals = {
         "basic_send_window_guard": sidecar_mod.basic_send_window_guard,
         "activate_window": sidecar_mod.activate_window,
         "sleep": sidecar_mod.time.sleep,
     }
-    calls = {"guard": 0, "activate": 0, "sleeps": []}
+    calls = {"guard": 0, "activate": 0, "activate_modes": [], "sleeps": []}
     try:
         def fake_guard(_hwnd: int) -> dict[str, object]:
             calls["guard"] += 1
@@ -5577,17 +5577,20 @@ def test_recover_send_window_guard_does_not_activate_foreground_mismatch() -> No
                 return {"ok": False, "reason": "foreground_not_wechat_target"}
             return {"ok": True, "reason": "window_valid"}
 
-        def fake_activate(_hwnd: int) -> None:
+        def fake_activate(_hwnd: int, *, foreground_only: bool = False) -> None:
             calls["activate"] += 1
+            calls["activate_modes"].append(foreground_only)
 
         sidecar_mod.basic_send_window_guard = fake_guard
         sidecar_mod.activate_window = fake_activate
         sidecar_mod.time.sleep = lambda seconds: calls["sleeps"].append(seconds)
         result = sidecar_mod.recover_send_window_guard(1001, max_attempts=2)
-        assert_true(result.get("ok") is False, f"foreground mismatch must fail without recovery: {result}")
-        assert_true(calls["guard"] == 1, f"foreground guard must run exactly once: {calls}")
-        assert_true(calls["activate"] == 0, f"business action must not activate WeChat: {calls}")
-        assert_true(calls["sleeps"] == [], f"business action must not run recovery delays: {calls}")
+        assert_true(result.get("ok") is True, f"foreground mismatch should recover: {result}")
+        assert_true(calls["guard"] == 3, f"guard must recheck after each recovery attempt: {calls}")
+        assert_true(calls["activate"] == 2, f"focus recovery must be bounded to two attempts: {calls}")
+        assert_true(calls["activate_modes"] == [True, True], f"recovery must stay foreground-only: {calls}")
+        assert_true(len(calls["sleeps"]) == 2, f"each recovery attempt must settle before recheck: {calls}")
+        assert_true(result.get("focus_recovery_attempts") == 2, f"recovery count must be recorded: {result}")
     finally:
         sidecar_mod.basic_send_window_guard = originals["basic_send_window_guard"]
         sidecar_mod.activate_window = originals["activate_window"]
@@ -5612,15 +5615,19 @@ def test_recover_send_window_guard_stops_after_two_failed_attempts() -> None:
             }
 
         sidecar_mod.basic_send_window_guard = fake_guard
-        sidecar_mod.activate_window = lambda _hwnd: calls.__setitem__("activate", calls["activate"] + 1)
+        def fake_activate(_hwnd: int, *, foreground_only: bool = False) -> None:
+            calls["activate"] += 1
+
+        sidecar_mod.activate_window = fake_activate
         sidecar_mod.time.sleep = lambda seconds: calls["sleeps"].append(seconds)
         result = sidecar_mod.recover_send_window_guard(1001, max_attempts=2)
         assert_true(result.get("ok") is False, f"focus recovery must fail closed: {result}")
-        assert_true(calls["guard"] == 1, f"legacy max_attempts must not trigger retries: {calls}")
-        assert_true(calls["activate"] == 0, f"business action must not activate WeChat: {calls}")
-        assert_true(calls["sleeps"] == [], f"business action must not wait for activation recovery: {calls}")
+        assert_true(calls["guard"] == 3, f"recovery must stop after two failed attempts: {calls}")
+        assert_true(calls["activate"] == 2, f"focus recovery must be bounded to two attempts: {calls}")
+        assert_true(len(calls["sleeps"]) == 2, f"recovery waits must be bounded: {calls}")
+        assert_true(result.get("focus_recovery_attempts") == 2, f"recovery count must be recorded: {result}")
         foreground = result.get("foreground_window") if isinstance(result.get("foreground_window"), dict) else {}
-        assert_true(foreground.get("title") == "other-1", f"single foreground evidence must be preserved: {result}")
+        assert_true(foreground.get("title") == "other-3", f"latest foreground evidence must be preserved: {result}")
     finally:
         sidecar_mod.basic_send_window_guard = originals["basic_send_window_guard"]
         sidecar_mod.activate_window = originals["activate_window"]
@@ -7879,7 +7886,7 @@ def main() -> int:
         test_non_retryable_input_failure_detects_focus_loss,
         test_foreground_guard_zero_hwnd_cannot_be_bypassed_by_legacy_env,
         test_foreground_guard_zero_hwnd_blocks_when_disabled,
-        test_recover_send_window_guard_does_not_activate_foreground_mismatch,
+        test_recover_send_window_guard_recovers_foreground_mismatch,
         test_recover_send_window_guard_stops_after_two_failed_attempts,
         test_recover_send_window_guard_does_not_retry_non_focus_failures,
         test_send_payload_stops_before_input_after_two_focus_recovery_failures,

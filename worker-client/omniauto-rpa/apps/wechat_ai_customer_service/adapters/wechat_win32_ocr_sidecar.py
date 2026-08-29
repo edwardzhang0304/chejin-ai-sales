@@ -12015,10 +12015,36 @@ def basic_send_window_guard(hwnd: int) -> dict[str, Any]:
 
 
 def recover_send_window_guard(hwnd: int, *, max_attempts: int = 1) -> dict[str, Any]:
-    # Business actions must never steal focus or move/restore WeChat.  Keep
-    # the compatibility name so callers share one foreground-only boundary.
-    _ = max_attempts
-    return basic_send_window_guard(hwnd)
+    # Focus recovery is deliberately bounded and foreground-only.  It is
+    # allowed only for a focus mismatch; all other guard failures remain
+    # fail-closed and do not start a new UI action.
+    initial = basic_send_window_guard(hwnd)
+    if initial.get("ok"):
+        return {**initial, "focus_recovery_attempts": 0}
+    if str(initial.get("reason") or "") not in {
+        "foreground_not_wechat_target",
+        "foreground_probe_failed",
+    }:
+        return initial
+    try:
+        attempt_limit = max(1, min(int(max_attempts), 2))
+    except (TypeError, ValueError):
+        attempt_limit = 1
+    last = dict(initial)
+    for attempt in range(attempt_limit):
+        try:
+            activate_window(hwnd, foreground_only=True)
+        except Exception as exc:
+            last["focus_recovery_error"] = repr(exc)
+        humanized_action_sleep(200, 300)
+        refreshed = basic_send_window_guard(hwnd)
+        last = {
+            **refreshed,
+            "focus_recovery_attempts": attempt + 1,
+        }
+        if refreshed.get("ok"):
+            return last
+    return last
 
 
 def paste_text_in_chunks_with_humanized_pacing(text: str, settings: dict[str, Any]) -> dict[str, Any]:
