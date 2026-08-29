@@ -359,6 +359,10 @@ class VoiceActionV3132Test(unittest.TestCase):
                     "candidate_group_count": 1,
                     "sender_role": "customer",
                     "message_type": "voice",
+                    "physical_identity_inherited_from_prepare": False,
+                    "selection_policy": (
+                        "latest_frame_bottommost_untranscribed_voice"
+                    ),
                 },
             },
         )
@@ -465,8 +469,10 @@ class VoiceActionV3132Test(unittest.TestCase):
         )
         self.assertEqual(click.call_count, 1)
 
-    def test_execute_zero_clicks_when_same_slot_voice_neighbor_changes(self):
-        """The real execute gate must not trust the colliding viewport digest."""
+    def test_execute_uses_current_unique_voice_when_neighbor_diagnostic_changes(
+        self,
+    ):
+        """Prepare-frame neighbor diagnostics must not identify the target."""
 
         screenshot = Image.new("RGB", (920, 991), (250, 250, 250))
         prepared = {
@@ -542,10 +548,10 @@ class VoiceActionV3132Test(unittest.TestCase):
 
         self.assertEqual(
             result["state"],
-            "voice_action_cancelled_before_trigger",
+            "voice_transcribe_ambiguous",
         )
-        self.assertEqual(result["action_phase"], "cancelled_before_trigger")
-        self.assertEqual(click.call_count, 0)
+        self.assertEqual(result["action_phase"], "quarantined")
+        self.assertEqual(click.call_count, 1)
 
     def test_sidecar_stale_phase_write_cannot_overwrite_success_fact(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -586,19 +592,23 @@ class VoiceActionV3132Test(unittest.TestCase):
                 {"state": "completed", "transcript": "已确认文本"},
             )
 
-    def test_new_voice_in_same_observation_seat_cancels_before_any_click(self):
+    def test_prepare_frame_fingerprint_does_not_block_current_unique_voice(
+        self,
+    ):
         with tempfile.TemporaryDirectory() as tmp:
             journal = self._journal(tmp)
             click = Mock()
             candidate = {
-                # Viewport-derived observation ids and anchors may be reused
-                # when a newly arrived same-duration voice occupies A's old
-                # seat.  Only the fresh physical fingerprint may keep the
-                # prepare token attached to the original bubble.
+                # Prepare-frame ids, coordinates and fingerprints are audit
+                # evidence only. The execute frame owns the current target.
                 "observation_id": "voice-a",
                 "voice_state": "untranscribed",
                 "sender_role": "customer",
                 "action_target": {"anchor_key": "anchor-a"},
+                "visible_button_target": {
+                    "click_bounds": [420, 220, 500, 250],
+                    "layout_snapshot_id": "uat-layout",
+                },
             }
             image = Image.new("RGB", (800, 600), "white")
             with patch.object(sidecar, "capture_wechat", return_value=(image, "frame-b.png")), patch.object(
@@ -630,13 +640,13 @@ class VoiceActionV3132Test(unittest.TestCase):
                 )
 
             self.assertEqual(
-                result["state"], "voice_action_cancelled_before_trigger"
+                result["state"], "voice_transcribe_ambiguous"
             )
-            self.assertFalse(result["ui_action_performed"])
+            self.assertTrue(result["ui_action_performed"])
             self.assertEqual(
-                action_journal_phase(journal), "cancelled_before_trigger"
+                action_journal_phase(journal), "quarantined"
             )
-            click.assert_not_called()
+            self.assertEqual(click.call_count, 1)
 
     def test_invalid_visible_button_bounds_cancel_before_trigger(self):
         with tempfile.TemporaryDirectory() as tmp:
