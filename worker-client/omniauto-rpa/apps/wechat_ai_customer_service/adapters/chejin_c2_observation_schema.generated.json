@@ -1,8 +1,8 @@
 {
   "generated_file": true,
   "source": "contracts/c2_contract_v3.json",
-  "contract_revision": "0.9.43",
-  "contract_sha256": "a87275e55d6f25aeba3185d854f4e613a9209924ba4ac5ac4f6f49a3aeb00cef",
+  "contract_revision": "0.9.44",
+  "contract_sha256": "7b951e1433d61266b3fd038c0705cf8ecb53d6e659579278d4bb019f27191bc4",
   "observation_schema_version": 3,
   "action_phases": [
     "not_attempted",
@@ -317,7 +317,6 @@
       "C2_IMAGE_VISION_CONFIG_INVALID",
       "C2_IMAGE_UNDERSTANDING_SCHEMA_INVALID",
       "C2_IMAGE_UNDERSTANDING_FAILED",
-      "C2_IMAGE_REIDENTIFICATION_REQUIRED",
       "C2_PRE_SEND_IMAGE_TARGET_NOT_FOUND",
       "C2_PRE_SEND_LAYOUT_INVALID"
     ],
@@ -335,10 +334,10 @@
       "vision_window_message_parse_failed": "C2_IMAGE_OBSERVATION_FAILED",
       "C2_PRE_SEND_LAYOUT_INVALID": "C2_PRE_SEND_LAYOUT_INVALID",
       "C2_PRE_SEND_IMAGE_TARGET_NOT_FOUND": "C2_PRE_SEND_IMAGE_TARGET_NOT_FOUND",
-      "C2_IMAGE_REIDENTIFICATION_REQUIRED": "C2_IMAGE_REIDENTIFICATION_REQUIRED",
       "C2_IMAGE_SLOT_RECONFIRM_FAILED": "C2_IMAGE_SLOT_RECONFIRM_FAILED",
       "MESSAGE_IDENTITY_UNCONFIRMED": "C2_IMAGE_SLOT_RECONFIRM_FAILED",
       "image_sender_role_untrusted": "C2_IMAGE_SLOT_RECONFIRM_FAILED",
+      "image_action_policy_missing": "C2_IMAGE_SLOT_RECONFIRM_FAILED",
       "image_slot_identity_missing": "C2_IMAGE_SLOT_RECONFIRM_FAILED",
       "image_bubble_rect_missing": "C2_IMAGE_SLOT_RECONFIRM_FAILED",
       "image_clipboard_side_filter_invalid": "C2_IMAGE_SLOT_RECONFIRM_FAILED",
@@ -825,6 +824,13 @@
       "dedupe_confidence",
       "dedupe_basis",
       "message_position",
+      "business_projection",
+      "strong_boundary_tokens",
+      "strong_boundary_anchor",
+      "message_identity_commit_record",
+      "message_identity_runtime_evidence",
+      "message_commit_evidence",
+      "image_sha256",
       "observation",
       "voice_transcription",
       "voice_transcription_meta",
@@ -928,6 +934,7 @@
       "binding_candidate_count",
       "tracking_frame_ids",
       "tracking_edges",
+      "action_result_receipt",
       "confirmed_action_mapping"
     ],
     "frame_binding_container": "frame_action_binding",
@@ -964,26 +971,23 @@
       "ambiguous"
     ],
     "confirmed_methods": [
-      "native_source_id",
-      "continuous_target_tracking",
-      "neighbor_scroll_alignment"
+      "actual_action_result"
     ],
     "confirmed_candidate_count": 1,
-    "continuous_tracking_rule": "at_least_three_real_capture_frame_ids_and_a_contiguous_chain_of_exactly_adjacent_unique_tracking_edges_from_selected_pre_observation_to_final_bound_observation",
+    "actual_action_result_rule": "one_physical_action_count_one_unique_result_candidate_one_actual_post_transcript_business_signature_and_one_complete_receipt_must_match_the_worker_reservation_before_commit",
     "popup_state_query_rule": "a_win32_popup_hwnd_query_exception_is_popup_window_state_unknown_and_must_never_be_reported_as_closed",
     "post_click_wait_rule": "both_successful_and_failed_click_verification_enter_the_same_passive_transcript_evidence_wait_for_at_most_24_frames_or_120_seconds_without_a_second_transcribe_click",
     "forbidden_compatibility_fields": [
       "tracking_candidate_counts"
     ],
     "cancel_before_trigger_rule": "token_or_target_revalidation_failure_must_return_cancelled_before_trigger_with_zero_ui_actions_and_burn_the_reservation",
-    "ambiguous_terminal_rule": "persist_quarantined_without_body_binding_or_repeat_click_then_allow_at_most_two_evidence_only_reads_or_120_seconds_before_one_idempotent_handoff",
-    "neighbor_alignment_rule": "at_least_two_trusted_independent_neighbors_with_consistent_measured_scroll_delta_and_exactly_one_same_role_voice_at_the_projected_target_slot",
-    "worker_behavior": "validate_and_forward_sidecar_mapping_without_anchor_content_or_coordinate_reconstruction",
+    "ambiguous_terminal_rule": "persist_the_journal_without_body_binding_or_repeat_click_then_set_flow_technical_failed_and_worker_faulted_with_zero_handoff_and_brain_calls",
+    "worker_behavior": "validate_one_actual_action_result_receipt_without_anchor_coordinate_tracking_or_alternate_identity_reconstruction",
     "invalid_behavior": "C2_VOICE_IDENTITY_CONTRACT_INVALID"
   },
   "frame_action_binding_contract": {
-    "release": "0.9.43",
-    "purpose": "prove_only_that_the_worker_selected_unique_frame_local_target_is_still_safe_to_operate_inside_the_current_ui_transaction",
+    "release": "0.9.44",
+    "purpose": "carry_one_worker_approved_current_media_action_policy_and_current_frame_diagnostic_evidence_without_claiming_cross_frame_identity",
     "durable_identity": false,
     "observation_owner": "sidecar",
     "admission_owner": "worker",
@@ -998,13 +1002,11 @@
     "sidecar_execute_checks": [
       "token_unconsumed",
       "same_authorized_private_conversation",
-      "one_unique_current_local_target",
-      "local_target_matches_frame_action_binding",
-      "no_relevant_message_sequence_change"
+      "one_unique_target_under_the_worker_approved_current_frame_selection_policy",
+      "current_click_bounds_and_click_point_are_valid_inside_the_latest_frame_target"
     ],
     "sidecar_may_return": [
       "raw_current_observations",
-      "frame_changed",
       "target_not_found",
       "target_ambiguous",
       "cancelled_before_trigger",
@@ -1017,11 +1019,11 @@
       "commit_basis"
     ],
     "worker_rules": {
-      "normal_unchanged_unique_target": "allow_exactly_one_physical_action",
-      "relevant_frame_change": "invalidate_old_binding_and_rearbitrate_from_latest_frame_according_to_operation_phase",
+      "normal_current_unique_target": "allow_exactly_one_physical_action_using_only_the_latest_frame_geometry",
+      "frame_change_before_trigger": "do_not_compare_old_and_new_geometry_or_observation_ids_for_identity; apply_the_worker_approved_current_frame_selection_policy_once",
       "not_found_or_ambiguous": "zero_click_and_return_specific_error",
-      "confirmed_or_uniquely_failed_receipt": "commit_reserved_identity_through_the_single_worker_commit_gate",
-      "triggered_result_unresolved": "preserve_action_journal_and_forbid_reclick"
+      "confirmed_actual_result_receipt": "commit_reserved_identity_through_the_single_worker_commit_gate",
+      "triggered_result_unresolved": "preserve_action_journal_forbid_reclick_create_zero_handoff_and_brain_calls_set_flow_technical_failed_and_worker_faulted"
     },
     "absence_of_native_id_behavior": "supported_and_not_a_standalone_reason_to_block_first_action",
     "forbidden_shortcuts": [
@@ -1030,11 +1032,19 @@
       "role_type_duration_position_as_durable_identity",
       "current_confirmed_action_mapping_required_before_current_action",
       "worker_stable_id_required_before_current_action"
+    ],
+    "forbidden_execute_comparisons": [
+      "old_vs_current_observation_id",
+      "old_vs_current_coordinates",
+      "old_vs_current_relative_quantized_bounds",
+      "old_vs_current_64_bucket_digest",
+      "old_vs_current_bubble_crop_fingerprint",
+      "old_vs_current_visual_similarity"
     ]
   },
   "pre_send_message_viewport_contract": {
-    "release": "0.9.43",
-    "selected_target_fingerprint_scope": "one_selected_message_type_role_relative_quantized_bounds_required_neighbors_and_sequence_position_only",
+    "release": "0.9.44",
+    "selected_target_fingerprint_scope": "prepare_frame_diagnostic_only_and_forbidden_as_an_execute_identity_or_equality_gate",
     "selected_target_forbidden_inputs": [
       "message_viewport_change_digest",
       "raw_message_viewport_rgb",
@@ -1046,16 +1056,36 @@
       "voice_playback_animation_pixels",
       "gif_animation_frame_pixels"
     ],
-    "message_viewport_change_digest_schema_version": 2,
+    "message_viewport_change_digest_schema_version": 3,
     "message_viewport_change_digest_fields": [
       "screen_order",
       "sender_role",
       "message_type",
-      "relative_quantized_bounds",
-      "stable_content_signature",
+      "normalized_content_signature",
       "media_state"
     ],
     "message_viewport_change_digest_rule": "sha256_of_canonical_json_from_the_ordered_normalized_production_observation_sequence_only",
+    "message_viewport_change_digest_scope": "shared_geometry_free_business_change_projection_only; never_a_media_identity_or_click_target_binding",
+    "send_context_business_digest_schema_version": 3,
+    "send_context_business_digest_fields": [
+      "screen_order",
+      "sender_role",
+      "message_type",
+      "normalized_content_signature",
+      "media_state"
+    ],
+    "send_context_business_digest_forbidden_fields": [
+      "absolute_coordinates",
+      "relative_quantized_bounds",
+      "ocr_bounds",
+      "bubble_rect",
+      "screenshot_pixels",
+      "frame_id",
+      "observation_id",
+      "coordinate_derived_source_id",
+      "bubble_or_roi_visual_fingerprint"
+    ],
+    "send_context_business_digest_rule": "pre_send_refresh_S0_S1_S2_and_C4_share_one_pure_ordered_business_projection; geometry_only_changes_never_change_this_digest; sidecar_must_complete_its_single_same_frame_physical_row_voice_merge_before_projection_and_worker_must_reject_duplicate_or_conflicting_observations_instead_of_merging_again",
     "ignored_dynamic_visuals": [
       "input_caret",
       "bottom_toolbar",
@@ -1087,7 +1117,7 @@
       "bottom",
       "raw_rgb_hash_used"
     ],
-    "pre_send_context_guard_integrity_rule": "both_worker_pre_send_checks_require_ok_true_and_one_nonempty_layout_snapshot_id; message_count_must_equal_the_ordered_sequence_length; screen_order_must_be_contiguous; both_digests_must_equal_sha256_of_the_canonical_sequence; bottom_must_equal_the_last_sequence_item_or_null_for_an_empty_sequence; raw_rgb_hash_used_must_be_false; worker_must_recompute_the_same_shared_pure_projection_from_the_exact_response_observations_using_the_guard_viewport_bounds_and_require_ordered_equality_for_count_role_type_content_signature_media_state_and_relative_position; this_projection_is_frame_binding_only_and_must_not_decide_or_inherit_message_identity",
+    "pre_send_context_guard_integrity_rule": "both_worker_pre_send_checks_require_ok_true_and_one_nonempty_layout_snapshot_id; schema_version_must_equal_send_context_business_digest_schema_version; message_count_must_equal_the_ordered_sequence_length; screen_order_must_be_contiguous; both_digests_must_equal_sha256_of_the_canonical_sequence; bottom_must_equal_the_last_sequence_item_or_null_for_an_empty_sequence; raw_rgb_hash_used_must_be_false; worker_must_recompute_the_same_shared_pure_projection_from_the_exact_response_observations_and_require_ordered_equality_for_count_role_type_normalized_content_signature_and_media_state; viewport_bounds_are_only_layout_evidence_and_must_not_enter_cross_frame_business_equality_or_message_identity",
     "pre_send_passive_reread_layout_rule": "after_the_single_allowed_passive_reread_worker_must_repeat_the_full_context_guard_and_exact_observations_binding_check_before_any_sequence_result_is_used; an_invalid_or_cross_frame_guard_returns_C2_PRE_SEND_LAYOUT_INVALID_instead_of_a_sequence_error",
     "pre_send_context_guard_invalid_rule": "return_C2_PRE_SEND_LAYOUT_INVALID_without_passive_reread_handoff_claim_send_text_input_or_any_media_action; settle_the_original_reply_task_and_flow_as_technical_failed_release_the_ui_lock_and_set_the_worker_faulted",
     "layout_invalid_error": "C2_PRE_SEND_LAYOUT_INVALID",
@@ -1153,7 +1183,7 @@
     }
   },
   "startup_layout_calibration_contract": {
-    "schema_version": "0.9.43",
+    "schema_version": "0.9.44",
     "owner": "omniauto",
     "worker_role": "persist_path_transport_contract_validation_and_execution_only",
     "single_runtime_path": true,

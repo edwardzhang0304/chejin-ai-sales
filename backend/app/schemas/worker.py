@@ -59,7 +59,7 @@ class WorkerInflightFlowFinishRequest(BaseModel):
     terminal_kind: str = Field(
         min_length=1,
         max_length=64,
-        pattern="^(task_terminal|read_confirmed|failed_before_message_action|read_failed_no_fact)$",
+        pattern="^(task_terminal|read_confirmed|failed_before_message_action|read_failed_no_fact|technical_failed)$",
     )
     conversation_id: str | None = Field(default=None, max_length=36)
     error_code: str | None = Field(default=None, max_length=64)

@@ -251,6 +251,13 @@ class RpaBridge:
         expected_confirmed_self_text: str = "",
         chat_fact_roi_ocr: bool = False,
         same_frame_full_ocr_evidence: dict[str, Any] | None = None,
+        history_mode: str = "",
+        anchor_ids: list[str] | None = None,
+        anchor_content_keys: list[str] | None = None,
+        reply_content_keys: list[str] | None = None,
+        max_scroll_steps: int = 0,
+        max_snapshots: int = 1,
+        restore_to_latest: bool = True,
         max_duration_seconds: int = 12,
         cancel_check: CancellationCheck | None = None,
     ) -> dict[str, Any]:
@@ -291,21 +298,38 @@ class RpaBridge:
             # test machines.  Search-by-remark-code needs several passes before
             # messages are read, so the default visible-read budget is too short.
             effective_max_duration_seconds = max(effective_max_duration_seconds, 75)
+        normalized_history_mode = str(history_mode or "").strip()
         args = [
             "messages",
             "--sidecar-run-id",
             sidecar_run_id,
             "--history-load-times",
-            "0",
+            str(max(0, int(max_scroll_steps or 0))),
             "--max-scroll-steps",
             "0",
             "--max-duration-seconds",
             str(effective_max_duration_seconds),
             "--max-snapshots",
-            "1",
+            str(max(1, int(max_snapshots or 1))),
             "--artifact-dir",
             str(artifact_dir),
         ]
+        if normalized_history_mode:
+            args[1:1] = ["--history-mode", normalized_history_mode]
+        for values, flag in (
+            (anchor_ids, "--anchor-id"),
+            (anchor_content_keys, "--anchor-content-key"),
+            (reply_content_keys, "--reply-content-key"),
+        ):
+            for value in values or []:
+                clean_value = str(value or "").strip()
+                if clean_value:
+                    args.extend([flag, clean_value])
+        args.append(
+            "--restore-to-latest"
+            if restore_to_latest
+            else "--no-restore-to-latest"
+        )
         if str(display_name or "").strip():
             args[1:1] = ["--target", display_name]
         if str(rpa_session_key or "").strip():
@@ -331,6 +355,7 @@ class RpaBridge:
         sidecar_timeout = (
             max(30, min(240, effective_max_duration_seconds + 75))
             if normalized_target_mode == "search_by_remark_code"
+            or normalized_history_mode
             else max(30, min(90, effective_max_duration_seconds + 30))
         )
         call_options: dict[str, Any] = {"timeout": sidecar_timeout}

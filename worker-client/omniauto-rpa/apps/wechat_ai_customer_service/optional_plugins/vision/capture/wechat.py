@@ -809,7 +809,9 @@ def image_bubble_visual_fingerprint(
     try:
         resampling = getattr(Image, "Resampling", Image).LANCZOS
         gray = crop.convert("L").resize((9, 8), resampling)
-        pixels = list(gray.getdata())
+        pixels = list(
+            getattr(gray, "get_flattened_data", gray.getdata)()
+        )
         bits = [
             1
             if pixels[row * 9 + column] > pixels[row * 9 + column + 1]
@@ -834,7 +836,11 @@ def image_bubble_visual_fingerprint(
                 # separating visually similar but physically different media.
                 quantized = bytes(
                     int(channel) & 0xF0
-                    for pixel in normalized.getdata()
+                    for pixel in getattr(
+                        normalized,
+                        "get_flattened_data",
+                        normalized.getdata,
+                    )()
                     for channel in pixel[:3]
                 )
             finally:

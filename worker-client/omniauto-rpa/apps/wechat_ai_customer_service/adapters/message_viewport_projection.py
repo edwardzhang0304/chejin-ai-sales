@@ -20,8 +20,8 @@ SEND_CONTEXT_ROW_KINDS = {
     "image_bubble",
     "system_message",
 }
-MESSAGE_VIEWPORT_DIGEST_SCHEMA_VERSION = 2
-MESSAGE_VIEWPORT_BOUNDS_QUANTIZATION = 64
+MESSAGE_VIEWPORT_DIGEST_SCHEMA_VERSION = 3
+SEND_CONTEXT_BUSINESS_DIGEST_SCHEMA_VERSION = 3
 
 _OCR_PUNCTUATION_TRANSLATION = str.maketrans(
     {
@@ -94,38 +94,11 @@ def _message_rect_values(value: Any) -> list[float] | None:
     return [left, top, right, bottom]
 
 
-def normalized_relative_message_bounds(
-    value: Any,
-    *,
-    viewport_bounds: Any,
-) -> list[int]:
-    """Quantize a bubble relative to the viewport to absorb OCR jitter."""
+def stable_business_content_signature(
+    observation: dict[str, Any],
+) -> str:
+    """Return content/state evidence without geometry or frame identity."""
 
-    rect = _message_rect_values(value)
-    viewport = _message_rect_values(viewport_bounds)
-    if rect is None or viewport is None:
-        return []
-    left, top, right, bottom = rect
-    view_left, view_top, view_right, view_bottom = viewport
-    width = max(1.0, view_right - view_left)
-    height = max(1.0, view_bottom - view_top)
-    scale = MESSAGE_VIEWPORT_BOUNDS_QUANTIZATION
-
-    def bucket(current: float, origin: float, extent: float) -> int:
-        return max(
-            0,
-            min(scale, int(round((current - origin) / extent * scale))),
-        )
-
-    return [
-        bucket(left, view_left, width),
-        bucket(top, view_top, height),
-        bucket(right, view_left, width),
-        bucket(bottom, view_top, height),
-    ]
-
-
-def _content_signature(observation: dict[str, Any]) -> str:
     row_kind = str(observation.get("row_kind") or "").strip().lower()
     if row_kind in {"text_bubble", "voice_transcript", "system_message"}:
         normalized = normalized_projection_text(
@@ -159,7 +132,7 @@ def _content_signature(observation: dict[str, Any]) -> str:
     return hashlib.sha256(row_kind.encode("utf-8")).hexdigest()
 
 
-def _media_state(observation: dict[str, Any]) -> str:
+def business_media_state(observation: dict[str, Any]) -> str:
     row_kind = str(observation.get("row_kind") or "").strip().lower()
     if row_kind == "voice_transcript":
         return "transcribed"
@@ -174,117 +147,47 @@ def _observation_rect(observation: dict[str, Any]) -> list[float] | None:
     return _message_rect_values(observation.get("bubble_rect"))
 
 
-def _is_visual_voice_hint(observation: dict[str, Any]) -> bool:
-    quality_flags = {
-        str(value or "").strip().lower()
-        for value in (observation.get("quality_flags") or [])
-    }
-    observation_id = str(observation.get("observation_id") or "").lower()
-    return "visual_voice_hint" in quality_flags or observation_id.startswith(
-        "voice-hint:"
-    )
-
-
-def _same_voice_row_geometry(
-    first: dict[str, Any],
-    second: dict[str, Any],
-) -> bool:
-    first_rect = _observation_rect(first)
-    second_rect = _observation_rect(second)
-    if first_rect is None or second_rect is None:
-        return False
-    first_left, first_top, first_right, first_bottom = first_rect
-    second_left, second_top, second_right, second_bottom = second_rect
-    first_center_y = (first_top + first_bottom) / 2.0
-    second_center_y = (second_top + second_bottom) / 2.0
-    first_height = first_bottom - first_top
-    second_height = second_bottom - second_top
-    allowed_y = max(8.0, min(first_height, second_height) * 0.6)
-    horizontal_overlap = min(first_right, second_right) - max(
-        first_left, second_left
-    )
-    return (
-        abs(first_center_y - second_center_y) <= allowed_y
-        and horizontal_overlap > 0
-    )
-
-
-def _prefer_observation(
-    first: dict[str, Any],
-    second: dict[str, Any],
-) -> dict[str, Any]:
-    def score(value: dict[str, Any]) -> tuple[int, int, int]:
-        source_message = (
-            value.get("source_message")
-            if isinstance(value.get("source_message"), dict)
-            else {}
-        )
-        return (
-            0 if _is_visual_voice_hint(value) else 1,
-            1 if str(value.get("voice_duration") or "").strip() else 0,
-            1 if str(source_message.get("id") or "").strip() else 0,
-        )
-
-    return second if score(second) > score(first) else first
-
-
-def canonical_message_viewport_observations(
+def ordered_message_viewport_observations(
     observations: list[dict[str, Any]] | None,
 ) -> list[dict[str, Any]]:
-    """Order visible facts and collapse duplicate visual voice hints."""
+    """Return eligible rows in current-frame screen order without merging.
+
+    Sidecar owns the single OCR/visual same-row merge before this shared
+    projection is called.  The shared projection must not silently repair a
+    duplicate/conflicting Sidecar contract for the Worker.
+    """
 
     eligible = [
-        observation
-        for observation in (observations or [])
+        (input_index, observation)
+        for input_index, observation in enumerate(observations or [])
         if isinstance(observation, dict)
         and str(observation.get("row_kind") or "").strip().lower()
         in SEND_CONTEXT_ROW_KINDS
     ]
 
-    def sort_key(observation: dict[str, Any]) -> tuple[Any, ...]:
+    def sort_key(
+        indexed_observation: tuple[int, dict[str, Any]],
+    ) -> tuple[Any, ...]:
+        input_index, observation = indexed_observation
         rect = _observation_rect(observation) or [0, 0, 0, 0]
-        return (rect[1], rect[0], rect[3], str(observation.get("observation_id") or ""))
+        return (
+            rect[1],
+            rect[0],
+            rect[3],
+            input_index,
+        )
 
     eligible.sort(key=sort_key)
-    canonical: list[dict[str, Any]] = []
-    for observation in eligible:
-        row_kind = str(observation.get("row_kind") or "").strip().lower()
-        role = str(observation.get("sender_role") or "unknown").strip().lower()
-        duplicate_index: int | None = None
-        if row_kind == "voice_bubble":
-            for index, existing in enumerate(canonical):
-                if (
-                    str(existing.get("row_kind") or "").strip().lower()
-                    == "voice_bubble"
-                    and str(existing.get("sender_role") or "unknown").strip().lower()
-                    == role
-                    and (
-                        _is_visual_voice_hint(existing)
-                        or _is_visual_voice_hint(observation)
-                    )
-                    and _same_voice_row_geometry(existing, observation)
-                ):
-                    duplicate_index = index
-                    break
-        if duplicate_index is None:
-            canonical.append(observation)
-        else:
-            canonical[duplicate_index] = _prefer_observation(
-                canonical[duplicate_index], observation
-            )
-    canonical.sort(key=sort_key)
-    return canonical
+    return [observation for _, observation in eligible]
 
 
-def normalized_message_viewport_sequence(
+def _normalized_business_sequence(
     observations: list[dict[str, Any]] | None,
-    *,
-    message_viewport_bounds: Any,
 ) -> list[dict[str, Any]]:
-    """Project one frame into ordered, non-identity visual business facts."""
+    """The sole five-field business projection implementation."""
 
     sequence: list[dict[str, Any]] = []
-    for observation in canonical_message_viewport_observations(observations):
+    for observation in ordered_message_viewport_observations(observations):
         sequence.append(
             {
                 "screen_order": len(sequence),
@@ -294,12 +197,40 @@ def normalized_message_viewport_sequence(
                 "message_type": str(
                     observation.get("message_type") or "unknown"
                 ).strip().lower(),
-                "relative_quantized_bounds": normalized_relative_message_bounds(
-                    observation.get("bubble_rect"),
-                    viewport_bounds=message_viewport_bounds,
+                "normalized_content_signature": (
+                    stable_business_content_signature(observation)
                 ),
-                "stable_content_signature": _content_signature(observation),
-                "media_state": _media_state(observation),
+                "media_state": business_media_state(observation),
             }
         )
     return sequence
+
+
+def normalized_message_viewport_sequence(
+    observations: list[dict[str, Any]] | None,
+    *,
+    message_viewport_bounds: Any,
+) -> list[dict[str, Any]]:
+    """Compatibility entry to the sole geometry-free business projection."""
+
+    _ = message_viewport_bounds
+    return _normalized_business_sequence(observations)
+
+
+def normalized_business_message_sequence(
+    observations: list[dict[str, Any]] | None,
+    *,
+    message_viewport_bounds: Any,
+) -> list[dict[str, Any]]:
+    """Project ordered business facts without cross-frame geometry.
+
+    C2 business rereads, media-action admission and C3 pre-send/S0/S1/S2 all
+    consume this projection. Coordinates still locate a target in the latest
+    frame, but they cannot veto an already-authorized action, declare that the
+    conversation changed, or create durable message identity.
+    """
+
+    # Bounds remain required by the caller's layout contract but are not
+    # consumed by this cross-frame business projection.
+    _ = message_viewport_bounds
+    return _normalized_business_sequence(observations)

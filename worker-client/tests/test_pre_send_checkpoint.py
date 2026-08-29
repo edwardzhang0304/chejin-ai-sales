@@ -7,6 +7,14 @@ from chejin_worker_client.pre_send_checkpoint import (
     reply_fact_evidence_for_observation,
     stable_fact_signature,
 )
+from chejin_worker_client.message_viewport_projection import (
+    boundary_tokens_for_observations,
+    normalized_business_message_sequence,
+)
+from chejin_worker_client.message_identity_commit import (
+    MessageCommitBasis,
+    committed_identity_record,
+)
 
 
 def _fact(
@@ -20,15 +28,26 @@ def _fact(
     voice_duration: str = "",
     terminal_action_receipt: bool = False,
 ) -> dict:
+    observation_id = f"checkpoint:{stable_id}"
+    exact_image_sha256 = ""
+    if image_fingerprint.startswith("imagev2:"):
+        candidate = image_fingerprint.rsplit(":", 1)[-1].lower()
+        if len(candidate) == 64:
+            exact_image_sha256 = candidate
+    elif image_fingerprint.startswith("sha256:"):
+        candidate = image_fingerprint.split(":", 1)[1].lower()
+        if len(candidate) == 64:
+            exact_image_sha256 = candidate
     signature = stable_fact_signature(
         sender_role=sender_role,
         message_type=message_type,
         item_state="completed",
         content=content,
         voice_duration=voice_duration,
-        image_visual_fingerprint=image_fingerprint,
+        image_content_sha256=image_fingerprint,
     )
     fact_observation = {
+        "observation_id": observation_id,
         "row_kind": (
             "voice_transcript"
             if message_type == "voice"
@@ -44,66 +63,128 @@ def _fact(
         "image_physical_anchor": {
             "bubble_visual_fingerprint": image_fingerprint,
         },
+        "_worker_image_action_summary": (
+            {"image_sha256": exact_image_sha256}
+            if terminal_action_receipt and exact_image_sha256
+            else {}
+        ),
     }
     reply_fact_evidence = reply_fact_evidence_for_observation(
         fact_observation,
         item_state="completed",
     )
-    if message_type in {"voice", "image"}:
-        continuity_basis = (
-            "native_source_message_id"
-            if native_source_message_id
-            else "terminal_committed_fact_equivalence"
-            if terminal_action_receipt
-            else "unproven_media_continuity"
-        )
-        continuity_signature = (
-            canonical_sha256(
-                {
-                    "message_type": message_type,
-                    "native_source_message_id": native_source_message_id,
-                }
-            )
-            if native_source_message_id
-            else canonical_sha256(reply_fact_evidence)
-            if terminal_action_receipt
-            else ""
-        )
-    else:
-        continuity_basis = "ordered_fact"
-        continuity_signature = signature
+    commit_basis = MessageCommitBasis.NEW_SUFFIX
+    commit_proof: dict = {
+        "alignment_status": "unique",
+        "old_tail_fully_consumed": True,
+        "new_suffix_observation_id": observation_id,
+    }
+    action_receipt_digest = ""
+    if message_type == "voice" and terminal_action_receipt:
+        commit_basis = MessageCommitBasis.CONFIRMED_VOICE_ACTION
+        mapping = {
+            "canonical_action_id": f"voice-action:{stable_id}",
+            "reserved_worker_stable_id": stable_id,
+            "selected_action_token": f"voice-ticket:{stable_id}",
+            "pre_observation_id": f"pre:{stable_id}",
+            "post_observation_id": observation_id,
+            "binding_confirmed": True,
+            "trigger_observation_id": observation_id,
+            "physical_identity_inherited_from_prepare": False,
+            "physical_action_count": 1,
+            "result_candidate_count": 1,
+            "stable_business_content_signature": signature,
+        }
+        fact_observation["_worker_voice_action_summary"] = {
+            "confirmed_action_mapping": mapping,
+        }
+        commit_proof = dict(mapping)
+        action_receipt_digest = "a" * 64
+    elif message_type == "image" and terminal_action_receipt:
+        commit_basis = MessageCommitBasis.CONFIRMED_IMAGE_ACTION
+        mapping = {
+            "canonical_action_id": f"image-action:{stable_id}",
+            "reserved_worker_stable_id": stable_id,
+            "pre_observation_id": f"pre:{stable_id}",
+            "post_observation_id": observation_id,
+            "binding_confirmed": True,
+            "trigger_observation_id": observation_id,
+            "physical_identity_inherited_from_prepare": False,
+        }
+        fact_observation["_worker_image_action_summary"] = {
+            "image_sha256": exact_image_sha256,
+            "confirmed_action_mapping": mapping,
+        }
+        commit_proof = {**mapping, "image_sha256": exact_image_sha256}
+        action_receipt_digest = "a" * 64
+    elif message_type in {"voice", "image"}:
+        # Deliberately incomplete: checkpoint validation must reject media
+        # that has no formal action result.
+        commit_basis = MessageCommitBasis.NATIVE_SOURCE_MESSAGE_ID
+        commit_proof = {
+            "native_source_message_id": native_source_message_id,
+            "sender_role": sender_role,
+            "message_type": message_type,
+        }
+    commit_record = committed_identity_record(
+        worker_stable_id=stable_id,
+        commit_basis=commit_basis,
+        observation_id=observation_id,
+        sender_role=sender_role,
+        message_type=message_type,
+        proof=commit_proof,
+    )
+    fact_observation.update(
+        {
+            "native_source_message_id": native_source_message_id,
+            "source_adapter": "win32_ocr",
+            "_worker_stable_id": stable_id,
+            "_worker_identity_scope": "committed",
+            "_worker_committed_message": commit_record,
+        }
+    )
     return {
         "worker_stable_id": stable_id,
         "sender_role": sender_role,
         "message_type": message_type,
         "item_state": "completed",
         "stable_fact_signature": signature,
-        "continuity_basis": continuity_basis,
-        "continuity_signature": continuity_signature,
-        "commit_basis": (
-            f"confirmed_{message_type}_action"
-            if terminal_action_receipt
-            else ""
-        ),
-        "action_receipt_digest": (
-            "a" * 64 if terminal_action_receipt else ""
-        ),
+        "source_message_key": f"source:{stable_id}",
+        "commit_basis": commit_basis.value,
+        "action_receipt_digest": action_receipt_digest,
         "reply_fact_evidence": reply_fact_evidence,
-        "physical_identity_confirmed": bool(
-            message_type not in {"voice", "image"}
-            or native_source_message_id
-        ),
+        "message_identity_commit_record": commit_record,
+        "message_identity_runtime_evidence": {},
+        "_business_observation": fact_observation,
     }
 
 
 def _checkpoint(*facts: dict) -> dict:
+    committed_tail: list[dict] = []
+    observations: list[dict] = []
+    for raw in facts:
+        item = dict(raw)
+        observation = dict(item.pop("_business_observation"))
+        observations.append(observation)
+        committed_tail.append(item)
+    projection = normalized_business_message_sequence(
+        observations,
+        message_viewport_bounds=None,
+    )
+    tokens = boundary_tokens_for_observations(
+        observations,
+        committed_only=True,
+    )
+    for index, item in enumerate(committed_tail):
+        item["business_projection"] = projection[index]
+        item["strong_boundary_tokens"] = sorted(tokens.get(index, set()))
     return {
-        "checkpoint_revision": 3,
+        "checkpoint_revision": 5,
         "conversation_id": "conv-1",
         "batch_id": "batch-1",
         "baseline_kind": "message_tail",
         "authoritative_frame_source": "final_read",
-        "committed_tail": list(facts),
+        "committed_tail": committed_tail,
         "tail_complete": True,
     }
 
@@ -192,28 +273,31 @@ def test_terminal_transcribed_voice_matches_without_rechecking_long_term_identit
     assert result["comparison_result"] == "checkpoint_equal"
     assert result["old_tail_fully_consumed"] is True
     assert [item["worker_stable_id"] for item in result["matched_pairs"]] == [
-        "worker-message-1",
-        "worker-message-2",
+        "",
+        "",
     ]
 
 
-def test_terminal_image_matches_by_confirmed_stable_fingerprint():
+def test_image_matches_only_by_confirmed_native_identity_not_bubble_pixels():
+    exact_a = "a" * 64
+    exact_b = "b" * 64
     checkpoint = _checkpoint(
         _fact(
             "worker-message-9",
             sender_role="customer",
             message_type="image",
-            image_fingerprint="sha256:image-a",
+            image_fingerprint=f"imagev2:old-render:{exact_a}",
             native_source_message_id="wx-native-image-9",
+            terminal_action_receipt=True,
         )
     )
 
     result = compare_checkpoint_to_observations(
         checkpoint,
         [
-            _image(
-                "new-frame-image",
-                "sha256:image-a",
+                _image(
+                    "new-frame-image",
+                    f"imagev2:new-render:{exact_b}",
                 native_source_message_id="wx-native-image-9",
             )
         ],
@@ -312,10 +396,12 @@ def test_replacement_and_truncation_are_not_treated_as_new_suffix():
         current_tail_complete=True,
     )
 
-    assert replaced["comparison_result"] == "checkpoint_not_continuous"
-    assert replaced["reason"] == "checkpoint_prefix_fact_mismatch"
-    assert truncated["comparison_result"] == "checkpoint_not_continuous"
-    assert truncated["reason"] == "checkpoint_rows_missing_or_viewport_truncated"
+    assert replaced["comparison_result"] == (
+        "checkpoint_continuity_context_expansion_required"
+    )
+    assert truncated["comparison_result"] == (
+        "checkpoint_continuity_context_expansion_required"
+    )
 
 
 def test_same_transcript_new_voice_without_strong_continuity_is_not_equal():
@@ -336,8 +422,12 @@ def test_same_transcript_new_voice_without_strong_continuity_is_not_equal():
         current_tail_complete=True,
     )
 
-    assert result["comparison_result"] == "checkpoint_not_continuous"
-    assert result["reason"] == "checkpoint_media_continuity_unproven"
+    assert result["comparison_result"] == (
+        "checkpoint_continuity_context_expansion_required"
+    )
+    assert result["continuity_relation"] == (
+        "continuity_context_expansion_required"
+    )
 
 
 def test_terminal_committed_voice_exact_facts_allow_send_without_identity_inheritance():
@@ -368,14 +458,14 @@ def test_terminal_committed_voice_exact_facts_allow_send_without_identity_inheri
 
     assert result["comparison_result"] == "checkpoint_equal"
     assert result["physical_identity_confirmed"] is False
-    assert result["terminal_fact_equivalence_count"] == 1
+    assert result["terminal_fact_equivalence_count"] == 0
     assert result["matched_pairs"] == [
         {
             "pre_sequence_index": 0,
             "post_sequence_index": 0,
             "worker_stable_id": "",
             "post_observation_id": "fresh-terminal-voice",
-            "match_basis": "terminal_committed_fact_equivalence",
+            "match_basis": "worker_business_viewport_continuity",
             "physical_identity_confirmed": False,
         }
     ]
@@ -407,8 +497,9 @@ def test_terminal_committed_voice_changed_or_incomplete_tail_stays_closed():
         current_tail_complete=False,
     )
 
-    assert changed["comparison_result"] == "checkpoint_not_continuous"
-    assert changed["reason"] == "checkpoint_prefix_fact_mismatch"
+    assert changed["comparison_result"] == (
+        "checkpoint_continuity_context_expansion_required"
+    )
     assert incomplete["comparison_result"] == "checkpoint_not_continuous"
     assert incomplete["reason"] == "checkpoint_current_tail_incomplete"
 
@@ -461,11 +552,12 @@ def test_similar_new_image_without_strong_continuity_is_not_equal():
         current_tail_complete=True,
     )
 
-    assert result["comparison_result"] == "checkpoint_not_continuous"
-    assert result["reason"] == "checkpoint_media_continuity_unproven"
+    assert result["comparison_result"] == (
+        "checkpoint_continuity_context_expansion_required"
+    )
 
 
-def test_terminal_committed_image_requires_exact_not_perceptual_evidence():
+def test_terminal_committed_image_pixels_never_prove_cross_frame_identity():
     exact_a = "a" * 64
     exact_b = "b" * 64
     checkpoint = _checkpoint(
@@ -492,16 +584,88 @@ def test_terminal_committed_image_requires_exact_not_perceptual_evidence():
         current_tail_complete=True,
     )
 
-    assert same["comparison_result"] == "checkpoint_equal"
-    assert same["physical_identity_confirmed"] is False
-    assert same["matched_pairs"][0]["worker_stable_id"] == ""
-    assert similar_only["comparison_result"] == "checkpoint_not_continuous"
-    assert similar_only["reason"] == "checkpoint_prefix_fact_mismatch"
+    assert same["comparison_result"] == (
+        "checkpoint_continuity_context_expansion_required"
+    )
+    assert similar_only["comparison_result"] == (
+        "checkpoint_continuity_context_expansion_required"
+    )
+
+
+def test_checkpoint_binding_accepts_formal_image_action_without_using_pixels_as_identity():
+    checkpoint = _checkpoint(
+        _fact(
+            "worker-message-image-old",
+            sender_role="customer",
+            message_type="image",
+            image_fingerprint=f"imagev2:same-dhash:{'a' * 64}",
+            terminal_action_receipt=True,
+        )
+    )
+    binding = {
+        "conversation_id": "conv-1",
+        "batch_id": "batch-1",
+        "reply_action_id": "reply-1",
+        "checkpoint_digest": canonical_sha256(checkpoint),
+    }
+
+    assert checkpoint_binding_error(
+        checkpoint,
+        binding,
+        conversation_id="conv-1",
+        batch_id="batch-1",
+        reply_action_id="reply-1",
+    ) == ""
+
+
+def test_checkpoint_binding_requires_formal_receipt_for_strong_image_identity():
+    missing_receipt = _checkpoint(
+        _fact(
+            "worker-message-image-native",
+            sender_role="customer",
+            message_type="image",
+            image_fingerprint=f"imagev2:native:{'a' * 64}",
+            native_source_message_id="wx-native-image-1",
+        )
+    )
+    binding = {
+        "conversation_id": "conv-1",
+        "batch_id": "batch-1",
+        "reply_action_id": "reply-1",
+        "checkpoint_digest": canonical_sha256(missing_receipt),
+    }
+
+    assert checkpoint_binding_error(
+        missing_receipt,
+        binding,
+        conversation_id="conv-1",
+        batch_id="batch-1",
+        reply_action_id="reply-1",
+    ) == "checkpoint_item_invalid"
+
+    with_receipt = _checkpoint(
+        _fact(
+            "worker-message-image-native",
+            sender_role="customer",
+            message_type="image",
+            image_fingerprint=f"imagev2:native:{'a' * 64}",
+            native_source_message_id="wx-native-image-1",
+            terminal_action_receipt=True,
+        )
+    )
+    binding["checkpoint_digest"] = canonical_sha256(with_receipt)
+    assert checkpoint_binding_error(
+        with_receipt,
+        binding,
+        conversation_id="conv-1",
+        batch_id="batch-1",
+        reply_action_id="reply-1",
+    ) == ""
 
 
 def test_friend_welcome_empty_baseline_allows_only_an_empty_current_frame():
     checkpoint = {
-        "checkpoint_revision": 3,
+        "checkpoint_revision": 5,
         "conversation_id": "conv-1",
         "batch_id": "batch-1",
         "baseline_kind": "friend_welcome_empty",
@@ -516,6 +680,7 @@ def test_friend_welcome_empty_baseline_allows_only_an_empty_current_frame():
         before_frame_id="checkpoint:welcome",
         after_frame_id="frame:empty",
         current_tail_complete=True,
+        current_empty_viewport_confirmed=True,
     )
     superseded = compare_checkpoint_to_observations(
         checkpoint,
@@ -523,6 +688,7 @@ def test_friend_welcome_empty_baseline_allows_only_an_empty_current_frame():
         before_frame_id="checkpoint:welcome",
         after_frame_id="frame:message",
         current_tail_complete=True,
+        current_empty_viewport_confirmed=False,
     )
 
     assert unchanged["comparison_result"] == "checkpoint_equal"
@@ -544,7 +710,7 @@ def test_incomplete_current_tail_blocks_text_and_empty_welcome_baselines():
         )
     )
     welcome_checkpoint = {
-        "checkpoint_revision": 3,
+        "checkpoint_revision": 4,
         "conversation_id": "conv-1",
         "batch_id": "batch-1",
         "baseline_kind": "friend_welcome_empty",

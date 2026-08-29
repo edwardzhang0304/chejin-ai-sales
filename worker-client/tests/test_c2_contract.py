@@ -28,6 +28,7 @@ from chejin_worker_client.c2_contract import (
 )
 from chejin_worker_client.config import ClientConfig
 from chejin_worker_client.api import ApiError
+from chejin_worker_client import message_viewport_projection as worker_projection
 from chejin_worker_client.transaction_outcomes import (
     FlowOutcomeAccumulator,
     classify_action_result,
@@ -51,6 +52,14 @@ from chejin_worker_client.wechat_c2 import (
 
 
 class C2ContractTests(unittest.TestCase):
+    def test_worker_projection_surface_exposes_business_rules_only(self):
+        self.assertTrue(
+            callable(worker_projection.normalized_business_message_sequence)
+        )
+        self.assertFalse(
+            hasattr(worker_projection, "normalized_message_viewport_sequence")
+        )
+
     def _real_legacy_sidecar_identity_fixture(self):
         omniauto_root = Path(__file__).resolve().parents[1] / "omniauto-rpa"
         if str(omniauto_root) not in sys.path:
@@ -264,6 +273,62 @@ class C2ContractTests(unittest.TestCase):
 
         self._assert_public_sidecar_identity_payload(public_payload)
 
+    def test_worker_rejects_duplicate_sidecar_observation_id(self):
+        observation = {
+            "schema_version": 3,
+            "observation_id": "voice-duplicate-id",
+            "row_kind": "voice_bubble",
+            "sender_role": "customer",
+            "sender_role_source": "same_row_avatar",
+            "message_type": "voice",
+            "voice_state": "untranscribed",
+            "anchor_aliases": ["voice-structural:duplicate-id"],
+        }
+        self.assertEqual(
+            sidecar_contract_error(
+                {
+                    "observation_schema_version": 3,
+                    "observations": [observation, dict(observation)],
+                }
+            ),
+            "C2_SIDECAR_IDENTITY_CONTRACT_INVALID",
+        )
+
+    def test_worker_rejects_duplicate_explicit_stable_voice_anchor(self):
+        common = {
+            "schema_version": 3,
+            "row_kind": "voice_bubble",
+            "sender_role": "customer",
+            "sender_role_source": "same_row_avatar",
+            "message_type": "voice",
+            "voice_state": "untranscribed",
+            "voice_anchor_structural_key": "voice-structural:shared",
+        }
+        self.assertEqual(
+            sidecar_contract_error(
+                {
+                    "observation_schema_version": 3,
+                    "observations": [
+                        {
+                            **common,
+                            "observation_id": "voice-upper",
+                            "voice_anchor_stable_key": "voice-stable:duplicate",
+                        },
+                        {
+                            **common,
+                            "observation_id": "voice-lower",
+                            "source_message": {
+                                "voice_anchor_stable_key": (
+                                    "voice-stable:duplicate"
+                                )
+                            },
+                        },
+                    ],
+                }
+            ),
+            "C2_SIDECAR_IDENTITY_CONTRACT_INVALID",
+        )
+
     def test_daemon_entry_sanitizes_legacy_message_identity(self):
         sidecar, _, raw_payload = self._real_legacy_sidecar_identity_fixture()
         daemon_input = io.StringIO(
@@ -361,7 +426,7 @@ class C2ContractTests(unittest.TestCase):
 
     def test_slot_ledger_contract_separates_fact_scope_from_delivery(self):
         schema = c2_contract_v3()["slot_ledger_state_schema"]
-        self.assertEqual(c2_contract_v3()["contract_revision"], "0.9.43")
+        self.assertEqual(c2_contract_v3()["contract_revision"], "0.9.44")
         self.assertIn(
             "anchor_aliases",
             c2_contract_v3()["message_limits"][
@@ -492,15 +557,15 @@ class C2ContractTests(unittest.TestCase):
             alignment["provisional_media_identity_rule"],
         )
         self.assertIn(
-            "adjacent_action_frames",
+            "actual_result_of_the_current_single_physical_action",
             alignment["confirmed_action_continuity_rule"],
         )
         self.assertIn(
-            "stable_image_fingerprint",
+            "actual_image_bytes_sha256",
             alignment["confirmed_image_action_rule"],
         )
         self.assertIn(
-            "persisted_confirmed_receipt",
+            "persisted_complete_actual_action_receipt",
             alignment["image_identity_commit_gate"],
         )
         self.assertIn(
@@ -508,9 +573,62 @@ class C2ContractTests(unittest.TestCase):
             alignment["image_identity_consumer_gate"],
         )
         self.assertIn(
-            "idempotent_empty_message_gate",
+            "technical_failed",
             alignment["image_identity_failure_behavior"],
         )
+        self.assertIn(
+            "zero_handoff",
+            alignment["image_identity_failure_behavior"],
+        )
+        image_slot = alignment["image_flow_action_slot_contract"]
+        self.assertEqual(image_slot["owner"], "worker")
+        self.assertEqual(
+            image_slot["required_fields"],
+            [
+                "read_run_id",
+                "action_plan_revision",
+                "selected_sequence_ordinal",
+                "pre_action_business_projection_digest",
+            ],
+        )
+        self.assertFalse(image_slot["durable_message_identity"])
+        self.assertIn(
+            "full_authoritative_frame",
+            image_slot["post_action_reread_rule"],
+        )
+        self.assertIn(
+            "compare_business_viewport_continuity",
+            image_slot["continuity_rule"],
+        )
+        self.assertIn(
+            "unique_viewport_slide_with_tail_append",
+            image_slot["continuity_rule"],
+        )
+        self.assertNotIn(
+            "head_slide",
+            image_slot["forbidden_continuity_relations"],
+        )
+        self.assertIn("worker_faulted", image_slot["failure_rule"])
+        self.assertEqual(
+            c2_contract_v3()["pre_send_fact_checkpoint_contract"][
+                "checkpoint_revision"
+            ],
+            5,
+        )
+        technical_gate = c2_contract_v3()["message_identity_contract"][
+            "media_action_technical_failure_gate"
+        ]
+        self.assertEqual(
+            set(technical_gate["error_codes"]),
+            {
+                "C2_IMAGE_IDENTITY_CONTRACT_INVALID",
+                "C2_VOICE_IDENTITY_CONTRACT_INVALID",
+                "C2_VOICE_RESULT_AMBIGUOUS",
+            },
+        )
+        self.assertFalse(technical_gate["passive_reread_allowed"])
+        self.assertFalse(technical_gate["handoff_allowed"])
+        self.assertFalse(technical_gate["feishu_allowed"])
         self.assertIn(
             "without_restoring_unproven_weak_media",
             alignment["recent_ai_boundary_rule"],
@@ -578,9 +696,9 @@ class C2ContractTests(unittest.TestCase):
         self.assertEqual(
             voice_binding["confirmed_candidate_count"], 1
         )
-        self.assertIn(
-            "continuous_target_tracking",
+        self.assertEqual(
             voice_binding["confirmed_methods"],
+            ["actual_action_result"],
         )
         for field in (
             "voice_action_stage",
@@ -593,6 +711,7 @@ class C2ContractTests(unittest.TestCase):
             "selected_target_fingerprint",
             "tracking_frame_ids",
             "tracking_edges",
+            "action_result_receipt",
             "confirmed_action_mapping",
         ):
             self.assertIn(
@@ -600,8 +719,8 @@ class C2ContractTests(unittest.TestCase):
                 voice_binding["required_response_fields"],
             )
         self.assertIn(
-            "at_least_three_real_capture_frame_ids",
-            voice_binding["continuous_tracking_rule"],
+            "one_physical_action_count",
+            voice_binding["actual_action_result_rule"],
         )
         self.assertIn(
             "slot_ledger_states",

@@ -159,10 +159,34 @@ class WechatWin32OcrVoiceSelectionTest(unittest.TestCase):
         click_ok: bool = True,
         target_confirmation: dict | None = None,
         transcript_delay_reads: int = 1,
+        current_candidates: list[dict] | None = None,
+        prepared_payload: dict | None = None,
     ) -> tuple[dict, Mock, Mock, str]:
         action_id = f"action-{candidate['observation_id']}"
         reserved_id = f"worker-{candidate['observation_id']}"
-        fingerprint = f"fingerprint-{candidate['observation_id']}"
+        prepared = dict(prepared_payload or {})
+        fingerprint = str(
+            prepared.get("selected_target_fingerprint")
+            or f"fingerprint-{candidate['observation_id']}"
+        )
+        pre_frame_id = str(
+            prepared.get("pre_frame_id") or "frame-prepare"
+        )
+        selected_pre_observation_id = str(
+            prepared.get("selected_pre_observation_id")
+            or candidate["observation_id"]
+        )
+        selected_action_token = str(
+            prepared.get("selected_action_token") or "token-a"
+        )
+        viewport_digest = str(
+            prepared.get("message_viewport_change_digest")
+            or self.EMPTY_VIEWPORT_DIGEST
+        )
+        candidate_group_count = int(
+            prepared.get("candidate_group_count")
+            or len(current_candidates or [candidate])
+        )
         anchor = dict(candidate["action_target"])
         final_message = dict(bound_message or {})
         if final_message:
@@ -230,31 +254,31 @@ class WechatWin32OcrVoiceSelectionTest(unittest.TestCase):
                         "physical_anchor_keys": ["anchor-a"],
                     }
                 ],
-                pre_frame_id="frame-prepare",
+                pre_frame_id=pre_frame_id,
                 canonical_action_id=action_id,
                 reserved_worker_stable_id=reserved_id,
                 prepare_evidence={
-                    "pre_frame_id": "frame-prepare",
-                    "selected_pre_observation_id": candidate["observation_id"],
-                    "selected_action_token": "token-a",
+                    "pre_frame_id": pre_frame_id,
+                    "selected_pre_observation_id": selected_pre_observation_id,
+                    "selected_action_token": selected_action_token,
                     "selected_target_fingerprint": fingerprint,
-                    "message_viewport_change_digest": (
-                        self.EMPTY_VIEWPORT_DIGEST
-                    ),
-                    "candidate_group_count": 1,
+                    "message_viewport_change_digest": viewport_digest,
+                    "candidate_group_count": candidate_group_count,
                     "frame_action_binding": {
                         "schema_version": 1,
                         "status": "prepared",
-                        "pre_frame_id": "frame-prepare",
-                        "selected_pre_observation_id": candidate[
-                            "observation_id"
-                        ],
-                        "selected_action_token": "token-a",
-                        "selected_target_fingerprint": fingerprint,
-                        "message_viewport_change_digest": (
-                            self.EMPTY_VIEWPORT_DIGEST
+                        "pre_frame_id": pre_frame_id,
+                        "selected_pre_observation_id": (
+                            selected_pre_observation_id
                         ),
-                        "candidate_group_count": 1,
+                        "selected_action_token": selected_action_token,
+                        "selected_target_fingerprint": fingerprint,
+                        "message_viewport_change_digest": viewport_digest,
+                        "candidate_group_count": candidate_group_count,
+                        "selection_policy": (
+                            "latest_frame_bottommost_untranscribed_voice"
+                        ),
+                        "physical_identity_inherited_from_prepare": False,
                         "sender_role": candidate.get(
                             "sender_role", "customer"
                         ),
@@ -301,7 +325,10 @@ class WechatWin32OcrVoiceSelectionTest(unittest.TestCase):
             ), patch.object(
                 sidecar,
                 "build_unified_voice_observations_v3",
-                side_effect=[[candidate], [candidate]],
+                side_effect=[
+                    list(current_candidates or [candidate]),
+                    list(current_candidates or [candidate]),
+                ],
             ), patch.object(
                 sidecar,
                 "_voice_observation_fingerprint",
@@ -346,16 +373,173 @@ class WechatWin32OcrVoiceSelectionTest(unittest.TestCase):
                     action_journal_path=str(journal_path),
                     canonical_voice_action_id=action_id,
                     reserved_worker_stable_id=reserved_id,
-                    pre_frame_id="frame-prepare",
-                    selected_pre_observation_id=candidate["observation_id"],
-                    selected_action_token="token-a",
-                    selected_target_fingerprint=fingerprint,
-                    message_viewport_change_digest=(
-                        self.EMPTY_VIEWPORT_DIGEST
+                    pre_frame_id=pre_frame_id,
+                    selected_pre_observation_id=(
+                        selected_pre_observation_id
                     ),
+                    selected_action_token=selected_action_token,
+                    selected_target_fingerprint=fingerprint,
+                    message_viewport_change_digest=viewport_digest,
                 )
             phase = action_journal_phase(journal_path)
         return result, click, menu, phase
+
+    def _prepare_voice_action(
+        self,
+        candidates: list[dict],
+    ) -> dict:
+        image = Image.new("RGB", (965, 852), (247, 247, 247))
+        with patch.object(
+            sidecar,
+            "capture_wechat",
+            return_value=(image, "voice-action-prepare.png"),
+        ), patch.object(
+            sidecar, "run_ocr", return_value=[]
+        ), patch.object(
+            sidecar,
+            "basic_chat_layout_evidence",
+            return_value={
+                "ok": True,
+                "layout_snapshot_id": "voice-prepare-layout",
+                "layout_snapshot": {
+                    "frame_id": "voice-prepare-layout"
+                },
+            },
+        ), patch.object(
+            sidecar,
+            "validate_active_send_target",
+            return_value={
+                "ok": True,
+                "conversation_type": "private",
+                "short_code_confirmed": True,
+            },
+        ), patch.object(
+            sidecar,
+            "c2_target_activation_confirmed",
+            return_value=True,
+        ), patch.object(
+            sidecar,
+            "parse_current_chat_frame_messages",
+            return_value=[],
+        ), patch.object(
+            sidecar,
+            "build_unified_voice_observations_v3",
+            return_value=list(candidates),
+        ), patch.object(
+            sidecar,
+            "build_message_observations_v3",
+            return_value=[],
+        ), patch.object(
+            sidecar,
+            "_voice_observation_fingerprint",
+            side_effect=lambda _image, observation: (
+                f"fingerprint-{observation['observation_id']}"
+            ),
+        ):
+            return sidecar.prepare_voice_action_payload(
+                1,
+                {},
+                target="CJR8S5K3",
+                confirm_target="CJR8S5K3",
+            )
+
+    def test_production_action_gate_processes_two_same_duration_rows_once_each(
+        self,
+    ) -> None:
+        def candidate(observation_id: str, top: int) -> dict:
+            anchor = {
+                "source": "parser_voice_message_context_menu_anchor",
+                "click_bounds": [488, top, 548, top + 30],
+                "item": {
+                    "text": '3"',
+                    "voice_duration_text": '3"',
+                    "left": 488,
+                    "top": top,
+                    "right": 548,
+                    "bottom": top + 30,
+                    "center_x": 518,
+                    "center_y": top + 15,
+                    "sender_role": "customer",
+                    "parser_bubble_rect": [
+                        488,
+                        top,
+                        548,
+                        top + 30,
+                    ],
+                },
+            }
+            result = unified_voice_observation(anchor)
+            assert result is not None
+            result.update(
+                {
+                    "observation_id": observation_id,
+                    "message_type": "voice",
+                    "screen_order": 0 if top < 300 else 1,
+                    "bubble_rect": [488, top, 548, top + 30],
+                    "voice_duration_text": '3"',
+                }
+            )
+            return result
+
+        upper = candidate("voice-upper-three-seconds", 220)
+        lower = candidate("voice-lower-three-seconds", 320)
+
+        first_prepare = self._prepare_voice_action([upper, lower])
+        self.assertEqual(
+            first_prepare["selected_pre_observation_id"],
+            lower["observation_id"],
+        )
+        first, first_click, first_menu, first_phase = (
+            self._execute_prepared_voice(
+                candidate=lower,
+                current_candidates=[upper, lower],
+                prepared_payload=first_prepare,
+                bound_message={
+                    "id": "voice-lower-transcript",
+                    "sender_role": "customer",
+                    "content": "第二条三秒语音",
+                    "voice_duration_text": '3"',
+                    "bubble_rect": [488, 320, 700, 365],
+                },
+            )
+        )
+
+        second_prepare = self._prepare_voice_action([upper])
+        self.assertEqual(
+            second_prepare["selected_pre_observation_id"],
+            upper["observation_id"],
+        )
+        second, second_click, second_menu, second_phase = (
+            self._execute_prepared_voice(
+                candidate=upper,
+                current_candidates=[upper],
+                prepared_payload=second_prepare,
+                bound_message={
+                    "id": "voice-upper-transcript",
+                    "sender_role": "customer",
+                    "content": "第一条三秒语音",
+                    "voice_duration_text": '3"',
+                    "bubble_rect": [488, 220, 700, 265],
+                },
+            )
+        )
+
+        self.assertEqual(first["state"], "voice_transcribe_completed")
+        self.assertEqual(second["state"], "voice_transcribe_completed")
+        self.assertEqual(first_phase, "confirmed")
+        self.assertEqual(second_phase, "confirmed")
+        self.assertEqual(first_click.call_count, 1)
+        self.assertEqual(second_click.call_count, 1)
+        self.assertEqual(first_menu.call_count, 1)
+        self.assertEqual(second_menu.call_count, 1)
+        self.assertNotEqual(
+            first["confirmed_action_mapping"][
+                "reserved_worker_stable_id"
+            ],
+            second["confirmed_action_mapping"][
+                "reserved_worker_stable_id"
+            ],
+        )
 
     def test_frame_action_binding_does_not_require_native_message_id(
         self,
@@ -519,6 +703,11 @@ class WechatWin32OcrVoiceSelectionTest(unittest.TestCase):
         )
         self.assertEqual(result["messages"][0]["content"], "10万左右的车有什么推荐的吗？")
         self.assertTrue(result["click_verification_recovered"])
+        self.assertEqual(
+            result["business_state"],
+            "confirmed_result_pending_continuity",
+        )
+        self.assertIs(result["business_result_confirmed"], False)
         self.assertEqual(phase, "confirmed")
         self.assertEqual(click.call_count, 1)
 
@@ -563,6 +752,11 @@ class WechatWin32OcrVoiceSelectionTest(unittest.TestCase):
             "voice_transcribe_completed",
             result,
         )
+        self.assertEqual(
+            result["business_state"],
+            "confirmed_result_pending_continuity",
+        )
+        self.assertIs(result["business_result_confirmed"], False)
         self.assertEqual(result["evidence_read_count"], 3)
         self.assertTrue(result["click_verification_recovered"])
         self.assertEqual(phase, "confirmed")
@@ -760,6 +954,16 @@ class WechatWin32OcrVoiceSelectionTest(unittest.TestCase):
         )
         self.assertIn("visual_voice_hint", observation["quality_flags"])
         self.assertFalse(observation.get("contract_errors"))
+        guard = sidecar.build_send_context_guard(
+            observations,
+            layout_evidence={
+                "ok": True,
+                "layout_snapshot_id": "same-frame-voice-merge",
+                "message_viewport_bounds": [360, 100, 980, 800],
+            },
+        )
+        self.assertTrue(guard["ok"])
+        self.assertEqual(guard["message_count"], 1)
 
     def test_same_row_conflicting_voice_evidence_is_contract_error(
         self,

@@ -82,8 +82,12 @@ from apps.wechat_ai_customer_service.adapters.add_friend_artifacts import (
 )
 from apps.wechat_ai_customer_service.adapters.message_viewport_projection import (
     MESSAGE_VIEWPORT_DIGEST_SCHEMA_VERSION,
+    SEND_CONTEXT_BUSINESS_DIGEST_SCHEMA_VERSION,
     normalized_message_viewport_sequence as _shared_message_viewport_sequence,
-    normalized_relative_message_bounds as _shared_relative_message_bounds,
+    normalized_business_message_sequence as _shared_business_message_sequence,
+    ordered_message_viewport_observations as _shared_ordered_message_viewport_observations,
+    stable_business_content_signature as _shared_business_content_signature,
+    business_media_state as _shared_business_media_state,
 )
 from apps.wechat_ai_customer_service.adapters.add_friend_contract import (
     normalize_add_friend_query,
@@ -3338,10 +3342,19 @@ def messages_payload(
         screenshot=screenshot,
         layout_evidence=layout_evidence,
     )
+    send_context_guard = build_send_context_guard(
+        observations,
+        screenshot=screenshot,
+        layout_evidence=layout_evidence,
+    )
+    authoritative_tail_complete = bool(
+        mode == "" and int(history_load_times or 0) == 0
+    )
+    send_context_guard["tail_complete"] = authoritative_tail_complete
     image_frame_action_bindings = build_image_frame_action_bindings(
         observations,
         frame_id=str(layout_evidence.get("layout_snapshot_id") or ""),
-        viewport_change_evidence=viewport_change_evidence,
+        business_evidence=send_context_guard,
     )
     observation_validation_errors = [
         {
@@ -3365,11 +3378,8 @@ def messages_payload(
         "history_load": history_load,
         "messages": messages,
         "observations": observations,
-        "send_context_guard": build_send_context_guard(
-            observations,
-            screenshot=screenshot,
-            layout_evidence=layout_evidence,
-        ),
+        "send_context_guard": send_context_guard,
+        "tail_complete": authoritative_tail_complete,
         "message_viewport_change_evidence": viewport_change_evidence,
         # One-frame image operation tickets are deliberately kept outside
         # observations/source_message. Worker may consume a ticket once, but
@@ -3462,54 +3472,23 @@ def _voice_observation_fingerprint(
     image: Image.Image,
     observation: dict[str, Any],
 ) -> str:
-    """Return action-local target evidence without raw viewport pixels.
+    """Describe one Worker-approved business occurrence, never its identity.
 
-    The fingerprint proves only the selected voice row inside the current
-    immutable frame.  Viewport change detection is a separate contract and
-    must never be folded into this target identity.  In particular, blinking
-    carets, hover/selection paint and voice playback animation are not stable
-    target evidence.
+    The prepare observation id and geometry are retained elsewhere for audit.
+    The execute frame re-applies this occurrence policy, and only the actual
+    action result may later receive the reserved Worker identity.
     """
 
-    source_message = (
-        observation.get("source_message")
-        if isinstance(observation.get("source_message"), dict)
-        else {}
-    )
-    target = (
-        observation.get("action_target")
-        if isinstance(observation.get("action_target"), dict)
-        else {}
-    )
-    layout = basic_chat_layout_evidence(image)
-    relative_bounds = normalized_relative_message_bounds(
-        observation.get("bubble_rect"),
-        viewport_bounds=layout.get("message_viewport_bounds"),
-    )
+    _ = image
     material = {
         "sender_role": normalized_voice_sender_role(
             observation.get("sender_role")
         ),
-        "voice_duration": str(observation.get("voice_duration") or ""),
-        "voice_duration_text": voice_transcribe_compact_text(
-            observation.get("voice_duration_text")
+        "message_type": "voice",
+        "stable_business_content_signature": (
+            _shared_business_content_signature(observation)
         ),
-        "source_message_id": str(
-            observation.get("source_message_id")
-            or source_message.get("id")
-            or ""
-        ),
-        "anchor_stable_key": str(target.get("anchor_stable_key") or ""),
-        "anchor_structural_key": str(
-            target.get("anchor_structural_key")
-            or observation.get("voice_anchor_structural_key")
-            or observation.get("voice_anchor_key")
-            or ""
-        ),
-        "avatar_role": str(
-            (target.get("avatar_alignment") or {}).get("role") or ""
-        ),
-        "relative_quantized_bounds": relative_bounds,
+        "media_state": _shared_business_media_state(observation),
         "screen_order": int(observation.get("screen_order") or 0),
         "neighbor_before_signature": str(
             observation.get("neighbor_before_signature") or ""
@@ -3674,7 +3653,12 @@ def prepare_voice_action_payload(
     ]
     frame_id = _voice_action_frame_id(screenshot, screenshot_path)
     observations = build_message_observations_v3(messages)
-    viewport_change_evidence = build_message_viewport_change_evidence(
+    geometry_evidence = build_message_viewport_change_evidence(
+        observations,
+        screenshot=screenshot,
+        layout_evidence=layout_evidence,
+    )
+    viewport_change_evidence = build_send_context_guard(
         observations,
         screenshot=screenshot,
         layout_evidence=layout_evidence,
@@ -3690,6 +3674,7 @@ def prepare_voice_action_payload(
             "reason": "message_viewport_digest_unavailable",
             "layout_evidence": layout_evidence,
             "message_viewport_change_evidence": viewport_change_evidence,
+            "geometry_evidence": geometry_evidence,
             "screenshot_path": screenshot_path,
             "ocr_evidence": list(ocr_items),
             "ui_action_performed": False,
@@ -3704,6 +3689,7 @@ def prepare_voice_action_payload(
             "observations": observations,
             "message_viewport_change_digest": viewport_change_digest,
             "message_viewport_change_evidence": viewport_change_evidence,
+            "geometry_evidence": geometry_evidence,
             "target_confirmation": target_confirmation,
             "ui_action_performed": False,
         }
@@ -3739,6 +3725,7 @@ def prepare_voice_action_payload(
         "selected_target_fingerprint": fingerprint,
         "message_viewport_change_digest": viewport_change_digest,
         "message_viewport_change_evidence": viewport_change_evidence,
+        "geometry_evidence": geometry_evidence,
         "selected_voice_observation": _public_voice_observation(selected),
         "selected_physical_anchor_keys": sorted(
             voice_context_anchor_exclusion_keys(
@@ -3901,6 +3888,40 @@ def _confirmed_voice_action_result(
     post_observation_id = str(
         action_observations[0].get("observation_id") or ""
     )
+    trigger_observation_id = str(
+        selected.get("observation_id") or ""
+    ).strip()
+    transcript_content_signature = _shared_business_content_signature(
+        action_observations[0]
+    )
+    result_screen_order = next(
+        (
+            index
+            for index, observation in enumerate(observations)
+            if str(observation.get("observation_id") or "").strip()
+            == post_observation_id
+        ),
+        -1,
+    )
+    if result_screen_order < 0:
+        return None
+    action_result_receipt = {
+        "schema_version": 1,
+        "canonical_action_id": canonical_voice_action_id,
+        "reserved_worker_stable_id": reserved_worker_stable_id,
+        "selected_action_token": selected_action_token,
+        "pre_observation_id": selected_pre_observation_id,
+        "trigger_observation_id": trigger_observation_id,
+        "post_observation_id": post_observation_id,
+        "physical_identity_inherited_from_prepare": False,
+        "physical_action_count": 1,
+        "result_candidate_count": 1,
+        "stable_business_content_signature": (
+            transcript_content_signature
+        ),
+        "result_screen_order": result_screen_order,
+        "binding_confirmed": True,
+    }
     tracking_edges.append(
         {
             "from_frame_id": tracking_edges[-1]["to_frame_id"],
@@ -3921,12 +3942,15 @@ def _confirmed_voice_action_result(
         action_journal_path,
         "confirmed",
         physical_anchor_keys=physical_anchor_keys,
-        business_state="completed",
-        business_result_confirmed=True,
+        business_state="confirmed_result_pending_continuity",
+        business_result_confirmed=False,
         terminal_payload={
-            "state": "completed",
-            "media_action_terminal": "committed_completed",
+            "state": "confirmed_result_pending_continuity",
+            "media_action_terminal": None,
+            "continuity_state": "confirmed_result_pending_continuity",
             "transcribed_messages": bound,
+            "trigger_observation_id": trigger_observation_id,
+            "action_result_receipt": action_result_receipt,
             **dict(recovery_evidence or {}),
         },
     )
@@ -3935,14 +3959,16 @@ def _confirmed_voice_action_result(
         "state": "voice_transcribe_completed",
         "voice_action_stage": "execute",
         "action_phase": "confirmed",
-        "business_state": "completed",
-        "business_result_confirmed": True,
+        "business_state": "confirmed_result_pending_continuity",
+        "business_result_confirmed": False,
         "canonical_voice_action_id": canonical_voice_action_id,
         "reserved_worker_stable_id": reserved_worker_stable_id,
+        "trigger_observation_id": trigger_observation_id,
+        "action_result_receipt": action_result_receipt,
         **request_identity_evidence,
         "post_frame_id": final_frame_id,
         "transcript_binding_status": "confirmed",
-        "transcript_binding_method": "continuous_target_tracking",
+        "transcript_binding_method": "actual_action_result",
         "binding_candidate_count": 1,
         "tracking_frame_ids": tracking_frame_ids,
         "tracking_edges": tracking_edges,
@@ -3951,6 +3977,14 @@ def _confirmed_voice_action_result(
             "reserved_worker_stable_id": reserved_worker_stable_id,
             "selected_action_token": selected_action_token,
             "pre_observation_id": selected_pre_observation_id,
+            "trigger_observation_id": trigger_observation_id,
+            "physical_identity_inherited_from_prepare": False,
+            "stable_business_content_signature": (
+                transcript_content_signature
+            ),
+            "result_screen_order": result_screen_order,
+            "physical_action_count": 1,
+            "result_candidate_count": 1,
             "binding_confirmed": True,
             "post_observation_id": post_observation_id,
             "derived_observation_ids": [],
@@ -4087,7 +4121,12 @@ def execute_voice_action_payload(
     selected_target_fingerprint: str,
     message_viewport_change_digest: str,
 ) -> dict[str, Any]:
-    """Execute only the exact, journaled prepare target and finish once."""
+    """Execute one current-frame voice action and finish exactly once.
+
+    Prepare-frame ids, geometry and digests are retained only as journal
+    evidence. The current screenshot supplies the only click coordinates;
+    the actual transcript result is what Worker may bind to the reservation.
+    """
 
     journal = read_action_phase_journal(action_journal_path)
     journal_payload = journal.get("payload") if isinstance(journal.get("payload"), dict) else {}
@@ -4128,6 +4167,11 @@ def execute_voice_action_payload(
         or int(frame_action_binding.get("candidate_group_count") or 0)
         != int(prepare_evidence.get("candidate_group_count") or 0)
         or str(frame_action_binding.get("message_type") or "") != "voice"
+        or frame_action_binding.get(
+            "physical_identity_inherited_from_prepare"
+        ) is not False
+        or str(frame_action_binding.get("selection_policy") or "")
+        != "latest_frame_bottommost_untranscribed_voice"
         or str(frame_action_binding.get("sender_role") or "")
         not in {"customer", "self"}
     ):
@@ -4199,7 +4243,12 @@ def execute_voice_action_payload(
         and isinstance(item.get("action_target"), dict)
     ]
     current_observations = build_message_observations_v3(messages)
-    current_viewport_evidence = build_message_viewport_change_evidence(
+    current_geometry_evidence = build_message_viewport_change_evidence(
+        current_observations,
+        screenshot=screenshot,
+        layout_evidence=layout_evidence,
+    )
+    current_viewport_evidence = build_send_context_guard(
         current_observations,
         screenshot=screenshot,
         layout_evidence=layout_evidence,
@@ -4211,18 +4260,27 @@ def execute_voice_action_payload(
         screenshot,
         screenshot_path,
     )
-    matches = [
-        item for item in candidates
-        if str(item.get("observation_id") or "") == selected_pre_observation_id
-        and _voice_observation_fingerprint(screenshot, item) == selected_target_fingerprint
+    approved_sender_role = normalized_voice_sender_role(
+        frame_action_binding.get("sender_role")
+    )
+    eligible_candidates = [
+        item
+        for item in candidates
+        if normalized_voice_sender_role(item.get("sender_role"))
+        == approved_sender_role
     ]
+    selected = (
+        max(
+            eligible_candidates,
+            key=lambda item: voice_target_center_y(item.get("action_target")),
+        )
+        if eligible_candidates
+        else None
+    )
     if (
         (confirm_target and not c2_target_activation_confirmed(target_confirmation))
-        or len(candidates)
-        != int(prepare_evidence.get("candidate_group_count") or 0)
-        or len(matches) != 1
+        or selected is None
         or not current_viewport_digest
-        or current_viewport_digest != message_viewport_change_digest
     ):
         write_action_phase_journal(
             action_journal_path,
@@ -4230,7 +4288,7 @@ def execute_voice_action_payload(
             terminal_payload={
                 "state": "cancelled_before_trigger",
                 "media_action_terminal": "cancelled_before_trigger",
-                "reason": "prepared_voice_target_changed",
+                "reason": "current_frame_voice_target_unavailable",
                 "expected_message_viewport_change_digest": (
                     message_viewport_change_digest
                 ),
@@ -4245,24 +4303,21 @@ def execute_voice_action_payload(
             "action_phase": "cancelled_before_trigger",
             "business_state": "not_attempted",
             "business_result_confirmed": False,
-            "error_code": "C2_VOICE_PREPARED_TARGET_CHANGED",
+            "error_code": "C2_PRE_SEND_VOICE_TARGET_NOT_FOUND",
             "ui_action_performed": False,
             "target_confirmation": target_confirmation,
             "candidate_count": len(candidates),
-            "matched_candidate_count": len(matches),
+            "matched_candidate_count": 0,
             "before_frame_id": pre_frame_id,
             "after_frame_id": execute_frame_id,
             "execute_frame_id": execute_frame_id,
             "screenshot_path": screenshot_path,
-            "message_viewport_changed": bool(
-                current_viewport_digest
-                and current_viewport_digest
-                != message_viewport_change_digest
-            ),
+            "message_viewport_changed": False,
             "message_viewport_change_evidence": current_viewport_evidence,
+            "geometry_evidence": current_geometry_evidence,
             **request_identity_evidence,
         }
-    selected = matches[0]
+    assert selected is not None
     anchor = dict(selected["action_target"])
     physical_anchor_keys = sorted(voice_context_anchor_exclusion_keys(anchor, image_size))
     tracking_edges: list[dict[str, Any]] = [
@@ -4278,10 +4333,10 @@ def execute_voice_action_payload(
             ),
             "message_type": "voice",
             "structural_evidence": {
-                "selected_observation_id_unchanged": True
+                "worker_approved_business_occurrence_unique": True
             },
             "displacement_evidence": {
-                "target_fingerprint_unchanged": True
+                "current_frame_geometry_only": True
             },
             "edge_candidate_count": 1,
         }
@@ -4311,7 +4366,7 @@ def execute_voice_action_payload(
                 "action_phase": "cancelled_before_trigger",
                 "business_state": "not_attempted",
                 "business_result_confirmed": False,
-                "error_code": "C2_VOICE_PREPARED_TARGET_CHANGED",
+                "error_code": "C2_PRE_SEND_VOICE_TARGET_NOT_FOUND",
                 "ui_action_performed": False,
                 "target_confirmation": target_confirmation,
                 **request_identity_evidence,
@@ -4374,9 +4429,7 @@ def execute_voice_action_payload(
         )
         failed_screenshot = evidence["screenshot"]
         failed_path = str(evidence["screenshot_path"] or "")
-        failed_items = list(evidence["ocr_items"] or [])
         failed_messages = list(evidence["messages"] or [])
-        failed_size = tuple(evidence["image_size"] or image_size)
         recovered_bound = list(evidence["bound"] or [])
         recovered_result = _confirmed_voice_action_result(
             action_journal_path=action_journal_path,
@@ -4412,83 +4465,21 @@ def execute_voice_action_payload(
             failed_screenshot,
             failed_path,
         )
-        failed_candidates = [
-            item
-            for item in build_unified_voice_observations_v3(
-                failed_screenshot,
-                failed_items,
-                failed_size,
-                parsed_messages=failed_messages,
-            )
-            if item.get("voice_state") == "untranscribed"
-            and not item.get("contract_errors")
-            and isinstance(item.get("action_target"), dict)
-        ]
-        tracked_candidates = [
-            item
-            for item in failed_candidates
-            if str(item.get("observation_id") or "")
-            == selected_pre_observation_id
-            and _voice_observation_fingerprint(
-                failed_screenshot,
-                item,
-            )
-            == selected_target_fingerprint
-        ]
-        post_observation_id = ""
-        if len(tracked_candidates) == 1:
-            tracked_aliases = voice_context_anchor_exclusion_keys(
-                dict(tracked_candidates[0]["action_target"]),
-                failed_size,
-            )
-            matching_observations = [
-                item
-                for item in failed_observations
-                if isinstance(item, dict)
-                and item.get("row_kind") == "voice_bubble"
-                and tracked_aliases
-                & set(voice_context_anchor_exclusion_keys(
-                    dict(item.get("action_target") or {}),
-                    failed_size,
-                ))
-            ]
-            if len(matching_observations) == 1:
-                post_observation_id = str(
-                    matching_observations[0].get("observation_id") or ""
-                ).strip()
-        if post_observation_id:
-            tracking_edges.append(
-                {
-                    "from_frame_id": tracking_edges[-1]["to_frame_id"],
-                    "from_observation_id": tracking_edges[-1][
-                        "to_observation_id"
-                    ],
-                    "to_frame_id": failed_frame_id,
-                    "to_observation_id": post_observation_id,
-                    "sender_role": normalized_voice_sender_role(
-                        selected.get("sender_role")
-                    ),
-                    "message_type": "voice",
-                    "structural_evidence": {
-                        "failed_action_target_tracked": True
-                    },
-                    "displacement_evidence": {
-                        "same_action_token_chain": True
-                    },
-                    "edge_candidate_count": 1,
-                }
-            )
-            tracking_frame_ids.append(failed_frame_id)
+        # The action produced no unique result.  Do not try to recover a
+        # message identity by comparing the old target fingerprint, aliases,
+        # bounds or observation id with this later frame.  Those values are
+        # current-frame click/diagnostic evidence only.  Worker will preserve
+        # this journal as a technical failure and must not repeat the action.
         write_action_phase_journal(
             action_journal_path,
             "quarantined",
             physical_anchor_keys=physical_anchor_keys,
-            business_state="failed",
+            business_state="technical_failed",
             business_result_confirmed=False,
             error_code="C2_VOICE_RESULT_AMBIGUOUS",
             terminal_payload={
-                "state": "quarantined",
-                "media_action_terminal": "identity_unresolved",
+                "state": "technical_failed",
+                "media_action_terminal": "technical_failed",
                 "click": click_result,
                 "evidence_read_count": int(evidence["read_count"] or 0),
                 "evidence_elapsed_seconds": float(
@@ -4501,7 +4492,7 @@ def execute_voice_action_payload(
             "state": "voice_transcribe_ambiguous",
             "error_code": "C2_VOICE_RESULT_AMBIGUOUS",
             "action_phase": "quarantined",
-            "business_state": "failed",
+            "business_state": "technical_failed",
             "business_result_confirmed": False,
             "canonical_voice_action_id": canonical_voice_action_id,
             "reserved_worker_stable_id": reserved_worker_stable_id,
@@ -4580,12 +4571,12 @@ def execute_voice_action_payload(
         action_journal_path,
         "quarantined",
         physical_anchor_keys=physical_anchor_keys,
-        business_state="failed",
+        business_state="technical_failed",
         business_result_confirmed=False,
         error_code="C2_VOICE_RESULT_AMBIGUOUS",
         terminal_payload={
-            "state": "quarantined",
-            "media_action_terminal": "identity_unresolved",
+            "state": "technical_failed",
+            "media_action_terminal": "technical_failed",
             "evidence_read_count": evidence_read_count,
             "evidence_elapsed_seconds": evidence_elapsed_seconds,
         },
@@ -4595,7 +4586,7 @@ def execute_voice_action_payload(
         "state": "voice_transcribe_ambiguous",
         "error_code": "C2_VOICE_RESULT_AMBIGUOUS",
         "action_phase": "quarantined",
-        "business_state": "failed",
+        "business_state": "technical_failed",
         "business_result_confirmed": False,
         "canonical_voice_action_id": canonical_voice_action_id,
         "reserved_worker_stable_id": reserved_worker_stable_id,
@@ -10698,6 +10689,11 @@ def send_payload(
     baseline_context_validation = validate_send_context_guard(
         expected_context_guard,
         baseline_snapshot.get("send_context_guard"),
+        current_observations=(
+            baseline_snapshot.get("observations")
+            if isinstance(baseline_snapshot.get("observations"), list)
+            else None
+        ),
     )
     if not baseline_context_validation.get("ok"):
         return finish({
@@ -10846,6 +10842,11 @@ def send_payload(
         validation_result = validate_send_context_guard(
             expected_context_guard,
             snapshot.get("send_context_guard"),
+            current_observations=(
+                snapshot.get("observations")
+                if isinstance(snapshot.get("observations"), list)
+                else None
+            ),
         )
         return {
             **validation_result,
@@ -17089,26 +17090,10 @@ def basic_chat_layout_evidence(screenshot: Any) -> dict[str, Any]:
     }
 
 
-def normalized_relative_message_bounds(
-    value: Any,
-    *,
-    viewport_bounds: Any,
-) -> list[int]:
-    return _shared_relative_message_bounds(
-        value,
-        viewport_bounds=viewport_bounds,
-    )
-
-
-def normalized_message_viewport_sequence(
-    observations: list[dict[str, Any]] | None,
-    *,
-    message_viewport_bounds: Any,
-) -> list[dict[str, Any]]:
-    return _shared_message_viewport_sequence(
-        observations,
-        message_viewport_bounds=message_viewport_bounds,
-    )
+# Public compatibility names are aliases to the one shared business
+# implementation, not local wrappers with a second rule body.
+normalized_message_viewport_sequence = _shared_message_viewport_sequence
+normalized_business_message_sequence = _shared_business_message_sequence
 
 
 def build_message_viewport_change_evidence(
@@ -17159,19 +17144,19 @@ def build_image_frame_action_bindings(
     observations: list[dict[str, Any]] | None,
     *,
     frame_id: str,
-    viewport_change_evidence: dict[str, Any] | None,
+    business_evidence: dict[str, Any] | None,
 ) -> dict[str, dict[str, Any]]:
-    """Issue one-frame image action tickets without creating message identity.
+    """Issue Worker action policies without creating image identity.
 
-    The ticket is intentionally outside ``source_message`` and is valid only
-    for the current Sidecar frame.  Worker owns admission and the later
-    durable identity commit; this helper only packages the UI evidence needed
-    by the in-process image execute path.
+    The prepare observation id and geometry are audit evidence only. Worker
+    authorizes one business occurrence; execute locates that occurrence in
+    its latest frame, and only the actual clipboard receipt may later receive
+    the reserved durable identity.
     """
 
     evidence = (
-        dict(viewport_change_evidence)
-        if isinstance(viewport_change_evidence, dict)
+        dict(business_evidence)
+        if isinstance(business_evidence, dict)
         else {}
     )
     clean_frame_id = str(frame_id or "").strip()
@@ -17183,6 +17168,14 @@ def build_image_frame_action_bindings(
         for item in (evidence.get("sequence") or [])
         if isinstance(item, dict)
     ]
+    ordered_observations = _shared_ordered_message_viewport_observations(
+        observations
+    )
+    order_by_observation_id = {
+        str(item.get("observation_id") or "").strip(): screen_order
+        for screen_order, item in enumerate(ordered_observations)
+        if str(item.get("observation_id") or "").strip()
+    }
     candidates = [
         item
         for item in (observations or [])
@@ -17192,14 +17185,13 @@ def build_image_frame_action_bindings(
         and str(item.get("sender_role") or "").strip().lower()
         in {"customer", "self"}
         and isinstance(item.get("image_physical_anchor"), dict)
-        and str(
-            item.get("image_physical_anchor", {}).get(
-                "bubble_visual_fingerprint"
-            )
-            or ""
-        ).strip()
     ]
-    if not clean_frame_id or not viewport_digest or not ordered:
+    if (
+        not clean_frame_id
+        or not viewport_digest
+        or not ordered
+        or len(ordered) != len(ordered_observations)
+    ):
         return {}
     candidate_count = len(candidates)
     bindings: dict[str, dict[str, Any]] = {}
@@ -17209,15 +17201,27 @@ def build_image_frame_action_bindings(
         ).strip()
         if not observation_id:
             continue
+        selected_business_screen_order = order_by_observation_id.get(
+            observation_id
+        )
+        if selected_business_screen_order is None:
+            continue
         local_target_material = {
-            "observation_id": observation_id,
-            "sender_role": str(
-                observation.get("sender_role") or ""
-            ).strip().lower(),
-            "message_type": "image",
-            "bubble_rect": observation.get("bubble_rect"),
-            "image_physical_anchor": observation.get(
-                "image_physical_anchor"
+            "selected_business_screen_order": (
+                selected_business_screen_order
+            ),
+            "selected_business_fact": ordered[
+                selected_business_screen_order
+            ],
+            "preceding_business_fact": (
+                ordered[selected_business_screen_order - 1]
+                if selected_business_screen_order > 0
+                else None
+            ),
+            "following_business_fact": (
+                ordered[selected_business_screen_order + 1]
+                if selected_business_screen_order + 1 < len(ordered)
+                else None
             ),
         }
         target_fingerprint = hashlib.sha256(
@@ -17237,6 +17241,9 @@ def build_image_frame_action_bindings(
         bindings[observation_id] = {
             "schema_version": 1,
             "status": "prepared",
+            "selection_policy": (
+                "worker_approved_current_business_occurrence"
+            ),
             "selected_action_token": token,
             "pre_frame_id": clean_frame_id,
             "selected_pre_observation_id": observation_id,
@@ -17244,6 +17251,10 @@ def build_image_frame_action_bindings(
             "candidate_group_count": candidate_count,
             "ordered_frame_observations": ordered,
             "message_viewport_change_digest": viewport_digest,
+            "selected_business_screen_order": (
+                selected_business_screen_order
+            ),
+            "physical_identity_inherited_from_prepare": False,
             "sender_role": str(
                 observation.get("sender_role") or ""
             ).strip().lower(),
@@ -17252,54 +17263,55 @@ def build_image_frame_action_bindings(
     return bindings
 
 
-def _send_context_anchor_value(value: Any) -> str:
-    if value in (None, "", [], {}):
-        return ""
-    if isinstance(value, (dict, list)):
-        return hashlib.sha256(
-            json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode(
-                "utf-8"
-            )
-        ).hexdigest()[:24]
-    return str(value).strip()
-
-
-def send_context_entry_from_observation(observation: dict[str, Any]) -> dict[str, str]:
-    row_kind = str(observation.get("row_kind") or "").strip().lower()
-    return {
-        "row_kind": row_kind,
-        "sender_role": str(observation.get("sender_role") or "").strip().lower(),
-        "content_normalized": _normalized_send_ocr_correspondence_text(
-            observation.get("content_clean")
-        ),
-        "voice_anchor": _send_context_anchor_value(
-            observation.get("parent_voice_anchor_key")
-            or observation.get("voice_anchor_key")
-        ),
-        "image_anchor": _send_context_anchor_value(
-            observation.get("image_physical_anchor")
-        ),
-    }
-
-
 def build_send_context_guard(
     observations: list[dict[str, Any]] | None,
     *,
     screenshot: Any | None = None,
     layout_evidence: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    evidence = build_message_viewport_change_evidence(
-        observations,
-        screenshot=screenshot,
-        layout_evidence=layout_evidence,
+    layout = (
+        dict(layout_evidence)
+        if isinstance(layout_evidence, dict)
+        else basic_chat_layout_evidence(screenshot)
     )
-    sequence = list(evidence.get("sequence") or [])
+    if layout.get("ok") is not True:
+        return {
+            **layout,
+            "schema_version": SEND_CONTEXT_BUSINESS_DIGEST_SCHEMA_VERSION,
+            "sequence": [],
+            "message_count": 0,
+            "message_viewport_change_digest": "",
+            "sequence_sha256": "",
+            "bottom": None,
+            "raw_rgb_hash_used": False,
+            "tail_complete": False,
+        }
+    sequence = normalized_business_message_sequence(
+        observations,
+        message_viewport_bounds=layout.get("message_viewport_bounds"),
+    )
+    serialized = json.dumps(
+        sequence,
+        ensure_ascii=True,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    digest = hashlib.sha256(serialized.encode("utf-8")).hexdigest()
     return {
-        **evidence,
-        "sequence_sha256": str(
-            evidence.get("message_viewport_change_digest") or ""
+        "ok": True,
+        "schema_version": SEND_CONTEXT_BUSINESS_DIGEST_SCHEMA_VERSION,
+        "layout_snapshot_id": str(layout.get("layout_snapshot_id") or ""),
+        "message_viewport_bounds": list(
+            layout.get("message_viewport_bounds") or []
         ),
+        "sequence": sequence,
+        "message_count": len(sequence),
+        "message_viewport_change_digest": digest,
+        "sequence_sha256": digest,
         "bottom": dict(sequence[-1]) if sequence else None,
+        "raw_rgb_hash_used": False,
+        # messages_payload replaces this with the actual capture-mode value.
+        "tail_complete": True,
     }
 
 def parse_expected_send_context_guard(value: Any) -> dict[str, Any]:
@@ -17318,32 +17330,119 @@ def parse_expected_send_context_guard(value: Any) -> dict[str, Any]:
 def validate_send_context_guard(
     expected: dict[str, Any] | None,
     current: dict[str, Any] | None,
+    *,
+    current_observations: list[dict[str, Any]] | None,
 ) -> dict[str, Any]:
+    """Delegate S0/S1/S2 continuity to the sole Worker comparator.
+
+    This Sidecar adapter validates that both guards carry a projected
+    sequence, but it deliberately owns no cross-frame comparison algorithm.
+    Missing Worker code/evidence fails closed instead of falling back to a
+    local equality shortcut.
+    """
+
     expected_payload = expected if isinstance(expected, dict) else {}
     current_payload = current if isinstance(current, dict) else {}
     expected_sequence = expected_payload.get("sequence")
     current_sequence = current_payload.get("sequence")
-    if int(expected_payload.get("schema_version") or 0) != MESSAGE_VIEWPORT_DIGEST_SCHEMA_VERSION or not isinstance(
-        expected_sequence, list
+    continuity_contract = (
+        expected_payload.get("worker_continuity_contract")
+        if isinstance(
+            expected_payload.get("worker_continuity_contract"), dict
+        )
+        else {}
+    )
+    if (
+        int(expected_payload.get("schema_version") or 0)
+        != SEND_CONTEXT_BUSINESS_DIGEST_SCHEMA_VERSION
+        or not isinstance(expected_sequence, list)
+        or int(continuity_contract.get("schema_version") or 0) != 1
+        or str(continuity_contract.get("comparator") or "").strip()
+        != "compare_business_viewport_continuity"
     ):
         return {
             "ok": False,
             "reason": "expected_context_guard_missing_or_invalid",
             "error_code": "C3_SEND_CONTEXT_GUARD_REQUIRED",
         }
-    if int(current_payload.get("schema_version") or 0) != MESSAGE_VIEWPORT_DIGEST_SCHEMA_VERSION or not isinstance(
-        current_sequence, list
+    if (
+        int(current_payload.get("schema_version") or 0)
+        != SEND_CONTEXT_BUSINESS_DIGEST_SCHEMA_VERSION
+        or not isinstance(current_sequence, list)
+        or not isinstance(current_observations, list)
     ):
         return {
             "ok": False,
             "reason": "current_context_guard_invalid",
             "error_code": "C3_SEND_CONTEXT_GUARD_INVALID",
         }
-    if expected_sequence != current_sequence:
+    try:
+        from chejin_worker_client.message_viewport_projection import (
+            boundary_tokens_for_observations as worker_boundary_tokens,
+            compare_business_viewport_continuity as worker_compare,
+        )
+    except Exception as exc:
         return {
             "ok": False,
-            "reason": "message_sequence_changed",
+            "reason": "worker_continuity_comparator_unavailable",
+            "error_code": "C3_SEND_CONTEXT_GUARD_INVALID",
+            "worker_import_error_type": type(exc).__name__,
+        }
+    serialized_old_tokens = continuity_contract.get(
+        "old_boundary_tokens"
+    )
+    if not isinstance(serialized_old_tokens, dict):
+        return {
+            "ok": False,
+            "reason": "worker_continuity_boundary_evidence_invalid",
+            "error_code": "C3_SEND_CONTEXT_GUARD_INVALID",
+        }
+    old_tokens: dict[int, set[str]] = {}
+    for raw_index, raw_tokens in serialized_old_tokens.items():
+        try:
+            index = int(raw_index)
+        except (TypeError, ValueError):
+            return {
+                "ok": False,
+                "reason": "worker_continuity_boundary_evidence_invalid",
+                "error_code": "C3_SEND_CONTEXT_GUARD_INVALID",
+            }
+        if str(index) != str(raw_index) or not isinstance(raw_tokens, list):
+            return {
+                "ok": False,
+                "reason": "worker_continuity_boundary_evidence_invalid",
+                "error_code": "C3_SEND_CONTEXT_GUARD_INVALID",
+            }
+        old_tokens[index] = {
+            str(token or "").strip()
+            for token in raw_tokens
+            if str(token or "").strip()
+        }
+    decision = worker_compare(
+        expected_sequence,
+        current_sequence,
+        old_boundary_tokens=old_tokens,
+        new_boundary_tokens=worker_boundary_tokens(
+            current_observations,
+            committed_only=False,
+        ),
+        old_top_boundary_complete=bool(
+            continuity_contract.get("old_top_boundary_complete")
+        ),
+        new_top_boundary_complete=bool(
+            continuity_contract.get("old_top_boundary_complete")
+            and not current_sequence
+        ),
+    )
+    relation = str(decision.get("relation") or "")
+    if relation != "business_sequence_equal":
+        return {
+            "ok": False,
+            "reason": "message_sequence_changed_or_unresolved",
             "error_code": "C3_CONTEXT_CHANGED_BEFORE_SEND",
+            "continuity_relation": relation,
+            "continuity_reason": str(decision.get("reason") or ""),
+            "worker_continuity_decision": decision,
             "expected_message_count": len(expected_sequence),
             "current_message_count": len(current_sequence),
             "expected_bottom": expected_payload.get("bottom"),
@@ -17357,6 +17456,8 @@ def validate_send_context_guard(
         "message_count": len(current_sequence),
         "sequence_sha256": current_payload.get("sequence_sha256"),
         "bottom": current_payload.get("bottom"),
+        "continuity_relation": relation,
+        "worker_continuity_decision": decision,
     }
 
 
@@ -17879,6 +17980,11 @@ def build_send_fact_snapshot_from_frame(
             context_check = validate_send_context_guard(
                 expected_context_guard,
                 snapshot.get("send_context_guard"),
+                current_observations=(
+                    snapshot.get("observations")
+                    if isinstance(snapshot.get("observations"), list)
+                    else None
+                ),
             )
             if context_check.get("ok") is not True:
                 same_frame_fallback_reason = (

@@ -13,11 +13,11 @@ from chejin_worker_client.message_identity_commit import (
     MessageCommitBasis,
     committed_identity_record,
 )
-from chejin_worker_client.sequence_alignment import (
-    align_committed_message_sequence,
-    build_post_action_observation_sequence,
-    build_pre_action_identity_sequence,
-    inherited_worker_ids,
+from chejin_worker_client.message_viewport_projection import (
+    boundary_tokens_for_observations,
+    compare_business_viewport_continuity,
+    normalized_business_message_sequence,
+    stable_business_content_signature,
 )
 from chejin_worker_client.wechat_c2 import (
     apply_image_terminal_result,
@@ -168,11 +168,11 @@ def attach_committed_record(
         )
         normalized_proof.update(dict(mapping))
         if basis is MessageCommitBasis.CONFIRMED_IMAGE_ACTION:
-            fingerprint = str(
-                (summary or {}).get("image_visual_fingerprint") or ""
+            image_sha256 = str(
+                (summary or {}).get("image_sha256") or ""
             )
-            if fingerprint:
-                normalized_proof["image_visual_fingerprint"] = fingerprint
+            if image_sha256:
+                normalized_proof["image_sha256"] = image_sha256
     item["_worker_committed_message"] = committed_identity_record(
         worker_stable_id=str(item.get("_worker_stable_id") or ""),
         commit_basis=basis,
@@ -182,6 +182,44 @@ def attach_committed_record(
         proof=normalized_proof,
     )
     return item
+
+
+def attach_confirmed_voice_result(
+    observation: dict,
+    *,
+    stable_id: str,
+    action_id: str,
+    pre_observation_id: str,
+    result_screen_order: int,
+) -> dict:
+    item = {
+        **observation,
+        "_worker_stable_id": stable_id,
+        "_worker_identity_scope": "committed",
+    }
+    signature = stable_business_content_signature(item)
+    mapping = {
+        "canonical_action_id": action_id,
+        "reserved_worker_stable_id": stable_id,
+        "selected_action_token": f"token-{action_id}",
+        "pre_observation_id": pre_observation_id,
+        "post_observation_id": str(item.get("observation_id") or ""),
+        "trigger_observation_id": f"trigger-{action_id}",
+        "physical_identity_inherited_from_prepare": False,
+        "physical_action_count": 1,
+        "result_candidate_count": 1,
+        "stable_business_content_signature": signature,
+        "result_screen_order": result_screen_order,
+        "binding_confirmed": True,
+    }
+    item["_worker_voice_action_summary"] = {
+        "confirmed_action_mapping": mapping,
+    }
+    return attach_committed_record(
+        item,
+        basis=MessageCommitBasis.CONFIRMED_VOICE_ACTION,
+        proof=mapping,
+    )
 
 
 def sidecar_session_identity(
@@ -209,23 +247,6 @@ def sidecar_session_identity(
 
 
 class WechatC2Test(unittest.TestCase):
-    def _align_committed(
-        self,
-        previous: list[dict],
-        current: list[dict],
-        committed_ids: dict[str, str],
-    ) -> dict:
-        return align_committed_message_sequence(
-            build_pre_action_identity_sequence(
-                previous,
-                committed_ids=committed_ids,
-            ),
-            build_post_action_observation_sequence(current),
-            pre_sequence_source="checkpoint",
-            pre_frame_id="checkpoint:test",
-            post_frame_id="frame:current",
-        )
-
     def test_ingest_builder_requires_and_preserves_caller_read_run_id(self):
         target = WechatReadTarget(
             conversation_id="conv-explicit-read-run",
@@ -437,217 +458,6 @@ class WechatC2Test(unittest.TestCase):
             sequence_key,
             image_observation_source_key(target, shifted_sequence),
         )
-
-    def test_server_checkpoint_recovers_sequence_after_local_state_loss(self):
-        historical = self._identity_text("historical", "历史消息", 180)
-        current = [historical, self._identity_text("new", "新消息", 260)]
-        result = self._align_committed(
-            [historical],
-            current,
-            {"historical": "worker-message-7"},
-        )
-        self.assertEqual(result["alignment_status"], "unique")
-        self.assertEqual(
-            inherited_worker_ids(result),
-            {"historical": "worker-message-7"},
-        )
-        self.assertEqual(result["new_suffix_observation_ids"], ["new"])
-
-    def test_cross_round_identity_survives_page_shift(self):
-        previous = [
-            self._identity_text("frame-1-a", "您好", 180),
-            self._identity_text("frame-1-b", "好的", 260),
-        ]
-        current = [
-            self._identity_text("frame-2-a", "您好", 420),
-            self._identity_text("frame-2-b", "好的", 500),
-        ]
-        result = self._align_committed(
-            previous,
-            current,
-            {
-                "frame-1-a": "worker-message-1",
-                "frame-1-b": "worker-message-2",
-            },
-        )
-        self.assertEqual(result["alignment_status"], "unique")
-        self.assertEqual(
-            inherited_worker_ids(result),
-            {
-                "frame-2-a": "worker-message-1",
-                "frame-2-b": "worker-message-2",
-            },
-        )
-
-    def test_cross_round_identity_distinguishes_new_repeated_text(self):
-        previous = [self._identity_text("old-ok", "好的", 180)]
-        current = [
-            self._identity_text("old-ok-shifted", "好的", 360),
-            self._identity_text("new-ok", "好的", 440),
-        ]
-        result = self._align_committed(
-            previous,
-            current,
-            {"old-ok": "worker-message-1"},
-        )
-        self.assertEqual(result["alignment_status"], "ambiguous")
-        self.assertEqual(inherited_worker_ids(result), {})
-        self.assertEqual(result["new_suffix_observation_ids"], [])
-
-    def test_cross_round_identity_blocks_fully_identical_sequence(self):
-        previous = [
-            self._identity_text("old-ok-1", "好的", 180),
-            self._identity_text("old-ok-2", "好的", 260),
-        ]
-        current = [
-            self._identity_text("current-ok-1", "好的", 180),
-            self._identity_text("current-ok-2", "好的", 260),
-            self._identity_text("current-ok-3", "好的", 340),
-        ]
-        result = self._align_committed(
-            previous,
-            current,
-            {
-                "old-ok-1": "worker-message-1",
-                "old-ok-2": "worker-message-2",
-            },
-        )
-        self.assertEqual(result["alignment_status"], "ambiguous")
-        self.assertEqual(inherited_worker_ids(result), {})
-
-    def test_cross_round_identity_aligns_previous_suffix_for_repeated_text(self):
-        previous = [
-            self._identity_text("old-a-1", "A", 180),
-            self._identity_text("old-a-2", "A", 260),
-            self._identity_text("old-b", "B", 340),
-        ]
-        current = [
-            self._identity_text("current-a", "A", 180),
-            self._identity_text("current-b", "B", 260),
-            self._identity_text("current-c", "C", 340),
-        ]
-        result = self._align_committed(
-            previous,
-            current,
-            {
-                "old-a-1": "worker-message-1",
-                "old-a-2": "worker-message-2",
-                "old-b": "worker-message-3",
-            },
-        )
-        self.assertEqual(result["alignment_status"], "unique")
-        self.assertEqual(
-            inherited_worker_ids(result),
-            {
-                "current-a": "worker-message-2",
-                "current-b": "worker-message-3",
-            },
-        )
-        self.assertEqual(result["new_suffix_observation_ids"], ["current-c"])
-
-    def test_cross_round_image_with_only_trailing_text_cannot_inherit_identity(self):
-        previous_image = {
-            **self._identity_image("old-image", 340, occurrence_index=1, occurrence_count=2),
-            "canonical_visual_id": "visual-image-2",
-        }
-        current_image = {
-            **self._identity_image("current-image", 180, occurrence_index=0, occurrence_count=1),
-            "canonical_visual_id": "visual-image-2",
-        }
-        previous_text = self._identity_text("old-b", "B", 500)
-        current_text = self._identity_text("current-b", "B", 340)
-        result = self._align_committed(
-            [previous_image, previous_text],
-            [current_image, current_text, self._identity_text("current-c", "C", 420)],
-            {
-                "old-image": "worker-message-2",
-                "old-b": "worker-message-3",
-            },
-        )
-        self.assertEqual(result["alignment_status"], "ambiguous")
-        self.assertEqual(inherited_worker_ids(result), {})
-
-    def test_cross_round_image_cannot_use_legacy_visual_id_as_identity(self):
-        previous = {
-            **self._identity_image("old-image", 180, occurrence_index=0, occurrence_count=1),
-            "canonical_visual_id": "visual-image",
-        }
-        current = {
-            **self._identity_image("current-image", 420, occurrence_index=7, occurrence_count=9),
-            "canonical_visual_id": "visual-image",
-        }
-        result = self._align_committed(
-            [previous],
-            [current],
-            {"old-image": "worker-message-1"},
-        )
-        self.assertEqual(result["alignment_status"], "ambiguous")
-        self.assertEqual(inherited_worker_ids(result), {})
-        self.assertEqual(result["matched_pairs"], [])
-
-    def test_retired_identity_transition_cannot_reenter_v3_builder(self):
-        source = Path(wechat_c2_module.__file__).read_text(encoding="utf-8")
-        self.assertNotIn("reconcile_v16104_identity_transition", source)
-        self.assertEqual(source.count("_worker_legacy_dedupe_key"), 1)
-        self.assertIn(
-            'raise ValueError("C2_LEGACY_IDENTITY_FIELD_FORBIDDEN")',
-            source,
-        )
-        for retired_identity in (
-            "ocr_message_identity_context",
-            "voice_anchor_identity",
-            "voice_semantic_identity",
-            "worker_structural_identity",
-        ):
-            self.assertNotIn(retired_identity, source)
-
-    def test_v16104_transition_runs_when_backend_support_arrives_after_local_state(self):
-        previous = [self._identity_text("old", "历史消息", 180)]
-        current = [
-            self._identity_text("old-visible", "历史消息", 420),
-            self._identity_text("new", "新消息", 500),
-        ]
-        result = self._align_committed(
-            previous,
-            current,
-            {"old": "worker-message-8"},
-        )
-        self.assertEqual(result["alignment_status"], "unique")
-        self.assertEqual(
-            inherited_worker_ids(result),
-            {"old-visible": "worker-message-8"},
-        )
-        self.assertEqual(result["new_suffix_observation_ids"], ["new"])
-
-    def test_versioned_empty_transition_is_required_to_mark_migration_complete(self):
-        current = [self._identity_text("new-only", "全新消息", 180)]
-        result = align_committed_message_sequence(
-            [],
-            build_post_action_observation_sequence(current),
-            pre_sequence_source="empty_checkpoint",
-            pre_frame_id="checkpoint:none",
-            post_frame_id="frame:first",
-        )
-        self.assertEqual(result["alignment_status"], "not_required")
-        self.assertEqual(result["new_suffix_observation_ids"], ["new-only"])
-
-    def test_cross_round_identity_blocks_guess_when_no_sequence_overlap_exists(self):
-        previous = [
-            self._identity_text("old-a", "第一条", 180),
-            self._identity_text("old-ok", "好的", 260),
-        ]
-        current = [self._identity_text("unrelated", "完全不同的上下文", 180)]
-        result = self._align_committed(
-            previous,
-            current,
-            {
-                "old-a": "worker-message-1",
-                "old-ok": "worker-message-2",
-            },
-        )
-        self.assertEqual(result["alignment_status"], "unresolved")
-        self.assertEqual(inherited_worker_ids(result), {})
-        self.assertEqual(result["new_suffix_observation_ids"], [])
 
     def test_shared_mixed_roundtrip_fixture_is_translated_by_worker_in_screen_order(self):
         fixture_path = resolve_contract_artifact(
@@ -1063,6 +873,16 @@ class WechatC2Test(unittest.TestCase):
             remark_code="CJR8S5K3",
             authorization_revision="rev-1",
         )
+        voice_signature = stable_business_content_signature(
+            {
+                "row_kind": "voice_transcript",
+                "sender_role": "self",
+                "message_type": "voice",
+                "voice_state": "transcribed",
+                "content_clean": "我马上回去。",
+                "voice_duration": 4,
+            }
+        )
         payload = build_v3_message_ingest_payload(
             target,
             {
@@ -1086,6 +906,12 @@ class WechatC2Test(unittest.TestCase):
                                 "pre_observation_id": "voice-pre-30",
                                 "post_observation_id": "voice-transcript",
                                 "selected_action_token": "voice-token-30",
+                                "trigger_observation_id": "voice-trigger-30",
+                                "physical_identity_inherited_from_prepare": False,
+                                "physical_action_count": 1,
+                                "result_candidate_count": 1,
+                                "stable_business_content_signature": voice_signature,
+                                "result_screen_order": 0,
                                 "binding_confirmed": True,
                             },
                         ),
@@ -1096,6 +922,12 @@ class WechatC2Test(unittest.TestCase):
                                 "pre_observation_id": "voice-pre-30",
                                 "post_observation_id": "voice-transcript",
                                 "selected_action_token": "voice-token-30",
+                                "trigger_observation_id": "voice-trigger-30",
+                                "physical_identity_inherited_from_prepare": False,
+                                "physical_action_count": 1,
+                                "result_candidate_count": 1,
+                                "stable_business_content_signature": voice_signature,
+                                "result_screen_order": 0,
                                 "binding_confirmed": True,
                             }
                         },
@@ -1275,22 +1107,14 @@ class WechatC2Test(unittest.TestCase):
                     else "worker-message-21"
                 )
                 action_id = f"action-{observation_id}"
-                item["_worker_stable_id"] = stable_id
-                item["_worker_identity_scope"] = "committed"
-                item["_worker_voice_action_summary"] = {
-                    "confirmed_action_mapping": {
-                        "canonical_action_id": action_id,
-                        "reserved_worker_stable_id": stable_id,
-                        "pre_observation_id": observation_id,
-                        "post_observation_id": observation_id,
-                        "selected_action_token": f"token-{observation_id}",
-                        "binding_confirmed": True,
-                    }
-                }
-                item = attach_committed_record(
+                item = attach_confirmed_voice_result(
                     item,
-                    basis=MessageCommitBasis.CONFIRMED_VOICE_ACTION,
-                    proof={"confirmed_action_id": action_id},
+                    stable_id=stable_id,
+                    action_id=action_id,
+                    pre_observation_id=f"pre-{observation_id}",
+                    result_screen_order=(
+                        1 if observation_id == "voice-top" else 3
+                    ),
                 )
             return item
 
@@ -1601,8 +1425,11 @@ class WechatC2Test(unittest.TestCase):
             "reserved_worker_stable_id": "worker-message-9",
             "pre_observation_id": "image-receipt-fields",
             "post_observation_id": "image-receipt-fields",
+            "trigger_observation_id": "image-receipt-fields",
+            "physical_identity_inherited_from_prepare": False,
+            "result_screen_order": 0,
             "binding_confirmed": True,
-            "image_visual_fingerprint": "dhash64:0123456789abcdef",
+            "image_sha256": "a" * 64,
         }
         valid_result = {
             "state": "completed",
@@ -1627,8 +1454,11 @@ class WechatC2Test(unittest.TestCase):
             "reserved_worker_stable_id": "worker-message-10",
             "pre_observation_id": "",
             "post_observation_id": "different-observation",
+            "trigger_observation_id": "different-observation",
+            "physical_identity_inherited_from_prepare": True,
+            "result_screen_order": -1,
             "binding_confirmed": False,
-            "image_visual_fingerprint": "dhash64:ffffffffffffffff",
+            "image_sha256": "f" * 63,
         }
         for field, invalid_value in invalid_mutations.items():
             with self.subTest(field=field):
@@ -1657,6 +1487,9 @@ class WechatC2Test(unittest.TestCase):
     def test_image_identity_receipt_accepts_distinct_pre_and_post_observations(self):
         observation = {
             "schema_version": 3,
+            # Formalization consumes the row that was actually selected in
+            # the action frame.  The prepare-frame id remains only in the
+            # receipt below as audit evidence.
             "observation_id": "image-after-action",
             "row_kind": "image_bubble",
             "sender_role": "customer",
@@ -1677,8 +1510,11 @@ class WechatC2Test(unittest.TestCase):
             "reserved_worker_stable_id": "worker-message-19",
             "pre_observation_id": "image-before-action",
             "post_observation_id": "image-after-action",
+            "trigger_observation_id": "image-after-action",
+            "physical_identity_inherited_from_prepare": False,
+            "result_screen_order": 0,
             "binding_confirmed": True,
-            "image_visual_fingerprint": "dhash64:0123456789abcdef",
+            "image_sha256": "b" * 64,
         }
 
         committed = apply_image_terminal_result(
@@ -1728,9 +1564,13 @@ class WechatC2Test(unittest.TestCase):
                     "reserved_worker_stable_id": "worker-message-12",
                     "pre_observation_id": "image-whitelist",
                     "post_observation_id": "image-whitelist",
+                    "trigger_observation_id": "image-whitelist",
+                    "physical_identity_inherited_from_prepare": False,
+                    "result_screen_order": 0,
                     "binding_confirmed": True,
                 },
-                "image_visual_fingerprint": "dhash64:0123456789abcdef",
+                "image_sha256": "c" * 64,
+                "result_screen_order": 0,
             },
         }
         observation = attach_committed_record(
@@ -1740,9 +1580,9 @@ class WechatC2Test(unittest.TestCase):
                 **observation["_worker_image_action_summary"][
                     "confirmed_action_mapping"
                 ],
-                "image_visual_fingerprint": (
+                "image_sha256": (
                     observation["_worker_image_action_summary"][
-                        "image_visual_fingerprint"
+                        "image_sha256"
                     ]
                 ),
             },
@@ -1775,14 +1615,22 @@ class WechatC2Test(unittest.TestCase):
             "reserved_worker_stable_id": "worker-message-99",
             "pre_observation_id": "other",
             "post_observation_id": "other",
+            "trigger_observation_id": "other",
+            "physical_identity_inherited_from_prepare": True,
+            "result_screen_order": -1,
             "binding_confirmed": False,
-            "image_visual_fingerprint": "dhash64:ffffffffffffffff",
+            "image_sha256": "d" * 63,
         }
         for field, invalid_value in proof_mutations.items():
             with self.subTest(proof_field=field):
                 rejected = json.loads(json.dumps(observation))
-                if field == "image_visual_fingerprint":
+                if field == "image_sha256":
                     rejected["_worker_image_action_summary"][field] = invalid_value
+                elif field == "result_screen_order":
+                    rejected["_worker_image_action_summary"][field] = invalid_value
+                    rejected["_worker_image_action_summary"][
+                        "confirmed_action_mapping"
+                    ][field] = invalid_value
                 else:
                     rejected["_worker_image_action_summary"][
                         "confirmed_action_mapping"
@@ -2368,7 +2216,7 @@ class WechatC2Test(unittest.TestCase):
             payload["messages"][0]["source_message_key"],
         )
 
-    def test_same_duration_voice_insertion_gets_new_sequence_identity(self):
+    def test_same_duration_voice_insertion_is_unique_tail_by_worker_comparator(self):
         old_voice = {
             "observation_id": "old-three-seconds",
             "row_kind": "voice_bubble",
@@ -2376,24 +2224,43 @@ class WechatC2Test(unittest.TestCase):
             "message_type": "voice",
             "voice_state": "untranscribed",
             "native_source_message_id": "native-old-voice",
+            "_worker_stable_id": "worker-message-1",
+            "_worker_identity_scope": "committed",
+        }
+        visible_old = {
+            **old_voice,
+            "observation_id": "old-three-seconds-visible",
+            "_worker_stable_id": "",
+            "_worker_identity_scope": "",
         }
         new_voice = {
-            **old_voice,
+            **visible_old,
             "observation_id": "new-three-seconds",
             "native_source_message_id": "",
         }
-        visible_old = {**old_voice, "observation_id": "old-three-seconds-visible"}
-        result = self._align_committed(
-            [old_voice],
-            [visible_old, new_voice],
-            {"old-three-seconds": "worker-message-1"},
+        previous = [old_voice]
+        current = [visible_old, new_voice]
+        result = compare_business_viewport_continuity(
+            normalized_business_message_sequence(
+                previous,
+                message_viewport_bounds=None,
+            ),
+            normalized_business_message_sequence(
+                current,
+                message_viewport_bounds=None,
+            ),
+            old_boundary_tokens=boundary_tokens_for_observations(
+                previous,
+                committed_only=True,
+            ),
+            new_boundary_tokens=boundary_tokens_for_observations(
+                current,
+                committed_only=False,
+            ),
         )
-        self.assertEqual(result["alignment_status"], "unique")
-        self.assertEqual(
-            inherited_worker_ids(result),
-            {"old-three-seconds-visible": "worker-message-1"},
-        )
-        self.assertEqual(result["new_suffix_observation_ids"], ["new-three-seconds"])
+        self.assertEqual(result["relation"], "unique_tail_append")
+        self.assertEqual(result["matched_pairs"], [{"old_index": 0, "new_index": 0}])
+        self.assertEqual(result["new_suffix_indexes"], [1])
 
 
 if __name__ == "__main__":
