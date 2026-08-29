@@ -16,6 +16,7 @@ TEXT_OVERLAP_REJECTION_RATIO = 0.42
 MEDIA_ROLE_EDGE_CONTINUITY_RATIO = 0.45
 MEDIA_EDGE_BACKGROUND_DISTANCE = 6.0
 MEDIA_CROP_EDGE_ACTIVE_RATIO = 0.15
+EMBEDDED_OCR_MAX_TEXT_OVERLAP_RATIO = 0.30
 IMAGE_PREVIEW_TOKENS = ("[图片]", "[照片]", "[Image]", "图片", "照片", "发送了一张图片")
 SAVE_MENU_TOKENS = (
     "另存为",
@@ -545,6 +546,24 @@ def explained_non_image_regions(
                 "bounds": bounds,
                 "message_type": message_type,
                 "sender_role": role,
+                "sender_role_source": role_source,
+                "same_row_avatar_evidence": bool(
+                    role_source == "same_row_avatar"
+                    or (
+                        role_source != "parent_voice"
+                        and str(avatar.get("role") or "").strip().lower()
+                        == role
+                    )
+                    or (
+                        "avatar_row_structure_confirmed"
+                        in {
+                            str(value).strip()
+                            for value in (
+                                message.get("sender_role_evidence") or []
+                            )
+                        }
+                    )
+                ),
                 "voice_anchor_key": voice_anchor_key,
                 "evidence": (
                     "bound_voice_transcript"
@@ -562,6 +581,34 @@ def explained_non_image_regions(
             }
         )
     return regions
+
+
+def _is_embedded_ocr_text_conflict(
+    candidate: dict[str, Any] | None,
+    typed_conflict: dict[str, Any] | None,
+) -> bool:
+    """Return whether small same-row OCR may yield to a valid image surface."""
+
+    if not isinstance(candidate, dict) or not isinstance(typed_conflict, dict):
+        return False
+    if str(typed_conflict.get("message_type") or "").strip().lower() != "text":
+        return False
+    if typed_conflict.get("same_row_avatar_evidence") is not True:
+        return False
+    # A voice-bound row is never reclassified by image geometry.
+    if str(typed_conflict.get("voice_anchor_key") or "").strip():
+        return False
+    try:
+        contained_ratio = float(typed_conflict.get("contained_ratio"))
+    except (TypeError, ValueError):
+        return False
+    if not 0.80 <= contained_ratio <= 1.0:
+        return False
+    try:
+        text_overlap_ratio = float(candidate.get("text_overlap_ratio"))
+    except (TypeError, ValueError):
+        return False
+    return 0.0 <= text_overlap_ratio < EMBEDDED_OCR_MAX_TEXT_OVERLAP_RATIO
 
 
 def explained_non_image_conflict(
@@ -1257,7 +1304,18 @@ def detect_visual_image_bubbles(
             # turn a trusted text or voice row back into an image.  In
             # particular, role-facing edge continuity cannot distinguish a
             # solid WeChat text bubble from an image surface.
-            reliable_type_veto = typed_conflict is not None
+            embedded_ocr_conflict = _is_embedded_ocr_text_conflict(
+                {"text_overlap_ratio": text_overlap_ratio},
+                typed_conflict,
+            )
+            reliable_type_veto = (
+                typed_conflict is not None and not embedded_ocr_conflict
+            )
+            if embedded_ocr_conflict:
+                structure_evidence = [
+                    *structure_evidence,
+                    "embedded_ocr_text_yields_to_image_surface",
+                ]
             if reliable_type_veto:
                 if diagnostics is not None:
                     diagnostics.append(

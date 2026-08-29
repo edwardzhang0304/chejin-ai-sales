@@ -6857,6 +6857,124 @@ class C2VisionIntegrationTests(unittest.TestCase):
                 )
                 self.assertEqual(merged[0]["sender_role"], role)
 
+    def test_real_vehicle_photo_plate_ocr_does_not_veto_image_message(self):
+        """A plate OCR row inside a real vehicle photo must reach Vision."""
+        asset = (
+            Path(__file__).resolve().parents[2]
+            / "website"
+            / "assets"
+            / "vehicles"
+            / "vehicle-02.jpg"
+        )
+        with Image.open(asset) as source:
+            photo = source.convert("RGB")
+            photo.thumbnail((300, 220), Image.Resampling.LANCZOS)
+            screenshot = Image.new("RGB", (980, 860), (250, 250, 250))
+            screenshot.paste(photo, (464, 300))
+            draw = ImageDraw.Draw(screenshot)
+            # Customer avatar on the role-facing edge of the photo row.
+            draw.rectangle((408, 300, 452, 344), fill=(70, 120, 170))
+            plate = {
+                "left": 560,
+                "top": 390,
+                "right": 680,
+                "bottom": 425,
+            }
+            messages = [
+                {
+                    "id": "plate-ocr-false-text",
+                    "type": "text",
+                    "sender_role": "customer",
+                    "sender_role_source": "same_row_avatar",
+                    "sender_role_evidence": ["avatar_row_structure_confirmed"],
+                    "avatar_alignment": {"role": "customer"},
+                    "content": "粤B·A1234",
+                    "bubble_rect": plate,
+                }
+            ]
+            try:
+                candidates = detect_visual_image_bubbles(
+                    screenshot,
+                    messages=messages,
+                    side_filter="customer",
+                    message_viewport_bounds=_test_message_viewport(screenshot),
+                )
+                merged = wechat_win32_ocr_sidecar.merge_structural_image_messages(
+                    screenshot,
+                    [],
+                    messages,
+                    target="CJTEST01",
+                    layout_snapshot=_test_layout_snapshot(screenshot),
+                )
+            finally:
+                screenshot.close()
+        self.assertEqual(len(candidates), 1, candidates)
+        self.assertIn(
+            "embedded_ocr_text_yields_to_image_surface",
+            candidates[0]["structure_evidence"],
+        )
+        self.assertEqual([item["type"] for item in merged], ["image"], merged)
+        self.assertNotIn("photo_like_surface", merged[0])
+        self.assertNotIn("text_overlap_ratio", merged[0])
+
+    def test_reliable_voice_inside_image_surface_remains_a_voice(self):
+        """Image geometry must never override a reliable voice row."""
+        asset = (
+            Path(__file__).resolve().parents[2]
+            / "website"
+            / "assets"
+            / "vehicles"
+            / "vehicle-02.jpg"
+        )
+        with Image.open(asset) as source:
+            photo = source.convert("RGB")
+            photo.thumbnail((300, 220), Image.Resampling.LANCZOS)
+            screenshot = Image.new("RGB", (980, 860), (250, 250, 250))
+            screenshot.paste(photo, (464, 300))
+            draw = ImageDraw.Draw(screenshot)
+            draw.rectangle((408, 300, 452, 344), fill=(70, 120, 170))
+            voice = {
+                "id": "voice-inside-photo",
+                "type": "voice",
+                "sender_role": "customer",
+                "sender_role_source": "same_row_avatar",
+                "avatar_alignment": {"role": "customer"},
+                "parent_voice_anchor_key": "voice-stable:inside-photo",
+                "content": "这是可靠的语音转写结果。",
+                "bubble_rect": {
+                    "left": 560,
+                    "top": 390,
+                    "right": 680,
+                    "bottom": 425,
+                },
+            }
+            diagnostics = []
+            try:
+                candidates = detect_visual_image_bubbles(
+                    screenshot,
+                    messages=[voice],
+                    side_filter="customer",
+                    diagnostics=diagnostics,
+                    message_viewport_bounds=_test_message_viewport(screenshot),
+                )
+                merged = wechat_win32_ocr_sidecar.merge_structural_image_messages(
+                    screenshot,
+                    [],
+                    [voice],
+                    target="CJTEST01",
+                    layout_snapshot=_test_layout_snapshot(screenshot),
+                    image_candidate_diagnostics=diagnostics,
+                )
+            finally:
+                screenshot.close()
+
+        self.assertEqual(candidates, [], candidates)
+        self.assertEqual(merged, [voice])
+        self.assertEqual(
+            diagnostics[0]["message_type"],
+            "voice",
+        )
+
     def test_genuine_long_text_bubbles_do_not_become_images(self):
         variants = {
             "customer": {

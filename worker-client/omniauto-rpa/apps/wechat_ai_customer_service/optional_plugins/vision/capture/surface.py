@@ -12,6 +12,7 @@ from .wechat import (
     explained_non_image_conflict,
     explained_non_image_regions,
     extract_chat_time_markers,
+    _is_embedded_ocr_text_conflict,
 )
 
 
@@ -55,6 +56,44 @@ def _contained_area_ratio(
     overlap_height = max(0.0, min(bottom, outer_bottom) - max(top, outer_top))
     inner_area = max(1.0, (right - left) * (bottom - top))
     return (overlap_width * overlap_height) / inner_area
+
+
+def _small_embedded_ocr_text(
+    message: dict[str, Any],
+    image_rect: tuple[float, float, float, float],
+) -> bool:
+    """Identify a trusted text row that is only a small part of an image."""
+
+    message_rect = _surface_bounds(
+        message.get("bubble_rect") or message.get("bounds")
+    )
+    if message_rect is None:
+        return False
+    role = str(
+        message.get("sender_role") or message.get("sender") or ""
+    ).strip().lower()
+    if role == "contact":
+        role = "customer"
+    if role not in {"customer", "self"}:
+        return False
+    conflict = explained_non_image_conflict(
+        tuple(int(value) for value in image_rect),
+        side=role,
+        regions=explained_non_image_regions([message]),
+    )
+    if conflict is None:
+        return False
+    left, top, right, bottom = message_rect
+    image_left, image_top, image_right, image_bottom = image_rect
+    overlap_width = max(0.0, min(right, image_right) - max(left, image_left))
+    overlap_height = max(0.0, min(bottom, image_bottom) - max(top, image_top))
+    image_area = max(1.0, (image_right - image_left) * (image_bottom - image_top))
+    return _is_embedded_ocr_text_conflict(
+        {
+            "text_overlap_ratio": (overlap_width * overlap_height) / image_area,
+        },
+        conflict,
+    )
 
 
 def image_candidates_without_reliable_typed_message_conflicts(
@@ -102,7 +141,13 @@ def image_candidates_without_reliable_typed_message_conflicts(
             # normal WeChat text bubble also has a continuous role-facing edge;
             # it is therefore not evidence capable of overturning a reliable
             # message type.
-        if typed_conflict is None:
+        # A valid image surface outranks a small text row that only inherited
+        # same-row avatar evidence (e.g. a vehicle plate). Voice and ordinary
+        # high-coverage text remain protected by the typed-row veto.
+        if typed_conflict is None or _is_embedded_ocr_text_conflict(
+            candidate,
+            typed_conflict,
+        ):
             kept.append(dict(candidate))
         elif diagnostics is not None:
             diagnostics.append(
@@ -157,11 +202,14 @@ def messages_outside_image_bubbles(
             continue
         # Final defensive gate: even if an upstream/reused structural image
         # observation overlaps this row, a reliably typed text/voice fact is
-        # monotonic and cannot be erased during merge.  OCR-like fragments
-        # inside a real image do not pass explained_non_image_regions() unless
-        # they also carry trusted chat-row role/type evidence.
+        # monotonic and cannot be erased during merge. The one exception is
+        # the same small embedded OCR conflict handled by the detector.
         if explained_non_image_regions([item]):
-            kept.append(dict(item))
+            if not any(
+                _small_embedded_ocr_text(item, image_rect)
+                for image_rect in image_bounds
+            ):
+                kept.append(dict(item))
             continue
         rect = _surface_bounds(item.get("bubble_rect"))
         if rect is None:
