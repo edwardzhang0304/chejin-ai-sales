@@ -98,8 +98,11 @@ from chejin_worker_client.task_runner import (
     TaskLeaseGuard,
     TaskRunner,
     _apply_worker_identity_from_continuity,
+    _canonical_business_projection_digest,
+    _confirmed_text_fallback_for_candidate,
     _executable_untranscribed_voice_observations,
     _freeze_phase_metadata,
+    _payload_with_confirmed_text_candidate_receipts,
     _validate_pre_send_context_guard,
     pre_send_new_suffix_validation,
     voice_action_journal_anchor_keys,
@@ -23249,7 +23252,7 @@ class TaskRunnerTest(unittest.TestCase):
             "observation_id"
         ]
 
-    def test_menu_confirmed_text_survives_worker_image_candidate_pipeline(self):
+    def test_menu_confirmed_text_survives_reread_and_other_image_finishes(self):
         from contextlib import nullcontext
 
         from PIL import Image
@@ -23424,10 +23427,17 @@ class TaskRunnerTest(unittest.TestCase):
 
         class Actions:
             right_click_count = 0
+            right_click_bounds: list[list[int]] = []
             dismiss_count = 0
+            copy_click_count = 0
 
             def right_click(self, x, y, *, bounds):
                 self.right_click_count += 1
+                self.right_click_bounds.append(list(bounds))
+                return {"screen_x": x, "screen_y": y}
+
+            def click_screen(self, x, y, *, bounds):
+                self.copy_click_count += 1
                 return {"screen_x": x, "screen_y": y}
 
             def dismiss_menu_safely(self):
@@ -23438,11 +23448,14 @@ class TaskRunnerTest(unittest.TestCase):
             read_count = 0
 
             def sequence_number(self):
-                return 9
+                return 10 + actions.copy_click_count
 
             def read_current_bitmap(self):
                 self.read_count += 1
-                raise AssertionError("text_candidate_must_not_read_clipboard")
+                return copied_image.copy()
+
+            def clear_current(self, expected_sequence):
+                return {"ok": expected_sequence == 11}
 
         actions = Actions()
         clipboard = Clipboard()
@@ -23463,9 +23476,11 @@ class TaskRunnerTest(unittest.TestCase):
         )
 
         process_calls = 0
+        vision_result_calls = 0
+        completed_image_transaction: dict[str, Any] = {}
 
         def run_real_text_menu_transaction(**kwargs):
-            nonlocal process_calls
+            nonlocal process_calls, vision_result_calls
             process_calls += 1
             binding_payload = kwargs["frame_action_binding"]
             acquired = image_transaction.acquire_current_image_via_ports(
@@ -23481,18 +23496,46 @@ class TaskRunnerTest(unittest.TestCase):
                     ),
                 },
             )
-            assert acquired["ok"] is False, acquired
-            assert acquired["reason"] == (
-                "C2_IMAGE_CANDIDATE_CONFIRMED_TEXT"
-            )
+            if process_calls == 1:
+                assert acquired["ok"] is False, acquired
+                assert acquired["reason"] == (
+                    "C2_IMAGE_CANDIDATE_CONFIRMED_TEXT"
+                )
+                return {
+                    "state": "candidate_reclassified_text",
+                    "reason": acquired["reason"],
+                    "action_phase": "not_attempted",
+                    "business_state": "candidate_reclassified_text",
+                    "business_result_confirmed": True,
+                    "ui_action_performed": True,
+                    "transaction": dict(acquired["transaction"]),
+                    "diagnostics": {
+                        "events": [],
+                        "image_persisted": False,
+                    },
+                }
+            assert acquired["ok"] is True, acquired
+            vision_result_calls += 1
+            clipboard_payload = acquired.pop("_ephemeral_clipboard_image")
+            try:
+                completed_image_transaction.update(
+                    dict(acquired["transaction"])
+                )
+            finally:
+                clipboard_payload.release()
             return {
-                "state": "candidate_reclassified_text",
-                "reason": acquired["reason"],
-                "action_phase": "not_attempted",
-                "business_state": "candidate_reclassified_text",
+                "state": "completed",
+                "reason": "vision_ready",
+                "action_phase": "confirmed",
+                "business_state": "completed",
                 "business_result_confirmed": True,
                 "ui_action_performed": True,
-                "transaction": dict(acquired["transaction"]),
+                "customer_image_understanding": {
+                    "schema_version": 1,
+                    "vision_summary": "剩余图片识别完成",
+                },
+                "visual_bridge_input": {"summary": "剩余图片"},
+                "transaction": dict(completed_image_transaction),
                 "diagnostics": {
                     "events": [],
                     "image_persisted": False,
@@ -23520,18 +23563,40 @@ class TaskRunnerTest(unittest.TestCase):
             origin_read_run_id=f"read-text-candidate-{unique}"
         )
 
+        copied_image = Image.new("RGB", (64, 48), (30, 80, 180))
         try:
             with patch(
+                "chejin_worker_client.omniauto_vision."
+                "vision_configuration_status",
+                return_value={
+                    "ready": True,
+                    "config": {
+                        "customer_image_understanding": {"enabled": True}
+                    },
+                },
+            ), patch(
                 "chejin_worker_client.omniauto_vision.process_image_slot",
                 side_effect=run_real_text_menu_transaction,
             ), patch.object(
                 image_transaction,
                 "_classify_context_menu",
-                return_value={
-                    "kind": "text",
-                    "labels": ["复制文字"],
-                    "copy_item": None,
-                },
+                side_effect=lambda *_args, **_kwargs: (
+                    {
+                        "kind": "text",
+                        "labels": ["复制文字"],
+                        "copy_item": None,
+                    }
+                    if actions.right_click_count == 1
+                    else {
+                        "kind": "image",
+                        "labels": ["复制", "编辑"],
+                        "copy_item": {
+                            "x": 620,
+                            "y": 390,
+                            "bounds": [590, 370, 670, 420],
+                        },
+                    }
+                ),
             ):
                 processed, stats = runner._process_final_image_slots(
                     binding=binding,
@@ -23544,13 +23609,73 @@ class TaskRunnerTest(unittest.TestCase):
                     },
                     flow_outcomes=flow_outcomes,
                 )
+
+                receipts = flow_outcomes.confirmed_text_candidate_receipts()
+                assert len(receipts) == 1
+                assert receipts[0]["origin_read_run_id"] == (
+                    flow_outcomes.origin_read_run_id
+                )
+
+                # Mandatory reread 1 returns the same raw candidate.  The
+                # current-read receipt restores it before continuity, then the
+                # normal image loop continues with the other real image.
+                reread_after_text = {
+                    "frame_id": f"reread-text-frame-{unique}",
+                    "authoritative_frame_source": "final_read",
+                    "observations": [
+                        copy.deepcopy(action_remaining),
+                        copy.deepcopy(action_candidate),
+                        copy.deepcopy(late_text),
+                    ],
+                }
+                FakeBridge._attach_image_frame_action_bindings(
+                    reread_after_text
+                )
+                # Copying the other image does not change its bubble.  This
+                # second mandatory reread finalizes that actual clipboard
+                # result while replaying the text receipt again, with no
+                # second right-click on the text candidate.
+                reread_after_image = copy.deepcopy(reread_after_text)
+                reread_after_image["frame_id"] = (
+                    f"reread-image-frame-{unique}"
+                )
+                FakeBridge._attach_image_frame_action_bindings(
+                    reread_after_image
+                )
+                runner.bridge.get_messages_payloads = [
+                    reread_after_text,
+                    reread_after_image,
+                ]
+                convergence = runner._converge_current_screen_after_images(
+                    binding=binding,
+                    target=target,
+                    target_label=target.display_name,
+                    sidecar_payload=processed,
+                    lease=type(
+                        "Lease",
+                        (),
+                        {"update_step": lambda _self, _step: None},
+                    )(),
+                    action_cancel_requested=lambda: False,
+                    enforce_read_targets=False,
+                    flow_outcomes=flow_outcomes,
+                )
         finally:
+            copied_image.close()
             surface.close()
 
-        assert actions.right_click_count == 1
-        assert process_calls == 1
+        assert actions.right_click_count == 2
+        assert actions.right_click_bounds.count(
+            action_candidate["bubble_rect"]
+        ) == 1
+        assert actions.right_click_bounds.count(
+            action_remaining["bubble_rect"]
+        ) == 1
+        assert process_calls == 2
+        assert vision_result_calls == 1
         assert actions.dismiss_count == 1
-        assert clipboard.read_count == 0
+        assert actions.copy_click_count == 1
+        assert clipboard.read_count == 1
         assert stats.get("terminal_gate") is None
         assert processed["observations"], (processed, stats)
         remaining_images = [
@@ -23577,6 +23702,237 @@ class TaskRunnerTest(unittest.TestCase):
             key.startswith("_image_candidate")
             for item in processed["observations"]
             for key in item
+        )
+        assert convergence["ok"] is True, json.dumps(
+            convergence,
+            ensure_ascii=False,
+            sort_keys=True,
+            default=str,
+        )
+        assert len(runner.bridge.message_reads) == 2
+        assert "_pending_image_action" not in convergence["payload"]
+        assert convergence.get("terminal_gate") is None
+        final_guard = convergence["payload"]["send_context_guard"]
+        assert final_guard["sequence_sha256"] == (
+            final_guard["message_viewport_change_digest"]
+        )
+        assert final_guard["bottom"] == final_guard["sequence"][-1]
+        assert not [
+            item
+            for item in convergence["payload"]["observations"]
+            if item.get("row_kind") == "image_bubble"
+            and item.get("item_state") != "completed"
+        ]
+        assert [
+            item.get("content_clean")
+            for item in convergence["payload"]["observations"]
+            if item.get("row_kind") == "text_bubble"
+        ] == ["粤B·A1234", "第二行文字", "刚补充一句"]
+        completed_images = [
+            item
+            for item in convergence["payload"]["observations"]
+            if item.get("row_kind") == "image_bubble"
+            and item.get("item_state") == "completed"
+        ]
+        assert len(completed_images) == 1
+        assert completed_images[0]["content_clean"] == (
+            "剩余图片识别完成"
+        )
+
+    def test_two_equal_menu_confirmed_text_receipts_replay_without_identity(self):
+        unique = str(time.time_ns())
+
+        def fallback(name: str) -> dict:
+            return {
+                "observation_id": f"text-{name}-{unique}",
+                "row_kind": "text_bubble",
+                "sender_role": "customer",
+                "message_type": "text",
+                "content_clean": "相同文字",
+                "bubble_rect": [500, 100, 650, 135],
+            }
+
+        def candidate(name: str) -> dict:
+            return {
+                "observation_id": f"candidate-{name}-{unique}",
+                "row_kind": "image_bubble",
+                "sender_role": "customer",
+                "message_type": "image",
+                "item_state": "discovered",
+                "bubble_rect": [460, 80, 720, 150],
+                "_image_candidate_verification": {
+                    "required": True,
+                    "fallback_observations": [fallback(name)],
+                },
+            }
+
+        first_candidate = candidate("first")
+        second_candidate = candidate("second")
+        first_fallback = _confirmed_text_fallback_for_candidate(
+            first_candidate
+        )
+        assert first_fallback is not None
+        fallback_projection = first_fallback[1]
+        fallback_digest = first_fallback[2]
+        baseline = {
+            "frame_id": f"baseline-{unique}",
+            "observations": [fallback("first"), fallback("second")],
+        }
+        refreshed = {
+            "frame_id": f"refreshed-{unique}",
+            "observations": [first_candidate, second_candidate],
+        }
+        receipts = [
+            {
+                "schema_version": 1,
+                "receipt_id": f"receipt-{index}-{unique}",
+                "origin_read_run_id": f"read-{unique}",
+                "fallback_business_projection": fallback_projection,
+                "fallback_business_projection_digest": fallback_digest,
+            }
+            for index in range(2)
+        ]
+
+        result = _payload_with_confirmed_text_candidate_receipts(
+            baseline_payload=baseline,
+            refreshed_payload=refreshed,
+            receipts=receipts,
+        )
+
+        assert result["ok"] is True, result
+        assert result["continuity_evidence"]["relation"] == (
+            "business_sequence_equal"
+        )
+        assert len(result["applied_observation_ids"]) == 2
+        assert [
+            item.get("row_kind")
+            for item in result["payload"]["observations"]
+        ] == ["text_bubble", "text_bubble"]
+        assert not any(
+            str(key).startswith("_worker")
+            for item in result["payload"]["observations"]
+            for key in item
+        )
+
+    def test_confirmed_text_receipt_rejects_zero_legal_mapping(self):
+        unique = str(time.time_ns())
+        fallback = {
+            "observation_id": f"text-{unique}",
+            "row_kind": "text_bubble",
+            "sender_role": "customer",
+            "message_type": "text",
+            "content_clean": "粤B·A1234",
+            "bubble_rect": [500, 100, 650, 135],
+        }
+        candidate = {
+            "observation_id": f"candidate-{unique}",
+            "row_kind": "image_bubble",
+            "sender_role": "customer",
+            "message_type": "image",
+            "item_state": "discovered",
+            "bubble_rect": [460, 80, 720, 150],
+            "_image_candidate_verification": {
+                "required": True,
+                "fallback_observations": [fallback],
+            },
+        }
+        receipt_fallback = _confirmed_text_fallback_for_candidate(candidate)
+        assert receipt_fallback is not None
+        result = _payload_with_confirmed_text_candidate_receipts(
+            baseline_payload={
+                "observations": [
+                    fallback,
+                    {
+                        "observation_id": f"old-neighbor-{unique}",
+                        "row_kind": "text_bubble",
+                        "sender_role": "customer",
+                        "message_type": "text",
+                        "content_clean": "旧上下文",
+                        "bubble_rect": [500, 150, 650, 185],
+                    },
+                ]
+            },
+            refreshed_payload={
+                "observations": [
+                    candidate,
+                    {
+                        "observation_id": f"new-neighbor-{unique}",
+                        "row_kind": "text_bubble",
+                        "sender_role": "customer",
+                        "message_type": "text",
+                        "content_clean": "已经被替换的上下文",
+                        "bubble_rect": [500, 150, 650, 185],
+                    },
+                ]
+            },
+            receipts=[
+                {
+                    "schema_version": 1,
+                    "receipt_id": f"receipt-{unique}",
+                    "origin_read_run_id": f"read-{unique}",
+                    "fallback_business_projection": receipt_fallback[1],
+                    "fallback_business_projection_digest": (
+                        receipt_fallback[2]
+                    ),
+                }
+            ],
+        )
+
+        assert result == {
+            "ok": False,
+            "error_code": "C2_IMAGE_IDENTITY_CONTRACT_INVALID",
+            "reason": "confirmed_text_receipt_mapping_not_found",
+            "candidate_count": 1,
+        }
+
+    def test_confirmed_text_receipt_ignores_candidate_without_required_flag(self):
+        unique = str(time.time_ns())
+        fallback = {
+            "observation_id": f"text-{unique}",
+            "row_kind": "text_bubble",
+            "sender_role": "customer",
+            "message_type": "text",
+            "content_clean": "不应恢复",
+            "bubble_rect": [500, 100, 650, 135],
+        }
+        candidate = {
+            "observation_id": f"candidate-{unique}",
+            "row_kind": "image_bubble",
+            "sender_role": "customer",
+            "message_type": "image",
+            "item_state": "discovered",
+            "bubble_rect": [460, 80, 720, 150],
+            "_image_candidate_verification": {
+                "fallback_observations": [fallback],
+            },
+        }
+        projection = normalized_business_message_sequence(
+            [fallback],
+            message_viewport_bounds=None,
+        )
+        refreshed = {"observations": [candidate]}
+        result = _payload_with_confirmed_text_candidate_receipts(
+            baseline_payload={"observations": [fallback]},
+            refreshed_payload=refreshed,
+            receipts=[
+                {
+                    "schema_version": 1,
+                    "receipt_id": f"receipt-{unique}",
+                    "origin_read_run_id": f"read-{unique}",
+                    "fallback_business_projection": projection,
+                    "fallback_business_projection_digest": (
+                        _canonical_business_projection_digest(projection)
+                    ),
+                }
+            ],
+        )
+
+        assert result["ok"] is True
+        assert result["payload"] is refreshed
+        assert result["continuity_evidence"] is None
+        assert result["applied_observation_ids"] == []
+        assert result["payload"]["observations"][0]["row_kind"] == (
+            "image_bubble"
         )
 
     def test_completed_image_without_confirmed_receipt_never_reaches_ledger(self):
