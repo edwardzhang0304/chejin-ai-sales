@@ -4114,6 +4114,8 @@ class TaskRunner:
         *,
         flow_id: str,
         flow_kind: str,
+        conversation_id: str | None = None,
+        unread_generation: int | None = None,
     ) -> bool:
         control = load_runtime_control()
         existing_id = str(control.get("inflight_flow_id") or "").strip()
@@ -4128,6 +4130,8 @@ class TaskRunner:
             binding,
             flow_id=flow_id,
             flow_kind=flow_kind,
+            conversation_id=conversation_id,
+            unread_generation=unread_generation,
         )
         self._backend_inflight_flow_state = dict(backend_state)
         try:
@@ -6151,10 +6155,22 @@ class TaskRunner:
 
     def _execute_task(self, binding: Binding, task: Task, mode: str) -> None:
         flow_kind = "chat_reply" if task.task_type == "chat_reply" else "task"
+        task_c3 = task.raw.get("c3") if isinstance(task.raw, dict) else None
+        task_reply_action = (
+            task_c3.get("reply_action")
+            if isinstance(task_c3, dict)
+            and isinstance(task_c3.get("reply_action"), dict)
+            else {}
+        )
+        task_conversation_id = (
+            str(task_reply_action.get("conversation_id") or "").strip()
+            or None
+        )
         if not self._start_inflight_flow(
             binding,
             flow_id=task.id,
             flow_kind=flow_kind,
+            conversation_id=task_conversation_id,
         ):
             return
         self.current_task = task
@@ -6219,6 +6235,7 @@ class TaskRunner:
                     binding,
                     task.id,
                     terminal_kind="task_terminal",
+                    conversation_id=task_conversation_id,
                 )
             except Exception as exc:
                 append_log(
@@ -13170,7 +13187,7 @@ class TaskRunner:
                     if isinstance(target.raw, dict)
                     and isinstance(target.raw.get("recovery_hold"), dict)
                     and target.raw.get("recovery_hold", {}).get("status")
-                    == "active"
+                    in {"active", "suspended"}
                     else "checkpoint_merge"
                 ),
                 "authoritative_frame_source": (
@@ -14085,6 +14102,164 @@ class TaskRunner:
             or transaction.get("menu_dismissed") is True
             or transaction.get("copy_click_ok") is True
         )
+        candidate_reclassified_text = bool(
+            str(result.get("state") or "").strip()
+            == "candidate_reclassified_text"
+            and str(result.get("reason") or "").strip()
+            == "C2_IMAGE_CANDIDATE_CONFIRMED_TEXT"
+            and returned_action_phase == "not_attempted"
+            and transaction.get("status")
+            == "text_context_menu_confirmed"
+            and transaction.get("menu_dismissed") is True
+            and transaction.get("menu_copy_confirmed") is False
+            and transaction.get("clipboard_content_read") is False
+            and transaction.get("current_frame_target_selected") is True
+            and transaction.get(
+                "physical_identity_inherited_from_prepare"
+            )
+            is False
+        )
+        if candidate_reclassified_text:
+            action_frame_observations = [
+                copy.deepcopy(item)
+                for item in (
+                    transaction.get("action_frame_observations") or []
+                )
+                if isinstance(item, dict)
+            ]
+            fallback_observations = [
+                copy.deepcopy(item)
+                for item in (transaction.get("fallback_observations") or [])
+                if isinstance(item, dict)
+                and str(item.get("row_kind") or "").strip().lower()
+                == "text_bubble"
+                and str(item.get("sender_role") or "").strip().lower()
+                in {"customer", "self"}
+                and not list(item.get("contract_errors") or [])
+            ]
+            trigger_observation_id = str(
+                transaction.get("trigger_observation_id") or ""
+            ).strip()
+            trigger_indexes = [
+                index
+                for index, item in enumerate(action_frame_observations)
+                if str(item.get("observation_id") or "").strip()
+                == trigger_observation_id
+                and str(item.get("row_kind") or "").strip().lower()
+                == "image_bubble"
+            ]
+            action_frame_id = str(
+                transaction.get("action_frame_layout_snapshot_id") or ""
+            ).strip()
+            selected_pre_indexes = [
+                index
+                for index, item in enumerate(payload.get("observations") or [])
+                if isinstance(item, dict)
+                and str(item.get("observation_id") or "").strip()
+                == selected_observation_id
+                and str(item.get("row_kind") or "").strip().lower()
+                == "image_bubble"
+            ]
+            if (
+                not fallback_observations
+                or len(trigger_indexes) != 1
+                or len(selected_pre_indexes) != 1
+                or not action_frame_id
+            ):
+                result = {
+                    **result,
+                    "state": "failed",
+                    "business_state": "technical_failed",
+                    "business_result_confirmed": False,
+                    "reason": "C2_IMAGE_IDENTITY_CONTRACT_INVALID",
+                    "reason_detail": "candidate_text_action_frame_contract_invalid",
+                }
+                candidate_reclassified_text = False
+            else:
+                resolved_observations = copy.deepcopy(
+                    action_frame_observations
+                )
+                for fallback in fallback_observations:
+                    for key in tuple(fallback):
+                        if key.startswith("_worker_") or key == (
+                            "_image_candidate_verification"
+                        ):
+                            fallback.pop(key, None)
+                trigger_index = trigger_indexes[0]
+                resolved_observations[trigger_index : trigger_index + 1] = (
+                    fallback_observations
+                )
+                candidate_payload = {
+                    **payload,
+                    "frame_id": action_frame_id,
+                    "layout_snapshot_id": action_frame_id,
+                    "authoritative_frame_source": "action_result",
+                    "observations": resolved_observations,
+                }
+                candidate_projection = _business_projection_for_payload(
+                    candidate_payload,
+                    resolved_observations,
+                )
+                prior_evidence = (
+                    dict(payload.get("message_viewport_change_evidence"))
+                    if isinstance(
+                        payload.get("message_viewport_change_evidence"),
+                        dict,
+                    )
+                    else {}
+                )
+                candidate_payload["message_viewport_change_evidence"] = {
+                    **prior_evidence,
+                    "ok": True,
+                    "sequence": candidate_projection,
+                    "message_count": len(candidate_projection),
+                    "message_viewport_change_digest": (
+                        _canonical_business_projection_digest(
+                            candidate_projection
+                        )
+                    ),
+                }
+                result["_candidate_reclassified_payload"] = {
+                    **candidate_payload,
+                }
+                if image_action_journal is not None:
+                    update_action_journal_item(
+                        image_action_journal,
+                        journal_item_id=image_action_id,
+                        action_phase="cancelled_before_trigger",
+                        business_state="not_attempted",
+                        business_result_confirmed=False,
+                        error_code="",
+                        terminal_payload={
+                            "state": "candidate_reclassified_text",
+                            "media_action_terminal": (
+                                MediaActionTerminal.CANCELLED_BEFORE_TRIGGER.value
+                            ),
+                            "image_flow_action_slot_status": "processed",
+                            "error_code": None,
+                            "reason_detail": (
+                                "text_context_menu_confirmed"
+                            ),
+                        },
+                    )
+                result.update(
+                    {
+                        "action_phase": "cancelled_before_trigger",
+                        "business_state": "not_attempted",
+                        "business_result_confirmed": False,
+                        "media_action_terminal": (
+                            MediaActionTerminal.CANCELLED_BEFORE_TRIGGER.value
+                        ),
+                        "_image_action_id": image_action_id,
+                        "_image_action_journal_path": (
+                            str(image_action_journal)
+                            if image_action_journal
+                            else ""
+                        ),
+                        "_image_action_journal_item_id": image_action_id,
+                    }
+                )
+                return result
         if (
             image_action_journal is not None
             and returned_action_phase
@@ -14508,6 +14683,28 @@ class TaskRunner:
             or action_phase
             not in {"not_attempted", "cancelled_before_trigger"}
         )
+        if (
+            str(normalized.get("state") or "").strip()
+            == "candidate_reclassified_text"
+            and str(normalized.get("reason") or "").strip()
+            == "C2_IMAGE_CANDIDATE_CONFIRMED_TEXT"
+            and action_phase == "cancelled_before_trigger"
+            and isinstance(
+                normalized.get("_candidate_reclassified_payload"), dict
+            )
+        ):
+            return {
+                "result": normalized,
+                "transaction": transaction,
+                "diagnostics": diagnostics,
+                "action_phase": action_phase,
+                "candidate_reclassified_text": True,
+                "removed_from_final_screen": False,
+                "action_was_attempted": False,
+                "ui_frame_invalidated": False,
+                "raw_terminal_state": "candidate_reclassified_text",
+                "terminal_state": "candidate_reclassified_text",
+            }
         if (
             action_phase in {
                 "not_attempted",
@@ -16077,6 +16274,65 @@ class TaskRunner:
             diagnostics = normalized["diagnostics"]
             result_reason = str(result.get("reason") or "")
             result_action_phase = normalized["action_phase"]
+            if normalized.get("candidate_reclassified_text") is True:
+                candidate_payload = (
+                    result.get("_candidate_reclassified_payload")
+                    if isinstance(
+                        result.get("_candidate_reclassified_payload"), dict
+                    )
+                    else {}
+                )
+                candidate_observations = [
+                    dict(item)
+                    for item in (candidate_payload.get("observations") or [])
+                    if isinstance(item, dict)
+                ]
+                if (
+                    not candidate_payload
+                    or not candidate_observations
+                    or any(
+                        str(item.get("observation_id") or "").strip()
+                        == observation_id
+                        and str(item.get("row_kind") or "").strip().lower()
+                        == "image_bubble"
+                        for item in candidate_observations
+                    )
+                ):
+                    stats["terminal_gate"] = {
+                        "error_code": (
+                            "C2_IMAGE_IDENTITY_CONTRACT_INVALID"
+                        ),
+                        "technical_failure": True,
+                        "reason": "candidate_text_payload_invalid",
+                        "identity_errors": [],
+                        "authoritative_frame_source": "action_result",
+                        "ui_frame_invalidated": False,
+                        "action_journal_path": str(
+                            result.get("_image_action_journal_path") or ""
+                        ),
+                    }
+                    enriched_observations[index] = None
+                    break
+                mark_image_removed_from_final_screen(
+                    stats,
+                    action_local_key,
+                )
+                append_log(
+                    "INFO",
+                    "c2_image_candidate_confirmed_text",
+                    "右键菜单确认该候选是普通文字；保留文字，零复制、零剪贴板、零 Vision。",
+                    metadata={
+                        **common_metadata,
+                        "action_phase": result_action_phase,
+                        "menu_dismissed": True,
+                    },
+                )
+                # Right-clicking and dismissing the menu invalidates every
+                # remaining coordinate from this frame.  The removal marker
+                # below already requests the normal post-image full reread;
+                # stop here so any remaining image is selected only from that
+                # new authoritative frame.
+                return candidate_payload, finalize_image_phase_result(stats)
             if normalized["removed_from_final_screen"]:
                 image_action_started = True
                 if result_reason == "C2_PRE_SEND_LAYOUT_INVALID":
@@ -20312,6 +20568,8 @@ class TaskRunner:
             binding,
             flow_id=read_run_id,
             flow_kind="c2_read",
+            conversation_id=target.conversation_id,
+            unread_generation=target.unread_generation,
         ):
             return {
                 "ok": False,

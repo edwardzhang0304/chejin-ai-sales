@@ -8,6 +8,7 @@ from app.enums import TaskStatus
 from app.errors import AppError
 from app.models.audit import OperationLog
 from app.models.base import utcnow
+from app.models.c3 import Conversation
 from app.models.sales import Sales
 from app.models.task import Task
 from app.models.wechat import MessageEvent, WechatSessionBinding
@@ -23,6 +24,10 @@ from app.schemas.worker import (
 )
 from app.schemas.worker import WorkerCreate
 from app.services.audit_service import write_log
+from app.services.recovery_hold_state import (
+    settle_recovery_hold_after_flow,
+    suspend_recovery_hold,
+)
 from app.services.worker_token_service import (
     decrypt_worker_token,
     encrypt_worker_token,
@@ -305,6 +310,37 @@ def start_inflight_flow(
     worker: Worker,
     payload: WorkerInflightFlowStartRequest,
 ) -> dict:
+    binding = None
+    if payload.conversation_id:
+        # Lock the conversation binding before the Worker row.  Recovery-hold
+        # suspension and in-flight registration must be one transaction so a
+        # 120-second expiry cannot slip between them.
+        binding = db.scalar(
+            select(WechatSessionBinding)
+            .where(
+                WechatSessionBinding.worker_id == worker.id,
+                WechatSessionBinding.conversation_id
+                == payload.conversation_id,
+                WechatSessionBinding.deleted_at.is_(None),
+            )
+            .with_for_update()
+        )
+        if binding is None:
+            raise AppError(
+                "WORKER_INFLIGHT_CONVERSATION_NOT_BOUND",
+                "在途流程绑定的微信会话不存在",
+                409,
+            )
+        if (
+            payload.flow_kind == "c2_read"
+            and int(payload.unread_generation or 0)
+            > int(binding.unread_generation or 0)
+        ):
+            raise AppError(
+                "WORKER_INFLIGHT_UNREAD_GENERATION_INVALID",
+                "在途读取携带了后端尚未签发的未读代次",
+                409,
+            )
     worker = _lock_worker(db, worker.id)
     if worker.run_status != "running":
         raise AppError("WORKER_NOT_ACCEPTING_TASKS", "Worker 已暂停，不能开始新流程", 409)
@@ -317,16 +353,40 @@ def start_inflight_flow(
             and current.get("flow_kind") == payload.flow_kind
             and current.get("status") in {"active", "draining"}
         ):
+            if (
+                str(current.get("conversation_id") or "")
+                != str(payload.conversation_id or "")
+                or current.get("unread_generation")
+                != payload.unread_generation
+            ):
+                raise AppError(
+                    "WORKER_INFLIGHT_FLOW_SCOPE_MISMATCH",
+                    "同一在途流程的客户或未读代次发生变化",
+                    409,
+                )
             return current
         raise AppError("WORKER_INFLIGHT_FLOW_CONFLICT", "Worker 已有其他在途流程", 409)
     state = {
         "status": "active",
         "flow_id": payload.flow_id,
         "flow_kind": payload.flow_kind,
+        "conversation_id": payload.conversation_id,
+        "unread_generation": payload.unread_generation,
         "registered_at": utcnow().isoformat(),
         "pause_requested_at": None,
     }
     worker.inflight_flow_state = state
+    if binding is not None:
+        suspend_recovery_hold(
+            binding,
+            read_run_id=payload.flow_id,
+            unread_generation=(
+                int(payload.unread_generation)
+                if payload.unread_generation is not None
+                else int(binding.unread_generation or 0)
+            ),
+            observed_at=utcnow(),
+        )
     db.flush()
     return state
 
@@ -337,16 +397,45 @@ def finish_inflight_flow(
     payload: WorkerInflightFlowFinishRequest,
     actor: ActorContext,
 ) -> dict:
+    locked_binding = None
+    if payload.conversation_id:
+        locked_binding = db.scalar(
+            select(WechatSessionBinding)
+            .where(
+                WechatSessionBinding.worker_id == worker.id,
+                WechatSessionBinding.conversation_id
+                == payload.conversation_id,
+                WechatSessionBinding.deleted_at.is_(None),
+            )
+            .with_for_update()
+        )
     worker = _lock_worker(db, worker.id)
     current = dict(worker.inflight_flow_state or {})
     if current.get("flow_id") != payload.flow_id:
         raise AppError("WORKER_INFLIGHT_FLOW_MISMATCH", "只能结束当前同一在途流程", 409)
+    if (
+        payload.conversation_id
+        and str(current.get("conversation_id") or "").strip()
+        and str(current.get("conversation_id") or "")
+        != payload.conversation_id
+    ):
+        raise AppError(
+            "WORKER_INFLIGHT_FLOW_SCOPE_MISMATCH",
+            "只能结束当前同一客户的在途流程",
+            409,
+        )
     flow_kind = str(current.get("flow_kind") or "")
     if payload.terminal_kind == "task_terminal":
         if flow_kind not in {"task", "chat_reply"}:
             raise AppError(
                 "WORKER_INFLIGHT_FLOW_TERMINAL_KIND_INVALID",
                 "C2 读取流程不能按任务终态结束",
+                409,
+            )
+        if flow_kind == "chat_reply" and not payload.conversation_id:
+            raise AppError(
+                "WORKER_INFLIGHT_FLOW_SCOPE_MISMATCH",
+                "C3 回复流程结束时必须携带原客户会话",
                 409,
             )
         task = db.get(Task, payload.flow_id)
@@ -367,15 +456,7 @@ def finish_inflight_flow(
                 "读取确认终态字段不完整",
                 409,
             )
-        binding = db.scalar(
-            select(WechatSessionBinding)
-            .where(
-                WechatSessionBinding.worker_id == worker.id,
-                WechatSessionBinding.conversation_id == payload.conversation_id,
-                WechatSessionBinding.deleted_at.is_(None),
-            )
-            .with_for_update()
-        )
+        binding = locked_binding
         if (
             binding is None
             or binding.last_read_run_id != payload.flow_id
@@ -398,15 +479,7 @@ def finish_inflight_flow(
                 "后端重读调度终态必须携带会话和标准错误码",
                 409,
             )
-        binding = db.scalar(
-            select(WechatSessionBinding)
-            .where(
-                WechatSessionBinding.worker_id == worker.id,
-                WechatSessionBinding.conversation_id == payload.conversation_id,
-                WechatSessionBinding.deleted_at.is_(None),
-            )
-            .with_for_update()
-        )
+        binding = locked_binding
         if (
             binding is None
             or binding.last_read_run_id != payload.flow_id
@@ -525,16 +598,7 @@ def finish_inflight_flow(
                 409,
             )
         if payload.error_code == "C2_UNREAD_RESULT_REPEATEDLY_INCONCLUSIVE":
-            binding = db.scalar(
-                select(WechatSessionBinding)
-                .where(
-                    WechatSessionBinding.worker_id == worker.id,
-                    WechatSessionBinding.conversation_id
-                    == payload.conversation_id,
-                    WechatSessionBinding.deleted_at.is_(None),
-                )
-                .with_for_update()
-            )
+            binding = locked_binding
             if (
                 binding is None
                 or binding.last_read_run_id != payload.flow_id
@@ -562,6 +626,50 @@ def finish_inflight_flow(
         )
     worker.inflight_flow_state = {}
     db.flush()
+    if locked_binding is not None:
+        if worker.run_status != "running":
+            # Pausing/faulting during a Flow must not settle or expire an old
+            # customer hold. Preserve the suspended evidence and make the
+            # first post-resume scheduler action an authoritative reread.
+            hold = dict(locked_binding.recovery_hold or {})
+            if hold.get("status") == "suspended":
+                locked_binding.next_read_due_at = utcnow()
+        else:
+            hold = settle_recovery_hold_after_flow(
+                locked_binding,
+                read_run_id=payload.flow_id,
+                technical_failed=(
+                    payload.terminal_kind == "technical_failed"
+                ),
+                resume_without_deferred=(
+                    flow_kind == "chat_reply"
+                    and payload.terminal_kind == "task_terminal"
+                ),
+            )
+        if hold.get("status") == "active" and worker.run_status == "running":
+            conversation = db.scalar(
+                select(Conversation)
+                .where(
+                    Conversation.conversation_id
+                    == locked_binding.conversation_id
+                )
+                .with_for_update()
+            )
+            if conversation is not None:
+                # Import locally to preserve the Worker service's ownership of
+                # the in-flight row while reusing the single backend expiry
+                # implementation after (never during) the flow terminal.
+                from app.services.wechat_service import (
+                    _expire_identity_unresolved_recovery_hold,
+                )
+
+                _expire_identity_unresolved_recovery_hold(
+                    db,
+                    binding=locked_binding,
+                    conversation=conversation,
+                    worker=worker,
+                )
+                db.flush()
     return {"finished": True, "flow_id": payload.flow_id}
 
 

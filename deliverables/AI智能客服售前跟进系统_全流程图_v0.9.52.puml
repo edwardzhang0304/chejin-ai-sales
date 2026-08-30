@@ -1,5 +1,5 @@
 @startuml
-' 文档版本：v0.9.50；灰度目标版本：0.9.50（继承不可变 gray-v0.9.49/26e149a；唯一checkpoint比较结果从Worker顶层传到Sidecar最终发送门；凭证缺失/矛盾为technical_failed+Worker faulted、零Handoff、零飞书；合同为76a4e559...60748；来源提交、打包和Windows实机UAT待完成）；最后更新：2026-08-29
+' 文档版本：v0.9.52；本地候选：0.9.52/053ec758...87940（继承不可变 gray-v0.9.51/2335db2；旧恢复计时器、读取结果和C4召回不得越过新未读代次或在途Flow；代码、迁移、合同、Schema和定向测试已完成；独立OmniAuto来源提交为80b79835f181201e80cb2f58f06df2c515f1dc56；车金提交、打包、部署和Windows实机UAT未完成）；最后更新：2026-08-30
 title AI智能客服售前跟进系统 全流程图（C0-C4、媒体、回复、转人工与恢复）
 
 skinparam monochrome true
@@ -55,12 +55,29 @@ frame_action_binding不是跨轮身份证，首次动作不得要求本次confir
 end note
 
 note over W,OA
-0.9.50发送前凭证链：pre_send_refresh的checkpoint比较结果
+0.9.50已冻结的发送前凭证链：pre_send_refresh的checkpoint比较结果
 只允许在Worker返回值顶层出现一次；Worker原样绑定matched_pairs
 的强边界凭证后，Sidecar最终发送门只执行同一共享比较器。
 非空checkpoint的比较凭证缺失或矛盾，固定返回
 C3_SEND_CONTEXT_GUARD_INVALID：零输入、零点击、零发送、
 零Handoff、零飞书，Worker=faulted。
+end note
+
+note over W,Handoff
+0.9.52跨轮互斥：recoverable_hold的120秒只属于其
+origin_unread_generation + gate_identity_key，不是客户级全局闹钟。
+两者必须同时相同才可继续原计时；新代次即使指纹相同也必须从0新建。
+新未读代次或同客户新C2/C3 Flow注册时，旧hold必须原子suspended；
+read-authorization、媒体动作续权、ingest前置检查和心跳不得触发旧超时Handoff。
+当前Flow终态后才结算：问题消失=resolved；同一问题恢复原first_seen_at；
+不同问题=旧hold superseded并从0建立新hold；technical_failed=Worker faulted且零Handoff。
+C3终态若未产生新的C2身份结论，恢复原hold和原first_seen_at后才允许检查到期，
+不得永久suspended或重置120秒。
+Worker非running时不得检查到期或创建Handoff；恢复running后先权威复读。
+read-targets必须在锁定候选Binding后重新锁定并刷新Worker；
+最终状态非running时直接返回空目标，零hold到期、零C4转换、零新读取。
+retry_required次数只在同一unread_generation内累计。
+C4到期只在无待处理新未读、无C2/C3在途Flow时进入recall_precheck。
 end note
 
 note over W,OA
@@ -340,7 +357,7 @@ loop Worker运行中；每次循环最多完成一个会话事务
       Auth -> Auth: 只更新会话发现/绑定事实\nscan-result本身不授予读取权限
       Auth -> Auth: 将候选与C1的friend_request_sent核对\n校验短码、Worker/微信实例绑定和首屏行证据
       Auth -> Auth: 只有核对通过才签发短时读取许可\nread_reason=friend_acceptance_visible_hit\n首屏命中走visible，未命中按正式短码搜索
-      Auth -> Auth: 已有会话到达召回周期时，仅在静默时段/上限/状态检查通过后\n签发read_reason=recall_precheck + recall_cycle_id + recall_origin_status
+      Auth -> Auth: 已有会话到达召回周期时先检查\n无待处理新unread_generation且无C2/C3在途Flow\n满足后才签发recall_precheck；否则只记待重新评估
       opt 此前bound的同一可见行，本次高质量观察不到原短码
         Auth -> Auth: 先保持原绑定并置degraded\n单次缺失不等于短码已移除
         alt 同一原行仍在第一屏且证据足够
@@ -363,6 +380,8 @@ loop Worker运行中；每次循环最多完成一个会话事务
         end
       end
       W -> Auth: GET read-targets
+      Auth -> Auth: 固定调度顺序：在途Flow只续行，不派新工作\n新unread_generation > 同代次有限重读 > 到期hold > C4 recall
+      Auth -> Auth: 新C2 Flow注册时原子suspend同客户旧hold\n轻量授权不得执行hold到期或_prepare_due_recall
       Auth --> W: 仅返回后端已许可的目标\nconversation_id + remark_code\nauthorization_revision + read_reason\nunread_generation=N
 
       alt read-targets为空
@@ -380,6 +399,7 @@ loop Worker运行中；每次循环最多完成一个会话事务
 
         group 2. 授权检查 + 打开会话 + 单帧确认和首次读取
           W -> Auth: 校验当前authorization_revision
+          Auth -> Auth: 只核对X-Inflight-Flow-Id、会话和授权\n禁止在本续权中创建Handoff或切入recall_precheck
           alt 监听停止、人工接管或revision变化
             Auth --> W: authorization_invalid / ai_disabled
             W -> W: 不点击、不读取、不转写、不识图、不入库
@@ -543,6 +563,8 @@ loop Worker运行中；每次循环最多完成一个会话事务
             只决定恢复/结算，不决定消息类型。
             弱图片候选不得先删除已解析文字/语音；
             禁止简化成“有文字就不是图片”。
+            80%包含+30%文字面积只产生待验证候选，
+            不删除备用OCR文字、不确认图片、不调用Vision。
             end note
             alt 图片检测/物理锚点代码异常或候选被截断
               OA --> W: C2_IMAGE_OBSERVATION_FAILED\n结构化observation contract error
@@ -687,7 +709,12 @@ loop Worker运行中；每次循环最多完成一个会话事务
                     end note
                     alt 精确确认为文字菜单
                       OA -> WX: 关闭菜单\n不点击复制
-                      OA --> W: media_result=failed\nerror_code=C2_IMAGE_SOURCE_INVALID\nreason_detail=text_context_menu_rejected\n零剪贴板读取/零Vision
+                      alt 本对象是80%/30%待验证候选
+                        OA --> W: 同帧文字菜单回执 + 备用OCR文字\n零剪贴板读取/零Vision
+                        W -> W: 取消本图片预留号\n按动作帧保留原文字与同帧新消息
+                      else 普通图片目标却出现文字菜单
+                        OA --> W: media_result=failed\nerror_code=C2_IMAGE_SOURCE_INVALID\nreason_detail=text_context_menu_rejected\n零剪贴板读取/零Vision
+                      end
                     else 精确确认为语音菜单
                       OA -> WX: 关闭菜单\n不点击复制
                       OA --> W: media_result=failed\nerror_code=C2_IMAGE_SOURCE_INVALID\nreason_detail=voice_context_menu_rejected\n零剪贴板读取/零Vision
@@ -903,11 +930,16 @@ loop Worker运行中；每次循环最多完成一个会话事务
             else 本轮没有ingested的新customer消息
               W -> W: no_action\nself-only/duplicated/ignored不触发Brain
             else history_gap=true且切入最新待回复尾部
-              Ingest -> C3: 新消息事实已入库\n建立L2 recoverable_hold
-              C3 -> C3: 合并后端recent_messages纯数据恢复（次数0）\n必要时最多两次不同read_run_id被动稳定重读
-              alt 两次/120秒内恢复或缺口仅在旧区间
+              Ingest -> C3: 先锁定并验收当前read_run+unread_generation事实\n再按gate_identity_key建立/结算L2 hold
+              C3 -> C3: 合并后端recent_messages纯数据恢复（次数0）\n必要时只在同一unread_generation做两次不同read_run_id被动重读
+              alt 当前Flow仍在执行/媒体Journal或Outbox未结算
+                C3 -> C3: hold=suspended\n旧120秒不得创建Handoff/飞书或改变会话状态
+              else 当前Flow终态且问题恢复、不同或仍为同一问题
+                C3 -> C3: 消失=resolved；不同=superseded并新建hold\n同一问题恢复active并保留原first_seen_at
+              end
+              alt 当前Flow终态后恢复或缺口仅在旧区间
                 C3 --> W: auto_recovered_clean_read\n继续最新完整尾部
-              else 仍影响最新待回复尾部
+              else 当前Flow终态后同一问题达到两次/120秒\n仍影响最新待回复尾部
                 C3 --> W: terminal handoff + C2_MESSAGE_HISTORY_GAP
               end
             else 会话ai_enabled=false/仍在waiting_sales_reply/全局紧急暂停

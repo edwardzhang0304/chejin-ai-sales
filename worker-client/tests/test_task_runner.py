@@ -1469,17 +1469,36 @@ class FakeApi:
         self.inflight_flow_id: str | None = None
         self.inflight_flow_state: dict = {}
         self.inflight_flow_events: list[str] = []
+        self.inflight_flow_start_payloads: list[dict] = []
         self.legacy_recovery_payloads: list[dict] = []
         self.legacy_recovery_error: Exception | None = None
         self.legacy_recovery_result_override: dict | None = None
 
-    def start_inflight_flow(self, binding: Binding, *, flow_id: str, flow_kind: str):
+    def start_inflight_flow(
+        self,
+        binding: Binding,
+        *,
+        flow_id: str,
+        flow_kind: str,
+        conversation_id: str | None = None,
+        unread_generation: int | None = None,
+    ):
+        self.inflight_flow_start_payloads.append(
+            {
+                "flow_id": flow_id,
+                "flow_kind": flow_kind,
+                "conversation_id": conversation_id,
+                "unread_generation": unread_generation,
+            }
+        )
         self.inflight_flow_id = flow_id
         self.inflight_flow_events.append(f"start:{flow_kind}:{flow_id}")
         self.inflight_flow_state = {
             "status": "active",
             "flow_id": flow_id,
             "flow_kind": flow_kind,
+            "conversation_id": conversation_id,
+            "unread_generation": unread_generation,
             "registered_at": "2026-08-14T00:00:00+00:00",
             "pause_requested_at": None,
         }
@@ -8175,6 +8194,16 @@ class TaskRunnerTest(unittest.TestCase):
         self.assertIn("claim:task-chat", api.events)
         self.assertIn("claim_source:c2_conversation_flow:conv-1", api.events)
         self.assertIn("claim_send:reply-action-1", api.events)
+        self.assertEqual(len(api.inflight_flow_start_payloads), 1)
+        self.assertEqual(
+            api.inflight_flow_start_payloads[0],
+            {
+                "flow_id": "task-chat",
+                "flow_kind": "chat_reply",
+                "conversation_id": "conv-1",
+                "unread_generation": None,
+            },
+        )
         self.assertNotIn("ingest:1", api.events)
         self.assertEqual(api.message_payloads, [])
         self.assertLess(
@@ -13242,6 +13271,7 @@ class TaskRunnerTest(unittest.TestCase):
             ocr_confidence=0.98,
             read_reason="waiting_user_reply",
             authorization_revision="revision-journal-voice",
+            unread_generation=8,
         )
         api.read_targets = [target]
         observed_phases: list[str] = []
@@ -13368,6 +13398,15 @@ class TaskRunnerTest(unittest.TestCase):
             ["not_attempted", "trigger_attempted", "confirmed"],
         )
         self.assertEqual(len(api.message_payloads), 1)
+        self.assertEqual(len(api.inflight_flow_start_payloads), 1)
+        self.assertEqual(
+            api.inflight_flow_start_payloads[0]["conversation_id"],
+            target.conversation_id,
+        )
+        self.assertEqual(
+            api.inflight_flow_start_payloads[0]["unread_generation"],
+            8,
+        )
         self.assertEqual(
             api.message_payloads[0]["evidence"][
                 "authoritative_frame_source"
@@ -23209,6 +23248,336 @@ class TaskRunnerTest(unittest.TestCase):
         assert receipt["trigger_observation_id"] == action_c[
             "observation_id"
         ]
+
+    def test_menu_confirmed_text_survives_worker_image_candidate_pipeline(self):
+        from contextlib import nullcontext
+
+        from PIL import Image
+
+        from apps.wechat_ai_customer_service.optional_plugins.vision.capture import (
+            transaction as image_transaction,
+        )
+        from apps.wechat_ai_customer_service.optional_plugins.vision.ports import (
+            VisionHostPorts,
+        )
+
+        unique = str(time.time_ns())
+
+        def fallback_observation(name: str) -> dict:
+            return {
+                "schema_version": 3,
+                "observation_id": f"text-{name}-{unique}",
+                "row_kind": "text_bubble",
+                "sender_role": "customer",
+                "sender_role_source": "same_row_avatar",
+                "message_type": "text",
+                "voice_state": "not_voice",
+                "content_clean": "粤B·A1234",
+                "bubble_rect": [520, 250, 650, 290],
+                "source_message": {
+                    "id": f"text-source-{name}-{unique}",
+                    "type": "text",
+                    "content": "粤B·A1234",
+                    "sender_role": "customer",
+                },
+            }
+
+        def image_candidate(name: str, fallback: dict) -> dict:
+            observation_id = f"image-{name}-{unique}"
+            return {
+                "schema_version": 3,
+                "observation_id": observation_id,
+                "row_kind": "image_bubble",
+                "sender_role": "customer",
+                "sender_role_source": "same_row_avatar",
+                "message_type": "image",
+                "voice_state": "not_voice",
+                "item_state": "discovered",
+                "bubble_rect": [460, 210, 760, 510],
+                "image_physical_anchor": {
+                    "sender_role": "customer",
+                    "audit_observation_id": observation_id,
+                },
+                "source_message": {
+                    "id": observation_id,
+                    "type": "image",
+                    "sender_role": "customer",
+                },
+                "_image_candidate_verification": {
+                    "required": True,
+                    "reason": (
+                        "embedded_ocr_text_requires_context_menu"
+                    ),
+                    "fallback_observations": [copy.deepcopy(fallback)],
+                },
+            }
+
+        pre_text = fallback_observation("pre")
+        pre_candidate = image_candidate("pre", pre_text)
+        pre_remaining = image_candidate(
+            "remaining-pre",
+            fallback_observation("remaining-pre-fallback"),
+        )
+        pre_remaining.pop("_image_candidate_verification", None)
+        pre_remaining["bubble_rect"] = [460, 90, 760, 190]
+        pre_payload = {
+            "frame_id": f"pre-frame-{unique}",
+            "authoritative_frame_source": "final_read",
+            "observations": [pre_remaining, pre_candidate],
+        }
+        FakeBridge._attach_image_frame_action_bindings(pre_payload)
+
+        action_text = fallback_observation("action")
+        action_candidate = image_candidate("action", action_text)
+        second_action_text = {
+            **fallback_observation("action-second-line"),
+            "content_clean": "第二行文字",
+            "bubble_rect": [520, 300, 680, 340],
+            "source_message": {
+                "id": f"text-source-action-second-line-{unique}",
+                "type": "text",
+                "content": "第二行文字",
+                "sender_role": "customer",
+            },
+        }
+        action_candidate["_image_candidate_verification"][
+            "fallback_observations"
+        ].append(second_action_text)
+        action_remaining = image_candidate(
+            "remaining-action",
+            fallback_observation("remaining-action-fallback"),
+        )
+        action_remaining.pop("_image_candidate_verification", None)
+        action_remaining["bubble_rect"] = [460, 90, 760, 190]
+        late_text = {
+            **fallback_observation("late"),
+            "content_clean": "刚补充一句",
+            "bubble_rect": [520, 540, 690, 580],
+            "source_message": {
+                "id": f"text-source-late-{unique}",
+                "type": "text",
+                "content": "刚补充一句",
+                "sender_role": "customer",
+            },
+        }
+        action_payload = {
+            "frame_id": f"action-frame-{unique}",
+            "authoritative_frame_source": "action_frame",
+            "observations": [
+                action_remaining,
+                action_candidate,
+                late_text,
+            ],
+        }
+        FakeBridge._attach_image_frame_action_bindings(action_payload)
+        action_message = {
+            **copy.deepcopy(action_candidate),
+            "id": action_candidate["observation_id"],
+            "message_id": action_candidate["observation_id"],
+            "type": "image",
+            "bounds": list(action_candidate["bubble_rect"]),
+            "anchor": {"x": 610, "y": 360},
+            "_current_business_screen_order": 0,
+        }
+        action_remaining_message = {
+            **copy.deepcopy(action_remaining),
+            "id": action_remaining["observation_id"],
+            "message_id": action_remaining["observation_id"],
+            "type": "image",
+            "bounds": list(action_remaining["bubble_rect"]),
+            "anchor": {"x": 610, "y": 140},
+            "_current_business_screen_order": 0,
+        }
+        action_message["_current_business_screen_order"] = 1
+        surface = Image.new("RGB", (900, 650), "white")
+
+        class Frames:
+            def capture_frame(self, context):
+                if context.get("phase") == "image_candidate":
+                    return {
+                        "ok": True,
+                        "image": surface.copy(),
+                        "image_size": surface.size,
+                        "messages": [
+                            copy.deepcopy(action_remaining_message),
+                            copy.deepcopy(action_message),
+                        ],
+                        "observations": [
+                            copy.deepcopy(action_remaining),
+                            copy.deepcopy(action_candidate),
+                            copy.deepcopy(late_text),
+                        ],
+                        "time_markers": [],
+                        "layout_snapshot_id": action_payload["frame_id"],
+                        "image_frame_action_bindings": copy.deepcopy(
+                            action_payload["image_frame_action_bindings"]
+                        ),
+                    }
+                return {
+                    "ok": True,
+                    "image": surface.copy(),
+                    "image_size": surface.size,
+                    "ocr_items": [{"text": "复制文字"}],
+                    "menu_panel_bounds": [580, 350, 700, 450],
+                    "screen_origin": [0, 0],
+                }
+
+        class Actions:
+            right_click_count = 0
+            dismiss_count = 0
+
+            def right_click(self, x, y, *, bounds):
+                self.right_click_count += 1
+                return {"screen_x": x, "screen_y": y}
+
+            def dismiss_menu_safely(self):
+                self.dismiss_count += 1
+                return {"ok": True, "reason": "menu_dismissed"}
+
+        class Clipboard:
+            read_count = 0
+
+            def sequence_number(self):
+                return 9
+
+            def read_current_bitmap(self):
+                self.read_count += 1
+                raise AssertionError("text_candidate_must_not_read_clipboard")
+
+        actions = Actions()
+        clipboard = Clipboard()
+        ports = VisionHostPorts(
+            rpa_lease=type(
+                "Lease",
+                (),
+                {"lease": lambda *_args, **_kwargs: nullcontext()},
+            )(),
+            conversation_target=type(
+                "Target",
+                (),
+                {"confirm_target": lambda *_args, **_kwargs: {"ok": True}},
+            )(),
+            window_frame=Frames(),
+            ui_action=actions,
+            clipboard=clipboard,
+        )
+
+        process_calls = 0
+
+        def run_real_text_menu_transaction(**kwargs):
+            nonlocal process_calls
+            process_calls += 1
+            binding_payload = kwargs["frame_action_binding"]
+            acquired = image_transaction.acquire_current_image_via_ports(
+                ports,
+                {
+                    "sender_role": "customer",
+                    "bubble_rect": kwargs["observation"]["bubble_rect"],
+                    "image_physical_anchor": kwargs["observation"][
+                        "image_physical_anchor"
+                    ],
+                    "expected_business_screen_order": int(
+                        binding_payload["selected_business_screen_order"]
+                    ),
+                },
+            )
+            assert acquired["ok"] is False, acquired
+            assert acquired["reason"] == (
+                "C2_IMAGE_CANDIDATE_CONFIRMED_TEXT"
+            )
+            return {
+                "state": "candidate_reclassified_text",
+                "reason": acquired["reason"],
+                "action_phase": "not_attempted",
+                "business_state": "candidate_reclassified_text",
+                "business_result_confirmed": True,
+                "ui_action_performed": True,
+                "transaction": dict(acquired["transaction"]),
+                "diagnostics": {
+                    "events": [],
+                    "image_persisted": False,
+                },
+            }
+
+        runner, _ = self.make_runner(
+            FakeApi(None),
+            FakeBridge(RpaResult(ok=True, result_code="ok", message="unused")),
+        )
+        target = WechatReadTarget(
+            conversation_id=f"conv-text-candidate-{unique}",
+            rpa_session_key="wx:rpa:v1:text-candidate",
+            display_name="CJTEXT01",
+            remark_code="CJTEXT01",
+            authorization_revision=f"revision-{unique}",
+        )
+        binding = Binding(
+            worker_id="worker-text-candidate",
+            worker_token="token",
+            client_instance_id="client-text-candidate",
+            run_status="running",
+        )
+        flow_outcomes = FlowOutcomeAccumulator(
+            origin_read_run_id=f"read-text-candidate-{unique}"
+        )
+
+        try:
+            with patch(
+                "chejin_worker_client.omniauto_vision.process_image_slot",
+                side_effect=run_real_text_menu_transaction,
+            ), patch.object(
+                image_transaction,
+                "_classify_context_menu",
+                return_value={
+                    "kind": "text",
+                    "labels": ["复制文字"],
+                    "copy_item": None,
+                },
+            ):
+                processed, stats = runner._process_final_image_slots(
+                    binding=binding,
+                    target=target,
+                    sidecar_payload=pre_payload,
+                    enforce_read_targets=False,
+                    allowed_new_observation_ids={
+                        pre_candidate["observation_id"],
+                        pre_remaining["observation_id"],
+                    },
+                    flow_outcomes=flow_outcomes,
+                )
+        finally:
+            surface.close()
+
+        assert actions.right_click_count == 1
+        assert process_calls == 1
+        assert actions.dismiss_count == 1
+        assert clipboard.read_count == 0
+        assert stats.get("terminal_gate") is None
+        assert processed["observations"], (processed, stats)
+        remaining_images = [
+            item
+            for item in processed["observations"]
+            if item.get("row_kind") == "image_bubble"
+        ]
+        assert len(remaining_images) == 1
+        assert remaining_images[0]["observation_id"] == (
+            action_remaining["observation_id"]
+        )
+        assert [
+            item.get("content_clean")
+            for item in processed["observations"]
+            if item.get("row_kind") == "text_bubble"
+        ] == ["粤B·A1234", "第二行文字", "刚补充一句"]
+        assert stats["completed"] == 0
+        assert stats["failed"] == 0
+        assert stats["removed_from_final_screen"] == 1
+        assert stats["requires_final_refresh"] is True
+        assert "terminal_gate" not in stats
+        assert "_pending_image_action" not in processed
+        assert not any(
+            key.startswith("_image_candidate")
+            for item in processed["observations"]
+            for key in item
+        )
 
     def test_completed_image_without_confirmed_receipt_never_reaches_ledger(self):
         runner, _ = self.make_runner(

@@ -1427,6 +1427,16 @@ class WechatC2Test(unittest.TestCase):
                     "dhash64:0123456789abcdef"
                 ),
             },
+            "_image_candidate_verification": {
+                "required": True,
+                "reason": "embedded_ocr_text_requires_context_menu",
+                "fallback_observations": [
+                    {
+                        "row_kind": "text_bubble",
+                        "content_clean": "粤B·A1234",
+                    }
+                ],
+            },
         }
         valid_receipt = {
             "canonical_action_id": "image-action-9",
@@ -1456,6 +1466,20 @@ class WechatC2Test(unittest.TestCase):
         )
         self.assertEqual(committed["_worker_identity_scope"], "committed")
         self.assertEqual(committed["item_state"], "completed")
+        self.assertNotIn("_image_candidate_verification", committed)
+        replay_input = {
+            **committed,
+            "_image_candidate_verification": {
+                "required": True,
+                "fallback_observations": [
+                    {"row_kind": "text_bubble", "content_clean": "不得落盘"}
+                ],
+            },
+        }
+        replayed = wechat_c2_module.replayable_image_observation(
+            replay_input
+        )
+        self.assertNotIn("_image_candidate_verification", replayed)
 
         invalid_mutations = {
             "canonical_action_id": "",

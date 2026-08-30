@@ -1,10 +1,10 @@
 {
   "contract_version": 3,
-  "contract_revision": "0.9.51",
+  "contract_revision": "0.9.52",
   "observation_schema_version": 3,
   "control_schema_version": 1,
   "performance_fast_path_contract": {
-    "release": "0.9.51",
+    "release": "0.9.52",
     "business_semantics_unchanged": true,
     "flags": [
       "CHEJIN_TASK_SAFE_WAKE_ENABLED",
@@ -30,7 +30,7 @@
     "sidebar_search_safety_rule": "sidebar ROI may identify a candidate only; login overlays central dialogs and whole-window blocking state must be decided from full-window OCR of the exact same screenshot"
   },
   "startup_layout_calibration_contract": {
-    "schema_version": "0.9.51",
+    "schema_version": "0.9.52",
     "owner": "omniauto",
     "worker_role": "persist_path_transport_contract_validation_and_execution_only",
     "single_runtime_path": true,
@@ -95,6 +95,11 @@
     "flow_kinds": ["task", "c2_read", "chat_reply"],
     "backend_states": ["active", "draining"],
     "continuation_header": "X-Inflight-Flow-Id",
+    "start_scope": {
+      "c2_read_required_fields": ["conversation_id", "unread_generation"],
+      "conversation_id_rule": "every_scoped_c2_or_c3_flow_must_be_bound_to_the_authorized_conversation_before_any_recovery_hold_or_recall_transition",
+      "unread_generation_rule": "c2_read_must_carry_the_exact_backend_issued_unread_generation"
+    },
     "pause_rule": "reject_new_work_and_allow_only_the_exact_registered_flow_to_settle",
     "emergency_stop_rule": "prevent_every_not_yet_started_wechat_ui_action",
     "finish_request": {
@@ -113,7 +118,7 @@
       "local_proof_rule": "every terminal kind requires the UI lock plus same-flow pending Outbox, Ledger, ActionJournal, and sent_ack to be settled; both no-fact failure terminals additionally forbid any same-flow Outbox, Ledger, or Journal artifact"
     },
     "local_atomicity_rule": "request_pause, clear_pause, begin_flow, and finish_flow must read, validate, and update runtime_control_v1 in one SQLite BEGIN IMMEDIATE transaction",
-    "row_lock_rule": "set_run_status, start_inflight_flow, and finish_inflight_flow must serialize on the same Worker row with SELECT FOR UPDATE",
+    "row_lock_rule": "recovery_and_recall_transitions_use_SELECT_FOR_UPDATE_in_the_fixed_order_WechatSessionBinding_then_Worker_inflight_flow_state_then_Conversation_then_open_HandoffEvent; read_targets_must_refresh_the_Worker_under_that_lock_even_after_its_route_level_check",
     "faulted_sticky_rule": "faulted_is_a_persisted_local_authority_and_must_never_be_downgraded_to_paused_by_heartbeat_restart_reconciliation_backend_sync_failure_or_any_central_pause_helper;_only_an_explicit_successful_operator_start_transition_may_clear_it",
     "confirmed_media_reconciliation_rule": "one_confirmed_physical_voice_or_image_action_journal_may_repair_only_the_same_origin_read_run_same_message_type_same_source_key_failed_waiting_ledger_before_backend_ack;_the_previous_failed_result_remains_nested_audit_evidence_and_confirmed_or_already_completed_facts_are_immutable",
     "confirmed_journal_archive_retry_rule": "after_backend_or_ledger_confirmation_a_transient_windows_file_lock_while_archiving_the_exact_action_journal_keeps_the_old_flow_and_retries_archive_on_the_next_tick_with_zero_repeat_http_or_wechat_action",
@@ -139,7 +144,32 @@
       "C2_MESSAGE_HISTORY_GAP"
     ],
     "generic_recovery_rule": "only the listed conversation/message-history identity gates enter one conversation-local hold for at most two distinct passive stable rereads or 120 seconds before one idempotent handoff; media action invariant failures are technical failures and are never recovery or handoff gates",
-    "gate_key_rule": "sha256(conversation_id + '|' + reply_action_id + '|' + '|'.join(sorted(all_recoverable_codes)) + '|reply_suffix')",
+    "gate_key_rule": "sha256(conversation_id + '|' + reply_action_id + '|' + gate_identity_key + '|' + '|'.join(sorted(all_recoverable_codes)) + '|' + gate_scope + '|' + origin_unread_generation)",
+    "hold_scope_fields": [
+      "gate_key",
+      "gate_identity_key",
+      "originating_read_run_id",
+      "origin_unread_generation",
+      "first_seen_at",
+      "recovery_attempt_count",
+      "last_counted_read_run_id"
+    ],
+    "flow_interlock_rule": "a_newer_unread_generation_or_same_conversation_C2_or_C3_flow_suspends_the_old_hold; authorization_media_continuation_ingest_heartbeat_and_C4_are_forbidden_to_expire_it_while_that_flow_or_its_Journal_Ledger_Outbox_is_unsettled",
+    "flow_terminal_rule": "only_after_the_scoped_flow_terminal_may_one_deferred_resolved_same_identity_or_different_identity_transition_be_applied; same_identity_preserves_first_seen_at_and_counts_the_read_once; different_identity_supersedes_the_old_gate_and_starts_at_count_zero_with_a_new_first_seen_at",
+    "same_gate_rule": "same_gate_requires_both_gate_identity_key_and_origin_unread_generation_to_match; an_identical_error_fingerprint_in_a_new_unread_generation_is_a_new_hold_with_count_zero_and_a_new_first_seen_at",
+    "c3_terminal_rule": "a_terminal_C3_flow_without_a_new_C2_identity_decision_resumes_the_exact_suspended_hold_with_its_original_first_seen_at_then_may_evaluate_expiry; it_must_never_leave_the_hold_permanently_suspended_or_reset_the_timer",
+    "paused_worker_rule": "a_non_running_worker_must_never_expire_or_escalate_a_hold; a_flow_terminal_while_paused_preserves_suspended_evidence_and_schedules_one_authoritative_reread_before_any_expiry_check_after_manual_resume",
+    "scheduler_run_status_rule": "after_locking_all_candidate_bindings_then_locking_and_refreshing_the_Worker_row_read_targets_must_return_no_targets_when_run_status_is_not_running_before_binding_degrade_timer_expiry_C4_transition_or_read_dispatch",
+    "legacy_hold_rule": "a_pre_0_9_52_hold_missing_origin_unread_generation_or_gate_identity_key_can_never_handoff_from_its_old_timestamp_and_requires_one_current_authoritative_read",
+    "lightweight_authorization_rule": "read_authorization_is_validation_only_and_must_not_expire_a_hold_prepare_recall_or_create_any_business_terminal",
+    "scheduler_priority": [
+      "registered_inflight_flow",
+      "new_unread_generation",
+      "same_generation_bounded_reread",
+      "due_recovery_hold",
+      "c4_recall"
+    ],
+    "c4_interlock_rule": "recall_precheck_is_forbidden_while_the_conversation_has_pending_unread_or_a_scoped_C2_or_C3_flow; a_new_customer_fact_cancels_the_due_recall",
     "relation_rule": "aggregate every recoverable gate: any after wins, otherwise any unknown wins, otherwise before_or_equal",
     "attempt_rule": "discovery_or_checkpoint_merge_establishes_the_hold_without_consuming_an_attempt; only_a_different_read_run_stable_reread_counts; duplicate_transport_pause_offline_and_timeout_do_not_count",
     "unknown_rule": "after_two_real_attempts an unresolved reply-suffix unknown creates one idempotent handoff",
@@ -150,6 +180,7 @@
     "current_field": "unread_generation",
     "consumed_field": "consumed_unread_generation",
     "request_field": "unread_generation",
+    "result_generation_field": "last_read_result_unread_generation",
     "new_generation_evidence": [
       "normalized_message_preview",
       "preview_time",
@@ -167,6 +198,7 @@
     "inconclusive_read_rule": "text_may_be_ingested_but_any_still_unresolved_media_or_untrusted_viewport_returns_retry_required_preserves_consumed_unread_generation_and_finishes_the_current_transport_flow_only_after_the_backend_receipt_is_confirmed",
     "inconclusive_error_code": "C2_UNREAD_RESULT_INCONCLUSIVE",
     "inconclusive_max_authoritative_reads": 2,
+    "inconclusive_attempt_scope_rule": "retry_required_and_the_two_read_limit_are_counted_per_unread_generation; a_new_generation_bypasses_the_previous_generation_retry_cooldown_and_starts_its_own_first_attempt",
     "inconclusive_terminal_result": "technical_failed",
     "inconclusive_terminal_error_code": "C2_UNREAD_RESULT_REPEATEDLY_INCONCLUSIVE",
     "bounded_identity_recovery_rule": "an_existing_recoverable_hold_keeps_its_own_distinct_reread_limit_and_terminal_handoff;_generic_inconclusive_counting_must_not_preempt_that_state_machine_and_the_terminal_handoff_consumes_the_authorized_generation",
@@ -1589,7 +1621,7 @@
     ]
   },
   "frame_action_binding_contract": {
-    "release": "0.9.51",
+    "release": "0.9.52",
     "purpose": "carry_one_worker_approved_current_media_action_policy_and_current_frame_diagnostic_evidence_without_claiming_cross_frame_identity",
     "durable_identity": false,
     "observation_owner": "sidecar",
@@ -1646,7 +1678,7 @@
     ]
   },
   "pre_send_message_viewport_contract": {
-    "release": "0.9.51",
+    "release": "0.9.52",
     "selected_target_fingerprint_scope": "prepare_frame_diagnostic_only_and_forbidden_as_an_execute_identity_or_equality_gate",
     "selected_target_forbidden_inputs": [
       "message_viewport_change_digest",
@@ -1745,7 +1777,7 @@
     "physical_media_action_rule": "each_voice_or_image_action_may_trigger_at_most_once_and_post_trigger_waits_are_passive_evidence_reads_only"
   },
   "pre_send_fact_checkpoint_contract": {
-    "release": "0.9.51",
+    "release": "0.9.52",
     "checkpoint_revision": 5,
     "checkpoint_owner": "backend",
     "comparison_and_decision_owner": "worker",

@@ -9,6 +9,7 @@ from typing import Any, Callable
 from .wechat import (
     attach_image_physical_anchors,
     detect_visual_image_bubbles,
+    embedded_ocr_text_candidate,
     explained_non_image_conflict,
     explained_non_image_regions,
     extract_chat_time_markers,
@@ -104,6 +105,28 @@ def image_candidates_without_reliable_typed_message_conflicts(
             # message type.
         if typed_conflict is None:
             kept.append(dict(candidate))
+        elif embedded_ocr_text_candidate(candidate, typed_conflict):
+            kept.append(
+                {
+                    **dict(candidate),
+                    "candidate_verification_required": True,
+                    "candidate_verification_reason": (
+                        "embedded_ocr_text_requires_context_menu"
+                    ),
+                }
+            )
+            if diagnostics is not None:
+                diagnostics.append(
+                    {
+                        "event": "image_candidate_requires_menu_verification",
+                        "reason": "embedded_ocr_text_candidate_only",
+                        "image_bounds": list(image_rect or []),
+                        "protected_bounds": list(typed_conflict["bounds"]),
+                        "sender_role": image_role,
+                        "contained_ratio": typed_conflict["contained_ratio"],
+                        "candidate": dict(candidate),
+                    }
+                )
         elif diagnostics is not None:
             diagnostics.append(
                 {
@@ -128,6 +151,45 @@ def image_candidates_without_reliable_typed_message_conflicts(
     return kept
 
 
+def _embedded_ocr_fallback_messages(
+    candidate: dict[str, Any],
+    messages: list[dict[str, Any]] | None,
+) -> list[dict[str, Any]]:
+    """Return the original text facts hidden behind one provisional surface."""
+
+    candidate_rect = _surface_bounds(
+        candidate.get("bubble_rect") or candidate.get("bounds")
+    )
+    candidate_role = str(
+        candidate.get("sender_role")
+        or candidate.get("sender")
+        or candidate.get("visual_side")
+        or candidate.get("side")
+        or ""
+    ).strip().lower()
+    if (
+        candidate_rect is None
+        or candidate_role not in {"customer", "self"}
+        or candidate.get("candidate_verification_required") is not True
+    ):
+        return []
+    fallback: list[dict[str, Any]] = []
+    for message in messages or []:
+        if not isinstance(message, dict):
+            continue
+        conflict = explained_non_image_conflict(
+            tuple(int(value) for value in candidate_rect),
+            side=candidate_role,
+            regions=explained_non_image_regions([message]),
+        )
+        if conflict is not None and embedded_ocr_text_candidate(
+            candidate,
+            conflict,
+        ):
+            fallback.append(dict(message))
+    return fallback
+
+
 def messages_outside_image_bubbles(
     messages: list[dict[str, Any]] | None,
     image_messages: list[dict[str, Any]] | None,
@@ -139,7 +201,7 @@ def messages_outside_image_bubbles(
     """
 
     image_bounds = [
-        rect
+        (rect, dict(item))
         for item in image_messages or []
         if isinstance(item, dict)
         for rect in [_surface_bounds(item.get("bubble_rect") or item.get("bounds"))]
@@ -155,21 +217,65 @@ def messages_outside_image_bubbles(
         if str(item.get("type") or item.get("message_type") or "").lower() == "image":
             kept.append(dict(item))
             continue
-        # Final defensive gate: even if an upstream/reused structural image
-        # observation overlaps this row, a reliably typed text/voice fact is
-        # monotonic and cannot be erased during merge.  OCR-like fragments
-        # inside a real image do not pass explained_non_image_regions() unless
-        # they also carry trusted chat-row role/type evidence.
-        if explained_non_image_regions([item]):
-            kept.append(dict(item))
-            continue
         rect = _surface_bounds(item.get("bubble_rect"))
         if rect is None:
             kept.append(dict(item))
             continue
         left, top, right, bottom = rect
         embedded = False
-        for image_left, image_top, image_right, image_bottom in image_bounds:
+        reliable_type = bool(explained_non_image_regions([item]))
+        item_identity = str(
+            item.get("id") or item.get("message_id") or ""
+        ).strip()
+        for (
+            image_left,
+            image_top,
+            image_right,
+            image_bottom,
+        ), image_message in image_bounds:
+            verification = (
+                image_message.get("_image_candidate_verification")
+                if isinstance(
+                    image_message.get("_image_candidate_verification"),
+                    dict,
+                )
+                else {}
+            )
+            fallback_messages = [
+                dict(value)
+                for value in (
+                    image_message.get("_embedded_ocr_fallback_messages")
+                    or verification.get("fallback_messages")
+                    or []
+                )
+                if isinstance(value, dict)
+            ]
+            fallback_ids = {
+                str(value.get("id") or value.get("message_id") or "").strip()
+                for value in fallback_messages
+                if str(
+                    value.get("id") or value.get("message_id") or ""
+                ).strip()
+            }
+            exact_fallback_match = any(
+                dict(item) == value
+                for value in fallback_messages
+            )
+            verification_required = bool(
+                image_message.get("candidate_verification_required") is True
+                or verification.get("required") is True
+            )
+            if reliable_type and not (
+                verification_required
+                and (
+                    exact_fallback_match
+                    or (
+                        item_identity
+                        and item_identity in fallback_ids
+                    )
+                )
+            ):
+                continue
             if _contained_area_ratio(
                 (left, top, right, bottom),
                 (image_left, image_top, image_right, image_bottom),
@@ -316,6 +422,29 @@ def visual_image_envelopes_from_bubbles(
                     if following_text_id
                     else {}
                 ),
+                **(
+                    {
+                        "_image_candidate_verification": {
+                            "required": True,
+                            "reason": str(
+                                bubble.get("candidate_verification_reason")
+                                or "embedded_ocr_text_requires_context_menu"
+                            ),
+                            "fallback_messages": [
+                                dict(item)
+                                for item in (
+                                    bubble.get(
+                                        "_embedded_ocr_fallback_messages"
+                                    )
+                                    or []
+                                )
+                                if isinstance(item, dict)
+                            ],
+                        }
+                    }
+                    if bubble.get("candidate_verification_required") is True
+                    else {}
+                ),
             }
         )
     return result
@@ -360,6 +489,15 @@ def visual_image_messages_from_current_surface(
         voice_action_attempts,
         diagnostics=diagnostics,
     )
+    for bubble in bubbles:
+        if not isinstance(bubble, dict):
+            continue
+        fallback_messages = _embedded_ocr_fallback_messages(
+            bubble,
+            existing_messages,
+        )
+        if bubble.get("candidate_verification_required") is True:
+            bubble["_embedded_ocr_fallback_messages"] = fallback_messages
     anchor_messages = messages_outside_image_bubbles(
         existing_messages,
         bubbles,

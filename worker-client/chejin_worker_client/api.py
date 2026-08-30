@@ -99,13 +99,27 @@ class WorkerApiClient:
         return WorkerProfile.from_api(payload)
 
     def start_inflight_flow(
-        self, binding: Binding, *, flow_id: str, flow_kind: str
+        self,
+        binding: Binding,
+        *,
+        flow_id: str,
+        flow_kind: str,
+        conversation_id: str | None = None,
+        unread_generation: int | None = None,
     ) -> dict[str, Any]:
+        request_payload: dict[str, Any] = {
+            "flow_id": flow_id,
+            "flow_kind": flow_kind,
+        }
+        if conversation_id:
+            request_payload["conversation_id"] = conversation_id
+        if unread_generation is not None:
+            request_payload["unread_generation"] = int(unread_generation)
         payload = self._request(
             "POST",
             f"/workers/{binding.worker_id}/inflight-flow/start",
             binding=binding,
-            json={"flow_id": flow_id, "flow_kind": flow_kind},
+            json=request_payload,
         )
         self.inflight_flow_id = flow_id
         return dict(payload or {})

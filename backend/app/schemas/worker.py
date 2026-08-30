@@ -52,6 +52,33 @@ class WorkerRunStatusRequest(BaseModel):
 class WorkerInflightFlowStartRequest(BaseModel):
     flow_id: str = Field(min_length=1, max_length=128)
     flow_kind: str = Field(min_length=1, max_length=32)
+    conversation_id: str | None = Field(default=None, max_length=36)
+    unread_generation: int | None = Field(default=None, ge=0)
+
+    @field_validator("conversation_id")
+    @classmethod
+    def strip_optional_start_conversation(
+        cls,
+        value: str | None,
+    ) -> str | None:
+        if value is None:
+            return None
+        cleaned = value.strip()
+        return cleaned or None
+
+    @model_validator(mode="after")
+    def validate_inflight_flow_scope(self):
+        if self.flow_kind == "c2_read" and (
+            not self.conversation_id or self.unread_generation is None
+        ):
+            raise ValueError(
+                "C2 读取在途流程必须绑定 conversation_id 和 unread_generation"
+            )
+        if self.flow_kind == "chat_reply" and not self.conversation_id:
+            raise ValueError("C3 回复在途流程必须绑定 conversation_id")
+        if self.flow_kind != "c2_read" and self.unread_generation is not None:
+            raise ValueError("非 C2 读取流程不得声明 unread_generation")
+        return self
 
 
 class WorkerInflightFlowFinishRequest(BaseModel):

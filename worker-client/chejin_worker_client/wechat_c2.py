@@ -237,6 +237,7 @@ def _drop_image_runtime_fields(value: Any) -> Any:
             str(key): _drop_image_runtime_fields(child)
             for key, child in value.items()
             if str(key).strip().lower() not in IMAGE_RUNTIME_FIELDS
+            and str(key).strip().lower() != "_image_candidate_verification"
             and not str(key).strip().lower().startswith(IMAGE_RUNTIME_FIELD_PREFIXES)
         }
     if isinstance(value, list):
@@ -920,6 +921,12 @@ def apply_image_terminal_result(observation: dict[str, Any], result: dict[str, A
     enriched.pop("contract_errors", None)
     if state != "completed":
         return enriched
+    # This is Sidecar-only evidence used before the context menu decides
+    # whether a proportional OCR overlap is text or an image.  A confirmed
+    # image is identified by the actual clipboard receipt below; the
+    # provisional classifier and its fallback OCR must not become a durable
+    # message fact or leak into the backend payload.
+    enriched.pop("_image_candidate_verification", None)
     understanding = _project_customer_image_understanding(result.get("customer_image_understanding") or {})
     bridge = _project_visual_bridge_input(result.get("visual_bridge_input") or {})
     image_sha256 = str(transaction.get("image_sha256") or "").strip().lower()

@@ -13,7 +13,7 @@ import uuid
 from zoneinfo import ZoneInfo
 
 from fastapi.encoders import jsonable_encoder
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -79,6 +79,11 @@ from app.services.message_contract import (
     canonical_message_identity_text,
     canonical_reply_text,
     reply_text_hash,
+)
+from app.services.recovery_hold_state import (
+    defer_recovery_hold_until_flow_terminal,
+    inflight_flow_matches_conversation,
+    suspend_recovery_hold,
 )
 
 
@@ -893,6 +898,15 @@ def _apply_scan_fields(binding: WechatSessionBinding, payload: WechatSessionScan
         binding.unread_generation = current_generation + 1
         binding.unread_evidence_key = incoming_evidence_key or None
         _reset_read_backoff(binding)
+        # A newer unread generation owns the next authoritative read.  Do not
+        # delete or restart the older identity problem; suspend its timer
+        # until the new flow has a durable terminal.
+        suspend_recovery_hold(
+            binding,
+            read_run_id=None,
+            unread_generation=current_generation + 1,
+            observed_at=now,
+        )
     elif incoming_unread and incoming_evidence_key and not current_evidence_key:
         # Backfilled rows may have a generation but no semantic evidence key.
         # Attaching the first stable key must not manufacture a new generation.
@@ -1318,6 +1332,74 @@ def ingest_scan_result(db: Session, worker: Worker, payload: WechatSessionScanRe
         db.flush()
         return response
 
+    # The route-level ``new_work`` check is only an optimistic fast path.  A
+    # C2/C3 flow can register immediately afterwards, so acquire every
+    # existing binding named by this scan first and then the Worker row.  This
+    # is the same Binding -> Worker order used by flow registration and hold
+    # settlement.  Once the Worker row is locked, a scan may safely update an
+    # unread generation or create conversations; otherwise a stale scan could
+    # overwrite the state owned by a newly registered flow.
+    remark_codes = sorted(
+        {
+            candidate
+            for item in payload.sessions
+            for candidate in _clean_candidates(item.remark_code_candidates)
+        }
+    )
+    session_keys = sorted(
+        {
+            str(item.rpa_session_key or "").strip()
+            for item in payload.sessions
+            if str(item.rpa_session_key or "").strip()
+        }
+    )
+    binding_matchers = []
+    if remark_codes:
+        binding_matchers.append(
+            WechatSessionBinding.remark_code.in_(remark_codes)
+        )
+    if session_keys:
+        binding_matchers.append(
+            WechatSessionBinding.rpa_session_key.in_(session_keys)
+        )
+    if binding_matchers:
+        list(
+            db.scalars(
+                select(WechatSessionBinding)
+                .where(
+                    WechatSessionBinding.worker_id == worker.id,
+                    WechatSessionBinding.deleted_at.is_(None),
+                    or_(*binding_matchers),
+                )
+                .order_by(WechatSessionBinding.id.asc())
+                .with_for_update()
+            ).all()
+        )
+    worker = db.scalar(
+        select(Worker)
+        .where(Worker.id == worker.id, Worker.deleted_at.is_(None))
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    )
+    if worker is None:
+        raise AppError("WORKER_NOT_FOUND", "Worker 不存在", 404)
+    if worker.run_status != "running":
+        return {
+            "targets": [],
+            "poll_after_seconds": 10,
+            "next_action": NEXT_ACTION_NONE,
+        }
+    inflight_state = dict(worker.inflight_flow_state or {})
+    if (
+        inflight_state.get("status") in {"active", "draining"}
+        and str(inflight_state.get("flow_id") or "").strip()
+    ):
+        raise AppError(
+            "SESSION_SCAN_INFLIGHT_FLOW_CONFLICT",
+            "Worker 已有在途流程，扫描结果不得覆盖当前会话状态",
+            409,
+        )
+
     ambiguous_remark_codes = _ambiguous_scan_remark_codes(payload.sessions)
     bindings = [
         _bind_one_session(
@@ -1388,6 +1470,9 @@ def _read_is_due(
         return False
     if (
         binding.last_read_result == "retry_required"
+        and binding.last_read_result_unread_generation is not None
+        and int(binding.last_read_result_unread_generation)
+        == int(binding.unread_generation or 0)
         and due_at is not None
         and due_at.astimezone(timezone.utc) > utcnow().astimezone(timezone.utc)
     ):
@@ -1416,6 +1501,11 @@ def _read_completion_payload(binding: WechatSessionBinding) -> dict:
         "no_change_read_count": int(binding.no_change_read_count or 0),
         "next_read_due_at": binding.next_read_due_at,
         "unread_generation": int(binding.unread_generation or 0),
+        "result_unread_generation": (
+            int(binding.last_read_result_unread_generation)
+            if binding.last_read_result_unread_generation is not None
+            else None
+        ),
         "consumed_unread_generation": int(
             binding.consumed_unread_generation or 0
         ),
@@ -1504,10 +1594,13 @@ def _settle_completed_read(
     ):
         return _read_completion_payload(binding)
     now = utcnow()
+    previous_read_result = str(binding.last_read_result or "")
+    previous_result_generation = binding.last_read_result_unread_generation
+    requested_unread_generation = max(0, int(unread_generation or 0))
     binding.last_read_run_id = read_run_id
     binding.last_read_completed_at = now
+    binding.last_read_result_unread_generation = requested_unread_generation
     binding.last_read_conversation_status = str(conversation.status or "")
-    requested_unread_generation = max(0, int(unread_generation or 0))
     current_unread_generation = max(
         0,
         int(binding.unread_generation or 0),
@@ -1519,7 +1612,10 @@ def _settle_completed_read(
     if pending_unread_generation and not read_conclusive:
         if (
             not bounded_retry_managed
-            and binding.last_read_result == "retry_required"
+            and previous_read_result == "retry_required"
+            and previous_result_generation is not None
+            and int(previous_result_generation)
+            == requested_unread_generation
         ):
             # Two different authorized reads have now produced fresh frames
             # without a trustworthy conclusion.  Continuing to reopen the
@@ -1562,37 +1658,129 @@ def _settle_completed_read(
 
 
 def read_targets(db: Session, worker: Worker, limit: int = 20) -> dict:
-    _degrade_invalid_bound_targets(db, worker)
-    bindings = list(
+    # The route-level new-work check is only an early rejection: a Flow can
+    # start immediately after it.  The scheduler must acquire the contract
+    # lock order (Binding -> Worker -> Conversation -> Handoff) before it may
+    # expire a hold or prepare C4.
+    # Lock the complete set that may be validated or dispatched before the
+    # Worker row. This preserves Binding -> Worker lock order while ensuring
+    # an operator pause cannot race with even the binding-degrade side path.
+    locked_bindings = list(
         db.scalars(
             select(WechatSessionBinding)
             .where(
                 WechatSessionBinding.worker_id == worker.id,
                 WechatSessionBinding.bind_status == BIND_STATUS_BOUND,
-                WechatSessionBinding.listen_status.in_([LISTEN_STATUS_LISTENING, LISTEN_STATUS_DEGRADED]),
                 WechatSessionBinding.allow_listening.is_(True),
-                WechatSessionBinding.remark_code.is_not(None),
-                WechatSessionBinding.remark_code != "",
-                WechatSessionBinding.conversation_id.is_not(None),
-                WechatSessionBinding.conversation_id != "",
                 WechatSessionBinding.deleted_at.is_(None),
             )
             .order_by(WechatSessionBinding.last_seen_at.desc())
+            .with_for_update()
         )
     )
+    worker = db.scalar(
+        select(Worker)
+        .where(Worker.id == worker.id, Worker.deleted_at.is_(None))
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    )
+    if worker is None:
+        raise AppError("WORKER_NOT_FOUND", "Worker 不存在", 404)
+    if str(worker.run_status or "") != "running":
+        # The route-level acceptance check can race with an operator pause.
+        # The row-locked, refreshed Worker is the only authority allowed to
+        # start a timer transition, C4 recall, or a new read dispatch.
+        return {
+            "targets": [],
+            "poll_after_seconds": 10,
+            "next_action": NEXT_ACTION_NONE,
+        }
+    _degrade_invalid_bound_targets(
+        db,
+        worker,
+        locked_rows=locked_bindings,
+    )
+    bindings = [
+        item
+        for item in locked_bindings
+        if item.bind_status == BIND_STATUS_BOUND
+        and item.listen_status
+        in {LISTEN_STATUS_LISTENING, LISTEN_STATUS_DEGRADED}
+        and item.allow_listening is True
+        and bool(str(item.remark_code or "").strip())
+        and bool(str(item.conversation_id or "").strip())
+    ]
+    inflight_state = dict(worker.inflight_flow_state or {})
+    if (
+        inflight_state.get("status") in {"active", "draining"}
+        and str(inflight_state.get("flow_id") or "").strip()
+    ):
+        # A registered flow may only be continued through its scoped APIs.
+        # No recovery timer, recall transition, or new target is evaluated.
+        return {
+            "targets": [],
+            "poll_after_seconds": 10,
+            "next_action": NEXT_ACTION_NONE,
+        }
     targets: list[dict] = []
     for item in bindings:
         conversation = _upsert_conversation_for_binding(db, item)
+        db.flush()
+        conversation = db.scalar(
+            select(Conversation)
+            .where(
+                Conversation.conversation_id == item.conversation_id
+            )
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
+        if conversation is None:
+            raise AppError(
+                "MESSAGE_CONVERSATION_NOT_FOUND",
+                "读取目标会话不存在",
+                409,
+            )
         from app.services.c3_service import enforce_open_handoff_gate
 
-        enforce_open_handoff_gate(db, conversation)
-        _expire_identity_unresolved_recovery_hold(
-            db,
-            binding=item,
-            conversation=conversation,
-        )
-        _prepare_due_recall(conversation, db=db)
+        enforce_open_handoff_gate(db, conversation, for_update=True)
         _sync_read_backoff_with_conversation(item, conversation)
+        pending_unread = bool(
+            item.unread_hint
+            and int(item.unread_generation or 0)
+            > int(item.consumed_unread_generation or 0)
+        )
+        if pending_unread:
+            suspend_recovery_hold(
+                item,
+                read_run_id=None,
+                unread_generation=int(item.unread_generation or 0),
+                observed_at=utcnow(),
+            )
+        hold = dict(item.recovery_hold or {})
+        preliminary_reason = _read_reason(item, conversation)
+        recovery_reread_due = bool(
+            hold.get("status") in {"active", "suspended"}
+            and preliminary_reason
+            and _read_is_due(item, read_reason=preliminary_reason)
+        )
+        if not pending_unread and not recovery_reread_due:
+            _expire_identity_unresolved_recovery_hold(
+                db,
+                binding=item,
+                conversation=conversation,
+                worker=worker,
+            )
+        hold = dict(item.recovery_hold or {})
+        if (
+            not pending_unread
+            and hold.get("status") not in {"active", "suspended"}
+        ):
+            _prepare_due_recall(
+                conversation,
+                binding=item,
+                worker=worker,
+                db=db,
+            )
         if conversation.status in CONVERSATION_CLOSED_STATUSES:
             continue
         read_reason = _read_reason(item, conversation)
@@ -1746,10 +1934,34 @@ def _apply_identity_unresolved_recovery_hold(
     binding: WechatSessionBinding,
     conversation: Conversation,
     read_run_id: str,
+    unread_generation: int,
+    authoritative_read_confirmed: bool,
     evidence_payload: dict,
     gate_codes: list[str],
     details_by_code: dict[str, list[dict]],
 ) -> tuple[list[str], dict | None]:
+    now = utcnow()
+    current_worker = db.get(Worker, binding.worker_id)
+    flow_in_progress = bool(
+        current_worker is not None
+        and inflight_flow_matches_conversation(
+            current_worker,
+            conversation_id=binding.conversation_id,
+        )
+    )
+
+    def persist_transition(candidate: dict) -> dict:
+        if flow_in_progress:
+            return defer_recovery_hold_until_flow_terminal(
+                binding,
+                candidate=candidate,
+                read_run_id=read_run_id,
+                unread_generation=unread_generation,
+                observed_at=now,
+            )
+        binding.recovery_hold = candidate
+        return candidate
+
     recoverable = [
         code for code in gate_codes
         if code in RECOVERABLE_IDENTITY_UNRESOLVED_GATE_CODES
@@ -1757,19 +1969,31 @@ def _apply_identity_unresolved_recovery_hold(
     remaining = [code for code in gate_codes if code not in recoverable]
     if not recoverable:
         current = dict(binding.recovery_hold or {})
-        if current.get("status") == "active":
+        if (
+            authoritative_read_confirmed
+            and current.get("status") in {"active", "suspended"}
+        ):
             current["status"] = "resolved"
-            current["last_seen_at"] = utcnow().isoformat()
-            binding.recovery_hold = current
+            current["last_seen_at"] = now.isoformat()
+            current["suspended_by_read_run_id"] = None
+            persist_transition(current)
         return remaining, None
 
     boundary = _ai_reply_boundary(
         db, conversation_id=binding.conversation_id
     )
     reply_action_id = str(boundary.get("reply_action_id") or "")
-    now_iso = utcnow().isoformat()
+    now_iso = now.isoformat()
     ordered_codes = sorted(set(recoverable))
     existing_hold = dict(binding.recovery_hold or {})
+    deferred_existing = existing_hold.get("deferred_hold_after_flow")
+    effective_existing_hold = (
+        dict(deferred_existing)
+        if isinstance(deferred_existing, dict)
+        and str(existing_hold.get("suspended_by_read_run_id") or "")
+        == read_run_id
+        else existing_hold
+    )
     has_reply_boundary = bool(
         reply_action_id
         and str(boundary.get("sent_at") or "").strip()
@@ -1778,8 +2002,10 @@ def _apply_identity_unresolved_recovery_hold(
             str(evidence_payload.get("authorization_read_reason") or "")
             == "recent_ai_sent"
             or (
-                existing_hold.get("status") == "active"
-                and existing_hold.get("gate_scope") == "reply_suffix"
+                effective_existing_hold.get("status")
+                in {"active", "suspended"}
+                and effective_existing_hold.get("gate_scope")
+                == "reply_suffix"
             )
         )
     )
@@ -1807,10 +2033,11 @@ def _apply_identity_unresolved_recovery_hold(
     )
     selected_details = details_by_code.get(selected_code) or []
     if has_reply_boundary and relation == "before_or_equal":
-        current = dict(binding.recovery_hold or {})
-        if current.get("status") == "active":
+        current = dict(effective_existing_hold)
+        if current.get("status") in {"active", "suspended"}:
             current.update({"status": "resolved", "last_seen_at": now_iso})
-            binding.recovery_hold = current
+            current["suspended_by_read_run_id"] = None
+            persist_transition(current)
         return remaining, {
             "batch_id": None,
             "batch_status": "historical_warning",
@@ -1821,25 +2048,59 @@ def _apply_identity_unresolved_recovery_hold(
     stable_identity_key = str(
         evidence_payload.get("flow_gate_identity_key") or ""
     ).strip()
+    gate_identity_key = stable_identity_key or hashlib.sha256(
+        json.dumps(
+            {
+                "reason_codes": ordered_codes,
+                "scope": scope,
+                "relation": relation,
+                "details": selected_details,
+            },
+            ensure_ascii=True,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
     gate_key = hashlib.sha256(
         (
             binding.conversation_id
             + "|"
-            + (reply_action_id if has_reply_boundary else stable_identity_key)
+            + reply_action_id
+            + "|"
+            + gate_identity_key
             + "|"
             + "|".join(ordered_codes)
             + "|"
             + scope
+            + "|"
+            + str(max(0, int(unread_generation or 0)))
         ).encode("utf-8")
     ).hexdigest()
     detail = selected_details[0] if selected_details else {}
     attempt_kind = str(
         evidence_payload.get("recovery_attempt_kind") or ""
     ).strip()
-    current = existing_hold
-    same_gate = current.get("gate_key") == gate_key
+    current = effective_existing_hold
+    current_origin_unread_generation = current.get(
+        "origin_unread_generation"
+    )
+    same_gate = bool(
+        current.get("gate_key") == gate_key
+        and str(current.get("gate_identity_key") or "")
+        == gate_identity_key
+        and current_origin_unread_generation is not None
+        and int(current_origin_unread_generation)
+        == max(0, int(unread_generation or 0))
+    )
     if same_gate:
-        current["last_seen_at"] = now_iso
+        current.update(
+            {
+                "status": "active",
+                "last_seen_at": now_iso,
+                "suspended_by_read_run_id": None,
+                "suspended_unread_generation": None,
+            }
+        )
         if (
             str(current.get("last_counted_read_run_id") or "") != read_run_id
             and attempt_kind == "stable_reread"
@@ -1856,6 +2117,7 @@ def _apply_identity_unresolved_recovery_hold(
         current = {
             "status": "active",
             "gate_key": gate_key,
+            "gate_identity_key": gate_identity_key,
             "reason_code": selected_code,
             "reason_codes": ordered_codes,
             "gate_scope": scope,
@@ -1863,6 +2125,10 @@ def _apply_identity_unresolved_recovery_hold(
             "min_screen_order": int(detail.get("min_screen_order") or 0),
             "max_screen_order": int(detail.get("max_screen_order") or 0),
             "originating_read_run_id": read_run_id,
+            "origin_unread_generation": max(
+                0,
+                int(unread_generation or 0),
+            ),
             "first_seen_at": now_iso,
             "last_seen_at": now_iso,
             "recovery_attempt_count": initial_count,
@@ -1870,11 +2136,25 @@ def _apply_identity_unresolved_recovery_hold(
             "last_counted_read_run_id": (
                 read_run_id if initial_count else None
             ),
+            "suspended_by_read_run_id": None,
+            "suspended_unread_generation": None,
         }
+        if effective_existing_hold.get("gate_key"):
+            current["superseded_gate_key"] = str(
+                effective_existing_hold.get("gate_key")
+            )
     current["boundary_relation"] = relation
-    binding.recovery_hold = current
+    persisted_hold = persist_transition(current)
     conversation.status = "waiting_user_reply"
     conversation.next_recall_at = None
+
+    if flow_in_progress:
+        return remaining, {
+            "batch_id": None,
+            "batch_status": "recoverable_hold",
+            "reason_codes": recoverable,
+            "recovery_hold": persisted_hold,
+        }
 
     try:
         first_seen_at = datetime.fromisoformat(
@@ -1893,7 +2173,9 @@ def _apply_identity_unresolved_recovery_hold(
         int(current.get("recovery_attempt_count") or 0)
         >= IDENTITY_UNRESOLVED_MAX_PASSIVE_REREADS
         or elapsed_seconds >= IDENTITY_UNRESOLVED_MAX_ELAPSED_SECONDS
-    ) and (not has_reply_boundary or relation in {"after", "unknown"}):
+    ) and (
+        not has_reply_boundary or relation in {"after", "unknown"}
+    ):
         from app.services.c3_service import create_deterministic_handoff_for_ingest
 
         handoff = create_deterministic_handoff_for_ingest(
@@ -1932,11 +2214,49 @@ def _expire_identity_unresolved_recovery_hold(
     *,
     binding: WechatSessionBinding,
     conversation: Conversation,
+    worker: Worker | None = None,
 ) -> None:
     """Escalate an untouched identity hold after its bounded 120s window."""
 
     current = dict(binding.recovery_hold or {})
     if current.get("status") != "active":
+        return
+    # A v0.9.51 or older record has no generation/gate scope and therefore
+    # cannot safely create a new Handoff from its historical timestamp.  It
+    # must first be confirmed by one current authoritative read.
+    if (
+        current.get("origin_unread_generation") is None
+        or not str(current.get("gate_identity_key") or "").strip()
+    ):
+        return
+    if int(binding.unread_generation or 0) > int(
+        current.get("origin_unread_generation") or 0
+    ):
+        suspend_recovery_hold(
+            binding,
+            read_run_id=None,
+            unread_generation=int(binding.unread_generation or 0),
+            observed_at=utcnow(),
+        )
+        return
+    current_worker = worker or db.get(Worker, binding.worker_id)
+    if current_worker is None or str(current_worker.run_status or "") != "running":
+        # User pause/fault is never permission to change customer state.
+        # A later manual resume must first schedule an authoritative reread.
+        return
+    if current_worker is not None and inflight_flow_matches_conversation(
+        current_worker,
+        conversation_id=binding.conversation_id,
+    ):
+        suspend_recovery_hold(
+            binding,
+            read_run_id=str(
+                dict(current_worker.inflight_flow_state or {}).get("flow_id")
+                or ""
+            ),
+            unread_generation=int(binding.unread_generation or 0),
+            observed_at=utcnow(),
+        )
         return
     try:
         first_seen_at = datetime.fromisoformat(
@@ -1946,9 +2266,12 @@ def _expire_identity_unresolved_recovery_hold(
             first_seen_at = first_seen_at.replace(tzinfo=timezone.utc)
     except (TypeError, ValueError):
         return
+    elapsed_seconds = (utcnow() - first_seen_at).total_seconds()
     if (
-        utcnow() - first_seen_at
-    ).total_seconds() < IDENTITY_UNRESOLVED_MAX_ELAPSED_SECONDS:
+        int(current.get("recovery_attempt_count") or 0)
+        < IDENTITY_UNRESOLVED_MAX_PASSIVE_REREADS
+        and elapsed_seconds < IDENTITY_UNRESOLVED_MAX_ELAPSED_SECONDS
+    ):
         return
     from app.services.c3_service import create_deterministic_handoff_for_ingest
 
@@ -1987,18 +2310,46 @@ def read_authorization_snapshot(
 ) -> dict:
     """Return the current lightweight authorization without legacy identity history."""
 
-    conversation = _upsert_conversation_for_binding(db, binding)
-    from app.services.c3_service import enforce_open_handoff_gate
+    # This endpoint is used repeatedly while a long voice/image action is in
+    # flight.  It must observe the already-bound conversation, never create
+    # one or repair its ownership projection as a side effect of renewing an
+    # authorization lease.
+    conversation = db.get(Conversation, binding.conversation_id)
+    if conversation is None:
+        raise AppError(
+            "MESSAGE_CONVERSATION_NOT_FOUND",
+            "读取授权绑定的会话不存在",
+            409,
+        )
+    from app.services.c3_service import open_handoff_events_for_conversation
 
-    enforce_open_handoff_gate(db, conversation)
-    _expire_identity_unresolved_recovery_hold(
-        db,
-        binding=binding,
-        conversation=conversation,
+    # Authorization renewal is read-only business logic.  An authoritative
+    # open Handoff still constrains the returned read reason, but this endpoint
+    # must not repair the Conversation projection or create any new terminal.
+    open_handoff_active = bool(
+        open_handoff_events_for_conversation(
+            db,
+            conversation.conversation_id,
+            for_update=False,
+        )
     )
-    _prepare_due_recall(conversation, db=db)
-    _sync_read_backoff_with_conversation(binding, conversation)
-    read_reason = _read_reason(binding, conversation)
+    # This is a lightweight continuation check.  It must not create Handoff,
+    # prepare C4 recall, or otherwise mutate business state while a long
+    # voice/image action is renewing its authorization.
+    read_reason = (
+        "waiting_sales_reply"
+        if open_handoff_active
+        and str(conversation.status or "") not in CONVERSATION_CLOSED_STATUSES
+        else _read_reason(binding, conversation)
+    )
+    current_worker = db.get(Worker, binding.worker_id)
+    current_flow_matches = bool(
+        current_worker is not None
+        and inflight_flow_matches_conversation(
+            current_worker,
+            conversation_id=binding.conversation_id,
+        )
+    )
     allowed = bool(
         binding.bind_status == BIND_STATUS_BOUND
         and binding.listen_status in {LISTEN_STATUS_LISTENING, LISTEN_STATUS_DEGRADED}
@@ -2009,6 +2360,8 @@ def read_authorization_snapshot(
         and conversation.status not in CONVERSATION_CLOSED_STATUSES
         and read_reason
         and (
+            current_flow_matches
+            or
             not enforce_read_due
             or _read_is_due(binding, read_reason=str(read_reason))
         )
@@ -2421,17 +2774,24 @@ def _authorization_revision(binding: WechatSessionBinding) -> str:
     return hashlib.sha256(seed.encode("utf-8")).hexdigest()[:32]
 
 
-def _degrade_invalid_bound_targets(db: Session, worker: Worker) -> None:
-    rows = list(
-        db.scalars(
-            select(WechatSessionBinding).where(
-                WechatSessionBinding.worker_id == worker.id,
-                WechatSessionBinding.bind_status == BIND_STATUS_BOUND,
-                WechatSessionBinding.allow_listening.is_(True),
-                WechatSessionBinding.deleted_at.is_(None),
+def _degrade_invalid_bound_targets(
+    db: Session,
+    worker: Worker,
+    *,
+    locked_rows: list[WechatSessionBinding] | None = None,
+) -> None:
+    rows = locked_rows
+    if rows is None:
+        rows = list(
+            db.scalars(
+                select(WechatSessionBinding).where(
+                    WechatSessionBinding.worker_id == worker.id,
+                    WechatSessionBinding.bind_status == BIND_STATUS_BOUND,
+                    WechatSessionBinding.allow_listening.is_(True),
+                    WechatSessionBinding.deleted_at.is_(None),
+                ).with_for_update()
             )
         )
-    )
     changed = False
     for item in rows:
         error_code = None
@@ -2468,7 +2828,23 @@ def _friend_acceptance_recently_visible(binding: WechatSessionBinding) -> bool:
 
 def _read_reason(binding: WechatSessionBinding, conversation: Conversation) -> str | None:
     recovery_hold = dict(binding.recovery_hold or {})
-    if recovery_hold.get("status") == "active":
+    pending_unread = bool(
+        binding.unread_hint
+        and int(binding.unread_generation or 0)
+        > int(binding.consumed_unread_generation or 0)
+    )
+    if pending_unread:
+        if conversation.status == "ai_active":
+            return "visible_unread"
+        if conversation.status == "waiting_user_reply" and conversation.last_ai_reply_at:
+            return "recent_ai_sent"
+        if conversation.status in {
+            "waiting_user_reply",
+            "recalled_waiting_user",
+            "sales_replied_waiting_user",
+        }:
+            return "waiting_user_reply"
+    if recovery_hold.get("status") in {"active", "suspended"}:
         # Identity recovery is a passive authoritative reread.  It is not a
         # new unread authorization and must not depend on a red dot surviving
         # the first attempt.
@@ -2512,8 +2888,27 @@ def _read_reason(binding: WechatSessionBinding, conversation: Conversation) -> s
 def _prepare_due_recall(
     conversation: Conversation,
     *,
+    binding: WechatSessionBinding | None = None,
+    worker: Worker | None = None,
     db: Session | None = None,
 ) -> None:
+    if binding is not None:
+        if (
+            binding.unread_hint
+            and int(binding.unread_generation or 0)
+            > int(binding.consumed_unread_generation or 0)
+        ):
+            return
+        if dict(binding.recovery_hold or {}).get("status") in {
+            "active",
+            "suspended",
+        }:
+            return
+    if worker is not None and inflight_flow_matches_conversation(
+        worker,
+        conversation_id=conversation.conversation_id,
+    ):
+        return
     settings = get_settings()
     if conversation.status not in {"waiting_user_reply", "sales_replied_waiting_user", "recalled_waiting_user"}:
         return
@@ -3729,7 +4124,7 @@ def ingest_messages(db: Session, worker: Worker, payload: WechatMessageIngestReq
             WechatSessionBinding.conversation_id == payload.conversation_id,
             WechatSessionBinding.worker_id == worker.id,
             WechatSessionBinding.deleted_at.is_(None),
-        )
+        ).with_for_update()
     )
     if not binding or binding.bind_status != BIND_STATUS_BOUND or not binding.allow_listening or not _clean_locator(binding.remark_code):
         raise AppError("MESSAGE_CONVERSATION_NOT_BOUND", "会话未绑定，不能入库消息", 409)
@@ -3750,6 +4145,39 @@ def ingest_messages(db: Session, worker: Worker, payload: WechatMessageIngestReq
             "读取请求携带了后端尚未签发的未读代次",
             409,
         )
+    locked_worker = db.scalar(
+        select(Worker)
+        .where(Worker.id == worker.id, Worker.deleted_at.is_(None))
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    )
+    if locked_worker is None:
+        raise AppError("WORKER_NOT_FOUND", "Worker 不存在", 404)
+    worker = locked_worker
+    inflight_state = dict(worker.inflight_flow_state or {})
+    if str(inflight_state.get("flow_id") or "").strip():
+        if (
+            str(inflight_state.get("flow_id") or "")
+            != payload.read_run_id
+            or str(inflight_state.get("conversation_id") or "")
+            != payload.conversation_id
+        ):
+            raise AppError(
+                "MESSAGE_INFLIGHT_FLOW_SCOPE_MISMATCH",
+                "消息载荷不属于当前客户在途流程",
+                409,
+            )
+        flow_generation = inflight_state.get("unread_generation")
+        if (
+            inflight_state.get("flow_kind") == "c2_read"
+            and flow_generation is not None
+            and int(flow_generation) != int(payload.unread_generation or 0)
+        ):
+            raise AppError(
+                "MESSAGE_INFLIGHT_UNREAD_GENERATION_MISMATCH",
+                "消息载荷与当前在途读取代次不一致",
+                409,
+            )
     _validate_v3_request_contract(payload)
     _validate_non_delivered_frame_observations(db, payload)
     ordered_messages = _ordered_v3_messages(payload)
@@ -3862,6 +4290,19 @@ def ingest_messages(db: Session, worker: Worker, payload: WechatMessageIngestReq
         if str(item.flow_state or "").strip().lower() not in FLOW_STATES_V3:
             raise AppError("MESSAGE_FLOW_STATE_INVALID", "V3 消息流程状态不合法", 409)
     conversation = _upsert_conversation_for_binding(db, binding)
+    db.flush()
+    conversation = db.scalar(
+        select(Conversation)
+        .where(Conversation.conversation_id == binding.conversation_id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    )
+    if conversation is None:
+        raise AppError(
+            "MESSAGE_CONVERSATION_NOT_FOUND",
+            "消息会话不存在",
+            409,
+        )
     from app.services.c3_service import enforce_open_handoff_gate
 
     open_handoff_active = bool(
@@ -4663,12 +5104,17 @@ def ingest_messages(db: Session, worker: Worker, payload: WechatMessageIngestReq
     ]
     identity_recovery_result = None
     if not open_handoff_active:
+        complete_viewport_confirmed = (
+            _complete_authoritative_viewport_confirmed(evidence_payload)
+        )
         handoff_flow_gates, identity_recovery_result = (
             _apply_identity_unresolved_recovery_hold(
                 db,
                 binding=binding,
                 conversation=conversation,
                 read_run_id=payload.read_run_id,
+                unread_generation=payload.unread_generation,
+                authoritative_read_confirmed=complete_viewport_confirmed,
                 evidence_payload=evidence_payload,
                 gate_codes=handoff_flow_gates,
                 details_by_code=flow_gate_details_by_code,

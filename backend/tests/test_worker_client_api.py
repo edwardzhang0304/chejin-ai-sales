@@ -12,6 +12,7 @@ from app.models.audit import OperationLog
 from app.models.base import utcnow
 from app.models.task import Task
 from app.models.wechat import MessageEvent, WechatSessionBinding
+from app.models.worker import Worker
 from app.services import task_service
 from app.errors import AppError
 
@@ -345,9 +346,30 @@ def test_pause_drains_only_exact_registered_flow_and_rejects_new_work():
         "X-Worker-Token": worker["worker_token"],
         "X-Client-Instance-Id": "client-a",
     }
+    conversation_id = "conv-runtime-1"
+    with SessionLocal() as db:
+        db.add(
+            WechatSessionBinding(
+                conversation_id=conversation_id,
+                worker_id=worker["id"],
+                display_name="CJRUNTIME",
+                remark_code="CJRUNTIME",
+                rpa_session_key="wx:runtime:1",
+                row_fingerprint="runtime-row",
+                bind_status="bound",
+                listen_status="listening",
+                allow_listening=True,
+            )
+        )
+        db.commit()
     started = client.post(
         f"/api/workers/{worker['id']}/inflight-flow/start",
-        json={"flow_id": "read-runtime-1", "flow_kind": "c2_read"},
+        json={
+            "flow_id": "read-runtime-1",
+            "flow_kind": "c2_read",
+            "conversation_id": conversation_id,
+            "unread_generation": 0,
+        },
         headers=headers,
     )
     assert started.status_code == 200, started.text
@@ -376,7 +398,7 @@ def test_pause_drains_only_exact_registered_flow_and_rejects_new_work():
         json={
             "flow_id": "read-runtime-1",
             "terminal_kind": "failed_before_message_action",
-            "conversation_id": "conv-runtime-1",
+            "conversation_id": conversation_id,
             "error_code": "C2_TARGET_NOT_FOUND",
         },
         headers={**headers, "X-Inflight-Flow-Id": "forged-flow"},
@@ -389,13 +411,35 @@ def test_pause_drains_only_exact_registered_flow_and_rejects_new_work():
         json={
             "flow_id": "read-runtime-1",
             "terminal_kind": "failed_before_message_action",
-            "conversation_id": "conv-runtime-1",
+            "conversation_id": conversation_id,
             "error_code": "C2_TARGET_NOT_FOUND",
         },
         headers={**headers, "X-Inflight-Flow-Id": "read-runtime-1"},
     )
     assert finished.status_code == 200, finished.text
     assert finished.json()["data"]["finished"] is True
+
+
+def test_chat_reply_inflight_flow_requires_conversation_scope():
+    worker = _create_worker("C3 Flow 客户范围 Worker")
+    _bind_worker(worker)
+    assert _heartbeat(worker).status_code == 200
+    response = client.post(
+        f"/api/workers/{worker['id']}/inflight-flow/start",
+        json={
+            "flow_id": "chat-reply-without-conversation",
+            "flow_kind": "chat_reply",
+        },
+        headers={
+            "X-Worker-Token": worker["worker_token"],
+            "X-Client-Instance-Id": "client-a",
+        },
+    )
+    assert response.status_code == 400
+    assert response.json()["code"] == "VALIDATION_ERROR"
+    with SessionLocal() as db:
+        current = db.get(Worker, worker["id"])
+        assert current.inflight_flow_state == {}
 
 
 def test_faulted_worker_drains_current_flow_and_cannot_pull_new_work():
@@ -406,9 +450,30 @@ def test_faulted_worker_drains_current_flow_and_cannot_pull_new_work():
         "X-Worker-Token": worker["worker_token"],
         "X-Client-Instance-Id": "client-a",
     }
+    conversation_id = "conv-pre-send-layout"
+    with SessionLocal() as db:
+        db.add(
+            WechatSessionBinding(
+                conversation_id=conversation_id,
+                worker_id=worker["id"],
+                display_name="CJLAYOUT",
+                remark_code="CJLAYOUT",
+                rpa_session_key="wx:layout:1",
+                row_fingerprint="layout-row",
+                bind_status="bound",
+                listen_status="listening",
+                allow_listening=True,
+            )
+        )
+        db.commit()
     started = client.post(
         f"/api/workers/{worker['id']}/inflight-flow/start",
-        json={"flow_id": "pre-send-layout-flow", "flow_kind": "c2_read"},
+        json={
+            "flow_id": "pre-send-layout-flow",
+            "flow_kind": "c2_read",
+            "conversation_id": conversation_id,
+            "unread_generation": 0,
+        },
         headers=headers,
     )
     assert started.status_code == 200
@@ -458,7 +523,12 @@ def test_c2_inflight_finish_requires_backend_read_completion_proof():
     flow_id = "read-proof-required"
     assert client.post(
         f"/api/workers/{worker['id']}/inflight-flow/start",
-        json={"flow_id": flow_id, "flow_kind": "c2_read"},
+        json={
+            "flow_id": flow_id,
+            "flow_kind": "c2_read",
+            "conversation_id": conversation_id,
+            "unread_generation": 0,
+        },
         headers=headers,
     ).status_code == 200
     finish_payload = {
@@ -498,10 +568,31 @@ def test_c2_inflight_read_failed_no_fact_is_an_audited_terminal():
         "X-Worker-Token": worker["worker_token"],
         "X-Client-Instance-Id": "client-a",
     }
+    conversation_id = "11111111-2222-3333-4444-666666666666"
+    with SessionLocal() as db:
+        db.add(
+            WechatSessionBinding(
+                conversation_id=conversation_id,
+                worker_id=worker["id"],
+                display_name="CJNOFACT",
+                remark_code="CJNOFACT",
+                rpa_session_key="wx:no-fact:1",
+                row_fingerprint="no-fact-row",
+                bind_status="bound",
+                listen_status="listening",
+                allow_listening=True,
+            )
+        )
+        db.commit()
     flow_id = "read-sidecar-no-fact"
     assert client.post(
         f"/api/workers/{worker['id']}/inflight-flow/start",
-        json={"flow_id": flow_id, "flow_kind": "c2_read"},
+        json={
+            "flow_id": flow_id,
+            "flow_kind": "c2_read",
+            "conversation_id": conversation_id,
+            "unread_generation": 0,
+        },
         headers=headers,
     ).status_code == 200
 
@@ -510,7 +601,7 @@ def test_c2_inflight_read_failed_no_fact_is_an_audited_terminal():
         json={
             "flow_id": flow_id,
             "terminal_kind": "read_failed_no_fact",
-            "conversation_id": "11111111-2222-3333-4444-666666666666",
+            "conversation_id": conversation_id,
             "error_code": "C2_MESSAGE_OCR_FAILED",
         },
         headers={**headers, "X-Inflight-Flow-Id": flow_id},
@@ -527,13 +618,18 @@ def test_c2_inflight_read_failed_no_fact_is_an_audited_terminal():
     conflicting_flow_id = "read-sidecar-formed-fact"
     assert client.post(
         f"/api/workers/{worker['id']}/inflight-flow/start",
-        json={"flow_id": conflicting_flow_id, "flow_kind": "c2_read"},
+        json={
+            "flow_id": conflicting_flow_id,
+            "flow_kind": "c2_read",
+            "conversation_id": conversation_id,
+            "unread_generation": 0,
+        },
         headers=headers,
     ).status_code == 200
     with SessionLocal() as db:
         db.add(
             MessageEvent(
-                conversation_id="11111111-2222-3333-4444-777777777777",
+                conversation_id=conversation_id,
                 worker_id=worker["id"],
                 rpa_session_key="wx:formed-fact",
                 read_run_id=conflicting_flow_id,
@@ -553,7 +649,7 @@ def test_c2_inflight_read_failed_no_fact_is_an_audited_terminal():
         json={
             "flow_id": conflicting_flow_id,
             "terminal_kind": "read_failed_no_fact",
-            "conversation_id": "11111111-2222-3333-4444-777777777777",
+            "conversation_id": conversation_id,
             "error_code": "C2_MESSAGE_OCR_FAILED",
         },
         headers={
@@ -576,6 +672,30 @@ def test_postgres_inflight_start_pause_finish_are_serialized():
         "X-Worker-Token": worker["worker_token"],
         "X-Client-Instance-Id": "client-a",
     }
+    conversation_id = "conv-concurrent-flow"
+    with SessionLocal() as db:
+        db.add(
+            WechatSessionBinding(
+                conversation_id=conversation_id,
+                worker_id=worker["id"],
+                display_name="CJCONCUR",
+                remark_code="CJCONCUR",
+                rpa_session_key="wx:concurrent:flow",
+                row_fingerprint="concurrent-flow-row",
+                bind_status="bound",
+                listen_status="listening",
+                allow_listening=True,
+            )
+        )
+        db.commit()
+
+    def c2_start_payload(flow_id: str) -> dict:
+        return {
+            "flow_id": flow_id,
+            "flow_kind": "c2_read",
+            "conversation_id": conversation_id,
+            "unread_generation": 0,
+        }
 
     def concurrent_posts(requests: list[tuple[str, dict, dict]]) -> list[tuple[int, str]]:
         barrier = threading.Barrier(len(requests))
@@ -605,8 +725,8 @@ def test_postgres_inflight_start_pause_finish_are_serialized():
 
     start_start = concurrent_posts(
         [
-            (start_path, {"flow_id": "read-concurrent-a", "flow_kind": "c2_read"}, headers),
-            (start_path, {"flow_id": "read-concurrent-b", "flow_kind": "c2_read"}, headers),
+            (start_path, c2_start_payload("read-concurrent-a"), headers),
+            (start_path, c2_start_payload("read-concurrent-b"), headers),
         ]
     )
     assert sorted(code for code, _ in start_start) == [200, 409]
@@ -618,7 +738,7 @@ def test_postgres_inflight_start_pause_finish_are_serialized():
         json={
             "flow_id": winner,
             "terminal_kind": "failed_before_message_action",
-            "conversation_id": "conv-concurrent-start",
+            "conversation_id": conversation_id,
             "error_code": "C2_TARGET_NOT_FOUND",
         },
         headers=finish_headers,
@@ -626,7 +746,7 @@ def test_postgres_inflight_start_pause_finish_are_serialized():
 
     start_pause = concurrent_posts(
         [
-            (start_path, {"flow_id": "read-concurrent-pause", "flow_kind": "c2_read"}, headers),
+            (start_path, c2_start_payload("read-concurrent-pause"), headers),
             (pause_path, {"run_status": "paused", "client_instance_id": "client-a"}, headers),
         ]
     )
@@ -642,7 +762,7 @@ def test_postgres_inflight_start_pause_finish_are_serialized():
             json={
                 "flow_id": "read-concurrent-pause",
                 "terminal_kind": "failed_before_message_action",
-                "conversation_id": "conv-concurrent-pause",
+                "conversation_id": conversation_id,
                 "error_code": "C2_TARGET_NOT_FOUND",
             },
             headers={**headers, "X-Inflight-Flow-Id": "read-concurrent-pause"},
@@ -655,7 +775,7 @@ def test_postgres_inflight_start_pause_finish_are_serialized():
     ).status_code == 200
     assert client.post(
         start_path,
-        json={"flow_id": "read-concurrent-finish", "flow_kind": "c2_read"},
+        json=c2_start_payload("read-concurrent-finish"),
         headers=headers,
     ).status_code == 200
     pause_finish = concurrent_posts(
@@ -666,7 +786,7 @@ def test_postgres_inflight_start_pause_finish_are_serialized():
                 {
                     "flow_id": "read-concurrent-finish",
                     "terminal_kind": "failed_before_message_action",
-                    "conversation_id": "conv-concurrent-finish",
+                    "conversation_id": conversation_id,
                     "error_code": "C2_TARGET_NOT_FOUND",
                 },
                 {**headers, "X-Inflight-Flow-Id": "read-concurrent-finish"},
