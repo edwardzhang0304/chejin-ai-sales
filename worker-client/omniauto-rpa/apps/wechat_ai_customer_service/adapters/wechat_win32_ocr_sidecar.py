@@ -6958,6 +6958,33 @@ def build_message_observations_v3(
             )
         if row_kind == "image_bubble":
             observation["item_state"] = "discovered"
+            verification = (
+                message.get("_image_candidate_verification")
+                if isinstance(
+                    message.get("_image_candidate_verification"),
+                    dict,
+                )
+                else {}
+            )
+            if verification.get("required") is True:
+                fallback_messages = [
+                    dict(item)
+                    for item in (
+                        verification.get("fallback_messages") or []
+                    )
+                    if isinstance(item, dict)
+                ]
+                fallback_observations = build_message_observations_v3(
+                    fallback_messages
+                )
+                observation["_image_candidate_verification"] = {
+                    "required": True,
+                    "reason": str(
+                        verification.get("reason")
+                        or "embedded_ocr_text_requires_context_menu"
+                    ),
+                    "fallback_observations": fallback_observations,
+                }
         contract_errors = validate_message_observation_v3(observation)
         if contract_errors:
             observation["contract_errors"] = contract_errors

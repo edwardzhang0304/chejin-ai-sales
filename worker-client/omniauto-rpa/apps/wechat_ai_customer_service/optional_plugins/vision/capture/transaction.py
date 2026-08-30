@@ -47,13 +47,21 @@ def _failure(reason: str, **extra: Any) -> dict[str, Any]:
     }
 
 
-def _dismiss_menu_safely(port: Any) -> None:
+def _dismiss_menu_safely(port: Any) -> dict[str, Any]:
     dismiss = getattr(port, "dismiss_menu_safely", None)
     if callable(dismiss):
         try:
-            dismiss()
-        except Exception:
-            pass
+            result = dismiss()
+            if isinstance(result, dict):
+                return dict(result)
+            return {"ok": True, "reason": "menu_dismissed"}
+        except Exception as exc:
+            return {
+                "ok": False,
+                "reason": "menu_dismiss_exception",
+                "error_type": type(exc).__name__,
+            }
+    return {"ok": False, "reason": "menu_dismiss_port_missing"}
 
 
 def _cancelled(data: dict[str, Any]) -> bool:
@@ -445,6 +453,14 @@ def _acquire_current_image_via_ports(
                         ),
                     },
                 )
+            candidate_verification = (
+                bubble.get("_image_candidate_verification")
+                if isinstance(
+                    bubble.get("_image_candidate_verification"),
+                    dict,
+                )
+                else {}
+            )
             # Message ownership is decided by C2's same-row avatar contract.
             # Vision geometry is used only to click the already-authorized slot.
             direction = sender_role
@@ -538,13 +554,120 @@ def _acquire_current_image_via_ports(
                 menu_panel_bounds=confirmed_menu_bounds,
             )
             menu_kind = str(classification.get("kind") or "unknown")
-            if menu_kind in {"text", "voice"}:
+            if menu_kind == "text":
+                dismissal = _dismiss_menu_safely(ports.ui_action)
+                menu_opened = False
+                action_observation_rows = [
+                    item
+                    for item in action_frame_observations
+                    if str(item.get("observation_id") or "").strip()
+                    == str(bubble.get("id") or bubble.get("message_id") or "").strip()
+                    and str(item.get("row_kind") or "").strip().lower()
+                    == "image_bubble"
+                ]
+                normalized_verification = (
+                    action_observation_rows[0].get(
+                        "_image_candidate_verification"
+                    )
+                    if len(action_observation_rows) == 1
+                    and isinstance(
+                        action_observation_rows[0].get(
+                            "_image_candidate_verification"
+                        ),
+                        dict,
+                    )
+                    else {}
+                )
+                fallback_observations = [
+                    dict(item)
+                    for item in (
+                        normalized_verification.get(
+                            "fallback_observations"
+                        )
+                        or []
+                    )
+                    if isinstance(item, dict)
+                    and str(item.get("row_kind") or "").strip().lower()
+                    == "text_bubble"
+                    and str(item.get("sender_role") or "").strip().lower()
+                    in {"customer", "self"}
+                    and not list(item.get("contract_errors") or [])
+                ]
+                if (
+                    candidate_verification.get("required") is True
+                    and normalized_verification.get("required") is True
+                    and fallback_observations
+                    and dismissal.get("ok") is True
+                ):
+                    # This is a successful type resolution, not an image
+                    # failure.  Keep it outside the failure-code mapper so the
+                    # Worker can restore the same-frame OCR facts while doing
+                    # zero copy, zero clipboard read and zero Vision work.
+                    terminal_result = {
+                        "ok": False,
+                        "reason": "C2_IMAGE_CANDIDATE_CONFIRMED_TEXT",
+                        "state": "image_candidate_resolved_as_text",
+                        "action_phase": "not_attempted",
+                        "transaction": {
+                            "status": "text_context_menu_confirmed",
+                            "action_phase": "not_attempted",
+                            "right_click_ok": True,
+                            "menu_copy_confirmed": False,
+                            "clipboard_content_read": False,
+                            "menu_labels": classification.get("labels") or [],
+                            "menu_panel_bounds": list(
+                                confirmed_menu_bounds or []
+                            ),
+                            "menu_dismissed": True,
+                            "current_frame_target_selected": True,
+                            "physical_identity_inherited_from_prepare": False,
+                            "trigger_observation_id": str(
+                                bubble.get("id")
+                                or bubble.get("message_id")
+                                or ""
+                            ).strip(),
+                            "trigger_business_screen_order": (
+                                actual_business_screen_order
+                            ),
+                            "action_frame_observations": (
+                                action_frame_observations
+                            ),
+                            "action_frame_layout_snapshot_id": str(
+                                frame.get("layout_snapshot_id") or ""
+                            ),
+                            "fallback_observations": fallback_observations,
+                        },
+                    }
+                    return terminal_result
+                return fail(
+                    (
+                        "C2_IMAGE_MENU_OPERATION_FAILED"
+                        if dismissal.get("ok") is not True
+                        else "C2_IMAGE_SOURCE_INVALID"
+                    ),
+                    transaction={
+                        "status": (
+                            "menu_dismiss_failed"
+                            if dismissal.get("ok") is not True
+                            else "text_context_menu_rejected"
+                        ),
+                        "right_click_ok": True,
+                        "menu_copy_confirmed": False,
+                        "clipboard_content_read": False,
+                        "menu_labels": classification.get("labels") or [],
+                        "menu_panel_bounds": list(confirmed_menu_bounds or []),
+                        "menu_dismissed": bool(
+                            dismissal.get("ok") is True
+                        ),
+                    },
+                )
+            if menu_kind == "voice":
                 _dismiss_menu_safely(ports.ui_action)
                 menu_opened = False
                 return fail(
                     "C2_IMAGE_SOURCE_INVALID",
                     transaction={
-                        "status": f"{menu_kind}_context_menu_rejected",
+                        "status": "voice_context_menu_rejected",
                         "right_click_ok": True,
                         "menu_copy_confirmed": False,
                         "clipboard_content_read": False,

@@ -2,6 +2,7 @@ import copy
 import hashlib
 import json
 import threading
+import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 import sys
@@ -78,6 +79,7 @@ from app.models.task import Task
 from app.models.wechat import (
     MessageEvent,
     WechatRecoverySettlement,
+    WechatScanRun,
     WechatSessionBinding,
 )
 from app.models.worker import Worker
@@ -85,8 +87,10 @@ from app.core.database import SessionLocal
 from app.schemas.wechat import (
     WechatMessageEvidence,
     WechatMessageIngestRequest,
+    WechatSessionScanResultRequest,
 )
-from app.services import c3_service, wechat_service
+from app.schemas.worker import WorkerInflightFlowStartRequest
+from app.services import c3_service, wechat_service, worker_service
 from app.services.message_contract import (
     canonical_message_identity_text as backend_canonical_message_identity_text,
     canonical_reply_text as backend_canonical_reply_text,
@@ -1889,7 +1893,12 @@ def test_inconclusive_read_retry_then_technical_failure_clears_both_backend_flow
     }
     first_start = client.post(
         f"/api/workers/{worker['id']}/inflight-flow/start",
-        json={"flow_id": first_flow_id, "flow_kind": "c2_read"},
+        json={
+            "flow_id": first_flow_id,
+            "flow_kind": "c2_read",
+            "conversation_id": binding["conversation_id"],
+            "unread_generation": binding["unread_generation"],
+        },
         headers=_worker_headers(worker),
     )
     assert first_start.status_code == 200, first_start.text
@@ -1951,7 +1960,12 @@ def test_inconclusive_read_retry_then_technical_failure_clears_both_backend_flow
     }
     second_start = client.post(
         f"/api/workers/{worker['id']}/inflight-flow/start",
-        json={"flow_id": second_flow_id, "flow_kind": "c2_read"},
+        json={
+            "flow_id": second_flow_id,
+            "flow_kind": "c2_read",
+            "conversation_id": binding["conversation_id"],
+            "unread_generation": binding["unread_generation"],
+        },
         headers=_worker_headers(worker),
     )
     assert second_start.status_code == 200, second_start.text
@@ -4243,7 +4257,7 @@ def test_media_action_technical_failure_is_rejected_without_recovery_or_handoff(
         assert db.query(MessageEvent).count() == 0
 
 
-def test_identity_unresolved_hold_escalates_after_120_seconds_without_more_ui_actions():
+def test_legacy_identity_hold_without_generation_scope_requires_authoritative_read():
     worker = _create_worker()
     _create_sales(worker["id"])
     _create_lead("身份隔离超时客户", "13896676675")
@@ -4280,9 +4294,1555 @@ def test_identity_unresolved_hold_escalates_after_120_seconds_without_more_ui_ac
     with SessionLocal() as db:
         persisted = db.get(WechatSessionBinding, binding["id"])
         conversation = db.get(Conversation, binding["conversation_id"])
-        assert persisted.recovery_hold["status"] == "escalated"
+        assert persisted.recovery_hold["status"] == "suspended"
+        assert conversation.status == "waiting_user_reply"
+        assert db.query(HandoffEvent).count() == 0
+    targets = response.json()["data"]["targets"]
+    assert len(targets) == 1
+    assert targets[0]["conversation_id"] == binding["conversation_id"]
+
+
+def test_new_voice_generation_cannot_be_interrupted_by_expired_old_hold():
+    """Exercise scan -> flow -> auth -> ingest -> terminal through real HTTP."""
+
+    worker = _create_worker()
+    _create_sales(worker["id"])
+    _create_lead("旧计时器并发新语音客户", "13896676552")
+    remark_code = _pull_remark_code(worker)
+    first_scan = client.post(
+        f"/api/workers/{worker['id']}/wechat/sessions/scan-result",
+        json=_scan_payload(remark_code),
+        headers=_worker_headers(worker),
+    )
+    assert first_scan.status_code == 200, first_scan.text
+    binding = first_scan.json()["data"]["bindings"][0]
+    old_gate_identity = hashlib.sha256(b"old-identity-problem").hexdigest()
+    old_gate_key = hashlib.sha256(
+        (
+            binding["conversation_id"]
+            + "||"
+            + old_gate_identity
+            + "|MESSAGE_CROSS_ROUND_IDENTITY_AMBIGUOUS"
+            + "|conversation_identity"
+            + "|"
+            + str(binding["unread_generation"])
+        ).encode("utf-8")
+    ).hexdigest()
+    old_first_seen = (utcnow() - timedelta(seconds=121)).isoformat()
+    with SessionLocal() as db:
+        row = db.get(WechatSessionBinding, binding["id"])
+        conversation = db.get(Conversation, binding["conversation_id"])
+        assert row is not None and conversation is not None
+        row.unread_hint = False
+        row.last_observed_unread_hint = False
+        row.consumed_unread_generation = int(row.unread_generation or 0)
+        row.recovery_hold = {
+            "status": "active",
+            "gate_key": old_gate_key,
+            "gate_identity_key": old_gate_identity,
+            "reason_code": "MESSAGE_CROSS_ROUND_IDENTITY_AMBIGUOUS",
+            "reason_codes": ["MESSAGE_CROSS_ROUND_IDENTITY_AMBIGUOUS"],
+            "gate_scope": "conversation_identity",
+            "boundary_relation": "unknown",
+            "originating_read_run_id": "read-old-generation",
+            "origin_unread_generation": int(row.unread_generation or 0),
+            "first_seen_at": old_first_seen,
+            "last_seen_at": old_first_seen,
+            "recovery_attempt_count": 0,
+            "last_counted_read_run_id": None,
+        }
+        conversation.status = "waiting_user_reply"
+        db.commit()
+
+    new_scan_payload = _scan_payload(remark_code)
+    new_scan_payload["scan_id"] = "scan-new-eight-second-voice"
+    new_scan_payload["sessions"][0].update(
+        {
+            "unread_hint": True,
+            "last_message_preview": '[语音] 8"',
+            "last_message_observation_id": "voice-eight-seconds-new-round",
+        }
+    )
+    new_scan = client.post(
+        f"/api/workers/{worker['id']}/wechat/sessions/scan-result",
+        json=new_scan_payload,
+        headers=_worker_headers(worker),
+    )
+    assert new_scan.status_code == 200, new_scan.text
+    new_binding = new_scan.json()["data"]["bindings"][0]
+    assert new_binding["unread_generation"] == binding["unread_generation"] + 1
+    with SessionLocal() as db:
+        row = db.get(WechatSessionBinding, binding["id"])
+        assert row.recovery_hold["status"] == "suspended"
+        assert db.query(HandoffEvent).count() == 0
+
+    targets = client.get(
+        f"/api/workers/{worker['id']}/wechat/sessions/read-targets",
+        headers=_worker_headers(worker),
+    )
+    assert targets.status_code == 200, targets.text
+    target = targets.json()["data"]["targets"][0]
+    assert target["unread_generation"] == new_binding["unread_generation"]
+    flow_id = "read-new-eight-second-voice"
+    flow_headers = {
+        **_worker_headers(worker),
+        "X-Inflight-Flow-Id": flow_id,
+    }
+    started = client.post(
+        f"/api/workers/{worker['id']}/inflight-flow/start",
+        json={
+            "flow_id": flow_id,
+            "flow_kind": "c2_read",
+            "conversation_id": binding["conversation_id"],
+            "unread_generation": target["unread_generation"],
+        },
+        headers=_worker_headers(worker),
+    )
+    assert started.status_code == 200, started.text
+
+    # The old 120-second timer is already due.  Lightweight continuation
+    # checks before and during the action are read-only and cannot escalate it.
+    for _phase in ("prepare", "execute", "journal_confirmed"):
+        authorization = client.get(
+            (
+                f"/api/workers/{worker['id']}/wechat/conversations/"
+                f"{binding['conversation_id']}/read-authorization"
+            ),
+            headers=flow_headers,
+        )
+        assert authorization.status_code == 200, authorization.text
+        assert authorization.json()["data"]["allowed"] is True
+        with SessionLocal() as db:
+            row = db.get(WechatSessionBinding, binding["id"])
+            conversation = db.get(Conversation, binding["conversation_id"])
+            assert row.recovery_hold["status"] == "suspended"
+            assert conversation.status != "waiting_sales_reply"
+            assert db.query(HandoffEvent).count() == 0
+
+    voice = _v3_message(
+        "voice-eight-seconds-new-round",
+        role="customer",
+        message_type="voice",
+        content="第二条八秒语音已经转写",
+        screen_order=1,
+    )
+    ingest_payload = _v3_ingest_payload(
+        new_binding,
+        remark_code,
+        read_run_id=flow_id,
+        messages=[voice],
+        read_reason=target["read_reason"],
+        unread_generation=target["unread_generation"],
+    )
+    voice_observations = ingest_payload["evidence"]["observations"]
+    voice_guard = build_send_context_guard(
+        voice_observations,
+        layout_evidence={
+            "ok": True,
+            "layout_snapshot_id": f"layout:{flow_id}",
+            "chat_header_bounds": [0, 0, 1000, 100],
+            "message_viewport_bounds": [0, 100, 1000, 800],
+            "input_bounds": [0, 800, 1000, 1000],
+        },
+    )
+    ingest_payload["evidence"].update(
+        {
+            "tail_complete": True,
+            "business_projection": voice_guard["sequence"],
+            "send_context_guard": voice_guard,
+        }
+    )
+    ingest_payload["authorization_revision"] = authorization.json()["data"][
+        "authorization_revision"
+    ]
+    ingested = client.post(
+        f"/api/workers/{worker['id']}/wechat/messages/ingest",
+        json=ingest_payload,
+        headers=flow_headers,
+    )
+    assert ingested.status_code == 200, ingested.text
+    assert ingested.json()["data"]["read_completion"]["result"] == "new_facts"
+    with SessionLocal() as db:
+        row = db.get(WechatSessionBinding, binding["id"])
+        conversation = db.get(Conversation, binding["conversation_id"])
+        assert row.recovery_hold["status"] == "suspended"
+        assert row.recovery_hold["deferred_hold_after_flow"]["status"] == (
+            "resolved"
+        )
+        assert conversation.status != "waiting_sales_reply"
+        assert db.query(HandoffEvent).count() == 0
+        event = db.query(MessageEvent).filter(
+            MessageEvent.conversation_id == binding["conversation_id"],
+            MessageEvent.message_type == "voice",
+        ).one()
+        assert event.content == "第二条八秒语音已经转写"
+        assert db.query(MessageBatch).filter(
+            MessageBatch.conversation_id == binding["conversation_id"]
+        ).count() == 1
+
+    finished = client.post(
+        f"/api/workers/{worker['id']}/inflight-flow/finish",
+        json={
+            "flow_id": flow_id,
+            "terminal_kind": "read_confirmed",
+            "conversation_id": binding["conversation_id"],
+            "error_code": None,
+        },
+        headers=flow_headers,
+    )
+    assert finished.status_code == 200, finished.text
+    with SessionLocal() as db:
+        row = db.get(WechatSessionBinding, binding["id"])
+        worker_row = db.get(Worker, worker["id"])
+        assert row.recovery_hold["status"] == "resolved"
+        assert row.recovery_hold["first_seen_at"] == old_first_seen
+        assert worker_row.inflight_flow_state == {}
+        assert db.query(HandoffEvent).count() == 0
+
+
+def test_expired_same_identity_hold_escalates_only_after_flow_terminal():
+    worker = _create_worker()
+    _create_sales(worker["id"])
+    _create_lead("同问题终态后升级客户", "13896676553")
+    remark_code = _pull_remark_code(worker)
+    scan = client.post(
+        f"/api/workers/{worker['id']}/wechat/sessions/scan-result",
+        json=_scan_payload(remark_code),
+        headers=_worker_headers(worker),
+    )
+    assert scan.status_code == 200, scan.text
+    binding = scan.json()["data"]["bindings"][0]
+    gate_identity_key = hashlib.sha256(b"same-current-problem").hexdigest()
+    gate_key = hashlib.sha256(
+        (
+            binding["conversation_id"]
+            + "||"
+            + gate_identity_key
+            + "|MESSAGE_CROSS_ROUND_IDENTITY_AMBIGUOUS"
+            + "|conversation_identity|"
+            + str(int(binding["unread_generation"] or 0))
+        ).encode("utf-8")
+    ).hexdigest()
+    first_seen_at = (utcnow() - timedelta(seconds=121)).isoformat()
+    with SessionLocal() as db:
+        row = db.get(WechatSessionBinding, binding["id"])
+        conversation = db.get(Conversation, binding["conversation_id"])
+        assert row is not None and conversation is not None
+        row.recovery_hold = {
+            "status": "active",
+            "gate_key": gate_key,
+            "gate_identity_key": gate_identity_key,
+            "reason_code": "MESSAGE_CROSS_ROUND_IDENTITY_AMBIGUOUS",
+            "reason_codes": ["MESSAGE_CROSS_ROUND_IDENTITY_AMBIGUOUS"],
+            "gate_scope": "conversation_identity",
+            "boundary_relation": "unknown",
+            "originating_read_run_id": "read-original-problem",
+            "origin_unread_generation": int(row.unread_generation or 0),
+            "first_seen_at": first_seen_at,
+            "last_seen_at": first_seen_at,
+            "recovery_attempt_count": 0,
+            "last_counted_read_run_id": None,
+        }
+        conversation.status = "waiting_user_reply"
+        db.commit()
+
+    targets = client.get(
+        f"/api/workers/{worker['id']}/wechat/sessions/read-targets",
+        headers=_worker_headers(worker),
+    )
+    assert targets.status_code == 200, targets.text
+    target = targets.json()["data"]["targets"][0]
+    flow_id = "read-same-problem-after-timeout"
+    flow_headers = {
+        **_worker_headers(worker),
+        "X-Inflight-Flow-Id": flow_id,
+    }
+    started = client.post(
+        f"/api/workers/{worker['id']}/inflight-flow/start",
+        json={
+            "flow_id": flow_id,
+            "flow_kind": "c2_read",
+            "conversation_id": binding["conversation_id"],
+            "unread_generation": target["unread_generation"],
+        },
+        headers=_worker_headers(worker),
+    )
+    assert started.status_code == 200, started.text
+
+    payload = _v3_ingest_payload(
+        binding,
+        remark_code,
+        read_run_id=flow_id,
+        messages=[],
+        read_reason=target["read_reason"],
+        unread_generation=target["unread_generation"],
+    )
+    payload["evidence"].update(
+        {
+            "flow_gate_identity_key": gate_identity_key,
+            "flow_gate_errors": [
+                "MESSAGE_CROSS_ROUND_IDENTITY_AMBIGUOUS"
+            ],
+            "flow_gate_details": [
+                    {
+                        "error_code": (
+                            "MESSAGE_CROSS_ROUND_IDENTITY_AMBIGUOUS"
+                        ),
+                        "position_source": "identity_error_visual_top",
+                        "gate_scope": "conversation_identity",
+                    "boundary_relation": "unknown",
+                    "min_screen_order": 1,
+                    "max_screen_order": 1,
+                }
+            ],
+            "recovery_attempt_kind": "stable_reread",
+        }
+    )
+    ingested = client.post(
+        f"/api/workers/{worker['id']}/wechat/messages/ingest",
+        json=payload,
+        headers=flow_headers,
+    )
+    assert ingested.status_code == 200, ingested.text
+    assert ingested.json()["data"]["read_completion"]["result"] == (
+        "retry_required"
+    )
+    with SessionLocal() as db:
+        row = db.get(WechatSessionBinding, binding["id"])
+        assert row.recovery_hold["status"] == "suspended"
+        deferred = row.recovery_hold["deferred_hold_after_flow"]
+        assert deferred["status"] == "active"
+        assert deferred["first_seen_at"] == first_seen_at
+        assert deferred["recovery_attempt_count"] == 1
+        assert db.query(HandoffEvent).count() == 0
+
+    finished = client.post(
+        f"/api/workers/{worker['id']}/inflight-flow/finish",
+        json={
+            "flow_id": flow_id,
+            "terminal_kind": "retry_required",
+            "conversation_id": binding["conversation_id"],
+            "error_code": "C2_UNREAD_RESULT_INCONCLUSIVE",
+        },
+        headers=flow_headers,
+    )
+    assert finished.status_code == 200, finished.text
+    with SessionLocal() as db:
+        row = db.get(WechatSessionBinding, binding["id"])
+        conversation = db.get(Conversation, binding["conversation_id"])
+        assert row.recovery_hold["status"] == "escalated"
         assert conversation.status == "waiting_sales_reply"
         assert db.query(HandoffEvent).count() == 1
+
+
+def test_different_identity_problem_supersedes_old_timer_after_flow_terminal():
+    worker = _create_worker()
+    _create_sales(worker["id"])
+    _create_lead("不同问题不继承旧时间客户", "13896676554")
+    remark_code = _pull_remark_code(worker)
+    scan = client.post(
+        f"/api/workers/{worker['id']}/wechat/sessions/scan-result",
+        json=_scan_payload(remark_code),
+        headers=_worker_headers(worker),
+    )
+    binding = scan.json()["data"]["bindings"][0]
+    old_identity = hashlib.sha256(b"old-problem").hexdigest()
+    old_gate_key = hashlib.sha256(
+        (
+            binding["conversation_id"]
+            + "||"
+            + old_identity
+            + "|MESSAGE_CROSS_ROUND_IDENTITY_AMBIGUOUS"
+            + "|conversation_identity"
+        ).encode("utf-8")
+    ).hexdigest()
+    old_first_seen = (utcnow() - timedelta(seconds=121)).isoformat()
+    with SessionLocal() as db:
+        row = db.get(WechatSessionBinding, binding["id"])
+        conversation = db.get(Conversation, binding["conversation_id"])
+        row.recovery_hold = {
+            "status": "active",
+            "gate_key": old_gate_key,
+            "gate_identity_key": old_identity,
+            "reason_code": "MESSAGE_CROSS_ROUND_IDENTITY_AMBIGUOUS",
+            "reason_codes": ["MESSAGE_CROSS_ROUND_IDENTITY_AMBIGUOUS"],
+            "gate_scope": "conversation_identity",
+            "boundary_relation": "unknown",
+            "originating_read_run_id": "read-old-problem",
+            "origin_unread_generation": int(row.unread_generation or 0),
+            "first_seen_at": old_first_seen,
+            "last_seen_at": old_first_seen,
+            "recovery_attempt_count": 1,
+            "last_counted_read_run_id": "read-old-problem",
+        }
+        conversation.status = "waiting_user_reply"
+        db.commit()
+
+    target_response = client.get(
+        f"/api/workers/{worker['id']}/wechat/sessions/read-targets",
+        headers=_worker_headers(worker),
+    )
+    target = target_response.json()["data"]["targets"][0]
+    flow_id = "read-different-problem"
+    flow_headers = {
+        **_worker_headers(worker),
+        "X-Inflight-Flow-Id": flow_id,
+    }
+    started = client.post(
+        f"/api/workers/{worker['id']}/inflight-flow/start",
+        json={
+            "flow_id": flow_id,
+            "flow_kind": "c2_read",
+            "conversation_id": binding["conversation_id"],
+            "unread_generation": target["unread_generation"],
+        },
+        headers=_worker_headers(worker),
+    )
+    assert started.status_code == 200, started.text
+
+    new_identity = hashlib.sha256(b"new-problem").hexdigest()
+    payload = _v3_ingest_payload(
+        binding,
+        remark_code,
+        read_run_id=flow_id,
+        messages=[],
+        read_reason=target["read_reason"],
+        unread_generation=target["unread_generation"],
+    )
+    payload["evidence"].update(
+        {
+            "flow_gate_identity_key": new_identity,
+            "flow_gate_errors": ["MESSAGE_IDENTITY_UNCONFIRMED"],
+            "flow_gate_details": [
+                {
+                    "error_code": "MESSAGE_IDENTITY_UNCONFIRMED",
+                    "position_source": "identity_error_visual_top",
+                    "gate_scope": "conversation_identity",
+                    "boundary_relation": "unknown",
+                    "min_screen_order": 2,
+                    "max_screen_order": 2,
+                }
+            ],
+            "recovery_attempt_kind": "stable_reread",
+        }
+    )
+    ingested = client.post(
+        f"/api/workers/{worker['id']}/wechat/messages/ingest",
+        json=payload,
+        headers=flow_headers,
+    )
+    assert ingested.status_code == 200, ingested.text
+    with SessionLocal() as db:
+        row = db.get(WechatSessionBinding, binding["id"])
+        assert row.recovery_hold["status"] == "suspended"
+        deferred = row.recovery_hold["deferred_hold_after_flow"]
+        assert deferred["gate_identity_key"] == new_identity
+        assert deferred["superseded_gate_key"] == old_gate_key
+        assert deferred["recovery_attempt_count"] == 0
+        assert deferred["first_seen_at"] != old_first_seen
+        assert db.query(HandoffEvent).count() == 0
+
+    finished = client.post(
+        f"/api/workers/{worker['id']}/inflight-flow/finish",
+        json={
+            "flow_id": flow_id,
+            "terminal_kind": "retry_required",
+            "conversation_id": binding["conversation_id"],
+            "error_code": "C2_UNREAD_RESULT_INCONCLUSIVE",
+        },
+        headers=flow_headers,
+    )
+    assert finished.status_code == 200, finished.text
+    with SessionLocal() as db:
+        row = db.get(WechatSessionBinding, binding["id"])
+        assert row.recovery_hold["status"] == "active"
+        assert row.recovery_hold["gate_identity_key"] == new_identity
+        assert row.recovery_hold["superseded_gate_key"] == old_gate_key
+        assert row.recovery_hold["recovery_attempt_count"] == 0
+        assert db.query(HandoffEvent).count() == 0
+
+
+def test_same_identity_fingerprint_in_new_generation_starts_a_new_hold_timer():
+    worker = _create_worker()
+    _create_sales(worker["id"])
+    _create_lead("新代次同异常指纹客户", "13896676552")
+    remark_code = _pull_remark_code(worker)
+    first_scan = client.post(
+        f"/api/workers/{worker['id']}/wechat/sessions/scan-result",
+        json=_scan_payload(remark_code),
+        headers=_worker_headers(worker),
+    )
+    binding = first_scan.json()["data"]["bindings"][0]
+    identity_key = hashlib.sha256(b"same-fingerprint-new-generation").hexdigest()
+    old_generation = int(binding["unread_generation"] or 0)
+    old_gate_key = hashlib.sha256(
+        (
+            binding["conversation_id"]
+            + "||"
+            + identity_key
+            + "|MESSAGE_CROSS_ROUND_IDENTITY_AMBIGUOUS"
+            + "|conversation_identity|"
+            + str(old_generation)
+        ).encode("utf-8")
+    ).hexdigest()
+    old_first_seen = (utcnow() - timedelta(seconds=121)).isoformat()
+    with SessionLocal() as db:
+        row = db.get(WechatSessionBinding, binding["id"])
+        row.recovery_hold = {
+            "status": "active",
+            "gate_key": old_gate_key,
+            "gate_identity_key": identity_key,
+            "reason_code": "MESSAGE_CROSS_ROUND_IDENTITY_AMBIGUOUS",
+            "reason_codes": ["MESSAGE_CROSS_ROUND_IDENTITY_AMBIGUOUS"],
+            "gate_scope": "conversation_identity",
+            "boundary_relation": "unknown",
+            "originating_read_run_id": "read-old-generation",
+            "origin_unread_generation": old_generation,
+            "first_seen_at": old_first_seen,
+            "last_seen_at": old_first_seen,
+            "recovery_attempt_count": 1,
+        }
+        db.commit()
+
+    second_scan_payload = _scan_payload(remark_code)
+    second_scan_payload["scan_id"] = "scan-same-fingerprint-new-generation"
+    second_scan_payload["sessions"][0].update(
+        {
+            "last_message_preview": '[语音] 8"',
+            "last_message_observation_id": "same-fingerprint-new-voice",
+        }
+    )
+    second_scan = client.post(
+        f"/api/workers/{worker['id']}/wechat/sessions/scan-result",
+        json=second_scan_payload,
+        headers=_worker_headers(worker),
+    )
+    assert second_scan.status_code == 200, second_scan.text
+    target = client.get(
+        f"/api/workers/{worker['id']}/wechat/sessions/read-targets",
+        headers=_worker_headers(worker),
+    ).json()["data"]["targets"][0]
+    assert target["unread_generation"] > old_generation
+    flow_id = "read-same-fingerprint-new-generation"
+    flow_headers = {
+        **_worker_headers(worker),
+        "X-Inflight-Flow-Id": flow_id,
+    }
+    started = client.post(
+        f"/api/workers/{worker['id']}/inflight-flow/start",
+        json={
+            "flow_id": flow_id,
+            "flow_kind": "c2_read",
+            "conversation_id": binding["conversation_id"],
+            "unread_generation": target["unread_generation"],
+        },
+        headers=_worker_headers(worker),
+    )
+    assert started.status_code == 200, started.text
+    payload = _v3_ingest_payload(
+        binding,
+        remark_code,
+        read_run_id=flow_id,
+        messages=[],
+        read_reason=target["read_reason"],
+        unread_generation=target["unread_generation"],
+    )
+    payload["evidence"].update(
+        {
+            "flow_gate_identity_key": identity_key,
+            "flow_gate_errors": ["MESSAGE_CROSS_ROUND_IDENTITY_AMBIGUOUS"],
+            "flow_gate_details": [
+                {
+                    "error_code": "MESSAGE_CROSS_ROUND_IDENTITY_AMBIGUOUS",
+                    "position_source": "identity_error_visual_top",
+                    "gate_scope": "conversation_identity",
+                    "boundary_relation": "unknown",
+                    "min_screen_order": 2,
+                    "max_screen_order": 2,
+                }
+            ],
+            "recovery_attempt_kind": "stable_reread",
+        }
+    )
+    ingested = client.post(
+        f"/api/workers/{worker['id']}/wechat/messages/ingest",
+        json=payload,
+        headers=flow_headers,
+    )
+    assert ingested.status_code == 200, ingested.text
+    assert ingested.json()["data"]["read_completion"]["result"] == (
+        "retry_required"
+    )
+    with SessionLocal() as db:
+        row = db.get(WechatSessionBinding, binding["id"])
+        deferred = row.recovery_hold["deferred_hold_after_flow"]
+        assert deferred["gate_key"] != old_gate_key
+        assert deferred["origin_unread_generation"] == target[
+            "unread_generation"
+        ]
+        assert deferred["first_seen_at"] != old_first_seen
+        assert deferred["recovery_attempt_count"] == 0
+        assert deferred["superseded_gate_key"] == old_gate_key
+        assert db.query(HandoffEvent).count() == 0
+
+    finished = client.post(
+        f"/api/workers/{worker['id']}/inflight-flow/finish",
+        json={
+            "flow_id": flow_id,
+            "terminal_kind": "retry_required",
+            "conversation_id": binding["conversation_id"],
+            "error_code": "C2_UNREAD_RESULT_INCONCLUSIVE",
+        },
+        headers=flow_headers,
+    )
+    assert finished.status_code == 200, finished.text
+    with SessionLocal() as db:
+        row = db.get(WechatSessionBinding, binding["id"])
+        assert row.recovery_hold["status"] == "active"
+        assert row.recovery_hold["origin_unread_generation"] == target[
+            "unread_generation"
+        ]
+        assert row.recovery_hold["first_seen_at"] != old_first_seen
+        assert row.recovery_hold["recovery_attempt_count"] == 0
+        assert db.query(HandoffEvent).count() == 0
+
+
+def test_expired_hold_is_suspended_during_chat_reply_and_resumes_after_terminal():
+    """A C3 flow protects the customer, but does not erase the old timer."""
+
+    worker = _create_worker()
+    _create_sales(worker["id"])
+    _create_lead("C3 期间旧计时器互斥客户", "13896676557")
+    remark_code = _pull_remark_code(worker)
+    scan = client.post(
+        f"/api/workers/{worker['id']}/wechat/sessions/scan-result",
+        json=_scan_payload(remark_code),
+        headers=_worker_headers(worker),
+    )
+    binding = scan.json()["data"]["bindings"][0]
+    flow_id = "chat-reply-protects-expired-hold"
+    with SessionLocal() as db:
+        row = db.get(WechatSessionBinding, binding["id"])
+        row.recovery_hold = {
+            "status": "active",
+            "gate_key": hashlib.sha256(b"c3-old-hold").hexdigest(),
+            "gate_identity_key": hashlib.sha256(
+                b"c3-old-identity"
+            ).hexdigest(),
+            "reason_code": "MESSAGE_CROSS_ROUND_IDENTITY_AMBIGUOUS",
+            "reason_codes": ["MESSAGE_CROSS_ROUND_IDENTITY_AMBIGUOUS"],
+            "originating_read_run_id": "old-read-before-c3",
+            "origin_unread_generation": int(row.unread_generation or 0),
+            "first_seen_at": (
+                utcnow() - timedelta(seconds=121)
+            ).isoformat(),
+            "last_seen_at": utcnow().isoformat(),
+            "recovery_attempt_count": 0,
+        }
+        db.add(
+            Task(
+                id=flow_id,
+                task_type="chat_reply",
+                status="running",
+                worker_id=worker["id"],
+            )
+        )
+        db.commit()
+
+    started = client.post(
+        f"/api/workers/{worker['id']}/inflight-flow/start",
+        json={
+            "flow_id": flow_id,
+            "flow_kind": "chat_reply",
+            "conversation_id": binding["conversation_id"],
+        },
+        headers=_worker_headers(worker),
+    )
+    assert started.status_code == 200, started.text
+    with SessionLocal() as db:
+        row = db.get(WechatSessionBinding, binding["id"])
+        assert row.recovery_hold["status"] == "suspended"
+        assert row.recovery_hold["suspended_by_read_run_id"] == flow_id
+        assert db.query(HandoffEvent).count() == 0
+        task = db.get(Task, flow_id)
+        task.status = "completed"
+        task.completed_at = utcnow()
+        db.commit()
+
+    finished = client.post(
+        f"/api/workers/{worker['id']}/inflight-flow/finish",
+        json={
+            "flow_id": flow_id,
+            "terminal_kind": "task_terminal",
+            "conversation_id": binding["conversation_id"],
+        },
+        headers={
+            **_worker_headers(worker),
+            "X-Inflight-Flow-Id": flow_id,
+        },
+    )
+    assert finished.status_code == 200, finished.text
+    with SessionLocal() as db:
+        row = db.get(WechatSessionBinding, binding["id"])
+        assert row.recovery_hold["status"] == "escalated"
+        assert row.recovery_hold["first_seen_at"]
+        assert db.query(HandoffEvent).count() == 1
+
+
+def test_pause_during_flow_prevents_hold_expiry_until_authoritative_reread():
+    worker = _create_worker()
+    _create_sales(worker["id"])
+    _create_lead("Flow 中暂停不改变客户状态", "13896676551")
+    remark_code = _pull_remark_code(worker)
+    scan = client.post(
+        f"/api/workers/{worker['id']}/wechat/sessions/scan-result",
+        json=_scan_payload(remark_code),
+        headers=_worker_headers(worker),
+    )
+    binding = scan.json()["data"]["bindings"][0]
+    flow_id = "chat-reply-paused-before-old-hold-terminal"
+    with SessionLocal() as db:
+        row = db.get(WechatSessionBinding, binding["id"])
+        # Model the real C3 boundary: the unread generation that produced the
+        # reply has already been consumed, so resume cannot rely on a red dot.
+        row.consumed_unread_generation = int(row.unread_generation or 0)
+        row.unread_hint = False
+        row.recovery_hold = {
+            "status": "active",
+            "gate_key": hashlib.sha256(b"paused-old-hold").hexdigest(),
+            "gate_identity_key": hashlib.sha256(
+                b"paused-old-identity"
+            ).hexdigest(),
+            "reason_code": "MESSAGE_CROSS_ROUND_IDENTITY_AMBIGUOUS",
+            "reason_codes": ["MESSAGE_CROSS_ROUND_IDENTITY_AMBIGUOUS"],
+            "originating_read_run_id": "old-read-before-pause",
+            "origin_unread_generation": int(row.unread_generation or 0),
+            "first_seen_at": (
+                utcnow() - timedelta(seconds=121)
+            ).isoformat(),
+            "last_seen_at": utcnow().isoformat(),
+            "recovery_attempt_count": 0,
+        }
+        db.add(
+            Task(
+                id=flow_id,
+                task_type="chat_reply",
+                status="running",
+                worker_id=worker["id"],
+            )
+        )
+        db.commit()
+
+    started = client.post(
+        f"/api/workers/{worker['id']}/inflight-flow/start",
+        json={
+            "flow_id": flow_id,
+            "flow_kind": "chat_reply",
+            "conversation_id": binding["conversation_id"],
+        },
+        headers=_worker_headers(worker),
+    )
+    assert started.status_code == 200, started.text
+    paused = client.post(
+        f"/api/workers/{worker['id']}/run-status",
+        json={
+            "run_status": "paused",
+            "client_instance_id": "client-a",
+        },
+        headers=_worker_headers(worker),
+    )
+    assert paused.status_code == 200, paused.text
+    with SessionLocal() as db:
+        task = db.get(Task, flow_id)
+        task.status = "completed"
+        task.completed_at = utcnow()
+        db.commit()
+
+    finished = client.post(
+        f"/api/workers/{worker['id']}/inflight-flow/finish",
+        json={
+            "flow_id": flow_id,
+            "terminal_kind": "task_terminal",
+            "conversation_id": binding["conversation_id"],
+        },
+        headers={
+            **_worker_headers(worker),
+            "X-Inflight-Flow-Id": flow_id,
+        },
+    )
+    assert finished.status_code == 200, finished.text
+    with SessionLocal() as db:
+        row = db.get(WechatSessionBinding, binding["id"])
+        worker_row = db.get(Worker, worker["id"])
+        assert worker_row.run_status == "paused"
+        assert worker_row.inflight_flow_state == {}
+        assert row.recovery_hold["status"] == "suspended"
+        assert db.query(HandoffEvent).count() == 0
+
+    while_paused = client.get(
+        f"/api/workers/{worker['id']}/wechat/sessions/read-targets",
+        headers=_worker_headers(worker),
+    )
+    assert while_paused.status_code == 409
+    with SessionLocal() as db:
+        assert db.query(HandoffEvent).count() == 0
+
+    resumed = client.post(
+        f"/api/workers/{worker['id']}/run-status",
+        json={
+            "run_status": "running",
+            "client_instance_id": "client-a",
+        },
+        headers=_worker_headers(worker),
+    )
+    assert resumed.status_code == 200, resumed.text
+    reread = client.get(
+        f"/api/workers/{worker['id']}/wechat/sessions/read-targets",
+        headers=_worker_headers(worker),
+    )
+    assert reread.status_code == 200, reread.text
+    targets = reread.json()["data"]["targets"]
+    assert len(targets) == 1
+    assert targets[0]["conversation_id"] == binding["conversation_id"]
+    # Even without a red dot, resuming must schedule a passive authoritative
+    # reread before it may evaluate the suspended customer timer.
+    assert targets[0]["read_reason"] == "waiting_user_reply"
+    with SessionLocal() as db:
+        assert db.query(HandoffEvent).count() == 0
+
+
+def test_retry_required_is_counted_per_unread_generation():
+    worker = _create_worker()
+    _create_sales(worker["id"])
+    _create_lead("跨代次有限复读客户", "13896676555")
+    remark_code = _pull_remark_code(worker)
+    first_scan = client.post(
+        f"/api/workers/{worker['id']}/wechat/sessions/scan-result",
+        json=_scan_payload(remark_code),
+        headers=_worker_headers(worker),
+    )
+    binding = first_scan.json()["data"]["bindings"][0]
+
+    def run_inconclusive(flow_id: str, target: dict) -> dict:
+        flow_headers = {
+            **_worker_headers(worker),
+            "X-Inflight-Flow-Id": flow_id,
+        }
+        started = client.post(
+            f"/api/workers/{worker['id']}/inflight-flow/start",
+            json={
+                "flow_id": flow_id,
+                "flow_kind": "c2_read",
+                "conversation_id": binding["conversation_id"],
+                "unread_generation": target["unread_generation"],
+            },
+            headers=_worker_headers(worker),
+        )
+        assert started.status_code == 200, started.text
+        payload = _v3_ingest_payload(
+            binding,
+            remark_code,
+            read_run_id=flow_id,
+            messages=[],
+            read_reason=target["read_reason"],
+            unread_generation=target["unread_generation"],
+        )
+        response = client.post(
+            f"/api/workers/{worker['id']}/wechat/messages/ingest",
+            json=payload,
+            headers=flow_headers,
+        )
+        assert response.status_code == 200, response.text
+        completion = response.json()["data"]["read_completion"]
+        terminal = (
+            "technical_failed"
+            if completion["result"] == "technical_failed"
+            else "retry_required"
+        )
+        if terminal == "technical_failed":
+            faulted = client.post(
+                f"/api/workers/{worker['id']}/run-status",
+                json={
+                    "run_status": "faulted",
+                    "client_instance_id": "client-a",
+                },
+                headers=_worker_headers(worker),
+            )
+            assert faulted.status_code == 200, faulted.text
+        finished = client.post(
+            f"/api/workers/{worker['id']}/inflight-flow/finish",
+            json={
+                "flow_id": flow_id,
+                "terminal_kind": terminal,
+                "conversation_id": binding["conversation_id"],
+                "error_code": completion.get("error_code"),
+            },
+            headers=flow_headers,
+        )
+        assert finished.status_code == 200, finished.text
+        return completion
+
+    first_target = client.get(
+        f"/api/workers/{worker['id']}/wechat/sessions/read-targets",
+        headers=_worker_headers(worker),
+    ).json()["data"]["targets"][0]
+    first = run_inconclusive("read-generation-one", first_target)
+    assert first["result"] == "retry_required"
+    assert first["result_unread_generation"] == first_target[
+        "unread_generation"
+    ]
+
+    second_scan_payload = _scan_payload(remark_code)
+    second_scan_payload["scan_id"] = "scan-second-unread-generation"
+    second_scan_payload["sessions"][0].update(
+        {
+            "last_message_preview": "第二代次的新消息",
+            "last_message_observation_id": "second-generation-observation",
+        }
+    )
+    second_scan = client.post(
+        f"/api/workers/{worker['id']}/wechat/sessions/scan-result",
+        json=second_scan_payload,
+        headers=_worker_headers(worker),
+    )
+    assert second_scan.status_code == 200, second_scan.text
+    with SessionLocal() as db:
+        row = db.get(WechatSessionBinding, binding["id"])
+        row.next_read_due_at = utcnow() - timedelta(seconds=1)
+        db.commit()
+    second_target = client.get(
+        f"/api/workers/{worker['id']}/wechat/sessions/read-targets",
+        headers=_worker_headers(worker),
+    ).json()["data"]["targets"][0]
+    assert second_target["unread_generation"] > first_target[
+        "unread_generation"
+    ]
+    second = run_inconclusive("read-generation-two-first", second_target)
+    assert second["result"] == "retry_required"
+    assert second["result_unread_generation"] == second_target[
+        "unread_generation"
+    ]
+
+    with SessionLocal() as db:
+        row = db.get(WechatSessionBinding, binding["id"])
+        row.next_read_due_at = utcnow() - timedelta(seconds=1)
+        db.commit()
+    third_target = client.get(
+        f"/api/workers/{worker['id']}/wechat/sessions/read-targets",
+        headers=_worker_headers(worker),
+    ).json()["data"]["targets"][0]
+    third = run_inconclusive("read-generation-two-second", third_target)
+    assert third["result"] == "technical_failed"
+    assert third["result_unread_generation"] == second_target[
+        "unread_generation"
+    ]
+
+
+def test_due_recall_cannot_interrupt_new_message_flow_and_is_cancelled_by_fact(
+    monkeypatch,
+):
+    settings = wechat_service.get_settings()
+    monkeypatch.setattr(settings, "c3_recall_quiet_start_hour", 0)
+    monkeypatch.setattr(settings, "c3_recall_quiet_end_hour", 0)
+    worker = _create_worker()
+    _create_sales(worker["id"])
+    _create_lead("召回到期并发新消息客户", "13896676556")
+    remark_code = _pull_remark_code(worker)
+    scan = client.post(
+        f"/api/workers/{worker['id']}/wechat/sessions/scan-result",
+        json=_scan_payload(remark_code),
+        headers=_worker_headers(worker),
+    )
+    binding = scan.json()["data"]["bindings"][0]
+    with SessionLocal() as db:
+        conversation = db.get(Conversation, binding["conversation_id"])
+        assert conversation is not None
+        conversation.status = "waiting_user_reply"
+        conversation.ai_enabled = True
+        conversation.next_recall_at = utcnow() - timedelta(seconds=1)
+        conversation.recall_count = 0
+        db.commit()
+
+    targets = client.get(
+        f"/api/workers/{worker['id']}/wechat/sessions/read-targets",
+        headers=_worker_headers(worker),
+    )
+    assert targets.status_code == 200, targets.text
+    target = targets.json()["data"]["targets"][0]
+    assert target["read_reason"] != "recall_precheck"
+    with SessionLocal() as db:
+        conversation = db.get(Conversation, binding["conversation_id"])
+        assert conversation.status == "waiting_user_reply"
+
+    flow_id = "read-new-fact-while-recall-due"
+    flow_headers = {
+        **_worker_headers(worker),
+        "X-Inflight-Flow-Id": flow_id,
+    }
+    started = client.post(
+        f"/api/workers/{worker['id']}/inflight-flow/start",
+        json={
+            "flow_id": flow_id,
+            "flow_kind": "c2_read",
+            "conversation_id": binding["conversation_id"],
+            "unread_generation": target["unread_generation"],
+        },
+        headers=_worker_headers(worker),
+    )
+    assert started.status_code == 200, started.text
+    authorization = client.get(
+        (
+            f"/api/workers/{worker['id']}/wechat/conversations/"
+            f"{binding['conversation_id']}/read-authorization"
+        ),
+        headers=flow_headers,
+    )
+    assert authorization.status_code == 200, authorization.text
+    assert authorization.json()["data"]["allowed"] is True
+    with SessionLocal() as db:
+        conversation = db.get(Conversation, binding["conversation_id"])
+        assert conversation.status == "waiting_user_reply"
+        assert conversation.recall_cycle_id is None
+
+    payload = _v3_ingest_payload(
+        binding,
+        remark_code,
+        read_run_id=flow_id,
+        messages=[
+            _v3_message(
+                "new-text-while-recall-due",
+                role="customer",
+                message_type="text",
+                content="这是召回到期时刚到的新消息",
+                screen_order=1,
+            )
+        ],
+        read_reason=target["read_reason"],
+        unread_generation=target["unread_generation"],
+    )
+    payload["authorization_revision"] = authorization.json()["data"][
+        "authorization_revision"
+    ]
+    ingested = client.post(
+        f"/api/workers/{worker['id']}/wechat/messages/ingest",
+        json=payload,
+        headers=flow_headers,
+    )
+    assert ingested.status_code == 200, ingested.text
+    finished = client.post(
+        f"/api/workers/{worker['id']}/inflight-flow/finish",
+        json={
+            "flow_id": flow_id,
+            "terminal_kind": "read_confirmed",
+            "conversation_id": binding["conversation_id"],
+            "error_code": None,
+        },
+        headers=flow_headers,
+    )
+    assert finished.status_code == 200, finished.text
+    with SessionLocal() as db:
+        conversation = db.get(Conversation, binding["conversation_id"])
+        assert conversation.status == "ai_active"
+        assert conversation.next_recall_at is None
+        assert conversation.recall_cycle_id is None
+        assert db.query(MessageEvent).filter(
+            MessageEvent.conversation_id == binding["conversation_id"],
+            MessageEvent.content == "这是召回到期时刚到的新消息",
+        ).count() == 1
+
+
+def test_read_scheduler_rechecks_locked_worker_before_expiring_hold():
+    """A stale route-level Worker snapshot cannot outrun Flow registration."""
+
+    worker = _create_worker()
+    _create_sales(worker["id"])
+    _create_lead("调度锁顺序客户", "13896676557")
+    remark_code = _pull_remark_code(worker)
+    scan = client.post(
+        f"/api/workers/{worker['id']}/wechat/sessions/scan-result",
+        json=_scan_payload(remark_code),
+        headers=_worker_headers(worker),
+    )
+    binding = scan.json()["data"]["bindings"][0]
+    gate_identity_key = hashlib.sha256(b"scheduler-race-gate").hexdigest()
+    first_seen_at = (utcnow() - timedelta(seconds=121)).isoformat()
+    with SessionLocal() as db:
+        row = db.get(WechatSessionBinding, binding["id"])
+        conversation = db.get(Conversation, binding["conversation_id"])
+        worker_row = db.get(Worker, worker["id"])
+        row.unread_hint = False
+        row.last_observed_unread_hint = False
+        row.consumed_unread_generation = int(row.unread_generation or 0)
+        row.recovery_hold = {
+            "status": "active",
+            "gate_key": hashlib.sha256(b"scheduler-race-hold").hexdigest(),
+            "gate_identity_key": gate_identity_key,
+            "reason_code": "MESSAGE_CROSS_ROUND_IDENTITY_AMBIGUOUS",
+            "reason_codes": ["MESSAGE_CROSS_ROUND_IDENTITY_AMBIGUOUS"],
+            "gate_scope": "conversation_identity",
+            "boundary_relation": "unknown",
+            "originating_read_run_id": "read-before-race",
+            "origin_unread_generation": int(row.unread_generation or 0),
+            "first_seen_at": first_seen_at,
+            "last_seen_at": first_seen_at,
+            "recovery_attempt_count": 0,
+        }
+        conversation.status = "waiting_user_reply"
+        worker_row.inflight_flow_state = {
+            "status": "active",
+            "flow_id": "read-won-race",
+            "flow_kind": "c2_read",
+            "conversation_id": binding["conversation_id"],
+            "unread_generation": int(row.unread_generation or 0),
+        }
+        db.commit()
+
+    # Model an authenticated route object captured immediately before the
+    # competing Flow committed.  Production must refresh it under row lock.
+    stale_worker = Worker(id=worker["id"], inflight_flow_state={})
+    with SessionLocal() as db:
+        result = wechat_service.read_targets(db, stale_worker)
+        db.commit()
+    assert result["targets"] == []
+    with SessionLocal() as db:
+        row = db.get(WechatSessionBinding, binding["id"])
+        conversation = db.get(Conversation, binding["conversation_id"])
+        assert row.recovery_hold["status"] == "active"
+        assert conversation.status == "waiting_user_reply"
+        assert db.query(HandoffEvent).count() == 0
+
+
+def test_read_scheduler_rechecks_locked_pause_before_starting_recall(
+    monkeypatch,
+):
+    """A pause committed after route auth forbids all scheduler side effects."""
+
+    settings = wechat_service.get_settings()
+    monkeypatch.setattr(settings, "c3_recall_quiet_start_hour", 0)
+    monkeypatch.setattr(settings, "c3_recall_quiet_end_hour", 0)
+    worker = _create_worker()
+    _create_sales(worker["id"])
+    _create_lead("暂停竞态禁止召回客户", "13896676562")
+    remark_code = _pull_remark_code(worker)
+    scan = client.post(
+        f"/api/workers/{worker['id']}/wechat/sessions/scan-result",
+        json=_scan_payload(remark_code),
+        headers=_worker_headers(worker),
+    )
+    binding = scan.json()["data"]["bindings"][0]
+    with SessionLocal() as db:
+        row = db.get(WechatSessionBinding, binding["id"])
+        conversation = db.get(Conversation, binding["conversation_id"])
+        worker_row = db.get(Worker, worker["id"])
+        row.unread_hint = False
+        row.last_observed_unread_hint = False
+        row.consumed_unread_generation = int(row.unread_generation or 0)
+        row.recovery_hold = {}
+        conversation.status = "waiting_user_reply"
+        conversation.ai_enabled = True
+        conversation.next_recall_at = utcnow() - timedelta(seconds=1)
+        conversation.recall_count = 0
+        worker_row.run_status = "paused"
+        db.commit()
+
+    # This object models the running snapshot authenticated immediately before
+    # the operator's pause committed. The service must refresh it under lock.
+    stale_worker = Worker(
+        id=worker["id"],
+        run_status="running",
+        inflight_flow_state={},
+    )
+    with SessionLocal() as db:
+        result = wechat_service.read_targets(db, stale_worker)
+        db.commit()
+    assert result["targets"] == []
+    assert result["next_action"] == wechat_service.NEXT_ACTION_NONE
+    with SessionLocal() as db:
+        conversation = db.get(Conversation, binding["conversation_id"])
+        worker_row = db.get(Worker, worker["id"])
+        assert worker_row.run_status == "paused"
+        assert conversation.status == "waiting_user_reply"
+        assert conversation.recall_cycle_id is None
+        assert db.query(HandoffEvent).count() == 0
+
+
+def test_postgres_flow_registration_row_lock_precedes_hold_expiry():
+    """A real Binding row lock makes Flow registration win atomically."""
+
+    if engine.dialect.name != "postgresql":
+        pytest.skip("PostgreSQL hold/flow row-lock race test")
+
+    worker = _create_worker()
+    _create_sales(worker["id"])
+    _create_lead("行锁互斥客户", "13896676561")
+    remark_code = _pull_remark_code(worker)
+    scan = client.post(
+        f"/api/workers/{worker['id']}/wechat/sessions/scan-result",
+        json=_scan_payload(remark_code),
+        headers=_worker_headers(worker),
+    )
+    binding = scan.json()["data"]["bindings"][0]
+    first_seen_at = (utcnow() - timedelta(seconds=121)).isoformat()
+    with SessionLocal() as db:
+        row = db.get(WechatSessionBinding, binding["id"])
+        conversation = db.get(Conversation, binding["conversation_id"])
+        row.unread_hint = False
+        row.last_observed_unread_hint = False
+        row.consumed_unread_generation = int(row.unread_generation or 0)
+        row.recovery_hold = {
+            "status": "active",
+            "gate_key": hashlib.sha256(b"postgres-race-hold").hexdigest(),
+            "gate_identity_key": hashlib.sha256(
+                b"postgres-race-identity"
+            ).hexdigest(),
+            "reason_code": "MESSAGE_CROSS_ROUND_IDENTITY_AMBIGUOUS",
+            "reason_codes": ["MESSAGE_CROSS_ROUND_IDENTITY_AMBIGUOUS"],
+            "gate_scope": "conversation_identity",
+            "boundary_relation": "unknown",
+            "originating_read_run_id": "read-before-postgres-race",
+            "origin_unread_generation": int(row.unread_generation or 0),
+            "first_seen_at": first_seen_at,
+            "last_seen_at": first_seen_at,
+            "recovery_attempt_count": 0,
+        }
+        conversation.status = "waiting_user_reply"
+        db.commit()
+
+    scheduler_started = threading.Event()
+    scheduler_finished = threading.Event()
+    scheduler_outcome: dict = {}
+
+    def run_scheduler() -> None:
+        with SessionLocal() as scheduler_db:
+            scheduler_worker = scheduler_db.get(Worker, worker["id"])
+            scheduler_started.set()
+            scheduler_outcome["result"] = wechat_service.read_targets(
+                scheduler_db,
+                scheduler_worker,
+            )
+            scheduler_db.commit()
+        scheduler_finished.set()
+
+    with SessionLocal() as flow_db:
+        # Hold the exact Binding row before registering the Flow.  The
+        # scheduler starts concurrently and must wait on this database lock.
+        flow_db.scalar(
+            select(WechatSessionBinding)
+            .where(WechatSessionBinding.id == binding["id"])
+            .with_for_update()
+        )
+        flow_worker = flow_db.get(Worker, worker["id"])
+        flow_state = worker_service.start_inflight_flow(
+            flow_db,
+            flow_worker,
+            WorkerInflightFlowStartRequest(
+                flow_id="read-postgres-lock-winner",
+                flow_kind="c2_read",
+                conversation_id=binding["conversation_id"],
+                unread_generation=binding["unread_generation"],
+            ),
+        )
+        assert flow_state["status"] == "active"
+        scheduler_thread = threading.Thread(target=run_scheduler)
+        scheduler_thread.start()
+        assert scheduler_started.wait(timeout=2)
+        time.sleep(0.2)
+        assert scheduler_finished.is_set() is False
+        flow_db.commit()
+    scheduler_thread.join(timeout=5)
+    assert scheduler_finished.is_set() is True
+    assert scheduler_outcome["result"]["targets"] == []
+    with SessionLocal() as db:
+        row = db.get(WechatSessionBinding, binding["id"])
+        conversation = db.get(Conversation, binding["conversation_id"])
+        worker_row = db.get(Worker, worker["id"])
+        assert row.recovery_hold["status"] == "suspended"
+        assert conversation.status == "waiting_user_reply"
+        assert worker_row.inflight_flow_state["flow_id"] == (
+            "read-postgres-lock-winner"
+        )
+        assert db.query(HandoffEvent).count() == 0
+
+
+def test_postgres_pause_row_lock_wins_before_recall_dispatch(monkeypatch):
+    """A concurrent pause commits before the scheduler may start C4."""
+
+    if engine.dialect.name != "postgresql":
+        pytest.skip("PostgreSQL pause/read-target row-lock race test")
+    settings = wechat_service.get_settings()
+    monkeypatch.setattr(settings, "c3_recall_quiet_start_hour", 0)
+    monkeypatch.setattr(settings, "c3_recall_quiet_end_hour", 0)
+    worker = _create_worker()
+    _create_sales(worker["id"])
+    _create_lead("行锁暂停禁止召回客户", "13896676563")
+    remark_code = _pull_remark_code(worker)
+    scan = client.post(
+        f"/api/workers/{worker['id']}/wechat/sessions/scan-result",
+        json=_scan_payload(remark_code),
+        headers=_worker_headers(worker),
+    )
+    binding = scan.json()["data"]["bindings"][0]
+    with SessionLocal() as db:
+        row = db.get(WechatSessionBinding, binding["id"])
+        conversation = db.get(Conversation, binding["conversation_id"])
+        row.unread_hint = False
+        row.last_observed_unread_hint = False
+        row.consumed_unread_generation = int(row.unread_generation or 0)
+        row.recovery_hold = {}
+        conversation.status = "waiting_user_reply"
+        conversation.ai_enabled = True
+        conversation.next_recall_at = utcnow() - timedelta(seconds=1)
+        conversation.recall_count = 0
+        db.commit()
+
+    scheduler_started = threading.Event()
+    scheduler_finished = threading.Event()
+    scheduler_outcome: dict = {}
+
+    def run_scheduler() -> None:
+        stale_worker = Worker(
+            id=worker["id"],
+            run_status="running",
+            inflight_flow_state={},
+        )
+        with SessionLocal() as scheduler_db:
+            scheduler_started.set()
+            scheduler_outcome["result"] = wechat_service.read_targets(
+                scheduler_db,
+                stale_worker,
+            )
+            scheduler_db.commit()
+        scheduler_finished.set()
+
+    with SessionLocal() as pause_db:
+        locked_worker = pause_db.scalar(
+            select(Worker)
+            .where(Worker.id == worker["id"])
+            .with_for_update()
+        )
+        locked_worker.run_status = "paused"
+        pause_db.flush()
+        scheduler_thread = threading.Thread(target=run_scheduler)
+        scheduler_thread.start()
+        assert scheduler_started.wait(timeout=2)
+        time.sleep(0.2)
+        assert scheduler_finished.is_set() is False
+        pause_db.commit()
+
+    scheduler_thread.join(timeout=5)
+    assert scheduler_finished.is_set() is True
+    assert scheduler_outcome["result"]["targets"] == []
+    with SessionLocal() as db:
+        conversation = db.get(Conversation, binding["conversation_id"])
+        worker_row = db.get(Worker, worker["id"])
+        assert worker_row.run_status == "paused"
+        assert conversation.status == "waiting_user_reply"
+        assert conversation.recall_cycle_id is None
+        assert db.query(HandoffEvent).count() == 0
+
+
+def test_scan_result_rechecks_locked_worker_before_advancing_unread_generation():
+    """A stale route snapshot cannot write N+1 across a registered Flow."""
+
+    worker = _create_worker()
+    _create_sales(worker["id"])
+    _create_lead("扫描锁顺序客户", "13896676559")
+    remark_code = _pull_remark_code(worker)
+    scan = client.post(
+        f"/api/workers/{worker['id']}/wechat/sessions/scan-result",
+        json=_scan_payload(remark_code),
+        headers=_worker_headers(worker),
+    )
+    binding = scan.json()["data"]["bindings"][0]
+    with SessionLocal() as db:
+        row = db.get(WechatSessionBinding, binding["id"])
+        worker_row = db.get(Worker, worker["id"])
+        worker_row.inflight_flow_state = {
+            "status": "active",
+            "flow_id": "read-active-during-scan",
+            "flow_kind": "c2_read",
+            "conversation_id": binding["conversation_id"],
+            "unread_generation": int(row.unread_generation or 0),
+        }
+        initial_generation = int(row.unread_generation or 0)
+        db.commit()
+
+    stale_worker = Worker(id=worker["id"], inflight_flow_state={})
+    scan_payload = _scan_payload(remark_code)
+    scan_payload["scan_id"] = "scan-must-not-cross-active-flow"
+    scan_payload["sessions"][0].update(
+        {
+            "unread_hint": True,
+            "last_message_preview": '[语音] 8"',
+            "last_message_observation_id": "new-during-active-flow",
+        }
+    )
+    with SessionLocal() as db:
+        with pytest.raises(AppError) as exc_info:
+            wechat_service.ingest_scan_result(
+                db,
+                stale_worker,
+                WechatSessionScanResultRequest.model_validate(scan_payload),
+            )
+        db.rollback()
+    assert exc_info.value.code == "SESSION_SCAN_INFLIGHT_FLOW_CONFLICT"
+    with SessionLocal() as db:
+        row = db.get(WechatSessionBinding, binding["id"])
+        assert int(row.unread_generation or 0) == initial_generation
+        assert db.query(WechatScanRun).filter(
+            WechatScanRun.scan_id == "scan-must-not-cross-active-flow"
+        ).count() == 0
+
+
+def test_read_authorization_does_not_repair_handoff_projection():
+    """Authorization renewal observes an existing Handoff without mutation."""
+
+    worker = _create_worker()
+    _create_sales(worker["id"])
+    _create_lead("轻量授权无副作用客户", "13896676560")
+    remark_code = _pull_remark_code(worker)
+    scan = client.post(
+        f"/api/workers/{worker['id']}/wechat/sessions/scan-result",
+        json=_scan_payload(remark_code),
+        headers=_worker_headers(worker),
+    )
+    binding = scan.json()["data"]["bindings"][0]
+    flow_id = "read-authorization-side-effect-free"
+    started = client.post(
+        f"/api/workers/{worker['id']}/inflight-flow/start",
+        json={
+            "flow_id": flow_id,
+            "flow_kind": "c2_read",
+            "conversation_id": binding["conversation_id"],
+            "unread_generation": binding["unread_generation"],
+        },
+        headers=_worker_headers(worker),
+    )
+    assert started.status_code == 200, started.text
+    with SessionLocal() as db:
+        conversation = db.get(Conversation, binding["conversation_id"])
+        conversation.status = "waiting_user_reply"
+        # A lightweight authorization request must not repair unrelated
+        # ownership projection fields.  Those writes belong to explicit
+        # binding/settlement flows, not a long-action lease renewal.
+        conversation.lead_id = None
+        conversation.sales_id = None
+        conversation.worker_id = None
+        db.add(
+            HandoffEvent(
+                conversation_id=binding["conversation_id"],
+                status="created",
+                handoff_reason_code="TEST_EXISTING_HANDOFF",
+                reason_detail="existing authoritative handoff",
+                trigger_message_event_ids=[],
+            )
+        )
+        db.commit()
+
+    authorization = client.get(
+        (
+            f"/api/workers/{worker['id']}/wechat/conversations/"
+            f"{binding['conversation_id']}/read-authorization"
+        ),
+        headers={
+            **_worker_headers(worker),
+            "X-Inflight-Flow-Id": flow_id,
+        },
+    )
+    assert authorization.status_code == 200, authorization.text
+    assert authorization.json()["data"]["read_reason"] == (
+        "waiting_sales_reply"
+    )
+    with SessionLocal() as db:
+        conversation = db.get(Conversation, binding["conversation_id"])
+        assert conversation.status == "waiting_user_reply"
+        assert conversation.lead_id is None
+        assert conversation.sales_id is None
+        assert conversation.worker_id is None
+        assert db.query(HandoffEvent).count() == 1
+
+
+def test_technical_failed_flow_keeps_old_hold_suspended_without_handoff():
+    worker = _create_worker()
+    _create_sales(worker["id"])
+    _create_lead("技术失败保留旧问题客户", "13896676558")
+    remark_code = _pull_remark_code(worker)
+    scan = client.post(
+        f"/api/workers/{worker['id']}/wechat/sessions/scan-result",
+        json=_scan_payload(remark_code),
+        headers=_worker_headers(worker),
+    )
+    binding = scan.json()["data"]["bindings"][0]
+    first_seen_at = (utcnow() - timedelta(seconds=121)).isoformat()
+    with SessionLocal() as db:
+        row = db.get(WechatSessionBinding, binding["id"])
+        conversation = db.get(Conversation, binding["conversation_id"])
+        row.recovery_hold = {
+            "status": "active",
+            "gate_key": hashlib.sha256(b"technical-old-hold").hexdigest(),
+            "gate_identity_key": hashlib.sha256(
+                b"technical-old-identity"
+            ).hexdigest(),
+            "reason_code": "MESSAGE_CROSS_ROUND_IDENTITY_AMBIGUOUS",
+            "reason_codes": ["MESSAGE_CROSS_ROUND_IDENTITY_AMBIGUOUS"],
+            "gate_scope": "conversation_identity",
+            "boundary_relation": "unknown",
+            "originating_read_run_id": "read-before-technical-failure",
+            "origin_unread_generation": int(row.unread_generation or 0),
+            "first_seen_at": first_seen_at,
+            "last_seen_at": first_seen_at,
+            "recovery_attempt_count": 1,
+        }
+        conversation.status = "waiting_user_reply"
+        db.commit()
+
+    flow_id = "read-current-technical-failure"
+    flow_headers = {
+        **_worker_headers(worker),
+        "X-Inflight-Flow-Id": flow_id,
+    }
+    started = client.post(
+        f"/api/workers/{worker['id']}/inflight-flow/start",
+        json={
+            "flow_id": flow_id,
+            "flow_kind": "c2_read",
+            "conversation_id": binding["conversation_id"],
+            "unread_generation": binding["unread_generation"],
+        },
+        headers=_worker_headers(worker),
+    )
+    assert started.status_code == 200, started.text
+    faulted = client.post(
+        f"/api/workers/{worker['id']}/run-status",
+        json={
+            "run_status": "faulted",
+            "client_instance_id": "client-a",
+        },
+        headers=_worker_headers(worker),
+    )
+    assert faulted.status_code == 200, faulted.text
+    finished = client.post(
+        f"/api/workers/{worker['id']}/inflight-flow/finish",
+        json={
+            "flow_id": flow_id,
+            "terminal_kind": "technical_failed",
+            "conversation_id": binding["conversation_id"],
+            "error_code": "C2_MEDIA_ACTION_RESULT_UNRESOLVED",
+        },
+        headers=flow_headers,
+    )
+    assert finished.status_code == 200, finished.text
+    with SessionLocal() as db:
+        row = db.get(WechatSessionBinding, binding["id"])
+        conversation = db.get(Conversation, binding["conversation_id"])
+        worker_row = db.get(Worker, worker["id"])
+        assert row.recovery_hold["status"] == "suspended"
+        assert row.recovery_hold["first_seen_at"] == first_seen_at
+        assert "deferred_hold_after_flow" not in row.recovery_hold
+        assert conversation.status == "waiting_user_reply"
+        assert worker_row.run_status == "faulted"
+        assert worker_row.inflight_flow_state == {}
+        assert db.query(HandoffEvent).count() == 0
 
 
 def test_recent_ai_sent_without_new_messages_is_no_change_and_stays_waiting():
@@ -4433,13 +5993,20 @@ def test_reply_suffix_hold_aggregates_all_gates_and_escalates_after_real_reread(
             ReplyAction.conversation_id == binding["conversation_id"],
             ReplyAction.status == "sent",
         ).one()
+        gate_identity_key = str(
+            persisted_binding.recovery_hold["gate_identity_key"]
+        )
         expected_gate_key = hashlib.sha256(
             (
                 binding["conversation_id"]
                 + "|"
                 + sent_action.id
+                + "|"
+                + gate_identity_key
                 + "|C2_MESSAGE_HISTORY_GAP|MESSAGE_CROSS_ROUND_IDENTITY_AMBIGUOUS"
                 + "|reply_suffix"
+                + "|"
+                + str(persisted_binding.unread_generation or 0)
             ).encode("utf-8")
         ).hexdigest()
         assert persisted_binding.recovery_hold["gate_key"] == expected_gate_key
@@ -4465,12 +6032,22 @@ def test_reply_suffix_hold_aggregates_all_gates_and_escalates_after_real_reread(
     second_payload["authorization_revision"] = (
         refreshed_authorization.json()["data"]["authorization_revision"]
     )
+    second_payload["read_reason"] = refreshed_authorization.json()["data"][
+        "read_reason"
+    ]
+    second_payload["evidence"]["read_reason"] = second_payload[
+        "read_reason"
+    ]
+    second_payload["evidence"]["authorization_read_reason"] = (
+        second_payload["read_reason"]
+    )
     second = client.post(
         f"/api/workers/{worker['id']}/wechat/messages/ingest",
         json=second_payload,
         headers=_worker_headers(worker),
     )
     assert second.status_code == 200, second.text
+    assert "message_batch" in second.json()["data"], second.text
     assert second.json()["data"]["message_batch"]["batch_status"] == (
         "recoverable_hold"
     )
@@ -4495,6 +6072,15 @@ def test_reply_suffix_hold_aggregates_all_gates_and_escalates_after_real_reread(
     assert refreshed_authorization.status_code == 200
     third_payload["authorization_revision"] = (
         refreshed_authorization.json()["data"]["authorization_revision"]
+    )
+    third_payload["read_reason"] = refreshed_authorization.json()["data"][
+        "read_reason"
+    ]
+    third_payload["evidence"]["read_reason"] = third_payload[
+        "read_reason"
+    ]
+    third_payload["evidence"]["authorization_read_reason"] = (
+        third_payload["read_reason"]
     )
     third = client.post(
         f"/api/workers/{worker['id']}/wechat/messages/ingest",
@@ -5241,6 +6827,11 @@ def test_recall_no_action_restores_exact_origin_status(
         conversation.next_recall_at = utcnow() - timedelta(minutes=1)
         conversation.recall_count = 1
         conversation.recall_daily_count = 0
+        persisted_binding = db.get(WechatSessionBinding, binding["id"])
+        persisted_binding.unread_hint = False
+        persisted_binding.consumed_unread_generation = int(
+            persisted_binding.unread_generation or 0
+        )
         db.commit()
 
     targets = client.get(
@@ -5333,7 +6924,7 @@ def test_message_batch_status_rejects_other_worker_and_returns_terminal_state():
 
 
 def test_v3_ingest_uses_canonical_content_and_rejects_expired_authorization_revision():
-    assert contract_revision() == "0.9.51"
+    assert contract_revision() == "0.9.52"
     location_recovery = c2_contract_v3()[
         "target_location_recovery_contract"
     ]
@@ -7885,6 +9476,8 @@ def test_lightweight_read_authorization_returns_current_recovery_target():
         assert binding_row is not None
         assert conversation is not None
         conversation.status = "waiting_sales_reply"
+        binding_row.last_read_conversation_status = "waiting_sales_reply"
+        binding_row.next_read_due_at = utcnow() + timedelta(seconds=60)
         db.commit()
 
     cooling_down = client.get(
@@ -10041,6 +11634,9 @@ def test_safety_gate_after_human_sales_reply_is_not_cleared():
         headers=_worker_headers(worker),
     )
     binding = scan.json()["data"]["bindings"][0]
+    gate_identity_key = hashlib.sha256(
+        b"sales-reply-history-gap"
+    ).hexdigest()
     payload = _v3_ingest_payload(
         binding,
         remark_code,
@@ -10065,6 +11661,7 @@ def test_safety_gate_after_human_sales_reply_is_not_cleared():
         ],
     )
     payload["evidence"]["flow_gate_errors"] = ["C2_MESSAGE_HISTORY_GAP"]
+    payload["evidence"]["flow_gate_identity_key"] = gate_identity_key
     payload["evidence"]["flow_gate_details"] = [
         {
             "error_code": "C2_MESSAGE_HISTORY_GAP",
@@ -10113,6 +11710,7 @@ def test_safety_gate_after_human_sales_reply_is_not_cleared():
         reread["evidence"]["flow_gate_errors"] = [
             "C2_MESSAGE_HISTORY_GAP"
         ]
+        reread["evidence"]["flow_gate_identity_key"] = gate_identity_key
         reread["evidence"]["flow_gate_details"] = [
             {
                 "error_code": "C2_MESSAGE_HISTORY_GAP",

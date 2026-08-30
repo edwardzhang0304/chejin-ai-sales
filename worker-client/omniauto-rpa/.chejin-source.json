@@ -4,7 +4,7 @@
   "upstream_base_commit": "a563e6688c47a8922510794101967823fe1389d7",
   "selective_integrations": [
     {
-      "source_commit": "ffb17693f775c8e8ac34e529af624f84326f0e41",
+      "source_commit": "80b79835f181201e80cb2f58f06df2c515f1dc56",
       "scope": [
         "exact_wechat_context_menu_classification",
         "same_popup_menu_panel_evidence_contract",
@@ -114,7 +114,9 @@
         "pillow_flattened_pixel_iteration_compatibility_contract",
         "c2_contract_0_9_50_generated_schema",
         "portable_send_context_continuity_comparator_contract",
-        "c2_contract_0_9_51_generated_schema"
+        "c2_contract_0_9_51_generated_schema",
+        "embedded_ocr_image_candidate_context_menu_confirmation_contract",
+        "c2_contract_0_9_52_generated_schema"
       ]
     }
   ],
@@ -156,5 +158,5 @@
       ]
     }
   ],
-  "integration_note": "0.9.51 独立 OmniAuto 来源已固定为真实提交 ffb17693f775c8e8ac34e529af624f84326f0e41；该提交基于 0.9.50 来源 f6a7706c20c22d8cd176fefeccfdcf3027eaa753，仅同步 0.9.51 生成合同/Schema，不修改 OmniAuto 生产逻辑、媒体编排或状态机。车金 0.9.51 将未读读取的 retry_required 与 technical_failed 结果贯穿到 Worker/后端 Flow 终态：首次不明确合法释放 Flow 并按后端计划重读，第二次仍不明确则 Worker faulted 且两端 Flow 清除；空 Outbox 不得覆盖后端终态。合同为 0.9.51 / 9f831b2978707c1abb1db0b7bf0cabb45d728ff7a7f307fa2d9bb4fc232a54df。0.9.50 独立 OmniAuto 来源已固定为真实提交 f6a7706c20c22d8cd176fefeccfdcf3027eaa753；该提交基于 0.9.49 来源 8100c2f8bd0cfcd80874d95d69b76e11c9c51a4f，只新增可移植纯连续性比较器、Sidecar 无 Worker 依赖的最终发送验证、0.9.50 生成合同/Schema 及隔离回归测试。0.9.49 独立 OmniAuto 来源已固定为真实提交 8100c2f8bd0cfcd80874d95d69b76e11c9c51a4f；该提交基于 0.9.48 来源 3413c591357f6fd790f53b0f967ff6bc9c6de57f，只同步 0.9.49 生成合同/Schema，不修改 OmniAuto 生产逻辑、Brain、媒体编排或状态机。车金 0.9.49 只为旧版本不可修复 Outbox 增加本地有限隔离终态：保留原始证据、零 HTTP、零微信操作，结算精确匹配的等待 Ledger，解除 draining 并恢复其他客户接单；当前版本同类坏证据仍故障关闭。合同为 0.9.49 / 2302479941f86d8f854dd0169716d0eb89b1ba0f8952344728fefb86d4811289。0.9.47 历史来源提交为 6fc2b12a1c121ec747f9f7ef7123775474dff1d1；0.9.46 历史来源提交为 69c69a60b7e08a31f9d773864b14b35faf86754b，其缺失或畸形证据零 HTTP 隔离、旧 Flow 有限 technical_failed 终态、解除 draining、post_index 与 new_suffix 验收以及不重复点击能力继续保留。0.9.45 历史来源提交为 53caedad5baece001659aafcb5d7f86d98933e27。继续以 gray-v0.9.20 业务流程为基线，历史 ActionJournal 恢复、确定性 Outbox、sent_ack、启动标定和区域坐标映射语义保持不变。车金候选提交、推送、标签、ZIP、配套后端部署和 Windows 实机 OCR/鼠标 UAT 待完成；自动化通过不代表实机已验收。"
+  "integration_note": "0.9.52 独立 OmniAuto 来源已固定为真实提交 80b79835f181201e80cb2f58f06df2c515f1dc56；该提交基于 0.9.51 来源 ffb17693f775c8e8ac34e529af624f84326f0e41，只增加嵌入 OCR 图片候选的右键菜单确认闭环和 0.9.52 生成合同/Schema：80%/30% 比例只允许进入待验证候选，文字菜单必须保留原 OCR 事实且零剪贴板/零 Vision，图片菜单仍必须取得实际图片字节回执才正式确认；不修改 Brain、媒体处理顺序或后端业务状态机。车金 0.9.52 同时收口 recovery hold 的未读代次、暂停并发和读取终态契约，合同为 0.9.52 / 053ec7587763a8360c3d134916501108af4304c38e8e3c69d4e4a80239587940。0.9.51 独立 OmniAuto 来源已固定为真实提交 ffb17693f775c8e8ac34e529af624f84326f0e41；该提交基于 0.9.50 来源 f6a7706c20c22d8cd176fefeccfdcf3027eaa753，仅同步 0.9.51 生成合同/Schema，不修改 OmniAuto 生产逻辑、媒体编排或状态机。车金 0.9.51 将未读读取的 retry_required 与 technical_failed 结果贯穿到 Worker/后端 Flow 终态：首次不明确合法释放 Flow 并按后端计划重读，第二次仍不明确则 Worker faulted 且两端 Flow 清除；空 Outbox 不得覆盖后端终态。合同为 0.9.51 / 9f831b2978707c1abb1db0b7bf0cabb45d728ff7a7f307fa2d9bb4fc232a54df。0.9.50 独立 OmniAuto 来源已固定为真实提交 f6a7706c20c22d8cd176fefeccfdcf3027eaa753；该提交基于 0.9.49 来源 8100c2f8bd0cfcd80874d95d69b76e11c9c51a4f，只新增可移植纯连续性比较器、Sidecar 无 Worker 依赖的最终发送验证、0.9.50 生成合同/Schema 及隔离回归测试。0.9.49 独立 OmniAuto 来源已固定为真实提交 8100c2f8bd0cfcd80874d95d69b76e11c9c51a4f；该提交基于 0.9.48 来源 3413c591357f6fd790f53b0f967ff6bc9c6de57f，只同步 0.9.49 生成合同/Schema，不修改 OmniAuto 生产逻辑、Brain、媒体编排或状态机。车金 0.9.49 只为旧版本不可修复 Outbox 增加本地有限隔离终态：保留原始证据、零 HTTP、零微信操作，结算精确匹配的等待 Ledger，解除 draining 并恢复其他客户接单；当前版本同类坏证据仍故障关闭。合同为 0.9.49 / 2302479941f86d8f854dd0169716d0eb89b1ba0f8952344728fefb86d4811289。0.9.47 历史来源提交为 6fc2b12a1c121ec747f9f7ef7123775474dff1d1；0.9.46 历史来源提交为 69c69a60b7e08a31f9d773864b14b35faf86754b，其缺失或畸形证据零 HTTP 隔离、旧 Flow 有限 technical_failed 终态、解除 draining、post_index 与 new_suffix 验收以及不重复点击能力继续保留。0.9.45 历史来源提交为 53caedad5baece001659aafcb5d7f86d98933e27。继续以 gray-v0.9.20 业务流程为基线，历史 ActionJournal 恢复、确定性 Outbox、sent_ack、启动标定和区域坐标映射语义保持不变。车金候选提交、推送、标签、ZIP、配套后端部署和 Windows 实机 OCR/鼠标 UAT 待完成；自动化通过不代表实机已验收。"
 }

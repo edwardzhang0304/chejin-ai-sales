@@ -643,6 +643,7 @@ class _WindowFrame:
                 layout_snapshot=layout_snapshot,
             )
             from apps.wechat_ai_customer_service.optional_plugins.vision.capture.surface import (
+                messages_outside_image_bubbles,
                 observe_structural_image_messages,
             )
             from apps.wechat_ai_customer_service.optional_plugins.vision.capture.wechat import (
@@ -679,6 +680,10 @@ class _WindowFrame:
                     ),
                 ),
                 message_viewport_bounds=message_viewport_bounds,
+            )
+            messages = messages_outside_image_bubbles(
+                messages,
+                image_messages,
             )
             messages.extend(image_messages)
 
@@ -970,7 +975,7 @@ class _UiAction:
         """Click a point in the currently captured popup frame."""
         self.click_screen(x, y, bounds=bounds)
 
-    def dismiss_menu_safely(self) -> None:
+    def dismiss_menu_safely(self) -> dict[str, Any]:
         started_at = time.perf_counter()
         hwnd = self.state.ensure_window()
         result = self.state.host.dismiss_voice_transcribe_context_menu(
@@ -982,6 +987,11 @@ class _UiAction:
             "context_menu_dismiss",
             "completed" if not isinstance(result, dict) or result.get("ok", True) else "failed",
             started_at=started_at,
+        )
+        return (
+            dict(result)
+            if isinstance(result, dict)
+            else {"ok": True, "reason": "menu_dismissed"}
         )
 
 
@@ -1889,6 +1899,32 @@ def process_image_slot(
         reason = str(result.get("reason") or "vision_understanding_missing")
         transaction = dict(result.get("clipboard_transaction") or {})
         acquisition_state = str(result.get("acquisition_state") or "")
+        if (
+            reason == "C2_IMAGE_CANDIDATE_CONFIRMED_TEXT"
+            and acquisition_state == "image_candidate_resolved_as_text"
+            and transaction.get("status")
+            == "text_context_menu_confirmed"
+            and transaction.get("menu_dismissed") is True
+            and transaction.get("menu_copy_confirmed") is False
+            and transaction.get("clipboard_content_read") is False
+        ):
+            state.record(
+                "vision_provider",
+                "completed",
+                started_at=plugin_started_at,
+                reason=reason,
+                image_persisted=False,
+            )
+            return {
+                "state": "candidate_reclassified_text",
+                "reason": reason,
+                "action_phase": "not_attempted",
+                "business_state": "candidate_reclassified_text",
+                "business_result_confirmed": True,
+                "ui_action_performed": True,
+                "transaction": transaction,
+                "diagnostics": state.diagnostics(),
+            }
         state.record(
             "vision_provider",
             "failed",

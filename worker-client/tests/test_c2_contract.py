@@ -541,7 +541,7 @@ class C2ContractTests(unittest.TestCase):
 
     def test_slot_ledger_contract_separates_fact_scope_from_delivery(self):
         schema = c2_contract_v3()["slot_ledger_state_schema"]
-        self.assertEqual(c2_contract_v3()["contract_revision"], "0.9.51")
+        self.assertEqual(c2_contract_v3()["contract_revision"], "0.9.52")
         self.assertIn(
             "anchor_aliases",
             c2_contract_v3()["message_limits"][

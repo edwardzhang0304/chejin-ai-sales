@@ -74,6 +74,10 @@ class WechatSessionBinding(Base, TimestampMixin):
         nullable=True,
     )
     last_read_result: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    last_read_result_unread_generation: Mapped[int | None] = mapped_column(
+        Integer,
+        nullable=True,
+    )
     last_read_run_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
     no_change_read_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     next_read_due_at: Mapped[datetime | None] = mapped_column(

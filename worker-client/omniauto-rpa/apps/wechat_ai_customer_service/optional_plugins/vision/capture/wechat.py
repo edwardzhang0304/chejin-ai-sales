@@ -16,6 +16,7 @@ TEXT_OVERLAP_REJECTION_RATIO = 0.42
 MEDIA_ROLE_EDGE_CONTINUITY_RATIO = 0.45
 MEDIA_EDGE_BACKGROUND_DISTANCE = 6.0
 MEDIA_CROP_EDGE_ACTIVE_RATIO = 0.15
+EMBEDDED_OCR_MAX_TEXT_OVERLAP_RATIO = 0.30
 IMAGE_PREVIEW_TOKENS = ("[图片]", "[照片]", "[Image]", "图片", "照片", "发送了一张图片")
 SAVE_MENU_TOKENS = (
     "另存为",
@@ -545,6 +546,24 @@ def explained_non_image_regions(
                 "bounds": bounds,
                 "message_type": message_type,
                 "sender_role": role,
+                "sender_role_source": role_source,
+                "same_row_avatar_evidence": bool(
+                    role_source == "same_row_avatar"
+                    or (
+                        role_source != "parent_voice"
+                        and str(avatar.get("role") or "").strip().lower()
+                        == role
+                    )
+                    or (
+                        "avatar_row_structure_confirmed"
+                        in {
+                            str(value).strip()
+                            for value in (
+                                message.get("sender_role_evidence") or []
+                            )
+                        }
+                    )
+                ),
                 "voice_anchor_key": voice_anchor_key,
                 "evidence": (
                     "bound_voice_transcript"
@@ -562,6 +581,35 @@ def explained_non_image_regions(
             }
         )
     return regions
+
+
+def embedded_ocr_text_candidate(
+    candidate: dict[str, Any] | None,
+    typed_conflict: dict[str, Any] | None,
+) -> bool:
+    """Allow a small trusted OCR row to become a menu-verified candidate.
+
+    This is deliberately not an image classification.  It only permits the
+    existing right-click/menu/clipboard transaction to verify the surface.
+    """
+
+    if not isinstance(candidate, dict) or not isinstance(typed_conflict, dict):
+        return False
+    if str(typed_conflict.get("message_type") or "").strip().lower() != "text":
+        return False
+    if typed_conflict.get("same_row_avatar_evidence") is not True:
+        return False
+    if str(typed_conflict.get("voice_anchor_key") or "").strip():
+        return False
+    try:
+        contained_ratio = float(typed_conflict.get("contained_ratio"))
+        text_overlap_ratio = float(candidate.get("text_overlap_ratio"))
+    except (TypeError, ValueError):
+        return False
+    return bool(
+        0.80 <= contained_ratio <= 1.0
+        and 0.0 <= text_overlap_ratio < EMBEDDED_OCR_MAX_TEXT_OVERLAP_RATIO
+    )
 
 
 def explained_non_image_conflict(
@@ -1257,7 +1305,14 @@ def detect_visual_image_bubbles(
             # turn a trusted text or voice row back into an image.  In
             # particular, role-facing edge continuity cannot distinguish a
             # solid WeChat text bubble from an image surface.
-            reliable_type_veto = typed_conflict is not None
+            candidate_requires_menu_verification = embedded_ocr_text_candidate(
+                {"text_overlap_ratio": text_overlap_ratio},
+                typed_conflict,
+            )
+            reliable_type_veto = bool(
+                typed_conflict is not None
+                and not candidate_requires_menu_verification
+            )
             if reliable_type_veto:
                 if diagnostics is not None:
                     diagnostics.append(
@@ -1332,6 +1387,16 @@ def detect_visual_image_bubbles(
                     "visual_fingerprint": visual_fingerprint,
                     "anchor": {"x": int((bounds[0] + bounds[2]) / 2), "y": int((bounds[1] + bounds[3]) / 2)},
                     "wechat_message_time": nearest_chat_time_marker(bounds, time_markers),
+                    **(
+                        {
+                            "candidate_verification_required": True,
+                            "candidate_verification_reason": (
+                                "embedded_ocr_text_requires_context_menu"
+                            ),
+                        }
+                        if candidate_requires_menu_verification
+                        else {}
+                    ),
                 }
             )
     candidates.sort(key=lambda item: float(item.get("score") or 0.0), reverse=True)

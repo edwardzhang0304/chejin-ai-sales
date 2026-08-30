@@ -397,6 +397,249 @@ class C2VisionIntegrationTests(unittest.TestCase):
             approved_request,
         )
 
+    def test_embedded_ocr_ratio_creates_only_menu_verified_candidate(self):
+        from apps.wechat_ai_customer_service.optional_plugins.vision.capture import (
+            surface,
+        )
+
+        candidate = {
+            "bounds": [460, 220, 760, 520],
+            "side": "customer",
+            "sender_role": "customer",
+            "text_overlap_ratio": 0.12,
+        }
+        plate_text = {
+            "id": "plate-text",
+            "type": "text",
+            "message_type": "text",
+            "sender_role": "customer",
+            "sender_role_source": "same_row_avatar",
+            "sender_role_evidence": ["avatar_row_structure_confirmed"],
+            "content": "粤B·A1234",
+            "bubble_rect": [560, 380, 680, 420],
+        }
+
+        kept = surface.image_candidates_without_reliable_typed_message_conflicts(
+            [candidate], [plate_text], []
+        )
+
+        self.assertEqual(len(kept), 1)
+        self.assertTrue(kept[0]["candidate_verification_required"])
+        self.assertEqual(
+            surface._embedded_ocr_fallback_messages(kept[0], [plate_text]),
+            [plate_text],
+        )
+        no_id_text = {key: value for key, value in plate_text.items() if key != "id"}
+        self.assertEqual(
+            surface.messages_outside_image_bubbles(
+                [no_id_text],
+                [
+                    {
+                        **kept[0],
+                        "_image_candidate_verification": {
+                            "required": True,
+                            "fallback_messages": [no_id_text],
+                        },
+                    }
+                ],
+            ),
+            [],
+        )
+
+    def test_vehicle_photo_plate_ocr_keeps_text_fallback_until_menu(self):
+        asset = (
+            Path(__file__).resolve().parents[2]
+            / "website"
+            / "assets"
+            / "vehicles"
+            / "vehicle-02.jpg"
+        )
+        with Image.open(asset) as source:
+            photo = source.convert("RGB")
+            photo.thumbnail((300, 220), Image.Resampling.LANCZOS)
+            screenshot = Image.new("RGB", (980, 860), (250, 250, 250))
+            screenshot.paste(photo, (464, 300))
+            ImageDraw.Draw(screenshot).rectangle(
+                (408, 300, 452, 344), fill=(70, 120, 170)
+            )
+            plate_text = {
+                "id": "plate-ocr-fallback",
+                "type": "text",
+                "sender_role": "customer",
+                "sender_role_source": "same_row_avatar",
+                "sender_role_evidence": ["avatar_row_structure_confirmed"],
+                "avatar_alignment": {"role": "customer"},
+                "content": "粤B·A1234",
+                "bubble_rect": [560, 390, 680, 425],
+            }
+            try:
+                merged = (
+                    wechat_win32_ocr_sidecar.merge_structural_image_messages(
+                        screenshot,
+                        [],
+                        [plate_text],
+                        target="CJTEST01",
+                        layout_snapshot=_test_layout_snapshot(screenshot),
+                    )
+                )
+            finally:
+                screenshot.close()
+
+        self.assertEqual([item["type"] for item in merged], ["image"])
+        verification = merged[0]["_image_candidate_verification"]
+        self.assertTrue(verification["required"])
+        self.assertEqual(verification["fallback_messages"], [plate_text])
+        observations = wechat_win32_ocr_sidecar.build_message_observations_v3(
+            merged
+        )
+        self.assertEqual(len(observations), 1)
+        self.assertEqual(
+            observations[0]["_image_candidate_verification"][
+                "fallback_observations"
+            ][0]["content_clean"],
+            "粤B·A1234",
+        )
+
+    def test_text_menu_restores_fallback_without_clipboard_or_vision(self):
+        image = Image.new("RGB", (900, 700), "white")
+        fallback = {
+            "schema_version": 3,
+            "observation_id": "fallback-text-action-frame",
+            "row_kind": "text_bubble",
+            "sender_role": "customer",
+            "sender_role_source": "same_row_avatar",
+            "message_type": "text",
+            "voice_state": "not_voice",
+            "content_clean": "粤B·A1234",
+            "bubble_rect": [520, 260, 650, 300],
+            "source_message": {
+                "id": "fallback-source-action-frame",
+                "type": "text",
+                "content": "粤B·A1234",
+                "sender_role": "customer",
+            },
+        }
+        candidate = {
+            "id": "candidate-action-frame",
+            "message_id": "candidate-action-frame",
+            "observation_id": "candidate-action-frame",
+            "schema_version": 3,
+            "type": "image",
+            "message_type": "image",
+            "row_kind": "image_bubble",
+            "sender_role": "customer",
+            "sender_role_source": "same_row_avatar",
+            "voice_state": "not_voice",
+            "item_state": "discovered",
+            "bounds": [460, 220, 760, 520],
+            "bubble_rect": [460, 220, 760, 520],
+            "anchor": {"x": 610, "y": 370},
+            "image_physical_anchor": {"sender_role": "customer"},
+            "_current_business_screen_order": 0,
+            "_image_candidate_verification": {
+                "required": True,
+                "reason": "embedded_ocr_text_requires_context_menu",
+                "fallback_observations": [fallback],
+            },
+        }
+
+        class Frames:
+            def capture_frame(self, context):
+                if context.get("phase") == "image_candidate":
+                    return {
+                        "ok": True,
+                        "image": image.copy(),
+                        "image_size": image.size,
+                        "messages": [dict(candidate)],
+                        "observations": [dict(candidate)],
+                        "time_markers": [],
+                        "layout_snapshot_id": "layout-text-candidate",
+                    }
+                return {
+                    "ok": True,
+                    "image": image.copy(),
+                    "image_size": image.size,
+                    "ocr_items": [{"text": "复制文字"}],
+                    "menu_panel_bounds": [580, 360, 710, 460],
+                    "screen_origin": [0, 0],
+                }
+
+        class Actions:
+            right_click_count = 0
+            dismiss_count = 0
+
+            def right_click(self, x, y, *, bounds):
+                self.right_click_count += 1
+                return {"screen_x": x, "screen_y": y}
+
+            def dismiss_menu_safely(self):
+                self.dismiss_count += 1
+                return {"ok": True, "reason": "menu_dismissed"}
+
+        class Clipboard:
+            read_count = 0
+
+            def sequence_number(self):
+                return 7
+
+            def read_current_bitmap(self):
+                self.read_count += 1
+                raise AssertionError("text_menu_must_not_read_clipboard")
+
+        actions = Actions()
+        clipboard = Clipboard()
+        ports = VisionHostPorts(
+            rpa_lease=SimpleNamespace(
+                lease=lambda *_args, **_kwargs: nullcontext()
+            ),
+            conversation_target=SimpleNamespace(
+                confirm_target=lambda _context: {"ok": True}
+            ),
+            window_frame=Frames(),
+            ui_action=actions,
+            clipboard=clipboard,
+        )
+        try:
+            with patch.object(
+                transaction,
+                "_classify_context_menu",
+                return_value={
+                    "kind": "text",
+                    "labels": ["复制文字"],
+                    "copy_item": None,
+                },
+            ):
+                result = self.acquire_approved_current_image(
+                    ports,
+                    {
+                        "sender_role": "customer",
+                        "bubble_rect": candidate["bubble_rect"],
+                        "image_physical_anchor": candidate[
+                            "image_physical_anchor"
+                        ],
+                        "expected_business_screen_order": 0,
+                    },
+                )
+        finally:
+            image.close()
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(
+            result["reason"], "C2_IMAGE_CANDIDATE_CONFIRMED_TEXT"
+        )
+        self.assertEqual(
+            result["state"],
+            "image_candidate_resolved_as_text",
+        )
+        self.assertEqual(actions.right_click_count, 1)
+        self.assertEqual(actions.dismiss_count, 1)
+        self.assertEqual(clipboard.read_count, 0)
+        self.assertFalse(result["transaction"]["menu_copy_confirmed"])
+        self.assertFalse(result["transaction"]["clipboard_content_read"])
+        self.assertEqual(
+            result["transaction"]["fallback_observations"], [fallback]
+        )
+
     def test_c2_role_remains_authoritative_when_visual_side_conflicts(self):
         screenshot = Image.new("RGB", (800, 700), "white")
         static_fingerprint = "imagev2:" + "0" * 16 + ":" + "a" * 64
@@ -842,6 +1085,29 @@ class C2VisionIntegrationTests(unittest.TestCase):
         )
         observed_images[0]["source_adapter"] = "win32_ocr"
         observed_images[0]["native_source_message_id"] = ""
+        observed_images[0]["_image_candidate_verification"] = {
+            "required": True,
+            "reason": "embedded_ocr_text_requires_context_menu",
+            "fallback_observations": [
+                {
+                    "schema_version": 3,
+                    "observation_id": "plate-text-fallback",
+                    "row_kind": "text_bubble",
+                    "sender_role": "customer",
+                    "sender_role_source": "same_row_avatar",
+                    "message_type": "text",
+                    "voice_state": "not_voice",
+                    "content_clean": "粤B·A1234",
+                    "bubble_rect": [500, 220, 590, 250],
+                    "source_message": {
+                        "id": "plate-text-fallback-source",
+                        "type": "text",
+                        "content": "粤B·A1234",
+                        "sender_role": "customer",
+                    },
+                }
+            ],
+        }
 
         class Target:
             context = {}
