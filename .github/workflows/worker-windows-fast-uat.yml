@@ -58,9 +58,15 @@ jobs:
           $env:CHEJIN_WORKER_HOME = Join-Path $env:RUNNER_TEMP "chejin-worker-affected-tests"
           $env:PYTHONPATH = "$PWD\worker-client;$PWD\backend"
           python -m pytest worker-client/tests/test_task_runner.py -q `
-            -k "visible_unread or inconclusive or inflight_flow or confirmed_ai_reply"
+            -k "visible_unread or inconclusive or inflight_flow or confirmed_ai_reply or image or candidate or continuity"
           if ($LASTEXITCODE -ne 0) {
             throw "Affected Worker read-settlement tests failed"
+          }
+          python -m pytest `
+            worker-client/tests/test_c2_vision_integration.py `
+            worker-client/tests/test_transaction_outcomes.py -q
+          if ($LASTEXITCODE -ne 0) {
+            throw "Affected image candidate and read-run receipt tests failed"
           }
           python -m pytest backend/tests/test_wechat_c2_api.py backend/tests/test_worker_client_api.py -q `
             -k "visible_unread or inconclusive or inflight_flow"

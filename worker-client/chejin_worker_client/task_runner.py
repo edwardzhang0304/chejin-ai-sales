@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import copy
 import hashlib
+from itertools import product
 import json
 import os
 import re
@@ -880,6 +881,288 @@ def _business_projection_for_payload(
         ],
         message_viewport_bounds=guard.get("message_viewport_bounds"),
     )
+
+
+def _confirmed_text_fallback_for_candidate(
+    observation: dict[str, Any],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], str] | None:
+    """Return the geometry-free text fallback carried by one candidate."""
+
+    verification = (
+        observation.get("_image_candidate_verification")
+        if isinstance(
+            observation.get("_image_candidate_verification"), dict
+        )
+        else {}
+    )
+    if verification.get("required") is not True:
+        return None
+    fallback_observations = [
+        copy.deepcopy(item)
+        for item in (verification.get("fallback_observations") or [])
+        if isinstance(item, dict)
+        and str(item.get("row_kind") or "").strip().lower()
+        == "text_bubble"
+        and str(item.get("sender_role") or "").strip().lower()
+        in {"customer", "self"}
+        and not list(item.get("contract_errors") or [])
+    ]
+    if not fallback_observations:
+        return None
+    for fallback in fallback_observations:
+        for key in tuple(fallback):
+            if key.startswith("_worker_") or key == (
+                "_image_candidate_verification"
+            ):
+                fallback.pop(key, None)
+    projection = normalized_business_message_sequence(
+        fallback_observations,
+        message_viewport_bounds=None,
+    )
+    if not projection:
+        return None
+    return (
+        fallback_observations,
+        projection,
+        _canonical_business_projection_digest(projection),
+    )
+
+
+def _payload_with_confirmed_text_candidate_receipts(
+    *,
+    baseline_payload: dict[str, Any],
+    refreshed_payload: dict[str, Any],
+    receipts: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Apply read-run-local text receipts through the sole continuity rule.
+
+    The receipt does not identify a durable message.  It only authorizes the
+    Worker to replay a menu-confirmed type resolution while the same read run
+    is rereading the current chat.  If more than one candidate substitution
+    keeps the business sequence continuous, the Worker refuses to guess.
+    """
+
+    observations = [
+        copy.deepcopy(item)
+        for item in (refreshed_payload.get("observations") or [])
+        if isinstance(item, dict)
+    ]
+    receipt_counts: dict[str, int] = {}
+    receipt_projections: dict[str, list[dict[str, Any]]] = {}
+    for receipt in receipts:
+        digest = str(
+            receipt.get("fallback_business_projection_digest") or ""
+        ).strip()
+        projection = receipt.get("fallback_business_projection")
+        if digest and isinstance(projection, list) and projection:
+            receipt_counts[digest] = receipt_counts.get(digest, 0) + 1
+            receipt_projections[digest] = [
+                dict(item) for item in projection if isinstance(item, dict)
+            ]
+    candidates: list[
+        tuple[int, list[dict[str, Any]], str]
+    ] = []
+    for index, observation in enumerate(observations):
+        fallback = _confirmed_text_fallback_for_candidate(observation)
+        if fallback is not None and receipt_counts.get(fallback[2], 0):
+            candidates.append((index, fallback[0], fallback[2]))
+    if not candidates:
+        return {
+            "ok": True,
+            "payload": refreshed_payload,
+            "continuity_evidence": None,
+            "applied_observation_ids": [],
+        }
+    # The exhaustive search proves that exactly one type replay preserves the
+    # complete business sequence.  Keep it bounded while the UI lock is held.
+    if len(candidates) > 10:
+        return {
+            "ok": False,
+            "error_code": "C2_IMAGE_IDENTITY_CONTRACT_INVALID",
+            "reason": "confirmed_text_receipt_candidate_set_ambiguous",
+            "candidate_count": len(candidates),
+        }
+
+    def fact_keys(sequence: list[dict[str, Any]]) -> list[tuple[str, ...]]:
+        return [
+            tuple(
+                str(item.get(key) or "")
+                for key in (
+                    "sender_role",
+                    "message_type",
+                    "normalized_content_signature",
+                    "media_state",
+                )
+            )
+            for item in sequence
+        ]
+
+    old_projection = _business_projection_for_payload(baseline_payload)
+    old_keys = fact_keys(old_projection)
+    candidate_by_index = {
+        index: (fallback, digest)
+        for index, fallback, digest in candidates
+    }
+    valid_variants: list[
+        tuple[list[dict[str, Any]], dict[str, Any], list[str], list[str]]
+    ] = []
+    for choices in product((False, True), repeat=len(candidates)):
+        selected_indexes = {
+            candidates[position][0]
+            for position, selected in enumerate(choices)
+            if selected
+        }
+        if not selected_indexes:
+            continue
+        applied_counts: dict[str, int] = {}
+        for index in selected_indexes:
+            digest = candidate_by_index[index][1]
+            applied_counts[digest] = applied_counts.get(digest, 0) + 1
+        if any(
+            count > receipt_counts.get(digest, 0)
+            for digest, count in applied_counts.items()
+        ):
+            continue
+        built: list[dict[str, Any]] = []
+        applied_ids: list[str] = []
+        restored_text_ids: list[str] = []
+        for index, observation in enumerate(observations):
+            if index not in selected_indexes:
+                built.append(observation)
+                continue
+            fallback_observations, _digest = candidate_by_index[index]
+            built.extend(fallback_observations)
+            applied_ids.append(
+                str(observation.get("observation_id") or "").strip()
+            )
+            restored_text_ids.extend(
+                str(item.get("observation_id") or "").strip()
+                for item in fallback_observations
+                if str(item.get("observation_id") or "").strip()
+            )
+        new_projection = _business_projection_for_payload(
+            refreshed_payload,
+            built,
+        )
+        new_keys = fact_keys(new_projection)
+        old_tokens = _business_boundary_tokens_for_payload(
+            baseline_payload,
+            committed_only=True,
+        )
+        new_tokens = _business_boundary_tokens_for_payload(
+            refreshed_payload,
+            built,
+            committed_only=False,
+        )
+        receipt_mapping_valid = True
+        for digest, count in sorted(applied_counts.items()):
+            receipt_keys = fact_keys(receipt_projections.get(digest, []))
+            width = len(receipt_keys)
+            if not width:
+                receipt_mapping_valid = False
+                break
+            old_starts = [
+                start
+                for start in range(len(old_keys) - width + 1)
+                if old_keys[start : start + width] == receipt_keys
+            ]
+            new_starts = [
+                start
+                for start in range(len(new_keys) - width + 1)
+                if new_keys[start : start + width] == receipt_keys
+            ]
+            if len(old_starts) != count or len(new_starts) != count:
+                receipt_mapping_valid = False
+                break
+            for occurrence, (old_start, new_start) in enumerate(
+                zip(old_starts, new_starts)
+            ):
+                token = f"read-run-confirmed-text:{digest}:{occurrence}"
+                old_tokens.setdefault(old_start, set()).add(token)
+                new_tokens.setdefault(new_start, set()).add(token)
+        if not receipt_mapping_valid:
+            continue
+        continuity = compare_business_viewport_continuity(
+            old_projection,
+            new_projection,
+            old_boundary_tokens=old_tokens,
+            new_boundary_tokens=new_tokens,
+        )
+        if str(continuity.get("relation") or "") in {
+            "business_sequence_equal",
+            "unique_tail_append",
+            "unique_viewport_slide_with_tail_append",
+        }:
+            valid_variants.append(
+                (built, dict(continuity), applied_ids, restored_text_ids)
+            )
+            if len(valid_variants) > 1:
+                break
+    if len(valid_variants) > 1:
+        return {
+            "ok": False,
+            "error_code": "C2_IMAGE_IDENTITY_CONTRACT_INVALID",
+            "reason": "confirmed_text_receipt_mapping_ambiguous",
+            "candidate_count": len(candidates),
+        }
+    if not valid_variants:
+        return {
+            "ok": False,
+            "error_code": "C2_IMAGE_IDENTITY_CONTRACT_INVALID",
+            "reason": "confirmed_text_receipt_mapping_not_found",
+            "candidate_count": len(candidates),
+        }
+
+    (
+        restored_observations,
+        continuity,
+        applied_ids,
+        restored_text_ids,
+    ) = valid_variants[0]
+    restored_payload = copy.deepcopy(refreshed_payload)
+    restored_payload["observations"] = restored_observations
+    projection = _business_projection_for_payload(
+        restored_payload,
+        restored_observations,
+    )
+    projection_digest = _canonical_business_projection_digest(projection)
+    for field in ("message_viewport_change_evidence", "send_context_guard"):
+        evidence = (
+            dict(restored_payload.get(field) or {})
+            if isinstance(restored_payload.get(field), dict)
+            else None
+        )
+        if evidence is None:
+            continue
+        evidence.update(
+            {
+                "sequence": projection,
+                "message_count": len(projection),
+                "message_viewport_change_digest": projection_digest,
+            }
+        )
+        if field == "send_context_guard":
+            evidence["sequence_sha256"] = projection_digest
+            evidence["bottom"] = dict(projection[-1]) if projection else None
+        restored_payload[field] = evidence
+    bindings = (
+        dict(restored_payload.get("image_frame_action_bindings") or {})
+        if isinstance(
+            restored_payload.get("image_frame_action_bindings"), dict
+        )
+        else {}
+    )
+    for observation_id in applied_ids:
+        bindings.pop(observation_id, None)
+    if bindings or "image_frame_action_bindings" in restored_payload:
+        restored_payload["image_frame_action_bindings"] = bindings
+    return {
+        "ok": True,
+        "payload": restored_payload,
+        "continuity_evidence": continuity,
+        "applied_observation_ids": applied_ids,
+        "restored_text_observation_ids": restored_text_ids,
+    }
 
 
 def _business_boundary_tokens_for_payload(
@@ -14859,6 +15142,54 @@ class TaskRunner:
             )
             if isinstance(item, dict)
         ]
+        action_frame_receipt_error: dict[str, Any] | None = None
+        action_frame_receipt_application = (
+            _payload_with_confirmed_text_candidate_receipts(
+                baseline_payload=pre_payload,
+                refreshed_payload={
+                    "frame_id": str(
+                        result_transaction.get(
+                            "action_frame_layout_snapshot_id"
+                        )
+                        or ""
+                    ).strip(),
+                    "authoritative_frame_source": "action_frame",
+                    "observations": action_frame_observations,
+                },
+                receipts=flow_outcomes.confirmed_text_candidate_receipts(),
+            )
+        )
+        if action_frame_receipt_application.get("ok") is not True:
+            action_frame_receipt_error = dict(
+                action_frame_receipt_application
+            )
+        else:
+            action_frame_receipt_payload = dict(
+                action_frame_receipt_application.get("payload") or {}
+            )
+            action_frame_observations = [
+                dict(item)
+                for item in (
+                    action_frame_receipt_payload.get("observations") or []
+                )
+                if isinstance(item, dict)
+            ]
+            action_frame_receipt_continuity = (
+                action_frame_receipt_application.get(
+                    "continuity_evidence"
+                )
+            )
+            if isinstance(action_frame_receipt_continuity, dict):
+                action_frame_observations = (
+                    _apply_worker_identity_from_continuity(
+                        list(pre_payload.get("observations") or []),
+                        action_frame_observations,
+                        action_frame_receipt_continuity,
+                        current_flow_read_run_id=(
+                            flow_outcomes.origin_read_run_id
+                        ),
+                    )
+                )
         trigger_observation_id = str(
             result_transaction.get("trigger_observation_id") or ""
         ).strip()
@@ -14880,10 +15211,24 @@ class TaskRunner:
             and str(item.get("row_kind") or "").strip().lower()
             == "image_bubble"
         ]
-        pre_to_action_continuity = _image_flow_action_slot_continuity(
-            pre_payload=pre_payload,
-            post_observations=action_frame_observations,
-            image_flow_action_slot=slot,
+        pre_to_action_continuity = (
+            {
+                "ok": False,
+                "relation": "business_sequence_not_continuous",
+                "reason": str(
+                    (action_frame_receipt_error or {}).get("reason")
+                    or "confirmed_text_receipt_action_frame_invalid"
+                ),
+                "matched_pairs": [],
+                "new_suffix_indexes": [],
+                "overlap_candidates": [],
+            }
+            if action_frame_receipt_error is not None
+            else _image_flow_action_slot_continuity(
+                pre_payload=pre_payload,
+                post_observations=action_frame_observations,
+                image_flow_action_slot=slot,
+            )
         )
         action_frame_identity_observations: list[Any] = []
         if (
@@ -16305,6 +16650,68 @@ class TaskRunner:
                         "technical_failure": True,
                         "reason": "candidate_text_payload_invalid",
                         "identity_errors": [],
+                        "authoritative_frame_source": "action_result",
+                        "ui_frame_invalidated": False,
+                        "action_journal_path": str(
+                            result.get("_image_action_journal_path") or ""
+                        ),
+                    }
+                    enriched_observations[index] = None
+                    break
+                receipt_fallback_observations = [
+                    copy.deepcopy(item)
+                    for item in (
+                        transaction.get("fallback_observations") or []
+                    )
+                    if isinstance(item, dict)
+                    and str(item.get("row_kind") or "").strip().lower()
+                    == "text_bubble"
+                ]
+                receipt_fallback_projection = (
+                    normalized_business_message_sequence(
+                        receipt_fallback_observations,
+                        message_viewport_bounds=None,
+                    )
+                )
+                try:
+                    flow_outcomes.record_confirmed_text_candidate_receipt(
+                        {
+                            "schema_version": 1,
+                            "receipt_id": action_local_key,
+                            "origin_read_run_id": (
+                                flow_outcomes.origin_read_run_id
+                            ),
+                            "action_frame_id": str(
+                                candidate_payload.get("frame_id") or ""
+                            ).strip(),
+                            "selected_pre_observation_id": observation_id,
+                            "fallback_business_projection": (
+                                receipt_fallback_projection
+                            ),
+                            "fallback_business_projection_digest": (
+                                _canonical_business_projection_digest(
+                                    receipt_fallback_projection
+                                )
+                            ),
+                            "resolved_frame_business_projection_digest": (
+                                _canonical_business_projection_digest(
+                                    _business_projection_for_payload(
+                                        candidate_payload,
+                                        candidate_observations,
+                                    )
+                                )
+                            ),
+                        }
+                    )
+                except ValueError as exc:
+                    stats["terminal_gate"] = {
+                        "error_code": (
+                            "C2_IMAGE_IDENTITY_CONTRACT_INVALID"
+                        ),
+                        "technical_failure": True,
+                        "reason": "confirmed_text_receipt_invalid",
+                        "identity_errors": [],
+                        "receipt_error_type": type(exc).__name__,
                         "authoritative_frame_source": "action_result",
                         "ui_frame_invalidated": False,
                         "action_journal_path": str(
@@ -19073,6 +19480,74 @@ class TaskRunner:
                     "image_stats": aggregate_image_stats,
                 }
 
+            receipt_application = (
+                _payload_with_confirmed_text_candidate_receipts(
+                    baseline_payload=current_payload,
+                    refreshed_payload=refreshed,
+                    receipts=(
+                        flow_outcomes.confirmed_text_candidate_receipts()
+                    ),
+                )
+            )
+            if receipt_application.get("ok") is not True:
+                error_code = str(
+                    receipt_application.get("error_code")
+                    or "C2_IMAGE_IDENTITY_CONTRACT_INVALID"
+                )
+                return {
+                    "ok": False,
+                    "error_code": error_code,
+                    "terminal_gate": {
+                        "state": "technical_failed",
+                        "error_code": error_code,
+                        "technical_failure": True,
+                        "reason": str(
+                            receipt_application.get("reason") or ""
+                        ),
+                        "retry_allowed": False,
+                        "handoff_required": False,
+                    },
+                    "payload": current_payload,
+                    "image_stats": aggregate_image_stats,
+                }
+            refreshed = dict(
+                receipt_application.get("payload") or refreshed
+            )
+            receipt_continuity = receipt_application.get(
+                "continuity_evidence"
+            )
+            applied_receipt_observation_ids = [
+                str(value)
+                for value in (
+                    receipt_application.get("applied_observation_ids") or []
+                )
+                if str(value).strip()
+            ]
+            restored_receipt_text_observation_ids = [
+                str(value)
+                for value in (
+                    receipt_application.get(
+                        "restored_text_observation_ids"
+                    )
+                    or []
+                )
+                if str(value).strip()
+            ]
+            if applied_receipt_observation_ids:
+                append_log(
+                    "INFO",
+                    "c2_image_candidate_text_receipt_replayed",
+                    "当前 read_run 复读已应用菜单确认的文字临时回执；未再次右键、未读取剪贴板、未调用 Vision。",
+                    metadata={
+                        "conversation_id": target.conversation_id,
+                        "remark_code": target.remark_code,
+                        "read_run_id": flow_outcomes.origin_read_run_id,
+                        "observation_ids": (
+                            applied_receipt_observation_ids
+                        ),
+                    },
+                )
+
             raw_refreshed_observations = list(
                 refreshed.get("observations") or []
             )
@@ -19102,6 +19577,21 @@ class TaskRunner:
                 if isinstance(current_payload.get("observations"), list)
                 else raw_refreshed_observations
             )
+            if (
+                not isinstance(continuity, dict)
+                and isinstance(receipt_continuity, dict)
+            ):
+                continuity = dict(receipt_continuity)
+                refreshed_observations = (
+                    _apply_worker_identity_from_continuity(
+                        list(current_payload.get("observations") or []),
+                        raw_refreshed_observations,
+                        continuity,
+                        current_flow_read_run_id=(
+                            flow_outcomes.origin_read_run_id
+                        ),
+                    )
+                )
             if not isinstance(continuity, dict):
                 continuity = compare_business_viewport_continuity(
                     _business_projection_for_payload(current_payload),
@@ -19242,6 +19732,56 @@ class TaskRunner:
                     post_frame_id=_payload_frame_id(refreshed),
                 )
             )
+            if restored_receipt_text_observation_ids:
+                # The action frame may also contain ordinary text appended
+                # while the menu was open.  None of those frame-local facts
+                # may be committed before the mandatory reread.  Once the
+                # receipt-bound reread proves continuity, commit every trusted
+                # unresolved text/system fact from that same authoritative
+                # frame; already committed history remains untouched.
+                restored_id_set = {
+                    *restored_receipt_text_observation_ids,
+                    *(
+                        str(item.get("observation_id") or "").strip()
+                        for item in refreshed_observations
+                        if isinstance(item, dict)
+                        and str(item.get("row_kind") or "").strip().lower()
+                        in {"text_bubble", "system_row", "system_message"}
+                        and observation_role_is_trusted(item)
+                        and not str(
+                            item.get("_worker_stable_id") or ""
+                        ).strip()
+                        and not isinstance(
+                            item.get("_worker_committed_message"), dict
+                        )
+                    ),
+                }
+                ordered_restored_ids = [
+                    str(item.get("observation_id") or "").strip()
+                    for item in ordered_message_viewport_observations(
+                        [
+                            value
+                            for value in refreshed_observations
+                            if isinstance(value, dict)
+                        ]
+                    )
+                    if str(item.get("observation_id") or "").strip()
+                    in restored_id_set
+                ]
+                sequence_alignment_evidence[
+                    "new_suffix_observation_ids"
+                ] = ordered_restored_ids
+                sequence_alignment_evidence["matched_pairs"] = [
+                    pair
+                    for pair in (
+                        sequence_alignment_evidence.get("matched_pairs")
+                        or []
+                    )
+                    if str(
+                        (pair or {}).get("post_observation_id") or ""
+                    ).strip()
+                    not in restored_id_set
+                ]
             refreshed_observations = (
                 self._assign_sequence_new_suffix_identities(
                     target=target,

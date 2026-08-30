@@ -4558,7 +4558,8 @@ failed 终态并进入 Ledger/Outbox，禁止永久停留在 `C2_IMAGE_FACT_PEND
    错误排除。
 8. OCR 文字框至少 `80%` 位于结构矩形内、且文字面积小于矩形的 `30%`，只能将该矩形标记为“必须经右键菜单验证的图片候选”。该比例不能直接删除原 OCR 文字，不能生成正式图片消息，也不能进入 Vision。
 9. Sidecar 只在最新动作帧右键该候选并返回原始菜单/剪贴板证据：精确文字菜单时关闭菜单、保留同帧原 OCR 文字、零剪贴板读取和零 Vision；精确图片菜单且剪贴板得到新的可解码位图时，才由 Worker 按完整回执绑定图片身份，并删除图片内的备用 OCR 文字。
-10. 菜单边界、菜单类型、复制项或剪贴板结果无法唯一确认时，必须返回现有具体技术错误，不得根据 `80%/30%` 比例猜测文字或图片。候选验证信息仅在 Sidecar→Worker 当次动作中使用，不得进入正式消息、Ledger、Outbox 或后端。
+10. 对精确确认为文字的待验证候选，Worker 必须生成仅限当前 `read_run_id`、仅存于当前 Flow 内存账本的 `confirmed_text_candidate_receipt`。它只证明“本轮菜单已确认该候选应按备用 OCR 文字解释”，不是长期消息身份，不得进入正式消息、Ledger、Outbox、后端或下一读取轮次。强制复读及后续图片动作帧再次出现同一原始候选时，Worker 必须先尝试应用该回执恢复文字，再交给唯一业务连续性比较器；只有映射唯一才继续，零第二次右键、零第二次剪贴板读取、零第二次 Vision。零个或多个合法映射固定按图片身份合同技术失败，不得猜测。
+11. 菜单边界、菜单类型、复制项或剪贴板结果无法唯一确认时，必须返回现有具体技术错误，不得根据 `80%/30%` 比例猜测文字或图片。候选验证信息仅在 Sidecar→Worker 当次动作中使用，不得进入正式消息、Ledger、Outbox 或后端。
 
 `structural_image_candidate / explained_voice_region` 是 OmniAuto 内部仲裁对象，不新增
 后端接口字段。但本次语音身份生命周期已改变跨进程机器语义，不得继续沿用
@@ -4587,6 +4588,8 @@ failed 终态并进入 Ledger/Outbox，禁止永久停留在 `C2_IMAGE_FACT_PEND
 -> 精确出现“语音转文字”或“收起文字”，确认为语音菜单
 -> 精确出现“复制”，并至少出现“编辑/用窗口打开/另存为/打开方式”之一，才确认为图片菜单
 -> “复制/转发/收藏/多选/提醒/引用/删除”均为公共项，不能单独证明消息类型
+-> 待验证候选确认为文字菜单时，Worker记录仅限当前read_run的临时文字确认回执；强制复读及后续图片动作帧先用该回执恢复备用OCR文字，再交唯一连续性比较器
+-> 回执映射唯一：不再右键该候选，继续处理其他图片；回执缺失、跨read_run、碰撞或多解：technical_failed，零Ledger/Outbox/Handoff
 -> 文字或语音菜单：关闭菜单、零复制、零剪贴板读取、零Vision；说明当前图片动作计划点到了错类型，固定identity_unresolved -> technical_failed，不伪造failed图片消息
 -> 只有公共项、证据不足或多类特征冲突：关闭菜单，固定C2_IMAGE_MENU_OPERATION_FAILED -> identity_unresolved -> technical_failed，不点击任何菜单项、不产生业务failed事实
 -> 只有确认为图片菜单后，才按已验证的图片菜单口径点击复制
@@ -4649,7 +4652,7 @@ Vision 正式凭据交付规则：
 |---|---|
 | 新图片识别成功 | 先验证本次 confirmed action receipt 并经唯一提交门形成 `committed_message`，再以 `message_type=image + item_state=completed` 保存文字白名单结果并按原槽位顺序入库。Vision 成功但身份回执缺失/矛盾时进入隔离，不得形成 completed 消息。 |
 | 已确认的图片内容处理失败 | 必须先唯一确认 action/reserved、图片菜单、复制点击、剪贴板新代次和实际图片字节 SHA-256，随后批准的 Vision Provider 明确返回处理失败，才允许形成 `committed_failed + C2_IMAGE_UNDERSTANDING_FAILED`。对象或回执不唯一时不得伪造 failed 消息。 |
-| `80%/30%` 待验证候选右键后确认为文字菜单 | 这是候选类型确认成功，不是图片动作失败。关闭菜单，零复制/剪贴板/Vision，烧毁本次图片预留号，保留动作帧的原 OCR 文字与同帧新消息；之后必须完整复读最新画面，再处理剩余媒体。不得形成图片消息、committed failed 或 Handoff。 |
+| `80%/30%` 待验证候选右键后确认为文字菜单 | 这是候选类型确认成功，不是图片动作失败。关闭菜单，零复制/剪贴板/Vision，烧毁本次图片预留号，保留动作帧的原 OCR 文字与同帧新消息，并生成仅限当前 `read_run_id` 的内存临时文字回执。之后必须完整复读最新画面；同一候选再次被包装成图片时，先按回执恢复文字并经唯一连续性比较器确认，禁止第二次右键，再继续其他图片。回执不得进入 Ledger/Outbox/后端或跨读取轮次复用，不得形成图片消息、committed failed 或 Handoff。 |
 | 普通已授权图片目标右键后却确认为文字菜单 | 说明当前图片动作计划与实际物理类型矛盾。关闭菜单，零复制/剪贴板/Vision，固定 `C2_IMAGE_SOURCE_INVALID/text_context_menu_rejected -> identity_unresolved -> technical_failed`，不得形成 committed failed 或 Handoff。 |
 | 图片候选右键后确认为语音菜单 | 说明当前图片动作计划选错物理类型。关闭菜单，零复制/剪贴板/Vision，固定 `C2_IMAGE_SOURCE_INVALID/voice_context_menu_rejected -> identity_unresolved -> technical_failed`，不得形成 committed failed 或 Handoff。 |
 | 图片候选右键后确认为图片菜单 | 必须同时精确出现“复制”和至少一项“编辑/用窗口打开/另存为/打开方式”，才允许点击复制并继续剪贴板、指纹及 Vision 证明链。 |

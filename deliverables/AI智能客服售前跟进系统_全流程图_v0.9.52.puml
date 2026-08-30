@@ -711,7 +711,15 @@ loop Worker运行中；每次循环最多完成一个会话事务
                       OA -> WX: 关闭菜单\n不点击复制
                       alt 本对象是80%/30%待验证候选
                         OA --> W: 同帧文字菜单回执 + 备用OCR文字\n零剪贴板读取/零Vision
-                        W -> W: 取消本图片预留号\n按动作帧保留原文字与同帧新消息
+                        W -> W: 取消本图片预留号\n按动作帧保留原文字与同帧新消息\n记录仅当前read_run有效的临时文字回执
+                        W -> OA: 强制完整复读最新画面
+                        OA --> W: 原始observations
+                        W -> W: 先用临时回执恢复文字\n再调用唯一业务连续性比较器
+                        alt 回执映射唯一
+                          W -> W: 禁止再次右键该候选\n继续处理其他图片
+                        else 回执缺失、跨read_run、碰撞或多解
+                          W -> W: technical_failed\n零Ledger/Outbox/Handoff
+                        end
                       else 普通图片目标却出现文字菜单
                         OA --> W: media_result=failed\nerror_code=C2_IMAGE_SOURCE_INVALID\nreason_detail=text_context_menu_rejected\n零剪贴板读取/零Vision
                       end

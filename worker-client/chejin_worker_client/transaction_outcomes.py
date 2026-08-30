@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 from typing import Any, Callable, Iterable
 from pathlib import Path
 
@@ -20,6 +21,10 @@ class FlowOutcomeAccumulator:
         self._checkpoint = checkpoint
         self._action_journal_paths: set[Path] = set()
         self._origin_read_run_id = str(origin_read_run_id or "").strip()
+        # A text context menu can disprove one provisional image candidate.
+        # This receipt is intentionally scoped to this in-memory read flow:
+        # it is neither a durable message identity nor an Outbox fact.
+        self._confirmed_text_candidate_receipts: list[dict[str, Any]] = []
 
     @property
     def origin_read_run_id(self) -> str:
@@ -80,6 +85,45 @@ class FlowOutcomeAccumulator:
 
     def action_journal_paths(self) -> list[Path]:
         return sorted(self._action_journal_paths)
+
+    def record_confirmed_text_candidate_receipt(
+        self,
+        receipt: dict[str, Any],
+    ) -> None:
+        """Remember a menu-confirmed text candidate for this read run only."""
+
+        item = copy.deepcopy(receipt)
+        receipt_origin = str(item.get("origin_read_run_id") or "").strip()
+        if (
+            not self._origin_read_run_id
+            or receipt_origin != self._origin_read_run_id
+        ):
+            raise ValueError("C2_CONFIRMED_TEXT_RECEIPT_ORIGIN_CONFLICT")
+        receipt_id = str(item.get("receipt_id") or "").strip()
+        fallback_digest = str(
+            item.get("fallback_business_projection_digest") or ""
+        ).strip()
+        fallback_projection = item.get("fallback_business_projection")
+        if (
+            int(item.get("schema_version") or 0) != 1
+            or not receipt_id
+            or not fallback_digest
+            or not isinstance(fallback_projection, list)
+            or not fallback_projection
+        ):
+            raise ValueError("C2_CONFIRMED_TEXT_RECEIPT_INVALID")
+        for existing in self._confirmed_text_candidate_receipts:
+            if str(existing.get("receipt_id") or "").strip() != receipt_id:
+                continue
+            if existing != item:
+                raise ValueError("C2_CONFIRMED_TEXT_RECEIPT_COLLISION")
+            return
+        self._confirmed_text_candidate_receipts.append(item)
+
+    def confirmed_text_candidate_receipts(self) -> list[dict[str, Any]]:
+        """Return read-run-local type receipts without exposing mutable state."""
+
+        return copy.deepcopy(self._confirmed_text_candidate_receipts)
 
     def _persist_checkpoint(self) -> None:
         if self._checkpoint is not None:

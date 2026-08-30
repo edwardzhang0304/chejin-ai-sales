@@ -446,7 +446,10 @@ class C2VisionIntegrationTests(unittest.TestCase):
             [],
         )
 
-    def test_vehicle_photo_plate_ocr_keeps_text_fallback_until_menu(self):
+    def test_vehicle_photo_fixture_preserves_injected_plate_text_until_menu(self):
+        # This is a candidate-layout fixture, not an OCR test: the plate text
+        # below is deliberately injected so the test can isolate whether
+        # embedded text survives until the real context-menu classification.
         asset = (
             Path(__file__).resolve().parents[2]
             / "website"
