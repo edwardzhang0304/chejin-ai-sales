@@ -75,9 +75,35 @@ def _emit_worker_progress(*, stage: str, event: str, result_class: str = "") -> 
         return
 
 
+def _read_utf8_request() -> str:
+    """Read the parent envelope independently of the Windows code page."""
+
+    stream = getattr(sys.stdin, "buffer", None)
+    if stream is not None:
+        return stream.read().decode("utf-8")
+    return sys.stdin.read()
+
+
+def _write_utf8_envelope(payload: dict) -> None:
+    """Write the child envelope as UTF-8 even under a non-UTF Windows locale."""
+
+    encoded = json.dumps(
+        payload,
+        ensure_ascii=False,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    stream = getattr(sys.stdout, "buffer", None)
+    if stream is not None:
+        stream.write(encoded)
+        stream.flush()
+        return
+    sys.stdout.write(encoded.decode("utf-8"))
+    sys.stdout.flush()
+
+
 def main() -> int:
     try:
-        payload = json.loads(sys.stdin.read() or "{}")
+        payload = json.loads(_read_utf8_request() or "{}")
         config = payload.get("config")
         invocation = payload.get("invocation")
         if not isinstance(config, dict) or not isinstance(invocation, dict):
@@ -117,8 +143,7 @@ def main() -> int:
             "exception_type": type(exc).__name__,
         }
         exit_code = 1
-    sys.stdout.write(json.dumps(envelope, ensure_ascii=False, separators=(",", ":")))
-    sys.stdout.flush()
+    _write_utf8_envelope(envelope)
     return exit_code
 
 
