@@ -80,6 +80,31 @@ PNG_1X1 = bytes.fromhex(
 )
 
 
+def _generate_reply_decision_with_isolated_failure_evidence(
+    adapter: RealOmniAutoAIEngineAdapter,
+    *,
+    conversation_context: dict,
+    message_batch: dict,
+):
+    """Preserve child-process evidence in CI assertion output.
+
+    AppError deliberately keeps its structured data out of ``str(exc)``.
+    These production-boundary tests need that already-sanitized data when a
+    platform-specific isolated worker failure occurs; otherwise Windows CI
+    reports only the generic message and hides the actual failed stage.
+    """
+
+    try:
+        return adapter.generate_reply_decision(
+            conversation_context=conversation_context,
+            message_batch=message_batch,
+        )
+    except AppError as exc:
+        pytest.fail(
+            f"isolated Brain failed: code={exc.code!r}, data={exc.data!r}"
+        )
+
+
 def _adapter_request_with_frozen_context(
     *,
     conversation_context: dict,
@@ -1448,7 +1473,8 @@ def test_message_event_history_reaches_real_provider_input_once(
         },
     )
 
-    decision = adapter.generate_reply_decision(
+    decision = _generate_reply_decision_with_isolated_failure_evidence(
+        adapter,
         conversation_context={
             **context["conversation"],
             "brain_context_snapshot": context["brain_context_snapshot"],
@@ -1793,7 +1819,8 @@ def test_message_event_history_reaches_auto_routine_product_fast_provider(
     monkeypatch.setattr(adapter, "_load_config", lambda: config)
 
     try:
-        decision = adapter.generate_reply_decision(
+        decision = _generate_reply_decision_with_isolated_failure_evidence(
+            adapter,
             conversation_context={
                 **context["conversation"],
                 "brain_context_snapshot": context[
