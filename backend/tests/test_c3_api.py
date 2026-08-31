@@ -1045,11 +1045,18 @@ def test_llm_total_budget_caps_fallback_to_remaining_time(monkeypatch):
         "apps.wechat_ai_customer_service.llm_config"
     )
     calls: list[dict] = []
+    monotonic_clock = [100.0]
+
+    monkeypatch.setattr(
+        llm_config.time,
+        "monotonic",
+        lambda: monotonic_clock[0],
+    )
 
     def fake_request_once_with_wall_timeout(**kwargs):
         calls.append(dict(kwargs))
         if len(calls) == 1:
-            time.sleep(0.12)
+            monotonic_clock[0] += 0.12
             return {
                 "ok": False,
                 "status": 0,
@@ -1069,9 +1076,8 @@ def test_llm_total_budget_caps_fallback_to_remaining_time(monkeypatch):
         "call_llm_request_once_with_wall_timeout",
         fake_request_once_with_wall_timeout,
     )
-    # Leave a real but bounded fallback slice.  The previous 60 ms margin was
-    # smaller than normal CI scheduler jitter and could expire before the
-    # second call even though the production budget logic was correct.
+    # Advance a controlled monotonic clock so this contract proves the shared
+    # budget calculation without depending on Windows scheduler granularity.
     with llm_config.llm_total_time_budget(0.22):
         result = llm_config.call_llm_request_with_failover(
             provider="openai",
