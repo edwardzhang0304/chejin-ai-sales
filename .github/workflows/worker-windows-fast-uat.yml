@@ -102,6 +102,7 @@ jobs:
         shell: powershell
         run: |
           $ErrorActionPreference = "Stop"
+          $env:PYTHONUTF8 = "1"
           $env:PYTHONPATH = "$PWD\worker-client;$PWD\backend"
           python -m pytest backend/tests/test_c3_api.py backend/tests/test_c3_brain_context_bridge.py -q
           if ($LASTEXITCODE -ne 0) {
@@ -201,7 +202,7 @@ jobs:
       - name: Upload Fast UAT ZIP
         uses: actions/upload-artifact@v4
         with:
-          name: chejin-worker-fast-uat-v0.9.54-${{ github.sha }}
+          name: chejin-worker-fast-uat-v0.9.55-${{ github.sha }}
           path: worker-client/dist/fast-uat-release/chejin-worker-fast-uat-*.zip
           if-no-files-found: error
           retention-days: 14
