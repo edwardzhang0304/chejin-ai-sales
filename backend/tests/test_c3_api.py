@@ -1145,6 +1145,10 @@ def test_real_provider_worker_records_runtime_and_workflow_boundaries(monkeypatc
         / "omniauto-rpa"
     )
     monkeypatch.setenv("C3_OMNIAUTO_ROOT", str(omniauto_root))
+    # GitHub's Windows runner uses a non-UTF console code page.  The isolated
+    # JSON pipe is a UTF-8 protocol and must not inherit that locale for either
+    # its Chinese request or Chinese Brain result.
+    monkeypatch.setenv("PYTHONIOENCODING", "ascii")
     adapter = RealOmniAutoAIEngineAdapter()
     config = {
         "customer_service_brain": {
