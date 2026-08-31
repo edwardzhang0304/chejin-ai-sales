@@ -1796,8 +1796,185 @@ def collect_recovered_customer_message_batch(
     }
 
 
+def _brain_snapshot_text(value: Any, limit: int) -> str:
+    return " ".join(str(value or "").split()).strip()[:limit]
+
+
+def _brain_snapshot_event_time(item: MessageEvent) -> str:
+    value = item.observed_at or item.occurred_at or item.ingested_at
+    if value is None:
+        raise AppError(
+            "AI_CONTEXT_BUILD_FAILED",
+            "MessageEvent 缺少可冻结的事件时间",
+            409,
+            {"message_event_id": item.id},
+        )
+    return value.isoformat()
+
+
+def _brain_snapshot_message(item: MessageEvent) -> dict[str, Any]:
+    raw = item.raw_payload if isinstance(item.raw_payload, dict) else {}
+    result: dict[str, Any] = {
+        "message_event_id": _brain_snapshot_text(item.id, 128),
+        "source_message_key": _brain_snapshot_text(
+            item.source_message_key or raw.get("source_message_key"), 255
+        ),
+        "sender_role": _brain_snapshot_text(item.sender_role, 32).lower(),
+        "message_type": _brain_snapshot_text(item.message_type, 32).lower(),
+        "content": _brain_snapshot_text(item.content, 4000),
+        "item_state": _brain_snapshot_text(
+            item.item_state or raw.get("item_state"), 32
+        ).lower(),
+        "error_code": _brain_snapshot_text(
+            item.error_code or raw.get("error_code"), 64
+        ),
+        "occurred_at": _brain_snapshot_event_time(item),
+    }
+    if result["message_type"] != "image":
+        return result
+    understanding = (
+        raw.get("customer_image_understanding")
+        if isinstance(raw.get("customer_image_understanding"), dict)
+        else {}
+    )
+    bridge = (
+        raw.get("visual_bridge_input")
+        if isinstance(raw.get("visual_bridge_input"), dict)
+        else {}
+    )
+    catalog_assist = (
+        bridge.get("catalog_assist")
+        if isinstance(bridge.get("catalog_assist"), dict)
+        else {}
+    )
+    understanding_bridge = (
+        understanding.get("bridge")
+        if isinstance(understanding.get("bridge"), dict)
+        else {}
+    )
+    image_ocr = understanding.get("image_ocr_text")
+    if not isinstance(image_ocr, list):
+        image_ocr = []
+    classification = understanding.get("classification")
+    entities = understanding.get("entities")
+    result.update(
+        {
+            "vision_summary": _brain_snapshot_text(
+                understanding.get("vision_summary"), 2000
+            ),
+            "image_ocr_text": [
+                _brain_snapshot_text(value, 500)
+                for value in image_ocr[:20]
+                if _brain_snapshot_text(value, 500)
+            ],
+            "classification": (
+                dict(classification) if isinstance(classification, dict) else {}
+            ),
+            "entities": dict(entities) if isinstance(entities, dict) else {},
+            "normalized_vehicle_query": _brain_snapshot_text(
+                catalog_assist.get("normalized_vehicle_query")
+                or understanding_bridge.get("normalized_vehicle_query"),
+                500,
+            ),
+            "server_validated_product_id": _brain_snapshot_text(
+                catalog_assist.get("server_validated_product_id")
+                or raw.get("server_validated_product_id"),
+                128,
+            ),
+        }
+    )
+    return result
+
+
+def _brain_snapshot_sha256(messages: list[dict[str, Any]]) -> str:
+    encoded = json.dumps(
+        messages,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _brain_snapshot_message_is_semantic(item: dict[str, Any]) -> bool:
+    if item.get("error_code") or item.get("item_state") == "failed":
+        return False
+    if item.get("sender_role") not in {"customer", "self", "system"}:
+        return False
+    if item.get("message_type") != "image":
+        return bool(item.get("content"))
+    return bool(
+        item.get("content")
+        or item.get("vision_summary")
+        or item.get("image_ocr_text")
+    )
+
+
+def _build_brain_context_snapshot(
+    db: Session,
+    *,
+    binding: WechatSessionBinding,
+    batch: MessageBatch,
+) -> dict[str, Any]:
+    existing = (
+        batch.ai_request_snapshot.get("brain_context_snapshot")
+        if isinstance(batch.ai_request_snapshot, dict)
+        else None
+    )
+    if isinstance(existing, dict) and existing:
+        return dict(existing)
+
+    current_ids = [str(value) for value in (batch.message_event_ids or [])]
+    history_filter = MessageEvent.conversation_id == binding.conversation_id
+    if current_ids:
+        history_filter = history_filter & MessageEvent.id.not_in(current_ids)
+    all_history_rows = list(
+        db.scalars(
+            select(MessageEvent)
+            .where(history_filter)
+            .order_by(
+                func.coalesce(
+                    MessageEvent.observed_at,
+                    MessageEvent.occurred_at,
+                    MessageEvent.ingested_at,
+                ),
+                MessageEvent.observation_order,
+                MessageEvent.id,
+            )
+        )
+    )
+    history_count = len(all_history_rows)
+    window_rows = all_history_rows[-50:]
+    prior_messages = [_brain_snapshot_message(item) for item in window_rows]
+    # Only the frozen 50-event window can be rendered into history_text.
+    # Counting older, deliberately excluded rows would incorrectly report a
+    # lost history when the retained window legitimately contains no semantic
+    # fact.
+    semantic_count = sum(
+        1
+        for item in prior_messages
+        if _brain_snapshot_message_is_semantic(item)
+    )
+    return {
+        "schema_version": 1,
+        "history_authority": "chejin_message_events_v1",
+        "conversation_id": binding.conversation_id,
+        "prior_messages": prior_messages,
+        "current_batch_message_ids": current_ids,
+        "history_event_count_before_batch": history_count,
+        "semantic_history_count_before_batch": semantic_count,
+        "prior_messages_sha256": _brain_snapshot_sha256(prior_messages),
+        "history_window_complete": len(prior_messages) == min(50, history_count),
+    }
+
+
 def _build_ai_context(db: Session, binding: WechatSessionBinding, conversation: Conversation, batch: MessageBatch) -> dict[str, Any]:
     messages = _customer_messages(db, batch)
+    brain_context_snapshot = _build_brain_context_snapshot(
+        db,
+        binding=binding,
+        batch=batch,
+    )
     history_rows = list(
         db.scalars(
             select(MessageEvent)
@@ -1828,9 +2005,12 @@ def _build_ai_context(db: Session, binding: WechatSessionBinding, conversation: 
             "sender_role": item.sender_role,
             "message_type": item.message_type,
             "content": item.content,
-            "item_state": str(raw.get("item_state") or ""),
+            "item_state": str(
+                item.item_state or raw.get("item_state") or ""
+            ),
             "error_code": str(
-                raw.get("error_code")
+                item.error_code
+                or raw.get("error_code")
                 or ""
             ),
             "occurred_at": (
@@ -1876,7 +2056,11 @@ def _build_ai_context(db: Session, binding: WechatSessionBinding, conversation: 
                     )
                     or ""
                 )[:500],
-                "server_validated_product_id": "",
+                "server_validated_product_id": str(
+                    catalog_assist.get("server_validated_product_id")
+                    or raw.get("server_validated_product_id")
+                    or ""
+                )[:128],
                 "customer_image_understanding": understanding,
                 "visual_bridge_input": bridge,
             }
@@ -1884,6 +2068,11 @@ def _build_ai_context(db: Session, binding: WechatSessionBinding, conversation: 
         return result
 
     context = {
+        # The immutable snapshot has one canonical storage location in
+        # MessageBatch.ai_request_snapshot.  The Adapter receives it
+        # explicitly below; do not duplicate it under conversation where a
+        # same-batch retry could accidentally miss it and rebuild history.
+        "brain_context_snapshot": brain_context_snapshot,
         "conversation": {
             "conversation_id": binding.conversation_id,
             "lead_id": binding.lead_id,
@@ -1893,7 +2082,6 @@ def _build_ai_context(db: Session, binding: WechatSessionBinding, conversation: 
             "status": conversation.status,
             "ai_enabled": conversation.ai_enabled,
             "reply_count": conversation.reply_count,
-            "history": [compact_message(item) for item in history_rows],
         },
         "messages": [
             {
@@ -2793,6 +2981,29 @@ def _schedule_retry_or_handoff(
     batch: MessageBatch,
     decision: AIEngineDecision,
 ) -> dict[str, Any]:
+    if decision.error_code == "AI_CONTEXT_BUILD_FAILED":
+        # A frozen-snapshot validation failure is deterministic.  Retrying the
+        # same code immediately cannot repair it, and exhausting normal model
+        # retries must never turn this technical fault into a sales handoff.
+        batch.status = "failed"
+        batch.active = False
+        batch.retryable = True
+        batch.decision = "retry_later"
+        batch.error_code = "AI_CONTEXT_BUILD_FAILED"
+        batch.suggested_action = "repair_context_bridge_then_retry_same_batch"
+        batch.ai_response_snapshot = _preserve_generation_attempt_history(
+            batch,
+            _decision_payload(decision),
+        )
+        batch.generated_at = utcnow()
+        batch.generation_started_at = None
+        db.flush()
+        return {
+            "decision": "retry_later",
+            "batch": _batch_to_dict(batch),
+            "error_code": "AI_CONTEXT_BUILD_FAILED",
+            "suggested_action": batch.suggested_action,
+        }
     attempts = int(batch.generation_attempt_count or 0)
     max_attempts = max(1, int(get_settings().c3_batch_recovery_max_attempts))
     if attempts >= max_attempts:
@@ -2974,7 +3185,49 @@ def generate_for_batch(
         }
 
     batch.status = "generating"
-    context = _build_ai_context(db, binding, conversation, batch)
+    try:
+        context = _build_ai_context(db, binding, conversation, batch)
+    except AppError as exc:
+        if exc.code != "AI_CONTEXT_BUILD_FAILED":
+            raise
+        return _schedule_retry_or_handoff(
+            db,
+            batch=batch,
+            decision=AIEngineDecision(
+                decision="retry_later",
+                risk_flags=["ai_context_build_failed"],
+                guard_result="failed",
+                error_code="AI_CONTEXT_BUILD_FAILED",
+                suggested_action="repair_context_bridge_then_retry_same_batch",
+                raw_payload={
+                    "context_error": {
+                        "exception_type": type(exc).__name__,
+                        "reason": str(exc.code),
+                    }
+                },
+            ),
+        )
+    except Exception as exc:
+        # Snapshot normalization is a pre-Provider contract boundary.  A
+        # malformed persisted fact or serialization bug must never leave the
+        # already-claimed batch in ``generating`` for the recovery loop to
+        # redispatch indefinitely.
+        return _schedule_retry_or_handoff(
+            db,
+            batch=batch,
+            decision=AIEngineDecision(
+                decision="retry_later",
+                risk_flags=["ai_context_build_failed"],
+                guard_result="failed",
+                error_code="AI_CONTEXT_BUILD_FAILED",
+                suggested_action="repair_context_bridge_then_retry_same_batch",
+                raw_payload={
+                    "context_error": {
+                        "exception_type": type(exc).__name__,
+                    }
+                },
+            ),
+        )
     batch.ai_request_snapshot = context
     messages = context["messages"]
     if not messages and batch.trigger_type == "customer_message":
@@ -3009,7 +3262,10 @@ def generate_for_batch(
     generation_started_monotonic = time.perf_counter()
     try:
         decision = get_ai_engine_adapter().generate_reply_decision(
-            conversation_context=context["conversation"],
+            conversation_context={
+                **context["conversation"],
+                "brain_context_snapshot": context["brain_context_snapshot"],
+            },
             message_batch={
                 "id": prepared_batch_id,
                 "messages": messages,

@@ -55,7 +55,12 @@ from customer_service_conversation_strategy import (
 )
 from llm_reply_guard import guard_synthesized_reply
 from evidence_authority import PRODUCT_MASTER_CATEGORY_ID, annotate_authority
-from reply_evidence_builder import build_reply_evidence_pack, catalog_product_payload
+from reply_evidence_builder import (
+    build_reply_evidence_pack,
+    catalog_product_payload,
+    chejin_context_projection,
+    compact_message,
+)
 try:
     from apps.wechat_ai_customer_service.wechat_message_normalizer import split_wechat_ocr_speaker_prefix
 except Exception:  # pragma: no cover - workflow import fallback for script mode
@@ -73,6 +78,11 @@ DEFAULT_VERY_LARGE_PROMPT_THRESHOLD_CHARS = 12000
 DEFAULT_MAX_TOKENS = 1600
 DEFAULT_TEMPERATURE = 0.35
 DEFAULT_HISTORY_CHAR_BUDGET = 1200
+CHEJIN_HISTORY_AUTHORITY = "chejin_message_events_v1"
+CHEJIN_HISTORY_SEMANTIC_INSTRUCTION = (
+    "结合完整历史判断客户当前需求；以后续明确修改为准；"
+    "结合否定词的真实作用范围，不得仅凭关键词删除旧条件。"
+)
 DEFAULT_PERSONA_PROMPT = (
     "你是谨慎、真实、不过度承诺的微信客服。回复应简短、礼貌、像真人客服。"
     "只按已审核的产品知识、公司政策、客服规则和当前会话上下文回答。"
@@ -591,11 +601,19 @@ def build_low_authority_fast_evidence_pack(
 ) -> dict[str, Any]:
     conversation = raw_capture.get("conversation") if isinstance(raw_capture.get("conversation"), dict) else {}
     context = dict(target_state.get("conversation_context", {}) or {})
-    current_batch_text = "\n".join(
+    chejin_context = chejin_context_projection(target_state)
+    current_batch_text = str(
+        chejin_context.get("current_batch_text") or ""
+    ) or "\n".join(
         f"[{str(item.get('sender') or target_name).strip() or target_name}] {str(item.get('content') or '').strip()}"
         for item in batch
         if isinstance(item, dict) and str(item.get("content") or "").strip()
     )
+    history = [
+        compact_message(item)
+        for item in (chejin_context.get("history") or [])
+        if isinstance(item, dict)
+    ]
     safety = {"must_handoff": False, "reasons": [], "allowed_auto_reply": True}
     return {
         "schema_version": 1,
@@ -604,12 +622,17 @@ def build_low_authority_fast_evidence_pack(
         "current_batch": [dict(item) for item in batch if isinstance(item, dict)],
         "conversation": {
             "context": context,
-            "history": [],
-            "history_count": 0,
-            "history_text": "",
+            "history": history,
+            "history_count": len(history),
+            "history_text": str(chejin_context.get("history_text") or ""),
             "current_batch_text": current_batch_text,
-            "conversation_summary": "",
+            "conversation_summary": str(
+                chejin_context.get("conversation_summary") or ""
+            ),
             "raw_conversation_id": str(conversation.get("conversation_id") or raw_capture.get("conversation_id") or target_name),
+            "history_authority": str(
+                chejin_context.get("history_authority") or ""
+            ),
         },
         "knowledge": {
             "evidence": {"products": [], "catalog_candidates": [], "faq": [], "policies": {}, "product_scoped": [], "style_examples": []},
@@ -2068,6 +2091,13 @@ def build_brain_input(
             "history_text": str(conversation.get("history_text") or ""),
             "summary": str(conversation.get("conversation_summary") or ""),
             "current_batch_text": str(conversation.get("current_batch_text") or ""),
+            "history_authority": str(conversation.get("history_authority") or ""),
+            "semantic_instruction": (
+                CHEJIN_HISTORY_SEMANTIC_INSTRUCTION
+                if str(conversation.get("history_authority") or "")
+                == CHEJIN_HISTORY_AUTHORITY
+                else ""
+            ),
             "conversation_strategy_state": strategy_hint,
             "conversation_interaction_state": interaction_hint,
         },
@@ -2966,6 +2996,16 @@ def build_brain_prompt_pack(*, settings: dict[str, Any], brain_input: dict[str, 
             "常识性建议：facts_claimed=[]，recommended_action=send_reply，answer_mode用direct_answer或compare_options。"
             "遵守runtime_principles；它不授权事实。只输出裸JSON对象，不要Markdown，不要```json代码块，不要解释。"
         )
+    conversation = (
+        brain_input.get("conversation")
+        if isinstance(brain_input.get("conversation"), dict)
+        else {}
+    )
+    semantic_instruction = str(
+        conversation.get("semantic_instruction") or ""
+    ).strip()
+    if semantic_instruction:
+        system = f"{system}{semantic_instruction}"
     return {
         "schema_version": 1,
         "system": system,
@@ -2984,6 +3024,10 @@ def slim_brain_input_for_prompt(brain_input: dict[str, Any], *, settings: dict[s
     runtime = brain_input.get("runtime") if isinstance(brain_input.get("runtime"), dict) else {}
     prompt_profile = str(settings.get("prompt_profile") or "").strip()
     routine_product_fast = prompt_profile == "routine_product_fast"
+    chejin_authoritative_history = (
+        str(conversation.get("history_authority") or "")
+        == CHEJIN_HISTORY_AUTHORITY
+    )
     content_evidence = dict(knowledge.get("evidence") or {}) if isinstance(knowledge.get("evidence"), dict) else {}
     style_context = content_evidence.pop("style_examples", [])
     # Product/formal facts are already present in authoritative buckets below.
@@ -3010,6 +3054,19 @@ def slim_brain_input_for_prompt(brain_input: dict[str, Any], *, settings: dict[s
     current_message = compact_current_message_for_prompt(
         brain_input.get("current_message", {}) if isinstance(brain_input.get("current_message"), dict) else {}
     )
+    interaction_state = compact_conversation_interaction_state_for_prompt(
+        runtime.get("conversation_interaction_state")
+        or conversation.get("conversation_interaction_state")
+        or {}
+    )
+    if chejin_authoritative_history:
+        # In CheJin mode current_batch_text is the only customer-text channel.
+        # Keep current_message and interaction state as mechanical metadata so
+        # the same current turn does not reach Provider two or three times.
+        current_message.pop("clean_text", None)
+        current_message.pop("raw_text", None)
+        current_message["content_source"] = "conversation.current_batch_text"
+        interaction_state.pop("last_unanswered_customer_text", None)
     current_message["referenced_context_policy"] = "引用只辅助理解指代，不授权新事实、订单抽取或自动学习。"
     auxiliary: dict[str, Any] = {}
     common_sense = {} if routine_product_fast else compact_common_sense_for_prompt(evidence.get("common_sense", {}))
@@ -3034,13 +3091,30 @@ def slim_brain_input_for_prompt(brain_input: dict[str, Any], *, settings: dict[s
         "conversation": {
             "context": conversation.get("context", {}),
             "summary": clip(str(conversation.get("summary") or ""), int(settings.get("summary_char_budget") or 360)),
-            "history_text": clip(str(conversation.get("history_text") or ""), int(settings.get("history_char_budget") or DEFAULT_HISTORY_CHAR_BUDGET)),
-            "current_batch_text": clip(str(conversation.get("current_batch_text") or ""), int(settings.get("current_batch_char_budget") or 500)),
-            "conversation_interaction_state": compact_conversation_interaction_state_for_prompt(
-                runtime.get("conversation_interaction_state")
-                or conversation.get("conversation_interaction_state")
-                or {}
+            "history_text": (
+                str(conversation.get("history_text") or "")
+                if chejin_authoritative_history
+                else clip(
+                    str(conversation.get("history_text") or ""),
+                    int(
+                        settings.get("history_char_budget")
+                        or DEFAULT_HISTORY_CHAR_BUDGET
+                    ),
+                )
             ),
+            "current_batch_text": (
+                str(conversation.get("current_batch_text") or "")
+                if chejin_authoritative_history
+                else clip(
+                    str(conversation.get("current_batch_text") or ""),
+                    int(settings.get("current_batch_char_budget") or 500),
+                )
+            ),
+            "history_authority": str(conversation.get("history_authority") or ""),
+            "semantic_instruction": str(
+                conversation.get("semantic_instruction") or ""
+            ),
+            "conversation_interaction_state": interaction_state,
         },
         "content_basis": {
             "product_master": product_master,
@@ -3067,11 +3141,7 @@ def slim_brain_input_for_prompt(brain_input: dict[str, Any], *, settings: dict[s
             or conversation.get("conversation_strategy_state")
             or {}
         ),
-        "conversation_interaction_state": compact_conversation_interaction_state_for_prompt(
-            runtime.get("conversation_interaction_state")
-            or conversation.get("conversation_interaction_state")
-            or {}
-        ),
+        "conversation_interaction_state": interaction_state,
         "runtime_principles": compact_runtime_principles_for_prompt(
             runtime.get("runtime_principles") or build_brain_runtime_principles(settings=settings),
             profile=prompt_profile,

@@ -1,10 +1,13 @@
 from fastapi.testclient import TestClient
 import hashlib
 import importlib
+import json
 import pytest
+import shutil
 import threading
 import time
 from datetime import timedelta
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from types import SimpleNamespace
 import sys
@@ -75,6 +78,62 @@ FORBIDDEN_RESPONSE_FIELDS = {
 PNG_1X1 = bytes.fromhex(
     "89504e470d0a1a0a0000000d4948445200000001000000010804000000b51c0c020000000b4944415478da6364f80f00010501012718e3660000000049454e44ae426082"
 )
+
+
+def _adapter_request_with_frozen_context(
+    *,
+    conversation_context: dict,
+    message_batch: dict,
+) -> dict:
+    """Build the same empty-history snapshot required by the real adapter.
+
+    Adapter unit tests may replace the external Provider boundary, but they
+    must not bypass the production CheJin context bridge.
+    """
+
+    context = dict(conversation_context)
+    batch = dict(message_batch)
+    normalized_messages: list[dict] = []
+    for index, value in enumerate(message_batch.get("messages") or []):
+        item = dict(value)
+        item["id"] = str(
+            item.get("id")
+            or item.get("message_event_id")
+            or f"{batch.get('id') or 'batch'}-message-{index + 1}"
+        )
+        item.setdefault("sender_role", "customer")
+        item.setdefault("message_type", "text")
+        normalized_messages.append(item)
+    batch["messages"] = normalized_messages
+    conversation_id = str(context.get("conversation_id") or "")
+    context["brain_context_snapshot"] = {
+        "schema_version": 1,
+        "history_authority": "chejin_message_events_v1",
+        "conversation_id": conversation_id,
+        "prior_messages": [],
+        "current_batch_message_ids": [
+            item["id"] for item in normalized_messages
+        ],
+        "history_event_count_before_batch": 0,
+        "semantic_history_count_before_batch": 0,
+        "prior_messages_sha256": hashlib.sha256(b"[]").hexdigest(),
+        "history_window_complete": True,
+    }
+    return {"conversation_context": context, "message_batch": batch}
+
+
+def _generate_adapter_decision(
+    adapter: RealOmniAutoAIEngineAdapter,
+    *,
+    conversation_context: dict,
+    message_batch: dict,
+):
+    return adapter.generate_reply_decision(
+        **_adapter_request_with_frozen_context(
+            conversation_context=conversation_context,
+            message_batch=message_batch,
+        )
+    )
 
 
 def setup_function():
@@ -525,7 +584,8 @@ def test_real_adapter_uses_guard_approved_brain_text_without_rewriting(monkeypat
     monkeypatch.setattr(adapter, "_load_brain", lambda: object())
     monkeypatch.setattr(adapter, "_run_brain_isolated", lambda **_kwargs: brain_result)
 
-    decision = adapter.generate_reply_decision(
+    decision = _generate_adapter_decision(
+        adapter,
         conversation_context={"conversation_id": "conv-real-adapter", "remark_code": "CJREAL01"},
         message_batch={"id": "batch-real-adapter", "messages": [{"content": "想看 SUV"}]},
     )
@@ -573,7 +633,8 @@ def test_real_adapter_second_no_visible_attempt_receives_focused_recovery_instru
     monkeypatch.setattr(adapter, "_load_brain", lambda: object())
     monkeypatch.setattr(adapter, "_run_brain_isolated", fake_run_brain_isolated)
 
-    decision = adapter.generate_reply_decision(
+    decision = _generate_adapter_decision(
+        adapter,
         conversation_context={"conversation_id": "conv-no-visible-retry"},
         message_batch={
             "id": "batch-no-visible-retry",
@@ -624,7 +685,8 @@ def test_real_adapter_first_attempt_does_not_claim_prior_failure(monkeypatch):
     monkeypatch.setattr(adapter, "_load_brain", lambda: object())
     monkeypatch.setattr(adapter, "_run_brain_isolated", fake_run_brain_isolated)
 
-    decision = adapter.generate_reply_decision(
+    decision = _generate_adapter_decision(
+        adapter,
         conversation_context={"conversation_id": "conv-first-attempt"},
         message_batch={
             "id": "batch-first-attempt",
@@ -664,7 +726,8 @@ def test_real_adapter_emits_structured_hard_opt_out_without_customer_reply(monke
     monkeypatch.setattr(adapter, "_load_brain", lambda: object())
     monkeypatch.setattr(adapter, "_run_brain_isolated", lambda **_kwargs: brain_result)
 
-    decision = adapter.generate_reply_decision(
+    decision = _generate_adapter_decision(
+        adapter,
         conversation_context={"conversation_id": "conv-opt-out"},
         message_batch={"id": "batch-opt-out", "messages": [{"content": "请不要再联系我"}]},
     )
@@ -712,7 +775,8 @@ def test_real_adapter_maps_structured_high_intent_to_direct_handoff(monkeypatch)
         lambda **_kwargs: brain_result,
     )
 
-    decision = adapter.generate_reply_decision(
+    decision = _generate_adapter_decision(
+        adapter,
         conversation_context={"conversation_id": "conv-high-intent"},
         message_batch={
             "id": "batch-high-intent",
@@ -761,7 +825,8 @@ def test_real_adapter_high_intent_overrides_send_reply(monkeypatch):
         lambda **_kwargs: brain_result,
     )
 
-    decision = adapter.generate_reply_decision(
+    decision = _generate_adapter_decision(
+        adapter,
         conversation_context={"conversation_id": "conv-high-intent-conflict"},
         message_batch={
             "id": "batch-high-intent-conflict",
@@ -815,7 +880,8 @@ def test_real_adapter_does_not_label_combined_risk_reason_as_high_intent_without
         lambda **_kwargs: brain_result,
     )
 
-    decision = adapter.generate_reply_decision(
+    decision = _generate_adapter_decision(
+        adapter,
         conversation_context={"conversation_id": "conv-contract-risk"},
         message_batch={
             "id": "batch-contract-risk",
@@ -858,7 +924,8 @@ def test_real_adapter_preserves_brain_owned_boundary_as_reply_then_handoff(monke
     monkeypatch.setattr(adapter, "_load_brain", lambda: object())
     monkeypatch.setattr(adapter, "_run_brain_isolated", lambda **_kwargs: brain_result)
 
-    decision = adapter.generate_reply_decision(
+    decision = _generate_adapter_decision(
+        adapter,
         conversation_context={"conversation_id": "conv-boundary-handoff"},
         message_batch={
             "id": "batch-boundary-handoff",
@@ -888,7 +955,8 @@ def test_real_adapter_provider_exception_is_explicit_retry_later(monkeypatch):
     monkeypatch.setattr(adapter, "_run_brain_isolated", fail_brain)
 
     with pytest.raises(AppError) as exc:
-        adapter.generate_reply_decision(
+        _generate_adapter_decision(
+            adapter,
             conversation_context={"conversation_id": "conv-provider-fail"},
             message_batch={"id": "batch-provider-fail", "messages": [{"content": "你好"}]},
         )
@@ -930,7 +998,8 @@ def test_real_adapter_provider_hard_timeout_kills_isolated_process(monkeypatch, 
 
     started_at = time.monotonic()
     with pytest.raises(AppError) as exc:
-        adapter.generate_reply_decision(
+        _generate_adapter_decision(
+            adapter,
             conversation_context={"conversation_id": "conv-provider-timeout"},
             message_batch={"id": "batch-provider-timeout", "messages": [{"content": "你好"}]},
         )
@@ -1130,7 +1199,8 @@ def test_real_adapter_maps_brain_no_visible_provider_result_to_retry_later(monke
         },
     )
 
-    decision = adapter.generate_reply_decision(
+    decision = _generate_adapter_decision(
+        adapter,
         conversation_context={"conversation_id": "conv-no-visible"},
         message_batch={"id": "batch-no-visible", "messages": [{"content": "你好"}]},
     )
@@ -1179,7 +1249,8 @@ def test_real_adapter_preserves_brain_timeout_as_provider_timeout(monkeypatch):
         },
     )
 
-    decision = adapter.generate_reply_decision(
+    decision = _generate_adapter_decision(
+        adapter,
         conversation_context={"conversation_id": "conv-timeout"},
         message_batch={
             "id": "batch-timeout",
@@ -1242,7 +1313,8 @@ def test_real_adapter_maps_explicit_non_send_brain_decisions(
         lambda **_kwargs: brain_result,
     )
 
-    decision = adapter.generate_reply_decision(
+    decision = _generate_adapter_decision(
+        adapter,
         conversation_context={"conversation_id": "conv-explicit-decision"},
         message_batch={
             "id": "batch-explicit-decision",
@@ -1253,6 +1325,706 @@ def test_real_adapter_maps_explicit_non_send_brain_decisions(
     assert decision.decision == expected_decision
     assert decision.suggested_action == expected_suggested_action
     assert decision.raw_payload["omniauto_brain_result"] == brain_result
+
+
+@pytest.mark.parametrize(
+    ("history_customer_turns", "current_text"),
+    [
+        (["家用", "SUV"], "10万以内"),
+        (["预算8万"], "10万以内"),
+        (["我想看SUV"], "不要SUV了，改看轿车"),
+        ([], "不要只看SUV，轿车也可以"),
+        ([], "不要太费油的SUV"),
+    ],
+)
+def test_message_event_history_reaches_real_provider_input_once(
+    monkeypatch,
+    history_customer_turns,
+    current_text,
+):
+    """DB -> snapshot -> adapter -> evidence -> Brain -> provider boundary."""
+
+    worker, binding_payload = _setup_bound_conversation()
+    base = utcnow() - timedelta(minutes=3)
+    with SessionLocal() as db:
+        binding = db.get(WechatSessionBinding, binding_payload["id"])
+        for index, content in enumerate(history_customer_turns):
+            db.add(
+                MessageEvent(
+                    id=f"history-event-{index + 1}",
+                    conversation_id=binding.conversation_id,
+                    binding_id=binding.id,
+                    lead_id=binding.lead_id,
+                    sales_id=binding.sales_id,
+                    worker_id=binding.worker_id,
+                    rpa_session_key=binding.rpa_session_key,
+                    read_run_id=f"history-read-{index + 1}",
+                    contract_version=3,
+                    source_message_key=f"history-source-{index + 1}",
+                    dedupe_key=f"history-dedupe-{index + 1}",
+                    sender_role="customer",
+                    message_type="text",
+                    content=content,
+                    item_state="confirmed",
+                    raw_payload={"item_state": "confirmed"},
+                    evidence={},
+                    occurred_at=base + timedelta(minutes=index),
+                    observed_at=base + timedelta(minutes=index),
+                    observation_order=index + 1,
+                )
+            )
+        db.commit()
+
+    current_id = _ingest(
+        worker,
+        binding_payload["conversation_id"],
+        "brain-context-current",
+        current_text,
+    )
+    batch_id = _collect(binding_payload["conversation_id"], current_id)[
+        "batch_id"
+    ]
+    with SessionLocal() as db:
+        batch = db.get(MessageBatch, batch_id)
+        binding = db.get(WechatSessionBinding, binding_payload["id"])
+        conversation = db.get(Conversation, binding.conversation_id)
+        context = c3_service._build_ai_context(
+            db,
+            binding,
+            conversation,
+            batch,
+        )
+
+    assert "history" not in context["conversation"]
+    snapshot = context["brain_context_snapshot"]
+    assert [item["content"] for item in snapshot["prior_messages"]] == (
+        history_customer_turns
+    )
+    assert snapshot["current_batch_message_ids"] == [current_id]
+
+    omniauto_root = (
+        Path(__file__).resolve().parents[2] / "worker-client" / "omniauto-rpa"
+    )
+    monkeypatch.setenv("C3_OMNIAUTO_ROOT", str(omniauto_root))
+    monkeypatch.setattr(
+        "app.services.ai_adapter.get_settings",
+        lambda: SimpleNamespace(
+            c3_omniauto_root=str(omniauto_root),
+            c3_brain_provider_timeout_seconds=10.0,
+        ),
+    )
+    adapter = RealOmniAutoAIEngineAdapter()
+    monkeypatch.setattr(
+        adapter,
+        "_load_config",
+        lambda: {
+            "customer_service_brain": {
+                "enabled": True,
+                "mode": "brain_first",
+                "provider": "manual_json",
+                "api_key": "test-only-manual-provider",
+                "brain_plan": {
+                    "schema_version": 1,
+                    "recommended_action": "send_reply",
+                    "reply_segments": ["您更偏向省油还是空间？"],
+                    "confidence": 0.9,
+                    "risk_flags": [],
+                    "evidence_refs": [],
+                    "facts_claimed": [],
+                },
+                "min_confidence": 0.2,
+                "require_evidence": False,
+                "include_brain_input_in_audit": True,
+                "quality_verifier_enabled": False,
+                "semantic_reviewer_enabled": False,
+                "fallback_to_legacy_on_error": False,
+            },
+            "llm_reply_synthesis": {
+                "enabled": True,
+                "provider": "manual_json",
+            },
+            "raw_message_store": {"enabled": False},
+            "final_visible_llm_polish": {"enabled": False},
+        },
+    )
+
+    decision = adapter.generate_reply_decision(
+        conversation_context={
+            **context["conversation"],
+            "brain_context_snapshot": context["brain_context_snapshot"],
+        },
+        message_batch={
+            "id": batch_id,
+            "messages": context["messages"],
+            "trigger_type": "customer_message",
+        },
+    )
+    brain_input = decision.raw_payload["omniauto_brain_result"]["brain_input"]
+    provider_history = brain_input["conversation"]["history_text"]
+    provider_current = brain_input["conversation"]["current_batch_text"]
+    provider_context = brain_input["conversation"]["context"]
+    expected_history = "\n".join(
+        f"客户：{text}" for text in history_customer_turns
+    )
+    semantic_instruction = (
+        "结合完整历史判断客户当前需求；以后续明确修改为准；"
+        "结合否定词的真实作用范围，不得仅凭关键词删除旧条件。"
+    )
+    assert provider_history == expected_history
+    assert provider_current == f"客户：{current_text}"
+    assert current_text not in provider_history
+    assert provider_current.count(current_text) == 1
+    assert not {
+        key for key in provider_context if key.startswith("last_customer_need_")
+    }
+    assert brain_input["conversation"]["history_authority"] == (
+        "chejin_message_events_v1"
+    )
+    assert brain_input["conversation"]["semantic_instruction"] == (
+        semantic_instruction
+    )
+    brain_module = importlib.import_module(
+        "apps.wechat_ai_customer_service.workflows.customer_service_brain"
+    )
+    normal_prompt = brain_module.build_brain_prompt_pack(
+        settings={},
+        brain_input=brain_input,
+    )
+    bridged = adapter._load_context_bridge()(
+        brain_context_snapshot=context["brain_context_snapshot"],
+        current_batch=context["messages"],
+        expected_conversation_id=binding_payload["conversation_id"],
+    )
+    fast_target_state = {
+        "conversation_id": binding_payload["conversation_id"],
+        "conversation_context": bridged["conversation_context"],
+        "conversation_strategy_state": bridged["conversation_strategy_state"],
+        "conversation_interaction_state": bridged[
+            "conversation_interaction_state"
+        ],
+        "chejin_brain_context": bridged,
+    }
+    fast_evidence = brain_module.build_low_authority_fast_evidence_pack(
+        target_name=binding_payload["conversation_id"],
+        target_state=fast_target_state,
+        batch=context["messages"],
+        combined=current_text,
+        raw_capture={
+            "conversation": {
+                "conversation_id": binding_payload["conversation_id"]
+            }
+        },
+        profile={"enabled": True},
+    )
+    fast_input = brain_module.build_brain_input(
+        settings={"prompt_profile": "low_authority_fast"},
+        target_name=binding_payload["conversation_id"],
+        target_state=fast_target_state,
+        batch=context["messages"],
+        combined=current_text,
+        raw_capture={
+            "conversation": {
+                "conversation_id": binding_payload["conversation_id"]
+            }
+        },
+        evidence_pack=fast_evidence,
+    )
+    fast_prompt = brain_module.build_brain_prompt_pack(
+        settings={
+            "prompt_profile": "low_authority_fast",
+            "history_char_budget": 80,
+            "current_batch_char_budget": 120,
+        },
+        brain_input=fast_input,
+    )
+    for provider_prompt in (normal_prompt, fast_prompt):
+        provider_prompt_context = provider_prompt["user"]["brain_input"][
+            "conversation"
+        ]
+        assert provider_prompt_context["history_text"] == expected_history
+        assert provider_prompt_context["current_batch_text"] == (
+            f"客户：{current_text}"
+        )
+        assert provider_prompt_context["semantic_instruction"] == (
+            semantic_instruction
+        )
+        assert semantic_instruction in provider_prompt["system"]
+        assert brain_module.build_brain_user_content(provider_prompt).count(
+            current_text
+        ) == 1
+    assert brain_input["runtime"]["conversation_interaction_state"][
+        "unanswered_exists"
+    ] is True
+
+
+def test_message_event_history_reaches_auto_routine_product_fast_provider(
+    monkeypatch,
+    request,
+    tmp_path,
+):
+    """DB -> Adapter -> automatic routine profile -> real Provider HTTP body."""
+
+    worker, binding_payload = _setup_bound_conversation()
+    base = utcnow() - timedelta(minutes=3)
+    history_turns = ["家用通勤为主", "预算10万以内"]
+    with SessionLocal() as db:
+        binding = db.get(WechatSessionBinding, binding_payload["id"])
+        for index, content in enumerate(history_turns):
+            db.add(
+                MessageEvent(
+                    id=f"routine-fast-history-{index + 1}",
+                    conversation_id=binding.conversation_id,
+                    binding_id=binding.id,
+                    lead_id=binding.lead_id,
+                    sales_id=binding.sales_id,
+                    worker_id=binding.worker_id,
+                    rpa_session_key=binding.rpa_session_key,
+                    read_run_id=f"routine-fast-history-read-{index + 1}",
+                    contract_version=3,
+                    source_message_key=f"routine-fast-history-source-{index + 1}",
+                    dedupe_key=f"routine-fast-history-dedupe-{index + 1}",
+                    sender_role="customer",
+                    message_type="text",
+                    content=content,
+                    item_state="confirmed",
+                    raw_payload={"item_state": "confirmed"},
+                    evidence={},
+                    occurred_at=base + timedelta(minutes=index),
+                    observed_at=base + timedelta(minutes=index),
+                    observation_order=index + 1,
+                )
+            )
+        db.commit()
+
+    current_text = "秦PLUS多少钱？"
+    current_id = _ingest(
+        worker,
+        binding_payload["conversation_id"],
+        "routine-fast-current",
+        current_text,
+    )
+    batch_id = _collect(binding_payload["conversation_id"], current_id)[
+        "batch_id"
+    ]
+    with SessionLocal() as db:
+        batch = db.get(MessageBatch, batch_id)
+        binding = db.get(WechatSessionBinding, binding_payload["id"])
+        conversation = db.get(Conversation, binding.conversation_id)
+        context = c3_service._build_ai_context(
+            db,
+            binding,
+            conversation,
+            batch,
+        )
+
+    # Seed the ordinary product source through its production store.  This is
+    # what lets the Brain select routine_product_fast itself; the test never
+    # injects an evidence pack or prompt_profile.
+    omniauto_root = (
+        Path(__file__).resolve().parents[2] / "worker-client" / "omniauto-rpa"
+    )
+    monkeypatch.setenv("C3_OMNIAUTO_ROOT", str(omniauto_root))
+    monkeypatch.setenv("WECHAT_STORAGE_BACKEND", "json")
+    tenant_id = "routine_fast_" + hashlib.sha256(
+        str(tmp_path).encode("utf-8")
+    ).hexdigest()[:12]
+    monkeypatch.setenv("WECHAT_KNOWLEDGE_TENANT", tenant_id)
+    monkeypatch.setenv("OPENAI_COMPATIBLE_API_KEY", "provider-test-key")
+    monkeypatch.setattr(
+        "app.services.ai_adapter.get_settings",
+        lambda: SimpleNamespace(
+            c3_omniauto_root=str(omniauto_root),
+            c3_brain_provider_timeout_seconds=15.0,
+        ),
+    )
+    adapter = RealOmniAutoAIEngineAdapter()
+    adapter._load_brain()
+    product_master_module = importlib.import_module(
+        "apps.wechat_ai_customer_service.product_master"
+    )
+    knowledge_paths_module = importlib.import_module(
+        "apps.wechat_ai_customer_service.knowledge_paths"
+    )
+    tenant_root = knowledge_paths_module.tenant_root(tenant_id)
+    tenant_runtime_root = knowledge_paths_module.tenant_runtime_root(
+        tenant_id
+    )
+    request.addfinalizer(
+        lambda: shutil.rmtree(tenant_root, ignore_errors=True)
+    )
+    request.addfinalizer(
+        lambda: shutil.rmtree(tenant_runtime_root, ignore_errors=True)
+    )
+    raw_store_module = importlib.import_module(
+        "apps.wechat_ai_customer_service.admin_backend.services.raw_message_store"
+    )
+    product_id = "routine-fast-qinplus"
+    product_result = product_master_module.ProductMasterStore(
+        tenant_id=tenant_id
+    ).save_item(
+        {
+            "id": product_id,
+            "data": {
+                "name": "秦PLUS",
+                "aliases": ["秦PLUS", "秦plus"],
+                "category": "二手车",
+                "price": "8.68万",
+                "unit": "辆",
+                "inventory": 1,
+            },
+        }
+    )
+    assert product_result["ok"] is True
+
+    # Put contradictory text in the legacy store.  If the CheJin path touches
+    # the old source, that poison will replace/contaminate the Provider input.
+    raw_store_module.RawMessageStore(tenant_id=tenant_id).upsert_messages(
+        {
+            "conversation_id": binding_payload["conversation_id"],
+            "conversation_type": "private",
+            "target_name": "legacy-poison",
+        },
+        [
+            {
+                "id": "legacy-poison-message",
+                "sender": "customer",
+                "sender_role": "customer",
+                "content": "旧RawMessageStore错误历史",
+                "type": "text",
+            }
+        ],
+        source_module="test_legacy_poison",
+        learning_enabled=False,
+        create_batch=False,
+    )
+
+    plan = {
+        "can_answer": True,
+        "understanding": {
+            "user_intent": "询问具体车型报价",
+            "normalized_entities": [
+                {
+                    "raw": "秦PLUS",
+                    "normalized": "秦PLUS",
+                    "entity_type": "product",
+                }
+            ],
+        },
+        "answer_mode": "quote_product_fact",
+        "reply_strategy": {"style": "concise_human"},
+        "evidence_used": {"product_ids": [product_id]},
+        "facts_claimed": [
+            {
+                "fact_type": "price",
+                "value": "8.68万",
+                "source_level": "product_master",
+                "source_id": product_id,
+            }
+        ],
+        "reply_segments": ["秦PLUS这台目前报价8.68万。"],
+        "risk": {
+            "risk_level": "low",
+            "risk_tags": [],
+            "needs_handoff": False,
+        },
+        "recommended_action": "send_reply",
+        "confidence": 0.9,
+        "reason": "商品主数据命中。",
+    }
+    provider_requests: list[dict] = []
+
+    class ProviderHandler(BaseHTTPRequestHandler):
+        def do_POST(self):  # noqa: N802 - stdlib handler contract
+            body = self.rfile.read(int(self.headers.get("Content-Length") or 0))
+            provider_requests.append(json.loads(body.decode("utf-8")))
+            response = json.dumps(
+                {
+                    "choices": [
+                        {
+                            "message": {
+                                "content": json.dumps(
+                                    plan,
+                                    ensure_ascii=False,
+                                )
+                            }
+                        }
+                    ],
+                    "usage": {},
+                },
+                ensure_ascii=False,
+            ).encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(response)))
+            self.end_headers()
+            self.wfile.write(response)
+
+        def log_message(self, _format, *_args):
+            return
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), ProviderHandler)
+    server_thread = threading.Thread(target=server.serve_forever, daemon=True)
+    server_thread.start()
+    base_url = f"http://127.0.0.1:{server.server_address[1]}/v1"
+    config = {
+        "customer_service_brain": {
+            "enabled": True,
+            "mode": "brain_first",
+            "provider": "openai_compatible",
+            "model": "provider-test-model",
+            "base_url": base_url,
+            "api_key": "provider-test-key",
+            "min_confidence": 0.2,
+            "require_evidence": True,
+            "include_brain_input_in_audit": True,
+            "include_evidence_pack_in_audit": True,
+            "quality_verifier_enabled": False,
+            "semantic_reviewer_enabled": False,
+            "require_final_visible_polish": False,
+            "fallback_to_legacy_on_error": False,
+        },
+        "llm_reply_synthesis": {
+            "enabled": True,
+            "provider": "openai_compatible",
+        },
+        "raw_message_store": {"enabled": False},
+        "final_visible_llm_polish": {"enabled": False},
+    }
+    monkeypatch.setattr(adapter, "_load_config", lambda: config)
+
+    try:
+        decision = adapter.generate_reply_decision(
+            conversation_context={
+                **context["conversation"],
+                "brain_context_snapshot": context[
+                    "brain_context_snapshot"
+                ],
+            },
+            message_batch={
+                "id": batch_id,
+                "messages": context["messages"],
+                "trigger_type": "customer_message",
+            },
+        )
+
+        # The first run above crosses the real Adapter JSON/subprocess and HTTP
+        # boundaries.  Repeat the same production Brain runner in-process only
+        # to make the forbidden legacy-store call count directly observable;
+        # no evidence, profile, prompt, or Brain decision is replaced.
+        legacy_store_calls: list[str] = []
+        reply_evidence_module = importlib.import_module(
+            "apps.wechat_ai_customer_service.workflows.reply_evidence_builder"
+        )
+
+        class ForbiddenRawMessageStore:
+            def __init__(self, *_args, **_kwargs):
+                legacy_store_calls.append("RawMessageStore")
+                raise AssertionError(
+                    "CheJin routine product Brain must not read RawMessageStore"
+                )
+
+        def forbidden_legacy_history(**_kwargs):
+            legacy_store_calls.append("assemble_conversation_history")
+            raise AssertionError(
+                "CheJin routine product Brain must not assemble legacy history"
+            )
+
+        monkeypatch.setattr(
+            reply_evidence_module,
+            "RawMessageStore",
+            ForbiddenRawMessageStore,
+        )
+        monkeypatch.setattr(
+            reply_evidence_module,
+            "assemble_conversation_history",
+            forbidden_legacy_history,
+        )
+        brain_runner = adapter._load_brain()
+        monkeypatch.setattr(
+            adapter,
+            "_run_brain_isolated",
+            lambda *, config, invocation, timeout_seconds: brain_runner(
+                config=config,
+                **invocation,
+            ),
+        )
+        observable_decision = adapter.generate_reply_decision(
+            conversation_context={
+                **context["conversation"],
+                "brain_context_snapshot": context[
+                    "brain_context_snapshot"
+                ],
+            },
+            message_batch={
+                "id": batch_id,
+                "messages": context["messages"],
+                "trigger_type": "customer_message",
+            },
+        )
+        assert legacy_store_calls == []
+    finally:
+        server.shutdown()
+        server.server_close()
+        server_thread.join(timeout=2.0)
+        shutil.rmtree(tenant_root, ignore_errors=True)
+        shutil.rmtree(tenant_runtime_root, ignore_errors=True)
+
+    expected_history = "\n".join(f"客户：{text}" for text in history_turns)
+    semantic_instruction = (
+        "结合完整历史判断客户当前需求；以后续明确修改为准；"
+        "结合否定词的真实作用范围，不得仅凭关键词删除旧条件。"
+    )
+    assert len(provider_requests) == 2
+    for provider_request in provider_requests:
+        system_message = provider_request["messages"][0]["content"]
+        user_message = provider_request["messages"][1]["content"]
+        provider_user = json.loads(user_message.split("\n\n", 1)[0])
+        provider_conversation = provider_user["brain_input"]["conversation"]
+        assert "常规商品问价/推荐" in system_message
+        assert semantic_instruction in system_message
+        assert provider_conversation["history_text"] == expected_history
+        assert provider_conversation["current_batch_text"] == (
+            f"客户：{current_text}"
+        )
+        assert user_message.count(current_text) == 1
+        assert "旧RawMessageStore错误历史" not in user_message
+    for result in (decision, observable_decision):
+        assert result.raw_payload["omniauto_brain_result"][
+            "routine_product_fast_profile"
+        ]["enabled"] is True
+        assert result.raw_payload["omniauto_brain_result"]["brain_input"][
+            "conversation"
+        ]["history_authority"] == "chejin_message_events_v1"
+
+
+def test_invalid_frozen_history_creates_no_provider_reply_or_handoff(monkeypatch):
+    worker, binding = _setup_bound_conversation()
+    current_id = _ingest(
+        worker,
+        binding["conversation_id"],
+        "brain-context-invalid",
+        "想看家用轿车",
+    )
+    batch_id = _collect(binding["conversation_id"], current_id)["batch_id"]
+    _reset_batch_to_generation_state(
+        batch_id,
+        status="collecting",
+        generation_attempt_count=0,
+    )
+    with SessionLocal() as db:
+        batch = db.get(MessageBatch, batch_id)
+        batch.ai_request_snapshot = {
+            "brain_context_snapshot": {
+                "schema_version": 1,
+                "history_authority": "chejin_message_events_v1",
+                "conversation_id": binding["conversation_id"],
+                "prior_messages": [],
+                "current_batch_message_ids": [current_id],
+                "history_event_count_before_batch": 0,
+                "semantic_history_count_before_batch": 0,
+                "prior_messages_sha256": "0" * 64,
+                "history_window_complete": True,
+            }
+        }
+        db.commit()
+
+    omniauto_root = (
+        Path(__file__).resolve().parents[2] / "worker-client" / "omniauto-rpa"
+    )
+    app_root = omniauto_root / "apps" / "wechat_ai_customer_service"
+    for import_root in reversed(
+        [omniauto_root, app_root, app_root / "workflows", app_root / "adapters"]
+    ):
+        if str(import_root) not in sys.path:
+            sys.path.insert(0, str(import_root))
+    bridge = importlib.import_module(
+        "apps.wechat_ai_customer_service.workflows.chejin_brain_context_bridge"
+    ).build_chejin_brain_context
+    adapter = RealOmniAutoAIEngineAdapter()
+    provider_calls: list[dict] = []
+    monkeypatch.setattr(adapter, "_load_context_bridge", lambda: bridge)
+    monkeypatch.setattr(
+        adapter,
+        "_load_brain",
+        lambda: pytest.fail("invalid context must fail before Brain runtime"),
+    )
+    monkeypatch.setattr(
+        adapter,
+        "_run_brain_isolated",
+        lambda **kwargs: provider_calls.append(kwargs),
+    )
+    monkeypatch.setattr(c3_service, "get_ai_engine_adapter", lambda: adapter)
+
+    generated = _generate(batch_id)
+    assert generated["decision"] == "retry_later"
+    assert generated["error_code"] == "AI_CONTEXT_BUILD_FAILED"
+    assert generated["batch"]["status"] == "failed"
+    assert provider_calls == []
+    with SessionLocal() as db:
+        batch = db.get(MessageBatch, batch_id)
+        assert batch.message_event_ids == [current_id]
+        assert db.get(MessageEvent, current_id) is not None
+        assert db.query(ReplyAction).count() == 0
+        assert db.query(HandoffEvent).count() == 0
+
+
+def test_snapshot_construction_failure_is_settled_without_provider_or_handoff(
+    monkeypatch,
+):
+    worker, binding = _setup_bound_conversation()
+    current_id = _ingest(
+        worker,
+        binding["conversation_id"],
+        "brain-context-snapshot-build-failure",
+        "家用SUV，10万以内",
+    )
+    batch_id = _collect(binding["conversation_id"], current_id)["batch_id"]
+    _reset_batch_to_generation_state(
+        batch_id,
+        status="collecting",
+        generation_attempt_count=0,
+    )
+    provider_calls: list[dict] = []
+
+    class ForbiddenAdapter:
+        def generate_reply_decision(self, **kwargs):
+            provider_calls.append(kwargs)
+            raise AssertionError("snapshot failure must precede Adapter")
+
+    monkeypatch.setattr(c3_service, "get_ai_engine_adapter", lambda: ForbiddenAdapter())
+    monkeypatch.setattr(
+        c3_service,
+        "_build_brain_context_snapshot",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AppError(
+                "AI_CONTEXT_BUILD_FAILED",
+                "snapshot normalization failed",
+                409,
+            )
+        ),
+    )
+
+    generated = _generate(batch_id)
+
+    assert generated["decision"] == "retry_later"
+    assert generated["error_code"] == "AI_CONTEXT_BUILD_FAILED"
+    assert generated["batch"]["status"] == "failed"
+    assert generated["batch"]["active"] is False
+    assert provider_calls == []
+    with SessionLocal() as db:
+        batch = db.get(MessageBatch, batch_id)
+        assert batch.status == "failed"
+        assert batch.active is False
+        assert batch.error_code == "AI_CONTEXT_BUILD_FAILED"
+        assert batch.generation_started_at is None
+        assert batch.ai_response_snapshot["error_code"] == (
+            "AI_CONTEXT_BUILD_FAILED"
+        )
+        assert batch.ai_response_snapshot["raw_payload"]["context_error"][
+            "exception_type"
+        ] == "AppError"
+        assert db.query(ReplyAction).filter_by(batch_id=batch_id).count() == 0
+        assert db.query(HandoffEvent).filter_by(batch_id=batch_id).count() == 0
 
 
 def test_provider_failure_enters_durable_retry_wait(monkeypatch):
@@ -1917,9 +2689,25 @@ def test_pause_after_brain_allows_exact_c2_flow_to_claim_send_and_ack():
 
     flow_id = "read-pause-after-brain"
     worker_headers = _worker_headers(worker)
+    with SessionLocal() as db:
+        unread_generation = int(
+            db.query(WechatSessionBinding)
+            .filter(
+                WechatSessionBinding.conversation_id
+                == binding["conversation_id"]
+            )
+            .one()
+            .unread_generation
+            or 0
+        )
     started = client.post(
         f"/api/workers/{worker['id']}/inflight-flow/start",
-        json={"flow_id": flow_id, "flow_kind": "c2_read"},
+        json={
+            "flow_id": flow_id,
+            "flow_kind": "c2_read",
+            "conversation_id": binding["conversation_id"],
+            "unread_generation": unread_generation,
+        },
         headers=worker_headers,
     )
     assert started.status_code == 200, started.text
@@ -2587,8 +3375,8 @@ def test_brain_history_uses_observed_order_when_old_fact_arrives_late():
             conversation_id=binding["conversation_id"],
             status="collecting",
             active=False,
-            message_event_ids=[newer_id],
-            message_count=1,
+            message_event_ids=[],
+            message_count=0,
             generation_no=99,
         )
         db.add(batch)
@@ -2605,9 +3393,9 @@ def test_brain_history_uses_observed_order_when_old_fact_arrives_late():
             batch,
         )
 
-        assert [
-            item["content"] for item in context["conversation"]["history"]
-        ] == [
+        assert [item["content"] for item in context[
+            "brain_context_snapshot"
+        ]["prior_messages"]] == [
             "网络延迟送达的旧消息",
             "画面里较新的消息",
         ]
@@ -2660,8 +3448,8 @@ def test_brain_history_preserves_structured_image_context_across_rounds():
             conversation_id=binding["conversation_id"],
             status="collecting",
             active=False,
-            message_event_ids=[image_id],
-            message_count=1,
+            message_event_ids=[],
+            message_count=0,
             generation_no=100,
         )
         db.add(batch)
@@ -2684,16 +3472,146 @@ def test_brain_history_preserves_structured_image_context_across_rounds():
 
     history_image = next(
         item
-        for item in context["conversation"]["history"]
-        if item["id"] == image_id
+        for item in context["brain_context_snapshot"][
+            "prior_messages"
+        ]
+        if item["message_event_id"] == image_id
     )
-    current_image = context["messages"][0]
-    for item in (history_image, current_image):
-        assert item["message_type"] == "image"
-        assert item["vision_summary"] == "白色 SUV 外观，车头朝左"
-        assert item["image_ocr_text"] == ["测试车牌"]
-        assert item["normalized_vehicle_query"] == "白色 SUV"
-        assert item["server_validated_product_id"] == ""
+    assert context["messages"] == []
+    assert history_image["message_type"] == "image"
+    assert history_image["vision_summary"] == "白色 SUV 外观，车头朝左"
+    assert history_image["image_ocr_text"] == ["测试车牌"]
+    assert history_image["normalized_vehicle_query"] == "白色 SUV"
+    assert history_image["server_validated_product_id"] == "server-product-001"
+
+
+def test_same_batch_retry_reuses_frozen_brain_context_snapshot():
+    worker, binding = _setup_bound_conversation()
+    _ingest(
+        worker,
+        binding["conversation_id"],
+        "msg-frozen-history-before",
+        "家用轿车",
+    )
+    current_id = _ingest(
+        worker,
+        binding["conversation_id"],
+        "msg-frozen-current",
+        "10万以内",
+    )
+    batch_id = _collect(binding["conversation_id"], current_id)["batch_id"]
+
+    with SessionLocal() as db:
+        batch = db.get(MessageBatch, batch_id)
+        binding_row = db.get(WechatSessionBinding, binding["id"])
+        conversation = db.get(Conversation, binding["conversation_id"])
+        first_context = c3_service._build_ai_context(
+            db,
+            binding_row,
+            conversation,
+            batch,
+        )
+        batch.ai_request_snapshot = first_context
+        frozen = first_context["brain_context_snapshot"]
+        db.commit()
+
+    # A later fact may supersede this batch in normal production, but it must
+    # never rewrite the immutable history used by a forced recovery of this
+    # exact batch.
+    with SessionLocal() as db:
+        binding_row = db.get(WechatSessionBinding, binding["id"])
+        tick = utcnow() + timedelta(seconds=1)
+        db.add(
+            MessageEvent(
+                id="history-arrived-after-freeze",
+                conversation_id=binding_row.conversation_id,
+                binding_id=binding_row.id,
+                lead_id=binding_row.lead_id,
+                sales_id=binding_row.sales_id,
+                worker_id=binding_row.worker_id,
+                rpa_session_key=binding_row.rpa_session_key,
+                read_run_id="history-after-freeze-read",
+                contract_version=3,
+                source_message_key="history-after-freeze-source",
+                dedupe_key="history-after-freeze-dedupe",
+                sender_role="customer",
+                message_type="text",
+                content="后来才到的新消息",
+                item_state="confirmed",
+                raw_payload={"item_state": "confirmed"},
+                evidence={},
+                occurred_at=tick,
+                observed_at=tick,
+                observation_order=99,
+            )
+        )
+        db.commit()
+
+    with SessionLocal() as db:
+        batch = db.get(MessageBatch, batch_id)
+        binding_row = db.get(WechatSessionBinding, binding["id"])
+        conversation = db.get(Conversation, binding["conversation_id"])
+        retry_context = c3_service._build_ai_context(
+            db,
+            binding_row,
+            conversation,
+            batch,
+        )
+
+    assert retry_context["brain_context_snapshot"] == frozen
+    assert "后来才到的新消息" not in str(frozen)
+
+
+@pytest.mark.parametrize(
+    "trigger_type",
+    ["customer_message", "recall", "c2_handoff_recovery"],
+)
+def test_all_message_triggers_freeze_the_same_authoritative_history(
+    trigger_type,
+):
+    worker, binding = _setup_bound_conversation()
+    history_id = _ingest(
+        worker,
+        binding["conversation_id"],
+        f"history-{trigger_type}",
+        "前一轮家用轿车",
+    )
+    current_id = _ingest(
+        worker,
+        binding["conversation_id"],
+        f"current-{trigger_type}",
+        "这一轮10万以内",
+    )
+    with SessionLocal() as db:
+        batch = MessageBatch(
+            conversation_id=binding["conversation_id"],
+            status="collecting",
+            active=False,
+            trigger_type=trigger_type,
+            trigger_key=f"trigger-{trigger_type}",
+            trigger_message_event_id=current_id,
+            message_event_ids=[current_id],
+            message_count=1,
+            generation_no=99,
+        )
+        db.add(batch)
+        db.flush()
+        binding_row = db.get(WechatSessionBinding, binding["id"])
+        conversation = db.get(Conversation, binding["conversation_id"])
+        context = c3_service._build_ai_context(
+            db,
+            binding_row,
+            conversation,
+            batch,
+        )
+
+    snapshot = context["brain_context_snapshot"]
+    assert snapshot["history_authority"] == "chejin_message_events_v1"
+    assert snapshot["current_batch_message_ids"] == [current_id]
+    assert [item["message_event_id"] for item in snapshot["prior_messages"]] == [
+        history_id
+    ]
+    assert [item["id"] for item in context["messages"]] == [current_id]
 
 
 def test_stale_message_batch_generation_is_reclaimed_once():

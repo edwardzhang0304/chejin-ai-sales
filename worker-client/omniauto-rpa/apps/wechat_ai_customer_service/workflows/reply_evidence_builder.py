@@ -35,6 +35,14 @@ DEFAULT_MAX_HISTORY_MESSAGES = 40
 DEFAULT_HISTORY_CHAR_BUDGET = 12000
 DEFAULT_MAX_RAG_HITS = 5
 DEFAULT_MAX_TEXT_CHARS = 900
+CHEJIN_HISTORY_AUTHORITY = "chejin_message_events_v1"
+
+
+class ChejinContextProjectionError(ValueError):
+    """Fail closed before Provider when CheJin's sole history is disconnected."""
+
+    code = "AI_CONTEXT_BUILD_FAILED"
+
 AI_EXPERIENCE_REFERENCE_SOURCE_TYPES = {
     "rag_experience",
     "cleaned_real_chat_pack",
@@ -81,6 +89,25 @@ AI_EXPERIENCE_RUNTIME_NOISE_TERMS = {
     "llm_synthesis_reply",
     "rag_context_reply",
 }
+
+
+def chejin_context_projection(target_state: dict[str, Any]) -> dict[str, Any]:
+    required = (
+        target_state.get("chejin_context_required") is True
+        or target_state.get("history_authority") == CHEJIN_HISTORY_AUTHORITY
+    )
+    value = target_state.get("chejin_brain_context")
+    if not isinstance(value, dict):
+        if required:
+            raise ChejinContextProjectionError("chejin_brain_context_missing")
+        return {}
+    if value.get("history_authority") != CHEJIN_HISTORY_AUTHORITY:
+        if required:
+            raise ChejinContextProjectionError(
+                "chejin_brain_context_authority_invalid"
+            )
+        return {}
+    return value
 AI_EXPERIENCE_RUNTIME_STYLE_MARKERS = {
     "你好",
     "您好",
@@ -466,19 +493,33 @@ def build_reply_evidence_pack(
         )
     )
     relax_soft_synthesis_safety(compact_knowledge, text=combined)
-    history = recent_history(
-        raw_capture=raw_capture,
-        batch=batch,
-        max_messages=int(settings.get("max_history_messages", DEFAULT_MAX_HISTORY_MESSAGES) or DEFAULT_MAX_HISTORY_MESSAGES),
-        char_budget=int(settings.get("history_char_budget", DEFAULT_HISTORY_CHAR_BUDGET) or DEFAULT_HISTORY_CHAR_BUDGET),
-    )
-
-    history_text_pack = assemble_conversation_history(
-        target_name=target_name,
-        conversation_id=raw_conversation_id(raw_capture),
-        current_batch=batch,
-        config=config,
-    )
+    chejin_context = chejin_context_projection(target_state)
+    if chejin_context:
+        history = [
+            compact_message(item)
+            for item in (chejin_context.get("history") or [])
+            if isinstance(item, dict)
+        ]
+        history_text_pack = {
+            "history_text": str(chejin_context.get("history_text") or ""),
+            "current_batch_text": str(
+                chejin_context.get("current_batch_text") or ""
+            ),
+            "summary": str(chejin_context.get("conversation_summary") or ""),
+        }
+    else:
+        history = recent_history(
+            raw_capture=raw_capture,
+            batch=batch,
+            max_messages=int(settings.get("max_history_messages", DEFAULT_MAX_HISTORY_MESSAGES) or DEFAULT_MAX_HISTORY_MESSAGES),
+            char_budget=int(settings.get("history_char_budget", DEFAULT_HISTORY_CHAR_BUDGET) or DEFAULT_HISTORY_CHAR_BUDGET),
+        )
+        history_text_pack = assemble_conversation_history(
+            target_name=target_name,
+            conversation_id=raw_conversation_id(raw_capture),
+            current_batch=batch,
+            config=config,
+        )
     if settings.get("foreground_realtime"):
         history_text_pack = dict(history_text_pack)
         history_limit = max(300, int(settings.get("history_char_budget", DEFAULT_HISTORY_CHAR_BUDGET) or DEFAULT_HISTORY_CHAR_BUDGET))
@@ -500,6 +541,9 @@ def build_reply_evidence_pack(
             "current_batch_text": history_text_pack.get("current_batch_text", ""),
             "conversation_summary": history_text_pack.get("summary", ""),
             "raw_conversation_id": raw_conversation_id(raw_capture),
+            "history_authority": str(
+                chejin_context.get("history_authority") or ""
+            ),
         },
         "existing_reply": {
             "authority": "non_authoritative_legacy_candidate",
@@ -577,10 +621,25 @@ def raw_conversation_id(raw_capture: dict[str, Any]) -> str:
 
 def compact_message(message: dict[str, Any]) -> dict[str, Any]:
     return {
-        "id": str(message.get("id") or message.get("message_id") or message.get("raw_message_id") or ""),
-        "sender": str(message.get("sender") or ""),
-        "time": str(message.get("time") or message.get("message_time") or message.get("observed_at") or ""),
-        "content": truncate_text(str(message.get("content") or ""), 600),
+        "id": str(
+            message.get("id")
+            or message.get("message_id")
+            or message.get("raw_message_id")
+            or message.get("message_event_id")
+            or ""
+        ),
+        "sender": str(message.get("sender") or message.get("sender_role") or ""),
+        "time": str(
+            message.get("time")
+            or message.get("message_time")
+            or message.get("observed_at")
+            or message.get("occurred_at")
+            or ""
+        ),
+        "content": truncate_text(
+            str(message.get("semantic_text") or message.get("content") or ""),
+            600,
+        ),
     }
 
 

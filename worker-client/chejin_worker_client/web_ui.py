@@ -43,7 +43,7 @@ from .ui_state_mapping import runtime_process_screen, runtime_step_title
 
 WINDOW_WIDTH = 316
 WINDOW_HEIGHT = 628
-CLIENT_VERSION = f"V{__version__} · Worker C2/C3 客户端"
+CLIENT_VERSION = f"V{__version__}"
 TITLEBAR_HEIGHT = 28
 WINDOW_CONTROL_WIDTH = 90
 WINDOW_RADIUS = 10
