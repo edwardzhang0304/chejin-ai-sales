@@ -16324,6 +16324,21 @@ class TaskRunnerTest(unittest.TestCase):
             ),
             (True, "handoff", None),
         )
+        self.assertEqual(
+            TaskRunner._conversation_flow_outcome(
+                {
+                    "ok": True,
+                    "batch": {
+                        "status": "failed",
+                        "decision": "retry_later",
+                        "error_code": "AI_CONTEXT_BUILD_FAILED",
+                    },
+                    "sent": False,
+                },
+                had_message_batch=True,
+            ),
+            (True, "retry_later", None),
+        )
 
     def test_c2_text_noise_does_not_trigger_voice_transcribe(self):
         api = FakeApi(None)

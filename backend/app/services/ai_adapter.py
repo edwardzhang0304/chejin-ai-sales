@@ -294,6 +294,36 @@ class RealOmniAutoAIEngineAdapter:
             ) from exc
 
     @staticmethod
+    def _load_context_bridge():
+        settings = get_settings()
+        default_root = Path(__file__).resolve().parents[3] / "worker-client" / "omniauto-rpa"
+        root = Path(
+            getattr(settings, "c3_omniauto_root", "") or default_root
+        ).expanduser().resolve()
+        app_root = root / "apps" / "wechat_ai_customer_service"
+        for path in reversed(
+            [root, app_root, app_root / "workflows", app_root / "adapters"]
+        ):
+            value = str(path)
+            if value not in sys.path:
+                sys.path.insert(0, value)
+        try:
+            module = importlib.import_module(
+                "apps.wechat_ai_customer_service.workflows.chejin_brain_context_bridge"
+            )
+            return module.build_chejin_brain_context
+        except Exception as exc:
+            raise AppError(
+                "AI_ENGINE_RUNTIME_IMPORT_FAILED",
+                "OmniAuto 车金上下文桥加载失败",
+                503,
+                {
+                    "exception_type": type(exc).__name__,
+                    "suggested_action": "check_omniauto_context_bridge",
+                },
+            ) from exc
+
+    @staticmethod
     def _load_config() -> dict:
         settings = get_settings()
         if not settings.c3_omniauto_config_path:
@@ -502,16 +532,56 @@ class RealOmniAutoAIEngineAdapter:
             return result
 
     def generate_reply_decision(self, *, conversation_context: dict, message_batch: dict) -> AIEngineDecision:
+        bridge = self._load_context_bridge()
+        messages = message_batch.get("messages") if isinstance(message_batch.get("messages"), list) else []
+        try:
+            bridged_context = bridge(
+                brain_context_snapshot=conversation_context.get(
+                    "brain_context_snapshot"
+                ),
+                current_batch=messages,
+                expected_conversation_id=str(
+                    conversation_context.get("conversation_id") or ""
+                ),
+            )
+        except Exception as exc:
+            raise AppError(
+                "AI_CONTEXT_BUILD_FAILED",
+                "后端冻结的 Brain 历史上下文无法通过唯一上下文桥",
+                409,
+                {
+                    "exception_type": type(exc).__name__,
+                    "reason": str(exc)[:128],
+                    "suggested_action": "repair_context_bridge_then_retry_same_batch",
+                },
+            ) from exc
+        # Context validity is a deterministic precondition.  Do not load the
+        # Brain runtime, configuration, credentials, or Provider path until
+        # the frozen MessageEvent snapshot has passed the sole bridge.
         self._load_brain()
         config = self._load_config()
         self._require_api_key(config)
-        messages = message_batch.get("messages") if isinstance(message_batch.get("messages"), list) else []
         combined = "\n".join(str(item.get("content") or "").strip() for item in messages).strip()
         target_name = str(conversation_context.get("remark_code") or conversation_context.get("conversation_id") or "customer")
         target_state = {
             "conversation_id": conversation_context.get("conversation_id"),
+            # This marker is independent of the projected payload on purpose:
+            # if a later refactor drops ``chejin_brain_context``, both normal
+            # and fast Brain paths must fail closed instead of reading
+            # RawMessageStore or silently using an empty history.
+            "history_authority": "chejin_message_events_v1",
+            "chejin_context_required": True,
             "customer_profile": conversation_context.get("customer_profile") or {},
-            "history": conversation_context.get("history") or [],
+            "conversation_context": dict(
+                bridged_context.get("conversation_context") or {}
+            ),
+            "conversation_strategy_state": dict(
+                bridged_context.get("conversation_strategy_state") or {}
+            ),
+            "conversation_interaction_state": dict(
+                bridged_context.get("conversation_interaction_state") or {}
+            ),
+            "chejin_brain_context": bridged_context,
             "visual_bridge_inputs": [
                 item.get("visual_bridge_input")
                 for item in messages

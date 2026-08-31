@@ -97,6 +97,21 @@ jobs:
             throw "Affected restart and fault-state tests failed"
           }
 
+      - name: Run affected Brain context and Provider-input tests
+        working-directory: .
+        shell: powershell
+        run: |
+          $ErrorActionPreference = "Stop"
+          $env:PYTHONPATH = "$PWD\worker-client;$PWD\backend"
+          python -m pytest backend/tests/test_c3_api.py backend/tests/test_c3_brain_context_bridge.py -q
+          if ($LASTEXITCODE -ne 0) {
+            throw "Affected Brain context bridge tests failed"
+          }
+          python worker-client\omniauto-rpa\apps\wechat_ai_customer_service\tests\run_customer_service_brain_contract_checks.py
+          if ($LASTEXITCODE -ne 0) {
+            throw "Brain Provider-input contract checks failed"
+          }
+
       - name: Run contract and packaging gates
         working-directory: worker-client
         shell: powershell
@@ -186,7 +201,7 @@ jobs:
       - name: Upload Fast UAT ZIP
         uses: actions/upload-artifact@v4
         with:
-          name: chejin-worker-fast-uat-v0.9.52-${{ github.sha }}
+          name: chejin-worker-fast-uat-v0.9.53-${{ github.sha }}
           path: worker-client/dist/fast-uat-release/chejin-worker-fast-uat-*.zip
           if-no-files-found: error
           retention-days: 14

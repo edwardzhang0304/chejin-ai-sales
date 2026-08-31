@@ -169,7 +169,8 @@ class UiContractTest(unittest.TestCase):
 
         self.assertIn("QWebEngineView", web_ui)
         self.assertIn("QWebChannel", web_ui)
-        self.assertIn('CLIENT_VERSION = f"V{__version__} · Worker C2/C3 客户端"', web_ui)
+        self.assertIn('CLIENT_VERSION = f"V{__version__}"', web_ui)
+        self.assertNotIn("Worker C2/C3 客户端", web_ui)
         self.assertIn(
             "本地已停止接收新工作，当前客户继续安全处理；后端暂停状态正在重试同步。",
             web_ui,
@@ -286,7 +287,8 @@ class UiContractTest(unittest.TestCase):
         web_ui = (ROOT / "chejin_worker_client" / "web_ui.py").read_text(encoding="utf-8")
 
         self.assertIn("from . import __version__", web_ui)
-        self.assertIn('CLIENT_VERSION = f"V{__version__} · Worker C2/C3 客户端"', web_ui)
+        self.assertIn('CLIENT_VERSION = f"V{__version__}"', web_ui)
+        self.assertNotIn("Worker C2/C3 客户端", web_ui)
         self.assertNotIn('CLIENT_VERSION = "V16.', web_ui)
 
     def test_incident_evidence_controls_and_log_fields_are_visible(self):
