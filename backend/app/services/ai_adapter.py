@@ -365,10 +365,22 @@ class RealOmniAutoAIEngineAdapter:
         messages = message_batch.get("messages") if isinstance(message_batch.get("messages"), list) else []
         combined = "\n".join(str(item.get("content") or "").strip() for item in messages).strip()
         target_name = str(conversation_context.get("remark_code") or conversation_context.get("conversation_id") or "customer")
+        raw_history = (
+            conversation_context.get("history")
+            if isinstance(conversation_context.get("history"), list)
+            else []
+        )
+        history = [dict(item) for item in raw_history if isinstance(item, dict)]
         target_state = {
             "conversation_id": conversation_context.get("conversation_id"),
             "customer_profile": conversation_context.get("customer_profile") or {},
-            "history": conversation_context.get("history") or [],
+            "history": history,
+            # C3 owns message history in public.message_events. Keep an
+            # OmniAuto-compatible ledger projection for vision/context helpers
+            # without writing a second history store during Brain generation.
+            "conversation_context": {
+                "ledger_recent_messages": history,
+            },
             "visual_bridge_inputs": [
                 item.get("visual_bridge_input")
                 for item in messages
