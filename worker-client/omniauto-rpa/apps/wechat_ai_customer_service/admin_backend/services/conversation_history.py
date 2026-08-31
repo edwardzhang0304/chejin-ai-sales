@@ -38,9 +38,14 @@ class ConversationHistoryAssembler:
         self.char_budget = max(500, char_budget)
         self.max_messages = max(1, max_messages)
 
-    def assemble(self, *, current_batch: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+    def assemble(
+        self,
+        *,
+        current_batch: list[dict[str, Any]] | None = None,
+        history_messages: list[dict[str, Any]] | None = None,
+    ) -> dict[str, Any]:
         """Return full history context package."""
-        rounds = self._load_rounds()
+        rounds = self._load_rounds(history_messages=history_messages)
         history_text = self._format_rounds(rounds)
         current = self._format_current_batch(current_batch or [])
         return {
@@ -52,22 +57,30 @@ class ConversationHistoryAssembler:
             "rounds": rounds,
         }
 
-    def _load_rounds(self) -> list[dict[str, Any]]:
+    def _load_rounds(self, *, history_messages: list[dict[str, Any]] | None = None) -> list[dict[str, Any]]:
         """Load messages from store and group into rounds."""
-        if not self.conversation_id:
-            return []
-        try:
-            messages = RawMessageStore().list_messages(
-                conversation_id=self.conversation_id,
-                limit=self.max_messages,
-            )
-        except Exception:
-            return []
+        if history_messages is not None:
+            messages = [dict(item) for item in history_messages if isinstance(item, dict)]
+        else:
+            if not self.conversation_id:
+                return []
+            try:
+                messages = RawMessageStore().list_messages(
+                    conversation_id=self.conversation_id,
+                    limit=self.max_messages,
+                )
+            except Exception:
+                return []
 
         # Sort chronologically (oldest first)
         messages = sorted(
             [m for m in messages if isinstance(m, dict)],
-            key=lambda m: str(m.get("observed_at") or m.get("message_time") or ""),
+            key=lambda m: str(
+                m.get("observed_at")
+                or m.get("message_time")
+                or m.get("occurred_at")
+                or ""
+            ),
         )
 
         # Group consecutive messages by same sender into rounds
@@ -85,7 +98,12 @@ class ConversationHistoryAssembler:
                 rounds.append({
                     "sender": sender,
                     "content": content,
-                    "time": str(msg.get("message_time") or msg.get("observed_at") or ""),
+                    "time": str(
+                        msg.get("message_time")
+                        or msg.get("observed_at")
+                        or msg.get("occurred_at")
+                        or ""
+                    ),
                     "sender_role": str(msg.get("sender_role") or ""),
                 })
 
@@ -115,9 +133,15 @@ class ConversationHistoryAssembler:
                 continue
             # Map sender_role to label
             role = str(r.get("sender_role") or "")
-            if role == "self" or sender == "self":
+            if role in {"self", "sales", "assistant", "agent", "outbound"} or sender in {
+                "self",
+                "sales",
+                "assistant",
+                "agent",
+                "outbound",
+            }:
                 label = "客服"
-            elif role == "bot":
+            elif role == "bot" or sender == "bot":
                 label = "AI客服"
             else:
                 label = sender or "客户"
@@ -146,6 +170,7 @@ def assemble_conversation_history(
     current_batch: list[dict[str, Any]] | None = None,
     customer_summary: str = "",
     config: dict[str, Any] | None = None,
+    history_messages: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """High-level helper: assemble three-layer context for LLM prompt.
 
@@ -166,7 +191,10 @@ def assemble_conversation_history(
         max_rounds=max_rounds,
         char_budget=char_budget,
     )
-    result = assembler.assemble(current_batch=current_batch or [])
+    result = assembler.assemble(
+        current_batch=current_batch or [],
+        history_messages=history_messages,
+    )
 
     summary = str(customer_summary or "").strip()
     history_text = result["history_text"]

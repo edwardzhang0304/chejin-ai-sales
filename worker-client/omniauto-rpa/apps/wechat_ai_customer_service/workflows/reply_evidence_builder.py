@@ -48,6 +48,25 @@ AI_EXPERIENCE_REFERENCE_SOURCE_TYPES = {
     "chat_log",
     "upload",
 }
+
+
+def _transport_history_from_raw_capture(raw_capture: dict[str, Any]) -> list[dict[str, Any]] | None:
+    """Read an already-authoritative history projection from an adapter.
+
+    C3 stores conversation history in its own MessageEvent ledger. The legacy
+    OmniAuto path stores it in RawMessageStore, so the C3 adapter supplies this
+    additive transport projection to avoid a second write just for prompting.
+    """
+
+    capture = raw_capture if isinstance(raw_capture, dict) else {}
+    conversation = capture.get("conversation") if isinstance(capture.get("conversation"), dict) else {}
+    missing = object()
+    history = conversation.get("history", missing)
+    if history is missing:
+        history = capture.get("history", missing)
+    if history is missing:
+        return None
+    return [dict(item) for item in history if isinstance(item, dict)] if isinstance(history, list) else []
 AI_EXPERIENCE_RUNTIME_RISK_TERMS = {
     "最低价",
     "保证",
@@ -443,6 +462,7 @@ def build_reply_evidence_pack(
 ) -> dict[str, Any]:
     settings = config.get("llm_reply_synthesis", {}) or {}
     context = dict(target_state.get("conversation_context", {}) or {})
+    transport_history = _transport_history_from_raw_capture(raw_capture)
     try:
         knowledge_pack = build_evidence_pack(combined, context=context)
         knowledge_error = ""
@@ -471,6 +491,7 @@ def build_reply_evidence_pack(
         batch=batch,
         max_messages=int(settings.get("max_history_messages", DEFAULT_MAX_HISTORY_MESSAGES) or DEFAULT_MAX_HISTORY_MESSAGES),
         char_budget=int(settings.get("history_char_budget", DEFAULT_HISTORY_CHAR_BUDGET) or DEFAULT_HISTORY_CHAR_BUDGET),
+        history_messages=transport_history,
     )
 
     history_text_pack = assemble_conversation_history(
@@ -478,6 +499,7 @@ def build_reply_evidence_pack(
         conversation_id=raw_conversation_id(raw_capture),
         current_batch=batch,
         config=config,
+        history_messages=transport_history,
     )
     if settings.get("foreground_realtime"):
         history_text_pack = dict(history_text_pack)
@@ -556,17 +578,24 @@ def recent_history(
     batch: list[dict[str, Any]],
     max_messages: int,
     char_budget: int,
+    history_messages: list[dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
-    conversation_id = raw_conversation_id(raw_capture)
-    messages: list[dict[str, Any]] = []
-    if conversation_id:
-        try:
-            messages = RawMessageStore().list_messages(conversation_id=conversation_id, limit=max_messages)
-        except Exception:
-            messages = []
-    if not messages:
-        messages = list(batch)
-    compacted = [compact_message(item) for item in reversed(messages[:max_messages])]
+    if history_messages is not None:
+        # C3 sends chronological MessageEvent history. It is authoritative for
+        # this request and must win over a stale/empty legacy store.
+        messages = list(history_messages)[-max_messages:]
+        compacted = [compact_message(item) for item in messages]
+    else:
+        conversation_id = raw_conversation_id(raw_capture)
+        messages = []
+        if conversation_id:
+            try:
+                messages = RawMessageStore().list_messages(conversation_id=conversation_id, limit=max_messages)
+            except Exception:
+                messages = []
+        if not messages:
+            messages = list(batch)
+        compacted = [compact_message(item) for item in reversed(messages[:max_messages])]
     return trim_history(compacted, char_budget=max(500, char_budget))
 
 
@@ -578,8 +607,14 @@ def raw_conversation_id(raw_capture: dict[str, Any]) -> str:
 def compact_message(message: dict[str, Any]) -> dict[str, Any]:
     return {
         "id": str(message.get("id") or message.get("message_id") or message.get("raw_message_id") or ""),
-        "sender": str(message.get("sender") or ""),
-        "time": str(message.get("time") or message.get("message_time") or message.get("observed_at") or ""),
+        "sender": str(message.get("sender") or message.get("sender_role") or ""),
+        "time": str(
+            message.get("time")
+            or message.get("message_time")
+            or message.get("occurred_at")
+            or message.get("observed_at")
+            or ""
+        ),
         "content": truncate_text(str(message.get("content") or ""), 600),
     }
 
