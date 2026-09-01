@@ -11,6 +11,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from types import SimpleNamespace
 import sys
+from PIL import Image
 from sqlalchemy import select
 
 from app.contracts.c2 import c2_contract_v3, contract_revision, contract_sha256
@@ -42,7 +43,17 @@ from app.models.base import utcnow
 WORKER_CLIENT_ROOT = Path(__file__).resolve().parents[2] / "worker-client"
 if str(WORKER_CLIENT_ROOT) not in sys.path:
     sys.path.insert(0, str(WORKER_CLIENT_ROOT))
+OMNIAUTO_ROOT = WORKER_CLIENT_ROOT / "omniauto-rpa"
+if str(OMNIAUTO_ROOT) not in sys.path:
+    sys.path.insert(0, str(OMNIAUTO_ROOT))
 
+from apps.wechat_ai_customer_service.adapters.wechat_win32_ocr_sidecar import (
+    build_message_observations_v3,
+    build_send_context_guard,
+    parse_messages_from_ocr,
+)
+import apps.wechat_ai_customer_service.adapters.wechat_win32_ocr_sidecar as wechat_sidecar
+from chejin_worker_client.models import WechatReadTarget
 from chejin_worker_client.pre_send_checkpoint import (
     checkpoint_binding_error as worker_checkpoint_binding_error,
     compare_checkpoint_to_observations as worker_compare_checkpoint,
@@ -50,11 +61,13 @@ from chejin_worker_client.pre_send_checkpoint import (
 from chejin_worker_client.message_identity_commit import (
     MessageCommitBasis,
     committed_identity_record,
+    require_committed_message,
 )
 from chejin_worker_client.message_viewport_projection import (
     boundary_tokens_for_observations,
     normalized_business_message_sequence,
 )
+from chejin_worker_client.wechat_c2 import build_message_ingest_payload
 
 
 client = TestClient(app)
@@ -1591,6 +1604,316 @@ def test_message_event_history_reaches_real_provider_input_once(
     assert brain_input["runtime"]["conversation_interaction_state"][
         "unanswered_exists"
     ] is True
+
+
+def test_v0957_raw_multiline_ocr_reaches_database_and_brain_once(
+    monkeypatch,
+):
+    """Raw OCR -> Sidecar -> Worker -> HTTP -> DB -> real Brain input."""
+
+    worker, binding_payload = _setup_bound_conversation()
+    screenshot = Image.new("RGB", (980, 1080), "white")
+    rows = [
+        {
+            "text": "你不用帮我找你库里有的，我是要你给我根据市场的",
+            "confidence": 0.998,
+            "left": 431,
+            "right": 833,
+            "top": 778,
+            "bottom": 798,
+            "center_x": 632,
+            "center_y": 788,
+        },
+        {
+            "text": "公开信息，找几款合适的型号推给我，不要反复问重",
+            "confidence": 0.997,
+            "left": 429,
+            "right": 834,
+            "top": 802,
+            "bottom": 822,
+            "center_x": 631.5,
+            "center_y": 812,
+        },
+        {
+            "text": "复的问题",
+            "confidence": 1.0,
+            "left": 427,
+            "right": 504,
+            "top": 824,
+            "bottom": 848,
+            "center_x": 465.5,
+            "center_y": 836,
+        },
+    ]
+    expected_content = "\n".join(str(row["text"]) for row in rows)
+
+    original_classifier = wechat_sidecar.classify_message_side_details
+
+    def weak_geometry_role(item, **kwargs):
+        if str(item.get("text") or "").startswith("公开信息"):
+            return {
+                "side": "self",
+                "confidence": 0.55,
+                "algorithm": "wechat_win32_bubble_role_v2",
+                "evidence": ["forced_weak_self_for_v0957_e2e"],
+            }
+        return original_classifier(item, **kwargs)
+
+    def avatar_role_for_row(_image, bounds, _image_size, **_kwargs):
+        if int(bounds[1]) == 778:
+            return {
+                "role": "customer",
+                "source": "wechat_avatar_row_structure_v2",
+                "customer": {
+                    "present": True,
+                    "foreground_bounds": [397, 775, 427, 805],
+                },
+                "self": {"present": False, "foreground_bounds": []},
+                "ambiguous": False,
+            }
+        return {
+            "role": "",
+            "source": "",
+            "customer": {"present": False, "foreground_bounds": []},
+            "self": {"present": False, "foreground_bounds": []},
+            "ambiguous": False,
+        }
+
+    monkeypatch.setattr(
+        wechat_sidecar,
+        "classify_message_side_details",
+        weak_geometry_role,
+    )
+    monkeypatch.setattr(
+        wechat_sidecar,
+        "message_row_avatar_role_details",
+        avatar_role_for_row,
+    )
+    parsed = parse_messages_from_ocr(
+        rows,
+        screenshot.size,
+        target=binding_payload["remark_code"],
+        screenshot=screenshot,
+        layout_snapshot={
+            "valid": True,
+            "layout_snapshot_id": "layout-v0957-multiline-e2e",
+            "message_viewport_bounds": [392, 129, 980, 864],
+            "input_bounds": [397, 872, 886, 984],
+        },
+    )
+    assert len(parsed) == 1
+    assert parsed[0]["sender_role"] == "customer"
+    assert parsed[0]["content"] == expected_content
+    assert parsed[0]["content_raw_ocr"] == expected_content
+
+    observations = build_message_observations_v3(parsed)
+    assert len(observations) == 1
+    observation = observations[0]
+    assert observation["sender_role_source"] == "same_row_avatar"
+    stable_id = "worker-message-1"
+    observation.update(
+        {
+            "_worker_stable_id": stable_id,
+            "_worker_identity_scope": "committed",
+        }
+    )
+    observation["_worker_committed_message"] = committed_identity_record(
+        worker_stable_id=stable_id,
+        commit_basis=MessageCommitBasis.NEW_SUFFIX,
+        observation_id=observation["observation_id"],
+        sender_role="customer",
+        message_type="text",
+        proof={
+            "alignment_status": "not_required",
+            "old_tail_fully_consumed": True,
+            "new_suffix_observation_id": observation["observation_id"],
+        },
+    )
+
+    with SessionLocal() as db:
+        binding = db.get(WechatSessionBinding, binding_payload["id"])
+        authorization_revision = _authorization_revision(binding)
+        unread_generation = int(binding.unread_generation or 0)
+        durable_source_key = require_committed_message(
+            conversation_id=binding.conversation_id,
+            observation=observation,
+        ).source_message_key
+    target = WechatReadTarget(
+        conversation_id=binding_payload["conversation_id"],
+        remark_code=binding_payload["remark_code"],
+        rpa_session_key=binding_payload["rpa_session_key"],
+        display_name=binding_payload["remark_code"],
+        read_reason="waiting_sales_reply",
+        authorization_revision=authorization_revision,
+        unread_generation=unread_generation,
+        raw={
+            "authorization_read_reason": "waiting_sales_reply",
+            "unread_generation": unread_generation,
+            "consumed_unread_generation": 0,
+        },
+    )
+    read_run_id = "read-v0957-multiline-e2e"
+    guard = build_send_context_guard(
+        [observation],
+        layout_evidence={
+            "ok": True,
+            "layout_snapshot_id": "layout-v0957-multiline-e2e",
+            "chat_header_bounds": [392, 0, 980, 120],
+            "message_viewport_bounds": [392, 129, 980, 864],
+            "input_bounds": [397, 872, 886, 984],
+        },
+    )
+    worker_payload = build_message_ingest_payload(
+        target,
+        {
+            "ok": True,
+            "contract_revision": contract_revision(),
+            "contract_sha256": contract_sha256(),
+            "observation_schema_version": int(
+                c2_contract_v3()["observation_schema_version"]
+            ),
+            "authoritative_frame_source": "final_read",
+            "tail_complete": True,
+            "send_context_guard": guard,
+            "observations": observations,
+            "slot_ledger_states": [
+                {
+                    "observation_id": observation["observation_id"],
+                    "screen_order": 1,
+                    "order_source": "observation_index_fallback",
+                    "row_kind": "text_bubble",
+                    "source_message_key": durable_source_key,
+                    "origin_read_run_id": read_run_id,
+                    "fact_scope": "current_read_run",
+                    "delivery_state": "not_enqueued",
+                    "item_state": "completed",
+                }
+            ],
+            "sequence_alignment_evidence": {
+                "pre_sequence_source": "empty_checkpoint",
+                "pre_frame_id": (
+                    f"checkpoint:none:{binding_payload['conversation_id']}"
+                ),
+                "post_frame_id": f"frame:{read_run_id}",
+                "alignment_status": "not_required",
+                "candidate_alignment_count": 0,
+                "matched_pairs": [],
+                "old_tail_fully_consumed": True,
+                "new_suffix_observation_ids": [
+                    observation["observation_id"]
+                ],
+            },
+        },
+        read_run_id=read_run_id,
+    )
+    assert len(worker_payload["messages"]) == 1
+    ingest = client.post(
+        f"/api/workers/{worker['id']}/wechat/messages/ingest",
+        json=worker_payload,
+        headers=_worker_headers(worker),
+    )
+    assert ingest.status_code == 200, ingest.text
+    event_id = ingest.json()["data"]["results"][0]["message_event_id"]
+
+    with SessionLocal() as db:
+        events = db.scalars(
+            select(MessageEvent).where(
+                MessageEvent.conversation_id
+                == binding_payload["conversation_id"]
+            )
+        ).all()
+        assert len(events) == 1
+        assert events[0].sender_role == "customer"
+        assert events[0].content == expected_content
+
+    batch_id = _collect(binding_payload["conversation_id"], event_id)[
+        "batch_id"
+    ]
+    with SessionLocal() as db:
+        batch = db.get(MessageBatch, batch_id)
+        binding = db.get(WechatSessionBinding, binding_payload["id"])
+        conversation = db.get(Conversation, binding.conversation_id)
+        context = c3_service._build_ai_context(
+            db,
+            binding,
+            conversation,
+            batch,
+        )
+
+    omniauto_root = (
+        Path(__file__).resolve().parents[2]
+        / "worker-client"
+        / "omniauto-rpa"
+    )
+    monkeypatch.setenv("C3_OMNIAUTO_ROOT", str(omniauto_root))
+    monkeypatch.setattr(
+        "app.services.ai_adapter.get_settings",
+        lambda: SimpleNamespace(
+            c3_omniauto_root=str(omniauto_root),
+            c3_brain_provider_timeout_seconds=10.0,
+        ),
+    )
+    adapter = RealOmniAutoAIEngineAdapter()
+    monkeypatch.setattr(
+        adapter,
+        "_load_config",
+        lambda: {
+            "customer_service_brain": {
+                "enabled": True,
+                "mode": "brain_first",
+                "provider": "manual_json",
+                "api_key": "test-only-manual-provider",
+                "brain_plan": {
+                    "schema_version": 1,
+                    "recommended_action": "send_reply",
+                    "reply_segments": ["我已经收到您的完整需求。"],
+                    "confidence": 0.9,
+                    "risk_flags": [],
+                    "evidence_refs": [],
+                    "facts_claimed": [],
+                },
+                "min_confidence": 0.2,
+                "require_evidence": False,
+                "include_brain_input_in_audit": True,
+                "quality_verifier_enabled": False,
+                "semantic_reviewer_enabled": False,
+                "fallback_to_legacy_on_error": False,
+            },
+            "llm_reply_synthesis": {
+                "enabled": True,
+                "provider": "manual_json",
+            },
+            "raw_message_store": {"enabled": False},
+            "final_visible_llm_polish": {"enabled": False},
+        },
+    )
+    decision = _generate_reply_decision_with_isolated_failure_evidence(
+        adapter,
+        conversation_context={
+            **context["conversation"],
+            "brain_context_snapshot": context["brain_context_snapshot"],
+        },
+        message_batch={
+            "id": batch_id,
+            "messages": context["messages"],
+            "trigger_type": "customer_message",
+        },
+    )
+    brain_input = decision.raw_payload["omniauto_brain_result"]["brain_input"]
+    expected_brain_content = " ".join(str(row["text"]) for row in rows)
+    assert brain_input["conversation"]["current_batch_text"] == (
+        f"客户：{expected_brain_content}"
+    )
+    brain_module = importlib.import_module(
+        "apps.wechat_ai_customer_service.workflows.customer_service_brain"
+    )
+    prompt = brain_module.build_brain_prompt_pack(
+        settings={},
+        brain_input=brain_input,
+    )
+    assert brain_module.build_brain_user_content(prompt).count(
+        expected_brain_content
+    ) == 1
 
 
 def test_message_event_history_reaches_auto_routine_product_fast_provider(

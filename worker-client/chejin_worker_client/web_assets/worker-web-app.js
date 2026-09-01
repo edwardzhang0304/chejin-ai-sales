@@ -24,9 +24,9 @@ var __toESM = (mod, isNodeMode, target) => (target = mod != null ? __create(__ge
   mod
 ));
 
-// frontend/node_modules/react/cjs/react.development.js
+// ../../../Users/zhangwentao/Documents/车金/frontend/node_modules/react/cjs/react.development.js
 var require_react_development = __commonJS({
-  "frontend/node_modules/react/cjs/react.development.js"(exports, module) {
+  "../../../Users/zhangwentao/Documents/\u8F66\u91D1/frontend/node_modules/react/cjs/react.development.js"(exports, module) {
     "use strict";
     (function() {
       function defineDeprecationWarning(methodName, info) {
@@ -996,9 +996,9 @@ var require_react_development = __commonJS({
   }
 });
 
-// frontend/node_modules/react/index.js
+// ../../../Users/zhangwentao/Documents/车金/frontend/node_modules/react/index.js
 var require_react = __commonJS({
-  "frontend/node_modules/react/index.js"(exports, module) {
+  "../../../Users/zhangwentao/Documents/\u8F66\u91D1/frontend/node_modules/react/index.js"(exports, module) {
     "use strict";
     if (false) {
       module.exports = null;
@@ -1008,9 +1008,9 @@ var require_react = __commonJS({
   }
 });
 
-// frontend/node_modules/scheduler/cjs/scheduler.development.js
+// ../../../Users/zhangwentao/Documents/车金/frontend/node_modules/scheduler/cjs/scheduler.development.js
 var require_scheduler_development = __commonJS({
-  "frontend/node_modules/scheduler/cjs/scheduler.development.js"(exports) {
+  "../../../Users/zhangwentao/Documents/\u8F66\u91D1/frontend/node_modules/scheduler/cjs/scheduler.development.js"(exports) {
     "use strict";
     (function() {
       function performWorkUntilDeadline() {
@@ -1267,9 +1267,9 @@ var require_scheduler_development = __commonJS({
   }
 });
 
-// frontend/node_modules/scheduler/index.js
+// ../../../Users/zhangwentao/Documents/车金/frontend/node_modules/scheduler/index.js
 var require_scheduler = __commonJS({
-  "frontend/node_modules/scheduler/index.js"(exports, module) {
+  "../../../Users/zhangwentao/Documents/\u8F66\u91D1/frontend/node_modules/scheduler/index.js"(exports, module) {
     "use strict";
     if (false) {
       module.exports = null;
@@ -1279,9 +1279,9 @@ var require_scheduler = __commonJS({
   }
 });
 
-// frontend/node_modules/react-dom/cjs/react-dom.development.js
+// ../../../Users/zhangwentao/Documents/车金/frontend/node_modules/react-dom/cjs/react-dom.development.js
 var require_react_dom_development = __commonJS({
-  "frontend/node_modules/react-dom/cjs/react-dom.development.js"(exports) {
+  "../../../Users/zhangwentao/Documents/\u8F66\u91D1/frontend/node_modules/react-dom/cjs/react-dom.development.js"(exports) {
     "use strict";
     (function() {
       function noop() {
@@ -1523,9 +1523,9 @@ var require_react_dom_development = __commonJS({
   }
 });
 
-// frontend/node_modules/react-dom/index.js
+// ../../../Users/zhangwentao/Documents/车金/frontend/node_modules/react-dom/index.js
 var require_react_dom = __commonJS({
-  "frontend/node_modules/react-dom/index.js"(exports, module) {
+  "../../../Users/zhangwentao/Documents/\u8F66\u91D1/frontend/node_modules/react-dom/index.js"(exports, module) {
     "use strict";
     if (false) {
       checkDCE();
@@ -1536,9 +1536,9 @@ var require_react_dom = __commonJS({
   }
 });
 
-// frontend/node_modules/react-dom/cjs/react-dom-client.development.js
+// ../../../Users/zhangwentao/Documents/车金/frontend/node_modules/react-dom/cjs/react-dom-client.development.js
 var require_react_dom_client_development = __commonJS({
-  "frontend/node_modules/react-dom/cjs/react-dom-client.development.js"(exports) {
+  "../../../Users/zhangwentao/Documents/\u8F66\u91D1/frontend/node_modules/react-dom/cjs/react-dom-client.development.js"(exports) {
     "use strict";
     (function() {
       function findHook(fiber, id) {
@@ -21435,9 +21435,9 @@ var require_react_dom_client_development = __commonJS({
   }
 });
 
-// frontend/node_modules/react-dom/client.js
+// ../../../Users/zhangwentao/Documents/车金/frontend/node_modules/react-dom/client.js
 var require_client = __commonJS({
-  "frontend/node_modules/react-dom/client.js"(exports, module) {
+  "../../../Users/zhangwentao/Documents/\u8F66\u91D1/frontend/node_modules/react-dom/client.js"(exports, module) {
     "use strict";
     if (false) {
       checkDCE();
@@ -21448,9 +21448,9 @@ var require_client = __commonJS({
   }
 });
 
-// frontend/node_modules/react/cjs/react-jsx-runtime.development.js
+// ../../../Users/zhangwentao/Documents/车金/frontend/node_modules/react/cjs/react-jsx-runtime.development.js
 var require_react_jsx_runtime_development = __commonJS({
-  "frontend/node_modules/react/cjs/react-jsx-runtime.development.js"(exports) {
+  "../../../Users/zhangwentao/Documents/\u8F66\u91D1/frontend/node_modules/react/cjs/react-jsx-runtime.development.js"(exports) {
     "use strict";
     (function() {
       function getComponentNameFromType(type) {
@@ -21705,9 +21705,9 @@ var require_react_jsx_runtime_development = __commonJS({
   }
 });
 
-// frontend/node_modules/react/jsx-runtime.js
+// ../../../Users/zhangwentao/Documents/车金/frontend/node_modules/react/jsx-runtime.js
 var require_jsx_runtime = __commonJS({
-  "frontend/node_modules/react/jsx-runtime.js"(exports, module) {
+  "../../../Users/zhangwentao/Documents/\u8F66\u91D1/frontend/node_modules/react/jsx-runtime.js"(exports, module) {
     "use strict";
     if (false) {
       module.exports = null;
@@ -22280,6 +22280,20 @@ function EnvironmentIssueScreen({
     /* @__PURE__ */ (0, import_jsx_runtime.jsx)(Dock, { state: "\u6682\u505C\u63A5\u5355", disabled: true })
   ] }) });
 }
+function ClientFaultedScreen({ model }) {
+  return /* @__PURE__ */ (0, import_jsx_runtime.jsx)("section", { className: "cw-screen screen active", "data-screen-view": "client-faulted", children: /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { className: "cw-workspace workspace", children: [
+    /* @__PURE__ */ (0, import_jsx_runtime.jsx)("header", { className: "cw-workspace-head workspace-head", children: /* @__PURE__ */ (0, import_jsx_runtime.jsx)(ConnectionLine, { model }) }),
+    /* @__PURE__ */ (0, import_jsx_runtime.jsx)(StatusSummary, { model }),
+    /* @__PURE__ */ (0, import_jsx_runtime.jsx)(
+      CurrentProcess,
+      {
+        message: model.task.metaText || "\u5BA2\u6237\u7AEF\u53D1\u751F\u6280\u672F\u6545\u969C\uFF0C\u5DF2\u505C\u6B62\u9886\u53D6\u65B0\u4EFB\u52A1\uFF1B\u6545\u969C\u8BC1\u636E\u5DF2\u4FDD\u7559\uFF0C\u8BF7\u67E5\u770B\u672C\u673A\u65E5\u5FD7\u3002",
+        state: "error"
+      }
+    ),
+    /* @__PURE__ */ (0, import_jsx_runtime.jsx)(Dock, { state: "\u6682\u505C\u63A5\u5355", disabled: true })
+  ] }) });
+}
 function SettingsScreen({ model, onScreenChange }) {
   return /* @__PURE__ */ (0, import_jsx_runtime.jsx)("section", { className: "cw-screen screen active", "data-screen-view": "settings", children: /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { className: "cw-settings-page", children: [
     /* @__PURE__ */ (0, import_jsx_runtime.jsx)("header", { className: "cw-workspace-head workspace-head", children: /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { children: [
@@ -22493,6 +22507,7 @@ function renderScreen(props) {
   }
   if (screen === "offline") return /* @__PURE__ */ (0, import_jsx_runtime.jsx)(OfflineScreen, { model });
   if (screen === "offline-empty") return /* @__PURE__ */ (0, import_jsx_runtime.jsx)(OfflineScreen, { model, hasCurrentOperation: false });
+  if (screen === "client-faulted") return /* @__PURE__ */ (0, import_jsx_runtime.jsx)(ClientFaultedScreen, { model });
   if (screen === "automation-unavailable") return /* @__PURE__ */ (0, import_jsx_runtime.jsx)(EnvironmentIssueScreen, { model, type: "automation" });
   if (screen === "wechat-disconnected") return /* @__PURE__ */ (0, import_jsx_runtime.jsx)(EnvironmentIssueScreen, { model, type: "wechat" });
   if (screen === "failed") return /* @__PURE__ */ (0, import_jsx_runtime.jsx)(TaskScreen, { screen, model, steps: model.failedSteps, statusText: "\u5931\u8D25", dockState: model.status.receiveState, onStartAccepting, onPauseAccepting });
@@ -22542,6 +22557,7 @@ var screens = [
   "paused-empty-2",
   "offline",
   "offline-empty",
+  "client-faulted",
   "automation-unavailable",
   "wechat-disconnected",
   "failed",

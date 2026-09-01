@@ -20136,6 +20136,10 @@ def parse_messages_from_ocr(
         ]
 
     grouped: list[list[dict[str, Any]]] = []
+    normalized_conversation_type = infer_conversation_type(target)
+    strict_private_text_grouping = bool(
+        normalized_conversation_type == "private" and screenshot is not None
+    )
     for item in sorted(rows, key=lambda row: (float(row["center_y"]), float(row["left"]))):
         side = str(item.get("side") or classify_message_side(item, width=width))
         if not grouped:
@@ -20150,16 +20154,89 @@ def parse_messages_from_ocr(
             parent_side = str(grouped[-1][0].get("side") or previous_side)
             grouped[-1].append({**item, "side": parent_side, "sender_role_evidence": evidence})
             continue
-        if side != "self" and previous_side == "self" and message_line_continues_previous_self_bubble(item, previous, vertical_gap):
+        current_avatar_role = frame_local_explicit_avatar_role(item)
+        group_anchor = frame_local_private_text_group_anchor(grouped[-1])
+        group_is_avatar_anchored_ordinary_text = bool(
+            group_anchor.get("ok") is True
+            and all(private_multiline_ordinary_text_item(candidate) for candidate in grouped[-1])
+        )
+        if (
+            strict_private_text_grouping
+            and group_is_avatar_anchored_ordinary_text
+            and current_avatar_role in {"self", "customer"}
+        ):
+            if (
+                group_anchor.get("ok") is True
+                and current_avatar_role == str(group_anchor.get("role") or "")
+                and same_frame_avatar_component(
+                    item.get("avatar_alignment"),
+                    group_anchor.get("avatar_alignment"),
+                    role=current_avatar_role,
+                )
+                and private_multiline_ordinary_text_item(item)
+                and message_line_continues_anchored_text_bubble(
+                    item,
+                    previous,
+                    vertical_gap,
+                    message_bounds=message_bounds,
+                )
+            ):
+                append_private_text_continuation(
+                    grouped[-1],
+                    item,
+                    anchor=group_anchor,
+                    duplicate_avatar_observation=True,
+                )
+            else:
+                grouped.append([{**item, "side": current_avatar_role}])
+            continue
+        if (
+            strict_private_text_grouping
+            and group_is_avatar_anchored_ordinary_text
+            and private_multiline_ordinary_text_item(item)
+            and message_line_continues_anchored_text_bubble(
+                item,
+                previous,
+                vertical_gap,
+                message_bounds=message_bounds,
+            )
+        ):
+            append_private_text_continuation(
+                grouped[-1],
+                item,
+                anchor=group_anchor,
+            )
+            continue
+        if (
+            strict_private_text_grouping
+            and group_is_avatar_anchored_ordinary_text
+        ):
+            # Any row may join an avatar-anchored ordinary-text group only
+            # through an earlier type-specific rule.  Falling through to the
+            # legacy same-side/self heuristics would silently create a second
+            # and weaker grouping algorithm for text, media, cards or system
+            # rows.
+            grouped.append([{**item, "side": side}])
+            continue
+        if (
+            screenshot is None
+            and side != "self"
+            and previous_side == "self"
+            and message_line_continues_previous_self_bubble(item, previous, vertical_gap)
+        ):
+            # Preserve the pre-0.9.57 screenshot-free parser compatibility
+            # surface for every legacy caller, including callers that cannot
+            # reliably declare a conversation type without a frame. Formal C2
+            # reads always carry a screenshot and therefore can enter the rule
+            # only through the explicit-avatar branches above.
             evidence = list(item.get("sender_role_evidence") or [])
-            evidence.append("self_continuation_from_previous_line")
+            evidence.append("legacy_screenshot_free_self_continuation")
             grouped[-1].append({**item, "side": "self", "sender_role_evidence": evidence})
             continue
         previous_height = max(1.0, float(previous.get("bottom") or 0) - float(previous.get("top") or 0))
         item_height = max(1.0, float(item.get("bottom") or 0) - float(item.get("top") or 0))
         same_bubble_line_gap = min(merge_vertical_gap, max(7.0, min(previous_height, item_height) * 0.45))
         previous_avatar_role = str((previous.get("avatar_alignment") or {}).get("role") or "")
-        current_avatar_role = str((item.get("avatar_alignment") or {}).get("role") or "")
         voice_transcript_continuation = bool(
             voice_duration_item_like(previous)
             and not voice_duration_item_like(item)
@@ -20236,6 +20313,15 @@ def parse_messages_from_ocr(
             ),
             group[0].get("avatar_alignment") if isinstance(group[0].get("avatar_alignment"), dict) else {},
         )
+        if strict_private_text_grouping and all(
+            private_multiline_ordinary_text_item(item) for item in group
+        ):
+            text_group_anchor = frame_local_private_text_group_anchor(group)
+            if text_group_anchor.get("ok") is not True:
+                continue
+            side = str(text_group_anchor.get("role") or "unknown")
+            sender, sender_role = sender_fields_for_message_side(side, target=target)
+            avatar_alignment = dict(text_group_anchor.get("avatar_alignment") or {})
         if screenshot is not None and str(avatar_alignment.get("role") or "") not in {"self", "customer"}:
             continue
         record = {
@@ -20300,17 +20386,201 @@ def classify_message_side(item: dict[str, Any], *, width: int) -> str:
     return str(classify_message_side_details(item, width=width).get("side") or "unknown")
 
 
-def message_line_continues_previous_self_bubble(item: dict[str, Any], previous: dict[str, Any], vertical_gap: float) -> bool:
+def frame_local_explicit_avatar_role(item: dict[str, Any]) -> str:
+    alignment = item.get("avatar_alignment") if isinstance(item.get("avatar_alignment"), dict) else {}
+    if alignment.get("ambiguous") is True:
+        return ""
+    role = str(alignment.get("role") or "").strip().lower()
+    return role if role in {"customer", "self"} else ""
+
+
+def frame_local_avatar_component_bounds(alignment: Any, *, role: str) -> list[float] | None:
+    item = alignment if isinstance(alignment, dict) else {}
+    role_evidence = item.get(role) if isinstance(item.get(role), dict) else {}
+    for value in (
+        role_evidence.get("foreground_bounds"),
+        role_evidence.get("component_bounds"),
+        item.get("component_bounds"),
+    ):
+        if isinstance(value, (list, tuple)) and len(value) >= 4:
+            bounds = [float(number) for number in value[:4]]
+            if bounds[2] > bounds[0] and bounds[3] > bounds[1]:
+                return bounds
+    return None
+
+
+def same_frame_avatar_component(first: Any, second: Any, *, role: str) -> bool:
+    left = first if isinstance(first, dict) else {}
+    right = second if isinstance(second, dict) else {}
+    for key in ("avatar_component_id", "component_id"):
+        left_id = str(left.get(key) or "").strip()
+        right_id = str(right.get(key) or "").strip()
+        if left_id or right_id:
+            return bool(left_id and right_id and left_id == right_id)
+    left_bounds = frame_local_avatar_component_bounds(left, role=role)
+    right_bounds = frame_local_avatar_component_bounds(right, role=role)
+    if left_bounds is None or right_bounds is None:
+        return False
+    return bool(
+        min(left_bounds[2], right_bounds[2]) > max(left_bounds[0], right_bounds[0])
+        and min(left_bounds[3], right_bounds[3]) > max(left_bounds[1], right_bounds[1])
+    )
+
+
+def frame_local_private_text_group_anchor(group: list[dict[str, Any]]) -> dict[str, Any]:
+    anchors = [
+        item
+        for item in group or []
+        if frame_local_explicit_avatar_role(item) in {"customer", "self"}
+    ]
+    if not anchors:
+        return {"ok": False, "reason": "explicit_avatar_missing"}
+    first = anchors[0]
+    role = frame_local_explicit_avatar_role(first)
+    first_alignment = first.get("avatar_alignment") if isinstance(first.get("avatar_alignment"), dict) else {}
+    for candidate in anchors[1:]:
+        candidate_role = frame_local_explicit_avatar_role(candidate)
+        candidate_alignment = candidate.get("avatar_alignment") if isinstance(candidate.get("avatar_alignment"), dict) else {}
+        if candidate_role != role:
+            return {"ok": False, "reason": "explicit_avatar_role_conflict"}
+        if not same_frame_avatar_component(
+            first_alignment,
+            candidate_alignment,
+            role=role,
+        ):
+            return {"ok": False, "reason": "multiple_avatar_components"}
+    return {
+        "ok": True,
+        "role": role,
+        "avatar_alignment": dict(first_alignment),
+        "sender_role_algorithm": str(first.get("sender_role_algorithm") or "wechat_avatar_row_structure_v2"),
+        "sender_role_confidence": float(first.get("sender_role_confidence") or 0.0),
+        "sender_role_evidence": list(first.get("sender_role_evidence") or []),
+    }
+
+
+def private_multiline_ordinary_text_item(item: dict[str, Any]) -> bool:
+    text = str(item.get("text") or "").strip()
+    if not text or is_message_noise(text):
+        return False
+    row_kind = str(item.get("row_kind") or "").strip().lower()
+    message_type = str(
+        item.get("message_type") or item.get("type") or item.get("content_type") or ""
+    ).strip().lower()
+    if row_kind and row_kind not in {"text", "text_bubble", "ordinary_text"}:
+        return False
+    if message_type and message_type not in {"text", "text_bubble", "ordinary_text"}:
+        return False
+    if any(
+        bool(item.get(key))
+        for key in (
+            "image_candidate",
+            "is_image_candidate",
+            "structural_image_candidate",
+            "is_file_card",
+            "is_quote_card",
+            "is_system_message",
+        )
+    ):
+        return False
+    if (
+        voice_duration_item_like(item)
+        or voice_transcribe_button_text_like(text)
+        or voice_transcribe_collapse_text_like(text)
+        or call_event_text_like(text)
+        or text in FILE_CARD_FOOTER_TEXTS
+        or bool(re.match(r"^\s*[\[【]?引用(?:\s|[:：])", text))
+    ):
+        return False
+    return True
+
+
+def message_line_continues_anchored_text_bubble(
+    item: dict[str, Any],
+    previous: dict[str, Any],
+    vertical_gap: float,
+    *,
+    message_bounds: list[int] | tuple[int, int, int, int] | None = None,
+) -> bool:
     if vertical_gap < -4.0:
         return False
-    previous_height = max(1.0, float(previous.get("bottom") or 0) - float(previous.get("top") or 0))
-    current_height = max(1.0, float(item.get("bottom") or 0) - float(item.get("top") or 0))
+    previous_height = max(
+        1.0,
+        float(previous.get("bottom") or 0) - float(previous.get("top") or 0),
+    )
+    current_height = max(
+        1.0,
+        float(item.get("bottom") or 0) - float(item.get("top") or 0),
+    )
     gap_limit = max(8.0, min(14.0, max(previous_height, current_height) * 0.65))
     if vertical_gap > gap_limit:
         return False
     previous_left = float(previous.get("left") or 0)
     current_left = float(item.get("left") or 0)
-    return abs(current_left - previous_left) <= 32.0
+    if abs(current_left - previous_left) > 32.0:
+        return False
+    if message_bounds is None:
+        return True
+    if not isinstance(message_bounds, (list, tuple)) or len(message_bounds) < 4:
+        return False
+    viewport_left, viewport_top, viewport_right, viewport_bottom = [float(value) for value in message_bounds[:4]]
+    for candidate in (previous, item):
+        if not (
+            viewport_left <= float(candidate.get("left") or 0) < float(candidate.get("right") or 0) <= viewport_right
+            and viewport_top <= float(candidate.get("top") or 0) < float(candidate.get("bottom") or 0) <= viewport_bottom
+        ):
+            return False
+    return True
+
+
+def message_line_continues_previous_self_bubble(
+    item: dict[str, Any],
+    previous: dict[str, Any],
+    vertical_gap: float,
+) -> bool:
+    """Backward-compatible name; all decisions use the role-neutral rule."""
+    return message_line_continues_anchored_text_bubble(item, previous, vertical_gap)
+
+
+def append_private_text_continuation(
+    group: list[dict[str, Any]],
+    item: dict[str, Any],
+    *,
+    anchor: dict[str, Any],
+    duplicate_avatar_observation: bool = False,
+) -> None:
+    role = str(anchor.get("role") or "")
+    anchor_evidence = list(anchor.get("sender_role_evidence") or [])
+    weak_geometry_role = str(item.get("side") or "").strip().lower()
+    for marker in (
+        "private_multiline_bubble_role_locked",
+        f"private_multiline_explicit_avatar_role={role}",
+        (
+            f"private_multiline_weak_geometry_disagrees={weak_geometry_role}"
+            if weak_geometry_role in {"customer", "self"} and weak_geometry_role != role
+            else ""
+        ),
+    ):
+        if marker and marker not in anchor_evidence:
+            anchor_evidence.append(marker)
+    group[0] = {
+        **group[0],
+        "side": role,
+        "sender_role_algorithm": str(anchor.get("sender_role_algorithm") or "wechat_avatar_row_structure_v2"),
+        "sender_role_confidence": float(anchor.get("sender_role_confidence") or 0.0),
+        "sender_role_evidence": anchor_evidence,
+    }
+    evidence = list(item.get("sender_role_evidence") or [])
+    evidence.extend(
+        marker
+        for marker in (
+            "private_multiline_continuation_inherits_explicit_avatar",
+            f"private_multiline_explicit_avatar_role={role}",
+            "duplicate_same_frame_avatar_observation" if duplicate_avatar_observation else "",
+        )
+        if marker and marker not in evidence
+    )
+    group.append({**item, "side": role, "sender_role_evidence": evidence})
 
 
 def message_line_continues_voice_transcript_group(

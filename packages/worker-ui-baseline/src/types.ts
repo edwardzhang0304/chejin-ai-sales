@@ -9,6 +9,7 @@ export type WorkerClientScreen =
   | "paused-empty-2"
   | "offline"
   | "offline-empty"
+  | "client-faulted"
   | "automation-unavailable"
   | "wechat-disconnected"
   | "failed"

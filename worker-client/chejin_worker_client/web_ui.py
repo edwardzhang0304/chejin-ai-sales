@@ -497,7 +497,7 @@ class WorkerWebWindow(QMainWindow):
         if self.active_page in {"settings", "schedule-settings", "logs"}:
             return self.active_page
         if self.binding.run_status == "faulted":
-            return "automation-unavailable"
+            return "client-faulted"
         if self.connection_status == "offline":
             has_local_process = bool(
                 self.current_task
@@ -624,10 +624,10 @@ class WorkerWebWindow(QMainWindow):
         if run_status == "faulted":
             model["statusText"] = "客户端故障"
             model["metaText"] = (
-                "本地已停止领取新任务；后端故障状态未同步时会自动重试，"
-                "但不会降级显示为普通暂停。"
+                "客户端发生技术故障，已停止领取新任务；故障证据已保留。"
+                "后端故障状态未同步时会自动重试。"
                 if self.runner.run_status_sync_error
-                else "客户端发生技术故障，已停止领取新任务。"
+                else "客户端发生技术故障，已停止领取新任务；故障证据已保留，请查看本机日志。"
             )
             return model
         if self.runner.run_status_sync_error and run_status == "paused":

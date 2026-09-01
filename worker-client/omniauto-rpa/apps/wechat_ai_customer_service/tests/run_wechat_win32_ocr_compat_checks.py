@@ -1375,6 +1375,294 @@ def test_parse_messages_from_ocr() -> None:
     assert_true(messages[0]["sender"] == "self", f"right-side message should be self: {messages}")
 
 
+def _v0957_text_row(
+    text: str,
+    *,
+    left: int,
+    right: int,
+    top: int,
+    bottom: int,
+    **extra: object,
+) -> dict[str, object]:
+    return {
+        "text": text,
+        "confidence": float(extra.pop("confidence", 0.99)),
+        "left": left,
+        "right": right,
+        "top": top,
+        "bottom": bottom,
+        "center_x": (left + right) / 2.0,
+        "center_y": (top + bottom) / 2.0,
+        **extra,
+    }
+
+
+def _v0957_avatar_alignment(role: str = "", *, bounds: list[int] | None = None) -> dict[str, object]:
+    customer = {"present": False, "foreground_bounds": []}
+    self_side = {"present": False, "foreground_bounds": []}
+    if role in {"customer", "self"}:
+        evidence = {
+            "present": True,
+            "foreground_bounds": list(bounds or ([400, 770, 430, 800] if role == "customer" else [900, 770, 930, 800])),
+        }
+        if role == "customer":
+            customer = evidence
+        else:
+            self_side = evidence
+    return {
+        "role": role,
+        "source": "wechat_avatar_row_structure_v2" if role else "",
+        "customer": customer,
+        "self": self_side,
+        "ambiguous": False,
+    }
+
+
+def _v0957_parse_private_rows(
+    rows: list[dict[str, object]],
+    *,
+    avatars_by_top: dict[int, dict[str, object]],
+    target: str = "CJMULTI1",
+) -> list[dict[str, object]]:
+    import apps.wechat_ai_customer_service.adapters.wechat_win32_ocr_sidecar as sidecar_mod
+
+    screenshot = Image.new("RGB", (980, 1080), "white")
+    layout_snapshot = _compat_layout_snapshot(screenshot.size)
+
+    def avatar_for_row(
+        _screenshot: object,
+        bounds: list[float],
+        _image_size: tuple[int, int],
+        **_kwargs: object,
+    ) -> dict[str, object]:
+        return dict(avatars_by_top.get(int(bounds[1]), _v0957_avatar_alignment()))
+
+    with patch.object(sidecar_mod, "message_row_avatar_role_details", side_effect=avatar_for_row):
+        return parse_messages_from_ocr(
+            rows,
+            screenshot.size,
+            target=target,
+            screenshot=screenshot,
+            layout_snapshot=layout_snapshot,
+        )
+
+
+def test_v0957_private_multiline_customer_uses_one_avatar_anchored_bubble() -> None:
+    import apps.wechat_ai_customer_service.adapters.wechat_win32_ocr_sidecar as sidecar_mod
+
+    rows = [
+        _v0957_text_row(
+            "你不用帮我找你库里有的，我是要你给我根据市场的",
+            left=431,
+            right=833,
+            top=778,
+            bottom=798,
+            confidence=0.998,
+        ),
+        _v0957_text_row(
+            "公开信息，找几款合适的型号推给我，不要反复问重",
+            left=429,
+            right=834,
+            top=802,
+            bottom=822,
+            confidence=0.997,
+        ),
+        _v0957_text_row("复的问题", left=427, right=504, top=824, bottom=848, confidence=1.0),
+    ]
+    original_classifier = sidecar_mod.classify_message_side_details
+    weak_geometry_conflicts: list[str] = []
+
+    def weak_geometry_can_disagree(item: dict[str, object], **kwargs: object) -> dict[str, object]:
+        if str(item.get("text") or "").startswith("公开信息"):
+            weak_geometry_conflicts.append(str(item.get("text") or ""))
+            return {
+                "side": "self",
+                "confidence": 0.55,
+                "algorithm": "wechat_win32_bubble_role_v2",
+                "evidence": ["forced_weak_self_for_v0957_regression"],
+            }
+        return original_classifier(item, **kwargs)
+
+    with patch.object(sidecar_mod, "classify_message_side_details", side_effect=weak_geometry_can_disagree):
+        messages = _v0957_parse_private_rows(
+            rows,
+            avatars_by_top={778: _v0957_avatar_alignment("customer", bounds=[397, 775, 427, 805])},
+        )
+
+    expected = "\n".join(str(row["text"]) for row in rows)
+    assert_true(len(messages) == 1, f"three OCR rows must become one private message: {messages}")
+    assert_true(messages[0]["sender_role"] == "customer", f"the explicit customer avatar must lock the bubble role: {messages}")
+    assert_true(messages[0]["content"] == expected, f"normalized content must retain every OCR line: {messages}")
+    assert_true(messages[0]["content_raw_ocr"] == expected, f"raw OCR must remain complete and unedited: {messages}")
+    assert_true(
+        len(weak_geometry_conflicts) == 1,
+        f"the incident must exercise a continuation row whose weak geometry says self: {weak_geometry_conflicts}",
+    )
+    assert_true(
+        "private_multiline_bubble_role_locked" in set(messages[0].get("sender_role_evidence") or []),
+        f"the same-frame avatar lock must be auditable: {messages}",
+    )
+    assert_true(
+        "private_multiline_weak_geometry_disagrees=self" in set(messages[0].get("sender_role_evidence") or []),
+        f"the contradictory weak geometry must remain diagnostic evidence: {messages}",
+    )
+
+
+def test_v0957_private_multiline_self_and_single_line_roles_remain_stable() -> None:
+    self_rows = [
+        _v0957_text_row("这是销售回复的第一行", left=595, right=868, top=420, bottom=440),
+        _v0957_text_row("这是同一气泡的第二行", left=610, right=866, top=444, bottom=464),
+    ]
+    self_messages = _v0957_parse_private_rows(
+        self_rows,
+        avatars_by_top={420: _v0957_avatar_alignment("self", bounds=[890, 416, 924, 450])},
+    )
+    assert_true(len(self_messages) == 1, f"anchored multiline self text must remain one message: {self_messages}")
+    assert_true(self_messages[0]["sender_role"] == "self", f"self avatar must lock the whole bubble: {self_messages}")
+
+    single_rows = [
+        _v0957_text_row("单行客户文字", left=431, right=610, top=500, bottom=522),
+        _v0957_text_row("单行销售文字", left=690, right=868, top=570, bottom=592),
+    ]
+    single_messages = _v0957_parse_private_rows(
+        single_rows,
+        avatars_by_top={
+            500: _v0957_avatar_alignment("customer", bounds=[397, 496, 427, 526]),
+            570: _v0957_avatar_alignment("self", bounds=[890, 566, 924, 596]),
+        },
+    )
+    assert_true([item["sender_role"] for item in single_messages] == ["customer", "self"], f"single-line roles changed: {single_messages}")
+
+    mixed_text_rows = [
+        _v0957_text_row("家用 SUV，English words 也要保留", left=431, right=790, top=640, bottom=662),
+        _v0957_text_row("第二行：10 万以内。", left=430, right=690, top=666, bottom=688),
+    ]
+    mixed_text_messages = _v0957_parse_private_rows(
+        mixed_text_rows,
+        avatars_by_top={640: _v0957_avatar_alignment("customer", bounds=[397, 636, 427, 666])},
+    )
+    expected_mixed_text = "\n".join(str(item["text"]) for item in mixed_text_rows)
+    assert_true(
+        len(mixed_text_messages) == 1
+        and mixed_text_messages[0]["content_raw_ocr"] == expected_mixed_text,
+        f"Chinese punctuation and English spaces must survive multiline grouping: {mixed_text_messages}",
+    )
+
+
+def test_v0957_repeated_same_avatar_crop_merges_but_distinct_avatars_do_not() -> None:
+    rows = [
+        _v0957_text_row("同一头像被两个裁剪重复看到一", left=431, right=760, top=300, bottom=320),
+        _v0957_text_row("同一头像被两个裁剪重复看到二", left=430, right=760, top=324, bottom=344),
+    ]
+    same_avatar = _v0957_parse_private_rows(
+        rows,
+        avatars_by_top={
+            300: _v0957_avatar_alignment("customer", bounds=[397, 296, 427, 326]),
+            324: _v0957_avatar_alignment("customer", bounds=[397, 297, 427, 327]),
+        },
+    )
+    assert_true(len(same_avatar) == 1, f"overlapping detections of one avatar component must not split a bubble: {same_avatar}")
+
+    distinct_avatar = _v0957_parse_private_rows(
+        rows,
+        avatars_by_top={
+            300: _v0957_avatar_alignment("customer", bounds=[397, 296, 427, 326]),
+            324: _v0957_avatar_alignment("customer", bounds=[397, 330, 427, 360]),
+        },
+    )
+    assert_true(len(distinct_avatar) == 2, f"two explicit same-role avatar components must remain two messages: {distinct_avatar}")
+
+
+def test_v0957_private_multiline_rejects_missing_conflicting_and_out_of_bounds_evidence() -> None:
+    adjacent = [
+        _v0957_text_row("没有头像的第一行", left=431, right=700, top=300, bottom=320),
+        _v0957_text_row("没有头像的第二行", left=430, right=700, top=324, bottom=344),
+    ]
+    assert_true(
+        _v0957_parse_private_rows(adjacent, avatars_by_top={}) == [],
+        "avatar-free adjacent text must not become a formal private customer/self message",
+    )
+
+    conflicting = [
+        _v0957_text_row("客户一条", left=431, right=650, top=400, bottom=420),
+        _v0957_text_row("销售一条", left=650, right=868, top=424, bottom=444),
+    ]
+    conflict_messages = _v0957_parse_private_rows(
+        conflicting,
+        avatars_by_top={
+            400: _v0957_avatar_alignment("customer", bounds=[397, 396, 427, 426]),
+            424: _v0957_avatar_alignment("self", bounds=[890, 420, 924, 450]),
+        },
+    )
+    assert_true([item["sender_role"] for item in conflict_messages] == ["customer", "self"], f"opposite roles must not merge: {conflict_messages}")
+
+    for label, second in (
+        ("gap", _v0957_text_row("超出行距", left=431, right=700, top=335, bottom=355)),
+        ("edge", _v0957_text_row("超出边缘差", left=464, right=700, top=324, bottom=344)),
+    ):
+        messages = _v0957_parse_private_rows(
+            [adjacent[0], second],
+            avatars_by_top={300: _v0957_avatar_alignment("customer", bounds=[397, 296, 427, 326])},
+        )
+        assert_true(len(messages) == 1, f"{label} boundary violation must not merge into the anchored message: {messages}")
+        assert_true(str(second["text"]) not in messages[0]["content"], f"{label} boundary violation leaked into content: {messages}")
+
+
+def test_v0957_private_text_group_does_not_absorb_media_or_cards() -> None:
+    first = _v0957_text_row("普通文字气泡", left=431, right=650, top=300, bottom=320)
+    forbidden_rows = [
+        _v0957_text_row('3"', left=431, right=485, top=324, bottom=344, row_kind="voice", message_type="voice"),
+        _v0957_text_row("图片候选", left=431, right=600, top=324, bottom=344, row_kind="image", message_type="image", image_candidate=True),
+        _v0957_text_row("系统提示", left=431, right=600, top=324, bottom=344, row_kind="system", message_type="system", is_system_message=True),
+        _v0957_text_row("文件卡片", left=431, right=600, top=324, bottom=344, row_kind="file", message_type="file", is_file_card=True),
+        _v0957_text_row("【引用：旧消息】", left=431, right=650, top=324, bottom=344, row_kind="quote", message_type="quote", is_quote_card=True),
+    ]
+    for forbidden in forbidden_rows:
+        messages = _v0957_parse_private_rows(
+            [first, forbidden],
+            avatars_by_top={300: _v0957_avatar_alignment("customer", bounds=[397, 296, 427, 326])},
+        )
+        assert_true(messages and messages[0]["content"] == first["text"], f"non-text row was absorbed into private text: {forbidden} -> {messages}")
+
+
+def test_v0957_group_chat_never_calls_private_multiline_rule() -> None:
+    import apps.wechat_ai_customer_service.adapters.wechat_win32_ocr_sidecar as sidecar_mod
+
+    rows = [
+        _v0957_text_row("群聊第一行", left=431, right=650, top=300, bottom=320),
+        _v0957_text_row("群聊第二行", left=430, right=650, top=324, bottom=344),
+    ]
+    with patch.object(
+        sidecar_mod,
+        "message_line_continues_anchored_text_bubble",
+        side_effect=AssertionError("private multiline grouping must not run for group chats"),
+    ):
+        messages = _v0957_parse_private_rows(
+            rows,
+            avatars_by_top={300: _v0957_avatar_alignment("customer", bounds=[397, 296, 427, 326])},
+            target="车金测试群",
+        )
+    assert_true(
+        not any("private_multiline_bubble_role_locked" in set(item.get("sender_role_evidence") or []) for item in messages),
+        f"private-chat grouping evidence leaked into a group chat: {messages}",
+    )
+
+
+def test_v0957_mutation_disabling_avatar_continuation_reproduces_incident() -> None:
+    import apps.wechat_ai_customer_service.adapters.wechat_win32_ocr_sidecar as sidecar_mod
+
+    rows = [
+        _v0957_text_row("长文第一行", left=431, right=700, top=300, bottom=320),
+        _v0957_text_row("长文第二行", left=430, right=700, top=324, bottom=344),
+    ]
+    avatars = {300: _v0957_avatar_alignment("customer", bounds=[397, 296, 427, 326])}
+    production = _v0957_parse_private_rows(rows, avatars_by_top=avatars)
+    with patch.object(sidecar_mod, "message_line_continues_anchored_text_bubble", return_value=False):
+        mutated = _v0957_parse_private_rows(rows, avatars_by_top=avatars)
+    assert_true(len(production) == 1 and "长文第二行" in production[0]["content"], f"production fix did not preserve the full bubble: {production}")
+    assert_true(not mutated or "长文第二行" not in mutated[0]["content"], f"mutation did not reproduce the missing-line incident: {mutated}")
+
+
 def test_parse_messages_strips_voice_duration_prefix_after_transcription() -> None:
     items = [
         {"text": '5"', "confidence": 0.66, "left": 440, "right": 489, "top": 547, "bottom": 573, "center_x": 464.5, "center_y": 560},
@@ -7751,6 +8039,13 @@ def main() -> int:
         test_add_friend_optional_field_fill_disabled_by_default,
         test_message_probe_tokens_prefer_semantic_body_after_live_marker,
         test_parse_messages_from_ocr,
+        test_v0957_private_multiline_customer_uses_one_avatar_anchored_bubble,
+        test_v0957_private_multiline_self_and_single_line_roles_remain_stable,
+        test_v0957_repeated_same_avatar_crop_merges_but_distinct_avatars_do_not,
+        test_v0957_private_multiline_rejects_missing_conflicting_and_out_of_bounds_evidence,
+        test_v0957_private_text_group_does_not_absorb_media_or_cards,
+        test_v0957_group_chat_never_calls_private_multiline_rule,
+        test_v0957_mutation_disabling_avatar_continuation_reproduces_incident,
         test_parse_messages_strips_voice_duration_prefix_after_transcription,
         test_parse_messages_skips_file_card_footer_noise,
         test_parse_messages_marks_unconverted_voice_as_voice_placeholder,
