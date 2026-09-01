@@ -49,6 +49,9 @@ def generated_payload(contract: dict) -> dict:
         "action_phases": list(contract["action_phases"]),
         "sender_roles": list(contract["sender_roles"]),
         "row_rules": dict(contract["row_rules"]),
+        "private_multiline_text_grouping_contract": dict(
+            contract["private_multiline_text_grouping_contract"]
+        ),
         "image_contract": dict(contract["image_contract"]),
         "message_limits": dict(contract["message_limits"]),
         "voice_action_binding_contract": dict(

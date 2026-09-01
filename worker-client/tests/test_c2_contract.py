@@ -53,6 +53,41 @@ from chejin_worker_client.wechat_c2 import (
 
 
 class C2ContractTests(unittest.TestCase):
+    def test_private_multiline_text_grouping_has_one_owner_and_no_cross_layer_merge(self):
+        contract = c2_contract_v3()[
+            "private_multiline_text_grouping_contract"
+        ]
+        self.assertEqual(contract["release"], "0.9.57")
+        self.assertEqual(contract["owner"], "omniauto_sidecar")
+        self.assertTrue(contract["explicit_avatar_required"])
+        self.assertEqual(contract["group_chat_behavior"], "forbidden")
+        self.assertEqual(
+            contract["continuation_function"],
+            "message_line_continues_anchored_text_bubble",
+        )
+        self.assertIn("single_v0_9_56", contract["continuation_rule_owner"])
+        self.assertIn("left_edge", contract["continuation_edge_rule"])
+        self.assertIn(
+            "diagnostic_only",
+            contract["weak_geometry_role_behavior"],
+        )
+        self.assertIn(
+            "without_second_line_grouping",
+            contract["worker_behavior"],
+        )
+        self.assertIn(
+            "without_second_line_grouping",
+            contract["backend_behavior"],
+        )
+        self.assertIn(
+            "worker_compensating_line_merge",
+            contract["forbidden_shortcuts"],
+        )
+        self.assertIn(
+            "backend_compensating_line_merge",
+            contract["forbidden_shortcuts"],
+        )
+
     def test_unread_generation_contract_has_bounded_reread_terminal(self):
         unread = c2_contract_v3()["unread_generation_contract"]
         terminals = c2_contract_v3()["runtime_control_contract"][
@@ -541,7 +576,7 @@ class C2ContractTests(unittest.TestCase):
 
     def test_slot_ledger_contract_separates_fact_scope_from_delivery(self):
         schema = c2_contract_v3()["slot_ledger_state_schema"]
-        self.assertEqual(c2_contract_v3()["contract_revision"], "0.9.56")
+        self.assertEqual(c2_contract_v3()["contract_revision"], "0.9.57")
         self.assertIn(
             "anchor_aliases",
             c2_contract_v3()["message_limits"][

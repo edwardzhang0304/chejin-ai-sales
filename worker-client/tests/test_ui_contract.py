@@ -165,6 +165,13 @@ class UiContractTest(unittest.TestCase):
         classic_ui = (ROOT / "chejin_worker_client" / "ui.py").read_text(
             encoding="utf-8"
         )
+        component_ui = (
+            ROOT.parent
+            / "packages"
+            / "worker-ui-baseline"
+            / "src"
+            / "WorkerClientBaseline.tsx"
+        ).read_text(encoding="utf-8")
         app_js = ROOT / "chejin_worker_client" / "web_assets" / "worker-web-app.js"
 
         self.assertIn("QWebEngineView", web_ui)
@@ -176,6 +183,10 @@ class UiContractTest(unittest.TestCase):
             web_ui,
         )
         self.assertIn("后端故障状态未同步", web_ui)
+        self.assertIn('return "client-faulted"', web_ui)
+        self.assertIn("客户端发生技术故障，已停止领取新任务", component_ui)
+        self.assertIn("故障证据已保留", component_ui)
+        self.assertIn('screen === "client-faulted"', app_js.read_text(encoding="utf-8"))
         self.assertIn('"客户端故障" if is_faulted', classic_ui)
         self.assertNotIn("本地微信操作已停止", web_ui)
         self.assertFalse((ROOT / "web-ui-src").exists())

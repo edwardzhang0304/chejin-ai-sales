@@ -1,10 +1,54 @@
 {
   "contract_version": 3,
-  "contract_revision": "0.9.56",
+  "contract_revision": "0.9.57",
   "observation_schema_version": 3,
   "control_schema_version": 1,
+  "private_multiline_text_grouping_contract": {
+    "release": "0.9.57",
+    "owner": "omniauto_sidecar",
+    "scope": "same_current_screenshot_private_chat_ordinary_text_only",
+    "processing_order": [
+      "filter_non_message_ui_and_non_text_structures",
+      "collect_same_row_explicit_avatar_evidence_and_weak_geometry_diagnostics",
+      "group_ocr_lines_into_one_physical_text_bubble",
+      "lock_the_group_role_from_one_unique_explicit_avatar_component",
+      "emit_one_complete_text_observation"
+    ],
+    "required_anchor_roles": ["customer", "self"],
+    "explicit_avatar_required": true,
+    "conflicting_or_multiple_avatar_components_behavior": "do_not_merge",
+    "continuation_rule_owner": "reuse_the_single_v0_9_56_sidecar_text_continuation_rule_without_a_second_threshold_set",
+    "continuation_function": "message_line_continues_anchored_text_bubble",
+    "continuation_vertical_gap_rule": "-4px<=current.top-previous.bottom<=max(8px,min(14px,max(previous_text_height,current_text_height)*0.65))",
+    "continuation_edge_rule": "customer_and_self_ocr_text_left_edge_absolute_difference<=32px",
+    "same_viewport_and_role_column_required": true,
+    "weak_geometry_role_behavior": "diagnostic_only_never_overrides_the_unique_explicit_avatar_anchor",
+    "content_raw_ocr_rule": "preserve_every_grouped_ocr_line_without_truncation_summary_or_rewrite",
+    "excluded_row_kinds": [
+      "voice_bubble",
+      "voice_transcript",
+      "image_bubble",
+      "system_message",
+      "call_event",
+      "file_card",
+      "quote_card",
+      "timestamp",
+      "input_text",
+      "ui_text"
+    ],
+    "group_chat_behavior": "forbidden",
+    "worker_behavior": "validate_contract_duplicates_conflicts_and_cross_frame_order_without_second_line_grouping_or_sender_inference",
+    "backend_behavior": "persist_dedupe_and_settle_without_second_line_grouping_or_sender_inference",
+    "coordinate_lifetime": "current_screenshot_grouping_diagnostics_only_never_durable_identity_or_cross_frame_continuity",
+    "forbidden_shortcuts": [
+      "duplicated_or_modified_text_continuation_thresholds",
+      "avatar_free_private_role_generation",
+      "worker_compensating_line_merge",
+      "backend_compensating_line_merge"
+    ]
+  },
   "performance_fast_path_contract": {
-    "release": "0.9.56",
+    "release": "0.9.57",
     "business_semantics_unchanged": true,
     "flags": [
       "CHEJIN_TASK_SAFE_WAKE_ENABLED",
@@ -30,7 +74,7 @@
     "sidebar_search_safety_rule": "sidebar ROI may identify a candidate only; login overlays central dialogs and whole-window blocking state must be decided from full-window OCR of the exact same screenshot"
   },
   "startup_layout_calibration_contract": {
-    "schema_version": "0.9.56",
+    "schema_version": "0.9.57",
     "owner": "omniauto",
     "worker_role": "persist_path_transport_contract_validation_and_execution_only",
     "single_runtime_path": true,
@@ -1621,7 +1665,7 @@
     ]
   },
   "frame_action_binding_contract": {
-    "release": "0.9.56",
+    "release": "0.9.57",
     "purpose": "carry_one_worker_approved_current_media_action_policy_and_current_frame_diagnostic_evidence_without_claiming_cross_frame_identity",
     "durable_identity": false,
     "observation_owner": "sidecar",
@@ -1678,7 +1722,7 @@
     ]
   },
   "pre_send_message_viewport_contract": {
-    "release": "0.9.56",
+    "release": "0.9.57",
     "selected_target_fingerprint_scope": "prepare_frame_diagnostic_only_and_forbidden_as_an_execute_identity_or_equality_gate",
     "selected_target_forbidden_inputs": [
       "message_viewport_change_digest",
@@ -1777,7 +1821,7 @@
     "physical_media_action_rule": "each_voice_or_image_action_may_trigger_at_most_once_and_post_trigger_waits_are_passive_evidence_reads_only"
   },
   "pre_send_fact_checkpoint_contract": {
-    "release": "0.9.56",
+    "release": "0.9.57",
     "checkpoint_revision": 5,
     "checkpoint_owner": "backend",
     "comparison_and_decision_owner": "worker",

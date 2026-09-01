@@ -455,6 +455,8 @@ class WebUiBindingBehaviorTest(unittest.TestCase):
             module, "_log_rows", return_value=[]
         ), patch.object(module, "latest_incident", return_value=None), patch.object(
             module, "lock_summary", return_value={}
+        ), patch.object(
+            module, "save_binding"
         ):
             binding = Binding(
                 worker_id="worker-faulted",
@@ -469,17 +471,21 @@ class WebUiBindingBehaviorTest(unittest.TestCase):
                     id=binding.worker_id,
                     worker_name="故障状态测试 Worker",
                     run_status="faulted",
+                    rpa_component_status="ready",
+                    wechat_status="logged_in",
                 )
             )
             window.on_status("offline")
 
             payload = json.loads(window.bridge.initialState())
 
-        self.assertEqual(payload["screen"], "automation-unavailable")
+        self.assertEqual(payload["screen"], "client-faulted")
         self.assertEqual(
             payload["model"]["status"]["receiveState"],
             "客户端故障",
         )
+        self.assertEqual(payload["model"]["status"]["automationState"], "可用")
+        self.assertEqual(payload["model"]["status"]["wechatState"], "已连接")
         self.assertEqual(
             payload["model"]["task"]["statusText"],
             "客户端故障",
@@ -488,10 +494,38 @@ class WebUiBindingBehaviorTest(unittest.TestCase):
             "后端故障状态未同步",
             payload["model"]["task"]["metaText"],
         )
+        self.assertIn("故障证据已保留", payload["model"]["task"]["metaText"])
         self.assertNotIn(
             "暂停接单",
             payload["model"]["task"]["statusText"],
         )
+
+    def test_real_automation_unavailable_keeps_environment_issue_screen(self):
+        with _headless_web_ui_module() as module, patch.object(
+            module, "_log_rows", return_value=[]
+        ), patch.object(module, "latest_incident", return_value=None), patch.object(
+            module, "lock_summary", return_value={}
+        ):
+            binding = Binding(
+                worker_id="worker-rpa-unavailable",
+                worker_token="token-rpa-unavailable",
+                client_instance_id="client-rpa-unavailable",
+                run_status="paused",
+            )
+            window = self._window(module, binding)
+            window.connection_status = "online"
+            window.profile = WorkerProfile(
+                id=binding.worker_id,
+                worker_name="组件异常测试 Worker",
+                run_status="paused",
+                rpa_component_status="unavailable",
+                wechat_status="logged_in",
+            )
+
+            payload = json.loads(window.bridge.initialState())
+
+        self.assertEqual(payload["screen"], "automation-unavailable")
+        self.assertEqual(payload["model"]["status"]["automationState"], "不可用")
 
     def test_runtime_control_read_failure_does_not_project_client_offline(self):
         with _headless_web_ui_module() as module, patch.object(
