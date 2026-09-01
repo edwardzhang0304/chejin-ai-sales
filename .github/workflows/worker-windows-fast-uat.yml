@@ -113,6 +113,18 @@ jobs:
             throw "Brain Provider-input contract checks failed"
           }
 
+      - name: Compare observability off and on business traces
+        working-directory: .
+        shell: powershell
+        run: |
+          $ErrorActionPreference = "Stop"
+          $env:CHEJIN_WORKER_HOME = Join-Path $env:RUNNER_TEMP "chejin-worker-observability-neutrality"
+          $env:PYTHONPATH = "$PWD\worker-client;$PWD\backend"
+          python worker-client\scripts\run-observability-business-neutrality.py
+          if ($LASTEXITCODE -ne 0) {
+            throw "Observability changed a front-middle-back business trace"
+          }
+
       - name: Run contract and packaging gates
         working-directory: worker-client
         shell: powershell
@@ -202,7 +214,7 @@ jobs:
       - name: Upload Fast UAT ZIP
         uses: actions/upload-artifact@v4
         with:
-          name: chejin-worker-fast-uat-v0.9.57-${{ github.sha }}
+          name: chejin-worker-fast-uat-v0.9.58-${{ github.sha }}
           path: worker-client/dist/fast-uat-release/chejin-worker-fast-uat-*.zip
           if-no-files-found: error
           retention-days: 14

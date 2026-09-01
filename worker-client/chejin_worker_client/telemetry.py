@@ -11,43 +11,36 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Iterator
 
+from .api import ApiError
 from .config import CONFIG
+from .c2_contract import c2_contract_v3
 from .models import Binding
 
 
-STANDARD_STAGE_NAMES = frozenset(
-    {
-        "c0.lead_received",
-        "c0.lead_assigned",
-        "c1.add_friend_queued",
-        "c1.add_friend_execute",
-        "c1.friend_acceptance_wait",
-        "c2.scan",
-        "c2.read_queued",
-        "c2.target_locate",
-        "c2.message_read",
-        "c2.voice_transcription",
-        "c2.image_vision",
-        "c2.message_ingest",
-        "c3.brain_queued",
-        "c3.brain_generate",
-        "c3.pre_send_refresh",
-        "c3.reply_queued",
-        "c3.reply_send_confirm",
-        "c4.recall_wait",
-        "c4.recall_precheck",
-        "c4.brain_generate",
-        "c4.reply_queued",
-        "c4.reply_send_confirm",
-        "handoff.event_create",
-        "handoff.feishu_notify",
-        "handoff.wait_sales",
-        "handoff.close",
-    }
-)
+def _contract_standard_stage_names() -> frozenset[str]:
+    contract = c2_contract_v3().get("observability_contract")
+    values = contract.get("standard_stage_names") if isinstance(contract, dict) else None
+    if not isinstance(values, list) or not values:
+        raise RuntimeError("Invalid observability standard stage contract")
+    names = frozenset(str(value).strip() for value in values if str(value).strip())
+    if len(names) != len(values):
+        raise RuntimeError("Duplicate or empty observability standard stage name")
+    return names
+
+
+STANDARD_STAGE_NAMES = _contract_standard_stage_names()
 TERMINAL_STATUSES = frozenset({"succeeded", "failed", "cancelled", "abandoned"})
 _UPLOAD_LOCK = threading.Lock()
 _UPLOAD_ACTIVE = False
+DELIVERY_PENDING = "pending"
+DELIVERY_QUARANTINED = "quarantined"
+MAX_BUFFERED_STAGE_EVENTS = 5000
+MAX_EVENT_PAYLOAD_BYTES = 64 * 1024
+MAX_TELEMETRY_STORAGE_BYTES = 64 * 1024 * 1024
+MAX_PROCESS_LINK_ROWS = 5000
+MAX_STAGE_ATTEMPT_ROWS = 5000
+MAX_AUTHORITY_SNAPSHOTS = 500
+MAX_AUTHORITY_SNAPSHOT_BYTES = 512 * 1024
 
 
 def utc_iso_now() -> str:
@@ -56,6 +49,66 @@ def utc_iso_now() -> str:
 
 def telemetry_db_path() -> Path:
     return CONFIG.app_dir / "worker_telemetry.sqlite3"
+
+
+def _telemetry_storage_bytes(path: Path) -> int:
+    total = 0
+    for candidate in (path, Path(f"{path}-wal"), Path(f"{path}-shm")):
+        try:
+            total += candidate.stat().st_size
+        except OSError:
+            continue
+    return total
+
+
+def _storage_has_room_for_row(path: Path) -> bool:
+    return (
+        _telemetry_storage_bytes(path) + 4096
+        <= MAX_TELEMETRY_STORAGE_BYTES
+    )
+
+
+def _prune_process_links(conn: sqlite3.Connection) -> None:
+    conn.execute(
+        """
+        DELETE FROM telemetry_process_links
+         WHERE rowid IN (
+            SELECT rowid
+              FROM telemetry_process_links
+             ORDER BY created_at DESC, rowid DESC
+             LIMIT -1 OFFSET ?
+         )
+        """,
+        (MAX_PROCESS_LINK_ROWS,),
+    )
+
+
+def _prune_stage_attempts(conn: sqlite3.Connection) -> None:
+    conn.execute(
+        """
+        DELETE FROM telemetry_stage_attempts
+         WHERE rowid IN (
+            SELECT rowid
+              FROM telemetry_stage_attempts
+             ORDER BY updated_at DESC, rowid DESC
+             LIMIT -1 OFFSET ?
+         )
+        """,
+        (MAX_STAGE_ATTEMPT_ROWS,),
+    )
+
+
+def _ensure_column(
+    conn: sqlite3.Connection,
+    table: str,
+    column: str,
+    declaration: str,
+) -> None:
+    existing = {
+        str(row[1]) for row in conn.execute(f"PRAGMA table_info({table})")
+    }
+    if column not in existing:
+        conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {declaration}")
 
 
 @contextmanager
@@ -73,9 +126,37 @@ def _connect(path: Path) -> Iterator[sqlite3.Connection]:
                 payload_json TEXT NOT NULL,
                 created_at TEXT NOT NULL,
                 upload_attempt_count INTEGER NOT NULL DEFAULT 0,
-                next_attempt_at REAL NOT NULL DEFAULT 0
+                next_attempt_at REAL NOT NULL DEFAULT 0,
+                delivery_state TEXT NOT NULL DEFAULT 'pending',
+                last_error_code TEXT,
+                last_http_status INTEGER,
+                quarantined_at TEXT
             )
             """
+        )
+        _ensure_column(
+            conn,
+            "telemetry_stage_events",
+            "delivery_state",
+            "TEXT NOT NULL DEFAULT 'pending'",
+        )
+        _ensure_column(
+            conn,
+            "telemetry_stage_events",
+            "last_error_code",
+            "TEXT",
+        )
+        _ensure_column(
+            conn,
+            "telemetry_stage_events",
+            "last_http_status",
+            "INTEGER",
+        )
+        _ensure_column(
+            conn,
+            "telemetry_stage_events",
+            "quarantined_at",
+            "TEXT",
         )
         conn.execute(
             """
@@ -98,7 +179,20 @@ def _connect(path: Path) -> Iterator[sqlite3.Connection]:
             )
             """
         )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS telemetry_authority_snapshots (
+                process_run_id TEXT PRIMARY KEY,
+                report_json TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+            """
+        )
         yield conn
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
     finally:
         conn.close()
 
@@ -114,7 +208,16 @@ def remember_process_run(
         return False
     try:
         uuid.UUID(str(process_run_id))
-        with _connect(db_path or telemetry_db_path()) as conn:
+        path = db_path or telemetry_db_path()
+        with _connect(path) as conn:
+            existing = conn.execute(
+                "SELECT process_run_id FROM telemetry_process_links WHERE local_run_id = ?",
+                (str(local_run_id),),
+            ).fetchone()
+            if existing is not None:
+                return str(existing["process_run_id"]) == str(process_run_id)
+            if not _storage_has_room_for_row(path):
+                return False
             conn.execute(
                 """
                 INSERT INTO telemetry_process_links (
@@ -129,6 +232,7 @@ def remember_process_run(
                     utc_iso_now(),
                 ),
             )
+            _prune_process_links(conn)
             row = conn.execute(
                 "SELECT process_run_id FROM telemetry_process_links WHERE local_run_id = ?",
                 (str(local_run_id),),
@@ -143,6 +247,8 @@ def load_process_run(
     *,
     db_path: Path | None = None,
 ) -> str | None:
+    if not CONFIG.observability_enabled:
+        return None
     try:
         with _connect(db_path or telemetry_db_path()) as conn:
             row = conn.execute(
@@ -178,7 +284,8 @@ def next_local_stage_attempt(
     if not CONFIG.observability_enabled:
         return 1
     try:
-        with _connect(db_path or telemetry_db_path()) as conn:
+        path = db_path or telemetry_db_path()
+        with _connect(path) as conn:
             conn.execute("BEGIN IMMEDIATE")
             row = conn.execute(
                 "SELECT last_attempt FROM telemetry_stage_attempts "
@@ -186,6 +293,8 @@ def next_local_stage_attempt(
                 (process_run_id, stage_name),
             ).fetchone()
             attempt = max(1, int((row[0] if row else 0) or 0) + 1)
+            if row is None and not _storage_has_room_for_row(path):
+                return 1
             conn.execute(
                 """
                 INSERT INTO telemetry_stage_attempts (
@@ -197,10 +306,34 @@ def next_local_stage_attempt(
                 """,
                 (process_run_id, stage_name, attempt, utc_iso_now()),
             )
+            _prune_stage_attempts(conn)
             conn.commit()
         return attempt
     except Exception:
         return 1
+
+
+def allocate_stage_attempt(
+    process_run_id: str,
+    stage_name: str,
+    stable_key: str,
+    *,
+    db_path: Path | None = None,
+) -> tuple[int, str]:
+    """Allocate one retry identity without reusing the prior stage row."""
+
+    if not str(stable_key or "").strip():
+        raise ValueError("stable stage attempt key is required")
+    attempt = next_local_stage_attempt(
+        process_run_id,
+        stage_name,
+        db_path=db_path,
+    )
+    # A fresh identity is required even if a very old bounded attempt counter
+    # has already been pruned. The attempt remains an ordered diagnostic; it
+    # must never be the sole uniqueness source for a persisted stage row.
+    stage_run_id = str(uuid.uuid4())
+    return attempt, stage_run_id
 
 
 def enqueue_stage_event(
@@ -215,16 +348,39 @@ def enqueue_stage_event(
     try:
         path = db_path or telemetry_db_path()
         payload = json.dumps(event, ensure_ascii=False, separators=(",", ":"))
+        payload_bytes = len(payload.encode("utf-8"))
+        if payload_bytes > MAX_EVENT_PAYLOAD_BYTES:
+            return False
         with _connect(path) as conn:
+            existing = conn.execute(
+                "SELECT 1 FROM telemetry_stage_events WHERE stage_run_id = ?",
+                (event["stage_run_id"],),
+            ).fetchone()
+            if existing is None:
+                buffered_count = int(
+                    conn.execute(
+                        "SELECT count(*) FROM telemetry_stage_events"
+                    ).fetchone()[0]
+                )
+                if (
+                    buffered_count >= MAX_BUFFERED_STAGE_EVENTS
+                    # Reserve one SQLite page in addition to the encoded row so
+                    # the configured total is a real admission limit, not a
+                    # threshold checked only after the next row has overflowed it.
+                    or _telemetry_storage_bytes(path) + payload_bytes + 4096
+                    > MAX_TELEMETRY_STORAGE_BYTES
+                ):
+                    return False
             conn.execute(
                 """
                 INSERT INTO telemetry_stage_events (
                     stage_run_id, payload_json, created_at,
-                    upload_attempt_count, next_attempt_at
-                ) VALUES (?, ?, ?, 0, 0)
+                    upload_attempt_count, next_attempt_at, delivery_state
+                ) VALUES (?, ?, ?, 0, 0, 'pending')
                 ON CONFLICT(stage_run_id) DO UPDATE SET
                     payload_json = CASE
-                        WHEN json_extract(telemetry_stage_events.payload_json, '$.status') = 'running'
+                        WHEN telemetry_stage_events.delivery_state = 'pending'
+                         AND json_extract(telemetry_stage_events.payload_json, '$.status') = 'running'
                          AND json_extract(excluded.payload_json, '$.status') != 'running'
                         THEN excluded.payload_json
                         ELSE telemetry_stage_events.payload_json
@@ -251,14 +407,139 @@ def pending_stage_events(
             rows = conn.execute(
                 """
                 SELECT payload_json
-                  FROM telemetry_stage_events
-                 WHERE next_attempt_at <= ?
+                 FROM telemetry_stage_events
+                 WHERE delivery_state = 'pending'
+                   AND next_attempt_at <= ?
                  ORDER BY created_at, stage_run_id
                  LIMIT ?
                 """,
                 (ready_at, batch_size),
             ).fetchall()
         return [json.loads(str(row["payload_json"])) for row in rows]
+    except Exception:
+        return []
+
+
+def quarantined_stage_events(
+    *,
+    db_path: Path | None = None,
+    limit: int = MAX_BUFFERED_STAGE_EVENTS,
+) -> list[dict[str, Any]]:
+    try:
+        path = db_path or telemetry_db_path()
+        with _connect(path) as conn:
+            rows = conn.execute(
+                """
+                SELECT payload_json, last_error_code, last_http_status,
+                       quarantined_at
+                  FROM telemetry_stage_events
+                 WHERE delivery_state = 'quarantined'
+                 ORDER BY created_at, stage_run_id
+                 LIMIT ?
+                """,
+                (max(1, min(int(limit), MAX_BUFFERED_STAGE_EVENTS)),),
+            ).fetchall()
+        return [
+            {
+                "payload": json.loads(str(row["payload_json"])),
+                "last_error_code": row["last_error_code"],
+                "last_http_status": row["last_http_status"],
+                "quarantined_at": row["quarantined_at"],
+            }
+            for row in rows
+        ]
+    except Exception:
+        return []
+
+
+def remember_authority_snapshots(
+    snapshots: list[dict[str, Any]],
+    *,
+    db_path: Path | None = None,
+) -> int:
+    """Cache bounded backend-computed reports for evidence export only."""
+
+    if not CONFIG.observability_enabled or not snapshots:
+        return 0
+    accepted: list[tuple[str, str, str]] = []
+    for snapshot in snapshots:
+        if not isinstance(snapshot, dict):
+            continue
+        process_run_id = str(snapshot.get("process_run_id") or "").strip()
+        try:
+            uuid.UUID(process_run_id)
+        except (TypeError, ValueError, AttributeError):
+            continue
+        encoded = json.dumps(
+            snapshot,
+            ensure_ascii=False,
+            separators=(",", ":"),
+        )
+        if len(encoded.encode("utf-8")) > MAX_AUTHORITY_SNAPSHOT_BYTES:
+            continue
+        accepted.append((process_run_id, encoded, utc_iso_now()))
+    if not accepted:
+        return 0
+    try:
+        path = db_path or telemetry_db_path()
+        with _connect(path) as conn:
+            remaining_bytes = max(
+                0,
+                MAX_TELEMETRY_STORAGE_BYTES
+                - _telemetry_storage_bytes(path),
+            )
+            bounded: list[tuple[str, str, str]] = []
+            for item in accepted:
+                estimated_bytes = len(item[1].encode("utf-8")) + 256
+                if estimated_bytes > remaining_bytes:
+                    continue
+                bounded.append(item)
+                remaining_bytes -= estimated_bytes
+            if not bounded:
+                return 0
+            conn.executemany(
+                """
+                INSERT INTO telemetry_authority_snapshots (
+                    process_run_id, report_json, updated_at
+                ) VALUES (?, ?, ?)
+                ON CONFLICT(process_run_id) DO UPDATE SET
+                    report_json = excluded.report_json,
+                    updated_at = excluded.updated_at
+                """,
+                bounded,
+            )
+            conn.execute(
+                """
+                DELETE FROM telemetry_authority_snapshots
+                 WHERE process_run_id NOT IN (
+                    SELECT process_run_id
+                      FROM telemetry_authority_snapshots
+                     ORDER BY updated_at DESC, process_run_id DESC
+                     LIMIT ?
+                 )
+                """,
+                (MAX_AUTHORITY_SNAPSHOTS,),
+            )
+        return len(bounded)
+    except Exception:
+        return 0
+
+
+def authority_snapshots(
+    *,
+    db_path: Path | None = None,
+) -> list[dict[str, Any]]:
+    try:
+        path = db_path or telemetry_db_path()
+        with _connect(path) as conn:
+            rows = conn.execute(
+                """
+                SELECT report_json
+                  FROM telemetry_authority_snapshots
+                 ORDER BY updated_at, process_run_id
+                """
+            ).fetchall()
+        return [json.loads(str(row["report_json"])) for row in rows]
     except Exception:
         return []
 
@@ -292,10 +573,56 @@ def _defer_failed(stage_run_ids: list[str], *, db_path: Path | None = None) -> N
                 """
                 UPDATE telemetry_stage_events
                    SET upload_attempt_count = ?, next_attempt_at = ?
-                 WHERE stage_run_id = ?
+                 WHERE stage_run_id = ? AND delivery_state = 'pending'
                 """,
                 (attempt, time.time() + delay, stage_run_id),
             )
+
+
+def _quarantine_rejected(
+    stage_run_ids: list[str],
+    *,
+    error: ApiError,
+    db_path: Path | None = None,
+) -> None:
+    if not stage_run_ids:
+        return
+    path = db_path or telemetry_db_path()
+    with _connect(path) as conn:
+        conn.executemany(
+            """
+            UPDATE telemetry_stage_events
+               SET delivery_state = 'quarantined',
+                   last_error_code = ?,
+                   last_http_status = ?,
+                   quarantined_at = ?,
+                   next_attempt_at = 0
+             WHERE stage_run_id = ? AND delivery_state = 'pending'
+            """,
+            (
+                (
+                    str(error.code or "OBSERVABILITY_REJECTED"),
+                    int(error.status_code or 0),
+                    utc_iso_now(),
+                    stage_run_id,
+                )
+                for stage_run_id in stage_run_ids
+            ),
+        )
+
+
+def _permanent_rejection(error: Exception) -> bool:
+    status_code = (
+        int(error.status_code or 0)
+        if isinstance(error, ApiError)
+        else 0
+    )
+    return (
+        isinstance(error, ApiError)
+        and 400 <= status_code < 500
+        and status_code not in {408, 425, 429}
+        and error.retryable is not True
+    )
 
 
 def flush_stage_events(
@@ -313,14 +640,53 @@ def flush_stage_events(
         return 0
     stage_run_ids = [str(item["stage_run_id"]) for item in events]
     try:
-        api.post_observability_stage_events(
+        response = api.post_observability_stage_events(
             binding,
             events,
             timeout=CONFIG.observability_upload_timeout_seconds,
         )
+        remember_authority_snapshots(
+            list(response.get("authority_snapshots") or [])
+            if isinstance(response, dict)
+            else [],
+            db_path=db_path,
+        )
         _delete_uploaded(stage_run_ids, db_path=db_path)
         return len(events)
-    except Exception:
+    except Exception as error:
+        if _permanent_rejection(error):
+            uploaded = 0
+            # A rejected batch does not identify the invalid member. Retry
+            # each item once so valid events are not quarantined with it.
+            for event in events:
+                stage_run_id = str(event["stage_run_id"])
+                try:
+                    response = api.post_observability_stage_events(
+                        binding,
+                        [event],
+                        timeout=CONFIG.observability_upload_timeout_seconds,
+                    )
+                    remember_authority_snapshots(
+                        list(response.get("authority_snapshots") or [])
+                        if isinstance(response, dict)
+                        else [],
+                        db_path=db_path,
+                    )
+                    _delete_uploaded([stage_run_id], db_path=db_path)
+                    uploaded += 1
+                except Exception as item_error:
+                    try:
+                        if _permanent_rejection(item_error):
+                            _quarantine_rejected(
+                                [stage_run_id],
+                                error=item_error,
+                                db_path=db_path,
+                            )
+                        else:
+                            _defer_failed([stage_run_id], db_path=db_path)
+                    except Exception:
+                        pass
+            return uploaded
         try:
             _defer_failed(stage_run_ids, db_path=db_path)
         except Exception:

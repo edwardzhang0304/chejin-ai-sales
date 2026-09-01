@@ -152,6 +152,7 @@ from .storage import (
 )
 from .telemetry import (
     StageTimer,
+    allocate_stage_attempt,
     abandon_buffered_running_stages,
     enqueue_c2_flow_timing_stages,
     enqueue_existing_duration,
@@ -17694,25 +17695,51 @@ class TaskRunner:
             self._emit_runtime_process(
                 {"event": "send_started", **self._runtime_process_context}
             )
-            reply_send_stage = (
+            reply_process_run_id = str(
+                task.process_run_id or target.process_run_id or ""
+            ).strip()
+            reply_stage_name = (
+                "c4.reply_send_confirm"
+                if str(status.get("trigger_type") or "") == "recall"
+                else "c3.reply_send_confirm"
+            )
+            reply_stage_attempt, reply_stage_run_id = allocate_stage_attempt(
+                reply_process_run_id,
+                reply_stage_name,
+                claim.reply_action_id,
+            )
+            reply_stage_timer = (
                 StageTimer(
-                    process_run_id=(
-                        task.process_run_id
-                        or target.process_run_id
-                        or ""
-                    ),
+                    process_run_id=reply_process_run_id,
                     conversation_id=target.conversation_id,
-                    stage_name=(
-                        "c4.reply_send_confirm"
-                        if str(status.get("trigger_type") or "") == "recall"
-                        else "c3.reply_send_confirm"
-                    ),
+                    stage_name=reply_stage_name,
                     component="worker",
-                    trace_id=str(uuid.uuid4()),
+                    attempt=reply_stage_attempt,
+                    stage_run_id=reply_stage_run_id,
                 )
-                if (task.process_run_id or target.process_run_id)
+                if reply_process_run_id
                 else None
             )
+
+            def record_reply_stage(
+                *,
+                sidecar_payload: dict[str, Any] | None,
+                stage_status: str,
+                error_code: str | None,
+            ) -> None:
+                if reply_stage_timer is None:
+                    return
+                reply_stage_timer.trace_id = str(
+                    (sidecar_payload or {}).get("sidecar_run_id")
+                    or (sidecar_payload or {}).get("run_id")
+                    or ""
+                ) or None
+                reply_stage_timer.finish(
+                    status=stage_status,
+                    error_code=error_code,
+                )
+                schedule_stage_event_upload(self.api, binding)
+
             try:
                 sidecar_result = self.bridge.send_reply(
                     target=target.remark_code or target.display_name,
@@ -17725,33 +17752,31 @@ class TaskRunner:
                     cancel_check=send_cancel_requested,
                 )
             except Exception as exc:
-                if reply_send_stage is not None:
-                    reply_send_stage.finish(
-                        status="failed",
-                        error_code=type(exc).__name__,
-                    )
-                    schedule_stage_event_upload(self.api, binding)
+                record_reply_stage(
+                    sidecar_payload=None,
+                    stage_status="failed",
+                    error_code=type(exc).__name__,
+                )
                 raise
             evidence = self._send_evidence(sidecar_result, target=target.remark_code or target.display_name)
             run_id = str(sidecar_result.get("sidecar_run_id") or sidecar_result.get("run_id") or "") or None
             action_outcome = classify_action_result("send", sidecar_result)
-            if reply_send_stage is not None:
-                reply_send_stage.finish(
-                    status=(
-                        "succeeded"
-                        if action_outcome["result"] == "sent"
-                        else "failed"
-                    ),
-                    error_code=(
-                        None
-                        if action_outcome["result"] == "sent"
-                        else str(
-                            action_outcome.get("error_code")
-                            or "RPA_SEND_REPLY_FAILED"
-                        )
-                    ),
-                )
-                schedule_stage_event_upload(self.api, binding)
+            record_reply_stage(
+                sidecar_payload=sidecar_result,
+                stage_status=(
+                    "succeeded"
+                    if action_outcome["result"] == "sent"
+                    else "failed"
+                ),
+                error_code=(
+                    None
+                    if action_outcome["result"] == "sent"
+                    else str(
+                        action_outcome.get("error_code")
+                        or "RPA_SEND_REPLY_FAILED"
+                    )
+                ),
+            )
             if action_outcome["result"] == "sent":
                 sent_at = self._utc_now_iso()
                 receipt_recorded = self._record_confirmed_ai_reply_receipt(
@@ -21824,7 +21849,6 @@ class TaskRunner:
         owner = f"{binding.worker_id}:{binding.client_instance_id}:message_ingest:{target.conversation_id}"
         lease: UiLockLease | None = held_lease
         owns_lease = held_lease is None
-        flow_started_at = time.perf_counter()
         flow_timing: dict[str, Any] = {
             "schema_version": 1,
             "flow": "c2_message_read",
@@ -23901,12 +23925,6 @@ class TaskRunner:
                     "payload": payload,
                     "local_validation_errors": local_validation_errors,
                 }
-            if isinstance(payload.get("evidence"), dict):
-                evidence_timing = {
-                    **flow_timing,
-                    "elapsed_before_ingest_seconds": round(max(0.0, time.perf_counter() - flow_started_at), 4),
-                }
-                payload["evidence"]["timing"] = json.loads(json.dumps(evidence_timing, ensure_ascii=False, default=str))
             payload = self._filter_confirmed_messages(payload)
             has_flow_gate = bool(
                 isinstance(payload.get("evidence"), dict)
@@ -24270,7 +24288,6 @@ class TaskRunner:
                 )
             if lease and owns_lease:
                 self._release_current_ui_lock(reason="message_ingest_finished")
-            flow_timing["total_duration_seconds"] = round(max(0.0, time.perf_counter() - flow_started_at), 4)
             process_run_id = load_process_run(read_run_id)
             if process_run_id and operation_phase != C2_PRE_SEND_REFRESH_PHASE:
                 enqueue_c2_flow_timing_stages(
@@ -24286,13 +24303,4 @@ class TaskRunner:
                     or None,
                 )
                 schedule_stage_event_upload(self.api, binding)
-            try:
-                append_log(
-                    "INFO",
-                    "c2_message_read_timing",
-                    "C2 消息读取耗时账本。",
-                    metadata=flow_timing,
-                )
-            except Exception:
-                pass
             self.current_step = None

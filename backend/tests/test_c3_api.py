@@ -30,7 +30,7 @@ from app.models.vehicle import KnowledgeItem
 from app.models.wechat import MessageEvent, WechatSessionBinding
 from app.services.wechat_service import _authorization_revision, _read_reason
 from app.errors import AppError
-from app.services import c3_service
+from app.services import c3_service, observability_service
 from app.services.c3_recovery import (
     recover_due_message_batches_once,
     recover_stale_reply_sends_once,
@@ -5091,6 +5091,113 @@ def test_stale_sending_reply_is_released_and_handed_off_without_resend():
     )
     assert duplicate_late_ack.status_code == 200
     assert duplicate_late_ack.json()["data"]["duplicated"] is True
+
+
+def test_observability_toggle_keeps_c4_front_middle_back_identical(
+    monkeypatch,
+):
+    def run(enabled: bool) -> dict:
+        setup_function()
+        monkeypatch.setattr(
+            observability_service,
+            "get_settings",
+            lambda: SimpleNamespace(observability_enabled=enabled),
+        )
+        worker, binding = _setup_bound_conversation()
+        content = "召回前确认没有新消息"
+        message_event_id = _ingest(
+            worker,
+            binding["conversation_id"],
+            f"neutral-c4-{enabled}",
+            content,
+        )
+        collected = _collect(
+            binding["conversation_id"],
+            message_event_id,
+        )
+        with SessionLocal() as db:
+            batch = db.get(MessageBatch, collected["batch_id"])
+            conversation = db.get(
+                Conversation,
+                binding["conversation_id"],
+            )
+            batch.trigger_type = "recall"
+            batch.recall_cycle_id = f"neutral-cycle-{enabled}"
+            batch.origin_conversation_status = "waiting_user_reply"
+            conversation.status = "recall_precheck"
+            conversation.recall_cycle_id = batch.recall_cycle_id
+            conversation.recall_origin_status = "waiting_user_reply"
+            conversation.recall_count = 1
+            conversation.recall_daily_count = 0
+            db.commit()
+        generated = _generate(collected["batch_id"])
+        action_id = generated["reply_action_id"]
+        task_id = generated["task_id"]
+        claimed = client.post(
+            f"/api/tasks/{task_id}/claim",
+            json={
+                "worker_id": worker["id"],
+                "current_step": "chat_reply_claimed",
+                "claim_source": "c2_conversation_flow",
+                "conversation_id": binding["conversation_id"],
+            },
+            headers=_worker_headers(worker),
+        )
+        send_claim = client.post(
+            f"/api/reply-actions/{action_id}/claim-send",
+            json={"task_id": task_id, "worker_id": worker["id"]},
+            headers=_task_lease_headers(worker, claimed),
+        )
+        send_data = send_claim.json()["data"]
+        sent_ack = client.post(
+            f"/api/reply-actions/{action_id}/sent-ack",
+            json={
+                "send_token": send_data["send_token"],
+                "task_id": task_id,
+                "worker_id": worker["id"],
+                "client_instance_id": "client-c3",
+                "send_result": "sent",
+                "action_phase": "confirmed",
+                "reply_text_hash": send_data["reply_text_hash"],
+                "sidecar_run_id": "neutral-c4-sidecar",
+            },
+            headers=_worker_headers(worker),
+        )
+        with SessionLocal() as db:
+            conversation = db.get(
+                Conversation,
+                binding["conversation_id"],
+            )
+            action = db.get(ReplyAction, action_id)
+            batch = db.get(MessageBatch, collected["batch_id"])
+            ack_count = db.query(SentAck).filter(
+                SentAck.reply_action_id == action_id
+            ).count()
+            back = {
+                "conversation_status": conversation.status,
+                "recall_count": conversation.recall_count,
+                "recall_daily_count": conversation.recall_daily_count,
+                "action_status": action.status,
+                "batch_status": batch.status,
+                "sent_ack_count": ack_count,
+            }
+        return {
+            "front": {
+                "content": content,
+                "trigger_type": "recall",
+                "origin_status": "waiting_user_reply",
+            },
+            "middle": {
+                "collect_status": collected["batch_status"],
+                "decision": generated["decision"],
+                "claim_status": claimed.status_code,
+                "send_claim_status": send_claim.status_code,
+                "sent_ack_status": sent_ack.status_code,
+            },
+            "back": back,
+        }
+
+    assert run(False) == run(True)
 
 
 def test_handoff_decision_uses_state_gate_without_disabling_ai():

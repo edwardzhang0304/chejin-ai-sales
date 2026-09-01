@@ -140,25 +140,6 @@ def collect_ids(value: Any, output: dict[str, set[str]]) -> None:
             collect_ids(item, output)
 
 
-def timing_projection(logs: list[dict[str, Any]], selector: str) -> list[dict[str, Any]]:
-    result = []
-    for row in logs:
-        event = str(row.get("event") or "").lower()
-        metadata = row.get("metadata") if isinstance(row.get("metadata"), dict) else {}
-        encoded = json.dumps(metadata, ensure_ascii=False).lower()
-        matches = {
-            "flow": event == "c2_message_read_timing" or "flow_timing" in encoded,
-            "brain": "brain" in event or "brain" in encoded,
-            "send": any(
-                token in event or token in encoded
-                for token in ("send_confirm", "sent_ack", "send_result", "ocr")
-            ),
-        }
-        if matches[selector]:
-            result.append(row)
-    return result
-
-
 def sidecar_projection(logs: list[dict[str, Any]]) -> list[dict[str, Any]]:
     calls: dict[str, dict[str, Any]] = {}
     for row in logs:
@@ -304,13 +285,37 @@ def collect(args: argparse.Namespace) -> Path:
             "updated_at >= ? AND updated_at <= ?", (start_iso, end_iso), "updated_at",
         )
     ]
-    telemetry = [
+    telemetry_rows = [
         decode_json_fields(row)
         for row in rows(
             telemetry_db, "telemetry_stage_events",
-            "stage_run_id, payload_json, created_at, upload_attempt_count",
+            "*",
             "created_at >= ? AND created_at <= ?", (start_iso, end_iso), "created_at",
         )
+    ]
+    telemetry = [
+        row
+        for row in telemetry_rows
+        if str(row.get("delivery_state") or "pending") == "pending"
+    ]
+    telemetry_quarantine = [
+        row
+        for row in telemetry_rows
+        if str(row.get("delivery_state") or "") == "quarantined"
+    ]
+    backend_authority_snapshots = [
+        decode_json_fields(row).get("report")
+        for row in rows(
+            telemetry_db,
+            "telemetry_authority_snapshots",
+            "process_run_id, report_json, updated_at",
+            "updated_at >= ? AND updated_at <= ?",
+            (start_iso, end_iso),
+            "updated_at",
+        )
+    ]
+    backend_authority_snapshots = [
+        item for item in backend_authority_snapshots if isinstance(item, dict)
     ]
     process_links = rows(
         telemetry_db, "telemetry_process_links", "*",
@@ -324,7 +329,8 @@ def collect(args: argparse.Namespace) -> Path:
     related: dict[str, set[str]] = {}
     for value in (
         logs, ledger, action_journal, c2_outbox, sent_ack, runtime_state,
-        telemetry, process_links,
+        telemetry, telemetry_quarantine, backend_authority_snapshots,
+        process_links,
     ):
         collect_ids(value, related)
     related_ids = {key: sorted(values) for key, values in related.items()}
@@ -405,6 +411,13 @@ def collect(args: argparse.Namespace) -> Path:
             "action_journal": len(action_journal) + len(file_journals),
             "c2_outbox": len(c2_outbox),
             "sent_ack": len(sent_ack),
+            "pending_standard_stage_uploads": len(telemetry),
+            "quarantined_standard_stage_uploads": len(
+                telemetry_quarantine
+            ),
+            "backend_authority_snapshots": len(
+                backend_authority_snapshots
+            ),
             "incident_text_entries": len(incidents),
         },
         "forbidden_content_excluded": [
@@ -421,10 +434,36 @@ def collect(args: argparse.Namespace) -> Path:
         write_json(archive, "logs/structured_logs.json", logs)
         write_json(archive, "ids/related_ids.json", related_ids)
         write_json(archive, "sidecar/calls.json", sidecar_calls)
-        write_json(archive, "timing/flow_timing.json", timing_projection(logs, "flow"))
-        write_json(archive, "timing/brain.json", timing_projection(logs, "brain"))
-        write_json(archive, "timing/send_confirm_ocr.json", timing_projection(logs, "send"))
-        write_json(archive, "telemetry/local_stage_buffer.json", telemetry)
+        write_json(
+            archive,
+            "telemetry/authority.json",
+            {
+                "schema_version": 1,
+                "operational_authority": "backend.process_stage_runs",
+                "query_api": "/api/observability/process-runs/{process_run_id}",
+                "local_data_role": (
+                    "bounded_pending_upload_quarantine_and_"
+                    "backend_authority_snapshot_only"
+                ),
+                "pending_upload_count": len(telemetry),
+                "quarantined_upload_count": len(telemetry_quarantine),
+                "backend_authority_snapshot_count": len(
+                    backend_authority_snapshots
+                ),
+                "legacy_timing_reports_emitted": False,
+            },
+        )
+        write_json(archive, "telemetry/pending_stage_uploads.json", telemetry)
+        write_json(
+            archive,
+            "telemetry/quarantined_stage_uploads.json",
+            telemetry_quarantine,
+        )
+        write_json(
+            archive,
+            "telemetry/backend_authority_snapshots.json",
+            backend_authority_snapshots,
+        )
         write_json(archive, "telemetry/process_links.json", process_links)
         write_json(archive, "state/binding.json", binding)
         write_json(archive, "state/ledger.json", ledger)
