@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import threading
 import uuid
+from types import SimpleNamespace
 
 import pytest
 from fastapi.testclient import TestClient
@@ -17,7 +18,7 @@ from app.models.lead import Lead, LeadContact
 from app.models.sales import Sales
 from app.models.wechat import WechatSessionBinding
 from app.models.worker import Worker
-from app.services import c3_service, feishu_service
+from app.services import c3_service, feishu_service, observability_service
 from app.services.observability_service import record_server_stage_best_effort
 from app.services.feishu_adapter import FeishuAdapter, FeishuAdapterError
 
@@ -369,6 +370,64 @@ def test_handoff_and_waiting_status_commit_before_single_notification(monkeypatc
         assert event.notify_status == "succeeded"
         assert event.notify_attempted_at is not None
         assert event.notify_completed_at is not None
+
+
+def test_observability_toggle_keeps_handoff_front_middle_back_identical(
+    monkeypatch,
+):
+    def run(enabled: bool) -> dict:
+        setup_function()
+        monkeypatch.setattr(
+            observability_service,
+            "get_settings",
+            lambda: SimpleNamespace(observability_enabled=enabled),
+        )
+        fake = FakeFeishuAdapter()
+        _use_fake_adapter(monkeypatch, fake)
+        conversation_id, _, _ = _seed_conversation()
+        event_id = _create_handoff(conversation_id)
+
+        with SessionLocal() as db:
+            conversation = db.get(Conversation, conversation_id)
+            event = db.get(HandoffEvent, event_id)
+            remark_code = db.scalar(
+                select(WechatSessionBinding.remark_code).where(
+                    WechatSessionBinding.conversation_id
+                    == conversation_id
+                )
+            )
+            back = {
+                "conversation_status": conversation.status,
+                "handoff_reason_code": event.handoff_reason_code,
+                "notify_status": event.notify_status,
+                "open_handoff_count": len(
+                    db.scalars(
+                        select(HandoffEvent).where(
+                            HandoffEvent.conversation_id == conversation_id,
+                            HandoffEvent.closed_at.is_(None),
+                            HandoffEvent.deleted_at.is_(None),
+                        )
+                    ).all()
+                ),
+            }
+        sent_open_id, message = fake.send_calls[0]
+        return {
+            "front": {
+                "reason": "CUSTOMER_HIGH_INTENT",
+                "conversation_status": "ai_active",
+            },
+            "middle": {
+                "lookup_calls": list(fake.lookup_calls),
+                "send_count": len(fake.send_calls),
+                "sent_open_id": sent_open_id,
+                "contains_remark_code": f"客户短码：{remark_code}" in message,
+                "contains_masked_phone": "138****6678" in message,
+                "leaks_plain_phone": "13896676678" in message,
+            },
+            "back": back,
+        }
+
+    assert run(False) == run(True)
 
 
 def test_handoff_notification_waits_for_outer_commit_across_telemetry_savepoint(

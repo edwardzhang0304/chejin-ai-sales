@@ -30,7 +30,7 @@ def test_time_window_evidence_export_is_read_only_redacted_and_complete(tmp_path
     (package_dir / "fast-uat-manifest.json").write_text(
         json.dumps(
             {
-                "version": "0.9.57",
+                "version": "0.9.58",
                 "git_commit": "commit-123",
                 "git_branch": "codex/gray-release-0.9.x",
                 "git_dirty": False,
@@ -41,7 +41,7 @@ def test_time_window_evidence_export_is_read_only_redacted_and_complete(tmp_path
     )
     contract = {
         "contract_version": 3,
-        "contract_revision": "0.9.57",
+        "contract_revision": "0.9.58",
         "observation_schema_version": 3,
     }
     (package_dir / "app" / "contracts" / "c2_contract_v3.json").write_text(
@@ -129,6 +129,75 @@ def test_time_window_evidence_export_is_read_only_redacted_and_complete(tmp_path
         )
         connection.commit()
 
+    telemetry_database = app_dir / "worker_telemetry.sqlite3"
+    stage_payload = {
+        "process_run_id": "11111111-1111-4111-8111-111111111111",
+        "stage_run_id": "22222222-2222-4222-8222-222222222222",
+        "parent_stage_run_id": None,
+        "conversation_id": "conversation-1",
+        "stage_name": "c2.message_read",
+        "component": "worker",
+        "attempt": 1,
+        "queued_at": None,
+        "started_at": EVENT_ISO,
+        "ended_at": EVENT_ISO,
+        "queue_duration_ms": None,
+        "execution_duration_ms": 321,
+        "status": "succeeded",
+        "error_code": None,
+        "trace_id": "trace-1",
+    }
+    with sqlite3.connect(telemetry_database) as connection:
+        connection.executescript(
+            """
+            CREATE TABLE telemetry_stage_events (
+              stage_run_id TEXT PRIMARY KEY, payload_json TEXT, created_at TEXT,
+              upload_attempt_count INTEGER, next_attempt_at REAL);
+            CREATE TABLE telemetry_process_links (
+              local_run_id TEXT PRIMARY KEY, process_run_id TEXT,
+              conversation_id TEXT, created_at TEXT);
+            CREATE TABLE telemetry_authority_snapshots (
+              process_run_id TEXT PRIMARY KEY, report_json TEXT,
+              updated_at TEXT);
+            """
+        )
+        connection.execute(
+            "INSERT INTO telemetry_stage_events VALUES (?,?,?,?,?)",
+            (
+                stage_payload["stage_run_id"],
+                json.dumps(stage_payload),
+                EVENT_ISO,
+                2,
+                0,
+            ),
+        )
+        connection.execute(
+            "INSERT INTO telemetry_process_links VALUES (?,?,?,?)",
+            ("read-1", stage_payload["process_run_id"], "conversation-1", EVENT_ISO),
+        )
+        connection.execute(
+            "INSERT INTO telemetry_authority_snapshots VALUES (?,?,?)",
+            (
+                stage_payload["process_run_id"],
+                json.dumps(
+                    {
+                        "process_run_id": stage_payload["process_run_id"],
+                        "stage_count": 1,
+                        "stages": [stage_payload],
+                        "summary": {
+                            "c2.message_read": {
+                                "attempt_count": 1,
+                                "execution_duration_ms": 321,
+                                "terminal_status": "succeeded",
+                            }
+                        },
+                    }
+                ),
+                EVENT_ISO,
+            ),
+        )
+        connection.commit()
+
     artifact_dir = app_dir / "artifacts" / "sidecar-1"
     artifact_dir.mkdir(parents=True)
     artifact = artifact_dir / "result.json"
@@ -179,6 +248,15 @@ def test_time_window_evidence_export_is_read_only_redacted_and_complete(tmp_path
         )
         manifest = json.loads(archive.read("manifest.json"))
         related_ids = json.loads(archive.read("ids/related_ids.json"))
+        timing_authority = json.loads(
+            archive.read("telemetry/authority.json")
+        )
+        pending_stages = json.loads(
+            archive.read("telemetry/pending_stage_uploads.json")
+        )
+        authority_snapshots = json.loads(
+            archive.read("telemetry/backend_authority_snapshots.json")
+        )
 
     assert not any(name.endswith((".sqlite3", ".png", ".env")) for name in names)
     assert "super-secret-token" not in combined
@@ -186,7 +264,7 @@ def test_time_window_evidence_export_is_read_only_redacted_and_complete(tmp_path
     assert "send-secret" not in combined
     assert "13800138000" not in combined
     assert "客户原文" not in combined
-    assert manifest["build"]["worker_version"] == "0.9.57"
+    assert manifest["build"]["worker_version"] == "0.9.58"
     assert manifest["worker"]["worker_id"] == "worker-1"
     assert manifest["worker"]["client_instance_id"] == "client-1"
     assert related_ids["conversation_id"] == ["conversation-1"]
@@ -194,4 +272,30 @@ def test_time_window_evidence_export_is_read_only_redacted_and_complete(tmp_path
     assert "state/ledger.json" in names
     assert "state/c2_outbox.json" in names
     assert "state/sent_ack.json" in names
+    assert "timing/flow_timing.json" not in names
+    assert "timing/brain.json" not in names
+    assert "timing/send_confirm_ocr.json" not in names
+    assert "telemetry/local_stage_buffer.json" not in names
+    assert timing_authority == {
+        "schema_version": 1,
+        "operational_authority": "backend.process_stage_runs",
+        "query_api": "/api/observability/process-runs/{process_run_id}",
+        "local_data_role": (
+            "bounded_pending_upload_quarantine_and_"
+            "backend_authority_snapshot_only"
+        ),
+        "pending_upload_count": 1,
+        "quarantined_upload_count": 0,
+        "backend_authority_snapshot_count": 1,
+        "legacy_timing_reports_emitted": False,
+    }
+    assert pending_stages[0]["payload"]["stage_name"] == "c2.message_read"
+    assert authority_snapshots[0]["process_run_id"] == stage_payload[
+        "process_run_id"
+    ]
+    assert authority_snapshots[0]["summary"]["c2.message_read"][
+        "execution_duration_ms"
+    ] == 321
+    assert manifest["counts"]["pending_standard_stage_uploads"] == 1
+    assert manifest["counts"]["backend_authority_snapshots"] == 1
     assert any(name.startswith("incidents/INC-UNKNOWN") for name in names)

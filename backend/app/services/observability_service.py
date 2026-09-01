@@ -10,6 +10,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.errors import AppError
+from app.contracts.c2 import c2_contract_v3
 from app.core.config import get_settings
 from app.models.observability import ProcessStageRun
 from app.models.c3 import HandoffEvent, MessageBatch, ReplyAction
@@ -20,36 +21,18 @@ from app.models.wechat import WechatSessionBinding
 from app.schemas.observability import ProcessStageEventIn
 
 
-STANDARD_STAGE_NAMES = frozenset(
-    {
-        "c0.lead_received",
-        "c0.lead_assigned",
-        "c1.add_friend_queued",
-        "c1.add_friend_execute",
-        "c1.friend_acceptance_wait",
-        "c2.scan",
-        "c2.read_queued",
-        "c2.target_locate",
-        "c2.message_read",
-        "c2.voice_transcription",
-        "c2.image_vision",
-        "c2.message_ingest",
-        "c3.brain_queued",
-        "c3.brain_generate",
-        "c3.pre_send_refresh",
-        "c3.reply_queued",
-        "c3.reply_send_confirm",
-        "c4.recall_wait",
-        "c4.recall_precheck",
-        "c4.brain_generate",
-        "c4.reply_queued",
-        "c4.reply_send_confirm",
-        "handoff.event_create",
-        "handoff.feishu_notify",
-        "handoff.wait_sales",
-        "handoff.close",
-    }
-)
+def _contract_standard_stage_names() -> frozenset[str]:
+    contract = c2_contract_v3().get("observability_contract")
+    values = contract.get("standard_stage_names") if isinstance(contract, dict) else None
+    if not isinstance(values, list) or not values:
+        raise RuntimeError("Invalid observability standard stage contract")
+    names = frozenset(str(value).strip() for value in values if str(value).strip())
+    if len(names) != len(values):
+        raise RuntimeError("Duplicate or empty observability standard stage name")
+    return names
+
+
+STANDARD_STAGE_NAMES = _contract_standard_stage_names()
 TERMINAL_STAGE_STATUSES = frozenset(
     {"succeeded", "failed", "cancelled", "abandoned"}
 )
@@ -192,6 +175,39 @@ def record_server_stage_best_effort(
             exc_info=True,
         )
         return None
+
+
+def abandon_open_server_stages_after_restart(db: Session) -> int:
+    """Close only pre-startup backend stages; never infer elapsed duration."""
+
+    if not get_settings().observability_enabled:
+        return 0
+    try:
+        rows = list(
+            db.scalars(
+                select(ProcessStageRun).where(
+                    ProcessStageRun.component == "backend",
+                    ProcessStageRun.status == "running",
+                )
+            )
+        )
+        if not rows:
+            return 0
+        ended_at = datetime.now(timezone.utc)
+        with db.begin_nested():
+            for row in rows:
+                row.status = "abandoned"
+                row.ended_at = ended_at
+                row.execution_duration_ms = None
+                row.error_code = "BACKEND_RESTARTED_DURING_STAGE"
+            db.flush()
+        return len(rows)
+    except Exception:
+        logger.warning(
+            "open observability stages could not be abandoned",
+            exc_info=True,
+        )
+        return 0
 
 
 def process_run_id_for_read_target(
@@ -376,6 +392,7 @@ def ingest_worker_stage_events(
             "updated_count": 0,
             "ignored_terminal_regressions": 0,
             "observability_enabled": False,
+            "authority_snapshots": [],
         }
     accepted = 0
     inserted = 0
@@ -470,11 +487,18 @@ def ingest_worker_stage_events(
         updated += 1
         accepted += 1
     db.flush()
+    authority_snapshots = [
+        get_process_run(db, process_run_id)
+        for process_run_id in sorted(
+            {str(event.process_run_id) for event in events}
+        )
+    ]
     return {
         "accepted_count": accepted,
         "inserted_count": inserted,
         "updated_count": updated,
         "ignored_terminal_regressions": ignored_terminal_regressions,
+        "authority_snapshots": authority_snapshots,
     }
 
 

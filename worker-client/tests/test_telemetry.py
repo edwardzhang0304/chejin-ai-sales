@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import sqlite3
 import tempfile
 import time
@@ -8,16 +9,23 @@ import uuid
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 import chejin_worker_client.telemetry as telemetry
+from chejin_worker_client.api import ApiError
 from chejin_worker_client.models import Binding
 from chejin_worker_client.telemetry import (
     StageTimer,
+    allocate_stage_attempt,
     abandon_buffered_running_stages,
+    authority_snapshots,
     enqueue_c2_flow_timing_stages,
     enqueue_existing_duration,
     flush_stage_events,
     load_process_run,
     pending_stage_events,
+    quarantined_stage_events,
+    remember_authority_snapshots,
     remember_process_run,
 )
 
@@ -33,6 +41,26 @@ class TelemetryConnectionLifecycleTest(unittest.TestCase):
 
             with self.assertRaises(sqlite3.ProgrammingError):
                 connection.execute("SELECT 1")
+
+    def test_connection_context_commits_before_closing(self):
+        with tempfile.TemporaryDirectory(
+            prefix="chejin-telemetry-commit-"
+        ) as temporary_directory:
+            path = Path(temporary_directory) / "telemetry.sqlite3"
+            with telemetry._connect(path) as connection:
+                connection.execute(
+                    "INSERT INTO telemetry_process_links "
+                    "(local_run_id, process_run_id, conversation_id, created_at) "
+                    "VALUES (?, ?, ?, ?)",
+                    ("local-1", _process_run_id(), None, telemetry.utc_iso_now()),
+                )
+
+            with sqlite3.connect(path) as connection:
+                count = connection.execute(
+                    "SELECT count(*) FROM telemetry_process_links"
+                ).fetchone()[0]
+
+            self.assertEqual(count, 1)
 
 
 def _process_run_id() -> str:
@@ -57,6 +85,36 @@ def test_stage_timer_replaces_running_with_one_terminal_event(tmp_path):
     assert events[0]["stage_run_id"] == timer.stage_run_id
     assert events[0]["status"] == "succeeded"
     assert events[0]["execution_duration_ms"] >= 0
+
+
+def test_repeated_stage_attempts_have_distinct_ids_and_rows(tmp_path):
+    db_path = tmp_path / "telemetry.sqlite3"
+    process_run_id = _process_run_id()
+    timers = []
+    for expected_attempt in (1, 2):
+        attempt, stage_run_id = allocate_stage_attempt(
+            process_run_id,
+            "c3.reply_send_confirm",
+            "reply-action-1",
+            db_path=db_path,
+        )
+        assert attempt == expected_attempt
+        timer = StageTimer(
+            process_run_id=process_run_id,
+            conversation_id="conversation-1",
+            stage_name="c3.reply_send_confirm",
+            component="worker",
+            attempt=attempt,
+            stage_run_id=stage_run_id,
+            db_path=db_path,
+        )
+        timer.finish(status="succeeded")
+        timers.append(timer)
+
+    events = pending_stage_events(db_path=db_path, limit=10)
+    assert [event["attempt"] for event in events] == [1, 2]
+    assert len({event["stage_run_id"] for event in events}) == 2
+    assert timers[0].stage_run_id != timers[1].stage_run_id
 
 
 def test_process_run_link_survives_outbox_retry_without_business_outbox_fields(
@@ -104,6 +162,14 @@ class _FailingApi:
         raise TimeoutError("telemetry endpoint unavailable")
 
 
+class _ErrorApi:
+    def __init__(self, error: Exception) -> None:
+        self.error = error
+
+    def post_observability_stage_events(self, *_args, **_kwargs):
+        raise self.error
+
+
 class _SuccessApi:
     def __init__(self) -> None:
         self.events = []
@@ -132,6 +198,265 @@ def test_upload_failure_keeps_buffer_and_never_raises_into_business(tmp_path):
             "SELECT upload_attempt_count, next_attempt_at FROM telemetry_stage_events"
         ).fetchone()
     assert row is not None and row[0] == 1 and row[1] > time.time()
+
+
+@pytest.mark.parametrize(
+    "upload_error",
+    [
+        TimeoutError("telemetry timeout"),
+        ConnectionError("telemetry offline"),
+        ApiError("OBSERVABILITY_UNAVAILABLE", "server error", 503),
+        ApiError("OBSERVABILITY_RATE_LIMITED", "slow down", 429),
+    ],
+    ids=["timeout", "offline", "http-5xx", "http-429"],
+)
+def test_retryable_upload_failure_is_deferred_outside_business_path(
+    tmp_path,
+    upload_error,
+):
+    db_path = tmp_path / "telemetry.sqlite3"
+    enqueue_existing_duration(
+        process_run_id=_process_run_id(),
+        conversation_id=None,
+        stage_name="c2.scan",
+        component="worker",
+        execution_duration_ms=123,
+        status="succeeded",
+        db_path=db_path,
+    )
+
+    uploaded = flush_stage_events(
+        _ErrorApi(upload_error),
+        Binding("worker-1", "token", "client-1"),
+        db_path=db_path,
+    )
+
+    assert uploaded == 0
+    with sqlite3.connect(db_path) as conn:
+        buffered = conn.execute(
+            "SELECT upload_attempt_count, next_attempt_at, payload_json "
+            "FROM telemetry_stage_events"
+        ).fetchone()
+    assert buffered is not None
+    assert buffered[0] == 1
+    assert buffered[1] > time.time()
+    assert json.loads(buffered[2])["attempt"] == 1
+
+
+def test_permanent_4xx_is_quarantined_and_never_retried(tmp_path):
+    db_path = tmp_path / "telemetry.sqlite3"
+    enqueue_existing_duration(
+        process_run_id=_process_run_id(),
+        conversation_id=None,
+        stage_name="c2.scan",
+        component="worker",
+        execution_duration_ms=123,
+        status="succeeded",
+        db_path=db_path,
+    )
+    api = _ErrorApi(
+        ApiError("OBSERVABILITY_STAGE_NAME_INVALID", "bad event", 400)
+    )
+
+    assert flush_stage_events(
+        api,
+        Binding("worker-1", "token", "client-1"),
+        db_path=db_path,
+    ) == 0
+    assert pending_stage_events(db_path=db_path) == []
+    quarantined = quarantined_stage_events(db_path=db_path)
+    assert len(quarantined) == 1
+    assert quarantined[0]["last_http_status"] == 400
+    assert (
+        quarantined[0]["last_error_code"]
+        == "OBSERVABILITY_STAGE_NAME_INVALID"
+    )
+
+    assert flush_stage_events(
+        api,
+        Binding("worker-1", "token", "client-1"),
+        db_path=db_path,
+    ) == 0
+
+
+def test_one_bad_event_does_not_block_valid_events_in_rejected_batch(tmp_path):
+    db_path = tmp_path / "telemetry.sqlite3"
+    good_id = str(uuid.uuid4())
+    bad_id = str(uuid.uuid4())
+    for stage_run_id in (good_id, bad_id):
+        enqueue_existing_duration(
+            process_run_id=_process_run_id(),
+            conversation_id=None,
+            stage_name="c2.scan",
+            component="worker",
+            execution_duration_ms=10,
+            status="succeeded",
+            stage_run_id=stage_run_id,
+            db_path=db_path,
+        )
+
+    class SelectiveApi:
+        def __init__(self):
+            self.accepted = []
+
+        def post_observability_stage_events(self, _binding, events, **_kwargs):
+            if len(events) > 1 or events[0]["stage_run_id"] == bad_id:
+                raise ApiError(
+                    "OBSERVABILITY_STAGE_IDENTITY_CONFLICT",
+                    "bad event",
+                    409,
+                )
+            self.accepted.extend(events)
+            return {"accepted_count": len(events)}
+
+    api = SelectiveApi()
+    assert flush_stage_events(
+        api,
+        Binding("worker-1", "token", "client-1"),
+        db_path=db_path,
+    ) == 1
+    assert [event["stage_run_id"] for event in api.accepted] == [good_id]
+    assert pending_stage_events(db_path=db_path) == []
+    quarantined = quarantined_stage_events(db_path=db_path)
+    assert [item["payload"]["stage_run_id"] for item in quarantined] == [
+        bad_id
+    ]
+
+
+def test_telemetry_buffer_has_event_payload_and_storage_caps(
+    monkeypatch,
+    tmp_path,
+):
+    db_path = tmp_path / "telemetry.sqlite3"
+    monkeypatch.setattr(telemetry, "MAX_BUFFERED_STAGE_EVENTS", 2)
+    ids = [str(uuid.uuid4()) for _ in range(3)]
+    for stage_run_id in ids[:2]:
+        assert enqueue_existing_duration(
+            process_run_id=_process_run_id(),
+            conversation_id=None,
+            stage_name="c2.scan",
+            component="worker",
+            execution_duration_ms=10,
+            status="succeeded",
+            stage_run_id=stage_run_id,
+            db_path=db_path,
+        ) is not None
+    assert enqueue_existing_duration(
+        process_run_id=_process_run_id(),
+        conversation_id=None,
+        stage_name="c2.scan",
+        component="worker",
+        execution_duration_ms=10,
+        status="succeeded",
+        stage_run_id=ids[2],
+        db_path=db_path,
+    ) is not None
+    assert len(pending_stage_events(db_path=db_path)) == 2
+
+    oversized = {
+        **pending_stage_events(db_path=db_path)[0],
+        "stage_run_id": str(uuid.uuid4()),
+        "trace_id": "x" * (telemetry.MAX_EVENT_PAYLOAD_BYTES + 1),
+    }
+    assert not telemetry.enqueue_stage_event(oversized, db_path=db_path)
+
+    monkeypatch.setattr(
+        telemetry,
+        "_telemetry_storage_bytes",
+        lambda _path: telemetry.MAX_TELEMETRY_STORAGE_BYTES,
+    )
+    capped = {
+        **pending_stage_events(db_path=db_path)[0],
+        "stage_run_id": str(uuid.uuid4()),
+    }
+    assert not telemetry.enqueue_stage_event(capped, db_path=db_path)
+    monkeypatch.setattr(
+        telemetry,
+        "_telemetry_storage_bytes",
+        lambda _path: telemetry.MAX_TELEMETRY_STORAGE_BYTES - 1,
+    )
+    assert not telemetry.enqueue_stage_event(capped, db_path=db_path)
+
+
+def test_auxiliary_tables_are_bounded_and_respect_total_storage_cap(
+    monkeypatch,
+    tmp_path,
+):
+    db_path = tmp_path / "telemetry.sqlite3"
+    monkeypatch.setattr(telemetry, "MAX_PROCESS_LINK_ROWS", 2)
+    monkeypatch.setattr(telemetry, "MAX_STAGE_ATTEMPT_ROWS", 2)
+
+    local_ids = [f"local-{index}" for index in range(3)]
+    for local_id in local_ids:
+        assert remember_process_run(
+            local_id,
+            _process_run_id(),
+            db_path=db_path,
+        )
+    for _index in range(3):
+        assert telemetry.next_local_stage_attempt(
+            _process_run_id(),
+            "c2.message_read",
+            db_path=db_path,
+        ) == 1
+
+    with sqlite3.connect(db_path) as conn:
+        link_count = conn.execute(
+            "SELECT count(*) FROM telemetry_process_links"
+        ).fetchone()[0]
+        attempt_count = conn.execute(
+            "SELECT count(*) FROM telemetry_stage_attempts"
+        ).fetchone()[0]
+    assert link_count == 2
+    assert attempt_count == 2
+    assert load_process_run(local_ids[0], db_path=db_path) is None
+
+    monkeypatch.setattr(
+        telemetry,
+        "_telemetry_storage_bytes",
+        lambda _path: telemetry.MAX_TELEMETRY_STORAGE_BYTES,
+    )
+    assert not remember_process_run(
+        "storage-capped-link",
+        _process_run_id(),
+        db_path=db_path,
+    )
+    before_attempt_count = attempt_count
+    assert telemetry.next_local_stage_attempt(
+        _process_run_id(),
+        "c2.message_read",
+        db_path=db_path,
+    ) == 1
+    with sqlite3.connect(db_path) as conn:
+        assert conn.execute(
+            "SELECT count(*) FROM telemetry_process_links"
+        ).fetchone()[0] == link_count
+        assert conn.execute(
+            "SELECT count(*) FROM telemetry_stage_attempts"
+        ).fetchone()[0] == before_attempt_count
+
+
+def test_backend_authority_snapshot_cache_is_bounded(monkeypatch, tmp_path):
+    db_path = tmp_path / "telemetry.sqlite3"
+    monkeypatch.setattr(telemetry, "MAX_AUTHORITY_SNAPSHOTS", 2)
+    process_run_ids = [_process_run_id() for _ in range(3)]
+    assert remember_authority_snapshots(
+        [
+            {
+                "process_run_id": process_run_id,
+                "stage_count": index,
+                "stages": [],
+                "summary": {},
+            }
+            for index, process_run_id in enumerate(process_run_ids)
+        ],
+        db_path=db_path,
+    ) == 3
+    cached = authority_snapshots(db_path=db_path)
+    assert len(cached) == 2
+    assert {item["process_run_id"] for item in cached}.issubset(
+        set(process_run_ids)
+    )
 
 
 def test_duplicate_upload_is_one_stage_and_success_deletes_buffer(tmp_path):
@@ -181,6 +506,57 @@ def test_local_telemetry_storage_failure_never_escapes_business_code(
     assert pending_stage_events(db_path=tmp_path / "unavailable.sqlite3") == []
 
 
+def test_real_unavailable_telemetry_path_does_not_change_business_result(tmp_path):
+    unavailable_path = tmp_path / "directory-not-database"
+    unavailable_path.mkdir()
+    timer = StageTimer(
+        process_run_id=_process_run_id(),
+        conversation_id="conversation-1",
+        stage_name="c2.message_read",
+        component="worker",
+        db_path=unavailable_path,
+    )
+
+    business_result = timer.finish(status="succeeded")
+
+    assert business_result["status"] == "succeeded"
+    assert business_result["error_code"] is None
+    assert pending_stage_events(db_path=unavailable_path) == []
+
+
+def test_real_sqlite_write_lock_drops_telemetry_without_blocking_business(tmp_path):
+    db_path = tmp_path / "telemetry.sqlite3"
+    enqueue_existing_duration(
+        process_run_id=_process_run_id(),
+        conversation_id=None,
+        stage_name="c2.scan",
+        component="worker",
+        execution_duration_ms=1,
+        status="succeeded",
+        db_path=db_path,
+    )
+    blocker = sqlite3.connect(db_path, timeout=0.1)
+    blocker.execute("BEGIN IMMEDIATE")
+    try:
+        timer = StageTimer(
+            process_run_id=_process_run_id(),
+            conversation_id="conversation-1",
+            stage_name="c2.message_read",
+            component="worker",
+            db_path=db_path,
+        )
+        business_result = timer.finish(status="succeeded")
+    finally:
+        blocker.rollback()
+        blocker.close()
+
+    assert business_result["status"] == "succeeded"
+    assert business_result["error_code"] is None
+    events = pending_stage_events(db_path=db_path)
+    assert len(events) == 1
+    assert events[0]["stage_name"] == "c2.scan"
+
+
 def test_observability_switch_disables_new_worker_events(monkeypatch, tmp_path):
     monkeypatch.setattr(
         telemetry,
@@ -200,6 +576,10 @@ def test_observability_switch_disables_new_worker_events(monkeypatch, tmp_path):
         db_path=tmp_path / "disabled.sqlite3",
     )
     timer.finish(status="succeeded")
+    assert telemetry.load_process_run(
+        "disabled-run",
+        db_path=tmp_path / "disabled.sqlite3",
+    ) is None
 
     assert not (tmp_path / "disabled.sqlite3").exists()
 

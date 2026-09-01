@@ -1,8 +1,185 @@
 {
   "contract_version": 3,
-  "contract_revision": "0.9.57",
+  "contract_revision": "0.9.58",
   "observation_schema_version": 3,
   "control_schema_version": 1,
+  "observability_contract": {
+    "release": "0.9.58",
+    "authority": "backend_process_stage_runs_and_api_obs_02",
+    "worker_local_store_role": "bounded_offline_upload_buffer_quarantine_and_backend_authority_evidence_cache_only",
+    "business_decision_use": "forbidden",
+    "reply_send_standard_timing_boundary": "worker_monotonic_timer_from_immediately_before_sidecar_process_launch_through_sidecar_return_or_exception",
+    "reply_send_sidecar_timing_role": "internal_diagnostic_only_never_the_standard_c3_or_c4_reply_send_duration",
+    "stage_attempt_identity_rule": "each_real_retry_increments_attempt_and_uses_a_fresh_distinct_stage_run_id_that_cannot_collide_after_bounded_attempt_metadata_is_pruned",
+    "transient_delivery_failure_rule": "timeout_network_408_425_429_and_5xx_are_exponential_backoff_retryable",
+    "permanent_delivery_failure_rule": "non_retryable_4xx_contract_rejections_are_quarantined_and_never_retried",
+    "worker_buffer_limits": {
+      "max_stage_events": 5000,
+      "max_event_payload_bytes": 65536,
+      "max_total_storage_bytes": 67108864,
+      "max_process_links": 5000,
+      "max_stage_attempt_rows": 5000,
+      "max_backend_authority_snapshots": 500,
+      "max_backend_authority_snapshot_bytes": 524288
+    },
+    "business_neutrality_direct_comparison_scenarios": [
+      "c0_lead_received_and_auto_assignment",
+      "c1_add_friend",
+      "c2_message_read",
+      "c3_reply_send",
+      "c4_recall",
+      "handoff_and_feishu"
+    ],
+    "backend_authority_snapshot_rule": "successful_authenticated_upload_response_returns_backend_computed_process_run_reports_cached_locally_only_for_bounded_uat_evidence_export",
+    "standard_stage_names": [
+      "c0.lead_received",
+      "c0.lead_assigned",
+      "c1.add_friend_queued",
+      "c1.add_friend_execute",
+      "c1.friend_acceptance_wait",
+      "c2.scan",
+      "c2.read_queued",
+      "c2.target_locate",
+      "c2.message_read",
+      "c2.voice_transcription",
+      "c2.image_vision",
+      "c2.message_ingest",
+      "c3.brain_queued",
+      "c3.brain_generate",
+      "c3.pre_send_refresh",
+      "c3.reply_queued",
+      "c3.reply_send_confirm",
+      "c4.recall_wait",
+      "c4.recall_precheck",
+      "c4.brain_generate",
+      "c4.reply_queued",
+      "c4.reply_send_confirm",
+      "handoff.event_create",
+      "handoff.feishu_notify",
+      "handoff.wait_sales",
+      "handoff.close"
+    ],
+    "timing_source_inventory": [
+      {
+        "source": "backend.process_stage_runs",
+        "writers": ["backend_observability_service", "worker_api_obs_01"],
+        "readers": ["api_obs_02"],
+        "standard_stage": "all_applicable_standard_stages",
+        "diagnostic_use": true,
+        "disposition": "keep_source"
+      },
+      {
+        "source": "worker.worker_telemetry.sqlite3",
+        "fields": ["telemetry_stage_events", "telemetry_process_links", "telemetry_stage_attempts", "telemetry_authority_snapshots", "upload_attempt_count", "delivery_state", "quarantine_metadata"],
+        "writers": ["worker_telemetry"],
+        "readers": ["worker_telemetry_uploader", "new_evidence_pending_quarantine_and_backend_authority_snapshot"],
+        "standard_stage": "all_worker_emitted_standard_stages",
+        "diagnostic_use": true,
+        "disposition": "keep_source"
+      },
+      {
+        "source": "worker.task_runner.flow_timing.phases",
+        "fields": ["name", "duration_seconds", "completed", "failed", "error_code"],
+        "writers": ["task_runner_c2_read"],
+        "readers": ["enqueue_c2_flow_timing_stages"],
+        "standard_stage": "c2.target_locate|c2.message_read|c2.voice_transcription|c2.image_vision",
+        "diagnostic_use": true,
+        "disposition": "map_once"
+      },
+      {
+        "source": "worker.c2_message_read_timing_and_ingest_evidence_timing",
+        "writers": ["task_runner_c2_read"],
+        "readers": ["legacy_uat_timing_projection"],
+        "standard_stage": "none_after_standard_mapping",
+        "diagnostic_use": false,
+        "disposition": "delete_duplicate"
+      },
+      {
+        "source": "sidecar.timing_timing_ms_ocr_total_duration_ms",
+        "writers": ["omniauto_sidecar"],
+        "readers": ["worker_standard_mapper", "incident_diagnostics"],
+        "standard_stage": "source_for_owning_non_reply_send_stage_and_internal_diagnostic_for_reply_send",
+        "diagnostic_use": true,
+        "disposition": "keep_source"
+      },
+      {
+        "source": "worker.sidecar_standard_stage_mapping",
+        "writers": ["worker_standard_mapper"],
+        "readers": ["worker_telemetry_uploader"],
+        "standard_stage": "owning_non_reply_send_c1_c2_c3_or_c4_stage",
+        "diagnostic_use": false,
+        "disposition": "map_once"
+      },
+      {
+        "source": "brain.stage_timings_stage_timeline_latency_trace",
+        "writers": ["omniauto_brain"],
+        "readers": ["brain_adapter_diagnostics", "incident_diagnostics"],
+        "standard_stage": "source_for_c3.brain_generate|c4.brain_generate",
+        "diagnostic_use": true,
+        "disposition": "keep_source"
+      },
+      {
+        "source": "adapter.brain_standard_stage_mapping",
+        "writers": ["brain_adapter"],
+        "readers": ["backend.process_stage_runs"],
+        "standard_stage": "c3.brain_generate|c4.brain_generate",
+        "diagnostic_use": false,
+        "disposition": "map_once"
+      },
+      {
+        "source": "vision.duration_ms_total_duration_ms",
+        "writers": ["omniauto_vision"],
+        "readers": ["worker_standard_mapper", "incident_diagnostics"],
+        "standard_stage": "source_for_c2.image_vision",
+        "diagnostic_use": true,
+        "disposition": "keep_source"
+      },
+      {
+        "source": "worker.vision_standard_stage_mapping",
+        "writers": ["worker_standard_mapper"],
+        "readers": ["worker_telemetry_uploader"],
+        "standard_stage": "c2.image_vision",
+        "diagnostic_use": false,
+        "disposition": "map_once"
+      },
+      {
+        "source": "add_friend_and_send_action_timing",
+        "fields": ["timing_ms", "timing", "send_timing", "send_observability"],
+        "writers": ["omniauto_add_friend", "omniauto_send"],
+        "readers": ["worker_standard_mapper", "incident_diagnostics"],
+        "standard_stage": "source_for_c1.add_friend_execute_and_internal_diagnostic_only_for_reply_send",
+        "diagnostic_use": true,
+        "disposition": "keep_source"
+      },
+      {
+        "source": "worker.add_friend_stage_perf_counter",
+        "writers": ["worker_stage_timer"],
+        "readers": ["worker_telemetry_uploader"],
+        "standard_stage": "c1.add_friend_execute",
+        "diagnostic_use": false,
+        "disposition": "map_once"
+      },
+      {
+        "source": "worker.reply_send_outer_stage_timer",
+        "writers": ["worker_stage_timer"],
+        "readers": ["worker_telemetry_uploader"],
+        "standard_stage": "c3.reply_send_confirm|c4.reply_send_confirm",
+        "diagnostic_use": false,
+        "disposition": "map_once"
+      },
+      {
+        "source": "published_legacy_uat_timing_files",
+        "fields": ["timing/flow_timing.json", "timing/brain.json", "timing/send_confirm_ocr.json"],
+        "writers": ["released_pre_1_1_evidence_collectors"],
+        "readers": ["legacy_incident_tools_only"],
+        "standard_stage": "none",
+        "diagnostic_use": true,
+        "disposition": "history_read_only"
+      }
+    ],
+    "new_evidence_rule": "bounded_backend_authority_snapshots_plus_pending_and_quarantined_worker_delivery_evidence_without_local_report_recalculation",
+    "legacy_timing_files_new_write": "forbidden"
+  },
   "private_multiline_text_grouping_contract": {
     "release": "0.9.57",
     "owner": "omniauto_sidecar",

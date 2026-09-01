@@ -19,6 +19,9 @@ from app.services.ai_adapter import check_ai_engine_readiness
 from app.services.c3_recovery import C3BatchRecoveryLoop
 from app.services.feishu_adapter import check_feishu_readiness
 from app.services.feishu_service import recover_handoff_notifications
+from app.services.observability_service import (
+    abandon_open_server_stages_after_restart,
+)
 from app.services.vehicle_service import knowledge_runtime_readiness, retry_pending_vehicle_file_cleanups
 
 
@@ -28,6 +31,24 @@ logger = logging.getLogger(__name__)
 
 class MessageIngestBodyTooLarge(Exception):
     pass
+
+
+def _recover_observability_on_startup_best_effort() -> int:
+    """Observability recovery must never prevent the business API from starting."""
+
+    try:
+        with SessionLocal() as observability_db:
+            abandoned_stages = abandon_open_server_stages_after_restart(
+                observability_db
+            )
+            observability_db.commit()
+        return abandoned_stages
+    except Exception:
+        logger.warning(
+            "backend observability startup recovery ignored",
+            exc_info=True,
+        )
+        return 0
 
 
 class C2IngestBodyLimitMiddleware:
@@ -122,6 +143,12 @@ def create_app() -> FastAPI:
         settings.assert_runtime_safe()
         if settings.auto_create_tables:
             Base.metadata.create_all(bind=engine)
+        abandoned_stages = _recover_observability_on_startup_best_effort()
+        if abandoned_stages:
+            logger.info(
+                "abandoned pre-restart backend observability stages=%s",
+                abandoned_stages,
+            )
         cleanup = retry_pending_vehicle_file_cleanups()
         if cleanup["pending"]:
             logger.warning("vehicle file cleanup remains pending count=%s", cleanup["pending"])

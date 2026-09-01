@@ -53,6 +53,67 @@ from chejin_worker_client.wechat_c2 import (
 
 
 class C2ContractTests(unittest.TestCase):
+    def test_observability_inventory_has_one_authority_and_exact_dispositions(self):
+        contract = c2_contract_v3()["observability_contract"]
+        self.assertEqual(contract["release"], "0.9.58")
+        self.assertEqual(
+            contract["authority"],
+            "backend_process_stage_runs_and_api_obs_02",
+        )
+        self.assertIn(
+            "before_sidecar_process_launch",
+            contract["reply_send_standard_timing_boundary"],
+        )
+        self.assertIn(
+            "internal_diagnostic_only",
+            contract["reply_send_sidecar_timing_role"],
+        )
+        self.assertIn(
+            "quarantined_and_never_retried",
+            contract["permanent_delivery_failure_rule"],
+        )
+        self.assertEqual(
+            contract["worker_buffer_limits"]["max_total_storage_bytes"],
+            64 * 1024 * 1024,
+        )
+        self.assertEqual(
+            contract["worker_buffer_limits"]["max_process_links"],
+            5000,
+        )
+        self.assertEqual(
+            contract["worker_buffer_limits"]["max_stage_attempt_rows"],
+            5000,
+        )
+        self.assertIn(
+            "distinct_stage_run_id",
+            contract["stage_attempt_identity_rule"],
+        )
+        self.assertEqual(
+            contract["business_neutrality_direct_comparison_scenarios"][0],
+            "c0_lead_received_and_auto_assignment",
+        )
+        self.assertIn(
+            "backend_computed",
+            contract["backend_authority_snapshot_rule"],
+        )
+        inventory = contract["timing_source_inventory"]
+        sources = [item["source"] for item in inventory]
+        self.assertEqual(len(sources), len(set(sources)))
+        self.assertEqual(
+            {item["disposition"] for item in inventory},
+            {
+                "keep_source",
+                "map_once",
+                "delete_duplicate",
+                "history_read_only",
+            },
+        )
+        for item in inventory:
+            self.assertTrue(item["writers"])
+            self.assertTrue(item["readers"])
+            self.assertTrue(item["standard_stage"])
+            self.assertIsInstance(item["diagnostic_use"], bool)
+
     def test_private_multiline_text_grouping_has_one_owner_and_no_cross_layer_merge(self):
         contract = c2_contract_v3()[
             "private_multiline_text_grouping_contract"
@@ -576,7 +637,7 @@ class C2ContractTests(unittest.TestCase):
 
     def test_slot_ledger_contract_separates_fact_scope_from_delivery(self):
         schema = c2_contract_v3()["slot_ledger_state_schema"]
-        self.assertEqual(c2_contract_v3()["contract_revision"], "0.9.57")
+        self.assertEqual(c2_contract_v3()["contract_revision"], "0.9.58")
         self.assertIn(
             "anchor_aliases",
             c2_contract_v3()["message_limits"][

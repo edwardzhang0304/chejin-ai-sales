@@ -16,6 +16,7 @@ import textwrap
 import threading
 import time
 import unittest
+import uuid
 import zipfile
 from datetime import datetime, timedelta, timezone
 from dataclasses import replace
@@ -111,6 +112,7 @@ from chejin_worker_client.transaction_outcomes import (
     FlowOutcomeAccumulator,
     merge_item_outcomes,
 )
+from chejin_worker_client.telemetry import pending_stage_events
 from chejin_worker_client.ui_lock import LOCK_FILE, UiLockError
 from chejin_worker_client.wechat_c2 import (
     apply_image_terminal_result,
@@ -1453,6 +1455,7 @@ class FakeApi:
         self.sent_ack_error: Exception | None = None
         self.scan_payloads: list[dict] = []
         self.message_payloads: list[dict] = []
+        self.message_process_run_ids: list[str | None] = []
         self.settlement_tokens: list[str | None] = []
         self.read_targets: list[WechatReadTarget] = []
         self.message_ingest_result = "ingested"
@@ -1849,10 +1852,12 @@ class FakeApi:
         payload: dict,
         *,
         settlement_token: str | None = None,
+        process_run_id: str | None = None,
     ):
         if self.message_ingest_error is not None:
             raise self.message_ingest_error
         self.settlement_tokens.append(settlement_token)
+        self.message_process_run_ids.append(process_run_id)
         self.message_payloads.append(payload)
         self.events.append(f"ingest:{len(payload.get('messages') or [])}")
         messages = payload.get("messages") or []
@@ -1989,6 +1994,7 @@ class FakeBridge:
             "sidecar_run_id": "send-run-1",
             "action_phase": "confirmed",
             "physical_send_triggered": True,
+            "timing": {"send_payload_duration_seconds": 0.125},
             "send_result": {
                 "ok": True,
                 "confirmed": True,
@@ -3952,6 +3958,356 @@ class TaskRunnerTest(unittest.TestCase):
         self.assertIn("complete_invite_sent:task-telemetry-failure", api.events)
         self.assertEqual([item.id for item in bridge.tasks], [task.id])
         self.assertIsNone(runner.current_task)
+
+    def test_observability_toggle_keeps_add_friend_business_trace_identical(self):
+        def run(enabled: bool) -> tuple[dict, list[dict]]:
+            task = Task(
+                id="task-observability-neutral-add-friend",
+                task_type="add_friend",
+                status="pending",
+                phone="13800000000",
+                process_run_id="22222222-2222-4222-8222-222222222222",
+            )
+            api = FakeApi(task)
+            bridge = FakeBridge(
+                RpaResult(
+                    ok=True,
+                    result_code="invite_sent",
+                    message="已发送添加通讯录邀请",
+                )
+            )
+            runner, seen = self.make_runner(api, bridge)
+            runner.binding = Binding(
+                worker_id="worker-observability-neutral",
+                worker_token="token",
+                client_instance_id="client-observability-neutral",
+                run_status="running",
+            )
+            telemetry_home = Path(
+                tempfile.mkdtemp(
+                    prefix=f"chejin-observability-{enabled}-"
+                )
+            )
+            telemetry_config = replace(
+                CONFIG,
+                observability_enabled=enabled,
+                app_dir=telemetry_home,
+            )
+
+            with patch(
+                "chejin_worker_client.telemetry.CONFIG",
+                telemetry_config,
+            ), patch(
+                "chejin_worker_client.task_runner.schedule_stage_event_upload",
+                return_value=False,
+            ):
+                runner.tick_once()
+                buffered = pending_stage_events(
+                    db_path=telemetry_home / "worker_telemetry.sqlite3"
+                )
+
+            business = {
+                "api_events": list(api.events),
+                "steps": [step.current_step for step in seen["steps"]],
+                "bridge_task_ids": [item.id for item in bridge.tasks],
+                "result_codes": [
+                    getattr(item, "result_code", None)
+                    for item in seen["results"]
+                ],
+                "current_task": runner.current_task,
+                "run_status": runner.binding.run_status,
+            }
+            return business, buffered
+
+        disabled_business, disabled_buffer = run(False)
+        enabled_business, enabled_buffer = run(True)
+
+        self.assertEqual(disabled_business, enabled_business)
+        self.assertEqual(disabled_buffer, [])
+        self.assertEqual(len(enabled_buffer), 1)
+        self.assertEqual(
+            enabled_buffer[0]["stage_name"],
+            "c1.add_friend_execute",
+        )
+
+    def test_observability_toggle_keeps_c2_front_middle_back_identical(self):
+        def clear_business_facts() -> None:
+            with db_connection() as conn:
+                conn.execute("DELETE FROM c2_action_journal")
+                conn.execute("DELETE FROM c2_message_ledger")
+                conn.execute("DELETE FROM c2_ingest_outbox")
+                conn.execute("DELETE FROM reply_send_ack_outbox")
+                conn.execute("DELETE FROM c2_runtime_state")
+                conn.execute(
+                    "DELETE FROM client_settings "
+                    "WHERE key = 'runtime_control_v1'"
+                )
+                conn.commit()
+
+        def run(enabled: bool) -> dict:
+            clear_business_facts()
+            target = WechatReadTarget(
+                conversation_id="conv-observability-neutral-c2",
+                rpa_session_key="wx:rpa:v1:neutral-c2",
+                display_name="CJNEUT02",
+                remark_code="CJNEUT02",
+                authorization_revision="revision-neutral-c2",
+                process_run_id=(
+                    "33333333-3333-4333-8333-333333333333"
+                ),
+                raw={"identity_checkpoint": identity_checkpoint()},
+            )
+            api = FakeApi(None)
+            api.read_targets = [target]
+            bridge = FakeBridge(
+                RpaResult(
+                    ok=True,
+                    result_code="invite_sent",
+                    message="unused",
+                ),
+                message_sender_role="customer",
+            )
+            bridge.get_messages_payloads = [
+                {
+                    "ok": True,
+                    "messages": [
+                        {
+                            "id": "neutral-c2-text",
+                            "source_adapter": "win32_ocr",
+                            "type": "text",
+                            "sender_role": "customer",
+                            "content": "在？",
+                        },
+                        {
+                            "id": "neutral-c2-voice-raw",
+                            "source_adapter": "win32_ocr",
+                            "type": "voice",
+                            "sender_role": "customer",
+                            "voice_duration": 2,
+                            "content": '[语音] 2"',
+                            "voice_anchor_stable_key": (
+                                "neutral-c2-voice-anchor"
+                            ),
+                            "frame_visual_id": (
+                                "neutral-c2-voice-untranscribed"
+                            ),
+                        },
+                    ],
+                },
+                {
+                    "ok": True,
+                    "messages": [
+                        {
+                            "id": "neutral-c2-text",
+                            "source_adapter": "win32_ocr",
+                            "type": "text",
+                            "sender_role": "customer",
+                            "content": "在？",
+                        },
+                        {
+                            "id": "neutral-c2-voice-done",
+                            "source_adapter": "win32_ocr",
+                            "type": "voice",
+                            "sender_role": "customer",
+                            "content": "你好",
+                            "voice_anchor_stable_key": (
+                                "neutral-c2-voice-anchor"
+                            ),
+                            "frame_visual_id": (
+                                "neutral-c2-voice-transcribed"
+                            ),
+                        },
+                    ],
+                },
+            ]
+            bridge.voice_payload = {
+                "ok": True,
+                "state": "voice_transcribe_completed",
+                "action_phase": "confirmed",
+                "business_state": "completed",
+                "business_result_confirmed": True,
+                "ui_action_performed": True,
+                "sidecar_run_id": "neutral-c2-voice-action",
+                "quality_flags": [],
+                "processed_voice_anchor_keys": [
+                    "neutral-c2-voice-anchor"
+                ],
+                "failed_voice_anchor_keys": [],
+                "transcribed_messages": [
+                    {"content": "你好", "sender_role": "customer"}
+                ],
+                "item_action_outcomes": [
+                    {
+                        "action_phase": "confirmed",
+                        "business_state": "completed",
+                        "business_result_confirmed": True,
+                        "physical_anchor_keys": [
+                            "neutral-c2-voice-anchor"
+                        ],
+                    }
+                ],
+            }
+            runner, _ = self.make_runner(api, bridge)
+            binding = Binding(
+                worker_id="worker-observability-neutral",
+                worker_token="token",
+                client_instance_id="client-observability-neutral",
+                run_status="running",
+            )
+            telemetry_home = Path(
+                tempfile.mkdtemp(prefix=f"chejin-neutral-c2-{enabled}-")
+            )
+            telemetry_config = replace(
+                CONFIG,
+                observability_enabled=enabled,
+                app_dir=telemetry_home,
+            )
+            with patch(
+                "chejin_worker_client.telemetry.CONFIG",
+                telemetry_config,
+            ), patch(
+                "chejin_worker_client.task_runner.schedule_stage_event_upload",
+                return_value=False,
+            ):
+                result = runner._read_one_wechat_target(
+                    binding,
+                    target,
+                    current_step="state_target_message_read",
+                    enforce_read_targets=True,
+                )
+            payload = api.message_payloads[0]
+            ledger = list_c2_ledger_entries(target.conversation_id)
+            return {
+                "front": {
+                    "conversation_id": target.conversation_id,
+                    "remark_code": target.remark_code,
+                    "input_messages": [
+                        ("customer", "text", "在？"),
+                        ("customer", "voice", '[语音] 2"'),
+                    ],
+                },
+                "middle": {
+                    "operation_order": list(bridge.c2_operation_order),
+                    "message_read_count": len(bridge.message_reads),
+                    "voice_action_count": len(bridge.voice_transcribes),
+                    "ingest_events": [
+                        event
+                        for event in api.events
+                        if event.startswith("ingest:")
+                    ],
+                },
+                "back": {
+                    "ok": result.get("ok"),
+                    "messages": [
+                        (
+                            item["sender_role_hint"],
+                            item["message_type"],
+                            item["content"],
+                        )
+                        for item in payload["messages"]
+                    ],
+                    "authoritative_frame_source": payload["evidence"][
+                        "authoritative_frame_source"
+                    ],
+                    "ledger": [
+                        (
+                            item["message_type"],
+                            item["terminal_state"],
+                            item["ingest_state"],
+                        )
+                        for item in ledger
+                    ],
+                },
+            }
+
+        self.assertEqual(run(False), run(True))
+
+    def test_observability_toggle_keeps_c3_front_middle_back_identical(self):
+        def clear_business_facts() -> None:
+            with db_connection() as conn:
+                conn.execute("DELETE FROM c2_action_journal")
+                conn.execute("DELETE FROM c2_message_ledger")
+                conn.execute("DELETE FROM c2_ingest_outbox")
+                conn.execute("DELETE FROM reply_send_ack_outbox")
+                conn.execute("DELETE FROM c2_runtime_state")
+                conn.execute(
+                    "DELETE FROM client_settings "
+                    "WHERE key = 'runtime_control_v1'"
+                )
+                conn.commit()
+
+        def run(enabled: bool) -> dict:
+            clear_business_facts()
+            task = self.make_chat_reply_task(
+                task_id="task-observability-neutral-c3"
+            )
+            task.process_run_id = (
+                "44444444-4444-4444-8444-444444444444"
+            )
+            api = FakeApi(task)
+            self.authorize_chat_reply_target(api)
+            api.message_ingest_result = "duplicated"
+            bridge = FakeBridge(
+                RpaResult(
+                    ok=True,
+                    result_code="invite_sent",
+                    message="unused",
+                )
+            )
+            runner, _ = self.make_runner(api, bridge)
+            runner.binding = Binding(
+                worker_id="worker-observability-neutral",
+                worker_token="token",
+                client_instance_id="client-observability-neutral",
+                run_status="running",
+            )
+            telemetry_home = Path(
+                tempfile.mkdtemp(prefix=f"chejin-neutral-c3-{enabled}-")
+            )
+            telemetry_config = replace(
+                CONFIG,
+                observability_enabled=enabled,
+                app_dir=telemetry_home,
+            )
+            with patch(
+                "chejin_worker_client.telemetry.CONFIG",
+                telemetry_config,
+            ), patch(
+                "chejin_worker_client.task_runner.schedule_stage_event_upload",
+                return_value=False,
+            ):
+                runner.tick_once()
+            ack = load_reply_send_ack_outbox("reply-action-1")
+            return {
+                "front": {
+                    "task_type": task.task_type,
+                    "reply_action_id": task.reply_action_id,
+                    "target": "CJTEST01",
+                    "reply_text": api.claim_reply_text,
+                },
+                "middle": {
+                    "claim_events": [
+                        event
+                        for event in api.events
+                        if event.startswith(("claim:", "claim_send:"))
+                    ],
+                    "send_count": len(bridge.sent_replies),
+                    "sent_text": bridge.sent_replies[0]["text"],
+                    "sent_ack_events": [
+                        event
+                        for event in api.events
+                        if event.startswith("sent_ack:")
+                    ],
+                },
+                "back": {
+                    "ack_status": ack["status"],
+                    "ack_action_phase": ack["action_phase"],
+                    "send_result": ack["ack_payload"]["send_result"],
+                    "current_task": runner.current_task,
+                },
+            }
+
+        self.assertEqual(run(False), run(True))
 
     def test_task_pull_rechecks_ui_lock_before_claiming(self):
         task = Task(
@@ -8185,6 +8541,7 @@ class TaskRunnerTest(unittest.TestCase):
 
     def test_chat_reply_claim_send_then_sends_and_acks(self):
         task = self.make_chat_reply_task(task_id="task-chat")
+        task.process_run_id = "55555555-5555-4555-8555-555555555555"
         api = FakeApi(task)
         self.authorize_chat_reply_target(api)
         api.message_ingest_result = "duplicated"
@@ -8228,6 +8585,113 @@ class TaskRunnerTest(unittest.TestCase):
             load_reply_send_ack_outbox("reply-action-1")["status"],
             "confirmed",
         )
+
+    def test_chat_reply_worker_timer_covers_sidecar_launch_and_return(self):
+        task = self.make_chat_reply_task(task_id="task-send-timing-map")
+        task.process_run_id = "11111111-1111-4111-8111-111111111111"
+        api = FakeApi(task)
+        self.authorize_chat_reply_target(api)
+        api.message_ingest_result = "duplicated"
+        bridge = FakeBridge(
+            RpaResult(ok=True, result_code="unused", message="unused"),
+            send_payload={
+                "ok": True,
+                "adapter": "mock",
+                "state": "send_mock",
+                "sidecar_run_id": "send-timing-run-1",
+                "action_phase": "confirmed",
+                "physical_send_triggered": True,
+                "timing": {"send_payload_duration_seconds": 4.321},
+                "send_result": {
+                    "ok": True,
+                    "confirmed": True,
+                    "result": "sent",
+                    "action_phase": "confirmed",
+                    "physical_send_triggered": True,
+                },
+            },
+        )
+        runner, _ = self.make_runner(api, bridge)
+        runner.binding = Binding(
+            worker_id="worker-send-timing-map",
+            worker_token="token",
+            client_instance_id="client-send-timing-map",
+            run_status="running",
+        )
+        mapped: list[dict] = []
+        timers: list[object] = []
+        boundary: list[str] = []
+
+        class BoundaryTimer:
+            def __init__(self, **kwargs):
+                self.kwargs = dict(kwargs)
+                self.trace_id = None
+                self.finished = None
+                timers.append(self)
+                if kwargs.get("stage_name") == "c3.reply_send_confirm":
+                    boundary.append("worker_timer_start")
+
+            def finish(self, **kwargs):
+                self.finished = dict(kwargs)
+                if self.kwargs.get("stage_name") == "c3.reply_send_confirm":
+                    boundary.append("worker_timer_finish")
+                return dict(kwargs)
+
+        original_send_reply = bridge.send_reply
+
+        def send_reply_with_boundary(**kwargs):
+            boundary.append("sidecar_launch")
+            result = original_send_reply(**kwargs)
+            boundary.append("sidecar_return")
+            return result
+
+        with patch(
+            "chejin_worker_client.task_runner.enqueue_existing_duration",
+            side_effect=lambda **kwargs: mapped.append(kwargs) or {},
+        ), patch(
+            "chejin_worker_client.task_runner.schedule_stage_event_upload",
+            return_value=True,
+        ), patch(
+            "chejin_worker_client.task_runner.StageTimer",
+            side_effect=BoundaryTimer,
+        ), patch.object(
+            bridge,
+            "send_reply",
+            side_effect=send_reply_with_boundary,
+        ):
+            runner.tick_once()
+
+        reply_timers = [
+            timer
+            for timer in timers
+            if timer.kwargs["stage_name"] == "c3.reply_send_confirm"
+        ]
+        self.assertEqual(len(reply_timers), 1)
+        self.assertEqual(reply_timers[0].kwargs["component"], "worker")
+        self.assertEqual(reply_timers[0].kwargs["attempt"], 1)
+        uuid.UUID(reply_timers[0].kwargs["stage_run_id"])
+        self.assertEqual(reply_timers[0].trace_id, "send-timing-run-1")
+        self.assertEqual(reply_timers[0].finished, {
+            "status": "succeeded",
+            "error_code": None,
+        })
+        self.assertEqual(
+            boundary,
+            [
+                "worker_timer_start",
+                "sidecar_launch",
+                "sidecar_return",
+                "worker_timer_finish",
+            ],
+        )
+        self.assertFalse(
+            any(
+                event["stage_name"] == "c3.reply_send_confirm"
+                for event in mapped
+            ),
+            "Sidecar timing remains diagnostic and must not replace the Worker boundary",
+        )
+        self.assertIn("sent_ack:sent:None", api.events)
 
     def test_action_journal_vertical_c3_send_reaches_sent_ack(self):
         task = self.make_chat_reply_task(
@@ -12614,6 +13078,7 @@ class TaskRunnerTest(unittest.TestCase):
                 row_fingerprint={"title_text": "CJTEST01 许聪"},
                 ocr_confidence=0.98,
                 authorization_revision="revision-text-and-voice",
+                process_run_id="33333333-3333-4333-8333-333333333333",
                 raw={"identity_checkpoint": identity_checkpoint()},
             )
         ]
@@ -12754,17 +13219,7 @@ class TaskRunnerTest(unittest.TestCase):
             api.message_payloads[0]["evidence"]["flow_gate_errors"],
             [],
         )
-        timing = api.message_payloads[0]["evidence"]["timing"]
-        self.assertEqual(timing["schema_version"], 1)
-        self.assertEqual(
-            [phase["name"] for phase in timing["phases"]],
-            [
-                "target_chat_locate",
-                "initial_message_read",
-                "voice_transcribe",
-                "build_ingest_payload",
-            ],
-        )
+        self.assertNotIn("timing", api.message_payloads[0]["evidence"])
 
     def test_voice_action_concurrent_new_text_commits_one_ordered_batch_and_one_brain(self):
         unique = str(time.time_ns())
@@ -16672,7 +17127,7 @@ class TaskRunnerTest(unittest.TestCase):
             ["MESSAGE_CROSS_ROUND_IDENTITY_AMBIGUOUS"],
         )
 
-    def test_identity_alignment_failure_marks_message_read_timing_failed(self):
+    def test_identity_alignment_failure_maps_failed_standard_stage_without_duplicate_log(self):
         api = FakeApi(None)
         bridge = FakeBridge(
             RpaResult(ok=True, result_code="unused", message="unused")
@@ -16710,6 +17165,7 @@ class TaskRunnerTest(unittest.TestCase):
             raw={"identity_checkpoint": identity_checkpoint()},
         )
 
+        emitted_timings: list[dict] = []
         with patch(
             "chejin_worker_client.task_runner.compare_business_viewport_continuity",
             return_value={
@@ -16722,6 +17178,17 @@ class TaskRunnerTest(unittest.TestCase):
                     {"old_start": 0, "new_start": 1, "size": 1},
                 ],
             },
+        ), patch(
+            "chejin_worker_client.task_runner.load_process_run",
+            return_value="11111111-1111-4111-8111-111111111111",
+        ), patch(
+            "chejin_worker_client.task_runner.enqueue_c2_flow_timing_stages",
+            side_effect=lambda **kwargs: emitted_timings.append(
+                kwargs["flow_timing"]
+            )
+            or [],
+        ), patch(
+            "chejin_worker_client.task_runner.schedule_stage_event_upload"
         ):
             result = runner._read_one_wechat_target(
                 binding,
@@ -16731,16 +17198,9 @@ class TaskRunnerTest(unittest.TestCase):
             )
 
         self.assertFalse(result["ok"])
-        timing_log = next(
-            row
-            for row in read_logs(limit=50)
-            if row.get("event") == "c2_message_read_timing"
-            and (row.get("metadata") or {}).get("conversation_id")
-            == target.conversation_id
-        )
         read_phase = next(
             phase
-            for phase in timing_log["metadata"]["phases"]
+            for phase in emitted_timings[0]["phases"]
             if phase["name"] == "initial_message_read"
         )
         self.assertIs(read_phase["completed"], False)
@@ -16748,6 +17208,12 @@ class TaskRunnerTest(unittest.TestCase):
         self.assertEqual(
             read_phase["error_code"],
             "MESSAGE_CROSS_ROUND_IDENTITY_AMBIGUOUS",
+        )
+        self.assertFalse(
+            any(
+                row.get("event") == "c2_message_read_timing"
+                for row in read_logs(limit=50)
+            )
         )
 
     def test_all_c2_outbox_submit_types_preserve_original_json_after_network_failure(self):
@@ -25686,6 +26152,7 @@ class TaskRunnerTest(unittest.TestCase):
             row_fingerprint={"title_text": "CJIMAGE01 客户"},
             read_reason="waiting_user_reply",
             authorization_revision=f"revision-journal-image-{unique}",
+            process_run_id="44444444-4444-4444-8444-444444444444",
         )
         api.read_targets = [target]
         observation = {
