@@ -256,6 +256,7 @@ class PackagingScriptsTest(unittest.TestCase):
         self.assertIn("CheJinUpdater.exe", build_script)
         self.assertIn("generate-update-package-manifest.py", build_script)
         self.assertIn('name="CheJinUpdater"', updater_spec)
+        self.assertIn("updater_runtime_hook.py", updater_spec)
         self.assertIn("Start-Process -FilePath $UpdaterExe", process_test)
         self.assertIn("updater-ready.json", process_test)
         self.assertIn('Invoke-UpdateCase $Success "succeeded"', process_test)
@@ -265,6 +266,7 @@ class PackagingScriptsTest(unittest.TestCase):
         self.assertIn("Convert-SignedReleaseToClientIdentity", process_test)
         self.assertIn('Add-Member -NotePropertyName "latest_version"', process_test)
         self.assertIn("Updater rejected the plan before ready", process_test)
+        self.assertIn("updater-startup.jsonl", process_test)
         self.assertIn("$UpdaterReadyTimeoutSeconds = 120", process_test)
         self.assertIn(
             '$BuildPython = Join-Path $Root ".venv\\Scripts\\python.exe"',

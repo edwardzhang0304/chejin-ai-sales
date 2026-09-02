@@ -117,6 +117,30 @@ def test_independent_updater_ready_timeout_matches_packaged_startup_budget() -> 
     assert coordinator_module.UPDATER_READY_TIMEOUT_SECONDS == 120.0
 
 
+def test_updater_launcher_injects_bounded_startup_diagnostic_path(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, object] = {}
+
+    def fake_popen(arguments, **kwargs):
+        captured["arguments"] = arguments
+        captured.update(kwargs)
+        return SimpleNamespace(pid=123)
+
+    monkeypatch.setattr(coordinator_module.subprocess, "Popen", fake_popen)
+    updater = tmp_path / "CheJinUpdater.exe"
+    plan = tmp_path / "control" / "update-plan.json"
+    UpdateCoordinator._launch_updater(updater, plan, "secret-token")
+
+    environment = captured["env"]
+    assert isinstance(environment, dict)
+    assert environment["CHEJIN_UPDATER_DIAGNOSTIC_PATH"] == str(
+        plan.parent / "updater-startup.jsonl"
+    )
+    assert "secret-token" not in environment["CHEJIN_UPDATER_DIAGNOSTIC_PATH"]
+
+
 def test_no_update_does_not_pause_or_close_new_work_gate(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     binding = Binding(
         "w", "worker-secret-token-must-not-enter-update-plan", "instance", run_status="running"

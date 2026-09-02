@@ -1190,12 +1190,17 @@ class UpdateCoordinator:
 
     @staticmethod
     def _launch_updater(updater: Path, plan_path: Path, token: str) -> subprocess.Popen:
+        updater_env = os.environ.copy()
+        updater_env["CHEJIN_UPDATER_DIAGNOSTIC_PATH"] = str(
+            plan_path.parent / "updater-startup.jsonl"
+        )
         return subprocess.Popen(
             [str(updater), "--plan", str(plan_path), "--token", token],
             cwd=str(updater.parent),
             stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
+            env=updater_env,
             creationflags=_creation_flags(),
         )
 
@@ -1206,6 +1211,10 @@ class UpdateCoordinator:
         token: str,
         current_pid: int,
     ) -> subprocess.Popen:
+        updater_env = os.environ.copy()
+        updater_env["CHEJIN_UPDATER_DIAGNOSTIC_PATH"] = str(
+            plan_path.parent / "updater-recovery-startup.jsonl"
+        )
         return subprocess.Popen(
             [
                 str(updater),
@@ -1221,5 +1230,6 @@ class UpdateCoordinator:
             stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
+            env=updater_env,
             creationflags=_creation_flags(),
         )

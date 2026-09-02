@@ -30,6 +30,34 @@ from .update_runtime_health_contract import validate_authenticated_runtime_marke
 PLAN_SCHEMA_VERSION = 1
 
 
+def _startup_diagnostic(phase: str, **details: Any) -> None:
+    """Append bounded startup evidence without recording arguments or secrets."""
+
+    raw_path = str(os.environ.get("CHEJIN_UPDATER_DIAGNOSTIC_PATH") or "").strip()
+    if not raw_path:
+        return
+    payload: dict[str, Any] = {
+        "timestamp_epoch": time.time(),
+        "phase": str(phase),
+        "pid": os.getpid(),
+    }
+    for key in ("error_type", "error_code"):
+        value = str(details.get(key) or "").strip()
+        if value:
+            payload[key] = value[:120]
+    try:
+        path = Path(raw_path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a", encoding="utf-8") as handle:
+            handle.write(
+                json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+                + "\n"
+            )
+    except Exception:
+        # Observability cannot affect directory replacement or rollback.
+        return
+
+
 def _atomic_json_write(path: Path, payload: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_suffix(path.suffix + ".tmp")
@@ -343,7 +371,9 @@ def run_update(plan_path: Path, token: str) -> int:
     plan: dict[str, Any] = {}
     old_exit_confirmed = False
     try:
+        _startup_diagnostic("plan_validation_started")
         plan = validate_update_plan(plan_path, token)
+        _startup_diagnostic("plan_validation_succeeded")
         paths = plan["_paths"]
         current: Path = paths["current"]
         staged: Path = paths["staged"]
@@ -362,6 +392,7 @@ def run_update(plan_path: Path, token: str) -> int:
                 "pid": os.getpid(),
             },
         )
+        _startup_diagnostic("ready_marker_written")
         if not wait_for_pid_exit(old_pid, float(plan.get("old_exit_timeout_seconds") or 30)):
             raise ClientUpdateError("UPDATE_INSTALL_FAILED", "旧客户端未能正常退出")
         old_exit_confirmed = True
@@ -410,6 +441,11 @@ def run_update(plan_path: Path, token: str) -> int:
         return 0
     except Exception as exc:
         code = exc.code if isinstance(exc, ClientUpdateError) else "UPDATE_INSTALL_FAILED"
+        _startup_diagnostic(
+            "update_failed",
+            error_type=type(exc).__name__,
+            error_code=code,
+        )
         message = str(exc)
         try:
             paths = plan.get("_paths") if isinstance(plan.get("_paths"), dict) else {}
@@ -579,6 +615,7 @@ def run_missing_result_recovery(
 
 
 def main(argv: list[str] | None = None) -> int:
+    _startup_diagnostic("main_entered")
     parser = argparse.ArgumentParser(prog="CheJinUpdater")
     parser.add_argument("--plan", type=Path, required=True)
     parser.add_argument("--token", required=True)
