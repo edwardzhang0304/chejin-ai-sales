@@ -27,6 +27,9 @@
     "same_capture_brain_invalid_plan_retry_fallback_timeout_seconds": 60,
     "same_capture_brain_repair_parse_retry_timeout_seconds": 60,
     "same_capture_brain_repair_parse_retry_fallback_timeout_seconds": 60,
+    "max_tokens": 8192,
+    "routine_product_fast_max_tokens": 8192,
+    "low_authority_fast_max_tokens": 8192,
     "fallback_to_legacy_on_error": false
   }
 }

@@ -67,7 +67,7 @@ DEFAULT_VERY_LARGE_PROMPT_TIMEOUT_SECONDS = 90
 DEFAULT_FALLBACK_TIMEOUT_SECONDS = 45
 DEFAULT_LARGE_PROMPT_THRESHOLD_CHARS = 5000
 DEFAULT_VERY_LARGE_PROMPT_THRESHOLD_CHARS = 12000
-DEFAULT_MAX_TOKENS = 1600
+DEFAULT_MAX_TOKENS = 8192
 DEFAULT_TEMPERATURE = 0.35
 DEFAULT_HISTORY_CHAR_BUDGET = 1200
 DEFAULT_PERSONA_PROMPT = (
@@ -525,7 +525,7 @@ def apply_routine_product_fast_brain_settings(settings: dict[str, Any], decision
     fast["max_prompt_style_examples"] = 0
     fast["max_prompt_rag_hits"] = 0
     fast["prompt_item_text_chars"] = min(int(settings.get("prompt_item_text_chars") or 220), 120)
-    fast["max_tokens"] = min(int(settings.get("max_tokens") or DEFAULT_MAX_TOKENS), positive_int_setting(settings, "routine_product_fast_max_tokens", 900, minimum=512))
+    fast["max_tokens"] = min(int(settings.get("max_tokens") or DEFAULT_MAX_TOKENS), positive_int_setting(settings, "routine_product_fast_max_tokens", DEFAULT_MAX_TOKENS, minimum=512))
     fast["timeout_seconds"] = min(int(settings.get("timeout_seconds") or DEFAULT_TIMEOUT_SECONDS), positive_int_setting(settings, "routine_product_fast_timeout_seconds", 18, minimum=5))
     fast["fallback_timeout_seconds"] = min(int(settings.get("fallback_timeout_seconds") or DEFAULT_FALLBACK_TIMEOUT_SECONDS), positive_int_setting(settings, "routine_product_fast_fallback_timeout_seconds", 16, minimum=5))
     return fast
@@ -549,7 +549,7 @@ def apply_low_authority_fast_brain_settings(settings: dict[str, Any], decision: 
     fast["max_prompt_style_examples"] = 0
     fast["max_prompt_rag_hits"] = 0
     fast["prompt_item_text_chars"] = min(int(settings.get("prompt_item_text_chars") or 220), 90)
-    fast["max_tokens"] = min(int(settings.get("max_tokens") or DEFAULT_MAX_TOKENS), positive_int_setting(settings, "low_authority_fast_max_tokens", 360, minimum=128))
+    fast["max_tokens"] = min(int(settings.get("max_tokens") or DEFAULT_MAX_TOKENS), positive_int_setting(settings, "low_authority_fast_max_tokens", DEFAULT_MAX_TOKENS, minimum=128))
     fast["timeout_seconds"] = min(int(settings.get("timeout_seconds") or DEFAULT_TIMEOUT_SECONDS), positive_int_setting(settings, "low_authority_fast_timeout_seconds", 12, minimum=3))
     fast["fallback_timeout_seconds"] = min(int(settings.get("fallback_timeout_seconds") or DEFAULT_FALLBACK_TIMEOUT_SECONDS), positive_int_setting(settings, "low_authority_fast_fallback_timeout_seconds", 10, minimum=3))
     fast["quality_repair_timeout_seconds"] = min(int(settings.get("quality_repair_timeout_seconds") or 8), positive_int_setting(settings, "low_authority_fast_repair_timeout_seconds", 6, minimum=3))
@@ -1781,7 +1781,7 @@ def effective_brain_settings(config: dict[str, Any]) -> dict[str, Any]:
     settings.setdefault("low_authority_fast_model_tier", "flash")
     settings.setdefault("low_authority_fast_timeout_seconds", 12)
     settings.setdefault("low_authority_fast_fallback_timeout_seconds", 10)
-    settings.setdefault("low_authority_fast_max_tokens", 700)
+    settings.setdefault("low_authority_fast_max_tokens", DEFAULT_MAX_TOKENS)
     settings.setdefault("low_authority_fast_repair_timeout_seconds", 6)
     settings.setdefault("low_authority_fast_repair_max_tokens", 520)
     settings.setdefault("fallback_to_legacy_on_error", False)

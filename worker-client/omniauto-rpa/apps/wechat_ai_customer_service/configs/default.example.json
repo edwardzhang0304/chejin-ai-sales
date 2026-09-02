@@ -197,7 +197,7 @@
     "fallback_timeout_seconds": 45,
     "large_prompt_timeout_threshold_chars": 5000,
     "very_large_prompt_timeout_threshold_chars": 12000,
-    "max_tokens": 900,
+    "max_tokens": 8192,
     "temperature": 0.35,
     "max_reply_segments": 3,
     "require_fact_claims": true,
@@ -230,6 +230,8 @@
     "max_prompt_style_examples": 1,
     "max_prompt_rag_hits": 1,
     "prompt_item_text_chars": 220,
+    "routine_product_fast_max_tokens": 8192,
+    "low_authority_fast_max_tokens": 8192,
     "blocking_shadow_enabled": false,
     "include_brain_input_in_audit": false,
     "include_evidence_pack_in_audit": false

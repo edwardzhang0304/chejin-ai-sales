@@ -4548,7 +4548,7 @@ def check_local_customer_service_settings_follow_active_tenant_for_brain_mode() 
         brain = normalized.get("customer_service_brain", {}) or {}
         assert_true(brain.get("enabled") is True, "active tenant brain_first setting should enable Brain")
         assert_equal(brain.get("mode"), "brain_first", "Brain mode should come from the active tenant settings")
-        assert_equal(int(brain.get("max_tokens") or 0), 2600, "Brain default token budget should avoid truncated plans")
+        assert_equal(int(brain.get("max_tokens") or 0), 8192, "Brain default token budget should avoid truncated plans")
     finally:
         remove_file(settings_store.settings_path)
         if old_tenant is None:

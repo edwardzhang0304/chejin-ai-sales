@@ -4913,7 +4913,7 @@ def apply_local_customer_service_settings(config: dict[str, Any]) -> dict[str, A
     customer_service_brain["mode"] = brain_mode
     customer_service_brain.setdefault("model_tier", "pro")
     customer_service_brain.setdefault("timeout_seconds", 18)
-    customer_service_brain.setdefault("max_tokens", 2600)
+    customer_service_brain.setdefault("max_tokens", 8192)
     customer_service_brain.setdefault("temperature", 0.35)
     customer_service_brain.setdefault("max_reply_segments", 3)
     customer_service_brain.setdefault("require_fact_claims", True)
