@@ -6,6 +6,7 @@ from pathlib import Path
 
 from client_delivery_policy import (
     is_client_forbidden_path,
+    is_client_runtime_junk_path,
     load_client_exclude_paths,
 )
 
@@ -32,6 +33,7 @@ def include_file(
     path: Path,
     *,
     client_exclude_paths: tuple[str, ...] = (),
+    runtime_delivery: bool = False,
 ) -> bool:
     rel = path.relative_to(root)
     rel_name = rel.as_posix()
@@ -39,6 +41,8 @@ def include_file(
         rel_name,
         client_exclude_paths,
     ):
+        return False
+    if runtime_delivery and is_client_runtime_junk_path(rel_name):
         return False
     if any(part in EXCLUDED_PARTS for part in rel.parts):
         return False
@@ -57,10 +61,13 @@ def tree_manifest(
     root: Path,
     *,
     client_delivery: bool = False,
+    runtime_delivery: bool = False,
 ) -> dict[str, object]:
     resolved = root.resolve()
     client_exclude_paths = (
-        load_client_exclude_paths(resolved) if client_delivery else ()
+        load_client_exclude_paths(resolved)
+        if client_delivery or runtime_delivery
+        else ()
     )
     files = sorted(
         (
@@ -72,6 +79,7 @@ def tree_manifest(
                 resolved,
                 path,
                 client_exclude_paths=client_exclude_paths,
+                runtime_delivery=runtime_delivery,
             )
         ),
         key=lambda path: path.relative_to(resolved).as_posix(),
@@ -157,8 +165,8 @@ def load_source_provenance(root: Path) -> dict[str, object]:
 
 
 def verify_same_tree(source_root: Path, packaged_root: Path) -> dict[str, object]:
-    source = tree_manifest(source_root, client_delivery=True)
-    packaged = tree_manifest(packaged_root, client_delivery=True)
+    source = tree_manifest(source_root, runtime_delivery=True)
+    packaged = tree_manifest(packaged_root, runtime_delivery=True)
     if source["tree_sha256"] != packaged["tree_sha256"]:
         source_files = {
             str(item["path"]): str(item["sha256"])

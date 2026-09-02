@@ -134,7 +134,7 @@ def build(*, runtime_root: Path, output_dir: Path, git_commit: str, git_branch: 
     shutil.copy2(ROOT / "packaging" / "collect_uat_evidence.py", package_root / "collect_uat_evidence.py")
 
     provenance = load_source_provenance(OMNIAUTO_ROOT)
-    omniauto_source = tree_manifest(OMNIAUTO_ROOT, client_delivery=True)
+    omniauto_source = tree_manifest(OMNIAUTO_ROOT, runtime_delivery=True)
     identity = {
         "schema_version": 1,
         "version": _version(),
