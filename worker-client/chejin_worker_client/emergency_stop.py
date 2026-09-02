@@ -28,13 +28,6 @@ def trigger_emergency_stop(*, reason: str, origin: str = "") -> dict[str, Any]:
 
 def emergency_stop_requested() -> bool:
     return _STOPPED.is_set()
-
-
-def emergency_stop_state() -> dict[str, Any]:
-    with _LOCK:
-        return dict(_STATE)
-
-
 def reset_emergency_stop_for_tests() -> None:
     with _LOCK:
         _STATE.clear()

@@ -104,7 +104,7 @@ class UiContractTest(unittest.TestCase):
         self.assertIn("checkForUpdates", web_app)
         self.assertIn("onCheckForUpdates", web_app)
         self.assertIn("\\u68C0\\u67E5\\u66F4\\u65B0", web_app)
-        self.assertIn("update.status_text", web_app)
+        self.assertIn("status_text", web_app)
 
         component_root = ROOT.parent / "packages" / "worker-ui-baseline" / "src"
         component = (component_root / "WorkerClientBaseline.tsx").read_text(
@@ -116,6 +116,7 @@ class UiContractTest(unittest.TestCase):
         ).read_text(encoding="utf-8")
         self.assertIn('className="cw-settings-action"', component)
         self.assertIn("onCheckForUpdates", component)
+        self.assertIn("update.status_text", component)
         self.assertNotIn('isSubPage || screen === "bind"', component)
         runtime_component = (
             component_root / "WorkerClientRuntimeApp.tsx"
@@ -256,7 +257,7 @@ class UiContractTest(unittest.TestCase):
         self.assertIn('return "client-faulted"', web_ui)
         self.assertIn("客户端发生技术故障，已停止领取新任务", component_ui)
         self.assertIn("故障证据已保留", component_ui)
-        self.assertIn('screen === "client-faulted"', app_js.read_text(encoding="utf-8"))
+        self.assertIn('screen === "client-faulted"', component_ui)
         self.assertIn('"客户端故障" if is_faulted', classic_ui)
         self.assertNotIn("本地微信操作已停止", web_ui)
         self.assertFalse((ROOT / "web-ui-src").exists())

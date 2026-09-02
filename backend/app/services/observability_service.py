@@ -38,12 +38,6 @@ TERMINAL_STAGE_STATUSES = frozenset(
 )
 PROCESS_RUN_NAMESPACE = uuid.UUID("2446d48e-7d89-48f8-a708-37644bb57cb3")
 logger = logging.getLogger(__name__)
-
-
-def new_process_run_id() -> str:
-    return str(uuid.uuid4())
-
-
 def process_run_id_for_key(kind: str, stable_key: str) -> str:
     """Server-owned deterministic identity for a persisted business start."""
 

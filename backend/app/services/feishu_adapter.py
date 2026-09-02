@@ -260,13 +260,5 @@ def get_feishu_adapter() -> FeishuAdapter:
         if _adapter is None:
             _adapter = FeishuAdapter()
         return _adapter
-
-
-def reset_feishu_adapter() -> None:
-    global _adapter
-    with _adapter_lock:
-        _adapter = None
-
-
 def check_feishu_readiness() -> dict[str, Any]:
     return get_feishu_adapter().configuration_status()

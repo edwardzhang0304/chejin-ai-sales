@@ -21,6 +21,7 @@ from build_policy import BuildPolicyError, validate_build_policy
 from client_delivery_policy import (
     forbidden_tree_entries,
     is_client_forbidden_path,
+    is_client_runtime_junk_path,
     load_client_exclude_paths,
 )
 from build_source import (
@@ -78,6 +79,99 @@ class PackagingScriptsTest(unittest.TestCase):
             text = script.read_text(encoding="utf-8-sig").lstrip()
             if "param(" in text:
                 self.assertTrue(text.startswith("param("), f"{script.name} 的 param 块必须在脚本最前面")
+
+    def test_installed_runtime_excludes_omniauto_tests_and_repository_metadata(self):
+        excluded = (
+            "apps/wechat_ai_customer_service/tests/test_sidecar.py",
+            "apps/wechat_ai_customer_service/optional_plugins/voice/tests/test_voice.py",
+            "uv.lock",
+            "README.md",
+            "START_HERE.md",
+            "PROJECT_STRUCTURE.md",
+            "pyproject.toml",
+        )
+        retained = (
+            "apps/wechat_ai_customer_service/adapters/wechat_win32_ocr_sidecar.py",
+            "apps/wechat_ai_customer_service/optional_plugins/vision/capture/transaction.py",
+            "apps/wechat_ai_customer_service/workflows/customer_service_brain.py",
+        )
+
+        self.assertTrue(all(is_client_runtime_junk_path(path) for path in excluded))
+        self.assertFalse(any(is_client_runtime_junk_path(path) for path in retained))
+        for packaging_path in (
+            ROOT / "packaging" / "chejin-worker-client.spec",
+            ROOT / "scripts" / "build-fast-uat-package.py",
+        ):
+            self.assertIn(
+                "is_client_runtime_junk_path",
+                packaging_path.read_text(encoding="utf-8"),
+            )
+
+    def test_worker_web_asset_is_a_minified_production_bundle(self):
+        build_script = (
+            ROOT.parent
+            / "packages"
+            / "worker-ui-baseline"
+            / "scripts"
+            / "build-worker-assets.mjs"
+        ).read_text(encoding="utf-8")
+        bundle = (
+            ROOT / "chejin_worker_client" / "web_assets" / "worker-web-app.js"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn('"--minify"', build_script)
+        self.assertIn('process.env.NODE_ENV="production"', build_script)
+        self.assertNotIn("react.development.js", bundle)
+        self.assertNotIn("Download the React DevTools", bundle)
+        self.assertLess(len(bundle.encode("utf-8")), 300_000)
+
+    def test_packaged_full_diagnostics_reports_source_checks_unavailable(self):
+        module = self._load_fast_uat_package_module()
+        with tempfile.TemporaryDirectory() as temp_dir:
+            package_root = Path(temp_dir) / "package"
+            module._copy_omniauto(package_root)
+            packaged_omniauto = package_root / "omniauto-rpa"
+            self.assertFalse(
+                (
+                    packaged_omniauto
+                    / "apps"
+                    / "wechat_ai_customer_service"
+                    / "tests"
+                ).exists()
+            )
+            command = subprocess.run(
+                [
+                    sys.executable,
+                    "-c",
+                    (
+                        "import json; "
+                        "from apps.wechat_ai_customer_service.admin_backend.services."
+                        "diagnostics_service import DiagnosticsService; "
+                        "print(json.dumps(DiagnosticsService().full_checks("
+                        "include_llm_probe=True, include_wechat_live=True), "
+                        "ensure_ascii=False))"
+                    ),
+                ],
+                cwd=packaged_omniauto,
+                env={**os.environ, "PYTHONPATH": str(packaged_omniauto)},
+                capture_output=True,
+                text=True,
+                timeout=30,
+                check=True,
+            )
+            checks = json.loads(command.stdout)
+
+        self.assertEqual(len(checks), 1)
+        self.assertFalse(checks[0]["available"])
+        self.assertEqual(checks[0]["status"], "unavailable")
+        self.assertEqual(
+            checks[0]["issues"][0]["code"],
+            "SOURCE_LEVEL_DIAGNOSTICS_NOT_INCLUDED",
+        )
+        self.assertEqual(
+            checks[0]["issues"][0]["title"],
+            "正式客户端不提供源码级诊断",
+        )
 
     def test_retired_desktop_input_feature_has_no_active_source_residue(self):
         source_roots = (
@@ -212,7 +306,7 @@ class PackagingScriptsTest(unittest.TestCase):
         self.assertIn("delivery ZIP does not contain the packaged runtime directory", workflow)
         self.assertIn("app_name = [string]$manifest.app_name", workflow)
         self.assertIn("delivery ZIP executable SHA256 mismatch", workflow)
-        self.assertIn("chejin-worker-v0.9.59-windows-x64.delivery.json", workflow)
+        self.assertIn("chejin-worker-v0.9.60-windows-x64.delivery.json", workflow)
         self.assertIn("CHEJIN_VISION_CLIENT_API_KEY", workflow)
         self.assertIn("vision_credential_embedded", workflow)
         self.assertIn("vision_configuration_locked", workflow)
@@ -238,7 +332,7 @@ class PackagingScriptsTest(unittest.TestCase):
             workflow,
         )
         self.assertIn("--artifact-storage-key", workflow)
-        self.assertIn("chejin-worker-v0.9.59-windows-x64.release.json", workflow)
+        self.assertIn("chejin-worker-v0.9.60-windows-x64.release.json", workflow)
         self.assertIn("must not contain a temporary download URL", workflow)
 
     def test_formal_update_package_contains_independent_updater_and_real_process_gate(self):
@@ -649,7 +743,7 @@ class PackagingScriptsTest(unittest.TestCase):
             [
                 {
                     "source_commit": (
-                        "516155d63b14aa59de7c361beb521f5967792fcb"
+                        "eae057db568b4bb8a57a0d4694aaaadfacef9464"
                     ),
                     "scope": [
                         "exact_wechat_context_menu_classification",
@@ -874,6 +968,16 @@ class PackagingScriptsTest(unittest.TestCase):
                         "c2_contract_0_9_57_generated_schema",
                         "c2_contract_0_9_58_generated_schema",
                         "c2_contract_0_9_59_generated_schema",
+                        "c2_contract_0_9_60_generated_schema",
+                        (
+                            "source_level_diagnostics_not_in_formal_"
+                            "runtime_contract"
+                        ),
+                        (
+                            "unused_voice_vision_compatibility_module_"
+                            "removal_contract"
+                        ),
+                        "brain_three_path_max_tokens_8192_contract",
                     ],
                 }
             ],
@@ -1304,7 +1408,7 @@ class PackagingScriptsTest(unittest.TestCase):
         self.assertIn('$packageDir = [string]$manifest.package_dir', workflow)
         self.assertIn('$exePath = [string]$manifest.exe_path', workflow)
         self.assertNotIn('dist\\车金Worker客户端', workflow)
-        self.assertIn('version -ne "0.9.59"', workflow)
+        self.assertIn('version -ne "0.9.60"', workflow)
         self.assertIn('tests_status -ne "passed"', workflow)
         self.assertIn('@("--omniauto-sidecar", "--help")', workflow)
         self.assertIn('@("--omniauto-ocr-probe")', workflow)

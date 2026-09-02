@@ -271,20 +271,3 @@ def reset_worker_binding(
     except Exception:
         db.rollback()
         raise
-
-
-@router.post("/workers/{worker_id}/reset-client-bind")
-def reset_worker_client_binding(
-    worker_id: str,
-    payload: WorkerResetBindingRequest,
-    db: Session = Depends(get_db),
-    actor: ActorContext = Depends(get_actor_context),
-    _admin_auth: None = Depends(require_admin_auth),
-):
-    try:
-        data = worker_service.reset_worker_binding(db, worker_id, actor)
-        db.commit()
-        return ok(data)
-    except Exception:
-        db.rollback()
-        raise

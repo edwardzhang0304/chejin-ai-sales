@@ -122,6 +122,18 @@ HEADERS = {
 }
 
 
+def test_worker_and_backend_message_contract_sources_are_identical():
+    backend_contract = (
+        Path(__file__).resolve().parents[1]
+        / "app"
+        / "services"
+        / "message_contract.py"
+    )
+    worker_contract = WORKER_CLIENT_ROOT / "chejin_worker_client" / "message_contract.py"
+
+    assert backend_contract.read_bytes() == worker_contract.read_bytes()
+
+
 def test_reply_text_contract_is_identical_in_worker_and_backend():
     values = [
         "第一行\n第二行\t第三行",
@@ -6924,7 +6936,7 @@ def test_message_batch_status_rejects_other_worker_and_returns_terminal_state():
 
 
 def test_v3_ingest_uses_canonical_content_and_rejects_expired_authorization_revision():
-    assert contract_revision() == "0.9.59"
+    assert contract_revision() == "0.9.60"
     location_recovery = c2_contract_v3()[
         "target_location_recovery_contract"
     ]

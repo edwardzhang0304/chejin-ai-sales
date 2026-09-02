@@ -940,34 +940,6 @@ def prune_incidents() -> dict[str, int]:
             if changed:
                 _write_incident_state(state)
     return {"removed": removed, "remaining": len(candidates), "bytes": total}
-
-
-def create_incident(
-    *,
-    event: str,
-    error_code: str | None,
-    message: str,
-    task_id: str | None = None,
-    metadata: dict[str, Any] | None = None,
-    traceback_text: str | None = None,
-) -> dict[str, str]:
-    """Compatibility helper for explicit synchronous callers and tests."""
-
-    scheduled = schedule_incident(
-        event=event,
-        error_code=error_code,
-        message=message,
-        task_id=task_id,
-        metadata=metadata,
-        traceback_text=traceback_text,
-    )
-    path = wait_for_incident(str(scheduled.get("incident_id") or ""), timeout=15.0)
-    return {
-        "incident_id": str(scheduled.get("incident_id") or ""),
-        "evidence_path": str(path or scheduled.get("evidence_path") or ""),
-    }
-
-
 def latest_incident() -> dict[str, str] | None:
     try:
         payload = json.loads((incident_directory() / "latest.json").read_text(encoding="utf-8"))

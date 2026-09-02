@@ -288,6 +288,33 @@ class DiagnosticsService:
                     ],
                 )
             )
+        missing_scripts = sorted(
+            str(command[-1])
+            for _name, command in commands
+            if str(command[-1]).endswith(".py")
+            and not (PROJECT_ROOT / str(command[-1])).is_file()
+        )
+        if missing_scripts:
+            return [
+                {
+                    "name": "source_level_diagnostics",
+                    "ok": False,
+                    "available": False,
+                    "status": "unavailable",
+                    "issues": [
+                        {
+                            "code": "SOURCE_LEVEL_DIAGNOSTICS_NOT_INCLUDED",
+                            "severity": "info",
+                            "title": "正式客户端不提供源码级诊断",
+                            "detail": (
+                                "完整诊断只在源码开发环境运行；"
+                                "正式运行包未包含测试脚本，也不会尝试启动它们。"
+                            ),
+                        }
+                    ],
+                    "missing_script_count": len(missing_scripts),
+                }
+            ]
         return [self.run_command(name, command) for name, command in commands]
 
     def run_command(self, name: str, command: list[str]) -> dict[str, Any]:

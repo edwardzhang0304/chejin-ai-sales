@@ -19,9 +19,11 @@ const result = spawnSync(
   [
     resolve(packageRoot, "src/WorkerClientRuntimeApp.tsx"),
     "--bundle",
+    "--minify",
     "--format=esm",
     "--platform=browser",
     "--jsx=automatic",
+    '--define:process.env.NODE_ENV="production"',
     `--outfile=${resolve(outputDir, "worker-web-app.js")}`,
   ],
   {

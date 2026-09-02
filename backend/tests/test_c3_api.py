@@ -1228,6 +1228,143 @@ def test_real_provider_worker_records_runtime_and_workflow_boundaries(monkeypatc
     ]
 
 
+@pytest.mark.parametrize(
+    ("route_name", "current_text", "expected_profile"),
+    [
+        (
+            "normal",
+            "我想了解一辆适合家用的二手车，预算十万元以内，有哪些选择？",
+            "normal",
+        ),
+        ("low_authority_fast", "在吗", "low_authority_fast"),
+    ],
+)
+def test_auto_brain_route_sends_8192_max_tokens_to_provider(
+    monkeypatch,
+    route_name,
+    current_text,
+    expected_profile,
+):
+    """Automatic normal/low-authority routing must reach the HTTP Provider."""
+
+    provider_requests: list[dict] = []
+    plan = {
+        "schema_version": 1,
+        "recommended_action": "send_reply",
+        "reply_segments": ["在的，您说。"],
+        "confidence": 0.9,
+        "risk_flags": [],
+        "evidence_refs": [],
+        "facts_claimed": [],
+    }
+
+    class ProviderHandler(BaseHTTPRequestHandler):
+        def do_POST(self):  # noqa: N802 - stdlib handler contract
+            body = self.rfile.read(int(self.headers.get("Content-Length") or 0))
+            provider_requests.append(json.loads(body.decode("utf-8")))
+            response = json.dumps(
+                {
+                    "choices": [
+                        {
+                            "message": {
+                                "content": json.dumps(
+                                    plan,
+                                    ensure_ascii=False,
+                                )
+                            }
+                        }
+                    ],
+                    "usage": {},
+                },
+                ensure_ascii=False,
+            ).encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(response)))
+            self.end_headers()
+            self.wfile.write(response)
+
+        def log_message(self, _format, *_args):
+            return
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), ProviderHandler)
+    server_thread = threading.Thread(target=server.serve_forever, daemon=True)
+    server_thread.start()
+    base_url = f"http://127.0.0.1:{server.server_address[1]}/v1"
+    omniauto_root = (
+        Path(__file__).resolve().parents[2] / "worker-client" / "omniauto-rpa"
+    )
+    monkeypatch.setenv("C3_OMNIAUTO_ROOT", str(omniauto_root))
+    monkeypatch.setenv("OPENAI_COMPATIBLE_API_KEY", "provider-test-key")
+    monkeypatch.setattr(
+        "app.services.ai_adapter.get_settings",
+        lambda: SimpleNamespace(
+            c3_omniauto_root=str(omniauto_root),
+            c3_brain_provider_timeout_seconds=15.0,
+        ),
+    )
+    adapter = RealOmniAutoAIEngineAdapter()
+    monkeypatch.setattr(
+        adapter,
+        "_load_config",
+        lambda: {
+            "customer_service_brain": {
+                "enabled": True,
+                "mode": "brain_first",
+                "provider": "openai_compatible",
+                "model": "provider-test-model",
+                "base_url": base_url,
+                "api_key": "provider-test-key",
+                "min_confidence": 0.2,
+                "require_evidence": False,
+                "require_fact_claims": False,
+                "quality_verifier_enabled": False,
+                "semantic_reviewer_enabled": False,
+                "require_final_visible_polish": False,
+                "fallback_to_legacy_on_error": False,
+            },
+            "llm_reply_synthesis": {
+                "enabled": True,
+                "provider": "openai_compatible",
+            },
+            "raw_message_store": {"enabled": False},
+            "final_visible_llm_polish": {"enabled": False},
+        },
+    )
+    try:
+        decision = _generate_adapter_decision(
+            adapter,
+            conversation_context={
+                "conversation_id": f"brain-budget-{route_name}",
+            },
+            message_batch={
+                "id": f"brain-budget-batch-{route_name}",
+                "messages": [
+                    {
+                        "id": f"brain-budget-message-{route_name}",
+                        "sender_role": "customer",
+                        "message_type": "text",
+                        "content": current_text,
+                    }
+                ],
+                "trigger_type": "customer_message",
+            },
+        )
+    finally:
+        server.shutdown()
+        server.server_close()
+        server_thread.join(timeout=2.0)
+
+    assert len(provider_requests) == 1
+    assert provider_requests[0]["max_tokens"] == 8192
+    result = decision.raw_payload["omniauto_brain_result"]
+    if expected_profile == "low_authority_fast":
+        assert result["low_authority_fast_profile"]["enabled"] is True
+    else:
+        assert result["low_authority_fast_profile"]["enabled"] is False
+        assert result["routine_product_fast_profile"]["enabled"] is False
+
+
 def test_real_adapter_maps_brain_no_visible_provider_result_to_retry_later(monkeypatch):
     adapter = RealOmniAutoAIEngineAdapter()
     monkeypatch.setattr(adapter, "_load_config", lambda: {"customer_service_brain": {"provider": "test", "model": "test", "api_key": "test-only"}})
@@ -2236,6 +2373,7 @@ def test_message_event_history_reaches_auto_routine_product_fast_provider(
     )
     assert len(provider_requests) == 2
     for provider_request in provider_requests:
+        assert provider_request["max_tokens"] == 8192
         system_message = provider_request["messages"][0]["content"]
         user_message = provider_request["messages"][1]["content"]
         provider_user = json.loads(user_message.split("\n\n", 1)[0])

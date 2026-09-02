@@ -476,29 +476,6 @@ def load_runtime_control() -> dict[str, Any]:
     except (json.JSONDecodeError, TypeError):
         return dict(DEFAULT_RUNTIME_CONTROL)
     return _normalize_runtime_control(payload)
-
-
-def save_runtime_control(payload: dict[str, Any]) -> dict[str, Any]:
-    state = _normalize_runtime_control(payload)
-    with db_connection() as conn:
-        conn.execute(
-            """
-            INSERT INTO client_settings (key, value, updated_at)
-            VALUES (?, ?, ?)
-            ON CONFLICT(key) DO UPDATE SET
-              value = excluded.value,
-              updated_at = excluded.updated_at
-            """,
-            (
-                RUNTIME_CONTROL_KEY,
-                json.dumps(state, ensure_ascii=False, sort_keys=True),
-                utc_now_iso(),
-            ),
-        )
-        conn.commit()
-    return state
-
-
 def _mutate_runtime_control(
     mutate: Callable[[dict[str, Any]], dict[str, Any] | None],
 ) -> dict[str, Any]:
