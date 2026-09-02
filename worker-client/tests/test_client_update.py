@@ -13,6 +13,8 @@ from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
 import pytest
 import requests
 
+import chejin_worker_client.client_update as client_update_module
+import chejin_worker_client.release_package_contract as release_contract_module
 from chejin_worker_client.client_update import (
     ClientUpdateError,
     UpdateStateStore,
@@ -24,6 +26,21 @@ from chejin_worker_client.client_update import (
 )
 from chejin_worker_client.models import ClientRelease
 from chejin_worker_client.api import WorkerApiClient
+
+
+def test_worker_and_updater_share_one_release_package_contract() -> None:
+    assert (
+        client_update_module.ClientUpdateError
+        is release_contract_module.ClientUpdateError
+    )
+    assert (
+        client_update_module.validate_release_contract
+        is release_contract_module.validate_release_contract
+    )
+    assert (
+        client_update_module.verify_staged_package
+        is release_contract_module.verify_staged_package
+    )
 
 
 class _Response:

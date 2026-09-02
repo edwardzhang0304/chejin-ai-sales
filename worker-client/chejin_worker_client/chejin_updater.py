@@ -12,20 +12,6 @@ import sys
 import time
 from typing import Any
 
-import psutil
-
-from .client_update import (
-    ClientUpdateError,
-    PACKAGE_MANIFEST_NAME,
-    ClientRelease,
-    hash_file,
-    load_trusted_release_keys,
-    validate_release_contract,
-    verify_staged_package,
-    verify_release_signature,
-)
-from .update_runtime_health_contract import validate_authenticated_runtime_marker
-
 
 PLAN_SCHEMA_VERSION = 1
 
@@ -56,6 +42,30 @@ def _startup_diagnostic(phase: str, **details: Any) -> None:
     except Exception:
         # Observability cannot affect directory replacement or rollback.
         return
+
+
+_startup_diagnostic("stdlib_imports_succeeded")
+
+import psutil
+
+_startup_diagnostic("psutil_import_succeeded")
+
+from .models import ClientRelease
+from .release_package_contract import (
+    ClientUpdateError,
+    PACKAGE_MANIFEST_NAME,
+    hash_file,
+    load_trusted_release_keys,
+    validate_release_contract,
+    verify_staged_package,
+    verify_release_signature,
+)
+
+_startup_diagnostic("release_contract_import_succeeded")
+
+from .update_runtime_health_contract import validate_authenticated_runtime_marker
+
+_startup_diagnostic("health_contract_import_succeeded")
 
 
 def _atomic_json_write(path: Path, payload: dict[str, Any]) -> None:
