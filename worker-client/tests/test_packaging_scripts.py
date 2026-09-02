@@ -245,6 +245,9 @@ class PackagingScriptsTest(unittest.TestCase):
         build_script = (ROOT / "scripts" / "build-windows.ps1").read_text(
             encoding="utf-8-sig"
         )
+        updater_module = (
+            ROOT / "chejin_worker_client" / "chejin_updater.py"
+        ).read_text(encoding="utf-8")
         updater_spec = (ROOT / "packaging" / "chejin-updater.spec").read_text(
             encoding="utf-8"
         )
@@ -257,6 +260,8 @@ class PackagingScriptsTest(unittest.TestCase):
         self.assertIn("generate-update-package-manifest.py", build_script)
         self.assertIn('name="CheJinUpdater"', updater_spec)
         self.assertIn("updater_runtime_hook.py", updater_spec)
+        self.assertIn("from .release_package_contract import", updater_module)
+        self.assertNotIn("from .client_update import", updater_module)
         self.assertIn("Start-Process -FilePath $UpdaterExe", process_test)
         self.assertIn("updater-ready.json", process_test)
         self.assertIn('Invoke-UpdateCase $Success "succeeded"', process_test)
