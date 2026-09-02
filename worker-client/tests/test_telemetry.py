@@ -6,6 +6,7 @@ import tempfile
 import time
 import unittest
 import uuid
+from contextlib import closing
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -55,7 +56,7 @@ class TelemetryConnectionLifecycleTest(unittest.TestCase):
                     ("local-1", _process_run_id(), None, telemetry.utc_iso_now()),
                 )
 
-            with sqlite3.connect(path) as connection:
+            with closing(sqlite3.connect(path)) as connection:
                 count = connection.execute(
                     "SELECT count(*) FROM telemetry_process_links"
                 ).fetchone()[0]
