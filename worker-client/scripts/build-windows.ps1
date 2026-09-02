@@ -119,6 +119,12 @@ if ($LASTEXITCODE -ne 0) {
 if ($LASTEXITCODE -ne 0) {
   throw "打包失败：依赖安装失败"
 }
+if (-not $SkipTests) {
+  .\.venv\Scripts\pip.exe install -r requirements-test.txt
+  if ($LASTEXITCODE -ne 0) {
+    throw "打包失败：测试依赖安装失败"
+  }
+}
 .\.venv\Scripts\python.exe -c "import uiautomation; print('uiautomation import passed')"
 if ($LASTEXITCODE -ne 0) {
   throw "打包失败：uiautomation 导入失败"

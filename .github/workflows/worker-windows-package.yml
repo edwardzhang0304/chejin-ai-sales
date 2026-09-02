@@ -45,7 +45,9 @@ jobs:
         with:
           python-version: 3.12.10
           cache: pip
-          cache-dependency-path: worker-client/requirements.txt
+          cache-dependency-path: |
+            worker-client/requirements.txt
+            worker-client/requirements-test.txt
 
       - name: Build and run packaged runtime probes
         shell: powershell

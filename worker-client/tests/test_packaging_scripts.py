@@ -1213,6 +1213,8 @@ class PackagingScriptsTest(unittest.TestCase):
         self.assertIn("onnxruntime.__version__ == '1.20.1'", text)
         self.assertIn("RapidOCR()(image)", text)
         self.assertIn("源码环境无法初始化固定版本的图片复核 OCR", text)
+        self.assertIn("install -r requirements-test.txt", text)
+        self.assertIn("测试依赖安装失败", text)
         self.assertIn("Worker 完整测试未通过", text)
         self.assertIn("PyInstaller 构建失败", text)
         self.assertIn('"PIL.ImageEnhance"', text)
