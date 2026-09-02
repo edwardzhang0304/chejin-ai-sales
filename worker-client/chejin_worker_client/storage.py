@@ -33,6 +33,8 @@ DEFAULT_RUNTIME_CONTROL = {
     "inflight_flow_id": None,
     "inflight_flow_kind": None,
     "inflight_started_at": None,
+    "update_no_new_work": False,
+    "update_request_id": None,
 }
 TIME_RE = re.compile(r"^\d{2}:\d{2}$")
 T = TypeVar("T")
@@ -454,6 +456,10 @@ def _normalize_runtime_control(payload: dict[str, Any] | None) -> dict[str, Any]
             str(source.get("inflight_started_at") or "").strip()
             or None
         ) if flow_id else None,
+        "update_no_new_work": bool(source.get("update_no_new_work")),
+        "update_request_id": (
+            str(source.get("update_request_id") or "").strip() or None
+        ),
     }
 
 
@@ -553,6 +559,34 @@ def clear_runtime_pause() -> dict[str, Any]:
     def mutate(state: dict[str, Any]) -> dict[str, Any]:
         state["pause_requested"] = False
         state["pause_requested_at"] = None
+        return state
+
+    return _mutate_runtime_control(mutate)
+
+
+def set_update_new_work_gate(
+    blocked: bool,
+    *,
+    update_request_id: str | None = None,
+) -> dict[str, Any]:
+    """Persist the updater's new-work barrier without touching an active Flow."""
+
+    clean_request_id = str(update_request_id or "").strip() or None
+
+    def mutate(state: dict[str, Any]) -> dict[str, Any]:
+        active_request_id = str(state.get("update_request_id") or "").strip() or None
+        if (
+            not blocked
+            and clean_request_id is not None
+            and active_request_id is not None
+            and active_request_id != clean_request_id
+        ):
+            # A late result reconciler from an older update must never reopen
+            # intake for a newer request.  Returning the unchanged state makes
+            # the compare-and-clear operation idempotent and fail closed.
+            return state
+        state["update_no_new_work"] = bool(blocked)
+        state["update_request_id"] = clean_request_id if blocked else None
         return state
 
     return _mutate_runtime_control(mutate)
@@ -2825,7 +2859,56 @@ def has_pending_reply_send_ack_outbox() -> bool:
             LIMIT 1
             """
         ).fetchone()
-    return row is not None
+        return row is not None
+
+
+def update_install_business_blockers() -> dict[str, int]:
+    """Return durable business facts that forbid replacing the program.
+
+    This is a read-only projection.  The updater may wait for the normal
+    recovery loops to settle these rows, but it must never mutate them.
+    """
+
+    with db_connection() as conn:
+        counts = {
+            "waiting_ledger": int(
+                conn.execute(
+                    "SELECT COUNT(*) FROM c2_message_ledger WHERE ingest_state = 'waiting'"
+                ).fetchone()[0]
+            ),
+            "pending_c2_outbox": int(
+                conn.execute(
+                    """
+                    SELECT COUNT(*) FROM c2_ingest_outbox
+                    WHERE status IN (
+                      'waiting', 'retry_waiting', 'refresh_pending',
+                      'rebuild_pending', 'split_pending', 'capability_paused'
+                    )
+                    """
+                ).fetchone()[0]
+            ),
+            "pending_sqlite_action_journal": int(
+                conn.execute("SELECT COUNT(*) FROM c2_action_journal").fetchone()[0]
+            ),
+            "pending_sent_ack": int(
+                conn.execute(
+                    """
+                    SELECT COUNT(*) FROM reply_send_ack_outbox
+                    WHERE status IN ('intent', 'waiting', 'capability_paused')
+                    """
+                ).fetchone()[0]
+            ),
+        }
+    try:
+        from .action_journal import list_action_journals
+
+        counts["pending_file_action_journal"] = len(list_action_journals())
+    except Exception:
+        # An unreadable Journal is an unknown physical-action state and must
+        # fail closed instead of being treated as no blocker.
+        counts["pending_file_action_journal"] = 1
+        counts["action_journal_state_unavailable"] = 1
+    return counts
 
 
 def has_pending_reply_send_ack_for_task_id(task_id: str) -> bool:

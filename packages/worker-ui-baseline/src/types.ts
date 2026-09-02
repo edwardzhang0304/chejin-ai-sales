@@ -110,4 +110,10 @@ export interface WorkerClientModel {
     end: string;
   };
   version: string;
+  update?: {
+    state?: string;
+    status_text?: string;
+    in_progress?: boolean;
+    available?: boolean;
+  };
 }

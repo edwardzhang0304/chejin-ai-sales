@@ -144,11 +144,13 @@ from .storage import (
     save_c2_state,
     save_reply_send_intent,
     request_runtime_pause,
+    set_update_new_work_gate,
     set_c2_outbox_error,
     set_reply_send_ack_error,
     transition_c2_outbox,
     terminate_waiting_c2_image_ledger,
     update_c2_state_atomic,
+    update_install_business_blockers,
 )
 from .telemetry import (
     StageTimer,
@@ -4058,8 +4060,10 @@ class TaskRunner:
         self.thread_monitor: threading.Thread | None = None
         self._thread_health_lock = threading.RLock()
         self._thread_failure_reported: set[str] = set()
+        self._background_loop_started: set[str] = set()
         self.c2_manual_scan_requested = threading.Event()
         self.task_lock = threading.Lock()
+        self._new_work_admission_lock = threading.RLock()
         self.reply_send_ack_lock = threading.Lock()
         self.c2_outbox_lock = threading.RLock()
         self.heartbeat_interval_seconds = CONFIG.heartbeat_interval_seconds
@@ -4081,6 +4085,7 @@ class TaskRunner:
         self.c2_stop_guard_before_voice_seconds = max(0.0, float(CONFIG.c2_stop_guard_before_voice_seconds))
         self.last_artifact_cleanup_at = 0.0
         self._pending_run_status_sync: str | None = None
+        self._backend_confirmed_run_status: str | None = None
         self._last_run_status_sync_attempt = 0.0
         self.run_status_sync_error: str | None = None
         abandon_buffered_running_stages()
@@ -4172,6 +4177,8 @@ class TaskRunner:
             self._thread_failure_reported.clear()
         self._maybe_cleanup_artifacts(force=True)
         if not (self.thread and self.thread.is_alive()):
+            with self._thread_health_lock:
+                self._background_loop_started.discard("task_runner")
             self.thread = threading.Thread(
                 target=self._run_supervised_loop,
                 args=("task_runner", self._loop),
@@ -4180,6 +4187,8 @@ class TaskRunner:
             )
             self.thread.start()
         if CONFIG.c2_enabled and not (self.c2_thread and self.c2_thread.is_alive()):
+            with self._thread_health_lock:
+                self._background_loop_started.discard("c2_listener")
             self.c2_thread = threading.Thread(
                 target=self._run_supervised_loop,
                 args=("c2_listener", self._c2_loop),
@@ -4188,6 +4197,8 @@ class TaskRunner:
             )
             self.c2_thread.start()
         if not (self.thread_monitor and self.thread_monitor.is_alive()):
+            with self._thread_health_lock:
+                self._background_loop_started.discard("thread_monitor")
             self.thread_monitor = threading.Thread(
                 target=self._run_supervised_loop,
                 args=("thread_monitor", self._monitor_background_threads),
@@ -4300,7 +4311,12 @@ class TaskRunner:
                 traceback_text="",
             )
 
+    def _mark_background_loop_entered(self, thread_kind: str) -> None:
+        with self._thread_health_lock:
+            self._background_loop_started.add(thread_kind)
+
     def _monitor_background_threads(self) -> None:
+        self._mark_background_loop_entered("thread_monitor")
         while not self.stop_event.wait(0.25):
             if (
                 self._pending_run_status_sync in {"paused", "faulted"}
@@ -4319,6 +4335,49 @@ class TaskRunner:
                     message=f"线程监控发现 {thread_kind} 已停止运行。",
                     traceback_text="",
                 )
+
+    def post_update_runtime_health_snapshot(self) -> dict[str, Any]:
+        """Project real loop liveness for the post-update health gate.
+
+        This is deliberately read-only.  It proves that every loop expected
+        for a bound client entered its supervised target, remains alive, and
+        has not reported a startup failure.  It never probes the backend or
+        WeChat and therefore cannot add business work during an update.
+        """
+
+        expected: dict[str, threading.Thread | None] = {
+            "task_runner": self.thread,
+            "thread_monitor": self.thread_monitor,
+        }
+        if CONFIG.c2_enabled:
+            expected["c2_listener"] = self.c2_thread
+        with self._thread_health_lock:
+            started = set(self._background_loop_started)
+            failures = sorted(self._thread_failure_reported)
+        threads = {
+            name: {
+                "entered_loop": name in started,
+                "alive": bool(thread and thread.is_alive()),
+            }
+            for name, thread in expected.items()
+        }
+        ready = bool(
+            self.binding is not None
+            and not self.stop_event.is_set()
+            and not failures
+            and all(
+                item["entered_loop"] and item["alive"]
+                for item in threads.values()
+            )
+        )
+        return {
+            "ready": ready,
+            "binding_state": "bound" if self.binding is not None else "unbound",
+            "stop_requested": self.stop_event.is_set(),
+            "required_threads": list(expected),
+            "threads": threads,
+            "startup_failures": failures,
+        }
 
     def _handle_background_thread_failure(
         self,
@@ -4371,9 +4430,24 @@ class TaskRunner:
             and not emergency_stop_requested()
             and active.run_status == "running"
             and control.get("pause_requested") is not True
+            and control.get("update_no_new_work") is not True
             and not control.get("inflight_flow_id")
             and not self._restart_backend_probe_pending
         )
+
+    def set_update_new_work_gate(
+        self,
+        blocked: bool,
+        *,
+        update_request_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Serialize updater admission with task pull and Flow registration."""
+
+        with self._new_work_admission_lock:
+            return set_update_new_work_gate(
+                blocked,
+                update_request_id=update_request_id,
+            )
 
     def _can_continue_inflight_flow(self, flow_id: str | None = None) -> bool:
         if self.stop_event.is_set() or emergency_stop_requested():
@@ -4392,6 +4466,97 @@ class TaskRunner:
             in {"active", "draining"}
         )
 
+    def update_install_safety_snapshot(self) -> dict[str, Any]:
+        """Read the one installation boundary without changing business state."""
+
+        binding = self.binding
+        control = load_runtime_control()
+        durable = update_install_business_blockers()
+        local_lock = lock_summary()
+        sidecar_active = bool(
+            getattr(self.bridge, "sidecar_active", lambda: True)()
+        )
+        bound = binding is not None
+        backend_status = self.profile_run_status_for_update()
+        backend_stopped_confirmed = bool(
+            not bound
+            or (
+                binding.run_status in {"paused", "faulted"}
+                and self._pending_run_status_sync is None
+                and backend_status == binding.run_status
+            )
+        )
+        snapshot = {
+            "new_work_blocked": control.get("update_no_new_work") is True,
+            "backend_stopped_confirmed_or_unbound": backend_stopped_confirmed,
+            "confirmed_run_status": "unbound" if not bound else backend_status,
+            "bound": bound,
+            "current_task": self.current_task.id if self.current_task else None,
+            "inflight_flow_id": control.get("inflight_flow_id"),
+            "task_lease_active": bool(
+                self.current_task_lease
+                or self.api.task_lease_fencing_tokens
+            ),
+            "ui_lock_active": bool(
+                self.current_ui_lock is not None
+                or local_lock.get("locked")
+            ),
+            "sidecar_active": sidecar_active,
+            **durable,
+        }
+        snapshot["safe"] = bool(
+            snapshot["new_work_blocked"]
+            and snapshot["backend_stopped_confirmed_or_unbound"]
+            and not snapshot["current_task"]
+            and not snapshot["inflight_flow_id"]
+            and not snapshot["task_lease_active"]
+            and not snapshot["ui_lock_active"]
+            and not snapshot["sidecar_active"]
+            and all(
+                int(snapshot.get(key) or 0) == 0
+                for key in (
+                    "waiting_ledger",
+                    "pending_c2_outbox",
+                    "pending_sqlite_action_journal",
+                    "pending_file_action_journal",
+                    "pending_sent_ack",
+                    "action_journal_state_unavailable",
+                )
+            )
+        )
+        waiting_reason_code = ""
+        waiting_reason_text = ""
+        if not snapshot["safe"]:
+            if not snapshot["new_work_blocked"]:
+                waiting_reason_code = "UPDATE_WAITING_NEW_WORK_GATE"
+                waiting_reason_text = "正在等待停止领取新任务"
+            elif not snapshot["backend_stopped_confirmed_or_unbound"]:
+                waiting_reason_code = "UPDATE_WAITING_BACKEND_RUN_STATUS_CONFIRMATION"
+                waiting_reason_text = "正在等待后端确认客户端已停止接单"
+            elif snapshot["current_task"] or snapshot["inflight_flow_id"]:
+                waiting_reason_code = "UPDATE_WAITING_ACTIVE_FLOW"
+                waiting_reason_text = "正在等待当前任务安全结束"
+            elif snapshot["task_lease_active"]:
+                waiting_reason_code = "UPDATE_WAITING_TASK_LEASE"
+                waiting_reason_text = "正在等待任务租约释放"
+            elif snapshot["ui_lock_active"]:
+                waiting_reason_code = "UPDATE_WAITING_UI_LOCK"
+                waiting_reason_text = "正在等待界面操作锁释放"
+            elif snapshot["sidecar_active"]:
+                waiting_reason_code = "UPDATE_WAITING_SIDECAR"
+                waiting_reason_text = "正在等待自动化操作安全结束"
+            else:
+                waiting_reason_code = "UPDATE_WAITING_DURABLE_SETTLEMENT"
+                waiting_reason_text = "正在等待本地业务账本安全结算"
+        snapshot["waiting_reason_code"] = waiting_reason_code
+        snapshot["waiting_reason_text"] = waiting_reason_text
+        return snapshot
+
+    def profile_run_status_for_update(self) -> str:
+        """Expose only the backend-confirmed status needed by the updater."""
+
+        return str(self._backend_confirmed_run_status or "")
+
     def _start_inflight_flow(
         self,
         binding: Binding,
@@ -4401,35 +4566,36 @@ class TaskRunner:
         conversation_id: str | None = None,
         unread_generation: int | None = None,
     ) -> bool:
-        control = load_runtime_control()
-        existing_id = str(control.get("inflight_flow_id") or "").strip()
-        if existing_id:
-            if existing_id != flow_id:
+        with self._new_work_admission_lock:
+            control = load_runtime_control()
+            existing_id = str(control.get("inflight_flow_id") or "").strip()
+            if existing_id:
+                if existing_id != flow_id:
+                    return False
+                self.api.inflight_flow_id = existing_id
+                return True
+            if not self._can_start_new_flow(binding):
                 return False
-            self.api.inflight_flow_id = existing_id
-            return True
-        if not self._can_start_new_flow(binding):
-            return False
-        backend_state = self.api.start_inflight_flow(
-            binding,
-            flow_id=flow_id,
-            flow_kind=flow_kind,
-            conversation_id=conversation_id,
-            unread_generation=unread_generation,
-        )
-        self._backend_inflight_flow_state = dict(backend_state)
-        try:
-            begin_runtime_flow(flow_id, flow_kind)
-        except Exception:
-            append_log(
-                "ERROR",
-                "runtime_inflight_local_persist_failed",
-                "后端已登记在途流程，但本地持久化失败；保留后端流程禁止继续。",
-                error_code="RUNTIME_INFLIGHT_LOCAL_PERSIST_FAILED",
-                metadata={"flow_id": flow_id, "flow_kind": flow_kind},
+            backend_state = self.api.start_inflight_flow(
+                binding,
+                flow_id=flow_id,
+                flow_kind=flow_kind,
+                conversation_id=conversation_id,
+                unread_generation=unread_generation,
             )
-            raise
-        return True
+            self._backend_inflight_flow_state = dict(backend_state)
+            try:
+                begin_runtime_flow(flow_id, flow_kind)
+            except Exception:
+                append_log(
+                    "ERROR",
+                    "runtime_inflight_local_persist_failed",
+                    "后端已登记在途流程，但本地持久化失败；保留后端流程禁止继续。",
+                    error_code="RUNTIME_INFLIGHT_LOCAL_PERSIST_FAILED",
+                    metadata={"flow_id": flow_id, "flow_kind": flow_kind},
+                )
+                raise
+            return True
 
     @staticmethod
     def _inflight_finish_receipt_key(flow_id: str) -> str:
@@ -6106,6 +6272,7 @@ class TaskRunner:
             return
         self._pending_run_status_sync = None
         self.run_status_sync_error = None
+        self._backend_confirmed_run_status = str(profile.run_status or "") or None
         self._apply_local_run_status(profile.run_status)
         self.on_profile(profile)
         append_log(
@@ -6120,6 +6287,12 @@ class TaskRunner:
             return False
         if run_status not in {"running", "paused", "faulted"}:
             self.on_error("接单状态无效。")
+            return False
+        if (
+            run_status == "running"
+            and load_runtime_control().get("update_no_new_work") is True
+        ):
+            self.on_error("客户端更新进行中，安装完成或取消后才能开始接单。")
             return False
         if run_status == "running" and emergency_stop_requested():
             self.on_error("客户端已触发紧急停止，请重启后再开始接单。")
@@ -6136,6 +6309,7 @@ class TaskRunner:
                 )
             self._pending_run_status_sync = None
             self.run_status_sync_error = None
+            self._backend_confirmed_run_status = str(profile.run_status or "") or None
             self._apply_local_run_status(profile.run_status)
             self.on_profile(profile)
             self._backend_inflight_flow_state = dict(
@@ -6205,6 +6379,7 @@ class TaskRunner:
 
     def _loop(self) -> None:
         append_log("INFO", "client_started", "Worker 客户端任务循环启动。")
+        self._mark_background_loop_entered("task_runner")
         while not self.stop_event.is_set():
             wake_requested_at: float | None = None
             with self._task_wake_state_lock:
@@ -6298,6 +6473,9 @@ class TaskRunner:
                 wechat_status=wechat_status,
                 current_step=self.current_step,
                 local_lock_summary=local_lock,
+            )
+            self._backend_confirmed_run_status = (
+                str(profile.run_status or "") or None
             )
             if binding.run_status == "faulted":
                 # A locally persisted technical fault is authoritative until
@@ -6400,34 +6578,48 @@ class TaskRunner:
 
     def _pull_and_execute(self, binding: Binding) -> None:
         with self.task_lock:
-            if not self._can_start_new_flow(binding):
-                return
-            if self.current_ui_lock is not None or bool(lock_summary().get("locked")):
-                append_log(
-                    "INFO",
-                    "task_pull_deferred_by_ui_flow",
-                    "微信 UI 正在执行单会话流程，服务端任务继续排队，本轮不领取。",
+            with self._new_work_admission_lock:
+                if not self._can_start_new_flow(binding):
+                    return
+                if self.current_ui_lock is not None or bool(lock_summary().get("locked")):
+                    append_log(
+                        "INFO",
+                        "task_pull_deferred_by_ui_flow",
+                        "微信 UI 正在执行单会话流程，服务端任务继续排队，本轮不领取。",
+                    )
+                    return
+                if not self._worker_transaction_barrier_ready(
+                    binding,
+                    reason="task_pull",
+                ):
+                    return
+                try:
+                    mode, task, reason = self.api.pull_task(binding)
+                except Exception as exc:
+                    append_log("ERROR", "task_pull_failed", str(exc))
+                    self.on_error(str(exc))
+                    return
+                if not task:
+                    self.on_task(None)
+                    if reason and reason != "NO_PENDING_TASK":
+                        self.on_error(reason)
+                    return
+                flow_kind, task_conversation_id = self._task_flow_registration(
+                    task
                 )
-                return
-            if not self._worker_transaction_barrier_ready(
+                if not self._start_inflight_flow(
+                    binding,
+                    flow_id=task.id,
+                    flow_kind=flow_kind,
+                    conversation_id=task_conversation_id,
+                ):
+                    return
+            self._execute_task(
                 binding,
-                reason="task_pull",
-            ):
-                return
-            try:
-                mode, task, reason = self.api.pull_task(binding)
-            except Exception as exc:
-                append_log("ERROR", "task_pull_failed", str(exc))
-                self.on_error(str(exc))
-                return
-            if not task:
-                self.on_task(None)
-                if reason and reason != "NO_PENDING_TASK":
-                    self.on_error(reason)
-                return
-            if not self._can_start_new_flow(binding):
-                return
-            self._execute_task(binding, task, mode)
+                task,
+                mode,
+                flow_already_started=True,
+            )
         # _execute_task settles the task and its durable facts while this
         # method still owns task_lock.  Requesting the coalesced wake from the
         # inner terminal handler is therefore intentionally rejected.  Retry
@@ -6437,7 +6629,8 @@ class TaskRunner:
             reason="task_execution_boundary_released"
         )
 
-    def _execute_task(self, binding: Binding, task: Task, mode: str) -> None:
+    @staticmethod
+    def _task_flow_registration(task: Task) -> tuple[str, str | None]:
         flow_kind = "chat_reply" if task.task_type == "chat_reply" else "task"
         task_c3 = task.raw.get("c3") if isinstance(task.raw, dict) else None
         task_reply_action = (
@@ -6450,7 +6643,18 @@ class TaskRunner:
             str(task_reply_action.get("conversation_id") or "").strip()
             or None
         )
-        if not self._start_inflight_flow(
+        return flow_kind, task_conversation_id
+
+    def _execute_task(
+        self,
+        binding: Binding,
+        task: Task,
+        mode: str,
+        *,
+        flow_already_started: bool = False,
+    ) -> None:
+        flow_kind, task_conversation_id = self._task_flow_registration(task)
+        if not flow_already_started and not self._start_inflight_flow(
             binding,
             flow_id=task.id,
             flow_kind=flow_kind,
@@ -9884,6 +10088,7 @@ class TaskRunner:
 
     def _c2_loop(self) -> None:
         append_log("INFO", "c2_listener_started", "C2 微信监听循环启动。")
+        self._mark_background_loop_entered("c2_listener")
         while not self.stop_event.is_set():
             binding = self.binding
             if not binding or not CONFIG.c2_enabled or not self._c2_dependencies_ready():

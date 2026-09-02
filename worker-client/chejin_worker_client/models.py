@@ -10,6 +10,47 @@ RunStatus = Literal["running", "paused", "faulted"]
 RpaStatus = Literal["ready", "unavailable"]
 WechatStatus = Literal["logged_in", "not_found", "logged_out", "unknown"]
 
+
+@dataclass(frozen=True)
+class ClientRelease:
+    update_available: bool
+    latest_version: str
+    channel: str
+    platform: str
+    artifact_url: str | None
+    artifact_size_bytes: int | None
+    artifact_sha256: str | None
+    manifest_signature: str | None
+    signature_key_id: str | None
+    git_commit: str | None
+    package_manifest_sha256: str | None
+    published_at: str | None
+    release_notes: str
+    minimum_updater_version: str
+    rollback_safe: bool
+    client_ahead_of_channel: bool = False
+
+    @classmethod
+    def from_api(cls, payload: dict[str, Any]) -> "ClientRelease":
+        return cls(
+            update_available=bool(payload.get("update_available")),
+            latest_version=str(payload.get("latest_version") or ""),
+            channel=str(payload.get("channel") or ""),
+            platform=str(payload.get("platform") or ""),
+            artifact_url=str(payload.get("artifact_url") or "") or None,
+            artifact_size_bytes=(int(payload["artifact_size_bytes"]) if payload.get("artifact_size_bytes") is not None else None),
+            artifact_sha256=str(payload.get("artifact_sha256") or "") or None,
+            manifest_signature=str(payload.get("manifest_signature") or "") or None,
+            signature_key_id=str(payload.get("signature_key_id") or "") or None,
+            git_commit=str(payload.get("git_commit") or "") or None,
+            package_manifest_sha256=str(payload.get("package_manifest_sha256") or "") or None,
+            published_at=str(payload.get("published_at") or "") or None,
+            release_notes=str(payload.get("release_notes") or ""),
+            minimum_updater_version=str(payload.get("minimum_updater_version") or ""),
+            rollback_safe=bool(payload.get("rollback_safe")),
+            client_ahead_of_channel=bool(payload.get("client_ahead_of_channel")),
+        )
+
 TASK_TYPE_TITLES = {
     "add_friend": "添加通讯录邀请",
     "chat_reply": "AI 自动回复",

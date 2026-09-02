@@ -15,6 +15,8 @@ Set-Location $Root
 $ReportsDir = Join-Path $Root "dist\reports"
 $PackageDir = Join-Path $Root "dist\CheJinWorkerClient"
 $ExePath = Join-Path $PackageDir "CheJinWorkerClient.exe"
+$UpdaterExePath = Join-Path $PackageDir "CheJinUpdater.exe"
+$UpdatePackageManifestPath = Join-Path $PackageDir "update-package-manifest.json"
 $ManifestPath = Join-Path $ReportsDir "CheJinWorkerClient.manifest.json"
 $PreflightReportPath = Join-Path $ReportsDir "preflight-build-report.json"
 $PackagingDiagnosticPath = Join-Path $ReportsDir "packaging-runtime-diagnostics.jsonl"
@@ -26,6 +28,8 @@ $UatEvidenceHelperSourcePath = Join-Path $Root "packaging\collect_uat_evidence.p
 $UatEvidenceHelperPath = Join-Path $PackageDir "collect_uat_evidence.py"
 $UatLauncherValidatorPath = Join-Path $Root "scripts\validate-uat-launcher.ps1"
 $VisionCredentialPath = Join-Path $ReportsDir "vision-runtime.json"
+$ReleaseSigningKeysPath = Join-Path $ReportsDir "release-signing-public-keys.json"
+$UpdaterDistPath = Join-Path $ReportsDir "updater-dist"
 $OmniAutoSourcePath = Join-Path $Root "omniauto-rpa"
 $OmniAutoProvenancePath = Join-Path $OmniAutoSourcePath ".chejin-source.json"
 $OmniAutoSidecarPath = Join-Path $OmniAutoSourcePath "apps\wechat_ai_customer_service\adapters\wechat_win32_ocr_sidecar.py"
@@ -139,6 +143,7 @@ if ($DevelopmentBuild) {
   if (Test-Path $VisionCredentialPath) {
     Remove-Item -LiteralPath $VisionCredentialPath -Force
   }
+  $env:CHEJIN_RELEASE_SIGNING_KEYS_PATH = Join-Path $Root "packaging\release-signing-public-keys.json"
 } else {
   if ([string]$env:GITHUB_ACTIONS -ne "true") {
     throw "正式打包失败：正式 Vision 凭据只能由 GitHub Actions CI Secret 注入。"
@@ -158,6 +163,35 @@ if ($DevelopmentBuild) {
   )
   $env:CHEJIN_VISION_CREDENTIAL_PATH = $VisionCredentialPath
   Remove-Item Env:CHEJIN_VISION_CLIENT_API_KEY -ErrorAction SilentlyContinue
+  $ReleaseSigningKeyId = [string]$env:CHEJIN_RELEASE_SIGNING_KEY_ID
+  $ReleaseSigningPublicKey = [string]$env:CHEJIN_RELEASE_SIGNING_PUBLIC_KEY_BASE64
+  if ([string]::IsNullOrWhiteSpace($ReleaseSigningKeyId) -or [string]::IsNullOrWhiteSpace($ReleaseSigningPublicKey)) {
+    throw "正式打包失败：CI 未注入客户端发布签名公钥及 key_id。"
+  }
+  try {
+    $ReleaseSigningPublicBytes = [Convert]::FromBase64String($ReleaseSigningPublicKey.Trim())
+  } catch {
+    throw "正式打包失败：客户端发布签名公钥不是合法 Base64。"
+  }
+  if ($ReleaseSigningPublicBytes.Length -ne 32) {
+    throw "正式打包失败：Ed25519 发布签名公钥必须为 32 字节。"
+  }
+  $ReleaseSigningKeysJson = [ordered]@{
+    schema_version = 1
+    keys = @(
+      [ordered]@{
+        key_id = $ReleaseSigningKeyId.Trim()
+        algorithm = "ed25519"
+        public_key_base64 = $ReleaseSigningPublicKey.Trim()
+      }
+    )
+  } | ConvertTo-Json -Depth 5 -Compress
+  [System.IO.File]::WriteAllText(
+    $ReleaseSigningKeysPath,
+    $ReleaseSigningKeysJson,
+    (New-Object System.Text.UTF8Encoding($false))
+  )
+  $env:CHEJIN_RELEASE_SIGNING_KEYS_PATH = $ReleaseSigningKeysPath
 }
 
 if (-not $SkipPreflight) {
@@ -208,6 +242,19 @@ if ($LASTEXITCODE -ne 0) {
   throw "打包失败：PyInstaller 构建失败"
 }
 
+if (Test-Path $UpdaterDistPath) {
+  Remove-Item -LiteralPath $UpdaterDistPath -Recurse -Force
+}
+.\.venv\Scripts\pyinstaller.exe --clean --noconfirm --distpath $UpdaterDistPath packaging\chejin-updater.spec
+if ($LASTEXITCODE -ne 0) {
+  throw "打包失败：独立 Updater 构建失败"
+}
+$BuiltUpdaterExePath = Join-Path $UpdaterDistPath "CheJinUpdater.exe"
+if (-not (Test-Path $BuiltUpdaterExePath)) {
+  throw "打包失败：未找到独立 CheJinUpdater.exe"
+}
+Copy-Item -LiteralPath $BuiltUpdaterExePath -Destination $UpdaterExePath -Force
+
 if (-not (Test-Path $ExePath)) {
   throw "打包失败：未找到 $ExePath"
 }
@@ -233,6 +280,18 @@ Copy-Item -LiteralPath $UatEvidenceHelperSourcePath -Destination $UatEvidenceHel
 & powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $UatLauncherValidatorPath -ScriptPath $UatEvidenceCollectorPath
 if ($LASTEXITCODE -ne 0) {
   throw "打包失败：UAT 证据收集脚本未通过 Windows PowerShell 5.1 BOM/语法门禁"
+}
+$UpdatePackageManifestJson = & .\.venv\Scripts\python.exe scripts\generate-update-package-manifest.py `
+  --package-root $PackageDir `
+  --version $Version.Trim() `
+  --git-commit $GitCommit.Trim() `
+  --output $UpdatePackageManifestPath
+if ($LASTEXITCODE -ne 0) {
+  throw "打包失败：无法生成自动更新包内文件清单。$UpdatePackageManifestJson"
+}
+$UpdatePackageManifest = $UpdatePackageManifestJson | ConvertFrom-Json
+if ($UpdatePackageManifest.ok -ne $true) {
+  throw "打包失败：自动更新包内文件清单无效。"
 }
 $env:CHEJIN_PACKAGING_DIAGNOSTIC_PATH = $PackagingDiagnosticPath
 if (Test-Path $PackagingDiagnosticPath) {
@@ -337,6 +396,8 @@ if ($LASTEXITCODE -ne 0) {
 $OmniAutoTreeVerification = $OmniAutoTreeVerificationJson | ConvertFrom-Json
 
 $Hash = Get-FileHash -Algorithm SHA256 $ExePath
+$UpdaterHash = Get-FileHash -Algorithm SHA256 $UpdaterExePath
+$UpdatePackageManifestHash = Get-FileHash -Algorithm SHA256 $UpdatePackageManifestPath
 $Files = Get-ChildItem $PackageDir -Recurse -File
 $TotalBytes = ($Files | Measure-Object -Property Length -Sum).Sum
 $ContractRevision = .\.venv\Scripts\python.exe -c "from chejin_worker_client.c2_contract import contract_revision; print(contract_revision())"
@@ -371,6 +432,11 @@ $Manifest = [ordered]@{
   package_dir = $PackageDir
   exe_path = $ExePath
   exe_sha256 = $Hash.Hash
+  updater_exe_path = $UpdaterExePath
+  updater_exe_sha256 = $UpdaterHash.Hash
+  update_package_manifest_path = $UpdatePackageManifestPath
+  update_package_manifest_sha256 = $UpdatePackageManifestHash.Hash
+  update_package_file_count = [int]$UpdatePackageManifest.file_count
   git_commit = $GitCommit.Trim()
   git_branch = $GitBranch.Trim()
   git_dirty = $GitDirty

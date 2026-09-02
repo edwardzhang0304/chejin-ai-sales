@@ -24,11 +24,17 @@ BUILD_IDENTITY_PATH = Path(
 VISION_CREDENTIAL_PATH = Path(
     os.environ.get("CHEJIN_VISION_CREDENTIAL_PATH") or ""
 )
+RELEASE_SIGNING_KEYS_PATH = Path(
+    os.environ.get("CHEJIN_RELEASE_SIGNING_KEYS_PATH")
+    or ROOT / "packaging" / "release-signing-public-keys.json"
+)
 
 if not OMNIAUTO_SIDECAR.exists():
     raise SystemExit(f"OmniAuto sidecar not found: {OMNIAUTO_SIDECAR}")
 if not CONTRACT_PATH.exists():
     raise SystemExit(f"C2 contract not found: {CONTRACT_PATH}")
+if not RELEASE_SIGNING_KEYS_PATH.is_file():
+    raise SystemExit("release signing public key file is missing")
 
 EXCLUDED_OMNIAUTO_PARTS = {
     ".git",
@@ -90,6 +96,7 @@ a = Analysis(
         *OMNIAUTO_DATAS,
         (str(CONTRACT_PATH), "contracts"),
         (str(ROOT / "chejin_worker_client" / "web_assets"), "chejin_worker_client/web_assets"),
+        (str(RELEASE_SIGNING_KEYS_PATH), "."),
         *(
             [(str(BUILD_IDENTITY_PATH), ".")]
             if BUILD_IDENTITY_PATH.is_file()

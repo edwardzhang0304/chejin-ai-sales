@@ -21,6 +21,8 @@ jobs:
     timeout-minutes: 90
     env:
       CHEJIN_VISION_CLIENT_API_KEY: ${{ secrets.CHEJIN_VISION_CLIENT_API_KEY }}
+      CHEJIN_RELEASE_SIGNING_KEY_ID: ${{ secrets.CHEJIN_RELEASE_SIGNING_KEY_ID }}
+      CHEJIN_RELEASE_SIGNING_PUBLIC_KEY_BASE64: ${{ secrets.CHEJIN_RELEASE_SIGNING_PUBLIC_KEY_BASE64 }}
 
     steps:
       - name: Enforce completed UAT approval
@@ -54,6 +56,17 @@ jobs:
             throw "build-windows.ps1 exited with code $LASTEXITCODE"
           }
 
+      - name: Exercise real updater process switch and rollback
+        shell: powershell
+        working-directory: worker-client
+        env:
+          CHEJIN_RELEASE_SIGNING_PRIVATE_KEY_BASE64: ${{ secrets.CHEJIN_RELEASE_SIGNING_PRIVATE_KEY_BASE64 }}
+        run: |
+          .\scripts\run-windows-updater-process-test.ps1 -PackageDir .\dist\CheJinWorkerClient
+          if ($LASTEXITCODE -ne 0) {
+            throw "real updater process switch/rollback test failed"
+          }
+
       - name: Validate manifest and packaged executable again
         shell: powershell
         working-directory: worker-client
@@ -70,7 +83,7 @@ jobs:
           $exePath = [string]$manifest.exe_path
 
           .\scripts\validate-package.ps1 -PackageDir $packageDir
-          if ($manifest.version -ne "0.9.58") {
+          if ($manifest.version -ne "0.9.59") {
             throw "unexpected version: $($manifest.version)"
           }
           if ($manifest.git_commit -ne $env:GITHUB_SHA) {
@@ -91,6 +104,13 @@ jobs:
           $exeHash = (Get-FileHash -Algorithm SHA256 $exePath).Hash
           if ($exeHash -ne $manifest.exe_sha256) {
             throw "manifest exe SHA256 mismatch"
+          }
+          $updaterPath = [string]$manifest.updater_exe_path
+          if (-not (Test-Path $updaterPath) -or (Split-Path -Leaf $updaterPath) -ne "CheJinUpdater.exe") {
+            throw "manifest does not reference CheJinUpdater.exe"
+          }
+          if ((Get-FileHash -Algorithm SHA256 $updaterPath).Hash -ne $manifest.updater_exe_sha256) {
+            throw "manifest updater SHA256 mismatch"
           }
 
           $env:CHEJIN_RPA_MODE = "mock"
@@ -154,7 +174,7 @@ jobs:
             throw "packaged startup crash did not create the default diagnostic"
           }
           $startupCrash = Get-Content -Encoding UTF8 $defaultStartupDiagnostic | Select-Object -Last 1 | ConvertFrom-Json
-          if ($startupCrash.version -ne "0.9.58" -or $startupCrash.build_commit -ne $env:GITHUB_SHA) {
+          if ($startupCrash.version -ne "0.9.59" -or $startupCrash.build_commit -ne $env:GITHUB_SHA) {
             throw "startup crash diagnostic build identity mismatch"
           }
           foreach ($requiredField in @("timestamp", "windows_version", "exception_type", "traceback")) {
@@ -177,6 +197,8 @@ jobs:
       - name: Prepare verified delivery ZIP
         shell: powershell
         working-directory: worker-client
+        env:
+          CHEJIN_RELEASE_SIGNING_PRIVATE_KEY_BASE64: ${{ secrets.CHEJIN_RELEASE_SIGNING_PRIVATE_KEY_BASE64 }}
         run: |
           $ErrorActionPreference = "Stop"
           $sourceBaseCommit = "4998a5853154dde2c224a21a3eef66c7b6d7db99"
@@ -190,10 +212,11 @@ jobs:
           $manifest = Get-Content -Raw -Encoding UTF8 $manifestPath | ConvertFrom-Json
           $packageDir = [string]$manifest.package_dir
           $releaseDir = Join-Path $PWD "dist\release"
-          $zipName = "chejin-worker-v0.9.58-windows-x64.zip"
+          $zipName = "chejin-worker-v0.9.59-windows-x64.zip"
           $zipPath = Join-Path $releaseDir $zipName
-          $deliveryManifestPath = Join-Path $releaseDir "chejin-worker-v0.9.58-windows-x64.delivery.json"
-          $sha256Path = Join-Path $releaseDir "chejin-worker-v0.9.58-windows-x64.sha256.txt"
+          $deliveryManifestPath = Join-Path $releaseDir "chejin-worker-v0.9.59-windows-x64.delivery.json"
+          $signedReleasePath = Join-Path $releaseDir "chejin-worker-v0.9.59-windows-x64.release.json"
+          $sha256Path = Join-Path $releaseDir "chejin-worker-v0.9.59-windows-x64.sha256.txt"
 
           New-Item -ItemType Directory -Force -Path $releaseDir | Out-Null
           Compress-Archive -Path $packageDir -DestinationPath $zipPath -CompressionLevel Optimal -Force
@@ -217,6 +240,20 @@ jobs:
           }
           if ((Split-Path -Leaf $verifiedExePath) -ne "CheJinWorkerClient.exe") {
             throw "delivery ZIP executable must be CheJinWorkerClient.exe"
+          }
+          $verifiedUpdaterPath = Join-Path $verifiedPackageRoot "CheJinUpdater.exe"
+          if (-not (Test-Path $verifiedUpdaterPath)) {
+            throw "delivery ZIP does not contain CheJinUpdater.exe"
+          }
+          if ((Get-FileHash -Algorithm SHA256 $verifiedUpdaterPath).Hash -ne $manifest.updater_exe_sha256) {
+            throw "delivery ZIP updater SHA256 mismatch"
+          }
+          $verifiedUpdateManifestPath = Join-Path $verifiedPackageRoot "update-package-manifest.json"
+          if (-not (Test-Path $verifiedUpdateManifestPath)) {
+            throw "delivery ZIP does not contain update-package-manifest.json"
+          }
+          if ((Get-FileHash -Algorithm SHA256 $verifiedUpdateManifestPath).Hash -ne $manifest.update_package_manifest_sha256) {
+            throw "delivery ZIP update package manifest SHA256 mismatch"
           }
           $verifiedInternalPath = Join-Path $verifiedPackageRoot "_internal"
           if (-not (Test-Path $verifiedInternalPath)) {
@@ -264,6 +301,8 @@ jobs:
             zip_sha256 = $zipHash
             exe_relative_path = $verifiedExeRelativePath
             exe_sha256 = [string]$manifest.exe_sha256
+            updater_exe_sha256 = [string]$manifest.updater_exe_sha256
+            update_package_manifest_sha256 = [string]$manifest.update_package_manifest_sha256
             file_count = [int]$manifest.file_count
             package_bytes = [long]$manifest.package_bytes
             tests_status = [string]$manifest.tests_status
@@ -289,19 +328,37 @@ jobs:
             throw "delivery manifest leaked the Vision credential"
           }
           "$($zipHash.ToLowerInvariant())  $zipName" | Set-Content -Encoding ASCII $sha256Path
+          python .\scripts\sign-client-release.py `
+            --archive $zipPath `
+            --package-manifest $verifiedUpdateManifestPath `
+            --version "0.9.59" `
+            --git-commit $env:GITHUB_SHA `
+            --artifact-storage-key "gray/windows-x64/$zipName" `
+            --published-at ((Get-Date).ToUniversalTime().ToString("o")) `
+            --key-id $env:CHEJIN_RELEASE_SIGNING_KEY_ID `
+            --output $signedReleasePath
+          if ($LASTEXITCODE -ne 0 -or -not (Test-Path $signedReleasePath)) {
+            throw "signed client release descriptor was not created"
+          }
+          $signedReleaseText = Get-Content -Raw -Encoding UTF8 $signedReleasePath
+          if ($signedReleaseText.Contains("artifact_url") -or $signedReleaseText.Contains("expires_at")) {
+            throw "immutable release descriptor must not contain a temporary download URL"
+          }
 
           Write-Host "Delivery ZIP: $zipPath"
           Write-Host "Delivery ZIP SHA256: $zipHash"
           Write-Host "Delivery manifest: $deliveryManifestPath"
+          Write-Host "Signed release descriptor: $signedReleasePath"
 
       - name: Upload verified Windows client
         uses: actions/upload-artifact@v4
         with:
-          name: chejin-worker-v0.9.58-windows-x64-${{ github.sha }}
+          name: chejin-worker-v0.9.59-windows-x64-${{ github.sha }}
           path: |
-            worker-client/dist/release/chejin-worker-v0.9.58-windows-x64.zip
-            worker-client/dist/release/chejin-worker-v0.9.58-windows-x64.delivery.json
-            worker-client/dist/release/chejin-worker-v0.9.58-windows-x64.sha256.txt
+            worker-client/dist/release/chejin-worker-v0.9.59-windows-x64.zip
+            worker-client/dist/release/chejin-worker-v0.9.59-windows-x64.delivery.json
+            worker-client/dist/release/chejin-worker-v0.9.59-windows-x64.release.json
+            worker-client/dist/release/chejin-worker-v0.9.59-windows-x64.sha256.txt
           if-no-files-found: error
           compression-level: 0
           retention-days: 14

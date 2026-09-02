@@ -50,7 +50,11 @@ class UiContractTest(unittest.TestCase):
 
         self.assertIn("自动接单时段", text)
         self.assertIn("本机执行日志", text)
-        self.assertIn("客户端版本号", text)
+        self.assertIn('version_title = QLabel("客户端版本号")', text)
+        self.assertIn('version_value = QLabel(f"V{__version__}")', text)
+        self.assertIn("检查更新", text)
+        self.assertIn('self.update_button.setFixedSize(72, 30)', text)
+        self.assertIn('self.update_button.setObjectName("settingsAction")', text)
         self.assertIn("设置 / 接单时段设置", text)
         self.assertIn("自动接单", text)
         self.assertIn("接单时间", text)
@@ -59,6 +63,69 @@ class UiContractTest(unittest.TestCase):
         self.assertNotIn("RPA 模式", text)
         self.assertNotIn("OmniAuto", text)
         self.assertNotIn("重新绑定 Worker", text)
+        self.assertNotIn("C2/C3", text)
+
+    def test_post_update_runtime_starts_before_health_marker_is_written(self):
+        for relative in (
+            "chejin_worker_client/web_ui.py",
+            "chejin_worker_client/ui.py",
+        ):
+            text = (ROOT / relative).read_text(encoding="utf-8")
+            self.assertLess(
+                text.rindex("startup_update = take_update_startup_context()"),
+                text.rindex("auto_start_runtime=not is_post_update"),
+            )
+            callback = text[text.rindex("def finish_post_update_startup()") :]
+            self.assertIn("window.start_runtime_services()", callback)
+            self.assertIn("health_gate.observe(", callback)
+            self.assertIn("window.post_update_runtime_health_snapshot()", callback)
+            self.assertIn("QTimer.singleShot(250, finish_post_update_startup)", callback)
+            self.assertIn("if auto_start_runtime:", text)
+
+    def test_web_settings_exposes_manual_update_for_bound_or_unbound_client(self):
+        web_ui = (ROOT / "chejin_worker_client" / "web_ui.py").read_text(
+            encoding="utf-8"
+        )
+        web_app = (
+            ROOT / "chejin_worker_client" / "web_assets" / "worker-web-app.js"
+        ).read_text(encoding="utf-8")
+
+        screen_projection = web_ui[
+            web_ui.index("    def _screen(self)") : web_ui.index(
+                "    def _model(self)"
+            )
+        ]
+        self.assertLess(
+            screen_projection.index(
+                'if self.active_page in {"settings", "schedule-settings", "logs"}'
+            ),
+            screen_projection.index("if not self.binding:"),
+        )
+        self.assertIn("checkForUpdates", web_app)
+        self.assertIn("onCheckForUpdates", web_app)
+        self.assertIn("\\u68C0\\u67E5\\u66F4\\u65B0", web_app)
+        self.assertIn("update.status_text", web_app)
+
+        component_root = ROOT.parent / "packages" / "worker-ui-baseline" / "src"
+        component = (component_root / "WorkerClientBaseline.tsx").read_text(
+            encoding="utf-8"
+        )
+        source_css = (component_root / "worker-ui.css").read_text(encoding="utf-8")
+        packaged_css = (
+            ROOT / "chejin_worker_client" / "web_assets" / "worker-ui.css"
+        ).read_text(encoding="utf-8")
+        self.assertIn('className="cw-settings-action"', component)
+        self.assertIn("onCheckForUpdates", component)
+        self.assertNotIn('isSubPage || screen === "bind"', component)
+        runtime_component = (
+            component_root / "WorkerClientRuntimeApp.tsx"
+        ).read_text(encoding="utf-8")
+        self.assertIn(': "bind";', runtime_component)
+        self.assertIn("min-width: 72px", source_css)
+        self.assertIn("height: 30px", source_css)
+        self.assertIn("border: 1px solid var(--cw-line)", source_css)
+        self.assertEqual(source_css, packaged_css)
+        self.assertIn("cw-settings-action", web_app)
 
     def test_workbench_matches_static_design_shell(self):
         text = (ROOT / "chejin_worker_client" / "ui.py").read_text(encoding="utf-8")
@@ -156,7 +223,10 @@ class UiContractTest(unittest.TestCase):
         self.assertIn('self.auto_accept_checkbox = QPushButton("关闭")', text)
         self.assertIn("ICON_CHEVRON_RIGHT_PATHS", text)
         self.assertIn('self.logs_table.setObjectName("logTable")', text)
-        self.assertIn("V14 · Worker 组件化客户端", text)
+        self.assertIn('version_title = QLabel("客户端版本号")', text)
+        self.assertIn('version_value = QLabel(f"V{__version__}")', text)
+        self.assertIn('"检查更新"', text)
+        self.assertNotIn("V14 · Worker 组件化客户端", text)
         self.assertNotIn("首次使用", text)
         self.assertNotIn("QCheckBox", text)
 

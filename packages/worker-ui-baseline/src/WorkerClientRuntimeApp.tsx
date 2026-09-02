@@ -20,6 +20,7 @@ interface CheJinBridge {
   startAccepting(): void;
   pauseAccepting(): void;
   updateAcceptSchedule(enabled: boolean, start: string, end: string): void;
+  checkForUpdates?(): void;
   exportLatestIncident?(): void;
   exportIncident?(incidentId: string): void;
   openIncidentDirectory?(): void;
@@ -101,6 +102,7 @@ const emptyRuntimeModel: WorkerClientModel = {
   replyFailedSteps: [],
   logs: [],
   latestIncident: null,
+  update: { state: "idle", status_text: "", in_progress: false, available: false },
 };
 
 function initialScreen(): WorkerClientScreen {
@@ -230,17 +232,23 @@ function App() {
       notice={notice}
       onScreenChange={changeScreen}
       onBack={() => {
+        const destination = state.model.workerId
+          ? state.model.status.receiveState === "接单中"
+            ? "accepting-wait"
+            : "paused-empty"
+          : "bind";
         if (bridge) {
-          setState((current) => ({ ...current, screen: current.model.status.receiveState === "接单中" ? "accepting-wait" : "paused-empty" }));
+          setState((current) => ({ ...current, screen: destination }));
           bridge.goBack();
           return;
         }
-        changeScreen("paused-empty");
+        changeScreen(destination);
       }}
       onBind={(workerId, workerToken) => bridge?.bindWorker(workerId, workerToken)}
       onStartAccepting={() => bridge?.startAccepting()}
       onPauseAccepting={() => bridge?.pauseAccepting()}
       onUpdateAcceptSchedule={updateAcceptSchedule}
+      onCheckForUpdates={() => bridge?.checkForUpdates?.()}
       onExportLatestIncident={() => bridge?.exportLatestIncident?.()}
       onExportIncident={(incidentId) => bridge?.exportIncident?.(incidentId)}
       onOpenIncidentDirectory={() => bridge?.openIncidentDirectory?.()}
