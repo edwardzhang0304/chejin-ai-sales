@@ -265,6 +265,7 @@ class PackagingScriptsTest(unittest.TestCase):
         self.assertIn("Convert-SignedReleaseToClientIdentity", process_test)
         self.assertIn('Add-Member -NotePropertyName "latest_version"', process_test)
         self.assertIn("Updater rejected the plan before ready", process_test)
+        self.assertIn("$UpdaterReadyTimeoutSeconds = 120", process_test)
         self.assertIn(
             '$BuildPython = Join-Path $Root ".venv\\Scripts\\python.exe"',
             process_test,
