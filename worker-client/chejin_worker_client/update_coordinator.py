@@ -33,6 +33,7 @@ from .update_data_snapshot import protected_update_snapshot
 
 
 UPDATER_CREATE_TIME_TOLERANCE_SECONDS = 0.01
+UPDATER_READY_TIMEOUT_SECONDS = 120.0
 
 
 def _atomic_json_write(path: Path, payload: dict[str, Any]) -> None:
@@ -1110,7 +1111,11 @@ class UpdateCoordinator:
         )
         updater_process = self.updater_launcher(updater_copy, plan_path, token)
         ready_path = control_root / "updater-ready.json"
-        deadline = time.monotonic() + 15.0
+        # The signed PyInstaller updater can legitimately spend time in
+        # first-launch extraction and Windows malware scanning.  Keep the old
+        # Worker alive and the program directory untouched until this bounded
+        # ready gate succeeds; do not impose a hidden shorter startup window.
+        deadline = time.monotonic() + UPDATER_READY_TIMEOUT_SECONDS
         try:
             while time.monotonic() < deadline:
                 if ready_path.is_file():

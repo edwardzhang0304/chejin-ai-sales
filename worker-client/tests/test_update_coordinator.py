@@ -113,6 +113,10 @@ def _wait(coordinator: UpdateCoordinator, timeout: float = 2.0) -> None:
     assert not worker.is_alive()
 
 
+def test_independent_updater_ready_timeout_matches_packaged_startup_budget() -> None:
+    assert coordinator_module.UPDATER_READY_TIMEOUT_SECONDS == 120.0
+
+
 def test_no_update_does_not_pause_or_close_new_work_gate(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     binding = Binding(
         "w", "worker-secret-token-must-not-enter-update-plan", "instance", run_status="running"

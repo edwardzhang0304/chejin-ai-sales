@@ -4,6 +4,7 @@
 
 $ErrorActionPreference = "Stop"
 $Root = Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path)
+$UpdaterReadyTimeoutSeconds = 120
 $BuildPython = Join-Path $Root ".venv\Scripts\python.exe"
 if (-not (Test-Path $BuildPython)) {
   throw "Updater process test requires the build virtual-environment Python"
@@ -376,7 +377,7 @@ function Invoke-UpdateCase([object]$Case, [string]$ExpectedState) {
   $Updater = Start-Process -FilePath $UpdaterExe -ArgumentList @("--plan", $Case.PlanPath, "--token", $Case.Token) -PassThru
   $ReadyPath = Join-Path $Case.Control "updater-ready.json"
   $ResultPath = Join-Path $Case.Control "update-result.json"
-  $ReadyDeadline = (Get-Date).AddSeconds(30)
+  $ReadyDeadline = (Get-Date).AddSeconds($UpdaterReadyTimeoutSeconds)
   while ((Get-Date) -lt $ReadyDeadline -and -not (Test-Path $ReadyPath)) {
     if (Test-Path $ResultPath) {
       $EarlyResult = Get-Content -Raw -Encoding UTF8 $ResultPath | ConvertFrom-Json
