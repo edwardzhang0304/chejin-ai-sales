@@ -127,6 +127,17 @@ function Write-Utf8NoBom([string]$Path, [string]$Content) {
   [IO.File]::WriteAllText($Path, $Content, (New-Object Text.UTF8Encoding($false)))
 }
 
+function Convert-SignedReleaseToClientIdentity([object]$ReleaseDescriptor) {
+  # sign-client-release.py emits the immutable publication descriptor used by
+  # the backend registration command.  The real latest-release API exposes
+  # that version as latest_version, which is the shape persisted in an update
+  # plan.  Exercise that production boundary instead of feeding the updater a
+  # backend-only descriptor directly.
+  $Identity = $ReleaseDescriptor | Select-Object *
+  $Identity | Add-Member -NotePropertyName "latest_version" -NotePropertyValue ([string]$ReleaseDescriptor.version) -Force
+  return $Identity
+}
+
 function Stop-ProbeFromPidFile([string]$PidFile) {
   if (-not (Test-Path $PidFile)) { return }
   $ProbePid = [int](Get-Content -Raw -Encoding UTF8 $PidFile)
@@ -173,7 +184,8 @@ function New-ReleasePlan(
     --key-id $env:CHEJIN_RELEASE_SIGNING_KEY_ID `
     --output $ReleasePath | Out-Null
   if ($LASTEXITCODE -ne 0) { throw "Could not sign process-test release" }
-  $Release = Get-Content -Raw -Encoding UTF8 $ReleasePath | ConvertFrom-Json
+  $ReleaseDescriptor = Get-Content -Raw -Encoding UTF8 $ReleasePath | ConvertFrom-Json
+  $Release = Convert-SignedReleaseToClientIdentity $ReleaseDescriptor
   $RandomBytes = New-Object byte[] 32
   $Random = [Security.Cryptography.RandomNumberGenerator]::Create()
   try {
@@ -289,7 +301,8 @@ function New-FormalClientReleasePlan(
     --key-id $env:CHEJIN_RELEASE_SIGNING_KEY_ID `
     --output $ReleasePath | Out-Null
   if ($LASTEXITCODE -ne 0) { throw "Could not sign formal process-test release" }
-  $Release = Get-Content -Raw -Encoding UTF8 $ReleasePath | ConvertFrom-Json
+  $ReleaseDescriptor = Get-Content -Raw -Encoding UTF8 $ReleasePath | ConvertFrom-Json
+  $Release = Convert-SignedReleaseToClientIdentity $ReleaseDescriptor
 
   $RandomBytes = New-Object byte[] 32
   $Random = [Security.Cryptography.RandomNumberGenerator]::Create()
@@ -361,13 +374,27 @@ function Invoke-UpdateCase([object]$Case, [string]$ExpectedState) {
   $Plan.old_pid = $Old.Id
   Write-Utf8NoBom $Case.PlanPath ($Plan | ConvertTo-Json -Depth 12)
   $Updater = Start-Process -FilePath $UpdaterExe -ArgumentList @("--plan", $Case.PlanPath, "--token", $Case.Token) -PassThru
-  Wait-File (Join-Path $Case.Control "updater-ready.json")
+  $ReadyPath = Join-Path $Case.Control "updater-ready.json"
+  $ResultPath = Join-Path $Case.Control "update-result.json"
+  $ReadyDeadline = (Get-Date).AddSeconds(30)
+  while ((Get-Date) -lt $ReadyDeadline -and -not (Test-Path $ReadyPath)) {
+    if (Test-Path $ResultPath) {
+      $EarlyResult = Get-Content -Raw -Encoding UTF8 $ResultPath | ConvertFrom-Json
+      throw "Updater rejected the plan before ready: state=$($EarlyResult.state), code=$($EarlyResult.result_code), message=$($EarlyResult.message)"
+    }
+    if ($Updater.HasExited) {
+      throw "Updater exited before ready with code $($Updater.ExitCode) and no result"
+    }
+    Start-Sleep -Milliseconds 100
+  }
+  if (-not (Test-Path $ReadyPath)) {
+    throw "Timed out waiting for $ReadyPath"
+  }
   Set-Content -LiteralPath $StopFile -Value "stop" -Encoding ASCII
   if (-not $Updater.WaitForExit(60000)) {
     Stop-Process -Id $Updater.Id -Force
     throw "Real updater process timed out"
   }
-  $ResultPath = Join-Path $Case.Control "update-result.json"
   Wait-File $ResultPath
   $Result = Get-Content -Raw -Encoding UTF8 $ResultPath | ConvertFrom-Json
   if ($Result.state -ne $ExpectedState) {
