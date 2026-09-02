@@ -146,7 +146,36 @@ def main() -> int:
     parser.add_argument("--skip-wechat", action="store_true", help="预检时跳过微信桌面客户端探测。")
     parser.add_argument("--write-report", type=Path, default=None, help="把预检 JSON 报告写入指定路径。")
     parser.add_argument("--wechat-diagnostics", action="store_true", help="采集微信窗口诊断信息后退出。")
+    parser.add_argument("--post-update-plan", type=Path, default=None, help=argparse.SUPPRESS)
+    parser.add_argument("--post-rollback-plan", type=Path, default=None, help=argparse.SUPPRESS)
+    parser.add_argument("--post-update-token", default=None, help=argparse.SUPPRESS)
     args = parser.parse_args()
+
+    if args.post_update_plan is not None:
+        if not args.post_update_token:
+            return 3
+        try:
+            from .post_update_health import verify_post_update_startup
+            from .update_startup_context import set_update_startup_context
+
+            plan = verify_post_update_startup(
+                args.post_update_plan.resolve(strict=True),
+                str(args.post_update_token),
+            )
+            set_update_startup_context(
+                {"mode": "updated", "plan": plan, "token": str(args.post_update_token)}
+            )
+        except Exception:
+            return 3
+    elif args.post_rollback_plan is not None:
+        from .update_startup_context import set_update_startup_context
+
+        set_update_startup_context(
+            {
+                "mode": "rolled_back",
+                "plan_path": str(args.post_rollback_plan.resolve(strict=False)),
+            }
+        )
 
     if args.wechat_diagnostics:
         from .rpa_bridge import RpaBridge

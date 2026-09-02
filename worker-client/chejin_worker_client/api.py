@@ -7,7 +7,7 @@ from urllib.parse import urlencode
 import requests
 
 from .config import CONFIG
-from .models import Binding, ReplySendClaim, Task, WechatReadTarget, WorkerProfile
+from .models import Binding, ClientRelease, ReplySendClaim, Task, WechatReadTarget, WorkerProfile
 
 
 class ApiError(RuntimeError):
@@ -52,6 +52,28 @@ class WorkerApiClient:
     def _task_lease_headers(self, task_id: str) -> dict[str, str]:
         token = int(self.task_lease_fencing_tokens.get(task_id) or 0)
         return {"X-Task-Lease-Fencing-Token": str(token)} if token > 0 else {}
+
+    def latest_client_release(
+        self,
+        *,
+        current_version: str,
+        client_instance_id: str,
+        platform: str = "windows-x64",
+        channel: str = "gray",
+    ) -> ClientRelease:
+        query = urlencode(
+            {
+                "current_version": current_version,
+                "platform": platform,
+                "channel": channel,
+            }
+        )
+        payload = self._request(
+            "GET",
+            f"/client-releases/latest?{query}",
+            extra_headers={"X-Client-Instance-Id": client_instance_id},
+        )
+        return ClientRelease.from_api(payload)
 
     def bind(self, worker_id: str, worker_token: str, client_instance_id: str) -> WorkerProfile:
         payload = self._request(

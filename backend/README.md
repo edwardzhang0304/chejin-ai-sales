@@ -160,7 +160,16 @@ GET  /api/operation-logs
 GET  /api/leads/{id}/operation-logs
 
 GET  /api/assignment/round-robin-state
+
+GET  /api/client-releases/latest
+GET  /api/client-releases/artifacts/{lease_id}
 ```
+
+客户端发布登记使用服务端命令，发布描述必须先经过 Ed25519 签名，且 ZIP 的大小和 SHA-256
+必须与描述一致。`CLIENT_RELEASE_ARTIFACT_ROOT` 必须挂载到持久化卷，
+`CLIENT_RELEASE_PUBLIC_BASE_URL` 必须配置为客户端可访问的 HTTPS API 地址。短期下载 URL
+只是一张可续期取货码；不可变包身份保存在 `worker_client_releases`，签发记录追加到
+`worker_client_release_download_leases`。
 
 ## 验证
 

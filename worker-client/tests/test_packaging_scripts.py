@@ -69,6 +69,7 @@ class PackagingScriptsTest(unittest.TestCase):
             ROOT / "scripts" / "build-fast-uat-runtime.ps1",
             ROOT / "scripts" / "collect-wechat-diagnostics.ps1",
             ROOT / "scripts" / "run-preflight.ps1",
+            ROOT / "scripts" / "run-windows-updater-process-test.ps1",
             ROOT / "scripts" / "validate-package.ps1",
             ROOT / "packaging" / "start-fast-uat.ps1",
         ]
@@ -211,7 +212,7 @@ class PackagingScriptsTest(unittest.TestCase):
         self.assertIn("delivery ZIP does not contain the packaged runtime directory", workflow)
         self.assertIn("app_name = [string]$manifest.app_name", workflow)
         self.assertIn("delivery ZIP executable SHA256 mismatch", workflow)
-        self.assertIn("chejin-worker-v0.9.58-windows-x64.delivery.json", workflow)
+        self.assertIn("chejin-worker-v0.9.59-windows-x64.delivery.json", workflow)
         self.assertIn("CHEJIN_VISION_CLIENT_API_KEY", workflow)
         self.assertIn("vision_credential_embedded", workflow)
         self.assertIn("vision_configuration_locked", workflow)
@@ -228,6 +229,44 @@ class PackagingScriptsTest(unittest.TestCase):
         self.assertIn("client_delivery_boundary_check", workflow)
         self.assertIn("actions/upload-artifact@v4", workflow)
         self.assertIn("if-no-files-found: error", workflow)
+        self.assertIn("Exercise real updater process switch and rollback", workflow)
+        self.assertIn("run-windows-updater-process-test.ps1", workflow)
+        self.assertIn("CHEJIN_RELEASE_SIGNING_PRIVATE_KEY_BASE64", workflow)
+        self.assertIn("sign-client-release.py", workflow)
+        self.assertIn("--artifact-storage-key", workflow)
+        self.assertIn("chejin-worker-v0.9.59-windows-x64.release.json", workflow)
+        self.assertIn("must not contain a temporary download URL", workflow)
+
+    def test_formal_update_package_contains_independent_updater_and_real_process_gate(self):
+        build_script = (ROOT / "scripts" / "build-windows.ps1").read_text(
+            encoding="utf-8-sig"
+        )
+        updater_spec = (ROOT / "packaging" / "chejin-updater.spec").read_text(
+            encoding="utf-8"
+        )
+        process_test = (
+            ROOT / "scripts" / "run-windows-updater-process-test.ps1"
+        ).read_text(encoding="utf-8-sig")
+
+        self.assertIn("packaging\\chejin-updater.spec", build_script)
+        self.assertIn("CheJinUpdater.exe", build_script)
+        self.assertIn("generate-update-package-manifest.py", build_script)
+        self.assertIn('name="CheJinUpdater"', updater_spec)
+        self.assertIn("Start-Process -FilePath $UpdaterExe", process_test)
+        self.assertIn("updater-ready.json", process_test)
+        self.assertIn('Invoke-UpdateCase $Success "succeeded"', process_test)
+        self.assertIn('Invoke-UpdateCase $Rollback "rolled_back"', process_test)
+        self.assertIn("New-FormalClientReleasePlan", process_test)
+        self.assertIn('Invoke-UpdateCase $Formal "succeeded"', process_test)
+        self.assertIn('$Marker.runtime_health.threads.$ThreadName', process_test)
+        self.assertIn(
+            '@("task_runner", "c2_listener", "thread_monitor")',
+            process_test,
+        )
+        self.assertNotIn(
+            "CHEJIN_RELEASE_SIGNING_PRIVATE_KEY_BASE64",
+            updater_spec,
+        )
 
     def test_formal_exe_workflow_is_manual_and_requires_completed_uat(self):
         workflow = (
@@ -590,7 +629,7 @@ class PackagingScriptsTest(unittest.TestCase):
             [
                 {
                     "source_commit": (
-                        "2a4a7ed9e459421c53865b0bbc9eeb9d88b3dd09"
+                        "516155d63b14aa59de7c361beb521f5967792fcb"
                     ),
                     "scope": [
                         "exact_wechat_context_menu_classification",
@@ -814,6 +853,7 @@ class PackagingScriptsTest(unittest.TestCase):
                         "private_multiline_text_grouping_contract",
                         "c2_contract_0_9_57_generated_schema",
                         "c2_contract_0_9_58_generated_schema",
+                        "c2_contract_0_9_59_generated_schema",
                     ],
                 }
             ],
@@ -1242,7 +1282,7 @@ class PackagingScriptsTest(unittest.TestCase):
         self.assertIn('$packageDir = [string]$manifest.package_dir', workflow)
         self.assertIn('$exePath = [string]$manifest.exe_path', workflow)
         self.assertNotIn('dist\\车金Worker客户端', workflow)
-        self.assertIn('version -ne "0.9.58"', workflow)
+        self.assertIn('version -ne "0.9.59"', workflow)
         self.assertIn('tests_status -ne "passed"', workflow)
         self.assertIn('@("--omniauto-sidecar", "--help")', workflow)
         self.assertIn('@("--omniauto-ocr-probe")', workflow)

@@ -53,6 +53,30 @@ from chejin_worker_client.wechat_c2 import (
 
 
 class C2ContractTests(unittest.TestCase):
+    def test_client_update_contract_keeps_business_and_program_state_separate(self):
+        contract = c2_contract_v3()["client_update_contract"]
+        self.assertEqual(contract["release"], "0.9.59")
+        self.assertEqual(contract["trigger"], "manual_settings_check_only")
+        self.assertEqual(contract["query_binding_requirement"], "none")
+        self.assertIn(
+            "artifact_storage_key",
+            contract["backend_release_record_immutability"],
+        )
+        self.assertNotIn(
+            "artifact_storage_key",
+            contract["client_download_identity"],
+        )
+        self.assertIn("append_only_audit_row", contract["download_lease_rule"])
+        self.assertIn("identity_fields_match", contract["download_lease_renewal_rule"])
+        self.assertIn("existing_leases_fail_closed", contract["withdrawal_rule"])
+        self.assertIn("inflight_flow", contract["installation_blockers"])
+        self.assertIn("action_journal", contract["installation_blockers"])
+        self.assertIn("ed25519_release_manifest_signature", contract["package_verification_order"])
+        self.assertIn("symbolic_link", contract["forbidden_archive_entries"])
+        self.assertEqual(contract["previous_retention_count"], 1)
+        self.assertIn("no_later_operator_pause_or_fault", contract["state_restore_rule"])
+        self.assertIn("must_remain_faulted", contract["faulted_installation_rule"])
+
     def test_observability_inventory_has_one_authority_and_exact_dispositions(self):
         contract = c2_contract_v3()["observability_contract"]
         self.assertEqual(contract["release"], "0.9.58")
@@ -637,7 +661,7 @@ class C2ContractTests(unittest.TestCase):
 
     def test_slot_ledger_contract_separates_fact_scope_from_delivery(self):
         schema = c2_contract_v3()["slot_ledger_state_schema"]
-        self.assertEqual(c2_contract_v3()["contract_revision"], "0.9.58")
+        self.assertEqual(c2_contract_v3()["contract_revision"], "0.9.59")
         self.assertIn(
             "anchor_aliases",
             c2_contract_v3()["message_limits"][

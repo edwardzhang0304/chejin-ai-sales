@@ -10,7 +10,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from PySide6.QtCore import QEvent, QPoint, QObject, Qt, QUrl, Signal, Slot
+from PySide6.QtCore import QEvent, QPoint, QObject, Qt, QTimer, QUrl, Signal, Slot
 from PySide6.QtGui import QBitmap, QColor, QGuiApplication, QPainter
 from PySide6.QtWebChannel import QWebChannel
 from PySide6.QtWebEngineWidgets import QWebEngineView
@@ -38,6 +38,8 @@ from .storage import (
     save_binding,
 )
 from .task_runner import TaskRunner
+from .update_coordinator import UpdateCoordinator
+from .update_startup_context import take_update_startup_context
 from .ui_lock import lock_summary
 from .ui_state_mapping import runtime_process_screen, runtime_step_title
 
@@ -189,6 +191,10 @@ class WorkerWebBridge(QObject):
     def pauseAccepting(self) -> None:
         self.window.set_accepting(False)
 
+    @Slot()
+    def checkForUpdates(self) -> None:
+        self.window.check_for_updates()
+
     @Slot(bool, str, str)
     def updateAcceptSchedule(self, enabled: bool, start: str, end: str) -> None:
         self.window.update_accept_schedule(enabled, start, end)
@@ -241,8 +247,10 @@ class WorkerWebWindow(QMainWindow):
     result_signal = Signal(object)
     error_signal = Signal(str)
     runtime_process_signal = Signal(object)
+    update_state_signal = Signal(object)
+    update_exit_signal = Signal()
 
-    def __init__(self) -> None:
+    def __init__(self, *, auto_start_runtime: bool = True) -> None:
         super().__init__()
         self.setWindowTitle("车金 Worker 客户端")
         self.setWindowFlags(Qt.WindowType.FramelessWindowHint | Qt.WindowType.Window)
@@ -266,6 +274,8 @@ class WorkerWebWindow(QMainWindow):
         self.runtime_process_timeline = RuntimeProcessTimeline()
         self._drag_origin: QPoint | None = None
         self._startup_position_attempted = False
+        self.update_state: dict[str, Any] = {}
+        self._runtime_services_started = False
 
         self.runner = TaskRunner(
             self.api,
@@ -281,6 +291,14 @@ class WorkerWebWindow(QMainWindow):
                 value
             ),
         )
+        self.update_coordinator = UpdateCoordinator(
+            self.api,
+            self.runner,
+            binding_provider=lambda: self.binding,
+            on_state=lambda value: self.update_state_signal.emit(value),
+            request_normal_exit=lambda: self.update_exit_signal.emit(),
+        )
+        self.update_state = self.update_coordinator.state()
 
         self.bridge = WorkerWebBridge(self)
         self.channel = QWebChannel(self)
@@ -296,8 +314,44 @@ class WorkerWebWindow(QMainWindow):
 
         self._wire_signals()
         self._load_web_assets()
+        if auto_start_runtime:
+            self.start_runtime_services()
+
+    def start_runtime_services(self) -> None:
+        """Start local runtime services before post-update health is declared."""
+
+        if self._runtime_services_started:
+            return
+        self._runtime_services_started = True
         if self.binding:
             self.runner.start(self.binding)
+        self.update_coordinator.start_result_reconciliation()
+
+    def post_update_runtime_health_snapshot(self) -> dict[str, Any]:
+        """Return local liveness only; never probe backend or WeChat."""
+
+        if not self._runtime_services_started:
+            return {
+                "ready": False,
+                "binding_state": "bound" if self.binding else "unbound",
+                "ui_event_loop_alive": True,
+                "required_threads": [],
+                "threads": {},
+                "startup_failures": ["runtime_services_not_started"],
+            }
+        if not self.binding:
+            return {
+                "ready": True,
+                "binding_state": "unbound",
+                "ui_event_loop_alive": True,
+                "required_threads": [],
+                "threads": {},
+                "startup_failures": [],
+            }
+        return {
+            **self.runner.post_update_runtime_health_snapshot(),
+            "ui_event_loop_alive": True,
+        }
 
     def resizeEvent(self, event: Any) -> None:
         super().resizeEvent(event)
@@ -407,6 +461,8 @@ class WorkerWebWindow(QMainWindow):
         self.result_signal.connect(self.on_result)
         self.error_signal.connect(self.on_error)
         self.runtime_process_signal.connect(self.on_runtime_process)
+        self.update_state_signal.connect(self.on_update_state)
+        self.update_exit_signal.connect(self._quit_for_update)
 
     def _load_web_assets(self) -> None:
         index_file = Path(__file__).resolve().parent / "web_assets" / "index.html"
@@ -473,6 +529,7 @@ class WorkerWebWindow(QMainWindow):
                         "customerProcessSteps": [],
                         "logs": [],
                         "latestIncident": {},
+                        "update": dict(self.update_state),
                     },
                     "bindError": self.bind_error,
                 },
@@ -492,10 +549,10 @@ class WorkerWebWindow(QMainWindow):
         }
 
     def _screen(self) -> str:
-        if not self.binding:
-            return "bind"
         if self.active_page in {"settings", "schedule-settings", "logs"}:
             return self.active_page
+        if not self.binding:
+            return "bind"
         if self.binding.run_status == "faulted":
             return "client-faulted"
         if self.connection_status == "offline":
@@ -603,6 +660,7 @@ class WorkerWebWindow(QMainWindow):
             ),
             "logs": _log_rows(),
             "latestIncident": latest_incident() or {},
+            "update": dict(self.update_state),
         }
 
     def _listener_model(self) -> dict[str, Any]:
@@ -850,7 +908,13 @@ class WorkerWebWindow(QMainWindow):
             self._publish()
             return
         next_status = "running" if accepting else "paused"
+        if not accepting:
+            self.update_coordinator.note_operator_pause()
         self.runner.set_run_status(next_status)
+        self._publish()
+
+    def check_for_updates(self) -> None:
+        self.update_coordinator.check_for_updates()
         self._publish()
 
     def update_accept_schedule(self, enabled: bool, start: str, end: str) -> None:
@@ -1016,10 +1080,60 @@ class WorkerWebWindow(QMainWindow):
         )
         self._publish()
 
+    @Slot(object)
+    def on_update_state(self, state: dict[str, Any]) -> None:
+        self.update_state = dict(state or {})
+        self._publish()
+
+    @Slot()
+    def _quit_for_update(self) -> None:
+        self.runner.stop()
+        self.close()
+
+    def closeEvent(self, event: Any) -> None:
+        self.update_coordinator.stop()
+        self.runner.stop()
+        super().closeEvent(event)
+
 
 def run_app() -> int:
     app = GuardedQApplication(sys.argv)
     app.setApplicationName("车金 Worker 客户端")
-    window = WorkerWebWindow()
+    startup_update = take_update_startup_context()
+    is_post_update = bool(
+        startup_update and startup_update.get("mode") == "updated"
+    )
+    window = WorkerWebWindow(auto_start_runtime=not is_post_update)
     window.show()
+    if is_post_update:
+        from .post_update_health import RuntimeHealthGate
+
+        plan = dict(startup_update.get("plan") or {})
+        token = str(startup_update.get("token") or "")
+        window.update_coordinator.set_post_update_context(plan, token)
+        health_gate = RuntimeHealthGate(plan, token)
+
+        def finish_post_update_startup() -> None:
+            try:
+                window.start_runtime_services()
+                marker = health_gate.observe(
+                    window.post_update_runtime_health_snapshot()
+                )
+            except Exception as exc:
+                append_log(
+                    "ERROR",
+                    "post_update_runtime_health_failed",
+                    "新客户端运行服务未通过稳定健康检查，等待更新器回滚。",
+                    error_code="UPDATE_RUNTIME_HEALTH_FAILED",
+                    metadata={"exception_type": type(exc).__name__},
+                )
+                window.close()
+                return
+            if marker is None:
+                QTimer.singleShot(250, finish_post_update_startup)
+
+        QTimer.singleShot(
+            0,
+            finish_post_update_startup,
+        )
     return app.exec()

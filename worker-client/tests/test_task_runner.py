@@ -8847,7 +8847,7 @@ class TaskRunnerTest(unittest.TestCase):
             1,
         )
         self.assertIn(
-            f"finish:{task.id}:task_terminal::",
+            f"finish:{task.id}:task_terminal:conv-1:",
             api.inflight_flow_events,
         )
         self.assertFalse(
@@ -8892,7 +8892,7 @@ class TaskRunnerTest(unittest.TestCase):
         )
         self.assertIn("sent_ack:sent:None", api.events)
         self.assertIn(
-            f"finish:{task.id}:task_terminal::",
+            f"finish:{task.id}:task_terminal:conv-1:",
             api.inflight_flow_events,
         )
         self.assertNotIn("pull", api.events[api.events.index("run_status:paused") + 1 :])

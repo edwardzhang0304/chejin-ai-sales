@@ -21835,7 +21835,7 @@ function Header({ screen, onScreenChange, onBack }) {
           className: "cw-icon-button",
           type: "button",
           "aria-label": "\u6253\u5F00\u8BBE\u7F6E",
-          style: { visibility: isSubPage || screen === "bind" ? "hidden" : "visible" },
+          style: { visibility: isSubPage ? "hidden" : "visible" },
           onClick: () => onScreenChange?.("settings"),
           children: /* @__PURE__ */ (0, import_jsx_runtime.jsx)(Icon, { name: "gear" })
         }
@@ -22294,7 +22294,8 @@ function ClientFaultedScreen({ model }) {
     /* @__PURE__ */ (0, import_jsx_runtime.jsx)(Dock, { state: "\u6682\u505C\u63A5\u5355", disabled: true })
   ] }) });
 }
-function SettingsScreen({ model, onScreenChange }) {
+function SettingsScreen({ model, onScreenChange, onCheckForUpdates }) {
+  const update = model.update || {};
   return /* @__PURE__ */ (0, import_jsx_runtime.jsx)("section", { className: "cw-screen screen active", "data-screen-view": "settings", children: /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { className: "cw-settings-page", children: [
     /* @__PURE__ */ (0, import_jsx_runtime.jsx)("header", { className: "cw-workspace-head workspace-head", children: /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { children: [
       /* @__PURE__ */ (0, import_jsx_runtime.jsx)("p", { className: "cw-eyebrow", children: "\u8BBE\u7F6E" }),
@@ -22321,10 +22322,23 @@ function SettingsScreen({ model, onScreenChange }) {
         ] }),
         /* @__PURE__ */ (0, import_jsx_runtime.jsx)(Icon, { name: "chevron" })
       ] }),
-      /* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", { className: "cw-settings-row settings-row", children: /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("span", { children: [
-        /* @__PURE__ */ (0, import_jsx_runtime.jsx)("strong", { children: "\u5BA2\u6237\u7AEF\u7248\u672C\u53F7" }),
-        /* @__PURE__ */ (0, import_jsx_runtime.jsx)("em", { children: model.version })
-      ] }) })
+      /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { className: "cw-settings-row cw-version-settings-row settings-row", children: [
+        /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("span", { children: [
+          /* @__PURE__ */ (0, import_jsx_runtime.jsx)("strong", { children: "\u5BA2\u6237\u7AEF\u7248\u672C\u53F7" }),
+          /* @__PURE__ */ (0, import_jsx_runtime.jsx)("em", { children: model.version }),
+          update.status_text ? /* @__PURE__ */ (0, import_jsx_runtime.jsx)("em", { className: "cw-update-status", role: "status", children: update.status_text }) : null
+        ] }),
+        /* @__PURE__ */ (0, import_jsx_runtime.jsx)(
+          "button",
+          {
+            className: "cw-settings-action",
+            type: "button",
+            disabled: update.in_progress || update.available === false,
+            onClick: onCheckForUpdates,
+            children: update.in_progress ? "\u66F4\u65B0\u4E2D" : "\u68C0\u67E5\u66F4\u65B0"
+          }
+        )
+      ] })
     ] })
   ] }) });
 }
@@ -22524,7 +22538,7 @@ function renderScreen(props) {
   if (screen === "ai-reply-failed") {
     return /* @__PURE__ */ (0, import_jsx_runtime.jsx)(BackgroundProcessScreen, { screen, model, steps: customerProcessSteps, dockState: model.status.receiveState, onPauseAccepting });
   }
-  if (screen === "settings") return /* @__PURE__ */ (0, import_jsx_runtime.jsx)(SettingsScreen, { model, onScreenChange });
+  if (screen === "settings") return /* @__PURE__ */ (0, import_jsx_runtime.jsx)(SettingsScreen, { model, onScreenChange, onCheckForUpdates: props.onCheckForUpdates });
   if (screen === "schedule-settings") return /* @__PURE__ */ (0, import_jsx_runtime.jsx)(ScheduleSettingsScreen, { model, onUpdateAcceptSchedule });
   return /* @__PURE__ */ (0, import_jsx_runtime.jsx)(
     LogsScreen,
@@ -22605,7 +22619,8 @@ var emptyRuntimeModel = {
   replyCompletedSteps: [],
   replyFailedSteps: [],
   logs: [],
-  latestIncident: null
+  latestIncident: null,
+  update: { state: "idle", status_text: "", in_progress: false, available: false }
 };
 function initialScreen() {
   const screen = new URLSearchParams(window.location.search).get("screen");
@@ -22719,17 +22734,19 @@ function App() {
       notice,
       onScreenChange: changeScreen,
       onBack: () => {
+        const destination = state.model.workerId ? state.model.status.receiveState === "\u63A5\u5355\u4E2D" ? "accepting-wait" : "paused-empty" : "bind";
         if (bridge) {
-          setState((current) => ({ ...current, screen: current.model.status.receiveState === "\u63A5\u5355\u4E2D" ? "accepting-wait" : "paused-empty" }));
+          setState((current) => ({ ...current, screen: destination }));
           bridge.goBack();
           return;
         }
-        changeScreen("paused-empty");
+        changeScreen(destination);
       },
       onBind: (workerId, workerToken) => bridge?.bindWorker(workerId, workerToken),
       onStartAccepting: () => bridge?.startAccepting(),
       onPauseAccepting: () => bridge?.pauseAccepting(),
       onUpdateAcceptSchedule: updateAcceptSchedule,
+      onCheckForUpdates: () => bridge?.checkForUpdates?.(),
       onExportLatestIncident: () => bridge?.exportLatestIncident?.(),
       onExportIncident: (incidentId) => bridge?.exportIncident?.(incidentId),
       onOpenIncidentDirectory: () => bridge?.openIncidentDirectory?.()

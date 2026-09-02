@@ -64,6 +64,7 @@ def _headless_web_ui_module():
     qt_core.QPoint = _Widget
     qt_core.QObject = _Widget
     qt_core.Qt = _QtObject()
+    qt_core.QTimer = _Widget
     qt_core.QUrl = _Widget
     qt_core.Signal = _Signal
     qt_core.Slot = _slot
@@ -155,6 +156,7 @@ class WebUiBindingBehaviorTest(unittest.TestCase):
         window.notice = ""
         window.state_revision = 0
         window.step_history = []
+        window.update_state = {}
         window.runtime_process_timeline = module.RuntimeProcessTimeline()
         window.runner = _Runner()
         window.rpa_bridge = types.SimpleNamespace(last_probe_payload={})

@@ -85,6 +85,8 @@ class RpaBridge:
         self.mode = CONFIG.rpa_mode
         self._active_artifact_dirs: set[Path] = set()
         self._active_artifact_dirs_lock = threading.Lock()
+        self._active_process_count = 0
+        self._active_process_count_lock = threading.Lock()
         self.last_probe_payload: dict[str, Any] = {}
         self._startup_window_normalization_state = "pending"
         self.last_startup_window_normalization: dict[str, Any] = {}
@@ -973,6 +975,10 @@ class RpaBridge:
         with self._active_artifact_dirs_lock:
             return set(self._active_artifact_dirs)
 
+    def sidecar_active(self) -> bool:
+        with self._active_process_count_lock:
+            return self._active_process_count > 0
+
     @staticmethod
     def _artifact_dir_from_args(args: list[str]) -> Path | None:
         try:
@@ -983,6 +989,24 @@ class RpaBridge:
         return Path(value) if value else None
 
     def _call_omniauto_process(
+        self,
+        args: list[str],
+        timeout: int = 30,
+        cancel_check: CancellationCheck | None = None,
+    ) -> dict[str, Any]:
+        with self._active_process_count_lock:
+            self._active_process_count += 1
+        try:
+            return self._call_omniauto_process_impl(
+                args,
+                timeout=timeout,
+                cancel_check=cancel_check,
+            )
+        finally:
+            with self._active_process_count_lock:
+                self._active_process_count = max(0, self._active_process_count - 1)
+
+    def _call_omniauto_process_impl(
         self,
         args: list[str],
         timeout: int = 30,

@@ -48,6 +48,10 @@ def _load_migration(filename: str):
             "20260811_0026_feishu_handoff_notifications.py",
             "IRREVERSIBLE_MIGRATION_20260811_0026",
         ),
+        (
+            "20260901_0031_worker_client_releases.py",
+            "IRREVERSIBLE_MIGRATION_20260901_0031",
+        ),
     ],
 )
 def test_data_bearing_migrations_refuse_automatic_downgrade(

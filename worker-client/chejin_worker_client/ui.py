@@ -26,12 +26,15 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from . import __version__
 from .api import WorkerApiClient
 from .models import Binding, RpaResult, RpaStep, Task, WorkerProfile, task_type_title
 from .qt_application import GuardedQApplication
 from .rpa_bridge import RpaBridge
 from .storage import append_log, clear_binding, load_binding, new_client_instance_id, read_logs, save_binding
 from .task_runner import TaskRunner
+from .update_coordinator import UpdateCoordinator
+from .update_startup_context import take_update_startup_context
 
 
 PageName = Literal["bind", "workbench", "settings", "schedule_settings", "logs"]
@@ -409,8 +412,10 @@ class WorkerWindow(QMainWindow):
     step_signal = Signal(object)
     result_signal = Signal(object)
     error_signal = Signal(str)
+    update_state_signal = Signal(object)
+    update_exit_signal = Signal()
 
-    def __init__(self) -> None:
+    def __init__(self, *, auto_start_runtime: bool = True) -> None:
         super().__init__()
         self.setWindowTitle("车金 Worker 客户端")
         self.setWindowFlags(Qt.WindowType.FramelessWindowHint | Qt.WindowType.Window)
@@ -429,6 +434,8 @@ class WorkerWindow(QMainWindow):
         self.step_history: list[tuple[str, str, StepState, str | None]] = []
         self._drag_offset: QPoint | None = None
         self._focused_step_widget: StepRow | None = None
+        self.update_state: dict = {}
+        self._runtime_services_started = False
 
         self.runner = TaskRunner(
             self.api,
@@ -440,6 +447,14 @@ class WorkerWindow(QMainWindow):
             on_result=lambda value: self.result_signal.emit(value),
             on_error=lambda value: self.error_signal.emit(value),
         )
+        self.update_coordinator = UpdateCoordinator(
+            self.api,
+            self.runner,
+            binding_provider=lambda: self.binding,
+            on_state=lambda value: self.update_state_signal.emit(value),
+            request_normal_exit=lambda: self.update_exit_signal.emit(),
+        )
+        self.update_state = self.update_coordinator.state()
 
         self.stack = QStackedWidget()
         self._build_root()
@@ -453,10 +468,47 @@ class WorkerWindow(QMainWindow):
 
         if self.binding:
             self.show_page("workbench")
-            self.runner.start(self.binding)
         else:
             self.show_page("bind")
+        if auto_start_runtime:
+            self.start_runtime_services()
         self.refresh_view()
+
+    def start_runtime_services(self) -> None:
+        """Start local runtime services before post-update health is declared."""
+
+        if self._runtime_services_started:
+            return
+        self._runtime_services_started = True
+        if self.binding:
+            self.runner.start(self.binding)
+        self.update_coordinator.start_result_reconciliation()
+
+    def post_update_runtime_health_snapshot(self) -> dict:
+        """Return local liveness only; never probe backend or WeChat."""
+
+        if not self._runtime_services_started:
+            return {
+                "ready": False,
+                "binding_state": "bound" if self.binding else "unbound",
+                "ui_event_loop_alive": True,
+                "required_threads": [],
+                "threads": {},
+                "startup_failures": ["runtime_services_not_started"],
+            }
+        if not self.binding:
+            return {
+                "ready": True,
+                "binding_state": "unbound",
+                "ui_event_loop_alive": True,
+                "required_threads": [],
+                "threads": {},
+                "startup_failures": [],
+            }
+        return {
+            **self.runner.post_update_runtime_health_snapshot(),
+            "ui_event_loop_alive": True,
+        }
 
     def _build_root(self) -> None:
         root = QWidget()
@@ -571,6 +623,8 @@ class WorkerWindow(QMainWindow):
         self.step_signal.connect(self.on_step)
         self.result_signal.connect(self.on_result)
         self.error_signal.connect(self.on_error)
+        self.update_state_signal.connect(self.on_update_state)
+        self.update_exit_signal.connect(self._quit_for_update)
 
     def _page_layout(
         self,
@@ -816,10 +870,34 @@ class WorkerWindow(QMainWindow):
         self.schedule_row.clicked.connect(lambda: self.show_page("schedule_settings"))
         logs_row = self._settings_row("本机执行日志", "查看最近 30 天，最多 1000 条本机日志")
         logs_row.clicked.connect(self.open_logs)
-        version_row = self._settings_row("客户端版本号", "V14 · Worker 组件化客户端", enabled=False)
+        self.version_row = QFrame()
+        self.version_row.setObjectName("settingsRowStatic")
+        self.version_row.setMinimumHeight(SETTINGS_ROW_HEIGHT)
+        version_layout = QHBoxLayout(self.version_row)
+        version_layout.setContentsMargins(10, 9, 10, 9)
+        version_layout.setSpacing(10)
+        version_text = QVBoxLayout()
+        version_text.setContentsMargins(0, 0, 0, 0)
+        version_text.setSpacing(4)
+        version_title = QLabel("客户端版本号")
+        version_title.setObjectName("settingsTitle")
+        version_value = QLabel(f"V{__version__}")
+        version_value.setObjectName("settingsSubtitle")
+        self.update_status_label = QLabel("")
+        self.update_status_label.setObjectName("settingsSubtitle")
+        self.update_status_label.setWordWrap(True)
+        version_text.addWidget(version_title)
+        version_text.addWidget(version_value)
+        version_text.addWidget(self.update_status_label)
+        self.update_button = QPushButton("检查更新")
+        self.update_button.setObjectName("settingsAction")
+        self.update_button.setFixedSize(72, 30)
+        self.update_button.clicked.connect(self.check_for_updates)
+        version_layout.addLayout(version_text, 1)
+        version_layout.addWidget(self.update_button)
         settings_layout.addWidget(self.schedule_row)
         settings_layout.addWidget(logs_row)
-        settings_layout.addWidget(version_row)
+        settings_layout.addWidget(self.version_row)
         layout.addWidget(settings_list)
         layout.addStretch()
         self.stack.addWidget(self.settings_page)
@@ -992,7 +1070,13 @@ class WorkerWindow(QMainWindow):
             self.on_error("客户端处于故障状态，本次运行禁止继续接单。")
             return
         next_status = "paused" if self.binding.run_status == "running" else "running"
+        if next_status == "paused":
+            self.update_coordinator.note_operator_pause()
         self.runner.set_run_status(next_status)
+        self.refresh_view()
+
+    def check_for_updates(self) -> None:
+        self.update_coordinator.check_for_updates()
         self.refresh_view()
 
     def show_page(self, page: PageName) -> None:
@@ -1014,7 +1098,7 @@ class WorkerWindow(QMainWindow):
             }[page]
         )
         self.back_button.setVisible(page in {"settings", "schedule_settings", "logs"})
-        self.settings_button.setVisible(page not in {"settings", "schedule_settings", "logs", "bind"})
+        self.settings_button.setVisible(page not in {"settings", "schedule_settings", "logs"})
         if page == "logs":
             self.refresh_logs()
         self.refresh_view()
@@ -1023,7 +1107,7 @@ class WorkerWindow(QMainWindow):
         if self.stack.currentWidget() in {self.logs_page, self.schedule_settings_page}:
             self.show_page("settings")
             return
-        self.show_page("workbench")
+        self.show_page("workbench" if self.binding else "bind")
 
     def open_logs(self) -> None:
         self.show_page("logs")
@@ -1099,6 +1183,14 @@ class WorkerWindow(QMainWindow):
         self.notice_label.setVisible(bool(message))
         self.refresh_view()
 
+    def on_update_state(self, state: dict) -> None:
+        self.update_state = dict(state or {})
+        self.refresh_view()
+
+    def _quit_for_update(self) -> None:
+        self.runner.stop()
+        self.close()
+
     def refresh_view(self) -> None:
         run_status = self.binding.run_status if self.binding else "paused"
         is_running = run_status == "running"
@@ -1106,6 +1198,17 @@ class WorkerWindow(QMainWindow):
         online = self.connection_status == "online"
         offline = self.connection_status == "offline"
         profile = self.profile
+        if hasattr(self, "update_button"):
+            self.update_button.setEnabled(
+                self.update_state.get("available") is not False
+                and not bool(self.update_state.get("in_progress"))
+            )
+            self.update_button.setText(
+                "更新中" if self.update_state.get("in_progress") else "检查更新"
+            )
+            self.update_status_label.setText(
+                str(self.update_state.get("status_text") or "")
+            )
         active_task = self.current_task
         display_task = active_task or self.last_task
         result = self.last_result
@@ -1301,6 +1404,7 @@ class WorkerWindow(QMainWindow):
         self.logs_table.resizeRowsToContents()
 
     def closeEvent(self, event) -> None:  # noqa: N802
+        self.update_coordinator.stop()
         self.runner.stop()
         super().closeEvent(event)
 
@@ -1885,6 +1989,33 @@ class WorkerWindow(QMainWindow):
             QPushButton#settingsRowStatic {
                 color: #171b22;
             }
+            QFrame#settingsRowStatic {
+                min-height: 61px;
+                border: none;
+                border-bottom: 1px solid #e8edf3;
+                background: #ffffff;
+                color: #171b22;
+            }
+            QPushButton#settingsAction {
+                min-width: 72px;
+                max-width: 72px;
+                min-height: 30px;
+                max-height: 30px;
+                padding: 0 11px;
+                color: #4a6ea5;
+                background: #ffffff;
+                border: 1px solid #d8dee6;
+                border-radius: 6px;
+                font-size: 12px;
+                font-weight: 800;
+            }
+            QPushButton#settingsAction:hover {
+                background: #edf3fb;
+            }
+            QPushButton#settingsAction:disabled {
+                color: #9aa3ad;
+                background: #e8edf3;
+            }
             QLabel#chevron {
                 color: #68717d;
                 min-width: 18px;
@@ -1917,7 +2048,42 @@ class WorkerWindow(QMainWindow):
 
 def run_app() -> int:
     app = GuardedQApplication([])
-    window = WorkerWindow()
+    startup_update = take_update_startup_context()
+    is_post_update = bool(
+        startup_update and startup_update.get("mode") == "updated"
+    )
+    window = WorkerWindow(auto_start_runtime=not is_post_update)
     window.show()
+    if is_post_update:
+        from .post_update_health import RuntimeHealthGate
+
+        plan = dict(startup_update.get("plan") or {})
+        token = str(startup_update.get("token") or "")
+        window.update_coordinator.set_post_update_context(plan, token)
+        health_gate = RuntimeHealthGate(plan, token)
+
+        def finish_post_update_startup() -> None:
+            try:
+                window.start_runtime_services()
+                marker = health_gate.observe(
+                    window.post_update_runtime_health_snapshot()
+                )
+            except Exception as exc:
+                append_log(
+                    "ERROR",
+                    "post_update_runtime_health_failed",
+                    "新客户端运行服务未通过稳定健康检查，等待更新器回滚。",
+                    error_code="UPDATE_RUNTIME_HEALTH_FAILED",
+                    metadata={"exception_type": type(exc).__name__},
+                )
+                window.close()
+                return
+            if marker is None:
+                QTimer.singleShot(250, finish_post_update_startup)
+
+        QTimer.singleShot(
+            0,
+            finish_post_update_startup,
+        )
     QTimer.singleShot(0, lambda: append_log("INFO", "ui_started", "Worker UI 启动。"))
     return app.exec()

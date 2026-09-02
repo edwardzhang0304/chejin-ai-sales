@@ -8,6 +8,11 @@ from app.models.c3 import (
     ReplyActionVehicleFact,
     SentAck,
 )
+from app.models.client_release import (
+    WorkerClientRelease,
+    WorkerClientReleaseDownloadLease,
+    WorkerClientReleaseQueryThrottle,
+)
 from app.models.lead import (
     AssignmentRoundRobinState,
     Lead,
@@ -65,6 +70,8 @@ __all__ = [
     "WechatSessionBinding",
     "Worker",
     "WorkerHeartbeatLog",
+    "WorkerClientRelease",
+    "WorkerClientReleaseQueryThrottle",
     "KnowledgeCategory",
     "KnowledgeItem",
     "KnowledgeTenant",

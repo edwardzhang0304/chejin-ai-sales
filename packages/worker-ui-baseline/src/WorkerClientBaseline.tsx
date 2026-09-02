@@ -14,6 +14,7 @@ interface WorkerClientBaselineProps {
   onStartAccepting?: () => void;
   onPauseAccepting?: () => void;
   onUpdateAcceptSchedule?: (enabled: boolean, start: string, end: string) => void;
+  onCheckForUpdates?: () => void;
   onExportLatestIncident?: () => void;
   onExportIncident?: (incidentId: string) => void;
   onOpenIncidentDirectory?: () => void;
@@ -92,7 +93,7 @@ function Header({ screen, onScreenChange, onBack }: Pick<WorkerClientBaselinePro
           className="cw-icon-button"
           type="button"
           aria-label="打开设置"
-          style={{ visibility: isSubPage || screen === "bind" ? "hidden" : "visible" }}
+          style={{ visibility: isSubPage ? "hidden" : "visible" }}
           onClick={() => onScreenChange?.("settings")}
         >
           <Icon name="gear" />
@@ -697,7 +698,8 @@ function ClientFaultedScreen({ model }: { model: WorkerClientModel }) {
   );
 }
 
-function SettingsScreen({ model, onScreenChange }: Pick<WorkerClientBaselineProps, "model" | "onScreenChange">) {
+function SettingsScreen({ model, onScreenChange, onCheckForUpdates }: Pick<WorkerClientBaselineProps, "model" | "onScreenChange" | "onCheckForUpdates">) {
+  const update = model.update || {};
   return (
     <section className="cw-screen screen active" data-screen-view="settings">
       <div className="cw-settings-page">
@@ -716,8 +718,20 @@ function SettingsScreen({ model, onScreenChange }: Pick<WorkerClientBaselineProp
             <span><strong>本机执行日志</strong><em>查看最近 30 天，最多 1000 条本机日志</em></span>
             <Icon name="chevron" />
           </button>
-          <div className="cw-settings-row settings-row">
-            <span><strong>客户端版本号</strong><em>{model.version}</em></span>
+          <div className="cw-settings-row cw-version-settings-row settings-row">
+            <span>
+              <strong>客户端版本号</strong>
+              <em>{model.version}</em>
+              {update.status_text ? <em className="cw-update-status" role="status">{update.status_text}</em> : null}
+            </span>
+            <button
+              className="cw-settings-action"
+              type="button"
+              disabled={update.in_progress || update.available === false}
+              onClick={onCheckForUpdates}
+            >
+              {update.in_progress ? "更新中" : "检查更新"}
+            </button>
           </div>
         </section>
       </div>
@@ -905,7 +919,7 @@ function renderScreen(props: WorkerClientBaselineProps) {
   if (screen === "ai-reply-failed") {
     return <BackgroundProcessScreen screen={screen} model={model} steps={customerProcessSteps} dockState={model.status.receiveState} onPauseAccepting={onPauseAccepting} />;
   }
-  if (screen === "settings") return <SettingsScreen model={model} onScreenChange={onScreenChange} />;
+  if (screen === "settings") return <SettingsScreen model={model} onScreenChange={onScreenChange} onCheckForUpdates={props.onCheckForUpdates} />;
   if (screen === "schedule-settings") return <ScheduleSettingsScreen model={model} onUpdateAcceptSchedule={onUpdateAcceptSchedule} />;
   return (
     <LogsScreen

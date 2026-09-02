@@ -44,6 +44,13 @@ class Settings(BaseSettings):
     admin_login_ip_max_failures: int = 20
     admin_login_block_base_seconds: int = 30
     admin_login_block_max_seconds: int = 15 * 60
+    client_release_rate_window_seconds: int = 60
+    client_release_ip_max_requests: int = 120
+    client_release_instance_max_requests: int = 30
+    client_release_download_lease_seconds: int = 10 * 60
+    client_release_download_lease_retention_days: int = 90
+    client_release_public_base_url: str = "https://127.0.0.1:8000/api"
+    client_release_artifact_root: str = "/app/data/client-releases"
     internal_service_token: str = "dev-only-internal-service-token-change-before-production"
     c3_ai_adapter_mode: str = "real"
     c3_reply_action_ttl_seconds: int = 300
@@ -143,6 +150,16 @@ class Settings(BaseSettings):
             raise ValueError("后台登录限速阈值必须至少为 1")
         if min(self.admin_login_block_base_seconds, self.admin_login_block_max_seconds) < 1:
             raise ValueError("后台登录封禁时间必须大于 0")
+        if min(
+            self.client_release_rate_window_seconds,
+            self.client_release_ip_max_requests,
+            self.client_release_instance_max_requests,
+            self.client_release_download_lease_seconds,
+            self.client_release_download_lease_retention_days,
+        ) < 1:
+            raise ValueError("客户端发布查询限速参数必须大于 0")
+        if not self.client_release_public_base_url.startswith("https://"):
+            raise ValueError("客户端更新下载入口必须使用 HTTPS")
         if self.environment.lower() in PRODUCTION_ENVIRONMENTS:
             if self.auto_create_tables:
                 raise ValueError("生产环境必须设置 AUTO_CREATE_TABLES=false，并使用 Alembic 迁移")

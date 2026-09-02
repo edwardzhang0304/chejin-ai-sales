@@ -32,12 +32,15 @@ services:
       OMNIAUTO_KNOWLEDGE_TENANT: ${WECHAT_KNOWLEDGE_TENANT:-chejin}
       OMNIAUTO_KNOWLEDGE_SCHEMA: ${WECHAT_POSTGRES_SCHEMA:-wechat_ai_customer_service}
       VEHICLE_IMAGE_STORAGE_ROOT: /app/data/vehicle-images
+      CLIENT_RELEASE_ARTIFACT_ROOT: /app/data/client-releases
+      CLIENT_RELEASE_PUBLIC_BASE_URL: ${CLIENT_RELEASE_PUBLIC_BASE_URL:-https://127.0.0.1:8000/api}
       WAIT_FOR_DB: "1"
       RUN_MIGRATIONS: "1"
     ports:
       - "${API_PORT:-8000}:8000"
     volumes:
       - chejin_vehicle_images:/app/data/vehicle-images
+      - chejin_client_releases:/app/data/client-releases
     depends_on:
       db:
         condition: service_healthy
@@ -76,3 +79,4 @@ services:
 volumes:
   chejin_leads_pgdata:
   chejin_vehicle_images:
+  chejin_client_releases:
