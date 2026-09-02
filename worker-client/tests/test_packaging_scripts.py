@@ -723,6 +723,77 @@ class PackagingScriptsTest(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "OMNIAUTO_TREE_MISMATCH"):
                 verify_same_tree(source, packaged)
 
+    def test_omniauto_runtime_tree_verification_ignores_source_only_files(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            source = root / "source"
+            packaged = root / "packaged"
+            for base in (source, packaged):
+                (base / "apps").mkdir(parents=True)
+                (base / ".chejin-source.json").write_text(
+                    (
+                        '{"schema_version":2,'
+                        '"upstream_base_commit":'
+                        '"855c21881641cdb2f9fe69d3f2e1caa05e37d04d",'
+                        '"selective_integrations":[{'
+                        '"source_commit":'
+                        '"2318bd8c5aa8d8ff2272a8decc285ef2ae9e01e7",'
+                        '"scope":["runtime_tree"]}],'
+                        '"chejin_integration_commit":'
+                        '"ff9e0de00013ac51a2f2a05e3774748c43c846fb"}'
+                    ),
+                    encoding="utf-8",
+                )
+                (base / "apps" / "one.py").write_text(
+                    "production", encoding="utf-8"
+                )
+                boundary_manifest = (
+                    base
+                    / "apps"
+                    / "wechat_ai_customer_service"
+                    / "deploy"
+                    / "client_source_manifest.json"
+                )
+                boundary_manifest.parent.mkdir(parents=True)
+                boundary_manifest.write_text(
+                    json.dumps(
+                        {
+                            "exclude_paths": [
+                                "apps/wechat_ai_customer_service/vps_admin/"
+                            ]
+                        }
+                    ),
+                    encoding="utf-8",
+                )
+
+            (source / "README.md").write_text(
+                "source documentation", encoding="utf-8"
+            )
+            source_test = source / "apps" / "service" / "tests" / "test_one.py"
+            source_test.parent.mkdir(parents=True)
+            source_test.write_text("source test", encoding="utf-8")
+
+            verified = verify_same_tree(source, packaged)
+
+            self.assertEqual(
+                verified["source"]["tree_sha256"],
+                verified["packaged"]["tree_sha256"],
+            )
+            self.assertNotIn(
+                "README.md",
+                {item["path"] for item in verified["source"]["files"]},
+            )
+            self.assertNotIn(
+                "apps/service/tests/test_one.py",
+                {item["path"] for item in verified["source"]["files"]},
+            )
+
+            (packaged / "apps" / "one.py").write_text(
+                "changed production", encoding="utf-8"
+            )
+            with self.assertRaisesRegex(ValueError, "OMNIAUTO_TREE_MISMATCH"):
+                verify_same_tree(source, packaged)
+
     def test_omniauto_provenance_records_merged_upstream_and_history(
         self,
     ):
