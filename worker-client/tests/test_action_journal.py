@@ -7,12 +7,14 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 os.environ.setdefault(
     "CHEJIN_WORKER_HOME",
     tempfile.mkdtemp(prefix="chejin-action-journal-test-"),
 )
 
+import chejin_worker_client.action_journal as action_journal
 from chejin_worker_client.action_journal import (
     action_journal_phase,
     commit_action_journal_item_identity,
@@ -59,6 +61,68 @@ class ActionJournalTest(unittest.TestCase):
 
     def tearDown(self) -> None:
         self.tmp.cleanup()
+
+    def test_atomic_write_retries_transient_replace_denial(self) -> None:
+        real_replace = action_journal.os.replace
+        replace_calls = 0
+
+        def transient_denial(source, destination):
+            nonlocal replace_calls
+            replace_calls += 1
+            if replace_calls == 1:
+                raise PermissionError(13, "sharing violation")
+            return real_replace(source, destination)
+
+        with (
+            mock.patch.object(
+                action_journal.os,
+                "replace",
+                side_effect=transient_denial,
+            ),
+            mock.patch.object(action_journal.time, "sleep") as sleep_mock,
+        ):
+            commit_action_journal_item_identity(
+                self.path,
+                journal_item_id="message-1",
+                source_message_key="worker-message-1",
+            )
+
+        self.assertEqual(replace_calls, 2)
+        sleep_mock.assert_called_once()
+        self.assertEqual(
+            read_action_journal(self.path)["items"]["message-1"][
+                "source_message_key"
+            ],
+            "worker-message-1",
+        )
+
+    def test_atomic_write_fails_closed_after_bounded_replace_denials(
+        self,
+    ) -> None:
+        with (
+            mock.patch.object(
+                action_journal.os,
+                "replace",
+                side_effect=PermissionError(13, "sharing violation"),
+            ) as replace_mock,
+            mock.patch.object(action_journal.time, "sleep"),
+        ):
+            with self.assertRaises(PermissionError):
+                commit_action_journal_item_identity(
+                    self.path,
+                    journal_item_id="message-1",
+                    source_message_key="worker-message-1",
+                )
+
+        self.assertEqual(
+            replace_mock.call_count,
+            action_journal._ATOMIC_REPLACE_ATTEMPTS,
+        )
+        self.assertIsNone(
+            read_action_journal(self.path)["items"]["message-1"][
+                "source_message_key"
+            ],
+        )
 
     def _strong_kill_after_update(self, source: str) -> int:
         env = dict(os.environ)

@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable
@@ -19,6 +20,8 @@ ACTION_PHASES = tuple(
 if not ACTION_PHASES:
     raise RuntimeError("C2 action_phases contract is empty")
 _PHASE_RANK = {value: index for index, value in enumerate(ACTION_PHASES)}
+_ATOMIC_REPLACE_ATTEMPTS = 5
+_ATOMIC_REPLACE_DELAY_SECONDS = 0.05
 
 
 def _now_iso() -> str:
@@ -56,7 +59,14 @@ def _atomic_write(path: Path, payload: dict[str, Any]) -> None:
         handle.write(encoded)
         handle.flush()
         os.fsync(handle.fileno())
-    os.replace(temporary, path)
+    for attempt in range(_ATOMIC_REPLACE_ATTEMPTS):
+        try:
+            os.replace(temporary, path)
+            return
+        except PermissionError:
+            if attempt + 1 >= _ATOMIC_REPLACE_ATTEMPTS:
+                raise
+            time.sleep(_ATOMIC_REPLACE_DELAY_SECONDS)
 
 
 def read_action_journal(path: str | Path) -> dict[str, Any]:
