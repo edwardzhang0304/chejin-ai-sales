@@ -330,7 +330,7 @@ jobs:
             throw "delivery manifest leaked the Vision credential"
           }
           "$($zipHash.ToLowerInvariant())  $zipName" | Set-Content -Encoding ASCII $sha256Path
-          python .\scripts\sign-client-release.py `
+          .\.venv\Scripts\python.exe .\scripts\sign-client-release.py `
             --archive $zipPath `
             --package-manifest $verifiedUpdateManifestPath `
             --version "0.9.59" `

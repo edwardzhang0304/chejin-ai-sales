@@ -233,6 +233,10 @@ class PackagingScriptsTest(unittest.TestCase):
         self.assertIn("run-windows-updater-process-test.ps1", workflow)
         self.assertIn("CHEJIN_RELEASE_SIGNING_PRIVATE_KEY_BASE64", workflow)
         self.assertIn("sign-client-release.py", workflow)
+        self.assertIn(
+            ".\\.venv\\Scripts\\python.exe .\\scripts\\sign-client-release.py",
+            workflow,
+        )
         self.assertIn("--artifact-storage-key", workflow)
         self.assertIn("chejin-worker-v0.9.59-windows-x64.release.json", workflow)
         self.assertIn("must not contain a temporary download URL", workflow)
@@ -258,6 +262,11 @@ class PackagingScriptsTest(unittest.TestCase):
         self.assertIn('Invoke-UpdateCase $Rollback "rolled_back"', process_test)
         self.assertIn("New-FormalClientReleasePlan", process_test)
         self.assertIn('Invoke-UpdateCase $Formal "succeeded"', process_test)
+        self.assertIn(
+            '$BuildPython = Join-Path $Root ".venv\\Scripts\\python.exe"',
+            process_test,
+        )
+        self.assertNotIn("& python", process_test)
         self.assertIn('$Marker.runtime_health.threads.$ThreadName', process_test)
         self.assertIn(
             '@("task_runner", "c2_listener", "thread_monitor")',
