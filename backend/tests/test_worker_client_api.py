@@ -172,7 +172,11 @@ def test_worker_client_bind_is_single_instance_and_reset_invalidates_old_client(
     assert duplicate.status_code == 409
     assert duplicate.json()["code"] == "WORKER_CLIENT_ALREADY_BOUND"
 
-    reset = client.post(f"/api/workers/{worker['id']}/reset-client-bind", json={"force": True}, headers=HEADERS)
+    reset = client.post(
+        f"/api/workers/{worker['id']}/reset-binding",
+        json={"force": True},
+        headers=HEADERS,
+    )
     assert reset.status_code == 200
     new_token = reset.json()["data"]["worker_token"]
 
@@ -190,6 +194,16 @@ def test_worker_client_bind_is_single_instance_and_reset_invalidates_old_client(
     )
     assert reset_required.status_code == 401
     assert reset_required.json()["code"] == "WORKER_CLIENT_BINDING_RESET"
+
+
+def test_removed_reset_client_bind_alias_is_not_exposed():
+    assert "/api/workers/{worker_id}/reset-client-bind" not in app.openapi()["paths"]
+    response = client.post(
+        "/api/workers/retired-alias/reset-client-bind",
+        json={"force": True},
+        headers=HEADERS,
+    )
+    assert response.status_code == 404
 
 
 def test_worker_can_pull_claim_report_steps_complete_and_upload_evidence():

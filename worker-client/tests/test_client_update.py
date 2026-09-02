@@ -82,7 +82,7 @@ def _archive() -> tuple[bytes, str]:
     updater_bytes = b"updater-test"
     manifest = {
         "schema_version": 1,
-        "version": "0.9.60",
+        "version": "0.9.61",
         "platform": "windows-x64",
         "git_commit": "b" * 40,
         "rollback_safe": True,
@@ -110,7 +110,7 @@ def _signed_release(payload: bytes, manifest_sha: str):
     public_key = private_key.public_key()
     release = ClientRelease(
         update_available=True,
-        latest_version="0.9.60",
+        latest_version="0.9.61",
         channel="gray",
         platform="windows-x64",
         artifact_url="https://download.example.test/release.zip?expires=1",
@@ -151,7 +151,7 @@ def test_full_release_verification_download_and_safe_extraction(tmp_path: Path) 
     package_root = Path(result["package_root"])
     assert package_root.name == "CheJinWorkerClient"
     assert (package_root / "CheJinWorkerClient.exe").read_bytes() == b"old-client-test"
-    assert result["package_manifest"]["version"] == "0.9.60"
+    assert result["package_manifest"]["version"] == "0.9.61"
 
 
 @pytest.mark.parametrize(

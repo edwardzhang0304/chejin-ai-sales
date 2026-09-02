@@ -9,7 +9,11 @@ import shutil
 import zipfile
 
 from build_source import BuildSourceError, verify_build_source
-from client_delivery_policy import is_client_forbidden_path, load_client_exclude_paths
+from client_delivery_policy import (
+    is_client_forbidden_path,
+    is_client_runtime_junk_path,
+    load_client_exclude_paths,
+)
 from omniauto_tree import load_source_provenance, tree_manifest
 
 
@@ -65,6 +69,8 @@ def _copy_omniauto(destination: Path) -> None:
             continue
         relative = path.relative_to(OMNIAUTO_ROOT)
         relative_name = relative.as_posix()
+        if is_client_runtime_junk_path(relative_name):
+            continue
         if is_client_forbidden_path(relative_name, excludes):
             continue
         if EXCLUDED_PARTS.intersection(relative.parts):

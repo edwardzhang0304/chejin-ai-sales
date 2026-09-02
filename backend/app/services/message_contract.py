@@ -6,7 +6,7 @@ import unicodedata
 
 
 def canonical_reply_text(value: object) -> str:
-    """Return the single reply-text representation shared by backend contracts."""
+    """Mirror the frozen backend reply-text contract, including NBSP handling."""
 
     return " ".join(str(value or "").split())
 
@@ -33,8 +33,18 @@ def _is_east_asian_text_or_punctuation(value: str) -> bool:
 
 
 def canonical_message_identity_text(value: object) -> str:
-    """Mirror the Worker OCR-layout identity normalization exactly."""
+    """Normalize OCR layout whitespace without weakening message semantics.
 
+    WeChat may wrap one CJK bubble into multiple OCR lines.  Such a visual
+    newline is not a character sent by the user and must not change the
+    cross-round identity hash.  Horizontal whitespace and whitespace between
+    ASCII words remain one real space, so this is narrower than deleting all
+    whitespace.
+    """
+
+    # Preserve the old canonical hash for every value without a visual line
+    # break. Existing backend checkpoints therefore remain valid across the
+    # upgrade; only OCR-inserted wrapping receives new treatment.
     text = str(value or "").strip()
 
     def replace_whitespace(match: re.Match[str]) -> str:

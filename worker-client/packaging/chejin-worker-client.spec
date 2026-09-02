@@ -11,6 +11,7 @@ sys.path.insert(0, str(ROOT / "scripts"))
 from build_source import resolve_contract_path
 from client_delivery_policy import (
     is_client_forbidden_path,
+    is_client_runtime_junk_path,
     load_client_exclude_paths,
 )
 
@@ -63,6 +64,8 @@ PIL_HIDDEN_IMPORTS = collect_submodules("PIL")
 def include_omniauto_file(path):
     rel = path.relative_to(OMNIAUTO_RPA_SOURCE)
     rel_name = rel.as_posix()
+    if is_client_runtime_junk_path(rel_name):
+        return False
     if is_client_forbidden_path(rel_name, OMNIAUTO_CLIENT_EXCLUDES):
         return False
     if any(part in EXCLUDED_OMNIAUTO_PARTS for part in rel.parts):

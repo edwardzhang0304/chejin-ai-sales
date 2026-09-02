@@ -8,6 +8,16 @@ from pathlib import Path, PurePosixPath
 CLIENT_MANIFEST_RELATIVE_PATH = PurePosixPath(
     "apps/wechat_ai_customer_service/deploy/client_source_manifest.json"
 )
+CLIENT_RUNTIME_EXCLUDED_PARTS = frozenset({"tests"})
+CLIENT_RUNTIME_EXCLUDED_ROOT_FILES = frozenset(
+    {
+        "PROJECT_STRUCTURE.md",
+        "README.md",
+        "START_HERE.md",
+        "pyproject.toml",
+        "uv.lock",
+    }
+)
 
 
 class ClientDeliveryPolicyError(RuntimeError):
@@ -50,6 +60,22 @@ def is_client_forbidden_path(
         if relative == prefix or relative.startswith(prefix + "/"):
             return True
     return False
+
+
+def is_client_runtime_junk_path(
+    relative_path: str | PurePosixPath,
+) -> bool:
+    """Return whether a source file has no role in an installed client runtime.
+
+    This deliberately remains narrower than the source-delivery manifest.  A
+    source archive may keep tests and repository metadata, while the executable
+    and Fast UAT runtime packages must not ship them.
+    """
+
+    relative = PurePosixPath(_normalize_relative_path(relative_path))
+    if any(part in CLIENT_RUNTIME_EXCLUDED_PARTS for part in relative.parts):
+        return True
+    return len(relative.parts) == 1 and relative.name in CLIENT_RUNTIME_EXCLUDED_ROOT_FILES
 
 
 def forbidden_tree_entries(

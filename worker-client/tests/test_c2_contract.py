@@ -55,7 +55,7 @@ from chejin_worker_client.wechat_c2 import (
 class C2ContractTests(unittest.TestCase):
     def test_client_update_contract_keeps_business_and_program_state_separate(self):
         contract = c2_contract_v3()["client_update_contract"]
-        self.assertEqual(contract["release"], "0.9.59")
+        self.assertEqual(contract["release"], "0.9.60")
         self.assertEqual(contract["trigger"], "manual_settings_check_only")
         self.assertEqual(contract["query_binding_requirement"], "none")
         self.assertIn(
@@ -661,7 +661,7 @@ class C2ContractTests(unittest.TestCase):
 
     def test_slot_ledger_contract_separates_fact_scope_from_delivery(self):
         schema = c2_contract_v3()["slot_ledger_state_schema"]
-        self.assertEqual(c2_contract_v3()["contract_revision"], "0.9.59")
+        self.assertEqual(c2_contract_v3()["contract_revision"], "0.9.60")
         self.assertIn(
             "anchor_aliases",
             c2_contract_v3()["message_limits"][

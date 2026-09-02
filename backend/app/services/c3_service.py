@@ -184,22 +184,6 @@ def _observation_voice_duration(observation: dict[str, Any]) -> str:
     )
 
 
-def _exact_image_content_sha256(value: object) -> str:
-    text = str(value or "").strip().lower()
-    if text.startswith("imagev2:"):
-        parts = text.split(":", 2)
-        digest = parts[2] if len(parts) == 3 else ""
-    elif text.startswith("sha256:"):
-        digest = text.split(":", 1)[1]
-    else:
-        digest = ""
-    if len(digest) != 64 or any(
-        character not in "0123456789abcdef" for character in digest
-    ):
-        return ""
-    return digest
-
-
 def _reply_fact_evidence(
     observation: dict[str, Any],
     *,

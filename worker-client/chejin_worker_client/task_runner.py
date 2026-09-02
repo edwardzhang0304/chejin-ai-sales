@@ -3168,22 +3168,6 @@ def _executable_untranscribed_voice_observations(
             continue
         executable.append(observation)
     return executable
-
-
-def _voice_payload_has_unbound_transcript(sidecar_payload: dict[str, Any]) -> bool:
-    transcribed = sidecar_payload.get("transcribed_messages")
-    if isinstance(transcribed, list) and any(isinstance(item, dict) for item in transcribed):
-        return False
-    new_messages = sidecar_payload.get("new_messages")
-    return isinstance(new_messages, list) and any(
-        isinstance(item, dict)
-        and str(item.get("type") or item.get("message_type") or "").lower() in {"voice", "audio"}
-        and "voice_duration_prefix_removed" in (item.get("quality_flags") or [])
-        and bool(str(item.get("content_clean") or item.get("content") or "").strip())
-        for item in new_messages
-    )
-
-
 def _voice_terminal_payload(
     voice_payload: dict[str, Any],
     *,
@@ -3906,99 +3890,6 @@ def _legacy_physical_journals_have_proven_identity(
             else:
                 return False
     return True
-
-
-def _unconfirmed_voice_action_outcomes(
-    *,
-    source_keys: list[str] | set[str],
-    roles: dict[str, str],
-    error_code: str,
-    voice_payload: dict[str, Any] | None = None,
-    anchors: dict[str, str] | None = None,
-) -> list[dict[str, Any]]:
-    """Classify missing per-item voice evidence through the only outcome gate."""
-
-    outcomes: list[dict[str, Any]] = []
-    for source_key in sorted(
-        {str(value).strip() for value in source_keys if str(value).strip()}
-    ):
-        anchor_key = str((anchors or {}).get(source_key) or "").strip()
-        outcome = classify_action_result(
-            "voice",
-            {
-                "error_code": str(
-                    error_code or "VOICE_ITEM_ACTION_OUTCOME_MISSING"
-                ),
-                "evidence": {
-                    "sender_role": str(roles.get(source_key) or ""),
-                    "voice_anchor_key": anchor_key,
-                    "item_action_outcome_missing": True,
-                },
-            },
-            source_message_key=source_key,
-        )
-        evidence = dict(outcome.get("evidence") or {})
-        evidence["action_kind"] = "voice"
-        outcome["evidence"] = evidence
-        outcome["terminal_payload"] = _voice_terminal_payload(
-            voice_payload or {},
-            anchor_keys=[anchor_key] if anchor_key else [],
-            result=str(outcome.get("result") or "failed"),
-            error_code=str(outcome.get("error_code") or "") or None,
-        )
-        outcomes.append(outcome)
-    return outcomes
-
-
-def _checkpoint_voice_outcome_in_action_journal(
-    journal_path: Path | None,
-    outcome: dict[str, Any],
-) -> None:
-    """Durably save the physical result before any identity alignment gate."""
-
-    if journal_path is None:
-        return
-    source_key = str(outcome.get("source_message_key") or "").strip()
-    result = str(outcome.get("result") or "").strip().lower()
-    if not source_key or result not in {"completed", "failed"}:
-        return
-    journal_payload = read_action_journal(journal_path)
-    journal_items = (
-        journal_payload.get("items")
-        if isinstance(journal_payload.get("items"), dict)
-        else {}
-    )
-    journal_item_id = next(
-        (
-            str(item_id)
-            for item_id, item in journal_items.items()
-            if isinstance(item, dict)
-            and str(item.get("source_message_key") or "").strip()
-            == source_key
-        ),
-        "",
-    )
-    if not journal_item_id:
-        return
-    update_action_journal_item(
-        journal_path,
-        journal_item_id=journal_item_id,
-        action_phase=str(
-            outcome.get("action_phase") or "not_attempted"
-        ),
-        business_state=result,
-        business_result_confirmed=(result == "completed"),
-        error_code=(
-            str(outcome.get("error_code") or "").strip() or None
-        ),
-        terminal_payload=(
-            dict(outcome.get("terminal_payload") or {})
-            if isinstance(outcome.get("terminal_payload"), dict)
-            else {"state": result}
-        ),
-    )
-
-
 class TaskRunner:
     def __init__(
         self,

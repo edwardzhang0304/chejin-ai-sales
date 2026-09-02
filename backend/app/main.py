@@ -1,5 +1,6 @@
 import logging
 from collections.abc import Awaitable, Callable
+from contextlib import asynccontextmanager
 from typing import Any
 
 from fastapi import FastAPI, Request
@@ -113,7 +114,46 @@ class C2IngestBodyLimitMiddleware:
 def create_app() -> FastAPI:
     docs_url = "/docs" if settings.docs_enabled else None
     openapi_url = "/openapi.json" if settings.docs_enabled else None
-    app = FastAPI(title=settings.app_name, docs_url=docs_url, redoc_url=None, openapi_url=openapi_url)
+
+    @asynccontextmanager
+    async def lifespan(app: FastAPI):
+        settings.assert_runtime_safe()
+        if settings.auto_create_tables:
+            Base.metadata.create_all(bind=engine)
+        abandoned_stages = _recover_observability_on_startup_best_effort()
+        if abandoned_stages:
+            logger.info(
+                "abandoned pre-restart backend observability stages=%s",
+                abandoned_stages,
+            )
+        cleanup = retry_pending_vehicle_file_cleanups()
+        if cleanup["pending"]:
+            logger.warning(
+                "vehicle file cleanup remains pending count=%s",
+                cleanup["pending"],
+            )
+        feishu_recovery = recover_handoff_notifications()
+        if feishu_recovery["unknown_settled"] or feishu_recovery["pending_attempted"]:
+            logger.info(
+                "Feishu handoff recovery unknown_settled=%s pending_attempted=%s",
+                feishu_recovery["unknown_settled"],
+                feishu_recovery["pending_attempted"],
+            )
+        recovery = C3BatchRecoveryLoop()
+        recovery.start()
+        app.state.c3_batch_recovery = recovery
+        try:
+            yield
+        finally:
+            recovery.stop()
+
+    app = FastAPI(
+        title=settings.app_name,
+        docs_url=docs_url,
+        redoc_url=None,
+        openapi_url=openapi_url,
+        lifespan=lifespan,
+    )
     app.add_middleware(
         C2IngestBodyLimitMiddleware,
         max_bytes=C2_MESSAGE_INGEST_MAX_BYTES,
@@ -137,37 +177,6 @@ def create_app() -> FastAPI:
             return response
         finally:
             reset_request_id(token)
-
-    @app.on_event("startup")
-    def create_tables_for_local_dev() -> None:
-        settings.assert_runtime_safe()
-        if settings.auto_create_tables:
-            Base.metadata.create_all(bind=engine)
-        abandoned_stages = _recover_observability_on_startup_best_effort()
-        if abandoned_stages:
-            logger.info(
-                "abandoned pre-restart backend observability stages=%s",
-                abandoned_stages,
-            )
-        cleanup = retry_pending_vehicle_file_cleanups()
-        if cleanup["pending"]:
-            logger.warning("vehicle file cleanup remains pending count=%s", cleanup["pending"])
-        feishu_recovery = recover_handoff_notifications()
-        if feishu_recovery["unknown_settled"] or feishu_recovery["pending_attempted"]:
-            logger.info(
-                "Feishu handoff recovery unknown_settled=%s pending_attempted=%s",
-                feishu_recovery["unknown_settled"],
-                feishu_recovery["pending_attempted"],
-            )
-        recovery = C3BatchRecoveryLoop()
-        recovery.start()
-        app.state.c3_batch_recovery = recovery
-
-    @app.on_event("shutdown")
-    def stop_c3_batch_recovery() -> None:
-        recovery = getattr(app.state, "c3_batch_recovery", None)
-        if recovery is not None:
-            recovery.stop()
 
     @app.exception_handler(AppError)
     async def app_error_handler(request: Request, exc: AppError):

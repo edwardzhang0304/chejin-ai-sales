@@ -554,31 +554,6 @@ def content_looks_like_untranscribed_voice_placeholder(content: str) -> bool:
     if re.fullmatch(r"\d{1,3}[\"']?[\(\[（]{1,2}", compact):
         return True
     return bool(re.fullmatch(r"\d{1,3}[\"秒sS](转文字|语音转文字|转为文字|转写)", compact))
-
-
-def raw_ocr_looks_like_voice_transcript(message: dict[str, Any]) -> bool:
-    raw = str(message.get("content_raw_ocr") or "")
-    content = str(message.get("content") or "")
-    if not raw or not content:
-        return False
-    if content_looks_like_untranscribed_voice_placeholder(content):
-        return False
-    compact_raw = re.sub(r"\s+", "", raw)
-    if not re.match(r"^[^\u4e00-\u9fffA-Za-z]{0,4}\d{1,3}[\"秒sS]", compact_raw):
-        return False
-    return bool(re.sub(r"^[^\u4e00-\u9fffA-Za-z]{0,4}\d{1,3}[\"秒sS]", "", compact_raw).strip())
-
-
-def strip_voice_ocr_duration_prefix(content: str) -> tuple[str, bool]:
-    lines = [line.strip() for line in str(content or "").splitlines() if line.strip()]
-    if len(lines) < 2:
-        return str(content or "").strip(), False
-    first = re.sub(r"\s+", "", lines[0])
-    if not re.fullmatch(r"[^\u4e00-\u9fffA-Za-z]{0,4}\d{1,3}[\"秒sS]", first):
-        return str(content or "").strip(), False
-    return "\n".join(lines[1:]).strip(), True
-
-
 def message_rect(message: dict[str, Any]) -> dict[str, float] | None:
     raw = message.get("bubble_rect") or message.get("rect") or message.get("bounds")
     if isinstance(raw, dict):
@@ -624,21 +599,6 @@ def authoritative_order_source(slots: list[dict[str, Any]]) -> str:
         if slots and all(slot.get("rect") for slot in slots)
         else "observation_index_fallback"
     )
-
-
-
-
-
-
-
-def sender_role_group(message: dict[str, Any]) -> str:
-    role = sender_role_hint(message)
-    if role in {"self", "sales", "sales_candidate"}:
-        return "self"
-    if role in {"customer", "contact"}:
-        return "customer"
-    return role or "unknown"
-
 
 def validate_committed_image_identity(
     observation: dict[str, Any],
@@ -1008,41 +968,6 @@ def unified_message_dedupe_metadata(
     )
 
 
-def voice_text_looks_like_payload(value: str) -> bool:
-    text = str(value or "").strip()
-    if not text:
-        return False
-    compact = text[:4000]
-    if text.startswith("{'") or text.startswith('{"') or text.startswith("[{"):
-        return True
-    payload_tokens = (
-        "voice_transcribe_completed",
-        "voice_transcribe_review",
-        "before_screenshot_path",
-        "after_screenshot_path",
-        "transcribed_messages",
-        "context_menu_attempt",
-    )
-    return len(text) > 1000 and any(token in compact for token in payload_tokens)
-
-
-def clean_voice_transcribed_content(item: dict[str, Any]) -> str:
-    for key in ("content_clean", "text", "transcript", "transcribed_text"):
-        value = item.get(key)
-        if isinstance(value, str) and value.strip() and not voice_text_looks_like_payload(value):
-            return value.strip()
-    content = item.get("content")
-    if isinstance(content, str):
-        stripped = content.strip()
-        if voice_text_looks_like_payload(stripped):
-            return ""
-        return stripped
-    if isinstance(content, dict):
-        for key in ("content_clean", "text", "transcript", "transcribed_text"):
-            value = content.get(key)
-            if isinstance(value, str) and value.strip() and not voice_text_looks_like_payload(value):
-                return value.strip()
-    return ""
 
 
 def voice_transcription_meta(

@@ -81,12 +81,3 @@ def normalize_email(value: str) -> NormalizedContact:
     name, domain = normalized.split("@", 1)
     masked = f"{name[:2]}***@{domain}" if len(name) > 2 else f"{name[:1]}***@{domain}"
     return NormalizedContact(value.strip(), normalized, _hash_value(normalized), masked, _encrypt_contact(normalized))
-
-
-def ensure_no_duplicates(values: list[str], code: str = "LEAD_CONTACT_DUPLICATED_IN_REQUEST") -> None:
-    seen: set[str] = set()
-    for value in values:
-        key = value.strip().lower()
-        if key in seen:
-            raise AppError(code, "该联系方式已填写，请勿重复添加", 400)
-        seen.add(key)
