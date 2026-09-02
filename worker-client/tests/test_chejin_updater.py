@@ -298,3 +298,26 @@ def test_staged_directory_switch_failure_restarts_unchanged_old_program(
     assert current.is_dir()
     assert not previous.exists()
     assert (current / "worker.py").read_text() == HEALTHY_WORKER
+
+
+def test_updater_startup_diagnostic_records_phases_without_arguments(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    diagnostic_path = tmp_path / "updater-startup.jsonl"
+    plan_path = tmp_path / "update-plan.json"
+    plan_path.write_text(json.dumps({"schema_version": 0}), encoding="utf-8")
+    monkeypatch.setenv("CHEJIN_UPDATER_DIAGNOSTIC_PATH", str(diagnostic_path))
+
+    assert updater_module.main(
+        ["--plan", str(plan_path), "--token", "must-not-enter-diagnostics"]
+    ) == 1
+
+    records = [json.loads(line) for line in diagnostic_path.read_text().splitlines()]
+    assert [item["phase"] for item in records] == [
+        "main_entered",
+        "plan_validation_started",
+        "update_failed",
+    ]
+    assert records[-1]["error_code"] == "UPDATE_INSTALL_FAILED"
+    assert "must-not-enter-diagnostics" not in diagnostic_path.read_text()

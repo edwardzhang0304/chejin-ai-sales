@@ -128,6 +128,11 @@ function Write-Utf8NoBom([string]$Path, [string]$Content) {
   [IO.File]::WriteAllText($Path, $Content, (New-Object Text.UTF8Encoding($false)))
 }
 
+function Read-UpdaterDiagnostic([string]$Path) {
+  if (-not (Test-Path $Path)) { return "missing" }
+  return ((Get-Content -Encoding UTF8 $Path | Select-Object -Last 20) -join " | ")
+}
+
 function Convert-SignedReleaseToClientIdentity([object]$ReleaseDescriptor) {
   # sign-client-release.py emits the immutable publication descriptor used by
   # the backend registration command.  The real latest-release API exposes
@@ -374,22 +379,33 @@ function Invoke-UpdateCase([object]$Case, [string]$ExpectedState) {
   $Plan = Get-Content -Raw -Encoding UTF8 $Case.PlanPath | ConvertFrom-Json
   $Plan.old_pid = $Old.Id
   Write-Utf8NoBom $Case.PlanPath ($Plan | ConvertTo-Json -Depth 12)
-  $Updater = Start-Process -FilePath $UpdaterExe -ArgumentList @("--plan", $Case.PlanPath, "--token", $Case.Token) -PassThru
+  $DiagnosticPath = Join-Path $Case.Control "updater-startup.jsonl"
+  $PreviousDiagnosticPath = [Environment]::GetEnvironmentVariable("CHEJIN_UPDATER_DIAGNOSTIC_PATH", "Process")
+  try {
+    $env:CHEJIN_UPDATER_DIAGNOSTIC_PATH = $DiagnosticPath
+    $Updater = Start-Process -FilePath $UpdaterExe -ArgumentList @("--plan", $Case.PlanPath, "--token", $Case.Token) -PassThru
+  } finally {
+    if ([string]::IsNullOrEmpty($PreviousDiagnosticPath)) {
+      Remove-Item Env:CHEJIN_UPDATER_DIAGNOSTIC_PATH -ErrorAction SilentlyContinue
+    } else {
+      $env:CHEJIN_UPDATER_DIAGNOSTIC_PATH = $PreviousDiagnosticPath
+    }
+  }
   $ReadyPath = Join-Path $Case.Control "updater-ready.json"
   $ResultPath = Join-Path $Case.Control "update-result.json"
   $ReadyDeadline = (Get-Date).AddSeconds($UpdaterReadyTimeoutSeconds)
   while ((Get-Date) -lt $ReadyDeadline -and -not (Test-Path $ReadyPath)) {
     if (Test-Path $ResultPath) {
       $EarlyResult = Get-Content -Raw -Encoding UTF8 $ResultPath | ConvertFrom-Json
-      throw "Updater rejected the plan before ready: state=$($EarlyResult.state), code=$($EarlyResult.result_code), message=$($EarlyResult.message)"
+      throw "Updater rejected the plan before ready: state=$($EarlyResult.state), code=$($EarlyResult.result_code), message=$($EarlyResult.message), diagnostic=$(Read-UpdaterDiagnostic $DiagnosticPath)"
     }
     if ($Updater.HasExited) {
-      throw "Updater exited before ready with code $($Updater.ExitCode) and no result"
+      throw "Updater exited before ready with code $($Updater.ExitCode) and no result; diagnostic=$(Read-UpdaterDiagnostic $DiagnosticPath)"
     }
     Start-Sleep -Milliseconds 100
   }
   if (-not (Test-Path $ReadyPath)) {
-    throw "Timed out waiting for $ReadyPath"
+    throw "Timed out waiting for $ReadyPath; updater_pid=$($Updater.Id); diagnostic=$(Read-UpdaterDiagnostic $DiagnosticPath)"
   }
   Set-Content -LiteralPath $StopFile -Value "stop" -Encoding ASCII
   if (-not $Updater.WaitForExit(60000)) {
