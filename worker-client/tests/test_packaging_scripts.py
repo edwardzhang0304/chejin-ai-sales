@@ -262,6 +262,9 @@ class PackagingScriptsTest(unittest.TestCase):
         self.assertIn('Invoke-UpdateCase $Rollback "rolled_back"', process_test)
         self.assertIn("New-FormalClientReleasePlan", process_test)
         self.assertIn('Invoke-UpdateCase $Formal "succeeded"', process_test)
+        self.assertIn("Convert-SignedReleaseToClientIdentity", process_test)
+        self.assertIn('Add-Member -NotePropertyName "latest_version"', process_test)
+        self.assertIn("Updater rejected the plan before ready", process_test)
         self.assertIn(
             '$BuildPython = Join-Path $Root ".venv\\Scripts\\python.exe"',
             process_test,
