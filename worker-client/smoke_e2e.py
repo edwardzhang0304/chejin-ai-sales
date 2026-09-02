@@ -38,12 +38,16 @@ class SmokeApi:
         *,
         flow_id: str,
         flow_kind: str,
+        conversation_id: str | None = None,
+        unread_generation: int | None = None,
     ):
         self.inflight_flow_id = flow_id
         self.inflight_flow_state = {
             "status": "active",
             "flow_id": flow_id,
             "flow_kind": flow_kind,
+            "conversation_id": conversation_id,
+            "origin_unread_generation": unread_generation,
             "registered_at": "2026-08-14T00:00:00+00:00",
             "pause_requested_at": None,
         }
