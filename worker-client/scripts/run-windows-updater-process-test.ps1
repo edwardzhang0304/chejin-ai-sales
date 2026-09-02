@@ -4,6 +4,10 @@
 
 $ErrorActionPreference = "Stop"
 $Root = Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path)
+$BuildPython = Join-Path $Root ".venv\Scripts\python.exe"
+if (-not (Test-Path $BuildPython)) {
+  throw "Updater process test requires the build virtual-environment Python"
+}
 if ($PackageDir -eq "") {
   $PackageDir = Join-Path $Root "dist\CheJinWorkerClient"
 }
@@ -149,7 +153,7 @@ function New-ReleasePlan(
   Copy-Item -LiteralPath $UpdaterExe -Destination (Join-Path $Staged "CheJinUpdater.exe")
   Set-Content -LiteralPath (Join-Path $Staged "version.txt") -Value "new" -Encoding ASCII
   $PackageManifestPath = Join-Path $Staged "update-package-manifest.json"
-  & python (Join-Path $Root "scripts\generate-update-package-manifest.py") `
+  & $BuildPython (Join-Path $Root "scripts\generate-update-package-manifest.py") `
     --package-root $Staged `
     --version "0.9.60" `
     --git-commit ("b" * 40) `
@@ -159,7 +163,7 @@ function New-ReleasePlan(
   Compress-Archive -Path $Staged -DestinationPath $Archive -CompressionLevel Fastest -Force
   $PublishedAt = (Get-Date).ToUniversalTime().ToString("o")
   $ReleasePath = Join-Path $Control "release.json"
-  & python (Join-Path $Root "scripts\sign-client-release.py") `
+  & $BuildPython (Join-Path $Root "scripts\sign-client-release.py") `
     --archive $Archive `
     --package-manifest $PackageManifestPath `
     --version "0.9.60" `
@@ -263,7 +267,7 @@ function New-FormalClientReleasePlan(
   try {
     $env:CHEJIN_WORKER_HOME = $Data
     $env:PYTHONPATH = $Root
-    $SnapshotJson = & python -c "import json; from chejin_worker_client.models import Binding; from chejin_worker_client.storage import save_binding; from chejin_worker_client.update_data_snapshot import protected_update_snapshot; save_binding(Binding('windows-process-worker','test-token','windows-process-instance',run_status='paused')); print(json.dumps(protected_update_snapshot(), ensure_ascii=False))"
+    $SnapshotJson = & $BuildPython -c "import json; from chejin_worker_client.models import Binding; from chejin_worker_client.storage import save_binding; from chejin_worker_client.update_data_snapshot import protected_update_snapshot; save_binding(Binding('windows-process-worker','test-token','windows-process-instance',run_status='paused')); print(json.dumps(protected_update_snapshot(), ensure_ascii=False))"
     if ($LASTEXITCODE -ne 0) { throw "Could not create formal-client protected snapshot" }
     $ProtectedSnapshot = ($SnapshotJson -join "`n") | ConvertFrom-Json
   } finally {
@@ -275,7 +279,7 @@ function New-FormalClientReleasePlan(
   Compress-Archive -Path $Staged -DestinationPath $Archive -CompressionLevel Fastest -Force
   $PublishedAt = (Get-Date).ToUniversalTime().ToString("o")
   $ReleasePath = Join-Path $Control "release.json"
-  & python (Join-Path $Root "scripts\sign-client-release.py") `
+  & $BuildPython (Join-Path $Root "scripts\sign-client-release.py") `
     --archive $Archive `
     --package-manifest $PackageManifestPath `
     --version $TargetVersion `
