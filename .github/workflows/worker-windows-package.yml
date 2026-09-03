@@ -85,8 +85,11 @@ jobs:
           $exePath = [string]$manifest.exe_path
 
           .\scripts\validate-package.ps1 -PackageDir $packageDir
-          if ($manifest.version -ne "0.9.61") {
+          if ($manifest.version -ne "0.9.62") {
             throw "unexpected version: $($manifest.version)"
+          }
+          if ($manifest.default_api_base_url -ne "https://jiangsuchejin.com/api") {
+            throw "formal package does not target the production API"
           }
           if ($manifest.git_commit -ne $env:GITHUB_SHA) {
             throw "manifest git commit does not match GitHub source"
@@ -164,6 +167,28 @@ jobs:
             throw "normal packaged startup produced a false crash diagnostic"
           }
 
+          Remove-Item Env:CHEJIN_API_BASE_URL -ErrorAction SilentlyContinue
+          $productionEndpointReport = Join-Path $env:RUNNER_TEMP "chejin-worker-production-endpoint-preflight.json"
+          $productionEndpointProbe = Start-Process -FilePath $exePath -ArgumentList @(
+            "--preflight", "--skip-wechat", "--preflight-format", "json",
+            "--write-report", $productionEndpointReport
+          ) -PassThru
+          if (-not $productionEndpointProbe.WaitForExit(120000)) {
+            Stop-Process -Id $productionEndpointProbe.Id -Force
+            throw "packaged production endpoint probe timed out"
+          }
+          if ($productionEndpointProbe.ExitCode -ne 0) {
+            Get-Content -Raw -Encoding UTF8 $productionEndpointReport | Write-Host
+            throw "packaged production endpoint probe failed"
+          }
+          $productionEndpointPayload = Get-Content -Raw -Encoding UTF8 $productionEndpointReport | ConvertFrom-Json
+          $productionBackendCheck = @($productionEndpointPayload.checks | Where-Object { $_.name -eq "backend" })
+          if ($productionBackendCheck.Count -ne 1 -or
+              $productionBackendCheck[0].ok -ne $true -or
+              $productionBackendCheck[0].detail.url -ne "https://jiangsuchejin.com/readyz") {
+            throw "packaged client does not default to the production backend"
+          }
+
           $crashProbe = Start-Process -FilePath $exePath -ArgumentList @("--startup-crash-probe") -PassThru
           if (-not $crashProbe.WaitForExit(30000)) {
             Stop-Process -Id $crashProbe.Id -Force
@@ -176,7 +201,7 @@ jobs:
             throw "packaged startup crash did not create the default diagnostic"
           }
           $startupCrash = Get-Content -Encoding UTF8 $defaultStartupDiagnostic | Select-Object -Last 1 | ConvertFrom-Json
-          if ($startupCrash.version -ne "0.9.61" -or $startupCrash.build_commit -ne $env:GITHUB_SHA) {
+          if ($startupCrash.version -ne "0.9.62" -or $startupCrash.build_commit -ne $env:GITHUB_SHA) {
             throw "startup crash diagnostic build identity mismatch"
           }
           foreach ($requiredField in @("timestamp", "windows_version", "exception_type", "traceback")) {
@@ -185,7 +210,7 @@ jobs:
             }
           }
           $secretValue = [string]$env:CHEJIN_VISION_CLIENT_API_KEY
-          foreach ($safeOutput in @($manifestPath, $preflightReport, $runtimeDiagnostics, $defaultStartupDiagnostic)) {
+          foreach ($safeOutput in @($manifestPath, $preflightReport, $productionEndpointReport, $runtimeDiagnostics, $defaultStartupDiagnostic)) {
             if (Test-Path $safeOutput) {
               $safeOutputText = Get-Content -Raw -Encoding UTF8 $safeOutput
               if (-not [string]::IsNullOrWhiteSpace($secretValue) -and $safeOutputText.Contains($secretValue)) {
@@ -214,11 +239,11 @@ jobs:
           $manifest = Get-Content -Raw -Encoding UTF8 $manifestPath | ConvertFrom-Json
           $packageDir = [string]$manifest.package_dir
           $releaseDir = Join-Path $PWD "dist\release"
-          $zipName = "chejin-worker-v0.9.61-windows-x64.zip"
+          $zipName = "chejin-worker-v0.9.62-windows-x64.zip"
           $zipPath = Join-Path $releaseDir $zipName
-          $deliveryManifestPath = Join-Path $releaseDir "chejin-worker-v0.9.61-windows-x64.delivery.json"
-          $signedReleasePath = Join-Path $releaseDir "chejin-worker-v0.9.61-windows-x64.release.json"
-          $sha256Path = Join-Path $releaseDir "chejin-worker-v0.9.61-windows-x64.sha256.txt"
+          $deliveryManifestPath = Join-Path $releaseDir "chejin-worker-v0.9.62-windows-x64.delivery.json"
+          $signedReleasePath = Join-Path $releaseDir "chejin-worker-v0.9.62-windows-x64.release.json"
+          $sha256Path = Join-Path $releaseDir "chejin-worker-v0.9.62-windows-x64.sha256.txt"
 
           New-Item -ItemType Directory -Force -Path $releaseDir | Out-Null
           Compress-Archive -Path $packageDir -DestinationPath $zipPath -CompressionLevel Optimal -Force
@@ -293,6 +318,7 @@ jobs:
             schema_version = 1
             app_name = [string]$manifest.app_name
             version = [string]$manifest.version
+            default_api_base_url = [string]$manifest.default_api_base_url
             platform = "windows-x64"
             package_kind = "portable_zip"
             source_base_commit = $sourceBaseCommit
@@ -333,7 +359,7 @@ jobs:
           .\.venv\Scripts\python.exe .\scripts\sign-client-release.py `
             --archive $zipPath `
             --package-manifest $verifiedUpdateManifestPath `
-            --version "0.9.61" `
+            --version "0.9.62" `
             --git-commit $env:GITHUB_SHA `
             --artifact-storage-key "gray/windows-x64/$zipName" `
             --published-at ((Get-Date).ToUniversalTime().ToString("o")) `
@@ -355,12 +381,12 @@ jobs:
       - name: Upload verified Windows client
         uses: actions/upload-artifact@v4
         with:
-          name: chejin-worker-v0.9.61-windows-x64-${{ github.sha }}
+          name: chejin-worker-v0.9.62-windows-x64-${{ github.sha }}
           path: |
-            worker-client/dist/release/chejin-worker-v0.9.61-windows-x64.zip
-            worker-client/dist/release/chejin-worker-v0.9.61-windows-x64.delivery.json
-            worker-client/dist/release/chejin-worker-v0.9.61-windows-x64.release.json
-            worker-client/dist/release/chejin-worker-v0.9.61-windows-x64.sha256.txt
+            worker-client/dist/release/chejin-worker-v0.9.62-windows-x64.zip
+            worker-client/dist/release/chejin-worker-v0.9.62-windows-x64.delivery.json
+            worker-client/dist/release/chejin-worker-v0.9.62-windows-x64.release.json
+            worker-client/dist/release/chejin-worker-v0.9.62-windows-x64.sha256.txt
           if-no-files-found: error
           compression-level: 0
           retention-days: 14

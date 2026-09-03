@@ -233,6 +233,13 @@ if ($LASTEXITCODE -ne 0) {
 $OmniAutoSourceTree = $OmniAutoSourceTreeJson | ConvertFrom-Json
 
 $Version = .\.venv\Scripts\python.exe -c "from chejin_worker_client import __version__; print(__version__)"
+$DefaultApiBaseUrl = .\.venv\Scripts\python.exe -c "from chejin_worker_client.config import DEFAULT_API_BASE_URL; print(DEFAULT_API_BASE_URL)"
+if ($LASTEXITCODE -ne 0) {
+  throw "打包失败：无法读取客户端默认 API 地址"
+}
+if (-not $DevelopmentBuild -and $DefaultApiBaseUrl.Trim() -ne "https://jiangsuchejin.com/api") {
+  throw "正式打包失败：客户端默认 API 地址不是生产环境"
+}
 $RuntimeBuildIdentityPath = Join-Path $ReportsDir "runtime-build-identity.json"
 @{
   version = $Version.Trim()
@@ -434,6 +441,7 @@ if ($SourceContractHash.Hash -ne $PackagedContractHash.Hash) {
 $Manifest = [ordered]@{
   app_name = "CheJinWorkerClient"
   version = $Version.Trim()
+  default_api_base_url = $DefaultApiBaseUrl.Trim()
   built_at = (Get-Date).ToUniversalTime().ToString("o")
   package_dir = $PackageDir
   exe_path = $ExePath
