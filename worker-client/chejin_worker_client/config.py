@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 
-DEFAULT_API_BASE_URL = "http://127.0.0.1:8000/api"
+DEFAULT_API_BASE_URL = "https://jiangsuchejin.com/api"
 
 
 def default_app_dir() -> Path:

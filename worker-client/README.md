@@ -88,7 +88,7 @@ worker-client\dist\CheJinWorkerClient\CheJinWorkerClient.exe
 .\scripts\validate-package.ps1
 ```
 
-默认服务端地址 `http://127.0.0.1:8000/api` 只适用于后端也运行在同一台 Windows 机器的本地开发场景。Windows UAT 不得依赖该默认值。
+正式客户端默认连接 `https://jiangsuchejin.com/api`，完整解压 ZIP 后可以直接双击 `CheJinWorkerClient.exe`，不需要先执行命令配置后端地址。
 
 正式 UAT 包完整解压后，必须用包内启动脚本显式指定本次测试的后端 API。启动脚本会先检查后端、微信和运行依赖，把 JSON 报告保存到 `%LOCALAPPDATA%\CheJinWorker\diagnostics\`；预检失败时不会启动客户端：
 
@@ -96,7 +96,7 @@ worker-client\dist\CheJinWorkerClient\CheJinWorkerClient.exe
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\start-uat.ps1 -ApiBaseUrl "https://本次-UAT-后端/api"
 ```
 
-开发环境仍可通过环境变量覆盖：
+本地开发和独立 UAT 仍可通过环境变量覆盖：
 
 ```powershell
 $env:CHEJIN_API_BASE_URL="https://your-host/api"
