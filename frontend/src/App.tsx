@@ -3,6 +3,7 @@ import { useEffect, useRef, useState } from "react";
 import { LoginPage } from "./features/auth/LoginPage";
 import { EmptyWorkspace } from "./features/home/EmptyWorkspace";
 import { LeadsPage } from "./features/leads/LeadsPage";
+import { KnowledgePage } from "./features/knowledge/KnowledgePage";
 import { LogsPage } from "./features/logs/LogsPage";
 import { SalesPage } from "./features/sales/SalesPage";
 import { TasksPage } from "./features/tasks/TasksPage";
@@ -13,11 +14,12 @@ import type { AuthSession } from "./shared/api/auth";
 import { ApiError, onUnauthorized } from "./shared/api/client";
 import { ChevronRightIcon } from "./shared/ui/Icons";
 
-type ModuleKey = "leads" | "vehicles" | "sales" | "workers" | "tasks" | "logs";
+type ModuleKey = "leads" | "vehicles" | "knowledge" | "sales" | "workers" | "tasks" | "logs";
 
 const modules: Array<{ key: ModuleKey; label: string }> = [
   { key: "leads", label: "线索管理" },
   { key: "vehicles", label: "车辆管理" },
+  { key: "knowledge", label: "知识管理" },
   { key: "sales", label: "销售管理" },
   { key: "workers", label: "Worker 管理" },
   { key: "tasks", label: "任务中心" },
@@ -193,6 +195,7 @@ export function App() {
       <section className="workspace">
         {activeModule === "leads" ? <LeadsPage /> : null}
         {activeModule === "vehicles" ? <VehiclesPage /> : null}
+        {activeModule === "knowledge" ? <KnowledgePage /> : null}
         {activeModule === "sales" ? <SalesPage openIntent={salesOpenIntent} /> : null}
         {activeModule === "workers" ? <WorkersPage openIntent={workerOpenIntent} /> : null}
         {activeModule === "tasks" ? (

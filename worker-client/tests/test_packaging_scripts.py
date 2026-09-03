@@ -306,7 +306,7 @@ class PackagingScriptsTest(unittest.TestCase):
         self.assertIn("delivery ZIP does not contain the packaged runtime directory", workflow)
         self.assertIn("app_name = [string]$manifest.app_name", workflow)
         self.assertIn("delivery ZIP executable SHA256 mismatch", workflow)
-        self.assertIn("chejin-worker-v0.9.60-windows-x64.delivery.json", workflow)
+        self.assertIn("chejin-worker-v0.9.61-windows-x64.delivery.json", workflow)
         self.assertIn("CHEJIN_VISION_CLIENT_API_KEY", workflow)
         self.assertIn("vision_credential_embedded", workflow)
         self.assertIn("vision_configuration_locked", workflow)
@@ -332,7 +332,7 @@ class PackagingScriptsTest(unittest.TestCase):
             workflow,
         )
         self.assertIn("--artifact-storage-key", workflow)
-        self.assertIn("chejin-worker-v0.9.60-windows-x64.release.json", workflow)
+        self.assertIn("chejin-worker-v0.9.61-windows-x64.release.json", workflow)
         self.assertIn("must not contain a temporary download URL", workflow)
 
     def test_formal_update_package_contains_independent_updater_and_real_process_gate(self):
@@ -814,7 +814,7 @@ class PackagingScriptsTest(unittest.TestCase):
             [
                 {
                     "source_commit": (
-                        "eae057db568b4bb8a57a0d4694aaaadfacef9464"
+                        "a29ba4e1278d55bc6aed617d045b0a85c10c4aff"
                     ),
                     "scope": [
                         "exact_wechat_context_menu_classification",
@@ -1049,9 +1049,40 @@ class PackagingScriptsTest(unittest.TestCase):
                             "removal_contract"
                         ),
                         "brain_three_path_max_tokens_8192_contract",
+                        (
+                            "chejin_immutable_knowledge_release_"
+                            "projection_contract"
+                        ),
+                        (
+                            "chejin_frozen_history_managed_knowledge_"
+                            "query_contract"
+                        ),
+                        (
+                            "chejin_legacy_knowledge_runtime_side_door_"
+                            "removal_contract"
+                        ),
+                        "c2_contract_0_9_61_generated_schema",
                     ],
                 }
             ],
+        )
+        self.assertEqual(
+            provenance["current_release"],
+            {
+                "version": "0.9.61",
+                "source_commit": (
+                    "a29ba4e1278d55bc6aed617d045b0a85c10c4aff"
+                ),
+                "contract_revision": "0.9.61",
+                "contract_sha256": (
+                    "637ba1843ac28056f88ac77b05014f65803a364426b"
+                    "72c30f649c7014a2d7bec"
+                ),
+                "scope": (
+                    "immutable knowledge release projection, frozen-history "
+                    "retrieval, and legacy KnowledgeRuntime isolation"
+                ),
+            },
         )
         self.assertIn(
             "strict_current_screen_without_history_scroll",
@@ -1479,7 +1510,7 @@ class PackagingScriptsTest(unittest.TestCase):
         self.assertIn('$packageDir = [string]$manifest.package_dir', workflow)
         self.assertIn('$exePath = [string]$manifest.exe_path', workflow)
         self.assertNotIn('dist\\车金Worker客户端', workflow)
-        self.assertIn('version -ne "0.9.60"', workflow)
+        self.assertIn('version -ne "0.9.61"', workflow)
         self.assertIn('tests_status -ne "passed"', workflow)
         self.assertIn('@("--omniauto-sidecar", "--help")', workflow)
         self.assertIn('@("--omniauto-ocr-probe")', workflow)

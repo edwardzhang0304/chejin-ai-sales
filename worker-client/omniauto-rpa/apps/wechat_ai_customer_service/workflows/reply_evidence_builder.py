@@ -8,13 +8,21 @@ that product master, formal knowledge and current conversation facts actually pa
 
 from __future__ import annotations
 
+from hashlib import sha256
+import json
 import re
 from typing import Any
+import unicodedata
 
 from apps.wechat_ai_customer_service.platform_understanding_rules import intent_group
 from admin_backend.services.raw_message_store import RawMessageStore
 from apps.wechat_ai_customer_service.admin_backend.services.conversation_history import assemble_conversation_history
-from knowledge_loader import build_evidence_pack
+from knowledge_loader import (
+    build_evidence_pack,
+    build_safety_summary,
+    detect_intent_tags,
+    normalize_pre_purchase_vehicle_tags,
+)
 from knowledge_runtime import KnowledgeRuntime
 from evidence_authority import (
     PRODUCT_MASTER_CATEGORY_ID,
@@ -42,6 +50,293 @@ class ChejinContextProjectionError(ValueError):
     """Fail closed before Provider when CheJin's sole history is disconnected."""
 
     code = "AI_CONTEXT_BUILD_FAILED"
+
+
+class ChejinKnowledgeProjectionError(ValueError):
+    """Fail closed before Provider when the batch-bound release is invalid."""
+
+    code = "AI_CONTEXT_BUILD_FAILED"
+
+
+def _managed_knowledge_query_terms(value: str) -> set[str]:
+    normalized = unicodedata.normalize("NFKC", str(value or "")).lower()
+    terms: set[str] = set(re.findall(r"[a-z0-9]+", normalized))
+    for block in re.findall(r"[\u3400-\u9fff]+", normalized):
+        terms.update(character for character in block if character.strip())
+        terms.update(block[index : index + 2] for index in range(max(0, len(block) - 1)))
+        terms.update(block[index : index + 3] for index in range(max(0, len(block) - 2)))
+    return {term for term in terms if term}
+
+
+def _retrieve_managed_knowledge(
+    items: list[dict[str, Any]],
+    retrieval_index: dict[str, Any],
+    *,
+    query_text: str,
+) -> list[dict[str, Any]]:
+    documents = retrieval_index.get("documents")
+    if retrieval_index.get("schema_version") != 1 or not isinstance(documents, list):
+        raise ChejinKnowledgeProjectionError("chejin_knowledge_retrieval_index_invalid")
+    item_map = {
+        (str(item.get("item_id") or ""), str(item.get("revision_id") or "")): item
+        for item in items
+    }
+    query_terms = _managed_knowledge_query_terms(query_text)
+    ranked: list[tuple[int, int, str, dict[str, Any]]] = []
+    indexed_keys: set[tuple[str, str]] = set()
+    for document in documents:
+        if not isinstance(document, dict):
+            raise ChejinKnowledgeProjectionError("chejin_knowledge_retrieval_document_invalid")
+        key = (str(document.get("item_id") or ""), str(document.get("revision_id") or ""))
+        item = item_map.get(key)
+        if item is None or key in indexed_keys:
+            raise ChejinKnowledgeProjectionError("chejin_knowledge_retrieval_document_mismatch")
+        indexed_keys.add(key)
+        title_terms = {str(term) for term in (document.get("title_terms") or []) if str(term)}
+        content_terms = {str(term) for term in (document.get("content_terms") or []) if str(term)}
+        title_matches = len(query_terms & title_terms)
+        content_matches = len(query_terms & content_terms)
+        score = title_matches * 4 + content_matches
+        if score > 0:
+            ranked.append((score, title_matches, str(item.get("item_id") or ""), item))
+    if indexed_keys != set(item_map):
+        raise ChejinKnowledgeProjectionError("chejin_knowledge_retrieval_index_incomplete")
+    ranked.sort(key=lambda row: (-row[0], -row[1], row[2]))
+    return [dict(row[3]) for row in ranked]
+
+
+def build_chejin_managed_knowledge_query(
+    target_state: dict[str, Any],
+    *,
+    current_query_text: str,
+) -> str:
+    """Build the sole retrieval query from the frozen CheJin conversation.
+
+    Elliptical turns such as ``要准备什么？`` only become meaningful when the
+    immutable history from the same MessageBatch is included.  No mutable
+    runtime history is consulted here.
+    """
+
+    context = chejin_context_projection(target_state)
+    parts: list[str] = []
+    for value in (
+        context.get("history_text"),
+        context.get("current_batch_text"),
+        current_query_text,
+    ):
+        text = str(value or "").strip()
+        if text and text not in parts:
+            parts.append(text)
+    return "\n".join(parts)
+
+
+def _resolve_chejin_knowledge_release(
+    target_state: dict[str, Any],
+    *,
+    query_text: str,
+) -> dict[str, Any] | None:
+    """Validate and retrieve from the immutable batch-bound release once."""
+
+    required = target_state.get("chejin_knowledge_required") is True
+    release = target_state.get("chejin_knowledge_release")
+    if not isinstance(release, dict) or not release:
+        if required:
+            raise ChejinKnowledgeProjectionError("chejin_knowledge_release_missing")
+        return None
+    release_id = str(release.get("release_id") or "").strip()
+    version = str(release.get("version") or "").strip()
+    expected_sha = str(release.get("snapshot_sha256") or "").strip().lower()
+    retrieval_index = release.get("retrieval_index")
+    expected_index_sha = str(
+        release.get("retrieval_index_sha256") or ""
+    ).strip().lower()
+    items = release.get("items")
+    if (
+        not release_id
+        or not version
+        or not isinstance(items, list)
+        or not isinstance(retrieval_index, dict)
+        or len(expected_sha) != 64
+        or len(expected_index_sha) != 64
+    ):
+        raise ChejinKnowledgeProjectionError(
+            "chejin_knowledge_release_contract_invalid"
+        )
+    normalized_items = [dict(item) for item in items if isinstance(item, dict)]
+    actual_sha = sha256(
+        json.dumps(
+            normalized_items,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
+    if actual_sha != expected_sha:
+        raise ChejinKnowledgeProjectionError(
+            "chejin_knowledge_release_digest_mismatch"
+        )
+    actual_index_sha = sha256(
+        json.dumps(
+            retrieval_index,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
+    if actual_index_sha != expected_index_sha:
+        raise ChejinKnowledgeProjectionError(
+            "chejin_knowledge_retrieval_index_digest_mismatch"
+        )
+    return {
+        "release_id": release_id,
+        "version": version,
+        "snapshot_sha256": expected_sha,
+        "retrieval_index_sha256": expected_index_sha,
+        "items": _retrieve_managed_knowledge(
+            normalized_items,
+            retrieval_index,
+            query_text=query_text,
+        ),
+    }
+
+
+def chejin_managed_knowledge_match_count(
+    target_state: dict[str, Any],
+    *,
+    query_text: str,
+) -> int:
+    """Return the formal match count using the same resolver as projection."""
+
+    resolved = _resolve_chejin_knowledge_release(
+        target_state,
+        query_text=query_text,
+    )
+    return len(resolved["items"]) if resolved is not None else 0
+
+
+def apply_chejin_knowledge_release(
+    evidence_pack: dict[str, Any],
+    target_state: dict[str, Any],
+    *,
+    query_text: str,
+) -> None:
+    """Project one immutable Chejin release into the existing evidence pack.
+
+    The backend is the only version authority. OmniAuto consumes the frozen
+    snapshot carried by the MessageBatch and must never re-select a newer
+    release during retry, repair, fast routing, or Guard.
+    """
+
+    resolved = _resolve_chejin_knowledge_release(
+        target_state,
+        query_text=query_text,
+    )
+    if resolved is None:
+        return
+    release_id = resolved["release_id"]
+    version = resolved["version"]
+    expected_sha = resolved["snapshot_sha256"]
+    expected_index_sha = resolved["retrieval_index_sha256"]
+    retrieved_items = resolved["items"]
+
+    faq: list[dict[str, Any]] = []
+    for item in retrieved_items:
+        item_id = str(item.get("item_id") or "").strip()
+        revision_id = str(item.get("revision_id") or "").strip()
+        title = str(item.get("title") or "").strip()
+        content = str(item.get("content") or "").strip()
+        if not item_id or not revision_id or not title or not content:
+            raise ChejinKnowledgeProjectionError("chejin_knowledge_release_item_invalid")
+        faq.append(
+            annotate_authority(
+                {
+                    "id": item_id,
+                    "intent": title,
+                    "title": title,
+                    "answer": content,
+                    "source_id": f"knowledge:{item_id}@{revision_id}",
+                    "knowledge_item_id": item_id,
+                    "knowledge_revision_id": revision_id,
+                    "knowledge_release_id": release_id,
+                },
+                category_id="faq",
+            )
+        )
+
+    knowledge = evidence_pack.setdefault("knowledge", {})
+    if not isinstance(knowledge, dict):
+        raise ChejinKnowledgeProjectionError("chejin_knowledge_pack_invalid")
+    evidence = knowledge.setdefault("evidence", {})
+    formal = knowledge.setdefault("formal_knowledge", {})
+    if not isinstance(evidence, dict) or not isinstance(formal, dict):
+        raise ChejinKnowledgeProjectionError("chejin_knowledge_pack_invalid")
+    knowledge["selected_items"] = []
+    # Replace, rather than append, so the mutable runtime cannot become a
+    # second version authority for managed business knowledge.
+    evidence["faq"] = faq
+    evidence["policies"] = {}
+    # Product Master vehicle facts remain independent. Mutable KnowledgeRuntime
+    # product-scoped rules are still formal business knowledge and must not
+    # bypass the immutable managed release.
+    evidence["product_scoped"] = []
+    evidence["style_examples"] = []
+    knowledge["formal_knowledge"] = {
+        "authority_level": "formal_knowledge",
+        "can_authorize_product_facts": False,
+        "faq": faq,
+        "policies": {},
+        "product_scoped": [],
+        "release_id": release_id,
+        "release_version": version,
+        "snapshot_sha256": expected_sha,
+        "retrieval_index_sha256": expected_index_sha,
+        "retrieved_count": len(faq),
+    }
+    # CheJin managed knowledge is the sole formal business-knowledge source.
+    # Runtime RAG/experience hits are deliberately removed rather than merged.
+    empty_rag = {
+        "enabled": False,
+        "reason": "chejin_managed_knowledge_is_sole_business_source",
+        "hits": [],
+        "ai_experience_hits": [],
+        "ai_experience_trace": [],
+        "excluded_hit_count": 0,
+        "reference_hit_count": 0,
+    }
+    knowledge["rag_evidence"] = dict(empty_rag)
+    knowledge["ai_experience_pool"] = {
+        "authority_level": "ai_experience_pool",
+        "can_authorize_reply_content": False,
+        "source": {"enabled": False, "reason": empty_rag["reason"], "hits": []},
+        "trace": {"reference_ids": [], "exclusion_reasons": {}, "items": []},
+    }
+    evidence_pack["rag"] = dict(empty_rag)
+    evidence_pack["ai_experience_pool"] = dict(knowledge["ai_experience_pool"])
+    # Runtime category matches can also change intent/safety without leaking
+    # their literal text.  Rebuild both from the customer query plus the
+    # release-projected evidence so the retired runtime is not a hidden second
+    # decision source.
+    intent_tags = normalize_pre_purchase_vehicle_tags(
+        detect_intent_tags(query_text),
+        query_text,
+    )
+    safety = build_safety_summary(intent_tags, evidence, query_text)
+    knowledge["intent_tags"] = intent_tags
+    knowledge["safety"] = safety
+    evidence_pack["intent_tags"] = intent_tags
+    evidence_pack["safety"] = safety
+    evidence_pack["knowledge_release"] = {
+        "release_id": release_id,
+        "version": version,
+        "snapshot_sha256": expected_sha,
+        "retrieval_index_sha256": expected_index_sha,
+    }
+    audit = evidence_pack.setdefault("audit_summary", {})
+    if isinstance(audit, dict):
+        audit["formal_knowledge_release_id"] = release_id
+        audit["formal_knowledge_release_version"] = version
+        audit["formal_knowledge_item_count"] = len(faq)
+        audit["evidence_ids"] = collect_evidence_ids(knowledge)
 
 AI_EXPERIENCE_REFERENCE_SOURCE_TYPES = {
     "rag_experience",
@@ -474,8 +769,41 @@ def build_reply_evidence_pack(
         knowledge_pack = build_evidence_pack(combined, context=context)
         knowledge_error = ""
     except Exception as exc:
-        knowledge_pack = {}
-        knowledge_error = repr(exc)
+        if target_state.get("chejin_knowledge_required") is True:
+            # Managed knowledge is carried by the immutable batch release.  A
+            # retired runtime formal/RAG outage must not block that authority.
+            # Product Master is still resolved independently below by
+            # ``compact_knowledge_pack`` and fails closed to an empty catalog.
+            clean_intents = normalize_pre_purchase_vehicle_tags(
+                detect_intent_tags(combined),
+                combined,
+            )
+            empty_evidence = {
+                "products": [],
+                "faq": [],
+                "policies": {},
+                "style_examples": [],
+                "product_scoped": [],
+            }
+            knowledge_pack = {
+                "schema_version": 1,
+                "scope": "chejin_managed_knowledge",
+                "input_text": combined,
+                "intent_tags": clean_intents,
+                "selected_items": [],
+                "conversation_context": context,
+                "evidence": empty_evidence,
+                "rag_evidence": {"enabled": False, "hits": []},
+                "safety": build_safety_summary(
+                    clean_intents,
+                    empty_evidence,
+                    combined,
+                ),
+            }
+            knowledge_error = ""
+        else:
+            knowledge_pack = {}
+            knowledge_error = repr(exc)
 
     compact_knowledge = compact_knowledge_pack(
         combined,

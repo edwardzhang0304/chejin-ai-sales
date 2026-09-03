@@ -215,8 +215,8 @@ export function VehicleDetailDrawer({ vehicle, loading, error, onRetry, onClose,
   }
 
   return (
-    <aside className={`panel management-drawer vehicle-detail-drawer ${editing ? "is-editing" : ""}`} aria-label="车辆详情">
-      <div className="drawer-head vehicle-drawer-head">
+    <aside className={`panel management-drawer standard-management-drawer vehicle-detail-drawer ${editing ? "is-editing" : ""}`} aria-label="车辆详情">
+      <div className="drawer-head standard-management-drawer-head vehicle-drawer-head">
         <div>
           <p>{editing ? "车辆详情 · 编辑中" : "车辆详情"}</p>
           <h2 title={vehicle?.display_name || "车辆详情"}>{vehicle?.display_name || "车辆详情"}</h2>
@@ -227,8 +227,8 @@ export function VehicleDetailDrawer({ vehicle, loading, error, onRetry, onClose,
       {loading ? <div className="state-box">正在加载车辆详情...</div> : error ? (
         <div className="state-box error"><span>{error}</span><button type="button" onClick={onRetry}>重试</button></div>
       ) : !vehicle || !form ? <div className="state-box">车辆详情不存在或已不可访问。</div> : (
-        <form className="vehicle-drawer-form" onSubmit={(event) => void handleSave(event)}>
-          <div className="vehicle-drawer-scroll">
+        <form className="management-drawer-form vehicle-drawer-form" onSubmit={(event) => void handleSave(event)}>
+          <div className="management-drawer-scroll vehicle-drawer-scroll">
             <section className="drawer-section vehicle-image-section">
               <VehicleImageManager
                 vehicleCode={vehicle.vehicle_code}
@@ -303,7 +303,7 @@ export function VehicleDetailDrawer({ vehicle, loading, error, onRetry, onClose,
             </section>
           </div>
 
-          <footer className="vehicle-drawer-actions">
+          <footer className="management-drawer-actions vehicle-drawer-actions">
             {saveError ? <div className="inline-alert error" role="alert">{saveError}</div> : null}
             {listingMissing.length ? <div className="listing-missing" role="alert"><strong>暂不能上架，请补齐：</strong><ul>{listingMissing.map((item) => <li key={item}>{item}</li>)}</ul></div> : null}
             <h3>操作</h3>

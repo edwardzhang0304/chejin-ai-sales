@@ -1,6 +1,6 @@
 @startuml
-' 文档版本：v0.9.57；灰度目标候选：0.9.57；最后更新：2026-09-01；合同 SHA：c978438ece0b9e950fe234f1366b4074635200886b5e2872d50f6bb84944c4be
-title AI智能客服售前跟进系统 全流程图（C0-C4、媒体、回复、转人工与恢复）
+' 文档版本：v0.9.61；灰度目标候选：0.9.61；最后更新：2026-09-03；合同 SHA：637ba1843ac28056f88ac77b05014f65803a364426b72c30f649c7014a2d7bec
+title AI智能客服售前跟进系统 全流程图（知识管理、C0-C4、媒体、回复、转人工与恢复）
 
 skinparam monochrome true
 skinparam shadowing false
@@ -42,9 +42,10 @@ box "车金服务端"
 participant "C0/C1线索、销售与任务服务" as C01
 participant "会话绑定与授权服务\nread-targets" as Auth
 participant "消息入库服务\nmessages/ingest" as Ingest
-database "业务数据库\nmessage_events" as DB
+participant "知识管理服务\n草稿 / 发布 / 回滚" as Knowledge
+database "业务数据库\nmessage_events + knowledge_releases" as DB
 participant "C3会话调度器\nmessage_batch" as C3
-participant "回复AI引擎\nContext + RAG + Brain + Guard" as Brain
+participant "回复AI引擎\nContext + 冻结知识 + Brain + Guard" as Brain
 participant "ReplyAction / SentAck" as Reply
 participant "HandoffEvent / 飞书通知" as Handoff
 end box
@@ -68,7 +69,25 @@ note over W,Reply
 10. C2身份只有四类对象：frame_observation、pending_media_action、committed_message、quarantine_record；只有committed_message可生成source key、查Ledger/Outbox、入库或进入Brain。
 11. 新文字/系统消息可由完整new_suffix直接提交；新语音/图片必须先落ActionJournal并经confirmed action提交。属于new_suffix、Vision成功或已有预留号都不等于正式消息。
 12. 媒体动作只能终止为cancelled_before_trigger、committed_completed、committed_failed或identity_unresolved；identity_unresolved只做无UI恢复，仍不明确则幂等handoff，不得长期挂起或重复点击。
+13. 每个message_batch创建时冻结唯一knowledge_release_id；同批次普通/快速Brain、重试、修复和Guard不得跨版本。草稿、旧KnowledgeRuntime业务知识和未发布候选不得进入Provider。
 end note
+
+group 运营后台知识管理（0.9.61）
+  OPS -> Knowledge: 查看知识 / 新增或编辑
+  Knowledge -> DB: 保存draft修订\n不修改当前发布指针
+  Knowledge --> OPS: 返回已保存草稿\n可继续编辑或单独发起发布
+  OPS -> Knowledge: 发布预览
+  Knowledge -> Knowledge: 校验必填、重复、敏感信息和硬规则冲突\n生成当前线上与目标草稿差异
+  Knowledge --> OPS: preview_id + 差异 + 校验结果
+  OPS -> Knowledge: 确认发布(preview_id)
+  Knowledge -> DB: 锁定当前版本\n构建不可变关键词索引并校验摘要\n原子写入新release和切换当前指针
+  Knowledge --> OPS: 发布成功 / 整体失败\n失败继续使用原线上版本
+  note over Knowledge,DB
+  只有当前已发布release可供新message_batch冻结。
+  归档和回滚也必须生成新不可变release，不物理改写历史。
+  当前版本使用冻结历史+当前消息的确定性关键词检索；不冒充向量语义检索。
+  end note
+end
 
 group C0-C1：线索进入、分配销售与加好友
   OPS -> C01: 新增/导入线索
@@ -761,7 +780,7 @@ loop Worker运行中；每次循环最多完成一个会话事务
               C3 -> C3: 记录warning\n不阻断最新完整客户尾部
               C3 --> W: 创建普通客户消息batch或no_action
             else 目标、授权、角色和所有customer内容完整
-              Ingest -> C3: collect/freeze message_batch\n返回当前batch_id
+              Ingest -> C3: collect/freeze message_batch\n冻结当前knowledge_release_id\n返回当前batch_id
             end
           end
 
@@ -769,15 +788,15 @@ loop Worker运行中；每次循环最多完成一个会话事务
             opt batch通过C3确定性门禁
               W -> C3: 只等待当前conversation_id + batch_id\n保持当前会话和UI锁，不处理其他会话
               alt trigger_type=friend_welcome
-                C3 -> Brain: 构建主动开场上下文\nC1线索资料 + 销售身份/业务规则\n不得伪造客户消息
+                C3 -> Brain: 构建主动开场上下文\nC1线索资料 + 销售身份/冻结知识版本\n不得伪造客户消息
               else trigger_type=recall
-                C3 -> Brain: 构建召回上下文\n历史message_events + 上次话题/车辆需求\n召回轮次/历史召回内容/召回策略
+                C3 -> Brain: 构建召回上下文\n历史message_events + 上次话题/车辆需求\n召回轮次/历史召回内容/召回策略 + 冻结知识版本
               else 普通客户消息批次
-                C3 -> Brain: 构建完整上下文\n历史message_events + 本轮文字\n语音转写 + Vision图片事实
+                C3 -> Brain: 构建完整上下文\n历史message_events + 本轮文字\n语音转写 + Vision图片事实 + 冻结知识版本
                 C3 -> C3: 历史图片保留item_state/error_code\n摘要/OCR/实体/中性查询\n服务端确认product_id
               end
               Brain -> Brain: Context Builder
-              Brain -> Brain: RAG / 车辆事实 / Evidence Pack
+              Brain -> Brain: 冻结历史+当前消息关键词检索\n清空旧KnowledgeRuntime业务知识\n车辆事实 / Evidence Pack
               Brain -> Brain: 回复生成与策略判断
               Brain -> Brain: Guard审核
               alt 允许自动回复

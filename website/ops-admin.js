@@ -116,9 +116,48 @@ const state = {
   vehicleImportPreview: "valid",
   vehicleImportResult: "success",
   pendingVehicleClose: false,
+  activeKnowledgeId: "pricing-rule",
+  knowledgeEditing: false,
+  pendingKnowledgeClose: false,
+  knowledgePublishMode: "edit",
   page: 1,
   pageSize: 20,
   total: 0,
+};
+
+const knowledgeItems = {
+  "pricing-rule": {
+    title: "车辆报价规则",
+    status: "published",
+    editor: "张三",
+    updated: "今天 13:40",
+    version: "KR-20260903-12",
+    content: "客户询问车辆价格时，应以车辆管理中已上架车辆的公开售价为准，不得使用采购价格或其他内部价格回答客户。",
+  },
+  "finance-plan": {
+    title: "金融方案说明",
+    status: "published",
+    editor: "李四",
+    updated: "昨天 18:20",
+    version: "KR-20260902-11",
+    content: "客户咨询金融方案时，只说明当前可提供的方案范围和申请流程，不承诺审批结果、最终利率或具体放款时间。",
+  },
+  "test-drive": {
+    title: "预约试驾说明",
+    status: "published",
+    editor: "张三",
+    updated: "09-01 11:16",
+    version: "KR-20260901-10",
+    content: "客户提出试驾需求时，应先确认意向车辆、到店日期和联系电话，再由销售确认具体可预约时段。",
+  },
+  "old-campaign": {
+    title: "旧活动政策",
+    status: "archived",
+    editor: "王五",
+    updated: "08-21 16:08",
+    version: "KR-20260821-10",
+    content: "八月到店活动已结束，历史内容仅用于运营追溯，不再用于新的客户回复。",
+  },
 };
 
 const workspace = document.querySelector("[data-workspace]");
@@ -993,6 +1032,120 @@ const filterVehicles = () => {
   applyVehicleListState(visible ? "default" : "no-results");
 };
 
+const setKnowledgeMode = (mode) => {
+  document.querySelectorAll("[data-knowledge-mode]").forEach((panel) => {
+    panel.classList.toggle("is-active", panel.dataset.knowledgeMode === mode);
+  });
+};
+
+const setKnowledgeEditing = (isEditing) => {
+  state.knowledgeEditing = isEditing;
+  document.querySelector("[data-knowledge-drawer]")?.classList.toggle("is-editing", isEditing);
+};
+
+const syncKnowledgeDrawer = (id) => {
+  const item = knowledgeItems[id];
+  const drawerEl = document.querySelector("[data-knowledge-drawer]");
+  if (!item || !drawerEl) return;
+  state.activeKnowledgeId = id;
+  setKnowledgeMode("detail");
+  setKnowledgeEditing(false);
+  drawerEl.querySelector("[data-knowledge-drawer-title]").textContent = item.title;
+  drawerEl.querySelector("[data-knowledge-drawer-content]").textContent = item.content;
+  drawerEl.querySelector("[data-knowledge-drawer-version]").textContent = item.version;
+  drawerEl.querySelector("[data-knowledge-drawer-editor]").textContent = item.editor;
+  drawerEl.querySelector("[data-knowledge-drawer-time]").textContent = item.updated;
+  drawerEl.querySelector("[data-knowledge-edit-title]").value = item.title;
+  drawerEl.querySelector("[data-knowledge-edit-content]").value = item.content;
+  const status = drawerEl.querySelector("[data-knowledge-drawer-status]");
+  status.textContent = item.status === "published" ? "已发布" : "已归档";
+  status.className = `status ${item.status === "published" ? "assigned" : "unassigned"}`;
+  drawerEl.querySelector('[data-action="archive-knowledge"]').hidden = item.status !== "published";
+};
+
+const openKnowledgeDrawer = (id) => {
+  syncKnowledgeDrawer(id);
+  document.querySelector("[data-knowledge-drawer]")?.classList.remove("closed");
+};
+
+const filterKnowledge = () => {
+  const keyword = document.querySelector("[data-knowledge-search]")?.value.trim().toLowerCase() || "";
+  const status = document.querySelector("[data-knowledge-status-filter]")?.value || "all";
+  let visible = 0;
+  document.querySelectorAll("tr[data-knowledge-id]").forEach((row) => {
+    const item = knowledgeItems[row.dataset.knowledgeId];
+    const matchedKeyword = !keyword || `${item.title} ${item.content}`.toLowerCase().includes(keyword);
+    const matchedStatus = status === "all" || item.status === status;
+    row.hidden = !(matchedKeyword && matchedStatus);
+    if (!row.hidden) visible += 1;
+  });
+  const table = document.querySelector(".knowledge-table");
+  const empty = document.querySelector('[data-knowledge-state="no-results"]');
+  if (table) table.hidden = visible === 0;
+  if (empty) empty.hidden = visible !== 0;
+};
+
+const prepareKnowledgePublishPreview = (mode) => {
+  const item = knowledgeItems[state.activeKnowledgeId];
+  const modal = document.querySelector('[data-modal="knowledge-publish-preview"]');
+  if (!modal) return;
+  state.knowledgePublishMode = mode;
+  let title = item?.title || "新增知识";
+  let before = item?.content || "当前线上版本中不存在该知识。";
+  let after = document.querySelector("[data-knowledge-edit-content]")?.value.trim() || "";
+  let changeType = "修改 1 条";
+  let heading = `${title} · 修改前后差异`;
+
+  if (mode === "create") {
+    title = document.querySelector("[data-new-knowledge-title]")?.value.trim() || "";
+    after = document.querySelector("[data-new-knowledge-content]")?.value.trim() || "";
+    before = "当前线上版本中不存在该知识。";
+    changeType = "新增 1 条";
+    heading = `${title || "新增知识"} · 新增内容`;
+  }
+
+  if (mode === "archive") {
+    after = "归档后，该知识将从新的线上版本中移除，历史内容和发布记录继续保留。";
+    changeType = "归档 1 条";
+    heading = `${title} · 归档差异`;
+  }
+
+  if (mode === "rollback") {
+    title = "回滚知识版本";
+    before = "当前线上版本：KR-20260903-12";
+    after = "目标历史内容：KR-20260902-11。回滚成功后将生成一个新的发布版本。";
+    changeType = "回滚版本";
+    heading = "当前版本与目标版本差异";
+  }
+
+  modal.querySelector("[data-knowledge-preview-title]").textContent = mode === "archive" ? "确认归档知识" : mode === "rollback" ? "确认回滚知识版本" : "确认发布知识";
+  modal.querySelector("[data-knowledge-change-type]").textContent = changeType;
+  modal.querySelector("[data-knowledge-diff-heading]").textContent = heading;
+  modal.querySelector("[data-knowledge-before-content]").textContent = before;
+  modal.querySelector("[data-knowledge-after-content]").textContent = after;
+  modal.querySelector("[data-knowledge-publish-confirm]").textContent = mode === "archive" ? "确认归档并发布" : mode === "rollback" ? "确认回滚" : "确认发布";
+  openModal("knowledge-publish-preview");
+};
+
+const applyKnowledgeScenario = (scenario) => {
+  const firstRow = document.querySelector('tr[data-knowledge-id="pricing-rule"]');
+  if (scenario === "detail" || scenario === "edit" || scenario === "archive-preview") {
+    firstRow?.classList.add("selected");
+    openKnowledgeDrawer("pricing-rule");
+  }
+  if (scenario === "edit") setKnowledgeEditing(true);
+  if (scenario === "create") openModal("knowledge-create");
+  if (scenario === "publish-preview") {
+    setKnowledgeEditing(true);
+    prepareKnowledgePublishPreview("edit");
+  }
+  if (scenario === "archive-preview") prepareKnowledgePublishPreview("archive");
+  if (scenario === "releases") {
+    setKnowledgeMode("releases");
+    document.querySelector("[data-knowledge-drawer]")?.classList.remove("closed");
+  }
+};
+
 const setVehicleImportStep = (step) => {
   state.vehicleImportStep = step;
   document.querySelectorAll("[data-import-stage]").forEach((stage) => {
@@ -1047,6 +1200,12 @@ const closeModal = (modal) => {
 
 const openModal = (name) => {
   if (name === "vehicle-import") resetVehicleImport();
+  if (name === "knowledge-create") {
+    const title = document.querySelector("[data-new-knowledge-title]");
+    const content = document.querySelector("[data-new-knowledge-content]");
+    if (title) title.value = "";
+    if (content) content.value = "";
+  }
   if (name === "vehicle-image-delete") {
     const copy = document.querySelector("[data-vehicle-image-delete-copy]");
     const confirm = document.querySelector("[data-vehicle-image-delete-confirm]");
@@ -1278,6 +1437,9 @@ document.addEventListener("input", (event) => {
   if (event.target.matches("[data-vehicle-search]")) {
     filterVehicles();
   }
+  if (event.target.matches("[data-knowledge-search]")) {
+    filterKnowledge();
+  }
   if (event.target.matches("[data-filter]")) {
     window.clearTimeout(filterTimer);
     filterTimer = window.setTimeout(() => {
@@ -1292,6 +1454,9 @@ document.addEventListener(
   (event) => {
     if (event.target.matches("[data-vehicle-status-filter]")) {
       filterVehicles();
+    }
+    if (event.target.matches("[data-knowledge-status-filter]")) {
+      filterKnowledge();
     }
     if (event.target.matches("[data-filter], [data-page-size]")) {
       state.page = 1;
@@ -1331,6 +1496,7 @@ document.addEventListener("click", (event) => {
   const leadRow = target.closest("tr[data-lead-id]");
   const taskRow = target.closest("tr[data-task-id]");
   const vehicleRow = target.closest("tr[data-vehicle-id]");
+  const knowledgeRow = target.closest("tr[data-knowledge-id]");
   const vehicleImageButton = target.closest("[data-image-src]");
 
   if (openModalButton) {
@@ -1370,6 +1536,11 @@ document.addEventListener("click", (event) => {
   if (vehicleRow && !target.closest("button, input, select, textarea, a")) {
     vehicleRow.parentElement?.querySelectorAll("tr").forEach((row) => row.classList.toggle("selected", row === vehicleRow));
     openVehicleDrawer(vehicleRow);
+  }
+
+  if (knowledgeRow && !target.closest("button, input, select, textarea, a")) {
+    knowledgeRow.parentElement?.querySelectorAll("tr").forEach((row) => row.classList.toggle("selected", row === knowledgeRow));
+    openKnowledgeDrawer(knowledgeRow.dataset.knowledgeId);
   }
 
   if (vehicleImageButton) {
@@ -1433,6 +1604,92 @@ document.addEventListener("click", (event) => {
   if (action === "show-worker-edit") setWorkerEditing(true);
   if (action === "close-worker-drawer") document.querySelector("[data-worker-drawer]")?.classList.add("closed");
   if (action === "close-task-drawer") document.querySelector("[data-task-drawer]")?.classList.add("closed");
+  if (action === "open-knowledge-releases") {
+    setKnowledgeEditing(false);
+    setKnowledgeMode("releases");
+    document.querySelector("[data-knowledge-drawer]")?.classList.remove("closed");
+  }
+  if (action === "close-knowledge-drawer") {
+    if (state.knowledgeEditing) {
+      state.pendingKnowledgeClose = true;
+      openModal("knowledge-unsaved");
+    } else {
+      document.querySelector("[data-knowledge-drawer]")?.classList.add("closed");
+    }
+  }
+  if (action === "edit-knowledge") setKnowledgeEditing(true);
+  if (action === "cancel-knowledge-edit") {
+    state.pendingKnowledgeClose = false;
+    openModal("knowledge-unsaved");
+  }
+  if (action === "discard-knowledge-edit") {
+    closeModal(actionEl.closest(".modal-backdrop"));
+    setKnowledgeEditing(false);
+    syncKnowledgeDrawer(state.activeKnowledgeId);
+    if (state.pendingKnowledgeClose) document.querySelector("[data-knowledge-drawer]")?.classList.add("closed");
+    state.pendingKnowledgeClose = false;
+  }
+  if (action === "preview-knowledge-publish") {
+    const title = document.querySelector("[data-knowledge-edit-title]")?.value.trim();
+    const content = document.querySelector("[data-knowledge-edit-content]")?.value.trim();
+    if (!title || !content) showToast("请填写标题和规则正文", "error");
+    else prepareKnowledgePublishPreview("edit");
+  }
+  if (action === "preview-new-knowledge") {
+    const title = document.querySelector("[data-new-knowledge-title]")?.value.trim();
+    const content = document.querySelector("[data-new-knowledge-content]")?.value.trim();
+    if (!title || !content) showToast("请填写标题和规则正文", "error");
+    else prepareKnowledgePublishPreview("create");
+  }
+  if (action === "archive-knowledge") prepareKnowledgePublishPreview("archive");
+  if (action === "confirm-knowledge-publish") {
+    const mode = state.knowledgePublishMode;
+    const item = knowledgeItems[state.activeKnowledgeId];
+    if (mode === "edit" && item) {
+      item.title = document.querySelector("[data-knowledge-edit-title]")?.value.trim() || item.title;
+      item.content = document.querySelector("[data-knowledge-edit-content]")?.value.trim() || item.content;
+      item.updated = "刚刚";
+      const row = document.querySelector(`tr[data-knowledge-id="${state.activeKnowledgeId}"]`);
+      if (row) {
+        row.querySelector(".lead-cell strong").textContent = item.title;
+        row.lastElementChild.textContent = "刚刚";
+      }
+      syncKnowledgeDrawer(state.activeKnowledgeId);
+    }
+    if (mode === "archive" && item) {
+      item.status = "archived";
+      item.updated = "刚刚";
+      const row = document.querySelector(`tr[data-knowledge-id="${state.activeKnowledgeId}"]`);
+      if (row) {
+        row.dataset.knowledgeStatus = "archived";
+        const badge = row.querySelector(".status");
+        badge.className = "status unassigned";
+        badge.textContent = "已归档";
+        row.lastElementChild.textContent = "刚刚";
+      }
+      syncKnowledgeDrawer(state.activeKnowledgeId);
+    }
+    closeModal(actionEl.closest(".modal-backdrop"));
+    document.querySelector('[data-modal="knowledge-create"]')?.setAttribute("hidden", "");
+    setKnowledgeEditing(false);
+    filterKnowledge();
+    showToast(mode === "archive" ? "知识已归档，新线上版本已发布" : mode === "rollback" ? "已回滚并生成新的知识版本" : "知识发布成功，新创建的 AI 对话批次将使用此版本", "success");
+  }
+  if (action === "clear-knowledge-filter") {
+    const keyword = document.querySelector("[data-knowledge-search]");
+    const status = document.querySelector("[data-knowledge-status-filter]");
+    if (keyword) keyword.value = "";
+    if (status) status.value = "all";
+    filterKnowledge();
+  }
+  if (action === "show-release-detail") {
+    document.querySelector("[data-release-detail-title]").textContent = actionEl.dataset.release || "知识发布记录";
+    openModal("knowledge-release-detail");
+  }
+  if (action === "preview-knowledge-rollback") {
+    closeModal(actionEl.closest(".modal-backdrop"));
+    prepareKnowledgePublishPreview("rollback");
+  }
   if (action === "save-worker-design") {
     closeModal(actionEl.closest(".modal-backdrop"));
     document.querySelector("[data-worker-drawer]")?.classList.remove("closed");
@@ -1699,5 +1956,6 @@ decorateTaskIdentifiers();
 if ([...moduleButtons].some((button) => button.dataset.module === initialModule)) {
   showModule(initialModule).then(() => {
     if (initialModule === "vehicles") applyVehicleScenario(initialParams.get("vehicleState") || "default");
+    if (initialModule === "knowledge") applyKnowledgeScenario(initialParams.get("knowledgeState") || "default");
   });
 }

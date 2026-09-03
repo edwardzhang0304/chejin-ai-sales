@@ -4,7 +4,7 @@
   "upstream_base_commit": "a563e6688c47a8922510794101967823fe1389d7",
   "selective_integrations": [
     {
-      "source_commit": "eae057db568b4bb8a57a0d4694aaaadfacef9464",
+      "source_commit": "a29ba4e1278d55bc6aed617d045b0a85c10c4aff",
       "scope": [
         "exact_wechat_context_menu_classification",
         "same_popup_menu_panel_evidence_contract",
@@ -129,7 +129,11 @@
         "c2_contract_0_9_60_generated_schema",
         "source_level_diagnostics_not_in_formal_runtime_contract",
         "unused_voice_vision_compatibility_module_removal_contract",
-        "brain_three_path_max_tokens_8192_contract"
+        "brain_three_path_max_tokens_8192_contract",
+        "chejin_immutable_knowledge_release_projection_contract",
+        "chejin_frozen_history_managed_knowledge_query_contract",
+        "chejin_legacy_knowledge_runtime_side_door_removal_contract",
+        "c2_contract_0_9_61_generated_schema"
       ]
     }
   ],
@@ -158,6 +162,13 @@
     "final_partition_complete_frame_commit_contract",
     "unknown_fact_explicit_identity_gate_contract"
   ],
+  "current_release": {
+    "version": "0.9.61",
+    "source_commit": "a29ba4e1278d55bc6aed617d045b0a85c10c4aff",
+    "contract_revision": "0.9.61",
+    "contract_sha256": "637ba1843ac28056f88ac77b05014f65803a364426b72c30f649c7014a2d7bec",
+    "scope": "immutable knowledge release projection, frozen-history retrieval, and legacy KnowledgeRuntime isolation"
+  },
   "historical_integrations": [
     {
       "upstream_base_commit": "855c21881641cdb2f9fe69d3f2e1caa05e37d04d",

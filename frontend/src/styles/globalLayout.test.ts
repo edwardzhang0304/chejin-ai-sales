@@ -7,9 +7,11 @@ const stylesheet = readFileSync("src/styles/global.css", "utf8");
 describe("运营后台公共布局合同", () => {
   it("六个模块共用同一工作区宽度，不再各自固定页面宽度", () => {
     expect(stylesheet).toMatch(
-      /\.leads-page,\s*\.sales-page,\s*\.workers-page,\s*\.tasks-page,\s*\.logs-page\s*\{[^}]*width:\s*100%/s,
+      /\.leads-page,\s*\.sales-page,\s*\.workers-page,\s*\.tasks-page,\s*\.logs-page,\s*\.knowledge-page\s*\{[^}]*width:\s*100%/s,
     );
-    expect(stylesheet).toMatch(/\.vehicles-page\s*\{[^}]*width:\s*100%/s);
+    expect(stylesheet).toMatch(
+      /\.vehicles-page,\s*\.knowledge-page\s*\{[^}]*width:\s*100%/s,
+    );
     expect(stylesheet).toMatch(/\.vehicle-management-grid\s*\{[^}]*width:\s*100%/s);
   });
 
@@ -21,7 +23,7 @@ describe("运营后台公共布局合同", () => {
       /\.management-grid\s*\{[^}]*grid-template-columns:\s*768px 360px/s,
     );
     expect(stylesheet).toMatch(
-      /\.content-grid:has\(> \.list-region:only-child\),\s*\.vehicle-management-grid:has\(> \.vehicle-list-panel:only-child\)\s*\{[^}]*grid-template-columns:\s*minmax\(0, 1fr\)/s,
+      /\.content-grid:has\(> \.list-region:only-child\),\s*\.vehicle-management-grid:has\(> \.vehicle-list-panel:only-child\),\s*\.knowledge-management-grid:has\(> \.knowledge-list-panel:only-child\)\s*\{[^}]*grid-template-columns:\s*minmax\(0, 1fr\)/s,
     );
     expect(stylesheet).toMatch(
       /@media \(max-width: 1439px\)[\s\S]*?\.content-grid,\s*\.management-grid\s*\{[^}]*grid-template-columns:\s*minmax\(0, 1fr\) 360px[\s\S]*?\.detail-drawer,\s*\.management-drawer\s*\{[^}]*width:\s*360px/s,
@@ -34,7 +36,9 @@ describe("运营后台公共布局合同", () => {
     expect(stylesheet).toMatch(
       /\.screen-sales \.management-table-card,\s*\.screen-workers \.management-table-card\s*\{[^}]*height:\s*524px/s,
     );
-    expect(stylesheet).toMatch(/\.vehicle-pagination-row\s*\{[^}]*margin-top:\s*14px/s);
+    expect(stylesheet).toMatch(
+      /\.vehicle-pagination-row,\s*\.paginated-management-pagination-row\s*\{[^}]*margin-top:\s*14px/s,
+    );
   });
 
   it("窄工作区筛选控件不会跨列重叠", () => {

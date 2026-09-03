@@ -600,7 +600,8 @@ p {
 .sales-page,
 .workers-page,
 .tasks-page,
-.logs-page {
+.logs-page,
+.knowledge-page {
   display: grid;
   gap: 16px;
   width: 100%;
@@ -633,7 +634,8 @@ p {
 .sales-page > .page-header,
 .workers-page > .page-header,
 .tasks-page > .page-header,
-.logs-page > .page-header {
+.logs-page > .page-header,
+.knowledge-page > .page-header {
   align-items: flex-start;
   width: 1120px;
   margin-bottom: 5px;
@@ -2675,6 +2677,12 @@ tbody tr:hover td {
   border-color: var(--primary);
 }
 
+.drawer-actions .danger-button {
+  color: #fff;
+  background: var(--danger);
+  border-color: var(--danger);
+}
+
 .drawer-hint {
   margin: 8px 0 0;
   padding: 8px 10px;
@@ -2821,7 +2829,8 @@ tbody tr:hover td {
   grid-template-rows: auto 1fr auto;
 }
 
-.vehicles-page {
+.vehicles-page,
+.knowledge-page {
   display: grid;
   gap: 0;
   width: 100%;
@@ -2838,7 +2847,8 @@ tbody tr:hover td {
   margin-top: 16px;
 }
 
-.vehicles-page > .page-header {
+.vehicles-page > .page-header,
+.knowledge-page > .page-header {
   align-items: flex-start;
   width: 1120px;
   margin-bottom: 5px;
@@ -3035,7 +3045,8 @@ tbody tr:hover td {
   padding: 20px;
 }
 
-.vehicle-filter-card {
+.vehicle-filter-card,
+.two-field-management-filter {
   display: grid;
   grid-template-columns: minmax(0, 1fr) 190px;
   gap: 16px;
@@ -3048,7 +3059,13 @@ tbody tr:hover td {
   border-radius: var(--radius);
 }
 
-.vehicle-filter-card label {
+.management-filter-card.two-field-management-filter {
+  grid-template-columns: minmax(0, 1fr) 190px;
+  gap: 16px;
+}
+
+.vehicle-filter-card label,
+.two-field-management-filter label {
   display: grid;
   gap: 6px;
   color: var(--subtle);
@@ -3081,7 +3098,8 @@ tbody tr:hover td {
   background: var(--primary);
 }
 
-.vehicle-table-card {
+.vehicle-table-card,
+.paginated-management-table-card {
   width: 728px;
   height: 448px;
   min-height: 448px;
@@ -3164,13 +3182,15 @@ tbody tr:hover td {
   100% { background-position: 0 0; }
 }
 
-.vehicle-pagination-row {
+.vehicle-pagination-row,
+.paginated-management-pagination-row {
   width: 726px;
   margin-top: 14px;
   border-top: 1px solid var(--soft-line);
 }
 
-.vehicle-empty {
+.vehicle-empty,
+.management-empty-state {
   align-content: center;
   justify-items: center;
   gap: 8px;
@@ -3180,18 +3200,21 @@ tbody tr:hover td {
   text-align: center;
 }
 
-.vehicle-empty strong {
+.vehicle-empty strong,
+.management-empty-state strong {
   color: var(--ink);
   font-size: 16px;
 }
 
-.vehicle-empty > span {
+.vehicle-empty > span,
+.management-empty-state > span {
   margin: 0;
   color: var(--muted);
   font-size: 13px;
 }
 
-.vehicle-empty > div {
+.vehicle-empty > div,
+.management-empty-state > div {
   display: flex;
   gap: 10px;
   justify-content: center;
@@ -3199,6 +3222,7 @@ tbody tr:hover td {
 }
 
 .vehicle-empty button,
+.management-empty-state button,
 .state-box button {
   min-height: 36px;
   padding: 0 16px;
@@ -3209,12 +3233,14 @@ tbody tr:hover td {
   font-weight: 700;
 }
 
-.vehicle-empty .primary-button {
+.vehicle-empty .primary-button,
+.management-empty-state .primary-button {
   color: var(--ink);
   background: #fff;
   border-color: var(--line);
 }
 
+.standard-management-drawer,
 .vehicle-detail-drawer {
   display: flex;
   flex-direction: column;
@@ -3224,6 +3250,7 @@ tbody tr:hover td {
   overflow: hidden;
 }
 
+.standard-management-drawer-head,
 .vehicle-drawer-head {
   flex: 0 0 auto;
   padding: 14px 14px 0;
@@ -3231,10 +3258,12 @@ tbody tr:hover td {
   border-bottom: 0;
 }
 
+.standard-management-drawer-head > div,
 .vehicle-drawer-head > div {
   min-width: 0;
 }
 
+.standard-management-drawer-head h2,
 .vehicle-drawer-head h2 {
   max-width: 272px;
   margin-top: 2px;
@@ -3245,6 +3274,7 @@ tbody tr:hover td {
   white-space: nowrap;
 }
 
+.management-drawer-form,
 .vehicle-drawer-form {
   display: flex;
   flex: 1 1 auto;
@@ -3252,6 +3282,7 @@ tbody tr:hover td {
   flex-direction: column;
 }
 
+.management-drawer-scroll,
 .vehicle-drawer-scroll {
   flex: 1 1 auto;
   min-height: 0;
@@ -3260,6 +3291,7 @@ tbody tr:hover td {
   overscroll-behavior: contain;
 }
 
+.management-drawer-actions,
 .vehicle-drawer-actions {
   flex: 0 0 auto;
   padding: 12px 14px 17px;
@@ -3880,12 +3912,19 @@ tbody tr:hover td {
   font-weight: 800;
 }
 
+.management-drawer-actions > h3,
 .vehicle-drawer-actions > h3 {
   margin: 0 0 10px;
   font-size: 14px;
 }
 
 .vehicle-detail-drawer .vehicle-drawer-head h2 {
+  margin-top: 2px;
+  font-size: 19px;
+  line-height: 26px;
+}
+
+.standard-management-drawer .standard-management-drawer-head h2 {
   margin-top: 2px;
   font-size: 19px;
   line-height: 26px;
@@ -4105,7 +4144,8 @@ tbody tr:hover td {
   .sales-page > .page-header,
   .workers-page > .page-header,
   .tasks-page > .page-header,
-  .logs-page > .page-header {
+  .logs-page > .page-header,
+  .knowledge-page > .page-header {
     width: 100%;
   }
 
@@ -4128,7 +4168,8 @@ tbody tr:hover td {
   }
 
   .content-grid:has(> .list-region:only-child),
-  .vehicle-management-grid:has(> .vehicle-list-panel:only-child) {
+  .vehicle-management-grid:has(> .vehicle-list-panel:only-child),
+  .knowledge-management-grid:has(> .knowledge-list-panel:only-child) {
     grid-template-columns: minmax(0, 1fr);
   }
 
@@ -4426,6 +4467,8 @@ tbody tr:hover td {
 
 @media (max-width: 1439px) {
   .vehicles-page > .page-header,
+  .knowledge-page > .page-header,
+  .knowledge-management-grid,
   .vehicle-management-grid {
     width: 100%;
   }
@@ -4445,7 +4488,10 @@ tbody tr:hover td {
   .vehicle-list-panel,
   .vehicle-filter-card,
   .vehicle-table-card,
-  .vehicle-pagination-row {
+  .vehicle-pagination-row,
+  .two-field-management-filter,
+  .paginated-management-table-card,
+  .paginated-management-pagination-row {
     width: 100%;
   }
 
@@ -4459,7 +4505,8 @@ tbody tr:hover td {
   .workers-page,
   .tasks-page,
   .logs-page,
-  .vehicles-page {
+  .vehicles-page,
+  .knowledge-page {
     width: 100%;
   }
 
@@ -4493,7 +4540,8 @@ tbody tr:hover td {
 }
 
 @media (max-width: 720px) {
-  .vehicles-page > .page-header {
+  .vehicles-page > .page-header,
+  .knowledge-page > .page-header {
     align-items: stretch;
   }
 
@@ -4507,7 +4555,9 @@ tbody tr:hover td {
     width: auto;
   }
 
-  .vehicle-filter-card {
+  .vehicle-filter-card,
+  .two-field-management-filter,
+  .management-filter-card.two-field-management-filter {
     grid-template-columns: minmax(0, 1fr);
     gap: 10px;
     height: auto;
@@ -4517,14 +4567,17 @@ tbody tr:hover td {
     grid-template-columns: repeat(3, minmax(0, 1fr));
   }
 
-  .vehicle-list-panel {
+  .vehicle-list-panel,
+  .knowledge-list-panel {
     grid-template-rows: auto auto minmax(420px, 1fr) 62px;
     height: auto;
     min-height: 740px;
   }
 
   .vehicle-pagination-row nav button:not(:first-child):not(:last-child),
-  .vehicle-pagination-row .pagination-ellipsis {
+  .vehicle-pagination-row .pagination-ellipsis,
+  .paginated-management-pagination-row nav button:not(:first-child):not(:last-child),
+  .paginated-management-pagination-row .pagination-ellipsis {
     display: none;
   }
 

@@ -45,6 +45,12 @@ const eventOptions = [
   { value: "vehicle_image_deleted", label: "删除车辆图片" },
   { value: "vehicle_excel_import_confirmed", label: "确认导入车辆" },
   { value: "vehicle_operation_failed", label: "车辆操作失败" },
+  { value: "knowledge_publish_previewed", label: "预览知识发布" },
+  { value: "knowledge_rollback_previewed", label: "预览知识回滚" },
+  { value: "knowledge_published", label: "发布知识" },
+  { value: "knowledge_archived", label: "归档知识" },
+  { value: "knowledge_rolled_back", label: "回滚知识版本" },
+  { value: "knowledge_operation_failed", label: "知识操作失败" },
   { value: "admin_account_created", label: "创建后台账号" },
   { value: "admin_account_enabled", label: "启用后台账号" },
   { value: "admin_account_disabled", label: "停用后台账号" },
@@ -62,6 +68,7 @@ export const operationModuleOptions = [
   { value: "worker", label: "Worker 管理" },
   { value: "task", label: "任务中心" },
   { value: "vehicles", label: "车辆管理" },
+  { value: "knowledge", label: "知识管理" },
   { value: "export", label: "线索导出" },
   { value: "auth", label: "账号与登录" },
 ];
@@ -81,6 +88,7 @@ const objectLabels: Record<string, string> = {
   worker: "Worker",
   task: "任务",
   vehicles: "车辆",
+  knowledge: "知识",
   export: "导出",
   auth: "后台账号",
 };
@@ -142,6 +150,8 @@ const fieldLabels: Record<string, string> = {
   content_type: "图片格式",
   size_bytes: "图片大小",
   image_ids: "图片顺序",
+  title: "知识标题",
+  content: "规则正文",
 };
 
 const authReasonLabels: Record<string, string> = {
@@ -208,6 +218,9 @@ export function operationObjectName(item: OperationLogItem) {
     stringFromMetadata(item.metadata, "sales_name") ||
     stringFromMetadata(item.metadata, "worker_name") ||
     stringFromMetadata(item.metadata, "vehicle_code") ||
+    stringFromMetadata(item.metadata, "title") ||
+    stringFromMetadata(item.after_data, "title") ||
+    stringFromMetadata(item.before_data, "title") ||
     stringFromMetadata(item.after_data, "sales_name") ||
     stringFromMetadata(item.after_data, "worker_name") ||
     stringFromMetadata(item.after_data, "vehicle_code") ||

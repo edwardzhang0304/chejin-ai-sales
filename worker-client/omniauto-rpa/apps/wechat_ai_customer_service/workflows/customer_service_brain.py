@@ -56,8 +56,11 @@ from customer_service_conversation_strategy import (
 from llm_reply_guard import guard_synthesized_reply
 from evidence_authority import PRODUCT_MASTER_CATEGORY_ID, annotate_authority
 from reply_evidence_builder import (
+    apply_chejin_knowledge_release,
+    build_chejin_managed_knowledge_query,
     build_reply_evidence_pack,
     catalog_product_payload,
+    chejin_managed_knowledge_match_count,
     chejin_context_projection,
     compact_message,
 )
@@ -844,12 +847,38 @@ def _maybe_run_customer_service_brain_within_time_budget(
         )
         return finish(payload)
 
+    image_query_terms = [
+        str(item.get("normalized_vehicle_query") or "").strip()
+        for item in batch
+        if isinstance(item, dict)
+        and str(item.get("message_type") or "").strip().lower() == "image"
+        and str(item.get("normalized_vehicle_query") or "").strip()
+    ]
+    evidence_combined = "\n".join(
+        [str(combined or "").strip(), *image_query_terms]
+    ).strip()
+    managed_knowledge_query = build_chejin_managed_knowledge_query(
+        target_state,
+        current_query_text=evidence_combined,
+    )
+    managed_knowledge_match_count = chejin_managed_knowledge_match_count(
+        target_state,
+        query_text=managed_knowledge_query,
+    )
+
     fast_profile = low_authority_fast_profile_decision(
         settings=settings,
         combined=combined,
         batch=batch,
         target_state=target_state,
     )
+    if fast_profile.get("enabled") and managed_knowledge_match_count > 0:
+        fast_profile = {
+            **fast_profile,
+            "enabled": False,
+            "reason": "managed_formal_knowledge_retrieved",
+            "managed_knowledge_match_count": managed_knowledge_match_count,
+        }
     payload["low_authority_fast_profile"] = fast_profile
     if fast_profile.get("enabled"):
         settings = apply_low_authority_fast_brain_settings(settings, fast_profile)
@@ -865,17 +894,6 @@ def _maybe_run_customer_service_brain_within_time_budget(
             profile=fast_profile,
         )
     else:
-        image_query_terms = [
-            str(item.get("normalized_vehicle_query") or "").strip()
-            for item in batch
-            if isinstance(item, dict)
-            and str(item.get("message_type") or "").strip().lower()
-            == "image"
-            and str(item.get("normalized_vehicle_query") or "").strip()
-        ]
-        evidence_combined = "\n".join(
-            [str(combined or "").strip(), *image_query_terms]
-        ).strip()
         evidence_pack = build_reply_evidence_pack(
             config=config_with_brain_synthesis_settings(config, settings),
             target_name=target_name,
@@ -892,6 +910,11 @@ def _maybe_run_customer_service_brain_within_time_budget(
             raw_capture=raw_capture,
             customer_profile=customer_profile,
         )
+    apply_chejin_knowledge_release(
+        evidence_pack,
+        target_state,
+        query_text=managed_knowledge_query,
+    )
     apply_server_validated_image_products(batch, evidence_pack)
     attach_conversation_runtime_hints_to_evidence_pack(evidence_pack, target_state)
     if str(evidence_pack.get("knowledge_error") or "").strip():
