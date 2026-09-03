@@ -250,12 +250,12 @@ export function VehiclesPage() {
       <div className="management-grid vehicle-management-grid">
         <section className="panel management-list-panel vehicle-list-panel">
           <div className="panel-header"><div><h2>车辆列表</h2></div></div>
-          <div className="vehicle-filter-card">
-            <label className="vehicle-search"><span>搜索</span><input type="search" value={keyword} onChange={(event) => setKeyword(event.target.value)} placeholder="车辆名称、编号、品牌、车系" aria-label="搜索车辆" /></label>
+          <div className="two-field-management-filter vehicle-filter-card">
+            <label className="management-search-field"><span>搜索</span><input type="search" value={keyword} onChange={(event) => setKeyword(event.target.value)} placeholder="车辆名称、编号、品牌、车系" aria-label="搜索车辆" /></label>
             <label><span>状态</span><select aria-label="筛选车辆状态" value={status} onChange={(event) => { setStatus(event.target.value as VehicleListingFilter); setPage(1); }}><option value="all">全部状态</option><option value="listed">已上架</option><option value="unlisted">已下架</option></select></label>
           </div>
 
-          <div className="vehicle-table-card">
+          <div className="paginated-management-table-card vehicle-table-card">
             {loading ? <div className="vehicle-empty state-box"><span className="loading-spinner" aria-hidden="true" /><strong>正在加载车辆</strong><span>请稍候。</span></div> : error ? <div className="vehicle-empty state-box error"><strong>车辆列表加载失败</strong><span>{error}</span><button type="button" onClick={() => void refreshList()}>重新加载</button></div> : items.length === 0 ? (
               <div className="vehicle-empty state-box">
                 <strong>{hasFilter ? "未找到匹配车辆" : "暂无车辆"}</strong>
@@ -283,7 +283,7 @@ export function VehiclesPage() {
           {!loading && !error && items.length > 0 ? (
             <Pagination
               ariaLabel="车辆分页"
-              className="vehicle-pagination-row"
+              className="paginated-management-pagination-row vehicle-pagination-row"
               currentPage={page}
               disabled={loading}
               ellipsis="…"

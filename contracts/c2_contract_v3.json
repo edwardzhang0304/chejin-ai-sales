@@ -1,10 +1,10 @@
 {
   "contract_version": 3,
-  "contract_revision": "0.9.60",
+  "contract_revision": "0.9.61",
   "observation_schema_version": 3,
   "control_schema_version": 1,
   "client_update_contract": {
-    "release": "0.9.60",
+    "release": "0.9.61",
     "trigger": "manual_settings_check_only",
     "eligible_runtime": "official_frozen_windows_x64_exe_delivery_package_only",
     "fast_uat_runtime": "not_an_update_target",

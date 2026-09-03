@@ -4,7 +4,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>车金 AI 运营后台</title>
-    <link rel="stylesheet" href="./ops-admin.css?v=auth-design-20260805a" />
+    <link rel="stylesheet" href="./ops-admin.css?v=knowledge-design-20260903a" />
   </head>
   <body>
     <main class="login-view" data-login-view>
@@ -65,6 +65,9 @@
           </button>
           <button type="button" data-module="vehicles">
             <span>车辆管理</span>
+          </button>
+          <button type="button" data-module="knowledge">
+            <span>知识管理</span>
           </button>
           <button type="button" data-module="sales">
             <span>销售管理</span>
@@ -589,6 +592,187 @@
                   <button class="primary-button edit-value" type="button" data-action="save-vehicle-edit">保存</button>
                 </div>
               </section>
+            </aside>
+          </div>
+        </section>
+
+        <section class="screen screen-knowledge" data-module-content="knowledge" hidden>
+          <header class="screen-header">
+            <div>
+              <p>业务知识运营</p>
+              <h1>知识管理</h1>
+            </div>
+            <button class="primary-button" type="button" data-open-modal="knowledge-create">新增知识</button>
+          </header>
+
+          <section class="metric-grid management-metrics knowledge-metrics" aria-label="知识管理概览">
+            <article class="knowledge-release-metric">
+              <button type="button" data-action="open-knowledge-releases" aria-label="查看知识发布记录">
+                <span>当前线上版本</span>
+                <strong>KR-20260903-12</strong>
+                <p>今天 14:30 发布</p>
+              </button>
+            </article>
+            <article>
+              <span>今日发布</span>
+              <strong>2 次</strong>
+              <p>1 新增 · 1 修改</p>
+            </article>
+            <article>
+              <span>已发布知识</span>
+              <strong>8 条</strong>
+              <p>累计已归档 2 条</p>
+            </article>
+          </section>
+
+          <div class="management-grid knowledge-management-grid">
+            <section class="panel management-list-panel knowledge-list-panel">
+              <div class="panel-header">
+                <div><h2>知识列表</h2></div>
+              </div>
+
+              <div class="management-filter-card knowledge-filter-card">
+                <label>
+                  <span>搜索</span>
+                  <input type="search" placeholder="标题或正文关键词" aria-label="搜索知识标题或正文关键词" data-knowledge-search />
+                </label>
+                <label>
+                  <span>状态</span>
+                  <select aria-label="筛选知识状态" data-knowledge-status-filter>
+                    <option value="all">全部状态</option>
+                    <option value="published">已发布</option>
+                    <option value="archived">已归档</option>
+                  </select>
+                </label>
+              </div>
+
+              <div class="management-table-card knowledge-table-card" data-knowledge-table-card>
+                <table class="management-table knowledge-table">
+                  <thead>
+                    <tr>
+                      <th>标题</th>
+                      <th>状态</th>
+                      <th>最后编辑人</th>
+                      <th>更新时间</th>
+                    </tr>
+                  </thead>
+                  <tbody data-knowledge-rows>
+                    <tr data-knowledge-id="pricing-rule" data-knowledge-status="published">
+                      <td class="lead-cell"><strong>车辆报价规则</strong></td>
+                      <td><span class="status assigned">已发布</span></td>
+                      <td>张三</td>
+                      <td>今天 13:40</td>
+                    </tr>
+                    <tr data-knowledge-id="finance-plan" data-knowledge-status="published">
+                      <td class="lead-cell"><strong>金融方案说明</strong></td>
+                      <td><span class="status assigned">已发布</span></td>
+                      <td>李四</td>
+                      <td>昨天 18:20</td>
+                    </tr>
+                    <tr data-knowledge-id="test-drive" data-knowledge-status="published">
+                      <td class="lead-cell"><strong>预约试驾说明</strong></td>
+                      <td><span class="status assigned">已发布</span></td>
+                      <td>张三</td>
+                      <td>09-01 11:16</td>
+                    </tr>
+                    <tr data-knowledge-id="old-campaign" data-knowledge-status="archived">
+                      <td class="lead-cell"><strong>旧活动政策</strong></td>
+                      <td><span class="status unassigned">已归档</span></td>
+                      <td>王五</td>
+                      <td>08-21 16:08</td>
+                    </tr>
+                  </tbody>
+                </table>
+                <div class="knowledge-state-panel" data-knowledge-state="no-results" hidden>
+                  <strong>未找到匹配知识</strong>
+                  <p>请调整搜索关键词或状态筛选。</p>
+                  <button type="button" data-action="clear-knowledge-filter">清空筛选</button>
+                </div>
+              </div>
+
+              <div class="pagination-row knowledge-pagination">
+                <div class="pagination-total"><span>共 <strong>10</strong> 条</span></div>
+                <nav aria-label="知识分页"><button disabled>上一页</button><strong>1</strong><button>2</button><button>3</button><button>下一页</button></nav>
+              </div>
+            </section>
+
+            <aside class="panel management-drawer knowledge-detail-drawer closed" data-knowledge-drawer>
+              <div class="knowledge-drawer-mode is-active" data-knowledge-mode="detail">
+                <div class="drawer-head">
+                  <div>
+                    <p><span class="knowledge-read-value">知识详情</span><span class="knowledge-edit-value">编辑知识</span></p>
+                    <h2 class="knowledge-read-value" data-knowledge-drawer-title>车辆报价规则</h2>
+                  </div>
+                  <button class="icon-button" type="button" data-action="close-knowledge-drawer" aria-label="关闭知识详情">×</button>
+                </div>
+
+                <div class="knowledge-read-value">
+                  <div class="knowledge-status-row"><span class="status assigned" data-knowledge-drawer-status>已发布</span></div>
+                  <section class="drawer-section knowledge-content-section">
+                    <h3>规则正文</h3>
+                    <p data-knowledge-drawer-content>客户询问车辆价格时，应以车辆管理中已上架车辆的公开售价为准，不得使用采购价格或其他内部价格回答客户。</p>
+                  </section>
+                  <section class="drawer-section">
+                    <h3>发布信息</h3>
+                    <dl class="drawer-dl">
+                      <div><dt>当前版本</dt><dd data-knowledge-drawer-version>KR-20260903-12</dd></div>
+                      <div><dt>最后编辑</dt><dd data-knowledge-drawer-editor>张三</dd></div>
+                      <div><dt>发布时间</dt><dd data-knowledge-drawer-time>今天 13:40</dd></div>
+                    </dl>
+                  </section>
+                  <section class="drawer-action-section knowledge-action-section">
+                    <h3>操作</h3>
+                    <div class="drawer-actions">
+                      <button class="danger-outline-button" type="button" data-action="archive-knowledge">归档</button>
+                      <button class="primary-button" type="button" data-action="edit-knowledge">编辑</button>
+                    </div>
+                  </section>
+                </div>
+
+                <form class="knowledge-edit-value knowledge-edit-form" data-knowledge-edit-form>
+                  <label>
+                    <span>标题 <b>*</b></span>
+                    <input type="text" value="车辆报价规则" data-knowledge-edit-title />
+                  </label>
+                  <label>
+                    <span>规则正文 <b>*</b></span>
+                    <textarea rows="9" data-knowledge-edit-content>客户询问车辆价格时，应以车辆管理中已上架车辆的公开售价为准，不得使用采购价格或其他内部价格回答客户。</textarea>
+                  </label>
+                  <div class="drawer-actions knowledge-edit-actions">
+                    <button type="button" data-action="cancel-knowledge-edit">取消</button>
+                    <button class="primary-button" type="button" data-action="preview-knowledge-publish">发布</button>
+                  </div>
+                </form>
+              </div>
+
+              <div class="knowledge-drawer-mode" data-knowledge-mode="releases">
+                <div class="drawer-head">
+                  <div><p>知识管理</p><h2>发布记录</h2></div>
+                  <button class="icon-button" type="button" data-action="close-knowledge-drawer" aria-label="关闭发布记录">×</button>
+                </div>
+                <section class="knowledge-current-release">
+                  <span>当前生效</span>
+                  <strong>KR-20260903-12</strong>
+                  <p>今天 14:30 · 张三发布</p>
+                </section>
+                <div class="knowledge-release-list">
+                  <button type="button" data-action="show-release-detail" data-release="KR-20260903-12">
+                    <span><strong>KR-20260903-12</strong><em>当前生效</em></span>
+                    <small>新增 1 条 · 修改 1 条</small>
+                    <time>今天 14:30</time>
+                  </button>
+                  <button type="button" data-action="show-release-detail" data-release="KR-20260902-11">
+                    <span><strong>KR-20260902-11</strong></span>
+                    <small>修改 2 条</small>
+                    <time>昨天 18:20</time>
+                  </button>
+                  <button type="button" data-action="show-release-detail" data-release="KR-20260821-10">
+                    <span><strong>KR-20260821-10</strong></span>
+                    <small>归档 1 条</small>
+                    <time>08-21 16:08</time>
+                  </button>
+                </div>
+              </div>
             </aside>
           </div>
         </section>
@@ -1255,13 +1439,14 @@
               <div class="panel-header"><div><h2>操作记录</h2></div></div>
               <div class="log-filter-card">
                 <label><span>搜索</span><input type="search" placeholder="搜索操作人、对象名称" /></label>
-                <label><span>模块</span><select><option>全部模块</option><option>线索管理</option><option>销售管理</option><option>Worker 管理</option><option>任务中心</option></select></label>
+                <label><span>模块</span><select><option>全部模块</option><option>线索管理</option><option>车辆管理</option><option>知识管理</option><option>销售管理</option><option>Worker 管理</option><option>任务中心</option></select></label>
                 <label><span>结果</span><select><option>全部结果</option><option>成功</option><option>失败</option></select></label>
               </div>
               <div class="management-table-card log-table-card">
                 <table class="log-management-table">
                   <thead><tr><th>操作时间</th><th>操作人</th><th>操作类型</th><th>操作对象</th><th>对象名称</th><th>结果</th><th>说明</th></tr></thead>
                   <tbody>
+                    <tr data-action="show-log-detail"><td>14:30</td><td>张三</td><td>发布知识</td><td>知识</td><td>车辆报价规则</td><td><span class="status completed">成功</span></td><td>已发布知识版本 KR-20260903-12</td></tr>
                     <tr data-action="show-log-detail"><td>10:22</td><td>运营小陈</td><td>更换 Worker</td><td>销售</td><td>张伟</td><td><span class="status completed">成功</span></td><td>绑定至 Mac-01 展厅机</td></tr>
                     <tr data-action="show-log-detail"><td>10:18</td><td>系统</td><td>创建任务</td><td>任务</td><td>TASK-1831</td><td><span class="status completed">成功</span></td><td>已创建添加通讯录邀请任务</td></tr>
                     <tr data-action="show-log-detail"><td>09:58</td><td>运营小陈</td><td>重置绑定</td><td>Worker</td><td>Mac-02 客服机</td><td><span class="status completed">成功</span></td><td>新 Token 已生成，旧客户端失效</td></tr>
@@ -1611,7 +1796,95 @@
       </section>
     </div>
 
+    <div class="modal-backdrop" data-modal="knowledge-create" hidden>
+      <section class="modal knowledge-form-modal" aria-label="新增知识">
+        <header><h2>新增知识</h2></header>
+        <div class="form-stack knowledge-modal-form">
+          <label>
+            <span>标题 <b>*</b></span>
+            <input type="text" placeholder="请输入知识标题" data-new-knowledge-title />
+          </label>
+          <label>
+            <span>规则正文 <b>*</b></span>
+            <textarea rows="8" placeholder="请输入 Brain 可检索和引用的正式知识内容" data-new-knowledge-content></textarea>
+          </label>
+        </div>
+        <footer>
+          <button type="button" data-close-modal>取消</button>
+          <button class="primary-button" type="button" data-action="preview-new-knowledge">发布</button>
+        </footer>
+      </section>
+    </div>
+
+    <div class="modal-backdrop" data-modal="knowledge-publish-preview" hidden>
+      <section class="modal knowledge-publish-modal" aria-label="知识发布确认">
+        <header>
+          <div>
+            <h2 data-knowledge-preview-title>确认发布知识</h2>
+            <p>校验通过后将生成新的不可变知识版本</p>
+          </div>
+        </header>
+        <div class="knowledge-release-summary">
+          <div><span>当前线上版本</span><strong>KR-20260903-12</strong></div>
+          <div><span>目标新版本</span><strong>KR-20260903-13</strong></div>
+          <div><span>本次变更</span><strong data-knowledge-change-type>修改 1 条</strong></div>
+        </div>
+        <section class="knowledge-validation-pass">
+          <strong>自动校验已通过</strong>
+          <p>必填、重复内容、敏感信息和硬规则冲突检查均通过。</p>
+        </section>
+        <section class="knowledge-diff-section">
+          <h3 data-knowledge-diff-heading>车辆报价规则 · 修改前后差异</h3>
+          <div class="knowledge-diff-grid">
+            <div>
+              <span>当前线上内容</span>
+              <p data-knowledge-before-content>客户询问车辆价格时，应以车辆管理中已上架车辆的公开售价为准，不得使用采购价格或其他内部价格回答客户。</p>
+            </div>
+            <div>
+              <span>发布后内容</span>
+              <p data-knowledge-after-content>客户询问车辆价格时，应以车辆管理中已上架车辆的公开售价为准，不得使用内部价格回答客户。</p>
+            </div>
+          </div>
+        </section>
+        <footer>
+          <button type="button" data-close-modal>取消</button>
+          <button class="primary-button" type="button" data-action="confirm-knowledge-publish" data-knowledge-publish-confirm>确认发布</button>
+        </footer>
+      </section>
+    </div>
+
+    <div class="modal-backdrop" data-modal="knowledge-unsaved" hidden>
+      <section class="modal small-modal">
+        <header><h2>放弃未发布的修改？</h2></header>
+        <p class="modal-copy">当前修改尚未发布，关闭后不会保存。是否放弃本次修改？</p>
+        <footer>
+          <button type="button" data-close-modal>继续编辑</button>
+          <button class="danger-button" type="button" data-action="discard-knowledge-edit">放弃修改</button>
+        </footer>
+      </section>
+    </div>
+
+    <div class="modal-backdrop" data-modal="knowledge-release-detail" hidden>
+      <section class="modal knowledge-release-detail-modal">
+        <header><div><h2 data-release-detail-title>KR-20260902-11</h2><p>知识发布记录</p></div></header>
+        <dl class="knowledge-release-detail-list">
+          <div><dt>构建结果</dt><dd><span class="status completed">成功</span></dd></div>
+          <div><dt>操作人</dt><dd>李四</dd></div>
+          <div><dt>发布时间</dt><dd>2026-09-02 18:20</dd></div>
+          <div><dt>变更摘要</dt><dd>修改 2 条知识</dd></div>
+        </dl>
+        <section class="knowledge-diff-section compact">
+          <h3>版本差异</h3>
+          <ul><li>修改“金融方案说明”</li><li>修改“预约试驾说明”</li></ul>
+        </section>
+        <footer>
+          <button type="button" data-close-modal>关闭</button>
+          <button class="primary-button" type="button" data-action="preview-knowledge-rollback">回滚到此版本</button>
+        </footer>
+      </section>
+    </div>
+
     <div class="app-toast" data-toast hidden></div>
-    <script src="./ops-admin.js?v=auth-design-20260805a"></script>
+    <script src="./ops-admin.js?v=knowledge-design-20260903a"></script>
   </body>
 </html>

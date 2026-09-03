@@ -21,6 +21,13 @@ from app.models.lead import (
     LeadDuplicateEvent,
     LeadNote,
 )
+from app.models.knowledge_management import (
+    CurrentKnowledgeRelease,
+    KnowledgePublishPreview,
+    KnowledgeRelease,
+    ManagedKnowledgeItem,
+    ManagedKnowledgeRevision,
+)
 from app.models.observability import ProcessStageRun
 from app.models.sales import Sales
 from app.models.task import Task, TaskEvent, TaskEvidence, TaskNote
@@ -52,6 +59,11 @@ __all__ = [
     "LeadContact",
     "LeadDuplicateEvent",
     "LeadNote",
+    "ManagedKnowledgeItem",
+    "ManagedKnowledgeRevision",
+    "KnowledgeRelease",
+    "CurrentKnowledgeRelease",
+    "KnowledgePublishPreview",
     "HandoffEvent",
     "MessageEvent",
     "MessageBatch",

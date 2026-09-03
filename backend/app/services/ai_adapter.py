@@ -582,6 +582,11 @@ class RealOmniAutoAIEngineAdapter:
                 bridged_context.get("conversation_interaction_state") or {}
             ),
             "chejin_brain_context": bridged_context,
+            "chejin_knowledge_release": conversation_context.get(
+                "knowledge_release_snapshot"
+            )
+            or {},
+            "chejin_knowledge_required": True,
             "visual_bridge_inputs": [
                 item.get("visual_bridge_input")
                 for item in messages

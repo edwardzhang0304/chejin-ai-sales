@@ -172,7 +172,7 @@ function New-ReleasePlan(
   $PackageManifestPath = Join-Path $Staged "update-package-manifest.json"
   & $BuildPython (Join-Path $Root "scripts\generate-update-package-manifest.py") `
     --package-root $Staged `
-    --version "0.9.60" `
+    --version "0.9.61" `
     --git-commit ("b" * 40) `
     --output $PackageManifestPath | Out-Null
   if ($LASTEXITCODE -ne 0) { throw "Could not generate process-test package manifest" }
@@ -183,7 +183,7 @@ function New-ReleasePlan(
   & $BuildPython (Join-Path $Root "scripts\sign-client-release.py") `
     --archive $Archive `
     --package-manifest $PackageManifestPath `
-    --version "0.9.60" `
+    --version "0.9.61" `
     --git-commit ("b" * 40) `
     --artifact-storage-key "gray/windows-x64/process-test.zip" `
     --published-at $PublishedAt `
@@ -207,7 +207,7 @@ function New-ReleasePlan(
     schema_version = 1
     update_request_id = $RequestId
     current_version = "0.9.59"
-    target_version = "0.9.60"
+    target_version = "0.9.61"
     current_program_dir = $Current
     staged_program_dir = $Staged
     previous_program_dir = $Previous
@@ -276,8 +276,8 @@ function New-FormalClientReleasePlan(
   $PackageManifest = Get-Content -Raw -Encoding UTF8 $PackageManifestPath | ConvertFrom-Json
   $TargetVersion = [string]$PackageManifest.version
   $GitCommit = [string]$PackageManifest.git_commit
-  if ($TargetVersion -ne "0.9.60") {
-    throw "Formal process test expected package version 0.9.60, got $TargetVersion"
+  if ($TargetVersion -ne "0.9.61") {
+    throw "Formal process test expected package version 0.9.61, got $TargetVersion"
   }
 
   $OldWorkerHome = [Environment]::GetEnvironmentVariable("CHEJIN_WORKER_HOME", "Process")

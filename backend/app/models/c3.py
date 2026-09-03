@@ -1,6 +1,6 @@
 from datetime import date, datetime
 
-from sqlalchemy import Boolean, CheckConstraint, Date, DateTime, Float, Index, Integer, JSON, String, Text, text
+from sqlalchemy import Boolean, CheckConstraint, Date, DateTime, Float, ForeignKey, Index, Integer, JSON, String, Text, text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.database import Base
@@ -51,6 +51,11 @@ class MessageBatch(Base, TimestampMixin):
     trigger_type: Mapped[str] = mapped_column(String(32), nullable=False, default="customer_message")
     trigger_key: Mapped[str | None] = mapped_column(String(128), nullable=True)
     recall_cycle_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    knowledge_release_id: Mapped[str | None] = mapped_column(
+        String(36),
+        ForeignKey("knowledge_releases.id", ondelete="RESTRICT"),
+        nullable=True,
+    )
     retryable: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     trigger_message_event_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
     message_event_ids: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)

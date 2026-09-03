@@ -37,6 +37,7 @@ from app.services.c3_recovery import (
 )
 from app.services.ai_adapter import RealOmniAutoAIEngineAdapter
 from app.services.message_contract import canonical_reply_text, reply_text_hash
+from app.services.knowledge_management_service import build_retrieval_index
 from app.models.base import utcnow
 
 
@@ -157,7 +158,83 @@ def _adapter_request_with_frozen_context(
         "prior_messages_sha256": hashlib.sha256(b"[]").hexdigest(),
         "history_window_complete": True,
     }
+    context.setdefault(
+        "knowledge_release_snapshot",
+        _test_knowledge_release_snapshot(),
+    )
     return {"conversation_context": context, "message_batch": batch}
+
+
+def _test_knowledge_release_snapshot() -> dict:
+    items = [
+        {
+            "item_id": "knowledge-test-boundary",
+            "revision_id": "knowledge-test-boundary-v1",
+            "title": "测试正式知识",
+            "content": "家用二手车预算咨询和秦PLUS价格咨询，仅用于验证消息批次冻结的知识发布契约。",
+            "content_sha256": "test-only-content-digest",
+        }
+    ]
+    retrieval_index = build_retrieval_index(items)
+    return {
+        "release_id": "knowledge-release-test-v1",
+        "version": "KR-TEST-01",
+        "snapshot_sha256": hashlib.sha256(
+            json.dumps(
+                items,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        ).hexdigest(),
+        "retrieval_index": retrieval_index,
+        "retrieval_index_sha256": hashlib.sha256(
+            json.dumps(
+                retrieval_index,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        ).hexdigest(),
+        "items": items,
+    }
+
+
+def _publish_managed_knowledge(title: str, content: str) -> dict:
+    draft_response = client.post(
+        "/api/knowledge/items",
+        json={"title": title, "content": content},
+        headers=HEADERS,
+    )
+    assert draft_response.status_code == 200, draft_response.text
+    draft = draft_response.json()["data"]
+    preview_response = client.post(
+        "/api/knowledge/releases/preview",
+        json={"operation": "create", "item_id": draft["id"]},
+        headers=HEADERS,
+    )
+    assert preview_response.status_code == 200, preview_response.text
+    preview = preview_response.json()["data"]
+    assert preview["can_publish"] is True
+    confirm_response = client.post(
+        "/api/knowledge/releases",
+        json={
+            "preview_id": preview["preview_id"],
+            "content_digest": preview["content_digest"],
+        },
+        headers=HEADERS,
+    )
+    assert confirm_response.status_code == 200, confirm_response.text
+    return confirm_response.json()["data"]
+
+
+def _publish_ninth_relevant_rule(*, title: str, content: str) -> dict:
+    for index in range(1, 9):
+        _publish_managed_knowledge(
+            f"无关知识{index:02d}",
+            f"这是与当前客户问题无关的运营规则{index:02d}，不得进入本次Provider请求。",
+        )
+    return _publish_managed_knowledge(title, content)
 
 
 def _generate_adapter_decision(
@@ -1358,9 +1435,15 @@ def test_auto_brain_route_sends_8192_max_tokens_to_provider(
     assert len(provider_requests) == 1
     assert provider_requests[0]["max_tokens"] == 8192
     result = decision.raw_payload["omniauto_brain_result"]
+    assert result["audit_summary"]["formal_knowledge_release_id"] == (
+        _test_knowledge_release_snapshot()["release_id"]
+    )
     if expected_profile == "low_authority_fast":
         assert result["low_authority_fast_profile"]["enabled"] is True
     else:
+        assert _test_knowledge_release_snapshot()["items"][0][
+            "title"
+        ] in json.dumps(provider_requests[0], ensure_ascii=False)
         assert result["low_authority_fast_profile"]["enabled"] is False
         assert result["routine_product_fast_profile"]["enabled"] is False
 
@@ -1638,6 +1721,7 @@ def test_message_event_history_reaches_real_provider_input_once(
         conversation_context={
             **context["conversation"],
             "brain_context_snapshot": context["brain_context_snapshot"],
+            "knowledge_release_snapshot": context["knowledge_release_snapshot"],
         },
         message_batch={
             "id": batch_id,
@@ -2029,6 +2113,7 @@ def test_v0957_raw_multiline_ocr_reaches_database_and_brain_once(
         conversation_context={
             **context["conversation"],
             "brain_context_snapshot": context["brain_context_snapshot"],
+            "knowledge_release_snapshot": context["knowledge_release_snapshot"],
         },
         message_batch={
             "id": batch_id,
@@ -2061,6 +2146,12 @@ def test_message_event_history_reaches_auto_routine_product_fast_provider(
     """DB -> Adapter -> automatic routine profile -> real Provider HTTP body."""
 
     worker, binding_payload = _setup_bound_conversation()
+    relevant_title = "秦PLUS报价规则"
+    relevant_content = "客户询问秦PLUS多少钱时，只能根据当前Product Master车源报价。"
+    published_knowledge = _publish_ninth_relevant_rule(
+        title=relevant_title,
+        content=relevant_content,
+    )
     base = utcnow() - timedelta(minutes=3)
     history_turns = ["家用通勤为主", "预算10万以内"]
     with SessionLocal() as db:
@@ -2296,6 +2387,9 @@ def test_message_event_history_reaches_auto_routine_product_fast_provider(
                 "brain_context_snapshot": context[
                     "brain_context_snapshot"
                 ],
+                "knowledge_release_snapshot": context[
+                    "knowledge_release_snapshot"
+                ],
             },
             message_batch={
                 "id": batch_id,
@@ -2351,6 +2445,9 @@ def test_message_event_history_reaches_auto_routine_product_fast_provider(
                 "brain_context_snapshot": context[
                     "brain_context_snapshot"
                 ],
+                "knowledge_release_snapshot": context[
+                    "knowledge_release_snapshot"
+                ],
             },
             message_batch={
                 "id": batch_id,
@@ -2371,6 +2468,10 @@ def test_message_event_history_reaches_auto_routine_product_fast_provider(
         "结合完整历史判断客户当前需求；以后续明确修改为准；"
         "结合否定词的真实作用范围，不得仅凭关键词删除旧条件。"
     )
+    assert context["knowledge_release_snapshot"]["release_id"] == (
+        published_knowledge["release"]["id"]
+    )
+    assert len(context["knowledge_release_snapshot"]["items"]) == 9
     assert len(provider_requests) == 2
     for provider_request in provider_requests:
         assert provider_request["max_tokens"] == 8192
@@ -2386,6 +2487,9 @@ def test_message_event_history_reaches_auto_routine_product_fast_provider(
         )
         assert user_message.count(current_text) == 1
         assert "旧RawMessageStore错误历史" not in user_message
+        assert relevant_title in user_message
+        assert relevant_content in user_message
+        assert "无关知识01" not in user_message
     for result in (decision, observable_decision):
         assert result.raw_payload["omniauto_brain_result"][
             "routine_product_fast_profile"
@@ -2393,6 +2497,327 @@ def test_message_event_history_reaches_auto_routine_product_fast_provider(
         assert result.raw_payload["omniauto_brain_result"]["brain_input"][
             "conversation"
         ]["history_authority"] == "chejin_message_events_v1"
+
+
+@pytest.mark.parametrize(
+    ("history_turns", "current_text", "inject_product_scoped_poison"),
+    [
+        pytest.param(
+            [],
+            "测试置换车置换资料要准备什么？",
+            True,
+            id="legacy-product-scoped-is-not-a-provider-side-door",
+        ),
+        pytest.param(
+            ["我想置换旧车"],
+            "要准备什么？",
+            False,
+            id="elliptical-turn-retrieves-from-frozen-history",
+        ),
+    ],
+)
+def test_ninth_relevant_rule_replaces_all_legacy_knowledge_in_normal_provider(
+    monkeypatch,
+    request,
+    tmp_path,
+    history_turns,
+    current_text,
+    inject_product_scoped_poison,
+):
+    """Formal API -> frozen history -> normal Brain -> real Provider body."""
+
+    worker, binding_payload = _setup_bound_conversation()
+    relevant_title = "置换资料收集新规则"
+    relevant_content = "客户询问置换资料时，应收集旧车品牌车型、上牌年份、里程和所在城市。"
+    published_knowledge = _publish_ninth_relevant_rule(
+        title=relevant_title,
+        content=relevant_content,
+    )
+    if history_turns:
+        base = utcnow() - timedelta(minutes=len(history_turns) + 1)
+        with SessionLocal() as db:
+            binding = db.get(WechatSessionBinding, binding_payload["id"])
+            for index, content in enumerate(history_turns):
+                db.add(
+                    MessageEvent(
+                        id=f"managed-history-{index + 1}",
+                        conversation_id=binding.conversation_id,
+                        binding_id=binding.id,
+                        lead_id=binding.lead_id,
+                        sales_id=binding.sales_id,
+                        worker_id=binding.worker_id,
+                        rpa_session_key=binding.rpa_session_key,
+                        read_run_id=f"managed-history-read-{index + 1}",
+                        contract_version=3,
+                        source_message_key=f"managed-history-source-{index + 1}",
+                        dedupe_key=f"managed-history-dedupe-{index + 1}",
+                        sender_role="customer",
+                        message_type="text",
+                        content=content,
+                        item_state="confirmed",
+                        raw_payload={"item_state": "confirmed"},
+                        evidence={},
+                        occurred_at=base + timedelta(minutes=index),
+                        observed_at=base + timedelta(minutes=index),
+                        observation_order=index + 1,
+                    )
+                )
+            db.commit()
+    current_id = _ingest(
+        worker,
+        binding_payload["conversation_id"],
+        "normal-managed-knowledge-current",
+        current_text,
+    )
+    batch_id = _collect(binding_payload["conversation_id"], current_id)["batch_id"]
+    with SessionLocal() as db:
+        batch = db.get(MessageBatch, batch_id)
+        binding = db.get(WechatSessionBinding, binding_payload["id"])
+        conversation = db.get(Conversation, binding.conversation_id)
+        context = c3_service._build_ai_context(db, binding, conversation, batch)
+    assert context["knowledge_release_snapshot"]["release_id"] == (
+        published_knowledge["release"]["id"]
+    )
+    assert len(context["knowledge_release_snapshot"]["items"]) == 9
+
+    omniauto_root = Path(__file__).resolve().parents[2] / "worker-client" / "omniauto-rpa"
+    monkeypatch.setenv("C3_OMNIAUTO_ROOT", str(omniauto_root))
+    monkeypatch.setenv("WECHAT_STORAGE_BACKEND", "json")
+    tenant_id = "normal_managed_" + hashlib.sha256(
+        str(tmp_path).encode("utf-8")
+    ).hexdigest()[:12]
+    monkeypatch.setenv("WECHAT_KNOWLEDGE_TENANT", tenant_id)
+    monkeypatch.setenv("OPENAI_COMPATIBLE_API_KEY", "provider-test-key")
+    monkeypatch.setattr(
+        "app.services.ai_adapter.get_settings",
+        lambda: SimpleNamespace(
+            c3_omniauto_root=str(omniauto_root),
+            c3_brain_provider_timeout_seconds=15.0,
+        ),
+    )
+    adapter = RealOmniAutoAIEngineAdapter()
+    adapter._load_brain()
+    knowledge_paths_module = importlib.import_module(
+        "apps.wechat_ai_customer_service.knowledge_paths"
+    )
+    tenant_root = knowledge_paths_module.tenant_root(tenant_id)
+    tenant_runtime_root = knowledge_paths_module.tenant_runtime_root(tenant_id)
+    request.addfinalizer(lambda: shutil.rmtree(tenant_root, ignore_errors=True))
+    request.addfinalizer(lambda: shutil.rmtree(tenant_runtime_root, ignore_errors=True))
+
+    # Seed an old formal policy through the production KnowledgeBaseStore.
+    source_knowledge_root = (
+        omniauto_root
+        / "apps"
+        / "wechat_ai_customer_service"
+        / "data"
+        / "tenants"
+        / "chejin"
+        / "knowledge_bases"
+    )
+    tenant_knowledge_root = tenant_root / "knowledge_bases"
+    shutil.copytree(source_knowledge_root, tenant_knowledge_root, dirs_exist_ok=True)
+    registry_module = importlib.import_module(
+        "apps.wechat_ai_customer_service.admin_backend.services.knowledge_registry"
+    )
+    knowledge_store_module = importlib.import_module(
+        "apps.wechat_ai_customer_service.admin_backend.services.knowledge_base_store"
+    )
+    legacy_store = knowledge_store_module.KnowledgeBaseStore(
+        registry=registry_module.KnowledgeRegistry(root=tenant_knowledge_root)
+    )
+    legacy_product_scoped_poison = (
+        "旧product_scoped错误规则：置换不需要任何资料。"
+    )
+    if inject_product_scoped_poison:
+        product_master_module = importlib.import_module(
+            "apps.wechat_ai_customer_service.product_master"
+        )
+        product_result = product_master_module.ProductMasterStore(
+            tenant_id=tenant_id
+        ).save_item(
+            {
+                "id": "legacy-tradein-product",
+                "data": {
+                    "name": "测试置换车",
+                    "aliases": ["测试置换车"],
+                    "category": "二手车",
+                    "inventory": 1,
+                },
+            }
+        )
+        assert product_result["ok"] is True
+        scoped_result = legacy_store.save_item(
+            "product_rules",
+            {
+                "id": "legacy-product-scoped-poison",
+                "category_id": "product_rules",
+                "data": {
+                    "product_id": "legacy-tradein-product",
+                    "title": "旧置换专属规则",
+                    "keywords": ["测试置换车", "置换", "资料"],
+                    "answer": legacy_product_scoped_poison,
+                    "allow_auto_reply": True,
+                    "requires_handoff": False,
+                },
+                "runtime": {
+                    "allow_auto_reply": True,
+                    "requires_handoff": False,
+                    "risk_level": "normal",
+                },
+            },
+        )
+        assert scoped_result["ok"] is True
+
+        # Prove the poison fixture is reachable through the retired production
+        # runtime before the managed-release projection removes it.  This keeps
+        # the Provider assertion from passing merely because the fixture never
+        # matched in the first place.
+        reply_evidence_module = importlib.import_module(
+            "apps.wechat_ai_customer_service.workflows.reply_evidence_builder"
+        )
+        legacy_pack = reply_evidence_module.build_evidence_pack(
+            current_text,
+            context={},
+        )
+        assert legacy_product_scoped_poison in json.dumps(
+            legacy_pack,
+            ensure_ascii=False,
+        )
+    legacy_formal_poison = "旧KnowledgeRuntime错误规则：置换不需要任何资料。"
+    legacy_result = legacy_store.save_item(
+        "policies",
+        {
+            "id": "legacy-runtime-poison",
+            "category_id": "policies",
+            "data": {
+                "title": "旧置换资料规则",
+                "keywords": ["置换", "资料"],
+                "policy_type": "trade_in",
+                "answer": legacy_formal_poison,
+            },
+            "runtime": {
+                "allow_auto_reply": False,
+                "requires_handoff": True,
+                "risk_level": "high",
+            },
+        },
+    )
+    assert legacy_result["ok"] is True
+
+    # Seed an old RAG hit through the production RagService and real index.
+    rag_module = importlib.import_module(
+        "apps.wechat_ai_customer_service.workflows.rag_layer"
+    )
+    legacy_rag_poison = "旧RAG错误规则：置换资料只需一张随意照片。"
+    poison_path = tmp_path / "legacy-rag-poison.txt"
+    poison_path.write_text(legacy_rag_poison, encoding="utf-8")
+    rag_result = rag_module.RagService(tenant_id=tenant_id).ingest_file(
+        poison_path,
+        source_type="policy_doc",
+        category="policies",
+    )
+    assert rag_result["ok"] is True
+    assert rag_module.RagService(tenant_id=tenant_id).search(current_text)["hits"]
+
+    plan = {
+        "schema_version": 1,
+        "recommended_action": "send_reply",
+        "reply_segments": ["可以先准备车型、年份、里程和城市。"],
+        "confidence": 0.9,
+        "risk_flags": [],
+        "evidence_refs": [],
+        "facts_claimed": [],
+    }
+    provider_requests: list[dict] = []
+
+    class ProviderHandler(BaseHTTPRequestHandler):
+        def do_POST(self):  # noqa: N802 - stdlib handler contract
+            body = self.rfile.read(int(self.headers.get("Content-Length") or 0))
+            provider_requests.append(json.loads(body.decode("utf-8")))
+            response = json.dumps(
+                {"choices": [{"message": {"content": json.dumps(plan, ensure_ascii=False)}}], "usage": {}},
+                ensure_ascii=False,
+            ).encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(response)))
+            self.end_headers()
+            self.wfile.write(response)
+
+        def log_message(self, _format, *_args):
+            return
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), ProviderHandler)
+    server_thread = threading.Thread(target=server.serve_forever, daemon=True)
+    server_thread.start()
+    base_url = f"http://127.0.0.1:{server.server_address[1]}/v1"
+    monkeypatch.setattr(
+        adapter,
+        "_load_config",
+        lambda: {
+            "customer_service_brain": {
+                "enabled": True,
+                "mode": "brain_first",
+                "provider": "openai_compatible",
+                "model": "provider-test-model",
+                "base_url": base_url,
+                "api_key": "provider-test-key",
+                "min_confidence": 0.2,
+                "require_evidence": False,
+                "require_fact_claims": False,
+                "quality_verifier_enabled": False,
+                "semantic_reviewer_enabled": False,
+                "require_final_visible_polish": False,
+                "fallback_to_legacy_on_error": False,
+            },
+            "llm_reply_synthesis": {"enabled": True, "provider": "openai_compatible"},
+            "raw_message_store": {"enabled": False},
+            "final_visible_llm_polish": {"enabled": False},
+        },
+    )
+    try:
+        decision = _generate_reply_decision_with_isolated_failure_evidence(
+            adapter,
+            conversation_context={
+                **context["conversation"],
+                "brain_context_snapshot": context["brain_context_snapshot"],
+                "knowledge_release_snapshot": context["knowledge_release_snapshot"],
+            },
+            message_batch={
+                "id": batch_id,
+                "messages": context["messages"],
+                "trigger_type": "customer_message",
+            },
+        )
+    finally:
+        server.shutdown()
+        server.server_close()
+        server_thread.join(timeout=2.0)
+        shutil.rmtree(tenant_root, ignore_errors=True)
+        shutil.rmtree(tenant_runtime_root, ignore_errors=True)
+
+    assert len(provider_requests) == 1
+    provider_payload = json.dumps(provider_requests[0], ensure_ascii=False)
+    assert relevant_title in provider_payload
+    assert relevant_content in provider_payload
+    assert "无关知识01" not in provider_payload
+    assert legacy_formal_poison not in provider_payload
+    assert legacy_rag_poison not in provider_payload
+    assert legacy_product_scoped_poison not in provider_payload
+    brain_result = decision.raw_payload["omniauto_brain_result"]
+    assert brain_result["low_authority_fast_profile"]["enabled"] is False
+    if history_turns:
+        assert brain_result["routine_product_fast_profile"]["enabled"] is False
+        assert brain_result["low_authority_fast_profile"]["reason"] == (
+            "managed_formal_knowledge_retrieved"
+        )
+        assert "我想置换旧车" in provider_payload
+    else:
+        # A product query may legitimately select routine_product_fast; that
+        # profile retains the highest-ranked managed formal rule.  The P0 was
+        # the low-authority profile whose formal-item allowance is zero.
+        assert brain_result["routine_product_fast_profile"]["enabled"] is True
 
 
 def test_invalid_frozen_history_creates_no_provider_reply_or_handoff(monkeypatch):

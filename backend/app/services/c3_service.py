@@ -1122,6 +1122,7 @@ def _batch_to_dict(batch: MessageBatch) -> dict[str, Any]:
         "trigger_type": batch.trigger_type,
         "trigger_key": batch.trigger_key,
         "recall_cycle_id": batch.recall_cycle_id,
+        "knowledge_release_id": batch.knowledge_release_id,
         "retryable": batch.retryable,
         "trigger_message_event_id": batch.trigger_message_event_id,
         "message_event_ids": batch.message_event_ids,
@@ -1513,6 +1514,8 @@ def create_control_message_batch(
         active.status = "superseded"
         active.active = False
         active.error_code = "MESSAGE_BATCH_SUPERSEDED"
+    from app.services.knowledge_management_service import current_release_for_batch
+
     batch = MessageBatch(
         conversation_id=conversation_id,
         status="collecting",
@@ -1520,6 +1523,7 @@ def create_control_message_batch(
         trigger_type=trigger_type,
         trigger_key=trigger_key,
         recall_cycle_id=recall_cycle_id,
+        knowledge_release_id=current_release_for_batch(db).id,
         message_event_ids=[],
         message_count=0,
         trace_id=trace_id,
@@ -1602,6 +1606,8 @@ def collect_message_batch(
         db.flush()
         return {"batch_id": active.id, "batch_status": active.status, "next_step": "generate", "batch": _batch_to_dict(active)}
 
+    from app.services.knowledge_management_service import current_release_for_batch
+
     batch = MessageBatch(
         conversation_id=conversation_id,
         status="collecting",
@@ -1610,6 +1616,7 @@ def collect_message_batch(
         message_event_ids=[message.id],
         message_count=1,
         generation_no=1,
+        knowledge_release_id=current_release_for_batch(db).id,
         trace_id=trace_id,
     )
     db.add(batch)
@@ -1758,6 +1765,8 @@ def collect_recovered_customer_message_batch(
             reason="C2 权威重读恢复后，以最新未回复客户尾部重建回复任务",
         )
 
+    from app.services.knowledge_management_service import current_release_for_batch
+
     batch = MessageBatch(
         conversation_id=conversation_id,
         status="collecting",
@@ -1768,6 +1777,7 @@ def collect_recovered_customer_message_batch(
         message_event_ids=unique_ids,
         message_count=len(unique_ids),
         generation_no=1,
+        knowledge_release_id=current_release_for_batch(db).id,
         trace_id=trace_id,
     )
     db.add(batch)
@@ -1953,6 +1963,21 @@ def _build_brain_context_snapshot(
 
 
 def _build_ai_context(db: Session, binding: WechatSessionBinding, conversation: Conversation, batch: MessageBatch) -> dict[str, Any]:
+    from app.services.knowledge_management_service import (
+        current_release_for_batch,
+        release_snapshot_for_batch,
+    )
+
+    if not batch.knowledge_release_id:
+        batch.knowledge_release_id = current_release_for_batch(db).id
+    existing_request_snapshot = (
+        batch.ai_request_snapshot
+        if isinstance(batch.ai_request_snapshot, dict)
+        else {}
+    )
+    frozen_knowledge = existing_request_snapshot.get("knowledge_release_snapshot")
+    if not isinstance(frozen_knowledge, dict) or str(frozen_knowledge.get("release_id") or "") != batch.knowledge_release_id:
+        frozen_knowledge = release_snapshot_for_batch(db, batch.knowledge_release_id)
     messages = _customer_messages(db, batch)
     brain_context_snapshot = _build_brain_context_snapshot(
         db,
@@ -2057,6 +2082,7 @@ def _build_ai_context(db: Session, binding: WechatSessionBinding, conversation: 
         # explicitly below; do not duplicate it under conversation where a
         # same-batch retry could accidentally miss it and rebuild history.
         "brain_context_snapshot": brain_context_snapshot,
+        "knowledge_release_snapshot": dict(frozen_knowledge),
         "conversation": {
             "conversation_id": binding.conversation_id,
             "lead_id": binding.lead_id,
@@ -3249,6 +3275,7 @@ def generate_for_batch(
             conversation_context={
                 **context["conversation"],
                 "brain_context_snapshot": context["brain_context_snapshot"],
+                "knowledge_release_snapshot": context["knowledge_release_snapshot"],
             },
             message_batch={
                 "id": prepared_batch_id,

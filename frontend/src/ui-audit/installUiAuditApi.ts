@@ -33,6 +33,56 @@ const vehicles = [
   return { vehicle_code, display_name, brand, series, model: null, public_price, first_registration, mileage_km, exterior_color: null, interior_color: null, location: null, customer_description: null, vin: null, plate_number: null, purchase_price: null, internal_notes: null, listing_status, images: [image], main_image: image, created_at: String(updated_at), updated_at };
 });
 
+let knowledgeItems = [
+  ["knowledge-price-boundary", "价格咨询回复边界", "客户询问价格时，只能引用车辆管理中已发布的公开售价；具体优惠、底价和最终成交价由销售确认。", "运营小陈", "2026-09-03T09:42:00+08:00"],
+  ["knowledge-test-drive", "到店试驾安排", "客户希望试驾时，先确认意向车型、预计到店日期和方便时段；具体车辆与接待安排由销售确认。", "运营小陈", "2026-09-03T09:18:00+08:00"],
+  ["knowledge-inventory", "在售与库存说明", "只能使用已上架车辆的公开信息回答；不得承诺实时库存、预留车辆或到店一定可看。", "系统", "2026-09-02T17:26:00+08:00"],
+  ["knowledge-finance", "贷款与分期咨询", "可以收集预算、首付和月供偏好，但审批结果、利率和具体方案必须由销售或资方确认。", "运营小陈", "2026-09-02T15:54:00+08:00"],
+  ["knowledge-trade-in", "旧车置换说明", "客户提出置换时，收集车型、年份、里程和车况；估值和置换金额不得由 AI 承诺。", "运营小陈", "2026-09-02T14:20:00+08:00"],
+  ["knowledge-contract", "合同与定金边界", "涉及合同、定金、付款、发票或法律承诺时停止自动承诺，并进入既有人工确认流程。", "系统", "2026-09-01T18:38:00+08:00"],
+  ["knowledge-visit", "门店到访信息", "可以介绍公开门店地址和营业时间；节假日或临时调整以销售确认的信息为准。", "系统", "2026-09-01T16:03:00+08:00"],
+  ["knowledge-delivery", "交车与手续说明", "交车时间、过户材料和上牌安排以销售最终确认为准，AI 不得代替销售承诺具体日期。", "运营小陈", "2026-08-31T14:32:00+08:00"],
+  ["knowledge-archived", "旧版车辆预留规则", "历史规则：客户看中车辆后可口头预留。", "运营小陈", "2026-08-29T11:16:00+08:00", "archived"],
+  ["knowledge-archived-finance", "旧版金融方案说明", "历史规则：AI 可直接承诺固定分期利率。", "运营小陈", "2026-08-21T16:08:00+08:00", "archived"],
+].map(([id, title, content, last_editor_name, updated_at, status = "published"]) => ({
+  id: String(id),
+  title: String(title),
+  content: String(content),
+  status: String(status),
+  current_revision_id: `revision-${String(id)}`,
+  last_editor_id: "operator-audit",
+  last_editor_name: String(last_editor_name),
+  published_at: String(updated_at),
+  archived_at: status === "archived" ? String(updated_at) : null,
+  created_at: "2026-08-20T10:00:00+08:00",
+  updated_at: String(updated_at),
+}));
+
+let knowledgeReleases = [
+  { id: "knowledge-release-07", version: "KR-20260903-02", status: "published", action: "update", operator_name: "运营小陈", change_summary: "修改 1 条知识变更", change_set: [{ type: "update", item_id: "knowledge-price-boundary", title: "价格咨询回复边界", before: null, after: null }], snapshot_sha256: "3ecf8a8dc2a44f32a4791f8f58276e6d0f49fd761e59ec1c94fd6992486cb948", published_at: "2026-09-03T09:42:00+08:00", is_current: true },
+  { id: "knowledge-release-06", version: "KR-20260903-01", status: "published", action: "create", operator_name: "运营小陈", change_summary: "新增 1 条知识变更", change_set: [{ type: "create", item_id: "knowledge-test-drive", title: "到店试驾安排", before: null, after: null }], snapshot_sha256: "5d3bf8d69331d2dc1441318c652007b87f1caab775e5af62d87ec0ffce119f42", published_at: "2026-09-03T09:18:00+08:00", is_current: false },
+  { id: "knowledge-release-05", version: "KR-20260902-03", status: "published", action: "archive", operator_name: "运营小陈", change_summary: "归档 1 条知识变更", change_set: [{ type: "archive", item_id: "knowledge-archived", title: "旧版车辆预留规则", before: null, after: null }], snapshot_sha256: "969ccf27a689f99617545dbc439dd2cab55b8dfef55862e521647c6b090d6fe5", published_at: "2026-09-02T17:26:00+08:00", is_current: false },
+];
+
+function knowledgeSnapshot() {
+  return knowledgeItems.filter((item) => item.status === "published").map((item) => ({
+    item_id: item.id,
+    revision_id: item.current_revision_id,
+    title: item.title,
+    content: item.content,
+    content_sha256: `audit-${item.id}`,
+  }));
+}
+
+function requestBody(init?: RequestInit) {
+  if (typeof init?.body !== "string") return {} as Record<string, unknown>;
+  try {
+    return JSON.parse(init.body) as Record<string, unknown>;
+  } catch {
+    return {} as Record<string, unknown>;
+  }
+}
+
 type AuditTask = Record<string, unknown> & { id: string; events: Array<Record<string, unknown>> };
 const taskRows = [
   ["TASK-1831", "add_friend", "running", "王先生", "138****6678", "张伟", "sales-zhang", "Mac-01 展厅机", "wk_20260605_8f3a2c9b", null, null, "add_friend_starting", "10:18"],
@@ -53,6 +103,8 @@ const taskRows = [
 });
 
 const logs = [
+  { id: "log-knowledge-1", event_type: "knowledge_published", module: "knowledge", operator_id: "operator-audit", operator_name: "运营小陈", target_type: "knowledge_item", target_id: "knowledge-price-boundary", lead_id: null, metadata: { operation: "update", target_version: "KR-20260903-02", title: "价格咨询回复边界" }, before_data: { release_id: "knowledge-release-06", version: "KR-20260903-01" }, after_data: { release_id: "knowledge-release-07", version: "KR-20260903-02" }, result: "success", summary: "修改价格咨询回复边界并发布新版本", created_at: "2026-09-03T09:42:00+08:00" },
+  { id: "log-knowledge-2", event_type: "knowledge_rollback_previewed", module: "knowledge", operator_id: "operator-audit", operator_name: "运营小陈", target_type: "knowledge_release", target_id: "knowledge-release-05", lead_id: null, metadata: { target_version: "KR-20260903-03", change_count: 2 }, before_data: { version: "KR-20260903-02" }, after_data: { version: "KR-20260902-03" }, result: "success", summary: "预览回滚至 KR-20260902-03 的完整差异", created_at: "2026-09-03T09:36:00+08:00" },
   { id: "log-1", event_type: "sales_worker_bound", module: "sales", operator_id: "operator-audit", operator_name: "运营小陈", target_type: "sales", target_id: "sales-zhang", lead_id: null, metadata: { sales_name: "张伟" }, before_data: { worker_id: null }, after_data: { worker_id: "wk_20260605_8f3a2c9b", worker_name: "Mac-01 展厅机" }, result: "success", summary: "销售后续可参与自动任务执行", created_at: "2026-06-05T10:22:00+08:00" },
   { id: "log-2", event_type: "task_created", module: "task", operator_id: null, operator_name: "系统", target_type: "task", target_id: "TASK-1831", lead_id: null, metadata: {}, before_data: null, after_data: { task_type: "add_friend", status: "pending" }, result: "success", summary: "已创建添加通讯录邀请任务", created_at: "2026-06-05T10:18:00+08:00" },
   { id: "log-3", event_type: "worker_binding_reset", module: "worker", operator_id: "operator-audit", operator_name: "运营小陈", target_type: "worker", target_id: "wk_20260605_2a91bd45", lead_id: null, metadata: { worker_name: "Mac-02 客服机" }, before_data: { client_binding_state: "bound" }, after_data: { client_binding_state: "reset_required" }, result: "success", summary: "新 Token 已生成，旧客户端失效", created_at: "2026-06-05T09:58:00+08:00" },
@@ -87,6 +139,68 @@ function auditResponse(url: URL, init?: RequestInit) {
     return json({ items: filtered.slice(0, pageSize), page: 1, page_size: pageSize, total: filtered.length });
   }
   if (/^\/vehicles\/[^/]+$/.test(path)) return json(vehicles.find((item) => item.vehicle_code === decodeURIComponent(path.split("/")[2])) ?? vehicles[0]);
+  if (path === "/knowledge/summary") {
+    return json({
+      current_release: knowledgeReleases[0],
+      published_today: 2,
+      published_today_breakdown: { create: 1, update: 1, archive: 0, rollback: 0 },
+      published_count: knowledgeItems.filter((item) => item.status === "published").length,
+      archived_count: knowledgeItems.filter((item) => item.status === "archived").length,
+    });
+  }
+  if (path === "/knowledge/items") {
+    const keyword = String(url.searchParams.get("keyword") || "").trim().toLowerCase();
+    const status = String(url.searchParams.get("status") || "all");
+    const page = Number(url.searchParams.get("page") || 1);
+    const pageSize = Number(url.searchParams.get("page_size") || 20);
+    const filtered = knowledgeItems.filter((item) => {
+      const matchesStatus = status === "all" || !status || item.status === status;
+      const matchesKeyword = !keyword || `${item.title}\n${item.content}`.toLowerCase().includes(keyword);
+      return matchesStatus && matchesKeyword;
+    });
+    return json({ items: filtered.slice((page - 1) * pageSize, page * pageSize), page, page_size: pageSize, total: filtered.length });
+  }
+  const knowledgeItemMatch = path.match(/^\/knowledge\/items\/([^/]+)$/);
+  if (knowledgeItemMatch) {
+    const item = knowledgeItems.find((row) => row.id === decodeURIComponent(knowledgeItemMatch[1])) ?? knowledgeItems[0];
+    return json({ ...item, release_history: knowledgeReleases.filter((release) => release.change_set.some((change) => change.item_id === item.id)) });
+  }
+  if (path === "/knowledge/releases/preview" && method === "POST") {
+    const body = requestBody(init);
+    const operation = String(body.operation || "create");
+    const itemId = String(body.item_id || `knowledge-audit-${Date.now()}`);
+    const existing = knowledgeItems.find((item) => item.id === itemId);
+    const title = String(body.title || existing?.title || "");
+    const content = String(body.content || existing?.content || "");
+    const issues = !title || !content ? [{ field: !title ? "title" : "content", problem: "知识标题和规则正文不能为空", suggestion: "填写完整内容后再发布" }] : [];
+    return json({
+      preview_id: `preview-${Date.now()}`,
+      operation,
+      item_id: itemId,
+      current_version: knowledgeReleases[0].version,
+      target_version: "KR-20260903-03",
+      target_release_id: null,
+      can_publish: issues.length === 0,
+      validation_issues: issues,
+      change_set: [{ type: operation, item_id: itemId, title, before: existing ? { item_id: existing.id, revision_id: existing.current_revision_id, title: existing.title, content: existing.content, content_sha256: `audit-${existing.id}` } : null, after: operation === "archive" ? null : { item_id: itemId, revision_id: `revision-${Date.now()}`, title, content, content_sha256: `audit-${itemId}` } }],
+      content_digest: "a".repeat(64),
+      expires_at: "2026-09-03T11:00:00+08:00",
+    });
+  }
+  if (path === "/knowledge/releases/rollback/preview" && method === "POST") {
+    const body = requestBody(init);
+    const target = knowledgeReleases.find((release) => release.id === body.target_release_id) ?? knowledgeReleases[1];
+    return json({ preview_id: `rollback-preview-${Date.now()}`, operation: "rollback", item_id: null, current_version: knowledgeReleases[0].version, target_version: "KR-20260903-03", target_release_id: target.id, can_publish: true, validation_issues: [], change_set: target.change_set, content_digest: "b".repeat(64), expires_at: "2026-09-03T11:00:00+08:00" });
+  }
+  if (path === "/knowledge/releases" && method === "POST") {
+    return json({ release: { ...knowledgeReleases[0], snapshot: knowledgeSnapshot() }, item: null, message: "新创建的 AI 对话批次将使用此版本" });
+  }
+  if (path === "/knowledge/releases") return json({ items: knowledgeReleases, page: 1, page_size: 20, total: knowledgeReleases.length });
+  const knowledgeReleaseMatch = path.match(/^\/knowledge\/releases\/([^/]+)$/);
+  if (knowledgeReleaseMatch) {
+    const release = knowledgeReleases.find((item) => item.id === decodeURIComponent(knowledgeReleaseMatch[1])) ?? knowledgeReleases[0];
+    return json({ ...release, snapshot: knowledgeSnapshot() });
+  }
   if (path === "/sales") return json({ items: sales });
   if (/^\/sales\/[^/]+$/.test(path)) return json(sales.find((item) => item.id === path.split("/")[2]) ?? sales[0]);
   if (path === "/workers") return json({ items: workers });

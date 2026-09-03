@@ -54,6 +54,13 @@ EVENT_NAMES: dict[str, str] = {
     "vehicle_image_deleted": "删除车辆图片",
     "vehicle_excel_import_confirmed": "确认导入车辆 Excel",
     "vehicle_operation_failed": "车辆操作失败",
+    "knowledge_publish_previewed": "预览知识发布",
+    "knowledge_rollback_previewed": "预览知识回滚",
+    "knowledge_draft_saved": "保存知识草稿",
+    "knowledge_published": "发布知识",
+    "knowledge_archived": "归档知识",
+    "knowledge_rolled_back": "回滚知识版本",
+    "knowledge_operation_failed": "知识操作失败",
     "admin_account_created": "创建后台账号",
     "admin_account_enabled": "启用后台账号",
     "admin_account_disabled": "停用后台账号",
@@ -76,6 +83,7 @@ FAILED_EVENTS = {
     "sales_feishu_open_id_sync_failed",
     "handoff_feishu_notify_failed",
     "worker_legacy_media_owner_unknown",
+    "knowledge_operation_failed",
 }
 logger = logging.getLogger(__name__)
 
