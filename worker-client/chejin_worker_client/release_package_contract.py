@@ -18,7 +18,7 @@ from .models import ClientRelease
 
 
 UPDATE_SCHEMA_VERSION = 1
-UPDATER_VERSION = "0.9.62"
+UPDATER_VERSION = "0.9.63"
 UPDATE_CHANNEL = "gray"
 UPDATE_PLATFORM = "windows-x64"
 VERSION_RE = re.compile(r"^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$")

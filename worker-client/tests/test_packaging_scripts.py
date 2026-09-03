@@ -309,7 +309,7 @@ class PackagingScriptsTest(unittest.TestCase):
         self.assertIn("app_name = [string]$manifest.app_name", workflow)
         self.assertIn("default_api_base_url = [string]$manifest.default_api_base_url", workflow)
         self.assertIn("delivery ZIP executable SHA256 mismatch", workflow)
-        self.assertIn("chejin-worker-v0.9.62-windows-x64.delivery.json", workflow)
+        self.assertIn("chejin-worker-v0.9.63-windows-x64.delivery.json", workflow)
         self.assertIn("CHEJIN_VISION_CLIENT_API_KEY", workflow)
         self.assertIn("vision_credential_embedded", workflow)
         self.assertIn("vision_configuration_locked", workflow)
@@ -335,7 +335,7 @@ class PackagingScriptsTest(unittest.TestCase):
             workflow,
         )
         self.assertIn("--artifact-storage-key", workflow)
-        self.assertIn("chejin-worker-v0.9.62-windows-x64.release.json", workflow)
+        self.assertIn("chejin-worker-v0.9.63-windows-x64.release.json", workflow)
         self.assertIn("must not contain a temporary download URL", workflow)
 
     def test_formal_update_package_contains_independent_updater_and_real_process_gate(self):
@@ -1065,6 +1065,7 @@ class PackagingScriptsTest(unittest.TestCase):
                             "removal_contract"
                         ),
                         "c2_contract_0_9_61_generated_schema",
+                        "c2_contract_0_9_63_generated_schema",
                     ],
                 }
             ],
@@ -1072,18 +1073,18 @@ class PackagingScriptsTest(unittest.TestCase):
         self.assertEqual(
             provenance["current_release"],
             {
-                "version": "0.9.61",
+                "version": "0.9.63",
                 "source_commit": (
                     "a29ba4e1278d55bc6aed617d045b0a85c10c4aff"
                 ),
-                "contract_revision": "0.9.61",
+                "contract_revision": "0.9.63",
                 "contract_sha256": (
-                    "637ba1843ac28056f88ac77b05014f65803a364426b"
-                    "72c30f649c7014a2d7bec"
+                    "18a82d17f94118c56e0f1497df6ff94a828a7db9daa3"
+                    "b9920d1dd9b9e136240e"
                 ),
                 "scope": (
-                    "immutable knowledge release projection, frozen-history "
-                    "retrieval, and legacy KnowledgeRuntime isolation"
+                    "production endpoint packaging and unified release-contract "
+                    "version governance; no OmniAuto behavior change"
                 ),
             },
         )
@@ -1513,7 +1514,7 @@ class PackagingScriptsTest(unittest.TestCase):
         self.assertIn('$packageDir = [string]$manifest.package_dir', workflow)
         self.assertIn('$exePath = [string]$manifest.exe_path', workflow)
         self.assertNotIn('dist\\车金Worker客户端', workflow)
-        self.assertIn('version -ne "0.9.62"', workflow)
+        self.assertIn('version -ne "0.9.63"', workflow)
         self.assertIn('tests_status -ne "passed"', workflow)
         self.assertIn('@("--omniauto-sidecar", "--help")', workflow)
         self.assertIn('@("--omniauto-ocr-probe")', workflow)
