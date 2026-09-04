@@ -276,8 +276,8 @@ function New-FormalClientReleasePlan(
   $PackageManifest = Get-Content -Raw -Encoding UTF8 $PackageManifestPath | ConvertFrom-Json
   $TargetVersion = [string]$PackageManifest.version
   $GitCommit = [string]$PackageManifest.git_commit
-  if ($TargetVersion -ne "0.9.64") {
-    throw "Formal process test expected package version 0.9.64, got $TargetVersion"
+  if ($TargetVersion -ne "0.9.65") {
+    throw "Formal process test expected package version 0.9.65, got $TargetVersion"
   }
 
   $OldWorkerHome = [Environment]::GetEnvironmentVariable("CHEJIN_WORKER_HOME", "Process")
