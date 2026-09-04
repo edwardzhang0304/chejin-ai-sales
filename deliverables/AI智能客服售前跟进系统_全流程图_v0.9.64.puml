@@ -1,5 +1,6 @@
 @startuml
-' 文档版本：v0.9.63；灰度目标候选：0.9.63；最后更新：2026-09-03；合同 SHA：18a82d17f94118c56e0f1497df6ff94a828a7db9daa3b9920d1dd9b9e136240e
+' 文档版本：v0.9.64；灰度代码复审通过，待运维构建及实机验收；最后更新：2026-09-04
+' 候选合同：0.9.64 / 840a770923bf6ef43c37c33086d817a0ff2d860cbb7c923c3b9c43f0bcf465bc；双仓真实来源见.chejin-source.json和版本记录；本轮不打包、不部署。
 title AI智能客服售前跟进系统 全流程图（知识管理、C0-C4、媒体、回复、转人工与恢复）
 
 skinparam monochrome true
@@ -334,11 +335,14 @@ loop Worker运行中；每次循环最多完成一个会话事务
                 W -> OA: parse_initial_from_captured_frame\n复用captured_frame_ref，不重新截图
               end
               OA -> OA: OCR观察当前屏文字、语音和图片
+              OA -> OA: 原图+有效布局建立唯一帧内头像组件表\n左右头像列不跟随文字长短\n逐个验证独立外边界，排除气泡与窗口边框
               OA -> OA: private普通文字先按当前帧归并物理气泡\n显式头像锚点锁定组角色\n无头像续行只复用0.9.56既有唯一续行规则
               note right of OA
                 禁止逐行先猜角色再按角色拼气泡；
                 完全无头像的文字组不得靠位置冒充customer/self；
                 语音、图片、system、文件/引用卡片不使用文字续行规则。
+                同帧ROI和整窗OCR只引用同一头像表；换帧不得沿用。
+                正常无新头像可按原条件续行；检测失败/候选未决不能冒充无头像。
               end note
               OA -> Role: 对已归并气泡统一判定角色\n组内唯一同行头像为权威
               Role --> OA: customer / self / system / unknown
@@ -863,7 +867,14 @@ loop Worker运行中；每次循环最多完成一个会话事务
                 OA -> OA: 发送物理点击前先落盘\naction_phase=trigger_attempted\n落盘失败则禁止点击
                 OA -> WX: 截图校验
                 WX --> OA: 发送结果画面
+                OA -> OA: 当前原图复用唯一头像检测与文字分组\n不得为发送确认另造头像或拼接算法
                 OA -> OA: 全屏OCR确认右侧文字\n若漏识别且结构候选为图片\n仅对最底部同排头像=self的候选做局部增强OCR\n有可读文字先归为text\n再以格式规范化+双向高重合度确认AI归属
+                note right of OA
+                  最多6次只读结果确认，包含已有首次S2快照；
+                  首次成功即结束，失败后最多补5帧，不补发。
+                  本轮不调整确认次数/等待/看门狗；
+                  上限耗尽仍不明确则沿原unknown回执收口。
+                end note
                 alt 新增右侧气泡身份确认
                   OA --> W: action_phase=confirmed + sent
                   W -> L: 可靠写入sent_ack Outbox\nsend_result=sent + 稳定气泡凭证

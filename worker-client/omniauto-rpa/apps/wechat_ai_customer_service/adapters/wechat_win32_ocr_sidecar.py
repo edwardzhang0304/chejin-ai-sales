@@ -155,6 +155,7 @@ from apps.wechat_ai_customer_service.wechat_message_envelope import (
     apply_message_envelope_to_record,
     build_message_envelope,
 )
+from apps.wechat_ai_customer_service.adapters.wechat_win32_ocr import frame_avatars
 from apps.wechat_ai_customer_service.adapters.wechat_win32_ocr import geometry as win32_ocr_geometry
 from apps.wechat_ai_customer_service.adapters.wechat_win32_ocr import capture as win32_ocr_capture
 from apps.wechat_ai_customer_service.adapters.wechat_win32_ocr import env_config as win32_ocr_env
@@ -2478,6 +2479,12 @@ def exception_payload_for_sidecar(exc: Exception, *, state: str = "win32_ocr_fai
         or "invalid window handle" in lower_error
     )
     payload = {"ok": False, "online": False, "state": state, "error": error}
+    if isinstance(exc, frame_avatars.AvatarEvidenceError):
+        payload.update({
+            "error_code": "C2_AVATAR_EVIDENCE_INVALID",
+            "reason": str(exc.evidence.get("reason") or "avatar_evidence_invalid"),
+            "avatar_evidence": exc.evidence,
+        })
     if invalid_handle:
         payload.update(
             {
@@ -8481,161 +8488,9 @@ def avatar_lane_visual_score(
     image_size: tuple[int, int],
     layout_snapshot: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    if screenshot is None or len(bounds) < 4:
-        return {"present": False, "score": 0.0, "reason": "screenshot_unavailable"}
-    try:
-        image = screenshot.convert("RGB")
-    except Exception:
-        return {"present": False, "score": 0.0, "reason": "screenshot_unavailable"}
-    width, height = image_size
-    if width <= 0 or height <= 0:
-        return {"present": False, "score": 0.0, "reason": "image_size_invalid"}
+    # Compatibility surface only; all consumers share the original frame table.
     snapshot = layout_snapshot or layout_snapshot_for_image(screenshot)
-    try:
-        viewport = win32_ocr_layout.required_region(snapshot, "message_viewport_bounds")
-    except win32_ocr_layout.LayoutSnapshotError:
-        return {"present": False, "score": 0.0, "reason": "layout_unresolved"}
-    bubble_left, bubble_top, bubble_right, bubble_bottom = [float(value) for value in bounds[:4]]
-    if role == "customer":
-        lane_left = max(viewport[0], int(round(bubble_left - 140.0)))
-        lane_right = min(int(round(bubble_left - 4.0)), viewport[0] + 150)
-    else:
-        lane_left = max(int(round(bubble_right + 4.0)), viewport[2] - 150)
-        lane_right = viewport[2]
-    lane_left = max(0, int(lane_left))
-    lane_right = min(width, int(lane_right))
-    if lane_right - lane_left < 20:
-        return {"present": False, "score": 0.0, "reason": "avatar_lane_empty"}
-    row_center = min((bubble_top + bubble_bottom) / 2.0, bubble_top + 24.0)
-    crop_centers = [row_center]
-    if bubble_bottom - bubble_top > 64.0:
-        # A tall image/card can begin below the avatar top.  The ordinary
-        # bubble-centred crop then sees only the avatar's lower strip and
-        # incorrectly reports an unknown sender.  Probe the row's leading
-        # edge as a second, bounded lane without widening horizontally or
-        # borrowing evidence from another message row.
-        crop_centers.append(bubble_top)
-
-    candidates: list[dict[str, Any]] = []
-    for crop_center in crop_centers:
-        crop_top = max(
-            viewport[1],
-            int(round(crop_center - 24.0)),
-        )
-        crop_bottom = min(
-            viewport[3],
-            crop_top + 48,
-        )
-        if crop_bottom - crop_top < 20:
-            continue
-        crop = image.crop((lane_left, crop_top, lane_right, crop_bottom))
-        stat = ImageStat.Stat(crop)
-        color_stddev = sum(float(value) for value in stat.stddev[:3]) / 3.0
-        pixels = crop.load()
-        border_pixels: list[tuple[int, int, int]] = []
-        for y in range(crop.height):
-            for x in range(crop.width):
-                if x < 4 or x >= crop.width - 4 or y < 3 or y >= crop.height - 3:
-                    border_pixels.append(pixels[x, y])
-        background = tuple(
-            sorted(int(pixel[channel]) for pixel in border_pixels)[len(border_pixels) // 2]
-            for channel in range(3)
-        ) if border_pixels else (247, 247, 247)
-        foreground_points: list[tuple[int, int]] = []
-        edge_hits = 0
-        edge_checks = 0
-        for y in range(crop.height):
-            for x in range(crop.width):
-                current = pixels[x, y]
-                if sum(abs(int(current[index]) - int(background[index])) for index in range(3)) / 3.0 >= 18.0:
-                    foreground_points.append((x, y))
-                if x + 1 < crop.width:
-                    adjacent = pixels[x + 1, y]
-                    edge_hits += int(sum(abs(int(current[index]) - int(adjacent[index])) for index in range(3)) / 3.0 >= 18.0)
-                    edge_checks += 1
-                if y + 1 < crop.height:
-                    adjacent = pixels[x, y + 1]
-                    edge_hits += int(sum(abs(int(current[index]) - int(adjacent[index])) for index in range(3)) / 3.0 >= 18.0)
-                    edge_checks += 1
-        edge_ratio = edge_hits / max(1, edge_checks)
-        if foreground_points:
-            foreground_left = min(point[0] for point in foreground_points)
-            foreground_top = min(point[1] for point in foreground_points)
-            foreground_right = max(point[0] for point in foreground_points)
-            foreground_bottom = max(point[1] for point in foreground_points)
-            foreground_width = foreground_right - foreground_left + 1
-            foreground_height = foreground_bottom - foreground_top + 1
-        else:
-            foreground_left = foreground_top = foreground_right = foreground_bottom = 0
-            foreground_width = 0
-            foreground_height = 0
-        foreground_ratio = len(foreground_points) / max(1, crop.width * crop.height)
-        avatar_sized_component = bool(
-            30 <= foreground_width <= crop.width
-            and 30 <= foreground_height <= 48
-            and foreground_ratio >= 0.16
-        )
-        component_bounds = [
-            lane_left + foreground_left,
-            crop_top + foreground_top,
-            lane_left + foreground_right,
-            crop_top + foreground_bottom,
-        ]
-        component_center_y = (component_bounds[1] + component_bounds[3]) / 2.0
-        bubble_leading_center_y = bubble_top
-        bubble_regular_center_y = min(
-            (bubble_top + bubble_bottom) / 2.0,
-            bubble_top + 24.0,
-        )
-        vertical_distance = min(
-            abs(component_center_y - bubble_regular_center_y),
-            abs(component_center_y - bubble_leading_center_y),
-        )
-        horizontal_gap = (
-            bubble_left - component_bounds[2]
-            if role == "customer"
-            else component_bounds[0] - bubble_right
-        )
-        max_gap = 150.0 if role == "customer" else 320.0
-        relative_alignment = bool(
-            -20.0 <= horizontal_gap <= max_gap
-            and vertical_distance <= 30.0
-        )
-        score = color_stddev + edge_ratio * 180.0
-        present = bool(
-            avatar_sized_component
-            and relative_alignment
-            and color_stddev >= 14.0
-            and edge_ratio >= 0.018
-            and score >= 22.0
-        )
-        candidates.append({
-            "present": present,
-            "score": round(score, 4),
-            "color_stddev": round(color_stddev, 4),
-            "edge_ratio": round(edge_ratio, 6),
-            "foreground_ratio": round(foreground_ratio, 6),
-            "foreground_bounds_size": [foreground_width, foreground_height],
-            "foreground_bounds": component_bounds,
-            "horizontal_gap": round(horizontal_gap, 2),
-            "vertical_distance": round(vertical_distance, 2),
-            "relative_alignment": relative_alignment,
-            "avatar_sized_component": avatar_sized_component,
-            "bounds": [lane_left, crop_top, lane_right, crop_bottom],
-            "position_source": "bubble_relative_avatar_adjacency",
-            "reason": "avatar_relative_structure" if present else "avatar_relative_structure_not_found",
-        })
-
-    if not candidates:
-        return {"present": False, "score": 0.0, "reason": "avatar_lane_empty"}
-    return max(
-        candidates,
-        key=lambda item: (
-            bool(item.get("present")),
-            bool(item.get("avatar_sized_component")),
-            float(item.get("score") or 0.0),
-        ),
-    )
+    return frame_avatars.associate(frame_avatars.avatar_table(screenshot, snapshot), bounds, role)
 
 
 def message_row_avatar_role_details(
@@ -8645,30 +8500,11 @@ def message_row_avatar_role_details(
     *,
     layout_snapshot: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    customer = avatar_lane_visual_score(
-        screenshot,
-        bounds=bounds,
-        role="customer",
-        image_size=image_size,
-        layout_snapshot=layout_snapshot,
-    )
-    self_side = avatar_lane_visual_score(
-        screenshot,
-        bounds=bounds,
-        role="self",
-        image_size=image_size,
-        layout_snapshot=layout_snapshot,
-    )
-    customer_present = bool(customer.get("present"))
-    self_present = bool(self_side.get("present"))
-    role = "customer" if customer_present and not self_present else ("self" if self_present and not customer_present else "")
-    return {
-        "role": role,
-        "source": "wechat_avatar_row_structure_v2" if role else "",
-        "customer": customer,
-        "self": self_side,
-        "ambiguous": bool(customer_present and self_present),
-    }
+    snapshot = layout_snapshot or layout_snapshot_for_image(screenshot)
+    details = frame_avatars.role_details(screenshot, snapshot, bounds)
+    if screenshot is not None and details["state"] in {"invalid", "ambiguous"}:
+        raise frame_avatars.AvatarEvidenceError(details)
+    return details
 
 
 def ocr_page_fingerprint(ocr_items: list[dict[str, Any]], *, geometry: dict[str, Any]) -> dict[str, Any]:
@@ -10645,7 +10481,7 @@ def send_payload(
             "state": "send_baseline_unavailable",
             "error_code": "SEND_BASELINE_UNAVAILABLE",
             "target": target,
-            "guard": validation,
+            "guard": {"ok": False, "reason": "send_baseline_unavailable"},
             "error": repr(exc),
         })
     _sidecar_timing_finish(timing, "send_baseline_snapshot", baseline_started)
@@ -20037,6 +19873,10 @@ def parse_messages_from_ocr(
 ) -> list[dict[str, Any]]:
     width, height = image_size
     snapshot = layout_snapshot or layout_snapshot_for_image(screenshot) or {}
+    if screenshot is not None:
+        avatar_evidence = frame_avatars.avatar_table(screenshot, snapshot)
+        if avatar_evidence.get("state") != "complete":
+            raise frame_avatars.AvatarEvidenceError(avatar_evidence)
     dynamic_regions = {
         name: snapshot.get(name)
         for name in win32_ocr_layout.REQUIRED_LAYOUT_REGION_NAMES
@@ -20237,15 +20077,24 @@ def parse_messages_from_ocr(
         item_height = max(1.0, float(item.get("bottom") or 0) - float(item.get("top") or 0))
         same_bubble_line_gap = min(merge_vertical_gap, max(7.0, min(previous_height, item_height) * 0.45))
         previous_avatar_role = str((previous.get("avatar_alignment") or {}).get("role") or "")
+        repeats_previous_avatar = bool(
+            current_avatar_role
+            and current_avatar_role == previous_avatar_role
+            and same_frame_avatar_component(
+                item.get("avatar_alignment"), previous.get("avatar_alignment"),
+                role=current_avatar_role,
+            )
+        )
         voice_transcript_continuation = bool(
             voice_duration_item_like(previous)
             and not voice_duration_item_like(item)
-            and not current_avatar_role
+            and (not current_avatar_role or repeats_previous_avatar)
             and vertical_gap <= max(42.0, height * 0.055)
         )
         starts_new_avatar_row = bool(
             previous_avatar_role
             and current_avatar_role
+            and not repeats_previous_avatar
             and vertical_gap > 3.0
         )
         if voice_transcript_continuation and not starts_new_avatar_row:
@@ -20598,7 +20447,16 @@ def message_line_continues_voice_transcript_group(
         return False
     avatar_role = str((item.get("avatar_alignment") or {}).get("role") or "")
     if avatar_role in {"self", "customer"}:
-        return False
+        parent_anchor = frame_local_private_text_group_anchor(group)
+        if (
+            parent_anchor.get("ok") is not True
+            or parent_anchor.get("role") != avatar_role
+            or not same_frame_avatar_component(
+                item.get("avatar_alignment"), parent_anchor.get("avatar_alignment"),
+                role=avatar_role,
+            )
+        ):
+            return False
     previous_text_line = next(
         (candidate for candidate in reversed(group) if not voice_duration_item_like(candidate)),
         None,

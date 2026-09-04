@@ -1,10 +1,10 @@
 {
   "contract_version": 3,
-  "contract_revision": "0.9.63",
+  "contract_revision": "0.9.64",
   "observation_schema_version": 3,
   "control_schema_version": 1,
   "client_update_contract": {
-    "release": "0.9.63",
+    "release": "0.9.64",
     "trigger": "manual_settings_check_only",
     "eligible_runtime": "official_frozen_windows_x64_exe_delivery_package_only",
     "fast_uat_runtime": "not_an_update_target",
@@ -317,6 +317,21 @@
     "worker_behavior": "validate_contract_duplicates_conflicts_and_cross_frame_order_without_second_line_grouping_or_sender_inference",
     "backend_behavior": "persist_dedupe_and_settle_without_second_line_grouping_or_sender_inference",
     "coordinate_lifetime": "current_screenshot_grouping_diagnostics_only_never_durable_identity_or_cross_frame_continuity",
+    "frame_avatar_evidence_contract": {
+      "release": "0.9.64",
+      "owner": "omniauto_sidecar_single_raw_frame_avatar_table",
+      "consumers": ["text", "voice", "image"],
+      "search_columns": "derived_from_valid_current_chat_layout_and_dpi_not_each_ocr_row",
+      "candidate_rule": "independent_outer_boundary_background_isolation_and_plausible_scale_never_union_of_search_region_pixels_or_square_shape_alone",
+      "interior_rule": "white_space_and_disconnected_internal_colours_do_not_invalidate_a_confirmed_outer_boundary",
+      "original_frame_rule": "enhanced_cropped_and_same_image_full_ocr_reuse_one_raw_image_table_after_mapping_coordinates_back",
+      "lifetime": "new_frame_new_table_no_cross_frame_component_identity",
+      "absence_rule": "valid_completed_detection_without_relevant_unresolved_candidate_only",
+      "unresolved_rule": "invalid_frame_or_layout_clipped_candidate_detector_exception_or_conflicting_association_is_technical_failure_not_absence",
+      "error_code": "C2_AVATAR_EVIDENCE_INVALID",
+      "noise_rule": "positively_excluded_bubble_or_window_edge_noise_does_not_block_ordinary_continuation",
+      "unchanged": ["text_continuation_tolerances", "cross_frame_identity", "media_orchestration", "six_read_only_send_confirmations", "send_match_threshold", "unknown_ack_no_resend"]
+    },
     "forbidden_shortcuts": [
       "duplicated_or_modified_text_continuation_thresholds",
       "avatar_free_private_role_generation",

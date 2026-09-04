@@ -26,6 +26,12 @@ from chejin_worker_client.client_update import (
 )
 from chejin_worker_client.models import ClientRelease
 from chejin_worker_client.api import WorkerApiClient
+from chejin_worker_client import __version__
+
+# Package verification requires a genuinely newer target, including after a
+# release bump. This is a test fixture version, not a published release.
+_CURRENT_PARTS = [int(part) for part in __version__.split(".")]
+TARGET_TEST_VERSION = ".".join(map(str, [*_CURRENT_PARTS[:2], _CURRENT_PARTS[2] + 1]))
 
 
 def test_worker_and_updater_share_one_release_package_contract() -> None:
@@ -82,7 +88,7 @@ def _archive() -> tuple[bytes, str]:
     updater_bytes = b"updater-test"
     manifest = {
         "schema_version": 1,
-        "version": "0.9.63",
+        "version": TARGET_TEST_VERSION,
         "platform": "windows-x64",
         "git_commit": "b" * 40,
         "rollback_safe": True,
@@ -110,7 +116,7 @@ def _signed_release(payload: bytes, manifest_sha: str):
     public_key = private_key.public_key()
     release = ClientRelease(
         update_available=True,
-        latest_version="0.9.63",
+        latest_version=TARGET_TEST_VERSION,
         channel="gray",
         platform="windows-x64",
         artifact_url="https://download.example.test/release.zip?expires=1",
@@ -151,7 +157,7 @@ def test_full_release_verification_download_and_safe_extraction(tmp_path: Path) 
     package_root = Path(result["package_root"])
     assert package_root.name == "CheJinWorkerClient"
     assert (package_root / "CheJinWorkerClient.exe").read_bytes() == b"old-client-test"
-    assert result["package_manifest"]["version"] == "0.9.63"
+    assert result["package_manifest"]["version"] == TARGET_TEST_VERSION
 
 
 @pytest.mark.parametrize(

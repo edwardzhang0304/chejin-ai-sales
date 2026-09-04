@@ -6661,7 +6661,7 @@ class C2VisionIntegrationTests(unittest.TestCase):
                 )
                 self.assertNotIn("contract_errors", observations[0])
 
-    def test_structural_image_bounds_exclude_avatar_before_shared_role_resolution(self):
+    def test_structural_image_joined_avatar_is_unresolved_not_a_role(self):
         screenshot = Image.new("RGB", (974, 853), (242, 242, 242))
         draw = ImageDraw.Draw(screenshot)
 
@@ -6694,24 +6694,17 @@ class C2VisionIntegrationTests(unittest.TestCase):
                 candidate["structure_evidence"],
             )
 
-            messages = wechat_win32_ocr_sidecar.merge_structural_image_messages(
-                screenshot,
-                [],
-                [],
-                target="CJTEST01",
-                layout_snapshot=_test_layout_snapshot(screenshot),
-            )
+            with self.assertRaisesRegex(RuntimeError, "C2_IMAGE_OBSERVATION_FAILED:same_row_avatar_role"):
+                wechat_win32_ocr_sidecar.merge_structural_image_messages(
+                    screenshot,
+                    [],
+                    [],
+                    target="CJTEST01",
+                    layout_snapshot=_test_layout_snapshot(screenshot),
+                )
         finally:
             screenshot.close()
 
-        self.assertEqual(len(messages), 1)
-        self.assertEqual(messages[0]["sender_role"], "customer")
-        self.assertEqual(messages[0]["avatar_alignment"]["role"], "customer")
-        observations = wechat_win32_ocr_sidecar.build_message_observations_v3(messages)
-        self.assertEqual(len(observations), 1)
-        self.assertEqual(observations[0]["sender_role"], "customer")
-        self.assertEqual(observations[0]["sender_role_source"], "same_row_avatar")
-        self.assertNotIn("contract_errors", observations[0])
 
     def test_structural_detector_finds_pale_rectangular_media_surfaces(self):
         variants = {
@@ -7282,10 +7275,8 @@ class C2VisionIntegrationTests(unittest.TestCase):
                     (x, y, x + 7, y + 7),
                     fill=(tone, 150, 80),
                 )
-        draw.rectangle(
-            (451, 402, 472, 414),
-            fill=(70, 120, 170),
-        )
+        # Independent avatar. Connected avatar/media is rejected above, not
+        # cropped into apparently valid evidence by either read path.
 
         initial_messages = (
             wechat_win32_ocr_sidecar.merge_structural_image_messages(
@@ -7382,7 +7373,7 @@ class C2VisionIntegrationTests(unittest.TestCase):
             refreshed["image"].close()
             screenshot.close()
 
-    def test_structural_self_image_bounds_exclude_avatar_before_shared_role_resolution(self):
+    def test_structural_self_image_joined_avatar_is_unresolved_not_a_role(self):
         screenshot = Image.new("RGB", (974, 853), (242, 242, 242))
         draw = ImageDraw.Draw(screenshot)
 
@@ -7413,24 +7404,17 @@ class C2VisionIntegrationTests(unittest.TestCase):
                 candidate["structure_evidence"],
             )
 
-            messages = wechat_win32_ocr_sidecar.merge_structural_image_messages(
-                screenshot,
-                [],
-                [],
-                target="CJTEST01",
-                layout_snapshot=_test_layout_snapshot(screenshot),
-            )
+            with self.assertRaisesRegex(RuntimeError, "C2_IMAGE_OBSERVATION_FAILED:same_row_avatar_role"):
+                wechat_win32_ocr_sidecar.merge_structural_image_messages(
+                    screenshot,
+                    [],
+                    [],
+                    target="CJTEST01",
+                    layout_snapshot=_test_layout_snapshot(screenshot),
+                )
         finally:
             screenshot.close()
 
-        self.assertEqual(len(messages), 1)
-        self.assertEqual(messages[0]["sender_role"], "self")
-        self.assertEqual(messages[0]["avatar_alignment"]["role"], "self")
-        observations = wechat_win32_ocr_sidecar.build_message_observations_v3(messages)
-        self.assertEqual(len(observations), 1)
-        self.assertEqual(observations[0]["sender_role"], "self")
-        self.assertEqual(observations[0]["sender_role_source"], "same_row_avatar")
-        self.assertNotIn("contract_errors", observations[0])
 
 
 if __name__ == "__main__":
