@@ -3,6 +3,10 @@ from __future__ import annotations
 import os
 import tempfile
 import unittest
+from concurrent.futures import ThreadPoolExecutor
+from threading import Event
+
+import pytest
 
 os.environ.setdefault(
     "CHEJIN_WORKER_HOME",
@@ -11,7 +15,117 @@ os.environ.setdefault(
 os.environ.setdefault("CHEJIN_RPA_MODE", "mock")
 
 from chejin_worker_client.api import ApiError, WorkerApiClient
-from chejin_worker_client.models import Binding
+from chejin_worker_client.models import Binding, ReplySendClaim, Task
+
+
+def _lease_case():
+    client = WorkerApiClient("http://unused/api")
+    binding = Binding("worker-1", "secret", "client-1", run_status="running")
+    claim = ReplySendClaim.from_api({"task_id": "task-1", "reply_action_id": "reply-1"})
+    client._remember_task_lease(Task("task-1", "chat_reply", "running", lease_fencing_token=7))
+    return client, binding, claim
+
+
+def _ack(claim, *, duplicated=False):
+    # Duplicate receipt responses intentionally have no task object.
+    return {"duplicated": duplicated, "ack": {"task_id": claim.task_id,
+        "reply_action_id": claim.reply_action_id, "send_result": "sent"}}
+
+
+def _send_ack(client, binding, claim):
+    return client.sent_ack(binding, claim, send_result="sent", action_phase="confirmed", reply_text_hash=None)
+
+
+@pytest.mark.parametrize("duplicated", [False, True])
+@pytest.mark.parametrize("send_result", ["sent", "failed", "unknown"])
+def test_confirmed_ack_releases_only_its_task_lease(monkeypatch, duplicated, send_result):
+    client, binding, claim = _lease_case()
+    client._remember_task_lease(Task("other", "chat_reply", "running", lease_fencing_token=8))
+    response = _ack(claim, duplicated=duplicated)
+    response["ack"]["send_result"] = send_result
+    monkeypatch.setattr(client, "_request", lambda *a, **k: response)
+    assert _send_ack(client, binding, claim) == response
+    assert client.task_lease_fencing_tokens == {"other": 8}
+
+
+@pytest.mark.parametrize("failure", ["timeout", "conflict", "missing_ack", "wrong_task", "wrong_reply"])
+def test_unconfirmed_ack_keeps_lease(monkeypatch, failure):
+    client, binding, claim = _lease_case()
+    def request(*args, **kwargs):
+        if failure == "timeout":
+            raise TimeoutError("offline")
+        if failure == "conflict":
+            raise ApiError("CONFLICT", "conflict", 409)
+        response = _ack(claim)
+        if failure == "missing_ack":
+            return {}
+        response["ack"]["task_id" if failure == "wrong_task" else "reply_action_id"] = "unrelated"
+        return response
+    monkeypatch.setattr(client, "_request", request)
+    if failure in {"timeout", "conflict"}:
+        with pytest.raises((TimeoutError, ApiError)):
+            _send_ack(client, binding, claim)
+    else:
+        _send_ack(client, binding, claim)
+    assert client.task_lease_fencing_tokens == {"task-1": 7}
+
+
+@pytest.mark.parametrize("new_generation", [False, True])
+def test_late_renewal_cannot_resurrect_settled_or_overwrite_new_lease(monkeypatch, new_generation):
+    client, binding, claim = _lease_case()
+    started, release = Event(), Event()
+    def request(method, path, **kwargs):
+        if path.endswith("/renew"):
+            started.set()
+            assert release.wait(5)
+            return {"id": claim.task_id, "status": "running", "lease_fencing_token": 7}
+        return _ack(claim)
+    monkeypatch.setattr(client, "_request", request)
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        future = pool.submit(client.renew_task_lease, binding, claim.task_id, current_step="sending")
+        try:
+            assert started.wait(5)
+            _send_ack(client, binding, claim)
+            if new_generation:
+                client._remember_task_lease(Task(claim.task_id, "chat_reply", "running", lease_fencing_token=8))
+        finally:
+            release.set()
+        future.result(timeout=5)
+    assert client.task_lease_fencing_tokens == ({"task-1": 8} if new_generation else {})
+
+
+def test_old_ack_response_cannot_clear_a_new_generation(monkeypatch):
+    client, binding, claim = _lease_case()
+    def request(*args, **kwargs):
+        client._remember_task_lease(Task(claim.task_id, "chat_reply", "running", lease_fencing_token=8))
+        return _ack(claim)
+    monkeypatch.setattr(client, "_request", request)
+    _send_ack(client, binding, claim)
+    assert client.task_lease_fencing_tokens == {"task-1": 8}
+
+
+@pytest.mark.parametrize("method", ["complete_invite_sent", "complete_already_friend", "fail_task"])
+@pytest.mark.parametrize("new_generation", [False, True])
+def test_other_terminal_endpoints_release_only_confirmed_generation(monkeypatch, method, new_generation):
+    client, binding, claim = _lease_case()
+    def request(*args, **kwargs):
+        if new_generation:
+            client._remember_task_lease(Task(claim.task_id, "add_friend", "running", lease_fencing_token=8))
+        return {"id": claim.task_id, "status": "completed"}
+    monkeypatch.setattr(client, "_request", request)
+    args = ("TEST_FAILURE", "test", "failed") if method == "fail_task" else ()
+    getattr(client, method)(binding, claim.task_id, *args)
+    assert client.task_lease_fencing_tokens == ({"task-1": 8} if new_generation else {})
+
+
+def test_normal_renewal_preserves_live_lease(monkeypatch):
+    client, binding, claim = _lease_case()
+    monkeypatch.setattr(client, "_request", lambda *a, **k: {
+        "id": claim.task_id, "status": "running", "lease_fencing_token": 7,
+        "lease_expires_at": "2026-09-04T16:00:00Z"})
+    renewed = client.renew_task_lease(binding, claim.task_id, current_step="sending")
+    assert renewed.lease_expires_at == "2026-09-04T16:00:00Z"
+    assert client.task_lease_fencing_tokens == {claim.task_id: 7}
 
 
 class _Response:

@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import re
 import sqlite3
 import sys
@@ -19,7 +20,7 @@ FORBIDDEN_SUFFIXES = {
 }
 SECRET_KEYS = re.compile(
     r"(^|_)(worker_token|send_token|access_token|refresh_token|cookie|password|"
-    r"secret|api_key|model_key|vision_key|feishu_app_secret|authorization)($|_)",
+    r"secret|one_time_token|api_key|model_key|vision_key|feishu_app_secret|authorization)($|_)",
     re.IGNORECASE,
 )
 PRIVATE_TEXT_KEYS = re.compile(
@@ -200,6 +201,39 @@ def write_json(archive: zipfile.ZipFile, name: str, value: Any) -> None:
     )
 
 
+def update_evidence(root: Path, start: datetime, end: datetime) -> list[tuple[str, Any]]:
+    """Only bounded diagnostic projections, never plans, tokens or snapshots of business rows."""
+    names = ("worker-startup.jsonl", "updater-startup.jsonl", "update-result.json")
+    fields = {
+        "schema_version", "timestamp_epoch", "phase", "pid", "error_type", "error_code",
+        "exception_type", "exit_code", "errno", "winerror", "frames", "state", "result_code",
+        "failure_code", "update_request_id", "target_version", "artifact_sha256",
+        "startup_diagnostic", "waiting_reason_code", "waiting_safety_snapshot",
+        "child_pid", "reason", "exit_code_hex", "marker_error", "elapsed_ms", "health_timeout_seconds",
+    }
+    entries = []
+    paths = [root / "update-state.json"]
+    for name in names:
+        paths.extend(root.glob(f"requests/*/control/{name}"))
+    for path in paths:
+        try:
+            if (not path.is_file() or path.is_symlink()
+                or not path.resolve().is_relative_to(root.resolve())
+                or not inside_window(path, start, end)
+                or path.stat().st_size > 2 * 1024 * 1024):
+                continue
+            payload = safe_text_payload(path)
+            records = payload if isinstance(payload, list) else [payload]
+            projected = [{k: v for k, v in item.items() if k in fields}
+                         for item in records if isinstance(item, dict)]
+            entries.append((path.relative_to(root).as_posix(), projected))
+            if len(entries) >= 100:
+                break
+        except (OSError, ValueError):
+            continue
+    return entries
+
+
 def build_identity(package_dir: Path) -> dict[str, Any]:
     manifest_path = package_dir / "fast-uat-manifest.json"
     manifest = (
@@ -236,6 +270,10 @@ def collect(args: argparse.Namespace) -> Path:
     if end <= start:
         raise ValueError("INVALID_TIME_WINDOW")
     start_iso, end_iso = iso(start), iso(end)
+    update_dir = Path(getattr(args, "update_dir", None)
+                      or os.environ.get("CHEJIN_UPDATE_STAGING_ROOT")
+                      or app_dir.parent / "CheJinWorkerUpdate").resolve()
+    update_files = update_evidence(update_dir, start, end)
     time_where = (
         "(created_at >= ? AND created_at <= ?) OR "
         "(updated_at >= ? AND updated_at <= ?)"
@@ -359,7 +397,8 @@ def collect(args: argparse.Namespace) -> Path:
                 or path.stat().st_size > 5 * 1024 * 1024
             ):
                 continue
-            if sidecar_ids and not any(run_id in str(path) for run_id in sidecar_ids):
+            is_startup_crash = root_name == "diagnostics" and path.name == "startup-crash.jsonl"
+            if sidecar_ids and not is_startup_crash and not any(run_id in str(path) for run_id in sidecar_ids):
                 preview = path.read_text(encoding="utf-8", errors="replace")
                 if not any(run_id in preview for run_id in sidecar_ids):
                     continue
@@ -419,6 +458,7 @@ def collect(args: argparse.Namespace) -> Path:
                 backend_authority_snapshots
             ),
             "incident_text_entries": len(incidents),
+            "update_diagnostic_files": len(update_files),
         },
         "forbidden_content_excluded": [
             "worker_client.sqlite3", ".env", "tokens", "cookies", "model_keys",
@@ -476,6 +516,8 @@ def collect(args: argparse.Namespace) -> Path:
             write_json(archive, f"sidecar/artifacts/{name}.redacted.json", payload)
         for name, payload in incidents:
             write_json(archive, f"incidents/{name}.redacted.json", payload)
+        for name, payload in update_files:
+            write_json(archive, f"update/{name}.redacted.json", payload)
     temporary.replace(output)
     return output
 
@@ -484,6 +526,7 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--app-dir", required=True)
     parser.add_argument("--package-dir", required=True)
+    parser.add_argument("--update-dir")
     parser.add_argument("--from-iso", required=True)
     parser.add_argument("--to-iso", required=True)
     parser.add_argument("--output", required=True)

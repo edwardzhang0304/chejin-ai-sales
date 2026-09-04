@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+from threading import RLock
 from typing import Any
 from urllib.parse import urlencode
 
@@ -42,15 +43,28 @@ class WorkerApiClient:
         self.session = requests.Session()
         self.timeout = CONFIG.api_timeout_seconds
         self.task_lease_fencing_tokens: dict[str, int] = {}
+        self._task_lease_lock = RLock()
         self.inflight_flow_id: str | None = None
 
     def _remember_task_lease(self, task: Task | None) -> Task | None:
         if task and task.lease_fencing_token > 0:
-            self.task_lease_fencing_tokens[task.id] = task.lease_fencing_token
+            with self._task_lease_lock:
+                self.task_lease_fencing_tokens[task.id] = task.lease_fencing_token
         return task
 
+    def _task_lease_token(self, task_id: str) -> int:
+        with self._task_lease_lock:
+            return int(self.task_lease_fencing_tokens.get(task_id) or 0)
+
+    def _forget_confirmed_task_lease(self, task_id: str, expected_token: int) -> None:
+        # Only the generation covered by this successful settlement may be
+        # released. Never hold this lock across a network request.
+        with self._task_lease_lock:
+            if self.task_lease_fencing_tokens.get(task_id) == expected_token:
+                self.task_lease_fencing_tokens.pop(task_id, None)
+
     def _task_lease_headers(self, task_id: str) -> dict[str, str]:
-        token = int(self.task_lease_fencing_tokens.get(task_id) or 0)
+        token = self._task_lease_token(task_id)
         return {"X-Task-Lease-Fencing-Token": str(token)} if token > 0 else {}
 
     def latest_client_release(
@@ -234,7 +248,7 @@ class WorkerApiClient:
         *,
         current_step: str | None,
     ) -> Task:
-        token = int(self.task_lease_fencing_tokens.get(task_id) or 0)
+        token = self._task_lease_token(task_id)
         if token <= 0:
             raise ApiError("TASK_LEASE_FENCING_MISSING", "缺少任务租约 fencing token", 409)
         payload = self._request(
@@ -246,7 +260,13 @@ class WorkerApiClient:
                 "current_step": current_step,
             },
         )
-        return self._remember_task_lease(Task.from_api(payload))  # type: ignore[return-value]
+        task = Task.from_api(payload)
+        with self._task_lease_lock:
+            # A renewal already in flight can return after sent_ack. It must
+            # neither resurrect the settled lease nor overwrite a new claim.
+            if task.id == task_id and self.task_lease_fencing_tokens.get(task_id) == token:
+                self._remember_task_lease(task)
+        return task
 
     def report_step(self, binding: Binding, task_id: str, current_step: str, remark: str) -> Task:
         payload = self._request(
@@ -284,7 +304,8 @@ class WorkerApiClient:
         remark: str | None = None,
         sent_at: str | None = None,
     ) -> dict[str, Any]:
-        return self._request(
+        token = self._task_lease_token(claim.task_id)
+        payload = self._request(
             "POST",
             f"/reply-actions/{claim.reply_action_id}/sent-ack",
             binding=binding,
@@ -303,8 +324,21 @@ class WorkerApiClient:
                 "remark": remark,
             },
         )
+        ack = payload.get("ack")
+        # The backend also returns the authoritative ack on an idempotent
+        # replay, without a task object. All three ack outcomes settle its
+        # transport task; durable unknown-send evidence remains untouched.
+        if (
+            isinstance(ack, dict)
+            and ack.get("task_id") == claim.task_id
+            and ack.get("reply_action_id") == claim.reply_action_id
+            and ack.get("send_result") in {"sent", "failed", "unknown"}
+        ):
+            self._forget_confirmed_task_lease(claim.task_id, token)
+        return payload
 
     def complete_invite_sent(self, binding: Binding, task_id: str) -> Task:
+        token = self._task_lease_token(task_id)
         payload = self._request(
             "POST",
             f"/tasks/{task_id}/invite-sent",
@@ -312,10 +346,12 @@ class WorkerApiClient:
             json={"remark": "已发送添加通讯录邀请"},
             extra_headers=self._task_lease_headers(task_id),
         )
-        self.task_lease_fencing_tokens.pop(task_id, None)
-        return Task.from_api(payload)
+        task = Task.from_api(payload)
+        self._forget_confirmed_task_lease(task_id, token)
+        return task
 
     def complete_already_friend(self, binding: Binding, task_id: str) -> Task:
+        token = self._task_lease_token(task_id)
         payload = self._request(
             "POST",
             f"/tasks/{task_id}/already-friend",
@@ -323,10 +359,12 @@ class WorkerApiClient:
             json={"remark": "客户已是好友"},
             extra_headers=self._task_lease_headers(task_id),
         )
-        self.task_lease_fencing_tokens.pop(task_id, None)
-        return Task.from_api(payload)
+        task = Task.from_api(payload)
+        self._forget_confirmed_task_lease(task_id, token)
+        return task
 
     def fail_task(self, binding: Binding, task_id: str, error_code: str, failure_step: str | None, message: str) -> Task:
+        token = self._task_lease_token(task_id)
         payload = self._request(
             "POST",
             f"/tasks/{task_id}/fail",
@@ -334,8 +372,9 @@ class WorkerApiClient:
             json={"error_code": error_code, "failure_step": failure_step, "failure_remark": message},
             extra_headers=self._task_lease_headers(task_id),
         )
-        self.task_lease_fencing_tokens.pop(task_id, None)
-        return Task.from_api(payload)
+        task = Task.from_api(payload)
+        self._forget_confirmed_task_lease(task_id, token)
+        return task
 
     def upload_evidence(
         self,

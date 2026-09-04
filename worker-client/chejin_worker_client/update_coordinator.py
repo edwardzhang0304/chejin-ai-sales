@@ -1000,12 +1000,14 @@ class UpdateCoordinator:
                 if (
                     waiting.get("waiting_reason_code") != reason_code
                     or waiting.get("waiting_reason_text") != reason_text
+                    or waiting.get("waiting_safety_snapshot") != boundary
                 ):
                     waiting = self._save(
                         {
                             **waiting,
                             "waiting_reason_code": reason_code,
                             "waiting_reason_text": reason_text,
+                            "waiting_safety_snapshot": boundary,
                         }
                     )
                 self.sleep(0.25)

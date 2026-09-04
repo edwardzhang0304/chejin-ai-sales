@@ -4388,6 +4388,8 @@ class TaskRunner:
                 self.current_task_lease
                 or self.api.task_lease_fencing_tokens
             ),
+            "task_lease_guard_active": self.current_task_lease is not None,
+            "cached_task_lease_count": len(self.api.task_lease_fencing_tokens),
             "ui_lock_active": bool(
                 self.current_ui_lock is not None
                 or local_lock.get("locked")

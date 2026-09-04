@@ -152,7 +152,13 @@ def main() -> int:
     args = parser.parse_args()
 
     if args.post_update_plan is not None:
+        from .update_diagnostics import record_update_startup_failure
+
         if not args.post_update_token:
+            record_update_startup_failure(
+                args.post_update_plan, phase="post_update_verification",
+                exc=RuntimeError("UPDATE_STARTUP_TOKEN_MISSING"), exit_code=3,
+            )
             return 3
         try:
             from .post_update_health import verify_post_update_startup
@@ -165,7 +171,10 @@ def main() -> int:
             set_update_startup_context(
                 {"mode": "updated", "plan": plan, "token": str(args.post_update_token)}
             )
-        except Exception:
+        except Exception as exc:
+            record_update_startup_failure(
+                args.post_update_plan, phase="post_update_verification", exc=exc, exit_code=3,
+            )
             return 3
     elif args.post_rollback_plan is not None:
         from .update_startup_context import set_update_startup_context
@@ -199,6 +208,11 @@ def main() -> int:
     try:
         instance_guard = acquire_single_instance()
     except SingleInstanceAlreadyRunning:
+        if args.post_update_plan is not None:
+            record_update_startup_failure(
+                args.post_update_plan, phase="single_instance",
+                exc=RuntimeError("UPDATE_STARTUP_INSTANCE_ALREADY_RUNNING"), exit_code=2,
+            )
         notify_already_running()
         return 2
 

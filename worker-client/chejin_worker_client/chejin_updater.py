@@ -27,10 +27,14 @@ def _startup_diagnostic(phase: str, **details: Any) -> None:
         "phase": str(phase),
         "pid": os.getpid(),
     }
-    for key in ("error_type", "error_code"):
+    for key in ("error_type", "error_code", "reason", "exit_code_hex", "marker_error"):
         value = str(details.get(key) or "").strip()
         if value:
             payload[key] = value[:120]
+    for key in ("child_pid", "exit_code", "elapsed_ms", "health_timeout_seconds"):
+        value = details.get(key)
+        if isinstance(value, (int, float)):
+            payload[key] = value
     try:
         path = Path(raw_path)
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -64,6 +68,7 @@ from .release_package_contract import (
 _startup_diagnostic("release_contract_import_succeeded")
 
 from .update_runtime_health_contract import validate_authenticated_runtime_marker
+from .update_diagnostics import update_error_code
 
 _startup_diagnostic("health_contract_import_succeeded")
 
@@ -335,15 +340,33 @@ def _wait_for_health(
     target_version: str,
     token: str,
     timeout_seconds: float,
+    *,
+    diagnostic: dict[str, Any] | None = None,
 ) -> bool:
-    deadline = time.monotonic() + max(1.0, float(timeout_seconds))
+    started = time.monotonic()
+    deadline = started + max(1.0, float(timeout_seconds))
+    evidence = diagnostic if diagnostic is not None else {}
+    evidence.update(pid=process.pid, health_timeout_seconds=timeout_seconds)
+
+    def finish(reason: str, *, exit_code: int | None = None) -> bool:
+        evidence.update(
+            reason=reason,
+            exit_code=exit_code,
+            elapsed_ms=round((time.monotonic() - started) * 1000),
+        )
+        if exit_code is not None:
+            evidence["exit_code_hex"] = f"0x{exit_code & 0xffffffff:08X}"
+        return reason == "healthy"
+
     expected_token = _token_digest(token)
     while time.monotonic() < deadline:
-        if process.poll() is not None:
-            return False
+        exit_code = process.poll()
+        if exit_code is not None:
+            return finish("process_exited", exit_code=exit_code)
         try:
             marker = _load_json(marker_path)
         except ClientUpdateError:
+            evidence["marker_error"] = "UPDATE_HEALTH_MARKER_UNREADABLE"
             time.sleep(0.2)
             continue
         try:
@@ -353,11 +376,15 @@ def _wait_for_health(
                 target_version=target_version,
                 token_sha256=expected_token,
             )
-            return True
-        except RuntimeError:
-            pass
+            evidence.pop("marker_error", None)
+            return finish("healthy")
+        except RuntimeError as exc:
+            evidence["marker_error"] = update_error_code(exc)
         time.sleep(0.2)
-    return False
+    exit_code = process.poll()
+    if exit_code is not None:
+        return finish("process_exited", exit_code=exit_code)
+    return finish("health_timeout")
 
 
 def _terminate_process(process: subprocess.Popen) -> None:
@@ -380,6 +407,7 @@ def run_update(plan_path: Path, token: str) -> int:
     new_process: subprocess.Popen | None = None
     plan: dict[str, Any] = {}
     old_exit_confirmed = False
+    startup_diagnostic: dict[str, Any] = {}
     try:
         _startup_diagnostic("plan_validation_started")
         plan = validate_update_plan(plan_path, token)
@@ -424,7 +452,9 @@ def run_update(plan_path: Path, token: str) -> int:
         worker_executable = current / str(plan.get("worker_executable_relative") or "CheJinWorkerClient.exe")
         if not worker_executable.is_file():
             raise ClientUpdateError("UPDATE_RESTART_FAILED", "新客户端可执行文件不存在")
+        startup_diagnostic["phase"] = "start_new_worker"
         new_process = _start_worker(worker_executable, plan_path=plan_path, token=token)
+        startup_diagnostic["phase"] = "wait_for_health"
         healthy = _wait_for_health(
             marker_path,
             new_process,
@@ -432,6 +462,14 @@ def run_update(plan_path: Path, token: str) -> int:
             str(plan.get("target_version") or ""),
             token,
             float(plan["health_timeout_seconds"]),
+            diagnostic=startup_diagnostic,
+        )
+        # Persist before any rollback work: if rollback itself is interrupted,
+        # the original child failure must still be diagnosable.
+        _startup_diagnostic(
+            "new_worker_health_checked",
+            child_pid=startup_diagnostic.get("pid"),
+            **{key: value for key, value in startup_diagnostic.items() if key not in {"phase", "pid"}},
         )
         if not healthy:
             raise ClientUpdateError("UPDATE_RESTART_FAILED", "新客户端未在健康检查窗口内启动")
@@ -451,6 +489,12 @@ def run_update(plan_path: Path, token: str) -> int:
         return 0
     except Exception as exc:
         code = exc.code if isinstance(exc, ClientUpdateError) else "UPDATE_INSTALL_FAILED"
+        if startup_diagnostic:
+            startup_diagnostic.update(
+                exception_type=type(exc).__name__,
+                errno=getattr(exc, "errno", None),
+                winerror=getattr(exc, "winerror", None),
+            )
         _startup_diagnostic(
             "update_failed",
             error_type=type(exc).__name__,
@@ -517,6 +561,7 @@ def run_update(plan_path: Path, token: str) -> int:
                 "state": state,
                 "result_code": result_code,
                 "failure_code": code,
+                "startup_diagnostic": startup_diagnostic,
                 "message": message,
                 "update_request_id": plan.get("update_request_id"),
                 "target_version": plan.get("target_version"),

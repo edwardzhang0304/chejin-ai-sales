@@ -119,6 +119,63 @@ def test_post_update_health_rejects_program_or_business_data_tampering(
         health_module.verify_post_update_startup(plan_path, token)
 
 
+@pytest.mark.parametrize("failure,expected", [
+    ("token", "UPDATE_STARTUP_TOKEN_INVALID"),
+    ("file", "UPDATE_STARTUP_FILE_HASH_MISMATCH"),
+    ("data", "UPDATE_PROTECTED_DATABASE_CHANGED"),
+])
+def test_real_main_records_rejected_startup_without_secrets(tmp_path, monkeypatch, failure, expected):
+    from chejin_worker_client import main as main_module
+    from test_packaging_entry import load_entry_module
+    plan_path, token, worker = _prepare_health_plan(tmp_path, monkeypatch)
+    if failure == "token":
+        token = "wrong-secret-token"
+    elif failure == "file":
+        worker.write_bytes(b"tampered")
+    else:
+        storage.save_binding(Binding("worker", "binding-secret", "instance", run_status="paused"))
+    monkeypatch.setattr(main_module.sys, "argv", ["worker", "--post-update-plan", str(plan_path), "--post-update-token", token])
+    # Execute the real packaging entry and main; only filesystem/runtime
+    # locations are isolated. This is source-entry validation, not an EXE UAT.
+    assert load_entry_module().run() == 3
+    evidence = (plan_path.parent / "worker-startup.jsonl").read_text(encoding="utf-8")
+    record = json.loads(evidence.splitlines()[-1])
+    assert record["error_code"] == expected
+    assert record["phase"] == "post_update_verification"
+    assert record["exit_code"] == 3
+    assert record["exception_type"] == "RuntimeError"
+    assert token not in evidence and "binding-secret" not in evidence
+    assert not (plan_path.parent / "healthy.json").exists()
+
+
+def test_failed_evidence_write_cannot_change_startup_exit(tmp_path, monkeypatch):
+    from chejin_worker_client import main as main_module
+    plan_path, token, _ = _prepare_health_plan(tmp_path, monkeypatch)
+    # A directory in place of the log is a real OS write failure, not a
+    # mocked successful diagnostic. Startup must still reject the bad token.
+    (plan_path.parent / "worker-startup.jsonl").mkdir()
+    monkeypatch.setattr(main_module.sys, "argv", ["worker", "--post-update-plan", str(plan_path), "--post-update-token", "wrong"])
+    assert main_module.main() == 3
+    assert not (plan_path.parent / "healthy.json").exists()
+
+
+def test_startup_evidence_is_bounded_and_does_not_copy_exception_text(tmp_path, monkeypatch):
+    from chejin_worker_client import update_diagnostics as diagnostics
+    plan_path = tmp_path / "update-plan.json"
+    try:
+        raise OSError(13, "worker_token=secret; chat text; private path")
+    except OSError as exc:
+        diagnostics.record_update_startup_failure(plan_path, phase="test", exc=exc)
+    path = tmp_path / "worker-startup.jsonl"
+    before = path.read_bytes()
+    record = json.loads(before)
+    assert record["errno"] == 13 and record["frames"]
+    assert b"secret" not in before and b"chat text" not in before
+    monkeypatch.setattr(diagnostics, "MAX_DIAGNOSTIC_BYTES", len(before))
+    diagnostics.record_update_startup_failure(plan_path, phase="test", exc=RuntimeError("UPDATE_FAILED"))
+    assert path.read_bytes() == before
+
+
 def test_runtime_must_remain_alive_across_stable_window_before_marker(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
