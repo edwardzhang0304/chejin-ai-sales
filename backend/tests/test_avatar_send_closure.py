@@ -62,6 +62,7 @@ def test_original_send_bridge_sqlite_http_flow_closure(tmp_path, request):
             kwargs.pop("timeout", None)
             if url.endswith("/sent-ack"):
                 assert lock_summary()["locked"]
+                assert api.task_lease_fencing_tokens  # leased BEFORE authoritative settlement
                 record = storage.list_reply_send_ack_outbox()[0]
                 assert record["status"] == "waiting"  # durable BEFORE HTTP
                 assert record["ack_payload"]["send_result"] == "sent"
@@ -184,3 +185,16 @@ def test_original_send_bridge_sqlite_http_flow_closure(tmp_path, request):
     assert sum(url.endswith("/inflight-flow/start") for _, url, _ in requests) == 1
     assert sum(url.endswith("/inflight-flow/finish") for _, url, _ in requests) == 1
     assert all(status == 200 for _, _, status in requests), requests
+
+    # The original production wrapper has completed every transition. Neither
+    # this test nor the update gate may clear leases or settle receipts for it.
+    assert runner.current_task_lease is None
+    assert api.task_lease_fencing_tokens == {}
+    assert runner.set_run_status("paused") is True
+    runner.set_update_new_work_gate(True, update_request_id="after-real-send")
+    for _ in range(2):
+        safety = runner.update_install_safety_snapshot()
+        assert safety["safe"] is True, safety
+        assert safety["cached_task_lease_count"] == 0
+        assert safety["task_lease_guard_active"] is False
+        assert safety["waiting_reason_code"] == ""

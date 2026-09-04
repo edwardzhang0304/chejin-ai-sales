@@ -2069,6 +2069,12 @@ def run_app() -> int:
                     window.post_update_runtime_health_snapshot()
                 )
             except Exception as exc:
+                from .update_diagnostics import record_update_startup_failure
+
+                record_update_startup_failure(
+                    Path(plan["healthy_marker_path"]).parent / "update-plan.json",
+                    phase="runtime_health", exc=exc,
+                )
                 append_log(
                     "ERROR",
                     "post_update_runtime_health_failed",

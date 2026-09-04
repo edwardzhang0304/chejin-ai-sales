@@ -174,9 +174,23 @@ def test_real_new_process_writes_health_marker_and_directory_switch_succeeds(tmp
 
 def test_failed_new_process_is_moved_to_evidence_and_old_process_is_restarted(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     plan_path, token, current, previous = _prepare_plan(tmp_path, monkeypatch, new_worker=FAILED_WORKER)
+    startup_log = plan_path.parent / "updater-startup.jsonl"
+    monkeypatch.setenv("CHEJIN_UPDATER_DIAGNOSTIC_PATH", str(startup_log))
     assert run_update(plan_path, token) == 1
     result = json.loads((plan_path.parent / "update-result.json").read_text())
     assert result["result_code"] == "UPDATE_ROLLED_BACK"
+    assert result["startup_diagnostic"]["reason"] == "process_exited"
+    assert result["startup_diagnostic"]["exit_code"] == 7
+    assert result["startup_diagnostic"]["pid"] > 0
+    assert result["startup_diagnostic"]["elapsed_ms"] < 3000
+    assert token not in json.dumps(result)
+    records = [json.loads(line) for line in startup_log.read_text().splitlines()]
+    health_record = next(row for row in records if row["phase"] == "new_worker_health_checked")
+    assert health_record["exit_code"] == 7
+    assert health_record["child_pid"] == result["startup_diagnostic"]["pid"]
+    assert health_record["reason"] == "process_exited"
+    assert records.index(health_record) < next(i for i, row in enumerate(records) if row["phase"] == "update_failed")
+    assert token not in startup_log.read_text()
     assert current.is_dir()
     assert not previous.exists()
     assert (current / "worker.py").read_text() == HEALTHY_WORKER
@@ -206,6 +220,24 @@ def test_missing_result_recovery_restores_previous_program_idempotently(
     assert (tmp_path / "install" / "CheJinWorkerClient.failed" / "worker.py").read_text() == FAILED_WORKER
 
     assert run_missing_result_recovery(plan_path, token, 0) == 0
+
+
+def test_live_process_without_marker_reports_timeout_not_early_exit(tmp_path, monkeypatch):
+    # Real child process stays alive; use the test plan's 3s timeout, not a
+    # production timeout change. run_update must terminate it and roll back.
+    worker = "#!/usr/bin/env python3\nimport time\ntime.sleep(30)\n"
+    plan_path, token, current, previous = _prepare_plan(tmp_path, monkeypatch, new_worker=worker)
+    assert run_update(plan_path, token) == 1
+    result = json.loads((plan_path.parent / "update-result.json").read_text())
+    detail = result["startup_diagnostic"]
+    assert detail["reason"] == "health_timeout"
+    assert detail["exit_code"] is None
+    assert detail["elapsed_ms"] >= 3000
+    assert detail["health_timeout_seconds"] == 3
+    assert detail["marker_error"] == "UPDATE_HEALTH_MARKER_UNREADABLE"
+    assert result["state"] == "rolled_back"
+    assert (current / "worker.py").read_text() == HEALTHY_WORKER
+    assert not previous.exists()
 
 
 def test_plan_rejects_nested_program_or_data_directories(

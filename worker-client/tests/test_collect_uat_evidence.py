@@ -22,6 +22,47 @@ def _touch_in_window(path: Path) -> None:
     os.utime(path, (timestamp, timestamp))
 
 
+def test_update_startup_evidence_is_exported_without_plan_secrets(tmp_path):
+    from chejin_worker_client.update_diagnostics import record_update_startup_failure
+
+    app_dir, package_dir = tmp_path / "CheJinWorker", tmp_path / "package"
+    app_dir.mkdir()
+    package_dir.mkdir()
+    update_dir = tmp_path / "CheJinWorkerUpdate"
+    control = update_dir / "requests" / "update-test" / "control"
+    control.mkdir(parents=True)
+    plan = control / "update-plan.json"
+    plan.write_text(json.dumps({"one_time_token": "never-export-plan-secret"}), encoding="utf-8")
+    record_update_startup_failure(plan, phase="post_update_verification",
+                                  exc=RuntimeError("UPDATE_STARTUP_FILE_HASH_MISMATCH"), exit_code=3)
+    result = control / "update-result.json"
+    result.write_text(json.dumps({"state": "rolled_back", "failure_code": "UPDATE_RESTART_FAILED",
+        "startup_diagnostic": {"reason": "process_exited", "exit_code": 3},
+        "message": "never-export-message-secret"}), encoding="utf-8")
+    state = update_dir / "update-state.json"
+    state.write_text(json.dumps({"state": "waiting_for_safe_boundary", "one_time_token": "never-export-state-secret",
+        "waiting_safety_snapshot": {"cached_task_lease_count": 1, "task_lease_guard_active": False},
+        "protected_data_snapshot": {"rows": "never-export-business-data"}}), encoding="utf-8")
+    logs = [control / "worker-startup.jsonl", result, state]
+    for path in [plan, *logs]:
+        _touch_in_window(path)
+    before = {p: p.read_bytes() for p in [plan, *logs]}
+    output = tmp_path / "evidence.zip"
+    completed = subprocess.run([sys.executable, str(COLLECTOR), "--app-dir", str(app_dir),
+        "--package-dir", str(package_dir), "--from-iso", FROM_ISO, "--to-iso", TO_ISO,
+        "--update-dir", str(update_dir), "--output", str(output)], capture_output=True, text=True)
+    assert completed.returncode == 0, completed.stderr
+    with zipfile.ZipFile(output) as archive:
+        all_text = "\n".join(archive.read(name).decode("utf-8") for name in archive.namelist())
+        assert "UPDATE_STARTUP_FILE_HASH_MISMATCH" in all_text
+        assert "process_exited" in all_text
+        assert "cached_task_lease_count" in all_text
+        assert "never-export" not in all_text
+        assert not any("update-plan" in name for name in archive.namelist())
+        assert json.loads(archive.read("manifest.json"))["counts"]["update_diagnostic_files"] == 3
+    assert {p: p.read_bytes() for p in before} == before
+
+
 def test_time_window_evidence_export_is_read_only_redacted_and_complete(tmp_path: Path) -> None:
     app_dir = tmp_path / "CheJinWorker"
     package_dir = tmp_path / "CheJinWorkerDebug"
@@ -216,6 +257,10 @@ def test_time_window_evidence_export_is_read_only_redacted_and_complete(tmp_path
     screenshot.write_bytes(b"raw screenshot")
     _touch_in_window(artifact)
     _touch_in_window(screenshot)
+    crash = app_dir / "diagnostics" / "startup-crash.jsonl"
+    crash.parent.mkdir()
+    crash.write_text(json.dumps({"exception_type": "ImportError", "traceback": "missing DLL"}) + "\n", encoding="utf-8")
+    _touch_in_window(crash)
 
     incident_dir = app_dir / "incidents"
     incident_dir.mkdir()
@@ -299,3 +344,4 @@ def test_time_window_evidence_export_is_read_only_redacted_and_complete(tmp_path
     assert manifest["counts"]["pending_standard_stage_uploads"] == 1
     assert manifest["counts"]["backend_authority_snapshots"] == 1
     assert any(name.startswith("incidents/INC-UNKNOWN") for name in names)
+    assert "sidecar/artifacts/diagnostics/startup-crash.jsonl.redacted.json" in names

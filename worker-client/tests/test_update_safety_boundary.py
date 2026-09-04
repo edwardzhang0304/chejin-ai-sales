@@ -63,8 +63,18 @@ def test_install_boundary_requires_every_business_and_physical_action_barrier(
     assert runner.update_install_safety_snapshot()["safe"] is False
     runner.current_task = None
     runner.current_task_lease = object()
-    assert runner.update_install_safety_snapshot()["safe"] is False
+    snapshot = runner.update_install_safety_snapshot()
+    assert snapshot["safe"] is False
+    assert snapshot["task_lease_guard_active"] is True
     runner.current_task_lease = None
+    runner.api.task_lease_fencing_tokens["task-a"] = 7
+    snapshot = runner.update_install_safety_snapshot()
+    assert snapshot["safe"] is False
+    assert snapshot["waiting_reason_code"] == "UPDATE_WAITING_TASK_LEASE"
+    assert snapshot["cached_task_lease_count"] == 1
+    assert snapshot["task_lease_guard_active"] is False
+    assert "7" not in str(snapshot)  # evidence does not expose fencing tokens
+    runner.api.task_lease_fencing_tokens.clear()
     runner.current_ui_lock = object()
     assert runner.update_install_safety_snapshot()["safe"] is False
     runner.current_ui_lock = None

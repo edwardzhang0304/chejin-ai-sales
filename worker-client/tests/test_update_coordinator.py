@@ -220,6 +220,7 @@ def test_update_blocks_new_work_before_pause_and_waits_for_safe_boundary(
         return FakeProcess(_updater)
 
     exit_called = threading.Event()
+    waiting_snapshots = []
     monkeypatch.setattr(coordinator_module, "set_update_new_work_gate", set_gate)
     monkeypatch.setattr(coordinator_module, "prepare_release_package", prepare)
     monkeypatch.setattr(
@@ -231,7 +232,8 @@ def test_update_blocks_new_work_before_pause_and_waits_for_safe_boundary(
         FakeApi(_release()),
         runner,  # type: ignore[arg-type]
         binding_provider=lambda: binding,
-        on_state=lambda _state: None,
+        on_state=lambda state: waiting_snapshots.append(state["waiting_safety_snapshot"])
+        if "waiting_safety_snapshot" in state else None,
         request_normal_exit=lambda: exit_called.set(),
         state_store=store,
         formal_package=True,
@@ -243,6 +245,7 @@ def test_update_blocks_new_work_before_pause_and_waits_for_safe_boundary(
     _wait(coordinator)
     assert events.index("gate:True") < events.index("status:paused") < events.index("prepare")
     assert "safety" in events
+    assert any(snapshot["safe"] is False for snapshot in waiting_snapshots)
     assert exit_called.is_set()
     state = store.load()
     assert state["state"] == "installing"
