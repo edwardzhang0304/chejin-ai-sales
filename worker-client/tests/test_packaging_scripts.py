@@ -309,7 +309,7 @@ class PackagingScriptsTest(unittest.TestCase):
         self.assertIn("app_name = [string]$manifest.app_name", workflow)
         self.assertIn("default_api_base_url = [string]$manifest.default_api_base_url", workflow)
         self.assertIn("delivery ZIP executable SHA256 mismatch", workflow)
-        self.assertIn("chejin-worker-v0.9.64-windows-x64.delivery.json", workflow)
+        self.assertIn("chejin-worker-v0.9.65-windows-x64.delivery.json", workflow)
         self.assertIn("CHEJIN_VISION_CLIENT_API_KEY", workflow)
         self.assertIn("vision_credential_embedded", workflow)
         self.assertIn("vision_configuration_locked", workflow)
@@ -335,7 +335,7 @@ class PackagingScriptsTest(unittest.TestCase):
             workflow,
         )
         self.assertIn("--artifact-storage-key", workflow)
-        self.assertIn("chejin-worker-v0.9.64-windows-x64.release.json", workflow)
+        self.assertIn("chejin-worker-v0.9.65-windows-x64.release.json", workflow)
         self.assertIn("must not contain a temporary download URL", workflow)
 
     def test_formal_update_package_contains_independent_updater_and_real_process_gate(self):
@@ -1076,19 +1076,16 @@ class PackagingScriptsTest(unittest.TestCase):
         self.assertEqual(
             provenance["current_release"],
             {
-                "version": "0.9.64",
+                "version": "0.9.65",
                 "source_commit": (
                     "03ddcd66cf22740c5c30537b0fb9e7873e24b50f"
                 ),
-                "contract_revision": "0.9.64",
+                "contract_revision": "0.9.65",
                 "contract_sha256": (
-                    "840a770923bf6ef43c37c33086d817a0ff2d860cbb7c923c3"
-                    "b9c43f0bcf465bc"
+                    "6ebe42853790b9911c3f81dbf1b917ddec03b249747bb4c26a447a889a862b5b"
                 ),
                 "scope": (
-                    "shared raw-frame avatar evidence and same-avatar voice "
-                    "continuation; unchanged read-only send confirmation and "
-                    "Worker/backend ownership"
+                    "Worker acknowledged lease cleanup and bounded update diagnostics; OmniAuto behavior unchanged; CheJin regenerates the 0.9.65 contract schema overlay"
                 ),
             },
         )
@@ -1518,7 +1515,7 @@ class PackagingScriptsTest(unittest.TestCase):
         self.assertIn('$packageDir = [string]$manifest.package_dir', workflow)
         self.assertIn('$exePath = [string]$manifest.exe_path', workflow)
         self.assertNotIn('dist\\车金Worker客户端', workflow)
-        self.assertIn('version -ne "0.9.64"', workflow)
+        self.assertIn('version -ne "0.9.65"', workflow)
         self.assertIn('tests_status -ne "passed"', workflow)
         self.assertIn('@("--omniauto-sidecar", "--help")', workflow)
         self.assertIn('@("--omniauto-ocr-probe")', workflow)
