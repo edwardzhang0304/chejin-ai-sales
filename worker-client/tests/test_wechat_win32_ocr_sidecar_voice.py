@@ -1597,7 +1597,9 @@ class WechatWin32OcrVoiceSelectionTest(unittest.TestCase):
             for x in range(470, 700, 6):
                 tone = 35 if ((x + y) // 6) % 2 else 220
                 draw.rectangle((x, y, x + 5, y + 5), fill=(tone, 150, 80))
-        draw.rounded_rectangle((772, 610, 919, 654), radius=8, fill=(140, 226, 146))
+        # Independent voice bubble: the former right edge (919) overlapped
+        # the avatar beginning at 900 and did not represent a normal frame.
+        draw.rounded_rectangle((772, 610, 885, 654), radius=8, fill=(140, 226, 146))
         self.draw_avatar(draw, (900, 608, 946, 656))
 
         items = [
@@ -1772,7 +1774,8 @@ class WechatWin32OcrVoiceSelectionTest(unittest.TestCase):
         image = Image.new("RGB", (981, 860), (247, 247, 247))
         draw = ImageDraw.Draw(image)
         draw.rectangle((0, 0, 376, 860), fill=(238, 238, 238))
-        self.draw_avatar(draw, (899, 280, 967, 328))
+        # The old fixture stretched a 48px avatar to 68px width.
+        self.draw_avatar(draw, (919, 280, 967, 328))
         items = [
             ocr_item('6" (c', 812, 292, 861, 317),
             ocr_item("房间我已经退了，但是有点冷，你看一下什么时候过", 459, 343, 863, 366),
@@ -2996,8 +2999,9 @@ class WechatWin32OcrVoiceSelectionTest(unittest.TestCase):
         image = Image.new("RGB", (965, 852), (247, 247, 247))
         draw = ImageDraw.Draw(image)
         self.draw_avatar(draw, (398, 136, 444, 184))
-        self.draw_avatar(draw, (398, 503, 444, 533))
-        self.draw_avatar(draw, (398, 547, 444, 577))
+        # Keep independent square avatars rather than compressed 46x30 strips.
+        self.draw_avatar(draw, (398, 489, 444, 535))
+        self.draw_avatar(draw, (398, 547, 444, 593))
         lower_before = {
             "id": "voice-lower-before",
             "type": "voice",
@@ -3094,7 +3098,7 @@ class WechatWin32OcrVoiceSelectionTest(unittest.TestCase):
         image = Image.new("RGB", (965, 852), (247, 247, 247))
         draw = ImageDraw.Draw(image)
         draw.rectangle((0, 0, 376, 852), fill=(238, 238, 238))
-        draw.rounded_rectangle((772, 610, 919, 654), radius=8, fill=(140, 226, 146))
+        draw.rounded_rectangle((772, 610, 885, 654), radius=8, fill=(140, 226, 146))
         self.draw_avatar(draw, (900, 608, 946, 656))
 
         hint = sidecar.visible_untranscribed_voice_hint(
@@ -3725,7 +3729,7 @@ class WechatWin32OcrVoiceSelectionTest(unittest.TestCase):
                 [470, 210 + offset, 820, 238 + offset],
                 image.size,
             )
-            self.assertEqual(details["customer"]["position_source"], "bubble_relative_avatar_adjacency")
+            self.assertEqual(details["customer"]["position_source"], "frame_avatar_column")
             return details["role"]
 
         self.assertEqual(detect(0), "customer")
