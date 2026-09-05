@@ -91,6 +91,35 @@ def _read_provider_progress(path: Path, *, progress_id: str) -> list[dict]:
     return events
 
 
+def _kill_provider_process(process: subprocess.Popen) -> None:
+    """Terminate the isolated Provider worker without inheriting a pipe hang."""
+
+    if os.name == "nt":
+        # ``Popen.kill`` can terminate the Python launcher while a descendant
+        # still owns the inherited stdout/stderr handles on Windows.  Killing
+        # the process tree closes those handles and keeps the hard timeout
+        # bounded.  Pass only the system root to the utility so application
+        # environment values are not propagated to another process.
+        system_root = os.environ.get("SystemRoot", r"C:\\Windows")
+        taskkill = str(Path(system_root) / "System32" / "taskkill.exe")
+        try:
+            subprocess.run(
+                [taskkill, "/PID", str(process.pid), "/T", "/F"],
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                check=False,
+                timeout=0.25,
+                env={"SystemRoot": system_root},
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            pass
+    try:
+        process.kill()
+    except OSError:
+        pass
+
+
 @dataclass(frozen=True)
 class AIEngineDecision:
     decision: str
@@ -459,7 +488,7 @@ class RealOmniAutoAIEngineAdapter:
                     timeout=timeout_seconds,
                 )
             except subprocess.TimeoutExpired as exc:
-                process.kill()
+                _kill_provider_process(process)
                 # Do not call communicate() without a timeout here.  On
                 # Windows a terminated worker can leave inherited pipe
                 # handles open briefly (or until a sleeping child exits),
@@ -467,16 +496,9 @@ class RealOmniAutoAIEngineAdapter:
                 # thirty-second stall.  Reap the process with a bounded wait
                 # and close the pipes after termination.
                 try:
-                    process.wait(timeout=0.5)
+                    process.wait(timeout=0.25)
                 except subprocess.TimeoutExpired:
-                    try:
-                        process.terminate()
-                    except OSError:
-                        pass
-                    try:
-                        process.wait(timeout=0.5)
-                    except subprocess.TimeoutExpired:
-                        pass
+                    pass
                 finally:
                     for stream in (process.stdin, process.stdout, process.stderr):
                         if stream is not None:
