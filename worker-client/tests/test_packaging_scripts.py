@@ -153,7 +153,12 @@ class PackagingScriptsTest(unittest.TestCase):
                     ),
                 ],
                 cwd=packaged_omniauto,
-                env={**os.environ, "PYTHONPATH": str(packaged_omniauto)},
+                env={
+                    **os.environ,
+                    "PYTHONPATH": str(packaged_omniauto),
+                    "PYTHONUTF8": "1",
+                    "PYTHONIOENCODING": "utf-8",
+                },
                 capture_output=True,
                 text=True,
                 timeout=30,
