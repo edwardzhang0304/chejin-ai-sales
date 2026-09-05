@@ -460,7 +460,30 @@ class RealOmniAutoAIEngineAdapter:
                 )
             except subprocess.TimeoutExpired as exc:
                 process.kill()
-                process.communicate()
+                # Do not call communicate() without a timeout here.  On
+                # Windows a terminated worker can leave inherited pipe
+                # handles open briefly (or until a sleeping child exits),
+                # which would turn a one-second provider timeout into a
+                # thirty-second stall.  Reap the process with a bounded wait
+                # and close the pipes after termination.
+                try:
+                    process.wait(timeout=0.5)
+                except subprocess.TimeoutExpired:
+                    try:
+                        process.terminate()
+                    except OSError:
+                        pass
+                    try:
+                        process.wait(timeout=0.5)
+                    except subprocess.TimeoutExpired:
+                        pass
+                finally:
+                    for stream in (process.stdin, process.stdout, process.stderr):
+                        if stream is not None:
+                            try:
+                                stream.close()
+                            except OSError:
+                                pass
                 progress = _read_provider_progress(
                     progress_path,
                     progress_id=progress_id,
