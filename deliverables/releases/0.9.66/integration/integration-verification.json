@@ -1,0 +1,72 @@
+{
+  "release": "0.9.66",
+  "source_parent": "03ddcd66cf22740c5c30537b0fb9e7873e24b50f",
+  "source_commit": "b8804f282c58f2b7a5d1ef4148a3267f32d07bdf",
+  "source_branch": "codex/gray-release-0.9.x-source",
+  "source_repository": "edwardzhang0304/omniauto",
+  "contract_sha256": "0f65d3a66514639a1768901f59af18cd35dfb43a7fed75ae211e479ba70ca490",
+  "contract_only_changes": [
+    "contract_revision",
+    "client_update_contract.release"
+  ],
+  "identical_source_embedded_file_sha256": {
+    "apps/wechat_ai_customer_service/adapters/wechat_win32_ocr/frame_avatars.py": "c7b66c996001312b420a296af1afdec666b5de76cbc91fc26ea339f82ffb79cc",
+    "apps/wechat_ai_customer_service/adapters/chejin_c2_observation_schema.generated.json": "51a0200ba18e7707a22ccf4f82fe1b37b61a2e0d42fa009a22c2e39d982557b2"
+  },
+  "junit_results": {
+    "omniauto-final.xml": {
+      "name": "pytest",
+      "errors": "0",
+      "failures": "0",
+      "skipped": "1",
+      "tests": "172",
+      "time": "73.382",
+      "timestamp": "2026-09-05T20:17:45.672524+08:00",
+      "hostname": "zhangwentaodeMacBook-Pro.local"
+    },
+    "contract.xml": {
+      "name": "pytest",
+      "errors": "0",
+      "failures": "0",
+      "skipped": "0",
+      "tests": "90",
+      "time": "0.809",
+      "timestamp": "2026-09-05T20:17:26.243913+08:00",
+      "hostname": "zhangwentaodeMacBook-Pro.local"
+    },
+    "provenance.xml": {
+      "name": "pytest",
+      "errors": "0",
+      "failures": "0",
+      "skipped": "0",
+      "tests": "42",
+      "time": "2.072",
+      "timestamp": "2026-09-05T20:19:32.241989+08:00",
+      "hostname": "zhangwentaodeMacBook-Pro.local"
+    },
+    "backend.xml": {
+      "name": "pytest",
+      "errors": "0",
+      "failures": "0",
+      "skipped": "0",
+      "tests": "2",
+      "time": "84.546",
+      "timestamp": "2026-09-05T20:17:27.419654+08:00",
+      "hostname": "zhangwentaodeMacBook-Pro.local"
+    },
+    "chejin-image-overlay.xml": {
+      "name": "pytest",
+      "errors": "0",
+      "failures": "0",
+      "skipped": "0",
+      "tests": "1",
+      "time": "1.265",
+      "timestamp": "2026-09-05T20:20:25.890568+08:00",
+      "hostname": "zhangwentaodeMacBook-Pro.local"
+    }
+  },
+  "review_approved_by_user": true,
+  "formal_windows_uat_passed": false,
+  "package_built": false,
+  "production_deployed": false
+}

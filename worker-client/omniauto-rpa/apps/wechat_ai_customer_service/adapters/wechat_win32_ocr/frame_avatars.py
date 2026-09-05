@@ -159,7 +159,43 @@ def _detect(image: Any, viewport: list[int], scale: float) -> dict[str, Any]:
     table["components"].sort(key=lambda c: (c["bounds"][1], c["bounds"][0]))
     for index, component in enumerate(table["components"]):
         component["component_id"] = f"avatar:{table['frame_reference']}:{index}"
+    _exclude_independent_inward_objects(table, viewport)
     return table
+
+
+def _exclude_independent_inward_objects(table: dict[str, Any], viewport: list[int]) -> None:
+    """Finalize coarse candidates using confirmed objects from this frame only.
+
+    The column intersection discovers candidates; only full contour bounds and
+    a unique, already isolated avatar can prove an inward object independent.
+    This excludes avatar evidence, never OCR content or a message type.
+    """
+    left, top, right, bottom = viewport
+    unresolved = []
+    for candidate in table["unresolved"]:
+        if candidate["reason"] != "candidate_attached_to_other_object":
+            unresolved.append(candidate)
+            continue
+        bounds = candidate["object_bounds"]
+        x0, y0, x1, y1 = bounds
+        if not (left < x0 < x1 < right and top < y0 < y1 < bottom):
+            unresolved.append(candidate)
+            continue
+        supporting = []
+        for avatar in table["components"]:
+            ax0, ay0, ax1, ay1 = avatar["bounds"]
+            if avatar["role"] != candidate["role"] or not ay0 <= y0 < ay1:
+                continue
+            if (candidate["role"] == "customer" and ax1 < x0
+                    or candidate["role"] == "self" and x1 < ax0):
+                supporting.append(avatar)
+        if len(supporting) != 1:
+            unresolved.append(candidate)
+            continue
+        table["excluded"].append({**candidate, "bounds": bounds,
+            "reason": "independent_inward_object_beside_confirmed_avatar",
+            "supporting_avatar_bounds": supporting[0]["bounds"]})
+    table["unresolved"] = unresolved
 
 
 def associate(table: dict[str, Any], bounds: list[float], role: str) -> dict[str, Any]:
