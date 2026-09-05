@@ -105,18 +105,27 @@ def _kill_provider_process(process: subprocess.Popen) -> None:
         # environment values are not propagated to another process.
         system_root = os.environ.get("SystemRoot", r"C:\\Windows")
         taskkill = str(Path(system_root) / "System32" / "taskkill.exe")
+        taskkill_process: subprocess.Popen | None = None
         try:
-            subprocess.run(
+            taskkill_process = subprocess.Popen(
                 [taskkill, "/PID", str(process.pid), "/T", "/F"],
                 stdin=subprocess.DEVNULL,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
-                check=False,
-                timeout=0.25,
                 env={"SystemRoot": system_root},
             )
-        except (OSError, subprocess.TimeoutExpired):
-            pass
+            try:
+                taskkill_process.wait(timeout=0.2)
+            except subprocess.TimeoutExpired:
+                # Do not use subprocess.run(timeout=...), whose timeout
+                # handler calls communicate() again and can wait for a
+                # descendant taskkill process on Windows.
+                try:
+                    taskkill_process.kill()
+                except OSError:
+                    pass
+        except OSError:
+            taskkill_process = None
     try:
         process.kill()
     except OSError:
