@@ -22,7 +22,10 @@ class AvatarEvidenceError(RuntimeError):
 # an OCR row. These concern candidate detection, not text continuation rules.
 MIN_SIZE = 24.0
 MAX_SIZE = 64.0
-COLUMN_WIDTH = 96.0
+# Keep the avatar lane close to the fixed WeChat avatar footprint.  The wider
+# lane admitted the ordinary customer bubble into cross-column evidence.
+COLUMN_WIDTH = 82.0
+COLUMN_EDGE_TOLERANCE = 4.0
 # External surfaces can be white on the light-grey chat background. The old
 # 18-level texture threshold erased that boundary and left only colour islands.
 # Low-contrast surface extraction is still gated by full contour, size, column
@@ -92,8 +95,10 @@ def _detect(image: Any, viewport: list[int], scale: float) -> dict[str, Any]:
         bounds = [left + x, top + y, left + x + w, top + y + h]
         # Classify the *whole* object before restricting it to avatar columns.
         # A bubble crossing a column boundary is not a cropped avatar candidate.
+        edge_tolerance = COLUMN_EDGE_TOLERANCE * scale
         role = next((role for role, lane in columns.items()
-                     if lane[0] <= bounds[0] and bounds[2] <= lane[2]), None)
+                     if lane[0] - edge_tolerance <= bounds[0]
+                     and bounds[2] <= lane[2] + edge_tolerance), None)
         if role is None:
             # A concave object may contain an avatar joined to media. Its
             # rectangular hull cannot confirm either an avatar or absence.

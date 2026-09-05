@@ -112,6 +112,35 @@ def draw_avatar(image, x, y, dpi=1.0):
     draw.rectangle(box((x+26, y+26, x+35, y+35)), fill="red")
 
 
+def test_customer_bubble_crossing_old_lane_boundary_is_ignored():
+    """A normal customer bubble must not become avatar ambiguity evidence."""
+    image = Image.new("RGB", (983, 1056), (250, 250, 250))
+    draw = ImageDraw.Draw(image)
+    draw.rectangle((0, 0, 348, 872), fill=(238, 238, 238))
+    draw_avatar(image, 351, 324)
+    # This matches the incident geometry: the bubble begins inside the old
+    # broad lane and extends past its right edge, without touching the avatar.
+    draw.rounded_rectangle((407, 324, 479, 369), radius=16, fill=(235, 235, 235))
+    layout = {
+        "valid": True,
+        "layout_snapshot_id": "incident-bubble-lane",
+        "dpi_scale": 1.0,
+        "message_viewport_bounds": [348, 110, 983, 872],
+        "input_bounds": [348, 872, 983, 1056],
+    }
+    row_item = row("你好", 334, left=426, right=469)
+
+    table = a.avatar_table(image, layout)
+    assert table["columns"]["customer"][2] == 430.0
+    assert not table["unresolved"]
+    messages = s.parse_messages_from_ocr(
+        [row_item], image.size, target="CJTEST01", screenshot=image,
+        layout_snapshot=layout,
+    )
+    assert len(messages) == 1
+    assert messages[0]["sender_role"] == "customer"
+
+
 def row(text, y, left=470, right=810):
     return {"text": text, "top": y, "bottom": y+22, "left": left, "right": right,
             "center_y": y+11, "center_x": (left+right)/2, "confidence": 1}
