@@ -157,7 +157,15 @@ class PackagingScriptsTest(unittest.TestCase):
                 capture_output=True,
                 text=True,
                 timeout=30,
-                check=True,
+            )
+            self.assertEqual(
+                command.returncode,
+                0,
+                msg=(
+                    "packaged diagnostics subprocess failed: "
+                    f"stdout={command.stdout[-2000:]!r} "
+                    f"stderr={command.stderr[-2000:]!r}"
+                ),
             )
             checks = json.loads(command.stdout)
 
