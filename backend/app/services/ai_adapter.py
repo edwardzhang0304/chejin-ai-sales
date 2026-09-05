@@ -548,10 +548,10 @@ class RealOmniAutoAIEngineAdapter:
                     # Windows can otherwise retain an inherited pipe handle
                     # after the worker is killed and make communicate() wait
                     # until a sleeping child exits.
-                    try:
-                        process.wait(timeout=0.25)
-                    except subprocess.TimeoutExpired:
-                        pass
+                    # Do not synchronously wait for the terminated process:
+                    # some Windows runner combinations hold the process
+                    # handle until a descendant exits.  The cleanup daemon
+                    # handles eventual reaping and directory removal.
                     progress = _read_provider_progress(
                         progress_path,
                         progress_id=progress_id,
