@@ -44,6 +44,19 @@ DEFAULT_HISTORY_CHAR_BUDGET = 12000
 DEFAULT_MAX_RAG_HITS = 5
 DEFAULT_MAX_TEXT_CHARS = 900
 CHEJIN_HISTORY_AUTHORITY = "chejin_message_events_v1"
+_MANAGED_KNOWLEDGE_QUERY_STOP_TERMS = {
+    # These terms are commonly present in the mechanical ``客户：`` history
+    # prefix or in generic policy prose.  They must not make every managed
+    # release item look relevant to an elliptical customer turn.
+    "客",
+    "户",
+    "客户",
+    "当",
+    "前",
+    "当前",
+    "问",
+    "问题",
+}
 
 
 class ChejinContextProjectionError(ValueError):
@@ -65,7 +78,11 @@ def _managed_knowledge_query_terms(value: str) -> set[str]:
         terms.update(character for character in block if character.strip())
         terms.update(block[index : index + 2] for index in range(max(0, len(block) - 1)))
         terms.update(block[index : index + 3] for index in range(max(0, len(block) - 2)))
-    return {term for term in terms if term}
+    return {
+        term
+        for term in terms
+        if term and term not in _MANAGED_KNOWLEDGE_QUERY_STOP_TERMS
+    }
 
 
 def _retrieve_managed_knowledge(
