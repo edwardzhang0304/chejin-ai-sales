@@ -16,7 +16,7 @@ from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "worker-client" / "tests"))
-from test_frame_avatars import incident_frames, replay_send_transport, TEXT, FIXTURES, HASHES, s
+from test_frame_avatars import incident_frames, replay_send_transport, TEXT, FIXTURES, HASHES, s, write_avatar_evidence
 import test_c3_api as backend
 
 
@@ -181,6 +181,13 @@ def test_original_send_bridge_sqlite_http_flow_closure(tmp_path, request):
         assert db.query(backend.SentAck).filter_by(reply_action_id=action_id).one().send_result == "sent"
         assert not (db.get(Worker, worker["id"]).inflight_flow_state or {}).get("flow_id")
         assert db.query(backend.HandoffEvent).count() == 0
+        closure_evidence = {
+            "task_status": db.get(backend.Task, task_id).status,
+            "reply_action_status": db.get(backend.ReplyAction, action_id).status,
+            "sent_ack_results": [ack.send_result for ack in db.query(backend.SentAck).filter_by(reply_action_id=action_id).all()],
+            "server_flow": db.get(Worker, worker["id"]).inflight_flow_state,
+            "handoff_count": db.query(backend.HandoffEvent).count(),
+        }
     assert sum(url.endswith("/sent-ack") for _, url, _ in requests) == 1
     assert sum(url.endswith("/inflight-flow/start") for _, url, _ in requests) == 1
     assert sum(url.endswith("/inflight-flow/finish") for _, url, _ in requests) == 1
@@ -198,3 +205,12 @@ def test_original_send_bridge_sqlite_http_flow_closure(tmp_path, request):
         assert safety["cached_task_lease_count"] == 0
         assert safety["task_lease_guard_active"] is False
         assert safety["waiting_reason_code"] == ""
+    write_avatar_evidence("worker-http-sqlite-auto-closure", {
+        "source": "production_TaskRunner_entry_with_original_Windows_PNG_replay",
+        "database": closure_evidence, "http_requests": requests,
+        "sidecar_actions": actions, "local_ui_lock": lock_summary(),
+        "local_flow_id": storage.load_runtime_control()["inflight_flow_id"],
+        "pending_sqlite_sent_ack": storage.has_pending_reply_send_ack_outbox(),
+        "cached_task_lease_count": len(api.task_lease_fencing_tokens),
+        "update_safety": safety,
+    })

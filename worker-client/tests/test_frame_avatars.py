@@ -1,6 +1,7 @@
 """v0.9.64 raw-frame regression. Synthetic/DPI cases are not Windows UAT."""
 import hashlib
 import json
+import os
 from pathlib import Path
 import sys
 from unittest.mock import patch
@@ -23,6 +24,18 @@ HASHES = {
     "send_result_confirm_3_1788518359097.png": "86de77c6023fe9b11514ca37a3b3cf9576ce70b3e7bdc64f9271a7c81bcb9199",
     "send_result_confirm_4_1788518374902.png": "9d98a1b8ffeb5408b05615aa36ea631519ea6d2d798b431d7f18516eb48fb0ed",
 }
+
+
+def write_avatar_evidence(name, payload, image=None):
+    """Optional raw test evidence, no effect on production return values."""
+    directory = os.environ.get("CHEJIN_AVATAR_EVIDENCE_DIR")
+    if not directory:
+        return
+    root = Path(directory)
+    root.mkdir(parents=True, exist_ok=True)
+    if image is not None:
+        image.save(root / (name + ".png"))
+    (root / (name + ".json")).write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
 @pytest.fixture(scope="module")
@@ -63,6 +76,10 @@ def incident_frames():
                 receipt_text=TEXT,
             )
         results.append((image, snapshot, result))
+        write_avatar_evidence(filename, {"source": "original_windows_png_real_rapidocr",
+            "original_path": str(path), "sha256": digest, "layout": snapshot,
+            "full_frame_ocr": s.run_ocr(image), "avatar_table": a.avatar_table(image, snapshot),
+            "send_fact_snapshot": result})
     return results
 
 
@@ -81,6 +98,7 @@ def test_original_frame_first_confirmation_succeeds(incident_frames, index):
             baseline_match_count=0, baseline_message_sequence=before["message_sequence"], initial_snapshot=result)
     assert ack["ok"] and ack["attempt"] == 1
     assert ack["confirmed_message"]["content"].replace("\n", "") == TEXT
+    write_avatar_evidence(f"original-confirmation-{index}", ack)
     # Same original image table is reused even if OCR is performed again.
     assert a.avatar_table(image, layout) is table
 
@@ -445,5 +463,11 @@ def replay_send_transport(args, incident_frames):
             action_journal_path=arg("--action-journal"))
     assert events == ["type", "enter"], (events, result)
     assert result["send_result"]["sent_confirmation"]["attempt"] == 1, result
+    write_avatar_evidence("original-send-transaction", {"source": "original_windows_S0_S1_S2_replay",
+        "controlled_boundaries": ["Windows geometry/focus", "process transport", "keyboard", "input location"],
+        "physical_boundary_events": events, "typed_frame_path": str(path),
+        "typed_frame_sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+        "typed_frame_ocr": s.run_ocr(typed_image), "typed_frame_avatar_table": a.avatar_table(typed_image, typed_layout),
+        "result": result})
     result["sidecar_run_id"] = "raw-avatar-replay-0964"
     return json.loads(json.dumps(result, ensure_ascii=False))

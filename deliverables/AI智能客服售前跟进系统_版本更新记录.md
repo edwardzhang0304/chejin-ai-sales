@@ -1,18 +1,18 @@
 # AI智能客服售前跟进系统 版本更新记录
 
-版本：v0.9.65（运维发布登记 v0.2；生产已部署，Windows 实机验收待完成）
+版本：v0.9.66（集成登记 v0.3；复审通过，版本与合同已同步，正式包待验收）
 
-最后更新：2026-09-04
+最后更新：2026-09-05
 
 ## 1. 文档职责
 
 本文件只记录版本、提交、验证、发布风险、包哈希和回滚证据，不定义新的产品或架构规则。
 项目级权威文档固定为四份：
 
-1. `AI智能客服售前跟进系统_PRD_运营后台统一版_v0.9.65.md`
-2. `AI智能客服售前跟进系统_技术方案手册_v0.9.65.md`
+1. `AI智能客服售前跟进系统_PRD_运营后台统一版_v0.9.66.md`
+2. `AI智能客服售前跟进系统_技术方案手册_v0.9.66.md`
 3. 本版本更新记录
-4. `AI智能客服售前跟进系统_全流程图_v0.9.65.puml`
+4. `AI智能客服售前跟进系统_全流程图_v0.9.66.puml`
 
 接口合同、事务恢复架构、场景矩阵、专项测试报告、交接文档、一致性检查、文档目录和子流程图
 已合并进上述四份，不再作为独立开发依据。代码目录 README、第三方声明、测试夹具和提示词属于
@@ -23,14 +23,48 @@
 | 项目 | 当前值 |
 |---|---|
 | 灰度分支 | `codex/gray-release-0.9.x` |
-| 修复交付 | `aadbea4f9b3d0cecfe132eea402a95773bf763cf`，远端已核对；租约清理及诊断补齐 |
-| 本轮版本 | `0.9.65`；运维只同步发布身份、生成合同/Schema、构建断言和四份文档；正式构建提交以 CI headSha 登记 |
-| 当前合同 | `0.9.65 / 6ebe42853790b9911c3f81dbf1b917ddec03b249747bb4c26a447a889a862b5b` |
-| 当前生产 / Windows | 后端、后台及更新渠道已为 `0.9.65`；Windows 客户端此前失败后自动回滚为 `0.9.63`，当前保持暂停，待重试实机升级 |
+| 开发基线 | `0.9.65 / 2feb3e291a0a41fe93e42bb92ce518716c7d07e5`；包含已交付租约清理和诊断补齐 |
+| 本轮版本 | `0.9.66`；用户独立复审通过，版本/合同/生成 Schema 已同步；正式包与 Windows 物理操作验收待执行 |
+| 合同状态 | 候选 `0.9.66 / 0f65d3a66514639a1768901f59af18cd35dfb43a7fed75ae211e479ba70ca490`；当前已发布合同仍为 `0.9.65 / 6ebe42853790b9911c3f81dbf1b917ddec03b249747bb4c26a447a889a862b5b` |
+| 生产 / Windows 记录 | 上次发布登记为后端、后台及更新渠道 `0.9.65`，Windows 待实机升级；本轮未操作生产或 Windows，不以文档变更替代实时状态核验 |
 | 回滚材料 | 保留已部署 `0.9.64` 服务端镜像、静态站点和更新登记；更早 `0.9.63` 镜像及数据备份也保留；Windows 成功升级后回退需匹配后端版本 |
-| OmniAuto 来源 | `03ddcd66cf22740c5c30537b0fb9e7873e24b50f`；生产行为不变，`0.9.65` 生成 Schema 属车金覆盖层 |
+| OmniAuto 来源 | 真实 `0.9.66` 来源 `b8804f282c58f2b7a5d1ef4148a3267f32d07bdf`，已推送用户 fork 并更新 `.chejin-source.json` |
 | 正式版本车道 | `1.0.x` 正式上线及稳定性修复；`1.1.x` 下一期优化；本轮不扩范围 |
-| 当前结论 | `0.9.65` 正式构建、备份、隔离恢复、同版后端/后台切换、签名登记和公网验证已通过；Windows 实机升级与业务 UAT 仍待完成 |
+| 当前结论 | 用户独立复跑 192 passed、4 subtests passed，确认无新 P0/P1 并批准双仓集成；本轮版本/合同及真实来源验证通过，未打包或部署，不等同 Windows 实机/EXE UAT |
+
+### 2.0.66 2026-09-05：真实头像边界与独立气泡误判——复审通过与双仓集成
+
+#### 集成登记 v0.3
+
+- 用户独立复审通过：192 passed + 4 subtests passed；隔离关闭修复后 32 个用例重新失败，33 项证据哈希一致，未发现新 P0/P1。用户明确授权提交、推送，并拒绝原样合并 PR #16。
+- 独立 OmniAuto：以已登记 `03ddcd66cf22740c5c30537b0fb9e7873e24b50f` 为父提交，形成 `b8804f282c58f2b7a5d1ef4148a3267f32d07bdf` 并推送 `edwardzhang0304/omniauto` 的 `codex/gray-release-0.9.x-source`。只修改分类文件、生成 Schema 和两份定向测试；提交正文保留许聪（meta-xucong）与 PR #16 的贡献说明，不采纳缩列/固定容差。
+- 版本治理：客户端、Updater、启动入口、Windows 脚本与工作流版本断言、后端合同断言统一为 `0.9.66`。机器合同只变更 `contract_revision` 和 `client_update_contract.release`，其余 JSON 语义不变；正式生成器生成 `0f65d3a66514639a1768901f59af18cd35dfb43a7fed75ae211e479ba70ca490`。两仓分类文件和生成 Schema 字节一致，来源测试绑定真实提交，未伪填来源。
+- 集成定向验证：独立源仓 `171 passed / 1 skipped`；跳过项是该源基线早已明确跳过的车金专属图片覆盖层正例，车金侧仍保留执行。首次同步测试误去掉该既有标记导致该项失败，已恢复原标记并完整复跑，未修改生产代码来隐藏错误。源仓本地环境另有既有 `asyncio_mode` 配置未识别警告。车金合同/启动入口 `41 passed + 49 subtests passed`，来源/构建脚本断言 `42 passed`，新合同下后端 C2 入库与原图 Worker 自动收尾 `2 passed`（2 条既有依赖弃用警告）。所有结果保留在 `deliverables/releases/0.9.66/integration/`，不运行无关全量或 Windows 打包。
+- 提交使用 `[skip ci]`：灰度推送原本自动触发 Fast UAT ZIP，本次只做用户授权的源码集成，不自动打包。正式 EXE、Windows 物理操作验收与生产部署仍待后续授权和门禁。
+- PR #16 仍不 merge/cherry-pick；车金集成推送后关闭并明确“部分采纳问题与测试场景、未直接合并实现”。具体车金提交及关闭结果在完成后登记。
+
+#### 实现与验证 v0.2（集成前复审记录）
+
+- **唯一生产修改**：`worker-client/omniauto-rpa/apps/wechat_ai_customer_service/adapters/wechat_win32_ocr/frame_avatars.py`。在已有候选提取和真实头像确认完成后，仅对 `candidate_attached_to_other_object` 按 E 节完整边界、视口内部、同侧、起始高度、严格内侧分离和唯一支撑条件分类。成功排除记录 `independent_inward_object_beside_confirmed_avatar`、物体完整边界及支撑头像边界，保留真实头像与 OCR。原列宽、容差、头像准入、associate 和 role_details 不变。
+- **来源说明**：保留许聪在车金 PR #16 提供的问题与正常气泡几何场景；未合并或移植其缩列及固定边缘容差补丁，未操作 PR。当前内嵌源码 SHA-256 为 `c7b66c996001312b420a296af1afdec666b5de76cbc91fc26ea339f82ffb79cc`；这只是本地文件哈希，不是新的 OmniAuto 提交或合同 SHA。
+- **前：真实输入**：使用 `worker-client/tests/fixtures/avatars_20260904/` 原始 Windows S0、输入后 S1、四张发送后 PNG，逐份核对已登记 SHA，未修改图片。共 6 文件、5 份不同字节内容；四张发送后图只有 3 份独立内容。实际运行 RapidOCR、生产布局标定及 ROI/同帧回退链。`before/` 和 `after/` 保存逐行真实 OCR、布局、生产发送快照；`after/original-full-contours.json` 保存调用生产检测器时真实 OpenCV 返回的完整物体外轮廓及最终头像表，不提供伪造轮廓。
+- **中：角色和完整分组**：四张发送后原图均保留四个真实头像、零未决头像，四行 self 回复完整归为一条；首个 S2 即可确认成功。同原图复用头像表、三至五行/短末行、独立两条消息、语音转写及图片调用者定向回归通过。新增“你好”气泡左右微移、尺寸变化、左右镜像、920/1000/1180 有效窗口布局和 100%/125%/150% 缩放均为人工像素/受控 OCR 夹具，明确不称作新的 Windows 实测。真实粘连、裁断、无头像、相反侧/其他行支撑、多个支撑和其他未决物体均保持拒绝或原行关联处理。
+- **后：真实生产收尾**：`backend/tests/test_avatar_send_closure.py` 从正式 `TaskRunner._execute_task()` 进入，执行真实 Bridge 参数传递、Sidecar 发送事务、原图 OCR/确认、Worker 本地 SQLite 回执及后端正式 HTTP 路由（ASGI TestClient + 临时 SQLite 测试数据库）。测试没有代程序调用 sent_ack、结束 Flow 或释放 UI 锁。受控键盘边界记录 `type, enter` 各一次，零补发；后端一条 sent 回执、Task=completed、ReplyAction=sent、Handoff=0；本地/服务端 Flow 自动结束、锁释放、Outbox 与任务租约清空。历史已转写语音和已批准回复是明确前置夹具；未重演之前语音点击，也不是完整 C0—C4 调度测试。
+- **结果**：`worker-final.xml` 为 172 passed（原头像/原图回归 57 + 新分类测试 115）；`media-final.xml` 为 19 passed、4 subtests passed（96 个无关用例未选）；`closure.xml` 为 1 passed、2 条既有 Starlette/httpx/anyio 弃用警告。合计唯一最终用例 192 passed、4 subtests passed，不累加中间重复运行或旧原型 85 项。六次只读确认上限、后帧成功、上限未知且零补发均由既有定向测试验证。
+- **反向验证**：隔离进程仅关闭新增排除函数，固定的 80 个气泡变体中 32 failed、48 passed（`mutation.xml`）。其中 24 个内容解析场景重新触发原头像歧义、8 个精确 PR 几何场景失去应有排除；48 个未进入原疑似分支的变体原本就正常，不能称为本次新修复。正常源码同一批用例已通过，另有两条测试在进程内关闭/恢复规则并确认重新失败/恢复成功。旧 Windows 四行原图在 0.9.65 已通过，属于本次受影响回归，不伪称它们也是本轮 E 分支的失败复现。
+- **首轮失败如实保留**：`before.log` 的人工裁断图最初画成实心长矩形，未进入既有凹轮廓疑似分支，已改为触底凹物体后验证仍拒绝；`classification.log` 中 48 项为测试错误要求所有尺寸都必须产生 exclusion，实际解析已经正确。最终拆为正常业务断言与精确误报几何的强排除断言，不改生产轮廓阈值来迎合测试。`media.log` 首次收集缺少 Worker PYTHONPATH，正确配置后复跑；这些失败日志仍保留，不能统称首次全绿。
+- **范围核对**：`scope-audit.json` 核对原 `_detect` AST 除末尾调用新增分类器之外一致，`avatar_table/associate/role_details` 等原函数一致；Worker、后端生产代码、共享投影、发送函数、合同、Schema、版本常量和来源登记均未修改。新增代码与测试差异见 `implementation.patch`。
+- **复现与证据**：原始日志、JUnit XML、逐帧 JSON、人工夹具 PNG 和隔离变异脚本统一在 `deliverables/releases/0.9.66/review/`。运行环境为 `/private/tmp/chejin-avatar-0964-venv/bin/python`；设置 `PYTHONPATH=worker-client:worker-client/omniauto-rpa`，分别运行 `pytest worker-client/tests/test_frame_avatars.py worker-client/tests/test_avatar_object_classification.py`、`pytest backend/tests/test_avatar_send_closure.py`、`pytest worker-client/tests/test_wechat_win32_ocr_sidecar_voice.py -k 'avatar or multiline or image_internal_duration or transcript_inherits or adjacent_same_side_bubbles or same_row_conflicting'`。指定 `CHEJIN_AVATAR_EVIDENCE_DIR` 可输出本轮逐帧证据。未执行无关全量。
+- **交付状态**：本地代码供复审，不作为正式发布或 Windows 鼠标键盘/EXE 验收通过。真实 Windows 进程传输、截图来源、几何/DPI、定位焦点和物理输入是受控边界；OCR、检测、分组、业务比较、发送确认、回执与自动收尾均执行生产实现。复审通过后再按 F 节形成真实双仓提交及来源登记；本轮未提交、推送、关闭 PR、生成新合同、打包或部署。
+
+#### 架构准备 v0.1（本轮实现前记录）
+
+1. **批准范围**：优化当前帧头像列分类；“疑似粘连”本身不应阻断已可靠确认的消息。只有证据能证明是独立内侧物体才排除；不将所有未决候选当成不存在。具体算法与职责以技术方案 6.0.3.3.3 E—G 为准。
+2. **PR 证据**：车金 PR #16，头提交 `a046760de74dcef39a4a04f0f3819e6beda8f65e`，基线与本轮 `0.9.65` HEAD 一致。其 `96→82` 粗列缩小和新增边缘容差能通过一个“你好”夹具，但相邻位置仍误报，因此不原样合并或 cherry-pick 参数修改。
+3. **反例复现**：基线四个独立气泡位置夹具均失败；PR 精确代码加既有回归得到 `59 passed / 2 failed`，气泡向左移动 1px、2px 仍失败。夹具为人工构造，不冒充 Windows 故障原图。审计证据位于 `/private/tmp/chejin-pr16-audit.mxiAUv/`。
+4. **隔离原型**：保持原粗列和头像确认规则，在唯一帧内表中按完整物体与已确认头像关系分类。既有回归及边界夹具 `61 passed`；客户/销售、100%/125%/150% 和四种位置变化组合 `24 passed`，合计 `85 passed`。原型与报告位于 `/private/tmp/chejin-avatar-object-review.tcr0fk/`，没有写入生产文件，不是正式版本已通过，也不是 Windows UAT。
+5. **实现与验收待办**：完成唯一分类器、同帧复用、真实原图 OCR、多行和媒体入口回归，以及正式 Worker 自动回执/解锁/Flow 结束链；附输入、最终头像表、消息分组、动作计数和数据库终态。禁用修复的反向变异必须使事故用例失败；不能由测试替程序完成收尾。
+6. **文档及治理**：当前四份权威文档统一到 `0.9.66`；旧 `0.9.65` 内容保留在 Git 和下方历史记录，未修改生产代码、合同或来源 SHA。正式实现复审后再形成真实双仓提交并更新来源；本轮不操作 PR、标签、安装包或生产服务。
 
 ### 2.0.65 2026-09-04：更新租约清理与失败诊断
 

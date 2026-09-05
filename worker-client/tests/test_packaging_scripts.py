@@ -309,7 +309,7 @@ class PackagingScriptsTest(unittest.TestCase):
         self.assertIn("app_name = [string]$manifest.app_name", workflow)
         self.assertIn("default_api_base_url = [string]$manifest.default_api_base_url", workflow)
         self.assertIn("delivery ZIP executable SHA256 mismatch", workflow)
-        self.assertIn("chejin-worker-v0.9.65-windows-x64.delivery.json", workflow)
+        self.assertIn("chejin-worker-v0.9.66-windows-x64.delivery.json", workflow)
         self.assertIn("CHEJIN_VISION_CLIENT_API_KEY", workflow)
         self.assertIn("vision_credential_embedded", workflow)
         self.assertIn("vision_configuration_locked", workflow)
@@ -335,7 +335,7 @@ class PackagingScriptsTest(unittest.TestCase):
             workflow,
         )
         self.assertIn("--artifact-storage-key", workflow)
-        self.assertIn("chejin-worker-v0.9.65-windows-x64.release.json", workflow)
+        self.assertIn("chejin-worker-v0.9.66-windows-x64.release.json", workflow)
         self.assertIn("must not contain a temporary download URL", workflow)
 
     def test_formal_update_package_contains_independent_updater_and_real_process_gate(self):
@@ -817,7 +817,7 @@ class PackagingScriptsTest(unittest.TestCase):
             [
                 {
                     "source_commit": (
-                        "03ddcd66cf22740c5c30537b0fb9e7873e24b50f"
+                        "b8804f282c58f2b7a5d1ef4148a3267f32d07bdf"
                     ),
                     "scope": [
                         "exact_wechat_context_menu_classification",
@@ -1069,6 +1069,8 @@ class PackagingScriptsTest(unittest.TestCase):
                         "c2_contract_0_9_64_generated_schema",
                         "frame_local_independent_avatar_evidence_contract",
                         "same_avatar_voice_transcript_continuation_contract",
+                        "confirmed_avatar_independent_inward_object_classification",
+                        "c2_contract_0_9_66_generated_schema",
                     ],
                 }
             ],
@@ -1076,16 +1078,16 @@ class PackagingScriptsTest(unittest.TestCase):
         self.assertEqual(
             provenance["current_release"],
             {
-                "version": "0.9.65",
+                "version": "0.9.66",
                 "source_commit": (
-                    "03ddcd66cf22740c5c30537b0fb9e7873e24b50f"
+                    "b8804f282c58f2b7a5d1ef4148a3267f32d07bdf"
                 ),
-                "contract_revision": "0.9.65",
+                "contract_revision": "0.9.66",
                 "contract_sha256": (
-                    "6ebe42853790b9911c3f81dbf1b917ddec03b249747bb4c26a447a889a862b5b"
+                    "0f65d3a66514639a1768901f59af18cd35dfb43a7fed75ae211e479ba70ca490"
                 ),
                 "scope": (
-                    "Worker acknowledged lease cleanup and bounded update diagnostics; OmniAuto behavior unchanged; CheJin regenerates the 0.9.65 contract schema overlay"
+                    "Frame-local independent inward object classification beside a unique confirmed avatar; preserve unresolved evidence and existing search width; generated 0.9.66 schema"
                 ),
             },
         )
@@ -1515,7 +1517,7 @@ class PackagingScriptsTest(unittest.TestCase):
         self.assertIn('$packageDir = [string]$manifest.package_dir', workflow)
         self.assertIn('$exePath = [string]$manifest.exe_path', workflow)
         self.assertNotIn('dist\\车金Worker客户端', workflow)
-        self.assertIn('version -ne "0.9.65"', workflow)
+        self.assertIn('version -ne "0.9.66"', workflow)
         self.assertIn('tests_status -ne "passed"', workflow)
         self.assertIn('@("--omniauto-sidecar", "--help")', workflow)
         self.assertIn('@("--omniauto-ocr-probe")', workflow)
