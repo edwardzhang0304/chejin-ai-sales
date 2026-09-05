@@ -68,5 +68,15 @@
   "review_approved_by_user": true,
   "formal_windows_uat_passed": false,
   "package_built": false,
-  "production_deployed": false
+  "production_deployed": false,
+  "chejin_integration_commit": "4f1de6d3b1464f9fafc4171d5fa47cca16ff16d1",
+  "chejin_branch": "codex/gray-release-0.9.x",
+  "both_sources_pushed": true,
+  "pr16": {
+    "state": "CLOSED",
+    "mergedAt": null,
+    "closedAt": "2026-09-05T12:22:06Z",
+    "headRefOid": "a046760de74dcef39a4a04f0f3819e6beda8f65e",
+    "comment_url": "https://github.com/edwardzhang0304/chejin-ai-sales/pull/16#issuecomment-5551784029"
+  }
 }

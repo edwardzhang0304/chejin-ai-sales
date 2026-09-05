@@ -1,6 +1,6 @@
 # AI智能客服售前跟进系统 版本更新记录
 
-版本：v0.9.66（集成登记 v0.3；复审通过，版本与合同已同步，正式包待验收）
+版本：v0.9.66（推送登记 v0.4；双仓已推送，PR16 已关闭，正式包待验收）
 
 最后更新：2026-09-05
 
@@ -23,6 +23,7 @@
 | 项目 | 当前值 |
 |---|---|
 | 灰度分支 | `codex/gray-release-0.9.x` |
+| 车金集成提交 | `4f1de6d3b1464f9fafc4171d5fa47cca16ff16d1`，已推送 `origin/codex/gray-release-0.9.x` |
 | 开发基线 | `0.9.65 / 2feb3e291a0a41fe93e42bb92ce518716c7d07e5`；包含已交付租约清理和诊断补齐 |
 | 本轮版本 | `0.9.66`；用户独立复审通过，版本/合同/生成 Schema 已同步；正式包与 Windows 物理操作验收待执行 |
 | 合同状态 | 候选 `0.9.66 / 0f65d3a66514639a1768901f59af18cd35dfb43a7fed75ae211e479ba70ca490`；当前已发布合同仍为 `0.9.65 / 6ebe42853790b9911c3f81dbf1b917ddec03b249747bb4c26a447a889a862b5b` |
@@ -30,11 +31,19 @@
 | 回滚材料 | 保留已部署 `0.9.64` 服务端镜像、静态站点和更新登记；更早 `0.9.63` 镜像及数据备份也保留；Windows 成功升级后回退需匹配后端版本 |
 | OmniAuto 来源 | 真实 `0.9.66` 来源 `b8804f282c58f2b7a5d1ef4148a3267f32d07bdf`，已推送用户 fork 并更新 `.chejin-source.json` |
 | 正式版本车道 | `1.0.x` 正式上线及稳定性修复；`1.1.x` 下一期优化；本轮不扩范围 |
-| 当前结论 | 用户独立复跑 192 passed、4 subtests passed，确认无新 P0/P1 并批准双仓集成；本轮版本/合同及真实来源验证通过，未打包或部署，不等同 Windows 实机/EXE UAT |
+| 当前结论 | 双仓已提交推送，0.9.66 版本/合同及真实来源验证通过；PR #16 已关闭且 mergedAt=null，保留贡献说明。未打包或部署，正式 EXE / Windows 实机验收仍待完成 |
 
 ### 2.0.66 2026-09-05：真实头像边界与独立气泡误判——复审通过与双仓集成
 
-#### 集成登记 v0.3
+#### 推送与 PR 处理 v0.4
+
+- 车金功能集成提交 `4f1de6d3b1464f9fafc4171d5fa47cca16ff16d1` 已推送 `edwardzhang0304/chejin-ai-sales` 的 `codex/gray-release-0.9.x`；OmniAuto 来源 `b8804f282c58f2b7a5d1ef4148a3267f32d07bdf` 已先行推送来源分支。均为普通快进推送，未强推、未创建发布标签。
+- 2026-09-05 20:22:06（北京时间）关闭 PR #16；GitHub 返回 `state=CLOSED`、`mergedAt=null`，head 仍为已审查的 `a046760de74dcef39a4a04f0f3819e6beda8f65e`。未删除贡献分支。
+- 关闭说明：https://github.com/edwardzhang0304/chejin-ai-sales/pull/16#issuecomment-5551784029 。明确“部分采纳问题与测试场景、未直接合并缩列/固定容差实现”，保留许聪（meta-xucong）贡献，并链接两个真实替代提交。
+- 集成后另行执行车金专属图片覆盖层正例：`1 passed`（`chejin-image-overlay.xml`），因此独立源仓保留原 skip 不影响车金该正例的验证。
+- 本次没有触发 workflow_dispatch、生成安装包或操作生产。集成与本次登记提交均使用 `[skip ci]`，避免灰度 push 自动打包。正式包及 Windows 物理操作验收仍待执行。
+
+#### 集成登记 v0.3（推送前准备）
 
 - 用户独立复审通过：192 passed + 4 subtests passed；隔离关闭修复后 32 个用例重新失败，33 项证据哈希一致，未发现新 P0/P1。用户明确授权提交、推送，并拒绝原样合并 PR #16。
 - 独立 OmniAuto：以已登记 `03ddcd66cf22740c5c30537b0fb9e7873e24b50f` 为父提交，形成 `b8804f282c58f2b7a5d1ef4148a3267f32d07bdf` 并推送 `edwardzhang0304/omniauto` 的 `codex/gray-release-0.9.x-source`。只修改分类文件、生成 Schema 和两份定向测试；提交正文保留许聪（meta-xucong）与 PR #16 的贡献说明，不采纳缩列/固定容差。
