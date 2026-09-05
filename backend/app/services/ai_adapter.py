@@ -97,39 +97,48 @@ def _read_provider_progress(path: Path, *, progress_id: str) -> list[dict]:
 def _kill_provider_process(process: subprocess.Popen) -> None:
     """Terminate the isolated Provider worker without inheriting a pipe hang."""
 
-    if os.name == "nt":
-        # ``Popen.kill`` can terminate the Python launcher while a descendant
-        # still owns the inherited stdout/stderr handles on Windows.  Killing
-        # the process tree closes those handles and keeps the hard timeout
-        # bounded.  Pass only the system root to the utility so application
-        # environment values are not propagated to another process.
-        system_root = os.environ.get("SystemRoot", r"C:\\Windows")
-        taskkill = str(Path(system_root) / "System32" / "taskkill.exe")
-        taskkill_process: subprocess.Popen | None = None
-        try:
-            taskkill_process = subprocess.Popen(
-                [taskkill, "/PID", str(process.pid), "/T", "/F"],
-                stdin=subprocess.DEVNULL,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                env={"SystemRoot": system_root},
-            )
-            try:
-                taskkill_process.wait(timeout=0.2)
-            except subprocess.TimeoutExpired:
-                # Do not use subprocess.run(timeout=...), whose timeout
-                # handler calls communicate() again and can wait for a
-                # descendant taskkill process on Windows.
-                try:
-                    taskkill_process.kill()
-                except OSError:
-                    pass
-        except OSError:
-            taskkill_process = None
+    # End the launcher first.  This is the bounded operation the caller
+    # depends on for its hard timeout; tree cleanup is best effort below.
     try:
         process.kill()
     except OSError:
         pass
+
+    if os.name == "nt":
+        # ``Popen.kill`` can terminate the Python launcher while a descendant
+        # still owns the inherited stdout/stderr handles on Windows.  Killing
+        # the process tree closes those handles.  Run the utility in a daemon
+        # thread so a hung taskkill invocation cannot extend the hard timeout.
+        # Pass only the system root to the utility so application environment
+        # values are not propagated to another process.
+        system_root = os.environ.get("SystemRoot", r"C:\\Windows")
+        taskkill = str(Path(system_root) / "System32" / "taskkill.exe")
+        def cleanup_tree() -> None:
+            try:
+                taskkill_process = subprocess.Popen(
+                    [taskkill, "/PID", str(process.pid), "/T", "/F"],
+                    stdin=subprocess.DEVNULL,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    env={"SystemRoot": system_root},
+                )
+                try:
+                    taskkill_process.wait(timeout=2.0)
+                except subprocess.TimeoutExpired:
+                    # Never wait for a stuck taskkill process on the request
+                    # path or during interpreter shutdown.
+                    try:
+                        taskkill_process.kill()
+                    except OSError:
+                        pass
+            except OSError:
+                pass
+
+        threading.Thread(
+            target=cleanup_tree,
+            name="chejin-provider-tree-cleanup",
+            daemon=True,
+        ).start()
 
 
 def _schedule_provider_temp_cleanup(temp_dir: Path, process: subprocess.Popen) -> None:
