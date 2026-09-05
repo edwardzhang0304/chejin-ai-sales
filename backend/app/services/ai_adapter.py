@@ -4,7 +4,10 @@ from dataclasses import dataclass
 import importlib
 import json
 import os
+import shutil
 import subprocess
+import threading
+import time
 from pathlib import Path
 import sys
 import tempfile
@@ -118,6 +121,32 @@ def _kill_provider_process(process: subprocess.Popen) -> None:
         process.kill()
     except OSError:
         pass
+
+
+def _schedule_provider_temp_cleanup(temp_dir: Path, process: subprocess.Popen) -> None:
+    """Retry cleanup after a timed-out Windows worker releases inherited handles."""
+
+    def cleanup() -> None:
+        try:
+            process.wait(timeout=0.5)
+        except (subprocess.TimeoutExpired, OSError):
+            pass
+        # A descendant can outlive the launcher briefly on Windows.  Keep the
+        # request path bounded and retry cleanup in a daemon thread instead of
+        # waiting for that descendant during TemporaryDirectory.__exit__.
+        for _ in range(120):
+            try:
+                shutil.rmtree(temp_dir, ignore_errors=False)
+            except OSError:
+                time.sleep(0.25)
+                continue
+            return
+
+    threading.Thread(
+        target=cleanup,
+        name="chejin-provider-temp-cleanup",
+        daemon=True,
+    ).start()
 
 
 @dataclass(frozen=True)
@@ -466,16 +495,19 @@ class RealOmniAutoAIEngineAdapter:
             separators=(",", ":"),
         )
         progress_id = uuid.uuid4().hex
-        with tempfile.TemporaryDirectory(prefix="chejin-ai-progress-") as temp_dir:
-            progress_path = Path(temp_dir) / "provider-progress.ndjson"
+        temp_dir = Path(tempfile.mkdtemp(prefix="chejin-ai-progress-"))
+        timeout_cleanup_target: tuple[Path, subprocess.Popen] | None = None
+        try:
+            progress_path = temp_dir / "provider-progress.ndjson"
             progress_path.touch(mode=0o600)
-            stdout_path = Path(temp_dir) / "provider.stdout"
-            stderr_path = Path(temp_dir) / "provider.stderr"
+            stdout_path = temp_dir / "provider.stdout"
+            stderr_path = temp_dir / "provider.stderr"
             child_env = os.environ.copy()
             child_env["CHEJIN_AI_PROGRESS_PATH"] = str(progress_path)
             child_env["CHEJIN_AI_PROGRESS_ID"] = progress_id
             stdout_handle = stdout_path.open("wb")
             stderr_handle = stderr_path.open("wb")
+            process: subprocess.Popen | None = None
             try:
                 process = subprocess.Popen(
                     [sys.executable, str(self._provider_worker_script)],
@@ -506,6 +538,7 @@ class RealOmniAutoAIEngineAdapter:
                         progress_path,
                         progress_id=progress_id,
                     )
+                    timeout_cleanup_target = (temp_dir, process)
                     raise AppError(
                         "AI_ENGINE_PROVIDER_TIMEOUT",
                         "OmniAuto Brain 提供商调用长时间无响应",
@@ -521,6 +554,8 @@ class RealOmniAutoAIEngineAdapter:
             finally:
                 stdout_handle.close()
                 stderr_handle.close()
+                if timeout_cleanup_target is not None:
+                    _schedule_provider_temp_cleanup(*timeout_cleanup_target)
             stdout = stdout_path.read_text(encoding="utf-8", errors="replace")
             progress = _read_provider_progress(
                 progress_path,
@@ -575,6 +610,12 @@ class RealOmniAutoAIEngineAdapter:
             result["provider_progress_id"] = progress_id
             result["provider_progress"] = progress
             return result
+        finally:
+            # If setup or provider parsing fails, remove the ordinary
+            # temporary directory.  Timed-out workers are cleaned up by the
+            # daemon retry scheduled after their handles are closed.
+            if timeout_cleanup_target is None:
+                shutil.rmtree(temp_dir, ignore_errors=True)
 
     def generate_reply_decision(self, *, conversation_context: dict, message_batch: dict) -> AIEngineDecision:
         bridge = self._load_context_bridge()
