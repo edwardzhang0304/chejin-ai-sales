@@ -539,8 +539,17 @@ class RealOmniAutoAIEngineAdapter:
                 )
                 try:
                     if process.stdin is not None:
-                        process.stdin.write(request)
-                        process.stdin.close()
+                        try:
+                            process.stdin.write(request)
+                        except (BrokenPipeError, OSError):
+                            # The worker may close stdin while starting.  Its
+                            # exit status below still determines success or
+                            # failure; this race must not mask timeout logic.
+                            pass
+                        try:
+                            process.stdin.close()
+                        except (BrokenPipeError, OSError):
+                            pass
                     deadline = time.monotonic() + timeout_seconds
                     while process.poll() is None:
                         remaining = deadline - time.monotonic()
