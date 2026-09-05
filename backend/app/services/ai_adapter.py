@@ -538,10 +538,18 @@ class RealOmniAutoAIEngineAdapter:
                     env=child_env,
                 )
                 try:
-                    process.communicate(
-                        input=request,
-                        timeout=timeout_seconds,
-                    )
+                    if process.stdin is not None:
+                        process.stdin.write(request)
+                        process.stdin.close()
+                    deadline = time.monotonic() + timeout_seconds
+                    while process.poll() is None:
+                        remaining = deadline - time.monotonic()
+                        if remaining <= 0:
+                            raise subprocess.TimeoutExpired(
+                                process.args,
+                                timeout_seconds,
+                            )
+                        time.sleep(min(0.05, remaining))
                 except subprocess.TimeoutExpired as exc:
                     _kill_provider_process(process)
                     # Keep child output in ordinary files rather than PIPEs.
