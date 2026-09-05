@@ -469,59 +469,59 @@ class RealOmniAutoAIEngineAdapter:
         with tempfile.TemporaryDirectory(prefix="chejin-ai-progress-") as temp_dir:
             progress_path = Path(temp_dir) / "provider-progress.ndjson"
             progress_path.touch(mode=0o600)
+            stdout_path = Path(temp_dir) / "provider.stdout"
+            stderr_path = Path(temp_dir) / "provider.stderr"
             child_env = os.environ.copy()
             child_env["CHEJIN_AI_PROGRESS_PATH"] = str(progress_path)
             child_env["CHEJIN_AI_PROGRESS_ID"] = progress_id
-            process = subprocess.Popen(
-                [sys.executable, str(self._provider_worker_script)],
-                stdin=subprocess.PIPE,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                env=child_env,
-            )
+            stdout_handle = stdout_path.open("wb")
+            stderr_handle = stderr_path.open("wb")
             try:
-                stdout, _stderr = process.communicate(
-                    input=request,
-                    timeout=timeout_seconds,
+                process = subprocess.Popen(
+                    [sys.executable, str(self._provider_worker_script)],
+                    stdin=subprocess.PIPE,
+                    stdout=stdout_handle,
+                    stderr=stderr_handle,
+                    text=True,
+                    encoding="utf-8",
+                    errors="replace",
+                    env=child_env,
                 )
-            except subprocess.TimeoutExpired as exc:
-                _kill_provider_process(process)
-                # Do not call communicate() without a timeout here.  On
-                # Windows a terminated worker can leave inherited pipe
-                # handles open briefly (or until a sleeping child exits),
-                # which would turn a one-second provider timeout into a
-                # thirty-second stall.  Reap the process with a bounded wait
-                # and close the pipes after termination.
                 try:
-                    process.wait(timeout=0.25)
-                except subprocess.TimeoutExpired:
-                    pass
-                finally:
-                    for stream in (process.stdin, process.stdout, process.stderr):
-                        if stream is not None:
-                            try:
-                                stream.close()
-                            except OSError:
-                                pass
-                progress = _read_provider_progress(
-                    progress_path,
-                    progress_id=progress_id,
-                )
-                raise AppError(
-                    "AI_ENGINE_PROVIDER_TIMEOUT",
-                    "OmniAuto Brain 提供商调用长时间无响应",
-                    503,
-                    {
-                        "timeout_seconds": timeout_seconds,
-                        "suggested_action": "retry_later",
-                        "provider_progress_id": progress_id,
-                        "provider_progress": progress,
-                        "last_provider_progress": progress[-1] if progress else None,
-                    },
-                ) from exc
+                    process.communicate(
+                        input=request,
+                        timeout=timeout_seconds,
+                    )
+                except subprocess.TimeoutExpired as exc:
+                    _kill_provider_process(process)
+                    # Keep child output in ordinary files rather than PIPEs.
+                    # Windows can otherwise retain an inherited pipe handle
+                    # after the worker is killed and make communicate() wait
+                    # until a sleeping child exits.
+                    try:
+                        process.wait(timeout=0.25)
+                    except subprocess.TimeoutExpired:
+                        pass
+                    progress = _read_provider_progress(
+                        progress_path,
+                        progress_id=progress_id,
+                    )
+                    raise AppError(
+                        "AI_ENGINE_PROVIDER_TIMEOUT",
+                        "OmniAuto Brain 提供商调用长时间无响应",
+                        503,
+                        {
+                            "timeout_seconds": timeout_seconds,
+                            "suggested_action": "retry_later",
+                            "provider_progress_id": progress_id,
+                            "provider_progress": progress,
+                            "last_provider_progress": progress[-1] if progress else None,
+                        },
+                    ) from exc
+            finally:
+                stdout_handle.close()
+                stderr_handle.close()
+            stdout = stdout_path.read_text(encoding="utf-8", errors="replace")
             progress = _read_provider_progress(
                 progress_path,
                 progress_id=progress_id,
