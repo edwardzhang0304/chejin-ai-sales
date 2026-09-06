@@ -1,6 +1,6 @@
 # AI智能客服售前跟进系统 技术方案
 
-版本：v0.9.67（实现候选 v0.2；Worker Vision 凭据后台配置，待复审）
+版本：v0.9.67.1（正式发布准备；Worker Vision 凭据后台配置，代码复审通过）
 
 日期：2026-07-21
 
@@ -12,7 +12,7 @@
 `315bf41`，本轮仅将 Vision Key 从安装包改为运营后台按 Worker 配置、绑定后运行时取得。
 允许多个 Worker 使用完全相同的 Key，不做 Key 唯一性、跨 Worker 重复检测或强制一机一 Key。
 头像修复、媒体编排、Brain、身份判断、C0—C4 状态机和更新安装门禁保持不变。
-本轮已完成本地代码、迁移及定向自测，尚未提交、推送、正式打包或部署；新合同/Schema/真实来源登记待复审后集成。
+功能源码 6b4a2c8 与推送登记 9c332e8 已通过复审并推送；用户已授权正式 Windows 包、生产后台/后端和更新渠道发布。发布准备已统一 0.9.67 版本、合同与生成 Schema；正式流水线及 Windows 实机验收结果以版本记录为准。
 2026-09-06 用户收口页面：新增 Vision Key 必填，去掉辅助解释小字，抽屉不提供清除入口；已配置编辑留空保留。
 不以改变 Key 来源承诺消除所有聊天安全提示。
 上次生产登记为 `0.9.66`，不在本轮重新宣称 Windows 验收已通过。更新查询使用
@@ -26,11 +26,10 @@ Flow、UI 锁、Sidecar 和本地账本全部门禁。等待状态增加 guard/c
 
 已发布 `0.9.65` 合同为 `6ebe42853790b9911c3f81dbf1b917ddec03b249747bb4c26a447a889a862b5b`。
 已发布 `contract_revision=0.9.66`，规范化 SHA 为 `0f65d3a66514639a1768901f59af18cd35dfb43a7fed75ae211e479ba70ca490`。
-目标 `contract_revision=0.9.67`，SHA 在实现与生成 Schema 完成后真实计算，不预填。
-OmniAuto 真实来源为 `b8804f282c58f2b7a5d1ef4148a3267f32d07bdf`，父提交为 `03ddcd66cf22740c5c30537b0fb9e7873e24b50f`；
+当前发布准备合同 `contract_revision=0.9.67`，实际生成 SHA 为 `49d9425a3166837621ff87bf50418509a518b779b793152b6e0a269a502e0e23`。
+OmniAuto 真实来源为 `621ca4795de38a51c579e8a389e2723374dabc23`，父提交为 `b8804f282c58f2b7a5d1ef4148a3267f32d07bdf`；本次仅更新生成 Schema 的版本与 SHA，运行逻辑不变。
 两仓头像分类文件与生成 Schema 逐字节一致，来源与集成详情见版本更新记录。
-用户确认上一轮 `0.9.63 → 0.9.64` 安装失败并回滚；本轮正式包已通过 CI 门禁、Updater 切换/回滚验证，
-并完成同版本后端部署与更新登记。Windows 实机安装结果仍以用户现场验证和版本更新记录为准。
+历史 0.9.66 正式包曾通过 CI 门禁并完成部署；此结果不代表本次 0.9.67 已发布。Windows 实机安装结果仍以用户现场验证和版本更新记录为准。
 
 ## 文档治理规则
 
@@ -6020,7 +6019,7 @@ unzip -t chejin-worker-v${RELEASE_VERSION}-windows-x64.zip
 ```
 
 只核对交付清单中的版本、完整源码提交、ZIP 哈希、可执行文件哈希、Updater 哈希、合同 revision/SHA、签名 key ID、
-`rollback_safe=true` 和 `vision_live_probe_check=passed`。不得在终端、日志、证据或聊天中打印任何凭据、私钥或临时下载 token。
+`rollback_safe=true`、`vision_credential_embedded=false`、`vision_credential_source=worker_backend` 和 `vision_live_probe_check=runtime_after_binding`。不得在终端、日志、证据或聊天中打印任何凭据、私钥或临时下载 token。
 
 ### 18.5 流程 B：生产切换前备份（不可跳过）
 
