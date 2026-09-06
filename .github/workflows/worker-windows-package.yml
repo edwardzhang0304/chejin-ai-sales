@@ -335,7 +335,7 @@ jobs:
             vision_base_url = [string]$manifest.vision_base_url
             vision_model = [string]$manifest.vision_model
             vision_request_style = [string]$manifest.vision_request_style
-            vision_live_probe_check = "passed"
+            vision_live_probe_check = [string]$manifest.vision_live_probe_check
             uat_launcher_utf8_bom_check = "passed"
             uat_launcher_powershell_5_1_parse_check = "passed"
             client_delivery_boundary_check = [string]$manifest.client_delivery_boundary_check
