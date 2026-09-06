@@ -109,28 +109,16 @@ class PackagingEntryDiagnosticsTest(unittest.TestCase):
             path = root / "CheJinWorker" / "diagnostics" / "startup-crash.jsonl"
             self.assertFalse(path.exists())
 
-    def test_frozen_startup_redaction_covers_embedded_vision_key(self):
-        with tempfile.TemporaryDirectory() as temp:
-            root = Path(temp)
-            embedded_key = "embedded-startup-unit-key-never-export"
-            (root / "vision-runtime.json").write_text(
-                json.dumps(
-                    {"schema_version": 1, "vision_api_key": embedded_key}
-                ),
-                encoding="utf-8",
-            )
-            with mock.patch.object(self.entry.sys, "frozen", True, create=True), mock.patch.object(
-                self.entry.sys,
-                "_MEIPASS",
-                str(root),
-                create=True,
-            ):
-                redacted = self.entry._redact_text(
-                    f"startup provider error: {embedded_key}"
-                )
-
-        self.assertNotIn(embedded_key, redacted)
-        self.assertIn("[REDACTED]", redacted)
+    def test_frozen_startup_redaction_covers_runtime_vision_key(self):
+        from chejin_worker_client import vision_credentials as credentials
+        key = "runtime-startup-unit-key-never-export"
+        credentials.complete_credential_refresh(credentials.begin_credential_refresh(), key)
+        try:
+            redacted = self.entry._redact_text(f"startup provider error: {key}")
+            self.assertNotIn(key, redacted)
+            self.assertIn("[REDACTED]", redacted)
+        finally:
+            credentials.clear_vision_credential()
 
     def test_frozen_startup_failure_logs_and_exits_without_error_dialog(self):
         with tempfile.TemporaryDirectory() as temp:

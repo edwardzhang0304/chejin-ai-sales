@@ -19,10 +19,9 @@ $appRoot = Join-Path $packageRoot "app"
 $pythonExe = Join-Path $runtimeRoot "python.exe"
 $pythonwExe = Join-Path $runtimeRoot "pythonw.exe"
 $identityPath = Join-Path $appRoot "runtime-build-identity.json"
-$visionCredentialPath = Join-Path $appRoot "vision-runtime.json"
 $omniautoPath = Join-Path $appRoot "omniauto-rpa"
 
-foreach ($requiredPath in @($pythonExe, $pythonwExe, $identityPath, $visionCredentialPath, $omniautoPath)) {
+foreach ($requiredPath in @($pythonExe, $pythonwExe, $identityPath, $omniautoPath)) {
   if (-not (Test-Path $requiredPath)) {
     throw "Fast UAT package is incomplete: $requiredPath"
   }
@@ -35,7 +34,6 @@ $env:CHEJIN_API_BASE_URL = $ApiBaseUrl.TrimEnd("/")
 $env:CHEJIN_RPA_MODE = "real"
 $env:CHEJIN_BUILD_KIND = "debug_uat_locked"
 $env:CHEJIN_BUILD_IDENTITY_PATH = $identityPath
-$env:CHEJIN_VISION_CREDENTIAL_PATH = $visionCredentialPath
 $env:CHEJIN_OMNIAUTO_RPA_SOURCE = $omniautoPath
 
 $localAppData = [Environment]::GetFolderPath("LocalApplicationData")

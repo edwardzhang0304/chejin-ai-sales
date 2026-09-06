@@ -1,6 +1,6 @@
 @startuml
-' 文档版本：v0.9.66；集成登记 v0.3，复审通过，版本与合同已同步，正式包待验收；最后更新：2026-09-05
-' 当前候选合同：0.9.66 / 0f65d3a66514639a1768901f59af18cd35dfb43a7fed75ae211e479ba70ca490；真实 OmniAuto 来源：b8804f282c58f2b7a5d1ef4148a3267f32d07bdf。已发布基线：0.9.65 / 6ebe42853790b9911c3f81dbf1b917ddec03b249747bb4c26a447a889a862b5b。继承租约清理与更新诊断；本轮只补技术方案 6.0.3.3.3 的同帧头像分类，不改变业务状态机；发布及回滚见版本记录。
+' 文档版本：v0.9.67；实现候选 v0.2，本地实现待复审；最后更新：2026-09-06
+' 目标合同：0.9.67，SHA 待实现后真实生成；已发布基线：0.9.66 / 0f65d3a66514639a1768901f59af18cd35dfb43a7fed75ae211e479ba70ca490。只调整技术方案 8.3.1 的 Vision 凭据来源，不修改图片/业务状态机；发布及回滚见版本记录。
 title AI智能客服售前跟进系统 全流程图（知识管理、C0-C4、媒体、回复、转人工与恢复）
 
 skinparam monochrome true
@@ -42,6 +42,7 @@ end box
 box "车金服务端"
 participant "C0/C1线索、销售与任务服务" as C01
 participant "会话绑定与授权服务\nread-targets" as Auth
+participant "Worker凭据服务\n配置 / 绑定鉴权" as Credential
 participant "消息入库服务\nmessages/ingest" as Ingest
 participant "知识管理服务\n草稿 / 发布 / 回滚" as Knowledge
 database "业务数据库\nmessage_events + knowledge_releases" as DB
@@ -72,6 +73,29 @@ note over W,Reply
 12. 媒体动作只能终止为cancelled_before_trigger、committed_completed、committed_failed或identity_unresolved；identity_unresolved只做无UI恢复，仍不明确则幂等handoff，不得长期挂起或重复点击。
 13. 每个message_batch创建时冻结唯一knowledge_release_id；同批次普通/快速Brain、重试、修复和Guard不得跨版本。草稿、旧KnowledgeRuntime业务知识和未发布候选不得进入Provider。
 end note
+
+group Worker Vision 凭据配置（0.9.67；安装包不含Key）
+  OPS -> Credential: 已登录后台创建Worker必填Key，编辑设置/替换\n去掉解释小字和抽屉清除入口；同Key不查重
+  Credential -> DB: 原子加密保存+脱敏操作审计\n不改任务或客户状态
+  Credential --> OPS: 仅配置状态/更新时间\n不回显Key
+  opt 客户端绑定成功、启动或用户显式开始接单
+    W -> Credential: GET /api/workers/{worker_id}/vision-credential\n现有Worker Token+当前已绑定实例
+    Credential -> Credential: 核对Worker启用、绑定与Token\n不是Key格式/唯一性判断
+    alt 鉴权通过且已配置
+      Credential -> DB: 读取并解密该Worker凭据
+      Credential --> W: HTTPS/no-store，仅当前Worker的Key
+      W -> W: 替换运行内存配置，执行原Vision预检\n不落盘，不新增Provider探测或轮询
+    else 未配置、读取失败或绑定失效
+      Credential --> W: 未配置状态或原鉴权/脱敏错误
+      W -> W: 原能力/绑定提示，禁止新C2\n恢复与更新不受Key缺失阻断
+    end
+  end
+  note over W,Credential
+  后台修改在重启或暂停后再次开始接单生效，不打断当前媒体动作。
+  旧内存不作为重新获取失败的兜底；本次不新增本地密钥存储。
+  后台清除不是供应商立即撤销，共用Key的撤销影响所有使用者。
+  end note
+end
 
 group 运营后台知识管理（0.9.61）
   OPS -> Knowledge: 查看知识 / 新增或编辑
@@ -199,7 +223,7 @@ loop Worker运行中；每次循环最多完成一个会话事务
   end
 
   group 0.5 新C2 UI流程所需Vision能力预检
-    W -> W: 校验正式包内置Vision客户端专用Key\nProvider/HTTPS接口/模型白名单
+    W -> W: 按原缓存节奏校验当前绑定的内存Vision配置\nProvider/HTTPS接口/模型白名单不变
     alt 配置缺失
       W -> W: vision_not_ready\n不开始新扫描、不打开会话
       break 配置恢复并重新预检前不进入新C2 UI流程
@@ -609,7 +633,7 @@ loop Worker运行中；每次循环最多完成一个会话事务
                         W -> W: 原始位图按像素/源内存上限解码\n缩放并自适应编码到Provider上限
                         W -> W: 校验image_hash和目标视觉指纹\n清除本次Windows剪贴板内容
                         W -> VG: 进程内调用 BuiltinVisionPlugin.run(context)\n不上传车金后端，不写本地文件
-                        VG -> VM: 使用CI注入的正式包内置客户端专用Key\nHTTPS + 白名单request_style调用单张图片Vision模型
+                        VG -> VM: 使用后台按当前Worker下发的内存Key\nHTTPS + 原白名单request_style调用单张图片Vision模型
                         note right of VM
                         Vision只输出：
                         vision_summary / image_ocr_text / classification /

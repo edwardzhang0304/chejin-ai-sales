@@ -15,8 +15,10 @@ from app.schemas.worker import (
     WorkerResetBindingRequest,
     WorkerRunStatusRequest,
     WorkerUpdate,
+    WorkerVisionCredential,
 )
-from app.services import task_service, worker_service
+from app.services import task_service, worker_service, worker_vision_credential_service
+from app.errors import AppError
 
 
 router = APIRouter(tags=["workers"])
@@ -271,3 +273,50 @@ def reset_worker_binding(
     except Exception:
         db.rollback()
         raise
+
+
+@router.put("/workers/{worker_id}/vision-credential")
+def set_vision_credential(
+    worker_id: str,
+    payload: WorkerVisionCredential,
+    db: Session = Depends(get_db),
+    actor: ActorContext = Depends(get_actor_context),
+):
+    try:
+        worker = worker_service._lock_worker(db, worker_id)
+        data = worker_vision_credential_service.save_credential(db, worker, payload.vision_api_key, actor)
+        db.commit()
+        return ok(data)
+    except Exception:
+        db.rollback()
+        raise
+
+
+@router.delete("/workers/{worker_id}/vision-credential")
+def clear_vision_credential(
+    worker_id: str,
+    db: Session = Depends(get_db),
+    actor: ActorContext = Depends(get_actor_context),
+):
+    try:
+        worker = worker_service._lock_worker(db, worker_id)
+        data = worker_vision_credential_service.save_credential(db, worker, None, actor, clear=True)
+        db.commit()
+        return ok(data)
+    except Exception:
+        db.rollback()
+        raise
+
+
+@router.get("/workers/{worker_id}/vision-credential")
+def get_vision_credential(
+    worker_id: str,
+    x_worker_token: str | None = Header(default=None),
+    x_client_instance_id: str | None = Header(default=None),
+    db: Session = Depends(get_db),
+):
+    worker_service._lock_worker(db, worker_id)
+    worker = worker_service.authenticate_worker_client(db, worker_id, x_worker_token, x_client_instance_id)
+    if worker.client_binding_state != "bound" or not worker.client_instance_id or not x_client_instance_id:
+        raise AppError("WORKER_CLIENT_BINDING_INVALID", "客户端未绑定或绑定已失效，请重新绑定", 401)
+    return ok(worker_vision_credential_service.read_credential(worker))

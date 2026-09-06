@@ -27,7 +27,6 @@ $UatEvidenceCollectorPath = Join-Path $PackageDir "collect-uat-evidence.ps1"
 $UatEvidenceHelperSourcePath = Join-Path $Root "packaging\collect_uat_evidence.py"
 $UatEvidenceHelperPath = Join-Path $PackageDir "collect_uat_evidence.py"
 $UatLauncherValidatorPath = Join-Path $Root "scripts\validate-uat-launcher.ps1"
-$VisionCredentialPath = Join-Path $ReportsDir "vision-runtime.json"
 $ReleaseSigningKeysPath = Join-Path $ReportsDir "release-signing-public-keys.json"
 $UpdaterDistPath = Join-Path $ReportsDir "updater-dist"
 $OmniAutoSourcePath = Join-Path $Root "omniauto-rpa"
@@ -145,30 +144,11 @@ if (-not $SkipTests) {
 New-Item -ItemType Directory -Force -Path $ReportsDir | Out-Null
 $env:CHEJIN_BUILD_KIND = if ($DevelopmentBuild) { "development" } else { "official" }
 if ($DevelopmentBuild) {
-  Remove-Item Env:CHEJIN_VISION_CREDENTIAL_PATH -ErrorAction SilentlyContinue
-  if (Test-Path $VisionCredentialPath) {
-    Remove-Item -LiteralPath $VisionCredentialPath -Force
-  }
   $env:CHEJIN_RELEASE_SIGNING_KEYS_PATH = Join-Path $Root "packaging\release-signing-public-keys.json"
 } else {
   if ([string]$env:GITHUB_ACTIONS -ne "true") {
-    throw "正式打包失败：正式 Vision 凭据只能由 GitHub Actions CI Secret 注入。"
+    throw "正式打包失败：正式发布必须由 GitHub Actions 执行。"
   }
-  $VisionClientApiKey = [string]$env:CHEJIN_VISION_CLIENT_API_KEY
-  if ([string]::IsNullOrWhiteSpace($VisionClientApiKey)) {
-    throw "正式打包失败：CI 未注入客户端专用 Vision 凭据。"
-  }
-  $VisionCredentialJson = [ordered]@{
-    schema_version = 1
-    vision_api_key = $VisionClientApiKey.Trim()
-  } | ConvertTo-Json -Compress
-  [System.IO.File]::WriteAllText(
-    $VisionCredentialPath,
-    $VisionCredentialJson,
-    (New-Object System.Text.UTF8Encoding($false))
-  )
-  $env:CHEJIN_VISION_CREDENTIAL_PATH = $VisionCredentialPath
-  Remove-Item Env:CHEJIN_VISION_CLIENT_API_KEY -ErrorAction SilentlyContinue
   $ReleaseSigningKeyId = [string]$env:CHEJIN_RELEASE_SIGNING_KEY_ID
   $ReleaseSigningPublicKey = [string]$env:CHEJIN_RELEASE_SIGNING_PUBLIC_KEY_BASE64
   if ([string]::IsNullOrWhiteSpace($ReleaseSigningKeyId) -or [string]::IsNullOrWhiteSpace($ReleaseSigningPublicKey)) {
@@ -335,11 +315,12 @@ if ($BundledVisionPreflight.ExitCode -ne 0) {
 $BundledVisionPreflightPayload = Get-Content -Raw -Encoding UTF8 $BundledVisionPreflightReport | ConvertFrom-Json
 $BundledVisionCheck = @($BundledVisionPreflightPayload.checks | Where-Object { $_.name -eq "vision_credential" })
 if ($BundledVisionCheck.Count -ne 1 -or
-    $BundledVisionCheck[0].ok -ne $true -or
-    $BundledVisionCheck[0].detail.credential_source -ne "embedded" -or
-    $BundledVisionCheck[0].detail.live_probe.ok -ne $true -or
-    $BundledVisionCheck[0].detail.live_probe.status -ne 200) {
-  throw "打包失败：最终 exe 内置 Vision 真实能力探针未通过"
+    $BundledVisionCheck[0].detail.credential_source -ne "worker_backend" -or
+    $BundledVisionCheck[0].detail.configured -ne $false) {
+  throw "打包失败：最终 exe 必须从后台取得 Vision 凭据，出厂应为未配置"
+}
+if (@(Get-ChildItem -Path $PackageDir -Recurse -File -Filter "vision-runtime.json").Count -ne 0) {
+  throw "打包失败：包内包含旧 Vision 凭据资源"
 }
 $PackagedPythonArchiveLines = & .\.venv\Scripts\pyi-archive_viewer.exe -l -r $ExePath
 if ($LASTEXITCODE -ne 0) {
@@ -456,13 +437,14 @@ $Manifest = [ordered]@{
   git_dirty = $GitDirty
   build_kind = if ($DevelopmentBuild) { "development" } else { "official" }
   formal_release = -not $DevelopmentBuild
-  vision_credential_embedded = -not $DevelopmentBuild
+  vision_credential_embedded = $false
+  vision_credential_source = "worker_backend"
   vision_configuration_locked = -not $DevelopmentBuild
   vision_provider = "anthropic_compatible"
   vision_base_url = "https://aiself.vip/v1"
   vision_model = "doubao-seed-2-0-lite-260428"
   vision_request_style = "anthropic_messages_vision"
-  vision_live_probe_check = if ($DevelopmentBuild) { "not_required" } else { "passed" }
+  vision_live_probe_check = "runtime_after_binding"
   tests_status = $TestsStatus
   preflight_status = $PreflightStatus
   c2_contract_revision = $ContractRevision.Trim()

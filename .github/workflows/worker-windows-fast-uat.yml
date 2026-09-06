@@ -19,7 +19,6 @@ jobs:
     runs-on: windows-latest
     timeout-minutes: 45
     env:
-      CHEJIN_VISION_CLIENT_API_KEY: ${{ secrets.CHEJIN_VISION_CLIENT_API_KEY }}
 
     steps:
       - name: Check out exact source
@@ -204,10 +203,11 @@ jobs:
           if ($LASTEXITCODE -ne 0) {
             throw "Extracted Fast UAT runtime preflight failed"
           }
-          $secretValue = [string]$env:CHEJIN_VISION_CLIENT_API_KEY
-          $safeManifest = Get-Content -Raw -Encoding UTF8 $manifestPath
-          if (-not [string]::IsNullOrWhiteSpace($secretValue) -and $safeManifest.Contains($secretValue)) {
-            throw "Fast UAT public manifest leaked the Vision credential"
+          if ($manifest.vision_credential_embedded -ne $false -or $manifest.vision_credential_source -ne "worker_backend") {
+            throw "Fast UAT must obtain Vision credentials from the backend"
+          }
+          if (@(Get-ChildItem -Path (Split-Path $launcher) -Recurse -File -Filter "vision-runtime.json").Count -ne 0) {
+            throw "Fast UAT contains legacy Vision credentials"
           }
           Get-FileHash -Algorithm SHA256 $zip.FullName | Format-List
 

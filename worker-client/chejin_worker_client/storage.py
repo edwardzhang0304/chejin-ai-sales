@@ -3108,13 +3108,14 @@ def append_log(
                 stored_metadata["traceback"] = "".join(
                     traceback.format_exception(exc_type, exc, exc_traceback)
                 )
-        try:
-            from .incident_evidence import redact_diagnostic
+    try:
+        from .incident_evidence import redact_diagnostic
 
-            message = str(redact_diagnostic(message))
-            stored_metadata = dict(redact_diagnostic(stored_metadata))
-        except Exception:
-            pass
+        message = str(redact_diagnostic(message))
+        stored_metadata = dict(redact_diagnostic(stored_metadata))
+    except Exception:
+        message = "日志脱敏失败，原始内容未记录。"
+        stored_metadata = {"redaction_failed": True}
     with db_connection() as conn:
         conn.execute(
             """

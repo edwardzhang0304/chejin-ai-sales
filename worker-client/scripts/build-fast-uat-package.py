@@ -115,10 +115,6 @@ def build(*, runtime_root: Path, output_dir: Path, git_commit: str, git_branch: 
         raise SystemExit("FAST_UAT_GIT_COMMIT_MISMATCH")
     if bool(build_source["git_dirty"]):
         raise SystemExit("FAST_UAT_GIT_DIRTY")
-    vision_key = str(os.environ.get("CHEJIN_VISION_CLIENT_API_KEY") or "").strip()
-    if not vision_key:
-        raise SystemExit("FAST_UAT_VISION_KEY_REQUIRED")
-
     package_root = output_dir / "CheJinWorkerDebug"
     if package_root.exists():
         shutil.rmtree(package_root)
@@ -146,6 +142,8 @@ def build(*, runtime_root: Path, output_dir: Path, git_commit: str, git_branch: 
         "distribution_channel": "windows_fast_debug_zip",
         "debug_uat": True,
         "vision_configuration_locked": True,
+        "vision_credential_embedded": False,
+        "vision_credential_source": "worker_backend",
         "omniauto_upstream_base_commit": provenance["upstream_base_commit"],
         "omniauto_tree_sha256": omniauto_source["tree_sha256"],
     }
@@ -153,14 +151,7 @@ def build(*, runtime_root: Path, output_dir: Path, git_commit: str, git_branch: 
         json.dumps(identity, ensure_ascii=False, indent=2) + "\n",
         encoding="utf-8",
     )
-    (app_root / "vision-runtime.json").write_text(
-        json.dumps({"schema_version": 1, "vision_api_key": vision_key}, separators=(",", ":")),
-        encoding="utf-8",
-    )
-    app_tree_sha256, app_file_count = _tree_hash(
-        app_root,
-        excluded_names={"vision-runtime.json"},
-    )
+    app_tree_sha256, app_file_count = _tree_hash(app_root)
     runtime_identity = json.loads(
         (runtime_root / "fast-uat-runtime-base.json").read_text(encoding="utf-8-sig")
     )
@@ -178,9 +169,6 @@ def build(*, runtime_root: Path, output_dir: Path, git_commit: str, git_branch: 
         json.dumps(manifest, ensure_ascii=False, indent=2) + "\n",
         encoding="utf-8",
     )
-    if vision_key in manifest_path.read_text(encoding="utf-8"):
-        raise SystemExit("FAST_UAT_MANIFEST_SECRET_LEAK")
-
     zip_path = output_dir / f"chejin-worker-fast-uat-v{_version()}-{git_commit[:12]}.zip"
     if zip_path.exists():
         zip_path.unlink()

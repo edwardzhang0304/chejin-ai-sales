@@ -69,9 +69,10 @@ def main() -> int:
             )
         if not isinstance(result, dict):
             raise TypeError("VISION_PROVIDER_RESULT_INVALID")
+        from .incident_evidence import redact_diagnostic
         envelope = {
             "ok": True,
-            "result": result,
+            "result": redact_diagnostic(result),
             "protocol_unicode_sentinel": UNICODE_PROTOCOL_SENTINEL,
         }
         exit_code = 0

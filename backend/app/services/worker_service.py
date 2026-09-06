@@ -24,6 +24,7 @@ from app.schemas.worker import (
 )
 from app.schemas.worker import WorkerCreate
 from app.services.audit_service import write_log
+from app.services.worker_vision_credential_service import credential_status, save_credential
 from app.services.recovery_hold_state import (
     settle_recovery_hold_after_flow,
     suspend_recovery_hold,
@@ -115,6 +116,7 @@ def worker_summary(db: Session, worker: Worker | None, *, include_token: bool = 
         "bound_sales_name": sales.sales_name if sales else None,
         "created_at": worker.created_at,
         "updated_at": worker.updated_at,
+        **credential_status(worker),
     }
     if include_token:
         data["worker_token"] = decrypt_worker_token(worker.worker_token_encrypted)
@@ -155,6 +157,7 @@ def create_worker(db: Session, payload: WorkerCreate, actor: ActorContext) -> di
     )
     db.add(worker)
     db.flush()
+    save_credential(db, worker, payload.vision_api_key, actor)
     write_log(
         db,
         actor,

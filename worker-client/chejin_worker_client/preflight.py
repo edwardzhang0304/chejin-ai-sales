@@ -134,25 +134,15 @@ def vision_credential_check() -> PreflightCheck:
     safe_detail = {
         key: value
         for key, value in status.items()
-        if key != "configured"
+        if key != "vision_api_key"
     }
     if isinstance(live_probe, dict):
         safe_detail["live_probe"] = live_probe
     return PreflightCheck(
         name="vision_credential",
         ok=capability_ready,
-        severity="error" if official else "warning",
-        message=(
-            "内置 Vision 能力可用。"
-            if capability_ready and official
-            else "Vision 开发凭据已配置。"
-            if capability_ready
-            else "内置 Vision 能力不可用。"
-            if configured and official
-            else "内置 Vision 凭据未配置。"
-            if official
-            else "Vision 开发凭据未配置。"
-        ),
+        severity="error" if configured and official else "warning",
+        message=("Vision 能力可用。" if capability_ready else "Vision 尚未就绪，绑定后从后台取得配置；新 C2 读取等待配置。"),
         detail=safe_detail,
     )
 

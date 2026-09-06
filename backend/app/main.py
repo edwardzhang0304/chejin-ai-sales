@@ -172,7 +172,16 @@ def create_app() -> FastAPI:
         request.state.request_id = request_id
         token = set_request_id(request_id)
         try:
-            response = await call_next(request)
+            credential_request = (
+                request.url.path.endswith("/vision-credential")
+                or (request.method == "POST" and request.url.path == f"{settings.api_prefix}/workers")
+            )
+            if credential_request and settings.is_production and request.url.scheme != "https":
+                response = error_response(400, "HTTPS_REQUIRED", "凭据接口要求 HTTPS", trace_id=request_id)
+            else:
+                response = await call_next(request)
+            if credential_request:
+                response.headers["Cache-Control"] = "no-store"
             response.headers["X-Request-Id"] = request_id
             return response
         finally:
@@ -196,13 +205,29 @@ def create_app() -> FastAPI:
                 "飞书用户标识只能由服务端维护",
                 trace_id=trace_id,
             )
-        return error_response(400, "VALIDATION_ERROR", "参数错误", {"errors": exc.errors()}, trace_id=trace_id)
+        errors = exc.errors()
+        if request.url.path.endswith("/vision-credential") or (
+            request.method == "POST" and request.url.path == f"{settings.api_prefix}/workers"
+        ):
+            # Malformed credential bodies can contain secrets even when an error
+            # points at another field (e.g. missing name). Never serialize input/ctx.
+            errors = [{"loc": error.get("loc"), "type": error.get("type")} for error in errors]
+        return error_response(400, "VALIDATION_ERROR", "参数错误", {"errors": errors}, trace_id=trace_id)
 
     @app.exception_handler(Exception)
     async def unhandled_error_handler(request: Request, exc: Exception):
         trace_id = getattr(request.state, "request_id", None)
-        logger.exception("Unhandled backend exception trace_id=%s path=%s", trace_id, request.url.path, exc_info=exc)
-        return error_response(500, "INTERNAL_SERVER_ERROR", "服务内部错误，请联系管理员并提供 trace_id", trace_id=trace_id)
+        credential_request = request.url.path.endswith("/vision-credential") or (
+            request.method == "POST" and request.url.path == f"{settings.api_prefix}/workers"
+        )
+        if credential_request:
+            logger.error("Credential operation failed trace_id=%s exception_type=%s", trace_id, type(exc).__name__)
+        else:
+            logger.exception("Unhandled backend exception trace_id=%s path=%s", trace_id, request.url.path, exc_info=exc)
+        response = error_response(500, "INTERNAL_SERVER_ERROR", "服务内部错误，请联系管理员并提供 trace_id", trace_id=trace_id)
+        if credential_request:
+            response.headers["Cache-Control"] = "no-store"
+        return response
 
     @app.get("/healthz")
     def healthz():

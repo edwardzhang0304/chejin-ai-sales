@@ -42,6 +42,8 @@ from .vision_credentials import (
     OFFICIAL_VISION_REQUEST_STYLE,
     VISION_API_KEY_ENV,
     install_resolved_vision_api_key,
+    vision_provider_environment,
+    vision_credential_status,
     is_official_vision_runtime,
     resolve_vision_runtime_settings,
 )
@@ -201,7 +203,7 @@ class _CancellableVisionProvider:
             "text": True,
             "encoding": "utf-8",
             "errors": "replace",
-            "env": subprocess_utf8_environment(),
+            "env": vision_provider_environment(subprocess_utf8_environment()),
         }
         if os.name == "nt":
             popen_kwargs["creationflags"] = int(
@@ -1168,6 +1170,8 @@ def vision_configuration_status() -> dict[str, Any]:
         "timeout_seconds": _vision_timeout_seconds(settings.get("timeout_seconds")),
     }
     missing_fields = list(missing)
+    if missing:
+        missing_fields.append(vision_credential_status()["failure_reason"])
     missing_fields.extend(
         name.upper()
         for name, value in required_values.items()
