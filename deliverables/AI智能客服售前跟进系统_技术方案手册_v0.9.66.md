@@ -1,6 +1,6 @@
 # AI智能客服售前跟进系统 技术方案
 
-版本：v0.9.66.1（集成登记 v0.3；固定客户端发布与后端部署 Runbook）
+版本：v0.9.66.2（集成登记 v0.3；拆分 Fast UAT 本地流程与正式生产流程）
 
 日期：2026-07-21
 
@@ -5849,13 +5849,25 @@ revision mismatch，不得静默兼容或覆盖旧包。
 - 配置已定项：C4 默认 72 小时、最多 3 个周期、每日 1 次、21:00—09:00 静默；召回文案由 Brain/Guard 生成，不使用固定文案。
 - 联调待确认项：飞书机器人定向个人通知的具体实现方式和错误返回格式。
 
-## 18. Windows 客户端与后端同版本发布 Runbook（固定流程）
+## 18. Windows 客户端与后端发布 Runbook（两条独立流程）
 
 本节是后续灰度版本的固定执行口径。每次发布只替换版本号、车金源码提交、OmniAuto 来源提交、Fast UAT
-运行号和包哈希；不得跳过备份、签名、更新登记或回滚验证。客户端和后端必须使用同一个精确版本，客户端
-更新查询与后端 API 使用 `${PRODUCTION_API_ORIGIN}`，安装包下载域名使用 `${UPDATE_DOWNLOAD_ORIGIN}`。
+运行号和包哈希；不得跳过备份、签名、更新登记或回滚验证。客户端和后端必须使用同一个精确版本。
 
-### 18.1 发布输入与停止条件
+两条流程的环境边界固定如下，禁止交叉使用：
+
+| 流程 | 作用 | 运营后台 | 后端 | 客户端包/下载 | 是否写生产 |
+|---|---|---|---|---|---|
+| 流程 A：Fast UAT | 本地开发验证和 Windows 快速包 | `${LOCAL_ADMIN_ORIGIN}`（通常 `http://127.0.0.1:5173`） | `${LOCAL_API_ORIGIN}`（通常 `http://127.0.0.1:8000`） | Fast UAT 临时 ZIP，不登记更新渠道 | 否 |
+| 流程 B：正式发布 | 对外客户端升级和生产切换 | `${PRODUCTION_WEB_ORIGIN}` | 生产服务器上的 `${PRODUCTION_API_ORIGIN}` | 签名正式 ZIP，登记到 `${UPDATE_DOWNLOAD_ORIGIN}` | 是 |
+
+流程 A 的通过记录只作为流程 B 的输入（Fast UAT 运行号和用户批准），不代表正式包已生成，也不代表生产已部署。
+流程 B 完成后仍需执行 Windows 实机验收；实机验收不反向修改流程 A 的结果。
+
+客户端更新查询始终使用 `${PRODUCTION_API_ORIGIN}`，安装包下载始终使用 `${UPDATE_DOWNLOAD_ORIGIN}`；本地 5173/8000
+不得写入正式包配置或生产更新登记。
+
+### 18.1 两条流程的共同输入与停止条件
 
 发布前由执行人填写以下变量，并把它们写入版本更新记录：
 
@@ -5872,7 +5884,14 @@ RELEASE_APPROVED=true
 Fast UAT 未通过、生产 Worker 未暂停且空闲、存在未结任务或租约、数据库备份未完成、Nginx 配置检查失败、
 或正式包的签名/哈希校验失败。
 
-### 18.2 来源、合同与 Fast UAT
+### 18.2 流程 A：Fast UAT 与 Mac 本地运营后台/后端
+
+流程 A 只验证候选代码在本地环境和 Windows 快速包中的行为，不触碰生产服务器、生产前端、正式更新域名或生产数据库。
+开始前确认本机的 `${LOCAL_ADMIN_ORIGIN}` 和 `${LOCAL_API_ORIGIN}` 指向本轮源码；如果端口上已有旧容器，先记录其版本，
+不得把旧容器状态写成当前版本的部署结果。流程 A 的结束条件是 Fast UAT 工作流通过、Mac 本地后台页面可访问、
+`${LOCAL_API_ORIGIN}/healthz` 和 `${LOCAL_API_ORIGIN}/readyz` 通过；结束后保存运行号，停止或标记本地临时服务。
+
+### 18.3 流程 A：来源、合同与 Fast UAT
 
 1. 核对车金分支、完整提交和 OmniAuto `.chejin-source.json`，确认没有把运维脚本、日志或临时证据混入源码提交。
 2. 在本地执行集成合同和受影响测试；记录 `contract_revision`、规范化 `contract_sha256`、测试结果和来源提交。
@@ -5888,7 +5907,7 @@ gh workflow run worker-windows-fast-uat.yml \
 Brain/Provider 输入、可观测性开关对照、合同门禁、提取后的运行时身份和 UAT 启动器检查。
 5. Fast UAT 失败只修复源码并升版本；不得拿失败包进入正式打包或生产。
 
-### 18.3 正式 Windows 包
+### 18.4 流程 B：正式 Windows 包
 
 Fast UAT 通过且用户明确批准后，触发正式门禁：
 
@@ -5918,7 +5937,7 @@ unzip -t chejin-worker-v${RELEASE_VERSION}-windows-x64.zip
 只核对交付清单中的版本、完整源码提交、ZIP 哈希、可执行文件哈希、Updater 哈希、合同 revision/SHA、签名 key ID、
 `rollback_safe=true` 和 `vision_live_probe_check=passed`。不得在终端、日志、证据或聊天中打印任何凭据、私钥或临时下载 token。
 
-### 18.4 生产切换前备份（不可跳过）
+### 18.5 流程 B：生产切换前备份（不可跳过）
 
 生产切换目标和更新包下载目标从受控发布配置读取。先确认：
 
@@ -5941,14 +5960,14 @@ git -C "${REPO_DIR}" status --short
 生产 `.env` 原样保留，不复制、不打印、不修改其中的凭据。凭据仅允许由 GitHub Actions 以现有受保护变量作为
 运行时环境变量传入；执行人不得读取值、输出值、写入聊天或证据文件，也不得把它写入生产发布脚本。
 
-### 18.5 后端候选构建与前端静态文件
+### 18.6 流程 B：后端候选构建与生产前端静态文件
 
 1. 备份完成后，在服务器拉取 `RELEASE_BRANCH` 并 checkout `RELEASE_COMMIT`；再次确认仓库 clean。
 2. 构建候选镜像 `chejin-api:v${RELEASE_VERSION}-<short-commit>`，使用离线容器命令校验 `contract_revision` 和 `contract_sha256`。
 3. 在同一提交构建前端，确认静态资源包含 `${PRODUCTION_API_ORIGIN}`，再暂存到 `${RELEASE_DIR}/frontend`。
 4. 写入 `${RELEASE_DIR}/compose.candidate.yaml`，只替换 API 镜像，不改生产 `.env`、数据库卷或客户端凭据。
 
-### 18.6 可自动回滚的 API/前端切换
+### 18.7 流程 B：可自动回滚的 API/前端切换
 
 切换前保存数据库业务状态快照，至少包括 leads、sales、workers、tasks、conversations、message_events、知识条目、
 知识发布号、Worker/销售绑定摘要和 Alembic 版本；再次确认 Worker 暂停空闲、任务已结算、`nginx -t` 通过。
@@ -5976,7 +5995,7 @@ docker exec chejin-leads-api python -c \
 并记录容器、健康、就绪、合同和状态比较结果。任何一步失败都执行发布目录中的 `rollback-production.sh`：恢复回滚镜像、
 恢复前端备份、`RUN_MIGRATIONS=0` 重启 API，再验证旧合同和健康状态。应用回滚不自动降级数据库。
 
-### 18.7 客户端发布登记
+### 18.8 流程 B：客户端发布登记
 
 后端切换成功后，才把正式包和签名描述传到生产发布目录。必须同时传输 ZIP、`.release.json`、`.delivery.json`、SHA256 文件和受信公钥，
 传输后在服务器再次做 SHA256 和 `unzip -t`。使用后端容器登记：
@@ -5996,7 +6015,7 @@ docker exec chejin-leads-api python -m app.scripts.register_client_release \
 记录返回的 `release_id`、`status=published`、artifact storage key 和包哈希。若登记失败，客户端不会看到新版本；先修复登记问题，
 不要重复上传不同内容的同版本包。
 
-### 18.8 线上更新接口和 Windows 实机验收
+### 18.9 流程 B：线上更新接口和 Windows 实机验收
 
 登记后必须验证以下四件事：
 
@@ -6008,7 +6027,7 @@ docker exec chejin-leads-api python -m app.scripts.register_client_release \
 Windows 实机仍必须由验收人执行：在当前旧版本设置页点击“检查更新”，确认显示目标版本和“正在下载”，观察下载/安装完成，
 重启后确认客户端版本、登录、Worker 心跳、任务接单和本地日志；保存脱敏后的结果截图和本机日志。实机未完成前，版本更新记录不得写“验收通过”。
 
-### 18.9 故障处理与回滚矩阵
+### 18.10 故障处理与回滚矩阵
 
 | 故障点 | 处理 |
 |---|---|
@@ -6021,7 +6040,7 @@ Windows 实机仍必须由验收人执行：在当前旧版本设置页点击“
 
 任何回滚都必须记录操作者、UTC 时间、触发原因、旧/新镜像、数据库备份目录、客户端登记状态和验证结果。
 
-### 18.10 本次 0.9.66 参考记录
+### 18.11 本次 0.9.66 参考记录
 
 本流程已在 `0.9.66` 实际执行并通过：正式流水线 `33972964626`，源码 `7742048904d9c40ab060a40f9737802a5f54717a`，
 客户端 ZIP SHA256 为 `3368307311af460e3c0e9b6e29d6890c198a952be9e45528bc6b04fa09cf3dde`；生产发布目录和备份目录
