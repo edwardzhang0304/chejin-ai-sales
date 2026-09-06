@@ -12,6 +12,7 @@ from build_source import BuildSourceError, verify_build_source
 from client_delivery_policy import (
     is_client_forbidden_path,
     is_client_runtime_junk_path,
+    is_secret_file_path,
     load_client_exclude_paths,
 )
 from omniauto_tree import load_source_provenance, tree_manifest
@@ -54,7 +55,13 @@ def _version() -> str:
 def _copy_worker_app(destination: Path) -> None:
     source = ROOT / "chejin_worker_client"
     for path in source.rglob("*"):
-        if not path.is_file() or "__pycache__" in path.parts or path.suffix in {".pyc", ".pyo"}:
+        if (
+            not path.is_file()
+            or path.is_symlink()
+            or "__pycache__" in path.parts
+            or path.suffix in {".pyc", ".pyo"}
+            or is_secret_file_path(path.name)
+        ):
             continue
         relative = path.relative_to(source)
         target = destination / "chejin_worker_client" / relative
@@ -65,7 +72,7 @@ def _copy_worker_app(destination: Path) -> None:
 def _copy_omniauto(destination: Path) -> None:
     excludes = load_client_exclude_paths(OMNIAUTO_ROOT)
     for path in OMNIAUTO_ROOT.rglob("*"):
-        if not path.is_file():
+        if not path.is_file() or path.is_symlink():
             continue
         relative = path.relative_to(OMNIAUTO_ROOT)
         relative_name = relative.as_posix()
@@ -81,7 +88,7 @@ def _copy_omniauto(destination: Path) -> None:
             continue
         if path.suffix in {".pyc", ".pyo", ".zip", ".env"}:
             continue
-        if path.name == ".env" or path.name.endswith(".local.env"):
+        if is_secret_file_path(relative_name):
             continue
         target = destination / "omniauto-rpa" / relative
         target.parent.mkdir(parents=True, exist_ok=True)

@@ -47,6 +47,16 @@ jobs:
             -r worker-client/requirements.txt `
             -r backend/requirements.txt
 
+      - name: Run credential security gate
+        working-directory: worker-client
+        shell: powershell
+        run: |
+          $ErrorActionPreference = "Stop"
+          python scripts/run-credential-security-checks.py
+          if ($LASTEXITCODE -ne 0) {
+            throw "Credential security gate failed"
+          }
+
       - name: Run affected Worker and backend read-settlement tests
         working-directory: .
         shell: powershell

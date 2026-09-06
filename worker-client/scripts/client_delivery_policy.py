@@ -24,6 +24,19 @@ class ClientDeliveryPolicyError(RuntimeError):
     pass
 
 
+def is_secret_file_path(value: str | PurePosixPath) -> bool:
+    """Exclude credential files, including environment overlays and backups."""
+    name = PurePosixPath(str(value).replace("\\", "/")).name.lower()
+    return (
+        name == ".env"
+        or name.startswith(".env.")
+        or name.endswith(".env")
+        or ".env." in name
+        or name == "vision-runtime.json"
+        or name.endswith((".pem", ".key", ".p12", ".pfx"))
+    )
+
+
 def _normalize_relative_path(value: str | PurePosixPath) -> str:
     raw = str(value).replace("\\", "/")
     while raw.startswith("./"):
