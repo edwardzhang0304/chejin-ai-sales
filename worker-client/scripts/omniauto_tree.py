@@ -7,6 +7,7 @@ from pathlib import Path
 from client_delivery_policy import (
     is_client_forbidden_path,
     is_client_runtime_junk_path,
+    is_secret_file_path,
     load_client_exclude_paths,
 )
 
@@ -52,7 +53,7 @@ def include_file(
         return False
     if path.suffix in {".pyc", ".pyo", ".zip", ".env"}:
         return False
-    if path.name == ".env" or path.name.endswith(".local.env"):
+    if is_secret_file_path(rel_name):
         return False
     return True
 

@@ -13,6 +13,7 @@ from build_policy import validate_build_policy
 from build_source import verify_build_source
 from client_delivery_policy import (
     is_client_forbidden_path,
+    is_secret_file_path,
     load_client_exclude_paths,
 )
 from omniauto_tree import load_source_provenance, tree_manifest
@@ -69,6 +70,8 @@ def _is_excluded(path: Path) -> bool:
     rel = path.relative_to(ROOT)
     parts = rel.parts
     rel_name = rel.as_posix()
+    if path.is_symlink() or is_secret_file_path(rel_name):
+        return True
     if rel_name.startswith("omniauto-rpa/") and is_client_forbidden_path(
         rel_name[len("omniauto-rpa/") :],
         OMNIAUTO_CLIENT_EXCLUDES,
@@ -122,6 +125,9 @@ def _forbidden_entries(names: list[str]) -> list[str]:
         parts = rel.parts
         base = parts[-1] if parts else ""
         rel_name = rel.as_posix()
+        if is_secret_file_path(rel_name):
+            forbidden.append(name)
+            continue
         if rel_name.startswith("omniauto-rpa/") and is_client_forbidden_path(
             rel_name[len("omniauto-rpa/") :],
             OMNIAUTO_CLIENT_EXCLUDES,

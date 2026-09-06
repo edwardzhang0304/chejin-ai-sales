@@ -12,6 +12,7 @@ from build_source import resolve_contract_path
 from client_delivery_policy import (
     is_client_forbidden_path,
     is_client_runtime_junk_path,
+    is_secret_file_path,
     load_client_exclude_paths,
 )
 
@@ -59,6 +60,8 @@ PIL_HIDDEN_IMPORTS = collect_submodules("PIL")
 
 
 def include_omniauto_file(path):
+    if path.is_symlink():
+        return False
     rel = path.relative_to(OMNIAUTO_RPA_SOURCE)
     rel_name = rel.as_posix()
     if is_client_runtime_junk_path(rel_name):
@@ -73,7 +76,7 @@ def include_omniauto_file(path):
         return False
     if path.suffix in {".pyc", ".pyo", ".zip", ".env"}:
         return False
-    if path.name == ".env" or path.name.endswith(".local.env"):
+    if is_secret_file_path(rel_name):
         return False
     return True
 

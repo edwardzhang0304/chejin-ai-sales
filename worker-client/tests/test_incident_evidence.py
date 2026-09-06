@@ -127,31 +127,45 @@ class IncidentEvidenceTest(unittest.TestCase):
         self.assertEqual(last_log["metadata"]["incident_id"], results[-1]["incident_id"])
         self.assertEqual(last_log["metadata"]["evidence_path"], results[-1]["evidence_path"])
 
-    def test_embedded_vision_key_is_redacted_without_environment_copy(self) -> None:
-        embedded_key = "embedded-vision-unit-key-never-export"
-        with tempfile.TemporaryDirectory() as credential_temp:
-            credential_path = Path(credential_temp) / "vision-runtime.json"
-            credential_path.write_text(
-                json.dumps(
-                    {"schema_version": 1, "vision_api_key": embedded_key}
-                ),
-                encoding="utf-8",
-            )
-            with patch.dict(
-                os.environ,
-                {
-                    "CHEJIN_BUILD_KIND": "official",
-                    "CHEJIN_VISION_CREDENTIAL_PATH": str(credential_path),
-                },
-                clear=False,
-            ):
-                os.environ.pop("CUSTOMER_IMAGE_UNDERSTANDING_API_KEY", None)
-                redacted = self.incidents.redact_diagnostic(
-                    {"traceback": f"provider failed: {embedded_key}"}
-                )
+    def test_runtime_vision_key_is_redacted_without_environment_copy(self) -> None:
+        from chejin_worker_client import vision_credentials as credentials
 
-        self.assertNotIn(embedded_key, json.dumps(redacted))
+        runtime_key = "FAKE-VISION-DIAGNOSTIC-MEMORY-SENTINEL"
+        credentials.clear_vision_credential()
+        try:
+            with patch.dict(os.environ, {"CHEJIN_BUILD_KIND": "official"}, clear=False):
+                os.environ.pop("CUSTOMER_IMAGE_UNDERSTANDING_API_KEY", None)
+                os.environ.pop("CHEJIN_VISION_CREDENTIAL_PATH", None)
+                # Same public memory boundary used after the backend response.
+                self.assertTrue(credentials.complete_credential_refresh(
+                    credentials.begin_credential_refresh(), runtime_key,
+                ))
+                redacted = self.incidents.redact_diagnostic(
+                    {"traceback": f"provider failed: {runtime_key}"}
+                )
+                self.assertNotIn("CUSTOMER_IMAGE_UNDERSTANDING_API_KEY", os.environ)
+        finally:
+            credentials.clear_vision_credential()
+
+        self.assertNotIn(runtime_key, json.dumps(redacted))
         self.assertIn("[REDACTED]", redacted["traceback"])
+
+    def test_active_flow_vision_key_is_redacted_after_refresh_failure(self) -> None:
+        from chejin_worker_client import vision_credentials as credentials
+
+        runtime_key = "FAKE-VISION-DIAGNOSTIC-FLOW-SENTINEL"
+        credentials.clear_vision_credential()
+        try:
+            credentials.complete_credential_refresh(credentials.begin_credential_refresh(), runtime_key)
+            with credentials.vision_credential_snapshot():
+                credentials.complete_credential_refresh(
+                    credentials.begin_credential_refresh(), failure_reason="VISION_CREDENTIAL_NETWORK_FAILED",
+                )
+                redacted = self.incidents.redact_diagnostic({"traceback": f"provider failed: {runtime_key}"})
+                self.assertNotIn(runtime_key, json.dumps(redacted))
+                self.assertIn("[REDACTED]", redacted["traceback"])
+        finally:
+            credentials.clear_vision_credential()
 
     def test_image_menu_failure_zip_contains_full_roi_and_ocr_evidence(self) -> None:
         artifact_dir = Path(self.tmp.name) / "artifacts" / "wechat_c2" / "messages" / "menu-run"

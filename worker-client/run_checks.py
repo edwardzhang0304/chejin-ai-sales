@@ -25,6 +25,14 @@ def main() -> int:
     )
     if generated_contract.returncode:
         return generated_contract.returncode
+    # unittest discovery does not execute function-style pytest security tests.
+    credential_test = subprocess.run(
+        [sys.executable, "scripts/run-credential-security-checks.py"],
+        cwd=ROOT,
+        env=env,
+    )
+    if credential_test.returncode:
+        return credential_test.returncode
     test = subprocess.run(
         [sys.executable, "-W", "error::ResourceWarning", "-m", "unittest", "discover", "-s", "tests", "-v"],
         cwd=ROOT,
