@@ -888,6 +888,8 @@ class C2VisionIntegrationTests(unittest.TestCase):
         screenshot.close()
 
     def setUp(self) -> None:
+        from chejin_worker_client.vision_credentials import clear_vision_credential
+        clear_vision_credential()
         self.vision_env_names = (
             "CUSTOMER_IMAGE_UNDERSTANDING_PROVIDER",
             "CUSTOMER_IMAGE_UNDERSTANDING_BASE_URL",
@@ -903,6 +905,8 @@ class C2VisionIntegrationTests(unittest.TestCase):
             os.environ.pop(name, None)
 
     def tearDown(self) -> None:
+        from chejin_worker_client.vision_credentials import clear_vision_credential
+        clear_vision_credential()
         for name, value in self.original_env.items():
             if value is None:
                 os.environ.pop(name, None)
@@ -974,7 +978,7 @@ class C2VisionIntegrationTests(unittest.TestCase):
         self.assertEqual(result["reason"], "vision_configuration_incomplete")
         self.assertEqual(
             result["missing_configuration"],
-            ["CUSTOMER_IMAGE_UNDERSTANDING_API_KEY"],
+            ["CUSTOMER_IMAGE_UNDERSTANDING_API_KEY", "VISION_CREDENTIAL_NOT_CONFIGURED"],
         )
         self.assertFalse(result["diagnostics"]["image_persisted"])
 
@@ -1487,7 +1491,8 @@ class C2VisionIntegrationTests(unittest.TestCase):
         self.assertEqual(actions.dismissed, 1)
 
     def test_non_secret_defaults_and_dedicated_key_build_formal_config(self):
-        os.environ["CUSTOMER_IMAGE_UNDERSTANDING_API_KEY"] = "unit-only"
+        from chejin_worker_client.vision_credentials import begin_credential_refresh, complete_credential_refresh
+        complete_credential_refresh(begin_credential_refresh(), "unit-only")
 
         config, missing = explicit_vision_config()
 
@@ -1540,7 +1545,8 @@ class C2VisionIntegrationTests(unittest.TestCase):
         self.assertEqual(settings["api_key"], "")
 
     def test_vision_timeout_env_is_shared_by_parent_and_provider_settings(self):
-        os.environ["CUSTOMER_IMAGE_UNDERSTANDING_API_KEY"] = "unit-only"
+        from chejin_worker_client.vision_credentials import begin_credential_refresh, complete_credential_refresh
+        complete_credential_refresh(begin_credential_refresh(), "unit-only")
         os.environ["CUSTOMER_IMAGE_UNDERSTANDING_TIMEOUT_SECONDS"] = "75"
 
         config, missing = explicit_vision_config()
@@ -4108,7 +4114,7 @@ class C2VisionIntegrationTests(unittest.TestCase):
         self.assertFalse(status["ready"])
         self.assertEqual(
             status["missing_configuration"],
-            ["CUSTOMER_IMAGE_UNDERSTANDING_API_KEY"],
+            ["CUSTOMER_IMAGE_UNDERSTANDING_API_KEY", "VISION_CREDENTIAL_NOT_CONFIGURED"],
         )
         self.assertIsNone(status["config"])
 

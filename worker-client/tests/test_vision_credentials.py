@@ -1,171 +1,97 @@
-from __future__ import annotations
-
+"""Memory credential boundary; all keys are artificial test sentinels."""
 import json
 import os
-from pathlib import Path
-import tempfile
-import unittest
+import sys
+import threading
 from unittest.mock import patch
 
-from chejin_worker_client.vision_credentials import (
-    OFFICIAL_VISION_BASE_URL,
-    OFFICIAL_VISION_MODEL,
-    OFFICIAL_VISION_PROVIDER,
-    OFFICIAL_VISION_REQUEST_STYLE,
-    resolve_vision_api_key,
-    resolve_vision_runtime_settings,
-    probe_official_vision_provider,
-    vision_credential_status,
-)
+import pytest
+
+from chejin_worker_client import vision_credentials as credentials
+from chejin_worker_client.api import WorkerApiClient, ApiError
+from chejin_worker_client.models import Binding
+
+KEY = "FAKE-VISION-0967-MEMORY-SENTINEL"
 
 
-class VisionCredentialsTest(unittest.TestCase):
-    def test_development_build_allows_dedicated_environment_override(self):
-        with patch.dict(
-            os.environ,
-            {
-                "CHEJIN_BUILD_KIND": "development",
-                "CUSTOMER_IMAGE_UNDERSTANDING_API_KEY": "dev-unit-key",
-                "CUSTOMER_IMAGE_UNDERSTANDING_BASE_URL": "https://dev.example/v1",
-            },
-            clear=False,
-        ):
-            self.assertEqual(resolve_vision_api_key(), "dev-unit-key")
-            self.assertEqual(
-                resolve_vision_runtime_settings()["base_url"],
-                "https://dev.example/v1",
-            )
-
-    def test_official_build_uses_embedded_key_and_locks_provider_tuple(self):
-        embedded_key = "official-unit-key-never-log"
-        with tempfile.TemporaryDirectory() as temp:
-            credential_path = Path(temp) / "vision-runtime.json"
-            credential_path.write_text(
-                json.dumps(
-                    {"schema_version": 1, "vision_api_key": embedded_key}
-                ),
-                encoding="utf-8",
-            )
-            with patch.dict(
-                os.environ,
-                {
-                    "CHEJIN_BUILD_KIND": "official",
-                    "CHEJIN_VISION_CREDENTIAL_PATH": str(credential_path),
-                    "CUSTOMER_IMAGE_UNDERSTANDING_API_KEY": "attacker-key",
-                    "CUSTOMER_IMAGE_UNDERSTANDING_PROVIDER": "attacker-provider",
-                    "CUSTOMER_IMAGE_UNDERSTANDING_BASE_URL": "https://attacker.invalid/v1",
-                    "CUSTOMER_IMAGE_UNDERSTANDING_MODEL": "attacker-model",
-                    "CUSTOMER_IMAGE_UNDERSTANDING_REQUEST_STYLE": "attacker-style",
-                },
-                clear=False,
-            ):
-                self.assertEqual(resolve_vision_api_key(), embedded_key)
-                self.assertEqual(
-                    resolve_vision_runtime_settings(),
-                    {
-                        "provider": OFFICIAL_VISION_PROVIDER,
-                        "base_url": OFFICIAL_VISION_BASE_URL,
-                        "model": OFFICIAL_VISION_MODEL,
-                        "request_style": OFFICIAL_VISION_REQUEST_STYLE,
-                    },
-                )
-
-    def test_fast_uat_build_uses_same_locked_vision_configuration(self):
-        embedded_key = "fast-uat-unit-key-never-log"
-        with tempfile.TemporaryDirectory() as temp:
-            credential_path = Path(temp) / "vision-runtime.json"
-            credential_path.write_text(
-                json.dumps(
-                    {"schema_version": 1, "vision_api_key": embedded_key}
-                ),
-                encoding="utf-8",
-            )
-            with patch.dict(
-                os.environ,
-                {
-                    "CHEJIN_BUILD_KIND": "debug_uat_locked",
-                    "CHEJIN_VISION_CREDENTIAL_PATH": str(credential_path),
-                    "CUSTOMER_IMAGE_UNDERSTANDING_API_KEY": "attacker-key",
-                    "CUSTOMER_IMAGE_UNDERSTANDING_BASE_URL": "https://attacker.invalid/v1",
-                },
-                clear=False,
-            ):
-                self.assertEqual(resolve_vision_api_key(), embedded_key)
-                self.assertEqual(
-                    resolve_vision_runtime_settings(),
-                    {
-                        "provider": OFFICIAL_VISION_PROVIDER,
-                        "base_url": OFFICIAL_VISION_BASE_URL,
-                        "model": OFFICIAL_VISION_MODEL,
-                        "request_style": OFFICIAL_VISION_REQUEST_STYLE,
-                    },
-                )
-                self.assertTrue(vision_credential_status()["configuration_locked"])
-
-    def test_status_never_contains_key(self):
-        embedded_key = "official-unit-key-never-export"
-        with tempfile.TemporaryDirectory() as temp:
-            credential_path = Path(temp) / "vision-runtime.json"
-            credential_path.write_text(
-                json.dumps(
-                    {"schema_version": 1, "vision_api_key": embedded_key}
-                ),
-                encoding="utf-8",
-            )
-            with patch.dict(
-                os.environ,
-                {
-                    "CHEJIN_BUILD_KIND": "official",
-                    "CHEJIN_VISION_CREDENTIAL_PATH": str(credential_path),
-                },
-                clear=False,
-            ):
-                payload = vision_credential_status()
-
-        self.assertTrue(payload["configured"])
-        self.assertTrue(payload["configuration_locked"])
-        self.assertEqual(payload["credential_source"], "embedded")
-        self.assertNotIn(embedded_key, json.dumps(payload))
-
-    def test_official_live_probe_returns_only_safe_operational_facts(self):
-        embedded_key = "official-live-probe-unit-key-never-export"
-        with tempfile.TemporaryDirectory() as temp:
-            credential_path = Path(temp) / "vision-runtime.json"
-            credential_path.write_text(
-                json.dumps(
-                    {"schema_version": 1, "vision_api_key": embedded_key}
-                ),
-                encoding="utf-8",
-            )
-            with patch.dict(
-                os.environ,
-                {
-                    "CHEJIN_BUILD_KIND": "official",
-                    "CHEJIN_VISION_CREDENTIAL_PATH": str(credential_path),
-                },
-                clear=False,
-            ), patch(
-                "chejin_worker_client.vision_credentials._run_vision_provider_probe_request",
-                return_value={"ok": True, "status": 200, "response_text": embedded_key},
-            ):
-                payload = probe_official_vision_provider()
-
-        self.assertTrue(payload["ok"])
-        self.assertEqual(payload["status"], 200)
-        self.assertNotIn(embedded_key, json.dumps(payload))
-
-    def test_official_live_probe_fails_closed_without_exposing_error(self):
-        with patch.dict(
-            os.environ,
-            {"CHEJIN_BUILD_KIND": "official"},
-            clear=False,
-        ):
-            os.environ.pop("CHEJIN_VISION_CREDENTIAL_PATH", None)
-            payload = probe_official_vision_provider()
-
-        self.assertFalse(payload["ok"])
-        self.assertEqual(payload["failure_reason"], "vision_credential_unavailable")
+@pytest.fixture(autouse=True)
+def reset_memory():
+    credentials.clear_vision_credential()
+    yield
+    credentials.clear_vision_credential()
 
 
-if __name__ == "__main__":
-    unittest.main()
+@pytest.mark.parametrize("kind", ["official", "debug_uat_locked", "development"])
+def test_no_key_fallback_from_old_resource_or_environment(tmp_path, monkeypatch, kind):
+    legacy = tmp_path / "vision-runtime.json"
+    legacy.write_text(json.dumps({"schema_version": 1, "vision_api_key": KEY}))
+    monkeypatch.setenv("CHEJIN_BUILD_KIND", kind)
+    monkeypatch.setenv("CHEJIN_VISION_CREDENTIAL_PATH", str(legacy))
+    monkeypatch.setenv(credentials.VISION_API_KEY_ENV, KEY)
+    monkeypatch.setattr(sys, "_MEIPASS", str(tmp_path), raising=False)
+    assert credentials.resolve_vision_api_key() == ""
+    assert credentials.vision_credential_status()["credential_source"] == "worker_backend"
+
+
+def test_flow_snapshot_survives_refresh_failure_and_next_flow_has_no_key(monkeypatch):
+    monkeypatch.delenv(credentials.VISION_API_KEY_ENV, raising=False)
+    credentials.complete_credential_refresh(credentials.begin_credential_refresh(), KEY)
+    with credentials.vision_credential_snapshot():
+        credentials.complete_credential_refresh(credentials.begin_credential_refresh(), failure_reason="VISION_CREDENTIAL_NETWORK_FAILED")
+        assert credentials.resolve_vision_api_key() == KEY
+        with credentials.vision_credential_snapshot():
+            assert credentials.resolve_vision_api_key() == KEY
+    assert credentials.resolve_vision_api_key() == ""
+    assert credentials.VISION_API_KEY_ENV not in os.environ
+
+
+def test_late_response_after_rebind_or_shutdown_is_discarded():
+    first = credentials.begin_credential_refresh()
+    second = credentials.begin_credential_refresh()
+    assert credentials.complete_credential_refresh(second, KEY + "-NEW")
+    assert not credentials.complete_credential_refresh(first, KEY)
+    credentials.clear_vision_credential()
+    assert not credentials.complete_credential_refresh(second, KEY)
+    assert credentials.resolve_vision_api_key() == ""
+
+
+def test_status_and_provider_environment_only_send_key_to_child(monkeypatch):
+    monkeypatch.setenv("CHEJIN_BUILD_KIND", "official")
+    credentials.complete_credential_refresh(credentials.begin_credential_refresh(), KEY)
+    status = credentials.vision_credential_status()
+    assert status["configured"] and status["configuration_locked"]
+    assert KEY not in json.dumps(status)
+    base = {"SAFE": "value", credentials.VISION_API_KEY_ENV: "old"}
+    child = credentials.vision_provider_environment(base)
+    assert child[credentials.VISION_API_KEY_ENV] == KEY
+    assert base[credentials.VISION_API_KEY_ENV] == "old"
+    with patch.object(credentials, "_run_vision_provider_probe_request", return_value={"ok": True, "status": 200, "response_text": KEY}):
+        probe = credentials.probe_official_vision_provider()
+    assert probe["ok"] and KEY not in json.dumps(probe)
+
+
+@pytest.mark.parametrize("url", ["http://example.com/api", "https://user:password@example.com/api", "https://example.com/api?key=x"])
+def test_insecure_credential_url_never_sends_request(url):
+    client = WorkerApiClient(url)
+    with patch.object(client.session, "get") as get:
+        with pytest.raises(ApiError, match="HTTPS"):
+            client.get_vision_credential(Binding("worker", "token", "instance"))
+        get.assert_not_called()
+
+
+def test_missing_key_does_not_block_unbound_preflight(monkeypatch):
+    from chejin_worker_client.preflight import vision_credential_check, has_blocking_failures
+    monkeypatch.setenv("CHEJIN_BUILD_KIND", "official")
+    check = vision_credential_check()
+    assert check.ok is False
+    assert not has_blocking_failures([check])
+    assert check.detail["configured"] is False
+
+
+def test_task_lease_completion_keeps_credential_for_next_flow():
+    from types import SimpleNamespace
+    from chejin_worker_client.task_runner import TaskLeaseGuard
+    credentials.complete_credential_refresh(credentials.begin_credential_refresh(), KEY)
+    guard = TaskLeaseGuard(api=WorkerApiClient("http://127.0.0.1:1/api"), binding=Binding("a", "test-token", "instance"), task=SimpleNamespace(id="task"), current_step=lambda: None)
+    guard.stop()
+    assert credentials.resolve_vision_api_key() == KEY

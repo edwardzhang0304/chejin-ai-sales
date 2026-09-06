@@ -155,7 +155,7 @@ class PreflightTest(unittest.TestCase):
             check = vision_credential_check()
 
         self.assertTrue(check.ok)
-        self.assertEqual(check.message, "内置 Vision 能力可用。")
+        self.assertEqual(check.message, "Vision 能力可用。")
         self.assertNotIn(secret, json.dumps(check.detail, ensure_ascii=False))
 
     def test_official_vision_preflight_blocks_when_live_probe_fails(self):
@@ -187,7 +187,7 @@ class PreflightTest(unittest.TestCase):
 
         self.assertFalse(check.ok)
         self.assertEqual(check.severity, "error")
-        self.assertEqual(check.message, "内置 Vision 能力不可用。")
+        self.assertEqual(check.message, "Vision 尚未就绪，绑定后从后台取得配置；新 C2 读取等待配置。")
         self.assertEqual(check.detail["live_probe"]["status"], 401)
 
 

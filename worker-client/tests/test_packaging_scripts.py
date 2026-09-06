@@ -329,8 +329,8 @@ class PackagingScriptsTest(unittest.TestCase):
         self.assertIn("vision_credential_embedded", workflow)
         self.assertIn("vision_configuration_locked", workflow)
         self.assertIn("vision_live_probe_check", workflow)
-        self.assertIn("diagnostic or manifest output leaked the Vision credential", workflow)
-        self.assertIn("delivery manifest leaked the Vision credential", workflow)
+        self.assertIn("package contains legacy Vision credentials", workflow)
+        self.assertIn("vision_credential_source", workflow)
         self.assertIn('Join-Path $verifiedPackageRoot "start-uat.ps1"', workflow)
         self.assertIn('must be CheJinWorkerClient', workflow)
         self.assertIn('must be CheJinWorkerClient.exe', workflow)
@@ -504,7 +504,7 @@ class PackagingScriptsTest(unittest.TestCase):
         )
 
         self.assertIn('$env:CHEJIN_BUILD_KIND = "debug_uat_locked"', launcher)
-        self.assertIn("CHEJIN_VISION_CREDENTIAL_PATH", launcher)
+        self.assertNotIn("CHEJIN_VISION_CREDENTIAL_PATH", launcher)
         self.assertIn("CHEJIN_OMNIAUTO_RPA_SOURCE", launcher)
         self.assertIn('Join-Path $localAppData "CheJinWorker\\diagnostics"', launcher)
         self.assertNotIn("CHEJIN_WORKER_HOME", launcher)
@@ -580,9 +580,9 @@ class PackagingScriptsTest(unittest.TestCase):
                 manifest = json.loads(
                     archive.read("CheJinWorkerDebug/fast-uat-manifest.json")
                 )
-                credential = json.loads(
-                    archive.read("CheJinWorkerDebug/app/vision-runtime.json")
-                )
+                self.assertNotIn("CheJinWorkerDebug/app/vision-runtime.json", members)
+                for member in members:
+                    self.assertNotIn(b"fast-uat-secret-never-public", archive.read(member))
                 public_manifest_bytes = archive.read(
                     "CheJinWorkerDebug/fast-uat-manifest.json"
                 )
@@ -600,9 +600,8 @@ class PackagingScriptsTest(unittest.TestCase):
                 manifest["runtime_base"]["runtime_kind"],
                 "chejin_worker_fast_uat_base",
             )
-            self.assertEqual(
-                credential["vision_api_key"], "fast-uat-secret-never-public"
-            )
+            self.assertFalse(manifest["vision_credential_embedded"])
+            self.assertEqual(manifest["vision_credential_source"], "worker_backend")
             self.assertNotIn(b"fast-uat-secret-never-public", public_manifest_bytes)
 
     def test_fast_uat_zip_rejects_dirty_git_source(self):
@@ -1479,12 +1478,12 @@ class PackagingScriptsTest(unittest.TestCase):
         self.assertIn("validate-uat-launcher.ps1", text)
         self.assertIn("powershell.exe -NoProfile -NonInteractive", text)
         self.assertIn("Windows PowerShell 5.1 BOM/语法门禁", text)
-        self.assertIn("CHEJIN_VISION_CLIENT_API_KEY", text)
+        self.assertNotIn("CHEJIN_VISION_CLIENT_API_KEY", text)
         self.assertIn("GITHUB_ACTIONS", text)
-        self.assertIn("CHEJIN_VISION_CREDENTIAL_PATH", text)
+        self.assertNotIn("CHEJIN_VISION_CREDENTIAL_PATH", text)
         self.assertIn("vision-runtime.json", text)
         self.assertIn("最终 exe 内置 Vision 能力预检未通过", text)
-        self.assertIn("最终 exe 内置 Vision 真实能力探针未通过", text)
+        self.assertIn("最终 exe 必须从后台取得 Vision 凭据", text)
         self.assertIn("vision_live_probe_check", text)
 
     def test_uat_launcher_requires_api_runs_preflight_and_saves_report(self):
@@ -1539,7 +1538,7 @@ class PackagingScriptsTest(unittest.TestCase):
         self.assertIn("chejin-worker-packaged-preflight.json", workflow)
         self.assertIn("chejin-worker-packaged-diagnostics.jsonl", workflow)
         self.assertIn('"--preflight-format", "json", "--write-report"', workflow)
-        self.assertIn("packaged Vision live capability probe did not pass", workflow)
+        self.assertIn("packaged Vision configuration must start without a credential", workflow)
         self.assertIn('Remove-Item Env:CHEJIN_PACKAGING_DIAGNOSTIC_PATH', workflow)
         self.assertIn('"--startup-crash-probe"', workflow)
         self.assertIn("startup-crash.jsonl", workflow)

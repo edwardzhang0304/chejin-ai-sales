@@ -1,0 +1,19 @@
+{
+  "postgres_migration": "20260906_0033",
+  "same_key_workers": 2,
+  "provider_requests": 3,
+  "image_sha256": "27c7ab9a37feb9ea8f28d34351136dc07067ef3853a0bdc0447d9cb2ab4bcc1f",
+  "image_source": "worker-client/tests/fixtures/avatars_20260904/send_baseline_1788518283890.png",
+  "image_payloads_unchanged": true,
+  "lifecycle": [
+    "bind",
+    "startup",
+    "pause_start",
+    "restart",
+    "network_failure",
+    "clear",
+    "check_update_without_key"
+  ],
+  "local_sqlite_and_diagnostics_scan": "passed",
+  "windows_uat": false
+}

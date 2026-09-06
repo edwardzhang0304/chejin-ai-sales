@@ -87,19 +87,11 @@ def _known_secret_values() -> set[str]:
         and str(value).strip()
         and len(str(value).strip()) >= 6
     }
-    frozen_root = getattr(sys, "_MEIPASS", None)
-    if frozen_root:
-        try:
-            payload = json.loads(
-                (Path(frozen_root) / "vision-runtime.json").read_text(
-                    encoding="utf-8-sig"
-                )
-            )
-            api_key = str(payload.get("vision_api_key") or "").strip()
-        except (OSError, UnicodeError, json.JSONDecodeError, AttributeError):
-            api_key = ""
-        if api_key:
-            values.add(api_key)
+    module = sys.modules.get("chejin_worker_client.vision_credentials")
+    if module is not None:
+        key = module.resolve_vision_api_key()
+        if key:
+            values.add(key)
     return values
 
 

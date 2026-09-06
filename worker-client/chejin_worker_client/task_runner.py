@@ -16,6 +16,7 @@ from typing import Any, Callable, Literal, TypeAlias
 
 from requests import exceptions as requests_exceptions
 
+from .vision_credentials import (begin_credential_refresh, complete_credential_refresh, clear_vision_credential, vision_credential_snapshot)
 from .api import ApiError, WorkerApiClient
 from .action_journal import (
     ACTION_JOURNAL_SCHEMA_VERSION,
@@ -4049,8 +4050,35 @@ class TaskRunner:
             return "no_reply"
         return "completed"
 
+    def _refresh_vision_credential(self, binding: Binding) -> bool:
+        generation = begin_credential_refresh()
+        self.last_c2_vision_preflight_at = 0.0
+        self.c2_vision_preflight_ready = False
+        identity = (binding.worker_id, binding.worker_token, binding.client_instance_id)
+        accepted = False
+        try:
+            key = self.api.get_vision_credential(binding)
+        except Exception as exc:
+            # Never include response text, request bodies or exception repr in logs.
+            reason = exc.code if isinstance(exc, ApiError) else "VISION_CREDENTIAL_FETCH_FAILED"
+            accepted = complete_credential_refresh(generation, failure_reason=reason)
+            if accepted:
+                if isinstance(exc, ApiError) and exc.status_code in {401, 404}:
+                    self.on_status("invalid")
+                    self.on_error("绑定已失效，请重新绑定。")
+                append_log("WARN", "vision_credential_fetch_failed", "Vision 配置获取失败，新 C2 读取等待配置。", error_code=reason)
+        else:
+            current = self.binding
+            if current and (current.worker_id, current.worker_token, current.client_instance_id) == identity:
+                accepted = complete_credential_refresh(generation, key)
+        if accepted:
+            self._c2_vision_ready_before_scan()
+        return accepted
+
     def start(self, binding: Binding) -> None:
         self.binding = binding
+        if not self._refresh_vision_credential(binding):
+            return
         if binding.run_status == "faulted":
             # A technical fault is a durable local safety decision.  If the
             # original backend status update was interrupted, a new Runner
@@ -4099,6 +4127,7 @@ class TaskRunner:
             self.thread_monitor.start()
 
     def stop(self) -> None:
+        clear_vision_credential()
         self.stop_event.set()
         self._task_wake_event.set()
         self.c2_manual_scan_requested.set()
@@ -6195,6 +6224,8 @@ class TaskRunner:
             # separate fail-safe for not-yet-started physical actions.
             self._apply_local_run_status(run_status)
         try:
+            if run_status == "running" and not self._refresh_vision_credential(self.binding):
+                return False
             profile = self.api.set_run_status(self.binding, run_status)
             if profile.run_status != run_status:
                 raise RuntimeError(
@@ -6469,6 +6500,7 @@ class TaskRunner:
         ):
             self._pull_and_execute(binding)
 
+    @vision_credential_snapshot()
     def _pull_and_execute(self, binding: Binding) -> None:
         with self.task_lock:
             with self._new_work_admission_lock:
@@ -21170,6 +21202,7 @@ class TaskRunner:
                 )
         return recovered_outcomes
 
+    @vision_credential_snapshot()
     def _read_one_wechat_target(
         self,
         binding: Binding,

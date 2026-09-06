@@ -22,9 +22,6 @@ ENTRY_PATH = ROOT / "packaging" / "chejin_worker_client_entry.py"
 BUILD_IDENTITY_PATH = Path(
     os.environ.get("CHEJIN_BUILD_IDENTITY_PATH") or ""
 )
-VISION_CREDENTIAL_PATH = Path(
-    os.environ.get("CHEJIN_VISION_CREDENTIAL_PATH") or ""
-)
 RELEASE_SIGNING_KEYS_PATH = Path(
     os.environ.get("CHEJIN_RELEASE_SIGNING_KEYS_PATH")
     or ROOT / "packaging" / "release-signing-public-keys.json"
@@ -103,11 +100,6 @@ a = Analysis(
         *(
             [(str(BUILD_IDENTITY_PATH), ".")]
             if BUILD_IDENTITY_PATH.is_file()
-            else []
-        ),
-        *(
-            [(str(VISION_CREDENTIAL_PATH), ".")]
-            if VISION_CREDENTIAL_PATH.is_file()
             else []
         ),
     ],

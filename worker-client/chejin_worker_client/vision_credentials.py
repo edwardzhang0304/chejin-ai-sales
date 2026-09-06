@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+from contextlib import contextmanager
+from contextvars import ContextVar
+from threading import RLock
+
 import base64
 import json
 import os
@@ -9,7 +13,6 @@ from typing import Any
 
 
 VISION_API_KEY_ENV = "CUSTOMER_IMAGE_UNDERSTANDING_API_KEY"
-VISION_CREDENTIAL_FILENAME = "vision-runtime.json"
 OFFICIAL_VISION_PROVIDER = "anthropic_compatible"
 OFFICIAL_VISION_BASE_URL = "https://aiself.vip/v1"
 OFFICIAL_VISION_MODEL = "doubao-seed-2-0-lite-260428"
@@ -63,50 +66,67 @@ def is_official_vision_runtime() -> bool:
     ).strip().lower() in {"official", "debug_uat_locked"}
 
 
-def _official_credential_path() -> Path | None:
-    frozen_root = getattr(sys, "_MEIPASS", None)
-    if frozen_root:
-        return Path(frozen_root) / VISION_CREDENTIAL_FILENAME
-    configured = str(
-        os.environ.get("CHEJIN_VISION_CREDENTIAL_PATH") or ""
-    ).strip()
-    return Path(configured) if configured else None
+# Runtime memory only. A generation rejects late responses after another fetch,
+# rebind, or shutdown; ContextVar snapshots keep an admitted media flow stable.
+_lock = RLock()
+_generation = 0
+_runtime_key = ""
+_failure_reason = "VISION_CREDENTIAL_NOT_CONFIGURED"
+_flow_key: ContextVar[str | None] = ContextVar("vision_flow_key", default=None)
 
 
-def _read_official_credential() -> str:
-    path = _official_credential_path()
-    if path is None:
-        return ""
-    try:
-        payload = json.loads(path.read_text(encoding="utf-8-sig"))
-    except (OSError, UnicodeError, json.JSONDecodeError):
-        return ""
-    if not isinstance(payload, dict) or int(payload.get("schema_version") or 0) != 1:
-        return ""
-    return str(payload.get("vision_api_key") or "").strip()
+def begin_credential_refresh() -> int:
+    global _generation, _runtime_key, _failure_reason
+    with _lock:
+        _generation += 1
+        _runtime_key = ""
+        _failure_reason = "VISION_CREDENTIAL_FETCH_PENDING"
+        return _generation
+
+
+def complete_credential_refresh(generation: int, key: str = "", *, failure_reason: str = "") -> bool:
+    global _runtime_key, _failure_reason
+    with _lock:
+        if generation != _generation:
+            return False
+        _runtime_key = key
+        _failure_reason = failure_reason or ("" if key else "VISION_CREDENTIAL_NOT_CONFIGURED")
+        return True
+
+
+def clear_vision_credential() -> None:
+    complete_credential_refresh(begin_credential_refresh())
 
 
 def resolve_vision_api_key() -> str:
-    """Resolve the dedicated key without logging or returning its source path.
+    snapshot = _flow_key.get()
+    if snapshot is not None:
+        return snapshot
+    with _lock:
+        return _runtime_key
 
-    Distributed builds ignore ordinary environment overrides. Source development
-    builds may use the dedicated development environment variable.
-    """
 
-    if is_official_vision_runtime():
-        return _read_official_credential()
-    return str(os.environ.get(VISION_API_KEY_ENV) or "").strip()
+@contextmanager
+def vision_credential_snapshot():
+    token = _flow_key.set(resolve_vision_api_key())
+    try:
+        yield
+    finally:
+        _flow_key.reset(token)
 
 
 def install_resolved_vision_api_key() -> bool:
-    """Install the resolved key only for the isolated provider child process."""
+    """Compatibility capability check; never put the key in the parent environment."""
+    return bool(resolve_vision_api_key())
 
-    api_key = resolve_vision_api_key()
-    if not api_key:
-        os.environ.pop(VISION_API_KEY_ENV, None)
-        return False
-    os.environ[VISION_API_KEY_ENV] = api_key
-    return True
+
+def vision_provider_environment(base: dict[str, str]) -> dict[str, str]:
+    environment = dict(base)
+    environment.pop(VISION_API_KEY_ENV, None)
+    key = resolve_vision_api_key()
+    if key:
+        environment[VISION_API_KEY_ENV] = key
+    return environment
 
 
 def resolve_vision_runtime_settings() -> dict[str, str]:
@@ -144,7 +164,8 @@ def vision_credential_status() -> dict[str, Any]:
     settings = resolve_vision_runtime_settings()
     return {
         "configured": bool(resolve_vision_api_key()),
-        "credential_source": "embedded" if official else "development_environment",
+        "credential_source": "worker_backend",
+        "failure_reason": "" if resolve_vision_api_key() else _failure_reason,
         "configuration_locked": official,
         **settings,
     }

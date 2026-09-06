@@ -1,0 +1,13 @@
+{
+  "viewport": [
+    1440,
+    1000
+  ],
+  "same_key_workers_saved": 2,
+  "blank_edit_kept_key": true,
+  "create_key_required": true,
+  "clear_button_present": false,
+  "help_text_present": false,
+  "browser_storage_leak": false,
+  "windows_uat": false
+}

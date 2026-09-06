@@ -20,7 +20,6 @@ jobs:
     runs-on: windows-latest
     timeout-minutes: 90
     env:
-      CHEJIN_VISION_CLIENT_API_KEY: ${{ secrets.CHEJIN_VISION_CLIENT_API_KEY }}
       CHEJIN_RELEASE_SIGNING_KEY_ID: ${{ secrets.CHEJIN_RELEASE_SIGNING_KEY_ID }}
       CHEJIN_RELEASE_SIGNING_PUBLIC_KEY_BASE64: ${{ secrets.CHEJIN_RELEASE_SIGNING_PUBLIC_KEY_BASE64 }}
 
@@ -100,11 +99,11 @@ jobs:
           if ($manifest.formal_release -ne $true) {
             throw "manifest is not a formal release"
           }
-          if ($manifest.vision_credential_embedded -ne $true -or $manifest.vision_configuration_locked -ne $true) {
-            throw "manifest does not confirm locked embedded Vision configuration"
+          if ($manifest.vision_credential_embedded -ne $false -or $manifest.vision_credential_source -ne "worker_backend" -or $manifest.vision_configuration_locked -ne $true) {
+            throw "manifest does not confirm backend Vision credential configuration"
           }
-          if ($manifest.vision_live_probe_check -ne "passed") {
-            throw "manifest does not confirm the packaged Vision live capability probe"
+          if ($manifest.vision_live_probe_check -ne "runtime_after_binding") {
+            throw "manifest has an invalid Vision probe lifecycle"
           }
           $exeHash = (Get-FileHash -Algorithm SHA256 $exePath).Hash
           if ($exeHash -ne $manifest.exe_sha256) {
@@ -146,8 +145,8 @@ jobs:
 
           $preflightPayload = Get-Content -Raw -Encoding UTF8 $preflightReport | ConvertFrom-Json
           $visionCheck = @($preflightPayload.checks | Where-Object { $_.name -eq "vision_credential" })
-          if ($visionCheck.Count -ne 1 -or $visionCheck[0].ok -ne $true -or $visionCheck[0].detail.live_probe.ok -ne $true -or $visionCheck[0].detail.live_probe.status -ne 200) {
-            throw "packaged Vision live capability probe did not pass"
+          if ($visionCheck.Count -ne 1 -or $visionCheck[0].detail.configured -ne $false -or $visionCheck[0].detail.credential_source -ne "worker_backend") {
+            throw "packaged Vision configuration must start without a credential"
           }
 
           Remove-Item Env:CHEJIN_PACKAGING_DIAGNOSTIC_PATH -ErrorAction SilentlyContinue
@@ -209,14 +208,8 @@ jobs:
               throw "startup crash diagnostic missing field: $requiredField"
             }
           }
-          $secretValue = [string]$env:CHEJIN_VISION_CLIENT_API_KEY
-          foreach ($safeOutput in @($manifestPath, $preflightReport, $productionEndpointReport, $runtimeDiagnostics, $defaultStartupDiagnostic)) {
-            if (Test-Path $safeOutput) {
-              $safeOutputText = Get-Content -Raw -Encoding UTF8 $safeOutput
-              if (-not [string]::IsNullOrWhiteSpace($secretValue) -and $safeOutputText.Contains($secretValue)) {
-                throw "diagnostic or manifest output leaked the Vision credential"
-              }
-            }
+          if (@(Get-ChildItem -Path (Split-Path $exePath) -Recurse -File -Filter "vision-runtime.json").Count -ne 0) {
+            throw "package contains legacy Vision credentials"
           }
 
           Write-Host "Windows packaged executable validation passed."
@@ -336,6 +329,7 @@ jobs:
             tests_status = [string]$manifest.tests_status
             preflight_status = [string]$manifest.preflight_status
             vision_credential_embedded = [bool]$manifest.vision_credential_embedded
+            vision_credential_source = [string]$manifest.vision_credential_source
             vision_configuration_locked = [bool]$manifest.vision_configuration_locked
             vision_provider = [string]$manifest.vision_provider
             vision_base_url = [string]$manifest.vision_base_url
@@ -351,10 +345,6 @@ jobs:
             created_at = (Get-Date).ToUniversalTime().ToString("o")
           }
           $deliveryManifest | ConvertTo-Json -Depth 5 | Set-Content -Encoding UTF8 $deliveryManifestPath
-          $deliveryManifestText = Get-Content -Raw -Encoding UTF8 $deliveryManifestPath
-          if (-not [string]::IsNullOrWhiteSpace([string]$env:CHEJIN_VISION_CLIENT_API_KEY) -and $deliveryManifestText.Contains([string]$env:CHEJIN_VISION_CLIENT_API_KEY)) {
-            throw "delivery manifest leaked the Vision credential"
-          }
           "$($zipHash.ToLowerInvariant())  $zipName" | Set-Content -Encoding ASCII $sha256Path
           .\.venv\Scripts\python.exe .\scripts\sign-client-release.py `
             --archive $zipPath `

@@ -1,0 +1,34 @@
+{
+  "status": "local_implementation_ready_for_review",
+  "passed_test_cases": 189,
+  "passed_subtests": 27,
+  "unique_junit_cases": 189,
+  "all_junit_cases_passed": true,
+  "frontend_build": "passed",
+  "postgres_migration": "20260906_0033",
+  "windows_new_package_uat": "not_run",
+  "formal_package_build": "not_run",
+  "commit_push_deploy": "not_performed",
+  "artificial_fixtures": [
+    "local ZIP assembly uses placeholder Windows runtime and synthetic source admission identity",
+    "Vision HTTP receiver is a test server"
+  ],
+  "evidence_files": [
+    "recovery.xml",
+    "delivery.xml",
+    "fetch-http.xml",
+    "assembly-secret-True.json",
+    "worker-auto-closure.xml",
+    "postgres-http.xml",
+    "backend-credentials.xml",
+    "assembly-secret-False.json",
+    "source-files-sha256.json",
+    "vision-regression.xml",
+    "memory.xml",
+    "browser.json",
+    "fetch-memory-final.xml",
+    "http-postgres-provider.json",
+    "frontend.xml"
+  ],
+  "counting_note": "189 distinct regular test cases; 27 pytest subtests reported separately. Repeated runs are deduplicated by classname and name."
+}

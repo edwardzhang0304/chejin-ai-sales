@@ -1,18 +1,21 @@
 # AI智能客服售前跟进系统 技术方案
 
-版本：v0.9.66.2（集成登记 v0.3；拆分 Fast UAT 本地流程与正式生产流程）
+版本：v0.9.67（实现候选 v0.2；Worker Vision 凭据后台配置，待复审）
 
 日期：2026-07-21
 
-最后更新：2026-09-05
+最后更新：2026-09-06
 
 适用范围：运营后台、车金后端、Windows Worker、OmniAuto Sidecar、C0—C4、车辆 Product Master、知识管理、人工接管与飞书通知。
 
-当前开发目标为 `0.9.66`，以已发布 `0.9.65` / `2feb3e291a0a41fe93e42bb92ce518716c7d07e5`
-为本轮审查基线；只修复 6.0.3.3.3 所述 Sidecar 当前帧头像列与独立气泡误判。
-先用已有检测确认真实头像，再以该头像的实际边界分类旁边的独立物体；粗搜索范围和“疑似粘连”
-标签不再单独否决已确认的消息。真正影响头像归属或消息分组的未决证据仍沿现有技术错误处理。
-生产已切换到 `0.9.66`，客户端正式包已签名并登记；Windows 物理操作验收仍由用户实机执行。更新查询使用
+当前开发目标为 `0.9.67`，继承已发布 `0.9.66` 与当前灰度 HEAD
+`315bf41`，本轮仅将 Vision Key 从安装包改为运营后台按 Worker 配置、绑定后运行时取得。
+允许多个 Worker 使用完全相同的 Key，不做 Key 唯一性、跨 Worker 重复检测或强制一机一 Key。
+头像修复、媒体编排、Brain、身份判断、C0—C4 状态机和更新安装门禁保持不变。
+本轮已完成本地代码、迁移及定向自测，尚未提交、推送、正式打包或部署；新合同/Schema/真实来源登记待复审后集成。
+2026-09-06 用户收口页面：新增 Vision Key 必填，去掉辅助解释小字，抽屉不提供清除入口；已配置编辑留空保留。
+不以改变 Key 来源承诺消除所有聊天安全提示。
+上次生产登记为 `0.9.66`，不在本轮重新宣称 Windows 验收已通过。更新查询使用
 `${PRODUCTION_API_ORIGIN}`，安装包下载使用 `${UPDATE_DOWNLOAD_ORIGIN}`。
 生产查询地址和下载地址以受控发布配置为准。
 
@@ -22,7 +25,8 @@ Flow、UI 锁、Sidecar 和本地账本全部门禁。等待状态增加 guard/c
 脱敏的异常与进程退出证据；证据写入失败不得改变启动校验、回滚或业务结果。
 
 已发布 `0.9.65` 合同为 `6ebe42853790b9911c3f81dbf1b917ddec03b249747bb4c26a447a889a862b5b`。
-当前候选 `contract_revision=0.9.66`，正式生成器计算的规范化 SHA 为 `0f65d3a66514639a1768901f59af18cd35dfb43a7fed75ae211e479ba70ca490`。
+已发布 `contract_revision=0.9.66`，规范化 SHA 为 `0f65d3a66514639a1768901f59af18cd35dfb43a7fed75ae211e479ba70ca490`。
+目标 `contract_revision=0.9.67`，SHA 在实现与生成 Schema 完成后真实计算，不预填。
 OmniAuto 真实来源为 `b8804f282c58f2b7a5d1ef4148a3267f32d07bdf`，父提交为 `03ddcd66cf22740c5c30537b0fb9e7873e24b50f`；
 两仓头像分类文件与生成 Schema 逐字节一致，来源与集成详情见版本更新记录。
 用户确认上一轮 `0.9.63 → 0.9.64` 安装失败并回滚；本轮正式包已通过 CI 门禁、Updater 切换/回滚验证，
@@ -50,12 +54,12 @@ OmniAuto 真实来源为 `b8804f282c58f2b7a5d1ef4148a3267f32d07bdf`，父提交�
    字段和领域对象字段使用 snake_case，两者不得被误认为两个接口。新增、改名或废弃
    接口必须先修改本文的权威目录和接口编号，不允许在代码、聊天记录或派生合同中另起
    同义名称。
-7. 灰度版本使用唯一 `0.9.x` 序列：`0.9.0` 至 `0.9.65` 已冻结，当前目标候选为 `0.9.66`；
+7. 灰度版本使用唯一 `0.9.x` 序列：`0.9.0` 至 `0.9.66` 已冻结，当前目标候选为 `0.9.67`；
    后续任何内容不同且进入测试的候选必须继续升版。PRD（仅有产品变化时）、技术方案、全流程图、版本记录、客户端、
    后端、OmniAuto 合同 `contract_revision`、生成 Schema、manifest 和安装包必须写入同一个
    精确版本，禁止各自升版、复用旧号覆盖新内容或把占位符 `0.9.X` 写入运行产物。
    `contract_version=3`、`observation_schema_version=3` 和文中 V3 仅是协议结构代号，不属于
-   灰度发布版本；当前目标为 `contract_revision=0.9.66`，规范化 SHA 必须在客户端、后端发布清单、
+   灰度发布版本；当前目标为 `contract_revision=0.9.67`，规范化 SHA 必须在客户端、后端发布清单、
    Schema 和生成物全部完成后由正式生成器真实计算，不得预填。知识管理不改变 C2 字段语义，但发布候选仍须按项目版本治理统一 revision 并重新运行生成器；独立 OmniAuto 来源、车金候选提交、标签和安装包必须按发布流程真实形成。
    版本车道固定为：`0.9.x` 仅用于正式上线前灰度验证，`1.0.x` 用于正式上线及其稳定性修复，
    `1.1.x` 用于下一期优化。三个 `x` 都只表示版本系列，任何提交、合同、Schema、manifest、
@@ -65,7 +69,7 @@ OmniAuto 真实来源为 `b8804f282c58f2b7a5d1ef4148a3267f32d07bdf`，父提交�
    测试和发布治理。原 `1.1.x` 待办中已提前完成并移出的能力为：`0.9.42` 非首屏会话定位复用；
    `0.9.58/0.9.59` 耗时观测清理和客户端手动检查更新；`0.9.60` 正式包/低风险代码瘦身与 Brain 主生成额度修复；
    `0.9.61` 运营后台知识管理。剩余 `1.1.x` 待办只以版本更新记录第 8 节为唯一清单，不得从旧会话或历史候选恢复已完成项。
-   `0.9.66` 继承 `0.9.65` 的租约清理、更新诊断及业务规则，只接收 6.0.3.3.3 的当前帧头像列与独立气泡分类整改、定向测试及必要发布治理，不得借此带入确认次数优化、AI 回复效果优化、经验池、Prompt 管理或其他下一期功能。每个不可变灰度候选使用精确标签
+   `0.9.67` 继承 `0.9.66`，只接收 8.3.1 的 Worker Vision 凭据配置、无 Key 打包及对应测试和发布治理，不得带入确认次数优化、AI 回复效果优化或其他下一期功能。每个不可变灰度候选使用精确标签
    `gray-v0.9.0、gray-v0.9.1、gray-v0.9.2、gray-v0.9.3、gray-v0.9.4、gray-v0.9.5、gray-v0.9.6……`。`main` 只接收已完成灰度验收的确切标签提交，不允许把
    dirty 工作区、未固定的本地提交或多个并行开发分支直接合入 `main`。
 
@@ -112,7 +116,7 @@ Windows Worker -> OmniAuto Sidecar -> 微信桌面端
 | Worker 本地存储 | SQLite + 本地文件目录 | 保存本地配置、运行日志、ActionJournal、Ledger、Outbox 和未确认发送记录；不保存图片原始字节或图片临时文件，服务端仍是最终事实源。 |
 | 通信方式 | HTTPS REST + Worker 主动轮询/心跳 | 商家电脑不暴露公网端口；Worker 主动拉任务、上报事实和心跳。 |
 | AI 文本 | OmniAuto AI Engine + 服务端可配置模型 Provider | OmniAuto 负责上下文、RAG、Guard、编排；模型密钥和主备路由服务端配置，不下发 Worker。 |
-| 图片理解 | Worker 内置 OmniAuto Vision + 服务端批准的视觉 Provider | Vision 在 Windows 客户端执行并直接调用批准的外部 Provider；正式包内置 CI 注入的客户端专用低权限 Key，用户不手工配置；原图不上传车金后端、不落盘，低置信转人工。 |
+| 图片理解 | Worker 内置 OmniAuto Vision + 服务端批准的视觉 Provider | Vision 仍在 Windows 客户端直接调用批准的 Provider；安装包不含 Key，后台按 Worker 配置，绑定客户端在运行时取得；允许不同 Worker 填相同 Key；原图不上传车金后端、不落盘，原媒体失败规则不变。 |
 | 知识检索 | 车金不可变发布索引 + 冻结会话上下文关键词检索 | `0.9.61` 使用标题/正文的规范化字符、二字词、三字词和英文数字词确定性召回；向量语义检索属于后续 AI 回复优化。Dify/FastGPT 仅预留 Adapter。 |
 | 车辆主数据 | OmniAuto Product Master | 本地手工 V2 车辆是唯一车辆事实源；运营通过车辆页面或 Excel 录入真实数据。不同步、不读写大风车 API。 |
 | 文件存储 | 服务端持久化文件卷（首期） | 车辆库图片允许运营上传并持久化；微信客户图片仍只在 Worker 内存处理，不上传、不落盘。两类图片不得混用。 |
@@ -364,7 +368,7 @@ Worker上报客户消息 -> 控制面检查会话和风控 -> AI/RAG/Guard -> �
   不得因进入 `target_chat_locating / c3_brain_waiting / chat_reply` 重置为另一套 screen。
 - 当前过程容器使用原生可访问滚动语义，保留滚轮、触控板、方向键、PageUp/PageDown、Home/End 和
   可拖动滚动能力；视觉上仅覆盖为窄圆角中性灰滑块。隐藏原生轨道时必须保留等价拖动和键盘能力。
-- Worker 不保存业务主状态，不直接调用文本大模型，不持有服务端 Brain、飞书或数据库密钥。Worker 正式包持有的唯一模型凭据是客户端直连图片理解所需的 Vision 客户端专用 Key：由 CI Secret 注入安装包，固定 Provider/接口/模型白名单，限制额度与调用频率，可监控、吊销和轮换；不得写入 Git、独立 `.env`、启动脚本、manifest、日志或故障证据。正式包不依赖用户手工设置 `CUSTOMER_IMAGE_UNDERSTANDING_API_KEY`；该环境变量只允许开发包显式覆盖。
+- Worker 不保存业务主状态，不直接调用文本大模型，不持有服务端 Brain、飞书或数据库密钥。唯一允许下发的模型凭据为后台对该 Worker 配置的 Vision Key，必须按 8.3.1 鉴权取得并仅保留在运行内存。正式包与 Fast UAT 均不内置真实 Key，Provider/接口/模型仍固定原白名单；不改模型、额度或调用次数，不增加一机一 Key 限制。Key 不进入 Git、文件、命令行、manifest、日志或故障证据；开发环境变量覆盖仅限明确的源码开发模式。
 - Worker 不需要开机自启，通过执行台启动按钮操作。
 - Worker RPA 能力优先复用 OmniAuto 仓库的微信 Win32/OCR sidecar、RPA 全局锁、输入/点击节流、截图证据和验收门禁；本项目新增 Worker 任务桥接层、RPA Sidecar 调用协议和 `add_friend` 执行器。`add_friend` 字段契约、结果码和验收口径统一写入本文档模块4，不再另设独立集成方案作为当前有效入口。
 - C1 `add_friend`、C2 会话绑定与文字/语音/图片事实、C3 AI 回复和 C4 召回使用本文定义的单一主链；车辆库/知识库只在服务端接入，不改变 Worker 的微信事实采集和发送合同。
@@ -579,6 +583,10 @@ flow 时，必须先结算嵌套产生的 C2 事实，再结束任务 flow。
 | `API-WORKER-05` | POST | `/api/workers/{worker_id}/heartbeat` | Worker 心跳 |
 | `API-WORKER-06` | POST | `/api/workers/{worker_id}/inflight-flow/start` | 在具体客户业务流程首次 UI 锁前登记唯一在途流程；仅 running 可调用 |
 | `API-WORKER-07` | POST | `/api/workers/{worker_id}/inflight-flow/finish` | 业务终态及 UI 锁释放后清除同一在途流程 |
+| `API-WORKER-08` | PUT | `/api/workers/{worker_id}/vision-credential` | 后台登录用户设置或替换 Vision Key；只返回配置状态 |
+| `API-WORKER-09` | DELETE | `/api/workers/{worker_id}/vision-credential` | 后台登录用户明确清除 Vision 配置；不删除 Worker 或业务事实 |
+| `API-WORKER-10` | GET | `/api/workers/{worker_id}/vision-credential` | 已绑定 Worker 在运行时取得自身凭据；禁止后台列表、更新查询和匿名调用代取 |
+| `API-WORKER-11` | POST | `/api/workers` | 复用现有创建 Worker 接口，新增可选只写字段 vision_api_key，Worker 与凭据原子保存 |
 | `API-CLIENT-01` | GET | `/api/client-releases/latest` | Windows 客户端查询当前灰度渠道的最新可自动更新发布清单；不依赖 Worker 或销售绑定 |
 | `API-TASK-01` | POST | `/api/tasks/{task_id}/claim` | Worker 领取任务 |
 | `API-TASK-02` | POST | `/api/tasks/{task_id}/lease/renew` | Worker 续租运行中的任务 |
@@ -3369,7 +3377,7 @@ POST /api/workers/{worker_id}/wechat/messages/ingest
 
 | 字段 | 类型 | 必填 | 说明 |
 |---|---|---|---|
-| `contract_version` | integer | 是 | 协议结构代号固定为 `3`，不是发布版本；目标灰度版本由 `contract_revision=0.9.66` 表达，并同时校验最终重新生成的 `contract_sha256 / observation_schema_version`。 |
+| `contract_version` | integer | 是 | 协议结构代号固定为 `3`，不是发布版本；目标灰度版本由 `contract_revision=0.9.67` 表达，并同时校验最终重新生成的 `contract_sha256 / observation_schema_version`。 |
 | `read_run_id` | string | 是 | 本次读取运行 ID。 |
 | `conversation_id` | string | 是 | 服务端已绑定会话 ID。 |
 | `remark_code` | string | 是 | 本轮已确认的客户短码。 |
@@ -4181,7 +4189,7 @@ failed 终态并进入 Ledger/Outbox，禁止永久停留在 `C2_IMAGE_FACT_PEND
 ### 8.1 唯一职责边界
 
 - 图片与文字、语音属于同一个 C2 单会话 Flow，不另建图片扫描任务、图片上传接口或平行准入链路。
-- Vision 的运行代码、Provider 网络请求和临时图片载荷均在 Windows Worker 客户端侧；车金后端不接收原图、不提供图片上传或 Vision 代理接口。正式客户端通过安装包内置的 Vision 客户端专用 Key 直接调用批准的 Provider，新电脑只需完成 Worker ID/Token 绑定。
+- Vision 的运行代码、Provider 网络请求和临时图片载荷均在 Windows Worker 客户端侧；车金后端不接收原图、不提供图片上传或 Vision 代理接口。管理员在后台配置该 Worker 的 Key，客户端完成 ID/Token 绑定后运行时取得；后端只管理凭据，不替代 Vision 或重新判断图片。
 - Brain 固定在服务端运行，只消费通过共享 schema 的图片文字化结果和服务端权威车辆/知识证据；Brain 不接收原图，也不持有客户端 Vision Key。
 - 图片复用有效短码、`conversation_type=private`、`read-targets` 和 `authorization_revision` 门禁。
 - OmniAuto 负责先生成结构图片候选、与已解析文字/语音完成类型仲裁，只对最终确认的 `image_bubble` 返回 `bubble_rect`，并执行当前剪贴板图片事务和 Vision 文字化理解。
@@ -4247,7 +4255,7 @@ failed 终态并进入 Ledger/Outbox，禁止永久停留在 `C2_IMAGE_FACT_PEND
 -> 剪贴板稳定确认不是位图时，得到C2_IMAGE_SOURCE_INVALID的media_result=failed，不调用Vision
 -> 按原始位图内存上限解码，再缩放和自适应编码到Provider载荷上限
 -> 校验image_hash/视觉指纹后清除本次Windows剪贴板内容
--> Worker进程内调用OmniAuto BuiltinVisionPlugin，并使用正式包内置的客户端专用Key直接请求批准的真实Vision Provider
+-> Worker进程内调用OmniAuto BuiltinVisionPlugin，并使用后台按当前绑定Worker下发的内存Key直接请求原批准Vision Provider
 -> 使用共享JSON Schema校验结果，得到media_result=completed / failed
 -> 取得动作后最新稳定画面和confirmed action receipt，严格校验action/reserved/pre/post observation/binding/fingerprint
 -> 回执完整：经唯一commit_message_identity提交原reserved ID，形成committed_completed/committed_failed；此后才生成source key并投递Ledger/Outbox
@@ -4273,28 +4281,104 @@ failed 终态并进入 Ledger/Outbox，禁止永久停留在 `C2_IMAGE_FACT_PEND
   缺失时 Worker 进入 `vision_not_ready`，不得首屏扫描、定向读取或打开会话；
   配置恢复并重新预检通过后才能启动新 C2。已有 `sent_ack`、消息 Outbox 和
   `settle_without_ui` 必须先恢复，不受该能力门禁影响。不得用 mock 冒充真实能力完成。
-- 正式包的 Vision 预检必须验证“内置凭据存在且可用、Provider/HTTPS 接口/模型/
+- 正式包的 Vision 预检必须验证“当前绑定 Worker 的运行时凭据存在且可用、Provider/HTTPS 接口/模型/
   request_style 与批准白名单一致”，但输出只能包含 `configured=true/false`、凭据
   来源类型、Provider、模型和稳定错误码，禁止输出 Key、Authorization 头或可还原
   片段。正式包不得因新电脑缺少 Windows 环境变量而进入 `vision_not_ready`；开发
-  包才允许通过环境变量替换凭据。正式包禁止只读取
-  `CUSTOMER_IMAGE_UNDERSTANDING_API_KEY`；必须满足安装包内置受控凭据和新电脑开箱可用要求。
+  包的源码开发模式才允许通过环境变量替换凭据。正式包与 Fast UAT 使用 8.3.1 后台配置，
+  禁止回退旧包文件、内置共享 Key 或普通环境变量；后台已配置时，新电脑绑定后可正常取得配置。
 - Provider 地址必须为 HTTPS（显式本地开发模式除外），请求风格使用白名单。一次
   非 JSON 格式纠正重试属于合法流程，父进程安全预算必须覆盖两次请求，不能用
   `单次timeout + 5秒` 提前杀死第二次请求。
 
-Vision 正式凭据交付规则：
+Vision 凭据交付统一遵守下一节；旧“CI 注入包内资源、改 Key 必须重新打包”的规则废止。
 
-1. Git 仓库、源码压缩包、PR、Actions 日志和普通构建产物中不得出现真实 Key。
-2. 正式 Windows 构建从受控 CI Secret 注入一个客户端专用 Key；开发构建不得冒充正式包。
-3. 内置 Key 只能访问批准的 Vision Provider、HTTPS 接口、模型和请求类型，并配置单机/全局额度、限流、异常用量告警、立即吊销和版本轮换能力。
-4. Key 不得作为包根目录下可编辑的 `.env`、配置说明、`.txt` 或 PowerShell 参数
-   交给用户配置；允许作为正式包 `_internal` 内部运行资源由凭据解析器读取并提供给
-   Vision 子进程。该资源仍属于客户端可提取边界，不得宣传为加密保险箱；运行日志、
-   子进程协议、预检报告、manifest、Actions 日志和故障 ZIP 必须脱敏。
-5. 由于客户端必须能够使用该 Key，无法承诺绝对不可提取；本项目不使用虚假“本地加密即绝对安全”的表述，安全目标是降低普通泄露、限制被盗后的权限和损失，并能快速吊销轮换。
-6. Key 轮换形成新客户端候选版本、新提交和新安装包 SHA；旧 Key 在迁移窗口结束后吊销。
-7. Windows UAT 必须从干净新电脑验证：不预设 Vision 环境变量，只输入 Worker ID/Token，也能通过 Vision 预检并完成真实图片识别。
+### 8.3.1 Worker Vision Key 后台配置（0.9.67，唯一实现方案）
+
+**范围与不变量**
+
+- 安装包只包含程序；管理员主动配置 Key，客户端绑定后鉴权取得。此为凭据管理改动，不重做图片处理。
+- **多个 Worker 可以配置完全相同的 Key**。数据库不得对 Key/Key 摘要建立唯一约束，前后端不得查重、
+  比较其他 Worker 的 Key、限制一机一 Key 或自动替用户创建新 Key。不增加 Key 前缀/厂商格式正则、
+  自动模型选择、额度检测、供应商所有权验证或额外付费探测；仍用原 Provider 配置和原 Vision 预检。
+- 只写入管理员输入的非空字符串（去首尾空白）；省略/空输入视为不配置或不修改，不代表清除。
+  传输层限制过大请求与换行头注入属于输入安全，不得演变为供应商 Key 格式猜测。
+
+**A. 页面与保存**
+
+1. 复用 Worker 新增/编辑界面，增加密码输入框“Vision Key”。按用户 2026-09-06 最新页面要求，
+   新增时必填，空白字符串不能保存；移除解释小字和抽屉“清除 Vision Key”入口。
+   已存在 Worker 显示“已配置/未配置”，输入框永远为空；已配置编辑留空保留旧值，输入新值替换，未配置编辑时须填写。
+   不展示 Key 全文、前后缀或可复制值，不缓存到浏览器 localStorage/sessionStorage，提交完成或关闭抽屉清空输入。
+2. 创建通过现有 `API-WORKER-11` 的可选 `vision_api_key` 一起保存；加密失败则整次创建回滚。
+   现有 Worker 替换使用 `API-WORKER-08`，正文为 `{vision_api_key: 输入值}`；空值不清除。
+   页面不提供清除操作；原 `API-WORKER-09` 仍保留后台登录鉴权的明确 DELETE 语义，普通编辑留空不调用。
+   普通 Worker 编辑接口不再另行写凭据；创建 HTTP 可选字段合同继续兼容非页面调用，运营页面新增必须填写。
+3. 复用现有后台登录权限，不增加审核、角色审批或新权限体系；Worker Token 不能调用后台写接口。
+   保存只表示配置保存成功，不冒充 Provider 已验收。变更后显示“客户端重启或暂停后重新开始接单时生效”。
+4. Worker 上增加 nullable `vision_api_key_encrypted`、`vision_credential_updated_at` 和
+   `vision_credential_updated_by`；既有行迁移为未配置，禁止从旧包或 CI 提取真实 Key 自动灌库。
+   管理员响应仅增加 `vision_configured` 和更新时间；密文和明文均不进入普通序列化。
+5. 后端复用既有 Fernet 加密基础及服务端受控加密主密钥，提供专用凭据服务封装，不复制第二套自制密码算法。
+   密文内同时保存 worker_id 和 Key，解密时核对归属；这不是 Key 查重。加密主密钥不与密文放在同库或包内。
+   所有凭据读写只走这一服务；保存、替换、清除与操作审计同事务完成，审计只记操作者、Worker、动作和结果。
+   原始请求体、校验错误中的 input、SQL参数、异常、APM/反向代理和前端监控均不能记录 Key。
+
+**B. 运行时读取与生效**
+
+1. `API-WORKER-10` 复用 `X-Worker-Token`、`X-Client-Instance-Id` 与现有 Worker 鉴权；
+   另外明确要求该 Worker 已 bound 且实例匹配，未绑定不能因为有 Token 就取 Key。
+   停用/删除/重置绑定后旧客户端拒绝访问；paused/faulted 不等于解除绑定，可取配置但不自动开始业务。
+   客户端实例 header 本身不是身份凭据，后台管理会话不替代 Worker Token。
+2. 成功沿用标准响应 envelope，data 为 `{worker_id, client_instance_id, configured, vision_api_key}`。
+   未配置返回 configured=false、vision_api_key=null；接口不创建配置、不改 Worker 或客户状态。
+   所有响应加 `Cache-Control: no-store`，不经 CDN 缓存；仅 HTTPS（明确隔离本地开发除外），
+   禁止跨域重定向带出认证头；Key 不放 URL。客户端只接收与本次绑定一致的响应，换绑后的迟到响应丢弃。
+3. 绑定成功、已绑定客户端启动、用户显式“开始接单”时，先取得当前配置，再执行原 Vision 预检。
+   复用现有网络超时/错误处理；不新增定时轮询、每条图片拉 Key、额外 Provider 探测或重试循环。
+   同一次运行使用内存快照，现有 5 秒预检缓存规则不变；Key 只送原 Vision 调用入口，不送 Brain/普通 Sidecar 参数。
+   如现有 Vision 子进程确需读取，限该子进程运行环境传入，不放命令行或 JSON 业务消息/日志。
+4. 本版不落 Windows 凭据文件或 SQLite，不新增 DPAPI 存储。换绑、退出时清除内存引用；
+   用户开始接单重新获取失败时，不回退旧内存 Key。后台保存不会中途替换正在执行媒体事务的 Key。
+   后台清除仅阻止之后取用，**不是立即吊销供应商 Key**；需立即失效时由运维在供应商处撤销，
+   共用该 Key 的 Worker 都会受影响。进程已取得 Key 后无法承诺远程彻底抹除或本机绝对不可提取。
+5. Key 缺失、解密/网络失败使用既有 `C2_VISION_NOT_READY` 能力路径并附不含秘密的具体原因；
+   鉴权 401/404 保留原绑定错误，不包装成“Key 不合法”。不得进入首屏扫描或新 C2 UI 操作，不造 Handoff，
+   不重写客户状态或新增永久 faulted。原 `sent_ack`、Outbox、Journal 和无需 UI 的恢复优先且照常进行。
+   绑定、设置页、检查更新不依赖 Vision Key；不在 C1、纯回执上报或更新安装入口加新 Key 门禁。
+   实际 Provider 执行中失败继续按既有媒体失败规则收尾，不为凭据变更重做媒体动作。
+
+**C. 包、诊断和职责**
+
+- 正式及 Fast UAT 构建工作流删除 `CHEJIN_VISION_CLIENT_API_KEY` secret 注入、Key 读取、
+  `vision-runtime.json` 生成/打包及“必须 embedded=true”的断言。冻结客户端解析器不再读 `_internal` 旧资源。
+  旧包不能靠安装后删除文件伪装成无 Key 包。保留发布签名私钥的原受控签名步骤及包内验证公钥，二者不是 Vision Key。
+- manifest 改为 `vision_credential_embedded=false`、`vision_credential_source=worker_backend`；
+  Provider/模型白名单仍锁定。打包入口无真实 Key 也必须成功，未绑定启动只显示待绑定/待配置。
+  CI 若需测试 Provider，可在独立测试进程显式运行时注入测试凭据；不得传播到打包步骤和上传产物。
+- Worker 唯一负责绑定及取得 Key，后端唯一负责配置/鉴权/解密，OmniAuto Vision 使用注入值执行原调用。
+  独立 OmniAuto 保留自己的原配置入口，不依赖车金后端或 Worker；不增加图片、角色或身份判断。
+  共享 C2 业务观察、媒体回执、Ledger/Outbox 字段不变；新增凭据接口 schema 是本节唯一合同。
+  任何 UAT/故障包只导出 configured、来源类型和脱敏错误，不包含 Key、密文或带 Key 的请求/进程环境。
+
+**D. 迁移与验收**
+
+1. 本地先完成新表字段、接口、前端、客户端解析和无 Key 包测试；发布依照现有两条环境流程，
+   统一 `0.9.67` 合同/Schema 后真实计算 SHA 和双仓来源，不覆盖 `0.9.66`。
+   运维通过后台人工配置已有 Worker（允许相同 Key），无 Key 配置不删除或重置绑定、任务、客户、账本。
+2. 旧包和旧 Key 风险独立登记：撤下旧带 Key 下载入口、由授权运维安排旧 Key 轮换/撤销；
+   已下载副本无法召回。撤销共用 Key 前确认受影响客户端迁移，不能假称发布新包自动撤销旧 Key。
+   当前更新心跳404问题另外诊断，不能绕过原更新暂停确认门禁来完成本功能。
+3. 测试用明显的假 Key 哨兵，不请求/导出真实生产 Key：两台 Worker 同 Key 保存与取用都成功；
+   A 的 Token 取 B、只有实例 header、未绑定、重置旧 Token、停用 Worker均不得取得凭据。
+4. 真实 PostgreSQL 迁移/加密落库 + 正式管理 HTTP + 绑定 HTTP + Worker 凭据解析 + 原 Vision Provider
+   测试 HTTP 接收端串联，断言正确 Key 到达该 Provider 请求、图片业务载荷及结果不变。
+   换 Key 后重启/重新开始生效；留空保留、明确清除、网络失败、坏密文及迟到换绑响应均覆盖。
+5. 检查管理列表/详情、422/异常响应、审计日志、SQLite/Outbox、诊断 ZIP、前端存储和完整解压包
+   均无哨兵 Key/密文。带 secret 环境的反例构建也不得将它收入包；测试不能只查 manifest 布尔值。
+6. 原图片处理次数、顺序、回执和 Flow 结束不变；未配置仍能绑定/检查更新/上报旧回执。
+   不跑无关全量、不假冒 Windows UAT；本机完成接口、真实数据库、配置传递与产物负向扫描，
+   Windows 正式打包验证无旧资源、新包绑定后配置与图片调用，结果分别记录。
 
 ### 8.4 成功、失败与重试口径
 
@@ -4762,7 +4846,8 @@ AI 经验池、自动采纳真实对话或 Prompt 编辑功能。
   新增、编辑、发布、归档和回滚，首期不再细分编辑人与审核人。
 - 敏感字段默认不进入 AI 可见投影；AI 数据边界独立于后台账号权限，不能因账号拥有
   全部后台权限而扩大模型可见字段。
-- 数据库凭据、模型密钥和存储凭据只保存在服务端，不下发 Worker 或浏览器。
+- 数据库、服务端 Brain 模型和存储凭据只保存在服务端，不下发 Worker 或浏览器。
+  唯一例外是 8.3.1 管理员主动配置的客户端 Vision Key，仅鉴权后下发对应 Worker，不回显浏览器。
 - 车辆新增、编辑、上下架、批量导入和图片变更，以及知识草稿保存、发布预览、发布、归档、
   回滚均记录操作人、时间、对象、前后摘要、结果和失败原因。审计日志不得保存登录口令、
   Provider Key 或其他服务端密钥。
@@ -4944,7 +5029,7 @@ send_reply / reply_then_handoff / handoff / retry_later / no_action
 |---|---|
 | 日志审计与数据留痕 | 记录任务、消息、RAG召回、候选回复、Guard、风控、飞书通知、Worker错误、人工操作，敏感字段脱敏。 |
 | 配置中心与运维监控 | 集中管理模型、风控、召回、销售/Worker绑定、车辆/知识存储等配置，展示Worker在线和服务健康状态。 |
-| 数据安全与权限边界 | 指定账号登录成功即拥有全部后台权限，不做 RBAC；后台会话与 Worker Token 完全隔离；模型Key、数据库/存储凭据、飞书配置不下发Worker；AI只读白名单字段。 |
+| 数据安全与权限边界 | 指定账号登录成功即拥有全部后台权限，不做 RBAC；后台会话与 Worker Token 完全隔离；服务端 Brain Key、数据库/存储凭据、飞书配置不下发 Worker；8.3.1 的客户端 Vision Key 为唯一鉴权下发例外，允许多 Worker 同 Key；AI只读白名单字段。 |
 | Worker兼容性管理 | 记录Windows、微信、Worker版本；每次微信升级前跑核心回归；支持暂停Worker和人工降级。 |
 | 异常恢复任务 | 定时扫描 `stale running`、未确认 Outbox 和车辆/知识迁移异常并按安全规则处理；`unknown_send_result` 是已确认终态，只用于防重复与后续气泡自动对账，不生成消息人工待办。 |
 
@@ -5957,8 +6042,9 @@ git -C "${REPO_DIR}" status --short
 - 当前线上 API 镜像的回滚 tag 和 `docker image save | gzip` 归档；
 - 当前源码提交、容器 ID、镜像 ID、备份文件 SHA256、配置文件权限/时间元数据。
 
-生产 `.env` 原样保留，不复制、不打印、不修改其中的凭据。凭据仅允许由 GitHub Actions 以现有受保护变量作为
-运行时环境变量传入；执行人不得读取值、输出值、写入聊天或证据文件，也不得把它写入生产发布脚本。
+生产 `.env` 原样保留，不打印或修改其中凭据；受控备份中的配置必须按原权限保护，不写入聊天或公开证据。
+构建/部署所需既有凭据仅由受控环境传入，不固化进程序包或发布脚本。Vision Key 不再由 Actions 构建注入，
+唯一配置入口是 8.3.1 的后台管理表单及鉴权运行时读取；管理员在表单输入不等于授权日志、打包或公开分发秘密。
 
 ### 18.6 流程 B：后端候选构建与生产前端静态文件
 

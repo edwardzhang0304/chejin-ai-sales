@@ -1,9 +1,24 @@
 from typing import Literal
 
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, Field, SecretStr, field_validator, model_validator
 
 
-class WorkerCreate(BaseModel):
+class WorkerVisionCredential(BaseModel):
+    vision_api_key: SecretStr | None = Field(default=None, repr=False)
+
+    @field_validator("vision_api_key")
+    @classmethod
+    def normalize_vision_key(cls, value: SecretStr | None) -> SecretStr | None:
+        if value is None:
+            return None
+        raw = value.get_secret_value()
+        if len(raw) > 8192 or "\r" in raw or "\n" in raw:
+            raise ValueError("Vision Key 输入过长或包含换行")
+        cleaned = raw.strip()
+        return SecretStr(cleaned) if cleaned else None
+
+
+class WorkerCreate(WorkerVisionCredential):
     worker_name: str = Field(min_length=1, max_length=64)
     device_name: str | None = Field(default=None, max_length=128)
     platform: str = Field(default="windows", max_length=32)

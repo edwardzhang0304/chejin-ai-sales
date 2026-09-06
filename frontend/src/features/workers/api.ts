@@ -1,5 +1,5 @@
 import { request } from "../../shared/api/client";
-import type { WorkerCreatePayload, WorkerItem, WorkerResetResult, WorkerUpdatePayload } from "./types";
+import type { WorkerCreatePayload, WorkerItem, WorkerResetResult, WorkerUpdatePayload, WorkerVisionStatus } from "./types";
 
 export function listWorkers(signal?: AbortSignal) {
   return request<{ items: WorkerItem[] }>("/workers", { signal });
@@ -27,5 +27,12 @@ export function resetWorkerBinding(workerId: string) {
   return request<WorkerResetResult>(`/workers/${workerId}/reset-binding`, {
     method: "POST",
     body: { force: true },
+  });
+}
+
+export function setWorkerVisionCredential(workerId: string, key: string) {
+  return request<WorkerVisionStatus>(`/workers/${workerId}/vision-credential`, {
+    method: "PUT",
+    body: { vision_api_key: key },
   });
 }
