@@ -1,0 +1,12 @@
+{
+  "release": "0.9.68",
+  "main_source_commit": "7cbe5727991650dcce5e48d799dc59635eade7f1",
+  "main_branch": "codex/gray-release-0.9.x",
+  "main_push": "succeeded; cef74f3 -> 7cbe572",
+  "source_fix_commit": "92648e700fba985036a5204723d950b322b40ce5",
+  "source_schema_commit": "c752cbd31b476cb5e7b2cb4ccd4d500b913aec6c",
+  "source_branch": "codex/gray-release-0.9.x-source",
+  "source_remote_readback": "c752cbd31b476cb5e7b2cb4ccd4d500b913aec6c",
+  "built": false,
+  "deployed": false
+}

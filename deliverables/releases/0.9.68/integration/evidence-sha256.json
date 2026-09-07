@@ -7,5 +7,6 @@
   "integration-verification.json": "64c563d0fab80ca29e713fde2bc80a204b0ac3a49772684e93579108733c0764",
   "main-regression.xml": "d4fe0920f3253f2403d31b7dd5189e5de84163f64f1becd29c1cef6f4a7eeff4",
   "source-regression.xml": "712c5b89ce94ed301b9013d6507ed213891240de8df80bcdd725779b6f9de7ab",
-  "worker-release-checks.xml": "45b2cc4529df68b68a638818473be59e1820ac43659cb58d9c5ccd1eb260b517"
+  "worker-release-checks.xml": "45b2cc4529df68b68a638818473be59e1820ac43659cb58d9c5ccd1eb260b517",
+  "push-registration.json": "6bc64248e9324ea68e20aaff54e28975ee44fa95990bee438f6f52e18b5de618"
 }
