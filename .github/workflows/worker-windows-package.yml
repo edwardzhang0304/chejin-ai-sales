@@ -12,11 +12,64 @@ on:
         description: Reference to the completed UAT record
         required: true
 
+      delivery_mode:
+        description: Build and stage, retry delivery, or promote an already verified stage
+        type: choice
+        options: [build_and_stage, stage_existing, check_staged, publish_staged]
+        default: build_and_stage
+      current_client_version:
+        description: Exact installed client version whose updater and trust must accept the package
+        required: true
+        default: '0.9.67'
+      formal_run_id:
+        description: Successful formal package run ID (stage_existing only)
+        default: ''
+      stage_id:
+        description: Verified stage ID from delivery summary (check/publish only)
+        default: ''
+      production_ready:
+        description: Backend cutover complete; Workers paused and local queues drained; approve registration
+        type: boolean
+        default: false
+
 permissions:
   contents: read
+  actions: read
 
 jobs:
+  prepare:
+    name: Validate release authorization and receiver readiness
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    environment: ${{ (inputs.delivery_mode == 'publish_staged' || inputs.delivery_mode == 'check_staged') && 'formal-production' || 'formal-staging' }}
+    env:
+      RELEASE_APPROVED: ${{ inputs.release_approved }}
+      RELEASE_REASON: ${{ inputs.release_reason }}
+      DELIVERY_MODE: ${{ inputs.delivery_mode }}
+      CURRENT_VERSION: ${{ inputs.current_client_version }}
+      FORMAL_RUN_ID: ${{ inputs.formal_run_id }}
+      STAGE_ID: ${{ inputs.stage_id }}
+      PRODUCTION_READY: ${{ inputs.production_ready }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Validate dispatch without executing input as shell code
+        env:
+          FORMAL_SSH_KEY: ${{ secrets.FORMAL_SSH_KEY }}
+          FORMAL_SSH_HOST: ${{ secrets.FORMAL_SSH_HOST }}
+          FORMAL_SSH_PORT: ${{ secrets.FORMAL_SSH_PORT }}
+          FORMAL_KNOWN_HOSTS: ${{ secrets.FORMAL_KNOWN_HOSTS }}
+        run: |
+          python3 ops/formal_release/validate_dispatch.py
+          role=stage
+          case "$DELIVERY_MODE" in check_staged|publish_staged) role=promote ;; esac
+          python3 ops/formal_release/deliver.py preflight --role "$role" --current-version "$CURRENT_VERSION"
+
   package:
+    name: Build signed formal Windows package
+    needs: prepare
+    if: inputs.delivery_mode == 'build_and_stage'
     runs-on: windows-latest
     timeout-minutes: 90
     env:
@@ -26,11 +79,14 @@ jobs:
     steps:
       - name: Enforce completed UAT approval
         shell: powershell
+        env:
+          RELEASE_APPROVED: ${{ inputs.release_approved }}
+          RELEASE_REASON: ${{ inputs.release_reason }}
         run: |
-          if ("${{ inputs.release_approved }}" -ne "true") {
+          if ("$env:RELEASE_APPROVED" -ne "true") {
             throw "Formal EXE build is blocked until Fast UAT C0-C4 is approved"
           }
-          if ([string]::IsNullOrWhiteSpace("${{ inputs.release_reason }}")) {
+          if ([string]::IsNullOrWhiteSpace($env:RELEASE_REASON)) {
             throw "Formal EXE build requires a completed UAT record reference"
           }
 
@@ -380,3 +436,17 @@ jobs:
           if-no-files-found: error
           compression-level: 0
           retention-days: 14
+
+  deliver:
+    needs: [prepare, package]
+    if: >-
+      always() && !cancelled() && inputs.release_approved && needs.prepare.result == 'success' &&
+      ((inputs.delivery_mode == 'build_and_stage' && needs.package.result == 'success') ||
+       inputs.delivery_mode != 'build_and_stage')
+    uses: ./.github/workflows/formal-release-delivery.yml
+    with:
+      operation: ${{ inputs.delivery_mode }}
+      formal_run_id: ${{ inputs.delivery_mode == 'build_and_stage' && github.run_id || inputs.formal_run_id }}
+      current_client_version: ${{ inputs.current_client_version }}
+      stage_id: ${{ inputs.stage_id }}
+      production_ready: ${{ inputs.production_ready }}
