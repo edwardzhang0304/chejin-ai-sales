@@ -22,6 +22,8 @@ import configure_github
 import receiver
 import select_artifact
 from verify import CHUNK, digest, verify
+from chejin_worker_client import __version__ as CURRENT_VERSION
+TARGET_VERSION = ".".join([*CURRENT_VERSION.split(".")[:2], str(int(CURRENT_VERSION.split(".")[2]) + 1)])
 from chejin_worker_client.models import ClientRelease
 from chejin_worker_client.release_package_contract import canonical_release_manifest
 
@@ -38,16 +40,16 @@ class DeliveryTests(unittest.TestCase):
         public.write_text(json.dumps({"keys": [{"key_id": "fixture", "algorithm": "ed25519", "public_key_base64":
             base64.b64encode(self.key.public_key().public_bytes_raw()).decode()}]}))
         self.config = {"staging_root": str(self.root / "stage"), "public_keys": str(public),
-                       "client_baselines": {"0.9.68": str(ROOT / "worker-client")}, "api_origin": "https://example.test/api"}
-        self.stem = "chejin-worker-v0.9.69-windows-x64"
+                       "client_baselines": {CURRENT_VERSION: str(ROOT / "worker-client")}, "api_origin": "https://example.test/api"}
+        self.stem = f"chejin-worker-v{TARGET_VERSION}-windows-x64"
         self.files = {"CheJinWorkerClient.exe": b"fixture client", "CheJinUpdater.exe": b"fixture updater",
-                      "_internal/contracts/c2_contract_v3.json": b'{"contract_revision":"0.9.69"}',
+                      "_internal/contracts/c2_contract_v3.json": json.dumps({"contract_revision": TARGET_VERSION}).encode(),
                       "_internal/fixture.bin": b"0" * (CHUNK + 32)}
         self.make_artifact()
 
     def make_artifact(self, extra=None):
         sha = lambda b: hashlib.sha256(b).hexdigest()
-        manifest = {"schema_version": 1, "version": "0.9.69", "platform": "windows-x64", "git_commit": "a" * 40,
+        manifest = {"schema_version": 1, "version": TARGET_VERSION, "platform": "windows-x64", "git_commit": "a" * 40,
                     "rollback_safe": True, "files": {name: sha(body) for name, body in self.files.items()}}
         manifest_raw = json.dumps(manifest).encode()
         archive = self.folder / (self.stem + ".zip")
@@ -58,23 +60,23 @@ class DeliveryTests(unittest.TestCase):
             z.writestr("CheJinWorkerClient/update-package-manifest.json", manifest_raw)
             if extra:
                 z.writestr(*extra)
-        self.desc = {"version": "0.9.69", "channel": "gray", "platform": "windows-x64", "status": "published",
+        self.desc = {"version": TARGET_VERSION, "channel": "gray", "platform": "windows-x64", "status": "published",
             "git_commit": "a" * 40, "artifact_sha256": digest(archive), "artifact_size_bytes": archive.stat().st_size,
             "artifact_storage_key": "gray/windows-x64/" + archive.name, "package_manifest_sha256": sha(manifest_raw),
             "published_at": "2026-09-07T00:00:00Z", "minimum_updater_version": "0.9.59", "rollback_safe": True,
             "signature_key_id": "fixture", "release_notes": ""}
-        release = ClientRelease.from_api({**self.desc, "latest_version": "0.9.69", "update_available": True})
+        release = ClientRelease.from_api({**self.desc, "latest_version": TARGET_VERSION, "update_available": True})
         self.desc["manifest_signature"] = base64.b64encode(self.key.sign(canonical_release_manifest(release))).decode()
         (self.folder / (self.stem + ".release.json")).write_text(json.dumps(self.desc))
-        delivery = {"version": "0.9.69", "build_commit": "a" * 40, "workflow_run_id": "123", "zip_sha256": digest(archive),
+        delivery = {"version": TARGET_VERSION, "build_commit": "a" * 40, "workflow_run_id": "123", "zip_sha256": digest(archive),
             "default_api_base_url": "https://example.test/api", "tests_status": "passed", "preflight_status": "passed",
             "vision_credential_embedded": False, "vision_credential_source": "worker_backend", "vision_configuration_locked": True,
-            "vision_live_probe_check": "runtime_after_binding", "c2_contract_revision": "0.9.69",
+            "vision_live_probe_check": "runtime_after_binding", "c2_contract_revision": TARGET_VERSION,
             "exe_sha256": sha(self.files["CheJinWorkerClient.exe"]), "updater_exe_sha256": sha(self.files["CheJinUpdater.exe"]),
             "c2_contract_sha256": sha(self.files["_internal/contracts/c2_contract_v3.json"])}
         (self.folder / (self.stem + ".delivery.json")).write_text(json.dumps(delivery))
         (self.folder / (self.stem + ".sha256.txt")).write_text(digest(archive) + "  " + archive.name + "\n")
-        self.meta, _ = deliver.metadata(self.folder, "0.9.68", "123", "a" * 40)
+        self.meta, _ = deliver.metadata(self.folder, CURRENT_VERSION, "123", "a" * 40)
 
     def remote(self, request, body=b"", role="stage"):
         with patch("receiver.shutil.disk_usage") as space:
@@ -158,7 +160,7 @@ class DeliveryTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "ROLE_DENIED"):
                 self.remote({"operation": "publish", "stage_id": token})
             with self.assertRaisesRegex(ValueError, "STAGE_NOT_VERIFIED"):
-                self.remote({"operation": "publish", "stage_id": token, "workers_drained": True, "current_version": "0.9.68"}, role="promote")
+                self.remote({"operation": "publish", "stage_id": token, "workers_drained": True, "current_version": CURRENT_VERSION}, role="promote")
             publish.assert_not_called()
 
     def test_queue_confirmation_required_and_publish_failure_not_success(self):
@@ -168,7 +170,7 @@ class DeliveryTests(unittest.TestCase):
                 self.remote({"operation": "publish", "stage_id": token}, role="promote")
             publish.assert_not_called()
             with self.assertRaisesRegex(ValueError, "BACKEND_CONTRACT_MISMATCH"):
-                self.remote({"operation": "publish", "stage_id": token, "workers_drained": True, "current_version": "0.9.68"}, role="promote")
+                self.remote({"operation": "publish", "stage_id": token, "workers_drained": True, "current_version": CURRENT_VERSION}, role="promote")
         self.assertFalse((Path(self.config["staging_root"]) / token / "publication-result.json").exists())
 
     def test_unknown_baseline_and_changed_source_blocked(self):
@@ -210,7 +212,7 @@ class GateTests(unittest.TestCase):
 
     def test_missing_receiver_or_approval_blocks_before_build(self):
         valid = {'GITHUB_REF':'refs/heads/codex/gray-release-0.9.x','RELEASE_APPROVED':'true',
-                 'RELEASE_REASON':'fixture','DELIVERY_MODE':'build_and_stage','CURRENT_VERSION':'0.9.68',
+                 'RELEASE_REASON':'fixture','DELIVERY_MODE':'build_and_stage','CURRENT_VERSION':CURRENT_VERSION,
                  'FORMAL_SSH_KEY':'fixture','FORMAL_SSH_HOST':'example.test','FORMAL_SSH_PORT':'22','FORMAL_KNOWN_HOSTS':'fixture'}
         validate_dispatch.validate(valid)
         for change in ({'FORMAL_SSH_KEY':''},{'RELEASE_APPROVED':'false'},{'GITHUB_REF':'refs/heads/untrusted'},
@@ -253,7 +255,7 @@ class ExternalTests(unittest.TestCase):
     def test_full_download_and_ranges_and_identity(self):
         from urllib.parse import urlparse, parse_qs
         body = b"a" * 32 + b"z" * 32
-        result = {"version": "0.9.69", "commit": "a" * 40, "sha256": hashlib.sha256(body).hexdigest(), "size": len(body)}
+        result = {"version": TARGET_VERSION, "commit": "a" * 40, "sha256": hashlib.sha256(body).hexdigest(), "size": len(body)}
         class Response(io.BytesIO):
             def __init__(self, payload, status=200, headers=None):
                 super().__init__(payload)
@@ -265,7 +267,7 @@ class ExternalTests(unittest.TestCase):
                 url = req if isinstance(req, str) else req.full_url
                 if 'client-releases/latest' in url:
                     current = parse_qs(urlparse(url).query)['current_version'][0]
-                    payload = {"data": {"update_available": current != '0.9.69', "latest_version": '0.9.69',
+                    payload = {"data": {"update_available": current != TARGET_VERSION, "latest_version": TARGET_VERSION,
                         "artifact_sha256": result['sha256'], "git_commit": result['commit'], "artifact_size_bytes": len(body),
                         "artifact_url": 'https://' + ('evil.test' if self.wrong_host else 'downloads.test') + '/file?token=private'}}
                     return Response(json.dumps(payload).encode())
@@ -278,13 +280,13 @@ class ExternalTests(unittest.TestCase):
                 return Response(body,headers={'Content-Length':str(len(body))})
         opener=Opener()
         with patch('deliver.build_opener',return_value=opener):
-            self.assertEqual(deliver.verify_external(result,'0.9.68','https://api.test/api','https://downloads.test')['external_download'],'passed')
+            self.assertEqual(deliver.verify_external(result,CURRENT_VERSION,'https://api.test/api','https://downloads.test')['external_download'],'passed')
             opener.corrupt_range=True
             with self.assertRaisesRegex(ValueError,'RANGE_BYTES_MISMATCH'):
-                deliver.verify_external(result,'0.9.68','https://api.test/api','https://downloads.test')
+                deliver.verify_external(result,CURRENT_VERSION,'https://api.test/api','https://downloads.test')
             opener.wrong_host=True
             with self.assertRaisesRegex(ValueError,'DOWNLOAD_ORIGIN_MISMATCH'):
-                deliver.verify_external(result,'0.9.68','https://api.test/api','https://downloads.test')
+                deliver.verify_external(result,CURRENT_VERSION,'https://api.test/api','https://downloads.test')
 
 
 class RegistrationTests(unittest.TestCase):
@@ -295,9 +297,9 @@ class RegistrationTests(unittest.TestCase):
         from unittest.mock import Mock
         for contract, active, operation, expected_error in (
             ('wrong',False,'publish','BACKEND_CONTRACT_MISMATCH'),
-            ('0.9.69',True,'publish','WORKERS_NOT_DRAINED'),
-            ('0.9.69',False,'check',None),
-            ('0.9.69',False,'publish',None),
+            (TARGET_VERSION,True,'publish','WORKERS_NOT_DRAINED'),
+            (TARGET_VERSION,False,'check',None),
+            (TARGET_VERSION,False,'publish',None),
         ):
             with self.subTest(contract=contract,active=active,operation=operation), tempfile.TemporaryDirectory() as tmp:
                 (Path(tmp)/'release.json').write_text('{}')
@@ -319,7 +321,7 @@ class RegistrationTests(unittest.TestCase):
                     'app.core.database':types.SimpleNamespace(SessionLocal=types.SimpleNamespace(begin=begin)),
                     'app.services.client_release_service':types.SimpleNamespace(register_signed_client_release=registry,store_client_release_artifact=storage),
                 }
-                with patch.dict(sys.modules,modules), patch.object(sys,'argv',['register.py',tmp,'0.9.69','f'*64,operation]):
+                with patch.dict(sys.modules,modules), patch.object(sys,'argv',['register.py',tmp,TARGET_VERSION,'f'*64,operation]):
                     if expected_error:
                         with self.assertRaisesRegex(RuntimeError,expected_error):
                             runpy.run_path(str(ROOT/'ops/formal_release/register.py'))
