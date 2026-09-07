@@ -54,6 +54,13 @@ jobs:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12.10'
+      - name: Run formal delivery regression tests before release work
+        run: |
+          python -m pip install --disable-pip-version-check 'cryptography>=42.0,<46'
+          python -m unittest discover -s ops/formal_release/tests -v
       - name: Validate dispatch without executing input as shell code
         env:
           FORMAL_SSH_KEY: ${{ secrets.FORMAL_SSH_KEY }}
