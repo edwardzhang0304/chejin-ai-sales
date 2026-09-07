@@ -124,6 +124,12 @@ if (-not $SkipTests) {
     throw "打包失败：测试依赖安装失败"
   }
 }
+if (-not $DevelopmentBuild) {
+  .\.venv\Scripts\python.exe ..\ops\formal_release\quick_gate.py
+  if ($LASTEXITCODE -ne 0) {
+    throw "正式打包失败：前置合同、凭据或 Brain 夹具检查未通过。"
+  }
+}
 .\.venv\Scripts\python.exe -c "import uiautomation; print('uiautomation import passed')"
 if ($LASTEXITCODE -ne 0) {
   throw "打包失败：uiautomation 导入失败"
