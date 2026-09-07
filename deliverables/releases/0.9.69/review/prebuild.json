@@ -18,11 +18,23 @@
     "worker-client/chejin_worker_client/legacy_update_handoff.py": "0f7960ed99ada8797dd5e7eafdebeeb6c6c8184d1ac9b51fb3d5400a1c9c7d3b",
     "worker-client/chejin_worker_client/post_update_health.py": "5125285b8b3b47dd754b2a6a5b56e191e22ec9922a4f3a5983b780b07a0c6165",
     "worker-client/scripts/sign-client-release.py": "69b2e926a329d0518d2eb7a679543cf41ee793e18e9fc0b9021fd70fff8b85c0",
-    "worker-client/scripts/run-windows-updater-process-test.ps1": "0615f58b31e1695d42e5db582de694c30b6150228e7607fbb9d35cefe115680d"
+    "worker-client/scripts/run-windows-updater-process-test.ps1": "066ed3dce01c676751364d0f14113db2e73be0b92fc5aeb3560330d838b20176"
   },
   "legacy_clients": [
     "0.9.67",
     "0.9.68"
   ],
-  "cancelled_prepublication_run": 34102688527
+  "cancelled_prepublication_run": 34102688527,
+  "windows_failed_run": 34103668630,
+  "windows_native_previous": {
+    "passed": 46,
+    "failed": 6,
+    "causes": [
+      "fixture default cp1252 encoding",
+      "fixture Linux-only path",
+      "two sequential cases retained the first Windows mutex"
+    ]
+  },
+  "local_native_and_packaging_tests": 90,
+  "native_windows_retest": "pending"
 }

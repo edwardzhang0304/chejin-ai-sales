@@ -111,6 +111,21 @@ jobs:
             worker-client/requirements.txt
             worker-client/requirements-test.txt
 
+      - name: Fail fast on native Windows handoff checks
+        shell: powershell
+        working-directory: worker-client
+        run: |
+          $ErrorActionPreference = "Stop"
+          $env:PYTHONUTF8 = "1"
+          $env:PYTHONIOENCODING = "utf-8"
+          $env:PYTHONPATH = $PWD.Path
+          $env:CHEJIN_WORKER_HOME = Join-Path $env:RUNNER_TEMP "chejin-native-prebuild"
+          python -m venv .venv
+          .\.venv\Scripts\python.exe -m pip install --disable-pip-version-check -r requirements.txt -r requirements-test.txt
+          if ($LASTEXITCODE -ne 0) { throw "Native gate dependencies failed" }
+          .\.venv\Scripts\python.exe -m pytest tests/test_update_handoff_baseline.py tests/test_post_update_health.py tests/test_update_shutdown_ui.py tests/test_legacy_update_handoff.py -q --junitxml "$env:RUNNER_TEMP/native-prebuild.xml"
+          if ($LASTEXITCODE -ne 0) { throw "Native handoff prebuild gate failed" }
+
       - name: Build and run packaged runtime probes
         shell: powershell
         working-directory: worker-client
@@ -486,6 +501,7 @@ jobs:
           name: windows-gate-reports-${{ github.run_id }}
           path: |
             worker-client/dist/reports/*.json
+            ${{ runner.temp }}/native-prebuild.xml
             ${{ runner.temp }}/chejin-updater-real-process/native-data-lock-tests.xml
             ${{ runner.temp }}/chejin-updater-real-process/**/update-result.json
             ${{ runner.temp }}/chejin-updater-real-process/**/worker-startup.jsonl
