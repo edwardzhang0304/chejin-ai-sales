@@ -90,3 +90,10 @@ def test_wrong_version_or_token_fails_closed(candidate,field,value):
 def test_untrusted_updater_rejected(tmp_path):
     path=tmp_path/'update-plan.json';(tmp_path/'CheJinUpdater.exe').write_bytes(b'untrusted')
     with pytest.raises(RuntimeError,match='UPDATE_LEGACY_UPDATER_UNTRUSTED'):legacy._validate_legacy_parent({},path)
+
+
+def test_068_uses_same_strict_snapshot_bridge(candidate):
+    path,token,data,before=candidate
+    plan=json.loads(path.read_text());plan['current_version']='0.9.68';path.write_text(json.dumps(plan))
+    assert health.verify_post_update_startup(path,token)['current_version']=='0.9.68'
+    assert old_snapshot(data)==before

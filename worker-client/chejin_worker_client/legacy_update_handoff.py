@@ -1,4 +1,4 @@
-"""Strict, one-release bridge from the shipped 0.9.67 updater to 0.9.69.
+"""Strict, one-release bridge from the shipped 0.9.67/0.9.68 updaters to 0.9.69.
 
 The legacy snapshot is NEVER discarded or rebased. It must match before any
 initialization and again afterward. The v2 snapshot additionally protects init.
@@ -22,7 +22,10 @@ from .update_data_snapshot import (
     protected_update_snapshot, capture_data_baseline,
 )
 
-LEGACY_UPDATER_SHA256 = "2120b60f83a08807e066c6cc23c1c4523ba6b347641f77840f416f950f0df35b"
+LEGACY_UPDATER_SHA256 = {
+    "0.9.67": "2120b60f83a08807e066c6cc23c1c4523ba6b347641f77840f416f950f0df35b",
+    "0.9.68": "f28068d191d54ad8d3f9efec549a4676aeb6f56305e8157d0d3ce20949b7f91e",
+}
 
 
 def assert_legacy_snapshot(expected: dict, data_dir: Path) -> None:
@@ -53,7 +56,7 @@ def _validate_legacy_parent(plan: dict, plan_path: Path) -> None:
     # Only the actual shipped updater is allowed to initiate this compatibility
     # entry, never an arbitrary caller supplying a schema-1 JSON file.
     updater = plan_path.parent / "CheJinUpdater.exe"
-    if hash_file(updater) != LEGACY_UPDATER_SHA256:
+    if hash_file(updater) != LEGACY_UPDATER_SHA256.get(plan.get("current_version")):
         raise RuntimeError("UPDATE_LEGACY_UPDATER_UNTRUSTED")
     try:
         parents = psutil.Process().parents()
@@ -70,7 +73,7 @@ def _validate_legacy_parent(plan: dict, plan_path: Path) -> None:
 
 @contextmanager
 def legacy_handoff(plan: dict, plan_path: Path, token: str):
-    if plan.get("schema_version") != 1 or plan.get("current_version") != "0.9.67" or plan.get("target_version") != "0.9.69":
+    if plan.get("schema_version") != 1 or plan.get("current_version") not in LEGACY_UPDATER_SHA256 or plan.get("target_version") != "0.9.69":
         raise RuntimeError("UPDATE_MANUAL_UPGRADE_REQUIRED")
     _validate_legacy_parent(plan, plan_path)
     store = UpdateStateStore()
@@ -81,7 +84,7 @@ def legacy_handoff(plan: dict, plan_path: Path, token: str):
         raise RuntimeError("UPDATE_LEGACY_REQUEST_INVALID")
     release = ClientRelease.from_api({**plan["release"], "update_available": True,
                                      "latest_version": plan["target_version"]})
-    validate_release_contract(release, current_version="0.9.67", require_download_url=False)
+    validate_release_contract(release, current_version=plan["current_version"], require_download_url=False)
     verify_release_signature(release)
     verify_staged_package(release, Path(plan["current_program_dir"]))
     # Original plan stays immutable for the old updater's result/rollback path.
