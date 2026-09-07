@@ -1,5 +1,7 @@
 ﻿param(
-  [string]$PackageDir = ""
+  [string]$PackageDir = "",
+  [string]$LegacyPackageDir = "",
+  [string]$LegacySourceDir = ""
 )
 
 $ErrorActionPreference = "Stop"
@@ -37,7 +39,7 @@ try {
   $env:CHEJIN_WORKER_HOME = Join-Path $TestRoot "lock-test-home"
   $env:PYTHONPATH = $Root
   $NativeReportPath = Join-Path $TestRoot "native-data-lock-tests.xml"
-  & $BuildPython -m pytest (Join-Path $Root "tests\test_update_handoff_baseline.py") (Join-Path $Root "tests\test_post_update_health.py") (Join-Path $Root "tests\test_update_shutdown_ui.py") -q --junitxml $NativeReportPath
+  & $BuildPython -m pytest (Join-Path $Root "tests\test_update_handoff_baseline.py") (Join-Path $Root "tests\test_post_update_health.py") (Join-Path $Root "tests\test_update_shutdown_ui.py") (Join-Path $Root "tests\test_legacy_update_handoff.py") -q --junitxml $NativeReportPath
   if ($LASTEXITCODE -ne 0) { throw "Native Windows data handoff tests failed" }
 } finally {
   $env:CHEJIN_WORKER_HOME = $SavedTestHome
@@ -445,6 +447,64 @@ function Invoke-UpdateCase([object]$Case, [string]$ExpectedState) {
   return $Result
 }
 
+function Invoke-LegacyCase([bool]$LateWrite) {
+  if (-not (Test-Path (Join-Path $LegacyPackageDir "CheJinUpdater.exe"))) { throw "Original 0.9.67 updater is required" }
+  $Name = if ($LateWrite) { "legacy-late-write" } else { "legacy-success" }
+  $Case = New-FormalClientReleasePlan (Join-Path $TestRoot $Name) $Name
+  $env:CHEJIN_WORKER_HOME = $Case.Data
+  $env:CHEJIN_UPDATE_STAGING_ROOT = Join-Path $TestRoot ($Name + "-state")
+  $env:CHEJIN_API_BASE_URL = "http://127.0.0.1:9/api"
+  $env:CHEJIN_API_TIMEOUT = "0.2"
+  $env:CHEJIN_RPA_MODE = "mock"
+  $LegacyUpdater = Join-Path $Case.Control "CheJinUpdater.exe"
+  Copy-Item (Join-Path $LegacyPackageDir "CheJinUpdater.exe") $LegacyUpdater
+  if ((Get-FileHash $LegacyUpdater -Algorithm SHA256).Hash -ne "2120B60F83A08807E066C6CC23C1C4523BA6B347641F77840F416F950F0DF35B") { throw "Legacy updater hash mismatch" }
+  $StopFile = Join-Path $Case.Control "stop-old"
+  $Old = Start-Process -FilePath (Join-Path $Case.Current "CheJinWorkerClient.exe") -ArgumentList @("--stop-file", $StopFile) -PassThru
+  Wait-File ($StopFile + ".pid")
+  $Plan = Get-Content -Raw -Encoding UTF8 $Case.PlanPath | ConvertFrom-Json
+  $Plan.schema_version = 1
+  $Plan.current_version = "0.9.67"
+  $Plan.old_pid = $Old.Id
+  $SnapshotPath = Join-Path $Case.Control "legacy-snapshot.json"
+  # Import the immutable old source to generate its actual snapshot format.
+  & $BuildPython -c "import sys,json,pathlib; sys.path.insert(0,sys.argv[1]); from chejin_worker_client.update_data_snapshot import protected_update_snapshot; pathlib.Path(sys.argv[2]).write_text(json.dumps(protected_update_snapshot()),encoding='utf-8')" $LegacySourceDir $SnapshotPath
+  if ($LASTEXITCODE -ne 0) { throw "Legacy snapshot capture failed" }
+  $Plan | Add-Member -NotePropertyName protected_data_snapshot -NotePropertyValue ((Get-Content -Raw -Encoding UTF8 $SnapshotPath) | ConvertFrom-Json) -Force
+  Write-Utf8NoBom $Case.PlanPath ($Plan | ConvertTo-Json -Depth 30)
+  & $BuildPython -c "import sys,json; from chejin_worker_client.client_update import UpdateStateStore; p=json.load(open(sys.argv[1],encoding='utf-8')); UpdateStateStore().save(dict(state='installing',install_started=True,update_request_id=p['update_request_id'],plan_path=sys.argv[1],pre_update_run_status='paused'))" $Case.PlanPath
+  if ($LASTEXITCODE -ne 0) { throw "Legacy request state setup failed" }
+  $PlanHash = (Get-FileHash $Case.PlanPath -Algorithm SHA256).Hash
+  $Updater = Start-Process $LegacyUpdater -ArgumentList @("--plan", $Case.PlanPath, "--token", $Case.Token) -PassThru
+  & $BuildPython -c "import sys,psutil; from pathlib import Path; from chejin_worker_client.client_update import UpdateStateStore; p=psutil.Process(int(sys.argv[1])); s=UpdateStateStore(); s.save(dict(s.load(),updater_pid=p.pid,updater_create_time=p.create_time(),updater_executable_path=str(Path(p.exe()).resolve())))" $Updater.Id
+  if ($LASTEXITCODE -ne 0) { throw "Legacy updater identity recording failed" }
+  Wait-File (Join-Path $Case.Control "updater-ready.json") 120
+  if ($LateWrite) {
+    & $BuildPython -c "import sqlite3,sys; from pathlib import Path; c=sqlite3.connect(Path(sys.argv[1])/'worker_client.sqlite3'); c.execute('UPDATE binding SET updated_at=?',('late-writer-proof',)); c.commit(); c.close()" $Case.Data
+    if ($LASTEXITCODE -ne 0) { throw "Legacy late-write injection failed" }
+  }
+  Set-Content -LiteralPath $StopFile -Value "stop" -Encoding ASCII
+  if (-not $Updater.WaitForExit(90000)) { throw "Legacy EXE handoff timed out" }
+  $ResultPath = Join-Path $Case.Control "update-result.json"
+  Wait-File $ResultPath
+  $Result = Get-Content -Raw -Encoding UTF8 $ResultPath | ConvertFrom-Json
+  $Expected = if ($LateWrite) { "rolled_back" } else { "succeeded" }
+  if ($Result.state -ne $Expected) { throw "Legacy handoff did not reach $Expected" }
+  if ((Get-FileHash $Case.PlanPath -Algorithm SHA256).Hash -ne $PlanHash) { throw "Legacy plan was modified" }
+  $MarkerPath = Join-Path $Case.Control "healthy.json"
+  if ($LateWrite) {
+    if (Test-Path $MarkerPath) { throw "Changed legacy data was accepted" }
+    $State = Get-Content -Raw -Encoding UTF8 (Join-Path $env:CHEJIN_UPDATE_STAGING_ROOT "update-state.json") | ConvertFrom-Json
+    if ($State.fault_after_request -ne $true) { throw "Legacy failure lost fault intent" }
+    Stop-ProbeFromPidFile (Join-Path $Case.Control "rollback-worker.pid")
+  } else {
+    $Marker = Get-Content -Raw -Encoding UTF8 $MarkerPath | ConvertFrom-Json
+    if ($Marker.version -ne "0.9.69" -or $Marker.runtime_health.binding_state -ne "bound") { throw "Legacy upgrade healthy marker invalid" }
+    Stop-Process -Id ([int]$Marker.pid) -Force -ErrorAction SilentlyContinue
+  }
+  Write-Host "Legacy 0.9.67 updater -> real 0.9.69 Worker: $Name passed"
+}
+
 try {
   $Success = New-ReleasePlan (Join-Path $TestRoot "success") $HealthyWorkerSource "update-success"
   Invoke-UpdateCase $Success "succeeded" | Out-Null
@@ -493,6 +553,16 @@ try {
     $env:CHEJIN_API_BASE_URL = $OldApiBaseUrl
     $env:CHEJIN_API_TIMEOUT = $OldApiTimeout
     $env:CHEJIN_RPA_MODE = $OldRpaMode
+  }
+  $LegacySavedEnv = @{}
+  foreach ($EnvName in @("CHEJIN_WORKER_HOME", "CHEJIN_UPDATE_STAGING_ROOT", "CHEJIN_API_BASE_URL", "CHEJIN_API_TIMEOUT", "CHEJIN_RPA_MODE")) {
+    $LegacySavedEnv[$EnvName] = [Environment]::GetEnvironmentVariable($EnvName, "Process")
+  }
+  try {
+    Invoke-LegacyCase $false
+    Invoke-LegacyCase $true
+  } finally {
+    foreach ($EnvName in $LegacySavedEnv.Keys) { [Environment]::SetEnvironmentVariable($EnvName, $LegacySavedEnv[$EnvName], "Process") }
   }
   Write-Host "Real Windows updater process switch and rollback passed."
 } finally {

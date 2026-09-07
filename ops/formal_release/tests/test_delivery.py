@@ -83,6 +83,23 @@ class DeliveryTests(unittest.TestCase):
             space.return_value.free = 20 * 1024 ** 3
             return receiver.handle(request, io.BytesIO(body), role, self.config)
 
+    def test_client_only_release_uses_signed_contract_revision(self):
+        old_revision = "0.9.68"
+        self.files["_internal/contracts/c2_contract_v3.json"] = json.dumps({"contract_revision": old_revision}).encode()
+        self.make_artifact()
+        path = self.folder / (self.stem + ".delivery.json")
+        delivery = json.loads(path.read_text())
+        delivery["c2_contract_revision"] = old_revision
+        path.write_text(json.dumps(delivery))
+        self.meta, _ = deliver.metadata(self.folder, CURRENT_VERSION, "123", "a" * 40)
+        result = deliver.stage(self.folder, self.meta, self.desc, self.remote)
+        self.assertEqual(result["contract_revision"], old_revision)
+        delivery["c2_contract_revision"] = "0.0.1"
+        path.write_text(json.dumps(delivery))
+        self.meta, _ = deliver.metadata(self.folder, CURRENT_VERSION, "123", "a" * 40)
+        with self.assertRaisesRegex(ValueError, "CONTRACT_REVISION_MISMATCH"):
+            deliver.stage(self.folder, self.meta, self.desc, self.remote)
+
     def test_real_signed_delivery_idempotent_and_immutable(self):
         first = deliver.stage(self.folder, self.meta, self.desc, self.remote)
         self.assertEqual(first["package"], "passed")

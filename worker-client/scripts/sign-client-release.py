@@ -110,7 +110,7 @@ def main() -> int:
         "package_manifest_sha256": hash_file(args.package_manifest),
         "published_at": canonical_utc_timestamp(args.published_at),
         "release_notes": "",
-        "minimum_updater_version": "0.9.69",
+        "minimum_updater_version": "0.9.67" if version == "0.9.69" else "0.9.69",
         "rollback_safe": True,
         "signature_key_id": args.key_id.strip(),
     }
