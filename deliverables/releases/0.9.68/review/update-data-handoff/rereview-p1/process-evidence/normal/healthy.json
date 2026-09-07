@@ -1,0 +1,17 @@
+{
+  "schema_version": 2,
+  "healthy": true,
+  "update_request_id": "update-process-evidence",
+  "version": "0.9.68",
+  "one_time_token_sha256": "09ed764fe7d13aa8ced40185772de24364c9640dbb97b3d9c3468dd659ab713c",
+  "pid": 25516,
+  "runtime_health": {
+    "ready": true,
+    "ui_event_loop_alive": true,
+    "required_threads": [],
+    "threads": {},
+    "startup_failures": [],
+    "stable_sample_count": 5,
+    "stable_for_ms": 1015
+  }
+}

@@ -659,6 +659,16 @@ def latest_client_release(
             "update_available": False,
             "client_ahead_of_channel": current > latest_tuple,
         }
+    # Protocol-2 releases require a capable installed updater. Keep legacy
+    # discovery responses unchanged; never issue a download lease for this
+    # unsupported first-hop upgrade.
+    minimum_updater = parse_exact_version(latest.minimum_updater_version)
+    if minimum_updater >= (0, 9, 69) and current < minimum_updater:
+        raise AppError(
+            "UPDATE_MANUAL_UPGRADE_REQUIRED",
+            "当前更新器不支持此版本，请联系管理员在安全退出后保留数据安装。",
+            409,
+        )
     return {
         **base,
         **_published_release_payload(

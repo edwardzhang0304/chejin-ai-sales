@@ -1,0 +1,9 @@
+{"timestamp_epoch":1788768550.1386921,"phase":"stdlib_imports_succeeded","pid":25569}
+{"timestamp_epoch":1788768550.1471958,"phase":"psutil_import_succeeded","pid":25569}
+{"timestamp_epoch":1788768550.165139,"phase":"release_contract_import_succeeded","pid":25569}
+{"timestamp_epoch":1788768550.172645,"phase":"health_contract_import_succeeded","pid":25569}
+{"timestamp_epoch":1788768550.172787,"phase":"main_entered","pid":25569}
+{"timestamp_epoch":1788768550.173228,"phase":"plan_validation_started","pid":25569}
+{"timestamp_epoch":1788768550.176453,"phase":"plan_validation_succeeded","pid":25569}
+{"timestamp_epoch":1788768550.176832,"phase":"ready_marker_written","pid":25569}
+{"timestamp_epoch":1788768550.2824519,"phase":"update_failed","pid":25569,"error_type":"ClientUpdateError","error_code":"UPDATE_WRITERS_NOT_STOPPED"}

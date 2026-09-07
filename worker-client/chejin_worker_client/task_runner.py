@@ -4132,6 +4132,19 @@ class TaskRunner:
         self._task_wake_event.set()
         self.c2_manual_scan_requested.set()
 
+    def stop_for_update(self, timeout_seconds: float = 25.0) -> None:
+        """Finish normal writer loops before the updater may take ownership."""
+        self.stop()
+        deadline = time.monotonic() + timeout_seconds
+        for thread in (self.thread, self.c2_thread, self.thread_monitor):
+            if thread is not None and thread is not threading.current_thread():
+                thread.join(max(0.0, deadline - time.monotonic()))
+                if thread.is_alive():
+                    raise RuntimeError("UPDATE_WRITERS_NOT_STOPPED")
+        from .incident_evidence import stop_incident_worker
+        if not stop_incident_worker(wait=True, timeout_seconds=max(0.0, deadline - time.monotonic())):
+            raise RuntimeError("UPDATE_WRITERS_NOT_STOPPED")
+
     def _safe_task_wake_boundary_ready(self) -> bool:
         """Return whether an event may request an early scheduler check.
 

@@ -323,6 +323,12 @@ def update_status_text(state: dict[str, Any]) -> str:
     code = str(state.get("result_code") or "")
     current_state = str(state.get("state") or "idle")
     target = str(state.get("target_version") or "")
+    if state.get("shutdown_failed") is True:
+        if not state.get("result_reconciled"):
+            return "后台停止失败，正在等待更新器结束本次更新"
+        return "后台未能及时停止，本次更新已结束；请重启客户端后重试"
+    if code == "UPDATE_MANUAL_UPGRADE_REQUIRED":
+        return "当前更新器不支持此版本，请联系管理员保留数据安装"
     if code == "UPDATE_ALREADY_LATEST":
         return "当前已是最新版本"
     if current_state == "checking":

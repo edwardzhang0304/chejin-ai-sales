@@ -64,6 +64,18 @@ class SingleInstanceTest(unittest.TestCase):
         self.assertIsNone(guard.handle)
         guard.release()
 
+    def test_authenticated_child_keeps_existing_mutex_handle_until_exit(self):
+        kernel32 = _FakeKernel32()
+        guard = acquire_single_instance(
+            platform_name="win32", join_authenticated_update=True,
+            kernel32=kernel32, get_last_error=lambda: 183,
+            set_last_error=lambda _value: None,
+        )
+        self.assertEqual(kernel32.closed_handles, [])
+        guard.release()
+        guard.release()
+        self.assertEqual(kernel32.closed_handles, [101])
+
     def test_main_does_not_start_ui_when_another_instance_exists(self):
         with (
             mock.patch.object(main.sys, "argv", ["chejin-worker-client"]),

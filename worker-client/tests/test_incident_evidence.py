@@ -341,6 +341,10 @@ class IncidentEvidenceTest(unittest.TestCase):
                     caller_done.wait(timeout=2.0),
                     "append_log waited for the blocked incident package capture",
                 )
+                self.assertFalse(
+                    self.incidents.stop_incident_worker(wait=True, timeout_seconds=0.01),
+                    "a blocked real capture must not be reported as stopped",
+                )
             finally:
                 release.set()
                 caller.join(timeout=5.0)
@@ -353,6 +357,7 @@ class IncidentEvidenceTest(unittest.TestCase):
             self.assertIsNotNone(
                 self.incidents.wait_for_incident(result["incident_id"], timeout=10.0)
             )
+            self.assertTrue(self.incidents.stop_incident_worker(wait=True))
 
     def test_repeated_fault_is_deduplicated_until_recovery(self) -> None:
         first = self.storage.append_log(

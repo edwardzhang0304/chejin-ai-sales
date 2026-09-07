@@ -553,15 +553,18 @@ def start_incident_worker() -> None:
         _WORKER_THREAD.start()
 
 
-def stop_incident_worker(*, wait: bool = True) -> None:
+def stop_incident_worker(*, wait: bool = True, timeout_seconds: float = 5.0) -> bool:
     global _WORKER_THREAD
-    _WORKER_STOP.set()
-    _wake_incident_worker("__stop__")
-    thread = _WORKER_THREAD
+    with _WORKER_LOCK:
+        _WORKER_STOP.set()
+        _wake_incident_worker("__stop__")
+        thread = _WORKER_THREAD
     if wait and thread is not None and thread.is_alive():
-        thread.join(timeout=5.0)
-    if thread is None or not thread.is_alive():
-        _WORKER_THREAD = None
+        thread.join(timeout=max(0.0, timeout_seconds))
+    with _WORKER_LOCK:
+        if _WORKER_THREAD is thread and (thread is None or not thread.is_alive()):
+            _WORKER_THREAD = None
+        return _WORKER_THREAD is None or not _WORKER_THREAD.is_alive()
 
 
 def wait_for_incident(incident_id: str, timeout: float = 10.0) -> Path | None:

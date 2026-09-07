@@ -1,0 +1,13 @@
+{"timestamp_epoch":1788768541.544928,"phase":"stdlib_imports_succeeded","pid":25524}
+{"timestamp_epoch":1788768541.545106,"phase":"psutil_import_succeeded","pid":25524}
+{"timestamp_epoch":1788768541.5556512,"phase":"release_contract_import_succeeded","pid":25524}
+{"timestamp_epoch":1788768541.556834,"phase":"health_contract_import_succeeded","pid":25524}
+{"timestamp_epoch":1788768541.5569239,"phase":"main_entered","pid":25524}
+{"timestamp_epoch":1788768541.557355,"phase":"plan_validation_started","pid":25524}
+{"timestamp_epoch":1788768541.560561,"phase":"plan_validation_succeeded","pid":25524}
+{"timestamp_epoch":1788768541.560908,"phase":"ready_marker_written","pid":25524}
+{"timestamp_epoch":1788768541.666633,"phase":"old_writers_exited","pid":25524}
+{"timestamp_epoch":1788768541.667667,"phase":"data_exclusive_acquired","pid":25524}
+{"timestamp_epoch":1788768541.66888,"phase":"data_baseline_captured","pid":25524}
+{"timestamp_epoch":1788768542.08515,"phase":"new_worker_health_checked","pid":25524,"reason":"process_exited","exit_code_hex":"0x00000003","marker_error":"UPDATE_HEALTH_MARKER_UNREADABLE","child_pid":25525,"exit_code":3,"elapsed_ms":410,"health_timeout_seconds":120.0}
+{"timestamp_epoch":1788768542.085658,"phase":"update_failed","pid":25524,"error_type":"ClientUpdateError","error_code":"UPDATE_RESTART_FAILED"}

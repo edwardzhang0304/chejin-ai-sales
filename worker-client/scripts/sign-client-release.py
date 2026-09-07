@@ -79,6 +79,8 @@ def main() -> int:
     commit = args.git_commit.strip().lower()
     if not VERSION_RE.fullmatch(version) or not GIT_COMMIT_RE.fullmatch(commit):
         raise SystemExit("version or git commit is invalid")
+    if tuple(map(int, version.split("."))) < (0, 9, 69):
+        raise SystemExit("The new update handoff requires a new candidate version >= 0.9.69; do not overwrite published 0.9.68")
     storage_key = str(args.artifact_storage_key or "").strip().replace("\\", "/")
     if (
         not storage_key
@@ -108,7 +110,7 @@ def main() -> int:
         "package_manifest_sha256": hash_file(args.package_manifest),
         "published_at": canonical_utc_timestamp(args.published_at),
         "release_notes": "",
-        "minimum_updater_version": "0.9.59",
+        "minimum_updater_version": "0.9.69",
         "rollback_safe": True,
         "signature_key_id": args.key_id.strip(),
     }

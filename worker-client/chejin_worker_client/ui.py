@@ -1188,7 +1188,12 @@ class WorkerWindow(QMainWindow):
         self.refresh_view()
 
     def _quit_for_update(self) -> None:
-        self.runner.stop()
+        try:
+            self.runner.stop_for_update()
+        except Exception:
+            self.update_coordinator.report_normal_exit_result(stopped=False)
+            return
+        self.update_coordinator.report_normal_exit_result(stopped=True)
         self.close()
 
     def refresh_view(self) -> None:

@@ -1,0 +1,49 @@
+{
+  "recorded_at": "2026-09-07T08:19:47.945476+00:00",
+  "scope": "Independent source-level re-review of two P1 fixes only; not formal Windows EXE release acceptance",
+  "verdict": "two_P1_fixes_pass_source_rereview",
+  "findings": [],
+  "evidence_source": "/Users/zhangwentao/Documents/车金/deliverables/releases/0.9.68/review/update-data-handoff/rereview-p1/review-evidence.json",
+  "source_hash_mismatches": [],
+  "working_source_sha256": {
+    "worker-client/chejin_worker_client/chejin_updater.py": "673b78d4ae2f26245c828edfe611fd96223ee9047ddbda47a7e01f61919f2710",
+    "worker-client/chejin_worker_client/update_coordinator.py": "c443bdd78bdb2d42ce86cc38658e8f87a78dbe272f04140a28661fab7148534d",
+    "worker-client/chejin_worker_client/storage.py": "0eb59dc965a5db250539a58ff51ad60c4fd0648cd5d38735a0593d8754117e21",
+    "worker-client/chejin_worker_client/post_update_health.py": "b03ee70be713599953628a1df0bb13d6f9c263d753f3fe9f0804566ceb90f8c7",
+    "worker-client/chejin_worker_client/ui.py": "56bcec0d63e750f303f868b8f8131180d57ae57d7cea8c4a0c96151369461d57",
+    "worker-client/chejin_worker_client/web_ui.py": "4e8ec931a297a911bf6dce21052f0aaa885009d03af0bfc0cce1999a4902084c",
+    "worker-client/chejin_worker_client/client_update.py": "093edef5eb2db6d60907ad17f112ae798fd9bd3c3b4f2fb8b7856f07352755ec",
+    "worker-client/scripts/run-windows-updater-process-test.ps1": "b9fd550a631df8a2836b7346fb5fc1b7adbb6a3313782cb444ea5f64ab800ed9",
+    "worker-client/tests/test_update_shutdown_ui.py": "f10fd98679980a0caf4385ddccca41e870af895e7bb277bf1e7f6d35271cf39a",
+    "worker-client/tests/test_post_update_health.py": "d35e62af8384302cb18b064d5935ccc174c4d21f905f5ce74101dfa7df629948",
+    "worker-client/tests/test_update_handoff_process.py": "fe34282994f41d083f15ea409c82c22820c2b1336d01d249d8ed831cef30f669",
+    "worker-client/tests/fixtures/update_handoff/worker_actor.py": "90a6e7f226698065090e670e9737dc9d1838deb0a49bf74c47398d57d17946e7",
+    "worker-client/tests/test_chejin_updater.py": "36dcd45fee89cab00802607fcae500c5e42f8c101059e1bc57769fcc5de01dea"
+  },
+  "independent_test_results": {
+    "regression": {
+      "tests": 72,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    "boundaries": {
+      "tests": 3,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    }
+  },
+  "reviewed_behavior": [
+    "Both UI slots report shutdown failure to coordinator, original updater result is reconciled, faulted state retained, no second updater launched.",
+    "Authenticated failed-shutdown receipt is checked during old-writer wait and immediately after wait; later window closure cannot resume installation.",
+    "Required database initialization precedes protected baseline comparison, subsequent connections skip initialization.",
+    "Additional independent boundary injections: cancellation receipt arrives as old-process wait returns; wrong-request authenticated receipt fails closed; 24 subsequent connections across 8 threads do not initialize again."
+  ],
+  "limits": [
+    "72 existing focused tests independently rerun plus 3 new boundary tests; full submitted 224 + 5 suite evidence checked but not fully rerun.",
+    "POSIX process tests and AST UI slots are not rendered Windows Qt or frozen EXE tests.",
+    "Native Windows locks, actual old installed updater compatibility, signed formal EXE upgrade and Windows fault paths remain release gates.",
+    "No source edits, commit, push, packaging, deployment or production access in this review."
+  ]
+}

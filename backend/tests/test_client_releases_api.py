@@ -105,6 +105,25 @@ def test_equal_and_ahead_versions_never_receive_a_download_url() -> None:
     assert ahead["client_ahead_of_channel"] is True
 
 
+def test_old_updater_requires_manual_install_without_issuing_download_lease() -> None:
+    _release("0.9.70")
+    with SessionLocal() as db:
+        release = db.query(WorkerClientRelease).one()
+        release.minimum_updater_version = "0.9.69"
+        db.commit()
+    for version in ("0.9.67", "0.9.68"):
+        response = _latest(version)
+        assert response.status_code == 409
+        assert response.json()["code"] == "UPDATE_MANUAL_UPGRADE_REQUIRED"
+        assert "artifact_url" not in response.json().get("data", {})
+    with SessionLocal() as db:
+        assert db.query(WorkerClientReleaseDownloadLease).count() == 0
+    capable = _latest("0.9.69")
+    assert capable.status_code == 200
+    assert capable.json()["data"]["update_available"] is True
+    assert capable.json()["data"]["minimum_updater_version"] == "0.9.69"
+
+
 def test_withdrawn_draft_wrong_platform_and_rollback_unsafe_are_not_installable() -> None:
     _release("0.9.60", status="withdrawn")
     _release("0.9.61", status="draft")

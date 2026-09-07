@@ -10,10 +10,10 @@ import shutil
 import subprocess
 import sys
 import time
-from typing import Any
+from typing import Any, Callable
 
 
-PLAN_SCHEMA_VERSION = 1
+PLAN_SCHEMA_VERSION = 2
 
 
 def _startup_diagnostic(phase: str, **details: Any) -> None:
@@ -68,6 +68,8 @@ from .release_package_contract import (
 _startup_diagnostic("release_contract_import_succeeded")
 
 from .update_runtime_health_contract import validate_authenticated_runtime_marker
+from .update_data_access import acquire_update_access, identity_alive
+from .update_data_snapshot import baseline_path, capture_data_baseline, load_data_baseline
 from .update_diagnostics import update_error_code
 
 _startup_diagnostic("health_contract_import_succeeded")
@@ -175,6 +177,14 @@ def validate_update_plan(plan_path: Path, token: str) -> dict[str, Any]:
             )
     if not staged.is_dir() or not current.is_dir() or not archive.is_file():
         raise ClientUpdateError("UPDATE_INSTALL_FAILED", "更新计划指向的程序或更新包不存在")
+    baseline_path(plan, plan_path)
+    identity = plan.get("old_process_identity")
+    if not isinstance(identity, dict) or identity.get("pid") != plan.get("old_pid"):
+        raise RuntimeError("UPDATE_PROCESS_IDENTITY_UNVERIFIABLE")
+    if set(identity) != {"pid", "create_time", "exe"}:
+        raise RuntimeError("UPDATE_PROCESS_IDENTITY_UNVERIFIABLE")
+    if not isinstance(plan.get("old_child_identities"), list):
+        raise RuntimeError("UPDATE_PROCESS_IDENTITY_UNVERIFIABLE")
     safe_boundary = plan.get("safe_boundary")
     if not isinstance(safe_boundary, dict) or safe_boundary.get("safe") is not True:
         raise ClientUpdateError("UPDATE_INSTALL_FAILED", "更新计划缺少安装安全边界证明")
@@ -303,10 +313,42 @@ def wait_for_pid_exit(pid: int, timeout_seconds: float) -> bool:
             process = psutil.Process(pid)
             if process.status() == psutil.STATUS_ZOMBIE:
                 return True
-        except psutil.Error:
+        except psutil.NoSuchProcess:
             return True
+        except psutil.Error as exc:
+            raise RuntimeError("UPDATE_PROCESS_IDENTITY_UNVERIFIABLE") from exc
         time.sleep(0.1)
     return not psutil.pid_exists(pid)
+
+
+def _check_shutdown_outcome(plan: dict[str, Any], plan_path: Path, token: str) -> None:
+    from .update_data_access import authenticate
+    path = plan_path.parent / "worker-shutdown-failed.json"
+    if not path.exists():
+        return
+    try:
+        record = _load_json(path)
+        payload = record["payload"]
+        expected = {"schema_version": 1, "update_request_id": plan["update_request_id"], "stopped": False}
+        if payload != expected or not hmac.compare_digest(record["auth"], authenticate(payload, token)):
+            raise ValueError()
+    except (OSError, ValueError, KeyError, TypeError) as exc:
+        raise ClientUpdateError("UPDATE_SHUTDOWN_OUTCOME_INVALID", "客户端停机结果无法认证，已禁止安装") from exc
+    raise ClientUpdateError("UPDATE_WRITERS_NOT_STOPPED", "客户端后台停止失败，本次更新已取消")
+
+
+def wait_for_old_writers(plan: dict[str, Any], *, cancel_check: Callable[[], None] | None = None) -> bool:
+    deadline = time.monotonic() + float(plan["old_exit_timeout_seconds"])
+    identities = [plan["old_process_identity"], *plan["old_child_identities"]]
+    while time.monotonic() < deadline:
+        if cancel_check is not None:
+            cancel_check()
+        if not any(identity_alive(identity) for identity in identities):
+            return True
+        time.sleep(0.1)
+    if cancel_check is not None:
+        cancel_check()
+    return not any(identity_alive(identity) for identity in identities)
 
 
 def _process_creation_flags() -> int:
@@ -403,10 +445,13 @@ def _terminate_process(process: subprocess.Popen) -> None:
 
 def run_update(plan_path: Path, token: str) -> int:
     result_path = plan_path.parent / "update-result.json"
+    replacement_started = False
     retired_previous: Path | None = None
     new_process: subprocess.Popen | None = None
     plan: dict[str, Any] = {}
     old_exit_confirmed = False
+    data_access = None
+    data_integrity_failed = False
     startup_diagnostic: dict[str, Any] = {}
     try:
         _startup_diagnostic("plan_validation_started")
@@ -431,9 +476,17 @@ def run_update(plan_path: Path, token: str) -> int:
             },
         )
         _startup_diagnostic("ready_marker_written")
-        if not wait_for_pid_exit(old_pid, float(plan.get("old_exit_timeout_seconds") or 30)):
+        if not wait_for_old_writers(plan, cancel_check=lambda: _check_shutdown_outcome(plan, plan_path, token)):
             raise ClientUpdateError("UPDATE_INSTALL_FAILED", "旧客户端未能正常退出")
+        _check_shutdown_outcome(plan, plan_path, token)
         old_exit_confirmed = True
+        _startup_diagnostic("old_writers_exited")
+        data_access = acquire_update_access(plan, token)
+        _startup_diagnostic("data_exclusive_acquired")
+        capture_data_baseline(plan, plan_path, token)
+        _startup_diagnostic("data_baseline_captured")
+        # Revalidate immutable package/paths while data ownership remains held.
+        validate_update_plan(plan_path, token)
 
         if previous.exists():
             retired_previous = previous.with_name(previous.name + ".retired-" + str(plan.get("update_request_id") or "unknown"))
@@ -441,6 +494,7 @@ def run_update(plan_path: Path, token: str) -> int:
                 shutil.rmtree(retired_previous)
             os.replace(previous, retired_previous)
         os.replace(current, previous)
+        replacement_started = True
         try:
             os.replace(staged, current)
         except Exception:
@@ -472,6 +526,16 @@ def run_update(plan_path: Path, token: str) -> int:
             **{key: value for key, value in startup_diagnostic.items() if key not in {"phase", "pid"}},
         )
         if not healthy:
+            # Startup errors are bounded, secret-free records written before exit.
+            failure_path = plan_path.parent / "worker-startup.jsonl"
+            if failure_path.is_file():
+                for line in failure_path.read_text(encoding="utf-8").splitlines()[-50:]:
+                    try:
+                        code = str(json.loads(line).get("error_code") or "")
+                        if code.startswith(("UPDATE_PROTECTED_", "UPDATE_DATA_", "UPDATE_PROCESS_")):
+                            data_integrity_failed = True
+                    except (ValueError, TypeError):
+                        data_integrity_failed = True
             raise ClientUpdateError("UPDATE_RESTART_FAILED", "新客户端未在健康检查窗口内启动")
         if retired_previous and retired_previous.exists():
             shutil.rmtree(retired_previous)
@@ -489,6 +553,8 @@ def run_update(plan_path: Path, token: str) -> int:
         return 0
     except Exception as exc:
         code = exc.code if isinstance(exc, ClientUpdateError) else "UPDATE_INSTALL_FAILED"
+        if str(exc).startswith(("UPDATE_DATA_BASELINE_", "UPDATE_PROTECTED_")):
+            data_integrity_failed = True
         if startup_diagnostic:
             startup_diagnostic.update(
                 exception_type=type(exc).__name__,
@@ -508,7 +574,12 @@ def run_update(plan_path: Path, token: str) -> int:
             failed = paths.get("failed")
             if new_process is not None:
                 _terminate_process(new_process)
-            if isinstance(current, Path) and isinstance(previous, Path) and previous.exists():
+                if new_process.poll() is None:
+                    raise RuntimeError("UPDATE_NEW_WORKER_TERMINATION_FAILED")
+            if data_access is not None:
+                data_access.close()
+                data_access = None
+            if replacement_started and isinstance(current, Path) and isinstance(previous, Path) and previous.exists():
                 if current.exists():
                     if isinstance(failed, Path):
                         if failed.exists():
@@ -562,6 +633,7 @@ def run_update(plan_path: Path, token: str) -> int:
                 "result_code": result_code,
                 "failure_code": code,
                 "startup_diagnostic": startup_diagnostic,
+                "data_integrity_failed": data_integrity_failed,
                 "message": message,
                 "update_request_id": plan.get("update_request_id"),
                 "target_version": plan.get("target_version"),
@@ -569,6 +641,9 @@ def run_update(plan_path: Path, token: str) -> int:
             },
         )
         return 1
+    finally:
+        if data_access is not None:
+            data_access.close()
 
 
 def run_missing_result_recovery(
@@ -584,6 +659,7 @@ def run_missing_result_recovery(
     plan: dict[str, Any] = {}
     try:
         plan = validate_missing_result_recovery_plan(plan_path, token)
+        load_data_baseline(plan, plan_path, token)
         request_id = str(plan.get("update_request_id") or "")
         ready_path = plan_path.parent / "missing-result-recovery-ready.json"
         _atomic_json_write(
@@ -603,6 +679,7 @@ def run_missing_result_recovery(
                 "UPDATE_ROLLBACK_FAILED",
                 "新客户端未能正常退出，无法恢复上一版本",
             )
+        _check_shutdown_outcome(plan, plan_path, token)
         paths = plan["_paths"]
         current: Path = paths["current"]
         previous: Path = paths["previous"]

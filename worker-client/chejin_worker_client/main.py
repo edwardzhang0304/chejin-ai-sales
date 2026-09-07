@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from contextlib import ExitStack
 import argparse
 import os
 import json
@@ -127,7 +128,7 @@ def run_bundled_omniauto_vision_wechat_worker(argv: list[str]) -> int:
     return int(wechat_worker.main(argv))
 
 
-def main() -> int:
+def _main(resources: ExitStack) -> int:
     if len(sys.argv) >= 2 and sys.argv[1] == "--omniauto-sidecar":
         return run_bundled_omniauto_sidecar(sys.argv[2:])
     if len(sys.argv) >= 2 and sys.argv[1] == "--vision-provider-worker":
@@ -150,6 +151,23 @@ def main() -> int:
     parser.add_argument("--post-rollback-plan", type=Path, default=None, help=argparse.SUPPRESS)
     parser.add_argument("--post-update-token", default=None, help=argparse.SUPPRESS)
     args = parser.parse_args()
+
+    if not args.preflight and not args.wechat_diagnostics and args.post_update_plan is None:
+        try:
+            instance_guard = acquire_single_instance()
+        except SingleInstanceAlreadyRunning:
+            notify_already_running()
+            return 2
+        resources.callback(instance_guard.release)
+        if args.post_update_plan is None:
+            from .config import CONFIG
+            from .update_data_access import acquire_data_access
+            try:
+                access = acquire_data_access(CONFIG.app_dir)
+            except RuntimeError:
+                return 3
+            if access is not None:
+                resources.callback(access.close)
 
     if args.post_update_plan is not None:
         from .update_diagnostics import record_update_startup_failure
@@ -205,17 +223,6 @@ def main() -> int:
         )
         return 1 if has_blocking_failures(checks) else 0
 
-    try:
-        instance_guard = acquire_single_instance()
-    except SingleInstanceAlreadyRunning:
-        if args.post_update_plan is not None:
-            record_update_startup_failure(
-                args.post_update_plan, phase="single_instance",
-                exc=RuntimeError("UPDATE_STARTUP_INSTANCE_ALREADY_RUNNING"), exit_code=2,
-            )
-        notify_already_running()
-        return 2
-
     bootstrap_qt_plugins()
     from .runtime_supervision import (
         install_runtime_supervision,
@@ -233,7 +240,15 @@ def main() -> int:
         mark_runtime_clean_exit(exit_code)
         return exit_code
     finally:
-        instance_guard.release()
+        from .update_data_access import clear_update_writer
+        clear_update_writer()
+
+
+def main() -> int:
+    from .update_data_access import clear_update_writer
+    with ExitStack() as resources:
+        resources.callback(clear_update_writer)
+        return _main(resources)
 
 
 if __name__ == "__main__":
