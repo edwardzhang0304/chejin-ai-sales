@@ -1,6 +1,6 @@
 @startuml
-' 文档版本：v0.9.67.1；代码复审通过，正式发布准备；最后更新：2026-09-06
-' 当前候选合同：0.9.67，SHA 49d9425a3166837621ff87bf50418509a518b779b793152b6e0a269a502e0e23；已发布基线：0.9.66 / 0f65d3a66514639a1768901f59af18cd35dfb43a7fed75ae211e479ba70ca490。只调整技术方案 8.3.1 的 Vision 凭据来源，不修改图片/业务状态机；发布及回滚见版本记录。
+' 文档版本：v0.9.68；代码复审通过，双仓集成与发布准备；最后更新：2026-09-07
+' 当前候选合同：0.9.68，SHA 23c30e5a5cce3b2e0d5e697fe2733cf670d3c8cde04665c68997e9762977f1a3；已发布基线：0.9.67。仅修 Brain 指导性引用和多段事实要求；本轮未打包或部署。
 title AI智能客服售前跟进系统 全流程图（知识管理、C0-C4、媒体、回复、转人工与恢复）
 
 skinparam monochrome true
@@ -829,6 +829,7 @@ loop Worker运行中；每次循环最多完成一个会话事务
               Brain -> Brain: Context Builder
               Brain -> Brain: 冻结历史+当前消息关键词检索\n清空旧KnowledgeRuntime业务知识\n车辆事实 / Evidence Pack
               Brain -> Brain: 回复生成与策略判断
+              Brain -> Brain: 按原始回复段落汇总事实要求\n指导性引用不单独触发事实声明\n付款询问不豁免其他段报价或承诺\n正式知识引用必须属于当前证据包
               Brain -> Brain: Guard审核
               alt 允许自动回复
                 Brain --> C3: send_reply + approved reply_text

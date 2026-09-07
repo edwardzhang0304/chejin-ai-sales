@@ -1,0 +1,14 @@
+{
+  ".github/workflows/worker-windows-fast-uat.yml": "f13b3654b9c030f1bccd08ed65446fca49f7d2e50e8d7d8db1926190322a9747",
+  "backend/tests/test_brain_fact_guidance_regression.py": "98911a2a2ee779faafaa5f2ffe67bc49025c82fe327a4b15ea17d3dda394689a",
+  "deliverables/AI智能客服售前跟进系统_版本更新记录.md": "24c9d5968bc2fab40eaf2933fbea63f7bb104bbb8820300aa6523e1767ec6a12",
+  "deliverables/releases/0.9.67/review/brain-fact-validation/segmented-ablation-context.json": "1b55763aea982287039e6cc8ae758f513987fc8f96411f99254c9e5aa3053f70",
+  "deliverables/releases/0.9.67/review/brain-fact-validation/segmented-before.xml": "de121c266d378bd5afdf1f5de3e8af277ca0db89bde8dd4ed71be64effbc2d60",
+  "deliverables/releases/0.9.67/review/brain-fact-validation/segmented-disabled.xml": "51cbed9ce66c2f7bb9cef7a391cd82877685af46e2980aa90d570d55720c063f",
+  "deliverables/releases/0.9.67/review/brain-fact-validation/segmented-fix-self-audit.json": "c4a93e7450216725d0a414218ac5eebadb3d6663f100d9083ff4ea794724f52b",
+  "deliverables/releases/0.9.67/review/brain-fact-validation/segmented-fixed-regression.xml": "d397f90e162eaccededa9a36662817c5adad6f71728645d99d66f3f0f2a11c7f",
+  "deliverables/releases/0.9.67/review/brain-fact-validation/segmented-independent.xml": "b4d7d38b7a3f396e7a9b312ad88a20661e589cac177f7ccab253c6d35d21f65e",
+  "deliverables/releases/0.9.67/review/brain-fact-validation/targeted-existing-checks.json": "10283a3166a65da32eab5d28da2377da8633db3a5858645038f979d62ed5d990",
+  "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/workflows/customer_service_brain.py": "b200e99d0db6a11d042c95d21a4d47de979dc77e20bbb3f703f24a214289c4c7",
+  "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/workflows/customer_service_brain_contract.py": "12d8743579bee3be159f30dc71e9161eaa4349669a8458d4623d64aba9409d96"
+}

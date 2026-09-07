@@ -200,6 +200,25 @@ AUTHORITY_FACT_HINT_TERMS = (
     "售后",
 )
 
+# A customer choosing a payment preference is not a statement about eligibility,
+# rates or approval. Match a whole segment, never a substring: an extra clause
+# inside that segment must still go through the checks on its original text.
+PAYMENT_PREFERENCE_QUESTION_RE = re.compile(
+    r"(?:(?:您好|你好|好的|好嘞)[，,。!！～~]\s*)?"
+    r"(?:请问[，,]?\s*)?(?:您|你)(?:这边)?(?:是)?(?:更)?"
+    r"(?:考虑|打算|准备|计划|选择|想选择|想选|倾向于?|偏向于?)?"
+    r"(?:贷款|分期|全款)(?:买车|购车)?"
+    r"还是(?:贷款|分期|全款)(?:买车|购车)?(?:呢|吗)?[？?。]?"
+)
+
+# Another segment may state finance terms without repeating "贷款", e.g.
+# "利率3%" or "审批包过". A preference question supplies that context; exempting
+# its own wording must not remove the requirement to check these other segments.
+FINANCE_DETAIL_HINT_TERMS = (
+    "审批", "审核", "征信", "利率", "利息", "月供", "首付", "手续费",
+    "免息", "无息", "零息", "贴息", "担保", "能批", "保证通过", "一定通过", "肯定通过",
+)
+
 PRICE_QUESTION_TERMS = ("多少钱", "价格", "报价", "怎么卖", "几万", "多少米", "落地", "费用")
 RECOMMENDATION_QUESTION_TERMS = ("推荐", "建议", "怎么选", "选哪", "哪款", "哪台", "哪个", "更适合", "优先", "挑一")
 COMPARISON_QUESTION_TERMS = ("对比", "区别", "哪个好", "哪一个好", "比起来", "相比")
@@ -1361,19 +1380,39 @@ def verify_brain_reply_quality(
 
 
 def plan_requires_fact_claims(plan: dict[str, Any]) -> bool:
+    """Require facts for factual output, not merely for citing a knowledge item.
+
+    Formal knowledge also contains greeting and needs-collection guidance.
+    A common-sense label cannot exempt a factual mode from declaring facts.
+    General advice still follows the existing semantic review and Guard checks.
+    """
     if plan.get("recommended_action") != "send_reply":
-        return False
-    if plan_is_common_sense_only_advice(plan):
         return False
     answer_mode = str(plan.get("answer_mode") or "")
     if answer_mode in {"recommend_from_catalog", "quote_product_fact"}:
         return True
     evidence = plan.get("evidence_used") if isinstance(plan.get("evidence_used"), dict) else {}
-    if evidence.get("product_ids") or evidence.get("formal_knowledge_ids"):
+    if evidence.get("product_ids"):
         return True
+    segments = plan.get("reply_segments", []) or []
+    payment_questions = [
+        bool(PAYMENT_PREFERENCE_QUESTION_RE.fullmatch(normalize_space(segment)))
+        for segment in segments
+    ]
+    if any(payment_questions):
+        # Evaluate every other original segment. Greetings need no allowlist;
+        # matching one question never exempts a claim before or after it.
+        return any(
+            not is_question and (
+                reply_has_authority_fact_hint(segment)
+                or contains_any(segment, FINANCE_DETAIL_HINT_TERMS)
+                or contains_any(segment, HIGH_RISK_COMMITMENT_ECHO_TERMS)
+            )
+            for segment, is_question in zip(segments, payment_questions)
+        )
+    if plan_is_common_sense_only_advice(plan):
+        return False
     reply = join_reply_segments(plan.get("reply_segments", []) or [])
-    if answer_mode == "compare_options":
-        return reply_has_authority_fact_hint(reply)
     return reply_has_authority_fact_hint(reply)
 
 

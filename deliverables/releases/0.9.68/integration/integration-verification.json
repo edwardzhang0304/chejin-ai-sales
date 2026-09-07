@@ -1,0 +1,36 @@
+{
+  "release": "0.9.68",
+  "source_fix_commit": "92648e700fba985036a5204723d950b322b40ce5",
+  "source_schema_commit": "c752cbd31b476cb5e7b2cb4ccd4d500b913aec6c",
+  "reviewed_runtime_and_regression_sha256": {
+    "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/workflows/customer_service_brain.py": "b200e99d0db6a11d042c95d21a4d47de979dc77e20bbb3f703f24a214289c4c7",
+    "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/workflows/customer_service_brain_contract.py": "12d8743579bee3be159f30dc71e9161eaa4349669a8458d4623d64aba9409d96",
+    "backend/tests/test_brain_fact_guidance_regression.py": "98911a2a2ee779faafaa5f2ffe67bc49025c82fe327a4b15ea17d3dda394689a"
+  },
+  "scoped_source_parity": {
+    "plan_requires_fact_claims": "AST identical",
+    "PAYMENT_PREFERENCE_QUESTION_RE": "AST identical",
+    "FINANCE_DETAIL_HINT_TERMS": "AST identical"
+  },
+  "generated_schema_byte_identical": true,
+  "source_specific_legacy_validation": "Preserved; full runtime files are intentionally not claimed identical.",
+  "independent_review": {
+    "original_review_sha256": "455300208e242dec9f69ec6947ee1621839ace4771baa6047d7cb9ba14bcd853",
+    "conclusion": "Passed in scope; prior two P1 closed, no new P0/P1 found.",
+    "regression_passed": 121,
+    "previous_examples_passed": 5,
+    "extra_boundaries_passed": 6,
+    "existing_checks_passed": 26
+  },
+  "integration_verification": {
+    "main_brain_c3_and_new_contract_tests_passed": 122,
+    "worker_contract_and_release_tests_passed": 79,
+    "worker_subtests_passed": 49,
+    "source_tests_passed": 82
+  },
+  "limitations": [
+    "HTTP Provider/reviewer responses are explicit local test doubles; actual Brain subprocess and SQLite/C3 pipeline exercised.",
+    "No Windows build, deployment, live Provider or physical WeChat send acceptance.",
+    "Other dirty frontend and credential edits are outside this integration."
+  ]
+}

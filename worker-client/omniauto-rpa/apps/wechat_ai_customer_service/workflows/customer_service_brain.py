@@ -39,6 +39,7 @@ from customer_service_brain_contract import (
     join_reply_segments,
     normalize_brain_plan,
     normalize_reply_segments,
+    plan_requires_fact_claims,
     social_message_requires_visible_brain_reply,
     strip_nonsemantic_runtime_markers,
     validate_brain_plan,
@@ -4518,13 +4519,19 @@ def compact_repair_result(result: dict[str, Any]) -> dict[str, Any]:
 
 
 def validate_plan_against_evidence(plan: dict[str, Any], evidence_pack: dict[str, Any]) -> dict[str, Any]:
-    """Verify that declared fact source_ids are present in the evidence pack."""
+    """Verify knowledge citations and fact sources against this turn's evidence."""
 
     product_ids = collect_product_ids(evidence_pack)
     formal_ids = collect_formal_ids(evidence_pack)
     normalized_product_ids = normalize_source_id_set(product_ids)
     normalized_formal_ids = normalize_source_id_set(formal_ids)
     errors: list[str] = []
+    evidence = plan.get("evidence_used") if isinstance(plan.get("evidence_used"), dict) else {}
+    # Guidance may be cited without facts, but its source must still exist.
+    # Otherwise an invented citation can masquerade as formal grounding later.
+    for source_id in evidence.get("formal_knowledge_ids", []) or []:
+        if normalize_source_id(source_id) not in normalized_formal_ids:
+            errors.append(f"formal_knowledge_source_not_in_evidence:{source_id}")
     for fact in plan.get("facts_claimed", []) or []:
         fact_type = str(fact.get("fact_type") or "")
         source_level = str(fact.get("source_level") or "")
@@ -4610,8 +4617,7 @@ def brain_plan_allows_soft_evidence_override(plan: dict[str, Any]) -> bool:
     risk_tags = {str(item).strip().lower() for item in (risk.get("risk_tags") or []) if str(item).strip()}
     if risk_tags & hard_risk_tags:
         return False
-    evidence = plan.get("evidence_used") if isinstance(plan.get("evidence_used"), dict) else {}
-    if evidence.get("product_ids") or evidence.get("formal_knowledge_ids"):
+    if plan_requires_fact_claims(plan):
         return False
     return str(plan.get("answer_mode") or "") in {
         "direct_answer",

@@ -1,0 +1,60 @@
+{
+  "status": "Segmented-reply P1 locally verified; awaiting independent re-review, not release approval",
+  "review_input": "/private/tmp/chejin-brain-rereview.1XvlWz/review.md",
+  "root_cause": "The preceding repair joined reply_segments before full matching a payment question, violating the existing multi-segment reply protocol. Passing isolated questions did not cover greetings plus questions.",
+  "change": [
+    "In the sole fact-requirement function, classify each original segment as a complete payment-preference inquiry or other content. Aggregate requirements across every other segment; do not rewrite, filter or merge the reply or citations.",
+    "Greetings require no new templates: they go through the existing fact checks like every other non-question segment. The payment-question grammar was not expanded.",
+    "Retain finance context across segments so a later rate/monthly-payment/approval statement cannot pass merely by omitting the word loan. Existing high-risk commitment markers are also checked.",
+    "Factual modes and product evidence still take precedence; hard risk, declared fact/source validation, semantic review, Guard, retries and task settlement remain unchanged."
+  ],
+  "added_tests": {
+    "count": 25,
+    "schema_positive": 5,
+    "schema_negative": 12,
+    "c3_positive": 3,
+    "c3_negative": 5,
+    "details": "Two/three segments, greeting before/after inquiry, budget question, arbitrary benign greeting, explicit and implicit finance claims before/after/in the same segment. Original segment arrays and knowledge refs retained."
+  },
+  "results": {
+    "affected_regressions": {
+      "tests": 121,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    "existing_contract_checks": {
+      "passed": 26,
+      "total": 26
+    },
+    "two_unmodified_review_scripts": {
+      "tests": 5,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    "new_tests_before_fix": {
+      "tests": 25,
+      "failures": 8,
+      "errors": 0,
+      "skipped": 0
+    },
+    "disable_only_segment_fix": {
+      "tests": 25,
+      "failures": 8,
+      "errors": 0,
+      "skipped": 0
+    }
+  },
+  "test_boundary": "Actual local C3 ASGI API, SQLite, evidence builder, Brain subprocess, HTTP model boundary and Guard; model/reviewer/customer inputs are artificial. Not live Provider quality evaluation, production validation or physical Windows sending. No production access this round.",
+  "before_after": "Three positive C3 combinations failed with no reply task before the fix and now create exactly one reply_action/chat_reply task, without handoff. Five negative C3 combinations remain AI_ENGINE_NO_VISIBLE_REPLY/retry_later with zero reply tasks. Removing only the segment aggregation in a temporary runtime reproduces eight failures.",
+  "audit_limits": "Checks cover the affected segmented finance inquiry/authority path; not an assertion that arbitrary natural language or every repository module is defect-free. Earlier self-audits were incomplete and are superseded by the subsequent independent reviews.",
+  "delivery": {
+    "committed": false,
+    "pushed": false,
+    "deployed": false,
+    "worker_business_flow_changed": false,
+    "published_version_contract_source_sha_changed": false,
+    "git_diff_check": "passed"
+  }
+}

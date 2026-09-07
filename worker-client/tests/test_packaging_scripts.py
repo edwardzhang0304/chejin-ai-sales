@@ -324,7 +324,7 @@ class PackagingScriptsTest(unittest.TestCase):
         self.assertIn("app_name = [string]$manifest.app_name", workflow)
         self.assertIn("default_api_base_url = [string]$manifest.default_api_base_url", workflow)
         self.assertIn("delivery ZIP executable SHA256 mismatch", workflow)
-        self.assertIn("chejin-worker-v0.9.67-windows-x64.delivery.json", workflow)
+        self.assertIn("chejin-worker-v0.9.68-windows-x64.delivery.json", workflow)
         self.assertNotIn("CHEJIN_VISION_CLIENT_API_KEY", workflow)
         self.assertIn('vision_credential_source -ne "worker_backend"', workflow)
         self.assertIn('vision_live_probe_check -ne "runtime_after_binding"', workflow)
@@ -352,7 +352,7 @@ class PackagingScriptsTest(unittest.TestCase):
             workflow,
         )
         self.assertIn("--artifact-storage-key", workflow)
-        self.assertIn("chejin-worker-v0.9.67-windows-x64.release.json", workflow)
+        self.assertIn("chejin-worker-v0.9.68-windows-x64.release.json", workflow)
         self.assertIn("must not contain a temporary download URL", workflow)
 
     def test_formal_update_package_contains_independent_updater_and_real_process_gate(self):
@@ -1089,22 +1089,34 @@ class PackagingScriptsTest(unittest.TestCase):
                         "c2_contract_0_9_66_generated_schema",
                         "c2_contract_0_9_67_generated_schema",
                     ],
-                }
+                },
+                {
+                    "source_commit": "92648e700fba985036a5204723d950b322b40ce5",
+                    "scope": [
+                        "brain_guidance_citation_fact_requirement",
+                        "brain_payment_preference_segment_aggregation",
+                        "brain_formal_citation_membership_validation",
+                        "brain_shared_soft_evidence_fact_requirement",
+                    ],
+                },
+                {
+                    "source_commit": "c752cbd31b476cb5e7b2cb4ccd4d500b913aec6c",
+                    "scope": ["c2_contract_0_9_68_generated_schema"],
+                },
             ],
         )
         self.assertEqual(
             provenance["current_release"],
             {
-                "version": "0.9.67",
-                "source_commit": (
-                    "621ca4795de38a51c579e8a389e2723374dabc23"
-                ),
-                "contract_revision": "0.9.67",
+                "version": "0.9.68",
+                "source_commit": "c752cbd31b476cb5e7b2cb4ccd4d500b913aec6c",
+                "contract_revision": "0.9.68",
                 "contract_sha256": (
-                    "49d9425a3166837621ff87bf50418509a518b779b793152b6e0a269a502e0e23"
+                    "23c30e5a5cce3b2e0d5e697fe2733cf670d3c8cde04665c68997e9762977f1a3"
                 ),
                 "scope": (
-                    "Generated 0.9.67 schema for Worker backend-managed Vision credentials; OmniAuto runtime logic unchanged"
+                    "Generated 0.9.68 schema following reviewed Brain guidance "
+                    "and segmented fact validation fix"
                 ),
             },
         )
@@ -1534,7 +1546,7 @@ class PackagingScriptsTest(unittest.TestCase):
         self.assertIn('$packageDir = [string]$manifest.package_dir', workflow)
         self.assertIn('$exePath = [string]$manifest.exe_path', workflow)
         self.assertNotIn('dist\\车金Worker客户端', workflow)
-        self.assertIn('version -ne "0.9.67"', workflow)
+        self.assertIn('version -ne "0.9.68"', workflow)
         self.assertIn('tests_status -ne "passed"', workflow)
         self.assertIn('@("--omniauto-sidecar", "--help")', workflow)
         self.assertIn('@("--omniauto-ocr-probe")', workflow)
