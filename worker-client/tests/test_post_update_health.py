@@ -181,6 +181,10 @@ def test_post_update_health_rejects_program_or_business_data_tampering(
     with pytest.raises(RuntimeError, match="UPDATE_STARTUP_FILE_HASH_MISMATCH"):
         health_module.verify_post_update_startup(plan_path, token)
 
+    # The two tamper cases are separate requests, not concurrent owners.
+    clear_update_writer()
+    while _GUARDS:
+        _GUARDS.pop().close()
     plan_path, token, worker = _prepare_health_plan(tmp_path / "second", monkeypatch)
     storage.save_binding(
         Binding("worker", "secret", "instance", run_status="paused")
@@ -283,10 +287,10 @@ def test_runtime_must_remain_alive_across_stable_window_before_marker(
     assert writes[0]["stable_for_ms"] == 1100
 
 
-def test_runtime_health_marker_rejects_exited_background_thread() -> None:
+def test_runtime_health_marker_rejects_exited_background_thread(tmp_path: Path) -> None:
     with pytest.raises(RuntimeError, match="UPDATE_RUNTIME_NOT_READY"):
         health_module.write_healthy_marker(
-            {"healthy_marker_path": "/tmp/should-not-exist.json"},
+            {"healthy_marker_path": str(tmp_path / "should-not-exist.json")},
             "token",
             runtime_health=_runtime_health(alive=False),
         )

@@ -6,6 +6,8 @@
 )
 
 $ErrorActionPreference = "Stop"
+$env:PYTHONUTF8 = "1"
+$env:PYTHONIOENCODING = "utf-8"
 $Root = Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path)
 $UpdaterReadyTimeoutSeconds = 120
 $BuildPython = Join-Path $Root ".venv\Scripts\python.exe"
@@ -478,7 +480,7 @@ function Invoke-LegacyCase([bool]$LateWrite, [string]$LegacyVersion = "0.9.67", 
   if ($LASTEXITCODE -ne 0) { throw "Legacy request state setup failed" }
   $PlanHash = (Get-FileHash $Case.PlanPath -Algorithm SHA256).Hash
   $Updater = Start-Process $LegacyUpdater -ArgumentList @("--plan", $Case.PlanPath, "--token", $Case.Token) -PassThru
-  & $BuildPython -c "import sys,psutil; from pathlib import Path; from chejin_worker_client.client_update import UpdateStateStore; p=psutil.Process(int(sys.argv[1])); s=UpdateStateStore(); s.save(dict(s.load(),updater_pid=p.pid,updater_create_time=p.create_time(),updater_executable_path=str(Path(p.exe()).resolve())))" $Updater.Id
+  & $BuildPython -c "import sys,psutil; from pathlib import Path; from chejin_worker_client.client_update import UpdateStateStore; p=psutil.Process(int(sys.argv[1])); s=UpdateStateStore(); s.save(dict(s.load(),updater_pid=p.pid,updater_create_time_epoch=p.create_time(),updater_executable_path=str(Path(p.exe()).resolve())))" $Updater.Id
   if ($LASTEXITCODE -ne 0) { throw "Legacy updater identity recording failed" }
   Wait-File (Join-Path $Case.Control "updater-ready.json") 120
   if ($LateWrite) {
@@ -502,6 +504,14 @@ function Invoke-LegacyCase([bool]$LateWrite, [string]$LegacyVersion = "0.9.67", 
   } else {
     $Marker = Get-Content -Raw -Encoding UTF8 $MarkerPath | ConvertFrom-Json
     if ($Marker.version -ne "0.9.69" -or $Marker.runtime_health.binding_state -ne "bound") { throw "Legacy upgrade healthy marker invalid" }
+    $StatePath = Join-Path $env:CHEJIN_UPDATE_STAGING_ROOT "update-state.json"
+    $ReconcileDeadline = (Get-Date).AddSeconds(15)
+    do {
+      $State = Get-Content -Raw -Encoding UTF8 $StatePath | ConvertFrom-Json
+      if ($State.result_reconciled -eq $true -and $State.state -eq "succeeded") { break }
+      Start-Sleep -Milliseconds 100
+    } while ((Get-Date) -lt $ReconcileDeadline)
+    if ($State.result_reconciled -ne $true -or $State.state -ne "succeeded") { throw "Legacy result did not reconcile successfully" }
     Stop-Process -Id ([int]$Marker.pid) -Force -ErrorAction SilentlyContinue
   }
   Write-Host "Legacy $LegacyVersion updater -> real 0.9.69 Worker: $Name passed"
