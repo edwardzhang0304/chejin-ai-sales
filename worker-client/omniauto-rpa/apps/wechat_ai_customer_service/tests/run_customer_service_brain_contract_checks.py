@@ -6897,6 +6897,17 @@ def check_brain_canonicalizes_year_model_price_text_to_product_master() -> CaseR
     pack["audit_summary"]["evidence_ids"] = ["product:chejin_tiguanl_2021_330tsi"]
     changed = brain_module.canonicalize_conversation_product_fact_sources(plan, pack)
     validation = validate_brain_plan(plan, require_fact_claims=True)
+    missing_policy_validation = brain_module.validate_plan_against_evidence(plan, pack)
+    assert_true(
+        not missing_policy_validation["ok"]
+        and "formal_knowledge_source_not_in_evidence:payment_policy" in missing_policy_validation["errors"],
+        f"product authority must not authorize a missing payment policy: {missing_policy_validation}",
+    )
+    # The positive case cites this policy; supply it in this turn's evidence.
+    # Keep the missing-source assertion above so fixture completeness cannot
+    # hide a regression in the formal knowledge membership gate.
+    evidence["policies"] = {"payment_policy": "支持分期，审批以资方为准。"}
+    knowledge["formal_knowledge"]["policies"] = dict(evidence["policies"])
     evidence_validation = brain_module.validate_plan_against_evidence(plan, pack)
     assert_true(changed and changed[0]["source_id"] == "chejin_tiguanl_2021_330tsi", f"year/model price text should be canonicalized: {changed}")
     assert_true(plan["facts_claimed"][0]["source_level"] == "product_master", f"source should be product_master: {plan}")
@@ -7893,6 +7904,9 @@ def check_brain_repair_retry_recovers_guard_repair_non_json() -> CaseResult:
     config = base_config(base_plan())
     config["customer_service_brain"].update({"provider": "openai", "mode": "shadow"})
     bad_plan = copy.deepcopy(base_plan())
+    # This case exercises identity repair, not a product quote. A quoted-fact
+    # mode with no facts is correctly rejected before the intended Guard path.
+    bad_plan["answer_mode"] = "soft_redirect_to_business"
     bad_plan["reply_segments"] = ["我是Brain，真人客服在这呢，您继续说需求就行。"]
     bad_plan["evidence_used"] = {"common_sense_topics": ["identity_reassurance"]}
     bad_plan["facts_claimed"] = []
