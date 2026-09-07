@@ -1,6 +1,6 @@
 # AI智能客服售前跟进系统 技术方案
 
-版本：v0.9.68.1（文档修订；应用与合同版本仍为 0.9.68；补齐已有客户端原地升级流程）
+版本：v0.9.68.4（文档修订；应用与合同版本仍为 0.9.68；正式交付自动化启用及验收）
 
 日期：2026-07-21
 
@@ -5957,7 +5957,7 @@ Fast UAT ZIP 不登记到正式更新渠道，也不能替代正式升级包。�
 
 | 流程 | 作用 | 运营后台 | 后端 | 客户端包/下载 | 是否写生产 |
 |---|---|---|---|---|---|
-| 流程 A：Fast UAT | 本地开发验证和 Windows 快速包 | `${LOCAL_ADMIN_ORIGIN}`（通常 `http://127.0.0.1:5173`） | `${LOCAL_API_ORIGIN}`（通常 `http://127.0.0.1:8000`） | Fast UAT 临时 ZIP，不登记更新渠道 | 否 |
+| 流程 A：Fast UAT | 本地开发验证和 Windows 快速包 | `${LOCAL_ADMIN_ORIGIN}`（通常 `http://127.0.0.1:5173`） | `${LOCAL_API_ORIGIN}`（通常 `http://127.0.0.1:8000`） | GitHub 生成临时 ZIP → 下载到 Mac，沿用 ZIP + 命令行流程，不登记更新渠道 | 否 |
 | 流程 B：正式发布 | 对外客户端升级和生产切换 | `${PRODUCTION_WEB_ORIGIN}` | 生产服务器上的 `${PRODUCTION_API_ORIGIN}` | 签名正式 ZIP，登记到 `${UPDATE_DOWNLOAD_ORIGIN}` | 是 |
 
 流程 A 的通过记录只作为流程 B 的输入（Fast UAT 运行号和用户批准），不代表正式包已生成，也不代表生产已部署。
@@ -5965,6 +5965,67 @@ Fast UAT ZIP 不登记到正式更新渠道，也不能替代正式升级包。�
 
 客户端更新查询始终使用 `${PRODUCTION_API_ORIGIN}`，安装包下载始终使用 `${UPDATE_DOWNLOAD_ORIGIN}`；本地 5173/8000
 不得写入正式包配置或生产更新登记。
+
+### 18.0 正式包流程优化约定（2026-09-07）
+
+用户已确认以下优化**仅适用于流程 B：正式包**。自动传输、分块续传、正式快速门禁前置及结果汇总已启用，
+入口为 `worker-windows-package.yml` 和 `ops/formal_release/`。GitHub 直传验收 `34092352886`、仅检查验收 `34092812439` 均通过，
+原 0.9.68 包的外网完整下载校验通过；18.4、18.8 的人工步骤保留为故障备用路径。本次未重复登记或重新构建原正式包。
+已发布的 0.9.68 产物身份保持不变，不因文档修订重新打包、替换同版本文件或重新部署。
+
+1. **传输路径**：GitHub 正式构建并签名 → 自动传到生产隔离待发布目录 → 服务端校验 → 满足切换条件后登记发布 → Windows 现有客户端“检查更新”。
+   GitHub Actions runner 从产物库读取精确正式运行的 ZIP，再通过受限 SSH 传输，正常正式发布不再经 Mac 人工下载后转传。待发布目录不可被更新接口或公开下载地址访问；上传完成不代表对用户发布。
+   CI 传输身份只允许写该目录，不使用生产 root 私钥，不直接获得数据库、运行配置或容器管理权限。
+2. **失败续传**：按 CI 运行号、完整提交、产物大小和 SHA-256 绑定传输任务，分块保存进度，有界重试并退避；重试只补缺失或损坏的块。
+   临时下载授权过期时重新取得授权并核对同一产物身份。续传后必须验证完整文件大小、SHA-256、ZIP 完整性、签名和包内清单；
+   身份不一致、哈希错误或验签失败立即停止，隔离失败产物，不登记发布，不无限重试。凭据及临时下载 URL 不进入日志。
+3. **正式门禁顺序**：先执行耗时短的来源/版本/合同一致性、关键测试夹具和凭据安全检查，再执行完整测试、Preflight、
+   主程序及 Updater 构建、运行探针、真实切换与回滚、解压复核和签名。只提前发现失败，不减少任何正式检查；Fast UAT 的工作流与门禁顺序不改。
+4. **发布条件**：包可提前进入待发布目录，构建与传输期间不提前暂停业务。后端切换前仍按 18.1 排空并暂停 Worker，
+   按 18.5—18.7 完成生产检查和切换；后端版本、合同及健康状态通过后才执行 18.8 登记。
+   验签使用服务器既有受信公钥及实际旧客户端信任基线，不能把本次包随附的新公钥直接作为信任依据。恢复接单仍须客户端升级并确认合同一致。
+5. **自动汇总**：每次输出版本、完整源码提交、CI 运行号、ZIP 大小/哈希，以及“正式包校验、传输校验、后端健康与合同、
+   更新登记、旧版本可发现更新、外网完整下载校验、Windows 原地升级、受影响业务验收”各自的通过/失败/待验证/未执行状态。
+   未做的检查不能默认通过；Windows 结果由实机证据补齐。生产详细证据保存在受控位置，公开摘要不含凭据、租约 URL 或业务数据。
+
+**Fast UAT 保持原路径**：GitHub 生成 Fast UAT ZIP → 下载到 Mac → 沿用现有 ZIP + 命令行的本地部署/交付步骤。
+这里的 Windows ZIP 只是下载到 Mac 中转，不表示在 Mac 上运行 Windows EXE。Mac 本地运营后台和后端仍走流程 A，
+不接入生产待发布目录、不签发正式更新、不登记生产渠道；本次优化不修改 `worker-windows-fast-uat.yml` 或其下载、启动方式。
+
+**落地验收与撤销方式**：在隔离待发布目录验证正常传输、中断续传、授权过期、同版本不同哈希、损坏包和无效签名；
+确认失败不会产生发布记录、重复执行不会替换已发布产物，快速门禁失败会在正式构建前停止，Fast UAT 的工作流及交付路径保持原样。
+正式发布后保留从生产更新下载域名进行的一次外网完整下载 SHA-256 验收，Range 检查不能替代该验收。
+自动化异常时停用新增传输/发布入口，恢复本节现行人工传输和校验步骤；不改动已发布包、业务数据、账号、绑定或运行配置。
+涉及生产切换失败仍按 18.10 和该次已登记的用户例外处理，客户端原有失败自动回滚保持有效。
+
+#### 18.0.1 自动交付入口与启用检查
+
+正式工作流提供四种 `delivery_mode`，Fast UAT 工作流不调用这些入口：
+
+| 模式 | 行为 | 是否重新打包 | 是否登记生产更新 |
+|---|---|---|---|
+| `build_and_stage` | 预检查、正式构建与签名、自动传输并校验 | 是 | 否 |
+| `stage_existing` | 按 `formal_run_id` 选择通过门禁的原产物，补传有效进度并校验 | 否 | 否 |
+| `check_staged` | 校验 `stage_id`、后端健康/合同、Worker 排空状态 | 否 | 否 |
+| `publish_staged` | 条件通过后登记同一产物，并执行外网完整下载验收 | 否 | 是 |
+
+`current_client_version` 必须填写真实升级起点，不沿用表单默认值。`check_staged` / `publish_staged` 还需要该次确认
+`production_ready=true`：生产后端切换完成、Worker 暂停空闲、本机待上传/待重试队列已排空；生产查询不能代替本机确认。
+发布程序在同一数据库事务中检查 Worker/任务状态并登记；不会自行暂停 Worker、部署后端、修改配置或恢复接单。
+
+GitHub 环境 `formal-staging` 和 `formal-production` 使用不同专用密钥，均限制灰度发布分支。
+各环境配置 `FORMAL_SSH_KEY`、`FORMAL_SSH_HOST`、`FORMAL_SSH_PORT`、`FORMAL_KNOWN_HOSTS`；环境变量配置
+`FORMAL_API_ORIGIN` 和 `FORMAL_DOWNLOAD_ORIGIN`。主机公钥须从已有受信运维连接获取并固定，不关闭主机身份校验。
+生产接收端由运维执行已审查的 `ops/formal_release/install.sh` 安装；公钥和旧客户端校验代码来自已发布基线，不能使用候选包自行声明的信任。
+切换实际升级起点前，先安装该已发布客户端的对应校验基线；预检查缺失基线时阻断构建。
+
+GitHub 产物下载失败可重新执行 `stage_existing`，不会重打包。接收端按 8 MiB 分块保留已校验进度，每次 SSH 传输最多尝试 5 次；
+源产物必须仍在 GitHub 保留期内，不能改用别的同名包。首次启用已通过真实 GitHub → 生产待发布目录的传输、续传、验签及角色隔离检查。
+接收端暂存总量上限为 4 GiB，并检查磁盘余量；容量不足时停止传输，由运维核对并清理已处理的暂存目录，禁止清理正式发布数据卷来腾空间。
+`formal-result.json` 和工作流摘要分别记录产物、传输、后端、登记、外网下载及 Windows 验收状态；传输成功时登记仍应为 `not_run`。
+
+出现故障时可使用现行人工路径。需要停用新增生产入口时，由运维执行安装目录内的 `disable.sh --confirm-disable-formal-receiver`，
+仅禁用专用 SSH 授权和固定 sudo 权限，保留暂存产物及审计记录；不改变现有应用。此操作不是客户端或后端版本回滚。
 
 ### 18.1 两条流程的共同输入与停止条件
 
@@ -6011,7 +6072,8 @@ gh workflow run worker-windows-fast-uat.yml \
 
 4. 等待 `worker-windows-fast-uat.yml` 完成，记录运行号和结果。Fast UAT 必须包括受影响 Worker/后端测试、恢复兼容性、
 Brain/Provider 输入、可观测性开关对照、合同门禁、提取后的运行时身份和 UAT 启动器检查。
-5. Fast UAT 失败只修复源码并升版本；不得拿失败包进入正式打包或生产。
+5. 通过后沿用现有方式将该运行对应的 Fast UAT ZIP 从 GitHub 下载到 Mac，核对版本、提交及包完整性，再按现有 ZIP + 命令行步骤使用；不得改成流程 B 的生产直传或更新登记。
+6. Fast UAT 失败只修复源码并升版本；不得拿失败包进入正式打包或生产。
 
 ### 18.4 流程 B：正式 Windows 包
 
@@ -6021,7 +6083,21 @@ Fast UAT 通过且用户明确批准后，触发正式门禁：
 gh workflow run worker-windows-package.yml \
   --ref "$RELEASE_BRANCH" \
   -f release_approved=true \
-  -f release_reason="Fast UAT $FAST_UAT_RUN_ID passed on $RELEASE_COMMIT"
+  -f release_reason="Fast UAT $FAST_UAT_RUN_ID passed on $RELEASE_COMMIT" \
+  -f delivery_mode=build_and_stage \
+  -f current_client_version="$CURRENT_CLIENT_VERSION"
+```
+
+上述自动入口以 18.0 的启用检查通过为前提。仅重试原产物传输时使用以下命令，不触发构建：
+
+```bash
+gh workflow run worker-windows-package.yml \
+  --ref "$RELEASE_BRANCH" \
+  -f release_approved=true \
+  -f release_reason="Retry verified formal artifact $FORMAL_RUN_ID" \
+  -f delivery_mode=stage_existing \
+  -f formal_run_id="$FORMAL_RUN_ID" \
+  -f current_client_version="$CURRENT_CLIENT_VERSION"
 ```
 
 正式门禁必须完整通过以下步骤：完整 Worker 测试和 Preflight、源码/合同检查、PyInstaller 主程序和独立 Updater、
@@ -6029,7 +6105,7 @@ gh workflow run worker-windows-package.yml \
 完整测试和两次 PyInstaller 通常需要十几分钟；单个步骤超过 25 分钟且状态无变化时，先检查运行状态和失败日志，
 确认 runner 无进展后取消并用同一提交重新触发，不得重复修改源码或盲目轮询。
 
-下载并核验产物：
+现行人工下载并核验产物（自动直传已启用，以下仅作为故障备用路径）：
 
 ```bash
 gh api "repos/<org>/<repo>/actions/runs/<run_id>/artifacts" \
@@ -6104,8 +6180,25 @@ docker exec chejin-leads-api python -c \
 
 ### 18.8 流程 B：客户端发布登记
 
-后端切换成功后，才把正式包和签名描述传到生产发布目录。必须同时传输 ZIP、`.release.json`、`.delivery.json`、SHA256 文件和受信公钥，
-传输后在服务器再次做 SHA256 和 `unzip -t`。使用后端容器登记：
+自动入口启用后，取得已校验的 `STAGE_ID`，确认后端切换和本机排空条件，再登记：
+
+```bash
+gh workflow run worker-windows-package.yml \
+  --ref "$RELEASE_BRANCH" \
+  -f release_approved=true \
+  -f release_reason="Publish verified stage $STAGE_ID after backend cutover and queue drain" \
+  -f delivery_mode=publish_staged \
+  -f stage_id="$STAGE_ID" \
+  -f current_client_version="$CURRENT_CLIENT_VERSION" \
+  -f production_ready=true
+```
+
+仅检查、暂不登记时，将 `delivery_mode` 改为 `check_staged`。登记成功而外网验收失败时，摘要必须保留 `publication=published` 和失败项，
+不能把它写成“未发布”或自动换包；按 18.10 处理。Windows 实机及业务验收继续单独记录。
+
+现行人工路径在后端切换成功后传输正式产物；18.0 自动化启用后允许提前传到隔离待发布目录，但仍须后端切换成功、合同与健康检查通过后才登记。
+产物包括 ZIP、`.release.json`、`.delivery.json` 和 SHA256 文件；公钥使用服务器既有受信配置，下面的 `trusted-public-keys.json` 必须来自该信任基线，不能信任包自行提供的公钥。
+传输后在服务器再次做 SHA256、`unzip -t`、签名及包内清单校验，并完成 18.9 的旧客户端兼容检查。使用后端容器登记：
 
 ```bash
 docker exec chejin-leads-api mkdir -p /tmp/release-v${RELEASE_VERSION}
