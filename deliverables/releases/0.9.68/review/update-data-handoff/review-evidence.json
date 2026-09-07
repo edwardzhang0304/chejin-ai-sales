@@ -1,0 +1,90 @@
+{
+  "recorded_at": "2026-09-07T07:46:18.240577+00:00",
+  "status": "implemented_for_review_not_released",
+  "baseline_git_head": "b442331a46f08d9cc870abc34234678eedc053c1",
+  "architecture_assessment": "正确：暂停接单不是停止写入；权威基线必须在旧进程完成退出后形成。Windows 事故尚未取得具体变化字段，不能预填为某张表或时间戳。",
+  "implementation": [
+    "Updater 等旧进程及子进程退出、取得独占数据目录锁后，在唯一生产入口留底。",
+    "共享快照模块使用同一只读 SQLite 事务，包含已提交 WAL；原保护表和字段完全保留。",
+    "计划/基线 schema 2；请求、版本、目录使用一次性令牌 HMAC 认证；基线原子创建一次，错配/损坏不可重拍。",
+    "新 Worker 在数据库初始化及后台线程启动前核对；正常启动后仅执行原有健康检查；缺失结果恢复不比较正常运行后的静态数据。",
+    "普通连接共享锁、Updater 独占锁、认证新进程交接；Windows 复用原单实例互斥并使用 LockFileEx。",
+    "绑定与运行控制无变化不 UPDATE、不刷新时间戳；租约、心跳和重试业务时钟不改。",
+    "正常退出有界等待业务线程和正在写入的诊断线程；差异仅记录表/字段/数量，真实数据异常回滚后保持故障。",
+    "新协议发布对不支持的旧版首跳返回 UPDATE_MANUAL_UPGRADE_REQUIRED，不签发下载租约。"
+  ],
+  "frozen_business_field_list_unchanged": true,
+  "tests": {
+    "worker": "207 passed + 5 subtests passed",
+    "backend": "10 passed; two existing dependency deprecation warnings",
+    "junit": {
+      "worker-tests.xml": {
+        "tests": 212,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      "backend-tests.xml": {
+        "tests": 10,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      }
+    }
+  },
+  "test_scope": {
+    "real": [
+      "production coordinator",
+      "independent production updater subprocess",
+      "real SQLite/WAL",
+      "production startup verifier",
+      "original runtime health gate"
+    ],
+    "synthetic": [
+      "business data and credentials",
+      "signed test release",
+      "Python script actors instead of Windows frozen EXEs",
+      "GUI/thread liveness in process actors; separate production TaskRunner liveness tests retained"
+    ],
+    "ablation": "Collector deliberately reuses a real SQLite snapshot taken before old-process exit. Real startup comparison rejects subsequent legitimate writes; no successful comparison is mocked.",
+    "combined_run_issue": "Initial combined run exposed diagnostic threads surviving test cleanup and writing into subsequently patched temporary database paths. Teardown now waits, and production update exit also waits for current diagnostic writes within its deadline."
+  },
+  "old_release_compatibility": {
+    "inspected_released_source": "82b5988ceeff8225f4fc282a2d3849d110a90d75",
+    "old_updater_version": "0.9.68",
+    "old_plan_schema": 1,
+    "new_plan_schema": 2,
+    "minimum_capable_updater": "0.9.69",
+    "finding": "Old updater source cannot consume schema 2. First delivery requires supported data-preserving manual installation. Source inspection is not execution of the released old EXE."
+  },
+  "release_gates_pending": [
+    "正式候选版本/真实来源登记：应用版本标签仍为 0.9.68；Updater 能力为 0.9.69。签名脚本已拒绝低于 0.9.69 的版本，防止覆盖已发布包。",
+    "Windows 原生锁和正式 EXE 退出、替换、启动、回滚验证；脚本已适配，当前 Mac 未执行。",
+    "线上旧 Windows 真包到修复版或保留数据安装的首次交付验收。"
+  ],
+  "no_commit_push_package_or_deploy": true,
+  "references": [
+    "https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-lockfileex",
+    "https://learn.microsoft.com/en-us/cpp/c-runtime-library/locking-constants?view=msvc-170"
+  ],
+  "working_source_sha256": {
+    "backend/app/services/client_release_service.py": "b82ae88c418a479a3c5b53764c1de1174a16f81b240ce5b3885ed2fa9351c31b",
+    "worker-client/chejin_worker_client/chejin_updater.py": "73bf1fcf7cd6aec134de3e593eb00f382f15e85e10490b019643d19c7122b97b",
+    "worker-client/chejin_worker_client/client_update.py": "74c674b5e9eaaabb363040717f53bea5855d9c3e462e4a54ea6e1b61d8f4f142",
+    "worker-client/chejin_worker_client/incident_evidence.py": "1eefea7c917975451407175f55911a6bd538f9eef735ea604c1f663d2b808115",
+    "worker-client/chejin_worker_client/main.py": "1924ab6b52ed72dcd970abc2e15e0a5b85b92d4af031115630d6abf7094dedeb",
+    "worker-client/chejin_worker_client/post_update_health.py": "ce6723d098db3e78ddaa08f34c5385756a37648244a2e11c47d5cca73ffeb237",
+    "worker-client/chejin_worker_client/release_package_contract.py": "c82451add98f40e3d7a9613041056334f795fc1a5003403219d1dd73d60fd6e1",
+    "worker-client/chejin_worker_client/single_instance.py": "00f35e84d610a04f3ed2fddd118e5f5ea02bb904ddf43867b146a3c3a25e1844",
+    "worker-client/chejin_worker_client/storage.py": "46e1dac53870374112987b6798db5a446422d626ee81d875c58e055c8256fc3c",
+    "worker-client/chejin_worker_client/task_runner.py": "75645c3e3d792c928d04c7bf2730edd93aec5f0e5d43005ebc6927ee7a81c123",
+    "worker-client/chejin_worker_client/ui.py": "10c1134984e5820107ff4f7db5eb1bfb719683547933f86f66dcc84d373028d5",
+    "worker-client/chejin_worker_client/update_coordinator.py": "6a39cba5fe2166d9411028eb4a001b9fafba2b809c8c0e6a99377d105d34e27f",
+    "worker-client/chejin_worker_client/update_data_access.py": "eedad0bea47ce72795a5d5b0ff1f8cb5ef0392ff1daa2d23b135ea7747a496b5",
+    "worker-client/chejin_worker_client/update_data_snapshot.py": "ee6816dbf1f0c4123640688347fd4b968d50a5d71567f898e1b411993fd0c6dd",
+    "worker-client/chejin_worker_client/update_diagnostics.py": "716f4102d2504bcd692e62b9a64ca6e5cf0c4ea61c17d5ec896b35721f566e00",
+    "worker-client/chejin_worker_client/web_ui.py": "434c76340ebc2c94d295084b6514d76b4e090a9243980b62a43b94fad38b4b85",
+    "worker-client/scripts/run-windows-updater-process-test.ps1": "c5176c0c830230b2f3ecf887e82639e1b3556e522d94b652bda9f7e4ab9669f1",
+    "worker-client/scripts/sign-client-release.py": "1993f173358fe38e26f5bcdfdf2be51d53f79b60b94d532c27944d2dce7bee03"
+  }
+}

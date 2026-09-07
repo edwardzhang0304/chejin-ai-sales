@@ -16,7 +16,7 @@ from typing import Any, Callable
 import psutil
 
 from . import __version__
-from .api import WorkerApiClient
+from .api import WorkerApiClient, ApiError
 from .client_update import (
     ClientUpdateError,
     UpdateStateStore,
@@ -29,7 +29,8 @@ from .models import Binding, ClientRelease
 from .post_update_health import authenticated_healthy_marker
 from .storage import append_log, set_update_new_work_gate
 from .task_runner import TaskRunner
-from .update_data_snapshot import protected_update_snapshot
+from .update_data_snapshot import BASELINE_PLAN_SCHEMA, load_data_baseline
+from .update_data_access import process_identity, authenticate
 
 
 UPDATER_CREATE_TIME_TOLERANCE_SECONDS = 0.01
@@ -169,6 +170,8 @@ class UpdateCoordinator:
         self._operator_pause_after_request = False
         self._fault_after_request = False
         self._install_started = False
+        self._exit_updater: tuple[Any, Path] | None = None
+        self._exit_request_token = ""
         self._post_update_plan: dict[str, Any] | None = None
         self._post_update_token = ""
         try:
@@ -461,6 +464,8 @@ class UpdateCoordinator:
             self._operator_pause_after_request = False
             self._fault_after_request = False
             self._install_started = False
+            self._exit_updater = None
+            self._exit_request_token = ""
             self._publish(state)
             self._worker = threading.Thread(
                 target=self._run,
@@ -483,6 +488,73 @@ class UpdateCoordinator:
 
     def stop(self) -> None:
         self._stop.set()
+
+    def _request_worker_exit(self, process: Any, executable: Path, token: str) -> None:
+        self._exit_updater = (process, executable)
+        self._exit_request_token = token
+        try:
+            self.request_normal_exit()
+        except Exception:
+            self.report_normal_exit_result(stopped=False)
+
+    def report_normal_exit_result(self, *, stopped: bool) -> None:
+        """Receive the UI shutdown outcome, including an asynchronous Qt slot.
+
+        On failure the same window consumes the original updater's bounded
+        result. Never launch a second updater or force a writer to exit.
+        """
+        with self._lock:
+            state = self.store.load()
+            if state.get("shutdown_failed") is True:
+                return
+            state = self._save({**state, "normal_exit_state": "stopped" if stopped else "failed"})
+            if stopped:
+                return
+            self._fault_after_request = True
+            state = self._save({**state, "shutdown_failed": True, "fault_after_request": True,
+                                "shutdown_error_code": "UPDATE_WRITERS_NOT_STOPPED"})
+            if self._exit_request_token:
+                payload = {"schema_version": 1, "update_request_id": state["update_request_id"], "stopped": False}
+                _atomic_json_write(Path(state["plan_path"]).parent / "worker-shutdown-failed.json",
+                                   {"payload": payload, "auth": authenticate(payload, self._exit_request_token)})
+            preparing_worker = self._worker
+
+            def settle_failed_shutdown() -> None:
+                # The callback may arrive before emit() returns. Wait for that
+                # preparation/recovery frame to finish before consuming state.
+                if preparing_worker is not None:
+                    preparing_worker.join(timeout=5.0)
+                    if preparing_worker.is_alive():
+                        self._settle_result_reconciliation_failure(
+                            self.store.load(), result_code="UPDATE_WRITERS_NOT_STOPPED",
+                            message="后台停止失败，更新交接未能结束；保持停止接单，请查看本机更新日志。",
+                            clear_gate=False,
+                        )
+                        return
+                self._stop.clear()
+                latest = self.store.load()
+                self.runner.set_run_status("faulted")
+                # Keep the original authenticated identity; never refresh an
+                # exited PID into a different process. Recovery has a new PID.
+                if self._exit_updater is not None and latest.get("updater_pid") != getattr(self._exit_updater[0], "pid", None):
+                    try:
+                        identity = self._capture_started_updater_identity(*self._exit_updater)
+                        latest = self._save({**latest, **identity})
+                    except ClientUpdateError:
+                        # It may already have exited and written its result.
+                        result_path = Path(str(latest.get("plan_path") or "")).parent / "update-result.json"
+                        if not result_path.is_file():
+                            self._settle_result_reconciliation_failure(
+                                latest, result_code="UPDATE_UPDATER_IDENTITY_UNVERIFIABLE",
+                                message="后台停止失败，更新器状态无法确认；请重启客户端后检查更新日志。",
+                                clear_gate=False,
+                            )
+                            return
+                self._reconcile_result(latest)
+
+            self._worker = threading.Thread(target=settle_failed_shutdown,
+                                           name="CheJinUpdateShutdownReconciler", daemon=True)
+            self._worker.start()
 
     def start_result_reconciliation(self) -> None:
         """Finish state restoration in the newly started or rolled-back app."""
@@ -681,6 +753,11 @@ class UpdateCoordinator:
             return
 
         final_state = str(result.get("state") or "failed")
+        if state.get("shutdown_failed") is True:
+            result = {**result, "updater_result_code": result.get("result_code"),
+                      "result_code": "UPDATE_WRITERS_NOT_STOPPED",
+                      "message": "后台线程未能及时停止，本次更新已结束；客户端保持故障，请重启后重试。"}
+            final_state = "failed"
         merged = self._save(
             {
                 **state,
@@ -697,6 +774,10 @@ class UpdateCoordinator:
                 "status_restore_pending": False,
             }
         )
+        if merged.get("data_integrity_failed") is True:
+            # Persist the existing fault state before clearing the temporary
+            # gate; a schedule must not resume work merely because rollback ran.
+            self.runner.set_run_status("faulted")
         self._set_new_work_gate(
             False,
             str(state.get("update_request_id") or ""),
@@ -706,6 +787,9 @@ class UpdateCoordinator:
                 str(state.get("update_request_id") or "")
             )
         if final_state not in {"succeeded", "rolled_back"}:
+            self._save({**merged, "result_reconciled": True})
+            return
+        if merged.get("data_integrity_failed") is True:
             self._save({**merged, "result_reconciled": True})
             return
         if str(plan.get("pre_update_run_status") or "") != "running":
@@ -772,6 +856,12 @@ class UpdateCoordinator:
             ).resolve(strict=True)
         except (OSError, RuntimeError):
             running_from_current = False
+        if context_matches:
+            try:
+                load_data_baseline(plan, plan_path, token)
+            except RuntimeError:
+                context_matches = False
+                state = {**state, "data_integrity_failed": True}
         if (
             context_matches
             and running_from_current
@@ -842,7 +932,7 @@ class UpdateCoordinator:
                                     ),
                                 }
                             )
-                            self.request_normal_exit()
+                            self._request_worker_exit(process, updater, token)
                             return "exit_requested"
                         raise ValueError("missing-result recovery request mismatch")
                     poll = getattr(process, "poll", None)
@@ -887,6 +977,8 @@ class UpdateCoordinator:
         """
 
         request_id = str(state.get("update_request_id") or "")
+        if state.get("data_integrity_failed") is True:
+            self.runner.set_run_status("faulted")
         if clear_gate:
             self._set_new_work_gate(False, request_id)
         self._save(
@@ -1015,7 +1107,7 @@ class UpdateCoordinator:
         except Exception as exc:
             if self._install_started:
                 return
-            code = exc.code if isinstance(exc, ClientUpdateError) else "UPDATE_CHECK_FAILED"
+            code = exc.code if isinstance(exc, (ClientUpdateError, ApiError)) else "UPDATE_CHECK_FAILED"
             _safe_update_log(
                 "ERROR",
                 "client_update_prepare_failed",
@@ -1074,7 +1166,7 @@ class UpdateCoordinator:
         release_identity = _persisted_release_identity(release)
         release_identity["release_notes"] = ""
         plan = {
-            "schema_version": 1,
+            "schema_version": BASELINE_PLAN_SCHEMA,
             "update_request_id": request_id,
             "current_version": __version__,
             "target_version": release.latest_version,
@@ -1088,6 +1180,8 @@ class UpdateCoordinator:
             "updater_ready_path": str(control_root / "updater-ready.json"),
             "worker_executable_relative": "CheJinWorkerClient.exe",
             "old_pid": os.getpid(),
+            "old_process_identity": process_identity(os.getpid()),
+            "old_child_identities": [process_identity(child.pid) for child in psutil.Process().children(recursive=True)],
             "old_exit_timeout_seconds": 30,
             "health_timeout_seconds": 120,
             "result_timeout_seconds": 180,
@@ -1096,7 +1190,7 @@ class UpdateCoordinator:
             # object-storage URL or user-facing notes.  Keeping those out of
             # the plan makes the handoff document non-credential-bearing.
             "release": release_identity,
-            "protected_data_snapshot": protected_update_snapshot(),
+            "data_baseline_path": str(control_root / "protected-data-baseline.json"),
             "safe_boundary": boundary,
             "pre_update_run_status": state.get("pre_update_run_status"),
             "operator_pause_after_request": self._operator_pause_after_request,
@@ -1169,8 +1263,8 @@ class UpdateCoordinator:
                     "state": installing.get("state"),
                 },
             )
-            self.request_normal_exit()
             self._install_started = True
+            self._request_worker_exit(updater_process, updater_copy, token)
         except Exception:
             if not self._install_started:
                 self._terminate_preinstall_updater(updater_process)

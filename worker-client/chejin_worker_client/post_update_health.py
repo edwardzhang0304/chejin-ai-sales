@@ -12,8 +12,8 @@ from typing import Any, Callable
 from . import __version__
 from .client_update import PACKAGE_MANIFEST_NAME, hash_file
 from .config import CONFIG
-from .storage import connect
-from .update_data_snapshot import assert_protected_update_snapshot
+from .update_data_snapshot import assert_protected_update_snapshot, load_data_baseline, BASELINE_PLAN_SCHEMA
+from .update_data_access import authorize_update_writer
 from .update_runtime_health_contract import (
     MINIMUM_RUNTIME_HEALTH_SAMPLES,
     MINIMUM_RUNTIME_STABLE_SECONDS,
@@ -35,6 +35,8 @@ def _token_sha256(token: str) -> str:
 
 def verify_post_update_startup(plan_path: Path, token: str) -> dict[str, Any]:
     plan = _load_json(plan_path)
+    if plan.get("schema_version") != BASELINE_PLAN_SCHEMA:
+        raise RuntimeError("UPDATE_MANUAL_UPGRADE_REQUIRED")
     if not hmac.compare_digest(
         str(plan.get("one_time_token_sha256") or ""),
         _token_sha256(token),
@@ -64,17 +66,15 @@ def verify_post_update_startup(plan_path: Path, token: str) -> dict[str, Any]:
         if hash_file(target) != str(expected or "").lower():
             raise RuntimeError("UPDATE_STARTUP_FILE_HASH_MISMATCH")
 
-    if not CONFIG.app_dir.exists():
-        CONFIG.app_dir.mkdir(parents=True, exist_ok=True)
-    conn = connect()
-    try:
-        conn.execute("SELECT 1").fetchone()
-    finally:
-        conn.close()
-    protected = plan.get("protected_data_snapshot")
-    if not isinstance(protected, dict):
-        raise RuntimeError("UPDATE_STARTUP_DATA_SNAPSHOT_MISSING")
-    assert_protected_update_snapshot(protected)
+    if CONFIG.app_dir.resolve() != Path(plan["data_dir"]).resolve():
+        raise RuntimeError("UPDATE_STARTUP_DATA_DIR_MISMATCH")
+    baseline = load_data_baseline(plan, plan_path, token)
+    authorize_update_writer(plan, token)
+    from .storage import initialize_post_update_database
+    initialize_post_update_database(CONFIG.app_dir)
+    # Include compatible initialization in the protected interval, then allow
+    # normal services. Later connections do not repeat this initialization.
+    assert_protected_update_snapshot(baseline["snapshot"], data_dir=CONFIG.app_dir, digest_key=token)
     return plan
 
 

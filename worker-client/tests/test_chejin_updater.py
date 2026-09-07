@@ -6,6 +6,7 @@ import json
 import os
 from pathlib import Path
 import stat
+import subprocess
 import sys
 import time
 
@@ -119,8 +120,16 @@ def _prepare_plan(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, new_worker
     signature = private_key.sign(canonical_release_manifest(release))
     release = ClientRelease(**{**release.__dict__, "manifest_signature": base64.b64encode(signature).decode()})
     token = "single-use-token"
+    from chejin_worker_client import storage
+    from chejin_worker_client.update_data_access import process_identity
+    monkeypatch.setattr(storage, "APP_DIR", data)
+    monkeypatch.setattr(storage, "DB_FILE", data / "worker_client.sqlite3")
+    storage.connect().close()
+    old = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(0.1)"])
+    identity = process_identity(old.pid)
+    old.wait(timeout=5)
     plan = {
-        "schema_version": 1,
+        "schema_version": 2,
         "update_request_id": "update-process-test",
         "one_time_token_sha256": hashlib.sha256(token.encode()).hexdigest(),
         "current_version": "0.9.59",
@@ -134,7 +143,10 @@ def _prepare_plan(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, new_worker
         "healthy_marker_path": str(marker),
         "updater_ready_path": str(updater_ready),
         "worker_executable_relative": "worker.py",
-        "old_pid": 0,
+        "old_pid": old.pid,
+        "old_process_identity": identity,
+        "old_child_identities": [],
+        "data_baseline_path": str(control / "protected-data-baseline.json"),
         "old_exit_timeout_seconds": 1,
         "health_timeout_seconds": 3,
         "result_timeout_seconds": 10,
@@ -208,6 +220,8 @@ def test_missing_result_recovery_restores_previous_program_idempotently(
     )
     plan = json.loads(plan_path.read_text(encoding="utf-8"))
     staged = Path(plan["staged_program_dir"])
+    from chejin_worker_client.update_data_snapshot import capture_data_baseline
+    capture_data_baseline(plan, plan_path, token)
     os.replace(current, previous)
     os.replace(staged, current)
 
@@ -330,6 +344,42 @@ def test_staged_directory_switch_failure_restarts_unchanged_old_program(
     assert current.is_dir()
     assert not previous.exists()
     assert (current / "worker.py").read_text() == HEALTHY_WORKER
+
+
+def test_baseline_failure_restarts_current_without_installing_or_replacing_prior_backup(tmp_path, monkeypatch):
+    plan_path, token, current, previous = _prepare_plan(tmp_path, monkeypatch, new_worker=HEALTHY_WORKER)
+    plan = json.loads(plan_path.read_text())
+    previous.mkdir()
+    (previous / "older-backup.txt").write_text("keep-existing-backup")
+    baseline = Path(plan["data_baseline_path"])
+    baseline.write_text("{damaged-baseline")
+    assert run_update(plan_path, token) == 1
+    result = json.loads((plan_path.parent / "update-result.json").read_text())
+    assert result["state"] == "rolled_back"
+    assert result["data_integrity_failed"] is True
+    assert baseline.read_text() == "{damaged-baseline"
+    assert (current / "worker.py").read_text() == HEALTHY_WORKER
+    assert Path(plan["staged_program_dir"]).is_dir()
+    assert (previous / "older-backup.txt").read_text() == "keep-existing-backup"
+    assert not Path(plan["failed_program_dir"]).exists()
+
+
+@pytest.mark.parametrize("auth_valid", [True, False])
+def test_failed_shutdown_prevents_install_even_if_the_old_process_has_since_exited(tmp_path, monkeypatch, auth_valid):
+    from chejin_worker_client.update_data_access import authenticate
+    plan_path, token, current, previous = _prepare_plan(tmp_path, monkeypatch, new_worker=HEALTHY_WORKER)
+    plan = json.loads(plan_path.read_text())
+    payload = {"schema_version": 1, "update_request_id": plan["update_request_id"], "stopped": False}
+    (plan_path.parent / "worker-shutdown-failed.json").write_text(json.dumps({
+        "payload": payload, "auth": authenticate(payload, token if auth_valid else "wrong-token")
+    }))
+    assert run_update(plan_path, token) == 1
+    result = json.loads((plan_path.parent / "update-result.json").read_text())
+    assert result["result_code"] == ("UPDATE_WRITERS_NOT_STOPPED" if auth_valid else "UPDATE_SHUTDOWN_OUTCOME_INVALID")
+    assert current.is_dir() and not previous.exists()
+    assert Path(plan["staged_program_dir"]).exists()
+    assert not Path(plan["data_baseline_path"]).exists()
+    assert not Path(plan["healthy_marker_path"]).exists()
 
 
 def test_updater_startup_diagnostic_records_phases_without_arguments(

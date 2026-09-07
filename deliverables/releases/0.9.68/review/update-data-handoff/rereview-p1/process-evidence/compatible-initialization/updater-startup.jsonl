@@ -1,0 +1,12 @@
+{"timestamp_epoch":1788768547.130817,"phase":"stdlib_imports_succeeded","pid":25541}
+{"timestamp_epoch":1788768547.140772,"phase":"psutil_import_succeeded","pid":25541}
+{"timestamp_epoch":1788768547.160404,"phase":"release_contract_import_succeeded","pid":25541}
+{"timestamp_epoch":1788768547.1675231,"phase":"health_contract_import_succeeded","pid":25541}
+{"timestamp_epoch":1788768547.167685,"phase":"main_entered","pid":25541}
+{"timestamp_epoch":1788768547.168134,"phase":"plan_validation_started","pid":25541}
+{"timestamp_epoch":1788768547.1721568,"phase":"plan_validation_succeeded","pid":25541}
+{"timestamp_epoch":1788768547.172653,"phase":"ready_marker_written","pid":25541}
+{"timestamp_epoch":1788768547.38391,"phase":"old_writers_exited","pid":25541}
+{"timestamp_epoch":1788768547.387716,"phase":"data_exclusive_acquired","pid":25541}
+{"timestamp_epoch":1788768547.3916821,"phase":"data_baseline_captured","pid":25541}
+{"timestamp_epoch":1788768549.243228,"phase":"new_worker_health_checked","pid":25541,"reason":"healthy","child_pid":25542,"elapsed_ms":1846,"health_timeout_seconds":120.0}

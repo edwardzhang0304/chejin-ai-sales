@@ -14,6 +14,13 @@ from chejin_worker_client.update_coordinator import UpdateCoordinator
 import chejin_worker_client.update_coordinator as coordinator_module
 
 
+@pytest.fixture(autouse=True)
+def finish_diagnostic_writers(monkeypatch):
+    yield
+    from chejin_worker_client.incident_evidence import stop_incident_worker
+    assert stop_incident_worker(wait=True)
+
+
 def _release(
     *,
     available: bool = True,
@@ -115,6 +122,28 @@ def _wait(coordinator: UpdateCoordinator, timeout: float = 2.0) -> None:
 
 def test_independent_updater_ready_timeout_matches_packaged_startup_budget() -> None:
     assert coordinator_module.UPDATER_READY_TIMEOUT_SECONDS == 120.0
+
+
+def test_manual_first_hop_response_does_not_pause_download_or_install(tmp_path):
+    from chejin_worker_client.api import ApiError
+    class OldUpdaterApi:
+        def latest_client_release(self, **kwargs):
+            raise ApiError("UPDATE_MANUAL_UPGRADE_REQUIRED", "请保留数据安装", 409)
+    binding = Binding("w", "token", "instance", run_status="running")
+    runner = FakeRunner(binding, [])
+    exits = []
+    coordinator = UpdateCoordinator(
+        OldUpdaterApi(), runner, binding_provider=lambda: binding,
+        on_state=lambda state: None, request_normal_exit=lambda: exits.append(True),
+        state_store=UpdateStateStore(tmp_path / "update"), formal_package=True,
+    )
+    assert coordinator.check_for_updates() is True
+    _wait(coordinator)
+    assert coordinator.state()["result_code"] == "UPDATE_MANUAL_UPGRADE_REQUIRED"
+    assert runner.statuses == [] and binding.run_status == "running"
+    assert exits == []
+    assert not list(tmp_path.rglob("*.zip"))
+    assert not list(tmp_path.rglob("update-plan.json"))
 
 
 def test_updater_launcher_injects_bounded_startup_diagnostic_path(
@@ -223,11 +252,6 @@ def test_update_blocks_new_work_before_pause_and_waits_for_safe_boundary(
     waiting_snapshots = []
     monkeypatch.setattr(coordinator_module, "set_update_new_work_gate", set_gate)
     monkeypatch.setattr(coordinator_module, "prepare_release_package", prepare)
-    monkeypatch.setattr(
-        coordinator_module,
-        "protected_update_snapshot",
-        lambda: {"snapshot_sha256": "d" * 64},
-    )
     coordinator = UpdateCoordinator(
         FakeApi(_release()),
         runner,  # type: ignore[arg-type]
@@ -252,7 +276,9 @@ def test_update_blocks_new_work_before_pause_and_waits_for_safe_boundary(
     assert state["install_started"] is True
     plan = json.loads(Path(state["plan_path"]).read_text(encoding="utf-8"))
     assert plan["safe_boundary"]["safe"] is True
-    assert plan["protected_data_snapshot"]["snapshot_sha256"] == "d" * 64
+    assert "protected_data_snapshot" not in plan
+    assert plan["schema_version"] == 2
+    assert not Path(plan["data_baseline_path"]).exists()
     assert plan["health_timeout_seconds"] == 120
     assert plan["result_timeout_seconds"] == 180
     assert state["updater_pid"] == 9876
@@ -318,11 +344,6 @@ def test_expired_download_url_is_requeried_only_when_package_identity_is_unchang
         coordinator_module,
         "set_update_new_work_gate",
         lambda *_args, **_kwargs: None,
-    )
-    monkeypatch.setattr(
-        coordinator_module,
-        "protected_update_snapshot",
-        lambda: {"snapshot_sha256": "d" * 64},
     )
     coordinator = UpdateCoordinator(
         api,  # type: ignore[arg-type]
@@ -416,11 +437,6 @@ def test_faulted_client_with_clear_boundary_can_install_without_becoming_paused(
         coordinator_module,
         "set_update_new_work_gate",
         lambda *_args, **_kwargs: None,
-    )
-    monkeypatch.setattr(
-        coordinator_module,
-        "protected_update_snapshot",
-        lambda: {"snapshot_sha256": "d" * 64},
     )
 
     def launch(_updater: Path, plan_path: Path, _token: str):
@@ -540,11 +556,6 @@ def test_invalid_updater_ready_marker_terminates_updater_before_restoring_intake
             "package_root": str(staged),
             "package_manifest": {"version": "0.9.60"},
         },
-    )
-    monkeypatch.setattr(
-        coordinator_module,
-        "protected_update_snapshot",
-        lambda: {"snapshot_sha256": "d" * 64},
     )
 
     def launch(_updater: Path, plan_path: Path, _token: str):
@@ -758,9 +769,11 @@ def test_success_result_retries_running_restore_after_backend_recovers(
     assert runner.statuses == ["running", "running"]
 
 
+@pytest.mark.parametrize("integrity_failed", [False, True])
 def test_success_result_never_overrides_operator_pause(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    integrity_failed: bool,
 ) -> None:
     binding = Binding("w", "token", "instance", run_status="paused")
     events: list[str] = []
@@ -786,6 +799,7 @@ def test_success_result_never_overrides_operator_pause(
                 "state": "rolled_back",
                 "result_code": "UPDATE_ROLLED_BACK",
                 "update_request_id": "request-paused",
+                "data_integrity_failed": integrity_failed,
             }
         ),
         encoding="utf-8",
@@ -800,10 +814,13 @@ def test_success_result_never_overrides_operator_pause(
             "install_started": True,
         }
     )
+    def clear_gate(*_args, **_kwargs):
+        if integrity_failed:
+            assert binding.run_status == "faulted"
     monkeypatch.setattr(
         coordinator_module,
         "set_update_new_work_gate",
-        lambda *_args, **_kwargs: None,
+        clear_gate,
     )
     coordinator = UpdateCoordinator(
         FakeApi(_release()),
@@ -818,8 +835,8 @@ def test_success_result_never_overrides_operator_pause(
     coordinator.start_result_reconciliation()
     _wait(coordinator)
 
-    assert runner.statuses == []
-    assert binding.run_status == "paused"
+    assert runner.statuses == (["faulted"] if integrity_failed else [])
+    assert binding.run_status == ("faulted" if integrity_failed else "paused")
     assert store.load()["result_reconciled"] is True
 
 
@@ -840,7 +857,7 @@ def _missing_result_plan(
     data.mkdir()
     (control / "CheJinUpdater.exe").write_bytes(b"updater")
     plan = {
-        "schema_version": 1,
+        "schema_version": 2,
         "update_request_id": request_id,
         "current_version": "0.9.58",
         "target_version": "0.9.59",
@@ -849,6 +866,7 @@ def _missing_result_plan(
         "previous_program_dir": str(previous),
         "failed_program_dir": str(tmp_path / "program" / "failed"),
         "data_dir": str(data),
+        "data_baseline_path": str(control / "protected-data-baseline.json"),
         "healthy_marker_path": str(control / "healthy.json"),
         "worker_executable_relative": "CheJinWorkerClient.exe",
         "health_timeout_seconds": 120,
@@ -872,6 +890,10 @@ def _missing_result_plan(
             ),
         }
     )
+    import sqlite3
+    from chejin_worker_client.update_data_snapshot import capture_data_baseline
+    sqlite3.connect(data / "worker_client.sqlite3").close()
+    capture_data_baseline(plan, plan_path, token)
     return store, plan_path, plan
 
 
@@ -902,9 +924,11 @@ def _valid_health_marker(plan: dict, token: str) -> dict:
     }
 
 
+@pytest.mark.parametrize("baseline_state", ["valid", "corrupt", "normal-write-after-health"])
 def test_dead_updater_with_valid_runtime_health_settles_success_once(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    baseline_state: str,
 ) -> None:
     token = "missing-result-token"
     store, plan_path, plan = _missing_result_plan(
@@ -916,6 +940,13 @@ def test_dead_updater_with_valid_runtime_health_settles_success_once(
         json.dumps(_valid_health_marker(plan, token)),
         encoding="utf-8",
     )
+    if baseline_state == "corrupt":
+        Path(plan["data_baseline_path"]).write_text("{corrupt")
+    elif baseline_state == "normal-write-after-health":
+        import sqlite3
+        with sqlite3.connect(Path(plan["data_dir"]) / "worker_client.sqlite3") as db:
+            db.execute("CREATE TABLE c2_runtime_state (key TEXT, value_json TEXT, updated_at TEXT)")
+            db.execute("INSERT INTO c2_runtime_state VALUES ('normal', '{}', 'after-health')")
     gates: list[tuple[bool, str | None]] = []
     monkeypatch.setattr(
         coordinator_module,
@@ -940,6 +971,13 @@ def test_dead_updater_with_valid_runtime_health_settles_success_once(
     coordinator.start_result_reconciliation()
     _wait(coordinator)
 
+    if baseline_state == "corrupt":
+        assert not (plan_path.parent / "update-result.json").exists()
+        assert Path(plan["data_baseline_path"]).read_text() == "{corrupt"
+        assert store.load()["state"] == "failed"
+        assert store.load()["data_integrity_failed"] is True
+        assert coordinator.runner.statuses == ["faulted"]
+        return
     result = json.loads(
         (plan_path.parent / "update-result.json").read_text(encoding="utf-8")
     )

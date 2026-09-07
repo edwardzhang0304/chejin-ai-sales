@@ -1,0 +1,8 @@
+{
+  "schema_version": 1,
+  "state": "succeeded",
+  "result_code": "UPDATE_SUCCEEDED",
+  "update_request_id": "update-process-evidence",
+  "target_version": "0.9.68",
+  "artifact_sha256": "fb9c50c5e6d1693a17411f5ac4bf4c520429f61b4d992f2359232d6e01a1fce1"
+}

@@ -29,6 +29,21 @@ if (Test-Path $TestRoot) {
 }
 New-Item -ItemType Directory -Force -Path $TestRoot | Out-Null
 
+# Exercise actual Win32 shared/exclusive locks before starting any probe EXE.
+# These use synthetic data and do not replace the formal EXE cases below.
+$SavedTestHome = [Environment]::GetEnvironmentVariable("CHEJIN_WORKER_HOME", "Process")
+$SavedTestPythonPath = [Environment]::GetEnvironmentVariable("PYTHONPATH", "Process")
+try {
+  $env:CHEJIN_WORKER_HOME = Join-Path $TestRoot "lock-test-home"
+  $env:PYTHONPATH = $Root
+  $NativeReportPath = Join-Path $TestRoot "native-data-lock-tests.xml"
+  & $BuildPython -m pytest (Join-Path $Root "tests\test_update_handoff_baseline.py") (Join-Path $Root "tests\test_post_update_health.py") (Join-Path $Root "tests\test_update_shutdown_ui.py") -q --junitxml $NativeReportPath
+  if ($LASTEXITCODE -ne 0) { throw "Native Windows data handoff tests failed" }
+} finally {
+  $env:CHEJIN_WORKER_HOME = $SavedTestHome
+  $env:PYTHONPATH = $SavedTestPythonPath
+}
+
 $OldWorkerSource = @'
 using System;
 using System.Diagnostics;
@@ -172,7 +187,7 @@ function New-ReleasePlan(
   $PackageManifestPath = Join-Path $Staged "update-package-manifest.json"
   & $BuildPython (Join-Path $Root "scripts\generate-update-package-manifest.py") `
     --package-root $Staged `
-    --version "0.9.61" `
+    --version "0.9.70" `
     --git-commit ("b" * 40) `
     --output $PackageManifestPath | Out-Null
   if ($LASTEXITCODE -ne 0) { throw "Could not generate process-test package manifest" }
@@ -183,7 +198,7 @@ function New-ReleasePlan(
   & $BuildPython (Join-Path $Root "scripts\sign-client-release.py") `
     --archive $Archive `
     --package-manifest $PackageManifestPath `
-    --version "0.9.61" `
+    --version "0.9.70" `
     --git-commit ("b" * 40) `
     --artifact-storage-key "gray/windows-x64/process-test.zip" `
     --published-at $PublishedAt `
@@ -204,15 +219,17 @@ function New-ReleasePlan(
   $TokenHash = [BitConverter]::ToString([Security.Cryptography.SHA256]::Create().ComputeHash($TokenBytes)).Replace("-", "").ToLowerInvariant()
   $PlanPath = Join-Path $Control "update-plan.json"
   $Plan = [ordered]@{
-    schema_version = 1
+    schema_version = 2
     update_request_id = $RequestId
     current_version = "0.9.59"
-    target_version = "0.9.61"
+    target_version = "0.9.70"
     current_program_dir = $Current
     staged_program_dir = $Staged
     previous_program_dir = $Previous
     failed_program_dir = $Failed
     data_dir = $Data
+    data_baseline_path = (Join-Path $Control "protected-data-baseline.json")
+    old_child_identities = @()
     archive_path = $Archive
     healthy_marker_path = (Join-Path $Control "healthy.json")
     updater_ready_path = (Join-Path $Control "updater-ready.json")
@@ -276,8 +293,8 @@ function New-FormalClientReleasePlan(
   $PackageManifest = Get-Content -Raw -Encoding UTF8 $PackageManifestPath | ConvertFrom-Json
   $TargetVersion = [string]$PackageManifest.version
   $GitCommit = [string]$PackageManifest.git_commit
-  if ($TargetVersion -ne "0.9.68") {
-    throw "Formal process test expected package version 0.9.68, got $TargetVersion"
+  if ([version]$TargetVersion -lt [version]"0.9.69") {
+    throw "New protocol requires a reviewed candidate >= 0.9.69; do not build over published 0.9.68"
   }
 
   $OldWorkerHome = [Environment]::GetEnvironmentVariable("CHEJIN_WORKER_HOME", "Process")
@@ -285,9 +302,8 @@ function New-FormalClientReleasePlan(
   try {
     $env:CHEJIN_WORKER_HOME = $Data
     $env:PYTHONPATH = $Root
-    $SnapshotJson = & $BuildPython -c "import json; from chejin_worker_client.models import Binding; from chejin_worker_client.storage import save_binding; from chejin_worker_client.update_data_snapshot import protected_update_snapshot; save_binding(Binding('windows-process-worker','test-token','windows-process-instance',run_status='paused')); print(json.dumps(protected_update_snapshot(), ensure_ascii=False))"
-    if ($LASTEXITCODE -ne 0) { throw "Could not create formal-client protected snapshot" }
-    $ProtectedSnapshot = ($SnapshotJson -join "`n") | ConvertFrom-Json
+    & $BuildPython -c "from chejin_worker_client.models import Binding; from chejin_worker_client.storage import save_binding; save_binding(Binding('windows-process-worker','test-token','windows-process-instance',run_status='paused'))"
+    if ($LASTEXITCODE -ne 0) { throw "Could not initialize the formal-client test database" }
   } finally {
     $env:CHEJIN_WORKER_HOME = $OldWorkerHome
     $env:PYTHONPATH = $OldPythonPath
@@ -318,7 +334,7 @@ function New-FormalClientReleasePlan(
   $TokenHash = [BitConverter]::ToString([Security.Cryptography.SHA256]::Create().ComputeHash($TokenBytes)).Replace("-", "").ToLowerInvariant()
   $PlanPath = Join-Path $Control "update-plan.json"
   $Plan = [ordered]@{
-    schema_version = 1
+    schema_version = 2
     update_request_id = $RequestId
     current_version = "0.9.58"
     target_version = $TargetVersion
@@ -327,6 +343,8 @@ function New-FormalClientReleasePlan(
     previous_program_dir = $Previous
     failed_program_dir = $Failed
     data_dir = $Data
+    data_baseline_path = (Join-Path $Control "protected-data-baseline.json")
+    old_child_identities = @()
     archive_path = $Archive
     healthy_marker_path = (Join-Path $Control "healthy.json")
     updater_ready_path = (Join-Path $Control "updater-ready.json")
@@ -337,7 +355,6 @@ function New-FormalClientReleasePlan(
     result_timeout_seconds = 70
     one_time_token_sha256 = $TokenHash
     release = $Release
-    protected_data_snapshot = $ProtectedSnapshot
     safe_boundary = [ordered]@{
       safe = $true
       new_work_blocked = $true
@@ -378,6 +395,12 @@ function Invoke-UpdateCase([object]$Case, [string]$ExpectedState) {
   Wait-File ($StopFile + ".pid")
   $Plan = Get-Content -Raw -Encoding UTF8 $Case.PlanPath | ConvertFrom-Json
   $Plan.old_pid = $Old.Id
+  $IdentityJson = & $BuildPython -c "import json,sys,psutil; from pathlib import Path; p=psutil.Process(int(sys.argv[1])); print(json.dumps(dict(pid=p.pid,create_time=p.create_time(),exe=str(Path(p.exe()).resolve()))))" $Old.Id
+  if ($LASTEXITCODE -ne 0) { throw "Cannot identify the actual old EXE" }
+  $Plan | Add-Member -NotePropertyName old_process_identity -NotePropertyValue (($IdentityJson -join "`n") | ConvertFrom-Json) -Force
+  # Probe cases also need a real database; formal cases have already seeded it.
+  & $BuildPython -c "import sqlite3,sys; from pathlib import Path; c=sqlite3.connect(Path(sys.argv[1])/'worker_client.sqlite3'); c.close()" $Plan.data_dir
+  if ($LASTEXITCODE -ne 0) { throw "Cannot initialize the probe database" }
   Write-Utf8NoBom $Case.PlanPath ($Plan | ConvertTo-Json -Depth 12)
   $DiagnosticPath = Join-Path $Case.Control "updater-startup.jsonl"
   $PreviousDiagnosticPath = [Environment]::GetEnvironmentVariable("CHEJIN_UPDATER_DIAGNOSTIC_PATH", "Process")
@@ -407,6 +430,7 @@ function Invoke-UpdateCase([object]$Case, [string]$ExpectedState) {
   if (-not (Test-Path $ReadyPath)) {
     throw "Timed out waiting for $ReadyPath; updater_pid=$($Updater.Id); diagnostic=$(Read-UpdaterDiagnostic $DiagnosticPath)"
   }
+  if (Test-Path $Plan.data_baseline_path) { throw "Baseline was incorrectly captured before the old process exited" }
   Set-Content -LiteralPath $StopFile -Value "stop" -Encoding ASCII
   if (-not $Updater.WaitForExit(60000)) {
     Stop-Process -Id $Updater.Id -Force
@@ -417,6 +441,7 @@ function Invoke-UpdateCase([object]$Case, [string]$ExpectedState) {
   if ($Result.state -ne $ExpectedState) {
     throw "Expected updater state $ExpectedState, got $($Result.state): $($Result.message)"
   }
+  if (-not (Test-Path $Plan.data_baseline_path)) { throw "Updater did not create the exit-time baseline" }
   return $Result
 }
 

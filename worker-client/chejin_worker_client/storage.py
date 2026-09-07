@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import sqlite3
+import threading
 import sys
 import traceback
 import uuid
@@ -13,6 +14,7 @@ from pathlib import Path
 import re
 from typing import Any, Callable, TypeVar
 
+from .update_data_access import acquire_data_access
 from .config import CONFIG
 from .c2_contract import c2_contract_v3
 from .models import Binding, utc_now_iso
@@ -20,6 +22,8 @@ from .models import Binding, utc_now_iso
 
 APP_DIR = CONFIG.app_dir
 DB_FILE = APP_DIR / "worker_client.sqlite3"
+_INITIALIZATION_LOCK = threading.RLock()
+_post_update_initialized_database: Path | None = None
 MAX_LOGS = 1000
 RETENTION_DAYS = 30
 MAX_C2_LEDGER_ROWS_PER_CONVERSATION = 2000
@@ -103,14 +107,38 @@ def ensure_app_dir() -> None:
     APP_DIR.mkdir(parents=True, exist_ok=True)
 
 
+class _GuardedConnection(sqlite3.Connection):
+    data_access = None
+
+    def close(self) -> None:
+        try:
+            super().close()
+        finally:
+            if self.data_access is not None:
+                self.data_access.close()
+                self.data_access = None
+
+
 def connect() -> sqlite3.Connection:
-    ensure_app_dir()
-    conn = sqlite3.connect(DB_FILE)
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA journal_mode=WAL")
-    conn.execute("PRAGMA foreign_keys=ON")
-    init_db(conn)
-    return conn
+    access = acquire_data_access(APP_DIR)
+    conn = None
+    try:
+        ensure_app_dir()
+        conn = sqlite3.connect(DB_FILE, factory=_GuardedConnection)
+        conn.data_access = access
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA foreign_keys=ON")
+        with _INITIALIZATION_LOCK:
+            if _post_update_initialized_database != DB_FILE.resolve():
+                init_db(conn)
+        return conn
+    except Exception:
+        if conn is not None:
+            conn.close()
+        elif access is not None:
+            access.close()
+        raise
 
 
 @contextmanager
@@ -120,6 +148,24 @@ def db_connection():
         yield conn
     finally:
         conn.close()
+
+
+def initialize_post_update_database(data_dir: Path) -> None:
+    """Run compatible initialization once before the startup integrity check.
+
+    Subsequent UI/runtime connections must not run migrations after that check.
+    The authenticated updater child already owns access to this directory.
+    """
+    global _post_update_initialized_database
+    if APP_DIR.resolve() != data_dir.resolve() or DB_FILE.resolve() != (data_dir / "worker_client.sqlite3").resolve():
+        raise RuntimeError("UPDATE_STARTUP_DATA_DIR_MISMATCH")
+    with _INITIALIZATION_LOCK:
+        try:
+            with db_connection():
+                pass
+        except Exception as exc:
+            raise RuntimeError("UPDATE_PROTECTED_DATABASE_INITIALIZATION_FAILED") from exc
+        _post_update_initialized_database = DB_FILE.resolve()
 
 
 def init_db(conn: sqlite3.Connection) -> None:
@@ -375,6 +421,11 @@ def save_binding(binding: Binding) -> None:
               run_status = excluded.run_status,
               bound_at = excluded.bound_at,
               updated_at = excluded.updated_at
+            WHERE binding.worker_id IS NOT excluded.worker_id
+               OR binding.worker_token IS NOT excluded.worker_token
+               OR binding.client_instance_id IS NOT excluded.client_instance_id
+               OR binding.run_status IS NOT excluded.run_status
+               OR binding.bound_at IS NOT excluded.bound_at
             """,
             (binding.worker_id, binding.worker_token, binding.client_instance_id, binding.run_status, binding.bound_at, now),
         )
@@ -500,6 +551,9 @@ def _mutate_runtime_control(
             state = _normalize_runtime_control(
                 candidate if isinstance(candidate, dict) else current
             )
+            if row is not None and decoded == state:
+                conn.commit()
+                return state
             conn.execute(
                 """
                 INSERT INTO client_settings (key, value, updated_at)

@@ -18,7 +18,7 @@ from .models import ClientRelease
 
 
 UPDATE_SCHEMA_VERSION = 1
-UPDATER_VERSION = "0.9.68"
+UPDATER_VERSION = "0.9.69"
 UPDATE_CHANNEL = "gray"
 UPDATE_PLATFORM = "windows-x64"
 VERSION_RE = re.compile(r"^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$")
@@ -166,7 +166,7 @@ def validate_release_contract(
             "更新版本、渠道或平台不匹配",
         )
     if parse_exact_version(UPDATER_VERSION) < minimum:
-        raise ClientUpdateError("UPDATE_PACKAGE_INCOMPATIBLE", "当前更新器版本过低")
+        raise ClientUpdateError("UPDATE_MANUAL_UPGRADE_REQUIRED", "当前更新器不支持本次升级，请联系管理员保留数据安装")
     if not release.rollback_safe:
         raise ClientUpdateError(
             "UPDATE_MANUAL_UPGRADE_REQUIRED",

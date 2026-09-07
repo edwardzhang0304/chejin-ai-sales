@@ -9,12 +9,25 @@ from types import SimpleNamespace
 
 import pytest
 
+from chejin_worker_client.update_data_access import acquire_update_access, authorize_update_writer, clear_update_writer
 from chejin_worker_client import storage
 from chejin_worker_client.models import Binding
 import chejin_worker_client.post_update_health as health_module
 import chejin_worker_client.update_data_snapshot as snapshot_module
 from chejin_worker_client.task_runner import TaskRunner
 from chejin_worker_client.emergency_stop import reset_emergency_stop_for_tests
+
+
+_GUARDS = []
+
+@pytest.fixture(autouse=True)
+def release_test_data_ownership(monkeypatch):
+    yield
+    from chejin_worker_client.incident_evidence import stop_incident_worker
+    assert stop_incident_worker(wait=True)
+    clear_update_writer()
+    while _GUARDS:
+        _GUARDS.pop().close()
 
 
 def _runtime_health(*, alive: bool = True) -> dict:
@@ -65,19 +78,76 @@ def _prepare_health_plan(
     storage.connect().close()
     token = "health-token"
     plan = {
-        "schema_version": 1,
+        "schema_version": 2,
         "update_request_id": "update-health",
+        "current_version": "0.9.59",
+        "data_dir": str(data),
+        "data_baseline_path": str(tmp_path / "control" / "protected-data-baseline.json"),
         "one_time_token_sha256": hashlib.sha256(token.encode()).hexdigest(),
         "target_version": "0.9.60",
         "current_program_dir": str(current),
         "healthy_marker_path": str(tmp_path / "control" / "healthy.json"),
         "health_timeout_seconds": 120,
-        "protected_data_snapshot": snapshot_module.protected_update_snapshot(),
     }
     plan_path = tmp_path / "control" / "update-plan.json"
     plan_path.parent.mkdir(parents=True)
     plan_path.write_text(json.dumps(plan), encoding="utf-8")
+    guard = acquire_update_access(plan, token)
+    _GUARDS.append(guard)
+    snapshot_module.capture_data_baseline(plan, plan_path, token)
+    authorize_update_writer(plan, token)
     return plan_path, token, worker
+
+
+@pytest.mark.parametrize("migration", ["unchanged", "compatible-column", "insert", "delete", "drop-field", "raises"])
+def test_initialization_is_inside_integrity_boundary_and_never_repeats_after_it(tmp_path, monkeypatch, migration):
+    plan_path, token, _ = _prepare_health_plan(tmp_path, monkeypatch)
+    # A pre-existing protected row is necessary to exercise deletion.
+    # The fixture baseline has no binding, but client_settings can be seeded
+    # only before baseline capture; test deletion instead removes a table.
+    baseline_before = Path(json.loads(plan_path.read_text())["data_baseline_path"]).read_bytes()
+    original = storage.init_db
+    calls = []
+    def initialize(conn):
+        calls.append(True)
+        original(conn)
+        if migration == "compatible-column":
+            conn.execute("ALTER TABLE binding ADD COLUMN compatible_note TEXT NOT NULL DEFAULT ''")
+        elif migration == "insert":
+            conn.execute("INSERT INTO client_settings VALUES ('audit-only','faulty-migration','synthetic')")
+        elif migration == "delete":
+            conn.execute("DROP TABLE binding")
+        elif migration == "drop-field":
+            conn.execute("ALTER TABLE binding DROP COLUMN worker_token")
+        elif migration == "raises":
+            raise RuntimeError("synthetic migration error")
+        conn.commit()
+    monkeypatch.setattr(storage, "init_db", initialize)
+    if migration in {"unchanged", "compatible-column"}:
+        plan = health_module.verify_post_update_startup(plan_path, token)
+        with storage.db_connection(), storage.db_connection():
+            pass
+        assert calls == [True]
+        marker = health_module.write_healthy_marker(plan, token, runtime_health=_runtime_health())
+        assert marker.is_file()
+    else:
+        with pytest.raises(RuntimeError, match="UPDATE_PROTECTED_DATABASE_"):
+            health_module.verify_post_update_startup(plan_path, token)
+        assert not (plan_path.parent / "healthy.json").exists()
+    assert Path(json.loads(plan_path.read_text())["data_baseline_path"]).read_bytes() == baseline_before
+
+
+def test_later_connection_cannot_run_the_review_injected_initialization(tmp_path, monkeypatch):
+    plan_path, token, _ = _prepare_health_plan(tmp_path, monkeypatch)
+    plan = health_module.verify_post_update_startup(plan_path, token)
+    def late_fault(conn):
+        conn.execute("INSERT INTO client_settings VALUES ('audit-only','faulty-migration','synthetic')")
+        conn.commit()
+        pytest.fail("initialization ran after the startup integrity check")
+    monkeypatch.setattr(storage, "init_db", late_fault)
+    storage.connect().close()
+    baseline = snapshot_module.load_data_baseline(plan, plan_path, token)
+    snapshot_module.assert_protected_update_snapshot(baseline["snapshot"], data_dir=storage.APP_DIR, digest_key=token)
 
 
 def test_post_update_health_is_local_and_writes_authenticated_marker(
@@ -143,7 +213,7 @@ def test_real_main_records_rejected_startup_without_secrets(tmp_path, monkeypatc
     assert record["error_code"] == expected
     assert record["phase"] == "post_update_verification"
     assert record["exit_code"] == 3
-    assert record["exception_type"] == "RuntimeError"
+    assert record["exception_type"] in {"RuntimeError", "SnapshotMismatch"}
     assert token not in evidence and "binding-secret" not in evidence
     assert not (plan_path.parent / "healthy.json").exists()
 
@@ -295,10 +365,7 @@ def test_production_task_runner_reports_all_required_loops_entered_and_alive(
             for item in snapshot["threads"].values()
         )
     finally:
-        runner.stop()
-        for thread in (runner.thread, runner.c2_thread, runner.thread_monitor):
-            if thread is not None:
-                thread.join(1.0)
+        runner.stop_for_update()
 
 
 def test_production_loop_exit_during_stability_window_writes_no_marker(
@@ -366,9 +433,6 @@ def test_production_loop_exit_during_stability_window_writes_no_marker(
         assert gate.observe(failed) is None
         assert not (tmp_path / "healthy.json").exists()
     finally:
-        runner.stop()
         release_task_loop.set()
-        for thread in (runner.thread, runner.c2_thread, runner.thread_monitor):
-            if thread is not None:
-                thread.join(1.0)
+        runner.stop_for_update()
         reset_emergency_stop_for_tests()

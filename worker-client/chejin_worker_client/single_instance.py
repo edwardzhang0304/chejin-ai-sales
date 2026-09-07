@@ -40,6 +40,7 @@ def _load_kernel32() -> Any:
 def acquire_single_instance(
     *,
     platform_name: str | None = None,
+    join_authenticated_update: bool = False,
     kernel32: Any | None = None,
     get_last_error: Callable[[], int] | None = None,
     set_last_error: Callable[[int], None] | None = None,
@@ -55,7 +56,7 @@ def acquire_single_instance(
     error_code = int(read_last_error())
     if not handle:
         raise OSError(error_code, "WINDOWS_SINGLE_INSTANCE_MUTEX_CREATE_FAILED")
-    if error_code == WINDOWS_ALREADY_EXISTS:
+    if error_code == WINDOWS_ALREADY_EXISTS and not join_authenticated_update:
         api.CloseHandle(handle)
         raise SingleInstanceAlreadyRunning("CHEJIN_WORKER_ALREADY_RUNNING")
     return SingleInstanceGuard(handle=int(handle), kernel32=api)

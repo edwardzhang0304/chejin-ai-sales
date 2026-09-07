@@ -1,0 +1,24 @@
+{
+  "schema_version": 1,
+  "state": "rolled_back",
+  "result_code": "UPDATE_ROLLED_BACK",
+  "failure_code": "UPDATE_RESTART_FAILED",
+  "startup_diagnostic": {
+    "phase": "wait_for_health",
+    "pid": 23415,
+    "health_timeout_seconds": 120.0,
+    "marker_error": "UPDATE_HEALTH_MARKER_UNREADABLE",
+    "reason": "process_exited",
+    "exit_code": 3,
+    "elapsed_ms": 612,
+    "exit_code_hex": "0x00000003",
+    "exception_type": "ClientUpdateError",
+    "errno": null,
+    "winerror": null
+  },
+  "data_integrity_failed": true,
+  "message": "新客户端未在健康检查窗口内启动",
+  "update_request_id": "update-process-evidence",
+  "target_version": "0.9.68",
+  "artifact_sha256": "0c9f00202e9a66a069a689f519bcc94f5ec68a10222927f1e7d14653d6f0c535"
+}

@@ -50,6 +50,9 @@ def record_update_startup_failure(
                 for frame in traceback.extract_tb(exc.__traceback__)[-12:]
             ],
         }
+        differences = getattr(exc, "differences", None)
+        if isinstance(differences, list):
+            record["differences"] = differences
         data = json.dumps(record, ensure_ascii=True, separators=(",", ":")) + "\n"
         path.parent.mkdir(parents=True, exist_ok=True)
         current_size = path.stat().st_size if path.exists() else 0
