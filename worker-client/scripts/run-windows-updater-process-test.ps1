@@ -1,7 +1,8 @@
 ﻿param(
   [string]$PackageDir = "",
   [string]$LegacyPackageDir = "",
-  [string]$LegacySourceDir = ""
+  [string]$LegacySourceDir = "",
+  [string]$Legacy068PackageDir = ""
 )
 
 $ErrorActionPreference = "Stop"
@@ -447,9 +448,9 @@ function Invoke-UpdateCase([object]$Case, [string]$ExpectedState) {
   return $Result
 }
 
-function Invoke-LegacyCase([bool]$LateWrite) {
-  if (-not (Test-Path (Join-Path $LegacyPackageDir "CheJinUpdater.exe"))) { throw "Original 0.9.67 updater is required" }
-  $Name = if ($LateWrite) { "legacy-late-write" } else { "legacy-success" }
+function Invoke-LegacyCase([bool]$LateWrite, [string]$LegacyVersion = "0.9.67", [string]$OriginalPackageDir = $LegacyPackageDir) {
+  if (-not (Test-Path (Join-Path $OriginalPackageDir "CheJinUpdater.exe"))) { throw "Original 0.9.67 updater is required" }
+  $Name = "legacy-$LegacyVersion-" + $(if ($LateWrite) { "late-write" } else { "success" })
   $Case = New-FormalClientReleasePlan (Join-Path $TestRoot $Name) $Name
   $env:CHEJIN_WORKER_HOME = $Case.Data
   $env:CHEJIN_UPDATE_STAGING_ROOT = Join-Path $TestRoot ($Name + "-state")
@@ -457,14 +458,15 @@ function Invoke-LegacyCase([bool]$LateWrite) {
   $env:CHEJIN_API_TIMEOUT = "0.2"
   $env:CHEJIN_RPA_MODE = "mock"
   $LegacyUpdater = Join-Path $Case.Control "CheJinUpdater.exe"
-  Copy-Item (Join-Path $LegacyPackageDir "CheJinUpdater.exe") $LegacyUpdater
-  if ((Get-FileHash $LegacyUpdater -Algorithm SHA256).Hash -ne "2120B60F83A08807E066C6CC23C1C4523BA6B347641F77840F416F950F0DF35B") { throw "Legacy updater hash mismatch" }
+  Copy-Item (Join-Path $OriginalPackageDir "CheJinUpdater.exe") $LegacyUpdater
+  $ExpectedUpdaterHash = if ($LegacyVersion -eq "0.9.67") { "2120B60F83A08807E066C6CC23C1C4523BA6B347641F77840F416F950F0DF35B" } else { "F28068D191D54AD8D3F9EFEC549A4676AEB6F56305E8157D0D3CE20949B7F91E" }
+  if ((Get-FileHash $LegacyUpdater -Algorithm SHA256).Hash -ne $ExpectedUpdaterHash) { throw "Legacy updater hash mismatch" }
   $StopFile = Join-Path $Case.Control "stop-old"
   $Old = Start-Process -FilePath (Join-Path $Case.Current "CheJinWorkerClient.exe") -ArgumentList @("--stop-file", $StopFile) -PassThru
   Wait-File ($StopFile + ".pid")
   $Plan = Get-Content -Raw -Encoding UTF8 $Case.PlanPath | ConvertFrom-Json
   $Plan.schema_version = 1
-  $Plan.current_version = "0.9.67"
+  $Plan.current_version = $LegacyVersion
   $Plan.old_pid = $Old.Id
   $SnapshotPath = Join-Path $Case.Control "legacy-snapshot.json"
   # Import the immutable old source to generate its actual snapshot format.
@@ -502,7 +504,7 @@ function Invoke-LegacyCase([bool]$LateWrite) {
     if ($Marker.version -ne "0.9.69" -or $Marker.runtime_health.binding_state -ne "bound") { throw "Legacy upgrade healthy marker invalid" }
     Stop-Process -Id ([int]$Marker.pid) -Force -ErrorAction SilentlyContinue
   }
-  Write-Host "Legacy 0.9.67 updater -> real 0.9.69 Worker: $Name passed"
+  Write-Host "Legacy $LegacyVersion updater -> real 0.9.69 Worker: $Name passed"
 }
 
 try {
@@ -561,6 +563,7 @@ try {
   try {
     Invoke-LegacyCase $false
     Invoke-LegacyCase $true
+    Invoke-LegacyCase $false "0.9.68" $Legacy068PackageDir
   } finally {
     foreach ($EnvName in $LegacySavedEnv.Keys) { [Environment]::SetEnvironmentVariable($EnvName, $LegacySavedEnv[$EnvName], "Process") }
   }

@@ -136,12 +136,24 @@ jobs:
           path: legacy-artifact
           merge-multiple: true
 
+      - name: Fetch original 0.9.68 formal artifact inside GitHub
+        uses: actions/download-artifact@v4
+        with:
+          artifact-ids: '10005603176'
+          run-id: '34085360247'
+          github-token: ${{ github.token }}
+          path: legacy-068-artifact
+          merge-multiple: true
+
       - name: Verify immutable old ZIP before extracting
         shell: powershell
         run: |
           $zip = Join-Path $PWD "legacy-artifact\chejin-worker-v0.9.67-windows-x64.zip"
           if ((Get-FileHash $zip -Algorithm SHA256).Hash -ne "51AEFF1E91AB0B043F674242CCBABD4B68081813F8E70CC577D34736F5064AD4") { throw "Old formal ZIP identity mismatch" }
           Expand-Archive -LiteralPath $zip -DestinationPath (Join-Path $env:RUNNER_TEMP "legacy-release")
+          $zip068 = Join-Path $PWD "legacy-068-artifact\chejin-worker-v0.9.68-windows-x64.zip"
+          if ((Get-FileHash $zip068 -Algorithm SHA256).Hash -ne "26B19D48275BA4AB5ABAD18A3B5919180929A097C4E24658BB41672C503B9938") { throw "0.9.68 formal ZIP identity mismatch" }
+          Expand-Archive -LiteralPath $zip068 -DestinationPath (Join-Path $env:RUNNER_TEMP "legacy-068-release")
 
       - name: Exercise real updater process switch and rollback
         shell: powershell
@@ -149,7 +161,7 @@ jobs:
         env:
           CHEJIN_RELEASE_SIGNING_PRIVATE_KEY_BASE64: ${{ secrets.CHEJIN_RELEASE_SIGNING_PRIVATE_KEY_BASE64 }}
         run: |
-          .\scripts\run-windows-updater-process-test.ps1 -PackageDir .\dist\CheJinWorkerClient -LegacyPackageDir (Join-Path $env:RUNNER_TEMP "legacy-release\CheJinWorkerClient") -LegacySourceDir (Join-Path $env:GITHUB_WORKSPACE ".legacy-source\worker-client")
+          .\scripts\run-windows-updater-process-test.ps1 -PackageDir .\dist\CheJinWorkerClient -LegacyPackageDir (Join-Path $env:RUNNER_TEMP "legacy-release\CheJinWorkerClient") -LegacySourceDir (Join-Path $env:GITHUB_WORKSPACE ".legacy-source\worker-client") -Legacy068PackageDir (Join-Path $env:RUNNER_TEMP "legacy-068-release\CheJinWorkerClient")
           if ($LASTEXITCODE -ne 0) {
             throw "real updater process switch/rollback test failed"
           }
