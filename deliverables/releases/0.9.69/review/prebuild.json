@@ -1,0 +1,23 @@
+{
+  "recorded_at": "2026-09-07T08:49:05.504209+00:00",
+  "source_base": "709b3239b0072325e880ac4747b405f6f121b974",
+  "target": "0.9.69",
+  "current_client": "0.9.67",
+  "contract_revision": "0.9.68",
+  "local_focused_tests": 74,
+  "delivery_tests": 19,
+  "quick_gate": "passed",
+  "windows_formal_exe": "pending",
+  "published": false,
+  "transfer_route": "GitHub runner to restricted production staging; no Mac ZIP transfer",
+  "limits": [
+    "Legacy source-side writers changing data after the old snapshot remain a fail-closed first-hop limitation.",
+    "Windows process gate uses the original old Updater EXE and new Worker EXE, with a controlled old worker stand-in; user button/UI acceptance remains pending."
+  ],
+  "changed_source_hashes": {
+    "worker-client/chejin_worker_client/legacy_update_handoff.py": "cbeb7aaa4b0d518971207192dacd3b4aaff1ec660cc3773bfa64dedec6e0398e",
+    "worker-client/chejin_worker_client/post_update_health.py": "5125285b8b3b47dd754b2a6a5b56e191e22ec9922a4f3a5983b780b07a0c6165",
+    "worker-client/scripts/sign-client-release.py": "69b2e926a329d0518d2eb7a679543cf41ee793e18e9fc0b9021fd70fff8b85c0",
+    "worker-client/scripts/run-windows-updater-process-test.ps1": "3f95ecf6e32fc87e9545fd71612e11c5176a06ecfca86e8f70f32c94690f58a6"
+  }
+}

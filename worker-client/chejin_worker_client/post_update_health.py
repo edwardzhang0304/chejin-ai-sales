@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from contextlib import nullcontext
 import hashlib
 import hmac
 import json
@@ -35,8 +36,6 @@ def _token_sha256(token: str) -> str:
 
 def verify_post_update_startup(plan_path: Path, token: str) -> dict[str, Any]:
     plan = _load_json(plan_path)
-    if plan.get("schema_version") != BASELINE_PLAN_SCHEMA:
-        raise RuntimeError("UPDATE_MANUAL_UPGRADE_REQUIRED")
     if not hmac.compare_digest(
         str(plan.get("one_time_token_sha256") or ""),
         _token_sha256(token),
@@ -68,13 +67,15 @@ def verify_post_update_startup(plan_path: Path, token: str) -> dict[str, Any]:
 
     if CONFIG.app_dir.resolve() != Path(plan["data_dir"]).resolve():
         raise RuntimeError("UPDATE_STARTUP_DATA_DIR_MISMATCH")
-    baseline = load_data_baseline(plan, plan_path, token)
-    authorize_update_writer(plan, token)
-    from .storage import initialize_post_update_database
-    initialize_post_update_database(CONFIG.app_dir)
-    # Include compatible initialization in the protected interval, then allow
-    # normal services. Later connections do not repeat this initialization.
-    assert_protected_update_snapshot(baseline["snapshot"], data_dir=CONFIG.app_dir, digest_key=token)
+    from .legacy_update_handoff import legacy_handoff
+    scope = legacy_handoff(plan, plan_path, token) if plan.get("schema_version") == 1 else nullcontext(plan)
+    with scope as plan:
+        baseline = load_data_baseline(plan, plan_path, token)
+        authorize_update_writer(plan, token)
+        from .storage import initialize_post_update_database
+        initialize_post_update_database(CONFIG.app_dir)
+        assert_protected_update_snapshot(baseline["snapshot"], data_dir=CONFIG.app_dir, digest_key=token)
+
     return plan
 
 

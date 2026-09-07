@@ -53,7 +53,7 @@ def publish(folder, meta, verified, config, check_only):
         run_fixed(["docker", "cp", str(source), config["container"] + ":" + target + "/" + name])
     try:
         output = run_fixed(["docker", "exec", "-i", config["container"], "python", "-",
-                            target, meta["version"], verified["contract_sha256"],
+                            target, verified["contract_revision"], verified["contract_sha256"],
                             "check" if check_only else "publish"],
                            input=Path(__file__).with_name("register.py").read_text(), text=True)
         result = json.loads(output)

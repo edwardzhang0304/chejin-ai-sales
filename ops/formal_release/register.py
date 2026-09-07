@@ -8,10 +8,10 @@ from app.contracts.c2 import contract_revision, contract_sha256
 from app.core.database import SessionLocal
 from app.services.client_release_service import register_signed_client_release, store_client_release_artifact
 
-folder, version, expected_contract_sha, operation = sys.argv[1:]
+folder, expected_contract_revision, expected_contract_sha, operation = sys.argv[1:]
 if operation not in {"check", "publish"}:
     raise RuntimeError("INVALID_OPERATION")
-if contract_revision() != version or contract_sha256() != expected_contract_sha:
+if contract_revision() != expected_contract_revision or contract_sha256() != expected_contract_sha:
     raise RuntimeError("BACKEND_CONTRACT_MISMATCH")
 root = Path(folder)
 with SessionLocal.begin() as db:

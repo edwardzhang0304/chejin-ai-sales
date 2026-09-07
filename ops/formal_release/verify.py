@@ -87,7 +87,7 @@ def verify(folder, meta, config):
                 "default_api_base_url": config["api_origin"], "tests_status": "passed",
                 "preflight_status": "passed", "vision_credential_embedded": False,
                 "vision_credential_source": "worker_backend", "vision_configuration_locked": True,
-                "vision_live_probe_check": "runtime_after_binding", "c2_contract_revision": meta["version"]}
+                "vision_live_probe_check": "runtime_after_binding"}
     require(all(delivery.get(k) == v and type(delivery.get(k)) is type(v) for k, v in expected.items()), "DELIVERY_GATE_FAILED")
     require(str(delivery.get("workflow_run_id")) == str(meta["run_id"]), "RUN_ID_MISMATCH")
     require(str(delivery.get("zip_sha256", "")).lower() == meta["sha256"], "DELIVERY_HASH_MISMATCH")
@@ -127,9 +127,10 @@ def verify(folder, meta, config):
             require(digest(package / name) == delivery[field].lower(), "EXECUTABLE_HASH_MISMATCH")
         raw = (package / "_internal/contracts/c2_contract_v3.json").read_bytes()
         require(hashlib.sha256(raw).hexdigest() == delivery["c2_contract_sha256"].lower(), "CONTRACT_FILE_MISMATCH")
+        require(json.loads(raw).get("contract_revision") == delivery.get("c2_contract_revision"), "CONTRACT_REVISION_MISMATCH")
         canonical = json.dumps(json.loads(raw), ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()
         contract_sha = hashlib.sha256(canonical).hexdigest()
     return {"version": meta["version"], "commit": meta["commit"], "run_id": str(meta["run_id"]),
             "sha256": meta["sha256"], "size": release.artifact_size_bytes, "contract_sha256": contract_sha,
-            "current_version": meta["current_version"], "file_count": len(manifest["files"]), "package": "passed", "old_client_signature": "passed",
+            "current_version": meta["current_version"], "contract_revision": delivery["c2_contract_revision"], "file_count": len(manifest["files"]), "package": "passed", "old_client_signature": "passed",
             "windows_upgrade": "pending", "business_uat": "pending"}
