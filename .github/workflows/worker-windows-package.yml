@@ -121,8 +121,10 @@ jobs:
           $env:PYTHONPATH = $PWD.Path
           $env:CHEJIN_WORKER_HOME = Join-Path $env:RUNNER_TEMP "chejin-native-prebuild"
           python -m venv .venv
-          .\.venv\Scripts\python.exe -m pip install --disable-pip-version-check -r requirements.txt -r requirements-test.txt
+          .\.venv\Scripts\python.exe -m pip install --disable-pip-version-check -r requirements.txt -r requirements-test.txt "websockets==15.0.1"
           if ($LASTEXITCODE -ne 0) { throw "Native gate dependencies failed" }
+          .\.venv\Scripts\python.exe scripts/run-windows-client-upgrade-test.py --driver-smoke (Join-Path $env:RUNNER_TEMP "qt-driver-prebuild")
+          if ($LASTEXITCODE -ne 0) { throw "Qt GUI driver prebuild gate failed" }
           .\.venv\Scripts\python.exe -m pytest tests/test_update_handoff_baseline.py tests/test_post_update_health.py tests/test_update_shutdown_ui.py tests/test_legacy_update_handoff.py -q --junitxml "$env:RUNNER_TEMP/native-prebuild.xml"
           if ($LASTEXITCODE -ne 0) { throw "Native handoff prebuild gate failed" }
 
@@ -474,7 +476,7 @@ jobs:
         working-directory: worker-client
         run: |
           $ErrorActionPreference = "Stop"
-          .\.venv\Scripts\python.exe -m pip install --disable-pip-version-check -r ..\backend\requirements.txt "playwright==1.55.0"
+          .\.venv\Scripts\python.exe -m pip install --disable-pip-version-check -r ..\backend\requirements.txt "websockets==15.0.1"
           if ($LASTEXITCODE -ne 0) { throw "GUI upgrade gate dependencies failed" }
           .\.venv\Scripts\python.exe scripts/run-windows-client-upgrade-test.py `
             --old-package-root (Join-Path $env:RUNNER_TEMP "old-069-release\CheJinWorkerClient") `
@@ -512,10 +514,12 @@ jobs:
           name: windows-gate-reports-${{ github.run_id }}
           path: |
             worker-client/dist/reports/*.json
+            ${{ runner.temp }}/qt-driver-prebuild/*
             ${{ runner.temp }}/chejin-original-client-upgrade/**/result.json
             ${{ runner.temp }}/chejin-original-client-upgrade/upgrade-result.json
             ${{ runner.temp }}/chejin-original-client-upgrade/**/process.log
-            ${{ runner.temp }}/chejin-original-client-upgrade/**/*.png
+            ${{ runner.temp }}/chejin-original-client-upgrade/*/before.png
+            ${{ runner.temp }}/chejin-original-client-upgrade/*/after.png
             ${{ runner.temp }}/chejin-original-client-upgrade/**/worker-startup.jsonl
             ${{ runner.temp }}/chejin-original-client-upgrade/**/update-result.json
             ${{ runner.temp }}/native-prebuild.xml
