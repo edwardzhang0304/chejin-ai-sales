@@ -54,9 +54,10 @@ def client_api(config, current_version):
     baseline = config["client_baselines"].get(current_version)
     require(baseline is not None, "OLD_CLIENT_BASELINE_NOT_INSTALLED")
     sys.path.insert(0, baseline)
+    from chejin_worker_client import __version__ as baseline_version
     from chejin_worker_client.models import ClientRelease
     from chejin_worker_client import release_package_contract as contract
-    require(contract.UPDATER_VERSION == current_version, "OLD_CLIENT_BASELINE_MISMATCH")
+    require(baseline_version == current_version, "OLD_CLIENT_BASELINE_MISMATCH")
     return ClientRelease, contract
 
 

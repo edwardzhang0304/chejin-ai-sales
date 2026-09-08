@@ -22,7 +22,7 @@ import configure_github
 import receiver
 import select_artifact
 from verify import CHUNK, digest, verify
-from chejin_worker_client.release_package_contract import UPDATER_VERSION as CURRENT_VERSION
+from chejin_worker_client import __version__ as CURRENT_VERSION
 TARGET_VERSION = ".".join([*CURRENT_VERSION.split(".")[:2], str(int(CURRENT_VERSION.split(".")[2]) + 1)])
 from chejin_worker_client.models import ClientRelease
 from chejin_worker_client.release_package_contract import canonical_release_manifest
@@ -79,6 +79,15 @@ class DeliveryTests(unittest.TestCase):
         (self.folder / (self.stem + ".delivery.json")).write_text(json.dumps(delivery))
         (self.folder / (self.stem + ".sha256.txt")).write_text(digest(archive) + "  " + archive.name + "\n")
         self.meta, _ = deliver.metadata(self.folder, CURRENT_VERSION, "123", "a" * 40)
+
+    def test_baseline_identifies_client_version_separately_from_updater_protocol(self):
+        from verify import client_api
+        from chejin_worker_client import release_package_contract
+        _, verifier = client_api(self.config, CURRENT_VERSION)
+        self.assertEqual(verifier.UPDATER_VERSION, release_package_contract.UPDATER_VERSION)
+        wrong = {**self.config, "client_baselines": {"0.9.60": str(ROOT / "worker-client")}}
+        with self.assertRaisesRegex(ValueError, "OLD_CLIENT_BASELINE_MISMATCH"):
+            client_api(wrong, "0.9.60")
 
     def test_missing_real_client_upgrade_evidence_blocks_staging(self):
         path = self.folder / (self.stem + ".delivery.json")
@@ -240,7 +249,7 @@ class GateTests(unittest.TestCase):
 
     def test_missing_receiver_or_approval_blocks_before_build(self):
         valid = {'GITHUB_REF':'refs/heads/codex/gray-release-0.9.x','RELEASE_APPROVED':'true',
-                 'RELEASE_REASON':'fixture','DELIVERY_MODE':'build_and_stage','CURRENT_VERSION':CURRENT_VERSION,
+                 'RELEASE_REASON':'fixture','DELIVERY_MODE':'build_and_stage','CURRENT_VERSION':'0.9.70',
                  'FORMAL_SSH_KEY':'fixture','FORMAL_SSH_HOST':'example.test','FORMAL_SSH_PORT':'22','FORMAL_KNOWN_HOSTS':'fixture'}
         validate_dispatch.validate(valid)
         for old_version in ('0.9.67', '0.9.68'):

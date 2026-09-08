@@ -324,7 +324,7 @@ class PackagingScriptsTest(unittest.TestCase):
         self.assertIn("app_name = [string]$manifest.app_name", workflow)
         self.assertIn("default_api_base_url = [string]$manifest.default_api_base_url", workflow)
         self.assertIn("delivery ZIP executable SHA256 mismatch", workflow)
-        self.assertIn("chejin-worker-v0.9.70-windows-x64.delivery.json", workflow)
+        self.assertIn("chejin-worker-v0.9.71-windows-x64.delivery.json", workflow)
         self.assertNotIn("CHEJIN_VISION_CLIENT_API_KEY", workflow)
         self.assertIn('vision_credential_source -ne "worker_backend"', workflow)
         self.assertIn('vision_live_probe_check -ne "runtime_after_binding"', workflow)
@@ -352,7 +352,7 @@ class PackagingScriptsTest(unittest.TestCase):
             workflow,
         )
         self.assertIn("--artifact-storage-key", workflow)
-        self.assertIn("chejin-worker-v0.9.70-windows-x64.release.json", workflow)
+        self.assertIn("chejin-worker-v0.9.71-windows-x64.release.json", workflow)
         self.assertIn("must not contain a temporary download URL", workflow)
 
     def test_formal_update_package_contains_independent_updater_and_real_process_gate(self):
@@ -402,7 +402,7 @@ class PackagingScriptsTest(unittest.TestCase):
             updater_spec,
         )
 
-    def test_formal_exe_workflow_is_manual_and_requires_completed_uat(self):
+    def test_formal_exe_workflow_is_manual_and_runs_shared_checks_without_fast_uat_package(self):
         workflow = (
             ROOT.parent / ".github" / "workflows" / "worker-windows-package.yml"
         ).read_text(encoding="utf-8")
@@ -411,12 +411,19 @@ class PackagingScriptsTest(unittest.TestCase):
         self.assertNotIn("\n  push:", workflow)
         self.assertIn("release_approved:", workflow)
         self.assertIn("release_reason:", workflow)
-        self.assertIn("Formal EXE build is blocked until Fast UAT C0-C4 is approved", workflow)
+        self.assertIn("validate_dispatch.py", workflow)
+        self.assertIn("uses: ./.github/actions/worker-release-checks", workflow)
+        self.assertNotIn("build-fast-uat-package.py", workflow)
+        self.assertNotIn("worker-windows-fast-uat.yml", workflow)
+        self.assertIn("Accept exact Windows candidate", workflow)
+        self.assertIn("needs.acceptance.result == 'success'", workflow)
 
     def test_fast_uat_workflow_reuses_runtime_and_probes_extracted_zip(self):
         workflow = (
             ROOT.parent / ".github" / "workflows" / "worker-windows-fast-uat.yml"
         ).read_text(encoding="utf-8")
+        self.assertIn("uses: ./.github/actions/worker-release-checks", workflow)
+        workflow += (ROOT.parent / ".github/actions/worker-release-checks/action.yml").read_text(encoding="utf-8")
 
         self.assertIn("actions/cache@v4", workflow)
         self.assertIn("build-fast-uat-runtime.ps1", workflow)
@@ -1120,16 +1127,20 @@ class PackagingScriptsTest(unittest.TestCase):
                         "backend_vehicle_facts_preserved_in_evidence_and_brain"
                     ]
                 },
+                {
+                    "source_commit": "a8999591d663c48ce482f949c40ec5d6b4a22894",
+                    "scope": ["c2_contract_0_9_71_generated_schema"],
+                },
             ],
         )
         self.assertEqual(
             provenance["current_release"],
             {
-                "version": "0.9.70",
-                "source_commit": "fd2c9d7700bac78710022b2a0c3579537395fc3e",
-                "contract_revision": "0.9.70",
-                "contract_sha256": "9a41f79da6b9dea74d23a2cc0ac5963a259f03285cf42432f6223816eb92c287",
-                "scope": "Reviewed failed-search cleanup and generated 0.9.70 lead cancellation contract schema",
+                "version": "0.9.71",
+                "source_commit": "a8999591d663c48ce482f949c40ec5d6b4a22894",
+                "contract_revision": "0.9.71",
+                "contract_sha256": "4f0abee79adafa760a664db2e2fd19ea2f4f98f4a057fb79b3946c2bb55cabdb",
+                "scope": "Reviewed joint Brain and vehicle changes; unified 0.9.71 candidate contract schema"
             },
         )
         self.assertIn(
@@ -1558,7 +1569,7 @@ class PackagingScriptsTest(unittest.TestCase):
         self.assertIn('$packageDir = [string]$manifest.package_dir', workflow)
         self.assertIn('$exePath = [string]$manifest.exe_path', workflow)
         self.assertNotIn('dist\\车金Worker客户端', workflow)
-        self.assertIn('version -ne "0.9.70"', workflow)
+        self.assertIn('version -ne "0.9.71"', workflow)
         self.assertIn('tests_status -ne "passed"', workflow)
         self.assertIn('@("--omniauto-sidecar", "--help")', workflow)
         self.assertIn('@("--omniauto-ocr-probe")', workflow)
