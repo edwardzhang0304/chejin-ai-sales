@@ -46,7 +46,7 @@ def setup_function():
 
 
 def _create_vehicle(**overrides) -> dict:
-    payload = {"display_name": "2022款测试轿车", "brand": "测试品牌", "series": "测试车系"}
+    payload = {"display_name": "2022款测试轿车", "brand": "测试品牌", "series": "国产车"}
     payload.update(overrides)
     response = client.post("/api/vehicles", json=payload, headers=ADMIN_HEADERS)
     assert response.status_code == 200, response.text
@@ -145,7 +145,7 @@ def test_excel_preview_confirm_is_atomic_and_idempotent():
     assert template.status_code == 200
     workbook = load_workbook(BytesIO(template.content))
     sheet = workbook["车辆信息"]
-    sheet.append([None, "Excel新增车辆", "品牌A", "车系A", "车型A", 9.98, "2021-08", 31000])
+    sheet.append([None, "Excel新增车辆", "品牌A", "国产车", "车型A", None, None, None, None, 9.98, "2021-08", 31000])
     content = BytesIO()
     workbook.save(content)
 
@@ -176,7 +176,7 @@ def test_excel_errors_block_confirm_without_writing_vehicle_facts():
     template = client.get("/api/vehicles/excel/template", headers=ADMIN_HEADERS)
     workbook = load_workbook(BytesIO(template.content))
     sheet = workbook["车辆信息"]
-    sheet.append([None, None, "品牌A", None, None, "不是数字", "2021-99", -1])
+    sheet.append([None, None, "品牌A", None, None, None, None, None, None, "不是数字", "2021-99", -1])
     content = BytesIO()
     workbook.save(content)
     preview = client.post(
@@ -201,7 +201,7 @@ def test_excel_nonexistent_vehicle_code_is_an_error_not_a_create():
     template = client.get("/api/vehicles/excel/template", headers=ADMIN_HEADERS)
     workbook = load_workbook(BytesIO(template.content))
     sheet = workbook["车辆信息"]
-    sheet.append(["CJ-NOT-EXISTS", "不能被创建", "品牌A", "车系A", None, 9.98, "2021-08", 31000])
+    sheet.append(["CJ-NOT-EXISTS", "不能被创建", "品牌A", "国产车", None, None, None, None, None, 9.98, "2021-08", 31000])
     content = BytesIO()
     workbook.save(content)
 
@@ -222,12 +222,12 @@ def test_excel_nonexistent_vehicle_code_is_an_error_not_a_create():
 
 
 def test_vehicle_list_search_filter_detail_update_and_system_fields_are_protected():
-    first = _create_vehicle(display_name="星河运动轿车", brand="星河", series="闪电")
-    second = _create_vehicle(display_name="远山城市车", brand="远山", series="通勤")
+    first = _create_vehicle(display_name="星河运动轿车", brand="星河", series="国产车")
+    second = _create_vehicle(display_name="远山城市车", brand="远山", series="日系车")
 
     by_name = client.get("/api/vehicles?keyword=星河", headers=ADMIN_HEADERS).json()["data"]
     by_code = client.get(f"/api/vehicles?keyword={second['vehicle_code']}", headers=ADMIN_HEADERS).json()["data"]
-    by_series = client.get("/api/vehicles?keyword=通勤", headers=ADMIN_HEADERS).json()["data"]
+    by_series = client.get("/api/vehicles?keyword=日系车", headers=ADMIN_HEADERS).json()["data"]
     assert [item["vehicle_code"] for item in by_name["items"]] == [first["vehicle_code"]]
     assert [item["vehicle_code"] for item in by_code["items"]] == [second["vehicle_code"]]
     assert [item["vehicle_code"] for item in by_series["items"]] == [second["vehicle_code"]]
@@ -410,7 +410,7 @@ def test_vehicle_image_delete_tracks_disk_cleanup_until_success(monkeypatch):
 
 
 def test_excel_update_preserves_blank_fields_and_confirm_rolls_back_the_whole_batch():
-    existing = _create_vehicle(display_name="原展示名", brand="原品牌", series="原车系", public_price=20.0)
+    existing = _create_vehicle(display_name="原展示名", brand="原品牌", series="国产新能源", public_price=20.0)
     template = client.get("/api/vehicles/excel/template", headers=ADMIN_HEADERS)
     workbook = load_workbook(BytesIO(template.content))
     sheet = workbook["车辆信息"]
@@ -427,7 +427,7 @@ def test_excel_update_preserves_blank_fields_and_confirm_rolls_back_the_whole_ba
     updated = client.get(f"/api/vehicles/{existing['vehicle_code']}", headers=ADMIN_HEADERS).json()["data"]
     assert updated["display_name"] == "原展示名"
     assert updated["brand"] == "新品牌"
-    assert updated["series"] == "原车系"
+    assert updated["series"] == "国产新能源"
     assert float(updated["public_price"]) == 20.0
     with SessionLocal() as db:
         assert db.scalar(select(OperationLog).where(OperationLog.event_type == "vehicle_excel_import_confirmed")) is not None

@@ -156,7 +156,7 @@ def test_listed_vehicle_reaches_brain_reply_and_internal_fields_never_leave_prod
         json={
             "display_name": "2024款星河通勤车",
             "brand": "星河",
-            "series": "通勤系列",
+            "series": "国产车",
             "public_price": 10.88,
             "first_registration": "2024-03",
             "mileage_km": 8600,

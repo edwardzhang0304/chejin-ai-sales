@@ -1057,6 +1057,13 @@ def compact_knowledge_pack(
         product_master = dedupe_authoritative_products(catalog_candidates, products_for_merge)[:item_limit]
     else:
         product_master = dedupe_authoritative_products(products, catalog_candidates)[:item_limit]
+    # The catalog reads the same authoritative rows. Restore backend-authored,
+    # field-bounded vehicle specs if an earlier retrieval projection clipped them.
+    vehicle_specs = {str(item.get("id")): item["specs"] for item in catalog_candidates if item.get("source_type") == "chejin_backend"}
+    for item in product_master:
+        if str(item.get("id")) in vehicle_specs:
+            item["specs"] = vehicle_specs[str(item.get("id"))]
+            item["source_type"] = "chejin_backend"
     faq = [
         annotate_authority(compact_mapping(item, max_text_chars=360), category_id="faq")
         for item in (evidence.get("faq", []) or [])[:item_limit]
@@ -2561,7 +2568,9 @@ def flatten_text_values(value: Any) -> list[str]:
 
 def catalog_product_payload(item: dict[str, Any]) -> dict[str, Any]:
     data = item.get("data", {}) or {}
+    backend_vehicle = (item.get("source") or {}).get("type") == "chejin_backend"
     return {
+        **({"source_type": "chejin_backend"} if backend_vehicle else {}),
         "id": item.get("id"),
         "category_id": PRODUCT_MASTER_CATEGORY_ID,
         "authority_level": "product_master",
@@ -2569,7 +2578,7 @@ def catalog_product_payload(item: dict[str, Any]) -> dict[str, Any]:
         "sku": data.get("sku"),
         "category": data.get("category"),
         "aliases": list(data.get("aliases", []) or [])[:10],
-        "specs": truncate_text(str(data.get("specs") or ""), 260),
+        "specs": str(data.get("specs") or "") if backend_vehicle else truncate_text(str(data.get("specs") or ""), 260),
         "price": data.get("price"),
         "unit": data.get("unit"),
         "stock": data.get("inventory"),

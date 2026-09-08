@@ -4881,7 +4881,9 @@ def compact_product_item_for_brain_prompt(item: dict[str, Any], *, max_text_char
         compact["matched_aliases"] = [str(alias) for alias in matched_aliases[:6] if str(alias).strip()]
     specs = str(item.get("specs") or "").strip()
     if specs:
-        compact["specs"] = clip(specs, max(120, min(max_text_chars, 180)))
+        # Vehicle service already bounds each factual field. Clipping the combined
+        # text would silently drop later facts, especially in the fast profile.
+        compact["specs"] = specs if item.get("source_type") == "chejin_backend" else clip(specs, max(120, min(max_text_chars, 180)))
     risk_rules = item.get("risk_rules") or []
     if isinstance(risk_rules, list) and risk_rules:
         compact["risk_rules"] = [
@@ -5388,6 +5390,12 @@ def merge_product_buckets(existing: Any, additions: list[dict[str, Any]]) -> lis
 
 
 def collect_formal_ids(evidence_pack: dict[str, Any]) -> set[str]:
+    """Collect exact citations from this turn's authoritative knowledge only.
+
+    Managed releases expose source_id as knowledge:<item>@<revision>. Keep
+    that complete value so an existing item cannot authorize a wrong revision.
+    """
+
     knowledge = evidence_pack.get("knowledge") if isinstance(evidence_pack.get("knowledge"), dict) else {}
     evidence = knowledge.get("evidence") if isinstance(knowledge.get("evidence"), dict) else {}
     formal = knowledge.get("formal_knowledge") if isinstance(knowledge.get("formal_knowledge"), dict) else {}
@@ -5395,7 +5403,7 @@ def collect_formal_ids(evidence_pack: dict[str, Any]) -> set[str]:
     for bucket in (evidence.get("faq", []), evidence.get("product_scoped", []), formal.get("faq", []), formal.get("product_scoped", [])):
         for item in bucket or []:
             if isinstance(item, dict):
-                for key in ("id", "knowledge_id", "intent", "policy_id"):
+                for key in ("id", "knowledge_id", "intent", "policy_id", "source_id"):
                     value = str(item.get(key) or "").strip()
                     if value:
                         ids.add(value)
@@ -5408,6 +5416,9 @@ def collect_formal_ids(evidence_pack: dict[str, Any]) -> set[str]:
                 item_id = str(value.get("id") or value.get("knowledge_id") or "").strip()
                 if item_id:
                     ids.add(item_id)
+                source_id = str(value.get("source_id") or "").strip()
+                if source_id:
+                    ids.add(source_id)
     for marker in collect_formal_evidence_markers(evidence_pack):
         ids.add(marker)
     return ids

@@ -41,6 +41,35 @@ def _safe_progress_value(value: object) -> str:
     ).strip("_")
 
 
+def _safe_response_diagnostics(raw: object) -> dict:
+    """Retain bounded provider evidence, never arbitrary response fields/text."""
+
+    if not isinstance(raw, dict) or raw.get("schema_version") != 1:
+        return {}
+    result = {"schema_version": 1}
+    for key in (
+        "requested_max_tokens", "http_status", "body_bytes", "choices_count",
+        "content_chars", "content_nonblank_chars", "reasoning_chars", "refusal_chars",
+        "tool_calls_count", "extracted_chars", "prompt_tokens", "completion_tokens", "reasoning_tokens",
+    ):
+        value = raw.get(key)
+        if key in raw and (value is None or type(value) is int and 0 <= value <= 10**12):
+            result[key] = value
+    for key in ("body_read_complete", "json_decode_attempted", "json_decoded", "extraction_attempted", "extraction_succeeded", "collection_failed"):
+        if type(raw.get(key)) is bool:
+            result[key] = raw[key]
+    types = {"missing", "null", "string", "list", "object", "boolean", "number", "other"}
+    for key in ("json_type", "choices_type", "message_type", "content_type"):
+        value = raw.get(key)
+        if isinstance(value, str) and value in types:
+            result[key] = value
+    reasons = {"stop", "length", "content_filter", "tool_calls", "function_call", "end_turn", "max_tokens", "stop_sequence", "tool_use", "pause_turn", "refusal", "missing", "other"}
+    reason = raw.get("finish_reason")
+    if isinstance(reason, str) and reason in reasons:
+        result["finish_reason"] = reason
+    return result
+
+
 def _read_provider_progress(path: Path, *, progress_id: str) -> list[dict]:
     try:
         if not path.is_file() or path.stat().st_size > 256 * 1024:
@@ -90,6 +119,9 @@ def _read_provider_progress(path: Path, *, progress_id: str) -> list[dict]:
                 pass
         if not all(event.get(key) for key in ("progress_id", "stage", "route", "event")):
             continue
+        diagnostics = _safe_response_diagnostics(raw.get("response_diagnostics"))
+        if diagnostics:
+            event["response_diagnostics"] = diagnostics
         events.append(event)
     return events
 

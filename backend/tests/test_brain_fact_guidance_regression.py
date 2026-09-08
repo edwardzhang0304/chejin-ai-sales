@@ -102,7 +102,10 @@ def test_fact_free_guidance_citation_must_exist_in_current_evidence(citation):
 
 
 @pytest.mark.parametrize("candidate,bad_source_first", [(0, False), (1, False), (0, True)])
-def test_c3_api_database_real_brain_and_provider_preserve_guided_reply(monkeypatch, candidate, bad_source_first, expect_reply=True):
+def test_c3_api_database_real_brain_and_provider_preserve_guided_reply(
+    monkeypatch, candidate, bad_source_first, expect_reply=True, *,
+    citation_format="source_id", expected_validation_error="missing_fact_claims", empty_first=False,
+):
     """Public C3 API -> SQLite -> real child Brain/Guard -> HTTP provider.
 
     Only the external LLM endpoint/configuration is replaced; the provider returns
@@ -121,6 +124,7 @@ def test_c3_api_database_real_brain_and_provider_preserve_guided_reply(monkeypat
     monkeypatch.setenv("OPENAI_COMPATIBLE_API_KEY", "FAKE-BRAIN-GUIDANCE-TEST")
     get_settings.cache_clear()
     requests = []
+    prompt_citations = []
     plan = make_plan(reply=CANDIDATES[candidate])
 
     class Provider(BaseHTTPRequestHandler):
@@ -131,6 +135,29 @@ def test_c3_api_database_real_brain_and_provider_preserve_guided_reply(monkeypat
             payload = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
             requests.append(payload)
             review = payload.get("model") == "test-semantic-reviewer"
+            if not review and not prompt_citations:
+                user_text = next(item["content"] for item in payload["messages"] if item["role"] == "user")
+                # Production appends JSON-output instructions after the input object.
+                user, _ = json.JSONDecoder().raw_decode(user_text.lstrip())
+                knowledge = user["brain_input"]["content_basis"]["formal_knowledge"]["faq"]
+                # Echo the actual versioned citations supplied to the provider,
+                # rather than preselecting the IDs the validator already accepts.
+                prompt_citations.extend(item["source_id"] for item in knowledge)
+                assert len(prompt_citations) == len(GUIDANCE)
+                citations = list(prompt_citations)
+                if citation_format == "id":
+                    citations = [item["id"] for item in knowledge]
+                elif citation_format == "wrong_revision":
+                    citations[0] = citations[0].rsplit("@", 1)[0] + "@wrong-revision"
+                elif citation_format == "unknown_item":
+                    citations[0] = "knowledge:unknown-item@" + knowledge[0]["knowledge_revision_id"]
+                elif citation_format == "mixed_revision":
+                    citations[0] = citations[0].rsplit("@", 1)[0] + "@" + knowledge[1]["knowledge_revision_id"]
+                elif citation_format == "unversioned":
+                    citations[0] = citations[0].rsplit("@", 1)[0]
+                else:
+                    assert citation_format == "source_id"
+                plan["evidence_used"]["formal_knowledge_ids"] = citations
             result = {
                 "verdict": "pass", "confidence": .95,
                 "customer_visible_risk": "low", "semantic_errors": [],
@@ -139,7 +166,10 @@ def test_c3_api_database_real_brain_and_provider_preserve_guided_reply(monkeypat
             if not review and bad_source_first and sum(item["model"] == "test-brain" for item in requests) == 1:
                 result = deepcopy(plan)
                 result["evidence_used"]["formal_knowledge_ids"] = ["invented-guidance-source"]
-            body = json.dumps({"choices": [{"message": {"content": json.dumps(result, ensure_ascii=False)}}]}).encode()
+            message = {"content": json.dumps(result, ensure_ascii=False)}
+            if not review and empty_first and sum(item["model"] == "test-brain" for item in requests) == 1:
+                message = {"content": None, "reasoning_content": "ARTIFICIAL-PRIVATE-REASONING"}
+            body = json.dumps({"choices": [{"message": message, "finish_reason": "stop"}]}).encode()
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
             self.send_header("Content-Length", str(len(body)))
@@ -170,9 +200,6 @@ def test_c3_api_database_real_brain_and_provider_preserve_guided_reply(monkeypat
     try:
         for title, content in GUIDANCE:
             api._publish_managed_knowledge(title, content)
-        response = api.client.get("/api/knowledge/items", headers=api.HEADERS)
-        assert response.status_code == 200, response.text
-        plan["evidence_used"]["formal_knowledge_ids"] = sorted(item["id"] for item in response.json()["data"]["items"])
         worker, binding = api._setup_bound_conversation()
         event_id = api._ingest(worker, binding["conversation_id"], "incident-guidance-fixture", "您好，之前咨询过二手车，想了解购车需求。")
         batch = api._collect(binding["conversation_id"], event_id)
@@ -183,7 +210,7 @@ def test_c3_api_database_real_brain_and_provider_preserve_guided_reply(monkeypat
             with api.SessionLocal() as db:
                 saved = db.get(MessageBatch, batch["batch_id"])
                 result = saved.ai_response_snapshot["raw_payload"]["omniauto_brain_result"]
-                assert "missing_fact_claims" in result["plan_validation"]["errors"]
+                assert any(error.split(":", 1)[0] == expected_validation_error for error in result["plan_validation"]["errors"])
                 assert not list(db.scalars(select(ReplyAction)))
                 assert not list(db.scalars(select(Task).where(Task.task_type == "chat_reply")))
             return
@@ -193,6 +220,9 @@ def test_c3_api_database_real_brain_and_provider_preserve_guided_reply(monkeypat
         assert second["task_id"] == first["task_id"]
         with api.SessionLocal() as db:
             saved = db.get(MessageBatch, batch["batch_id"])
+            released_items = saved.ai_request_snapshot["knowledge_release_snapshot"]["items"]
+            released_sources = {f"knowledge:{item['item_id']}@{item['revision_id']}" for item in released_items}
+            assert set(prompt_citations) <= released_sources
             result = saved.ai_response_snapshot["raw_payload"]["omniauto_brain_result"]
             assert result["plan_validation"]["ok"]
             assert result["brain_plan"]["facts_claimed"] == []
@@ -203,7 +233,21 @@ def test_c3_api_database_real_brain_and_provider_preserve_guided_reply(monkeypat
             assert len(list(db.scalars(select(ReplyAction)))) == 1
             assert len(list(db.scalars(select(Task).where(Task.task_type == "chat_reply")))) == 1
             assert not list(db.scalars(select(HandoffEvent)))
-        assert sum(item["model"] == "test-brain" for item in requests) == (2 if bad_source_first else 1)
+            if empty_first:
+                events = result["provider_progress"]
+                completed = [event for event in events if "response_diagnostics" in event]
+                assert len(completed) == len(requests)
+                first_diagnostic = completed[0]["response_diagnostics"]
+                assert first_diagnostic["content_type"] == "null"
+                assert first_diagnostic["content_chars"] == first_diagnostic["extracted_chars"] == 0
+                assert first_diagnostic["reasoning_chars"] > 0
+                assert first_diagnostic["refusal_chars"] is None
+                assert first_diagnostic["tool_calls_count"] is None
+                assert first_diagnostic["finish_reason"] == "stop"
+                assert completed[1]["response_diagnostics"]["extracted_chars"] > 0
+                assert completed[1]["call_id"] != completed[0]["call_id"]
+                assert "ARTIFICIAL-PRIVATE-REASONING" not in json.dumps(events)
+        assert sum(item["model"] == "test-brain" for item in requests) == (2 if bad_source_first or empty_first else 1)
         assert sum(item["model"] == "test-semantic-reviewer" for item in requests) >= 1
         prompt = json.dumps(requests[0], ensure_ascii=False)
         for title, _ in GUIDANCE:

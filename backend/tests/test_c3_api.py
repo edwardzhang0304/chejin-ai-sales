@@ -600,7 +600,7 @@ def _create_listed_vehicle() -> str:
         json={
             "display_name": "2024款发送门禁测试车",
             "brand": "车金测试",
-            "series": "发送门禁系列",
+            "series": "国产车",
             "public_price": 12.88,
             "customer_description": "适合城市通勤。",
         },

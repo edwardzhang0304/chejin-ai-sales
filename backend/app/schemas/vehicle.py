@@ -5,6 +5,10 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 
 YEAR_MONTH_RE = re.compile(r"^(19|20)\d{2}-(0[1-9]|1[0-2])$")
+ENERGY_TYPES = {"fuel": "燃油", "hybrid": "新能源混动", "range_extended": "新能源增程", "electric": "新能源纯电"}
+SERIES_OPTIONS = ("国产新能源", "合资新能源", "国产车", "德系车", "日系车", "美系车", "韩系车", "法系车", "其他")
+DRIVE_TYPES = {"front_wheel_drive": "前驱", "rear_wheel_drive": "后驱", "four_wheel_drive": "四驱"}
+BATTERY_DECIMAL_RE = re.compile(r"^[0-9]+(?:\.[0-9]+)?$")
 
 
 class VehicleFields(BaseModel):
@@ -14,6 +18,10 @@ class VehicleFields(BaseModel):
     brand: str | None = Field(default=None, max_length=100)
     series: str | None = Field(default=None, max_length=100)
     model: str | None = Field(default=None, max_length=200)
+    energy_type: str | None = None
+    displacement: str | None = Field(default=None, max_length=100)
+    battery_capacity_kwh: str | None = Field(default=None, max_length=100)
+    drive_type: str | None = None
     public_price: Decimal | None = Field(default=None, ge=0, max_digits=14, decimal_places=2)
     first_registration: str | None = Field(default=None, max_length=7)
     mileage_km: int | None = Field(default=None, ge=0, le=10_000_000)
@@ -44,6 +52,26 @@ class VehicleFields(BaseModel):
     @classmethod
     def strip_text(cls, value):
         return value.strip() if isinstance(value, str) else value
+
+    @field_validator("series", "energy_type", "drive_type")
+    @classmethod
+    def validate_selection(cls, value, info):
+        options = {"series": SERIES_OPTIONS, "energy_type": ENERGY_TYPES, "drive_type": DRIVE_TYPES}
+        if value is not None and value not in options[info.field_name]:
+            raise ValueError("请选择有效选项；清空请提交 null")
+        return value
+
+    @field_validator("displacement", "battery_capacity_kwh", mode="before")
+    @classmethod
+    def blank_to_null(cls, value):
+        return (value.strip() or None) if isinstance(value, str) else value
+
+    @field_validator("battery_capacity_kwh")
+    @classmethod
+    def validate_battery_capacity(cls, value):
+        if value is not None and (not BATTERY_DECIMAL_RE.fullmatch(value) or Decimal(value) <= 0):
+            raise ValueError("电池包容量必须是大于 0 的十进制数字文本，不含单位或科学计数法")
+        return value
 
     @field_validator("first_registration")
     @classmethod
