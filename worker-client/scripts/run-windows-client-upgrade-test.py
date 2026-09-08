@@ -29,6 +29,7 @@ OLD_UPDATER_SHA = "ced722e9b9d1403454e8bd71e7abfb25739fceb7f1ca5c13a778c919fe3ff
 WORKER_ID = "formal-upgrade-isolated-worker"
 INSTANCE_ID = "formal-upgrade-isolated-instance"
 TOKEN = "synthetic-loopback-worker-token"
+RUNTIME_CONTROL_KEY = "runtime_control_v1"
 
 
 def digest(path):
@@ -226,11 +227,12 @@ def serve(spec):
 def seed_old_data(source, data, status, env):
     code = """
 from chejin_worker_client.models import Binding
-from chejin_worker_client.storage import save_binding,save_accept_schedule,connect
+from chejin_worker_client.storage import save_binding,save_accept_schedule,request_runtime_pause,connect
 from datetime import datetime,timezone
 import sys
 save_binding(Binding(sys.argv[1],sys.argv[2],sys.argv[3],run_status=sys.argv[4]))
 save_accept_schedule(enabled=True,start='09:10',end='18:20')
+request_runtime_pause()
 now=datetime.now(timezone.utc).isoformat()
 with connect() as db:
  db.execute("INSERT INTO c2_runtime_state(key,value,updated_at) VALUES(?,?,?)",('upgrade_gate_history','{\"completed\":true}',now))
@@ -244,6 +246,7 @@ with connect() as db:
 
 def preserved_values(data):
     with sqlite3.connect(data / "worker_client.sqlite3") as db:
+        db.execute("BEGIN")
         return {
             "binding": db.execute("select worker_id,worker_token,client_instance_id,run_status,bound_at from binding").fetchall(),
             "settings": db.execute("select * from client_settings order by key").fetchall(),
@@ -251,6 +254,34 @@ def preserved_values(data):
             "ledger": db.execute("select * from c2_message_ledger where conversation_id='isolated-history'").fetchall(),
             "evidence": digest(data / "incidents" / "existing-evidence.json"),
         }
+
+
+def assert_preserved(before, after):
+    """Check business rows exactly, and the completed runtime gate separately.
+
+    The immutable updater baseline still protects ALL settings during handoff.
+    After reconciliation, opening the temporary intake gate legitimately changes
+    runtime_control_v1.updated_at; its value must return to the seeded pause state.
+    """
+    def split(snapshot):
+        protected = {**snapshot, "settings": [row for row in snapshot["settings"]
+                                              if row[0] != RUNTIME_CONTROL_KEY]}
+        runtime = [row for row in snapshot["settings"] if row[0] == RUNTIME_CONTROL_KEY]
+        assert len(runtime) == 1, "Expected one persisted runtime control row"
+        return protected, runtime[0]
+
+    before_business, before_control = split(before)
+    after_business, after_control = split(after)
+    changed = [key for key in before_business if before_business[key] != after_business[key]]
+    assert not changed, "Existing business data changed: " + ", ".join(changed)
+    expected = json.loads(before_control[1])
+    assert expected == {
+        "pause_requested": True, "pause_requested_at": expected.get("pause_requested_at"),
+        "inflight_flow_id": None, "inflight_flow_kind": None, "inflight_started_at": None,
+        "update_no_new_work": False, "update_request_id": None,
+    } and expected["pause_requested_at"], "Initial pause state is not idle"
+    assert json.loads(after_control[1]) == expected, "Pause/flow/update gate was not preserved"
+    assert datetime.fromisoformat(after_control[2]) >= datetime.fromisoformat(before_control[2]), "Runtime timestamp regressed"
 
 
 def run_case(args, status):
@@ -289,6 +320,7 @@ def run_case(args, status):
     env.pop("CHEJIN_RELEASE_SIGNING_PUBLIC_KEY_BASE64", None)
     seed_old_data(args.old_source_root, data, status, env)
     before = preserved_values(data)
+    checkpoints = {"synthetic_test_data_only": True, "seeded": before}
     processes = []
     report = {"current_version": "0.9.69", "target_version": "0.9.70", "initial_run_status": status,
               "old_exe_sha256": OLD_EXE_SHA, "old_updater_sha256": OLD_UPDATER_SHA,
@@ -325,6 +357,8 @@ def run_case(args, status):
             page.click_button("打开设置")
             page.wait_text("V0.9.69")
             page.screenshot(case / "before.png")
+            checkpoints["before_button"] = preserved_values(data)
+            assert_preserved(before, checkpoints["before_button"])
             page.click_button("检查更新")
             report["real_settings_button_clicked"] = True
             # The original coordinator owns plan creation and normal shutdown.
@@ -353,7 +387,10 @@ def run_case(args, status):
                 health = marker["runtime_health"]["threads"][name]
                 assert health["entered_loop"] and health["alive"]
             assert Path(plan["data_baseline_path"]).is_file()
-            assert preserved_values(data) == before, "Existing binding/config/history changed"
+            baseline = read_json(plan["data_baseline_path"])
+            assert baseline["payload"]["captured_after_old_exit"] is True
+            checkpoints["after_reconciliation"] = preserved_values(data)
+            assert_preserved(before, checkpoints["after_reconciliation"])
             target_manifest = read_json(current / "update-package-manifest.json")
             assert target_manifest["git_commit"] == read_json(args.release)["git_commit"]
             assert target_manifest["version"] == "0.9.70"
@@ -366,11 +403,13 @@ def run_case(args, status):
             assert any(r["kind"] == "download" and r["status"] == 200 for r in requests)
             report.update(status="passed", original_worker_exited=True, original_updater_used=True,
                           protected_data_preserved=True, target_ui_confirmed=True, actual_backend_download=True,
-                          target_commit=target_manifest["git_commit"], runtime_threads_alive=True)
+                          target_commit=target_manifest["git_commit"], runtime_threads_alive=True,
+                          immutable_handoff_baseline=True, paused_intent_and_idle_gate_preserved=True)
     except Exception as exc:
         report["failure"] = str(exc)[:500]
         raise
     finally:
+        write_json(case / "data-checkpoints.json", checkpoints)
         write_json(case / "result.json", report)
         # Cleanup applies only to isolated test processes, after a result exists.
         for process in psutil.process_iter(["pid", "exe"]):
