@@ -25,7 +25,7 @@ root=Path(sys.argv[1])
 for name in ('stage.pub','promote.pub'):
     assert re.fullmatch(r'ssh-ed25519 [A-Za-z0-9+/=]+(?: [^\r\n]*)?\n?', (root/name).read_text())
 assert json.loads((root/'trusted-public-keys.json').read_text())['keys']
-for version in ('0.9.67','0.9.68'):
+for version in ('0.9.69',):
     for file in ('__init__.py','models.py','release_package_contract.py'):
         assert (root/'baseline'/version/'chejin_worker_client'/file).is_file()
 PY
@@ -61,7 +61,7 @@ import json
 from pathlib import Path
 config={'staging_root':'/var/lib/chejin-formal-staging','container':'chejin-leads-api',
         'public_keys':'/opt/chejin-formal-release/public-keys.json',
-        'client_baselines':{v:'/opt/chejin-formal-release/baseline/'+v for v in ('0.9.67','0.9.68')},
+        'client_baselines':{v:'/opt/chejin-formal-release/baseline/'+v for v in ('0.9.69',)},
         'api_origin':'https://jiangsuchejin.com/api','staging_limit_bytes':4*1024**3}
 p=Path('/etc/chejin-formal-release.json');p.write_text(json.dumps(config)+'\n');p.chmod(0o600)
 PY

@@ -9,6 +9,7 @@ def validate(env):
     mode = env.get('DELIVERY_MODE')
     require(mode in {'build_and_stage','stage_existing','check_staged','publish_staged'}, 'INVALID_MODE')
     require(VERSION.fullmatch(env.get('CURRENT_VERSION','')), 'INVALID_CURRENT_VERSION')
+    require(tuple(map(int, env['CURRENT_VERSION'].split('.'))) >= (0, 9, 69), 'UNSUPPORTED_UPGRADE_START')
     for name in ('FORMAL_SSH_KEY','FORMAL_SSH_HOST','FORMAL_SSH_PORT','FORMAL_KNOWN_HOSTS'):
         require(env.get(name, '').strip(), 'FORMAL_RECEIVER_NOT_CONFIGURED')
     if mode == 'stage_existing':

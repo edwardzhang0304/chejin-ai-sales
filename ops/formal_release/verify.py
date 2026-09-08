@@ -89,6 +89,10 @@ def verify(folder, meta, config):
                 "vision_credential_source": "worker_backend", "vision_configuration_locked": True,
                 "vision_live_probe_check": "runtime_after_binding"}
     require(all(delivery.get(k) == v and type(delivery.get(k)) is type(v) for k, v in expected.items()), "DELIVERY_GATE_FAILED")
+    require(delivery.get("upgrade_start_version") == meta["current_version"]
+            and delivery.get("original_client_upgrade_check") == "passed"
+            and isinstance(delivery.get("original_client_upgrade_report_sha256"), str)
+            and SHA.fullmatch(delivery["original_client_upgrade_report_sha256"]), "ORIGINAL_CLIENT_UPGRADE_GATE_FAILED")
     require(str(delivery.get("workflow_run_id")) == str(meta["run_id"]), "RUN_ID_MISMATCH")
     require(str(delivery.get("zip_sha256", "")).lower() == meta["sha256"], "DELIVERY_HASH_MISMATCH")
     require((folder / (stem + ".sha256.txt")).read_text().strip().split() == [meta["sha256"], stem + ".zip"], "CHECKSUM_FILE_MISMATCH")

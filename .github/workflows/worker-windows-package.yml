@@ -20,7 +20,7 @@ on:
       current_client_version:
         description: Exact installed client version whose updater and trust must accept the package
         required: true
-        default: '0.9.67'
+        default: '0.9.69'
       formal_run_id:
         description: Successful formal package run ID (stage_existing only)
         default: ''
@@ -135,40 +135,28 @@ jobs:
             throw "build-windows.ps1 exited with code $LASTEXITCODE"
           }
 
-      - name: Fetch immutable 0.9.67 verifier source
+      - name: Fetch immutable 0.9.69 source for existing-data fixtures
         uses: actions/checkout@v4
         with:
-          ref: a1faf8bd1c9fba53bbb574de0ab3e1c59364d1a2
-          path: .legacy-source
+          ref: d9264625d218edfa36a6d4b91940853d7d8db0a1
+          path: .old-source
           persist-credentials: false
 
-      - name: Fetch original 0.9.67 formal artifact inside GitHub
+      - name: Fetch original 0.9.69 formal artifact inside GitHub
         uses: actions/download-artifact@v4
         with:
-          artifact-ids: '9984327008'
-          run-id: '34016248991'
+          artifact-ids: '10013698751'
+          run-id: '34106312819'
           github-token: ${{ github.token }}
-          path: legacy-artifact
+          path: old-artifact
           merge-multiple: true
 
-      - name: Fetch original 0.9.68 formal artifact inside GitHub
-        uses: actions/download-artifact@v4
-        with:
-          artifact-ids: '10005603176'
-          run-id: '34085360247'
-          github-token: ${{ github.token }}
-          path: legacy-068-artifact
-          merge-multiple: true
-
-      - name: Verify immutable old ZIP before extracting
+      - name: Verify immutable 0.9.69 ZIP before extracting
         shell: powershell
         run: |
-          $zip = Join-Path $PWD "legacy-artifact\chejin-worker-v0.9.67-windows-x64.zip"
-          if ((Get-FileHash $zip -Algorithm SHA256).Hash -ne "51AEFF1E91AB0B043F674242CCBABD4B68081813F8E70CC577D34736F5064AD4") { throw "Old formal ZIP identity mismatch" }
-          Expand-Archive -LiteralPath $zip -DestinationPath (Join-Path $env:RUNNER_TEMP "legacy-release")
-          $zip068 = Join-Path $PWD "legacy-068-artifact\chejin-worker-v0.9.68-windows-x64.zip"
-          if ((Get-FileHash $zip068 -Algorithm SHA256).Hash -ne "26B19D48275BA4AB5ABAD18A3B5919180929A097C4E24658BB41672C503B9938") { throw "0.9.68 formal ZIP identity mismatch" }
-          Expand-Archive -LiteralPath $zip068 -DestinationPath (Join-Path $env:RUNNER_TEMP "legacy-068-release")
+          $zip = Join-Path $PWD "old-artifact\chejin-worker-v0.9.69-windows-x64.zip"
+          if ((Get-FileHash $zip -Algorithm SHA256).Hash -ne "B2E4360D2E6FE7567B0EDFD911535E66FA1B1FC0F6CDD0986F4C0F9265A51DB5") { throw "0.9.69 formal ZIP identity mismatch" }
+          Expand-Archive -LiteralPath $zip -DestinationPath (Join-Path $env:RUNNER_TEMP "old-069-release")
 
       - name: Exercise real updater process switch and rollback
         shell: powershell
@@ -176,7 +164,7 @@ jobs:
         env:
           CHEJIN_RELEASE_SIGNING_PRIVATE_KEY_BASE64: ${{ secrets.CHEJIN_RELEASE_SIGNING_PRIVATE_KEY_BASE64 }}
         run: |
-          .\scripts\run-windows-updater-process-test.ps1 -PackageDir .\dist\CheJinWorkerClient -LegacyPackageDir (Join-Path $env:RUNNER_TEMP "legacy-release\CheJinWorkerClient") -LegacySourceDir (Join-Path $env:GITHUB_WORKSPACE ".legacy-source\worker-client") -Legacy068PackageDir (Join-Path $env:RUNNER_TEMP "legacy-068-release\CheJinWorkerClient")
+          .\scripts\run-windows-updater-process-test.ps1 -PackageDir .\dist\CheJinWorkerClient
           if ($LASTEXITCODE -ne 0) {
             throw "real updater process switch/rollback test failed"
           }
@@ -197,7 +185,7 @@ jobs:
           $exePath = [string]$manifest.exe_path
 
           .\scripts\validate-package.ps1 -PackageDir $packageDir
-          if ($manifest.version -ne "0.9.69") {
+          if ($manifest.version -ne "0.9.70") {
             throw "unexpected version: $($manifest.version)"
           }
           if ($manifest.default_api_base_url -ne "https://jiangsuchejin.com/api") {
@@ -313,7 +301,7 @@ jobs:
             throw "packaged startup crash did not create the default diagnostic"
           }
           $startupCrash = Get-Content -Encoding UTF8 $defaultStartupDiagnostic | Select-Object -Last 1 | ConvertFrom-Json
-          if ($startupCrash.version -ne "0.9.69" -or $startupCrash.build_commit -ne $env:GITHUB_SHA) {
+          if ($startupCrash.version -ne "0.9.70" -or $startupCrash.build_commit -ne $env:GITHUB_SHA) {
             throw "startup crash diagnostic build identity mismatch"
           }
           foreach ($requiredField in @("timestamp", "windows_version", "exception_type", "traceback")) {
@@ -345,11 +333,11 @@ jobs:
           $manifest = Get-Content -Raw -Encoding UTF8 $manifestPath | ConvertFrom-Json
           $packageDir = [string]$manifest.package_dir
           $releaseDir = Join-Path $PWD "dist\release"
-          $zipName = "chejin-worker-v0.9.69-windows-x64.zip"
+          $zipName = "chejin-worker-v0.9.70-windows-x64.zip"
           $zipPath = Join-Path $releaseDir $zipName
-          $deliveryManifestPath = Join-Path $releaseDir "chejin-worker-v0.9.69-windows-x64.delivery.json"
-          $signedReleasePath = Join-Path $releaseDir "chejin-worker-v0.9.69-windows-x64.release.json"
-          $sha256Path = Join-Path $releaseDir "chejin-worker-v0.9.69-windows-x64.sha256.txt"
+          $deliveryManifestPath = Join-Path $releaseDir "chejin-worker-v0.9.70-windows-x64.delivery.json"
+          $signedReleasePath = Join-Path $releaseDir "chejin-worker-v0.9.70-windows-x64.release.json"
+          $sha256Path = Join-Path $releaseDir "chejin-worker-v0.9.70-windows-x64.sha256.txt"
 
           New-Item -ItemType Directory -Force -Path $releaseDir | Out-Null
           Compress-Archive -Path $packageDir -DestinationPath $zipPath -CompressionLevel Optimal -Force
@@ -462,7 +450,7 @@ jobs:
           .\.venv\Scripts\python.exe .\scripts\sign-client-release.py `
             --archive $zipPath `
             --package-manifest $verifiedUpdateManifestPath `
-            --version "0.9.69" `
+            --version "0.9.70" `
             --git-commit $env:GITHUB_SHA `
             --artifact-storage-key "gray/windows-x64/$zipName" `
             --published-at ((Get-Date).ToUniversalTime().ToString("o")) `
@@ -481,15 +469,38 @@ jobs:
           Write-Host "Delivery manifest: $deliveryManifestPath"
           Write-Host "Signed release descriptor: $signedReleasePath"
 
+      - name: Exercise original 0.9.69 settings update against exact signed ZIP
+        shell: powershell
+        working-directory: worker-client
+        run: |
+          $ErrorActionPreference = "Stop"
+          .\.venv\Scripts\python.exe -m pip install --disable-pip-version-check -r ..\backend\requirements.txt "playwright==1.55.0"
+          if ($LASTEXITCODE -ne 0) { throw "GUI upgrade gate dependencies failed" }
+          .\.venv\Scripts\python.exe scripts/run-windows-client-upgrade-test.py `
+            --old-package-root (Join-Path $env:RUNNER_TEMP "old-069-release\CheJinWorkerClient") `
+            --old-source-root (Join-Path $env:GITHUB_WORKSPACE ".old-source\worker-client") `
+            --archive dist/release/chejin-worker-v0.9.70-windows-x64.zip `
+            --release dist/release/chejin-worker-v0.9.70-windows-x64.release.json `
+            --work-root (Join-Path $env:RUNNER_TEMP "chejin-original-client-upgrade")
+          if ($LASTEXITCODE -ne 0) { throw "Original client button upgrade failed; production publication blocked" }
+          $report = Get-Content -Raw -Encoding UTF8 (Join-Path $env:RUNNER_TEMP "chejin-original-client-upgrade/upgrade-result.json") | ConvertFrom-Json
+          if ($report.status -ne "passed" -or @($report.cases).Count -ne 2) { throw "Original client evidence incomplete" }
+          $path = "dist/release/chejin-worker-v0.9.70-windows-x64.delivery.json"
+          $delivery = Get-Content -Raw -Encoding UTF8 $path | ConvertFrom-Json
+          $delivery | Add-Member -NotePropertyName upgrade_start_version -NotePropertyValue "0.9.69" -Force
+          $delivery | Add-Member -NotePropertyName original_client_upgrade_check -NotePropertyValue "passed" -Force
+          $delivery | Add-Member -NotePropertyName original_client_upgrade_report_sha256 -NotePropertyValue ((Get-FileHash (Join-Path $env:RUNNER_TEMP "chejin-original-client-upgrade/upgrade-result.json") -Algorithm SHA256).Hash.ToLowerInvariant()) -Force
+          $delivery | ConvertTo-Json -Depth 8 | Set-Content -Encoding UTF8 $path
+
       - name: Upload verified Windows client
         uses: actions/upload-artifact@v4
         with:
-          name: chejin-worker-v0.9.69-windows-x64-${{ github.sha }}
+          name: chejin-worker-v0.9.70-windows-x64-${{ github.sha }}
           path: |
-            worker-client/dist/release/chejin-worker-v0.9.69-windows-x64.zip
-            worker-client/dist/release/chejin-worker-v0.9.69-windows-x64.delivery.json
-            worker-client/dist/release/chejin-worker-v0.9.69-windows-x64.release.json
-            worker-client/dist/release/chejin-worker-v0.9.69-windows-x64.sha256.txt
+            worker-client/dist/release/chejin-worker-v0.9.70-windows-x64.zip
+            worker-client/dist/release/chejin-worker-v0.9.70-windows-x64.delivery.json
+            worker-client/dist/release/chejin-worker-v0.9.70-windows-x64.release.json
+            worker-client/dist/release/chejin-worker-v0.9.70-windows-x64.sha256.txt
           if-no-files-found: error
           compression-level: 0
           retention-days: 14
@@ -501,6 +512,12 @@ jobs:
           name: windows-gate-reports-${{ github.run_id }}
           path: |
             worker-client/dist/reports/*.json
+            ${{ runner.temp }}/chejin-original-client-upgrade/**/result.json
+            ${{ runner.temp }}/chejin-original-client-upgrade/upgrade-result.json
+            ${{ runner.temp }}/chejin-original-client-upgrade/**/process.log
+            ${{ runner.temp }}/chejin-original-client-upgrade/**/*.png
+            ${{ runner.temp }}/chejin-original-client-upgrade/**/worker-startup.jsonl
+            ${{ runner.temp }}/chejin-original-client-upgrade/**/update-result.json
             ${{ runner.temp }}/native-prebuild.xml
             ${{ runner.temp }}/chejin-updater-real-process/native-data-lock-tests.xml
             ${{ runner.temp }}/chejin-updater-real-process/**/update-result.json
