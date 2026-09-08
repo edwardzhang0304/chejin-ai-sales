@@ -142,7 +142,7 @@ def accept(folder, report_path, commit, run_id, current_version):
     delivery = read(delivery_path)
     delivery.update(upgrade_start_version=current_version, original_client_upgrade_check="passed",
                     original_client_upgrade_report_sha256=digest(report_path),
-                    acceptance_commit=commit, acceptance_run_id=str(run_id),
+                    acceptance_commit=commit, acceptance_run_id=str(run_id), workflow_run_id=str(run_id),
                     candidate_build_run_id=proof["build_run_id"])
     delivery_path.write_text(json.dumps(delivery, ensure_ascii=False, indent=2), encoding="utf-8")
 

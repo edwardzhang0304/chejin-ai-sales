@@ -32,7 +32,7 @@ class CandidateTests(unittest.TestCase):
         self.sha = hashlib.sha256(self.archive.read_bytes()).hexdigest()
         self.original = self.archive.read_bytes()
         self.write(".release.json", {"git_commit": self.build, "version": "0.9.70", "artifact_sha256": self.sha})
-        self.write(".delivery.json", {"build_commit": self.build, "tests_status": "passed", "preflight_status": "passed"})
+        self.write(".delivery.json", {"build_commit": self.build, "workflow_run_id": "123", "tests_status": "passed", "preflight_status": "passed"})
         (self.folder / (self.stem + ".sha256.txt")).write_text(self.sha)
         self.inputs = patch("candidate.source_inputs", return_value="c" * 64)
         self.inputs.start()
@@ -65,6 +65,9 @@ class CandidateTests(unittest.TestCase):
         self.assertEqual((data["build_commit"], data["acceptance_commit"], data["candidate_build_run_id"]),
                          (self.build, self.retest, "123"))
         self.assertEqual(candidate.delivery_source(self.folder, self.retest, "456"), self.build)
+        import deliver
+        metadata, _ = deliver.metadata(self.folder, "0.9.69", "456", self.build)
+        self.assertEqual(data["workflow_run_id"], metadata["run_id"])
         self.assertEqual(self.archive.read_bytes(), self.original)
         self.assertEqual(candidate.read(self.folder / (self.stem + ".release.json"))["git_commit"], self.build)
 
