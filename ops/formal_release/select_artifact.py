@@ -14,10 +14,19 @@ def api(path):
 def select(run, jobs, artifacts):
     require(run["path"] == ".github/workflows/worker-windows-package.yml"
             and run["event"] == "workflow_dispatch" and run["head_branch"] == "codex/gray-release-0.9.x", "NOT_FORMAL_SOURCE")
-    require(any(j["name"] == "Build signed formal Windows package" and j["conclusion"] == "success"
-                or j["name"] == "package" and j["conclusion"] == "success" for j in jobs), "PACKAGE_GATE_NOT_PASSED")
+    # New runs separate successful builds from acceptance. A saved candidate
+    # must never become publishable merely because its build job succeeded.
+    acceptance = [j for j in jobs if j["name"] == "Accept exact Windows candidate"]
+    if acceptance:
+        require(len(acceptance) == 1 and acceptance[0]["conclusion"] == "success", "ACCEPTANCE_NOT_PASSED")
+    else:
+        require(any(j["name"] in {"Build signed formal Windows package", "package"}
+                    and j["conclusion"] == "success" for j in jobs), "PACKAGE_GATE_NOT_PASSED")
+    suffix = "-windows-x64-" + run["head_sha"]
+    if acceptance:
+        suffix += "-" + str(run["run_attempt"])
     eligible = [a for a in artifacts if a["name"].startswith("chejin-worker-v")
-                and a["name"].endswith("-windows-x64-" + run["head_sha"]) and not a["expired"]]
+                and a["name"].endswith(suffix) and not a["expired"]]
     require(len(eligible) == 1, "FORMAL_ARTIFACT_NOT_UNIQUE")
     return eligible[0]["id"], run["head_sha"]
 

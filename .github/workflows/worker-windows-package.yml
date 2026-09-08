@@ -4,25 +4,28 @@ on:
   workflow_dispatch:
     inputs:
       release_approved:
-        description: C0-C4 Fast UAT passed and formal EXE build is approved
+        description: Formal release is approved; required source tests run in this workflow
         required: true
         type: boolean
         default: false
       release_reason:
-        description: Reference to the completed UAT record
+        description: Reference to release authorization and exact source review
         required: true
 
       delivery_mode:
         description: Build and stage, retry delivery, or promote an already verified stage
         type: choice
-        options: [build_and_stage, stage_existing, check_staged, publish_staged]
+        options: [build_and_stage, retest_candidate, stage_existing, check_staged, publish_staged]
         default: build_and_stage
       current_client_version:
         description: Exact installed client version whose updater and trust must accept the package
         required: true
-        default: '0.9.69'
+        default: '0.9.70'
       formal_run_id:
         description: Successful formal package run ID (stage_existing only)
+        default: ''
+      candidate_run_id:
+        description: Original successful candidate build run to retest without rebuilding
         default: ''
       stage_id:
         description: Verified stage ID from delivery summary (check/publish only)
@@ -48,18 +51,20 @@ jobs:
       DELIVERY_MODE: ${{ inputs.delivery_mode }}
       CURRENT_VERSION: ${{ inputs.current_client_version }}
       FORMAL_RUN_ID: ${{ inputs.formal_run_id }}
+      CANDIDATE_RUN_ID: ${{ inputs.candidate_run_id }}
       STAGE_ID: ${{ inputs.stage_id }}
       PRODUCTION_READY: ${{ inputs.production_ready }}
     steps:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
+          fetch-depth: 0
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12.10'
       - name: Run formal delivery regression tests before release work
         run: |
-          python -m pip install --disable-pip-version-check 'cryptography>=42.0,<46'
+          python -m pip install --disable-pip-version-check 'cryptography>=42.0,<46' 'PyYAML==6.0.2'
           python -m unittest discover -s ops/formal_release/tests -v
       - name: Validate dispatch without executing input as shell code
         env:
@@ -84,19 +89,6 @@ jobs:
       CHEJIN_RELEASE_SIGNING_PUBLIC_KEY_BASE64: ${{ secrets.CHEJIN_RELEASE_SIGNING_PUBLIC_KEY_BASE64 }}
 
     steps:
-      - name: Enforce completed UAT approval
-        shell: powershell
-        env:
-          RELEASE_APPROVED: ${{ inputs.release_approved }}
-          RELEASE_REASON: ${{ inputs.release_reason }}
-        run: |
-          if ("$env:RELEASE_APPROVED" -ne "true") {
-            throw "Formal EXE build is blocked until Fast UAT C0-C4 is approved"
-          }
-          if ([string]::IsNullOrWhiteSpace($env:RELEASE_REASON)) {
-            throw "Formal EXE build requires a completed UAT record reference"
-          }
-
       - name: Check out exact source
         uses: actions/checkout@v4
         with:
@@ -121,12 +113,16 @@ jobs:
           $env:PYTHONPATH = $PWD.Path
           $env:CHEJIN_WORKER_HOME = Join-Path $env:RUNNER_TEMP "chejin-native-prebuild"
           python -m venv .venv
-          .\.venv\Scripts\python.exe -m pip install --disable-pip-version-check -r requirements.txt -r requirements-test.txt "websockets==15.0.1"
+          .\.venv\Scripts\python.exe -m pip install --disable-pip-version-check -r requirements.txt -r requirements-test.txt -r ../backend/requirements.txt "websockets==15.0.1" "PyYAML==6.0.2" httpx2
           if ($LASTEXITCODE -ne 0) { throw "Native gate dependencies failed" }
           .\.venv\Scripts\python.exe scripts/run-windows-client-upgrade-test.py --driver-smoke (Join-Path $env:RUNNER_TEMP "qt-driver-prebuild")
           if ($LASTEXITCODE -ne 0) { throw "Qt GUI driver prebuild gate failed" }
           .\.venv\Scripts\python.exe -m pytest tests/test_update_handoff_baseline.py tests/test_post_update_health.py tests/test_update_shutdown_ui.py tests/test_legacy_update_handoff.py tests/test_windows_upgrade_gate_data.py -q --junitxml "$env:RUNNER_TEMP/native-prebuild.xml"
           if ($LASTEXITCODE -ne 0) { throw "Native handoff prebuild gate failed" }
+          Add-Content -Path $env:GITHUB_PATH -Value (Join-Path $PWD ".venv/Scripts")
+
+      - name: Run shared source checks
+        uses: ./.github/actions/worker-release-checks
 
       - name: Build and run packaged runtime probes
         shell: powershell
@@ -135,40 +131,6 @@ jobs:
           .\scripts\build-windows.ps1
           if ($LASTEXITCODE -ne 0) {
             throw "build-windows.ps1 exited with code $LASTEXITCODE"
-          }
-
-      - name: Fetch immutable 0.9.69 source for existing-data fixtures
-        uses: actions/checkout@v4
-        with:
-          ref: d9264625d218edfa36a6d4b91940853d7d8db0a1
-          path: .old-source
-          persist-credentials: false
-
-      - name: Fetch original 0.9.69 formal artifact inside GitHub
-        uses: actions/download-artifact@v4
-        with:
-          artifact-ids: '10013698751'
-          run-id: '34106312819'
-          github-token: ${{ github.token }}
-          path: old-artifact
-          merge-multiple: true
-
-      - name: Verify immutable 0.9.69 ZIP before extracting
-        shell: powershell
-        run: |
-          $zip = Join-Path $PWD "old-artifact\chejin-worker-v0.9.69-windows-x64.zip"
-          if ((Get-FileHash $zip -Algorithm SHA256).Hash -ne "B2E4360D2E6FE7567B0EDFD911535E66FA1B1FC0F6CDD0986F4C0F9265A51DB5") { throw "0.9.69 formal ZIP identity mismatch" }
-          Expand-Archive -LiteralPath $zip -DestinationPath (Join-Path $env:RUNNER_TEMP "old-069-release")
-
-      - name: Exercise real updater process switch and rollback
-        shell: powershell
-        working-directory: worker-client
-        env:
-          CHEJIN_RELEASE_SIGNING_PRIVATE_KEY_BASE64: ${{ secrets.CHEJIN_RELEASE_SIGNING_PRIVATE_KEY_BASE64 }}
-        run: |
-          .\scripts\run-windows-updater-process-test.ps1 -PackageDir .\dist\CheJinWorkerClient
-          if ($LASTEXITCODE -ne 0) {
-            throw "real updater process switch/rollback test failed"
           }
 
       - name: Validate manifest and packaged executable again
@@ -187,7 +149,7 @@ jobs:
           $exePath = [string]$manifest.exe_path
 
           .\scripts\validate-package.ps1 -PackageDir $packageDir
-          if ($manifest.version -ne "0.9.70") {
+          if ($manifest.version -ne "0.9.71") {
             throw "unexpected version: $($manifest.version)"
           }
           if ($manifest.default_api_base_url -ne "https://jiangsuchejin.com/api") {
@@ -303,7 +265,7 @@ jobs:
             throw "packaged startup crash did not create the default diagnostic"
           }
           $startupCrash = Get-Content -Encoding UTF8 $defaultStartupDiagnostic | Select-Object -Last 1 | ConvertFrom-Json
-          if ($startupCrash.version -ne "0.9.70" -or $startupCrash.build_commit -ne $env:GITHUB_SHA) {
+          if ($startupCrash.version -ne "0.9.71" -or $startupCrash.build_commit -ne $env:GITHUB_SHA) {
             throw "startup crash diagnostic build identity mismatch"
           }
           foreach ($requiredField in @("timestamp", "windows_version", "exception_type", "traceback")) {
@@ -335,11 +297,11 @@ jobs:
           $manifest = Get-Content -Raw -Encoding UTF8 $manifestPath | ConvertFrom-Json
           $packageDir = [string]$manifest.package_dir
           $releaseDir = Join-Path $PWD "dist\release"
-          $zipName = "chejin-worker-v0.9.70-windows-x64.zip"
+          $zipName = "chejin-worker-v0.9.71-windows-x64.zip"
           $zipPath = Join-Path $releaseDir $zipName
-          $deliveryManifestPath = Join-Path $releaseDir "chejin-worker-v0.9.70-windows-x64.delivery.json"
-          $signedReleasePath = Join-Path $releaseDir "chejin-worker-v0.9.70-windows-x64.release.json"
-          $sha256Path = Join-Path $releaseDir "chejin-worker-v0.9.70-windows-x64.sha256.txt"
+          $deliveryManifestPath = Join-Path $releaseDir "chejin-worker-v0.9.71-windows-x64.delivery.json"
+          $signedReleasePath = Join-Path $releaseDir "chejin-worker-v0.9.71-windows-x64.release.json"
+          $sha256Path = Join-Path $releaseDir "chejin-worker-v0.9.71-windows-x64.sha256.txt"
 
           New-Item -ItemType Directory -Force -Path $releaseDir | Out-Null
           Compress-Archive -Path $packageDir -DestinationPath $zipPath -CompressionLevel Optimal -Force
@@ -452,7 +414,7 @@ jobs:
           .\.venv\Scripts\python.exe .\scripts\sign-client-release.py `
             --archive $zipPath `
             --package-manifest $verifiedUpdateManifestPath `
-            --version "0.9.70" `
+            --version "0.9.71" `
             --git-commit $env:GITHUB_SHA `
             --artifact-storage-key "gray/windows-x64/$zipName" `
             --published-at ((Get-Date).ToUniversalTime().ToString("o")) `
@@ -471,38 +433,173 @@ jobs:
           Write-Host "Delivery manifest: $deliveryManifestPath"
           Write-Host "Signed release descriptor: $signedReleasePath"
 
-      - name: Exercise original 0.9.69 settings update against exact signed ZIP
+      - name: Record immutable candidate and build inputs
+        shell: powershell
+        run: |
+          worker-client/.venv/Scripts/python.exe ops/formal_release/candidate.py record --folder worker-client/dist/release
+          if ($LASTEXITCODE -ne 0) { throw "Candidate provenance recording failed" }
+
+      - name: Preserve isolated candidate before acceptance
+        uses: actions/upload-artifact@v4
+        with:
+          name: chejin-candidate-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: worker-client/dist/release/*
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 30
+
+      - name: Preserve Windows gate reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-gate-reports-${{ github.job }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            worker-client/dist/reports/*.json
+            ${{ runner.temp }}/qt-driver-prebuild/*
+            ${{ runner.temp }}/chejin-original-client-upgrade/**/result.json
+            ${{ runner.temp }}/chejin-original-client-upgrade/*/data-checkpoints.json
+            ${{ runner.temp }}/chejin-original-client-upgrade/upgrade-result.json
+            ${{ runner.temp }}/chejin-original-client-upgrade/**/process.log
+            ${{ runner.temp }}/chejin-original-client-upgrade/*/before.png
+            ${{ runner.temp }}/chejin-original-client-upgrade/*/after.png
+            ${{ runner.temp }}/chejin-original-client-upgrade/**/worker-startup.jsonl
+            ${{ runner.temp }}/chejin-original-client-upgrade/**/update-result.json
+            ${{ runner.temp }}/native-prebuild.xml
+            ${{ runner.temp }}/chejin-updater-real-process/native-data-lock-tests.xml
+            ${{ runner.temp }}/chejin-updater-real-process/**/update-result.json
+            ${{ runner.temp }}/chejin-updater-real-process/**/worker-startup.jsonl
+          if-no-files-found: warn
+          retention-days: 30
+
+  acceptance:
+    name: Accept exact Windows candidate
+    needs: [prepare, package]
+    if: >-
+      always() && !cancelled() && needs.prepare.result == 'success' &&
+      ((inputs.delivery_mode == 'build_and_stage' && needs.package.result == 'success') ||
+       inputs.delivery_mode == 'retest_candidate')
+    runs-on: windows-latest
+    timeout-minutes: 25
+    env:
+      CHEJIN_RELEASE_SIGNING_KEY_ID: ${{ secrets.CHEJIN_RELEASE_SIGNING_KEY_ID }}
+      CHEJIN_RELEASE_SIGNING_PUBLIC_KEY_BASE64: ${{ secrets.CHEJIN_RELEASE_SIGNING_PUBLIC_KEY_BASE64 }}
+      CURRENT_VERSION: ${{ inputs.current_client_version }}
+      CANDIDATE_RUN_ID: ${{ inputs.delivery_mode == 'build_and_stage' && github.run_id || inputs.candidate_run_id }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12.10'
+          cache: pip
+          cache-dependency-path: |
+            worker-client/requirements.txt
+            worker-client/requirements-test.txt
+            backend/requirements.txt
+      - name: Fail fast on native Windows handoff checks
         shell: powershell
         working-directory: worker-client
         run: |
           $ErrorActionPreference = "Stop"
-          .\.venv\Scripts\python.exe -m pip install --disable-pip-version-check -r ..\backend\requirements.txt "websockets==15.0.1"
-          if ($LASTEXITCODE -ne 0) { throw "GUI upgrade gate dependencies failed" }
+          $env:PYTHONUTF8 = "1"
+          $env:PYTHONIOENCODING = "utf-8"
+          $env:PYTHONPATH = $PWD.Path
+          $env:CHEJIN_WORKER_HOME = Join-Path $env:RUNNER_TEMP "chejin-native-prebuild"
+          python -m venv .venv
+          .\.venv\Scripts\python.exe -m pip install --disable-pip-version-check -r requirements.txt -r requirements-test.txt -r ../backend/requirements.txt "websockets==15.0.1" "PyYAML==6.0.2" httpx2
+          if ($LASTEXITCODE -ne 0) { throw "Native gate dependencies failed" }
+          .\.venv\Scripts\python.exe scripts/run-windows-client-upgrade-test.py --driver-smoke (Join-Path $env:RUNNER_TEMP "qt-driver-prebuild")
+          if ($LASTEXITCODE -ne 0) { throw "Qt GUI driver prebuild gate failed" }
+          .\.venv\Scripts\python.exe -m pytest tests/test_update_handoff_baseline.py tests/test_post_update_health.py tests/test_update_shutdown_ui.py tests/test_legacy_update_handoff.py tests/test_windows_upgrade_gate_data.py -q --junitxml "$env:RUNNER_TEMP/native-prebuild.xml"
+          if ($LASTEXITCODE -ne 0) { throw "Native handoff prebuild gate failed" }
+          Add-Content -Path $env:GITHUB_PATH -Value (Join-Path $PWD ".venv/Scripts")
+
+      - name: Select original isolated candidate
+        id: candidate
+        shell: powershell
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python ops/formal_release/candidate.py select
+          if ($LASTEXITCODE -ne 0) { throw "Candidate selection failed" }
+      - name: Download original candidate inside GitHub
+        uses: actions/download-artifact@v4
+        with:
+          artifact-ids: ${{ steps.candidate.outputs.artifact_id }}
+          run-id: ${{ env.CANDIDATE_RUN_ID }}
+          github-token: ${{ github.token }}
+          path: worker-client/dist/release
+          merge-multiple: true
+      - name: Verify candidate identity and unchanged build inputs
+        shell: powershell
+        env:
+          BUILD_COMMIT: ${{ steps.candidate.outputs.build_commit }}
+        run: |
+          python ops/formal_release/candidate.py verify --folder worker-client/dist/release
+          if ($LASTEXITCODE -ne 0) { throw "Candidate invalid or build inputs changed; rebuild required" }
+          Expand-Archive -LiteralPath worker-client/dist/release/chejin-worker-v0.9.71-windows-x64.zip -DestinationPath (Join-Path $env:RUNNER_TEMP "candidate-extracted")
+
+      - name: Fetch immutable 0.9.70 source for existing-data fixtures
+        uses: actions/checkout@v4
+        with:
+          ref: 18d675b59007a12233e1c0b0d0ce600961619aa1
+          path: .old-source
+          persist-credentials: false
+
+      - name: Fetch original 0.9.70 formal artifact inside GitHub
+        uses: actions/download-artifact@v4
+        with:
+          artifact-ids: '10039251161'
+          run-id: '34180318869'
+          github-token: ${{ github.token }}
+          path: old-artifact
+          merge-multiple: true
+
+      - name: Verify immutable 0.9.70 ZIP before extracting
+        shell: powershell
+        run: |
+          $zip = Join-Path $PWD "old-artifact\chejin-worker-v0.9.70-windows-x64.zip"
+          if ((Get-FileHash $zip -Algorithm SHA256).Hash -ne "6C4562485EA26220816F7303D3DE2D120F8F7BD512494725A3172C38840B79FA") { throw "0.9.70 formal ZIP identity mismatch" }
+          Expand-Archive -LiteralPath $zip -DestinationPath (Join-Path $env:RUNNER_TEMP "old-070-release")
+
+      - name: Exercise real updater process switch and rollback
+        shell: powershell
+        working-directory: worker-client
+        env:
+          CHEJIN_RELEASE_SIGNING_PRIVATE_KEY_BASE64: ${{ secrets.CHEJIN_RELEASE_SIGNING_PRIVATE_KEY_BASE64 }}
+        run: |
+          .\scripts\run-windows-updater-process-test.ps1 -PackageDir (Join-Path $env:RUNNER_TEMP "candidate-extracted/CheJinWorkerClient")
+          if ($LASTEXITCODE -ne 0) {
+            throw "real updater process switch/rollback test failed"
+          }
+
+      - name: Exercise original 0.9.70 settings update against exact signed ZIP
+        shell: powershell
+        working-directory: worker-client
+        run: |
+          $ErrorActionPreference = "Stop"
           .\.venv\Scripts\python.exe scripts/run-windows-client-upgrade-test.py `
-            --old-package-root (Join-Path $env:RUNNER_TEMP "old-069-release\CheJinWorkerClient") `
+            --old-package-root (Join-Path $env:RUNNER_TEMP "old-070-release\CheJinWorkerClient") `
             --old-source-root (Join-Path $env:GITHUB_WORKSPACE ".old-source\worker-client") `
-            --archive dist/release/chejin-worker-v0.9.70-windows-x64.zip `
-            --release dist/release/chejin-worker-v0.9.70-windows-x64.release.json `
+            --archive dist/release/chejin-worker-v0.9.71-windows-x64.zip `
+            --release dist/release/chejin-worker-v0.9.71-windows-x64.release.json `
             --work-root (Join-Path $env:RUNNER_TEMP "chejin-original-client-upgrade")
           if ($LASTEXITCODE -ne 0) { throw "Original client button upgrade failed; production publication blocked" }
-          $report = Get-Content -Raw -Encoding UTF8 (Join-Path $env:RUNNER_TEMP "chejin-original-client-upgrade/upgrade-result.json") | ConvertFrom-Json
-          if ($report.status -ne "passed" -or @($report.cases).Count -ne 2) { throw "Original client evidence incomplete" }
-          $path = "dist/release/chejin-worker-v0.9.70-windows-x64.delivery.json"
-          $delivery = Get-Content -Raw -Encoding UTF8 $path | ConvertFrom-Json
-          $delivery | Add-Member -NotePropertyName upgrade_start_version -NotePropertyValue "0.9.69" -Force
-          $delivery | Add-Member -NotePropertyName original_client_upgrade_check -NotePropertyValue "passed" -Force
-          $delivery | Add-Member -NotePropertyName original_client_upgrade_report_sha256 -NotePropertyValue ((Get-FileHash (Join-Path $env:RUNNER_TEMP "chejin-original-client-upgrade/upgrade-result.json") -Algorithm SHA256).Hash.ToLowerInvariant()) -Force
-          $delivery | ConvertTo-Json -Depth 8 | Set-Content -Encoding UTF8 $path
+          .\.venv\Scripts\python.exe ../ops/formal_release/candidate.py accept --folder dist/release `
+            --report (Join-Path $env:RUNNER_TEMP "chejin-original-client-upgrade/upgrade-result.json")
+          if ($LASTEXITCODE -ne 0) { throw "Candidate acceptance identity failed" }
 
       - name: Upload verified Windows client
         uses: actions/upload-artifact@v4
         with:
-          name: chejin-worker-v0.9.70-windows-x64-${{ github.sha }}
+          name: chejin-worker-v0.9.71-windows-x64-${{ github.sha }}-${{ github.run_attempt }}
           path: |
-            worker-client/dist/release/chejin-worker-v0.9.70-windows-x64.zip
-            worker-client/dist/release/chejin-worker-v0.9.70-windows-x64.delivery.json
-            worker-client/dist/release/chejin-worker-v0.9.70-windows-x64.release.json
-            worker-client/dist/release/chejin-worker-v0.9.70-windows-x64.sha256.txt
+            worker-client/dist/release/chejin-worker-v0.9.71-windows-x64.zip
+            worker-client/dist/release/chejin-worker-v0.9.71-windows-x64.delivery.json
+            worker-client/dist/release/chejin-worker-v0.9.71-windows-x64.release.json
+            worker-client/dist/release/chejin-worker-v0.9.71-windows-x64.sha256.txt
           if-no-files-found: error
           compression-level: 0
           retention-days: 14
@@ -511,7 +608,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: windows-gate-reports-${{ github.run_id }}
+          name: windows-gate-reports-${{ github.job }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
             worker-client/dist/reports/*.json
             ${{ runner.temp }}/qt-driver-prebuild/*
@@ -531,11 +628,11 @@ jobs:
           retention-days: 30
 
   deliver:
-    needs: [prepare, package]
+    needs: [prepare, acceptance]
     if: >-
       always() && !cancelled() && inputs.release_approved && needs.prepare.result == 'success' &&
-      ((inputs.delivery_mode == 'build_and_stage' && needs.package.result == 'success') ||
-       inputs.delivery_mode != 'build_and_stage')
+      (((inputs.delivery_mode == 'build_and_stage' || inputs.delivery_mode == 'retest_candidate') && needs.acceptance.result == 'success') ||
+       inputs.delivery_mode == 'stage_existing' || inputs.delivery_mode == 'check_staged' || inputs.delivery_mode == 'publish_staged')
     runs-on: ubuntu-latest
     timeout-minutes: 40
     environment: ${{ (inputs.delivery_mode == 'publish_staged' || inputs.delivery_mode == 'check_staged') && 'formal-production' || 'formal-staging' }}
@@ -544,7 +641,7 @@ jobs:
       cancel-in-progress: false
     env:
       OPERATION: ${{ inputs.delivery_mode }}
-      FORMAL_RUN_ID: ${{ inputs.delivery_mode == 'build_and_stage' && github.run_id || inputs.formal_run_id }}
+      FORMAL_RUN_ID: ${{ (inputs.delivery_mode == 'build_and_stage' || inputs.delivery_mode == 'retest_candidate') && github.run_id || inputs.formal_run_id }}
       CURRENT_VERSION: ${{ inputs.current_client_version }}
       STAGE_ID: ${{ inputs.stage_id }}
       PRODUCTION_READY: ${{ inputs.production_ready }}
@@ -552,17 +649,18 @@ jobs:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
+          fetch-depth: 0
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12.10'
       - name: Validate formal source and select exact artifact
         id: source
-        if: inputs.delivery_mode == 'build_and_stage' || inputs.delivery_mode == 'stage_existing'
+        if: inputs.delivery_mode == 'build_and_stage' || inputs.delivery_mode == 'retest_candidate' || inputs.delivery_mode == 'stage_existing'
         env:
           GH_TOKEN: ${{ github.token }}
         run: python ops/formal_release/select_artifact.py
       - name: Download formal artifact inside GitHub runner
-        if: inputs.delivery_mode == 'build_and_stage' || inputs.delivery_mode == 'stage_existing'
+        if: inputs.delivery_mode == 'build_and_stage' || inputs.delivery_mode == 'retest_candidate' || inputs.delivery_mode == 'stage_existing'
         uses: actions/download-artifact@v4
         with:
           artifact-ids: ${{ steps.source.outputs.artifact_id }}
@@ -570,6 +668,14 @@ jobs:
           github-token: ${{ github.token }}
           path: formal-artifact
           merge-multiple: true
+      - name: Resolve immutable build identity after acceptance
+        id: build-source
+        if: inputs.delivery_mode == 'build_and_stage' || inputs.delivery_mode == 'retest_candidate' || inputs.delivery_mode == 'stage_existing'
+        env:
+          ACCEPTANCE_COMMIT: ${{ steps.source.outputs.commit }}
+        run: |
+          python -m pip install --disable-pip-version-check 'PyYAML==6.0.2'
+          python ops/formal_release/candidate.py delivery-source --folder formal-artifact
       - name: Transfer, verify or publish through restricted receiver
         env:
           FORMAL_SSH_KEY: ${{ secrets.FORMAL_SSH_KEY }}
@@ -578,10 +684,10 @@ jobs:
           FORMAL_KNOWN_HOSTS: ${{ secrets.FORMAL_KNOWN_HOSTS }}
           FORMAL_API_ORIGIN: ${{ vars.FORMAL_API_ORIGIN }}
           FORMAL_DOWNLOAD_ORIGIN: ${{ vars.FORMAL_DOWNLOAD_ORIGIN }}
-          SOURCE_COMMIT: ${{ steps.source.outputs.commit }}
+          SOURCE_COMMIT: ${{ steps.build-source.outputs.commit }}
         run: |
           case "$OPERATION" in
-            build_and_stage|stage_existing)
+            build_and_stage|retest_candidate|stage_existing)
               python ops/formal_release/deliver.py stage --folder formal-artifact \
                 --run-id "$FORMAL_RUN_ID" --commit "$SOURCE_COMMIT" --current-version "$CURRENT_VERSION"
               ;;
@@ -607,3 +713,28 @@ jobs:
           if [ ! -f formal-result.json ]; then
             echo '正式交付未完成：前置检查或 GitHub 产物下载失败。生产登记未执行，Windows 验收待完成。' >> "$GITHUB_STEP_SUMMARY"
           fi
+
+  summary:
+    name: Summarize release stages
+    needs: [prepare, package, acceptance, deliver]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12.10'
+      - name: Summarize timings and next action once
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CANDIDATE_RUN_ID: ${{ inputs.candidate_run_id }}
+        run: python ops/formal_release/summarize_run.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: formal-stage-timings-${{ github.run_id }}-${{ github.run_attempt }}
+          path: formal-stage-timings.json
+          if-no-files-found: error
+          retention-days: 30
