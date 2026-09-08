@@ -412,6 +412,17 @@ def _confirmed_empty_business_viewport(
     )
 
 
+def _ingest_followup_cancelled(result: dict[str, Any] | None) -> bool:
+    """Transport acceptance and business cancellation are independent."""
+    payload = result if isinstance(result, dict) else {}
+    completion = payload.get("read_completion")
+    return bool(
+        payload.get("followup_block_reason") == "LEAD_INVALID"
+        or payload.get("error_code") == "LEAD_INVALID"
+        or (isinstance(completion, dict) and completion.get("result") == "cancelled")
+    )
+
+
 def _read_completion_result(result: dict[str, Any] | None) -> str:
     payload = result if isinstance(result, dict) else {}
     api_result = (
@@ -700,6 +711,7 @@ LEGACY_FOLLOW_UP_REMOVAL_CONDITION = (
 )
 TASK_LEASE_DEFINITIVE_LOSS_CODES = frozenset(
     {
+        "LEAD_INVALID",
         "TASK_NOT_FOUND",
         "TASK_LEASE_NOT_RUNNING",
         "TASK_LEASE_CLIENT_INSTANCE_REQUIRED",
@@ -3922,6 +3934,10 @@ class TaskRunner:
         self._runtime_process_context: dict[str, Any] = {}
         self._backend_inflight_flow_state: dict[str, Any] = {}
         self._restart_recovery_flow_id: str | None = None
+        # Task and C2 loops share one persisted pre-restart Flow. Serialize
+        # its state reconciliation through HTTP finish and local cleanup.
+        # Reentrant because reconciliation enters the same finish boundary.
+        self._restart_recovery_lock = threading.RLock()
         self._restart_backend_probe_pending = False
         self._restart_flow_reconciliation_incident: tuple[str, str, str] | None = None
         self.current_ui_lock: UiLockLease | None = None
@@ -4500,7 +4516,9 @@ class TaskRunner:
         flow_kind: str,
         conversation_id: str | None = None,
         unread_generation: int | None = None,
+        authorization_revision: str | None = None,
     ) -> bool:
+        self._last_new_flow_block_reason = None
         with self._new_work_admission_lock:
             control = load_runtime_control()
             existing_id = str(control.get("inflight_flow_id") or "").strip()
@@ -4511,13 +4529,20 @@ class TaskRunner:
                 return True
             if not self._can_start_new_flow(binding):
                 return False
-            backend_state = self.api.start_inflight_flow(
-                binding,
-                flow_id=flow_id,
-                flow_kind=flow_kind,
-                conversation_id=conversation_id,
-                unread_generation=unread_generation,
-            )
+            try:
+                backend_state = self.api.start_inflight_flow(
+                    binding,
+                    flow_id=flow_id,
+                    flow_kind=flow_kind,
+                    conversation_id=conversation_id,
+                    unread_generation=unread_generation,
+                    **({"authorization_revision": authorization_revision} if authorization_revision else {}),
+                )
+            except ApiError as exc:
+                if exc.code != "LEAD_INVALID":
+                    raise
+                self._last_new_flow_block_reason = "LEAD_INVALID"
+                return False
             self._backend_inflight_flow_state = dict(backend_state)
             try:
                 begin_runtime_flow(flow_id, flow_kind)
@@ -5337,6 +5362,7 @@ class TaskRunner:
             "retry_required",
             "failed_before_message_action",
             "read_failed_no_fact",
+            "read_cancelled",
             "task_terminal",
         }:
             if has_pending_c2_outbox_for_read_run_id(flow_id):
@@ -5353,7 +5379,7 @@ class TaskRunner:
             )
         ):
             raise RuntimeError("RUNTIME_INFLIGHT_C2_LEDGER_PENDING")
-        if terminal_kind == "read_confirmed" and has_pending_reply_send_ack_outbox():
+        if terminal_kind in {"read_confirmed", "read_cancelled"} and has_pending_reply_send_ack_outbox():
             raise RuntimeError("RUNTIME_INFLIGHT_SENT_ACK_PENDING")
         if terminal_kind == "failed_before_message_action" and has_c2_ledger_for_origin_read_run_id(
             flow_id
@@ -5734,6 +5760,14 @@ class TaskRunner:
     ) -> bool:
         """Reconcile the complete local/backend restart-flow state matrix."""
 
+        with self._restart_recovery_lock:
+            return self._reconcile_restart_inflight_flow_locked(binding)
+
+    def _reconcile_restart_inflight_flow_locked(
+        self,
+        binding: Binding,
+    ) -> bool:
+
         control = load_runtime_control()
         local_flow_id = str(
             control.get("inflight_flow_id") or ""
@@ -6002,6 +6036,16 @@ class TaskRunner:
         self,
         binding: Binding,
     ) -> None:
+        # Read the Flow pointer, SQLite state and receipt only after acquiring
+        # ownership. A waiter must see the first thread's completed cleanup
+        # and exit, rather than submitting a stale second finish request.
+        with self._restart_recovery_lock:
+            self._finish_restart_recovery_flow_if_settled_locked(binding)
+
+    def _finish_restart_recovery_flow_if_settled_locked(
+        self,
+        binding: Binding,
+    ) -> None:
         """Close a pre-restart flow only after durable replay needs no UI.
 
         A restart never resumes locating, clicking, media handling or sending.
@@ -6061,15 +6105,12 @@ class TaskRunner:
         )
         if media_recovery_status not in {"settled", "technical_failed"}:
             return
-        if media_recovery_status == "technical_failed":
-            # Recovery just replaced the pre-restart success/failure receipt
-            # with the authoritative technical terminal. Reload it before
-            # choosing the backend finish kind; otherwise the stale local
-            # variable can incorrectly re-enter the normal-flow blockers and
-            # leave a faulted Worker holding the old Flow forever.
-            receipt = load_c2_state(
-                self._inflight_finish_receipt_key(flow_id)
-            )
+        # Recovery may have persisted a technical terminal or an accepted
+        # ingest's cancellation. Always use the receipt after recovery rather
+        # than overwriting it with the pre-recovery success/failure snapshot.
+        receipt = load_c2_state(
+            self._inflight_finish_receipt_key(flow_id)
+        )
         receipt_terminal_kind = str(
             receipt.get("terminal_kind") or ""
         ).strip()
@@ -6088,6 +6129,7 @@ class TaskRunner:
             "retry_required",
             "failed_before_message_action",
             "read_failed_no_fact",
+            "read_cancelled",
             "technical_failed",
         } and flow_kind == "c2_read" and conversation_id:
             durable_read_artifact_exists = bool(
@@ -6118,6 +6160,7 @@ class TaskRunner:
             "retry_required",
             "failed_before_message_action",
             "read_failed_no_fact",
+            "read_cancelled",
             "technical_failed",
         }:
             self._pause_for_restart_flow_reconciliation(
@@ -6648,6 +6691,17 @@ class TaskRunner:
                 return
             result = RpaResult(ok=False, error_code="TASK_TYPE_NOT_SUPPORTED", failure_step="task_dispatch", message=f"不支持的任务类型：{running_task.task_type}")
             self._handle_failed_result(binding, running_task, result)
+        except ApiError as exc:
+            if exc.code != "LEAD_INVALID":
+                self.on_error(str(exc))
+                append_log("ERROR", "task_execute_failed", str(exc), task_id=task.id)
+            else:
+                # Pending work may already have been cancelled by the same
+                # backend invalidation transaction. Running work reports its
+                # existing task terminal; it never starts a new UI attempt.
+                if self.current_task and self.current_task.status == "running":
+                    self.api.fail_task(binding, task.id, "LEAD_INVALID", self.current_step, "已停止跟进：线索无效")
+                append_log("INFO", "task_cancelled", "已停止跟进：线索无效", task_id=task.id, error_code="LEAD_INVALID")
         except Exception as exc:
             self.on_error(str(exc))
             append_log("ERROR", "task_execute_failed", str(exc), task_id=task.id)
@@ -6814,6 +6868,10 @@ class TaskRunner:
 
     def _handle_failed_result(self, binding: Binding, task: Task, result: RpaResult) -> None:
         failed = self.api.fail_task(binding, task.id, result.error_code or "OTHER", result.failure_step, result.message)
+        if failed.status == "cancelled" and failed.raw.get("cancel_reason") == "LEAD_INVALID":
+            append_log("INFO", "task_cancelled", "已停止跟进：线索无效", task_id=task.id, error_code="LEAD_INVALID")
+            self.on_result(result)
+            return
         self._upload_evidence_best_effort(
             binding,
             task.id,
@@ -7002,9 +7060,9 @@ class TaskRunner:
                 task,
                 RpaResult(
                     ok=False,
-                    error_code="C2_REPLY_TARGET_NOT_AUTHORIZED",
+                    error_code="LEAD_INVALID" if authorization.get("error_code") == "LEAD_INVALID" else "C2_REPLY_TARGET_NOT_AUTHORIZED",
                     failure_step="c2_reply_recovery",
-                    message="后端没有为该回复批次签发有效续行票，已停止恢复并转人工。",
+                    message="已停止跟进：线索无效" if authorization.get("error_code") == "LEAD_INVALID" else "后端没有为该回复批次签发有效续行票，已停止恢复并转人工。",
                 ),
             )
             return
@@ -11928,6 +11986,10 @@ class TaskRunner:
                 },
             )
             return False
+        if authorization.get("error_code") == "LEAD_INVALID":
+            target.raw["followup_block_reason"] = "LEAD_INVALID"
+            self.c2_stats["last_error"] = "LEAD_INVALID"
+            return False
         allowed = self._batch_authorization_allows_target(
             {"authorization": authorization},
             target,
@@ -12231,6 +12293,9 @@ class TaskRunner:
         return remaining
 
     def _mark_c2_read_failure_cooldown(self, dedupe_key: str, error_code: Any = None) -> None:
+        if error_code == "LEAD_INVALID":
+            self.c2_read_failure_cooldowns.pop(dedupe_key, None)
+            return
         cooldown = max(0.0, float(CONFIG.c2_message_failure_cooldown_seconds))
         if cooldown <= 0:
             return
@@ -12626,6 +12691,17 @@ class TaskRunner:
                 "recovery_action": recovery_action,
             }
         normalized_result = result if isinstance(result, dict) else {}
+        if _ingest_followup_cancelled(normalized_result):
+            # Persist before confirming the Outbox: restart/replay must never
+            # infer read_confirmed from these successfully delivered facts.
+            receipt_key = self._inflight_finish_receipt_key(str(payload.get("read_run_id") or ""))
+            previous_receipt = load_c2_state(receipt_key) or {}
+            if previous_receipt.get("terminal_kind") != "technical_failed":
+                save_c2_state(receipt_key, {
+                    "terminal_kind": "read_cancelled",
+                    "conversation_id": payload.get("conversation_id"),
+                    "error_code": "LEAD_INVALID",
+                })
         self._mark_ingest_ledger_confirmed(payload, normalized_result)
         self._consume_confirmed_ai_reply_receipts(
             payload=payload,
@@ -21279,10 +21355,11 @@ class TaskRunner:
             flow_kind="c2_read",
             conversation_id=target.conversation_id,
             unread_generation=target.unread_generation,
+            authorization_revision=target.authorization_revision,
         ):
             return {
                 "ok": False,
-                "error_code": "WORKER_NEW_FLOW_NOT_ALLOWED",
+                "error_code": self._last_new_flow_block_reason or "WORKER_NEW_FLOW_NOT_ALLOWED",
             }
         if existing_runtime_flow_id:
             self.api.inflight_flow_id = existing_runtime_flow_id
@@ -21353,6 +21430,8 @@ class TaskRunner:
                     )
                     schedule_stage_event_upload(self.api, binding)
                 raise
+            if target.raw.get("followup_block_reason") == "LEAD_INVALID":
+                result = {**result, "ok": False, "error_code": "LEAD_INVALID"}
             flow_result = dict(result)
             if pre_send_stage_timer is not None:
                 pre_send_stage_timer.finish(
@@ -21391,6 +21470,17 @@ class TaskRunner:
                     )
                 )
                 self._finalize_c2_flow_outcomes(target, flow_outcomes)
+                if target.raw.get("followup_block_reason") == "LEAD_INVALID":
+                    # Reuse the existing evidence-only recovery protocol for
+                    # an action that completed while its lead was revoked.
+                    # Never click the next media item or rerun Vision.
+                    cancellation_recovery = self._recover_restart_physical_action_journals(
+                        binding, flow_id=read_run_id, conversation_id=target.conversation_id,
+                    )
+                    if cancellation_recovery == "technical_failed":
+                        recovery_receipt = load_c2_state(self._inflight_finish_receipt_key(read_run_id))
+                        flow_result.update(flow_terminal_kind="technical_failed",
+                                           error_code=recovery_receipt.get("error_code"))
                 clear_c2_action_journal(flow_id)
                 for path, payload in current_journal_entries:
                     if self._action_journal_can_be_removed(payload):
@@ -21474,6 +21564,14 @@ class TaskRunner:
                         backend_read_error
                         or "C2_UNREAD_RESULT_INCONCLUSIVE"
                     )
+                elif (
+                    error_code == "LEAD_INVALID"
+                    or target.raw.get("followup_block_reason") == "LEAD_INVALID"
+                    or _ingest_followup_cancelled(flow_result.get("result"))
+                    or (load_c2_state(self._inflight_finish_receipt_key(read_run_id)) or {}).get("terminal_kind") == "read_cancelled"
+                ):
+                    terminal_kind = "read_cancelled"
+                    error_code = "LEAD_INVALID"
                 elif backend_read_confirmed or durable_read_artifact_exists:
                     terminal_kind = "read_confirmed"
                 elif inflight_activity.get("message_read_attempted") is True:
@@ -21490,6 +21588,7 @@ class TaskRunner:
                             "retry_required",
                             "failed_before_message_action",
                             "read_failed_no_fact",
+                            "read_cancelled",
                             "technical_failed",
                         }
                         else None
@@ -24222,6 +24321,11 @@ class TaskRunner:
             read_completion_result = str(
                 read_completion.get("result") or ""
             ).strip()
+            read_cancelled = _ingest_followup_cancelled(result) or (
+                (load_c2_state(self._inflight_finish_receipt_key(read_run_id)) or {}).get("terminal_kind") == "read_cancelled"
+            )
+            if read_cancelled:
+                target.raw["followup_block_reason"] = "LEAD_INVALID"
             ingest_error_code = ""
             if local_validation_errors:
                 ingest_error_code = str(local_validation_errors[0].get("error_code") or "C2_OBSERVATION_CONTRACT_INVALID")
@@ -24277,6 +24381,8 @@ class TaskRunner:
                         if read_technical_failed
                         else "c2_read_completion_retry_required"
                         if read_retry_required
+                        else "c2_read_completion_cancelled"
+                        if read_cancelled
                         else "c2_read_completion_confirmed"
                     ),
                     (
@@ -24284,6 +24390,8 @@ class TaskRunner:
                         if read_technical_failed
                         else "本次读取没有形成可信新消息结论；未读代次已保留，按后端时间重新读取。"
                         if read_retry_required
+                        else "线索已无效；已读取事实确认入库，本次流程按业务取消收尾。"
+                        if read_cancelled
                         else "后端已确认本次完整读取结果和下次允许读取时间。"
                     ),
                     error_code=(
@@ -24318,6 +24426,7 @@ class TaskRunner:
                 wait_for_brain
                 and not read_retry_required
                 and not read_technical_failed
+                and not read_cancelled
                 and isinstance(message_batch, dict)
                 and message_batch.get("batch_id")
             ):
@@ -24373,7 +24482,7 @@ class TaskRunner:
                     ),
                 )
             )
-            final_error_code = ingest_error_code or flow_error_code
+            final_error_code = ingest_error_code or ("LEAD_INVALID" if read_cancelled else flow_error_code)
             if flow_error_code:
                 self.c2_stats["last_error"] = flow_error_code
                 append_log(
@@ -24389,7 +24498,7 @@ class TaskRunner:
                     },
                 )
             return {
-                "ok": bool(fact_ingest_ok and conversation_flow_ok),
+                "ok": bool(fact_ingest_ok and conversation_flow_ok and not read_cancelled),
                 "error_code": final_error_code or None,
                 "result": result,
                 "payload": payload,

@@ -7,6 +7,7 @@ export type LeadListItem = {
   id: string;
   customer_name: string;
   status: LeadStatus;
+  followup_block_reason?: "LEAD_INVALID" | null;
   source_type: string;
   source_name_snapshot: string;
   primary_phone_masked: string | null;

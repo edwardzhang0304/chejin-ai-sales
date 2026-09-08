@@ -2942,6 +2942,22 @@ def sessions_payload(
             "reason": blocking_reason,
             "error": f"WeChat session list is blocked by: {blocking_reason}",
         }
+    search_snapshot = layout_snapshot_for_image(screenshot)
+    query = sidebar_search_query_text(items, screenshot.size, geometry=geometry, layout_snapshot=search_snapshot)
+    placeholder_visible = sidebar_search_box_evidence(items, geometry=geometry, layout_snapshot=search_snapshot).get("ok")
+    query_present = bool(query) and not (placeholder_visible and sidebar_search_clear_residue_allows_candidate_probe(query))
+    search_state = {
+        "detected": bool(sidebar_search_focus_indicator_detected(screenshot, geometry) or query_present),
+        "reason": "sidebar_search_not_idle",
+    }
+    if search_state.get("detected"):
+        return {
+            "ok": False, "online": True, "adapter": "win32_ocr",
+            "state": "sessions_blocked", "reason": "sidebar_search_active",
+            "window_probe": probe, "screenshot_path": path,
+            "search_state": search_state,
+            "error": "Sidebar search is still open; this frame is not a session-list scan.",
+        }
     sessions = parse_sessions_from_ocr(items, screenshot.size, screenshot=screenshot)
     session_layout_snapshot = layout_snapshot_for_image(screenshot) or {}
     if not sessions and not bool(session_layout_snapshot.get("valid")):
@@ -14179,6 +14195,40 @@ def sidebar_search_input_target_from_ocr(
     }
 
 
+def sidebar_search_cleanup_input_target(
+    ocr_items: list[dict[str, Any]], *, layout_snapshot: dict[str, Any] | None,
+) -> dict[str, Any] | None:
+    """Click visible query/placeholder text, never the old reference point.
+
+    The calibrated header restricts recognition; actual OCR bounds determine
+    the point. A missing/currently unreadable field cannot authorize a click.
+    """
+    try:
+        left, top, right, bottom = win32_ocr_layout.required_region(layout_snapshot, "sidebar_header_bounds")
+    except win32_ocr_layout.LayoutSnapshotError:
+        return None
+    width, height = right - left, bottom - top
+    candidates = []
+    for item in ocr_items or []:
+        text = normalize_ocr_text(item.get("text"))
+        if not text or text in {"+", "×", "x", "X"}:
+            continue
+        bounds = win32_ocr_layout.normalize_rect([item.get(key) or 0 for key in ("left", "top", "right", "bottom")])
+        x, y = (bounds[0] + bounds[2]) // 2, (bounds[1] + bounds[3]) // 2
+        if (bounds[0] >= left and bounds[2] <= right and bounds[1] >= top and bounds[3] <= bottom
+                and left + width * .10 <= x <= left + width * .82
+                and top + height * .18 <= y <= top + height * .82
+                and bounds[2] - bounds[0] >= 4 and bounds[3] - bounds[1] >= 4):
+            candidates.append({"point": [x, y], "bounds": bounds, "source": "fresh_sidebar_search_text_ocr"})
+    if not candidates:
+        return None
+    # Multiple fragments of one query share a row. Different rows are not a
+    # reliable input-field observation, so do not guess between them.
+    if max(c["bounds"][1] for c in candidates) >= min(c["bounds"][3] for c in candidates):
+        return None
+    return max(candidates, key=lambda c: c["bounds"][2] - c["bounds"][0])
+
+
 def dismiss_sidebar_search_state(
     hwnd: int,
     *,
@@ -14198,11 +14248,12 @@ def dismiss_sidebar_search_state(
         result["attempts"] = attempt
         before_shot, before_path = capture_wechat(hwnd, artifact_dir=artifact_dir, label="open_chat_search_dismiss_before")
         before_items = run_ocr_traced(before_shot, "open_chat_search_dismiss_before", source="open_chat")
+        before_surface = target_switch_surface_state(before_shot, before_items, geometry=active_geometry)
+        if not before_surface.get("ok"):
+            return {**result, "ok": False, "reason": "search_cleanup_surface_blocked", "surface": before_surface}
         current_snapshot = layout_snapshot_for_image(before_shot) or {}
-        search_target = sidebar_search_input_target_from_ocr(
+        search_target = sidebar_search_cleanup_input_target(
             before_items,
-            before_shot.size,
-            geometry=active_geometry,
             layout_snapshot=current_snapshot,
         )
         if not search_target:
@@ -14224,12 +14275,20 @@ def dismiss_sidebar_search_state(
                 "search_target": search_target,
             }
         humanized_action_sleep(180, 420)
+        focused_shot, _ = capture_wechat(hwnd, artifact_dir=artifact_dir, label="open_chat_search_dismiss_focused")
+        if not sidebar_search_focus_indicator_detected(focused_shot, active_geometry):
+            return {**result, "ok": False, "reason": "search_cleanup_focus_not_confirmed", "search_target": search_target}
+        if not basic_send_window_guard(hwnd).get("ok"):
+            return {**result, "ok": False, "reason": "window_guard_failed_before_search_cleanup_clear"}
         hotkey(win32con.VK_CONTROL, ord("A"))
         humanized_action_sleep(100, 260)
         key_press(win32con.VK_BACK)
         humanized_action_sleep(260, 620)
         cleared_shot, _ = capture_wechat(hwnd, artifact_dir=artifact_dir, label="open_chat_search_dismiss_cleared")
         cleared_items = run_ocr_traced(cleared_shot, "open_chat_search_dismiss_cleared", source="open_chat")
+        cleared_surface = target_switch_surface_state(cleared_shot, cleared_items, geometry=active_geometry)
+        if not cleared_surface.get("ok"):
+            return {**result, "ok": False, "reason": "search_cleanup_surface_blocked", "surface": cleared_surface}
         blank_target = safe_window_header_blank_click_target(
             cleared_items,
             cleared_shot.size,
@@ -14271,7 +14330,7 @@ def dismiss_sidebar_search_state(
             items,
             geometry=active_geometry,
             screenshot_path=shot_path,
-            target=target_hint,
+            target="",
         )
         result["surface"] = surface
         result["ocr_count"] = len(items)
@@ -14284,13 +14343,23 @@ def dismiss_sidebar_search_state(
             }
         last_search_state = sidebar_search_state_detected(shot, items, geometry=active_geometry)
         result["search_state"] = last_search_state
-        if not last_search_state.get("detected"):
+        result["search_box_evidence"] = sidebar_search_box_evidence(
+            items, geometry=active_geometry, layout_snapshot=layout_snapshot_for_image(shot),
+        )
+        query_text = sidebar_search_query_text(
+            items, shot.size, geometry=active_geometry, layout_snapshot=layout_snapshot_for_image(shot),
+        )
+        result["query_empty"] = not bool(query_text) or bool(
+            result["search_box_evidence"].get("ok") and sidebar_search_clear_residue_allows_candidate_probe(query_text)
+        )
+        if (not last_search_state.get("detected") and result["query_empty"]
+                and result["search_box_evidence"].get("ok")):
             return result
         humanized_action_sleep(520, 1300)
     return {
         **result,
         "ok": False,
-        "reason": str(last_search_state.get("reason") or "search_state_still_active_after_dismiss"),
+        "reason": str(last_search_state.get("reason") or "search_exit_not_confirmed"),
         "search_state": last_search_state,
     }
 
@@ -15430,6 +15499,7 @@ def open_chat_by_remark_code_search(
     ocr_trace_token = _ocr_trace_start()
     open_started = _sidecar_timing_start(timing, "open_chat_by_remark_code_search")
     partial_review_error = ""
+    search_started = False
 
     def make_report_payload(ok: bool, reason: str, partial: bool, **payload: Any) -> dict[str, Any]:
         return {
@@ -15465,6 +15535,20 @@ def open_chat_by_remark_code_search(
 
     def finish(ok: bool, reason: str, **payload: Any) -> dict[str, Any]:
         global _LAST_OPEN_CHAT_TIMING
+        if not ok and search_started:
+            cleanup_started = _sidecar_timing_start(timing, "search_by_remark_code_failure_cleanup")
+            try:
+                cleanup = dismiss_sidebar_search_state(
+                    hwnd, target_hint=clean_remark, artifact_dir=artifact_dir,
+                )
+            except Exception as exc:
+                # Keep the original locate failure and separately expose the
+                # cleanup failure; never turn missing exit evidence into success.
+                cleanup = {"ok": False, "reason": "search_cleanup_exception", "exception_type": type(exc).__name__}
+            _sidecar_timing_finish(timing, "search_by_remark_code_failure_cleanup", cleanup_started)
+            timing["search_by_remark_code_failure_cleanup_result"] = cleanup
+            payload["search_cleanup"] = cleanup
+            event("dismiss_failed_search", "completed" if cleanup.get("ok") else "failed", result=cleanup)
         _sidecar_timing_finish(timing, "open_chat_by_remark_code_search", open_started)
         _sidecar_timing_merge_ocr_trace(timing, "open_chat_by_remark_code_search", _ocr_trace_finish(ocr_trace_token))
         timing["opened"] = bool(ok)
@@ -15578,6 +15662,7 @@ def open_chat_by_remark_code_search(
     event("baseline_screenshot", "completed", **baseline_event)
 
     clear_started = _sidecar_timing_start(timing, "search_by_remark_code_clear_search")
+    search_started = True
     clear_result = clear_sidebar_search_box_without_select_all(
         hwnd,
         search_x,

@@ -313,6 +313,11 @@ def start_inflight_flow(
     worker: Worker,
     payload: WorkerInflightFlowStartRequest,
 ) -> dict:
+    from app.services.followup_eligibility import require_conversation_followup, require_followup
+    if payload.conversation_id:
+        require_conversation_followup(db, payload.conversation_id)
+    else:
+        require_followup(db, db.scalar(select(Task.lead_id).where(Task.id == payload.flow_id)))
     binding = None
     if payload.conversation_id:
         # Lock the conversation binding before the Worker row.  Recovery-hold
@@ -344,6 +349,12 @@ def start_inflight_flow(
                 "在途读取携带了后端尚未签发的未读代次",
                 409,
             )
+    if binding is not None and payload.flow_kind == "c2_read":
+        from app.services.followup_eligibility import token_for_revision
+        if (payload.authorization_revision or binding.followup_invalidated_revision is not None) and (
+            payload.authorization_revision != token_for_revision(binding.id, int(binding.authorization_revision or 1))
+        ):
+            raise AppError("MESSAGE_AUTHORIZATION_REVISION_EXPIRED", "读取票已撤销，不能启动新流程", 409)
     worker = _lock_worker(db, worker.id)
     if worker.run_status != "running":
         raise AppError("WORKER_NOT_ACCEPTING_TASKS", "Worker 已暂停，不能开始新流程", 409)
@@ -375,6 +386,7 @@ def start_inflight_flow(
         "flow_kind": payload.flow_kind,
         "conversation_id": payload.conversation_id,
         "unread_generation": payload.unread_generation,
+        "authorization_revision": payload.authorization_revision,
         "registered_at": utcnow().isoformat(),
         "pause_requested_at": None,
     }
@@ -400,6 +412,17 @@ def finish_inflight_flow(
     payload: WorkerInflightFlowFinishRequest,
     actor: ActorContext,
 ) -> dict:
+    # Settlement may enter recovery eligibility checks. Acquire the same root
+    # lock as invalidation before Binding/Worker/Conversation; invalid leads
+    # must still be allowed to settle their already executed actions.
+    from app.services.followup_eligibility import conversation_lead_id, lock_leads
+
+    lead_id = (
+        conversation_lead_id(db, payload.conversation_id)
+        if payload.conversation_id
+        else db.scalar(select(Task.lead_id).where(Task.id == payload.flow_id))
+    )
+    lock_leads(db, [lead_id])
     locked_binding = None
     if payload.conversation_id:
         locked_binding = db.scalar(
@@ -546,6 +569,19 @@ def finish_inflight_flow(
                 "error_code": payload.error_code,
             },
         )
+    elif payload.terminal_kind == "read_cancelled":
+        from app.services.followup_eligibility import revoked_flow_proof
+        proof = revoked_flow_proof(db, locked_binding, payload.flow_id) if locked_binding else None
+        if (flow_kind != "c2_read" or payload.error_code != "LEAD_INVALID"
+                or not payload.conversation_id or not proof):
+            raise AppError("WORKER_INFLIGHT_FLOW_NOT_SETTLED", "缺少同一读取流程的线索撤销依据", 409)
+        from app.services.followup_eligibility import revoked_read_facts_settled
+        if not revoked_read_facts_settled(db, locked_binding, payload.flow_id):
+            raise AppError("WORKER_INFLIGHT_FLOW_NOT_SETTLED", "撤销流程的原动作事实尚未结算", 409)
+        write_log(db, actor, event_type="worker_inflight_read_cancelled", module="worker",
+                  target_type="worker", target_id=worker.id,
+                  metadata={"flow_id": payload.flow_id, "conversation_id": payload.conversation_id,
+                            "error_code": "LEAD_INVALID", "revoked_revision": proof["old_revision"]})
     elif payload.terminal_kind == "read_failed_no_fact":
         if (
             flow_kind != "c2_read"

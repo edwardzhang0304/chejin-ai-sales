@@ -106,6 +106,10 @@ export function LeadDetailDrawer({ detail, loading, error, onClose, onRetry, onM
             </dl>
           </section>
 
+          {detail.followup_block_reason === "LEAD_INVALID" ? (
+            <p role="status" className="drawer-hint">已停止跟进：线索无效</p>
+          ) : null}
+
           <div className="tabs" role="tablist" aria-label="线索详情标签">
             {detailTabs.map((tab) => (
               <button
