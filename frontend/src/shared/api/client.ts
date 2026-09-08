@@ -107,7 +107,7 @@ export function onUnauthorized(listener: UnauthorizedListener) {
 }
 
 export function buildUrl(path: string, query?: RequestOptions["query"]) {
-  const url = new URL(`${runtimeConfig.baseUrl}${path}`);
+  const url = new URL(`${runtimeConfig.baseUrl}${path}`, globalThis.location?.origin);
   Object.entries(query ?? {}).forEach(([key, value]) => {
     if (value !== undefined && value !== null && value !== "") {
       url.searchParams.set(key, String(value));
