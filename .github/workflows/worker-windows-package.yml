@@ -125,7 +125,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "Native gate dependencies failed" }
           .\.venv\Scripts\python.exe scripts/run-windows-client-upgrade-test.py --driver-smoke (Join-Path $env:RUNNER_TEMP "qt-driver-prebuild")
           if ($LASTEXITCODE -ne 0) { throw "Qt GUI driver prebuild gate failed" }
-          .\.venv\Scripts\python.exe -m pytest tests/test_update_handoff_baseline.py tests/test_post_update_health.py tests/test_update_shutdown_ui.py tests/test_legacy_update_handoff.py -q --junitxml "$env:RUNNER_TEMP/native-prebuild.xml"
+          .\.venv\Scripts\python.exe -m pytest tests/test_update_handoff_baseline.py tests/test_post_update_health.py tests/test_update_shutdown_ui.py tests/test_legacy_update_handoff.py tests/test_windows_upgrade_gate_data.py -q --junitxml "$env:RUNNER_TEMP/native-prebuild.xml"
           if ($LASTEXITCODE -ne 0) { throw "Native handoff prebuild gate failed" }
 
       - name: Build and run packaged runtime probes
@@ -516,6 +516,7 @@ jobs:
             worker-client/dist/reports/*.json
             ${{ runner.temp }}/qt-driver-prebuild/*
             ${{ runner.temp }}/chejin-original-client-upgrade/**/result.json
+            ${{ runner.temp }}/chejin-original-client-upgrade/*/data-checkpoints.json
             ${{ runner.temp }}/chejin-original-client-upgrade/upgrade-result.json
             ${{ runner.temp }}/chejin-original-client-upgrade/**/process.log
             ${{ runner.temp }}/chejin-original-client-upgrade/*/before.png
