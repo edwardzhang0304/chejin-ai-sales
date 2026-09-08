@@ -1,9 +1,41 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { ApiError, apiErrorFromResponse, formatApiError, request, requestBlob, requestForm } from "./client";
+import { ApiError, apiErrorFromResponse, buildUrl, formatApiError, request, requestBlob, requestForm, runtimeConfig } from "./client";
+
+const originalBaseUrl = runtimeConfig.baseUrl;
 
 afterEach(() => {
   vi.unstubAllGlobals();
+  runtimeConfig.baseUrl = originalBaseUrl;
+});
+
+describe("production same-origin API URLs", () => {
+  it("sends login, form and download requests to the page origin with cookies", async () => {
+    runtimeConfig.baseUrl = "/api";
+    vi.stubGlobal("location", { origin: "https://jiangsuchejin.com" });
+    const fetchMock = vi.fn().mockImplementation(() => Promise.resolve(
+      new Response(JSON.stringify({ code: "OK", data: {} }), { status: 200 }),
+    ));
+    vi.stubGlobal("fetch", fetchMock);
+    await request("/auth/login", { method: "POST", body: { username: "fixture", password: "synthetic" } });
+    await requestForm("/import", new FormData());
+    await requestBlob("/export");
+    expect(fetchMock.mock.calls.map(([url]) => url)).toEqual([
+      "https://jiangsuchejin.com/api/auth/login",
+      "https://jiangsuchejin.com/api/import",
+      "https://jiangsuchejin.com/api/export",
+    ]);
+    for (const [, init] of fetchMock.mock.calls) expect(init.credentials).toBe("include");
+  });
+
+  it("preserves explicit Fast UAT API addresses and encoded query parameters", () => {
+    runtimeConfig.baseUrl = "http://127.0.0.1:8000/api";
+    vi.stubGlobal("location", { origin: "http://127.0.0.1:5173" });
+    const url = new URL(buildUrl("/leads", { search: "a&b", page: 1 }));
+    expect(url.origin).toBe("http://127.0.0.1:8000");
+    expect(url.searchParams.get("search")).toBe("a&b");
+    expect(url.searchParams.get("page")).toBe("1");
+  });
 });
 
 describe("ApiError", () => {
