@@ -19,6 +19,10 @@ export type VehicleItem = {
   brand: string | null;
   series: string | null;
   model: string | null;
+  energy_type: string | null;
+  displacement: string | null;
+  battery_capacity_kwh: string | null;
+  drive_type: string | null;
   public_price: number | string | null;
   first_registration: string | null;
   mileage_km: number | null;
@@ -43,6 +47,10 @@ export type VehicleEditableFields = Pick<
   | "brand"
   | "series"
   | "model"
+  | "energy_type"
+  | "displacement"
+  | "battery_capacity_kwh"
+  | "drive_type"
   | "public_price"
   | "first_registration"
   | "mileage_km"

@@ -1111,6 +1111,15 @@ class PackagingScriptsTest(unittest.TestCase):
                         "c2_contract_0_9_70_generated_schema",
                     ],
                 },
+                {
+                    "source_commit": "f9540516c8daf2fa28060689b96b20b45920f808",
+                    "scope": [
+                        "exact_versioned_formal_knowledge_citations",
+                        "bounded_provider_response_structure_diagnostics",
+                        "optional_response_metadata_unknown_counts",
+                        "backend_vehicle_facts_preserved_in_evidence_and_brain"
+                    ]
+                },
             ],
         )
         self.assertEqual(

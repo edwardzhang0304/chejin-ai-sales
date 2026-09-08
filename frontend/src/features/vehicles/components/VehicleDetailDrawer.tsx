@@ -8,6 +8,7 @@ import { CloseIcon } from "../../../shared/ui/Icons";
 import { postMutationMessage, runPostMutationRefresh } from "../../../shared/utils/postMutation";
 import { setVehicleListed, updateVehicle } from "../api";
 import type { VehicleEditableFields, VehicleItem } from "../types";
+import { batteryCapacityError, driveTypes, energyTypes, seriesOptions, vehicleOptionLabel } from "../vehicleFields";
 import { VehicleImageManager } from "./VehicleImageManager";
 
 type VehicleFormState = Record<keyof VehicleEditableFields, string>;
@@ -24,7 +25,7 @@ type Props = {
 };
 
 const textFields: Array<keyof VehicleEditableFields> = [
-  "display_name", "brand", "series", "model", "first_registration", "exterior_color", "interior_color", "location", "customer_description", "vin", "plate_number", "internal_notes",
+  "display_name", "brand", "series", "model", "energy_type", "displacement", "battery_capacity_kwh", "drive_type", "first_registration", "exterior_color", "interior_color", "location", "customer_description", "vin", "plate_number", "internal_notes",
 ];
 
 function toForm(vehicle: VehicleItem): VehicleFormState {
@@ -33,6 +34,10 @@ function toForm(vehicle: VehicleItem): VehicleFormState {
     brand: vehicle.brand || "",
     series: vehicle.series || "",
     model: vehicle.model || "",
+    energy_type: vehicle.energy_type || "",
+    displacement: vehicle.displacement || "",
+    battery_capacity_kwh: vehicle.battery_capacity_kwh || "",
+    drive_type: vehicle.drive_type || "",
     public_price: vehicle.public_price === null ? "" : String(vehicle.public_price),
     first_registration: vehicle.first_registration || "",
     mileage_km: vehicle.mileage_km === null ? "" : String(vehicle.mileage_km),
@@ -57,6 +62,14 @@ function buildPatch(vehicle: VehicleItem, form: VehicleFormState): Partial<Vehic
   if (form.purchase_price !== initial.purchase_price) patch.purchase_price = form.purchase_price === "" ? null : Number(form.purchase_price);
   if (form.mileage_km !== initial.mileage_km) patch.mileage_km = form.mileage_km === "" ? null : Number(form.mileage_km);
   return patch as Partial<VehicleEditableFields>;
+}
+
+function getListingMissing(vehicle: VehicleItem): string[] {
+  const missing: string[] = [];
+  if (!vehicle.display_name.trim()) missing.push("车辆展示名称");
+  if (!vehicle.public_price || Number(vehicle.public_price) <= 0) missing.push("大于 0 的公开售价");
+  if (!vehicle.images.length) missing.push("至少一张有效车辆图片");
+  return missing;
 }
 
 function formatDate(value: string | null | undefined) {
@@ -114,13 +127,14 @@ export function VehicleDetailDrawer({ vehicle, loading, error, onRetry, onClose,
   const [discardOpen, setDiscardOpen] = useState(false);
   const [listingConfirm, setListingConfirm] = useState<"list" | "unlist" | null>(null);
   const [listingBusy, setListingBusy] = useState(false);
-  const [listingMissing, setListingMissing] = useState<string[]>([]);
+  const [listingAttempted, setListingAttempted] = useState(false);
+  const listingMissing = listingAttempted && vehicle ? getListingMissing(vehicle) : [];
 
   useEffect(() => {
     setEditing(false);
     setForm(vehicle ? toForm(vehicle) : null);
     setSaveError(null);
-    setListingMissing([]);
+    setListingAttempted(false);
   }, [vehicle?.vehicle_code]);
 
   const dirty = useMemo(() => Boolean(vehicle && form && Object.keys(buildPatch(vehicle, form)).length), [vehicle, form]);
@@ -154,13 +168,18 @@ export function VehicleDetailDrawer({ vehicle, loading, error, onRetry, onClose,
       setSaveError("车辆展示名称不能为空。");
       return;
     }
+    const capacityError = batteryCapacityError(form.battery_capacity_kwh);
+    if (capacityError) {
+      setSaveError(capacityError);
+      return;
+    }
+    setSaveError(null);
     const patch = buildPatch(vehicle, form);
     if (!Object.keys(patch).length) {
       setEditing(false);
       return;
     }
     setSaving(true);
-    setSaveError(null);
     let updated: VehicleItem;
     try {
       updated = await updateVehicle(vehicle.vehicle_code, patch);
@@ -184,11 +203,8 @@ export function VehicleDetailDrawer({ vehicle, loading, error, onRetry, onClose,
       setListingConfirm("unlist");
       return;
     }
-    const missing: string[] = [];
-    if (!vehicle.display_name.trim()) missing.push("车辆展示名称");
-    if (!vehicle.public_price || Number(vehicle.public_price) <= 0) missing.push("大于 0 的公开售价");
-    if (!vehicle.images.length) missing.push("至少一张有效车辆图片");
-    setListingMissing(missing);
+    const missing = getListingMissing(vehicle);
+    setListingAttempted(true);
     if (!missing.length) setListingConfirm("list");
   }
 
@@ -207,7 +223,7 @@ export function VehicleDetailDrawer({ vehicle, loading, error, onRetry, onClose,
     }
 
     setListingConfirm(null);
-    setListingMissing([]);
+    setListingAttempted(false);
     const refreshed = await runPostMutationRefresh(() => onVehicleChanged(updated));
     const successMessage = listed ? "车辆已上架。" : "车辆已下架。";
     onNotify(postMutationMessage(successMessage, refreshed), "success");
@@ -246,8 +262,15 @@ export function VehicleDetailDrawer({ vehicle, loading, error, onRetry, onClose,
                 <div className="vehicle-form-grid">
                   <EditRow label="车辆展示名称" required><input maxLength={200} value={form.display_name} onChange={(event) => setForm({ ...form, display_name: event.target.value })} /></EditRow>
                   <EditRow label="品牌"><input maxLength={100} value={form.brand} onChange={(event) => setForm({ ...form, brand: event.target.value })} /></EditRow>
-                  <EditRow label="车系"><input maxLength={100} value={form.series} onChange={(event) => setForm({ ...form, series: event.target.value })} /></EditRow>
+                  <EditRow label="车系"><select aria-label="车系" value={form.series && !seriesOptions.includes(form.series) ? "__legacy__" : form.series} onChange={(event) => setForm({ ...form, series: event.target.value })}>
+                    {form.series && !seriesOptions.includes(form.series) ? <option value="__legacy__" disabled>待选择分类</option> : null}
+                    <option value="">未填写</option>{seriesOptions.map((value) => <option key={value} value={value}>{value}</option>)}
+                  </select>{form.series && !seriesOptions.includes(form.series) ? <small>原车系：{vehicle.series}（待选择分类）</small> : null}</EditRow>
                   <EditRow label="车型"><input maxLength={200} value={form.model} onChange={(event) => setForm({ ...form, model: event.target.value })} /></EditRow>
+                  <EditRow label="能源类型"><select value={form.energy_type} onChange={(event) => setForm({ ...form, energy_type: event.target.value })}><option value="">未填写</option>{Object.entries(energyTypes).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></EditRow>
+                  <EditRow label="排量"><input maxLength={100} placeholder="例如：1.5L、2.0L" value={form.displacement} onChange={(event) => setForm({ ...form, displacement: event.target.value })} /></EditRow>
+                  <EditRow label="电池包容量"><span className="vehicle-capacity-input"><input aria-label="电池包容量" aria-describedby="vehicle-battery-unit" inputMode="decimal" maxLength={100} placeholder="例如：75、82.5" value={form.battery_capacity_kwh} onChange={(event) => setForm({ ...form, battery_capacity_kwh: event.target.value })} /><span id="vehicle-battery-unit">kWh</span></span></EditRow>
+                  <EditRow label="驱动方式"><select value={form.drive_type} onChange={(event) => setForm({ ...form, drive_type: event.target.value })}><option value="">未填写</option>{Object.entries(driveTypes).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></EditRow>
                   <EditRow label="公开售价"><input type="number" min="0" step="0.01" value={form.public_price} onChange={(event) => setForm({ ...form, public_price: event.target.value })} /></EditRow>
                   <EditRow label="首次上牌"><input type="month" min="1900-01" max="2099-12" value={form.first_registration} onChange={(event) => setForm({ ...form, first_registration: event.target.value })} /></EditRow>
                   <EditRow label="表显里程"><input type="number" min="0" max="10000000" step="1" value={form.mileage_km} onChange={(event) => setForm({ ...form, mileage_km: event.target.value })} /></EditRow>
@@ -260,8 +283,12 @@ export function VehicleDetailDrawer({ vehicle, loading, error, onRetry, onClose,
                 <dl className="drawer-dl">
                   <ReadRow label="展示名称" value={vehicle.display_name} />
                   <ReadRow label="品牌" value={vehicle.brand} />
-                  <ReadRow label="车系" value={vehicle.series} />
+                  <ReadRow label="车系" value={vehicle.series || "未填写"} />
                   <ReadRow label="车型" value={vehicle.model} />
+                  <ReadRow label="能源类型" value={vehicleOptionLabel(energyTypes, vehicle.energy_type)} />
+                  <ReadRow label="排量" value={vehicle.displacement || "未填写"} />
+                  <ReadRow label="电池包容量" value={vehicle.battery_capacity_kwh ? `${vehicle.battery_capacity_kwh} kWh` : "未填写"} />
+                  <ReadRow label="驱动方式" value={vehicleOptionLabel(driveTypes, vehicle.drive_type)} />
                   <ReadRow label="公开售价" value={formatMoney(vehicle.public_price)} />
                   <ReadRow label="首次上牌" value={vehicle.first_registration} />
                   <ReadRow label="表显里程" value={formatMileage(vehicle.mileage_km)} />
@@ -308,7 +335,7 @@ export function VehicleDetailDrawer({ vehicle, loading, error, onRetry, onClose,
             {listingMissing.length ? <div className="listing-missing" role="alert"><strong>暂不能上架，请补齐：</strong><ul>{listingMissing.map((item) => <li key={item}>{item}</li>)}</ul></div> : null}
             <h3>操作</h3>
             {editing ? (
-              <div className="drawer-actions"><button type="button" disabled={saving} onClick={requestCancelEdit}>取消</button><button className="primary-button" type="submit" disabled={saving || !dirty}>{saving ? "保存中..." : "保存"}</button></div>
+              <div className="drawer-actions"><button type="button" disabled={saving} onClick={requestCancelEdit}>取消</button><button className="primary-button" type="submit" disabled={saving}>{saving ? "保存中..." : "保存"}</button></div>
             ) : (
               <div className="drawer-actions"><button type="button" onClick={() => { setForm(toForm(vehicle)); setEditing(true); setSaveError(null); }}>编辑车辆</button><button type="button" className={vehicle.listing_status === "listed" ? "danger-button" : "primary-button"} onClick={requestListingChange}>{vehicle.listing_status === "listed" ? "下架" : "上架"}</button></div>
             )}

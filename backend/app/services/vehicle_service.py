@@ -9,9 +9,12 @@ import re
 import warnings
 from uuid import uuid4
 from zipfile import BadZipFile, ZipFile
+from xml.etree import ElementTree
 
 from openpyxl import Workbook, load_workbook
 from openpyxl.styles import Font, PatternFill
+from openpyxl.utils import get_column_letter
+from openpyxl.worksheet.datavalidation import DataValidation
 from PIL import Image, UnidentifiedImageError
 from sqlalchemy import func, or_, select
 from sqlalchemy.exc import IntegrityError
@@ -29,13 +32,13 @@ from app.models.vehicle import (
     VehicleImage,
     VehicleImportPreview,
 )
-from app.schemas.vehicle import VehicleCreate, VehicleUpdate
+from app.schemas.vehicle import DRIVE_TYPES, ENERGY_TYPES, SERIES_OPTIONS, VehicleCreate, VehicleUpdate
 from app.services.audit_service import record_vehicle_operation_failure, write_log
 
 
 PRODUCT_LAYER = "product_master"
 PRODUCT_CATEGORY = "products"
-EXCEL_TEMPLATE_VERSION = "1.1"
+EXCEL_TEMPLATE_VERSION = "1.2"
 VEHICLE_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$")
 IMAGE_TYPES = {
     "jpeg": ("image/jpeg", ".jpg"),
@@ -48,6 +51,10 @@ EXCEL_HEADERS = [
     "品牌",
     "车系",
     "车型",
+    "能源类型",
+    "排量",
+    "电池包容量（kWh）",
+    "驱动方式",
     "公开售价",
     "首次上牌",
     "里程公里",
@@ -69,6 +76,10 @@ EXCEL_FIELD_MAP = dict(
             "brand",
             "series",
             "model",
+            "energy_type",
+            "displacement",
+            "battery_capacity_kwh",
+            "drive_type",
             "public_price",
             "first_registration",
             "mileage_km",
@@ -163,6 +174,10 @@ def _payload_fields(payload: dict) -> dict:
         "brand": details.get("brand"),
         "series": details.get("series"),
         "model": details.get("model"),
+        "energy_type": details.get("energy_type"),
+        "displacement": details.get("displacement"),
+        "battery_capacity_kwh": details.get("battery_capacity_kwh"),
+        "drive_type": details.get("drive_type"),
         "public_price": data.get("price"),
         "first_registration": details.get("first_registration"),
         "mileage_km": details.get("mileage_km"),
@@ -200,6 +215,21 @@ def _number(value):
     return float(value) if isinstance(value, Decimal) else value
 
 
+def _vehicle_specifications(fields: dict) -> str:
+    """Backend-owned Chinese facts consumed by the existing Product Master specs projection."""
+    series = fields.get("series")
+    facts = {
+        "品牌": fields.get("brand"),
+        "车系分类" if series in SERIES_OPTIONS else "原车系": series,
+        "车型": fields.get("model"),
+        "能源类型": ENERGY_TYPES.get(fields.get("energy_type")),
+        "排量": fields.get("displacement"),
+        "电池包容量": f"{fields['battery_capacity_kwh']} kWh" if fields.get("battery_capacity_kwh") else None,
+        "驱动方式": DRIVE_TYPES.get(fields.get("drive_type")),
+    }
+    return " / ".join(f"{label}：{value}" for label, value in facts.items() if value not in (None, ""))
+
+
 def _build_product_payload(
     vehicle_id: str,
     fields: dict,
@@ -217,6 +247,10 @@ def _build_product_payload(
             "brand",
             "series",
             "model",
+            "energy_type",
+            "displacement",
+            "battery_capacity_kwh",
+            "drive_type",
             "first_registration",
             "mileage_km",
             "exterior_color",
@@ -244,7 +278,7 @@ def _build_product_payload(
             "sku": vehicle_id,
             "category": "二手车",
             "aliases": aliases,
-            "specs": " / ".join(aliases),
+            "specs": _vehicle_specifications(fields),
             "price": _number(fields.get("public_price")),
             "unit": "台",
             "inventory": 1,
@@ -280,6 +314,7 @@ def _search_text(payload: dict) -> str:
             fields.get("brand"),
             fields.get("series"),
             fields.get("model"),
+            _vehicle_specifications(fields),
             fields.get("customer_description"),
         )
         if value not in (None, "")
@@ -717,7 +752,7 @@ def build_excel_template() -> bytes:
         cell.font = Font(bold=True, color="FFFFFF")
         cell.fill = PatternFill("solid", fgColor="1F4E78")
     sheet.freeze_panes = "A2"
-    sheet.auto_filter.ref = f"A1:P1"
+    sheet.auto_filter.ref = f"A1:{get_column_letter(len(EXCEL_HEADERS))}1"
     for column in sheet.columns:
         sheet.column_dimensions[column[0].column_letter].width = 18
     notes = workbook.create_sheet("字段说明")
@@ -728,9 +763,22 @@ def build_excel_template() -> bytes:
         "公开售价": "数字，单位由业务统一解释；上架前必须大于 0",
         "首次上牌": "YYYY-MM",
         "里程公里": "非负整数",
+        "车系": "、".join(SERIES_OPTIONS) + "；更新留空保留原值",
+        "能源类型": "、".join(ENERGY_TYPES.values()) + "；更新留空保留原值",
+        "排量": "文本，最多 100 字符，例如 1.5L、2.0L；更新留空保留原值",
+        "电池包容量（kWh）": "大于 0 的十进制数字，最多 100 字符，不含单位或科学计数法；精确小数请用文本格式；更新留空保留原值",
+        "驱动方式": "、".join(DRIVE_TYPES.values()) + "；更新留空保留原值",
     }
     for header in EXCEL_HEADERS:
         notes.append([header, descriptions.get(header, "留空表示不修改已有值")])
+    for header, choices in (("车系", SERIES_OPTIONS), ("能源类型", ENERGY_TYPES.values()), ("驱动方式", DRIVE_TYPES.values())):
+        validation = DataValidation(type="list", formula1='"' + ",".join(choices) + '"', allow_blank=True)
+        validation.errorTitle = "选项无效"
+        validation.error = "请选择模板中的中文选项，或留空。"
+        validation.showErrorMessage = True
+        sheet.add_data_validation(validation)
+        column = get_column_letter(EXCEL_HEADERS.index(header) + 1)
+        validation.add(f"{column}2:{column}{get_settings().vehicle_excel_max_rows + 1}")
     metadata = workbook.create_sheet("_元数据")
     metadata.sheet_state = "hidden"
     metadata.append(["template_version", EXCEL_TEMPLATE_VERSION])
@@ -792,6 +840,27 @@ def _integer_value(value, field_name: str, errors: list[str]):
     return result
 
 
+def _excel_capacity_cells(data: bytes, worksheet_path: str) -> dict[int, str]:
+    # Read numeric XML text directly: openpyxl's float conversion must not round a capacity.
+    column = get_column_letter(EXCEL_HEADERS.index("电池包容量（kWh）") + 1)
+    namespace = "{http://schemas.openxmlformats.org/spreadsheetml/2006/main}"
+    result = {}
+    with ZipFile(BytesIO(data)) as archive, archive.open(worksheet_path) as source:
+        for _, cell in ElementTree.iterparse(source, events=("end",)):
+            if cell.tag != namespace + "c":
+                continue
+            address = cell.get("r", "")
+            if re.fullmatch(column + r"[0-9]+", address):
+                if cell.find(namespace + "f") is not None:
+                    result[int(address[len(column):])] = "不支持公式"
+                elif cell.get("t", "n") == "n":
+                    value = cell.findtext(namespace + "v")
+                    if value is not None:
+                        result[int(address[len(column):])] = value
+            cell.clear()
+    return result
+
+
 def preview_excel_import(db: Session, *, filename: str, data: bytes, actor: ActorContext) -> dict:
     settings = get_settings()
     if not filename.lower().endswith(".xlsx"):
@@ -809,13 +878,17 @@ def preview_excel_import(db: Session, *, filename: str, data: bytes, actor: Acto
         raise AppError("VEHICLE_EXCEL_TEMPLATE_INVALID", "Excel 模板工作表不完整", 400)
     metadata = workbook["_元数据"]
     if metadata["A1"].value != "template_version" or str(metadata["B1"].value or "") != EXCEL_TEMPLATE_VERSION:
-        raise AppError("VEHICLE_EXCEL_TEMPLATE_VERSION_MISMATCH", "Excel 模板版本不匹配", 409, {"expected": EXCEL_TEMPLATE_VERSION})
+        raise AppError("VEHICLE_EXCEL_TEMPLATE_VERSION_MISMATCH", "Excel 模板版本不匹配，请下载最新版模板后重试", 409, {"expected": EXCEL_TEMPLATE_VERSION})
     sheet = workbook["车辆信息"]
+    try:
+        capacities = _excel_capacity_cells(data, sheet._worksheet_path)
+    except (ElementTree.ParseError, KeyError, ValueError) as exc:
+        raise AppError("VEHICLE_EXCEL_INVALID", "Excel 数据无法解析", 400) from exc
     headers = [str(cell.value or "").strip() for cell in next(sheet.iter_rows(min_row=1, max_row=1))]
     if headers != EXCEL_HEADERS:
         raise AppError("VEHICLE_EXCEL_HEADER_INVALID", "Excel 表头与模板不一致", 400, {"expected": EXCEL_HEADERS})
     raw_rows = list(sheet.iter_rows(min_row=2, values_only=True))
-    while raw_rows and all(_clean_excel_value(value) is None for value in raw_rows[-1]):
+    while raw_rows and all(_clean_excel_value(value) is None for value in raw_rows[-1]) and not capacities.get(len(raw_rows) + 1):
         raw_rows.pop()
     if len(raw_rows) > settings.vehicle_excel_max_rows:
         raise AppError("VEHICLE_EXCEL_ROWS_EXCEEDED", "Excel 数据行数超过限制", 413, {"max_rows": settings.vehicle_excel_max_rows})
@@ -830,6 +903,16 @@ def preview_excel_import(db: Session, *, filename: str, data: bytes, actor: Acto
     for index, values in enumerate(raw_rows, start=2):
         errors: list[str] = []
         raw = {EXCEL_FIELD_MAP[header]: _clean_excel_value(value) for header, value in zip(EXCEL_HEADERS, values)}
+        if index in capacities:
+            raw["battery_capacity_kwh"] = _clean_excel_value(capacities[index])
+        for field, mapping in (("energy_type", ENERGY_TYPES), ("drive_type", DRIVE_TYPES)):
+            value = raw.get(field)
+            if value is not None:
+                translated = {label: key for key, label in mapping.items()}.get(value)
+                if translated is None:
+                    errors.append(f"{next(header for header, key in EXCEL_FIELD_MAP.items() if key == field)}请选择模板中的中文选项")
+                else:
+                    raw[field] = translated
         vehicle_id = str(raw.pop("vehicle_code") or "")
         action = "update" if vehicle_id else "create"
         if vehicle_id:
@@ -854,9 +937,9 @@ def preview_excel_import(db: Session, *, filename: str, data: bytes, actor: Acto
             errors.append("已有车辆没有可更新字段")
         try:
             if action == "create":
-                VehicleCreate.model_validate(changes)
+                changes = VehicleCreate.model_validate(changes).model_dump(exclude_unset=True)
             elif changes:
-                VehicleUpdate.model_validate(changes)
+                changes = VehicleUpdate.model_validate(changes).model_dump(exclude_unset=True)
         except Exception as exc:
             errors.append(str(exc))
         if errors:

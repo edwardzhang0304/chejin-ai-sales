@@ -3321,12 +3321,14 @@ tbody tr:hover td {
 }
 
 .vehicle-form-grid input,
+.vehicle-form-grid select,
 .vehicle-form-grid textarea {
   font-size: 13px;
   font-weight: 600;
 }
 
-.vehicle-form-grid input {
+.vehicle-form-grid input,
+.vehicle-form-grid select {
   height: 34px;
 }
 
@@ -4589,4 +4591,15 @@ tbody tr:hover td {
     grid-template-columns: 1fr;
     gap: 3px;
   }
+}
+
+.vehicle-capacity-input {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.vehicle-capacity-input input {
+  flex: 1;
+  min-width: 0;
 }
