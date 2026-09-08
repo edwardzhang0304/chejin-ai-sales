@@ -8,6 +8,7 @@ or coordinator directly. No production credentials, customer data or messaging.
 from __future__ import annotations
 
 import argparse
+import base64
 from datetime import datetime, timedelta, timezone
 import hashlib
 import ipaddress
@@ -57,6 +58,116 @@ def wait_for(check, label, timeout=120):
             return result
         time.sleep(0.25)
     raise AssertionError("Timed out: " + label)
+
+
+class QtPage:
+    """Use Qt 6.6's page CDP endpoint; it cannot manage browser contexts.
+
+    JavaScript only reads rendered DOM geometry/text. Mouse input enters the
+    actual UI; no bridge, coordinator, update plan or application state is set.
+    """
+
+    def __init__(self, port):
+        from websockets.sync.client import connect
+        with urllib.request.urlopen(f"http://127.0.0.1:{port}/json", timeout=10) as response:
+            pages = [p for p in json.load(response) if p.get("type") == "page"]
+        assert len(pages) == 1, "Expected one actual Worker page"
+        self.socket = connect(pages[0]["webSocketDebuggerUrl"], proxy=None, open_timeout=10,
+                              close_timeout=1, max_size=16 * 1024 * 1024)
+        self.sequence = 0
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *unused):
+        self.socket.close()
+
+    def call(self, method, **params):
+        self.sequence += 1
+        self.socket.send(json.dumps({"id": self.sequence, "method": method, "params": params}))
+        deadline = time.monotonic() + 15
+        while time.monotonic() < deadline:
+            message = json.loads(self.socket.recv(timeout=max(0.1, deadline - time.monotonic())))
+            if message.get("id") != self.sequence:
+                continue
+            assert "error" not in message, f"CDP {method}: {message.get('error')}"
+            return message.get("result", {})
+        raise TimeoutError("CDP response: " + method)
+
+    def evaluate(self, expression):
+        result = self.call("Runtime.evaluate", expression=expression, returnByValue=True)
+        assert "exceptionDetails" not in result, "DOM inspection failed"
+        return result.get("result", {}).get("value")
+
+    def click_button(self, name):
+        expression = """(() => {
+          const matches = [...document.querySelectorAll('button')].filter(el => {
+            const style = getComputedStyle(el), rect = el.getBoundingClientRect();
+            return (el.getAttribute('aria-label') || el.innerText).trim() === NAME
+              && !el.disabled && style.visibility === 'visible' && style.display !== 'none'
+              && Number(style.opacity) > 0 && rect.width > 0 && rect.height > 0;
+          });
+          if (matches.length !== 1) return null;
+          const el = matches[0], rect = el.getBoundingClientRect();
+          const x = rect.x + rect.width / 2, y = rect.y + rect.height / 2;
+          const hit = document.elementFromPoint(x, y);
+          return hit && (hit === el || el.contains(hit)) ? {x, y} : null;
+        })()""".replace("NAME", json.dumps(name))
+        point = wait_for(lambda: self.evaluate(expression), "visible clickable button " + name, 60)
+        self.call("Input.dispatchMouseEvent", type="mouseMoved", **point)
+        self.call("Input.dispatchMouseEvent", type="mousePressed", button="left", buttons=1, clickCount=1, **point)
+        self.call("Input.dispatchMouseEvent", type="mouseReleased", button="left", buttons=0, clickCount=1, **point)
+
+    def wait_text(self, value):
+        expression = """[...document.querySelectorAll('body *')].some(el =>
+          el.children.length === 0 && el.textContent.trim() === TEXT && el.getClientRects().length
+          && getComputedStyle(el).visibility === 'visible')""".replace("TEXT", json.dumps(value))
+        wait_for(lambda: self.evaluate(expression), "visible text " + value, 30)
+
+    def screenshot(self, path):
+        result = self.call("Page.captureScreenshot", format="png")
+        Path(path).write_bytes(base64.b64decode(result["data"]))
+
+
+def serve_driver_fixture():
+    from PySide6.QtWidgets import QApplication
+    from PySide6.QtWebEngineWidgets import QWebEngineView
+    app = QApplication([])
+    view = QWebEngineView()
+    view.setHtml('''<button style="visibility:hidden" aria-label="Driver fixture">hidden</button>
+      <button aria-label="Driver fixture" onclick="this.textContent=event.isTrusted?'trusted click':'untrusted click'">ready</button>''')
+    view.show()
+    app.exec()
+
+
+def driver_smoke(folder):
+    """Prove the CI driver before building; this is not an upgrade result."""
+    folder.mkdir(parents=True, exist_ok=False)
+    port = free_port()
+    env = {**os.environ, "QTWEBENGINE_REMOTE_DEBUGGING": f"127.0.0.1:{port}"}
+    with (folder / "qt.log").open("w", encoding="utf-8") as log:
+        process = subprocess.Popen([sys.executable, str(Path(__file__).resolve()), "--serve-driver-fixture"],
+                                   env=env, cwd=folder, stdout=log, stderr=log)
+        try:
+            def ready():
+                assert process.poll() is None, "Qt driver fixture exited"
+                try:
+                    with urllib.request.urlopen(f"http://127.0.0.1:{port}/json", timeout=2) as response:
+                        return any(p.get("type") == "page" for p in json.load(response))
+                except OSError:
+                    return False
+            wait_for(ready, "Qt driver fixture", 90)
+            with QtPage(port) as page:
+                page.click_button("Driver fixture")
+                page.wait_text("trusted click")
+                page.screenshot(folder / "clicked.png")
+            write_json(folder / "result.json", {"qt_driver": "passed", "trusted_mouse_input": True,
+                                               "windows_upgrade_evidence": False})
+            print("Qt page driver: trusted click and screenshot passed")
+        finally:
+            if process.poll() is None:
+                process.terminate()
+                process.wait(timeout=10)
 
 
 def tls_files(folder):
@@ -125,7 +236,8 @@ with connect() as db:
  db.execute("INSERT INTO c2_runtime_state(key,value,updated_at) VALUES(?,?,?)",('upgrade_gate_history','{\"completed\":true}',now))
  db.execute("INSERT INTO c2_message_ledger(conversation_id,source_message_key,origin_read_run_id,dedupe_key,message_type,terminal_state,ingest_state,result_json,first_seen_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?)",('isolated-history','isolated-message','isolated-read','isolated-dedupe','text','completed','confirmed','{}',now,now))
 """
-    subprocess.run([sys.executable, "-c", code, WORKER_ID, TOKEN, INSTANCE_ID, status], env={**env, "PYTHONPATH": str(source)}, check=True)
+    subprocess.run([sys.executable, "-c", code, WORKER_ID, TOKEN, INSTANCE_ID, status],
+                   env={**env, "PYTHONPATH": str(source)}, cwd=source, check=True)
     (data / "incidents").mkdir(exist_ok=True)
     (data / "incidents" / "existing-evidence.json").write_text('{"synthetic":true}', encoding="utf-8")
 
@@ -142,7 +254,6 @@ def preserved_values(data):
 
 
 def run_case(args, status):
-    from playwright.sync_api import sync_playwright
     import psutil
     case = args.work_root / status
     case.mkdir(parents=True, exist_ok=False)
@@ -210,13 +321,11 @@ def run_case(args, status):
             except OSError:
                 return False
         wait_for(debug_ready, "original Worker UI")
-        with sync_playwright() as pw:
-            browser = pw.chromium.connect_over_cdp(f"http://127.0.0.1:{debug_port}", timeout=30000)
-            page = browser.contexts[0].pages[0]
-            page.get_by_role("button", name="打开设置", exact=True).click(timeout=60000)
-            page.get_by_text("V0.9.69", exact=True).wait_for(timeout=30000)
-            page.screenshot(path=str(case / "before.png"))
-            page.get_by_role("button", name="检查更新", exact=True).click(timeout=30000)
+        with QtPage(debug_port) as page:
+            page.click_button("打开设置")
+            page.wait_text("V0.9.69")
+            page.screenshot(case / "before.png")
+            page.click_button("检查更新")
             report["real_settings_button_clicked"] = True
             # The original coordinator owns plan creation and normal shutdown.
             # Do not close the browser, inject a plan, or terminate the old EXE.
@@ -228,7 +337,7 @@ def run_case(args, status):
                 state = read_json(state_path)
                 if state.get("state") in {"failed", "rolled_back", "rollback_failed"}:
                     raise AssertionError("Original GUI update failed: " + str(state.get("result_code")))
-                return state if state.get("state") == "succeeded" and not state.get("status_restore_pending") else False
+                return state if state.get("state") == "succeeded" and state.get("result_reconciled") is True and not state.get("status_restore_pending") else False
             state = wait_for(finished, "original GUI full upgrade", timeout=300)
             assert old.poll() is not None, "Original Worker did not exit"
             plan_path = Path(state["plan_path"])
@@ -248,11 +357,10 @@ def run_case(args, status):
             target_manifest = read_json(current / "update-package-manifest.json")
             assert target_manifest["git_commit"] == read_json(args.release)["git_commit"]
             assert target_manifest["version"] == "0.9.70"
-            new_browser = pw.chromium.connect_over_cdp(f"http://127.0.0.1:{debug_port}", timeout=30000)
-            new_page = new_browser.contexts[0].pages[0]
-            new_page.get_by_role("button", name="打开设置", exact=True).click(timeout=30000)
-            new_page.get_by_text("V0.9.70", exact=True).wait_for(timeout=30000)
-            new_page.screenshot(path=str(case / "after.png"))
+            with QtPage(debug_port) as new_page:
+                new_page.click_button("打开设置")
+                new_page.wait_text("V0.9.70")
+                new_page.screenshot(case / "after.png")
             requests = [json.loads(line) for line in Path(spec["requests"]).read_text().splitlines()]
             assert any(r["kind"] == "latest" and r["current_version"] == "0.9.69" and r["status"] == 200 for r in requests)
             assert any(r["kind"] == "download" and r["status"] == 200 for r in requests)
@@ -281,12 +389,20 @@ def run_case(args, status):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--serve", type=Path)
+    parser.add_argument("--driver-smoke", type=Path)
+    parser.add_argument("--serve-driver-fixture", action="store_true")
     parser.add_argument("--old-package-root", type=Path)
     parser.add_argument("--old-source-root", type=Path)
     parser.add_argument("--archive", type=Path)
     parser.add_argument("--release", type=Path)
     parser.add_argument("--work-root", type=Path)
     args = parser.parse_args()
+    if args.serve_driver_fixture:
+        serve_driver_fixture()
+        return
+    if args.driver_smoke:
+        driver_smoke(args.driver_smoke.resolve())
+        return
     if args.serve:
         serve(read_json(args.serve))
         return
