@@ -364,12 +364,17 @@ def duplicate_preview(db: Session, phones: list[str]) -> dict:
 
 
 def _lead_list_item(lead: Lead) -> dict:
+    from sqlalchemy.orm import object_session
+    from app.services.followup_eligibility import followup_block_reason
+    session = object_session(lead)
+    block_reason = followup_block_reason(session, lead.id, lock=False) if session else None
     primary_phone = _primary_contact(lead, ContactType.phone)
     primary_wechat = _primary_contact(lead, ContactType.wechat)
     return {
         "id": lead.id,
         "customer_name": lead.customer_name,
         "status": lead.status,
+        "followup_block_reason": block_reason,
         "source_type": lead.source_type,
         "source_name_snapshot": lead.source_name_snapshot,
         "primary_phone_masked": primary_phone.masked_value if primary_phone else None,
@@ -596,9 +601,12 @@ def update_lead(db: Session, lead_id: str, payload: LeadUpdate, actor: ActorCont
 
 
 def mark_invalid(db: Session, lead_id: str, payload: MarkInvalidRequest, actor: ActorContext) -> dict:
-    lead = db.get(Lead, lead_id)
+    from app.services.followup_eligibility import lock_leads, revoke_followup
+    lead = lock_leads(db, [lead_id]).get(lead_id)
     if not lead or lead.deleted_at:
         raise AppError("LEAD_NOT_FOUND", "线索不存在", 404)
+    if lead.status == LeadStatus.invalid.value:
+        return get_lead_detail(db, lead.id)
     before = {"status": lead.status, "invalid_reason": lead.invalid_reason}
     lead.status = LeadStatus.invalid.value
     lead.invalid_reason = payload.invalid_reason.value
@@ -617,52 +625,34 @@ def mark_invalid(db: Session, lead_id: str, payload: MarkInvalidRequest, actor: 
         before_data=before,
         after_data={"status": lead.status, "invalid_reason": lead.invalid_reason},
     )
+    revoke_followup(db, lead, actor)
     return get_lead_detail(db, lead.id)
 
 
 def batch_mark_invalid(db: Session, lead_ids: list[str], payload: MarkInvalidRequest, actor: ActorContext) -> dict:
+    from app.services.followup_eligibility import lock_leads
     if not lead_ids:
         raise AppError("VALIDATION_ERROR", "请选择要标记的线索", 400)
-    leads = list(db.scalars(select(Lead).where(Lead.id.in_(lead_ids), Lead.deleted_at.is_(None))).all())
-    found = {lead.id for lead in leads}
+    rows = lock_leads(db, lead_ids)
     results = []
-    for requested_id in lead_ids:
-        if requested_id not in found:
-            results.append({"lead_id": requested_id, "status": "skipped", "reason": "线索不存在"})
-
-    for lead in leads:
-        before = {"status": lead.status, "invalid_reason": lead.invalid_reason}
-        lead.status = LeadStatus.invalid.value
-        lead.invalid_reason = payload.invalid_reason.value
-        lead.invalid_remark = payload.invalid_remark
-        lead.invalid_at = utcnow()
-        lead.invalid_by = str(actor.operator_id)
-        lead.updated_by = str(actor.operator_id)
-        write_log(
-            db,
-            actor,
-            event_type="lead_marked_invalid",
-            module="lead",
-            target_type="lead",
-            target_id=lead.id,
-            lead_id=lead.id,
-            before_data=before,
-            after_data={"status": lead.status, "invalid_reason": lead.invalid_reason},
-            metadata={"batch": True},
-        )
-        results.append({"lead_id": lead.id, "status": "succeeded"})
-    return {
-        "requested": len(lead_ids),
-        "succeeded": sum(1 for item in results if item["status"] == "succeeded"),
-        "skipped": sum(1 for item in results if item["status"] == "skipped"),
-        "items": results,
-    }
+    for lead_id in sorted(set(lead_ids)):
+        lead = rows.get(lead_id)
+        if lead is None or lead.deleted_at:
+            results.append({"lead_id": lead_id, "status": "skipped", "reason": "线索不存在"})
+        else:
+            mark_invalid(db, lead_id, payload, actor)
+            results.append({"lead_id": lead_id, "status": "succeeded"})
+    return {"requested": len(lead_ids), "succeeded": sum(x["status"] == "succeeded" for x in results),
+            "skipped": sum(x["status"] == "skipped" for x in results), "items": results}
 
 
 def restore_lead(db: Session, lead_id: str, actor: ActorContext) -> dict:
-    lead = db.get(Lead, lead_id)
+    from app.services.followup_eligibility import lock_leads, revoke_followup
+    lead = lock_leads(db, [lead_id]).get(lead_id)
     if not lead or lead.deleted_at:
         raise AppError("LEAD_NOT_FOUND", "线索不存在", 404)
+    if lead.status != LeadStatus.invalid.value:
+        return get_lead_detail(db, lead.id)
     before = {"status": lead.status, "invalid_reason": lead.invalid_reason}
     lead.status = LeadStatus.assigned.value if lead.sales_id else LeadStatus.unassigned.value
     lead.assign_status = AssignStatus.assigned.value if lead.sales_id else AssignStatus.unassigned.value
@@ -682,6 +672,7 @@ def restore_lead(db: Session, lead_id: str, actor: ActorContext) -> dict:
         before_data=before,
         after_data={"status": lead.status},
     )
+    revoke_followup(db, lead, actor, restoring=True)
     return get_lead_detail(db, lead.id)
 
 

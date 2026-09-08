@@ -7859,7 +7859,7 @@ def test_dismiss_sidebar_search_state_retries_until_search_focus_is_gone() -> No
 
         def fake_capture(hwnd, artifact_dir=None, label="open_chat"):
             calls["captures"] += 1
-            image = focused if calls["captures"] == 1 else normal
+            image = focused if calls["captures"] <= 2 else normal
             _register_compat_image_layout(sidecar_mod, image, hwnd=int(hwnd))
             return image, f"{label}_{calls['captures']}.png"
 
@@ -7876,8 +7876,6 @@ def test_dismiss_sidebar_search_state_retries_until_search_focus_is_gone() -> No
                     "center_y": 65,
                 }
             ]
-            if image is focused
-            else []
         )
         sidecar_mod.target_switch_surface_state = lambda *args, **kwargs: {"ok": True, "reason": "surface_ready"}
         sidecar_mod.time.sleep = lambda seconds: None
@@ -7890,7 +7888,7 @@ def test_dismiss_sidebar_search_state_retries_until_search_focus_is_gone() -> No
         assert_true(result.get("ok") is True, f"dismiss should succeed after focus clears: {result}")
         assert_true(result.get("attempts") == 1, f"dismiss should clear and verify in one guarded round: {result}")
         assert_true(
-            calls == {"keys": 1, "hotkeys": 1, "clicks": 2, "captures": 3},
+            calls == {"keys": 1, "hotkeys": 1, "clicks": 2, "captures": 4},
             f"dismiss should clear search then click a fresh blank header target without ESC: {calls}",
         )
     finally:

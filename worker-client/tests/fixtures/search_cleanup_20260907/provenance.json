@@ -1,0 +1,18 @@
+{
+  "provenance": "User supplied chejin-existing-20260907-200033.zip; original Windows screenshots from 19:45 locate batch. idle is a pre-search reference, NOT an observed post-fix capture.",
+  "ocr": "Manually transcribed visible search/header/list labels for deterministic external OCR boundary; not a production OCR accuracy claim.",
+  "files": {
+    "idle": {
+      "original": "messages_search_baseline_1788781572897.png",
+      "sha256": "24d05aa73b5f4257594afa8328624fed97288da05fa68efd91012d36eec446f8"
+    },
+    "focused": {
+      "original": "open_chat_search_box_after_click_1788781579757.png",
+      "sha256": "49e8d12c615e05b87473fd5d6bebf6e4f40f7ec44c8e270c123f263d21ee4c3c"
+    },
+    "results": {
+      "original": "messages_search_by_remark_code_results_after_nudge_1788781605649.png",
+      "sha256": "e2e68d68b9f5dd491b3d907438fdd39157d447db3e2e948eecc1d117f0e0aca1"
+    }
+  }
+}

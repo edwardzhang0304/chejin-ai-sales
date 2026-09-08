@@ -1,0 +1,21 @@
+{
+  "source_commit": "fd2c9d7700bac78710022b2a0c3579537395fc3e",
+  "contract_revision": "0.9.70",
+  "contract_sha256": "9a41f79da6b9dea74d23a2cc0ac5963a259f03285cf42432f6223816eb92c287",
+  "application_version": "0.9.70",
+  "independent_review_tests": 132,
+  "independent_review_sha256": "12c707ec8f4a37cfa0eec40fb036f6bbe03eaf1f67c5e77716da195944819e71",
+  "independent_review_executed_this_turn": false,
+  "source_replay_uses_private_windows_screenshots": true,
+  "source_replay_ocr": "manually transcribed boundary",
+  "public_screenshots_included": false,
+  "package_built": false,
+  "deployed": false,
+  "automatic_update_enabled": false,
+  "source_hashes": {
+    "worker-client/chejin_worker_client/task_runner.py": "8c91f16186983713d59d1546480c7d853dda39f683dadacde902125e8d533c6b",
+    "backend/app/services/followup_eligibility.py": "f1a88ec05f6d2f587a56aad092de6110663cc48582d7ac09e24f78ea58924483",
+    "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/adapters/wechat_win32_ocr_sidecar.py": "322eb51e58a12ea7c84cf7a290b8f01679bbfae4f38cee2fc9b751f69e72320e",
+    "contracts/c2_contract_v3.json": "054ccf107dfc7806b389bd3ff036b326b370bfdb717167632a1e9960f2ce1f77"
+  }
+}

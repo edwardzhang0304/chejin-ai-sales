@@ -900,6 +900,10 @@ def message_batch_continuation_authorization(
     presented_token: str | None = None,
 ) -> dict[str, Any]:
     """Return a batch-scoped ticket; never widen global read-target admission."""
+    from app.services.followup_eligibility import followup_block_reason
+    if followup_block_reason(db, binding.lead_id):
+        return {"allowed": False, "error_code": "LEAD_INVALID", "followup_block_reason": "LEAD_INVALID",
+                "conversation_id": binding.conversation_id, "recovery_decision": "cancel"}
 
     from app.services.wechat_service import _authorization_revision
 
@@ -1492,6 +1496,8 @@ def create_control_message_batch(
     recall_cycle_id: str | None = None,
     trace_id: str | None = None,
 ) -> dict[str, Any]:
+    from app.services.followup_eligibility import require_conversation_followup
+    require_conversation_followup(db, conversation_id, require_fresh_read=True)
     conversation = db.scalar(
         select(Conversation)
         .where(Conversation.conversation_id == conversation_id)
@@ -1540,6 +1546,8 @@ def collect_message_batch(
     trigger_message_event_id: str,
     trace_id: str | None = None,
 ) -> dict[str, Any]:
+    from app.services.followup_eligibility import require_conversation_followup
+    require_conversation_followup(db, conversation_id, require_fresh_read=True)
     binding = _binding_or_404(db, conversation_id)
     conversation = db.scalar(
         select(Conversation)
@@ -1661,6 +1669,8 @@ def collect_recovered_customer_message_batch(
     fresh reply work needed after that handoff closes.  Recovery therefore has
     its own stable trigger, keyed by the ordered database event IDs.
     """
+    from app.services.followup_eligibility import require_conversation_followup
+    require_conversation_followup(db, conversation_id, require_fresh_read=True)
 
     unique_ids = list(
         dict.fromkeys(
@@ -2741,7 +2751,10 @@ def _create_send_failure_handoff(
     conversation: Conversation,
     error_code: str,
     send_result: str,
-) -> HandoffEvent:
+) -> HandoffEvent | None:
+    from app.services.followup_eligibility import followup_block_reason, revoked_reply_action
+    if followup_block_reason(db, conversation.lead_id) or revoked_reply_action(db, conversation.lead_id, action.id):
+        return None
     batch = db.get(MessageBatch, action.batch_id)
     event, _created = _create_or_reuse_open_handoff(
         db,
@@ -2783,6 +2796,10 @@ def handoff_unsent_reply_recovery_failure(
     reply_action_id: str,
     error_code: str,
 ) -> HandoffEvent | None:
+    from app.services.followup_eligibility import conversation_lead_id, followup_block_reason
+    conversation_id = db.scalar(select(ReplyAction.conversation_id).where(ReplyAction.id == reply_action_id))
+    if conversation_id and followup_block_reason(db, conversation_lead_id(db, conversation_id)):
+        return None
     action = db.get(ReplyAction, reply_action_id)
     if (
         not action
@@ -3061,6 +3078,15 @@ def claim_message_batch_generation(
     force: bool = False,
 ) -> dict[str, Any]:
     """Persist generation ownership before dispatching non-durable background work."""
+    from app.services.followup_eligibility import require_conversation_followup
+    followup_conversation_id = db.scalar(select(MessageBatch.conversation_id).where(MessageBatch.id == batch_id))
+    if followup_conversation_id:
+        try:
+            require_conversation_followup(db, followup_conversation_id)
+        except AppError as exc:
+            if exc.code != "LEAD_INVALID":
+                raise
+            return {"run": False, "terminal": True, "error_code": "LEAD_INVALID"}
 
     batch = db.scalar(
         select(MessageBatch)
@@ -3069,6 +3095,8 @@ def claim_message_batch_generation(
     )
     if not batch:
         raise AppError("MESSAGE_BATCH_NOT_FOUND", "消息批次不存在", 404)
+    if batch.status == "cancelled" and batch.suggested_action == "LEAD_INVALID":
+        return {"run": False, "terminal": True, "decision": "no_action", "error_code": "LEAD_INVALID"}
     if batch.status not in ACTIVE_BATCH_STATUSES and not force:
         return {"run": False, "terminal": True, "batch": _batch_to_dict(batch)}
 
@@ -3143,9 +3171,20 @@ def generate_for_batch(
     force: bool = False,
     expected_generation_attempt: int | None = None,
 ) -> dict[str, Any]:
+    from app.services.followup_eligibility import require_conversation_followup
+    followup_conversation_id = db.scalar(select(MessageBatch.conversation_id).where(MessageBatch.id == batch_id))
+    if followup_conversation_id:
+        try:
+            require_conversation_followup(db, followup_conversation_id)
+        except AppError as exc:
+            if exc.code != "LEAD_INVALID":
+                raise
+            return {"run": False, "terminal": True, "decision": "no_action", "error_code": "LEAD_INVALID"}
     batch = db.scalar(select(MessageBatch).where(MessageBatch.id == batch_id, MessageBatch.deleted_at.is_(None)).with_for_update())
     if not batch:
         raise AppError("MESSAGE_BATCH_NOT_FOUND", "消息批次不存在", 404)
+    if batch.status == "cancelled" and batch.suggested_action == "LEAD_INVALID":
+        return {"decision": "no_action", "error_code": "LEAD_INVALID", "task_id": None}
     if expected_generation_attempt is not None and (
         batch.status != "generating"
         or int(batch.generation_attempt_count or 0) != int(expected_generation_attempt)
@@ -3308,6 +3347,13 @@ def generate_for_batch(
         round((time.perf_counter() - generation_started_monotonic) * 1000)
     )
 
+    # The provider ran outside the transaction; serialize with invalidation again.
+    try:
+        require_conversation_followup(db, followup_conversation_id)
+    except AppError as exc:
+        if exc.code != "LEAD_INVALID":
+            raise
+        return {"decision": "no_action", "error_code": "LEAD_INVALID", "reply_action_id": None, "task_id": None}
     batch = db.scalar(
         select(MessageBatch)
         .where(
@@ -3653,6 +3699,13 @@ def claim_send(
 ) -> dict[str, Any]:
     # Local import avoids the c3 <-> wechat service module cycle while keeping
     # the authorization algorithm owned by exactly one backend implementation.
+    from app.services.followup_eligibility import require_conversation_followup
+    followup_conversation_id = db.scalar(select(ReplyAction.conversation_id).where(ReplyAction.id == reply_action_id))
+    if followup_conversation_id:
+        require_conversation_followup(db, followup_conversation_id)
+        from app.services.followup_eligibility import conversation_lead_id, revoked_reply_action
+        if revoked_reply_action(db, conversation_lead_id(db, followup_conversation_id), reply_action_id):
+            raise AppError("LEAD_INVALID", "旧发送许可已撤销，仅允许结算原回执", 409)
     from app.services.wechat_service import _authorization_revision
 
     # Vehicle mutations lock Product Master first and then dependent actions.
@@ -3752,6 +3805,11 @@ def claim_send(
 
 
 def sent_ack(db: Session, *, reply_action_id: str, payload: Any) -> dict[str, Any]:
+    from app.services.followup_eligibility import conversation_lead_id, followup_block_reason
+    followup_conversation_id = db.scalar(select(ReplyAction.conversation_id).where(ReplyAction.id == reply_action_id))
+    from app.services.followup_eligibility import revoked_reply_action
+    followup_lead_id = conversation_lead_id(db, followup_conversation_id) if followup_conversation_id else None
+    followup_cancelled = bool(followup_block_reason(db, followup_lead_id)) or revoked_reply_action(db, followup_lead_id, reply_action_id)
     existing = db.scalar(select(SentAck).where(SentAck.reply_action_id == reply_action_id))
     if existing:
         return {"duplicated": True, "ack": _sent_ack_to_dict(existing), "error_code": "SEND_ACK_DUPLICATED", "suggested_action": "use_existing_ack"}
@@ -3865,7 +3923,7 @@ def sent_ack(db: Session, *, reply_action_id: str, payload: Any) -> dict[str, An
         newer_sales_turn = bool(
             claim_boundary and last_sales and last_sales > claim_boundary
         )
-        if action.decision == "reply_then_handoff":
+        if not followup_cancelled and action.decision == "reply_then_handoff":
             open_handoffs = open_handoff_events_for_conversation(
                 db,
                 action.conversation_id,
@@ -3874,7 +3932,7 @@ def sent_ack(db: Session, *, reply_action_id: str, payload: Any) -> dict[str, An
             if open_handoffs:
                 conversation.status = "waiting_sales_reply"
                 conversation.next_recall_at = None
-        elif not newer_customer_turn and not newer_sales_turn:
+        elif not followup_cancelled and not newer_customer_turn and not newer_sales_turn:
             conversation.status = "waiting_user_reply"
             if batch and batch.trigger_type == "recall":
                 conversation.status = "recalled_waiting_user"
@@ -3943,6 +4001,10 @@ def recover_stale_sending_reply_action(
     reply_action_id: str,
     now: datetime | None = None,
 ) -> bool:
+    from app.services.followup_eligibility import conversation_lead_id, lock_leads
+    followup_conversation_id = db.scalar(select(ReplyAction.conversation_id).where(ReplyAction.id == reply_action_id))
+    if followup_conversation_id:
+        lock_leads(db, [conversation_lead_id(db, followup_conversation_id)])
     action = db.scalar(
         select(ReplyAction)
         .where(

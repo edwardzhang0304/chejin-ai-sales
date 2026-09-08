@@ -66,6 +66,7 @@ class ContactOut(BaseModel):
 
 
 class LeadListItem(BaseModel):
+    followup_block_reason: str | None = None
     id: str
     customer_name: str
     status: str

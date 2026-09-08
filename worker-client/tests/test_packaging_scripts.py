@@ -1103,21 +1103,24 @@ class PackagingScriptsTest(unittest.TestCase):
                     "source_commit": "c752cbd31b476cb5e7b2cb4ccd4d500b913aec6c",
                     "scope": ["c2_contract_0_9_68_generated_schema"],
                 },
+                {
+                    "source_commit": "fd2c9d7700bac78710022b2a0c3579537395fc3e",
+                    "scope": [
+                        "failed_sidebar_search_fresh_frame_cleanup",
+                        "active_sidebar_search_blocks_session_scan",
+                        "c2_contract_0_9_70_generated_schema",
+                    ],
+                },
             ],
         )
         self.assertEqual(
             provenance["current_release"],
             {
-                "version": "0.9.68",
-                "source_commit": "c752cbd31b476cb5e7b2cb4ccd4d500b913aec6c",
-                "contract_revision": "0.9.68",
-                "contract_sha256": (
-                    "23c30e5a5cce3b2e0d5e697fe2733cf670d3c8cde04665c68997e9762977f1a3"
-                ),
-                "scope": (
-                    "Generated 0.9.68 schema following reviewed Brain guidance "
-                    "and segmented fact validation fix"
-                ),
+                "version": "0.9.70",
+                "source_commit": "fd2c9d7700bac78710022b2a0c3579537395fc3e",
+                "contract_revision": "0.9.70",
+                "contract_sha256": "9a41f79da6b9dea74d23a2cc0ac5963a259f03285cf42432f6223816eb92c287",
+                "scope": "Reviewed failed-search cleanup and generated 0.9.70 lead cancellation contract schema",
             },
         )
         self.assertIn(

@@ -1488,6 +1488,7 @@ class FakeApi:
         flow_kind: str,
         conversation_id: str | None = None,
         unread_generation: int | None = None,
+        authorization_revision: str | None = None,
     ):
         self.inflight_flow_start_payloads.append(
             {
@@ -5220,6 +5221,40 @@ class TaskRunnerTest(unittest.TestCase):
         self.assertIsNone(load_runtime_control()["inflight_flow_id"])
         self.assertEqual(bridge.locate_payloads, [])
         self.assertEqual(bridge.sent_replies, [])
+
+    def _assert_restart_finish_conflict_blocks(self, error_code):
+        # API boundary failure: serialization must not turn a genuine 409
+        # into a successful local finish or discard the durable receipt.
+        api = FakeApi(None)
+        api.finish_inflight_error = ApiError(error_code, "未结算", 409)
+        bridge = FakeBridge(RpaResult(ok=True, result_code="unused"))
+        runner, seen = self.make_runner(api, bridge)
+        binding = Binding("worker-1", "token", "client-1", run_status="running")
+        runner.binding = binding
+        flow_id = "read-restart-rejected"
+        begin_runtime_flow(flow_id, "c2_read")
+        runner._restart_recovery_flow_id = flow_id
+        api.inflight_flow_id = flow_id
+        api.inflight_flow_state = {"status": "active", "flow_id": flow_id, "flow_kind": "c2_read"}
+        runner._backend_inflight_flow_state = dict(api.inflight_flow_state)
+        receipt_key = runner._inflight_finish_receipt_key(flow_id)
+        save_c2_state(receipt_key, {"terminal_kind": "read_cancelled", "conversation_id": "conv-1", "error_code": "LEAD_INVALID"})
+
+        runner._finish_restart_recovery_flow_if_settled(binding)
+
+        self.assertEqual(binding.run_status, "paused")
+        self.assertTrue(seen["errors"])
+        self.assertEqual(load_runtime_control()["inflight_flow_id"], flow_id)
+        self.assertEqual(load_c2_state(receipt_key)["terminal_kind"], "read_cancelled")
+        self.assertEqual(len(api.inflight_flow_events), 1)
+        self.assertEqual(bridge.message_reads, [])
+        self.assertEqual(bridge.sent_replies, [])
+
+    def test_restart_finish_actual_mismatch_is_not_ignored(self):
+        self._assert_restart_finish_conflict_blocks("WORKER_INFLIGHT_FLOW_MISMATCH")
+
+    def test_restart_finish_unsettled_facts_are_not_ignored(self):
+        self._assert_restart_finish_conflict_blocks("WORKER_INFLIGHT_FLOW_NOT_SETTLED")
 
     def test_restart_triggered_voice_recovers_gate_finishes_flow_and_pulls(self):
         api = FakeApi(None)

@@ -221,6 +221,10 @@ def _find_leads_by_remark_code(db: Session, remark_code: str) -> list[Lead]:
 
 
 def _binding_to_dict(binding: WechatSessionBinding) -> dict:
+    from sqlalchemy.orm import object_session
+    from app.services.followup_eligibility import followup_block_reason
+    session = object_session(binding)
+    block_reason = followup_block_reason(session, binding.lead_id, lock=False) if session else None
     return {
         "id": binding.id,
         "conversation_id": binding.conversation_id,
@@ -233,6 +237,8 @@ def _binding_to_dict(binding: WechatSessionBinding) -> dict:
         "row_fingerprint": binding.row_fingerprint,
         "bind_status": binding.bind_status,
         "listen_status": binding.listen_status,
+        "followup_block_reason": block_reason,
+        "effective_listening": bool(not block_reason and binding.allow_listening and binding.listen_status == "listening"),
         "allow_listening": binding.allow_listening,
         "authorization_revision": int(binding.authorization_revision or 1),
         "error_code": binding.error_code,
@@ -1429,6 +1435,8 @@ def _sync_read_backoff_with_conversation(
     binding: WechatSessionBinding,
     conversation: Conversation,
 ) -> None:
+    if binding.followup_restore_pending:
+        return
     current_status = str(conversation.status or "")
     previous_status = str(binding.last_read_conversation_status or "")
     if previous_status != current_status:
@@ -1609,7 +1617,9 @@ def _settle_completed_read(
         requested_unread_generation
         > int(binding.consumed_unread_generation or 0)
     )
-    if pending_unread_generation and not read_conclusive:
+    if (
+        pending_unread_generation or binding.followup_restore_pending
+    ) and not read_conclusive:
         if (
             not bounded_retry_managed
             and previous_read_result == "retry_required"
@@ -1665,6 +1675,12 @@ def read_targets(db: Session, worker: Worker, limit: int = 20) -> dict:
     # Lock the complete set that may be validated or dispatched before the
     # Worker row. This preserves Binding -> Worker lock order while ensuring
     # an operator pause cannot race with even the binding-degrade side path.
+    from app.services.followup_eligibility import lock_leads, followup_block_reason
+    lead_ids = list(db.scalars(select(WechatSessionBinding.lead_id).where(WechatSessionBinding.worker_id == worker.id)))
+    lead_ids.extend(db.scalars(select(Conversation.lead_id).join(
+        WechatSessionBinding, WechatSessionBinding.conversation_id == Conversation.conversation_id
+    ).where(WechatSessionBinding.worker_id == worker.id)))
+    lock_leads(db, lead_ids)
     locked_bindings = list(
         db.scalars(
             select(WechatSessionBinding)
@@ -1724,6 +1740,10 @@ def read_targets(db: Session, worker: Worker, limit: int = 20) -> dict:
         }
     targets: list[dict] = []
     for item in bindings:
+        from app.services.followup_eligibility import conversation_lead_id
+        scoped_lead_id = conversation_lead_id(db, item.conversation_id)
+        if followup_block_reason(db, scoped_lead_id):
+            continue
         conversation = _upsert_conversation_for_binding(db, item)
         db.flush()
         conversation = db.scalar(
@@ -2217,6 +2237,9 @@ def _expire_identity_unresolved_recovery_hold(
     worker: Worker | None = None,
 ) -> None:
     """Escalate an untouched identity hold after its bounded 120s window."""
+    from app.services.followup_eligibility import followup_block_reason
+    if followup_block_reason(db, binding.lead_id) or binding.followup_restore_pending:
+        return
 
     current = dict(binding.recovery_hold or {})
     if current.get("status") != "active":
@@ -2309,6 +2332,11 @@ def read_authorization_snapshot(
     enforce_read_due: bool = True,
 ) -> dict:
     """Return the current lightweight authorization without legacy identity history."""
+    from app.services.followup_eligibility import followup_block_reason
+    if followup_block_reason(db, binding.lead_id):
+        return {"allowed": False, "error_code": "LEAD_INVALID", "followup_block_reason": "LEAD_INVALID",
+                "recovery_decision": "cancel", "conversation_id": binding.conversation_id,
+                "authorization_revision": _authorization_revision(binding), "read_reason": ""}
 
     # This endpoint is used repeatedly while a long voice/image action is in
     # flight.  It must observe the already-bound conversation, never create
@@ -2488,6 +2516,8 @@ def read_authorization_for_worker(
     original_authorization_revision: str | None = None,
 ) -> dict:
     """Lightweight long-action authorization check without target discovery data."""
+    from app.services.followup_eligibility import conversation_lead_id, lock_leads
+    lock_leads(db, [conversation_lead_id(db, conversation_id)])
 
     binding = db.scalar(
         select(WechatSessionBinding).where(
@@ -2523,6 +2553,14 @@ def read_authorization_for_worker(
                 == transaction_id,
             )
         )
+        from app.services.followup_eligibility import followup_block_reason, revoked_flow_proof
+        if binding is not None and existing is None and (
+            followup_block_reason(db, binding.lead_id)
+            or (binding.followup_invalidated_revision is not None and original_revision != _authorization_revision(binding))
+        ):
+            original_flow_id = str((worker.inflight_flow_state or {}).get("flow_id") or "")
+            if not revoked_flow_proof(db, binding, original_flow_id, original_revision):
+                raise AppError("MESSAGE_AUTHORIZATION_REVISION_EXPIRED", "缺少原在途动作的撤销凭证，不能取得结算许可", 409)
         settlement_mode = (
             existing.settlement_mode
             if existing
@@ -2673,6 +2711,8 @@ def confirm_friend_activation(
     conversation_id: str,
     payload: WechatFriendActivationConfirmRequest,
 ) -> dict:
+    from app.services.followup_eligibility import require_conversation_followup
+    require_conversation_followup(db, conversation_id)
     binding = db.scalar(
         select(WechatSessionBinding)
         .where(
@@ -2827,6 +2867,8 @@ def _friend_acceptance_recently_visible(binding: WechatSessionBinding) -> bool:
 
 
 def _read_reason(binding: WechatSessionBinding, conversation: Conversation) -> str | None:
+    if binding.followup_restore_pending:
+        return "waiting_sales_reply" if conversation.status == "waiting_sales_reply" else "waiting_user_reply"
     recovery_hold = dict(binding.recovery_hold or {})
     pending_unread = bool(
         binding.unread_hint
@@ -2892,6 +2934,11 @@ def _prepare_due_recall(
     worker: Worker | None = None,
     db: Session | None = None,
 ) -> None:
+    from app.services.followup_eligibility import followup_block_reason
+    if db is not None and followup_block_reason(db, conversation.lead_id):
+        return
+    if binding is not None and binding.followup_restore_pending:
+        return
     if binding is not None:
         if (
             binding.unread_hint
@@ -4119,6 +4166,8 @@ def settle_messages_without_ui(
 
 
 def ingest_messages(db: Session, worker: Worker, payload: WechatMessageIngestRequest) -> dict:
+    from app.services.followup_eligibility import conversation_lead_id, lock_leads, revoked_flow_proof
+    lock_leads(db, [conversation_lead_id(db, payload.conversation_id)])
     binding = db.scalar(
         select(WechatSessionBinding).where(
             WechatSessionBinding.conversation_id == payload.conversation_id,
@@ -4135,7 +4184,11 @@ def ingest_messages(db: Session, worker: Worker, payload: WechatMessageIngestReq
         raise AppError("MESSAGE_TARGET_IDENTITY_MISSING", "V3 消息缺少读取目标短码", 409)
     if observed_remark_code and observed_remark_code != _clean_locator(binding.remark_code):
         raise AppError("MESSAGE_TARGET_IDENTITY_MISMATCH", "读取目标与绑定会话不一致，已拒绝入库", 409)
-    if str(payload.authorization_revision or "") != _authorization_revision(binding):
+    revoked_settlement = revoked_flow_proof(db, binding, payload.read_run_id, str(payload.authorization_revision or ""))
+    from app.services.followup_eligibility import require_followup
+    if not revoked_settlement:
+        require_followup(db, binding.lead_id)
+    if str(payload.authorization_revision or "") != _authorization_revision(binding) and not revoked_settlement:
         raise AppError("MESSAGE_AUTHORIZATION_REVISION_EXPIRED", "读取授权已过期，已拒绝旧任务入库", 409)
     if int(payload.unread_generation or 0) > int(
         binding.unread_generation or 0
@@ -4178,6 +4231,17 @@ def ingest_messages(db: Session, worker: Worker, payload: WechatMessageIngestReq
                 "消息载荷与当前在途读取代次不一致",
                 409,
             )
+    if revoked_settlement and str(inflight_state.get("flow_id") or "") != payload.read_run_id:
+        # A completed revoked Flow can replay an existing fact only. Its old
+        # ticket cannot manufacture additional messages after finish.
+        for item in payload.messages:
+            existing_fact = db.scalar(select(MessageEvent.id).where(
+                MessageEvent.worker_id == worker.id,
+                MessageEvent.conversation_id == payload.conversation_id,
+                MessageEvent.read_run_id == payload.read_run_id,
+                MessageEvent.source_message_key == item.source_message_key))
+            if not existing_fact:
+                raise AppError("MESSAGE_INFLIGHT_FLOW_SCOPE_MISMATCH", "撤销流程已结束，只能确认已入库的原事实", 409)
     _validate_v3_request_contract(payload)
     _validate_non_delivered_frame_observations(db, payload)
     ordered_messages = _ordered_v3_messages(payload)
@@ -4367,7 +4431,7 @@ def ingest_messages(db: Session, worker: Worker, payload: WechatMessageIngestReq
         == incoming_read_reason
     )
     state_transition_allowed = bool(
-        current_authorization_matches or continuation_authorization_matches
+        (current_authorization_matches or continuation_authorization_matches) and not revoked_settlement
     )
     state_transition_reason = (
         "batch_continuation_matches"
@@ -4905,8 +4969,16 @@ def ingest_messages(db: Session, worker: Worker, payload: WechatMessageIngestReq
         )
 
     if not state_transition_allowed:
+        if revoked_settlement and (not partitioned or partition_final):
+            binding.last_read_run_id = payload.read_run_id
+            binding.last_read_completed_at = utcnow()
+            binding.last_read_result = "cancelled"
         db.flush()
         return {
+            **({"followup_block_reason": "LEAD_INVALID", "error_code": "LEAD_INVALID",
+                **({"read_completion": {"read_run_id": payload.read_run_id, "result": "cancelled"}}
+                   if not partitioned or partition_final else {})}
+               if revoked_settlement else {}),
             "ingested_count": ingested_count,
             "duplicated_count": duplicated_count,
             "ignored_count": ignored_count,
@@ -5092,6 +5164,71 @@ def ingest_messages(db: Session, worker: Worker, payload: WechatMessageIngestReq
             "媒体动作技术故障不得作为消息恢复或转人工门禁上报",
             409,
         )
+    if binding.followup_restore_pending:
+        # Confirm the fresh complete read *before* opening the shared C3 gate.
+        # Accepted facts/partitions alone cannot authorize new follow-up. The
+        # ordinary final settlement below is idempotent for this same run.
+        restore_completion = None
+        restore_read_confirmed = bool(
+            not flow_gate_errors
+            and not ignored_count
+            and _complete_authoritative_viewport_confirmed(evidence_payload)
+        )
+        if not partitioned or partition_final:
+            restore_completion = _settle_completed_read(
+                binding,
+                conversation,
+                read_run_id=payload.read_run_id,
+                has_new_facts=read_has_new_facts,
+                read_conclusive=restore_read_confirmed,
+                bounded_retry_managed=False,
+                unread_generation=payload.unread_generation,
+            )
+            if restore_read_confirmed and restore_completion["result"] in {
+                "new_facts", "no_change",
+            }:
+                binding.followup_restore_pending = False
+                if binding.recovery_hold:
+                    binding.recovery_hold = {
+                        **binding.recovery_hold, "status": "suspended",
+                    }
+                # An earlier inconclusive read may have stored facts without
+                # authorizing Brain. The fresh frame can now collect those
+                # unbatched facts; events already owned by an old batch must
+                # not revive cancelled replies or repeat a completed reply.
+                batched_event_ids = {
+                    event_id
+                    for ids in db.scalars(
+                        select(MessageBatch.message_event_ids).where(
+                            MessageBatch.conversation_id == payload.conversation_id,
+                        )
+                    )
+                    for event_id in (ids or [])
+                }
+                new_customer_message_ids = [
+                    event_id for event_id in authoritative_customer_tail_ids
+                    if event_id not in batched_event_ids
+                ]
+        if binding.followup_restore_pending:
+            db.flush()
+            return {
+                "ingested_count": ingested_count,
+                "duplicated_count": duplicated_count,
+                "ignored_count": ignored_count,
+                "results": results,
+                "state_transition_applied": True,
+                "state_transition_reason": state_transition_reason,
+                "next_action": NEXT_ACTION_NONE,
+                **({"read_completion": restore_completion} if restore_completion else {}),
+                **({
+                    "ingest_partition": {
+                        "group_id": payload.read_run_id,
+                        "index": partition_index,
+                        "count": partition_count,
+                        "complete": partition_final,
+                    },
+                } if partitioned else {}),
+            }
     temporary_capability_gates = [
         code
         for code in flow_gate_errors

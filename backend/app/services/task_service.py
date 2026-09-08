@@ -80,6 +80,8 @@ def renew_task_lease(
     lease_fencing_token: int,
     current_step: str | None,
 ) -> dict[str, Any]:
+    from app.services.followup_eligibility import require_followup
+    require_followup(db, db.scalar(select(Task.lead_id).where(Task.id == task_id)))
     task = db.scalar(
         select(Task)
         .options(*_task_load_options())
@@ -779,6 +781,8 @@ def create_add_friend_task(
     worker_id: str | None = None,
     remark: str | None = None,
 ) -> dict[str, Any]:
+    from app.services.followup_eligibility import require_followup
+    require_followup(db, lead_id)
     lead = db.scalar(select(Lead).options(selectinload(Lead.contacts), selectinload(Lead.sales)).where(Lead.id == lead_id, Lead.deleted_at.is_(None)))
     if not lead:
         raise AppError("LEAD_NOT_FOUND", "线索不存在", 404)
@@ -827,6 +831,8 @@ def create_add_friend_task_for_lead(db: Session, lead: Lead, actor: ActorContext
 
 
 def unblock_sales_worker_tasks(db: Session, sales_id: str, worker_id: str, actor: ActorContext) -> int:
+    from app.services.followup_eligibility import lock_leads, followup_block_reason
+    lock_leads(db, db.scalars(select(Task.lead_id).where(Task.sales_id == sales_id)))
     worker = db.get(Worker, worker_id)
     if not worker or worker.deleted_at or not worker.enabled:
         return 0
@@ -843,7 +849,11 @@ def unblock_sales_worker_tasks(db: Session, sales_id: str, worker_id: str, actor
             .with_for_update()
         )
     )
+    unblocked_count = 0
     for task in rows:
+        if followup_block_reason(db, task.lead_id):
+            continue
+        unblocked_count += 1
         before = task.status
         task.status = TaskStatus.pending.value
         task.worker_id = worker.id
@@ -859,7 +869,7 @@ def unblock_sales_worker_tasks(db: Session, sales_id: str, worker_id: str, actor
             after_data={"status": task.status, "worker_id": worker.id},
         )
     db.flush()
-    return len(rows)
+    return unblocked_count
 
 
 def add_comment(db: Session, task_id: str, content: str, actor: ActorContext) -> dict[str, Any]:
@@ -904,6 +914,8 @@ def claim_task(
 ) -> dict[str, Any]:
     # The task row is the server-side claim boundary. Without a row lock, two
     # transactions can both observe pending and issue different leases.
+    from app.services.followup_eligibility import require_followup
+    require_followup(db, db.scalar(select(Task.lead_id).where(Task.id == task_id)))
     task = db.scalar(_task_claim_statement(task_id))
     if not task:
         raise AppError("TASK_NOT_FOUND", "任务不存在", 404)
@@ -1039,7 +1051,7 @@ def pull_task_for_worker(db: Session, worker: Worker) -> dict[str, Any]:
     if not can_claim:
         return {"mode": "idle", "can_claim": False, "reason": reason, "task": None}
 
-    pending_task = db.scalar(
+    candidates = list(db.scalars(
         select(Task)
         .options(*_task_load_options())
         .where(
@@ -1055,7 +1067,10 @@ def pull_task_for_worker(db: Session, worker: Worker) -> dict[str, Any]:
             Task.created_at.asc(),
             Task.id.asc(),
         )
-    )
+    ))
+    from app.services.followup_eligibility import lock_leads, followup_block_reason
+    lock_leads(db, [task.lead_id for task in candidates])
+    pending_task = next((task for task in candidates if not followup_block_reason(db, task.lead_id)), None)
     return {
         "mode": "pending" if pending_task else "idle",
         "can_claim": bool(pending_task),
@@ -1065,6 +1080,9 @@ def pull_task_for_worker(db: Session, worker: Worker) -> dict[str, Any]:
 
 
 def update_step(db: Session, task_id: str, current_step: str, remark: str | None, actor: ActorContext) -> dict[str, Any]:
+    from app.services.followup_eligibility import lock_leads
+    # Step reports record the current action; claim/renew grant new work.
+    lock_leads(db, [db.scalar(select(Task.lead_id).where(Task.id == task_id))])
     task = get_task_or_404(db, task_id)
     if task.status != TaskStatus.running.value:
         raise AppError("TASK_STEP_NOT_ALLOWED", "仅 running 任务可更新执行步骤", 409)
@@ -1076,6 +1094,8 @@ def update_step(db: Session, task_id: str, current_step: str, remark: str | None
 
 
 def complete_task(db: Session, task_id: str, result_code: TaskResultCode, remark: str | None, actor: ActorContext) -> dict[str, Any]:
+    from app.services.followup_eligibility import lock_leads
+    lock_leads(db, [db.scalar(select(Task.lead_id).where(Task.id == task_id))])
     task = get_task_or_404(db, task_id)
     if task.status != TaskStatus.running.value:
         raise AppError("TASK_COMPLETE_NOT_ALLOWED", "仅 running 任务可完成", 409)
@@ -1136,6 +1156,17 @@ def fail_task(
     *,
     allow_pending_chat_reply_recovery: bool = False,
 ) -> dict[str, Any]:
+    from app.services.followup_eligibility import followup_block_reason
+    blocked = followup_block_reason(db, db.scalar(select(Task.lead_id).where(Task.id == task_id)))
+    if blocked:
+        task = get_task_or_404(db, task_id)
+        action = db.get(ReplyAction, task.reply_action_id) if task.reply_action_id else None
+        if action and action.status == "sending":
+            raise AppError("REPLY_ACTION_SENT_ACK_REQUIRED", "已签发发送许可，须通过原 sent_ack 结算", 409)
+        if task.status == TaskStatus.cancelled.value:
+            return task_to_detail(task)
+        if task.status in CANCELLABLE_TASK_STATUSES:
+            return cancel_task(db, task_id, blocked, actor)
     task = get_task_or_404(db, task_id)
     pending_reply_recovery = (
         allow_pending_chat_reply_recovery

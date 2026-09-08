@@ -1,6 +1,6 @@
 {
   "contract_version": 3,
-  "contract_revision": "0.9.68",
+  "contract_revision": "0.9.70",
   "observation_schema_version": 3,
   "control_schema_version": 1,
   "client_update_contract": {
@@ -432,9 +432,19 @@
     "backend_states": ["active", "draining"],
     "continuation_header": "X-Inflight-Flow-Id",
     "start_scope": {
-      "c2_read_required_fields": ["conversation_id", "unread_generation"],
+      "c2_read_required_fields": ["conversation_id", "unread_generation", "authorization_revision"],
       "conversation_id_rule": "every_scoped_c2_or_c3_flow_must_be_bound_to_the_authorized_conversation_before_any_recovery_hold_or_recall_transition",
       "unread_generation_rule": "c2_read_must_carry_the_exact_backend_issued_unread_generation"
+    },
+    "lead_followup_eligibility": {
+      "owner": "backend",
+      "block_reason": "LEAD_INVALID",
+      "command_http_status": 409,
+      "query_behavior": "allowed=false; no new target or action permit",
+      "invalidation_rule": "lock Lead before downstream rows; increment binding revision once per transition; preserve configured listening and Handoff",
+      "settlement_rule": "original registered Flow and revoked revision may settle only original facts; no new Brain, reply or physical action",
+      "worker_rule": "business cancellation; no fault, handoff or locate cooldown; finish read_cancelled only after pending Journal Ledger Outbox and sent_ack are settled",
+      "restore_rule": "new revision and authoritative reread; never revive old Task, ReplyAction or authorization"
     },
     "pause_rule": "reject_new_work_and_allow_only_the_exact_registered_flow_to_settle",
     "emergency_stop_rule": "prevent_every_not_yet_started_wechat_ui_action",
@@ -446,15 +456,16 @@
         "retry_required",
         "failed_before_message_action",
         "read_failed_no_fact",
+        "read_cancelled",
         "technical_failed"
       ],
       "conversation_id_rule": "required_for_c2_read_and_null_for_task_terminal",
-      "error_code_rule": "required_for_retry_required_failed_before_message_action_read_failed_no_fact_and_technical_failed",
-      "backend_proof_rule": "task_terminal_requires_a_terminal_task; read_confirmed_requires_matching last_read_run_id plus completed_at and new_facts_or_no_change; retry_required_requires_matching last_read_run_id plus completed_at retry_required and the backend reread schedule; failed_before_message_action requires no attempted message read and no message fact; read_failed_no_fact requires an attempted read with no trusted message fact; technical_failed requires matching backend technical_failed plus faulted Worker; every non_success terminal requires an audit log",
+      "error_code_rule": "required_for_retry_required_failed_before_message_action_read_failed_no_fact_read_cancelled_and_technical_failed",
+      "backend_proof_rule": "read_cancelled requires LEAD_INVALID and the same registered Flow revocation audit plus completed original action settlement; task_terminal_requires_a_terminal_task; read_confirmed_requires_matching last_read_run_id plus completed_at and new_facts_or_no_change; retry_required_requires_matching last_read_run_id plus completed_at retry_required and the backend reread schedule; failed_before_message_action requires no attempted message read and no message fact; read_failed_no_fact requires an attempted read with no trusted message fact; technical_failed requires matching backend technical_failed plus faulted Worker; every non_success terminal requires an audit log",
       "local_proof_rule": "every terminal kind requires the UI lock plus same-flow pending Outbox, Ledger, ActionJournal, and sent_ack to be settled; both no-fact failure terminals additionally forbid any same-flow Outbox, Ledger, or Journal artifact"
     },
     "local_atomicity_rule": "request_pause, clear_pause, begin_flow, and finish_flow must read, validate, and update runtime_control_v1 in one SQLite BEGIN IMMEDIATE transaction",
-    "row_lock_rule": "recovery_and_recall_transitions_use_SELECT_FOR_UPDATE_in_the_fixed_order_WechatSessionBinding_then_Worker_inflight_flow_state_then_Conversation_then_open_HandoffEvent; read_targets_must_refresh_the_Worker_under_that_lock_even_after_its_route_level_check",
+    "row_lock_rule": "Lead_first_then_each_business_path_preserves_its_existing_relative_downstream_lock_order; recovery_and_recall_then_WechatSessionBinding_Worker_Conversation_open_HandoffEvent; read_targets_must_refresh_the_Worker_under_that_lock_even_after_its_route_level_check",
     "faulted_sticky_rule": "faulted_is_a_persisted_local_authority_and_must_never_be_downgraded_to_paused_by_heartbeat_restart_reconciliation_backend_sync_failure_or_any_central_pause_helper;_only_an_explicit_successful_operator_start_transition_may_clear_it",
     "confirmed_media_reconciliation_rule": "one_confirmed_physical_voice_or_image_action_journal_may_repair_only_the_same_origin_read_run_same_message_type_same_source_key_failed_waiting_ledger_before_backend_ack;_the_previous_failed_result_remains_nested_audit_evidence_and_confirmed_or_already_completed_facts_are_immutable",
     "confirmed_journal_archive_retry_rule": "after_backend_or_ledger_confirmation_a_transient_windows_file_lock_while_archiving_the_exact_action_journal_keeps_the_old_flow_and_retries_archive_on_the_next_tick_with_zero_repeat_http_or_wechat_action",
@@ -1531,6 +1542,7 @@
       "MESSAGE_INGEST_REQUEST_TOO_LARGE"
     ],
     "target_terminated_codes": [
+      "LEAD_INVALID",
       "MESSAGE_CONVERSATION_NOT_BOUND",
       "MESSAGE_REMARK_MISMATCH",
       "CONVERSATION_STATUS_NOT_LISTENABLE"

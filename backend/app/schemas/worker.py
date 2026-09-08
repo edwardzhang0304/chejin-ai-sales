@@ -65,6 +65,7 @@ class WorkerRunStatusRequest(BaseModel):
 
 
 class WorkerInflightFlowStartRequest(BaseModel):
+    authorization_revision: str | None = Field(default=None, max_length=128)
     flow_id: str = Field(min_length=1, max_length=128)
     flow_kind: str = Field(min_length=1, max_length=32)
     conversation_id: str | None = Field(default=None, max_length=36)
@@ -101,7 +102,7 @@ class WorkerInflightFlowFinishRequest(BaseModel):
     terminal_kind: str = Field(
         min_length=1,
         max_length=64,
-        pattern="^(task_terminal|read_confirmed|retry_required|failed_before_message_action|read_failed_no_fact|technical_failed)$",
+        pattern="^(task_terminal|read_confirmed|retry_required|failed_before_message_action|read_failed_no_fact|read_cancelled|technical_failed)$",
     )
     conversation_id: str | None = Field(default=None, max_length=36)
     error_code: str | None = Field(default=None, max_length=64)

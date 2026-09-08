@@ -184,6 +184,7 @@ class WorkerApiClient:
         flow_kind: str,
         conversation_id: str | None = None,
         unread_generation: int | None = None,
+        authorization_revision: str | None = None,
     ) -> dict[str, Any]:
         request_payload: dict[str, Any] = {
             "flow_id": flow_id,
@@ -193,6 +194,8 @@ class WorkerApiClient:
             request_payload["conversation_id"] = conversation_id
         if unread_generation is not None:
             request_payload["unread_generation"] = int(unread_generation)
+        if authorization_revision:
+            request_payload["authorization_revision"] = authorization_revision
         payload = self._request(
             "POST",
             f"/workers/{binding.worker_id}/inflight-flow/start",

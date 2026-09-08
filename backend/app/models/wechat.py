@@ -23,6 +23,8 @@ class WechatSessionBinding(Base, TimestampMixin):
     listen_status: Mapped[str] = mapped_column(String(32), nullable=False, default="not_started")
     allow_listening: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     authorization_revision: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    followup_invalidated_revision: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    followup_restore_pending: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default="false")
     error_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
     disable_reason: Mapped[str | None] = mapped_column(String(64), nullable=True)
     disabled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
