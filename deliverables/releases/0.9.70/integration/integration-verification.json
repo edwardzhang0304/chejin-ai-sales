@@ -17,5 +17,8 @@
     "backend/app/services/followup_eligibility.py": "f1a88ec05f6d2f587a56aad092de6110663cc48582d7ac09e24f78ea58924483",
     "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/adapters/wechat_win32_ocr_sidecar.py": "322eb51e58a12ea7c84cf7a290b8f01679bbfae4f38cee2fc9b751f69e72320e",
     "contracts/c2_contract_v3.json": "054ccf107dfc7806b389bd3ff036b326b370bfdb717167632a1e9960f2ce1f77"
-  }
+  },
+  "chejin_source_commit": "30473b3423fa16f81771718c4c39b5a16058020d",
+  "source_pushed": true,
+  "chejin_source_pushed": true
 }
