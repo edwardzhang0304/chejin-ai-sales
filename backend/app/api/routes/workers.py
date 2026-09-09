@@ -189,9 +189,10 @@ def finish_worker_inflight_flow(
         worker = worker_service.authenticate_worker_client(
             db, worker_id, x_worker_token, x_client_instance_id
         )
-        worker_service.validate_inflight_continuation(
-            worker, x_inflight_flow_id
-        )
+        # The locked service validates the current Flow or its exact durable
+        # settlement receipt; a paused client may replay a lost response.
+        if x_inflight_flow_id != payload.flow_id:
+            raise AppError("WORKER_INFLIGHT_FLOW_MISMATCH", "在途流程凭证不匹配", 409)
         actor = worker_actor_context(
             request, worker_id=worker.id, worker_name=worker.worker_name
         )

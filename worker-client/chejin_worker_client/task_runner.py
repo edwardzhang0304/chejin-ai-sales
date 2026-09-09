@@ -3947,6 +3947,11 @@ class TaskRunner:
         # its state reconciliation through HTTP finish and local cleanup.
         # Reentrant because reconciliation enters the same finish boundary.
         self._restart_recovery_lock = threading.RLock()
+        self._pending_flow_finish: dict[str, Any] = {}
+        self._flow_finish_retry_at = 0.0
+        self._flow_finish_retry_delay = 1.0
+        self._flow_finish_stage = "finish"
+        self._last_finished_flow_id: str | None = None
         self._restart_backend_probe_pending = False
         self._restart_flow_reconciliation_incident: tuple[str, str, str] | None = None
         self.current_ui_lock: UiLockLease | None = None
@@ -4390,6 +4395,7 @@ class TaskRunner:
             and active.run_status == "running"
             and not self._fault_recovery_processing
             and not self._run_status_persistence_pending
+            and not self._pending_flow_finish
             and control.get("pause_requested") is not True
             and control.get("update_no_new_work") is not True
             and not control.get("inflight_flow_id")
@@ -5370,6 +5376,144 @@ class TaskRunner:
         conversation_id: str | None = None,
         error_code: str | None = None,
     ) -> None:
+        # One owner across task, C2 and restart recovery, including local
+        # cleanup. Save intent before HTTP so a lost response survives restart.
+        with self._restart_recovery_lock:
+            if self._last_finished_flow_id == flow_id:
+                return
+            request = {
+                "flow_id": flow_id,
+                "worker_id": binding.worker_id,
+                "client_instance_id": binding.client_instance_id,
+                "terminal_kind": terminal_kind,
+                "conversation_id": conversation_id,
+                "error_code": error_code,
+            }
+            if request != self._pending_flow_finish:
+                self._flow_finish_retry_delay = 1.0
+            self._pending_flow_finish = request
+            self._flow_finish_retry_at = time.monotonic() + self._flow_finish_retry_delay
+            try:
+                key = self._inflight_finish_receipt_key(flow_id)
+                receipt = load_c2_state(key) or {}
+                try:
+                    self._assert_inflight_finish_ready(flow_id, terminal_kind)
+                except RuntimeError:
+                    self._flow_finish_stage = "dependencies"
+                    save_c2_state(key, {
+                        **receipt, "terminal_kind": terminal_kind,
+                        "conversation_id": conversation_id, "error_code": error_code,
+                        "finish_request": request, "finish_stage": "dependencies",
+                    })
+                    raise
+                self._flow_finish_stage = "finish"
+                if receipt.get("finish_request") != request or receipt.get("finish_stage") != "finish":
+                    save_c2_state(key, {**receipt, "finish_request": request, "finish_stage": "finish"})
+                self._finish_inflight_flow_locked(
+                    binding, flow_id, terminal_kind=terminal_kind,
+                    conversation_id=conversation_id, error_code=error_code,
+                )
+            except Exception:
+                self._flow_finish_retry_delay = min(30.0, self._flow_finish_retry_delay * 2)
+                raise
+            self._pending_flow_finish = {}
+            self._last_finished_flow_id = flow_id
+            self._request_task_wake_if_safe(reason="inflight_flow_finished")
+
+    @property
+    def flow_finish_wait_reason(self) -> str:
+        if not self._pending_flow_finish:
+            return ""
+        if self._flow_finish_stage == "dependencies":
+            return "等待上一流程的回执和事实结算，正在按原流程补传；完成前暂不领取新任务。"
+        return "等待服务端确认上一流程结束，正在自动重试登记；完成前暂不领取新任务。"
+
+    def _retry_pending_flow_finish(self, binding: Binding) -> bool:
+        """One owner settles durable dependencies, then the finish receipt. No UI."""
+        with self._restart_recovery_lock:
+            flow_id = str(load_runtime_control().get("inflight_flow_id") or "")
+            if flow_id and load_c2_state(self._restart_recovery_fault_key(flow_id)):
+                return True
+            request = self._pending_flow_finish
+            if flow_id:
+                receipt = load_c2_state(self._inflight_finish_receipt_key(flow_id)) or {}
+                persisted_request = receipt.get("finish_request") or {}
+                if persisted_request:
+                    # Proof correction may have committed before a storage
+                    # exception was raised. The durable envelope is authoritative
+                    # over the pre-write in-memory request on the next attempt.
+                    request = persisted_request
+                    self._flow_finish_stage = str(receipt.get("finish_stage") or "finish")
+            if not request:
+                return False
+            if (
+                not request.get("flow_id")
+                or (flow_id and request.get("flow_id") != flow_id)
+                or request.get("worker_id") != binding.worker_id
+                or request.get("client_instance_id") != binding.client_instance_id
+            ):
+                raise RuntimeError("RUNTIME_INFLIGHT_FINISH_RECEIPT_MISMATCH")
+            self._pending_flow_finish = dict(request)
+            if self.current_task or self.current_ui_lock or lock_summary().get("locked"):
+                return True
+            # Durable dependency inspection keeps its original immediate
+            # fault detection. Outbox/authorization recovery owns its retry
+            # clocks; the finish backoff must not postpone a local conflict.
+            if self._flow_finish_stage != "dependencies" and time.monotonic() < self._flow_finish_retry_at:
+                return True
+            try:
+                if self._flow_finish_stage == "dependencies":
+                    if not self._can_continue_inflight_flow(request["flow_id"]):
+                        return True
+                    key = self._inflight_finish_receipt_key(request["flow_id"])
+                    receipt = load_c2_state(key) or {}
+                    if receipt.get("finish_request") != request:
+                        # A prior intent save may have failed, or accepted
+                        # ingest may have replaced the receipt. Preserve newer
+                        # backend terminal proof while restoring the owner.
+                        save_c2_state(key, {
+                            "terminal_kind": request["terminal_kind"],
+                            "conversation_id": request.get("conversation_id"),
+                            "error_code": request.get("error_code"),
+                            **receipt, "finish_request": request,
+                            "finish_stage": "dependencies",
+                        })
+                    # The existing recovery implementation owns Journal scope,
+                    # legacy evidence and terminal derivation. Outbox/sent_ack
+                    # replay must run even when those facts are still pending.
+                    prepared = self._prepare_inflight_finish_from_durable_state(
+                        binding, flow_id=request["flow_id"],
+                    )
+                    if not load_runtime_control().get("inflight_flow_id"):
+                        # The existing legacy settler obtained backend proof.
+                        self._pending_flow_finish = {}
+                        self._last_finished_flow_id = request["flow_id"]
+                        return True
+                    barrier_ready = self._worker_transaction_barrier_ready(
+                        binding, reason="inflight_finish_dependencies",
+                    )
+                    if prepared is None:
+                        return True
+                    _, conversation_id, receipt, terminal_kind = prepared
+                    if not barrier_ready and terminal_kind != "technical_failed":
+                        return True
+                    request = {
+                        **request, "terminal_kind": terminal_kind,
+                        "conversation_id": receipt.get("conversation_id") or conversation_id or None,
+                        "error_code": receipt.get("error_code") or None,
+                    }
+            except Exception as exc:
+                self._handle_restart_recovery_exception(binding, exc)
+                return True
+            self._finish_recovery_request(
+                binding, request["flow_id"],
+                terminal_kind=request["terminal_kind"],
+                conversation_id=request.get("conversation_id"),
+                error_code=request.get("error_code"),
+            )
+            return True
+
+    def _assert_inflight_finish_ready(self, flow_id: str, terminal_kind: str) -> None:
         if self.current_ui_lock is not None or bool(lock_summary().get("locked")):
             raise RuntimeError("RUNTIME_INFLIGHT_FINISH_BEFORE_UI_UNLOCK")
         if terminal_kind in {
@@ -5420,6 +5564,16 @@ class TaskRunner:
             flow_id
         ):
             raise RuntimeError("RUNTIME_INFLIGHT_SENT_ACK_PENDING")
+
+    def _finish_inflight_flow_locked(
+        self,
+        binding: Binding,
+        flow_id: str,
+        *,
+        terminal_kind: str,
+        conversation_id: str | None = None,
+        error_code: str | None = None,
+    ) -> None:
         self.api.finish_inflight_flow(
             binding,
             flow_id=flow_id,
@@ -5427,12 +5581,15 @@ class TaskRunner:
             conversation_id=conversation_id,
             error_code=error_code,
         )
-        finish_runtime_flow(flow_id)
+        # HTTP accepted this exact receipt. Local pointer clearing may already
+        # have committed before clearing the receipt failed on the last attempt.
+        # Never clear a different local Flow; the storage compare guards it.
+        if load_runtime_control().get("inflight_flow_id"):
+            finish_runtime_flow(flow_id)
         clear_c2_state(self._inflight_finish_receipt_key(flow_id))
         self._backend_inflight_flow_state = {}
         if self._restart_recovery_flow_id == flow_id:
             self._restart_recovery_flow_id = None
-        self._request_task_wake_if_safe(reason="inflight_flow_finished")
 
     def _pause_for_restart_flow_reconciliation(
         self,
@@ -5661,77 +5818,10 @@ class TaskRunner:
                         metadata={"conversation_id": conversation_id},
                     )
                 return
-        if (
-            conversation_id
-            and has_c2_action_journal_for_origin_read_run_id(flow_id)
+        if not self._recover_inflight_sqlite_facts(
+            binding, flow_id=flow_id, conversation_id=conversation_id,
         ):
-            try:
-                self._recover_c2_action_journal(
-                    WechatReadTarget(
-                        conversation_id=conversation_id,
-                        rpa_session_key="",
-                        display_name="",
-                    )
-                )
-            except Exception as exc:
-                self._pause_for_restart_flow_reconciliation(
-                    binding,
-                    error_code="C2_ACTION_JOURNAL_RECOVERY_FAILED",
-                    message=(
-                        "旧 C2 结果日志无法恢复到账本；已暂停接单并保留现场。"
-                    ),
-                    local_flow_id=flow_id,
-                    backend_flow_id="",
-                    metadata={
-                        "conversation_id": conversation_id,
-                        "error_type": type(exc).__name__,
-                    },
-                )
-                return
-        if (
-            conversation_id
-            and not has_pending_c2_outbox_for_read_run_id(flow_id)
-            and has_c2_ledger_for_origin_read_run_id(
-                flow_id,
-                pending_only=True,
-            )
-        ):
-            waiting_entries = [
-                entry
-                for entry in list_c2_ledger_entries(
-                    conversation_id,
-                    ingest_state="waiting",
-                )
-                if str(entry.get("origin_read_run_id") or "").strip()
-                == flow_id
-            ]
-            waiting_types = {
-                str(entry.get("message_type") or "").strip().lower()
-                for entry in waiting_entries
-            }
-            unsupported_types = waiting_types - {"voice", "image"}
-            if not waiting_entries or unsupported_types:
-                self._pause_for_restart_flow_reconciliation(
-                    binding,
-                    error_code="C2_LEDGER_RECOVERY_EVIDENCE_INCOMPLETE",
-                    message=(
-                        "旧等待账本无法重建完整媒体事实；已暂停接单并保留现场。"
-                    ),
-                    local_flow_id=flow_id,
-                    backend_flow_id="",
-                    metadata={
-                        "conversation_id": conversation_id,
-                        "message_types": sorted(waiting_types),
-                    },
-                )
-                return
-            media_status = self._recover_pending_media_transaction(
-                binding,
-                flow_id=flow_id,
-                conversation_id=conversation_id,
-            )
-            if media_status != "settled":
-                return
+            return
         blocker = self._local_restart_flow_blocker(flow_id)
         if blocker:
             if blocker != "RUNTIME_INFLIGHT_C2_OUTBOX_PENDING":
@@ -5807,6 +5897,8 @@ class TaskRunner:
                 backend_flow_id=backend_flow_id,
                 fault=persisted_fault,
             )
+            return False
+        if self._retry_pending_flow_finish(binding):
             return False
         if not local_flow_id:
             if self._restart_recovery_flow_id:
@@ -5926,8 +6018,16 @@ class TaskRunner:
             self._restart_recovery_flow_id = None
             self._restart_backend_probe_pending = False
             self.api.inflight_flow_id = None
+            self._pending_flow_finish = {}
+            self._last_finished_flow_id = flow_id
             return
         if backend_flow_id != flow_id:
+            return
+        if (
+            self._pending_flow_finish.get("flow_id") == flow_id
+            and self._pending_flow_finish.get("terminal_kind") == "technical_failed"
+            and time.monotonic() < self._flow_finish_retry_at
+        ):
             return
         try:
             self._finish_inflight_flow(
@@ -6080,7 +6180,26 @@ class TaskRunner:
             "terminal_kind": "retry_required", "conversation_id": conversation_id,
             "error_code": "C2_UNREAD_RESULT_INCONCLUSIVE", "read_completion": completion,
         }
-        save_c2_state(self._inflight_finish_receipt_key(flow_id), receipt)
+        key = self._inflight_finish_receipt_key(flow_id)
+        previous = load_c2_state(key) or {}
+        pending = previous.get("finish_request") or {}
+        if (
+            pending.get("flow_id") == flow_id
+            and pending.get("worker_id") == binding.worker_id
+            and pending.get("client_instance_id") == binding.client_instance_id
+            and pending.get("conversation_id") == conversation_id
+        ):
+            # Publish the exact proof and its corrected finish request in the
+            # same existing KV write. A failure before/after commit cannot leave
+            # a saved proof paired with an obsolete read_confirmed owner.
+            receipt["finish_request"] = {
+                "flow_id": flow_id, "worker_id": binding.worker_id,
+                "client_instance_id": binding.client_instance_id,
+                "terminal_kind": receipt["terminal_kind"],
+                "conversation_id": conversation_id, "error_code": receipt["error_code"],
+            }
+            receipt["finish_stage"] = "finish"
+        save_c2_state(key, receipt)
         append_log(
             "INFO", "legacy_read_finish_receipt_reconciled",
             "旧读取成功回执已按同一流程的后端结算证明修正，继续申请正常结束。",
@@ -6089,10 +6208,89 @@ class TaskRunner:
         )
         return receipt
 
-    def _finish_restart_recovery_flow_if_settled_locked(
+    def _recover_inflight_sqlite_facts(
+        self, binding: Binding, *, flow_id: str, conversation_id: str,
+    ) -> bool:
+        """Reuse persisted action/ledger facts; never recapture media or send."""
+        if (
+            conversation_id
+            and has_c2_action_journal_for_origin_read_run_id(flow_id)
+        ):
+            try:
+                self._recover_c2_action_journal(
+                    WechatReadTarget(
+                        conversation_id=conversation_id,
+                        rpa_session_key="",
+                        display_name="",
+                    )
+                )
+            except Exception as exc:
+                self._pause_for_restart_flow_reconciliation(
+                    binding,
+                    error_code="C2_ACTION_JOURNAL_RECOVERY_FAILED",
+                    message=(
+                        "旧 C2 结果日志无法恢复到账本；已暂停接单并保留现场。"
+                    ),
+                    local_flow_id=flow_id,
+                    backend_flow_id="",
+                    metadata={
+                        "conversation_id": conversation_id,
+                        "error_type": type(exc).__name__,
+                    },
+                )
+                return False
+        if (
+            conversation_id
+            and not has_pending_c2_outbox_for_read_run_id(flow_id)
+            and has_c2_ledger_for_origin_read_run_id(
+                flow_id,
+                pending_only=True,
+            )
+        ):
+            waiting_entries = [
+                entry
+                for entry in list_c2_ledger_entries(
+                    conversation_id,
+                    ingest_state="waiting",
+                )
+                if str(entry.get("origin_read_run_id") or "").strip()
+                == flow_id
+            ]
+            waiting_types = {
+                str(entry.get("message_type") or "").strip().lower()
+                for entry in waiting_entries
+            }
+            unsupported_types = waiting_types - {"voice", "image"}
+            if not waiting_entries or unsupported_types:
+                self._pause_for_restart_flow_reconciliation(
+                    binding,
+                    error_code="C2_LEDGER_RECOVERY_EVIDENCE_INCOMPLETE",
+                    message=(
+                        "旧等待账本无法重建完整媒体事实；已暂停接单并保留现场。"
+                    ),
+                    local_flow_id=flow_id,
+                    backend_flow_id="",
+                    metadata={
+                        "conversation_id": conversation_id,
+                        "message_types": sorted(waiting_types),
+                    },
+                )
+                return False
+            media_status = self._recover_pending_media_transaction(
+                binding,
+                flow_id=flow_id,
+                conversation_id=conversation_id,
+            )
+            if media_status != "settled":
+                return False
+        return True
+
+    def _prepare_inflight_finish_from_durable_state(
         self,
         binding: Binding,
-    ) -> None:
+        *,
+        flow_id: str,
+    ) -> tuple[str, str, dict[str, Any], str] | None:
         """Close a pre-restart flow only after durable replay needs no UI.
 
         A restart never resumes locating, clicking, media handling or sending.
@@ -6100,7 +6298,6 @@ class TaskRunner:
         sent-ack facts; the backend remains the authority on task terminality.
         """
 
-        flow_id = str(self._restart_recovery_flow_id or "").strip()
         if (
             not flow_id
             or self.current_task is not None
@@ -6151,6 +6348,10 @@ class TaskRunner:
             conversation_id=conversation_id,
         )
         if media_recovery_status not in {"settled", "technical_failed"}:
+            return
+        if media_recovery_status != "technical_failed" and not self._recover_inflight_sqlite_facts(
+            binding, flow_id=flow_id, conversation_id=conversation_id,
+        ):
             return
         # Recovery may have persisted a technical terminal or an accepted
         # ingest's cancellation. Always use the receipt after recovery rather
@@ -6221,20 +6422,37 @@ class TaskRunner:
                 metadata={"flow_kind": flow_kind},
             )
             return
+        return flow_kind, conversation_id, receipt, terminal_kind
+
+    def _finish_restart_recovery_flow_if_settled_locked(
+        self,
+        binding: Binding,
+    ) -> None:
+        flow_id = str(self._restart_recovery_flow_id or "").strip()
+        prepared = self._prepare_inflight_finish_from_durable_state(binding, flow_id=flow_id)
+        if prepared is None:
+            return
+        flow_kind, conversation_id, receipt, terminal_kind = prepared
+        self._finish_recovery_request(
+            binding, flow_id, terminal_kind=terminal_kind,
+            conversation_id=str(receipt.get("conversation_id") or conversation_id or "").strip() or None,
+            error_code=str(receipt.get("error_code") or "").strip() or None,
+        )
+
+    def _finish_recovery_request(
+        self, binding: Binding, flow_id: str, *, terminal_kind: str,
+        conversation_id: str | None = None, error_code: str | None = None,
+    ) -> None:
+        """Shared HTTP failure and exact legacy-proof handling for every retry."""
+        flow_kind = str(load_runtime_control().get("inflight_flow_kind") or "")
+        receipt = load_c2_state(self._inflight_finish_receipt_key(flow_id)) or {}
         try:
             self._finish_inflight_flow(
                 binding,
                 flow_id,
                 terminal_kind=terminal_kind,
-                conversation_id=(
-                    str(
-                        receipt.get("conversation_id") or conversation_id
-                    ).strip()
-                    or None
-                ),
-                error_code=(
-                    str(receipt.get("error_code") or "").strip() or None
-                ),
+                conversation_id=conversation_id,
+                error_code=error_code,
             )
         except Exception as exc:
             if (
@@ -6261,20 +6479,21 @@ class TaskRunner:
             append_log(
                 "INFO",
                 "restart_inflight_flow_settlement_pending",
-                "重启前的原流程仍有业务终态未确认；继续保持暂停且不操作微信。",
+                "原流程结束尚未取得同一终态确认；保留接单状态且不重复操作微信。",
                 error_code="RUNTIME_INFLIGHT_RECOVERY_PENDING",
                 metadata={"flow_id": flow_id, "error": str(exc)},
             )
-            self._pause_for_restart_flow_reconciliation(
-                binding,
-                error_code="RUNTIME_INFLIGHT_RECOVERY_PENDING",
-                message=(
-                    "旧流程尚未达到可验证终态；已暂停接单并继续执行无界面结算。"
-                ),
-                local_flow_id=flow_id,
-                backend_flow_id=flow_id,
-                metadata={"error": str(exc)},
-            )
+            if self._restart_recovery_flow_id == flow_id:
+                self._pause_for_restart_flow_reconciliation(
+                    binding,
+                    error_code="RUNTIME_INFLIGHT_RECOVERY_PENDING",
+                    message=(
+                        "旧流程尚未达到可验证终态；已暂停接单并继续执行无界面结算。"
+                    ),
+                    local_flow_id=flow_id,
+                    backend_flow_id=flow_id,
+                    metadata={"error": str(exc)},
+                )
 
     def _apply_local_run_status(self, run_status: str) -> None:
         if not self.binding:
@@ -10337,6 +10556,9 @@ class TaskRunner:
                 runtime_control.get("inflight_flow_id") or ""
             ).strip()
             if inflight_flow_id:
+                if self._retry_pending_flow_finish(binding):
+                    self.stop_event.wait(1.0)
+                    continue
                 if self._can_continue_inflight_flow(inflight_flow_id):
                     # A persisted flow is recovery-only in this listener.  Its
                     # live owner (if any) continues the customer chain; after
