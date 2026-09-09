@@ -1,10 +1,12 @@
 # AI智能客服售前跟进系统 技术方案
 
-版本：v0.9.71.3（0.9.71正式发布完成；原始0.9.70按钮升级自动验收通过）
+版本：v0.9.72.2（0.9.72 已审修复双仓提交完成；未发布）
 
 日期：2026-07-21
 
-最后更新：2026-09-08
+最后更新：2026-09-09
+
+本次补齐 CJNPTTDE 复审缺口：旧错误读取回执须经同一 Flow 的后端只读证明才能修正；自动生成测试先观察真实产物；历史回放包含前序事实与已确认发送。头像排除与新回执透传保留。本轮登记范围已通过独立源码复审；用户指定继续双仓灰度分支，目标应用、机器合同与Schema统一0.9.72。已完成双仓灰度源码提交推送及真实来源登记（见版本记录2.0.72.2）；未发包或部署，正式Windows验收仍待完成；已发布0.9.71及回滚基线保持。
 
 本次0.9.71正式发布已完成：应用、安装包、C2合同及生成Schema统一0.9.71；原始0.9.70的真实“检查更新”按钮、原始Updater和本次签名包的paused/faulted完整Windows自动验收均通过，绑定、配置与历史数据保留。GitHub直传、生产Docker后端与运营后台切换、更新登记及外网完整下载校验通过。用户本机实际升级及业务复核仍待确认。正式包只构建一次，未触发Fast UAT；Fast UAT仍保持GitHub ZIP→Mac→原ZIP与命令行。准确来源与分阶段结果见版本更新记录2.0.71.2。
 
@@ -504,9 +506,9 @@ active flow 改为 `draining`、写入 `pause_requested_at`；不得接受暂停
 ```json
 {
   "flow_id": "task_id or read_run_id",
-  "terminal_kind": "task_terminal|read_confirmed|failed_before_message_action|read_failed_no_fact",
+  "terminal_kind": "task_terminal|read_confirmed|retry_required|failed_before_message_action|read_failed_no_fact|read_cancelled|technical_failed",
   "conversation_id": "c2_read 时必填，否则为 null",
-  "error_code": "failed_before_message_action/read_failed_no_fact 时必填，否则为 null"
+  "error_code": "读取失败、重读或取消终态按各自标准错误码填写；task_terminal/read_confirmed 为 null"
 }
 ```
 
@@ -515,10 +517,21 @@ active flow 改为 `draining`、写入 `pause_requested_at`；不得接受暂停
   `flow_id`，且 `last_read_completed_at` 非空、`last_read_result` 为 `new_facts/no_change`。
 - `failed_before_message_action`：只允许在尚未读取消息、尚未触发语音/图片/发送、
   本地无本 flow 的 Journal/Outbox 时使用；后端必须记录 conversation、error_code 和审计时间。
-  一旦发生消息或媒体动作，只能完成 `read_confirmed`，不得用失败类型提前清除 flow。
+  一旦发生消息或媒体动作，必须先按对应事实和原动作完成结算，再使用后端认可的读取终态；不得以此类型绕过待结算事实。
 - `read_failed_no_fact`：已经调用当前会话消息读取，但 Sidecar、OCR 或合同校验在形成任何
   可信消息、媒体动作、Ledger、Journal、Outbox、sent_ack 前失败时使用；后端确认同一
   `read_run_id` 没有消息事实并记录审计。它不能用于绕过已经形成的事实或动作。
+
+- `retry_required`：沿用既有后端重读终态，标准错误码为 `C2_UNREAD_RESULT_INCONCLUSIVE`。后端核对同一 flow 的 `last_read_result=retry_required`、完成时间及下一次读取时间；本次 flow 结束不等于把未读消息标为已处理。
+- `technical_failed`、`read_cancelled`：沿用既有技术故障和无效线索取消结算条件，仍校验原身份、撤销依据及动作事实；不是任意失败的清除通道。
+
+**读取回执接线（已随0.9.72源码集成）**：消息或身份门禁请求 HTTP 成功，只代表后端接收。Worker 必须透传响应的 `read_completion`；在 Outbox 标记 confirmed 前，将其结果、错误码、conversation 和对应 terminal 持久化到同一 flow 的既有结束回执。`new_facts/no_change` 才是 `read_confirmed`，`retry_required` 不得因“已有 Outbox”被改成成功。收尾期间收到的更新回执和重启时已确认的门禁重放也采用该回执；原 technical_failed/取消优先级及未结算屏障保持。真正 HTTP 失败保留原 Outbox，不能忽略 409、伪造成功或清除未结算账本。日志记录后端 result 与请求 terminal，不能将请求接收误写成“已转人工”。
+
+**旧错误回执恢复（已复审并随0.9.72源码集成）**：上一轮的新回执保存仅能防止再次写错，不能据此宣称已解决旧版留下的 confirmed Outbox / read_confirmed 回执。恢复必须先通过既有线程互斥、同一客户及未结算 Journal/Ledger/Outbox/sent_ack 屏障，再使用原 finish 接口。仅在 `c2_read + read_confirmed` 缺少新式读取证明，且后端明确返回 `409 / WORKER_INFLIGHT_FLOW_NOT_SETTLED` 时，查询原 `API-C2-03` 核实本次读取的真实结算。
+
+- 后端复用 `_read_completion_payload`，不重判业务结果。原读取授权接口增加可选只读 `read_completion`：含 `read_run_id` 和既有 result / completed_at / next_read_due_at / error_code。只有鉴权与绑定归属通过、Worker 当前 active/draining C2 Flow 的客户及 flow_id 均与 Binding 最后已完成读取一致，才返回该证明；其他 Flow、任务、客户或未完成读取不返回。`allowed` 仍只表示原授权资格，读取证明不能授权新 UI 操作。
+- Worker 必须核对外层 conversation、证明的 read_run_id、完成时间、`result=retry_required`、标准错误码及下一次读取时间全部匹配；匹配后只替换同一 Flow 的结束回执，保存后再请求 `retry_required` finish，由后端原门禁验证。原 confirmed Outbox 不改成 waiting、不重发原消息、不清库、不手工结束 Flow。
+- 缺证明、旧后端不支持此字段、网络失败、错 Flow/客户、其他结果或错误码均保留现场，继续原恢复保护；不能把任意 409 当成成功，也不能借此把其他技术故障或取消改成重读。新后端与新 Worker 须共同集成，单独替换客户端不能承诺恢复已有卡单。普通成功流程和已有正确 retry_required 回执不增加这次核对请求。
 
 所有 terminal kind 在本地调用 finish 前，都必须检查同一 flow 的待处理 Outbox、Ledger、
 ActionJournal 和 sent_ack；`task_terminal` 也不例外。发送前嵌套复读与外层任务复用同一
@@ -2101,7 +2114,8 @@ OCR 识别，但正式消息只剩第一行”。正确业务对象是“一个�
 同一张当前截图及同一有效layout_snapshot
 -> Sidecar过滤输入框、按钮、时间、系统提示和媒体结构噪声
 -> Sidecar从原始当前截图建立唯一帧内头像组件表（整改细则见6.0.3.3.3）
--> Sidecar将OCR行关联到该表的显式同行头像证据；弱几何只作诊断
+-> Sidecar排除完全包含于该表唯一已确认头像边界内的OCR行；保留原始OCR证据
+-> Sidecar将剩余OCR行关联到该表的显式同行头像证据；弱几何只作诊断
 -> Sidecar先把属于同一物理文字气泡的OCR行归为一个frame-local组
 -> 由组内唯一显式头像锚点锁定整个气泡的customer/self角色
 -> Sidecar输出一条完整文字observation
@@ -2109,6 +2123,8 @@ OCR 识别，但正式消息只剩第一行”。正确业务对象是“一个�
 -> 后端只校验、保存、去重和结算
 ```
 
+- 头像内文字排除只消费本帧有效布局对应的最终头像表：OCR 完整边界必须完全位于恰好一个已确认头像内部。部分重叠、未决头像、无可靠头像均不能按此规则丢弃；不按“UNI”等正文关键词过滤，不缩搜索列，不加像素容差，不使用上一帧位置。
+- 仅从聊天文字归并候选中排除头像内部文字，原 OCR 不删除。既有本地 `wechat_messages_frame_review` 同时保存消息区原始 OCR、最终头像表、排除归属和最终 observation 正文，便于区分识别、排除和归并阶段；不新增后端正文日志或遥测载荷。
 - Sidecar 是同一截图内文字行归并的唯一责任方。共享投影、Worker 和后端均不得再次拼接、
   拆分或根据坐标、正文相似度、左右位置重新猜发送方。
 - Worker 收到 Sidecar 输出的重复、冲突或缺少可信角色的 observation 时只能拒绝合同；不得
@@ -3563,7 +3579,7 @@ POST /api/workers/{worker_id}/wechat/messages/ingest
 | `results[]` | 每条消息的处理结果，包含 `dedupe_key`、`ingest_result=ingested/duplicated/ignored`、`message_event_id`、`error_code`；身份碰撞不得伪装成其中任一成功结果。 |
 | `next_action` | 兼容字段，固定为 `none`；发送动作不从消息入库响应直接下发。 |
 | `message_batch` | 可选。后端因本批事实启动 C3 时返回 `batch_id / batch_status`，Worker 只按该批次继续查询、领取任务和执行发送。 |
-| `read_completion` | 完整读取结算；包含 `result=new_facts/no_change/failed`、`completed_at`、`no_change_read_count` 和 `next_read_due_at`。空消息和全重复的完整读取也必须返回。 |
+| `read_completion` | 完整读取结算；包含 `result=new_facts/no_change/retry_required/technical_failed/cancelled`、`completed_at`、`no_change_read_count` 和 `next_read_due_at`。空消息和全重复的完整读取也必须返回。 |
 
 发生身份碰撞时固定返回 HTTP 409，错误码 `MESSAGE_IDENTITY_COLLISION`，并在安全脱敏的
 错误数据中返回 `recovery_action=refresh_identity_and_retry`、冲突项来源键和新的
