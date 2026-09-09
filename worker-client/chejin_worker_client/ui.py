@@ -412,6 +412,7 @@ class WorkerWindow(QMainWindow):
     step_signal = Signal(object)
     result_signal = Signal(object)
     error_signal = Signal(str)
+    fault_recovery_signal = Signal(object)
     update_state_signal = Signal(object)
     update_exit_signal = Signal()
 
@@ -446,6 +447,7 @@ class WorkerWindow(QMainWindow):
             on_step=lambda value: self.step_signal.emit(value),
             on_result=lambda value: self.result_signal.emit(value),
             on_error=lambda value: self.error_signal.emit(value),
+            on_fault_recovery=lambda value: self.fault_recovery_signal.emit(value),
         )
         self.update_coordinator = UpdateCoordinator(
             self.api,
@@ -623,6 +625,7 @@ class WorkerWindow(QMainWindow):
         self.step_signal.connect(self.on_step)
         self.result_signal.connect(self.on_result)
         self.error_signal.connect(self.on_error)
+        self.fault_recovery_signal.connect(lambda _state: self.refresh_view())
         self.update_state_signal.connect(self.on_update_state)
         self.update_exit_signal.connect(self._quit_for_update)
 
@@ -1053,7 +1056,7 @@ class WorkerWindow(QMainWindow):
         client_instance_id = self.binding.client_instance_id if self.binding else new_client_instance_id()
         try:
             profile = self.api.bind(worker_id, token, client_instance_id)
-            self.binding = Binding(worker_id=worker_id, worker_token=token, client_instance_id=client_instance_id, run_status="paused")
+            self.binding = Binding(worker_id=worker_id, worker_token=token, client_instance_id=client_instance_id, run_status=profile.run_status)
             save_binding(self.binding)
             append_log("INFO", "worker_bound", "绑定 Worker 成功。")
             self.on_profile(profile)
@@ -1065,9 +1068,6 @@ class WorkerWindow(QMainWindow):
 
     def toggle_run_status(self) -> None:
         if not self.binding:
-            return
-        if self.binding.run_status == "faulted":
-            self.on_error("客户端处于故障状态，本次运行禁止继续接单。")
             return
         next_status = "paused" if self.binding.run_status == "running" else "running"
         if next_status == "paused":
@@ -1114,9 +1114,7 @@ class WorkerWindow(QMainWindow):
 
     def on_profile(self, profile: WorkerProfile) -> None:
         self.profile = profile
-        if self.binding:
-            self.binding.run_status = profile.run_status
-            save_binding(self.binding)
+        # Delayed UI callbacks project status; only the runner persists it.
         self.refresh_view()
 
     def on_connection_status(self, status: str) -> None:
@@ -1325,6 +1323,12 @@ class WorkerWindow(QMainWindow):
         else:
             self.dock_button.setEnabled(True)
             self.dock.setProperty("dockState", "normal")
+        self.run_button.setEnabled(not offline)
+        if is_faulted:
+            recovery = self.runner.fault_recovery_state()
+            self.run_button.setEnabled(not offline and recovery["ready"])
+            self.dock_button.setEnabled(not offline and recovery["ready"])
+            self.headline_label.setText(recovery["reason"])
         self.dock.style().unpolish(self.dock)
         self.dock.style().polish(self.dock)
         self.dock_button.style().unpolish(self.dock_button)

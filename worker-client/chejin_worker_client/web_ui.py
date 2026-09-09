@@ -247,6 +247,7 @@ class WorkerWebWindow(QMainWindow):
     result_signal = Signal(object)
     error_signal = Signal(str)
     runtime_process_signal = Signal(object)
+    fault_recovery_signal = Signal(object)
     update_state_signal = Signal(object)
     update_exit_signal = Signal()
 
@@ -290,6 +291,7 @@ class WorkerWebWindow(QMainWindow):
             on_runtime_process=lambda value: self.runtime_process_signal.emit(
                 value
             ),
+            on_fault_recovery=lambda value: self.fault_recovery_signal.emit(value),
         )
         self.update_coordinator = UpdateCoordinator(
             self.api,
@@ -461,6 +463,7 @@ class WorkerWebWindow(QMainWindow):
         self.result_signal.connect(self.on_result)
         self.error_signal.connect(self.on_error)
         self.runtime_process_signal.connect(self.on_runtime_process)
+        self.fault_recovery_signal.connect(lambda _state: self._publish())
         self.update_state_signal.connect(self.on_update_state)
         self.update_exit_signal.connect(self._quit_for_update)
 
@@ -661,6 +664,7 @@ class WorkerWebWindow(QMainWindow):
             "logs": _log_rows(),
             "latestIncident": latest_incident() or {},
             "update": dict(self.update_state),
+            "faultRecovery": self.runner.fault_recovery_state(),
         }
 
     def _listener_model(self) -> dict[str, Any]:
@@ -886,7 +890,7 @@ class WorkerWebWindow(QMainWindow):
         client_instance_id = self.binding.client_instance_id if self.binding else new_client_instance_id()
         try:
             profile = self.api.bind(worker_id, worker_token, client_instance_id)
-            self.binding = Binding(worker_id=worker_id, worker_token=worker_token, client_instance_id=client_instance_id, run_status="paused")
+            self.binding = Binding(worker_id=worker_id, worker_token=worker_token, client_instance_id=client_instance_id, run_status=profile.run_status)
             save_binding(self.binding)
             append_log("INFO", "worker_bound", "绑定 Worker 成功。")
             self.bind_error = ""
@@ -902,10 +906,6 @@ class WorkerWebWindow(QMainWindow):
 
     def set_accepting(self, accepting: bool) -> None:
         if not self.binding:
-            return
-        if accepting and self.binding.run_status == "faulted":
-            self.notice = "客户端处于故障状态，本次运行禁止继续接单。"
-            self._publish()
             return
         next_status = "running" if accepting else "paused"
         if not accepting:
@@ -1002,9 +1002,8 @@ class WorkerWebWindow(QMainWindow):
     def on_profile(self, profile: WorkerProfile) -> None:
         self._position_next_to_wechat_once()
         self.profile = profile
-        if self.binding:
-            self.binding.run_status = profile.run_status
-            save_binding(self.binding)
+        # The runner owns persisted run status. Queued Qt profile events may
+        # predate a fault/pause or an explicit recovery; display must not write it.
         self._publish()
 
     @Slot(str)

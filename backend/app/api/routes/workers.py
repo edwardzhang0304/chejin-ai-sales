@@ -141,11 +141,13 @@ def bind_worker_client(
 def set_worker_run_status(
     worker_id: str,
     payload: WorkerRunStatusRequest,
+    request: Request,
     db: Session = Depends(get_db),
     x_worker_token: str | None = Header(default=None, alias="X-Worker-Token"),
 ):
     try:
-        data = worker_service.set_worker_run_status(db, worker_id, x_worker_token, payload)
+        data = worker_service.set_worker_run_status(db, worker_id, x_worker_token, payload,
+            actor=worker_actor_context(request, worker_id=worker_id, worker_name="客户端操作"))
         db.commit()
         return ok(data)
     except Exception:

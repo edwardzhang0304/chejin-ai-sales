@@ -90,6 +90,7 @@ class WorkerProfile:
     last_heartbeat_at: str | None = None
     bound_sales_name: str | None = None
     inflight_flow_state: dict[str, Any] = field(default_factory=dict)
+    fault_recovery: dict[str, Any] = field(default_factory=dict)
 
     @classmethod
     def from_api(cls, payload: dict[str, Any]) -> "WorkerProfile":
@@ -107,6 +108,7 @@ class WorkerProfile:
             local_lock_summary=payload.get("local_lock_summary") if isinstance(payload.get("local_lock_summary"), dict) else {},
             last_heartbeat_at=payload.get("last_heartbeat_at"),
             bound_sales_name=payload.get("bound_sales_name"),
+            fault_recovery=(dict(payload["fault_recovery"]) if isinstance(payload.get("fault_recovery"), dict) else {}),
             inflight_flow_state=(
                 dict(payload.get("inflight_flow_state") or {})
                 if isinstance(payload.get("inflight_flow_state"), dict)

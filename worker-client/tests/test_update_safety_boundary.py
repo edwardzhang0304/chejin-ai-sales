@@ -24,6 +24,8 @@ def _runner() -> TaskRunner:
     runner = object.__new__(TaskRunner)
     runner.binding = Binding("worker", "token", "instance", run_status="paused")
     runner._pending_run_status_sync = None
+    runner._fault_recovery_processing = False
+    runner._run_status_persistence_pending = False
     runner._backend_confirmed_run_status = "paused"
     runner.bridge = SimpleNamespace(sidecar_active=lambda: False)
     runner.current_task = None

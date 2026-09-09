@@ -4916,6 +4916,38 @@ class TaskRunnerTest(unittest.TestCase):
         self.assertIn("heartbeat:ready:logged_in", api.events)
         self.assertNotIn("pull", api.events)
 
+    def test_new_fault_wins_late_heartbeat_start_and_pause_sync_responses(self):
+        for boundary in ("heartbeat", "start", "pause_sync"):
+            with self.subTest(boundary=boundary):
+                api = FakeApi(None)
+                runner, _ = self.make_runner(api, FakeBridge(RpaResult(ok=True, result_code="unused", message="unused")))
+                runner.binding = Binding("worker-1", "token", "client-1", run_status="paused")
+                if boundary == "heartbeat":
+                    api.heartbeat_run_status = "running"
+                    original = api.heartbeat
+                    def delayed_heartbeat(*args, **kwargs):
+                        response = original(*args, **kwargs)
+                        runner.set_run_status("faulted")
+                        return response
+                    api.heartbeat = delayed_heartbeat
+                    runner.tick_once()
+                else:
+                    original_status = api.set_run_status
+                    def delayed_status(binding, status):
+                        response = original_status(binding, status)
+                        if status != "faulted":
+                            runner.set_run_status("faulted")
+                        return response
+                    api.set_run_status = delayed_status
+                    if boundary == "start":
+                        self.assertFalse(runner.set_run_status("running"))
+                    else:
+                        runner._pending_run_status_sync = "paused"
+                        runner._sync_pending_run_status(force=True)
+                self.assertEqual(runner.binding.run_status, "faulted")
+                self.assertEqual(load_binding().run_status, "faulted")
+                self.assertNotIn("pull", api.events)
+
     def test_backend_pause_returned_by_heartbeat_stops_task_pull_immediately(self):
         task = Task(id="task-server-paused", task_type="add_friend", status="pending", phone="13800000000")
         api = FakeApi(task)
@@ -7719,13 +7751,13 @@ class TaskRunnerTest(unittest.TestCase):
         self.assertTrue(runner.run_status_sync_error)
         self.assertFalse(any("暂停接单" in item for item in seen["errors"]))
 
-        # An explicit operator request remains the only supported way out of
-        # the sticky technical fault.
+        # An explicit click cannot bypass unconfirmed backend state and the
+        # unresolved, contradictory Flow. Safe recovery has its own HTTP test.
         api.run_status_error = None
-        self.assertTrue(runner.set_run_status("running"))
-        self.assertEqual(binding.run_status, "running")
-        self.assertEqual(load_binding().run_status, "running")
-        self.assertIsNone(runner._pending_run_status_sync)
+        self.assertFalse(runner.set_run_status("running"))
+        self.assertEqual(binding.run_status, "faulted")
+        self.assertEqual(load_binding().run_status, "faulted")
+        self.assertEqual(runner._pending_run_status_sync, "faulted")
 
     def test_restart_memory_and_sqlite_flow_id_mismatch_pauses(self):
         api = FakeApi(None)
