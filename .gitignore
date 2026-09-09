@@ -52,3 +52,6 @@ worker-client/.visual-venv/
 worker-client/omniauto-rpa/runtime/
 worker-client/omniauto-rpa/apps/wechat_ai_customer_service/runtime/
 worker-client/omniauto-rpa/apps/wechat_ai_customer_service/deploy/recorder_seed/**/*.zip
+
+# Private incident screenshots and original chat-history fixtures stay local.
+worker-client/tests/fixtures/avatar_text_20260909/
