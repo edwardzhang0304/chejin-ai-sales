@@ -662,9 +662,11 @@ def _reset_batch_to_generation_state(
             db.scalars(select(ReplyAction.id).where(ReplyAction.batch_id == batch_id))
         )
         if action_ids:
-            db.query(Task).filter(Task.reply_action_id.in_(action_ids)).delete(
-                synchronize_session=False
-            )
+            # ORM deletion includes Task.events/notes/evidences. Bulk DELETE
+            # bypassed those cascades and failed on real PostgreSQL foreign keys.
+            for task in db.scalars(select(Task).where(Task.reply_action_id.in_(action_ids))):
+                db.delete(task)
+            db.flush()
             db.query(ReplyAction).filter(ReplyAction.id.in_(action_ids)).delete(
                 synchronize_session=False
             )

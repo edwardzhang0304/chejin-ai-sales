@@ -1,6 +1,6 @@
 from datetime import timedelta, timezone
 
-from sqlalchemy import or_, select
+from sqlalchemy import and_, or_, select
 from sqlalchemy.orm import Session
 
 from app.core.request_context import ActorContext
@@ -8,7 +8,7 @@ from app.enums import TaskStatus
 from app.errors import AppError
 from app.models.audit import OperationLog
 from app.models.base import utcnow
-from app.models.c3 import Conversation, ReplyAction
+from app.models.c3 import Conversation, ReplyAction, SentAck
 from app.models.sales import Sales
 from app.models.task import Task
 from app.models.wechat import MessageEvent, WechatSessionBinding
@@ -114,7 +114,28 @@ def fault_recovery_readiness(db: Session, worker: Worker) -> dict:
         Conversation, ReplyAction.conversation_id == Conversation.conversation_id
     ).where(
         or_(ReplyAction.claimed_by_worker_id == worker.id, Conversation.worker_id == worker.id),
-        ReplyAction.status.in_({"sending", "unknown_send_result"}),
+        # Unknown is a no-resend physical outcome, not a pending receipt when
+        # the original claim, accepted SentAck and released failed Task agree.
+        # Do not compare text hashes: a mismatch itself may be formally settled
+        # as unknown by sent_ack, without permitting a resend.
+        or_(
+            ReplyAction.status == "sending",
+            and_(
+                ReplyAction.status == "unknown_send_result",
+                ~select(SentAck.id).join(Task, Task.id == SentAck.task_id).where(
+                    SentAck.reply_action_id == ReplyAction.id,
+                    SentAck.task_id == ReplyAction.claimed_task_id,
+                    Task.reply_action_id == ReplyAction.id,
+                    Task.worker_id == SentAck.worker_id,
+                    SentAck.worker_id == ReplyAction.claimed_by_worker_id,
+                    SentAck.send_token == ReplyAction.send_token,
+                    SentAck.send_result == "unknown",
+                    Task.status == TaskStatus.failed.value,
+                    Task.lease_owner_worker_id.is_(None),
+                    Task.lease_expires_at.is_(None),
+                ).correlate(ReplyAction).exists(),
+            ),
+        ),
     ).limit(1)):
         reason = "存在尚未确认的发送结果，需先完成原回执结算"
     elif worker.rpa_component_status != "ready" or worker.wechat_status != "logged_in":
@@ -492,6 +513,28 @@ def finish_inflight_flow(
         )
     worker = _lock_worker(db, worker.id)
     current = dict(worker.inflight_flow_state or {})
+    # Persist the accepted request in the same transaction as clearing the
+    # Flow. A lost HTTP response can then be replayed even while paused or
+    # faulted. Empty current state alone is never evidence of settlement.
+    finish_identity = {
+        **payload.model_dump(mode="json"),
+        "client_instance_id": worker.client_instance_id,
+        "bound_at": (
+            worker.bound_at.replace(tzinfo=timezone.utc).isoformat()
+            if worker.bound_at else None
+        ),
+    }
+    prior_finish = db.scalar(select(OperationLog).where(
+        OperationLog.event_type == "worker_inflight_finished",
+        OperationLog.target_type == "worker_flow",
+        OperationLog.target_id == payload.flow_id,
+        OperationLog.operator_id == worker.id,
+    ).order_by(OperationLog.created_at.desc(), OperationLog.id.desc()).limit(1))
+    if prior_finish is not None:
+        if prior_finish.after_data != finish_identity or current.get("flow_id") == payload.flow_id:
+            raise AppError("WORKER_INFLIGHT_FLOW_MISMATCH", "结束登记与原流程结算凭据不一致", 409)
+        return {"finished": True, "flow_id": payload.flow_id}
+    validate_inflight_continuation(worker, payload.flow_id)
     if current.get("flow_id") != payload.flow_id:
         raise AppError("WORKER_INFLIGHT_FLOW_MISMATCH", "只能结束当前同一在途流程", 409)
     if (
@@ -764,6 +807,12 @@ def finish_inflight_flow(
                     worker=worker,
                 )
                 db.flush()
+    write_log(
+        db, actor, event_type="worker_inflight_finished", module="worker",
+        target_type="worker_flow", target_id=payload.flow_id,
+        after_data=finish_identity,
+    )
+    db.flush()
     return {"finished": True, "flow_id": payload.flow_id}
 
 

@@ -227,6 +227,8 @@ class WorkerApiClient:
             },
             extra_headers={"X-Inflight-Flow-Id": flow_id},
         )
+        if not isinstance(payload, dict) or payload.get("finished") is not True or payload.get("flow_id") != flow_id:
+            raise ApiError("RUNTIME_INFLIGHT_FINISH_RESPONSE_INVALID", "流程结束响应缺少同一流程的确认", 502)
         if self.inflight_flow_id == flow_id:
             self.inflight_flow_id = None
         return dict(payload or {})

@@ -117,6 +117,7 @@ class _Runner:
         self.current_step = None
         self.c2_stats = {}
         self.run_status_sync_error = False
+        self.flow_finish_wait_reason = ""
         self.started_with = None
 
     def start(self, binding) -> None:
@@ -130,6 +131,17 @@ class _Runner:
 
 
 class WebUiBindingBehaviorTest(unittest.TestCase):
+    def test_pending_finish_uses_existing_timeline_until_confirmation(self):
+        with _headless_web_ui_module() as module:
+            window = self._window(module, Binding("worker", "token", "client", run_status="running"))
+            window.runner.flow_finish_wait_reason = "等待服务端确认上一流程结束，正在自动重试登记；完成前暂不领取新任务。"
+            self.assertEqual(window._screen(), "running")
+            step = window._model()["runningSteps"][0]
+            self.assertEqual(step["title"], "等待流程结束确认")
+            self.assertIn("暂不领取新任务", step["description"])
+            window.runner.flow_finish_wait_reason = ""
+            self.assertEqual(window._screen(), "accepting-wait")
+
     def test_delayed_profile_callback_never_rewrites_runner_run_status(self):
         with _headless_web_ui_module() as module, patch.object(module, "save_binding") as save:
             for current, stale in (("faulted", "running"), ("running", "faulted"), ("paused", "running")):

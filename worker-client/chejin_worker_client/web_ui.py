@@ -567,6 +567,8 @@ class WorkerWebWindow(QMainWindow):
             )
             return "offline" if has_local_process else "offline-empty"
         schedule_active = self.is_accept_schedule_active()
+        if self.runner.flow_finish_wait_reason:
+            return "running"
         if self.current_task and (self.binding.run_status == "paused" or not schedule_active):
             return "paused-running"
         if self.current_task:
@@ -683,6 +685,10 @@ class WorkerWebWindow(QMainWindow):
 
     def _task_model_for_screen(self, task: Task | None, offline: bool, run_status: str) -> dict[str, str]:
         model = _task_model(task)
+        if self.runner.flow_finish_wait_reason:
+            model["statusText"] = "等待流程结束确认"
+            model["metaText"] = self.runner.flow_finish_wait_reason
+            return model
         if run_status == "faulted":
             model["statusText"] = "客户端故障"
             model["metaText"] = (
@@ -747,6 +753,11 @@ class WorkerWebWindow(QMainWindow):
         return "未绑定"
 
     def _running_steps(self) -> list[dict[str, Any]]:
+        if self.runner.flow_finish_wait_reason:
+            return [{
+                "state": "current", "title": "等待流程结束确认",
+                "description": self.runner.flow_finish_wait_reason,
+            }]
         steps = list(self.step_history)
         if self.current_task:
             raw_step = self.runner.current_step or self.current_task.current_step
