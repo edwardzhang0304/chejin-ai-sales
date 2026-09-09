@@ -2702,7 +2702,24 @@ def read_authorization_for_worker(
             "authorization_revision": _authorization_revision(binding),
             "read_reason": "",
         }
-    return read_authorization_snapshot(db, binding=binding)
+    result = read_authorization_snapshot(db, binding=binding)
+    flow = worker.inflight_flow_state or {}
+    # Recovery evidence is separate from permission to do new UI work. Only
+    # expose the stored completion for this authenticated Worker's exact Flow;
+    # never lend another read's result to an old local finish receipt.
+    if (
+        flow.get("flow_kind") == "c2_read"
+        and flow.get("status") in {"active", "draining"}
+        and flow.get("conversation_id") == conversation_id
+        and binding.last_read_run_id
+        and flow.get("flow_id") == binding.last_read_run_id
+        and binding.last_read_completed_at is not None
+    ):
+        result["read_completion"] = {
+            **_read_completion_payload(binding),
+            "read_run_id": binding.last_read_run_id,
+        }
+    return result
 
 
 def confirm_friend_activation(

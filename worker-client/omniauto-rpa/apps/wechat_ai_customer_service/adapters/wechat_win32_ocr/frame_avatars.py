@@ -240,6 +240,25 @@ def associate(table: dict[str, Any], bounds: list[float], role: str) -> dict[str
             "isolation": component["isolation"]}
 
 
+def containing_component(table: dict[str, Any], bounds: list[float]) -> dict[str, Any] | None:
+    """Identify OCR wholly inside one already-confirmed avatar, never a column.
+
+    Partial overlaps remain message candidates. This consumes the unique
+    frame table; it does not detect avatars or change their admission rules.
+    """
+    if table.get("state") != "complete" or len(bounds) != 4:
+        return None
+    left, top, right, bottom = bounds
+    if not (left < right and top < bottom):
+        return None
+    matches = [
+        component for component in table.get("components", [])
+        if component["bounds"][0] <= left < right <= component["bounds"][2]
+        and component["bounds"][1] <= top < bottom <= component["bounds"][3]
+    ]
+    return matches[0] if len(matches) == 1 else None
+
+
 def role_details(image: Any, layout: dict[str, Any] | None, bounds: list[float]) -> dict[str, Any]:
     table = avatar_table(image, layout)
     customer = associate(table, bounds, "customer")

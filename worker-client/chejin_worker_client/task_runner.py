@@ -6042,6 +6042,38 @@ class TaskRunner:
         with self._restart_recovery_lock:
             self._finish_restart_recovery_flow_if_settled_locked(binding)
 
+    def _refresh_rejected_read_finish_receipt(
+        self, binding: Binding, *, flow_id: str, conversation_id: str,
+    ) -> dict[str, Any] | None:
+        """Recover a legacy success receipt from exact backend evidence only."""
+        snapshot = self.api.get_wechat_read_authorization(binding, conversation_id)
+        completion = snapshot.get("read_completion")
+        if (
+            snapshot.get("conversation_id") != conversation_id
+            or not isinstance(completion, dict)
+            or completion.get("read_run_id") != flow_id
+            or not completion.get("completed_at")
+        ):
+            return None
+        if (
+            completion.get("result") != "retry_required"
+            or completion.get("error_code") != "C2_UNREAD_RESULT_INCONCLUSIVE"
+            or not completion.get("next_read_due_at")
+        ):
+            return None
+        receipt = {
+            "terminal_kind": "retry_required", "conversation_id": conversation_id,
+            "error_code": "C2_UNREAD_RESULT_INCONCLUSIVE", "read_completion": completion,
+        }
+        save_c2_state(self._inflight_finish_receipt_key(flow_id), receipt)
+        append_log(
+            "INFO", "legacy_read_finish_receipt_reconciled",
+            "旧读取成功回执已按同一流程的后端结算证明修正，继续申请正常结束。",
+            metadata={"flow_id": flow_id, "conversation_id": conversation_id,
+                      "previous_terminal_kind": "read_confirmed", "backend_read_result": "retry_required"},
+        )
+        return receipt
+
     def _finish_restart_recovery_flow_if_settled_locked(
         self,
         binding: Binding,
@@ -6190,6 +6222,27 @@ class TaskRunner:
                 ),
             )
         except Exception as exc:
+            if (
+                isinstance(exc, ApiError)
+                and exc.status_code == 409
+                and exc.code == "WORKER_INFLIGHT_FLOW_NOT_SETTLED"
+                and flow_kind == "c2_read"
+                and terminal_kind == "read_confirmed"
+                and conversation_id
+                and not receipt.get("read_completion")
+            ):
+                try:
+                    refreshed = self._refresh_rejected_read_finish_receipt(
+                        binding, flow_id=flow_id, conversation_id=conversation_id,
+                    )
+                    if refreshed is not None:
+                        self._finish_inflight_flow(
+                            binding, flow_id, terminal_kind=refreshed["terminal_kind"],
+                            conversation_id=conversation_id, error_code=refreshed["error_code"],
+                        )
+                        return
+                except Exception as refresh_exc:
+                    exc = refresh_exc
             append_log(
                 "INFO",
                 "restart_inflight_flow_settlement_pending",
@@ -12691,16 +12744,36 @@ class TaskRunner:
                 "recovery_action": recovery_action,
             }
         normalized_result = result if isinstance(result, dict) else {}
+        read_completion = normalized_result.get("read_completion")
+        read_completion = read_completion if isinstance(read_completion, dict) else {}
+        read_result = str(read_completion.get("result") or "")
+        terminal_kind = {
+            "new_facts": "read_confirmed",
+            "no_change": "read_confirmed",
+            "retry_required": "retry_required",
+            "technical_failed": "technical_failed",
+        }.get(read_result)
         if _ingest_followup_cancelled(normalized_result):
-            # Persist before confirming the Outbox: restart/replay must never
-            # infer read_confirmed from these successfully delivered facts.
+            terminal_kind = "read_cancelled"
+        if terminal_kind:
+            # Delivery success is not read success. Persist the actual backend
+            # terminal before confirming Outbox, including failed-frame gates,
+            # so a crash/replay cannot promote retry_required to read_confirmed.
             receipt_key = self._inflight_finish_receipt_key(str(payload.get("read_run_id") or ""))
             previous_receipt = load_c2_state(receipt_key) or {}
-            if previous_receipt.get("terminal_kind") != "technical_failed":
+            if previous_receipt.get("terminal_kind") != "technical_failed" and (
+                previous_receipt.get("terminal_kind") != "read_cancelled"
+                or terminal_kind in {"read_cancelled", "technical_failed"}
+            ):
                 save_c2_state(receipt_key, {
-                    "terminal_kind": "read_cancelled",
+                    "terminal_kind": terminal_kind,
                     "conversation_id": payload.get("conversation_id"),
-                    "error_code": "LEAD_INVALID",
+                    "error_code": (
+                        "LEAD_INVALID" if terminal_kind == "read_cancelled"
+                        else None if terminal_kind == "read_confirmed"
+                        else read_completion.get("error_code")
+                    ),
+                    "read_completion": read_completion,
                 })
         self._mark_ingest_ledger_confirmed(payload, normalized_result)
         self._consume_confirmed_ai_reply_receipts(
@@ -13627,7 +13700,7 @@ class TaskRunner:
         identity_errors: list[dict[str, Any]],
         authoritative_frame_source: str = "initial_read",
         ui_frame_invalidated: bool = False,
-    ) -> bool:
+    ) -> dict[str, Any]:
         normalized_errors = [
             {
                 "observation_id": str(item.get("observation_id") or ""),
@@ -13704,6 +13777,16 @@ class TaskRunner:
             payload=payload,
             operation="identity_failure_gate",
         )
+        if delivery.get("ok") and not (delivery.get("result") or {}).get("read_completion"):
+            receipt = load_c2_state(self._inflight_finish_receipt_key(read_run_id)) or {}
+            if (
+                receipt.get("conversation_id") == target.conversation_id
+                and isinstance(receipt.get("read_completion"), dict)
+            ):
+                delivery = {
+                    **delivery,
+                    "result": {**(delivery.get("result") or {}), "read_completion": receipt["read_completion"]},
+                }
         outbox_id = str(delivery["outbox_id"])
         if not delivery.get("ok"):
             append_log(
@@ -13717,19 +13800,20 @@ class TaskRunner:
                     "flow_gate_identity_key": stable_gate_key,
                 },
             )
-            return False
+            return delivery
         append_log(
             "WARN",
             "c2_identity_failure_gate_reported",
-            "消息身份无法唯一确认，已创建一次可去重的人工接管门禁。",
+            "消息身份门禁已获后端接收，按后端读取结算结果处理。",
             error_code=error_code,
             metadata={
                 "conversation_id": target.conversation_id,
                 "outbox_id": outbox_id,
                 "flow_gate_identity_key": stable_gate_key,
+                "read_completion": (delivery.get("result") or {}).get("read_completion"),
             },
         )
-        return True
+        return delivery
 
     def _build_final_slot_incremental_plan(
         self,
@@ -21523,6 +21607,17 @@ class TaskRunner:
                     if isinstance(flow_result.get("result"), dict)
                     else {}
                 )
+                persisted_receipt = load_c2_state(
+                    self._inflight_finish_receipt_key(read_run_id)
+                ) or {}
+                # Final media/gate delivery may happen during cleanup, after
+                # flow_result was produced. Its durable backend receipt is
+                # newer and must also survive an already-confirmed replay.
+                if (
+                    persisted_receipt.get("conversation_id") == target.conversation_id
+                    and isinstance(persisted_receipt.get("read_completion"), dict)
+                ):
+                    read_completion = persisted_receipt["read_completion"]
                 backend_read_result = (
                     str(read_completion.get("result") or "").strip()
                     if isinstance(read_completion, dict)
@@ -21618,9 +21713,13 @@ class TaskRunner:
                     append_log(
                         "ERROR",
                         "inflight_flow_finish_failed",
-                        "C2 结算完成，但在途流程结束登记失败。",
+                        "C2 在途流程结束登记失败，保留原结算回执等待恢复。",
                         error_code="RUNTIME_INFLIGHT_FINISH_FAILED",
-                        metadata={"flow_id": read_run_id, "error": str(exc)},
+                        metadata={
+                            "flow_id": read_run_id, "error": str(exc),
+                            "requested_terminal_kind": terminal_kind,
+                            "backend_read_result": backend_read_result,
+                        },
                     )
             if finalization_error is not None:
                 raise finalization_error
@@ -22222,7 +22321,7 @@ class TaskRunner:
                     "final_messages": final_payload,
                     "action_journal_path": action_journal_path_value,
                 }
-            gate_reported = self._report_identity_failure_gate(
+            gate_delivery = self._report_identity_failure_gate(
                 binding=binding,
                 target=target,
                 read_run_id=read_run_id,
@@ -22239,6 +22338,7 @@ class TaskRunner:
             action_journal_path_value = str(
                 terminal_gate.get("action_journal_path") or ""
             ).strip()
+            gate_reported = gate_delivery.get("ok") is True
             if gate_reported and action_journal_path_value:
                 # The independent backend gate is now the durable settlement
                 # for this unidentifiable action.  Only after that ack may the
@@ -22250,6 +22350,7 @@ class TaskRunner:
                 "ok": False,
                 "error_code": gate_error_code,
                 "identity_gate_reported": gate_reported,
+                "result": gate_delivery.get("result") or {},
                 "identity_errors": identity_errors,
                 "target_confirmation": target_confirmation,
                 "initial_observations": initial_observations,
@@ -23561,8 +23662,9 @@ class TaskRunner:
                     },
                     force_incident=True,
                 )
+                gate_delivery: dict[str, Any] = {}
                 if operation_phase != C2_PRE_SEND_REFRESH_PHASE:
-                    self._report_identity_failure_gate(
+                    gate_delivery = self._report_identity_failure_gate(
                         binding=binding,
                         target=target,
                         read_run_id=read_run_id,
@@ -23572,6 +23674,7 @@ class TaskRunner:
                 return {
                     "ok": False,
                     "error_code": code,
+                    "result": gate_delivery.get("result") or {},
                     "pre_send_error_evidence": {
                         "source_message_type": error_source_message_type,
                         "candidate_count": len(initial_identity_errors),

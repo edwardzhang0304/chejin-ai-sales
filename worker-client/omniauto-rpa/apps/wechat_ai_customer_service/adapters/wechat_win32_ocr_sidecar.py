@@ -3480,7 +3480,9 @@ def messages_payload(
         }
     if artifact_dir:
         try:
-            review_path = write_messages_frame_review(Path(artifact_dir), payload)
+            review_path = write_messages_frame_review(
+                Path(artifact_dir), payload, screenshot=screenshot, ocr_items=ocr_items,
+            )
             payload["review_path"] = review_path
             payload["evidence_path"] = review_path
         except Exception as exc:
@@ -15010,7 +15012,13 @@ def write_messages_targeting_review(output_dir: Path, payload: dict[str, Any]) -
     )
 
 
-def write_messages_frame_review(output_dir: Path, payload: dict[str, Any]) -> str:
+def write_messages_frame_review(
+    output_dir: Path,
+    payload: dict[str, Any],
+    *,
+    screenshot: Any | None = None,
+    ocr_items: list[dict[str, Any]] | None = None,
+) -> str:
     observations = [
         item
         for item in (payload.get("observations") or [])
@@ -15054,6 +15062,7 @@ def write_messages_frame_review(output_dir: Path, payload: dict[str, Any]) -> st
                         "sender_role": item.get("sender_role"),
                         "sender_role_source": item.get("sender_role_source"),
                         "bubble_rect": item.get("bubble_rect"),
+                        "content_clean": item.get("content_clean"),
                         "item_state": item.get("item_state"),
                         "error_code": item.get("error_code"),
                         "reason_detail": item.get("reason_detail"),
@@ -15063,6 +15072,36 @@ def write_messages_frame_review(output_dir: Path, payload: dict[str, Any]) -> st
             },
         ),
     ]
+    if screenshot is not None:
+        snapshot = layout_snapshot_for_image(screenshot) or {}
+        table = frame_avatars.avatar_table(screenshot, snapshot)
+        viewport = snapshot.get("message_viewport_bounds")
+        message_ocr = [
+            item for item in (ocr_items or [])
+            if ocr_item_center_in_bounds(item, viewport)
+        ] if viewport else []
+        # Extend the existing local frame artifact, not telemetry or backend
+        # payloads. Preserve original OCR including excluded avatar lettering
+        # so a later failure can be replayed without reconstructing its text.
+        rows.append(_targeting_review_row(
+            title="03 原始文字与头像归属",
+            purpose="区分原始识别、头像内文字排除和最终气泡归并。",
+            expected="只排除完全位于已确认头像内部的 OCR 行，原始证据仍保留。",
+            detection={
+                "layout_snapshot": snapshot,
+                "avatar_table": table,
+                "message_ocr_items": [
+                    {
+                        **item,
+                        "excluded_avatar_component_id": (
+                            frame_avatars.containing_component(
+                                table, [float(item[k]) for k in ("left", "top", "right", "bottom")],
+                            ) or {}
+                        ).get("component_id"),
+                    } for item in message_ocr
+                ],
+            },
+        ))
     return write_step_event_report(
         output_dir=output_dir,
         json_name="wechat_messages_frame_review.json",
@@ -20000,6 +20039,14 @@ def parse_messages_from_ocr(
             "right": int(float(item.get("right") or 0)),
             "bottom": int(float(item.get("bottom") or 0)),
         }
+        if screenshot is not None and frame_avatars.containing_component(
+            avatar_evidence,
+            [float(item[key]) for key in ("left", "top", "right", "bottom")],
+        ) is not None:
+            # Avatar lettering (e.g. UNI) is UI content, not an intervening
+            # chat line. Keep the original OCR evidence untouched; remove
+            # only wholly-contained confirmed-avatar rows from grouping.
+            continue
         avatar_alignment = message_row_avatar_role_details(
             screenshot,
             [rect["left"], rect["top"], rect["right"], rect["bottom"]],

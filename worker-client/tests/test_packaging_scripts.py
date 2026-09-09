@@ -1131,16 +1131,24 @@ class PackagingScriptsTest(unittest.TestCase):
                     "source_commit": "a8999591d663c48ce482f949c40ec5d6b4a22894",
                     "scope": ["c2_contract_0_9_71_generated_schema"],
                 },
+                {
+                    "source_commit": "e556c9dd2ae742cada1976dd9b709b4ee7e53453",
+                    "scope": [
+                        "confirmed_avatar_ocr_row_exclusion",
+                        "frame_review_raw_ocr_and_avatar_evidence",
+                        "c2_contract_0_9_72_generated_schema",
+                    ],
+                },
             ],
         )
         self.assertEqual(
             provenance["current_release"],
             {
-                "version": "0.9.71",
-                "source_commit": "a8999591d663c48ce482f949c40ec5d6b4a22894",
-                "contract_revision": "0.9.71",
-                "contract_sha256": "4f0abee79adafa760a664db2e2fd19ea2f4f98f4a057fb79b3946c2bb55cabdb",
-                "scope": "Reviewed joint Brain and vehicle changes; unified 0.9.71 candidate contract schema"
+                "version": "0.9.72",
+                "source_commit": "e556c9dd2ae742cada1976dd9b709b4ee7e53453",
+                "contract_revision": "0.9.72",
+                "contract_sha256": "bf876db4edab2dc779b756508cce8e780f48153ccf6fe3ecc06f8ef9cf6ba7ae",
+                "scope": "Reviewed confirmed-avatar lettering exclusion and generated 0.9.72 schema; Worker/backend retain read settlement ownership"
             },
         )
         self.assertIn(
