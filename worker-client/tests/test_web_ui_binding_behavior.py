@@ -125,8 +125,31 @@ class _Runner:
     def stop(self) -> None:
         pass
 
+    def fault_recovery_state(self):
+        return {"ready": False, "checking": False, "reason": "等待检查"}
+
 
 class WebUiBindingBehaviorTest(unittest.TestCase):
+    def test_delayed_profile_callback_never_rewrites_runner_run_status(self):
+        with _headless_web_ui_module() as module, patch.object(module, "save_binding") as save:
+            for current, stale in (("faulted", "running"), ("running", "faulted"), ("paused", "running")):
+                binding = Binding("worker", "token", "client", run_status=current)
+                window = self._window(module, binding)
+                window._position_next_to_wechat_once = Mock()
+                window._publish = Mock()
+                window.on_profile(WorkerProfile(id="worker", worker_name="测试", run_status=stale))
+                self.assertEqual(binding.run_status, current)
+            save.assert_not_called()
+
+    def test_fault_start_uses_existing_bridge_and_runner_guard(self):
+        with _headless_web_ui_module() as module:
+            window = self._window(module, Binding("worker", "token", "client", run_status="faulted"))
+            window.runner.set_run_status = Mock(return_value=False)
+            window._publish = Mock()
+            window.bridge.startAccepting()
+            window.runner.set_run_status.assert_called_once_with("running")
+            self.assertEqual(window.binding.run_status, "faulted")
+
     @staticmethod
     def _window(module, binding):
         available = types.SimpleNamespace(

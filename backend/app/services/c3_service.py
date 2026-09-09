@@ -360,6 +360,15 @@ def _build_pre_send_fact_checkpoint(
             if isinstance(raw.get("business_projection"), dict)
             else {}
         )
+        historical_order = business_projection.get("screen_order")
+        if type(historical_order) is int and historical_order >= 0:
+            # ordered_messages is the latest proven visible tail. Persisted
+            # events keep their original frame positions, so rebase only this
+            # frozen copy; identity, content and historical evidence stay intact.
+            business_projection["screen_order"] = len(fact_items)
+        else:
+            # Do not manufacture a valid projection from missing/corrupt data.
+            complete = False
         strong_boundary_tokens = [
             str(token or "").strip()
             for token in (raw.get("strong_boundary_tokens") or [])

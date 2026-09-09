@@ -3917,6 +3917,7 @@ class TaskRunner:
         on_error: Callable[[str], None],
         can_pull_tasks: Callable[[], bool] | None = None,
         on_runtime_process: Callable[[dict[str, Any]], None] | None = None,
+        on_fault_recovery: Callable[[dict[str, Any]], None] | None = None,
     ) -> None:
         self.api = api
         self.bridge = bridge
@@ -3927,6 +3928,14 @@ class TaskRunner:
         self.on_result = on_result
         self.on_error = on_error
         self.on_runtime_process = on_runtime_process or (lambda _event: None)
+        self.on_fault_recovery = on_fault_recovery or (lambda _state: None)
+        self._run_status_intent_lock = threading.RLock()
+        self._run_status_revision = 0
+        self._fault_recovery_requested: int | None = None
+        self._fault_recovery_processing = False
+        self._fault_recovery_state = {"ready": False, "checking": False, "reason": "正在检查故障恢复条件"}
+        self._backend_fault_recovery: dict[str, Any] = {}
+        self._recovery_heartbeat_at = 0.0
         self.can_pull_tasks = can_pull_tasks or (lambda: True)
         self.binding: Binding | None = None
         self.current_task: Task | None = None
@@ -3993,6 +4002,7 @@ class TaskRunner:
         self.c2_stop_guard_before_voice_seconds = max(0.0, float(CONFIG.c2_stop_guard_before_voice_seconds))
         self.last_artifact_cleanup_at = 0.0
         self._pending_run_status_sync: str | None = None
+        self._run_status_persistence_pending = False
         self._backend_confirmed_run_status: str | None = None
         self._last_run_status_sync_attempt = 0.0
         self.run_status_sync_error: str | None = None
@@ -4378,6 +4388,8 @@ class TaskRunner:
             and not self.stop_event.is_set()
             and not emergency_stop_requested()
             and active.run_status == "running"
+            and not self._fault_recovery_processing
+            and not self._run_status_persistence_pending
             and control.get("pause_requested") is not True
             and control.get("update_no_new_work") is not True
             and not control.get("inflight_flow_id")
@@ -4455,10 +4467,8 @@ class TaskRunner:
             "sidecar_active": sidecar_active,
             **durable,
         }
-        snapshot["safe"] = bool(
-            snapshot["new_work_blocked"]
-            and snapshot["backend_stopped_confirmed_or_unbound"]
-            and not snapshot["current_task"]
+        snapshot["settlement_complete"] = bool(
+            not snapshot["current_task"]
             and not snapshot["inflight_flow_id"]
             and not snapshot["task_lease_active"]
             and not snapshot["ui_lock_active"]
@@ -4474,6 +4484,11 @@ class TaskRunner:
                     "action_journal_state_unavailable",
                 )
             )
+        )
+        snapshot["safe"] = bool(
+            snapshot["new_work_blocked"]
+            and snapshot["backend_stopped_confirmed_or_unbound"]
+            and snapshot["settlement_complete"]
         )
         waiting_reason_code = ""
         waiting_reason_text = ""
@@ -6264,12 +6279,148 @@ class TaskRunner:
     def _apply_local_run_status(self, run_status: str) -> None:
         if not self.binding:
             return
-        if run_status in {"paused", "faulted"}:
-            request_runtime_pause()
-        else:
-            clear_runtime_pause()
-        self.binding.run_status = run_status  # type: ignore[assignment]
-        save_binding(self.binding)
+        with self._run_status_intent_lock:
+            try:
+                if run_status in {"paused", "faulted"}:
+                    self._run_status_revision += 1
+                    self._fault_recovery_requested = None
+                    # Stop intake immediately, including when persistence fails.
+                    self.binding.run_status = run_status  # type: ignore[assignment]
+                    request_runtime_pause()
+                    save_binding(self.binding)
+                else:
+                    # Persist a candidate, not the shared live Binding. Neither
+                    # intake nor failure compensation may observe running early.
+                    candidate = copy.copy(self.binding)
+                    candidate.run_status = run_status  # type: ignore[assignment]
+                    save_binding(candidate)
+                    clear_runtime_pause()
+                    self.binding.run_status = run_status  # type: ignore[assignment]
+            except Exception:
+                self._run_status_persistence_pending = True
+                raise
+            self._run_status_persistence_pending = False
+
+    def fault_recovery_state(self) -> dict[str, Any]:
+        """UI reads the last background check; clicking always rechecks it."""
+        with self._run_status_intent_lock:
+            return dict(self._fault_recovery_state)
+
+    def _check_fault_recovery(self) -> dict[str, Any]:
+        reason = ""
+        snapshot = self.update_install_safety_snapshot()
+        if not self.binding or self.binding.run_status != "faulted":
+            reason = "客户端未处于故障状态"
+        elif emergency_stop_requested() or self.stop_event.is_set():
+            reason = "客户端正在停止，请重新启动客户端"
+        elif snapshot["new_work_blocked"]:
+            reason = "客户端更新进行中，请等待更新完成或取消"
+        elif not snapshot["backend_stopped_confirmed_or_unbound"]:
+            reason = "等待后端确认已停止接单"
+        elif self._restart_backend_probe_pending or self._restart_recovery_flow_id:
+            reason = "正在核对上次未完成的流程"
+        elif not snapshot["settlement_complete"]:
+            reason = "原任务、回执或操作尚未结算，正在按原流程处理"
+        elif not self.post_update_runtime_health_snapshot()["ready"]:
+            reason = "后台线程尚未就绪，请重新启动客户端后检查"
+        elif not self._recovery_heartbeat_at or time.monotonic() - self._recovery_heartbeat_at > max(5, self.heartbeat_interval_seconds * 2):
+            reason = "等待与后端连接正常"
+        elif self._backend_fault_recovery.get("protocol_version") != 1:
+            reason = "后端尚不支持安全恢复，请等待服务升级"
+        elif self._backend_fault_recovery.get("ready") is not True:
+            reason = str(self._backend_fault_recovery.get("reason") or "等待后端原任务结算")
+        elif self.last_rpa_component_status != "ready" or self.last_wechat_status != "logged_in":
+            reason = "等待自动化组件和微信连接正常"
+        return {"ready": not reason, "checking": False, "reason": reason or "检查通过，可点击开始接单；故障记录已保留"}
+
+    def _publish_fault_recovery(self) -> None:
+        if not self.binding or self.binding.run_status != "faulted":
+            return
+        try:
+            state = self._check_fault_recovery()
+        except Exception:
+            state = {"ready": False, "checking": False, "reason": "恢复检查失败，故障记录已保留，请查看本机日志"}
+        with self._run_status_intent_lock:
+            if self._fault_recovery_requested is not None or self._fault_recovery_processing:
+                state = {"ready": False, "checking": True, "reason": "正在核验并恢复接单"}
+            changed = state != self._fault_recovery_state
+            self._fault_recovery_state = state
+        if changed:
+            self.on_fault_recovery(dict(state))
+
+    def _request_fault_recovery(self) -> bool:
+        with self._run_status_intent_lock:
+            if self._fault_recovery_requested is not None or self._fault_recovery_processing:
+                return False
+            if not self._fault_recovery_state["ready"]:
+                self.on_error(self._fault_recovery_state["reason"])
+                return False
+            self._fault_recovery_requested = self._run_status_revision
+            self._fault_recovery_state = {"ready": False, "checking": True, "reason": "正在核验并恢复接单"}
+        self.on_fault_recovery(self.fault_recovery_state())
+        self._task_wake_event.set()
+        return True
+
+    def _process_fault_recovery(self) -> None:
+        # Runs on the existing task loop, never on the Qt event thread. Existing
+        # recovery owns old receipts; this operation only checks their settlement.
+        with self._run_status_intent_lock:
+            revision = self._fault_recovery_requested
+            if revision is None or self._fault_recovery_processing:
+                return
+            self._fault_recovery_requested = None
+            self._fault_recovery_processing = True
+        attempted = False
+        try:
+            with self._restart_recovery_lock, self._new_work_admission_lock:
+                state = self._check_fault_recovery()
+                if not state["ready"]:
+                    self.on_error(state["reason"])
+                    return
+                binding = self.binding
+                if not self._refresh_vision_credential(binding):
+                    return
+                with self._run_status_intent_lock:
+                    if revision != self._run_status_revision or not self._check_fault_recovery()["ready"]:
+                        return
+                attempted = True
+                profile = self.api.set_run_status(binding, "running", recover_from_fault=True)
+                with self._run_status_intent_lock:
+                    if (profile.run_status != "running" or revision != self._run_status_revision
+                            or not self._check_fault_recovery()["ready"]):
+                        raise RuntimeError("恢复期间状态发生变化，继续停止接单")
+                    self._backend_confirmed_run_status = "running"
+                    self._apply_local_run_status("running")
+                    self._pending_run_status_sync = None
+                    self.run_status_sync_error = None
+                    self._backend_inflight_flow_state = dict(profile.inflight_flow_state or {})
+                    self.on_profile(profile)
+                append_log("INFO", "client_fault_recovered", "操作人员明确开始接单，原任务已结算且恢复检查通过。")
+                self._task_wake_event.set()
+        except Exception as exc:
+            # A lost reply may hide a committed server transition. Keep the
+            # local stop gate and reassert it; never infer success or auto-retry.
+            restore_error = None
+            if attempted and self.binding:
+                with self._run_status_intent_lock:
+                    # Recovery started from faulted. Its compensation can only
+                    # reassert fault, never reuse a partially applied running.
+                    self._pending_run_status_sync = "faulted"
+                    try:
+                        self._apply_local_run_status("faulted")
+                    except Exception as restore_exc:
+                        restore_error = type(restore_exc).__name__
+                # Even when local persistence is unavailable, stop the backend.
+                # Keep pending until both local persistence and HTTP succeed.
+                self._sync_pending_run_status(force=True)
+            self.on_error("恢复接单失败，仍保持停止接单；请稍后重试。")
+            append_log("WARN", "client_fault_recovery_rejected", "安全恢复未完成，保留故障现场。",
+                       error_code=exc.code if isinstance(exc, ApiError) else "FAULT_RECOVERY_NOT_READY",
+                       metadata={"exception_type": type(exc).__name__, "local_restore_exception_type": restore_error})
+        finally:
+            with self._run_status_intent_lock:
+                self._fault_recovery_processing = False
+            self._publish_fault_recovery()
 
     def _sync_pending_run_status(self, *, force: bool = False) -> None:
         binding = self.binding
@@ -6280,12 +6431,22 @@ class TaskRunner:
         if not force and now - self._last_run_status_sync_attempt < 5.0:
             return
         self._last_run_status_sync_attempt = now
+        revision = self._run_status_revision
         try:
             profile = self.api.set_run_status(binding, pending)
             if profile.run_status != pending:
                 raise RuntimeError(
                     f"后端返回状态 {profile.run_status}，与请求状态 {pending} 不一致"
                 )
+            with self._run_status_intent_lock:
+                if revision != self._run_status_revision:
+                    self._pending_run_status_sync = binding.run_status
+                    return
+                self._backend_confirmed_run_status = str(profile.run_status or "") or None
+                self._apply_local_run_status(profile.run_status)
+                self._pending_run_status_sync = None
+                self.run_status_sync_error = None
+                self.on_profile(profile)
         except Exception as exc:
             self.run_status_sync_error = str(exc)
             pending_label = (
@@ -6301,11 +6462,6 @@ class TaskRunner:
                 metadata={"requested_run_status": pending, "error": str(exc)},
             )
             return
-        self._pending_run_status_sync = None
-        self.run_status_sync_error = None
-        self._backend_confirmed_run_status = str(profile.run_status or "") or None
-        self._apply_local_run_status(profile.run_status)
-        self.on_profile(profile)
         append_log(
             "INFO",
             "run_status_sync_recovered",
@@ -6316,6 +6472,12 @@ class TaskRunner:
     def set_run_status(self, run_status: str) -> bool:
         if not self.binding:
             return False
+        if run_status == "running" and self.binding.run_status == "faulted":
+            return self._request_fault_recovery()
+        if run_status == "paused" and self.binding.run_status == "faulted":
+            # A schedule/manual pause can cancel recovery, but cannot downgrade
+            # a technical fault into an unguarded ordinary pause.
+            run_status = "faulted"
         if run_status not in {"running", "paused", "faulted"}:
             self.on_error("接单状态无效。")
             return False
@@ -6332,6 +6494,7 @@ class TaskRunner:
             # Pause drains the registered flow. Emergency stop remains the
             # separate fail-safe for not-yet-started physical actions.
             self._apply_local_run_status(run_status)
+        revision = self._run_status_revision
         try:
             if run_status == "running" and not self._refresh_vision_credential(self.binding):
                 return False
@@ -6340,14 +6503,18 @@ class TaskRunner:
                 raise RuntimeError(
                     f"后端返回状态 {profile.run_status}，与请求状态 {run_status} 不一致"
                 )
-            self._pending_run_status_sync = None
-            self.run_status_sync_error = None
-            self._backend_confirmed_run_status = str(profile.run_status or "") or None
-            self._apply_local_run_status(profile.run_status)
-            self.on_profile(profile)
-            self._backend_inflight_flow_state = dict(
-                profile.inflight_flow_state or {}
-            )
+            with self._run_status_intent_lock:
+                if revision != self._run_status_revision:
+                    self._pending_run_status_sync = self.binding.run_status
+                    return False
+                self._pending_run_status_sync = None
+                self.run_status_sync_error = None
+                self._backend_confirmed_run_status = str(profile.run_status or "") or None
+                self._apply_local_run_status(profile.run_status)
+                self.on_profile(profile)
+                self._backend_inflight_flow_state = dict(
+                    profile.inflight_flow_state or {}
+                )
             if run_status == "running":
                 self._request_task_wake_if_safe(
                     reason="backend_run_status_running"
@@ -6365,6 +6532,9 @@ class TaskRunner:
             )
             return True
         except Exception as exc:
+            if revision != self._run_status_revision:
+                self._pending_run_status_sync = self.binding.run_status
+                return False
             if run_status in {"paused", "faulted"}:
                 self._pending_run_status_sync = run_status
                 self.run_status_sync_error = str(exc)
@@ -6444,6 +6614,13 @@ class TaskRunner:
                 self.stop_event.wait(self.poll_interval_seconds)
 
     def tick_once(self) -> None:
+        try:
+            self._tick_once()
+            self._process_fault_recovery()
+        finally:
+            self._publish_fault_recovery()
+
+    def _tick_once(self) -> None:
         binding = self.binding
         if not binding or emergency_stop_requested():
             return
@@ -6497,6 +6674,7 @@ class TaskRunner:
                     "vision": vision_capability,
                 },
             }
+        heartbeat_revision = self._run_status_revision
         try:
             profile = self.api.heartbeat(
                 binding,
@@ -6507,38 +6685,44 @@ class TaskRunner:
                 current_step=self.current_step,
                 local_lock_summary=local_lock,
             )
+            self._recovery_heartbeat_at = time.monotonic()
+            self._backend_fault_recovery = dict(profile.fault_recovery)
             self._backend_confirmed_run_status = (
                 str(profile.run_status or "") or None
             )
-            if binding.run_status == "faulted":
-                # A locally persisted technical fault is authoritative until
-                # an explicit operator transition succeeds.  Heartbeat may
-                # carry a stale remote running/paused value while the status
-                # endpoint or old-Flow finalization endpoint is unavailable;
-                # that stale projection must never downgrade the local fault.
-                if profile.run_status == "faulted":
-                    if self._pending_run_status_sync == "faulted":
+            with self._run_status_intent_lock:
+                if heartbeat_revision != self._run_status_revision:
+                    profile.run_status = binding.run_status
+                    self._pending_run_status_sync = binding.run_status
+                elif binding.run_status == "faulted":
+                    # A locally persisted technical fault is authoritative until
+                    # an explicit operator transition succeeds.  Heartbeat may
+                    # carry a stale remote running/paused value while the status
+                    # endpoint or old-Flow finalization endpoint is unavailable;
+                    # that stale projection must never downgrade the local fault.
+                    if profile.run_status == "faulted":
+                        if self._pending_run_status_sync == "faulted" and not self._run_status_persistence_pending:
+                            self._pending_run_status_sync = None
+                            self.run_status_sync_error = None
+                    else:
+                        profile.run_status = "faulted"
+                        self._pending_run_status_sync = "faulted"
+                        if not self.run_status_sync_error:
+                            self.run_status_sync_error = (
+                                "后端尚未确认客户端故障状态"
+                            )
+                elif self._pending_run_status_sync in {"paused", "faulted"}:
+                    pending_run_status = self._pending_run_status_sync
+                    if profile.run_status == pending_run_status and not self._run_status_persistence_pending:
                         self._pending_run_status_sync = None
                         self.run_status_sync_error = None
-                else:
-                    profile.run_status = "faulted"
-                    self._pending_run_status_sync = "faulted"
-                    if not self.run_status_sync_error:
-                        self.run_status_sync_error = (
-                            "后端尚未确认客户端故障状态"
-                        )
-            elif self._pending_run_status_sync in {"paused", "faulted"}:
-                pending_run_status = self._pending_run_status_sync
-                if profile.run_status == pending_run_status:
-                    self._pending_run_status_sync = None
-                    self.run_status_sync_error = None
-                else:
-                    profile.run_status = pending_run_status
-            elif profile.run_status != binding.run_status:
-                # The run-status endpoint is authoritative. In particular, an
-                # operator pause must not be overwritten by the next heartbeat
-                # carrying a stale local "running" value.
-                self._apply_local_run_status(profile.run_status)
+                    else:
+                        profile.run_status = pending_run_status
+                elif profile.run_status != binding.run_status:
+                    # The run-status endpoint is authoritative. In particular, an
+                    # operator pause must not be overwritten by the next heartbeat
+                    # carrying a stale local "running" value.
+                    self._apply_local_run_status(profile.run_status)
             self._backend_inflight_flow_state = dict(
                 profile.inflight_flow_state or {}
             )
@@ -6554,6 +6738,7 @@ class TaskRunner:
             self.on_status("online")
             mark_incident_recovered("heartbeat_failed")
         except ApiError as exc:
+            self._recovery_heartbeat_at = 0.0
             if exc.status_code == 401:
                 self.on_status("invalid")
                 self.on_error("绑定已失效，请重新绑定。")
@@ -6564,6 +6749,7 @@ class TaskRunner:
             append_log("ERROR", "heartbeat_failed", str(exc), error_code=exc.code)
             return
         except Exception as exc:
+            self._recovery_heartbeat_at = 0.0
             self.on_status("offline")
             self.on_error(str(exc))
             append_log("ERROR", "heartbeat_failed", str(exc))

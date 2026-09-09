@@ -1,6 +1,6 @@
 from datetime import timedelta, timezone
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
 from app.core.request_context import ActorContext
@@ -8,7 +8,7 @@ from app.enums import TaskStatus
 from app.errors import AppError
 from app.models.audit import OperationLog
 from app.models.base import utcnow
-from app.models.c3 import Conversation
+from app.models.c3 import Conversation, ReplyAction
 from app.models.sales import Sales
 from app.models.task import Task
 from app.models.wechat import MessageEvent, WechatSessionBinding
@@ -87,6 +87,41 @@ def _bound_sales(db: Session, worker_id: str) -> Sales | None:
     return db.scalar(select(Sales).where(Sales.worker_id == worker_id, Sales.deleted_at.is_(None)))
 
 
+def fault_recovery_readiness(db: Session, worker: Worker) -> dict:
+    """One server gate for the heartbeat projection and explicit recovery.
+
+    The transition calls this under the existing Worker row lock. Read related
+    work without taking inverse Task/Conversation locks; recovery never settles
+    or deletes any of it on behalf of the original owner.
+    """
+    reason = ""
+    if worker.client_binding_state != "bound" or not worker.client_instance_id:
+        reason = "客户端绑定未就绪"
+    elif computed_online_status(worker) != "online":
+        reason = "等待客户端重新连接"
+    elif (worker.inflight_flow_state or {}).get("flow_id"):
+        reason = "等待原流程正常结束"
+    elif worker.current_task or worker.running_status != "idle":
+        reason = "等待原任务正常结束"
+    elif (worker.local_lock_summary or {}).get("locked"):
+        reason = "等待界面操作锁释放"
+    elif db.scalar(select(Task.id).where(
+        or_(Task.worker_id == worker.id, Task.lease_owner_worker_id == worker.id),
+        or_(Task.status == "running", Task.lease_expires_at > utcnow()),
+    ).limit(1)):
+        reason = "等待原任务或租约结算"
+    elif db.scalar(select(ReplyAction.id).outerjoin(
+        Conversation, ReplyAction.conversation_id == Conversation.conversation_id
+    ).where(
+        or_(ReplyAction.claimed_by_worker_id == worker.id, Conversation.worker_id == worker.id),
+        ReplyAction.status.in_({"sending", "unknown_send_result"}),
+    ).limit(1)):
+        reason = "存在尚未确认的发送结果，需先完成原回执结算"
+    elif worker.rpa_component_status != "ready" or worker.wechat_status != "logged_in":
+        reason = "等待自动化组件和微信连接正常"
+    return {"protocol_version": 1, "ready": not reason, "reason": reason}
+
+
 def worker_summary(db: Session, worker: Worker | None, *, include_token: bool = False) -> dict | None:
     if not worker:
         return None
@@ -118,6 +153,8 @@ def worker_summary(db: Session, worker: Worker | None, *, include_token: bool = 
         "updated_at": worker.updated_at,
         **credential_status(worker),
     }
+    if worker.run_status == "faulted":
+        data["fault_recovery"] = fault_recovery_readiness(db, worker)
     if include_token:
         data["worker_token"] = decrypt_worker_token(worker.worker_token_encrypted)
     return data
@@ -237,7 +274,8 @@ def bind_worker_client(db: Session, worker_id: str, payload: WorkerClientBindReq
     worker.client_instance_id = payload.client_instance_id
     worker.client_binding_state = "bound"
     worker.bound_at = worker.bound_at or utcnow()
-    worker.run_status = "paused"
+    if worker.run_status != "faulted":
+        worker.run_status = "paused"
     db.flush()
     return worker_summary(db, worker, include_token=False)
 
@@ -252,7 +290,8 @@ def heartbeat_worker(db: Session, worker_id: str, worker_token: str | None, payl
     if payload.run_status is not None:
         if payload.run_status not in RUN_STATUS_VALUES:
             raise AppError("WORKER_RUN_STATUS_INVALID", "Worker 接单状态不合法", 400)
-        worker.run_status = payload.run_status
+        if worker.run_status != "faulted":
+            worker.run_status = payload.run_status
     if payload.rpa_component_status is not None:
         if payload.rpa_component_status not in RPA_COMPONENT_STATUS_VALUES:
             raise AppError("WORKER_RPA_STATUS_INVALID", "RPA 组件状态不合法", 400)
@@ -290,6 +329,7 @@ def set_worker_run_status(
     worker_id: str,
     worker_token: str | None,
     payload: WorkerRunStatusRequest,
+    actor: ActorContext | None = None,
 ) -> dict:
     authenticated = authenticate_worker_client(
         db, worker_id, worker_token, payload.client_instance_id
@@ -297,7 +337,22 @@ def set_worker_run_status(
     worker = _lock_worker(db, authenticated.id)
     if payload.run_status not in RUN_STATUS_VALUES:
         raise AppError("WORKER_RUN_STATUS_INVALID", "Worker 接单状态不合法", 400)
+    if worker.run_status == "faulted" and payload.run_status != "faulted":
+        if payload.run_status != "running" or not payload.recover_from_fault:
+            raise AppError("WORKER_FAULT_RECOVERY_REQUIRED", "客户端故障需通过检查后明确开始接单", 409)
+    if payload.recover_from_fault:
+        if payload.run_status != "running":
+            raise AppError("WORKER_RUN_STATUS_INVALID", "故障恢复只支持明确开始接单", 400)
+        readiness = fault_recovery_readiness(db, worker)
+        if not readiness["ready"]:
+            raise AppError("WORKER_FAULT_RECOVERY_NOT_READY", readiness["reason"], 409, readiness)
+    previous_status = worker.run_status
     worker.run_status = payload.run_status
+    if previous_status == "faulted" and payload.run_status == "running" and actor:
+        write_log(db, actor, event_type="worker_fault_recovered", module="worker",
+                  target_type="worker", target_id=worker.id,
+                  before_data={"run_status": "faulted"}, after_data={"run_status": "running"},
+                  metadata={"trigger": "client_explicit_start", "protocol_version": 1})
     if payload.run_status in {"paused", "faulted"}:
         current = dict(worker.inflight_flow_state or {})
         if current.get("status") == "active" and current.get("flow_id"):

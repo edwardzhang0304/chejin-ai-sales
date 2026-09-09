@@ -682,17 +682,17 @@ function EnvironmentIssueScreen({
   );
 }
 
-function ClientFaultedScreen({ model }: { model: WorkerClientModel }) {
+function ClientFaultedScreen({ model, onStartAccepting }: Pick<WorkerClientBaselineProps, "model" | "onStartAccepting">) {
   return (
     <section className="cw-screen screen active" data-screen-view="client-faulted">
       <div className="cw-workspace workspace">
         <header className="cw-workspace-head workspace-head"><ConnectionLine model={model} /></header>
         <StatusSummary model={model} />
         <CurrentProcess
-          message={model.task.metaText || "客户端发生技术故障，已停止领取新任务；故障证据已保留，请查看本机日志。"}
+          message={model.faultRecovery?.reason || model.task.metaText || "客户端发生技术故障，已停止领取新任务；故障证据已保留，请查看本机日志。"}
           state="error"
         />
-        <Dock state="暂停接单" disabled />
+        <Dock state="暂停接单" disabled={!model.faultRecovery?.ready || model.faultRecovery.checking} onStartAccepting={onStartAccepting} />
       </div>
     </section>
   );
@@ -902,7 +902,7 @@ function renderScreen(props: WorkerClientBaselineProps) {
   }
   if (screen === "offline") return <OfflineScreen model={model} />;
   if (screen === "offline-empty") return <OfflineScreen model={model} hasCurrentOperation={false} />;
-  if (screen === "client-faulted") return <ClientFaultedScreen model={model} />;
+  if (screen === "client-faulted") return <ClientFaultedScreen model={model} onStartAccepting={onStartAccepting} />;
   if (screen === "automation-unavailable") return <EnvironmentIssueScreen model={model} type="automation" />;
   if (screen === "wechat-disconnected") return <EnvironmentIssueScreen model={model} type="wechat" />;
   if (screen === "failed") return <TaskScreen screen={screen} model={model} steps={model.failedSteps} statusText="失败" dockState={model.status.receiveState} onStartAccepting={onStartAccepting} onPauseAccepting={onPauseAccepting} />;

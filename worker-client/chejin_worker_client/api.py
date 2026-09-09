@@ -167,12 +167,13 @@ class WorkerApiClient:
         )
         return WorkerProfile.from_api(payload)
 
-    def set_run_status(self, binding: Binding, run_status: str) -> WorkerProfile:
+    def set_run_status(self, binding: Binding, run_status: str, *, recover_from_fault: bool = False) -> WorkerProfile:
         payload = self._request(
             "POST",
             f"/workers/{binding.worker_id}/run-status",
             binding=binding,
-            json={"client_instance_id": binding.client_instance_id, "run_status": run_status},
+            json={"client_instance_id": binding.client_instance_id, "run_status": run_status,
+                  **({"recover_from_fault": True} if recover_from_fault else {})},
         )
         return WorkerProfile.from_api(payload)
 

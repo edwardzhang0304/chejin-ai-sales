@@ -62,6 +62,7 @@ class WorkerClientBindRequest(BaseModel):
 class WorkerRunStatusRequest(BaseModel):
     run_status: str = Field(min_length=1, max_length=32)
     client_instance_id: str | None = Field(default=None, max_length=128)
+    recover_from_fault: bool = False
 
 
 class WorkerInflightFlowStartRequest(BaseModel):
