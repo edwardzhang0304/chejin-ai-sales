@@ -370,7 +370,14 @@ def run_case(args, status):
                     return False
                 state = read_json(state_path)
                 if state.get("state") in {"failed", "rolled_back", "rollback_failed"}:
-                    raise AssertionError("Original GUI update failed: " + str(state.get("result_code")))
+                    report["failure_update_state"] = {
+                        key: state.get(key) for key in (
+                            "state", "result_code", "result_message", "message", "last_error",
+                            "install_started", "result_reconciled", "plan_path",
+                            "updater_pid", "updater_executable_path", "target_version",
+                        ) if key in state
+                    }
+                    raise AssertionError("Original GUI update failed: " + str(state.get("result_code")) + ": " + str(state.get("result_message") or state.get("message") or state.get("last_error") or ""))
                 return state if state.get("state") == "succeeded" and state.get("result_reconciled") is True and not state.get("status_restore_pending") else False
             state = wait_for(finished, "original GUI full upgrade", timeout=300)
             assert old.poll() is not None, "Original Worker did not exit"
@@ -407,6 +414,14 @@ def run_case(args, status):
                           immutable_handoff_baseline=True, paused_intent_and_idle_gate_preserved=True)
     except Exception as exc:
         report["failure"] = str(exc)[:500]
+        # Only this isolated run's synthetic state is inspected. Retain bounded
+        # diagnostics before the runner is destroyed; do not weaken acceptance.
+        diagnostic_files = []
+        for pattern in ("**/update-result.json", "**/updater-ready.json", "**/worker-startup.jsonl"):
+            for path in case.glob(pattern):
+                if path.is_file() and path.stat().st_size < 65536:
+                    diagnostic_files.append({"path": str(path.relative_to(case)), "text": path.read_text(encoding="utf-8-sig", errors="replace")[-12000:]})
+        report["failure_control_diagnostics"] = diagnostic_files
         raise
     finally:
         write_json(case / "data-checkpoints.json", checkpoints)
