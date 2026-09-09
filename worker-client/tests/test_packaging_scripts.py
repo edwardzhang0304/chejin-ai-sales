@@ -324,7 +324,7 @@ class PackagingScriptsTest(unittest.TestCase):
         self.assertIn("app_name = [string]$manifest.app_name", workflow)
         self.assertIn("default_api_base_url = [string]$manifest.default_api_base_url", workflow)
         self.assertIn("delivery ZIP executable SHA256 mismatch", workflow)
-        self.assertIn("chejin-worker-v0.9.71-windows-x64.delivery.json", workflow)
+        self.assertIn("chejin-worker-v0.9.72-windows-x64.delivery.json", workflow)
         self.assertNotIn("CHEJIN_VISION_CLIENT_API_KEY", workflow)
         self.assertIn('vision_credential_source -ne "worker_backend"', workflow)
         self.assertIn('vision_live_probe_check -ne "runtime_after_binding"', workflow)
@@ -352,7 +352,7 @@ class PackagingScriptsTest(unittest.TestCase):
             workflow,
         )
         self.assertIn("--artifact-storage-key", workflow)
-        self.assertIn("chejin-worker-v0.9.71-windows-x64.release.json", workflow)
+        self.assertIn("chejin-worker-v0.9.72-windows-x64.release.json", workflow)
         self.assertIn("must not contain a temporary download URL", workflow)
 
     def test_formal_update_package_contains_independent_updater_and_real_process_gate(self):
@@ -1577,7 +1577,7 @@ class PackagingScriptsTest(unittest.TestCase):
         self.assertIn('$packageDir = [string]$manifest.package_dir', workflow)
         self.assertIn('$exePath = [string]$manifest.exe_path', workflow)
         self.assertNotIn('dist\\车金Worker客户端', workflow)
-        self.assertIn('version -ne "0.9.71"', workflow)
+        self.assertIn('version -ne "0.9.72"', workflow)
         self.assertIn('tests_status -ne "passed"', workflow)
         self.assertIn('@("--omniauto-sidecar", "--help")', workflow)
         self.assertIn('@("--omniauto-ocr-probe")', workflow)
