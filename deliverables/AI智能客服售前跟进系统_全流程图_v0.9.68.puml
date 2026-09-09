@@ -1,5 +1,6 @@
 @startuml
-' 文档版本：v0.9.71.3；最后更新：2026-09-08
+' 文档版本：v0.9.72.2；最后更新：2026-09-09
+' 本轮登记范围源码复审通过；已按用户要求在既有双仓灰度分支提交推送0.9.72，应用/合同/Schema统一并登记真实来源；未发布，正式Windows EXE与实际发送验收待完成，详见版本记录2.0.72.2。
 ' 本次0.9.71正式发布已完成：应用、安装包、C2合同及生成Schema统一0.9.71；原始0.9.70的真实“检查更新”按钮、原始Updater和本次签名包的paused/faulted完整Windows自动验收均通过，绑定、配置与历史数据保留。GitHub直传、生产Docker后端与运营后台切换、更新登记及外网完整下载校验通过。用户本机实际升级及业务复核仍待确认。正式包只构建一次，未触发Fast UAT；Fast UAT仍保持GitHub ZIP→Mac→原ZIP与命令行。准确来源与分阶段结果见版本更新记录2.0.71.2。
 ' 正式源码5e2811678f6a7e579494aebb386e081a077806fb；合同0.9.71 / 4f0abee79adafa760a664db2e2fd19ea2f4f98f4a057fb79b3946c2bb55cabdb。
 ' 正式34202236018：自检/必要测试→一次构建并保存候选→独立Windows升级验收→GitHub直传待发布→生产切换→34207311956登记及外网核对。
@@ -58,6 +59,7 @@ participant "HandoffEvent / 飞书通知" as Handoff
 end box
 
 participant "车金飞书自建应用" as Feishu
+
 
 note over OPS,Brain
 车辆能源类型、车系下拉、排量、电池包容量及驱动方式（已审集成，未发布，技术方案9.1.1—9.1.5）：
@@ -411,6 +413,7 @@ loop Worker运行中；每次循环最多完成一个会话事务
               OA -> OA: OCR观察当前屏文字、语音和图片
               OA -> OA: 原图+有效布局建立唯一帧内头像组件表\n粗列仅发现候选，不随文字长短移动\n按原规则确认真实头像完整边界
               OA -> OA: 按技术方案E全部条件分类粗候选\n唯一同侧真实头像旁、完整独立内侧物体才排除误报\n不能证明独立则保留原未决证据
+              OA -> OA: OCR完整边界被唯一已确认头像完全包含时\n仅排除聊天归并候选；既有本地报告保留原OCR及归属
               OA -> OA: private普通文字先按当前帧归并物理气泡\n显式头像锚点锁定组角色\n无头像续行只复用0.9.56既有唯一续行规则
               note right of OA
                 禁止逐行先猜角色再按角色拼气泡；
@@ -796,7 +799,18 @@ loop Worker运行中；每次循环最多完成一个会话事务
                 W -> L: 冻结原Outbox和ledger\n按退避周期自动探测恢复
                 W -> W: capability_paused\n不调用Brain、不发送回复、不执行新UI动作
               else ingest完成
-                Ingest --> W: ingest results + batch_id（如有新增customer）
+                Ingest --> W: ingest results + read_completion + batch_id（如有新增customer）
+                W -> L: Outbox标记confirmed前保存同一Flow读取回执\n身份门禁也透传原结果，重启重放保留
+                note right of W
+                  HTTP成功不等于读取成功，也不等于已转人工。
+                  new_facts/no_change才用read_confirmed；
+                  retry_required用后端重读终态结束本轮，下一轮由原调度决定。
+                  技术失败、取消和未结算事实仍按原保护处理；不忽略409。
+                  旧read_confirmed回执被原finish明确拒绝后，
+                  只查询同一Flow的后端只读read_completion；
+                  客户、读取ID、完成时间、重读结果及错误码均匹配才修正回执再finish。
+                  缺证明/错配/其他错误保留现场，不清库或人工代结束。
+                end note
                 W -> L: 只把已确认ingested/duplicated的键\n写入持久化已处理清单
                 opt recall_precheck=true且发现新customer
                   W -> C3: 取消recall_cycle_id\n本轮改为普通客户消息批次
