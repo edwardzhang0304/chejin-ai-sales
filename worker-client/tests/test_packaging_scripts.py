@@ -324,7 +324,7 @@ class PackagingScriptsTest(unittest.TestCase):
         self.assertIn("app_name = [string]$manifest.app_name", workflow)
         self.assertIn("default_api_base_url = [string]$manifest.default_api_base_url", workflow)
         self.assertIn("delivery ZIP executable SHA256 mismatch", workflow)
-        self.assertIn("chejin-worker-v0.9.72-windows-x64.delivery.json", workflow)
+        self.assertIn("chejin-worker-v0.9.73-windows-x64.delivery.json", workflow)
         self.assertNotIn("CHEJIN_VISION_CLIENT_API_KEY", workflow)
         self.assertIn('vision_credential_source -ne "worker_backend"', workflow)
         self.assertIn('vision_live_probe_check -ne "runtime_after_binding"', workflow)
@@ -352,7 +352,7 @@ class PackagingScriptsTest(unittest.TestCase):
             workflow,
         )
         self.assertIn("--artifact-storage-key", workflow)
-        self.assertIn("chejin-worker-v0.9.72-windows-x64.release.json", workflow)
+        self.assertIn("chejin-worker-v0.9.73-windows-x64.release.json", workflow)
         self.assertIn("must not contain a temporary download URL", workflow)
 
     def test_formal_update_package_contains_independent_updater_and_real_process_gate(self):
@@ -1139,16 +1139,20 @@ class PackagingScriptsTest(unittest.TestCase):
                         "c2_contract_0_9_72_generated_schema",
                     ],
                 },
+                {
+                    "source_commit": "190ba63b7060fb925d080d63d1efa531d88ed9f4",
+                    "scope": ["c2_contract_0_9_73_generated_schema"],
+                },
             ],
         )
         self.assertEqual(
             provenance["current_release"],
             {
-                "version": "0.9.72",
-                "source_commit": "e556c9dd2ae742cada1976dd9b709b4ee7e53453",
-                "contract_revision": "0.9.72",
-                "contract_sha256": "bf876db4edab2dc779b756508cce8e780f48153ccf6fe3ecc06f8ef9cf6ba7ae",
-                "scope": "Reviewed confirmed-avatar lettering exclusion and generated 0.9.72 schema; Worker/backend retain read settlement ownership"
+                "version": "0.9.73",
+                "source_commit": "190ba63b7060fb925d080d63d1efa531d88ed9f4",
+                "contract_revision": "0.9.73",
+                "contract_sha256": "799451d85b3d63102bde91dc9678c6ac35ea82fba84239fe573c7a22323e671a",
+                "scope": "Generated schema revision only; reviewed pre-send checkpoint and explicit fault recovery belong to Chejin backend and Worker, not OmniAuto."
             },
         )
         self.assertIn(
@@ -1577,7 +1581,7 @@ class PackagingScriptsTest(unittest.TestCase):
         self.assertIn('$packageDir = [string]$manifest.package_dir', workflow)
         self.assertIn('$exePath = [string]$manifest.exe_path', workflow)
         self.assertNotIn('dist\\车金Worker客户端', workflow)
-        self.assertIn('version -ne "0.9.72"', workflow)
+        self.assertIn('version -ne "0.9.73"', workflow)
         self.assertIn('tests_status -ne "passed"', workflow)
         self.assertIn('@("--omniauto-sidecar", "--help")', workflow)
         self.assertIn('@("--omniauto-ocr-probe")', workflow)
