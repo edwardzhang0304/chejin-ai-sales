@@ -504,3 +504,50 @@ def test_excel_template_file_size_type_and_row_limits_match_the_acceptance_contr
     )
     assert too_many_rows.status_code == 413
     assert too_many_rows.json()["code"] == "VEHICLE_EXCEL_ROWS_EXCEEDED"
+
+
+def test_vehicle_summary_empty_catalog():
+    response = client.get('/api/vehicles', headers=ADMIN_HEADERS)
+    assert response.status_code == 200, response.text
+    assert response.json()['data']['summary'] == {
+        'total': 0, 'listed': 0, 'unlisted': 0,
+        'created_last_30_days': 0, 'needs_details': 0,
+    }
+
+
+def test_vehicle_summary_global_counts_creation_boundary_and_image_updates(monkeypatch):
+    from datetime import datetime, timedelta, timezone
+    now = datetime(2026, 9, 10, 6, 0, tzinfo=timezone.utc)
+    monkeypatch.setattr(vehicle_service, 'utcnow', lambda: now)
+    complete = _create_vehicle(display_name='统计完整车辆', public_price=10)
+    missing_price = _create_vehicle(display_name='统计缺价格')
+    missing_image = _create_vehicle(display_name='统计缺图片且零售价', public_price=0)
+    future = _create_vehicle(display_name='统计未来记录', public_price=5)
+    for vehicle in (complete, missing_price):
+        response = client.post(f"/api/vehicles/{vehicle['vehicle_code']}/images", files=[('files', ('car.png', PNG_1X1, 'image/png'))], headers=ADMIN_HEADERS)
+        assert response.json()['data']['succeeded'] == 1, response.text
+    assert client.post(f"/api/vehicles/{complete['vehicle_code']}/images", files=[('files', ('car.webp', WEBP_MINIMAL, 'image/webp'))], headers=ADMIN_HEADERS).json()['data']['succeeded'] == 1
+    assert client.post(f"/api/vehicles/{complete['vehicle_code']}/list", headers=ADMIN_HEADERS).status_code == 200
+    with SessionLocal() as db:
+        for vehicle, created_at in ((complete, now), (missing_price, now - timedelta(days=30)), (missing_image, now - timedelta(days=30, microseconds=1)), (future, now + timedelta(microseconds=1))):
+            row = db.scalar(select(KnowledgeItem).where(KnowledgeItem.item_id == vehicle['vehicle_code']))
+            row.created_at = created_at
+            row.updated_at = now
+        # Same item ID in another tenant must not contribute an image or a vehicle.
+        db.add(KnowledgeItem(tenant_id='summary_other_tenant', layer='product_master', category_id='products', product_id='', item_id=missing_image['vehicle_code'], status='active', payload={'data': {'price': 1}}, created_at=now))
+        db.add(VehicleImage(tenant_id='summary_other_tenant', vehicle_id=missing_image['vehicle_code'], storage_key='summary_other_tenant/car.png', original_filename='car.png', content_type='image/png', size_bytes=1, sha256='x', sort_order=0, created_by=ADMIN_HEADERS['X-Operator-Id']))
+        db.commit()
+    expected = {'total': 4, 'listed': 1, 'unlisted': 3, 'created_last_30_days': 2, 'needs_details': 3}
+    for path in ('/api/vehicles', '/api/vehicles?keyword=统计完整&listing_status=listed&page_size=1&page=2', '/api/vehicles?keyword=无匹配车辆'):
+        response = client.get(path, headers=ADMIN_HEADERS)
+        assert response.status_code == 200, response.text
+        assert response.json()['data']['summary'] == expected
+    assert client.get('/api/vehicles?keyword=无匹配车辆', headers=ADMIN_HEADERS).json()['data']['total'] == 0
+    # Public mutations update the same summary; no manual recomputation by the test.
+    assert client.put(f"/api/vehicles/{missing_price['vehicle_code']}", json={'public_price': 5}, headers=ADMIN_HEADERS).status_code == 200
+    expected['needs_details'] = 2
+    assert client.get('/api/vehicles', headers=ADMIN_HEADERS).json()['data']['summary'] == expected
+    image = client.get(f"/api/vehicles/{missing_price['vehicle_code']}", headers=ADMIN_HEADERS).json()['data']['images'][0]
+    assert client.delete(f"/api/vehicles/{missing_price['vehicle_code']}/images/{image['id']}", headers=ADMIN_HEADERS).status_code == 200
+    expected['needs_details'] = 3
+    assert client.get('/api/vehicles', headers=ADMIN_HEADERS).json()['data']['summary'] == expected

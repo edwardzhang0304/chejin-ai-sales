@@ -51,11 +51,19 @@ const vehicles = vi.hoisted(() => [
     updated_at: "2026-08-05T00:00:00Z",
   },
 ] as VehicleItem[]);
-const vehicleApiState = vi.hoisted(() => ({ empty: false }));
+const vehicleApiState = vi.hoisted(() => ({ empty: false, fail: false }));
 
 vi.mock("./api", () => ({
   createVehicle: vi.fn(),
-  listVehicles: vi.fn(async () => ({ items: vehicleApiState.empty ? [] : vehicles, page: 1, page_size: 20, total: vehicleApiState.empty ? 0 : vehicles.length })),
+  listVehicles: vi.fn(async () => {
+    if (vehicleApiState.fail) throw new Error("统计加载失败");
+    return {
+      items: vehicleApiState.empty ? [] : vehicles, page: 1, page_size: 20, total: vehicleApiState.empty ? 0 : vehicles.length,
+      summary: vehicleApiState.empty
+        ? { total: 0, listed: 0, unlisted: 0, created_last_30_days: 0, needs_details: 0 }
+        : { total: 87, listed: 80, unlisted: 7, created_last_30_days: 12, needs_details: 3 },
+    };
+  }),
   getVehicle: vi.fn(async (code: string) => vehicles.find((vehicle) => vehicle.vehicle_code === code)),
 }));
 
@@ -86,10 +94,12 @@ vi.mock("./components/VehicleImportModal", () => ({
 }));
 
 import { VehiclesPage } from "./VehiclesPage";
+import { listVehicles } from "./api";
 
 afterEach(() => {
   cleanup();
   vehicleApiState.empty = false;
+  vehicleApiState.fail = false;
 });
 
 async function openDirtyVehicle() {
@@ -149,5 +159,35 @@ describe("车辆空数据状态", () => {
     expect(await screen.findByText("暂无车辆")).toBeTruthy();
     expect(screen.getAllByRole("button", { name: "新增车辆" }).length).toBeGreaterThan(0);
     expect(screen.getAllByRole("button", { name: "导入车辆" }).length).toBeGreaterThan(0);
+  });
+});
+
+describe("车辆管理真实统计", () => {
+  it("显示接口中的全库统计，不拿当前页车辆凑数，筛选后口径不变", async () => {
+    render(<VehiclesPage />);
+    await screen.findByText("近 30 天新增 12 辆");
+    const metrics = screen.getByRole("region", { name: "车辆管理指标" });
+    expect([...metrics.querySelectorAll("strong")].map((node) => node.textContent)).toEqual(["87", "80", "7", "3"]);
+    fireEvent.change(screen.getByRole("searchbox", { name: "搜索车辆" }), { target: { value: "第一辆" } });
+    await waitFor(() => expect(listVehicles).toHaveBeenLastCalledWith(expect.objectContaining({ keyword: "第一辆" }), expect.any(AbortSignal)));
+    await waitFor(() => expect(metrics.getAttribute("aria-busy")).toBe("false"));
+    expect(metrics.textContent).toContain("近 30 天新增 12 辆");
+  });
+
+  it("空库明确显示零", async () => {
+    vehicleApiState.empty = true;
+    render(<VehiclesPage />);
+    await screen.findByText("近 30 天新增 0 辆");
+    expect([...screen.getByRole("region", { name: "车辆管理指标" }).querySelectorAll("strong")].every((node) => node.textContent === "0")).toBe(true);
+  });
+
+  it("加载中和失败不伪装成零，重试后恢复真实统计", async () => {
+    vehicleApiState.fail = true;
+    render(<VehiclesPage />);
+    expect(screen.getByText("近 30 天新增 加载中 辆")).toBeTruthy();
+    await screen.findByText("近 30 天新增 暂不可用 辆");
+    vehicleApiState.fail = false;
+    fireEvent.click(screen.getByRole("button", { name: "重新加载" }));
+    expect(await screen.findByText("近 30 天新增 12 辆")).toBeTruthy();
   });
 });

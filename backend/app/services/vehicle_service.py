@@ -384,7 +384,30 @@ def list_vehicles(
         "page": page,
         "page_size": page_size,
         "total": total,
+        "summary": _vehicle_summary(db),
     }
+
+
+def _vehicle_summary(db: Session) -> dict:
+    """Global catalog metrics, independent of list filters and pagination."""
+    now = utcnow()
+    price = KnowledgeItem.payload["data"]["price"].as_float()
+    has_image = select(VehicleImage.id).where(
+        VehicleImage.tenant_id == KnowledgeItem.tenant_id,
+        VehicleImage.vehicle_id == KnowledgeItem.item_id,
+    ).exists()
+    row = db.execute(_vehicle_query().with_only_columns(
+        func.count().label("total"),
+        func.count().filter(KnowledgeItem.status != "archived").label("listed"),
+        func.count().filter(KnowledgeItem.status == "archived").label("unlisted"),
+        func.count().filter(
+            KnowledgeItem.created_at >= now - timedelta(days=30),
+            KnowledgeItem.created_at <= now,
+        ).label("created_last_30_days"),
+        func.count().filter(or_(price.is_(None), price <= 0, ~has_image)).label("needs_details"),
+        maintain_column_froms=True,
+    )).mappings().one()
+    return dict(row)
 
 
 def get_vehicle(db: Session, vehicle_id: str) -> dict:

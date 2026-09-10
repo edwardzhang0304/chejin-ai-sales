@@ -10,7 +10,7 @@ import { AuthenticatedVehicleImage } from "./components/AuthenticatedVehicleImag
 import { CreateVehicleModal } from "./components/CreateVehicleModal";
 import { VehicleDetailDrawer } from "./components/VehicleDetailDrawer";
 import { VehicleImportModal } from "./components/VehicleImportModal";
-import type { VehicleItem, VehicleListingFilter } from "./types";
+import type { VehicleItem, VehicleListingFilter, VehicleSummary } from "./types";
 
 type PendingDirtyAction =
   | { kind: "switch"; code: string }
@@ -53,8 +53,8 @@ export function VehiclesPage() {
   const [pageSize, setPageSize] = useState(20);
   const [items, setItems] = useState<VehicleItem[]>([]);
   const [total, setTotal] = useState(0);
-  const [counts, setCounts] = useState({ all: 0, listed: 0, unlisted: 0 });
-  const [loading, setLoading] = useState(false);
+  const [summary, setSummary] = useState<VehicleSummary | null>(null);
+  const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [activeCode, setActiveCode] = useState<string | null>(null);
   const [detail, setDetail] = useState<VehicleItem | null>(null);
@@ -86,16 +86,11 @@ export function VehiclesPage() {
     setLoading(true);
     setError(null);
     try {
-      const [result, all, listed, unlisted] = await Promise.all([
-        listVehicles({ keyword: debouncedKeyword, listing_status: status, page, page_size: pageSize }, signal),
-        listVehicles({ listing_status: "all", page: 1, page_size: 1 }, signal),
-        listVehicles({ listing_status: "listed", page: 1, page_size: 1 }, signal),
-        listVehicles({ listing_status: "unlisted", page: 1, page_size: 1 }, signal),
-      ]);
+      const result = await listVehicles({ keyword: debouncedKeyword, listing_status: status, page, page_size: pageSize }, signal);
       if (signal?.aborted || requestId !== listRequestId.current) return false;
       setItems(result.items);
       setTotal(result.total);
-      setCounts({ all: all.total, listed: listed.total, unlisted: unlisted.total });
+      setSummary(result.summary);
       const maxPage = Math.max(1, Math.ceil(result.total / pageSize));
       if (page > maxPage) setPage(maxPage);
       return true;
@@ -231,6 +226,7 @@ export function VehiclesPage() {
 
   const totalPages = Math.max(1, Math.ceil(total / pageSize));
   const hasFilter = Boolean(debouncedKeyword || status !== "all");
+  const metric = (key: keyof VehicleSummary) => loading ? "加载中" : error || !summary ? "暂不可用" : summary[key];
 
   return (
     <div className="vehicles-page">
@@ -240,11 +236,11 @@ export function VehiclesPage() {
         <div className="page-actions"><button type="button" className="secondary-button" onClick={openImportVehicles}>导入车辆</button><button type="button" className="primary-button" onClick={openCreateVehicle}>新增车辆</button></div>
       </header>
 
-      <section className="metric-grid" aria-label="车辆管理指标">
-        <article><span>车辆总数</span><strong>{counts.all}</strong><p>近 30 天新增 — 辆</p></article>
-        <article><span>已上架</span><strong>{counts.listed}</strong><p>可用于客服查询与推荐</p></article>
-        <article><span>已下架</span><strong>{counts.unlisted}</strong><p>仍可在后台维护</p></article>
-        <article><span>待补充资料</span><strong className="warning-text">—</strong><p>缺价格或有效图片</p></article>
+      <section className="metric-grid" aria-label="车辆管理指标" aria-busy={loading}>
+        <article><span>车辆总数</span><strong>{metric("total")}</strong><p>近 30 天新增 {metric("created_last_30_days")} 辆</p></article>
+        <article><span>已上架</span><strong>{metric("listed")}</strong><p>可用于客服查询与推荐</p></article>
+        <article><span>已下架</span><strong>{metric("unlisted")}</strong><p>仍可在后台维护</p></article>
+        <article><span>待补充资料</span><strong className="warning-text">{metric("needs_details")}</strong><p>缺价格或有效图片</p></article>
       </section>
 
       <div className="management-grid vehicle-management-grid">
