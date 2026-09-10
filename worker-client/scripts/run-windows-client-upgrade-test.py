@@ -24,8 +24,8 @@ import time
 import urllib.request
 
 ROOT = Path(__file__).resolve().parents[2]
-OLD_EXE_SHA = "ad01999706a38821ae94edb55f5cb16e01df7ec00098f7ee4792a75185e60474"
-OLD_UPDATER_SHA = "7bb13362e40ff8cac8bbf0ba46bae6b051c04d1049ec2e12c06e5a1f4463716d"
+OLD_EXE_SHA = "09be639d7e0ff31a75f6aeb914ff86d5b9f0245314c1ad139441888dbe6bb45c"
+OLD_UPDATER_SHA = "20d7f7bea07e0e6ad74fb1f4cb0ff941cb2437afdc698c6f61cd27f35d215092"
 WORKER_ID = "formal-upgrade-isolated-worker"
 INSTANCE_ID = "formal-upgrade-isolated-instance"
 TOKEN = "synthetic-loopback-worker-token"
