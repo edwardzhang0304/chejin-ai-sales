@@ -2485,6 +2485,19 @@ def exception_payload_for_sidecar(exc: Exception, *, state: str = "win32_ocr_fai
             "reason": str(exc.evidence.get("reason") or "avatar_evidence_invalid"),
             "avatar_evidence": exc.evidence,
         })
+    elif str(exc).startswith("C2_IMAGE_OBSERVATION_FAILED:"):
+        payload.update({"error_code": "C2_IMAGE_OBSERVATION_FAILED",
+                        "reason": str(exc)})
+        # The image observer wraps the shared avatar exception. Preserve its
+        # evidence and typed error across CLI transport, not just repr().
+        cause = exc.__cause__
+        for _ in range(8):
+            if cause is None:
+                break
+            if isinstance(cause, frame_avatars.AvatarEvidenceError):
+                payload["avatar_evidence"] = cause.evidence
+                break
+            cause = cause.__cause__
     if invalid_handle:
         payload.update(
             {
@@ -3407,6 +3420,9 @@ def messages_payload(
         "observations": observations,
         "send_context_guard": send_context_guard,
         "tail_complete": authoritative_tail_complete,
+        "top_message_fragment": frame_avatars.avatar_table(
+            screenshot, layout_snapshot_for_image(screenshot)
+        ).get("top_fragments", []),
         "message_viewport_change_evidence": viewport_change_evidence,
         # One-frame image operation tickets are deliberately kept outside
         # observations/source_message. Worker may consume a ticket once, but
@@ -7171,12 +7187,29 @@ def merge_structural_image_messages(
         )
         if not bool((layout_snapshot or {}).get("valid")) or len(viewport) != 4:
             raise RuntimeError("WECHAT_UI_LAYOUT_UNRESOLVED")
+        frame_table = frame_avatars.avatar_table(screenshot, layout_snapshot)
 
         def resolve_role_from_same_layout(
             image: Any,
             bounds: list[float],
             image_size: tuple[int, int],
         ) -> dict[str, Any]:
+            # A coarse image candidate may still bridge two complete rows.
+            # The top-avatar association alone cannot certify the whole box;
+            # do not let it absorb a known text row or hide the next image.
+            row_avatars = [
+                item for item in frame_table.get("components", [])
+                if len(bounds) == 4
+                and item["bounds"][1] < bounds[3]
+                and item["bounds"][3] > bounds[1]
+            ]
+            if len(row_avatars) > 1:
+                raise frame_avatars.AvatarEvidenceError({
+                    "reason": "image_candidate_spans_multiple_avatar_rows",
+                    "row_bounds": bounds,
+                    "layout_snapshot": layout_snapshot,
+                    "avatar_table": frame_table,
+                })
             return message_row_avatar_role_details(
                 image,
                 bounds,
@@ -7201,7 +7234,11 @@ def merge_structural_image_messages(
             voice_action_attempts=voice_action_attempts,
             diagnostics=image_candidate_diagnostics,
             message_viewport_bounds=viewport,
+            readable_top=frame_table["readable_top"],
         )
+        image_messages = [item for item in image_messages if not frame_avatars.below_readable_top(
+            frame_table, win32_ocr_layout.normalize_rect(item.get("bubble_rect")),
+        )]
     except Exception as exc:
         return image_observation_failed(
             str(
@@ -8521,6 +8558,9 @@ def message_row_avatar_role_details(
     snapshot = layout_snapshot or layout_snapshot_for_image(screenshot)
     details = frame_avatars.role_details(screenshot, snapshot, bounds)
     if screenshot is not None and details["state"] in {"invalid", "ambiguous"}:
+        details = {**details, "row_bounds": bounds,
+                   "layout_snapshot": snapshot,
+                   "avatar_table": frame_avatars.avatar_table(screenshot, snapshot)}
         raise frame_avatars.AvatarEvidenceError(details)
     return details
 
@@ -15098,6 +15138,9 @@ def write_messages_frame_review(
                                 table, [float(item[k]) for k in ("left", "top", "right", "bottom")],
                             ) or {}
                         ).get("component_id"),
+                        "excluded_top_fragment": frame_avatars.below_readable_top(
+                            table, [float(item[k]) for k in ("left", "top", "right", "bottom")],
+                        ),
                     } for item in message_ocr
                 ],
             },
@@ -17916,6 +17959,9 @@ def build_send_fact_snapshot_from_frame(
         "validation": validation,
         "input_region": input_region,
         "matching_self_message_count": send_reply_match_count(messages, text),
+        "top_message_fragment": frame_avatars.avatar_table(
+            screenshot, layout_snapshot_for_image(screenshot)
+        ).get("top_fragments", []),
         "enhanced_text_recovery": enhanced_text_recovery,
         "message_count": len(messages),
         "observations": observations,
@@ -20046,6 +20092,10 @@ def parse_messages_from_ocr(
             # Avatar lettering (e.g. UNI) is UI content, not an intervening
             # chat line. Keep the original OCR evidence untouched; remove
             # only wholly-contained confirmed-avatar rows from grouping.
+            continue
+        if screenshot is not None and frame_avatars.below_readable_top(
+            avatar_evidence, [rect["left"], rect["top"], rect["right"], rect["bottom"]]
+        ):
             continue
         avatar_alignment = message_row_avatar_role_details(
             screenshot,

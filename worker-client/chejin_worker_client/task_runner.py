@@ -403,6 +403,7 @@ def _confirmed_empty_business_viewport(
         in {"initial_read", "final_read"}
         and payload.get("ui_frame_invalidated") is not True
         and not bool(payload.get("history_gap"))
+        and not bool(payload.get("top_message_fragment"))
         and not list(payload.get("flow_gate_errors") or [])
         and not list(payload.get("observation_validation_errors") or [])
         and str(confirmation.get("conversation_type") or "")
@@ -2657,7 +2658,15 @@ class TaskLeaseGuard:
         if self.thread and self.thread.is_alive():
             self.thread.join(timeout=2.0)
 
-C2_LOCATE_TERMINAL_ERROR_CODES = {
+C2_FRAME_TECHNICAL_ERROR_CODES = {
+    "C2_AVATAR_EVIDENCE_INVALID",
+    "OMNIAUTO_OBSERVATION_CONTRACT_INVALID",
+    "C2_IMAGE_OBSERVATION_FAILED",
+    "C2_PRE_SEND_LAYOUT_INVALID",
+    "WECHAT_UI_LAYOUT_UNRESOLVED",
+}
+
+C2_LOCATE_TERMINAL_ERROR_CODES = C2_FRAME_TECHNICAL_ERROR_CODES | {
     "C2_VISIBLE_TARGET_AMBIGUOUS",
     "C2_GROUP_CHAT_NOT_ALLOWED",
     "C2_CONVERSATION_TYPE_UNKNOWN",
@@ -9723,6 +9732,11 @@ class TaskRunner:
         explicit_empty = not pre_sequence and int(
             checkpoint.get("next_sequence_floor") or 0
         ) <= 1
+        if explicit_empty and prepared.get("top_message_fragment"):
+            return prepared, [{
+                "error_code": "MESSAGE_CROSS_ROUND_IDENTITY_AMBIGUOUS",
+                "reason": "partial_top_message_without_history",
+            }]
         if not pre_sequence and not explicit_empty:
             return prepared, [
                 {
@@ -21924,6 +21938,39 @@ class TaskRunner:
                 raise
             if target.raw.get("followup_block_reason") == "LEAD_INVALID":
                 result = {**result, "ok": False, "error_code": "LEAD_INVALID"}
+            evidence = (result.get("final_messages") or result.get("initial_messages")
+                        or result.get("messages") or result.get("target_confirmation") or {})
+            evidence = evidence if isinstance(evidence, dict) else {}
+            frame_failed = result.get("error_code") in C2_FRAME_TECHNICAL_ERROR_CODES
+            partial_alignment_failed = bool(evidence.get("top_message_fragment")) and result.get("error_code") in {
+                "MESSAGE_CROSS_ROUND_IDENTITY_AMBIGUOUS",
+                "C2_PRE_SEND_MESSAGE_SEQUENCE_ALIGNMENT_FAILED",
+            }
+            if not result.get("ok") and (frame_failed or partial_alignment_failed):
+                # Locating the correct customer cannot repair invalid frame
+                # evidence. Stop new work; the existing finally block owns
+                # receipt/Flow settlement and its durable network retry.
+                self.set_run_status("faulted")
+                result = {**result, "worker_faulted": True, "handoff_created": False}
+                if frame_failed:
+                    result["flow_terminal_kind"] = "technical_failed"
+                # Identity gates already have a backend receipt. Preserve its
+                # actual result (including retry_required) for settlement,
+                # while keeping new work stopped until explicit recovery.
+                append_log(
+                    "ERROR", "c2_frame_evidence_technical_failed",
+                    "会话画面读取证据异常；已停止接单并保留现场，请查看本机日志。",
+                    error_code=str(result["error_code"]),
+                    metadata={"conversation_id": target.conversation_id,
+                              "read_run_id": read_run_id,
+                              "reason": evidence.get("reason"),
+                              "avatar_evidence": evidence.get("avatar_evidence"),
+                              "observation_validation_errors": evidence.get("observation_validation_errors"),
+                              "top_message_fragment": evidence.get("top_message_fragment"),
+                              "pre_send_error_evidence": result.get("pre_send_error_evidence"),
+                              "artifact_dir": evidence.get("artifact_dir")},
+                    force_incident=True,
+                )
             flow_result = dict(result)
             if pre_send_stage_timer is not None:
                 pre_send_stage_timer.finish(

@@ -283,8 +283,11 @@ def test_image_observer_preserves_clipped_avatar_failure(role):
         for column in range(left, right, 8):
             tone = 35 if ((column-left+y-260)//8) % 2 else 220
             draw.rectangle((column, y, min(column+7, right-1), y+7), fill=(tone,150,80))
-    with pytest.raises(RuntimeError, match="C2_IMAGE_OBSERVATION_FAILED:same_row_avatar_role"):
+    with pytest.raises(RuntimeError, match="C2_IMAGE_OBSERVATION_FAILED:same_row_avatar_role") as raised:
         s.merge_structural_image_messages(image, [], [], target="CJTEST01", layout_snapshot=layout)
+    transported = s.exception_payload_for_sidecar(raised.value)
+    assert transported["error_code"] == "C2_IMAGE_OBSERVATION_FAILED"
+    assert transported["avatar_evidence"]["avatar_table"]["unresolved"]
     errors = []
     s.merge_structural_image_messages(image, [], [], target="CJTEST01", layout_snapshot=layout,
         observation_validation_errors=errors)
@@ -403,8 +406,8 @@ def test_invalid_and_ambiguous_evidence_is_not_normal_absence():
         with pytest.raises(a.AvatarEvidenceError):
             s.message_row_avatar_role_details(image, [470, 200, 800, 222], image.size, layout_snapshot=layout)
     image, layout = synthetic_frame()
-    draw_avatar(image, 930, 82)  # top edge is cut by the viewport
-    assert a.role_details(image, layout, [470, 107, 810, 129])["state"] == "ambiguous"
+    draw_avatar(image, 930, 780)  # bottom clipping is still unresolved
+    assert a.role_details(image, layout, [470, 785, 810, 798])["state"] == "ambiguous"
 
 
 def test_read_only_retry_limit_and_delayed_success(incident_frames):
