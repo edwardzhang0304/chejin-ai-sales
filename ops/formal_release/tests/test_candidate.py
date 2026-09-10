@@ -225,7 +225,7 @@ class SelectionAndWorkflowTests(unittest.TestCase):
 
     def test_retest_requires_candidate_run_and_configured_old_client(self):
         env = {"GITHUB_REF": "refs/heads/codex/gray-release-0.9.x", "RELEASE_APPROVED": "true",
-               "RELEASE_REASON": "fixture", "DELIVERY_MODE": "retest_candidate", "CURRENT_VERSION": "0.9.72",
+               "RELEASE_REASON": "fixture", "DELIVERY_MODE": "retest_candidate", "CURRENT_VERSION": "0.9.73",
                "FORMAL_SSH_KEY": "fixture", "FORMAL_SSH_HOST": "fixture", "FORMAL_SSH_PORT": "22",
                "FORMAL_KNOWN_HOSTS": "fixture"}
         with self.assertRaisesRegex(ValueError, "CANDIDATE_RUN_REQUIRED"):
