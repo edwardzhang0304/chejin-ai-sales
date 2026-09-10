@@ -64,11 +64,20 @@ export type VehicleEditableFields = Pick<
   | "internal_notes"
 >;
 
+export type VehicleSummary = {
+  total: number;
+  listed: number;
+  unlisted: number;
+  created_last_30_days: number;
+  needs_details: number;
+};
+
 export type VehicleListResult = {
   items: VehicleItem[];
   page: number;
   page_size: number;
   total: number;
+  summary: VehicleSummary;
 };
 
 export type VehicleUploadResultItem = {
