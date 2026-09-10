@@ -1133,13 +1133,35 @@ def detect_visual_image_bubbles(
     time_markers: list[dict[str, Any]] | None = None,
     diagnostics: list[dict[str, Any]] | None = None,
     message_viewport_bounds: list[int] | tuple[int, int, int, int],
+    readable_top: int | None = None,
 ) -> list[dict[str, Any]]:
     image = screenshot.convert("RGB")
     width, height = image.size
     left, top, right, bottom = _chat_bounds(width, height, message_viewport_bounds)
     if right <= left or bottom <= top:
         return []
+    content_top = top if readable_top is None else readable_top
+    if not isinstance(content_top, int) or not top <= content_top <= bottom:
+        raise ValueError("invalid_current_frame_readable_top")
+    if content_top == bottom:
+        return []
     crop = image.crop((left, top, right, bottom))
+    if content_top > top:
+        # Apply the shared frame-table exclusion BEFORE downsampling and
+        # connected components. Otherwise a clipped old surface can bridge to
+        # a complete new image in the coarse grid and discard both at the edge.
+        # Keep the sampling size/origin unchanged; all role, edge, fingerprint
+        # and action evidence below still reads the original screenshot.
+        visible = crop.crop((0, content_top - top, crop.width, crop.height))
+        background_fill = tuple(round(v) for v in ImageStat.Stat(visible).median[:3])
+        crop.paste(background_fill, (0, 0, crop.width, content_top - top))
+        if diagnostics is not None:
+            diagnostics.append({
+                "event": "image_candidate_top_prefix_excluded",
+                "message_viewport_bounds": [left, top, right, bottom],
+                "readable_top": content_top,
+                "source": "current_frame_avatar_table",
+            })
     scale = min(1.0, 220.0 / max(1, crop.width), 300.0 / max(1, crop.height))
     small = crop.resize((max(32, int(crop.width * scale)), max(32, int(crop.height * scale))), Image.Resampling.BILINEAR)
     background_stat = ImageStat.Stat(small)
@@ -1195,7 +1217,7 @@ def detect_visual_image_bubbles(
             max_y = max(point[1] for point in cells)
             bounds = (
                 left + int((min_x * block) / scale),
-                top + int((min_y * block) / scale),
+                max(content_top, top + int((min_y * block) / scale)),
                 left + int(min(crop.width, ((max_x + 1) * block) / scale)),
                 top + int(min(crop.height, ((max_y + 1) * block) / scale)),
             )

@@ -85,11 +85,39 @@ def _detect(image: Any, viewport: list[int], scale: float) -> dict[str, Any]:
                "self": [right - column_width, top, right, bottom]}
     table: dict[str, Any] = {"state": "complete", "reason": "detection_complete",
         "frame_reference": uuid.uuid4().hex, "columns": columns,
-        "components": [], "unresolved": [], "excluded": [], "scale": scale}
+        "components": [], "unresolved": [], "excluded": [], "scale": scale,
+        "top_fragments": [], "readable_top": top}
+    objects = [(contour, tuple(int(v) for v in cv2.boundingRect(contour)))
+               for contour in contours]
+    for _, (x, y, w, h) in objects:
+        if (y == 0 and 0 < x and x + w < mask.shape[1]
+                and h < mask.shape[0] and w >= 4 * scale):
+            bounds = [left+x, top+y, left+x+w, top+y+h]
+            table["top_fragments"].append({"bounds": bounds,
+                "reason": "object_clipped_by_viewport_top"})
+            table["readable_top"] = max(table["readable_top"], bounds[3])
+    # Include the whole visible bubble beside a clipped avatar, even if that
+    # bubble begins below the top edge. Stop at a real vertical gap, not at a
+    # fixed text height or number of lines. Window borders cannot extend it.
+    if table["top_fragments"]:
+        for _ in objects:
+            previous = table["readable_top"]
+            for _, (x, y, w, h) in objects:
+                if 0 < x and x+w < mask.shape[1] and top+y < previous:
+                    table["readable_top"] = max(table["readable_top"], top+y+h)
+            if table["readable_top"] == previous:
+                break
     pad = max(1, round(2 * scale))
-    for contour in contours:
-        x, y, w, h = (int(v) for v in cv2.boundingRect(contour))
+    for contour, (x, y, w, h) in objects:
         bounds = [left + x, top + y, left + x + w, top + y + h]
+        if (table["top_fragments"] and bounds[1] < table["readable_top"]
+                and 0 < x and x+w < mask.shape[1]):
+            # The actual viewport cuts this external object. Its visible
+            # remainder is not a new message or an avatar confirmation.
+            # Side/bottom-clipped objects retain the original rejection rules.
+            table["excluded"].append({"bounds": bounds,
+                "reason": "partial_top_message_prefix"})
+            continue
         # Classify the *whole* object before restricting it to avatar columns.
         # A bubble crossing a column boundary is not a cropped avatar candidate.
         role = next((role for role, lane in columns.items()
@@ -161,6 +189,18 @@ def _detect(image: Any, viewport: list[int], scale: float) -> dict[str, Any]:
         component["component_id"] = f"avatar:{table['frame_reference']}:{index}"
     _exclude_independent_inward_objects(table, viewport)
     return table
+
+
+def below_readable_top(table: dict[str, Any], bounds: list[float]) -> bool:
+    """Shared text/media boundary; never infer identity from a partial object."""
+    if not table.get("top_fragments"):
+        return False
+    try:
+        left, top, right, bottom = (float(v) for v in bounds)
+        valid = all(math.isfinite(v) for v in (left, top, right, bottom)) and left < right and top < bottom
+        return bool(valid and top < table["readable_top"])
+    except (TypeError, ValueError):
+        return False
 
 
 def _exclude_independent_inward_objects(table: dict[str, Any], viewport: list[int]) -> None:
@@ -261,6 +301,10 @@ def containing_component(table: dict[str, Any], bounds: list[float]) -> dict[str
 
 def role_details(image: Any, layout: dict[str, Any] | None, bounds: list[float]) -> dict[str, Any]:
     table = avatar_table(image, layout)
+    if below_readable_top(table, bounds):
+        return {"role": "", "source": "", "state": "absent", "ambiguous": False,
+                "reason": "partial_top_message_prefix", "customer": {"present": False},
+                "self": {"present": False}, "frame_reference": table.get("frame_reference")}
     customer = associate(table, bounds, "customer")
     own = associate(table, bounds, "self")
     invalid = any(c["state"] in {"invalid", "ambiguous"} for c in (customer, own))

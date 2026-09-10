@@ -96,6 +96,17 @@ def image_candidates_without_reliable_typed_message_conflicts(
                 side=image_role,
                 regions=protected_regions,
             )
+            if typed_conflict is None:
+                # Structural lane position is weaker than an already typed,
+                # avatar-anchored message. A wide self text bubble can enter
+                # the customer search lane; that must not bypass the existing
+                # typed-region arbitration. Embedded-image OCR still follows
+                # the verification branch below.
+                typed_conflict = explained_non_image_conflict(
+                    tuple(int(value) for value in image_rect),
+                    side="self" if image_role == "customer" else "customer",
+                    regions=[r for r in protected_regions if r.get("same_row_avatar_evidence") is True],
+                )
             # Type arbitration is monotonic.  Once the chat parser has
             # established a text/voice row with trusted sender-role evidence,
             # a weaker structural surface candidate must not replace it.
@@ -461,6 +472,7 @@ def visual_image_messages_from_current_surface(
     voice_action_attempts: list[dict[str, Any]] | None = None,
     diagnostics: list[dict[str, Any]] | None = None,
     message_viewport_bounds: list[int] | tuple[int, int, int, int],
+    readable_top: int | None = None,
 ) -> list[dict[str, Any]]:
     if screenshot is None:
         return []
@@ -477,6 +489,7 @@ def visual_image_messages_from_current_surface(
             ),
             diagnostics=diagnostics,
             message_viewport_bounds=message_viewport_bounds,
+            readable_top=readable_top,
         )
     except Exception as exc:
         raise ImageSurfaceObservationError(
@@ -520,6 +533,7 @@ def observe_structural_image_messages(
     voice_action_attempts: list[dict[str, Any]] | None = None,
     diagnostics: list[dict[str, Any]] | None = None,
     message_viewport_bounds: list[int] | tuple[int, int, int, int],
+    readable_top: int | None = None,
 ) -> list[dict[str, Any]]:
     """Run the one formal C2 image observation pipeline for the current frame."""
 
@@ -539,6 +553,7 @@ def observe_structural_image_messages(
             voice_action_attempts=voice_action_attempts,
             diagnostics=diagnostics,
             message_viewport_bounds=message_viewport_bounds,
+            readable_top=readable_top,
         )
     except ImageSurfaceObservationError:
         raise

@@ -417,6 +417,32 @@ def _qualified_edge_confidence(score: float, *, threshold: float) -> float:
     return min(0.97, 0.78 + (margin / 180.0))
 
 
+def _separator_content_start(
+    image: Any, *, left: int, right: int, edge_y: int, measured_row_height: int,
+) -> int | None:
+    """Find the first stable row after a measured horizontal separator.
+
+    Edge candidates describe contrast around a line, not its content-facing
+    edge. Including the line in the viewport can join it to the window border
+    and create a false full-height object in the avatar table.
+    """
+    columns = [int(left + (right - left) * ratio)
+               for ratio in (0.05, 0.18, 0.34, 0.50, 0.66, 0.82, 0.95)]
+    start = max(0, edge_y - 2)
+    end = min(image.height, edge_y + max(6, measured_row_height))
+    previous = [_pixel_luma(image.getpixel((x, start))) for x in columns]
+    last_transition = None
+    stable_rows = 0
+    for y in range(start + 1, end):
+        value = [_pixel_luma(image.getpixel((x, y))) for x in columns]
+        if sum(abs(a-b) >= 4.0 for a,b in zip(value, previous)) >= len(columns)-1:
+            last_transition, stable_rows = y, 0
+        elif last_transition is not None:
+            stable_rows += 1
+        previous = value
+    return last_transition if stable_rows >= 2 else None
+
+
 def _topmost_sidebar_operation_row_anchors(
     anchors: list[dict[str, Any]],
     *,
@@ -888,7 +914,6 @@ def build_structural_layout_regions(
             search_bounds[3] + max(8, int(search_height * 1.2)),
         )
         sidebar_header_bottom = shared_header_bottom
-        chat_header_bottom = shared_header_bottom
         header_confidence = max(
             0.75,
             min(0.99, float(search_anchors[0].get("confidence") or 0.0)),
@@ -896,7 +921,6 @@ def build_structural_layout_regions(
     elif operation_plus is not None:
         plus_point = [int(value) for value in operation_plus["point"]]
         sidebar_header_bottom = min(height, max(1, plus_point[1] * 2 + 2))
-        chat_header_bottom = sidebar_header_bottom
         header_confidence = min(
             0.97, max(0.80, float(operation_plus.get("confidence") or 0.0))
         )
@@ -916,7 +940,6 @@ def build_structural_layout_regions(
                 key=lambda pair: max(int(pair[0][0]), int(pair[1][0])),
             )
             sidebar_header_bottom = int(round((sidebar_edge[0] + chat_edge[0]) / 2))
-            chat_header_bottom = sidebar_header_bottom
             header_confidence = min(
                 _qualified_edge_confidence(sidebar_edge[1], threshold=24.0),
                 _qualified_edge_confidence(chat_edge[1], threshold=24.0),
@@ -928,7 +951,6 @@ def build_structural_layout_regions(
             # pixel structure, not a fixed y coordinate.
             sidebar_edge = min(sidebar_header_candidates, key=lambda item: int(item[0]))
             sidebar_header_bottom = int(sidebar_edge[0])
-            chat_header_bottom = sidebar_header_bottom
             header_confidence = _qualified_edge_confidence(sidebar_edge[1], threshold=24.0)
         else:
             conflicts.append("shared_header_boundary_missing")
@@ -939,13 +961,34 @@ def build_structural_layout_regions(
                 "confidence": 0.0,
                 "conflicts": conflicts,
             }
+    # Search OCR identifies the operation row only. It cannot define the
+    # message viewport: its glyph height changes with OCR/DPI and used to cut
+    # complete avatars. Measure the chat panel's own full-width separator.
+    chat_separators = _full_width_horizontal_separator_candidates(
+        image, left=main_boundary[0], right=width,
+    )
+    anchor_bottom = (
+        int(search_anchors[0]["bounds"][3]) if search_anchors
+        else int(operation_plus["point"][1]) if operation_plus
+        else int(height * 0.055)
+    )
+    row_height = (
+        int(search_anchors[0]["bounds"][3] - search_anchors[0]["bounds"][1])
+        if search_anchors else max(8, int(height * 0.025))
+    )
+    header_separators = [item for item in chat_separators
+                         if anchor_bottom < item[0] < upper_limit]
+    chat_header_bottom = (
+        _separator_content_start(
+            image, left=main_boundary[0], right=width,
+            edge_y=header_separators[0][0], measured_row_height=row_height,
+        ) if header_separators else None
+    )
+    if chat_header_bottom is None:
+        return {"ok": False, "regions": {}, "anchors": search_anchors,
+                "confidence": 0.0, "conflicts": ["chat_header_boundary_missing"]}
     input_top_candidates = [
-        item
-        for item in _full_width_horizontal_separator_candidates(
-            image,
-            left=main_boundary[0],
-            right=width,
-        )
+        item for item in chat_separators
         if max(chat_header_bottom + 24, int(height * 0.50))
         <= item[0]
         <= height - max(28, int(height * 0.035))
@@ -1006,12 +1049,16 @@ def build_structural_layout_regions(
         _qualified_edge_confidence(main_boundary[1], threshold=28.0),
         _qualified_edge_confidence(nav_boundary[1], threshold=28.0),
         header_confidence,
+        _qualified_edge_confidence(header_separators[0][1], threshold=24.0),
         _qualified_edge_confidence(max(input_top_candidates, key=lambda item: item[1])[1], threshold=24.0),
     ]
     anchors = [
         {"name": "nav_separator", "x": nav_boundary[0], "score": nav_boundary[1]},
         {"name": "sidebar_separator", "x": main_boundary[0], "score": main_boundary[1]},
         *search_anchors,
+        {"name": "chat_header_separator", "edge_y": header_separators[0][0],
+         "content_start_y": chat_header_bottom,
+         "source": "chat_panel_full_width_separator"},
         *(
             [{
                 "name": "startup_plus_pixel_anchor",
