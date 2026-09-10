@@ -166,6 +166,8 @@ class _CompatStructuralImage:
 
     def __init__(self, width: int, height: int, *, sidebar_edge: int | None = None) -> None:
         self.size = (width, height)
+        self.width = width
+        self.height = height
         if sidebar_edge is None:
             if width < 700:
                 sidebar_edge = int(width * 0.55)

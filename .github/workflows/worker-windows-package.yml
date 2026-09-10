@@ -17,6 +17,9 @@ on:
         type: choice
         options: [build_and_stage, retest_candidate, stage_existing, check_staged, publish_staged]
         default: build_and_stage
+      source_reuse_run_id:
+        description: Optional verified prior source-check run; never skips unfinished or changed checks
+        default: ''
       current_client_version:
         description: Exact installed client version whose updater and trust must accept the package
         required: true
@@ -103,6 +106,18 @@ jobs:
             worker-client/requirements.txt
             worker-client/requirements-test.txt
 
+      - name: Resolve immutable completed source-check evidence
+        if: inputs.source_reuse_run_id != ''
+        shell: powershell
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REUSE_RUN_ID: ${{ inputs.source_reuse_run_id }}
+        run: |
+          $receipt = Join-Path $env:RUNNER_TEMP "source-checks-partial.json"
+          python ops/formal_release/source_check_reuse.py --run-id $env:REUSE_RUN_ID --output $receipt
+          if ($LASTEXITCODE -ne 0) { throw "Source reuse evidence rejected" }
+          "CHEJIN_SOURCE_CHECK_RECEIPT=$receipt" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
       - name: Fail fast on native Windows handoff checks
         shell: powershell
         working-directory: worker-client
@@ -117,12 +132,24 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "Native gate dependencies failed" }
           .\.venv\Scripts\python.exe scripts/run-windows-client-upgrade-test.py --driver-smoke (Join-Path $env:RUNNER_TEMP "qt-driver-prebuild")
           if ($LASTEXITCODE -ne 0) { throw "Qt GUI driver prebuild gate failed" }
-          .\.venv\Scripts\python.exe -m pytest tests/test_update_handoff_baseline.py tests/test_post_update_health.py tests/test_update_shutdown_ui.py tests/test_legacy_update_handoff.py tests/test_windows_upgrade_gate_data.py -q --junitxml "$env:RUNNER_TEMP/native-prebuild.xml"
-          if ($LASTEXITCODE -ne 0) { throw "Native handoff prebuild gate failed" }
+          if (-not $env:CHEJIN_SOURCE_CHECK_RECEIPT) {
+            .\.venv\Scripts\python.exe -m pytest tests/test_update_handoff_baseline.py tests/test_post_update_health.py tests/test_update_shutdown_ui.py tests/test_legacy_update_handoff.py tests/test_windows_upgrade_gate_data.py -q --junitxml "$env:RUNNER_TEMP/native-prebuild.xml"
+            if ($LASTEXITCODE -ne 0) { throw "Native handoff prebuild gate failed" }
+          } else { Write-Output "Native handoff source checks reused from verified identical source; fresh Qt driver smoke passed" }
           Add-Content -Path $env:GITHUB_PATH -Value (Join-Path $PWD ".venv/Scripts")
 
       - name: Run shared source checks
+        if: env.CHEJIN_SOURCE_CHECK_RECEIPT == ''
         uses: ./.github/actions/worker-release-checks
+
+      - name: Finish source checks once before compilation
+        shell: powershell
+        working-directory: worker-client
+        run: |
+          $receipt = Join-Path $env:RUNNER_TEMP "source-checks-complete.json"
+          .\.venv\Scripts\python.exe run_checks.py --write-receipt $receipt
+          if ($LASTEXITCODE -ne 0) { throw "Source checks failed before compilation" }
+          "CHEJIN_SOURCE_CHECK_RECEIPT=$receipt" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
       - name: Build and run packaged runtime probes
         shell: powershell
@@ -465,6 +492,8 @@ jobs:
             ${{ runner.temp }}/chejin-original-client-upgrade/**/worker-startup.jsonl
             ${{ runner.temp }}/chejin-original-client-upgrade/**/update-result.json
             ${{ runner.temp }}/native-prebuild.xml
+            ${{ runner.temp }}/source-checks-partial.json
+            ${{ runner.temp }}/source-checks-complete.json
             ${{ runner.temp }}/chejin-updater-real-process/native-data-lock-tests.xml
             ${{ runner.temp }}/chejin-updater-real-process/**/update-result.json
             ${{ runner.temp }}/chejin-updater-real-process/**/worker-startup.jsonl
