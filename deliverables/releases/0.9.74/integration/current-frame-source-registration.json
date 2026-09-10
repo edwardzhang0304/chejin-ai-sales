@@ -1,0 +1,85 @@
+{
+  "schema_version": 1,
+  "date": "2026-09-10",
+  "status": "reviewed_scoped_source_integration_pushed_not_deployment",
+  "application_version": "0.9.74",
+  "chejin_branch": "codex/gray-release-0.9.x",
+  "chejin_code_commit": "66829f3abe09db44938e96eb40e01c4479fb5111",
+  "omniauto_repository": "edwardzhang0304/omniauto",
+  "omniauto_branch": "codex/gray-release-0.9.x-source",
+  "omniauto_source_commit": "e996a4a9099b86cd1e5ae8371c05a082906c5bc3",
+  "contract_revision": "0.9.74",
+  "contract_sha256": "e968efce01e506d6883f5f6b7dc2112a69236bd42fc3e9ce277b30afe40427e5",
+  "cumulative_code_commits": [
+    {
+      "commit": "e01802c063933e17928c5734b07ec3a2e05c657b",
+      "scope": "Flow completion retry without repeating WeChat actions; formally settled unknown-send recovery; seven test-data setup corrections; unified 0.9.74 contract"
+    },
+    {
+      "commit": "969d42ed2ce377ac1fd7fa7e59b59293b4200017",
+      "scope": "Backend vehicle summary and existing frontend cards: actual 30-day new and missing-detail counts, independent of filters/pagination"
+    },
+    {
+      "commit": "66829f3abe09db44938e96eb40e01c4479fb5111",
+      "scope": "Measured chat-header boundary; shared partial-top exclusion; complete lower images retained; dense ambiguity explicitly rejected; typed frame failures stop repeated searches and settle the original Flow"
+    }
+  ],
+  "reviewed_source_sha256": {
+    "worker-client/chejin_worker_client/task_runner.py": "42f240d9cad42567474475739f165078503c6e1b16641df60bb41007d63ad23d",
+    "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/adapters/wechat_win32_ocr/window_layout.py": "1e53f20b37bf8fd2fdfc1460a4d651a0389efa9c64efb37a87e3403717c74e88",
+    "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/adapters/wechat_win32_ocr/frame_avatars.py": "13d6bd0edc1815a20e7277f5ce43f01060cfde4a35faaf073eb02e09c3ba3434",
+    "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/adapters/wechat_win32_ocr_sidecar.py": "faf8e4328c8610a9ad42006ef01cdf82fedd577d8f04deca8a886c8e992817fa",
+    "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/optional_plugins/vision/capture/surface.py": "9830e7b680f48ada724894893787a18e560edfac85ff79898012393795445b31",
+    "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/optional_plugins/vision/capture/wechat.py": "028bcb552b58a2e4ed4a64bcd25f9d94cc93dc99fdc09592092c1abbe8067fad",
+    "worker-client/tests/test_chat_viewport_boundary.py": "317d0246bba6944fa9b24a866d1a20461651a07e609bb11de50137e1b86cf0d7",
+    "worker-client/tests/test_c2_frame_failure.py": "737a78e3ad238ecdfdc78bb2118cc3a4ac88c09c5d46497aa3abc92bf5538c9c",
+    "worker-client/tests/test_cj35_typed_region.py": "359d1dfe9fb3d777228ffcc87e0ddb5f676764dbd8ef0f4f87213994b938cf75",
+    "worker-client/tests/test_frame_avatars.py": "956bc667a8c9f25187b63a500612d6d9d10e9eb90bfddc28a5a4ebc003aed525",
+    "backend/tests/test_cj35_frame_recovery.py": "e7b460cb95a137f901b28a93b752a76592c6e0018224cbdaa04d598dffcd29bc",
+    "worker-client/tests/test_image_prefix_boundary.py": "5018098f4e13be70cfeab9eafc777a4e1f40dfe3a6c34e5d5126ca97c0cb26b7"
+  },
+  "candidate_manifest_sha256": "9a5b8771531b30a1ddf24b73cd2b3c78766f4c7761266fc716fd994b010322ea",
+  "independent_review_sha256": "950dc4b9dbee42ba35e6b02789a57f6815215375a968a04bd158418c86d64598",
+  "original_evidence_files_verified": 300,
+  "source_delta_matches_reviewed_changes": true,
+  "preexisting_source_host_adapters_preserved": true,
+  "checks": {
+    "chejin_contract_and_integration": {
+      "passed": 40,
+      "failed": 0,
+      "skipped": 0
+    },
+    "source_geometry_and_type": {
+      "passed": 27,
+      "failed": 0,
+      "skipped": 0
+    },
+    "source_image_candidate_final": {
+      "passed": 6,
+      "failed": 0,
+      "skipped": 0
+    },
+    "source_test_initial_failure": "Three self-side cases initially omitted side_filter=all in the new source-only harness. Corrected to the existing production caller argument; all six reran successfully. Runtime implementation unchanged. Initial XML retained locally.",
+    "source_warning": "Existing pytest config asyncio_mode option unavailable in this venv; no skips.",
+    "reuse": [
+      "43 targeted",
+      "57 image-prefix",
+      "300 adjacent",
+      "54 independent supplemental",
+      "5 real HTTP/PostgreSQL/Worker/SQLite modes"
+    ]
+  },
+  "evidence_sha256": {
+    "contract.xml": "23627b5c2ebe47ec0f6b49b0b981563b102e2f24954a8a02d85337672ab6c92c",
+    "source.xml": "e3aa3839466a10e44482ef8aa5cad7dcda4409099dc332236b75ceccd2fea01c",
+    "source-image-final.xml": "8048b5c2b315e0c6a3ad848881852ce4a0d9efd128cd4d4d401622933b5394b7",
+    "source-delta-check.json": "8c07d2423101b54bd23d33eedd7802f81a29fb86301d66a9f41fa180091f91f2"
+  },
+  "fixture_policy": "No original customer screenshots, OCR transcripts, local databases or raw incident reports published. Private replay requires the existing explicitly supplied local index. Synthetic tests are labelled.",
+  "acceptance_limits": [
+    "Very dense multi-avatar candidates can fail closed and stop new work; not all image layouts are successfully recognized.",
+    "No new Windows EXE, actual WeChat image send or customer-site recovery acceptance.",
+    "Source integration does not authorize packaging or deployment."
+  ],
+  "operations": "Use the latest existing Chejin gray branch containing all three code commits and recorded OmniAuto source. Deliver backend, frontend and Worker together; update formal release inputs to 0.9.74 and validate Windows acceptance. Do not reuse an earlier 0.9.74 candidate package solely because the version number matches."
+}
