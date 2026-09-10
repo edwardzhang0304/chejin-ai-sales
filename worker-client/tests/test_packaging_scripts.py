@@ -314,7 +314,7 @@ class PackagingScriptsTest(unittest.TestCase):
             ROOT.parent / ".github" / "workflows" / "worker-windows-package.yml"
         ).read_text(encoding="utf-8")
 
-        self.assertIn("4998a5853154dde2c224a21a3eef66c7b6d7db99", workflow)
+        self.assertIn("ffd492a96d3fa244958ba85ec02a085e15d0db91", workflow)
         self.assertIn("git merge-base --is-ancestor", workflow)
         self.assertIn("Compress-Archive -Path $packageDir", workflow)
         self.assertIn("Expand-Archive -LiteralPath $zipPath", workflow)
@@ -324,7 +324,7 @@ class PackagingScriptsTest(unittest.TestCase):
         self.assertIn("app_name = [string]$manifest.app_name", workflow)
         self.assertIn("default_api_base_url = [string]$manifest.default_api_base_url", workflow)
         self.assertIn("delivery ZIP executable SHA256 mismatch", workflow)
-        self.assertIn("chejin-worker-v0.9.73-windows-x64.delivery.json", workflow)
+        self.assertIn("chejin-worker-v0.9.74-windows-x64.delivery.json", workflow)
         self.assertNotIn("CHEJIN_VISION_CLIENT_API_KEY", workflow)
         self.assertIn('vision_credential_source -ne "worker_backend"', workflow)
         self.assertIn('vision_live_probe_check -ne "runtime_after_binding"', workflow)
@@ -352,7 +352,7 @@ class PackagingScriptsTest(unittest.TestCase):
             workflow,
         )
         self.assertIn("--artifact-storage-key", workflow)
-        self.assertIn("chejin-worker-v0.9.73-windows-x64.release.json", workflow)
+        self.assertIn("chejin-worker-v0.9.74-windows-x64.release.json", workflow)
         self.assertIn("must not contain a temporary download URL", workflow)
 
     def test_formal_update_package_contains_independent_updater_and_real_process_gate(self):
@@ -1143,16 +1143,30 @@ class PackagingScriptsTest(unittest.TestCase):
                     "source_commit": "190ba63b7060fb925d080d63d1efa531d88ed9f4",
                     "scope": ["c2_contract_0_9_73_generated_schema"],
                 },
+                {
+                    "source_commit": "2dc572ab89dc430876c44005a262a2e7633abca8",
+                    "scope": ["c2_contract_0_9_74_generated_schema"],
+                },
+                {
+                    "source_commit": "e996a4a9099b86cd1e5ae8371c05a082906c5bc3",
+                    "scope": [
+                        "current_chat_separator_independent_of_sidebar_search_glyphs",
+                        "shared_current_frame_top_fragment_boundary",
+                        "image_sampling_excludes_partial_prefix_before_components",
+                        "dense_multi_avatar_image_candidate_explicit_failure",
+                        "typed_current_frame_failure_cli_evidence",
+                    ],
+                },
             ],
         )
         self.assertEqual(
             provenance["current_release"],
             {
-                "version": "0.9.73",
-                "source_commit": "190ba63b7060fb925d080d63d1efa531d88ed9f4",
-                "contract_revision": "0.9.73",
-                "contract_sha256": "799451d85b3d63102bde91dc9678c6ac35ea82fba84239fe573c7a22323e671a",
-                "scope": "Generated schema revision only; reviewed pre-send checkpoint and explicit fault recovery belong to Chejin backend and Worker, not OmniAuto."
+                "version": "0.9.74",
+                "source_commit": "e996a4a9099b86cd1e5ae8371c05a082906c5bc3",
+                "contract_revision": "0.9.74",
+                "contract_sha256": "e968efce01e506d6883f5f6b7dc2112a69236bd42fc3e9ce277b30afe40427e5",
+                "scope": "0.9.74 generated schema plus reviewed current-frame boundary, shared partial-prefix handling, complete-image retention and typed frame-error evidence. Worker/backend retain business identity, Flow settlement and no-resend ownership."
             },
         )
         self.assertIn(
@@ -1581,7 +1595,7 @@ class PackagingScriptsTest(unittest.TestCase):
         self.assertIn('$packageDir = [string]$manifest.package_dir', workflow)
         self.assertIn('$exePath = [string]$manifest.exe_path', workflow)
         self.assertNotIn('dist\\车金Worker客户端', workflow)
-        self.assertIn('version -ne "0.9.73"', workflow)
+        self.assertIn('version -ne "0.9.74"', workflow)
         self.assertIn('tests_status -ne "passed"', workflow)
         self.assertIn('@("--omniauto-sidecar", "--help")', workflow)
         self.assertIn('@("--omniauto-ocr-probe")', workflow)
