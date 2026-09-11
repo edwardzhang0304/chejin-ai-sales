@@ -20,6 +20,8 @@ ACCEPT_JOB = "Accept exact Windows candidate"
 ROOT = Path(__file__).resolve().parents[2]
 # Exact exceptions, deliberately not entire scripts/tests/directories.
 RETEST_ONLY = {
+    "worker-client/scripts/run-windows-pending-read-install.py",
+    "ops/formal_release/tests/test_pending_read_install_gate.py",
     "worker-client/scripts/run-windows-client-upgrade-test.py",
     "worker-client/tests/test_windows_upgrade_gate_data.py",
     "ops/formal_release/candidate.py",
@@ -30,9 +32,9 @@ RETEST_ONLY = {
     ".github/workflows/release-evidence.yml",
 }
 DOCS = {
-    "deliverables/AI智能客服售前跟进系统_PRD_运营后台统一版_v0.9.76.md",
-    "deliverables/AI智能客服售前跟进系统_技术方案手册_v0.9.76.md",
-    "deliverables/AI智能客服售前跟进系统_全流程图_v0.9.76.puml",
+    "deliverables/AI智能客服售前跟进系统_PRD_运营后台统一版_v0.9.77.md",
+    "deliverables/AI智能客服售前跟进系统_技术方案手册_v0.9.77.md",
+    "deliverables/AI智能客服售前跟进系统_全流程图_v0.9.77.puml",
     "deliverables/AI智能客服售前跟进系统_技术方案手册_v0.9.75.md",
     "deliverables/AI智能客服售前跟进系统_PRD_运营后台统一版_v0.9.75.md",
     "deliverables/AI智能客服售前跟进系统_全流程图_v0.9.75.puml",

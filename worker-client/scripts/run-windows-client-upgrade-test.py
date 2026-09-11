@@ -322,7 +322,7 @@ def run_case(args, status):
     before = preserved_values(data)
     checkpoints = {"synthetic_test_data_only": True, "seeded": before}
     processes = []
-    report = {"current_version": "0.9.75", "target_version": "0.9.76", "initial_run_status": status,
+    report = {"current_version": "0.9.75", "target_version": "0.9.77", "initial_run_status": status,
               "old_exe_sha256": OLD_EXE_SHA, "old_updater_sha256": OLD_UPDATER_SHA,
               "target_zip_sha256": digest(args.archive), "status": "failed"}
     log = (case / "process.log").open("w", encoding="utf-8")
@@ -401,7 +401,7 @@ def run_case(args, status):
                 wait_for(debug_ready, "new manually installed Worker UI")
                 with QtPage(debug_port) as new_page:
                     new_page.click_button("打开设置")
-                    new_page.wait_text("V0.9.76")
+                    new_page.wait_text("V0.9.77")
                     new_page.screenshot(case / "after.png")
                 checkpoints["after_manual_install"] = preserved_values(data)
                 assert_preserved(before, checkpoints["after_manual_install"])
@@ -441,7 +441,7 @@ def run_case(args, status):
             assert digest(plan_path.parent / "CheJinUpdater.exe") == OLD_UPDATER_SHA
             assert plan["safe_boundary"]["safe"] is True
             marker = read_json(plan["healthy_marker_path"])
-            assert marker["healthy"] is True and marker["version"] == "0.9.76"
+            assert marker["healthy"] is True and marker["version"] == "0.9.77"
             assert marker["runtime_health"]["binding_state"] == "bound"
             for name in ("task_runner", "c2_listener", "thread_monitor"):
                 health = marker["runtime_health"]["threads"][name]
@@ -453,10 +453,10 @@ def run_case(args, status):
             assert_preserved(before, checkpoints["after_reconciliation"])
             target_manifest = read_json(current / "update-package-manifest.json")
             assert target_manifest["git_commit"] == read_json(args.release)["git_commit"]
-            assert target_manifest["version"] == "0.9.76"
+            assert target_manifest["version"] == "0.9.77"
             with QtPage(debug_port) as new_page:
                 new_page.click_button("打开设置")
-                new_page.wait_text("V0.9.76")
+                new_page.wait_text("V0.9.77")
                 new_page.screenshot(case / "after.png")
             requests = [json.loads(line) for line in Path(spec["requests"]).read_text().splitlines()]
             assert any(r["kind"] == "latest" and r["current_version"] == "0.9.75" and r["status"] == 200 for r in requests)
@@ -524,7 +524,7 @@ def main():
         args.target_package_root = args.target_package_root.resolve()
     results = [run_case(args, status) for status in ("paused", "faulted")]
     write_json(args.work_root / "upgrade-result.json", {"status": "passed", "cases": results})
-    print("Preserve-data manual install passed" if args.manual_install else "Original 0.9.75 GUI -> signed 0.9.76: paused and faulted cases passed")
+    print("Preserve-data manual install passed" if args.manual_install else "Original 0.9.75 GUI -> signed 0.9.77: paused and faulted cases passed")
 
 
 if __name__ == "__main__":

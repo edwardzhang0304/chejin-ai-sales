@@ -19,6 +19,7 @@ WORKFLOW = ".github/workflows/release-evidence.yml"
 FORMAL = ".github/workflows/worker-windows-package.yml"
 JOBS = {"source": "Selected source checks", "tooling": "Release tools checks"}
 TOOL_FILES = {
+    "worker-client/scripts/run-windows-pending-read-install.py",
     "worker-client/scripts/build-windows.ps1", "worker-client/run_checks.py",
     "worker-client/tests/test_packaging_scripts.py", "worker-client/tests/test_release_gate_runner.py",
     "worker-client/scripts/run-windows-client-upgrade-test.py",
