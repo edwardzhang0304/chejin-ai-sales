@@ -88,6 +88,10 @@ def load_receipt(path):
         require(receipt.get('original_run')==ORIGINAL_RUN and receipt.get('original_commit')==ORIGINAL_COMMIT
                 and receipt.get('native_stage')=='passed' and receipt.get('shared_stage')=='passed'
                 and set(receipt['completed_suites'])=={'schema','credentials','unittest','ui_bridge','run_add_friend_package_smoke.py'}, 'INVALID_PARTIAL_RECEIPT')
+    if 'unittest_resume' in receipt:
+        require(receipt.get('unit_source_run')==UNIT_RUN and receipt.get('unit_source_commit')==UNIT_COMMIT
+                and receipt['unittest_resume']==UNIT_RETRY and receipt.get('prior_unittest_total')==1108
+                and receipt.get('prior_unittest_passed')==1104, 'INVALID_UNITTEST_RESUME')
     return receipt
 
 
@@ -99,6 +103,8 @@ def complete(path, suites):
 
 
 def resolve(run_id, output):
+    if run_id == UNIT_RUN:
+        return resolve_failed_units(output)
     if run_id == LATER_RUN:
         return resolve_later_shared(output)
     if run_id == PREFIX_RUN:
@@ -124,6 +130,8 @@ def resolve(run_id, output):
 PREFIX_RUN = '34567516324'
 PREFIX_COMMIT = 'ae23705c3317c7ebd2970879b9e57756c5f889c0'
 PREFIX_REPAIRS = {
+ 'worker-client/run_checks.py', 'worker-client/tests/test_release_gate_runner.py',
+ 'worker-client/tests/test_incident_evidence.py',
  'worker-client/tests/test_c2_contract.py',
  'backend/app/services/release_readiness.py', 'backend/tests/test_release_readiness.py',
  'ops/formal_release/tests/test_candidate.py',
@@ -221,6 +229,66 @@ def resolve_later_shared(output):
     save(output,receipt)
     export_flags({'CHEJIN_SHARED_RECOVERY_REUSED':'true','CHEJIN_SHARED_BRAIN_REUSED':'true','CHEJIN_SHARED_OBSERVABILITY_REUSED':'true'})
     print(json.dumps({'source_reuse':'verified_later_shared_groups','original_run':LATER_RUN,'contract_and_packaging_checks':'must_run'}))
+
+
+UNIT_RUN = '34569859469'
+UNIT_COMMIT = '97c681564c8607c9b47d09c3f7d12700f4259a30'
+UNIT_RETRY = [
+ 'test_any_security_failure_stops_before_full_tests',
+ 'test_full_suite_failure_still_stops_after_security_passes',
+ 'test_schema_failure_stops_before_security_or_other_tests',
+ 'test_settle_window_includes_logs_written_after_failure',
+]
+UNIT_REPAIRS = {
+ 'worker-client/run_checks.py', 'worker-client/tests/test_release_gate_runner.py',
+ 'worker-client/tests/test_incident_evidence.py',
+ 'ops/formal_release/source_check_reuse.py', 'ops/formal_release/tests/test_source_check_reuse.py',
+ *[p for p in REPAIR_FILES if p.startswith('deliverables/')],
+}
+
+
+def validate_failed_units(run, jobs, log):
+    require(str(run['id'])==UNIT_RUN and run['head_sha']==UNIT_COMMIT
+            and run['head_branch']=='codex/gray-release-0.9.x' and run['event']=='workflow_dispatch'
+            and run['path']=='.github/workflows/worker-windows-package.yml' and run['status']=='completed', 'UNTRUSTED_UNIT_RUN')
+    job=next(j for j in jobs if j['name']=='Build signed formal Windows package')
+    require(job['conclusion']=='failure', 'UNEXPECTED_UNIT_JOB')
+    for name in ('Resolve immutable completed source-check evidence','Fail fast on native Windows handoff checks','Run shared source checks'):
+        require(any(s['name']==name and s['conclusion']=='success' for s in job['steps']), 'UNIT_PREFIX_NOT_PASSED')
+    lines=[re.sub(r'^.*?\d{4}-\d\d-\d\dT\S+Z ?', '', line).strip() for line in log.splitlines()]
+    headers=[line for line in lines if line.startswith(('FAIL:', 'ERROR:'))]
+    expected=[f'ERROR: {UNIT_RETRY[0]} (test_release_gate_runner.ReleaseGateRunnerTest.{UNIT_RETRY[0]}) (exit_code={i})' for i in range(1,6)]
+    expected += [f'ERROR: {name} (test_release_gate_runner.ReleaseGateRunnerTest.{name})' for name in UNIT_RETRY[1:3]]
+    expected += [f'FAIL: {UNIT_RETRY[3]} (test_incident_evidence.IncidentEvidenceTest.{UNIT_RETRY[3]})']
+    require(headers==expected and 'Ran 1108 tests in 804.266s' in lines
+            and 'FAILED (failures=1, errors=7)' in lines, 'UNEXPECTED_UNIT_FAILURE_SET')
+    return list(UNIT_RETRY)
+
+
+def resolve_failed_units(output):
+    resolve_later_shared(output)
+    require(fingerprint(UNIT_COMMIT,repair=True,repair_files=UNIT_REPAIRS)==fingerprint('HEAD',repair=True,repair_files=UNIT_REPAIRS),'UNIT_SOURCE_CHANGED')
+    # Only these four failed test bodies/setup may change; all previously
+    # passing test methods in the same files retain byte-identical ASTs.
+    import ast
+    for filename in ('test_incident_evidence.py','test_release_gate_runner.py'):
+        path='worker-client/tests/'+filename
+        def methods(raw):
+            return {node.name:ast.dump(node,include_attributes=False) for node in ast.walk(ast.parse(raw))
+                    if isinstance(node,(ast.FunctionDef,ast.AsyncFunctionDef)) and node.name.startswith('test_') and node.name not in UNIT_RETRY}
+        require(methods(git('show',UNIT_COMMIT+':'+path).decode())==methods(git('show','HEAD:'+path).decode()),'PASSED_TEST_BODY_CHANGED')
+        current=ast.parse(git('show','HEAD:'+path).decode())
+        expected=set(UNIT_RETRY[:3] if filename=='test_release_gate_runner.py' else UNIT_RETRY[3:])
+        require({n.name for n in ast.walk(current) if isinstance(n,ast.FunctionDef) and n.name in UNIT_RETRY}==expected,'FAILED_TEST_REMOVED')
+    def api(path):return json.loads(subprocess.check_output(['gh','api',f'repos/{REPO}/'+path],text=True,encoding='utf-8'))
+    run=api('actions/runs/'+UNIT_RUN);jobs=api('actions/runs/'+UNIT_RUN+'/jobs?per_page=100')['jobs']
+    log=subprocess.check_output(['gh','run','view',UNIT_RUN,'--repo',REPO,'--log-failed'],text=True,encoding='utf-8')
+    retry=validate_failed_units(run,jobs,log)
+    receipt=json.loads(Path(output).read_text());receipt.update(unit_source_run=UNIT_RUN,unit_source_commit=UNIT_COMMIT,
+        unit_log_sha256=hashlib.sha256(log.encode()).hexdigest(),unittest_resume=retry,prior_unittest_total=1108,prior_unittest_passed=1104)
+    save(output,receipt)
+    export_flags({'CHEJIN_SHARED_CHECKS_COMPLETE':'true'})
+    print(json.dumps({'source_reuse':'verified_unittest_partial','passed':1104,'retry':retry,'later_suites':'must_run'}))
 
 
 if __name__=='__main__':

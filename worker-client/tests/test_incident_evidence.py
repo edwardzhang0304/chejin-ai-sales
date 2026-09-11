@@ -464,24 +464,39 @@ class IncidentEvidenceTest(unittest.TestCase):
         self.assertIn("second pending stack", payload)
 
     def test_settle_window_includes_logs_written_after_failure(self) -> None:
+        # Freeze only the incident clock: filesystem latency must not consume
+        # the test's settle window before the cleanup log is committed.
+        from datetime import datetime, timedelta, timezone
+        clock = [datetime.now(timezone.utc)]
+        class IncidentClock(datetime):
+            @classmethod
+            def now(cls, tz=None):
+                return clock[0].astimezone(tz) if tz else clock[0].replace(tzinfo=None)
+        waiting = threading.Event()
+        original_wait = self.incidents._capture_wait_seconds
+        def observed_wait(request):
+            delay = original_wait(request)
+            if delay > 0:
+                waiting.set()
+            return delay
         self.incidents.INCIDENT_SETTLE_WINDOW_SECONDS = 0.2
-        result = self.storage.append_log(
-            "ERROR",
-            "settle_window_failure",
-            "failure starts cleanup",
-            error_code="SETTLE_WINDOW_FAILURE",
-        )
-        self.storage.append_log(
-            "INFO",
-            "settle_window_cleanup_completed",
-            "pause and outbox cleanup completed",
-        )
-
-        with zipfile.ZipFile(self._completed_path(result)) as archive:
-            logs = json.loads(archive.read("logs/recent_logs.json"))
-        self.assertTrue(
-            any(row.get("event") == "settle_window_cleanup_completed" for row in logs)
-        )
+        with patch.object(self.incidents, "datetime", IncidentClock), patch.object(
+            self.incidents, "_capture_wait_seconds", side_effect=observed_wait
+        ):
+            result = self.storage.append_log(
+                "ERROR", "settle_window_failure", "failure starts cleanup",
+                error_code="SETTLE_WINDOW_FAILURE",
+            )
+            self.assertTrue(waiting.wait(10), "Incident worker did not honor settle window")
+            self.assertFalse(Path(result["evidence_path"]).exists())
+            self.storage.append_log(
+                "INFO", "settle_window_cleanup_completed", "pause and outbox cleanup completed",
+            )
+            clock[0] += timedelta(seconds=1)
+            self.incidents._wake_incident_worker(result["incident_id"])
+            with zipfile.ZipFile(self._completed_path(result)) as archive:
+                logs = json.loads(archive.read("logs/recent_logs.json"))
+        self.assertTrue(any(row.get("event") == "settle_window_cleanup_completed" for row in logs))
 
     def test_merge_window_expiry_creates_a_new_incident(self) -> None:
         first = self.storage.append_log(
