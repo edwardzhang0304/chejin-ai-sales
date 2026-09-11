@@ -45,3 +45,21 @@ def test_fixture_child_output_decodes_utf8_independent_of_windows_locale():
     assert result.stdout == '原流程恢复'
     source = (Path(__file__).resolve().parents[3] / 'worker-client/scripts/run-windows-pending-read-install.py').read_text()
     assert 'text=True, encoding="utf-8", capture_output=True' in source
+
+
+def test_expected_fault_transition_updates_time_but_preserves_binding(original):
+    original['binding']['updated_at'] = '2026-09-11T12:00:00+00:00'
+    after = copy.deepcopy(original)
+    after['binding'].update(run_status='faulted', updated_at='2026-09-11T12:00:01+00:00')
+    gate.assert_identity(original, after)
+    assert gate.binding_difference(original, after)['changed_binding_fields'] == ['run_status', 'updated_at']
+    after['binding']['worker_token'] = 'changed'
+    with pytest.raises(AssertionError, match='Binding identity changed'):
+        gate.assert_identity(original, after)
+
+
+@pytest.mark.parametrize('status,stamp', [('paused','2026-09-11T12:00:01+00:00'), ('faulted','2026-09-11T11:59:59+00:00'), ('running','2026-09-11T12:00:01+00:00')])
+def test_unexpected_status_or_timestamp_still_blocks(original,status,stamp):
+    original['binding']['updated_at'] = '2026-09-11T12:00:00+00:00'
+    after = copy.deepcopy(original); after['binding'].update(run_status=status,updated_at=stamp)
+    with pytest.raises(AssertionError): gate.assert_identity(original,after)

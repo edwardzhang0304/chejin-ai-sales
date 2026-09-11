@@ -688,6 +688,7 @@ jobs:
           name: windows-gate-reports-${{ github.job }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
             worker-client/dist/reports/*.json
+            worker-client/dist/release/*.delivery.json
             ${{ runner.temp }}/qt-driver-prebuild/*
             ${{ runner.temp }}/chejin-original-client-upgrade/**/result.json
             ${{ runner.temp }}/chejin-original-client-upgrade/*/data-checkpoints.json
@@ -701,6 +702,7 @@ jobs:
             ${{ runner.temp }}/chejin-manual-install/**/result.json
             ${{ runner.temp }}/reused-completed-cases.json
             ${{ runner.temp }}/chejin-pending-read-install/result.json
+            ${{ runner.temp }}/chejin-pending-read-install/*-diff.json
             ${{ runner.temp }}/chejin-pending-read-install/*.log
             ${{ runner.temp }}/chejin-pending-read-install/*-http.jsonl
             ${{ runner.temp }}/chejin-pending-read-install/*.png

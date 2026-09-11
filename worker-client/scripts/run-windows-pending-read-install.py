@@ -143,9 +143,29 @@ def snapshot(data):
         return {'binding': binding, 'control': control, 'outbox': outbox, 'receipts': receipts, 'settings': settings}
 
 
+def binding_difference(before, after):
+    fields = sorted(k for k in set(before['binding']) | set(after['binding'])
+                    if before['binding'].get(k) != after['binding'].get(k))
+    return {'changed_binding_fields': fields,
+            'status_before': before['binding']['run_status'], 'status_after': after['binding']['run_status'],
+            'updated_at_before': before['binding'].get('updated_at'),
+            'updated_at_after': after['binding'].get('updated_at'),
+            'binding_values_redacted': True}
+
+
 def assert_identity(before, after):
-    assert {k: v for k, v in before['binding'].items() if k != 'run_status'} == {
-        k: v for k, v in after['binding'].items() if k != 'run_status'}, 'Binding changed'
+    # save_binding changes updated_at when paused becomes faulted. This is a
+    # recovery-state transition, not an Updater frozen-data baseline comparison.
+    changing = {'run_status', 'updated_at'}
+    assert {k: v for k, v in before['binding'].items() if k not in changing} == {
+        k: v for k, v in after['binding'].items() if k not in changing}, 'Binding identity changed'
+    old_status, new_status = before['binding']['run_status'], after['binding']['run_status']
+    assert old_status == new_status or (old_status, new_status) == ('paused', 'faulted'), 'Unexpected binding status transition'
+    old_time, new_time = before['binding'].get('updated_at'), after['binding'].get('updated_at')
+    if old_time != new_time:
+        from datetime import datetime
+        assert (old_status, new_status) == ('paused', 'faulted'), 'Binding timestamp changed without expected transition'
+        assert old_time and new_time and datetime.fromisoformat(new_time) >= datetime.fromisoformat(old_time), 'Binding timestamp moved backwards'
     assert before['settings'] == after['settings'], 'Acceptance schedule changed'
     def facts(value):
         return [{k: v for k, v in row.items() if k != 'status'} for row in value['outbox']]
@@ -249,7 +269,9 @@ def run(args):
                 with gate.QtPage(debug) as page:
                     page.click_button('打开设置'); page.wait_text('V0.9.75'); page.screenshot(folder/'before.png')
                 normal_close(old)
-            exited = snapshot(data); assert_identity(before, exited)
+            exited = snapshot(data)
+            gate.write_json(folder/'old-exit-diff.json', binding_difference(before, exited))
+            assert_identity(before, exited)
             assert exited['control']['inflight_flow_id'] == flow, 'Original pending flow unexpectedly vanished'
             sys.path.insert(0, str(ROOT/'worker-client'))
             from chejin_worker_client.models import ClientRelease
@@ -266,7 +288,10 @@ def run(args):
                 new = subprocess.Popen([str(newdir/'CheJinWorkerClient.exe')], env=env, cwd=newdir, stdout=log, stderr=log); processes.append(new)
                 ui_ready(new)
                 gate.wait_for(lambda: not snapshot(data)['control']['inflight_flow_id'], 'candidate EXE finishes original pending flow', 90)
-                after = snapshot(data); assert_identity(exited, after)
+                after = snapshot(data)
+                report['binding_difference'] = binding_difference(exited, after)
+                gate.write_json(folder/'recovery-diff.json', report['binding_difference'])
+                assert_identity(exited, after)
                 assert after['binding']['run_status'] == 'faulted' and after['control']['pause_requested']
                 assert all(r['status'] == 'confirmed' for r in after['outbox'])
                 # Successful finish removes the temporary local receipt. Its
