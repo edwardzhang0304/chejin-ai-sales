@@ -1,0 +1,333 @@
+{
+  "schema_version": 1,
+  "reviewed_commit": "821517d08099858e57a932f3433db551fbc8102d",
+  "review_base": "761239c5c20ab5e3cadd3d80d60f5e0c9bf18b15",
+  "repository": "edwardzhang0304/chejin-ai-sales",
+  "approval": "User provided reviewed commit 821517d and authorized formal release with reuse of completed 57 checks on 2026-09-11.",
+  "original_verification_sha256": "94cfa89437063d67a258c9a47ac7e3c994b961a525b401bc6628fba757ca9f19",
+  "source_sha256": {
+    "backend/app/services/message_viewport_projection.py": "bbdbf12b7f169e7600cc4b1cae7b427c6cb77110fa149107365b3414f2ef726f",
+    "backend/app/services/wechat_service.py": "a69091603a523e997f015326a983f735dbcd0f19a0b540cf45084dcb1997179d",
+    "backend/tests/test_c2_historical_ocr_settlement.py": "c612b2def6871dd54539ea003ea3434fc73940ee8a2afeaee32c107d88a517f8",
+    "backend/tests/test_c2_ocr_attribution.py": "f5d9fe823038ba884ff47a9bb88b69ff48e11d6496bcf0a175609228e537c8c1",
+    "backend/tests/fixtures/cjf9_20260911/backend_validate_before.py": "a0908c7c432358c15d9e24542c8a651483688bcc6d397593e5eb4c14bb47dc28",
+    "backend/tests/fixtures/cjf9_20260911/worker_finish_before.py": "69a9b8c58ca890f2d51b41c4ecac63dab68c4d1e43c6407256d35c64e38cc92e",
+    "worker-client/chejin_worker_client/task_runner.py": "f7906b0af88b51e5317f897655e18db5865c34ecac121e72b923c1fc5f372cd7",
+    "worker-client/chejin_worker_client/storage.py": "f5cc1222a44d61b7d9e27272d8d97f82d4b56415ac2f320b92a2bb6734b38778",
+    "worker-client/tests/test_task_runner.py": "1cc72ab65cf5ab69507aad3dfef49be7d15d64dacaefa066596f24de31276695",
+    "worker-client/tests/test_c2_identity_gate_receipts.py": "1fb5c567dbb4e46da9771aa43714dea6a5ae86b426825051c5894ea005186c83",
+    "worker-client/tests/test_storage.py": "7ef0bf6603b983837f842e962b44b178118913343fc9239cafd4c5d3131fd7a0"
+  },
+  "checks": [
+    {
+      "name": "focused",
+      "count": 32,
+      "original_xml_sha256": "7d349660b41e46d5570d47e07de8c352e178eb7b38106d718ee9d50a403c82ba",
+      "cases": [
+        {
+          "classname": "tests.test_c2_ocr_attribution",
+          "name": "test_historical_voice_ocr_and_protected_facts[unchanged-True]",
+          "result": "passed"
+        },
+        {
+          "classname": "tests.test_c2_ocr_attribution",
+          "name": "test_historical_voice_ocr_and_protected_facts[space-True]",
+          "result": "passed"
+        },
+        {
+          "classname": "tests.test_c2_ocr_attribution",
+          "name": "test_historical_voice_ocr_and_protected_facts[newline-True]",
+          "result": "passed"
+        },
+        {
+          "classname": "tests.test_c2_ocr_attribution",
+          "name": "test_historical_voice_ocr_and_protected_facts[price-False]",
+          "result": "passed"
+        },
+        {
+          "classname": "tests.test_c2_ocr_attribution",
+          "name": "test_historical_voice_ocr_and_protected_facts[decimal-False]",
+          "result": "passed"
+        },
+        {
+          "classname": "tests.test_c2_ocr_attribution",
+          "name": "test_historical_voice_ocr_and_protected_facts[body-False]",
+          "result": "passed"
+        },
+        {
+          "classname": "tests.test_c2_ocr_attribution",
+          "name": "test_historical_voice_ocr_and_protected_facts[role-False]",
+          "result": "passed"
+        },
+        {
+          "classname": "tests.test_c2_ocr_attribution",
+          "name": "test_historical_voice_ocr_and_protected_facts[source-False]",
+          "result": "passed"
+        },
+        {
+          "classname": "tests.test_c2_ocr_attribution",
+          "name": "test_historical_voice_ocr_and_protected_facts[other_conversation-False]",
+          "result": "passed"
+        },
+        {
+          "classname": "tests.test_c2_ocr_attribution",
+          "name": "test_historical_voice_ocr_and_protected_facts[failed_saved_voice-False]",
+          "result": "passed"
+        },
+        {
+          "classname": "tests.test_c2_ocr_attribution",
+          "name": "test_historical_voice_ocr_and_protected_facts[failed_observation-False]",
+          "result": "passed"
+        },
+        {
+          "classname": "tests.test_c2_ocr_attribution",
+          "name": "test_verified_original_receipt_separate_from_ocr[exact-ai]",
+          "result": "passed"
+        },
+        {
+          "classname": "tests.test_c2_ocr_attribution",
+          "name": "test_verified_original_receipt_separate_from_ocr[ocr-ai]",
+          "result": "passed"
+        },
+        {
+          "classname": "tests.test_c2_ocr_attribution",
+          "name": "test_verified_original_receipt_separate_from_ocr[space-ai]",
+          "result": "passed"
+        },
+        {
+          "classname": "tests.test_c2_ocr_attribution",
+          "name": "test_verified_original_receipt_separate_from_ocr[pending_ack-ai_pending_ack]",
+          "result": "passed"
+        },
+        {
+          "classname": "tests.test_c2_ocr_attribution",
+          "name": "test_verified_original_receipt_separate_from_ocr[unreconciled-ai_unreconciled]",
+          "result": "passed"
+        },
+        {
+          "classname": "tests.test_c2_ocr_attribution",
+          "name": "test_verified_original_receipt_separate_from_ocr[wrong_hash-ai_identity_unconfirmed_guard]",
+          "result": "passed"
+        },
+        {
+          "classname": "tests.test_c2_ocr_attribution",
+          "name": "test_verified_original_receipt_separate_from_ocr[wrong_source-ai_identity_unconfirmed_guard]",
+          "result": "passed"
+        },
+        {
+          "classname": "tests.test_c2_ocr_attribution",
+          "name": "test_verified_original_receipt_separate_from_ocr[missing_stable_id-ai_identity_unconfirmed_guard]",
+          "result": "passed"
+        },
+        {
+          "classname": "tests.test_c2_ocr_attribution",
+          "name": "test_verified_original_receipt_separate_from_ocr[wrong_time-ai_identity_unconfirmed_guard]",
+          "result": "passed"
+        },
+        {
+          "classname": "tests.test_c2_ocr_attribution",
+          "name": "test_verified_original_receipt_separate_from_ocr[wrong_action-ai_identity_unconfirmed_guard]",
+          "result": "passed"
+        },
+        {
+          "classname": "tests.test_c2_ocr_attribution",
+          "name": "test_verified_original_receipt_separate_from_ocr[wrong_conversation-ai_identity_unconfirmed_guard]",
+          "result": "passed"
+        },
+        {
+          "classname": "tests.test_c2_ocr_attribution",
+          "name": "test_verified_original_receipt_separate_from_ocr[price-ai_identity_unconfirmed_guard]",
+          "result": "passed"
+        },
+        {
+          "classname": "tests.test_c2_ocr_attribution",
+          "name": "test_verified_original_receipt_separate_from_ocr[decimal-ai_identity_unconfirmed_guard]",
+          "result": "passed"
+        },
+        {
+          "classname": "tests.test_c2_ocr_attribution",
+          "name": "test_verified_original_receipt_separate_from_ocr[corrupted_original-ai_identity_unconfirmed_guard]",
+          "result": "passed"
+        },
+        {
+          "classname": "tests.test_c2_ocr_attribution",
+          "name": "test_verified_original_receipt_separate_from_ocr[non_text-ai_identity_unconfirmed_guard]",
+          "result": "passed"
+        },
+        {
+          "classname": "tests.test_c2_ocr_attribution",
+          "name": "test_verified_original_receipt_separate_from_ocr[empty_receipt-ai_identity_unconfirmed_guard]",
+          "result": "passed"
+        },
+        {
+          "classname": "tests.test_c2_ocr_attribution",
+          "name": "test_verified_original_receipt_separate_from_ocr[malformed_receipt-ai_identity_unconfirmed_guard]",
+          "result": "passed"
+        },
+        {
+          "classname": "tests.test_c2_ocr_attribution",
+          "name": "test_verified_original_receipt_separate_from_ocr[human_no_action-human]",
+          "result": "passed"
+        },
+        {
+          "classname": "tests.test_c2_ocr_attribution",
+          "name": "test_verified_original_receipt_separate_from_ocr[human_same_text-human]",
+          "result": "passed"
+        },
+        {
+          "classname": "tests.test_c2_ocr_attribution",
+          "name": "test_worker_read_and_sent_receipt_attribution_through_http[voice]",
+          "result": "passed"
+        },
+        {
+          "classname": "tests.test_c2_ocr_attribution",
+          "name": "test_worker_read_and_sent_receipt_attribution_through_http[ai_sent]",
+          "result": "passed"
+        }
+      ]
+    },
+    {
+      "name": "regression",
+      "count": 22,
+      "original_xml_sha256": "36a0f943ca2cca2d26d84b8df4a10606c34a9a24adb3319a258c2b6b4524c1ab",
+      "cases": [
+        {
+          "classname": "tests.test_c2_historical_ocr_settlement",
+          "name": "test_historical_ocr_read_and_technical_finish[whitespace-synthetic]",
+          "result": "passed"
+        },
+        {
+          "classname": "tests.test_c2_historical_ocr_settlement",
+          "name": "test_historical_ocr_read_and_technical_finish[rejected-synthetic]",
+          "result": "passed"
+        },
+        {
+          "classname": "tests.test_c2_historical_ocr_settlement",
+          "name": "test_historical_ocr_read_and_technical_finish[rejected_status_timeout-synthetic]",
+          "result": "passed"
+        },
+        {
+          "classname": "tests.test_c2_historical_ocr_settlement",
+          "name": "test_historical_ocr_read_and_technical_finish[rejected_save_failure-synthetic]",
+          "result": "passed"
+        },
+        {
+          "classname": "tests.test_c2_historical_ocr_settlement",
+          "name": "test_historical_ocr_read_and_technical_finish[rejected_save_after-synthetic]",
+          "result": "passed"
+        },
+        {
+          "classname": "tests.test_c2_historical_ocr_settlement",
+          "name": "test_historical_ocr_read_and_technical_finish[rejected_status_lost_response-synthetic]",
+          "result": "passed"
+        },
+        {
+          "classname": "tests.test_c2_historical_ocr_settlement",
+          "name": "test_historical_ocr_read_and_technical_finish[legacy_restart-synthetic]",
+          "result": "passed"
+        },
+        {
+          "classname": "tests.test_c2_historical_ocr_settlement",
+          "name": "test_historical_ocr_read_and_technical_finish[legacy_no_completion-synthetic]",
+          "result": "passed"
+        },
+        {
+          "classname": "tests.test_wechat_c2_api",
+          "name": "test_message_identity_contract_ignores_only_visual_cjk_line_wraps",
+          "result": "passed"
+        },
+        {
+          "classname": "tests.test_wechat_c2_api",
+          "name": "test_voice_action_evidence_uses_actual_receipt_not_tracking_geometry",
+          "result": "passed"
+        },
+        {
+          "classname": "tests.test_wechat_c2_api",
+          "name": "test_customer_v3_voice_is_deduped_and_collectable_for_c3",
+          "result": "passed"
+        },
+        {
+          "classname": "tests.test_wechat_c2_api",
+          "name": "test_equal_voice_transcripts_with_distinct_anchor_keys_are_both_ingested",
+          "result": "passed"
+        },
+        {
+          "classname": "tests.test_wechat_c2_api",
+          "name": "test_sales_voice_transcription_pauses_takeover_without_disabling_ai_or_creating_batch",
+          "result": "passed"
+        },
+        {
+          "classname": "tests.test_wechat_c2_api",
+          "name": "test_unconfirmed_ai_receipt_survives_more_than_24_hours_until_bubble_ingest",
+          "result": "passed"
+        },
+        {
+          "classname": "tests.test_wechat_c2_api",
+          "name": "test_valid_ai_receipt_while_sent_ack_is_pending_is_not_human_sales",
+          "result": "passed"
+        },
+        {
+          "classname": "tests.test_wechat_c2_api",
+          "name": "test_unknown_send_without_local_receipt_never_rebinds_by_message_body",
+          "result": "passed"
+        },
+        {
+          "classname": "tests.test_wechat_c2_api",
+          "name": "test_sent_action_without_stable_receipt_keeps_conversation_identity_guarded",
+          "result": "passed"
+        },
+        {
+          "classname": "tests.test_wechat_c2_api",
+          "name": "test_failed_sales_voice_is_human_intervention_and_cannot_trigger_brain",
+          "result": "passed"
+        },
+        {
+          "classname": "tests.test_wechat_c2_api",
+          "name": "test_customer_after_failed_sales_voice_continues_to_brain",
+          "result": "passed"
+        },
+        {
+          "classname": "tests.test_wechat_c2_api",
+          "name": "test_voice_transcription_failures_are_rejected_and_create_no_reply_action",
+          "result": "passed"
+        },
+        {
+          "classname": "tests.test_wechat_c2_api",
+          "name": "test_duplicate_voice_key_with_different_media_anchor_is_identity_collision",
+          "result": "passed"
+        },
+        {
+          "classname": "tests.test_wechat_c2_api",
+          "name": "test_same_voice_identity_is_duplicated_when_only_frame_anchor_moves",
+          "result": "passed"
+        }
+      ]
+    },
+    {
+      "name": "worker",
+      "count": 3,
+      "original_xml_sha256": "8ecd22fc4b75b356682199957a567068a353967eaa47f0d3a4bea4c20011d0c5",
+      "cases": [
+        {
+          "classname": "worker-client.tests.test_task_runner.TaskRunnerTest",
+          "name": "test_scrolled_transcribed_voice_does_not_block_new_voice_or_reuse_identity",
+          "result": "passed"
+        },
+        {
+          "classname": "worker-client.tests.test_task_runner.TaskRunnerTest",
+          "name": "test_wrapped_ai_history_still_transcribes_and_ingests_new_voice",
+          "result": "passed"
+        },
+        {
+          "classname": "worker-client.tests.test_task_runner.TaskRunnerTest",
+          "name": "test_wrapped_confirmed_ai_reply_keeps_new_voice_executable",
+          "result": "passed"
+        }
+      ]
+    }
+  ],
+  "scope": "True HTTP/PostgreSQL/Worker/SQLite; controlled model and desktop; no production data, real model call, customer message, Windows or packaging.",
+  "environment": "Mac Python 3.13; isolated HTTP/PostgreSQL/Worker/SQLite; Windows package acceptance is separate",
+  "from_version": "0.9.75",
+  "target_version": "0.9.76"
+}

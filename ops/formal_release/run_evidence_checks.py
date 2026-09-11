@@ -54,11 +54,19 @@ def main():
     else:
         require(kind == "source", "UNKNOWN_CHECK_KIND")
         plan = json.loads(os.environ.get("SOURCE_TEST_PLAN", "{}"))
-        require(plan.get("reason") and plan.get("not_tested") and plan.get("pytest"), "REVIEWED_SOURCE_TEST_PLAN_REQUIRED")
-        require(set(plan) <= {"reason", "not_tested", "pytest"}, "UNSUPPORTED_TEST_PLAN_FIELD")
+        require(plan.get("reason") and plan.get("not_tested") and (plan.get("pytest") or plan.get("reviewed_handoff")), "REVIEWED_SOURCE_TEST_PLAN_REQUIRED")
+        require(set(plan) <= {"reason", "not_tested", "pytest", "reviewed_handoff"}, "UNSUPPORTED_TEST_PLAN_FIELD")
+    reused = None
+    if plan.get("reviewed_handoff"):
+        from reviewed_handoff import validate
+        reused = validate(plan["reviewed_handoff"])
     scope, results = [], []
+    if reused:
+        scope.append({"check": "reviewed_source_identity_and_release_version", "business_tests_executed": 0})
+        results.append({"exit_code": 0, "passed": 1, "failed": 0, "skipped": 0,
+                        "type": "evidence_and_version_verification", "business_tests_executed": 0})
     grouped = {}
-    for group in plan["pytest"]:
+    for group in plan.get("pytest", []):
         require(set(group) == {"cwd", "nodes"}, "INVALID_TEST_GROUP")
         grouped.setdefault(group["cwd"], []).extend(group["nodes"])
     for index, (cwd, nodes) in enumerate(grouped.items()):
@@ -73,7 +81,10 @@ def main():
                 "TESTS_FAILED_EMPTY_OR_SKIPPED: select the applicable tests; no completion evidence written")
     evidence = {"schema_version": 2, **current, "kind": kind, "status": "passed",
                 "fingerprint": fingerprint("HEAD", kind), "scope": scope, "results": results,
-                "reason": plan["reason"], "not_tested": plan["not_tested"], "python": sys.version}
+                "reason": plan["reason"], "not_tested": plan["not_tested"], "python": sys.version,
+                "reviewed_handoff": reused}
+    if reused:
+        evidence["scope"].append({"reused_engineering_checks": reused})
     (output / "evidence.json").write_text(json.dumps(evidence, indent=2), encoding="utf-8")
     print(json.dumps({"kind": kind, "results": results, "scope": scope}))
 

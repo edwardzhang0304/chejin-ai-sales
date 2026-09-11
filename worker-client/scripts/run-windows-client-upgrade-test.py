@@ -1,4 +1,4 @@
-"""Exercise the shipped 0.9.74 GUI and updater against the exact signed ZIP.
+"""Exercise the shipped 0.9.75 GUI and updater against the exact signed ZIP.
 
 Only the isolated Windows runner is used. Both EXEs are untouched; the backend
 is the candidate application with synthetic SQLite data and loopback TLS.
@@ -24,8 +24,8 @@ import time
 import urllib.request
 
 ROOT = Path(__file__).resolve().parents[2]
-OLD_EXE_SHA = "908942f2111e9a04bb4f900938143baf66f32cd5a5ddf988f656fa6676d2826e"
-OLD_UPDATER_SHA = "b103354cdf810036f9804d42f7a48f37e6ee1704072821daf6df16d696412251"
+OLD_EXE_SHA = "3336b868af6647eb207880a603f6ada8166f436e7853191151b28174f168e1bb"
+OLD_UPDATER_SHA = "7002af931bee724d24ba1023bc3c900bfd06a3e9991fb267547025a5cccd04d8"
 WORKER_ID = "formal-upgrade-isolated-worker"
 INSTANCE_ID = "formal-upgrade-isolated-instance"
 TOKEN = "synthetic-loopback-worker-token"
@@ -322,7 +322,7 @@ def run_case(args, status):
     before = preserved_values(data)
     checkpoints = {"synthetic_test_data_only": True, "seeded": before}
     processes = []
-    report = {"current_version": "0.9.74", "target_version": "0.9.75", "initial_run_status": status,
+    report = {"current_version": "0.9.75", "target_version": "0.9.76", "initial_run_status": status,
               "old_exe_sha256": OLD_EXE_SHA, "old_updater_sha256": OLD_UPDATER_SHA,
               "target_zip_sha256": digest(args.archive), "status": "failed"}
     log = (case / "process.log").open("w", encoding="utf-8")
@@ -355,7 +355,7 @@ def run_case(args, status):
         wait_for(debug_ready, "original Worker UI")
         with QtPage(debug_port) as page:
             page.click_button("打开设置")
-            page.wait_text("V0.9.74")
+            page.wait_text("V0.9.75")
             page.screenshot(case / "before.png")
             checkpoints["before_button"] = preserved_values(data)
             assert_preserved(before, checkpoints["before_button"])
@@ -401,7 +401,7 @@ def run_case(args, status):
                 wait_for(debug_ready, "new manually installed Worker UI")
                 with QtPage(debug_port) as new_page:
                     new_page.click_button("打开设置")
-                    new_page.wait_text("V0.9.75")
+                    new_page.wait_text("V0.9.76")
                     new_page.screenshot(case / "after.png")
                 checkpoints["after_manual_install"] = preserved_values(data)
                 assert_preserved(before, checkpoints["after_manual_install"])
@@ -436,12 +436,12 @@ def run_case(args, status):
             assert old.poll() is not None, "Original Worker did not exit"
             plan_path = Path(state["plan_path"])
             plan = read_json(plan_path)
-            assert plan["schema_version"] == 2 and plan["current_version"] == "0.9.74"
+            assert plan["schema_version"] == 2 and plan["current_version"] == "0.9.75"
             assert plan["old_pid"] == old.pid
             assert digest(plan_path.parent / "CheJinUpdater.exe") == OLD_UPDATER_SHA
             assert plan["safe_boundary"]["safe"] is True
             marker = read_json(plan["healthy_marker_path"])
-            assert marker["healthy"] is True and marker["version"] == "0.9.75"
+            assert marker["healthy"] is True and marker["version"] == "0.9.76"
             assert marker["runtime_health"]["binding_state"] == "bound"
             for name in ("task_runner", "c2_listener", "thread_monitor"):
                 health = marker["runtime_health"]["threads"][name]
@@ -453,13 +453,13 @@ def run_case(args, status):
             assert_preserved(before, checkpoints["after_reconciliation"])
             target_manifest = read_json(current / "update-package-manifest.json")
             assert target_manifest["git_commit"] == read_json(args.release)["git_commit"]
-            assert target_manifest["version"] == "0.9.75"
+            assert target_manifest["version"] == "0.9.76"
             with QtPage(debug_port) as new_page:
                 new_page.click_button("打开设置")
-                new_page.wait_text("V0.9.75")
+                new_page.wait_text("V0.9.76")
                 new_page.screenshot(case / "after.png")
             requests = [json.loads(line) for line in Path(spec["requests"]).read_text().splitlines()]
-            assert any(r["kind"] == "latest" and r["current_version"] == "0.9.74" and r["status"] == 200 for r in requests)
+            assert any(r["kind"] == "latest" and r["current_version"] == "0.9.75" and r["status"] == 200 for r in requests)
             assert any(r["kind"] == "download" and r["status"] == 200 for r in requests)
             report.update(status="passed", original_worker_exited=True, original_updater_used=True,
                           protected_data_preserved=True, target_ui_confirmed=True, actual_backend_download=True,
@@ -524,7 +524,7 @@ def main():
         args.target_package_root = args.target_package_root.resolve()
     results = [run_case(args, status) for status in ("paused", "faulted")]
     write_json(args.work_root / "upgrade-result.json", {"status": "passed", "cases": results})
-    print("Preserve-data manual install passed" if args.manual_install else "Original 0.9.74 GUI -> signed 0.9.75: paused and faulted cases passed")
+    print("Preserve-data manual install passed" if args.manual_install else "Original 0.9.75 GUI -> signed 0.9.76: paused and faulted cases passed")
 
 
 if __name__ == "__main__":

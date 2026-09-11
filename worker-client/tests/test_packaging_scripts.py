@@ -324,7 +324,7 @@ class PackagingScriptsTest(unittest.TestCase):
         self.assertIn("app_name = [string]$manifest.app_name", workflow)
         self.assertIn("default_api_base_url = [string]$manifest.default_api_base_url", workflow)
         self.assertIn("delivery ZIP executable SHA256 mismatch", workflow)
-        self.assertIn("chejin-worker-v0.9.75-windows-x64.delivery.json", workflow)
+        self.assertIn("chejin-worker-v0.9.76-windows-x64.delivery.json", workflow)
         self.assertNotIn("CHEJIN_VISION_CLIENT_API_KEY", workflow)
         self.assertIn('vision_credential_source -ne "worker_backend"', workflow)
         self.assertIn('vision_live_probe_check -ne "runtime_after_binding"', workflow)
@@ -352,7 +352,7 @@ class PackagingScriptsTest(unittest.TestCase):
             workflow,
         )
         self.assertIn("--artifact-storage-key", workflow)
-        self.assertIn("chejin-worker-v0.9.75-windows-x64.release.json", workflow)
+        self.assertIn("chejin-worker-v0.9.76-windows-x64.release.json", workflow)
         self.assertIn("must not contain a temporary download URL", workflow)
 
     def test_formal_update_package_contains_independent_updater_and_real_process_gate(self):
@@ -402,7 +402,7 @@ class PackagingScriptsTest(unittest.TestCase):
             updater_spec,
         )
 
-    def test_formal_exe_workflow_is_manual_and_runs_shared_checks_without_fast_uat_package(self):
+    def test_formal_exe_workflow_is_manual_and_reuses_evidence_without_fast_uat_package(self):
         workflow = (
             ROOT.parent / ".github" / "workflows" / "worker-windows-package.yml"
         ).read_text(encoding="utf-8")
@@ -412,7 +412,8 @@ class PackagingScriptsTest(unittest.TestCase):
         self.assertIn("release_approved:", workflow)
         self.assertIn("release_reason:", workflow)
         self.assertIn("validate_dispatch.py", workflow)
-        self.assertIn("uses: ./.github/actions/worker-release-checks", workflow)
+        self.assertIn("source_evidence.py resolve", workflow)
+        self.assertNotIn("uses: ./.github/actions/worker-release-checks", workflow)
         self.assertNotIn("build-fast-uat-package.py", workflow)
         self.assertNotIn("worker-windows-fast-uat.yml", workflow)
         self.assertIn("Accept exact Windows candidate", workflow)
@@ -1171,17 +1172,12 @@ class PackagingScriptsTest(unittest.TestCase):
                         "c2_contract_0_9_75_generated_schema"
                     ]
                 },
+                {'source_commit': '405c0c1344ad97a38d4f4b9bda2c3e84ec657900', 'scope': ['c2_contract_0_9_76_generated_schema']},
             ],
         )
         self.assertEqual(
             provenance["current_release"],
-            {
-                "version": "0.9.75",
-                "source_commit": "64377f2dcb32d4b4f3e29ba08431599b7c4cf5e8",
-                "contract_revision": "0.9.75",
-                "contract_sha256": "bcb1af09321339b159cc02581f5938e402f16094465933645c71bd7dc0eadcf1",
-                "scope": "0.9.75 generated schema; reviewed 3b0276e initial authoritative history suffix and unchanged action/send policy retained. Worker owns long-path update compatibility and fault messages."
-            },
+            {'version': '0.9.76', 'source_commit': '405c0c1344ad97a38d4f4b9bda2c3e84ec657900', 'contract_revision': '0.9.76', 'contract_sha256': 'fd5fff1004dea3adaedbfc4a8db700a4852977f2900ba5dd0d67f9f40f7fd68b', 'scope': 'Schema revision only; OmniAuto runtime unchanged. Reviewed Chejin 821517d historical OCR, AI attribution and fault settlement fixes.'},
         )
         self.assertIn(
             "strict_current_screen_without_history_scroll",
@@ -1611,7 +1607,7 @@ class PackagingScriptsTest(unittest.TestCase):
         self.assertIn('$packageDir = [string]$manifest.package_dir', workflow)
         self.assertIn('$exePath = [string]$manifest.exe_path', workflow)
         self.assertNotIn('dist\\车金Worker客户端', workflow)
-        self.assertIn('version -ne "0.9.75"', workflow)
+        self.assertIn('version -ne "0.9.76"', workflow)
         self.assertIn('tests_status -ne "passed"', workflow)
         self.assertIn('@("--omniauto-sidecar", "--help")', workflow)
         self.assertIn('@("--omniauto-ocr-probe")', workflow)
