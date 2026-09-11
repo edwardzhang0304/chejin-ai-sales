@@ -34,6 +34,7 @@ $OmniAutoProvenancePath = Join-Path $OmniAutoSourcePath ".chejin-source.json"
 $OmniAutoSidecarPath = Join-Path $OmniAutoSourcePath "apps\wechat_ai_customer_service\adapters\wechat_win32_ocr_sidecar.py"
 $GeneratedObservationSchemaPath = Join-Path $OmniAutoSourcePath "apps\wechat_ai_customer_service\adapters\chejin_c2_observation_schema.generated.json"
 $TestsStatus = "not_run"
+$SourceTestEvidence = $null
 $PreflightStatus = "not_run"
 $BuildSourceArgs = @("scripts\build_source.py")
 if ($DevelopmentBuild) {
@@ -106,29 +107,25 @@ if ($OmniAutoProvenanceSchema -ge 3) {
   throw "打包失败：OmniAuto selective integrations 不能为空"
 }
 
-if (-not (Test-Path ".venv")) {
-  python -m venv .venv
+if ($DevelopmentBuild) {
+  if (-not (Test-Path ".venv")) { python -m venv .venv }
+  .\.venv\Scripts\python.exe -m pip install --disable-pip-version-check -r requirements.txt
+  if ($LASTEXITCODE -ne 0) { throw "打包失败：依赖安装失败" }
+  if (-not $SkipTests) {
+    .\.venv\Scripts\python.exe -m pip install --disable-pip-version-check -r requirements-test.txt
+    if ($LASTEXITCODE -ne 0) { throw "打包失败：测试依赖安装失败" }
+  }
+} elseif (-not (Test-Path ".venv\Scripts\python.exe")) {
+  throw "正式打包失败：必须使用流水线已经准备好的构建环境。"
 }
 
-.\.venv\Scripts\python.exe -m pip install --upgrade pip
-if ($LASTEXITCODE -ne 0) {
-  throw "打包失败：pip 升级失败"
-}
-.\.venv\Scripts\pip.exe install -r requirements.txt
-if ($LASTEXITCODE -ne 0) {
-  throw "打包失败：依赖安装失败"
-}
-if (-not $SkipTests) {
-  .\.venv\Scripts\pip.exe install -r requirements-test.txt
-  if ($LASTEXITCODE -ne 0) {
-    throw "打包失败：测试依赖安装失败"
-  }
-}
 if (-not $DevelopmentBuild) {
-  .\.venv\Scripts\python.exe ..\ops\formal_release\quick_gate.py
+  .\.venv\Scripts\python.exe ..\ops\formal_release\source_evidence.py verify
   if ($LASTEXITCODE -ne 0) {
-    throw "正式打包失败：前置合同、凭据或 Brain 夹具检查未通过。"
+    throw "正式打包失败：缺少匹配的可信源码/发布工具测试凭证，不会自动重跑全量测试。"
   }
+  $TestsStatus = "passed"
+  $SourceTestEvidence = Get-Content -Raw -Encoding UTF8 $env:CHEJIN_FORMAL_SOURCE_RECEIPT | ConvertFrom-Json
 }
 .\.venv\Scripts\python.exe -c "import uiautomation; print('uiautomation import passed')"
 if ($LASTEXITCODE -ne 0) {
@@ -139,7 +136,7 @@ if ($LASTEXITCODE -ne 0) {
   throw "打包失败：源码环境无法初始化固定版本的图片复核 OCR。$RapidOcrSourceProbe"
 }
 
-if (-not $SkipTests) {
+if ($DevelopmentBuild -and -not $SkipTests) {
   .\.venv\Scripts\python.exe run_checks.py
   if ($LASTEXITCODE -ne 0) {
     throw "打包失败：Worker 完整测试未通过"
@@ -452,6 +449,7 @@ $Manifest = [ordered]@{
   vision_request_style = "anthropic_messages_vision"
   vision_live_probe_check = "runtime_after_binding"
   tests_status = $TestsStatus
+  source_test_evidence = $SourceTestEvidence
   preflight_status = $PreflightStatus
   c2_contract_revision = $ContractRevision.Trim()
   c2_contract_sha256 = $PackagedContractHash.Hash
@@ -481,7 +479,7 @@ $Manifest = [ordered]@{
   preflight_report = if (Test-Path $PreflightReportPath) { $PreflightReportPath } else { $null }
 }
 
-$Manifest | ConvertTo-Json -Depth 5 | Set-Content -Encoding UTF8 $ManifestPath
+$Manifest | ConvertTo-Json -Depth 12 | Set-Content -Encoding UTF8 $ManifestPath
 
 Write-Host "Built: $ExePath"
 Write-Host "SHA256: $($Hash.Hash)"

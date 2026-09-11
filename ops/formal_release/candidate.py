@@ -24,6 +24,10 @@ RETEST_ONLY = {
     "worker-client/tests/test_windows_upgrade_gate_data.py",
     "ops/formal_release/candidate.py",
     "ops/formal_release/tests/test_candidate.py",
+    "ops/formal_release/source_evidence.py",
+    "ops/formal_release/run_evidence_checks.py",
+    "ops/formal_release/tests/test_source_evidence.py",
+    ".github/workflows/release-evidence.yml",
 }
 DOCS = {
     "deliverables/AI智能客服售前跟进系统_技术方案手册_v0.9.68.md",
