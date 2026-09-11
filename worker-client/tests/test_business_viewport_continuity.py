@@ -149,8 +149,11 @@ def test_production_has_one_continuity_decider_and_one_voice_merge_owner() -> No
     assert definitions["compare_business_viewport_continuity"] == [
         REPOSITORY_ROOT
         / "worker-client"
-        / "chejin_worker_client"
-        / "message_viewport_projection.py"
+        / "omniauto-rpa"
+        / "apps"
+        / "wechat_ai_customer_service"
+        / "adapters"
+        / "business_viewport_continuity.py"
     ]
     assert definitions["_merge_same_frame_voice_hint"] == [
         REPOSITORY_ROOT

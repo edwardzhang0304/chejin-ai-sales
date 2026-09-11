@@ -1821,6 +1821,16 @@
     }
   },
   "message_identity_lifecycle_contract": {
+    "initial_history_suffix_rule": {
+      "owner": "worker",
+      "decider": "compare_business_viewport_continuity",
+      "opt_in": "allow_history_suffix=true_only_for_initial_authoritative_history_checkpoint_alignment",
+      "result": "unique_history_suffix_without_new_messages",
+      "requirements": "current_nonempty_complete_business_sequence_equals_a_committed_history_suffix_ending_at_the_known_tail_with_one_unique_strongly_bounded_overlap",
+      "new_suffix_indexes": [],
+      "effect": "reuse_only_proven_committed_identities_then_use_existing_ingest_dedupe_and_no_change_settlement; no_new_reply_or_repeat_media_action",
+      "unchanged_protection": "pre_send_and_physical_action_continuity_do_not_opt_in; weak_or_multiple_unproved_mappings_remain_blocked"
+    },
     "owner": "worker",
     "media_reservation_scope": "selected_current_action_only",
     "unselected_media_state": "frame_local_unselected_without_action_id_reserved_id_or_action_journal",

@@ -6559,7 +6559,7 @@ class TaskRunner:
             reason = str(self._backend_fault_recovery.get("reason") or "等待后端原任务结算")
         elif self.last_rpa_component_status != "ready" or self.last_wechat_status != "logged_in":
             reason = "等待自动化组件和微信连接正常"
-        return {"ready": not reason, "checking": False, "reason": reason or "检查通过，可点击开始接单；故障记录已保留"}
+        return {"ready": not reason, "checking": False, "reason": reason or "客户端发生故障，已停止接单。可点击“开始接单”尝试恢复。"}
 
     def _publish_fault_recovery(self) -> None:
         if not self.binding or self.binding.run_status != "faulted":
@@ -9780,6 +9780,9 @@ class TaskRunner:
                 committed_only=False,
             ),
             old_top_boundary_complete=explicit_empty,
+            # Backend history plus confirmed sends can extend above the
+            # current screen even when no new customer message has arrived.
+            allow_history_suffix=True,
             new_top_boundary_complete=(
                 _confirmed_empty_business_viewport(prepared, target)
             ),
@@ -9788,6 +9791,7 @@ class TaskRunner:
             "business_sequence_equal",
             "unique_tail_append",
             "unique_viewport_slide_with_tail_append",
+            "unique_history_suffix_without_new_messages",
         }:
             prepared["business_continuity_evidence"] = continuity
             return prepared, [

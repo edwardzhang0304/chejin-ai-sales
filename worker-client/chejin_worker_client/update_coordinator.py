@@ -16,6 +16,7 @@ from typing import Any, Callable
 import psutil
 
 from . import __version__
+from .update_filesystem import update_filesystem_path
 from .api import WorkerApiClient, ApiError
 from .client_update import (
     ClientUpdateError,
@@ -412,7 +413,7 @@ class UpdateCoordinator:
             return
         try:
             for name in ("download", "staging"):
-                target = request_root / name
+                target = update_filesystem_path(request_root / name)
                 if target.is_dir():
                     shutil.rmtree(target)
                 elif target.exists():
@@ -1108,12 +1109,13 @@ class UpdateCoordinator:
             if self._install_started:
                 return
             code = exc.code if isinstance(exc, (ClientUpdateError, ApiError)) else "UPDATE_CHECK_FAILED"
+            prepare_diagnostic = exc.data if isinstance(exc, ClientUpdateError) else {}
             _safe_update_log(
                 "ERROR",
                 "client_update_prepare_failed",
                 str(exc),
                 error_code=code,
-                metadata={"update_request_id": request_id},
+                metadata={"update_request_id": request_id, "prepare_diagnostic": prepare_diagnostic},
             )
             if gate_set:
                 self._set_new_work_gate(False, request_id)
@@ -1125,6 +1127,7 @@ class UpdateCoordinator:
                     "state": "failed",
                     "result_code": code,
                     "message": str(exc),
+                    "prepare_diagnostic": prepare_diagnostic,
                     "install_started": False,
                     "target_version": (
                         self.store.load().get("target_version")

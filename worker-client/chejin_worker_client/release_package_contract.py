@@ -15,6 +15,7 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 
 from . import __version__
 from .models import ClientRelease
+from .update_filesystem import update_filesystem_path
 
 
 UPDATE_SCHEMA_VERSION = 1
@@ -227,7 +228,7 @@ def verify_release_signature(
 
 def hash_file(path: Path) -> str:
     digest = hashlib.sha256()
-    with path.open("rb") as handle:
+    with update_filesystem_path(path).open("rb") as handle:
         for chunk in iter(lambda: handle.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
@@ -237,6 +238,7 @@ def verify_staged_package(
     release: ClientRelease,
     package_root: Path,
 ) -> dict[str, Any]:
+    package_root = update_filesystem_path(package_root)
     manifest_path = package_root / PACKAGE_MANIFEST_NAME
     try:
         raw_manifest = manifest_path.read_bytes()

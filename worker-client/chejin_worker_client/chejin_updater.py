@@ -55,6 +55,7 @@ import psutil
 _startup_diagnostic("psutil_import_succeeded")
 
 from .models import ClientRelease
+from .update_filesystem import update_filesystem_path
 from .release_package_contract import (
     ClientUpdateError,
     PACKAGE_MANIFEST_NAME,
@@ -175,7 +176,11 @@ def validate_update_plan(plan_path: Path, token: str) -> dict[str, Any]:
                 "UPDATE_INSTALL_FAILED",
                 "更新包不得位于可替换程序目录内",
             )
-    if not staged.is_dir() or not current.is_dir() or not archive.is_file():
+    if (
+        not update_filesystem_path(staged).is_dir()
+        or not update_filesystem_path(current).is_dir()
+        or not update_filesystem_path(archive).is_file()
+    ):
         raise ClientUpdateError("UPDATE_INSTALL_FAILED", "更新计划指向的程序或更新包不存在")
     baseline_path(plan, plan_path)
     identity = plan.get("old_process_identity")
@@ -289,7 +294,7 @@ def validate_missing_result_recovery_plan(
         for right in isolated[index + 1 :]:
             if left in right.parents or right in left.parents:
                 raise ClientUpdateError("UPDATE_ROLLBACK_FAILED", "恢复目录不得相互包含")
-    if not current.is_dir() or not previous.is_dir():
+    if not update_filesystem_path(current).is_dir() or not update_filesystem_path(previous).is_dir():
         raise ClientUpdateError("UPDATE_ROLLBACK_FAILED", "当前版本或上一版本目录缺失")
     return {
         **plan,
@@ -488,23 +493,23 @@ def run_update(plan_path: Path, token: str) -> int:
         # Revalidate immutable package/paths while data ownership remains held.
         validate_update_plan(plan_path, token)
 
-        if previous.exists():
+        if update_filesystem_path(previous).exists():
             retired_previous = previous.with_name(previous.name + ".retired-" + str(plan.get("update_request_id") or "unknown"))
-            if retired_previous.exists():
-                shutil.rmtree(retired_previous)
-            os.replace(previous, retired_previous)
-        os.replace(current, previous)
+            if update_filesystem_path(retired_previous).exists():
+                shutil.rmtree(update_filesystem_path(retired_previous))
+            os.replace(update_filesystem_path(previous), update_filesystem_path(retired_previous))
+        os.replace(update_filesystem_path(current), update_filesystem_path(previous))
         replacement_started = True
         try:
-            os.replace(staged, current)
+            os.replace(update_filesystem_path(staged), update_filesystem_path(current))
         except Exception:
-            os.replace(previous, current)
+            os.replace(update_filesystem_path(previous), update_filesystem_path(current))
             raise
 
         marker_path = _safe_absolute_path(plan.get("healthy_marker_path"), label="健康标记")
         marker_path.unlink(missing_ok=True)
         worker_executable = current / str(plan.get("worker_executable_relative") or "CheJinWorkerClient.exe")
-        if not worker_executable.is_file():
+        if not update_filesystem_path(worker_executable).is_file():
             raise ClientUpdateError("UPDATE_RESTART_FAILED", "新客户端可执行文件不存在")
         startup_diagnostic["phase"] = "start_new_worker"
         new_process = _start_worker(worker_executable, plan_path=plan_path, token=token)
@@ -537,8 +542,8 @@ def run_update(plan_path: Path, token: str) -> int:
                     except (ValueError, TypeError):
                         data_integrity_failed = True
             raise ClientUpdateError("UPDATE_RESTART_FAILED", "新客户端未在健康检查窗口内启动")
-        if retired_previous and retired_previous.exists():
-            shutil.rmtree(retired_previous)
+        if retired_previous and update_filesystem_path(retired_previous).exists():
+            shutil.rmtree(update_filesystem_path(retired_previous))
         _atomic_json_write(
             result_path,
             {
@@ -579,15 +584,15 @@ def run_update(plan_path: Path, token: str) -> int:
             if data_access is not None:
                 data_access.close()
                 data_access = None
-            if replacement_started and isinstance(current, Path) and isinstance(previous, Path) and previous.exists():
-                if current.exists():
+            if replacement_started and isinstance(current, Path) and isinstance(previous, Path) and update_filesystem_path(previous).exists():
+                if update_filesystem_path(current).exists():
                     if isinstance(failed, Path):
-                        if failed.exists():
-                            shutil.rmtree(failed)
-                        os.replace(current, failed)
+                        if update_filesystem_path(failed).exists():
+                            shutil.rmtree(update_filesystem_path(failed))
+                        os.replace(update_filesystem_path(current), update_filesystem_path(failed))
                     else:
                         raise ClientUpdateError("UPDATE_ROLLBACK_FAILED", "缺少失败证据目录")
-                os.replace(previous, current)
+                os.replace(update_filesystem_path(previous), update_filesystem_path(current))
                 old_executable = current / str(plan.get("worker_executable_relative") or "CheJinWorkerClient.exe")
                 rollback_process = _start_worker(old_executable, plan_path=plan_path, token=token, rollback=True)
                 time.sleep(0.5)
@@ -595,9 +600,9 @@ def run_update(plan_path: Path, token: str) -> int:
                     raise ClientUpdateError("UPDATE_ROLLBACK_FAILED", "旧客户端回滚后无法启动")
                 state = "rolled_back"
                 result_code = "UPDATE_ROLLED_BACK"
-                if retired_previous and retired_previous.exists():
-                    shutil.rmtree(retired_previous)
-            elif old_exit_confirmed and isinstance(current, Path) and current.exists():
+                if retired_previous and update_filesystem_path(retired_previous).exists():
+                    shutil.rmtree(update_filesystem_path(retired_previous))
+            elif old_exit_confirmed and isinstance(current, Path) and update_filesystem_path(current).exists():
                 old_executable = current / str(
                     plan.get("worker_executable_relative")
                     or "CheJinWorkerClient.exe"
@@ -616,8 +621,8 @@ def run_update(plan_path: Path, token: str) -> int:
                     )
                 state = "rolled_back"
                 result_code = "UPDATE_ROLLED_BACK"
-                if retired_previous and retired_previous.exists():
-                    shutil.rmtree(retired_previous)
+                if retired_previous and update_filesystem_path(retired_previous).exists():
+                    shutil.rmtree(update_filesystem_path(retired_previous))
             else:
                 state = "failed"
                 result_code = code
@@ -685,17 +690,17 @@ def run_missing_result_recovery(
         previous: Path = paths["previous"]
         failed: Path = paths["failed"]
         evidence_target = failed
-        if evidence_target.exists():
+        if update_filesystem_path(evidence_target).exists():
             evidence_target = failed.with_name(
                 failed.name + "-missing-result-" + (request_id or "unknown")
             )
-        if evidence_target.exists():
+        if update_filesystem_path(evidence_target).exists():
             raise ClientUpdateError(
                 "UPDATE_ROLLBACK_FAILED",
                 "失败版本证据目录已存在",
             )
-        os.replace(current, evidence_target)
-        os.replace(previous, current)
+        os.replace(update_filesystem_path(current), update_filesystem_path(evidence_target))
+        os.replace(update_filesystem_path(previous), update_filesystem_path(current))
         old_executable = current / str(
             plan.get("worker_executable_relative") or "CheJinWorkerClient.exe"
         )

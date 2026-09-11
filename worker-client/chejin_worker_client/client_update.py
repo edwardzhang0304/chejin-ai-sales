@@ -37,6 +37,7 @@ from .release_package_contract import (
     verify_staged_package,
 )
 from .storage import utc_now_iso
+from .update_filesystem import update_filesystem_path
 
 
 UPDATE_STATES = {
@@ -165,6 +166,8 @@ def download_release_archive(
     session: requests.Session | None = None,
     timeout_seconds: float = 60.0,
 ) -> Path:
+    logical_destination = destination
+    destination = update_filesystem_path(destination)
     expected_size = int(release.artifact_size_bytes or 0)
     expected_sha = str(release.artifact_sha256 or "").lower()
     destination.parent.mkdir(parents=True, exist_ok=True)
@@ -194,7 +197,7 @@ def download_release_archive(
         if digest.hexdigest() != expected_sha:
             raise ClientUpdateError("UPDATE_PACKAGE_HASH_MISMATCH", "更新包 SHA-256 校验失败")
         os.replace(temporary, destination)
-        return destination
+        return logical_destination
     except ClientUpdateError:
         temporary.unlink(missing_ok=True)
         raise
@@ -240,12 +243,17 @@ def _validated_member_path(member: zipfile.ZipInfo, destination: Path) -> Path:
 
 
 def extract_verified_archive(archive_path: Path, staging_root: Path) -> Path:
+    logical_staging_root = staging_root
+    staging_root = update_filesystem_path(staging_root)
     temporary = staging_root.with_name(staging_root.name + ".extracting")
-    if temporary.exists():
-        shutil.rmtree(temporary)
-    temporary.mkdir(parents=True, exist_ok=False)
+    member_name: str | None = None
+    target = temporary
+    operation = "prepare_directory"
     try:
-        with zipfile.ZipFile(archive_path) as archive:
+        if temporary.exists():
+            shutil.rmtree(temporary)
+        temporary.mkdir(parents=True, exist_ok=False)
+        with zipfile.ZipFile(update_filesystem_path(archive_path)) as archive:
             members = archive.infolist()
             if len(members) > MAX_ARCHIVE_FILES:
                 raise ClientUpdateError("UPDATE_PACKAGE_INCOMPATIBLE", "更新包文件数量超过限制")
@@ -254,6 +262,8 @@ def extract_verified_archive(archive_path: Path, staging_root: Path) -> Path:
                 raise ClientUpdateError("UPDATE_PACKAGE_INCOMPATIBLE", "更新包解压后体积超过限制")
             seen_windows_paths: set[str] = set()
             for member in members:
+                operation = "extract_member"
+                member_name = member.filename
                 target = _validated_member_path(member, temporary)
                 windows_key = "/".join(
                     part.casefold()
@@ -267,25 +277,45 @@ def extract_verified_archive(archive_path: Path, staging_root: Path) -> Path:
                         "更新包包含 Windows 重复路径",
                     )
                 seen_windows_paths.add(windows_key)
-                if member.is_dir():
+                # Windows-created ZIPs can use a trailing backslash for a
+                # directory. Interpret it consistently on all verification hosts.
+                if member.filename.endswith(("/", "\\")):
                     target.mkdir(parents=True, exist_ok=True)
                     continue
                 target.parent.mkdir(parents=True, exist_ok=True)
                 with archive.open(member) as source, target.open("wb") as output:
                     shutil.copyfileobj(source, output, length=1024 * 1024)
+        operation = "validate_root"
+        member_name = None
         package_root = temporary / PACKAGE_ROOT_NAME
         if not package_root.is_dir():
             raise ClientUpdateError("UPDATE_PACKAGE_INCOMPATIBLE", "更新包缺少唯一程序根目录")
         top_level = [item.name for item in temporary.iterdir()]
         if top_level != [PACKAGE_ROOT_NAME]:
             raise ClientUpdateError("UPDATE_PACKAGE_INCOMPATIBLE", "更新包包含额外顶层内容")
+        operation = "promote_staging"
+        target = staging_root
         if staging_root.exists():
             shutil.rmtree(staging_root)
         os.replace(temporary, staging_root)
-        return staging_root / PACKAGE_ROOT_NAME
-    except Exception:
+        return logical_staging_root / PACKAGE_ROOT_NAME
+    except Exception as exc:
         if temporary.exists():
             shutil.rmtree(temporary, ignore_errors=True)
+        if isinstance(exc, OSError):
+            raise ClientUpdateError(
+                "UPDATE_CHECK_FAILED",
+                "更新包解压失败，请查看本机更新日志",
+                data={
+                    "phase": "extract_archive",
+                    "operation": operation,
+                    "archive_member": member_name,
+                    "filesystem_path_length": len(str(target)),
+                    "exception_type": type(exc).__name__,
+                    "errno": exc.errno,
+                    "winerror": getattr(exc, "winerror", None),
+                },
+            ) from exc
         raise
 
 
@@ -308,9 +338,10 @@ def prepare_release_package(
         # A hash-valid archive can still fail its internal identity/inventory
         # contract.  It is not executable evidence, so remove only this
         # request's bounded staging and downloaded archive before failing.
-        if staging_root.exists():
-            shutil.rmtree(staging_root, ignore_errors=True)
-        archive_path.unlink(missing_ok=True)
+        staging_io = update_filesystem_path(staging_root)
+        if staging_io.exists():
+            shutil.rmtree(staging_io, ignore_errors=True)
+        update_filesystem_path(archive_path).unlink(missing_ok=True)
         raise
     return {
         "archive_path": str(archive_path),
