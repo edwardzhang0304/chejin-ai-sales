@@ -61,9 +61,9 @@ class SharedPrefixReuseTests(unittest.TestCase):
     def test_prefix_reuses_only_completed_native_and_shared_steps(self):
         run={'id':reuse.PREFIX_RUN,'head_sha':reuse.PREFIX_COMMIT,'head_branch':'codex/gray-release-0.9.x','path':'.github/workflows/worker-windows-package.yml','event':'workflow_dispatch','status':'completed'}
         jobs=[{'name':'Build signed formal Windows package','conclusion':'failure','steps':[{'name':name,'conclusion':'success'} for name in ('Fail fast on native Windows handoff checks','Native Windows long-path negative and repaired controls')]}]
-        log='end-action id=__self.__run_1;outcome=success;conclusion=success;\nend-action id=__self.__run_2;outcome=success;conclusion=success;\ntest_v16_component_ui_assets_are_packaged\nFAILED (failures=1)\nend-action id=__self.__run_3;outcome=failure;conclusion=failure;'
+        log='end-action id=__self.__run;outcome=success;conclusion=success;\nend-action id=__self.__run_2;outcome=success;conclusion=success;\ntest_v16_component_ui_assets_are_packaged\nFAILED (failures=1)\nend-action id=__self.__run_3;outcome=failure;conclusion=failure;'
         self.assertEqual(reuse.validate_prefix(run,jobs,log),['credentials'])
-        for bad in (log.replace('__run_1;outcome=success','__run_1;outcome=failure'),log.replace('__run_2;outcome=success','__run_2;outcome=failure'),log.replace('FAILED (failures=1)','FAILED (errors=1)')):
+        for bad in (log.replace('__run;outcome=success','__run;outcome=failure'),log.replace('__run_2;outcome=success','__run_2;outcome=failure'),log.replace('FAILED (failures=1)','FAILED (errors=1)')):
             with self.assertRaises(ValueError):reuse.validate_prefix(run,jobs,bad)
         with self.assertRaises(ValueError):reuse.validate_prefix({**run,'head_sha':'a'*40},jobs,log)
         for path in ('worker-client/chejin_worker_client/update.py','worker-client/tests/test_update_long_paths.py','worker-client/requirements.txt','backend/app/services/task_service.py'):
