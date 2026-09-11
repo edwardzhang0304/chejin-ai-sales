@@ -99,6 +99,8 @@ def complete(path, suites):
 
 
 def resolve(run_id, output):
+    if run_id == LATER_RUN:
+        return resolve_later_shared(output)
     if run_id == PREFIX_RUN:
         return resolve_prefix(run_id, output)
     require(run_id==ORIGINAL_RUN, 'UNSUPPORTED_REUSE_RUN')
@@ -122,6 +124,7 @@ def resolve(run_id, output):
 PREFIX_RUN = '34567516324'
 PREFIX_COMMIT = 'ae23705c3317c7ebd2970879b9e57756c5f889c0'
 PREFIX_REPAIRS = {
+ 'worker-client/tests/test_c2_contract.py',
  'backend/app/services/release_readiness.py', 'backend/tests/test_release_readiness.py',
  'ops/formal_release/tests/test_candidate.py',
  '.github/workflows/worker-windows-package.yml', '.github/actions/worker-release-checks/action.yml',
@@ -160,12 +163,11 @@ def validate_prefix_commands(old_workflow, new_workflow, old_action, new_action)
         "      - name: Run shared source checks\n        if: env.CHEJIN_SOURCE_CHECK_RECEIPT == ''",
         "      - name: Run shared source checks\n        if: env.CHEJIN_SHARED_CHECKS_COMPLETE != 'true'")
     require(expected == new_workflow, 'REUSED_WINDOWS_COMMANDS_CHANGED')
-    expected = old_action.replace(
-        "    - name: Run credential security gate\n",
-        "    - name: Run credential security gate\n      if: github.workflow != 'Worker Windows package gate' || env.CHEJIN_SHARED_CREDENTIALS_REUSED != 'true'\n").replace(
-        "    - name: Run affected Worker and backend read-settlement tests\n",
-        "    - name: Run affected Worker and backend read-settlement tests\n      if: github.workflow != 'Worker Windows package gate' || env.CHEJIN_SHARED_SETTLEMENT_REUSED != 'true'\n")
-    require(expected == new_action, 'REUSED_SHARED_COMMANDS_CHANGED')
+    conditions = {"      if: github.workflow != 'Worker Windows package gate' || env."+name+" != 'true'" for name in (
+        'CHEJIN_SHARED_CREDENTIALS_REUSED','CHEJIN_SHARED_SETTLEMENT_REUSED','CHEJIN_SHARED_RECOVERY_REUSED',
+        'CHEJIN_SHARED_BRAIN_REUSED','CHEJIN_SHARED_OBSERVABILITY_REUSED')}
+    normalize = lambda value: '\n'.join(line for line in value.split('\n') if line not in conditions)
+    require(normalize(old_action) == normalize(new_action), 'REUSED_SHARED_COMMANDS_CHANGED')
 
 
 def resolve_prefix(run_id, output):
@@ -187,6 +189,38 @@ def resolve_prefix(run_id, output):
     save(output,receipt)
     export_flags({'CHEJIN_SHARED_CREDENTIALS_REUSED':'true','CHEJIN_SHARED_SETTLEMENT_REUSED':'true','CHEJIN_LONG_PATH_REUSED':'true'})
     print(json.dumps({'source_reuse':'verified_shared_prefix','original_run':run_id,'failed_and_unexecuted_checks':'must_run'}))
+
+
+LATER_RUN = '34569027749'
+LATER_COMMIT = '0b665d9564a207c0cc58845e15ecafc40cda7018'
+LATER_REPAIRS = PREFIX_REPAIRS - {'worker-client/tests/test_ui_contract.py','backend/app/services/release_readiness.py','backend/tests/test_release_readiness.py'}
+
+
+def validate_later_shared(run, jobs, log):
+    require(str(run['id'])==LATER_RUN and run['head_sha']==LATER_COMMIT
+            and run['head_branch']=='codex/gray-release-0.9.x' and run['event']=='workflow_dispatch'
+            and run['path']=='.github/workflows/worker-windows-package.yml' and run['status']=='completed', 'UNTRUSTED_LATER_RUN')
+    job=next(j for j in jobs if j['name']=='Build signed formal Windows package')
+    require(job['conclusion']=='failure', 'UNEXPECTED_LATER_JOB')
+    require(any(s['name']=='Resolve immutable completed source-check evidence' and s['conclusion']=='success' for s in job['steps']), 'PARENT_EVIDENCE_NOT_PASSED')
+    for index in (3,4,5):
+        require('end-action id=__self.__run_'+str(index)+';outcome=success;conclusion=success;' in log, 'LATER_SHARED_GROUP_NOT_PASSED')
+    require('test_slot_ledger_contract_separates_fact_scope_from_delivery' in log
+            and 'end-action id=__self.__run_6;outcome=failure;conclusion=failure;' in log, 'UNEXPECTED_LATER_FAILURE')
+
+
+def resolve_later_shared(output):
+    # Revalidate the original native/credential/settlement evidence, not just its successor's claim.
+    resolve_prefix(PREFIX_RUN, output)
+    require(fingerprint(LATER_COMMIT,repair=True,repair_files=LATER_REPAIRS)==fingerprint('HEAD',repair=True,repair_files=LATER_REPAIRS), 'LATER_SHARED_SOURCE_CHANGED')
+    def api(path):return json.loads(subprocess.check_output(['gh','api',f'repos/{REPO}/'+path],text=True,encoding='utf-8'))
+    run=api('actions/runs/'+LATER_RUN);jobs=api('actions/runs/'+LATER_RUN+'/jobs?per_page=100')['jobs']
+    log=subprocess.check_output(['gh','run','view',LATER_RUN,'--repo',REPO,'--log-failed'],text=True,encoding='utf-8')
+    validate_later_shared(run,jobs,log)
+    receipt=json.loads(Path(output).read_text());receipt.update(later_shared_run=LATER_RUN,later_shared_commit=LATER_COMMIT,later_shared_log_sha256=hashlib.sha256(log.encode()).hexdigest())
+    save(output,receipt)
+    export_flags({'CHEJIN_SHARED_RECOVERY_REUSED':'true','CHEJIN_SHARED_BRAIN_REUSED':'true','CHEJIN_SHARED_OBSERVABILITY_REUSED':'true'})
+    print(json.dumps({'source_reuse':'verified_later_shared_groups','original_run':LATER_RUN,'contract_and_packaging_checks':'must_run'}))
 
 
 if __name__=='__main__':

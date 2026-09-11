@@ -40,6 +40,7 @@ runs:
         }
 
     - name: Run affected Worker recovery compatibility tests
+      if: github.workflow != 'Worker Windows package gate' || env.CHEJIN_SHARED_RECOVERY_REUSED != 'true'
       working-directory: worker-client
       shell: powershell
       run: |
@@ -63,6 +64,7 @@ runs:
         }
 
     - name: Run affected Brain context and Provider-input tests
+      if: github.workflow != 'Worker Windows package gate' || env.CHEJIN_SHARED_BRAIN_REUSED != 'true'
       working-directory: .
       shell: powershell
       run: |
@@ -79,6 +81,7 @@ runs:
         }
 
     - name: Compare observability off and on business traces
+      if: github.workflow != 'Worker Windows package gate' || env.CHEJIN_SHARED_OBSERVABILITY_REUSED != 'true'
       working-directory: .
       shell: powershell
       run: |
