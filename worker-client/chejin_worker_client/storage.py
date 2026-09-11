@@ -2069,7 +2069,9 @@ def enqueue_c2_outbox(payload: dict[str, Any]) -> str:
     return outbox_id
 
 
-def list_c2_outbox_waiting(limit: int = 20) -> list[dict[str, Any]]:
+def list_c2_outbox_waiting(
+    limit: int = 20, *, read_run_id: str | None = None,
+) -> list[dict[str, Any]]:
     now = utc_now_iso()
     with db_connection() as conn:
         rows = conn.execute(
@@ -2083,10 +2085,11 @@ def list_c2_outbox_waiting(limit: int = 20) -> list[dict[str, Any]]:
               'rebuild_pending', 'split_pending', 'capability_paused'
             )
               AND (next_attempt_at IS NULL OR next_attempt_at <= ?)
+              AND (? IS NULL OR read_run_id = ?)
             ORDER BY created_at ASC
             LIMIT ?
             """,
-            (now, max(1, int(limit))),
+            (now, read_run_id, read_run_id, max(1, int(limit))),
         ).fetchall()
     result: list[dict[str, Any]] = []
     for row in rows:

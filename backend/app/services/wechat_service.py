@@ -80,6 +80,7 @@ from app.services.message_contract import (
     canonical_reply_text,
     reply_text_hash,
 )
+from app.services.message_viewport_projection import normalized_projection_text
 from app.services.recovery_hold_state import (
     defer_recovery_hold_until_flow_terminal,
     inflight_flow_matches_conversation,
@@ -3211,7 +3212,8 @@ def _verified_ai_reply_action_for_self_message(
     raw_payload: dict,
 ) -> ReplyAction | None:
     """Validate a Worker-confirmed stable bubble receipt against one sent action."""
-    normalized = _normalized_contract_text(content)
+    observed_text = normalized_projection_text(content)
+    observation = raw_payload.get("observation") or {}
     receipt = (
         raw_payload.get("ai_reply_receipt")
         if isinstance(raw_payload.get("ai_reply_receipt"), dict)
@@ -3225,12 +3227,14 @@ def _verified_ai_reply_action_for_self_message(
         receipt.get("reconciliation_state") or "confirmed"
     ).strip()
     if (
-        not normalized
+        not observed_text
+        or not isinstance(observation, dict)
+        or observation.get("row_kind") != "text_bubble"
+        or observation.get("message_type") != "text"
         or not action_id
         or not receipt_hash
         or not worker_stable_id
         or receipt_source_key != source_message_key
-        or receipt_hash != _reply_text_hash(normalized)
     ):
         return None
 
@@ -3266,7 +3270,11 @@ def _verified_ai_reply_action_for_self_message(
             "unknown_send_result",
         }
         or action.reply_text_hash != receipt_hash
-        or _normalized_contract_text(action.reply_text) != normalized
+        # The immutable receipt authenticates the original send text. A later
+        # OCR rendering is not that transport payload and cannot be hashed as
+        # though it were. Only its presentation comparison uses the shared rule.
+        or _reply_text_hash(action.reply_text) != receipt_hash
+        or normalized_projection_text(action.reply_text) != observed_text
     ):
         return None
     if reconciliation_state == "ai_unreconciled":
@@ -3735,6 +3743,31 @@ def _validate_non_delivered_frame_observations(
                 (observation or {}).get("content_clean")
             )
         )
+        if (
+            event is not None
+            and slot.fact_scope == "historical"
+            and (
+                observed_type in {"text", "system"}
+                or (
+                    observed_type == "voice"
+                    and event.item_state == "completed"
+                    and not event.error_code
+                    and observation.get("row_kind") == "voice_transcript"
+                    and observation.get("voice_state") == "transcribed"
+                    and observation.get("item_state") != "failed"
+                )
+            )
+        ):
+            # The Worker has uniquely aligned this source identity. Check its
+            # persisted fact with the same OCR presentation rule, not the
+            # stricter outgoing reply-text contract. Source/role/type checks
+            # below still apply; neither stored text nor new facts are rewritten.
+            # Use the shared text normalization, not the looser candidate
+            # signature which drops all punctuation (12.8 must not equal 128).
+            content_mismatch = (
+                normalized_projection_text(event.content)
+                != normalized_projection_text((observation or {}).get("content_clean"))
+            )
         if (
             not isinstance(observation, dict)
             or event is None
@@ -4657,19 +4690,22 @@ def ingest_messages(db: Session, worker: Worker, payload: WechatMessageIngestReq
                 source_message_key=item.source_message_key,
                 raw_payload=raw_payload,
             )
-            local_receipt = (
-                raw_payload.get("ai_reply_receipt")
-                if isinstance(raw_payload.get("ai_reply_receipt"), dict)
-                else {}
+            # A disputed local AI receipt proves neither AI attribution nor
+            # human intervention. Reuse the existing uncertainty guard, without
+            # binding the action or closing a handoff as a sales response.
+            disputed_local_receipt = (
+                not ai_reply_action and "ai_reply_receipt" in raw_payload
             )
-            server_guarded_unreconciled = False
-            if not ai_reply_action and not local_receipt:
+            server_guarded_unreconciled = disputed_local_receipt
+            if not ai_reply_action and not disputed_local_receipt:
                 server_guarded_unreconciled = bool(
                     _has_unreconciled_ai_send_without_local_receipt(
                     db,
                     conversation_id=payload.conversation_id,
                     )
                 )
+            if disputed_local_receipt:
+                raw_payload["ai_reply_receipt_validation"] = "rejected"
             raw_payload["sender_source"] = (
                 "ai"
                 if ai_reply_action and ai_reply_action.status == "sent"
