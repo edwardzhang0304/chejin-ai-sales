@@ -86,3 +86,26 @@ class SharedPrefixReuseTests(unittest.TestCase):
             with self.assertRaises(ValueError):reuse.validate_later_shared(run,jobs,log.replace('__run_'+str(i)+';outcome=success','__run_'+str(i)+';outcome=failure'))
         self.assertNotIn('worker-client/tests/test_ui_contract.py',reuse.LATER_REPAIRS)
         self.assertNotIn('backend/app/services/c3_service.py',reuse.LATER_REPAIRS)
+
+class FailedUnitResumeTests(unittest.TestCase):
+    def test_only_exact_failed_methods_are_retried(self):
+        run={'id':reuse.UNIT_RUN,'head_sha':reuse.UNIT_COMMIT,'head_branch':'codex/gray-release-0.9.x','path':'.github/workflows/worker-windows-package.yml','event':'workflow_dispatch','status':'completed'}
+        jobs=[{'name':'Build signed formal Windows package','conclusion':'failure','steps':[{'name':n,'conclusion':'success'} for n in ('Resolve immutable completed source-check evidence','Fail fast on native Windows handoff checks','Run shared source checks')]}]
+        headers=[f'ERROR: {reuse.UNIT_RETRY[0]} (test_release_gate_runner.ReleaseGateRunnerTest.{reuse.UNIT_RETRY[0]}) (exit_code={i})' for i in range(1,6)]
+        headers += [f'ERROR: {n} (test_release_gate_runner.ReleaseGateRunnerTest.{n})' for n in reuse.UNIT_RETRY[1:3]]
+        headers += [f'FAIL: {reuse.UNIT_RETRY[3]} (test_incident_evidence.IncidentEvidenceTest.{reuse.UNIT_RETRY[3]})']
+        log='\n'.join(headers+['Ran 1108 tests in 804.266s','FAILED (failures=1, errors=7)'])
+        self.assertEqual(reuse.validate_failed_units(run,jobs,log),reuse.UNIT_RETRY)
+        for bad in (log+'\nFAIL: another_test',log.replace('1108','1109'),log.replace('errors=7','errors=8'),log.replace(headers[0],'')):
+            with self.assertRaises(ValueError):reuse.validate_failed_units(run,jobs,bad)
+        self.assertNotIn('worker-client/chejin_worker_client/incident_evidence.py',reuse.UNIT_REPAIRS)
+
+    def test_runner_filters_only_verified_failures_and_writes_no_false_completion(self):
+        spec=importlib.util.spec_from_file_location('unit_resume_runner',ROOT/'worker-client/run_checks.py')
+        runner=importlib.util.module_from_spec(spec);spec.loader.exec_module(runner)
+        with patch.dict(os.environ,{'CHEJIN_SOURCE_CHECK_RECEIPT':'fixture'}),patch.object(sys,'argv',['run_checks.py','--write-receipt','never.json']),patch.object(reuse,'load_receipt',return_value={'completed_suites':['schema','credentials'],'unittest_resume':reuse.UNIT_RETRY}),patch.object(reuse,'complete') as complete,patch.object(runner.subprocess,'run') as run:
+            run.return_value.returncode=17
+            self.assertEqual(runner.main(),17)
+            complete.assert_not_called();self.assertEqual(run.call_count,1)
+            command=run.call_args.args[0]
+            self.assertEqual(command[command.index('-k'):],sum((['-k',n] for n in reuse.UNIT_RETRY),[]))

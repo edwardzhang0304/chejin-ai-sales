@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import importlib.util
+import os
+import sys
 from pathlib import Path
 import subprocess
 import tempfile
@@ -15,6 +17,11 @@ ROOT = Path(__file__).resolve().parents[1]
 
 class ReleaseGateRunnerTest(unittest.TestCase):
     def setUp(self):
+        # Unit-test the CLI in isolation from unittest/pytest argv and CI reuse state.
+        args = patch.object(sys, "argv", ["run_checks.py"])
+        args.start(); self.addCleanup(args.stop)
+        env = patch.dict(os.environ, {"CHEJIN_SOURCE_CHECK_RECEIPT": ""})
+        env.start(); self.addCleanup(env.stop)
         spec = importlib.util.spec_from_file_location("release_gate_runner", ROOT / "run_checks.py")
         self.runner = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(self.runner)

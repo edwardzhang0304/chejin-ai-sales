@@ -19,7 +19,8 @@ def main() -> int:
     sys.path.insert(0, str(ROOT.parent / 'ops/formal_release'))
     from source_check_reuse import load_receipt, complete, SUITES
     receipt_path = os.environ.get('CHEJIN_SOURCE_CHECK_RECEIPT')
-    completed = set(load_receipt(receipt_path)['completed_suites']) if receipt_path else set()
+    receipt = load_receipt(receipt_path) if receipt_path else {}
+    completed = set(receipt.get('completed_suites', []))
     if completed == set(SUITES):
         print('SOURCE_CHECKS_REUSED_FROM_THIS_EXACT_RUN')
         if args.write_receipt: complete(args.write_receipt, completed)
@@ -50,8 +51,11 @@ def main() -> int:
     )
     if credential_test.returncode:
         return credential_test.returncode
+    unit_command = [sys.executable, "-W", "error::ResourceWarning", "-m", "unittest", "discover", "-s", "tests", "-v"]
+    for name in receipt.get("unittest_resume", []):
+        unit_command.extend(["-k", name])
     test = checked("unittest",
-        [sys.executable, "-W", "error::ResourceWarning", "-m", "unittest", "discover", "-s", "tests", "-v"],
+        unit_command,
         cwd=ROOT,
     )
     if test.returncode:
