@@ -20,6 +20,8 @@ ACCEPT_JOB = "Accept exact Windows candidate"
 ROOT = Path(__file__).resolve().parents[2]
 # Exact exceptions, deliberately not entire scripts/tests/directories.
 RETEST_ONLY = {
+    "ops/formal_release/reuse_native_windows.py",
+    "worker-client/scripts/run-windows-updater-process-test.ps1",
     "worker-client/scripts/run-windows-pending-read-install.py",
     "ops/formal_release/tests/test_pending_read_install_gate.py",
     "worker-client/scripts/run-windows-client-upgrade-test.py",

@@ -113,7 +113,9 @@ jobs:
       - name: Parse the formal build script with Windows PowerShell
         shell: powershell
         run: |
+          foreach ($script in @("worker-client/scripts/build-windows.ps1", "worker-client/scripts/run-windows-updater-process-test.ps1")) {
           $tokens = $null
           $errors = $null
-          [System.Management.Automation.Language.Parser]::ParseFile((Join-Path $PWD 'worker-client/scripts/build-windows.ps1'), [ref]$tokens, [ref]$errors) | Out-Null
+          [System.Management.Automation.Language.Parser]::ParseFile((Join-Path $PWD $script), [ref]$tokens, [ref]$errors) | Out-Null
           if ($errors.Count -gt 0) { throw ($errors | Out-String) }
+          }

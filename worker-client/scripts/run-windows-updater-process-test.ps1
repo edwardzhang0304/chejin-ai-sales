@@ -1,5 +1,6 @@
 ﻿param(
-  [string]$PackageDir = ""
+  [string]$PackageDir = "",
+  [string]$NativeEvidencePath = ""
 )
 
 $ErrorActionPreference = "Stop"
@@ -31,6 +32,12 @@ if (Test-Path $TestRoot) {
 }
 New-Item -ItemType Directory -Force -Path $TestRoot | Out-Null
 
+# Reuse only the explicitly verified prior native XML, otherwise run native checks.
+if ($NativeEvidencePath -ne "") {
+  & $BuildPython (Join-Path $Root "..\ops\formal_release\reuse_native_windows.py") --report $NativeEvidencePath
+  if ($LASTEXITCODE -ne 0) { throw "Native Windows evidence cannot be reused" }
+  Copy-Item -LiteralPath $NativeEvidencePath -Destination (Join-Path $TestRoot "native-data-lock-tests.xml")
+} else {
 # Exercise actual Win32 shared/exclusive locks before starting any probe EXE.
 # These use synthetic data and do not replace the formal EXE cases below.
 $SavedTestHome = [Environment]::GetEnvironmentVariable("CHEJIN_WORKER_HOME", "Process")
@@ -45,6 +52,11 @@ try {
   $env:CHEJIN_WORKER_HOME = $SavedTestHome
   $env:PYTHONPATH = $SavedTestPythonPath
 }
+
+}
+
+$CandidateManifest = Get-Content -Raw -Encoding UTF8 (Join-Path $PackageDir "update-package-manifest.json") | ConvertFrom-Json
+$ProbeTargetVersion = [string]$CandidateManifest.version
 
 $OldWorkerSource = @'
 using System;
@@ -186,10 +198,14 @@ function New-ReleasePlan(
   New-ProbeExe $NewWorkerSource (Join-Path $Staged "CheJinWorkerClient.exe")
   Copy-Item -LiteralPath $UpdaterExe -Destination (Join-Path $Staged "CheJinUpdater.exe")
   Set-Content -LiteralPath (Join-Path $Staged "version.txt") -Value "new" -Encoding ASCII
+  # Synthetic process probes must carry the same real contract resources as the candidate.
+  $Contracts = Join-Path $PackageDir "_internal\contracts"
+  if (-not (Test-Path $Contracts)) { $Contracts = Join-Path $PackageDir "contracts" }
+  Copy-Item -LiteralPath $Contracts -Destination (Join-Path $Staged "contracts") -Recurse
   $PackageManifestPath = Join-Path $Staged "update-package-manifest.json"
   & $BuildPython (Join-Path $Root "scripts\generate-update-package-manifest.py") `
     --package-root $Staged `
-    --version "0.9.70" `
+    --version $ProbeTargetVersion `
     --git-commit ("b" * 40) `
     --output $PackageManifestPath | Out-Null
   if ($LASTEXITCODE -ne 0) { throw "Could not generate process-test package manifest" }
@@ -200,7 +216,7 @@ function New-ReleasePlan(
   & $BuildPython (Join-Path $Root "scripts\sign-client-release.py") `
     --archive $Archive `
     --package-manifest $PackageManifestPath `
-    --version "0.9.70" `
+    --version $ProbeTargetVersion `
     --git-commit ("b" * 40) `
     --artifact-storage-key "gray/windows-x64/process-test.zip" `
     --published-at $PublishedAt `
@@ -224,7 +240,7 @@ function New-ReleasePlan(
     schema_version = 2
     update_request_id = $RequestId
     current_version = "0.9.59"
-    target_version = "0.9.70"
+    target_version = $ProbeTargetVersion
     current_program_dir = $Current
     staged_program_dir = $Staged
     previous_program_dir = $Previous
