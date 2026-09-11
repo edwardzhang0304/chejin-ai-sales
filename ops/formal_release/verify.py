@@ -75,6 +75,16 @@ def check_descriptor(meta, desc, config):
     return release, contract
 
 
+def manual_acceptance(delivery):
+    return (delivery.get("installation_mode") == "preserve_data_manual_install"
+            and delivery.get("original_client_upgrade_check") == "failed"
+            and delivery.get("automatic_update_allowed") is False
+            and delivery.get("manual_install_check") == "passed"
+            and delivery.get("pending_read_install_check") == "passed"
+            and all(isinstance(delivery.get(k), str) and SHA.fullmatch(delivery[k]) for k in
+                    ("manual_install_report_sha256", "pending_read_install_report_sha256")))
+
+
 def verify(folder, meta, config):
     stem, _ = identity(meta)
     for name, info in meta["files"].items():
@@ -91,9 +101,9 @@ def verify(folder, meta, config):
                 "vision_live_probe_check": "runtime_after_binding"}
     require(all(delivery.get(k) == v and type(delivery.get(k)) is type(v) for k, v in expected.items()), "DELIVERY_GATE_FAILED")
     require(delivery.get("upgrade_start_version") == meta["current_version"]
-            and delivery.get("original_client_upgrade_check") == "passed"
+            and ((delivery.get("original_client_upgrade_check") == "passed"
             and isinstance(delivery.get("original_client_upgrade_report_sha256"), str)
-            and SHA.fullmatch(delivery["original_client_upgrade_report_sha256"]), "ORIGINAL_CLIENT_UPGRADE_GATE_FAILED")
+            and SHA.fullmatch(delivery["original_client_upgrade_report_sha256"])) or manual_acceptance(delivery)), "ORIGINAL_CLIENT_UPGRADE_GATE_FAILED")
     require(str(delivery.get("workflow_run_id")) == str(meta["run_id"]), "RUN_ID_MISMATCH")
     require(str(delivery.get("zip_sha256", "")).lower() == meta["sha256"], "DELIVERY_HASH_MISMATCH")
     require((folder / (stem + ".sha256.txt")).read_text().strip().split() == [meta["sha256"], stem + ".zip"], "CHECKSUM_FILE_MISMATCH")

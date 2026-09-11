@@ -55,6 +55,10 @@ def require_publication_approval(folder, meta):
 
 
 def publish(folder, meta, verified, config, check_only):
+    stem, _ = identity(meta)
+    delivery = json.loads((folder / (stem + ".delivery.json")).read_text(encoding="utf-8-sig"))
+    require(delivery.get("original_client_upgrade_check") == "passed"
+            and delivery.get("automatic_update_allowed", True) is True, "MANUAL_INSTALL_NOT_AUTOMATIC_UPDATE")
     require_publication_approval(folder, meta)
     require(run_fixed(["docker", "inspect", config["container"], "--format", "{{.State.Health.Status}}"], text=True).strip() == "healthy", "BACKEND_UNHEALTHY")
     stem, _ = identity(meta)

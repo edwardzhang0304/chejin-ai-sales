@@ -126,6 +126,45 @@ class CandidateTests(unittest.TestCase):
             candidate.delivery_source(self.folder, self.retest, "456")
 
 
+class ManualCandidateTests(unittest.TestCase):
+    setUp = CandidateTests.setUp
+    write = CandidateTests.write
+    def manual_reports(self):
+        for c in self.result['cases']:
+            c.update(mode='preserve_data_manual_install', real_settings_button_clicked=False, original_updater_used=False,
+                     normal_close_used=True, target_program_manifest_verified=True, original_data_directory_reused=True)
+        self.report.write_text(json.dumps(self.result))
+        p = dict(self.result['cases'][0], mode='pending_read_preserve_data_install',
+                 original_pending_flow_preserved_at_install=True, original_outbox_bytes_preserved=True,
+                 original_flow_completed=True, stopped_after_recovery=True, real_exe_recovery=True)
+        pending = self.folder/'pending.json'; pending.write_text(json.dumps(p))
+        return pending, p
+
+    def test_manual_success_is_never_button_success(self):
+        pending, _ = self.manual_reports()
+        candidate.accept_manual(self.folder, self.report, pending, self.retest, '456', '0.9.69')
+        d = candidate.read(self.folder/(self.stem+'.delivery.json'))
+        self.assertTrue(candidate.manual_acceptance(d))
+        self.assertEqual(d['original_client_upgrade_check'], 'failed')
+        self.assertFalse(d['automatic_update_allowed'])
+        self.assertEqual(candidate.delivery_source(self.folder, self.retest, '456'), self.build)
+        import receiver, deliver
+        meta, _ = deliver.metadata(self.folder, '0.9.69', '456', self.build)
+        with self.assertRaisesRegex(ValueError, 'MANUAL_INSTALL_NOT_AUTOMATIC_UPDATE'):
+            receiver.publish(self.folder, meta, {}, {}, False)
+
+    def test_pending_failure_or_wrong_identity_blocks_manual(self):
+        pending, good = self.manual_reports()
+        for k,v in [('status','failed'),('target_zip_sha256','0'*64),('target_commit',self.retest),
+                    ('original_outbox_bytes_preserved',False),('original_flow_completed',False),
+                    ('stopped_after_recovery',False),('real_exe_recovery',False)]:
+            with self.subTest(k=k):
+                pending.write_text(json.dumps(dict(good, **{k:v})))
+                with self.assertRaises(ValueError):
+                    candidate.accept_manual(self.folder,self.report,pending,self.retest,'456','0.9.69')
+        self.assertNotIn('acceptance_run_id',candidate.read(self.folder/(self.stem+'.delivery.json')))
+
+
 class SourceInputTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()

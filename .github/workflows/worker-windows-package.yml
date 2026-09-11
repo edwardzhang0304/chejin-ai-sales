@@ -620,21 +620,7 @@ jobs:
             throw "real updater process switch/rollback test failed"
           }
 
-      - name: Exercise original 0.9.75 settings update against exact signed ZIP
-        shell: powershell
-        working-directory: worker-client
-        run: |
-          $ErrorActionPreference = "Stop"
-          .\.venv\Scripts\python.exe scripts/run-windows-client-upgrade-test.py `
-            --old-package-root (Join-Path $env:RUNNER_TEMP "old-075-release\CheJinWorkerClient") `
-            --old-source-root (Join-Path $env:GITHUB_WORKSPACE ".old-source\worker-client") `
-            --archive dist/release/chejin-worker-v0.9.77-windows-x64.zip `
-            --release dist/release/chejin-worker-v0.9.77-windows-x64.release.json `
-            --work-root (Join-Path $env:RUNNER_TEMP "chejin-original-client-upgrade")
-          if ($LASTEXITCODE -ne 0) { throw "Original client button upgrade failed; production publication blocked" }
-          .\.venv\Scripts\python.exe ../ops/formal_release/candidate.py accept --folder dist/release `
-            --report (Join-Path $env:RUNNER_TEMP "chejin-original-client-upgrade/upgrade-result.json")
-          if ($LASTEXITCODE -ne 0) { throw "Candidate acceptance identity failed" }
+      # Original .75 button path failed in run 34614282358. Manual-only delivery.
 
       - name: Verify preserve-data manual installation from original 0.9.75
         shell: powershell
@@ -680,6 +666,15 @@ jobs:
             --release dist/release/chejin-worker-v0.9.77-windows-x64.release.json `
             --work-root (Join-Path $env:RUNNER_TEMP "chejin-pending-read-install")
           if ($LASTEXITCODE -ne 0) { throw "Pending read EXE recovery failed; deployment blocked" }
+
+      - name: Bind manual-only acceptance to immutable candidate
+        shell: powershell
+        working-directory: worker-client
+        run: |
+          .\.venv\Scripts\python.exe ../ops/formal_release/candidate.py accept-manual --folder dist/release `
+            --report (Join-Path $env:RUNNER_TEMP "chejin-manual-install/upgrade-result.json") `
+            --pending-report (Join-Path $env:RUNNER_TEMP "chejin-pending-read-install/result.json")
+          if ($LASTEXITCODE -ne 0) { throw "Manual-only candidate acceptance failed" }
 
       - name: Stop isolated PostgreSQL
         if: always() && env.CHEJIN_PENDING_PG_CTL != ''
