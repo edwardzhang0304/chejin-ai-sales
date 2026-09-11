@@ -19,7 +19,7 @@ for file in receiver.py verify.py register.py maintenance.py build_admin.py manu
   test -f "$bundle/$file"
 done
 python3 - "$bundle" <<'PY'
-import json, re, sys
+import json, re, sys, subprocess
 from pathlib import Path
 root=Path(sys.argv[1])
 for name in ('stage.pub','promote.pub'):
@@ -30,6 +30,9 @@ assert versions and all(re.fullmatch(r'\d+\.\d+\.\d+', v) for v in versions)
 for version in versions:
     for file in ('__init__.py','models.py','release_package_contract.py'):
         assert (root/'baseline'/version/'chejin_worker_client'/file).is_file()
+    # Import in a fresh interpreter before installing anything; dependencies vary by old client.
+    check="import sys;sys.path.insert(0,sys.argv[1]);from chejin_worker_client import __version__;from chejin_worker_client.models import ClientRelease;from chejin_worker_client import release_package_contract as c;from pathlib import Path;assert __version__==sys.argv[2];c.load_trusted_release_keys(Path(sys.argv[3]))"
+    subprocess.run([sys.executable,'-c',check,str(root/'baseline'/version),version,str(root/'trusted-public-keys.json')],check=True)
 PY
 install -d -m 755 "$target"
 install -m 700 "$bundle/disable.sh" "$target/disable.sh"

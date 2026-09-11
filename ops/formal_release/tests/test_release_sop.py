@@ -184,3 +184,24 @@ def test_legacy_receiver_rejected_before_build(tmp_path):
         remote.return_value.return_value={'receiver_version':1}
         with pytest.raises(SystemExit):deliver.main()
         assert json.loads((tmp_path/'r.json').read_text())['error_code']=='RECEIVER_TOOL_UPDATE_REQUIRED'
+
+
+def test_installer_imports_baseline_dependencies_before_writes(tmp_path):
+    import base64
+    import shutil
+    import subprocess
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+    version_text=(ROOT/'worker-client/chejin_worker_client/__init__.py').read_text()
+    import re
+    current=re.search(r'__version__\s*=\s*"([^"]+)"',version_text)[1]
+    package=tmp_path/'baseline'/current/'chejin_worker_client';package.mkdir(parents=True)
+    for name in ('__init__.py','models.py','release_package_contract.py'):
+        shutil.copyfile(ROOT/'worker-client/chejin_worker_client'/name,package/name)
+    key=Ed25519PrivateKey.generate().public_key().public_bytes_raw()
+    (tmp_path/'trusted-public-keys.json').write_text(json.dumps({'keys':[{'key_id':'fixture','algorithm':'ed25519','public_key_base64':base64.b64encode(key).decode()}]}))
+    for name in ('stage.pub','promote.pub'):(tmp_path/name).write_text('ssh-ed25519 AAAA\n')
+    script=(ROOT/'ops/formal_release/install.sh').read_text().split('python3 - "$bundle" <<\'PY\'\n',1)[1].split('\nPY\n',1)[0]
+    def check():return subprocess.run([sys.executable,'-c',script,str(tmp_path)],capture_output=True,text=True)
+    missing=check();assert missing.returncode!=0 and 'update_filesystem' in missing.stderr
+    shutil.copyfile(ROOT/'worker-client/chejin_worker_client/update_filesystem.py',package/'update_filesystem.py')
+    complete=check();assert complete.returncode==0,complete.stderr
