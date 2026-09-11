@@ -36,3 +36,12 @@ def test_data_damage_cannot_pass_install_gate(original, change):
     elif change == 'delete': after['outbox'].clear()
     elif change == 'schedule': after['settings'].clear()
     with pytest.raises(AssertionError): gate.assert_identity(original, after)
+
+
+def test_fixture_child_output_decodes_utf8_independent_of_windows_locale():
+    import subprocess, sys
+    result = subprocess.run([sys.executable, '-c', "import sys;sys.stdout.buffer.write('原流程恢复'.encode('utf-8'))"],
+                            text=True, encoding='utf-8', capture_output=True, check=True)
+    assert result.stdout == '原流程恢复'
+    source = (Path(__file__).resolve().parents[3] / 'worker-client/scripts/run-windows-pending-read-install.py').read_text()
+    assert 'text=True, encoding="utf-8", capture_output=True' in source

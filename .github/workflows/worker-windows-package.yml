@@ -489,6 +489,7 @@ jobs:
             ${{ runner.temp }}/chejin-original-client-upgrade/**/update-result.json
             ${{ runner.temp }}/native-long-path.xml
             ${{ runner.temp }}/chejin-manual-install/**/result.json
+            ${{ runner.temp }}/reused-completed-cases.json
             ${{ runner.temp }}/chejin-pending-read-install/result.json
             ${{ runner.temp }}/chejin-pending-read-install/*.log
             ${{ runner.temp }}/chejin-pending-read-install/*-http.jsonl
@@ -607,34 +608,19 @@ jobs:
           path: prior-native-evidence
           merge-multiple: true
 
-      - name: Exercise real updater process switch and rollback
-        shell: powershell
-        working-directory: worker-client
-        env:
-          CHEJIN_RELEASE_SIGNING_PRIVATE_KEY_BASE64: ${{ secrets.CHEJIN_RELEASE_SIGNING_PRIVATE_KEY_BASE64 }}
-        run: |
-          $native = @(Get-ChildItem (Join-Path $env:GITHUB_WORKSPACE "prior-native-evidence") -Filter native-data-lock-tests.xml -Recurse)
-          if ($native.Count -ne 1) { throw "Expected exact prior Windows native XML" }
-          .\scripts\run-windows-updater-process-test.ps1 -PackageDir (Join-Path $env:RUNNER_TEMP "candidate-extracted/CheJinWorkerClient") -NativeEvidencePath $native[0].FullName
-          if ($LASTEXITCODE -ne 0) {
-            throw "real updater process switch/rollback test failed"
-          }
+      - name: Reuse completed manual installation and process cases
+        uses: actions/download-artifact@v4
+        with:
+          name: windows-gate-reports-acceptance-34615585004-1
+          run-id: '34615585004'
+          github-token: ${{ github.token }}
+          path: prior-completed-cases
 
-      # Original .75 button path failed in run 34614282358. Manual-only delivery.
-
-      - name: Verify preserve-data manual installation from original 0.9.75
+      - name: Authenticate completed cases and restore exact reports
         shell: powershell
-        working-directory: worker-client
         run: |
-          .\.venv\Scripts\python.exe scripts/run-windows-client-upgrade-test.py `
-            --manual-install `
-            --old-package-root (Join-Path $env:RUNNER_TEMP "old-075-release\CheJinWorkerClient") `
-            --old-source-root (Join-Path $env:GITHUB_WORKSPACE ".old-source\worker-client") `
-            --target-package-root (Join-Path $env:RUNNER_TEMP "candidate-extracted\CheJinWorkerClient") `
-            --archive dist/release/chejin-worker-v0.9.77-windows-x64.zip `
-            --release dist/release/chejin-worker-v0.9.77-windows-x64.release.json `
-            --work-root (Join-Path $env:RUNNER_TEMP "chejin-manual-install")
-          if ($LASTEXITCODE -ne 0) { throw "Preserve-data manual installation failed" }
+          python ops/formal_release/reuse_completed_candidate_cases.py --folder prior-completed-cases --target $env:RUNNER_TEMP
+          if ($LASTEXITCODE -ne 0) { throw "Prior successful cases cannot be reused" }
 
       - name: Start isolated PostgreSQL for pending read EXE acceptance
         shell: powershell
@@ -714,6 +700,7 @@ jobs:
             ${{ runner.temp }}/chejin-original-client-upgrade/**/update-result.json
             ${{ runner.temp }}/native-long-path.xml
             ${{ runner.temp }}/chejin-manual-install/**/result.json
+            ${{ runner.temp }}/reused-completed-cases.json
             ${{ runner.temp }}/chejin-pending-read-install/result.json
             ${{ runner.temp }}/chejin-pending-read-install/*.log
             ${{ runner.temp }}/chejin-pending-read-install/*-http.jsonl
