@@ -86,11 +86,14 @@ def publish(folder, meta, verified, config, check_only):
 
 def handle(request, stream, role, config):
     operation = request.get("operation")
-    allowed = {"init", "status", "chunk", "seal"} if role == "stage" else {"check", "publish"}
+    allowed = {"init", "status", "chunk", "seal"} if role == "stage" else {"check", "publish", "check-manual", "publish-manual"}
     if operation == "preflight":
         _, contract = client_api(config, request.get("current_version"))
         contract.load_trusted_release_keys(Path(config["public_keys"]))
-        return {"receiver_version": 1, "old_client_baseline": "passed"}
+        if request.get("release_route") == "manual":
+            require(all(config.get(k) for k in ("manual_download_origin", "manual_download_root", "manual_download_site"))
+                    and Path(__file__).with_name("manual_readiness.py").is_file(), "MANUAL_RECEIVER_NOT_CONFIGURED")
+        return {"receiver_version": 2, "old_client_baseline": "passed", "routes": ["button", "manual"]}
     require(operation in allowed, "ROLE_DENIED")
     root = Path(config["staging_root"])
     root.mkdir(mode=0o700, parents=True, exist_ok=True)
@@ -172,7 +175,11 @@ def handle(request, stream, role, config):
         require(request.get("workers_drained") is True, "LOCAL_QUEUE_CONFIRMATION_REQUIRED")
         require(request.get("current_version") == meta["current_version"], "UPGRADE_START_MISMATCH")
         verified = verify(folder, meta, config)
-        result = publish(folder, meta, verified, config, operation == "check")
+        if operation in {"check-manual", "publish-manual"}:
+            from manual_publication import publish as publish_manual
+            result = publish_manual(folder, meta, verified, config, operation == "check-manual")
+        else:
+            result = publish(folder, meta, verified, config, operation == "check")
         write_json(folder / "publication-result.json", result)
         return result
 

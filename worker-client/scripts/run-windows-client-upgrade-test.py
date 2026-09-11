@@ -1,4 +1,4 @@
-"""Exercise the shipped 0.9.75 GUI and updater against the exact signed ZIP.
+"""Exercise the selected original GUI and updater against the exact signed ZIP.
 
 Only the isolated Windows runner is used. Both EXEs are untouched; the backend
 is the candidate application with synthetic SQLite data and loopback TLS.
@@ -24,8 +24,8 @@ import time
 import urllib.request
 
 ROOT = Path(__file__).resolve().parents[2]
-OLD_EXE_SHA = "3336b868af6647eb207880a603f6ada8166f436e7853191151b28174f168e1bb"
-OLD_UPDATER_SHA = "7002af931bee724d24ba1023bc3c900bfd06a3e9991fb267547025a5cccd04d8"
+sys.path.insert(0, str(ROOT / "ops/formal_release"))
+from release_plan import load as load_release_plan
 WORKER_ID = "formal-upgrade-isolated-worker"
 INSTANCE_ID = "formal-upgrade-isolated-instance"
 TOKEN = "synthetic-loopback-worker-token"
@@ -286,14 +286,20 @@ def assert_preserved(before, after):
 
 def run_case(args, status):
     import psutil
+    plan = load_release_plan(getattr(args, "plan", None))
+    baseline = plan["old_client"]
+    current_version, target_version = baseline["version"], plan["version"]
+    source = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=args.old_source_root, text=True).strip()
+    assert source == baseline["source_commit"], "Original source identity mismatch"
+    assert read_json(args.release)["version"] == target_version, "Target version mismatch"
     case = args.work_root / status
     case.mkdir(parents=True, exist_ok=False)
     data = case / "data"
     data.mkdir()
     current = case / "install" / "CheJinWorkerClient"
     shutil.copytree(args.old_package_root, current)
-    assert digest(current / "CheJinWorkerClient.exe") == OLD_EXE_SHA
-    assert digest(current / "CheJinUpdater.exe") == OLD_UPDATER_SHA
+    assert digest(current / "CheJinWorkerClient.exe") == baseline["exe_sha256"]
+    assert digest(current / "CheJinUpdater.exe") == baseline["updater_sha256"]
     cert, key = tls_files(case)
     port, debug_port = free_port(), free_port()
     base = f"https://127.0.0.1:{port}"
@@ -322,8 +328,8 @@ def run_case(args, status):
     before = preserved_values(data)
     checkpoints = {"synthetic_test_data_only": True, "seeded": before}
     processes = []
-    report = {"current_version": "0.9.75", "target_version": "0.9.77", "initial_run_status": status,
-              "old_exe_sha256": OLD_EXE_SHA, "old_updater_sha256": OLD_UPDATER_SHA,
+    report = {"current_version": current_version, "target_version": target_version, "initial_run_status": status,
+              "old_exe_sha256": baseline["exe_sha256"], "old_updater_sha256": baseline["updater_sha256"],
               "target_zip_sha256": digest(args.archive), "status": "failed"}
     log = (case / "process.log").open("w", encoding="utf-8")
     try:
@@ -355,7 +361,7 @@ def run_case(args, status):
         wait_for(debug_ready, "original Worker UI")
         with QtPage(debug_port) as page:
             page.click_button("打开设置")
-            page.wait_text("V0.9.75")
+            page.wait_text("V" + current_version)
             page.screenshot(case / "before.png")
             checkpoints["before_button"] = preserved_values(data)
             assert_preserved(before, checkpoints["before_button"])
@@ -401,7 +407,7 @@ def run_case(args, status):
                 wait_for(debug_ready, "new manually installed Worker UI")
                 with QtPage(debug_port) as new_page:
                     new_page.click_button("打开设置")
-                    new_page.wait_text("V0.9.77")
+                    new_page.wait_text("V" + target_version)
                     new_page.screenshot(case / "after.png")
                 checkpoints["after_manual_install"] = preserved_values(data)
                 assert_preserved(before, checkpoints["after_manual_install"])
@@ -436,12 +442,12 @@ def run_case(args, status):
             assert old.poll() is not None, "Original Worker did not exit"
             plan_path = Path(state["plan_path"])
             plan = read_json(plan_path)
-            assert plan["schema_version"] == 2 and plan["current_version"] == "0.9.75"
+            assert plan["schema_version"] == 2 and plan["current_version"] == current_version
             assert plan["old_pid"] == old.pid
-            assert digest(plan_path.parent / "CheJinUpdater.exe") == OLD_UPDATER_SHA
+            assert digest(plan_path.parent / "CheJinUpdater.exe") == baseline["updater_sha256"]
             assert plan["safe_boundary"]["safe"] is True
             marker = read_json(plan["healthy_marker_path"])
-            assert marker["healthy"] is True and marker["version"] == "0.9.77"
+            assert marker["healthy"] is True and marker["version"] == target_version
             assert marker["runtime_health"]["binding_state"] == "bound"
             for name in ("task_runner", "c2_listener", "thread_monitor"):
                 health = marker["runtime_health"]["threads"][name]
@@ -453,13 +459,13 @@ def run_case(args, status):
             assert_preserved(before, checkpoints["after_reconciliation"])
             target_manifest = read_json(current / "update-package-manifest.json")
             assert target_manifest["git_commit"] == read_json(args.release)["git_commit"]
-            assert target_manifest["version"] == "0.9.77"
+            assert target_manifest["version"] == target_version
             with QtPage(debug_port) as new_page:
                 new_page.click_button("打开设置")
-                new_page.wait_text("V0.9.77")
+                new_page.wait_text("V" + target_version)
                 new_page.screenshot(case / "after.png")
             requests = [json.loads(line) for line in Path(spec["requests"]).read_text().splitlines()]
-            assert any(r["kind"] == "latest" and r["current_version"] == "0.9.75" and r["status"] == 200 for r in requests)
+            assert any(r["kind"] == "latest" and r["current_version"] == current_version and r["status"] == 200 for r in requests)
             assert any(r["kind"] == "download" and r["status"] == 200 for r in requests)
             report.update(status="passed", original_worker_exited=True, original_updater_used=True,
                           protected_data_preserved=True, target_ui_confirmed=True, actual_backend_download=True,
@@ -470,7 +476,7 @@ def run_case(args, status):
         # Only this isolated run's synthetic state is inspected. Retain bounded
         # diagnostics before the runner is destroyed; do not weaken acceptance.
         diagnostic_files = []
-        for pattern in ("**/update-result.json", "**/updater-ready.json", "**/worker-startup.jsonl"):
+        for pattern in ("**/update-result.json", "**/updater-ready.json", "**/worker-startup.jsonl", "**/updater-startup.jsonl"):
             for path in case.glob(pattern):
                 if path.is_file() and path.stat().st_size < 65536:
                     diagnostic_files.append({"path": str(path.relative_to(case)), "text": path.read_text(encoding="utf-8-sig", errors="replace")[-12000:]})
@@ -495,6 +501,8 @@ def run_case(args, status):
 
 def main():
     parser = argparse.ArgumentParser()
+    parser.add_argument("--plan", type=Path)
+    parser.add_argument("--case", choices=("paused", "faulted"))
     parser.add_argument("--serve", type=Path)
     parser.add_argument("--driver-smoke", type=Path)
     parser.add_argument("--serve-driver-fixture", action="store_true")
@@ -522,9 +530,9 @@ def main():
     if args.manual_install:
         assert args.target_package_root is not None
         args.target_package_root = args.target_package_root.resolve()
-    results = [run_case(args, status) for status in ("paused", "faulted")]
+    results = [run_case(args, status) for status in ([args.case] if args.case else ("paused", "faulted"))]
     write_json(args.work_root / "upgrade-result.json", {"status": "passed", "cases": results})
-    print("Preserve-data manual install passed" if args.manual_install else "Original 0.9.75 GUI -> signed 0.9.77: paused and faulted cases passed")
+    print("Preserve-data manual install passed" if args.manual_install else "Selected original GUI -> exact signed candidate: requested cases passed")
 
 
 if __name__ == "__main__":

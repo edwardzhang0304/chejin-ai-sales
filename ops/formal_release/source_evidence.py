@@ -160,7 +160,7 @@ def resolve(kind, requested=""):
 def issue(output, source_run=""):
     current = identity()
     # Check tooling first, before allocating a Windows builder or touching a receiver.
-    tools = resolve("tooling")
+    tools = resolve("tooling", os.environ.get("TOOL_RUN_ID", ""))
     source = resolve("source", source_run)
     receipt = {"schema_version": 2, **current, "kind": "formal-source-gate", "source": source, "tooling": tools,
                "source_fingerprint": fingerprint("HEAD", "source"),
@@ -196,7 +196,7 @@ def main():
         print("Verified source and tooling evidence; no source tests repeated")
     else:
         identity()
-        print(json.dumps(resolve("tooling")))
+        print(json.dumps(resolve("tooling", os.environ.get("TOOL_RUN_ID", ""))))
 
 
 if __name__ == "__main__":

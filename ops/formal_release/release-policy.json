@@ -1,0 +1,7 @@
+{
+  "retired_button_starts": [
+    "0.9.75"
+  ],
+  "reason": "用户已取消该旧版本按钮升级修复；此数据策略不限制后续版本之间的已验证升级。",
+  "minimum_supported_client": "0.9.69"
+}

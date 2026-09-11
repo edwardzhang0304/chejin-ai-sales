@@ -20,11 +20,17 @@ ACCEPT_JOB = "Accept exact Windows candidate"
 ROOT = Path(__file__).resolve().parents[2]
 # Exact exceptions, deliberately not entire scripts/tests/directories.
 RETEST_ONLY = {
-    "ops/formal_release/reuse_completed_candidate_cases.py",
+    "ops/formal_release/summarize_run.py",
+    "ops/formal_release/manual_publication.py", "ops/formal_release/manual_readiness.py",
+    "ops/formal_release/deliver.py", "ops/formal_release/install.sh",
+    "ops/formal_release/validate_dispatch.py", "ops/formal_release/workflow_scripts.py",
+    "ops/formal_release/tests/test_manual_publication.py",
+    "ops/formal_release/release_plan.py", "ops/formal_release/acceptance_cases.py",
+    "ops/formal_release/tests/test_release_sop.py", "ops/formal_release/release-policy.json",
+
     "ops/formal_release/verify.py",
     "ops/formal_release/receiver.py",
     "ops/formal_release/tests/test_delivery.py",
-    "ops/formal_release/reuse_native_windows.py",
     "worker-client/scripts/run-windows-updater-process-test.ps1",
     "worker-client/scripts/run-windows-pending-read-install.py",
     "ops/formal_release/tests/test_pending_read_install_gate.py",
@@ -37,18 +43,9 @@ RETEST_ONLY = {
     "ops/formal_release/tests/test_source_evidence.py",
     ".github/workflows/release-evidence.yml",
 }
-DOCS = {
-    "deliverables/AI智能客服售前跟进系统_PRD_运营后台统一版_v0.9.77.md",
-    "deliverables/AI智能客服售前跟进系统_技术方案手册_v0.9.77.md",
-    "deliverables/AI智能客服售前跟进系统_全流程图_v0.9.77.puml",
-    "deliverables/AI智能客服售前跟进系统_技术方案手册_v0.9.75.md",
-    "deliverables/AI智能客服售前跟进系统_PRD_运营后台统一版_v0.9.75.md",
-    "deliverables/AI智能客服售前跟进系统_全流程图_v0.9.75.puml",
-    "deliverables/AI智能客服售前跟进系统_技术方案手册_v0.9.68.md",
-    "deliverables/AI智能客服售前跟进系统_PRD_运营后台统一版_v0.9.68.md",
-    "deliverables/AI智能客服售前跟进系统_全流程图_v0.9.68.puml",
-    "deliverables/AI智能客服售前跟进系统_版本更新记录.md",
-}
+DOCS = {"deliverables/AI智能客服售前跟进系统_版本更新记录.md"}
+DOCUMENT_PREFIXES = ("deliverables/", "docs/", "rules/")
+
 
 
 def read(path):
@@ -66,7 +63,7 @@ def source_inputs(ref, root=ROOT, exclusions=None):
             continue
         info, raw_name = entry.split(b"\t", 1)
         name = raw_name.decode("utf-8")
-        if name in (RETEST_ONLY | DOCS if exclusions is None else exclusions) or name == "rules.md" or name.startswith("rules/"):
+        if name in (RETEST_ONLY | DOCS if exclusions is None else exclusions) or name == "rules.md" or (exclusions is None and name.startswith(DOCUMENT_PREFIXES)) or name.startswith("rules/"):
             continue
         if name == WORKFLOW:
             raw = subprocess.check_output(["git", "show", f"{ref}:{name}"], cwd=root)
@@ -186,13 +183,14 @@ def accept(folder, report_path, commit, run_id, current_version):
     delivery_path.write_text(json.dumps(delivery, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
-def accept_manual(folder, report_path, pending_path, commit, run_id, current_version):
+def accept_manual(folder, report_path, pending_path, commit, run_id, current_version, recovery_required=True):
     proof = read(folder / "candidate.json")
     stem = verify_candidate(folder, proof["build_commit"], proof["build_run_id"], commit)
-    report, pending = read(report_path), read(pending_path)
+    report = read(report_path)
+    pending = read(pending_path) if recovery_required else None
     require(report.get("status") == "passed" and len(report.get("cases", [])) == 2
             and {c.get("initial_run_status") for c in report["cases"]} == {"paused", "faulted"}, "MANUAL_CASES_INCOMPLETE")
-    for c in [*report["cases"], pending]:
+    for c in [*report["cases"], *([pending] if pending is not None else [])]:
         require(c.get("status") == "passed" and c.get("current_version") == current_version
                 and c.get("target_version") == proof["version"] and c.get("target_commit") == proof["build_commit"]
                 and c.get("target_zip_sha256") == proof["files"][stem + ".zip"], "MANUAL_PACKAGE_MISMATCH")
@@ -201,16 +199,17 @@ def accept_manual(folder, report_path, pending_path, commit, run_id, current_ver
                 and c.get("original_updater_used") is False and all(c.get(k) is True for k in (
                     "original_worker_exited", "normal_close_used", "protected_data_preserved", "target_ui_confirmed",
                     "target_program_manifest_verified", "paused_intent_and_idle_gate_preserved", "original_data_directory_reused")), "MANUAL_DATA_GATE_FAILED")
-    require(pending.get("mode") == "pending_read_preserve_data_install" and all(pending.get(k) is True for k in (
+    require(not recovery_required or (pending.get("mode") == "pending_read_preserve_data_install" and all(pending.get(k) is True for k in (
         "normal_close_used", "original_pending_flow_preserved_at_install", "original_data_directory_reused",
         "original_outbox_bytes_preserved", "original_flow_completed", "stopped_after_recovery",
-        "target_ui_confirmed", "real_exe_recovery")), "PENDING_READ_GATE_FAILED")
+        "target_ui_confirmed", "real_exe_recovery"))), "PENDING_READ_GATE_FAILED")
     path = folder / (stem + ".delivery.json")
     delivery = read(path)
     delivery.update(upgrade_start_version=current_version, installation_mode="preserve_data_manual_install",
-        original_client_upgrade_check="failed", automatic_update_allowed=False,
-        manual_install_check="passed", pending_read_install_check="passed",
-        manual_install_report_sha256=digest(report_path), pending_read_install_report_sha256=digest(pending_path),
+        original_client_upgrade_check="not_applicable", automatic_update_allowed=False,
+        manual_install_check="passed", pending_read_recovery_required=recovery_required,
+        pending_read_install_check="passed" if recovery_required else "not_applicable",
+        manual_install_report_sha256=digest(report_path), pending_read_install_report_sha256=digest(pending_path) if recovery_required else None,
         acceptance_commit=commit, acceptance_run_id=str(run_id), workflow_run_id=str(run_id),
         candidate_build_run_id=proof["build_run_id"])
     path.write_text(json.dumps(delivery, ensure_ascii=False, indent=2), encoding="utf-8")
