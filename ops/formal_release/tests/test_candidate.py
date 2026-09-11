@@ -212,6 +212,9 @@ class SelectionAndWorkflowTests(unittest.TestCase):
         steps = action["runs"]["steps"]
         self.assertEqual([{k:v for k,v in step.items() if k != "if"} for step in steps], old[first:end])
         expected = {
+            'Run affected Worker recovery compatibility tests': "github.workflow != 'Worker Windows package gate' || env.CHEJIN_SHARED_RECOVERY_REUSED != 'true'",
+            'Run affected Brain context and Provider-input tests': "github.workflow != 'Worker Windows package gate' || env.CHEJIN_SHARED_BRAIN_REUSED != 'true'",
+            'Compare observability off and on business traces': "github.workflow != 'Worker Windows package gate' || env.CHEJIN_SHARED_OBSERVABILITY_REUSED != 'true'",
             "Run credential security gate": "github.workflow != 'Worker Windows package gate' || env.CHEJIN_SHARED_CREDENTIALS_REUSED != 'true'",
             "Run affected Worker and backend read-settlement tests": "github.workflow != 'Worker Windows package gate' || env.CHEJIN_SHARED_SETTLEMENT_REUSED != 'true'",
         }

@@ -76,3 +76,13 @@ class SharedPrefixReuseTests(unittest.TestCase):
         reuse.validate_prefix_commands(old_w,new_w,old_a,new_a)
         with self.assertRaises(ValueError):reuse.validate_prefix_commands(old_w,new_w.replace('3.12.10','3.13.0'),old_a,new_a)
         with self.assertRaises(ValueError):reuse.validate_prefix_commands(old_w,new_w,old_a,new_a.replace('python -m pytest','echo bypass'))
+
+    def test_later_shared_chain_rejects_failed_group_and_changed_recovery_tests(self):
+        run={'id':reuse.LATER_RUN,'head_sha':reuse.LATER_COMMIT,'head_branch':'codex/gray-release-0.9.x','path':'.github/workflows/worker-windows-package.yml','event':'workflow_dispatch','status':'completed'}
+        jobs=[{'name':'Build signed formal Windows package','conclusion':'failure','steps':[{'name':'Resolve immutable completed source-check evidence','conclusion':'success'}]}]
+        log='\n'.join('end-action id=__self.__run_'+str(i)+';outcome=success;conclusion=success;' for i in (3,4,5))+'\ntest_slot_ledger_contract_separates_fact_scope_from_delivery\nend-action id=__self.__run_6;outcome=failure;conclusion=failure;'
+        reuse.validate_later_shared(run,jobs,log)
+        for i in (3,4,5):
+            with self.assertRaises(ValueError):reuse.validate_later_shared(run,jobs,log.replace('__run_'+str(i)+';outcome=success','__run_'+str(i)+';outcome=failure'))
+        self.assertNotIn('worker-client/tests/test_ui_contract.py',reuse.LATER_REPAIRS)
+        self.assertNotIn('backend/app/services/c3_service.py',reuse.LATER_REPAIRS)
