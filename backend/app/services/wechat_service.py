@@ -3351,7 +3351,7 @@ def _has_unreconciled_ai_send_without_local_receipt(
     return any(action.id not in used_action_ids for action in possible_actions)
 
 
-def _validate_v3_observation(observation: object, *, require_ingestible: bool | None = None) -> tuple[str, dict]:
+def _validate_v3_observation(observation: object, *, require_ingestible: bool | None = None, contract: dict | None = None) -> tuple[str, dict]:
     if not isinstance(observation, dict):
         raise AppError("MESSAGE_OBSERVATION_MISSING", "V3 消息缺少 OmniAuto observation", 409)
     if int(observation.get("schema_version") or 0) != OBSERVATION_SCHEMA_VERSION_V3:
@@ -3363,7 +3363,7 @@ def _validate_v3_observation(observation: object, *, require_ingestible: bool | 
     if not observation_id:
         raise AppError("MESSAGE_OBSERVATION_ID_MISSING", "V3 observation 缺少唯一标识", 409)
     row_kind = str(observation.get("row_kind") or "").strip().lower()
-    rule = ROW_RULES_V3.get(row_kind)
+    rule = (contract["row_rules"] if contract is not None else ROW_RULES_V3).get(row_kind)
     if not isinstance(rule, dict):
         raise AppError("MESSAGE_ROW_KIND_INVALID", "V3 消息 row_kind 不合法", 409)
     effective_rule = dict(rule)
@@ -3406,18 +3406,21 @@ def _validate_v3_observation(observation: object, *, require_ingestible: bool | 
     return observation_id, effective_rule
 
 
-def _validate_v3_request_contract(payload: WechatMessageIngestRequest) -> None:
-    if str(payload.contract_revision or "").strip() != CONTRACT_REVISION_V3:
+def _validate_v3_request_contract(payload: WechatMessageIngestRequest, *, contract: dict | None = None) -> None:
+    selected = contract if contract is not None else c2_contract_v3()
+    selected_revision = str(selected["contract_revision"])
+    selected_sha = hashlib.sha256(json.dumps(selected, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+    if str(payload.contract_revision or "").strip() != selected_revision:
         raise AppError("MESSAGE_CONTRACT_REVISION_MISMATCH", "V3 消息合同修订号不一致", 409)
-    if str(payload.contract_sha256 or "").strip().lower() != CONTRACT_SHA256_V3:
+    if str(payload.contract_sha256 or "").strip().lower() != selected_sha:
         raise AppError("MESSAGE_CONTRACT_SHA256_MISMATCH", "V3 消息合同指纹不一致", 409)
     if int(payload.observation_schema_version or 0) != OBSERVATION_SCHEMA_VERSION_V3:
         raise AppError("MESSAGE_OBSERVATION_SCHEMA_VERSION_MISMATCH", "V3 observation schema 版本不一致", 409)
 
     evidence = payload.evidence.model_dump(mode="json")
-    if str(evidence.get("contract_revision") or "").strip() != CONTRACT_REVISION_V3:
+    if str(evidence.get("contract_revision") or "").strip() != selected_revision:
         raise AppError("MESSAGE_EVIDENCE_CONTRACT_REVISION_MISMATCH", "V3 批次证据合同修订号不一致", 409)
-    if str(evidence.get("contract_sha256") or "").strip().lower() != CONTRACT_SHA256_V3:
+    if str(evidence.get("contract_sha256") or "").strip().lower() != selected_sha:
         raise AppError("MESSAGE_EVIDENCE_CONTRACT_SHA256_MISMATCH", "V3 批次证据合同指纹不一致", 409)
     if int(evidence.get("observation_schema_version") or 0) != OBSERVATION_SCHEMA_VERSION_V3:
         raise AppError("MESSAGE_EVIDENCE_OBSERVATION_SCHEMA_MISMATCH", "V3 批次证据 schema 版本不一致", 409)
@@ -3427,7 +3430,7 @@ def _validate_v3_request_contract(payload: WechatMessageIngestRequest) -> None:
     evidence_observations: dict[str, dict] = {}
     ingestible_observation_ids: set[str] = set()
     for observation in observations:
-        observation_id, rule = _validate_v3_observation(observation)
+        observation_id, rule = _validate_v3_observation(observation, contract=selected)
         if observation_id in evidence_observations:
             raise AppError("MESSAGE_OBSERVATION_ID_CONFLICT", "V3 批次存在重复 observation 标识", 409)
         evidence_observations[observation_id] = observation
@@ -3457,9 +3460,9 @@ def _validate_v3_request_contract(payload: WechatMessageIngestRequest) -> None:
             raise AppError("MESSAGE_RAW_PAYLOAD_MISSING", "V3 消息缺少原始识别证据", 409)
         if int(raw_payload.get("contract_version") or 0) != 3:
             raise AppError("MESSAGE_RAW_CONTRACT_VERSION_MISMATCH", "V3 原始证据合同版本不一致", 409)
-        if str(raw_payload.get("contract_revision") or "").strip() != CONTRACT_REVISION_V3:
+        if str(raw_payload.get("contract_revision") or "").strip() != selected_revision:
             raise AppError("MESSAGE_RAW_CONTRACT_REVISION_MISMATCH", "V3 原始证据合同修订号不一致", 409)
-        if str(raw_payload.get("contract_sha256") or "").strip().lower() != CONTRACT_SHA256_V3:
+        if str(raw_payload.get("contract_sha256") or "").strip().lower() != selected_sha:
             raise AppError("MESSAGE_RAW_CONTRACT_SHA256_MISMATCH", "V3 原始证据合同指纹不一致", 409)
         if int(raw_payload.get("observation_schema_version") or 0) != OBSERVATION_SCHEMA_VERSION_V3:
             raise AppError("MESSAGE_RAW_OBSERVATION_SCHEMA_MISMATCH", "V3 原始证据 schema 版本不一致", 409)
@@ -3468,7 +3471,7 @@ def _validate_v3_request_contract(payload: WechatMessageIngestRequest) -> None:
         _validate_cross_round_message_identity(raw_payload)
 
         observation = raw_payload.get("observation")
-        observation_id, rule = _validate_v3_observation(observation, require_ingestible=True)
+        observation_id, rule = _validate_v3_observation(observation, require_ingestible=True, contract=selected)
         if observation_id in mapped_observation_ids:
             raise AppError("MESSAGE_OBSERVATION_MAPPING_CONFLICT", "同一 observation 被组装成多条最终消息", 409)
         if evidence_observations.get(observation_id) != observation:
@@ -4292,7 +4295,9 @@ def ingest_messages(db: Session, worker: Worker, payload: WechatMessageIngestReq
                 MessageEvent.source_message_key == item.source_message_key))
             if not existing_fact:
                 raise AppError("MESSAGE_INFLIGHT_FLOW_SCOPE_MISMATCH", "撤销流程已结束，只能确认已入库的原事实", 409)
-    _validate_v3_request_contract(payload)
+    from app.services.read_recovery_service import select_settlement_contract
+    settlement_contract = select_settlement_contract(db, worker, payload)
+    _validate_v3_request_contract(payload, contract=settlement_contract)
     _validate_non_delivered_frame_observations(db, payload)
     ordered_messages = _ordered_v3_messages(payload)
     evidence_payload = payload.evidence.model_dump(mode="json")

@@ -6,12 +6,15 @@ import json
 import os
 from pathlib import Path
 import re
+import sys
 
 
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 GIT_COMMIT_RE = re.compile(r"^[0-9a-f]{40}$")
 VERSION_RE = re.compile(r"^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$")
 MANIFEST_NAME = "update-package-manifest.json"
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from chejin_worker_client.pending_read_recovery import package_recovery_capability
 
 
 def hash_file(path: Path) -> str:
@@ -44,6 +47,22 @@ def main() -> int:
     }
     if not files or any(not SHA256_RE.fullmatch(value) for value in files.values()):
         raise SystemExit("package file hash inventory is invalid")
+    recovery = package_recovery_capability()
+    if recovery['contracts'][-1]['revision'] != args.version.strip():
+        raise SystemExit('package version differs from recovery runtime contract')
+    # Capability is declared only when the actual candidate contains both
+    # exact contract resources; source files alone are not delivery evidence.
+    for pair in recovery['contracts']:
+        relative = ('c2_contract_v3.json' if pair['revision'] == args.version.strip()
+                    else 'recovery/c2_contract_v3_' + pair['revision'] + '.json')
+        packaged = next((base / relative for base in (root / '_internal/contracts', root / 'contracts')
+                         if (base / relative).is_file()), None)
+        if packaged is None:
+            raise SystemExit('packaged recovery contract missing: ' + relative)
+        canonical = json.dumps(json.loads(packaged.read_text(encoding='utf-8')), ensure_ascii=False,
+                               sort_keys=True, separators=(',', ':')).encode()
+        if hashlib.sha256(canonical).hexdigest() != pair['sha256']:
+            raise SystemExit('packaged recovery contract mismatch: ' + relative)
     payload = {
         "schema_version": 1,
         "version": args.version.strip(),
@@ -51,6 +70,7 @@ def main() -> int:
         "git_commit": args.git_commit.strip().lower(),
         "rollback_safe": True,
         "files": files,
+        "pending_read_recovery": recovery,
     }
     encoded = json.dumps(
         payload,

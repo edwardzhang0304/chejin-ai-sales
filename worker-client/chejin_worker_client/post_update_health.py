@@ -75,6 +75,12 @@ def verify_post_update_startup(plan_path: Path, token: str) -> dict[str, Any]:
         from .storage import initialize_post_update_database
         initialize_post_update_database(CONFIG.app_dir)
         assert_protected_update_snapshot(baseline["snapshot"], data_dir=CONFIG.app_dir, digest_key=token)
+        if baseline.get('pending_read_handoff') is not None:
+            from .pending_read_recovery import accepts_handoff, package_recovery_capability, inspect_pending_read
+            handoff = baseline['pending_read_handoff']
+            if (not accepts_handoff(package_recovery_capability(), handoff)
+                    or inspect_pending_read(CONFIG.app_dir) != handoff):
+                raise RuntimeError('UPDATE_PENDING_READ_HANDOFF_INVALID')
 
     return plan
 

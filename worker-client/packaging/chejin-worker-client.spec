@@ -98,6 +98,7 @@ a = Analysis(
         *RAPIDOCR_DATAS,
         *OMNIAUTO_DATAS,
         (str(CONTRACT_PATH), "contracts"),
+        (str(CONTRACT_PATH.parent / "recovery"), "contracts/recovery"),
         (str(ROOT / "chejin_worker_client" / "web_assets"), "chejin_worker_client/web_assets"),
         (str(RELEASE_SIGNING_KEYS_PATH), "."),
         *(

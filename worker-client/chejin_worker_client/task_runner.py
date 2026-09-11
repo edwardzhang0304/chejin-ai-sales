@@ -3944,6 +3944,7 @@ class TaskRunner:
         self._fault_recovery_processing = False
         self._fault_recovery_state = {"ready": False, "checking": False, "reason": "正在检查故障恢复条件"}
         self._backend_fault_recovery: dict[str, Any] = {}
+        self._backend_pending_read_recovery: dict[str, Any] = {}
         self._recovery_heartbeat_at = 0.0
         self.can_pull_tasks = can_pull_tasks or (lambda: True)
         self.binding: Binding | None = None
@@ -4532,6 +4533,39 @@ class TaskRunner:
         snapshot["waiting_reason_code"] = waiting_reason_code
         snapshot["waiting_reason_text"] = waiting_reason_text
         return snapshot
+
+    def update_pending_read_handoff_snapshot(self, package_manifest: dict[str, Any]) -> dict[str, Any]:
+        """Preserve one stopped read for a proven compatible target."""
+        from .pending_read_recovery import inspect_pending_read, accepts_handoff
+        with self._restart_recovery_lock:
+            snapshot = self.update_install_safety_snapshot()
+            if snapshot['safe']:
+                return snapshot
+            if (not self.binding or self.binding.run_status != 'faulted'
+                    or self._run_status_persistence_pending or self._fault_recovery_processing
+                    or not snapshot['new_work_blocked']
+                    or any(snapshot.get(k) for k in ('current_task', 'task_lease_active', 'ui_lock_active', 'sidecar_active',
+                        'pending_sqlite_action_journal', 'pending_file_action_journal', 'pending_sent_ack', 'action_journal_state_unavailable'))):
+                return snapshot
+            try:
+                handoff = inspect_pending_read(CONFIG.app_dir)
+                if not accepts_handoff(package_manifest.get('pending_read_recovery'), handoff):
+                    return snapshot
+                profile = self.api.set_run_status(self.binding, 'faulted')
+                capability = profile.pending_read_recovery
+                if (profile.run_status != 'faulted' or not capability.get('ready')
+                        or not accepts_handoff(capability, handoff)
+                        or any(capability.get(k) != handoff[k] for k in
+                               ('flow_id', 'conversation_id', 'worker_id', 'client_instance_id'))):
+                    return snapshot
+                return {**snapshot, 'safe': True, 'settlement_complete': False,
+                        'backend_stopped_confirmed_or_unbound': True, 'confirmed_run_status': 'faulted',
+                        'pending_read_handoff': handoff, 'waiting_reason_code': '',
+                        'waiting_reason_text': '已保留原流程，交由兼容版本继续结算'}
+            except Exception as exc:
+                # Report only the exception type, never a payload or credential.
+                snapshot['handoff_check_error'] = type(exc).__name__
+                return snapshot
 
     def profile_run_status_for_update(self) -> str:
         """Expose only the backend-confirmed status needed by the updater."""
@@ -6484,9 +6518,26 @@ class TaskRunner:
                 # rejected finish. Reuse its existing Outbox owner, without UI,
                 # before closing the Flow that authorizes that fact delivery.
                 if has_pending_c2_outbox_for_read_run_id(flow_id):
-                    if not list_c2_outbox_waiting(read_run_id=flow_id):
+                    from .c2_contract import contract_revision
+                    pending = list_c2_outbox_waiting(read_run_id=flow_id)
+                    cross_contract = any((item.get('payload') or {}).get('contract_revision') != contract_revision() for item in pending)
+                    if cross_contract:
+                        if not self.set_run_status('faulted'):
+                            raise RuntimeError('RUNTIME_INFLIGHT_FAULT_STATUS_SYNC_PENDING')
+                        from .pending_read_recovery import inspect_pending_read, accepts_handoff
+                        handoff = inspect_pending_read(CONFIG.app_dir)
+                        capability = self._backend_pending_read_recovery
+                        if (not capability.get('ready') or not accepts_handoff(capability, handoff)
+                                or any(capability.get(k) != handoff[k] for k in
+                                       ('flow_id', 'conversation_id', 'worker_id', 'client_instance_id'))):
+                            raise RuntimeError('RUNTIME_INFLIGHT_CONTRACT_RECOVERY_NOT_READY')
+                    if not pending:
                         raise RuntimeError("RUNTIME_INFLIGHT_C2_OUTBOX_PENDING")
                     delivered = self._replay_c2_outbox(binding, read_run_id=flow_id)
+                    if cross_contract and has_pending_c2_outbox_for_read_run_id(flow_id):
+                        # A rejected legacy request must retain the original Flow
+                        # for the eventual compatible backend, including on crash.
+                        raise RuntimeError('RUNTIME_INFLIGHT_C2_OUTBOX_PENDING')
                     if not delivered and not c2_outbox_capability_error_for_read_run_id(flow_id):
                         raise RuntimeError("RUNTIME_INFLIGHT_C2_OUTBOX_PENDING")
                 receipt = load_c2_state(self._inflight_finish_receipt_key(flow_id)) or {}
@@ -6785,6 +6836,7 @@ class TaskRunner:
                 self._backend_inflight_flow_state = dict(
                     profile.inflight_flow_state or {}
                 )
+                self._backend_pending_read_recovery = dict(getattr(profile, 'pending_read_recovery', {}) or {})
             if run_status == "running":
                 self._request_task_wake_if_safe(
                     reason="backend_run_status_running"
@@ -12881,12 +12933,16 @@ class TaskRunner:
     ) -> None:
         """Make a permanent local/HTTP contract failure visible and durable."""
 
+        stopped_status = 'faulted' if (
+            binding.run_status == 'faulted'
+            or (self.binding is not None and self.binding.run_status == 'faulted')
+        ) else 'paused'
         request_runtime_pause()
-        binding.run_status = "paused"
+        binding.run_status = stopped_status
         save_binding(binding)
         if self.binding is not None:
-            self.binding.run_status = "paused"
-        self._pending_run_status_sync = "paused"
+            self.binding.run_status = stopped_status
+        self._pending_run_status_sync = stopped_status
 
     def _attempt_c2_outbox_delivery(
         self,
@@ -13696,6 +13752,19 @@ class TaskRunner:
             or str(control.get("inflight_flow_kind") or "").strip()
             != "c2_read"
         ):
+            return
+        from .c2_contract import contract_revision
+        original = load_c2_state(self._inflight_finish_receipt_key(read_run_id)) or {}
+        if (payload.get('contract_revision') != contract_revision()
+                and original.get('terminal_kind') == 'technical_failed'
+                and original.get('error_code') in {
+                    'MESSAGE_OBSERVATION_MAPPING_INCOMPLETE',
+                    'MESSAGE_OBSERVATION_MAPPING_INCOMPLETE:FACT_SETTLEMENT_REQUIRED'}
+                and original.get('conversation_id') == conversation_id
+                and not original.get('read_completion')):
+            # Keep the original recovery receipt, even if this retry is rejected.
+            # Outbox already records the retry error; do not create a different
+            # terminal that would close the only Flow authorized to deliver it.
             return
         save_c2_state(
             self._inflight_finish_receipt_key(read_run_id),
