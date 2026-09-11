@@ -171,7 +171,7 @@ jobs:
           $exePath = [string]$manifest.exe_path
 
           .\scripts\validate-package.ps1 -PackageDir $packageDir
-          if ($manifest.version -ne "0.9.76") {
+          if ($manifest.version -ne "0.9.77") {
             throw "unexpected version: $($manifest.version)"
           }
           if ($manifest.default_api_base_url -ne "https://jiangsuchejin.com/api") {
@@ -287,7 +287,7 @@ jobs:
             throw "packaged startup crash did not create the default diagnostic"
           }
           $startupCrash = Get-Content -Encoding UTF8 $defaultStartupDiagnostic | Select-Object -Last 1 | ConvertFrom-Json
-          if ($startupCrash.version -ne "0.9.76" -or $startupCrash.build_commit -ne $env:GITHUB_SHA) {
+          if ($startupCrash.version -ne "0.9.77" -or $startupCrash.build_commit -ne $env:GITHUB_SHA) {
             throw "startup crash diagnostic build identity mismatch"
           }
           foreach ($requiredField in @("timestamp", "windows_version", "exception_type", "traceback")) {
@@ -319,11 +319,11 @@ jobs:
           $manifest = Get-Content -Raw -Encoding UTF8 $manifestPath | ConvertFrom-Json
           $packageDir = [string]$manifest.package_dir
           $releaseDir = Join-Path $PWD "dist\release"
-          $zipName = "chejin-worker-v0.9.76-windows-x64.zip"
+          $zipName = "chejin-worker-v0.9.77-windows-x64.zip"
           $zipPath = Join-Path $releaseDir $zipName
-          $deliveryManifestPath = Join-Path $releaseDir "chejin-worker-v0.9.76-windows-x64.delivery.json"
-          $signedReleasePath = Join-Path $releaseDir "chejin-worker-v0.9.76-windows-x64.release.json"
-          $sha256Path = Join-Path $releaseDir "chejin-worker-v0.9.76-windows-x64.sha256.txt"
+          $deliveryManifestPath = Join-Path $releaseDir "chejin-worker-v0.9.77-windows-x64.delivery.json"
+          $signedReleasePath = Join-Path $releaseDir "chejin-worker-v0.9.77-windows-x64.release.json"
+          $sha256Path = Join-Path $releaseDir "chejin-worker-v0.9.77-windows-x64.sha256.txt"
 
           New-Item -ItemType Directory -Force -Path $releaseDir | Out-Null
           Compress-Archive -Path $packageDir -DestinationPath $zipPath -CompressionLevel Optimal -Force
@@ -437,7 +437,7 @@ jobs:
           .\.venv\Scripts\python.exe .\scripts\sign-client-release.py `
             --archive $zipPath `
             --package-manifest $verifiedUpdateManifestPath `
-            --version "0.9.76" `
+            --version "0.9.77" `
             --git-commit $env:GITHUB_SHA `
             --artifact-storage-key "gray/windows-x64/$zipName" `
             --published-at ((Get-Date).ToUniversalTime().ToString("o")) `
@@ -489,6 +489,11 @@ jobs:
             ${{ runner.temp }}/chejin-original-client-upgrade/**/update-result.json
             ${{ runner.temp }}/native-long-path.xml
             ${{ runner.temp }}/chejin-manual-install/**/result.json
+            ${{ runner.temp }}/chejin-pending-read-install/result.json
+            ${{ runner.temp }}/chejin-pending-read-install/*.log
+            ${{ runner.temp }}/chejin-pending-read-install/*-http.jsonl
+            ${{ runner.temp }}/chejin-pending-read-install/*.png
+            ${{ runner.temp }}/chejin-pending-read-install/fixture-identity.json
             ${{ runner.temp }}/chejin-manual-install/upgrade-result.json
             ${{ runner.temp }}/chejin-manual-install/*/data-checkpoints.json
             ${{ runner.temp }}/chejin-manual-install/*/before.png
@@ -568,7 +573,7 @@ jobs:
         run: |
           python ops/formal_release/candidate.py verify --folder worker-client/dist/release
           if ($LASTEXITCODE -ne 0) { throw "Candidate invalid or build inputs changed; rebuild required" }
-          Expand-Archive -LiteralPath worker-client/dist/release/chejin-worker-v0.9.76-windows-x64.zip -DestinationPath (Join-Path $env:RUNNER_TEMP "candidate-extracted")
+          Expand-Archive -LiteralPath worker-client/dist/release/chejin-worker-v0.9.77-windows-x64.zip -DestinationPath (Join-Path $env:RUNNER_TEMP "candidate-extracted")
 
       - name: Fetch immutable 0.9.75 source for existing-data fixtures
         uses: actions/checkout@v4
@@ -612,8 +617,8 @@ jobs:
           .\.venv\Scripts\python.exe scripts/run-windows-client-upgrade-test.py `
             --old-package-root (Join-Path $env:RUNNER_TEMP "old-075-release\CheJinWorkerClient") `
             --old-source-root (Join-Path $env:GITHUB_WORKSPACE ".old-source\worker-client") `
-            --archive dist/release/chejin-worker-v0.9.76-windows-x64.zip `
-            --release dist/release/chejin-worker-v0.9.76-windows-x64.release.json `
+            --archive dist/release/chejin-worker-v0.9.77-windows-x64.zip `
+            --release dist/release/chejin-worker-v0.9.77-windows-x64.release.json `
             --work-root (Join-Path $env:RUNNER_TEMP "chejin-original-client-upgrade")
           if ($LASTEXITCODE -ne 0) { throw "Original client button upgrade failed; production publication blocked" }
           .\.venv\Scripts\python.exe ../ops/formal_release/candidate.py accept --folder dist/release `
@@ -629,20 +634,58 @@ jobs:
             --old-package-root (Join-Path $env:RUNNER_TEMP "old-075-release\CheJinWorkerClient") `
             --old-source-root (Join-Path $env:GITHUB_WORKSPACE ".old-source\worker-client") `
             --target-package-root (Join-Path $env:RUNNER_TEMP "candidate-extracted\CheJinWorkerClient") `
-            --archive dist/release/chejin-worker-v0.9.76-windows-x64.zip `
-            --release dist/release/chejin-worker-v0.9.76-windows-x64.release.json `
+            --archive dist/release/chejin-worker-v0.9.77-windows-x64.zip `
+            --release dist/release/chejin-worker-v0.9.77-windows-x64.release.json `
             --work-root (Join-Path $env:RUNNER_TEMP "chejin-manual-install")
           if ($LASTEXITCODE -ne 0) { throw "Preserve-data manual installation failed" }
+
+      - name: Start isolated PostgreSQL for pending read EXE acceptance
+        shell: powershell
+        run: |
+          $ErrorActionPreference = "Stop"
+          $pg = Get-ChildItem "C:\Program Files\PostgreSQL" -Filter pg_ctl.exe -Recurse | Select-Object -First 1
+          if (!$pg) { throw "PostgreSQL runtime missing on Windows runner" }
+          $bin = $pg.Directory.FullName
+          $data = Join-Path $env:RUNNER_TEMP "chejin-pending-postgres"
+          $port = python -c "import socket;s=socket.socket();s.bind(('127.0.0.1',0));print(s.getsockname()[1]);s.close()"
+          & (Join-Path $bin "initdb.exe") -D $data -U postgres -A trust --encoding=UTF8 --no-locale
+          if ($LASTEXITCODE -ne 0) { throw "Isolated PostgreSQL initialization failed" }
+          & $pg.FullName -D $data -l (Join-Path $env:RUNNER_TEMP "chejin-pending-postgres.log") -o "-h 127.0.0.1 -p $port" -w start
+          if ($LASTEXITCODE -ne 0) { throw "Isolated PostgreSQL start failed" }
+          & (Join-Path $bin "createdb.exe") -h 127.0.0.1 -p $port -U postgres chejin_pending_read_test
+          if ($LASTEXITCODE -ne 0) { throw "Isolated PostgreSQL test database failed" }
+          "CHEJIN_PENDING_TEST_DATABASE_URL=postgresql+psycopg://postgres@127.0.0.1:$port/chejin_pending_read_test" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "CHEJIN_PENDING_PG_CTL=$($pg.FullName)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Verify original pending read through exact Windows EXEs
+        shell: powershell
+        working-directory: worker-client
+        run: |
+          .\.venv\Scripts\python.exe scripts/run-windows-pending-read-install.py `
+            --old-package-root (Join-Path $env:RUNNER_TEMP "old-075-release\CheJinWorkerClient") `
+            --old-source-root (Join-Path $env:GITHUB_WORKSPACE ".old-source") `
+            --target-package-root (Join-Path $env:RUNNER_TEMP "candidate-extracted\CheJinWorkerClient") `
+            --archive dist/release/chejin-worker-v0.9.77-windows-x64.zip `
+            --release dist/release/chejin-worker-v0.9.77-windows-x64.release.json `
+            --work-root (Join-Path $env:RUNNER_TEMP "chejin-pending-read-install")
+          if ($LASTEXITCODE -ne 0) { throw "Pending read EXE recovery failed; deployment blocked" }
+
+      - name: Stop isolated PostgreSQL
+        if: always() && env.CHEJIN_PENDING_PG_CTL != ''
+        shell: powershell
+        run: |
+          & $env:CHEJIN_PENDING_PG_CTL -D (Join-Path $env:RUNNER_TEMP "chejin-pending-postgres") -m fast -w stop
+          if ($LASTEXITCODE -ne 0) { throw "Isolated PostgreSQL cleanup failed" }
 
       - name: Upload verified Windows client
         uses: actions/upload-artifact@v4
         with:
-          name: chejin-worker-v0.9.76-windows-x64-${{ github.sha }}-${{ github.run_attempt }}
+          name: chejin-worker-v0.9.77-windows-x64-${{ github.sha }}-${{ github.run_attempt }}
           path: |
-            worker-client/dist/release/chejin-worker-v0.9.76-windows-x64.zip
-            worker-client/dist/release/chejin-worker-v0.9.76-windows-x64.delivery.json
-            worker-client/dist/release/chejin-worker-v0.9.76-windows-x64.release.json
-            worker-client/dist/release/chejin-worker-v0.9.76-windows-x64.sha256.txt
+            worker-client/dist/release/chejin-worker-v0.9.77-windows-x64.zip
+            worker-client/dist/release/chejin-worker-v0.9.77-windows-x64.delivery.json
+            worker-client/dist/release/chejin-worker-v0.9.77-windows-x64.release.json
+            worker-client/dist/release/chejin-worker-v0.9.77-windows-x64.sha256.txt
           if-no-files-found: error
           compression-level: 0
           retention-days: 14
@@ -665,6 +708,11 @@ jobs:
             ${{ runner.temp }}/chejin-original-client-upgrade/**/update-result.json
             ${{ runner.temp }}/native-long-path.xml
             ${{ runner.temp }}/chejin-manual-install/**/result.json
+            ${{ runner.temp }}/chejin-pending-read-install/result.json
+            ${{ runner.temp }}/chejin-pending-read-install/*.log
+            ${{ runner.temp }}/chejin-pending-read-install/*-http.jsonl
+            ${{ runner.temp }}/chejin-pending-read-install/*.png
+            ${{ runner.temp }}/chejin-pending-read-install/fixture-identity.json
             ${{ runner.temp }}/chejin-manual-install/upgrade-result.json
             ${{ runner.temp }}/chejin-manual-install/*/data-checkpoints.json
             ${{ runner.temp }}/chejin-manual-install/*/before.png
