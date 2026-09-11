@@ -122,6 +122,7 @@ def resolve(run_id, output):
 PREFIX_RUN = '34567516324'
 PREFIX_COMMIT = 'ae23705c3317c7ebd2970879b9e57756c5f889c0'
 PREFIX_REPAIRS = {
+ 'backend/app/services/release_readiness.py', 'backend/tests/test_release_readiness.py',
  'ops/formal_release/tests/test_candidate.py',
  '.github/workflows/worker-windows-package.yml', '.github/actions/worker-release-checks/action.yml',
  'ops/formal_release/source_check_reuse.py', 'ops/formal_release/tests/test_source_check_reuse.py',
@@ -151,17 +152,30 @@ def validate_prefix(run, jobs, log):
     return ['credentials']
 
 
+def validate_prefix_commands(old_workflow, new_workflow, old_action, new_action):
+    # Exact known condition additions only; every command/dependency byte stays protected.
+    expected = old_workflow.replace(
+        "      - name: Native Windows long-path negative and repaired controls\n",
+        "      - name: Native Windows long-path negative and repaired controls\n        if: env.CHEJIN_LONG_PATH_REUSED != 'true'\n").replace(
+        "      - name: Run shared source checks\n        if: env.CHEJIN_SOURCE_CHECK_RECEIPT == ''",
+        "      - name: Run shared source checks\n        if: env.CHEJIN_SHARED_CHECKS_COMPLETE != 'true'")
+    require(expected == new_workflow, 'REUSED_WINDOWS_COMMANDS_CHANGED')
+    expected = old_action.replace(
+        "    - name: Run credential security gate\n",
+        "    - name: Run credential security gate\n      if: github.workflow != 'Worker Windows package gate' || env.CHEJIN_SHARED_CREDENTIALS_REUSED != 'true'\n").replace(
+        "    - name: Run affected Worker and backend read-settlement tests\n",
+        "    - name: Run affected Worker and backend read-settlement tests\n      if: github.workflow != 'Worker Windows package gate' || env.CHEJIN_SHARED_SETTLEMENT_REUSED != 'true'\n")
+    require(expected == new_action, 'REUSED_SHARED_COMMANDS_CHANGED')
+
+
 def resolve_prefix(run_id, output):
     require(os.environ.get('GITHUB_ACTIONS')=='true' and os.environ.get('GITHUB_REPOSITORY')==REPO,'TRUSTED_CI_REQUIRED')
     require(fingerprint(PREFIX_COMMIT,repair=True,repair_files=PREFIX_REPAIRS)==fingerprint('HEAD',repair=True,repair_files=PREFIX_REPAIRS), 'REUSED_PREFIX_SOURCE_CHANGED')
-    # Skip conditions may change; commands and dependencies from reused stages may not.
-    import yaml
-    def definition(ref, path): return yaml.load(git('show',ref+':'+path),Loader=yaml.BaseLoader)
-    old=definition(PREFIX_COMMIT,'.github/workflows/worker-windows-package.yml')['jobs']['package']
-    new=definition('HEAD','.github/workflows/worker-windows-package.yml')['jobs']['package']
-    require([{k:v for k,v in step.items() if k!='if'} for step in old['steps']]==[{k:v for k,v in step.items() if k!='if'} for step in new['steps']], 'REUSED_WINDOWS_COMMANDS_CHANGED')
-    path='.github/actions/worker-release-checks/action.yml'
-    require([{k:v for k,v in step.items() if k!='if'} for step in definition(PREFIX_COMMIT,path)['runs']['steps']]==[{k:v for k,v in step.items() if k!='if'} for step in definition('HEAD',path)['runs']['steps']], 'REUSED_SHARED_COMMANDS_CHANGED')
+    validate_prefix_commands(
+        git('show',PREFIX_COMMIT+':.github/workflows/worker-windows-package.yml').decode(),
+        git('show','HEAD:.github/workflows/worker-windows-package.yml').decode(),
+        git('show',PREFIX_COMMIT+':.github/actions/worker-release-checks/action.yml').decode(),
+        git('show','HEAD:.github/actions/worker-release-checks/action.yml').decode())
     def api(path):return json.loads(subprocess.check_output(['gh','api',f'repos/{REPO}/'+path],text=True,encoding='utf-8'))
     run=api('actions/runs/'+run_id);jobs=api('actions/runs/'+run_id+'/jobs?per_page=100')['jobs']
     log=subprocess.check_output(['gh','run','view',run_id,'--repo',REPO,'--log-failed'],text=True,encoding='utf-8')

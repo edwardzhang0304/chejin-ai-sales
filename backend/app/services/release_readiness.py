@@ -28,7 +28,7 @@ def task_release_blocker(task):
 
 def release_readiness(db):
     workers = db.execute(text('select run_status,running_status,current_task,local_lock_summary,inflight_flow_state from workers')).mappings().all()
-    worker_blockers = sum(not (w['run_status']=='paused' and w['running_status']=='idle' and w['current_task'] is None and not (w['local_lock_summary'] or {}).get('locked') and not w['inflight_flow_state']) for w in workers)
+    worker_blockers = sum(not (w['run_status'] in {'paused','faulted'} and w['running_status']=='idle' and w['current_task'] is None and not (w['local_lock_summary'] or {}).get('locked') and not w['inflight_flow_state']) for w in workers)
     tasks = db.execute(text("""select t.*, exists(select 1 from task_events e where e.task_id=t.id and e.event_type not in ('created','blocked')) as has_execution_event,
       exists(select 1 from task_evidences e where e.task_id=t.id) as has_evidence from tasks t""")).mappings().all()
     reasons = {}

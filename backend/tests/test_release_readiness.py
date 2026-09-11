@@ -39,5 +39,10 @@ def test_real_queued_task_is_preserved_and_execution_facts_block():
         row.lease_owner_client_instance_id=None; db.flush()
         assert release_readiness(db)['ready']
         current_worker = db.get(Worker, worker['id'])
+        current_worker.run_status='faulted'; db.flush()
+        assert release_readiness(db)['ready']  # Retain fault state; no intake or execution.
+        current_worker.run_status='running'; db.flush()
+        assert release_readiness(db)['worker_blockers'] == 1
+        current_worker.run_status='faulted'
         current_worker.inflight_flow_state={'flow_id':'synthetic-active'}; db.flush()
         assert release_readiness(db)['worker_blockers'] == 1
