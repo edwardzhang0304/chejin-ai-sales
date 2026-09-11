@@ -139,6 +139,7 @@ jobs:
           Add-Content -Path $env:GITHUB_PATH -Value (Join-Path $PWD ".venv/Scripts")
 
       - name: Native Windows long-path negative and repaired controls
+        if: env.CHEJIN_LONG_PATH_REUSED != 'true'
         shell: powershell
         working-directory: worker-client
         run: |
@@ -156,7 +157,7 @@ jobs:
           }
 
       - name: Run shared source checks
-        if: env.CHEJIN_SOURCE_CHECK_RECEIPT == ''
+        if: env.CHEJIN_SHARED_CHECKS_COMPLETE != 'true'
         uses: ./.github/actions/worker-release-checks
 
       - name: Finish source checks once before compilation

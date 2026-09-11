@@ -43,3 +43,18 @@ class PublicationApprovalTests(unittest.TestCase):
     (root/'production-approval.json').write_text(json.dumps(approval));receiver.require_publication_approval(root,meta)
     snippet.write_text('# inactive')
     with self.assertRaises(ValueError):receiver.require_publication_approval(root,meta)
+
+class MaintenanceFailureTests(unittest.TestCase):
+ def test_failed_unfreeze_restores_persistent_fence(self):
+  import json,tempfile
+  from unittest.mock import patch
+  import maintenance
+  with tempfile.TemporaryDirectory() as temp:
+   root=Path(temp);snippet=root/'snippet';site=root/'site'
+   snippet.write_text(maintenance.BLOCK);site.write_text(maintenance.INCLUDE)
+   (root/'release-approved.json').write_text(json.dumps({'backend_ready':True,'admin_browser_gate':'passed','workers_safe':True,'admin_candidate':{},'admin_browser_receipt':{}}))
+   with patch.object(maintenance,'SNIPPET',snippet),patch.object(maintenance,'SITE',site),patch.object(maintenance,'validate_ingress'),patch('build_admin.validate_browser_receipt'),patch.object(maintenance,'old_workers',return_value={42}),patch.object(maintenance.time,'monotonic',side_effect=[0,61]),patch.object(maintenance.subprocess,'run') as run,patch.object(sys,'argv',['maintenance.py','disable','--evidence-dir',str(root)]):
+    with self.assertRaisesRegex(RuntimeError,'freeze restored'):maintenance.main()
+    self.assertEqual(snippet.read_text(),maintenance.BLOCK)
+    self.assertFalse((root/'maintenance-disable.json').exists())
+    self.assertEqual(sum(c.args[0]==['systemctl','reload','nginx'] for c in run.call_args_list),2)

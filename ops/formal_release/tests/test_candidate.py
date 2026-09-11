@@ -209,7 +209,13 @@ class SelectionAndWorkflowTests(unittest.TestCase):
         first = next(i for i, step in enumerate(old) if step.get("name") == "Run credential security gate")
         end = next(i for i, step in enumerate(old) if step.get("name") == "Build reusable portable runtime base on cache miss")
         action = yaml.load((ROOT / ".github/actions/worker-release-checks/action.yml").read_text(), Loader=yaml.BaseLoader)
-        self.assertEqual(action["runs"]["steps"], old[first:end])
+        steps = action["runs"]["steps"]
+        self.assertEqual([{k:v for k,v in step.items() if k != "if"} for step in steps], old[first:end])
+        expected = {
+            "Run credential security gate": "github.workflow != 'Worker Windows package gate' || env.CHEJIN_SHARED_CREDENTIALS_REUSED != 'true'",
+            "Run affected Worker and backend read-settlement tests": "github.workflow != 'Worker Windows package gate' || env.CHEJIN_SHARED_SETTLEMENT_REUSED != 'true'",
+        }
+        self.assertEqual({step["name"]:step["if"] for step in steps if "if" in step}, expected)
         new = yaml.load((ROOT / ".github/workflows/worker-windows-fast-uat.yml").read_text(), Loader=yaml.BaseLoader)["jobs"]["fast-uat"]["steps"]
         self.assertEqual(new[:first], old[:first])
         self.assertEqual(new[first+1:], old[end:])
