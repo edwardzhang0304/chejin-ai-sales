@@ -10,6 +10,8 @@ on:
       - 'worker-client/run_checks.py'
       - 'worker-client/tests/test_packaging_scripts.py'
       - 'worker-client/tests/test_release_gate_runner.py'
+      - 'worker-client/scripts/run-windows-client-upgrade-test.py'
+      - 'worker-client/tests/test_windows_upgrade_gate_data.py'
       - 'worker-client/requirements-test.txt'
       - 'backend/requirements.txt'
       - 'backend/app/services/release_readiness.py'
@@ -84,6 +86,7 @@ jobs:
             worker-client/requirements-test.txt
             backend/requirements.txt
       - name: Install source test dependencies
+        if: fromJSON(inputs.source_test_plan).reviewed_handoff == '' || toJSON(fromJSON(inputs.source_test_plan).pytest) != 'null'
         run: python -m pip install --disable-pip-version-check -r worker-client/requirements.txt -r worker-client/requirements-test.txt -r backend/requirements.txt 'websockets==15.0.1' 'PyYAML==6.0.2' httpx2
       - name: Run only the engineer-reviewed selection
         env:

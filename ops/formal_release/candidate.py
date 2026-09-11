@@ -30,6 +30,9 @@ RETEST_ONLY = {
     ".github/workflows/release-evidence.yml",
 }
 DOCS = {
+    "deliverables/AI智能客服售前跟进系统_PRD_运营后台统一版_v0.9.76.md",
+    "deliverables/AI智能客服售前跟进系统_技术方案手册_v0.9.76.md",
+    "deliverables/AI智能客服售前跟进系统_全流程图_v0.9.76.puml",
     "deliverables/AI智能客服售前跟进系统_技术方案手册_v0.9.75.md",
     "deliverables/AI智能客服售前跟进系统_PRD_运营后台统一版_v0.9.75.md",
     "deliverables/AI智能客服售前跟进系统_全流程图_v0.9.75.puml",
