@@ -12,7 +12,7 @@ import os
 from pathlib import Path
 import subprocess
 
-from verify import COMMIT, SUFFIXES, digest, require
+from verify import COMMIT, SUFFIXES, digest, require, manual_acceptance
 
 WORKFLOW = ".github/workflows/worker-windows-package.yml"
 BUILD_JOB = "Build signed formal Windows package"
@@ -20,6 +20,9 @@ ACCEPT_JOB = "Accept exact Windows candidate"
 ROOT = Path(__file__).resolve().parents[2]
 # Exact exceptions, deliberately not entire scripts/tests/directories.
 RETEST_ONLY = {
+    "ops/formal_release/verify.py",
+    "ops/formal_release/receiver.py",
+    "ops/formal_release/tests/test_delivery.py",
     "ops/formal_release/reuse_native_windows.py",
     "worker-client/scripts/run-windows-updater-process-test.ps1",
     "worker-client/scripts/run-windows-pending-read-install.py",
@@ -182,6 +185,36 @@ def accept(folder, report_path, commit, run_id, current_version):
     delivery_path.write_text(json.dumps(delivery, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
+def accept_manual(folder, report_path, pending_path, commit, run_id, current_version):
+    proof = read(folder / "candidate.json")
+    stem = verify_candidate(folder, proof["build_commit"], proof["build_run_id"], commit)
+    report, pending = read(report_path), read(pending_path)
+    require(report.get("status") == "passed" and len(report.get("cases", [])) == 2
+            and {c.get("initial_run_status") for c in report["cases"]} == {"paused", "faulted"}, "MANUAL_CASES_INCOMPLETE")
+    for c in [*report["cases"], pending]:
+        require(c.get("status") == "passed" and c.get("current_version") == current_version
+                and c.get("target_version") == proof["version"] and c.get("target_commit") == proof["build_commit"]
+                and c.get("target_zip_sha256") == proof["files"][stem + ".zip"], "MANUAL_PACKAGE_MISMATCH")
+    for c in report["cases"]:
+        require(c.get("mode") == "preserve_data_manual_install" and c.get("real_settings_button_clicked") is False
+                and c.get("original_updater_used") is False and all(c.get(k) is True for k in (
+                    "original_worker_exited", "normal_close_used", "protected_data_preserved", "target_ui_confirmed",
+                    "target_program_manifest_verified", "paused_intent_and_idle_gate_preserved", "original_data_directory_reused")), "MANUAL_DATA_GATE_FAILED")
+    require(pending.get("mode") == "pending_read_preserve_data_install" and all(pending.get(k) is True for k in (
+        "normal_close_used", "original_pending_flow_preserved_at_install", "original_data_directory_reused",
+        "original_outbox_bytes_preserved", "original_flow_completed", "stopped_after_recovery",
+        "target_ui_confirmed", "real_exe_recovery")), "PENDING_READ_GATE_FAILED")
+    path = folder / (stem + ".delivery.json")
+    delivery = read(path)
+    delivery.update(upgrade_start_version=current_version, installation_mode="preserve_data_manual_install",
+        original_client_upgrade_check="failed", automatic_update_allowed=False,
+        manual_install_check="passed", pending_read_install_check="passed",
+        manual_install_report_sha256=digest(report_path), pending_read_install_report_sha256=digest(pending_path),
+        acceptance_commit=commit, acceptance_run_id=str(run_id), workflow_run_id=str(run_id),
+        candidate_build_run_id=proof["build_run_id"])
+    path.write_text(json.dumps(delivery, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
 def delivery_source(folder, acceptance_commit, acceptance_run_id):
     """Resolve original signed build identity after selecting a passed acceptance run."""
     files = list(folder.glob("*.delivery.json"))
@@ -192,7 +225,7 @@ def delivery_source(folder, acceptance_commit, acceptance_run_id):
     if "acceptance_commit" in data:
         require(data["acceptance_commit"] == acceptance_commit
                 and data["acceptance_run_id"] == str(acceptance_run_id)
-                and data["original_client_upgrade_check"] == "passed", "ACCEPTANCE_IDENTITY_MISMATCH")
+                and (data.get("original_client_upgrade_check") == "passed" or manual_acceptance(data)), "ACCEPTANCE_IDENTITY_MISMATCH")
         require(source_inputs(build) == source_inputs(acceptance_commit), "BUILD_INPUTS_CHANGED_REBUILD_REQUIRED")
     else:
         require(build == acceptance_commit, "LEGACY_BUILD_IDENTITY_MISMATCH")
@@ -201,9 +234,10 @@ def delivery_source(folder, acceptance_commit, acceptance_run_id):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("command", choices=["select", "record", "verify", "accept", "delivery-source"])
+    parser.add_argument("command", choices=["select", "record", "verify", "accept", "accept-manual", "delivery-source"])
     parser.add_argument("--folder", type=Path)
     parser.add_argument("--report", type=Path)
+    parser.add_argument("--pending-report", type=Path)
     args = parser.parse_args()
     env = os.environ
     if args.command == "select":
@@ -220,6 +254,8 @@ def main():
         record(args.folder, env["GITHUB_SHA"], env["GITHUB_RUN_ID"])
     elif args.command == "verify":
         verify_candidate(args.folder, env["BUILD_COMMIT"], env["CANDIDATE_RUN_ID"], env["GITHUB_SHA"])
+    elif args.command == "accept-manual":
+        accept_manual(args.folder, args.report, args.pending_report, env["GITHUB_SHA"], env["GITHUB_RUN_ID"], env["CURRENT_VERSION"])
     elif args.command == "accept":
         accept(args.folder, args.report, env["GITHUB_SHA"], env["GITHUB_RUN_ID"], env["CURRENT_VERSION"])
     else:
