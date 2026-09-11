@@ -146,6 +146,32 @@ def verify_external(result, current_version, api_origin, download_origin):
     return {**result, "backend": "passed", "old_client_discovery": "passed", "external_download": "passed"}
 
 
+def verify_manual_external(result, current_version, api_origin, download_origin):
+    """Verify manual bytes and ensure the old button does not advertise this manual release."""
+    from urllib.error import HTTPError
+    opener = build_opener(NoRedirect())
+    parsed, expected = urlparse(result['url']), urlparse(download_origin)
+    require(parsed.scheme == expected.scheme == 'https' and parsed.netloc == expected.netloc
+            and not parsed.username and not parsed.password, 'DOWNLOAD_ORIGIN_MISMATCH')
+    for path in ('/healthz', '/readyz'):
+        with opener.open(api_origin.removesuffix('/api')+path, timeout=20) as r:
+            require(r.status==200,'BACKEND_UNHEALTHY')
+    query=api_origin+'/client-releases/latest?'+urlencode({'current_version':current_version,'platform':'windows-x64','channel':'gray'})
+    try:
+        with opener.open(query,timeout=20) as r:
+            data=json.loads(r.read(2*1024*1024))
+            require(data.get('data',{}).get('update_available') is False,'MANUAL_ROUTE_ADVERTISES_AUTOMATIC_UPDATE')
+    except HTTPError as exc:
+        require(exc.code==409 and json.loads(exc.read(65536)).get('code')=='UPDATE_MANUAL_UPGRADE_REQUIRED','MANUAL_DISCOVERY_NOT_VERIFIED')
+    h=hashlib.sha256();length=0
+    with opener.open(result['url'],timeout=60) as r:
+        require(r.status==200 and int(r.headers.get('Content-Length',-1))==result['size'],'DOWNLOAD_SIZE_MISMATCH')
+        while block:=r.read(CHUNK):
+            length+=len(block);require(length<=result['size'],'DOWNLOAD_TOO_LARGE');h.update(block)
+    require(length==result['size'] and h.hexdigest()==result['sha256'],'FULL_DOWNLOAD_HASH_MISMATCH')
+    return {**result,'external_download':'passed','old_client_discovery':'manual_only','automatic_update_registered':False}
+
+
 def save_summary(result, output):
     output.write_text(json.dumps(result, ensure_ascii=False, indent=2) + "\n")
     summary = os.environ.get("GITHUB_STEP_SUMMARY")
@@ -159,7 +185,7 @@ def save_summary(result, output):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("operation", choices=("preflight", "stage", "check", "publish", "verify-live"))
+    parser.add_argument("operation", choices=("preflight", "stage", "check", "publish", "check-manual", "publish-manual", "verify-live"))
     parser.add_argument("--role", choices=("stage", "promote"), default="stage")
     parser.add_argument("--folder", type=Path)
     parser.add_argument("--run-id")
@@ -179,16 +205,19 @@ def main():
         else:
             remote = Remote(args.role if args.operation == "preflight" else "stage" if args.operation == "stage" else "promote")
             if args.operation == "preflight":
-                result.update(remote({"operation": "preflight", "current_version": args.current_version}))
+                result.update(remote({"operation": "preflight", "current_version": args.current_version,
+                                      "release_route": os.environ.get("RELEASE_ROUTE")}))
+                require(result.get("receiver_version", 0) >= 2, "RECEIVER_TOOL_UPDATE_REQUIRED")
             elif args.operation == "stage":
                 meta, desc = metadata(args.folder, args.current_version, args.run_id, args.commit)
                 result.update(stage(args.folder, meta, desc, remote))
             else:
                 require(args.workers_drained, "LOCAL_QUEUE_CONFIRMATION_REQUIRED")
                 result.update(remote({"operation": args.operation, "stage_id": args.stage_id, "workers_drained": True, "current_version": args.current_version}))
-        if args.operation in {"publish", "verify-live"}:
+        if args.operation in {"publish", "publish-manual", "verify-live"}:
             result["external_download"] = "failed"
-            result.update(verify_external(result, args.current_version, os.environ["FORMAL_API_ORIGIN"], os.environ["FORMAL_DOWNLOAD_ORIGIN"]))
+            verifier = verify_manual_external if result.get("installation_mode") == "preserve_data_manual_install" else verify_external
+            result.update(verifier(result, args.current_version, os.environ["FORMAL_API_ORIGIN"], os.environ["FORMAL_DOWNLOAD_ORIGIN"]))
         result["outcome"] = "passed"
     except Exception as exc:
         result["outcome"] = "failed"

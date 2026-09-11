@@ -76,13 +76,20 @@ def check_descriptor(meta, desc, config):
 
 
 def manual_acceptance(delivery):
-    return (delivery.get("installation_mode") == "preserve_data_manual_install"
-            and delivery.get("original_client_upgrade_check") == "failed"
+    if not (delivery.get("installation_mode") == "preserve_data_manual_install"
+            and delivery.get("original_client_upgrade_check") in {"failed", "not_applicable"}
             and delivery.get("automatic_update_allowed") is False
             and delivery.get("manual_install_check") == "passed"
-            and delivery.get("pending_read_install_check") == "passed"
-            and all(isinstance(delivery.get(k), str) and SHA.fullmatch(delivery[k]) for k in
-                    ("manual_install_report_sha256", "pending_read_install_report_sha256")))
+            and isinstance(delivery.get("manual_install_report_sha256"), str)
+            and SHA.fullmatch(delivery["manual_install_report_sha256"])):
+        return False
+    required = delivery.get("pending_read_recovery_required", True)
+    if required is False:
+        return (delivery.get("pending_read_install_check") == "not_applicable"
+                and delivery.get("pending_read_install_report_sha256") is None)
+    return (required is True and delivery.get("pending_read_install_check") == "passed"
+            and isinstance(delivery.get("pending_read_install_report_sha256"), str)
+            and SHA.fullmatch(delivery["pending_read_install_report_sha256"]) is not None)
 
 
 def verify(folder, meta, config):

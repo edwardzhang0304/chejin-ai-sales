@@ -1,4 +1,4 @@
-"""Original .75 EXE + original pending data -> exact candidate EXE recovery.
+"""Original selected EXE + original pending data -> exact candidate EXE recovery.
 
 Only synthetic isolated data, loopback HTTP and a controlled model. Fixture
 creation uses the complete original source; installation/recovery uses untouched
@@ -231,7 +231,10 @@ def run(args):
     cert, key = gate.tls_files(folder); port = gate.free_port(); debug = gate.free_port()
     oldsource = args.old_source_root.resolve()
     oldsha = subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=oldsource, text=True).strip()
-    assert oldsha == 'cd8763ed38ec1df1ff8054e49c3381e8a5322f62'
+    plan = gate.load_release_plan(getattr(args, 'plan', None))
+    baseline = plan['old_client']
+    assert plan['recovery'] == 'pending_read', 'Recovery case not requested'
+    assert oldsha == baseline['source_commit'], 'Original source identity mismatch'
     cfg = {'folder': str(folder), 'old_source': str(oldsource), 'old_sha': oldsha, 'port': port, 'base': f'https://127.0.0.1:{port}',
            'cert': str(cert), 'key': str(key), 'config_path': str(folder / 'config.json')}
     gate.write_json(cfg['config_path'], cfg)
@@ -246,13 +249,13 @@ def run(args):
         print('Synthetic original-source pending fixture created; no Windows acceptance claimed'); return
     assert os.name == 'nt', 'Windows EXE acceptance requires Windows'
     before = snapshot(data); flow = before['control']['inflight_flow_id']
-    report = {'status': 'failed', 'mode': 'pending_read_preserve_data_install', 'current_version': '0.9.75',
+    report = {'status': 'failed', 'mode': 'pending_read_preserve_data_install', 'current_version': baseline['version'],
               'target_version': gate.read_json(args.release)['version'], 'target_zip_sha256': gate.digest(args.archive), 'physical_wechat_send_tested': False}
     processes = []
     try:
         olddir = folder/'original'/'CheJinWorkerClient'; shutil.copytree(args.old_package_root, olddir)
-        assert gate.digest(olddir/'CheJinWorkerClient.exe') == gate.OLD_EXE_SHA
-        assert gate.digest(olddir/'CheJinUpdater.exe') == gate.OLD_UPDATER_SHA
+        assert gate.digest(olddir/'CheJinWorkerClient.exe') == baseline['exe_sha256']
+        assert gate.digest(olddir/'CheJinUpdater.exe') == baseline['updater_sha256']
         def ui_ready(proc):
             import urllib.request
             def ready():
@@ -267,7 +270,7 @@ def run(args):
                 old = subprocess.Popen([str(olddir/'CheJinWorkerClient.exe')], env=env, cwd=olddir, stdout=log, stderr=log); processes.append(old)
                 ui_ready(old)
                 with gate.QtPage(debug) as page:
-                    page.click_button('打开设置'); page.wait_text('V0.9.75'); page.screenshot(folder/'before.png')
+                    page.click_button('打开设置'); page.wait_text('V'+baseline['version']); page.screenshot(folder/'before.png')
                 normal_close(old)
             exited = snapshot(data)
             gate.write_json(folder/'old-exit-diff.json', binding_difference(before, exited))
@@ -311,7 +314,7 @@ def run(args):
                 assert any(r['path'].endswith('/messages/ingest') and r['status'] == 200 for r in requests)
                 assert any(r['path'].endswith('/inflight-flow/finish') and r['status'] == 200 for r in requests)
                 assert not any(r['path'].endswith('/inflight-flow/start') or r['path'].endswith('/claim-send') for r in requests)
-                report.update(status='passed', original_exe_sha256=gate.OLD_EXE_SHA, original_updater_sha256=gate.OLD_UPDATER_SHA,
+                report.update(status='passed', original_exe_sha256=baseline['exe_sha256'], original_updater_sha256=baseline['updater_sha256'],
                     normal_close_used=True, original_pending_flow_preserved_at_install=True, original_data_directory_reused=True,
                     original_outbox_bytes_preserved=True, original_flow_completed=True, stopped_after_recovery=True,
                     target_ui_confirmed=True, target_commit=manifest['git_commit'], real_exe_recovery=True)
@@ -326,6 +329,7 @@ def run(args):
 
 def main():
     p = argparse.ArgumentParser()
+    p.add_argument('--plan', type=Path)
     p.add_argument('--serve', type=Path); p.add_argument('--source', type=Path); p.add_argument('--label')
     p.add_argument('--fixture-operation'); p.add_argument('--config', type=Path)
     p.add_argument('--fixture-only', action='store_true')

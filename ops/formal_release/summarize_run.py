@@ -21,7 +21,7 @@ def summarize(jobs, run_id, candidate_run_id):
             for job in jobs if job["name"] != "Summarize release stages"]
     states = {row["name"]: row["status"] for row in rows}
     if states.get("Accept exact Windows candidate") == "failure":
-        next_action = "保留隔离候选。仅工具修正可用 retest_candidate；构建输入变化必须重建。"
+        next_action = "保留隔离候选。使用 accept_candidate 和原构建运行号续验；case_evidence_runs 填本次运行号复用通过场景。构建输入变化必须重建。"
     elif states.get("deliver") == "failure":
         next_action = "检查交付摘要；已验收包使用 stage_existing 续传，生产检查失败须先排查，不重建原包。"
     elif states.get("Build signed formal Windows package") == "failure":

@@ -51,6 +51,12 @@ def main():
     if kind == "tooling":
         plan = {"reason": "Release tools changed; validate only release tooling", "not_tested": "Business behavior and Windows EXE acceptance",
                 "pytest": [{"cwd": ".", "nodes": [str(p.relative_to(ROOT)) for p in sorted((ROOT / "ops/formal_release/tests").glob("test_*.py"))]}]}
+        plan['pytest'].append({'cwd':'worker-client','nodes':[
+            'tests/test_packaging_scripts.py::PackagingScriptsTest::'+name for name in (
+                'test_windows_ci_publishes_a_verified_portable_zip',
+                'test_formal_update_package_contains_independent_updater_and_real_process_gate',
+                'test_formal_exe_workflow_is_manual_and_reuses_evidence_without_fast_uat_package',
+                'test_windows_package_ci_builds_and_probes_the_frozen_executable')]})
     else:
         require(kind == "source", "UNKNOWN_CHECK_KIND")
         plan = json.loads(os.environ.get("SOURCE_TEST_PLAN", "{}"))

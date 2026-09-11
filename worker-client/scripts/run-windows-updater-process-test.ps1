@@ -1,6 +1,6 @@
 ﻿param(
   [string]$PackageDir = "",
-  [string]$NativeEvidencePath = ""
+  [Parameter(Mandatory=$true)][string]$CurrentVersion
 )
 
 $ErrorActionPreference = "Stop"
@@ -32,12 +32,6 @@ if (Test-Path $TestRoot) {
 }
 New-Item -ItemType Directory -Force -Path $TestRoot | Out-Null
 
-# Reuse only the explicitly verified prior native XML, otherwise run native checks.
-if ($NativeEvidencePath -ne "") {
-  & $BuildPython (Join-Path $Root "..\ops\formal_release\reuse_native_windows.py") --report $NativeEvidencePath
-  if ($LASTEXITCODE -ne 0) { throw "Native Windows evidence cannot be reused" }
-  Copy-Item -LiteralPath $NativeEvidencePath -Destination (Join-Path $TestRoot "native-data-lock-tests.xml")
-} else {
 # Exercise actual Win32 shared/exclusive locks before starting any probe EXE.
 # These use synthetic data and do not replace the formal EXE cases below.
 $SavedTestHome = [Environment]::GetEnvironmentVariable("CHEJIN_WORKER_HOME", "Process")
@@ -51,8 +45,6 @@ try {
 } finally {
   $env:CHEJIN_WORKER_HOME = $SavedTestHome
   $env:PYTHONPATH = $SavedTestPythonPath
-}
-
 }
 
 $CandidateManifest = Get-Content -Raw -Encoding UTF8 (Join-Path $PackageDir "update-package-manifest.json") | ConvertFrom-Json
@@ -239,7 +231,7 @@ function New-ReleasePlan(
   $Plan = [ordered]@{
     schema_version = 2
     update_request_id = $RequestId
-    current_version = "0.9.59"
+    current_version = $CurrentVersion
     target_version = $ProbeTargetVersion
     current_program_dir = $Current
     staged_program_dir = $Staged
@@ -311,8 +303,8 @@ function New-FormalClientReleasePlan(
   $PackageManifest = Get-Content -Raw -Encoding UTF8 $PackageManifestPath | ConvertFrom-Json
   $TargetVersion = [string]$PackageManifest.version
   $GitCommit = [string]$PackageManifest.git_commit
-  if ([version]$TargetVersion -lt [version]"0.9.69") {
-    throw "New protocol requires a reviewed candidate >= 0.9.69; do not build over published 0.9.68"
+  if ([version]$TargetVersion -le [version]$CurrentVersion) {
+    throw "TargetVersion must be newer than CurrentVersion"
   }
 
   $OldWorkerHome = [Environment]::GetEnvironmentVariable("CHEJIN_WORKER_HOME", "Process")
@@ -354,7 +346,7 @@ function New-FormalClientReleasePlan(
   $Plan = [ordered]@{
     schema_version = 2
     update_request_id = $RequestId
-    current_version = "0.9.58"
+    current_version = $CurrentVersion
     target_version = $TargetVersion
     current_program_dir = $Current
     staged_program_dir = $Staged

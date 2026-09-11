@@ -314,7 +314,7 @@ class PackagingScriptsTest(unittest.TestCase):
             ROOT.parent / ".github" / "workflows" / "worker-windows-package.yml"
         ).read_text(encoding="utf-8")
 
-        self.assertIn("ffd492a96d3fa244958ba85ec02a085e15d0db91", workflow)
+        self.assertIn("$env:CHEJIN_RELEASE_PLAN | ConvertFrom-Json).source_commit", workflow)
         self.assertIn("git merge-base --is-ancestor", workflow)
         self.assertIn("Compress-Archive -Path $packageDir", workflow)
         self.assertIn("Expand-Archive -LiteralPath $zipPath", workflow)
@@ -324,7 +324,7 @@ class PackagingScriptsTest(unittest.TestCase):
         self.assertIn("app_name = [string]$manifest.app_name", workflow)
         self.assertIn("default_api_base_url = [string]$manifest.default_api_base_url", workflow)
         self.assertIn("delivery ZIP executable SHA256 mismatch", workflow)
-        self.assertIn("chejin-worker-v0.9.76-windows-x64.delivery.json", workflow)
+        self.assertIn("chejin-worker-v${env:TARGET_VERSION}-windows-x64.delivery.json", workflow)
         self.assertNotIn("CHEJIN_VISION_CLIENT_API_KEY", workflow)
         self.assertIn('vision_credential_source -ne "worker_backend"', workflow)
         self.assertIn('vision_live_probe_check -ne "runtime_after_binding"', workflow)
@@ -343,8 +343,8 @@ class PackagingScriptsTest(unittest.TestCase):
         self.assertIn("client_delivery_boundary_check", workflow)
         self.assertIn("actions/upload-artifact@v4", workflow)
         self.assertIn("if-no-files-found: error", workflow)
-        self.assertIn("Exercise real updater process switch and rollback", workflow)
-        self.assertIn("run-windows-updater-process-test.ps1", workflow)
+        self.assertIn("Run only missing cases and bind exact candidate acceptance", workflow)
+        self.assertIn("ops/formal_release/acceptance_cases.py", workflow)
         self.assertIn("CHEJIN_RELEASE_SIGNING_PRIVATE_KEY_BASE64", workflow)
         self.assertIn("sign-client-release.py", workflow)
         self.assertIn(
@@ -352,7 +352,7 @@ class PackagingScriptsTest(unittest.TestCase):
             workflow,
         )
         self.assertIn("--artifact-storage-key", workflow)
-        self.assertIn("chejin-worker-v0.9.76-windows-x64.release.json", workflow)
+        self.assertIn("chejin-worker-v${env:TARGET_VERSION}-windows-x64.release.json", workflow)
         self.assertIn("must not contain a temporary download URL", workflow)
 
     def test_formal_update_package_contains_independent_updater_and_real_process_gate(self):
@@ -1607,13 +1607,15 @@ class PackagingScriptsTest(unittest.TestCase):
         self.assertIn('$packageDir = [string]$manifest.package_dir', workflow)
         self.assertIn('$exePath = [string]$manifest.exe_path', workflow)
         self.assertNotIn('dist\\车金Worker客户端', workflow)
-        self.assertIn('version -ne "0.9.76"', workflow)
+        self.assertIn('version -ne "${env:TARGET_VERSION}"', workflow)
         self.assertIn('tests_status -ne "passed"', workflow)
-        self.assertIn('@("--omniauto-sidecar", "--help")', workflow)
-        self.assertIn('@("--omniauto-ocr-probe")', workflow)
+        self.assertIn("packaged-vision-preflight.json", workflow)
+        build_script = (ROOT / "scripts/build-windows.ps1").read_text(encoding="utf-8-sig")
+        self.assertIn("--omniauto-sidecar", build_script)
+        self.assertIn("--omniauto-ocr-probe", build_script)
         self.assertIn("chejin-worker-packaged-preflight.json", workflow)
         self.assertIn("chejin-worker-packaged-diagnostics.jsonl", workflow)
-        self.assertIn('"--preflight-format", "json", "--write-report"', workflow)
+        self.assertIn('"--preflight-format", "json"', workflow)
         self.assertIn("packaged Vision configuration must start without a credential", workflow)
         self.assertIn('Remove-Item Env:CHEJIN_PACKAGING_DIAGNOSTIC_PATH', workflow)
         self.assertIn('"--startup-crash-probe"', workflow)

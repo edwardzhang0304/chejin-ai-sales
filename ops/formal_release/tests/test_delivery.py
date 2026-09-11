@@ -247,13 +247,14 @@ class GateTests(unittest.TestCase):
             self.assertIn('formal-staging',key_calls[0][0])
             self.assertIn('formal-production',key_calls[1][0])
 
-    def test_missing_receiver_or_approval_blocks_before_build(self):
+    @patch("validate_dispatch.load", return_value={"old_client": {"version": "0.9.75"}})
+    def test_missing_receiver_or_approval_blocks_before_build(self, _load):
         valid = {'GITHUB_REF':'refs/heads/codex/gray-release-0.9.x','RELEASE_APPROVED':'true',
                  'RELEASE_REASON':'fixture','DELIVERY_MODE':'build_and_stage','CURRENT_VERSION':'0.9.75',
                  'FORMAL_SSH_KEY':'fixture','FORMAL_SSH_HOST':'example.test','FORMAL_SSH_PORT':'22','FORMAL_KNOWN_HOSTS':'fixture'}
         validate_dispatch.validate(valid)
         for old_version in ('0.9.67', '0.9.68'):
-            with self.assertRaisesRegex(ValueError, 'UNSUPPORTED_UPGRADE_START'):
+            with self.assertRaisesRegex(ValueError, 'UPGRADE_START_PLAN_MISMATCH'):
                 validate_dispatch.validate({**valid, 'CURRENT_VERSION': old_version})
         for change in ({'FORMAL_SSH_KEY':''},{'RELEASE_APPROVED':'false'},{'GITHUB_REF':'refs/heads/untrusted'},
                        {'DELIVERY_MODE':'publish_staged','STAGE_ID':'a'*64,'PRODUCTION_READY':'false'}):

@@ -145,7 +145,7 @@ class ManualCandidateTests(unittest.TestCase):
         candidate.accept_manual(self.folder, self.report, pending, self.retest, '456', '0.9.69')
         d = candidate.read(self.folder/(self.stem+'.delivery.json'))
         self.assertTrue(candidate.manual_acceptance(d))
-        self.assertEqual(d['original_client_upgrade_check'], 'failed')
+        self.assertEqual(d['original_client_upgrade_check'], 'not_applicable')
         self.assertFalse(d['automatic_update_allowed'])
         self.assertEqual(candidate.delivery_source(self.folder, self.retest, '456'), self.build)
         import receiver, deliver
@@ -207,14 +207,16 @@ class SourceInputTests(unittest.TestCase):
 
     def test_acceptance_wiring_can_change_but_build_job_cannot(self):
         original = (self.root / candidate.WORKFLOW).read_text()
-        self.put(candidate.WORKFLOW, original.replace("timeout-minutes: 25", "timeout-minutes: 24"))
+        self.put(candidate.WORKFLOW, original.replace("timeout-minutes: 30", "timeout-minutes: 24"))
         self.assertEqual(candidate.source_inputs(self.commit(), self.root), self.fingerprint)
         self.put(candidate.WORKFLOW, original.replace("timeout-minutes: 90", "timeout-minutes: 89"))
         self.assertNotEqual(candidate.source_inputs(self.commit(), self.root), self.fingerprint)
 
     def test_inherited_workflow_environment_requires_rebuild(self):
         path = self.root / candidate.WORKFLOW
-        path.write_text(path.read_text().replace("permissions:\n", 'env:\n  BUILD_FLAG: changed\n\npermissions:\n', 1))
+        data = yaml.safe_load(path.read_text())
+        data["env"]["BUILD_FLAG"] = "changed"
+        path.write_text(yaml.safe_dump(data))
         self.assertNotEqual(candidate.source_inputs(self.commit(), self.root), self.fingerprint)
 
 
@@ -277,14 +279,16 @@ class SelectionAndWorkflowTests(unittest.TestCase):
 
     def test_retest_mode_cannot_execute_build_job_or_deliver_without_acceptance(self):
         jobs = yaml.load((ROOT / candidate.WORKFLOW).read_text(), Loader=yaml.BaseLoader)["jobs"]
-        self.assertEqual(jobs["package"]["if"], "inputs.delivery_mode == 'build_and_stage'")
+        self.assertNotIn("accept_candidate", jobs["package"]["if"])
+        self.assertIn("build_only", jobs["package"]["if"])
         self.assertEqual(jobs["deliver"]["needs"], ["prepare", "acceptance"])
         self.assertIn("needs.acceptance.result == 'success'", jobs["deliver"]["if"])
         self.assertFalse(any("build-windows.ps1" in step.get("run", "") for step in jobs["acceptance"]["steps"]))
         names = [step.get("name") for step in jobs["package"]["steps"]]
         self.assertLess(names.index("Prepare build environment and verify source evidence"), names.index("Build and run packaged runtime probes"))
 
-    def test_retest_requires_candidate_run_and_configured_old_client(self):
+    @patch("validate_dispatch.load", return_value={"old_client": {"version": "0.9.75"}})
+    def test_retest_requires_candidate_run_and_configured_old_client(self, _load):
         env = {"GITHUB_REF": "refs/heads/codex/gray-release-0.9.x", "RELEASE_APPROVED": "true",
                "RELEASE_REASON": "fixture", "DELIVERY_MODE": "retest_candidate", "CURRENT_VERSION": "0.9.75",
                "FORMAL_SSH_KEY": "fixture", "FORMAL_SSH_HOST": "fixture", "FORMAL_SSH_PORT": "22",
@@ -292,14 +296,14 @@ class SelectionAndWorkflowTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "CANDIDATE_RUN_REQUIRED"):
             validate_dispatch.validate(env)
         validate_dispatch.validate({**env, "CANDIDATE_RUN_ID": "123"})
-        with self.assertRaisesRegex(ValueError, "UPGRADE_START_FIXTURE_NOT_CONFIGURED"):
+        with self.assertRaisesRegex(ValueError, "UPGRADE_START_PLAN_MISMATCH"):
             validate_dispatch.validate({**env, "CANDIDATE_RUN_ID": "123", "CURRENT_VERSION": "0.9.69"})
 
     def test_summary_reports_failure_stage_without_claiming_publication(self):
         report = summarize_run.summarize([{"name": candidate.ACCEPT_JOB, "conclusion": "failure",
             "status": "completed", "started_at": "2026-09-08T00:00:00Z", "completed_at": "2026-09-08T00:01:26Z"}], "456", "123")
         self.assertEqual(report["stages"][0]["seconds"], 86)
-        self.assertIn("retest_candidate", report["next_action"])
+        self.assertIn("accept_candidate", report["next_action"])
 
 
 if __name__ == "__main__":
