@@ -191,7 +191,7 @@ def create_pending_fixture(cfg, env):
         f = folder / (name + '-frame.json'); gate.write_json(f, value)
         old = Path(cfg['old_source'])
         oldenv = {**env, 'PYTHONPATH': os.pathsep.join(str(old / p) for p in ('worker-client', 'worker-client/tests', 'worker-client/omniauto-rpa'))}
-        proc = subprocess.run([sys.executable, str(path), cfg['base'], json.dumps(cfg['worker']), cfg['rows'][0]['conversation_id'], str(f), name], env=oldenv, cwd=old, text=True, capture_output=True, timeout=45)
+        proc = subprocess.run([sys.executable, str(path), cfg['base'], json.dumps(cfg['worker']), cfg['rows'][0]['conversation_id'], str(f), name], env=oldenv, cwd=old, text=True, encoding="utf-8", capture_output=True, timeout=45)
         (folder / (name + '.log')).write_text(proc.stdout + proc.stderr, encoding='utf-8')
         assert proc.returncode == 0, proc.stderr[-1500:]
         return json.loads(proc.stdout.strip().splitlines()[-1])
@@ -282,7 +282,7 @@ def run(args):
                     completion = db.execute(text('select last_read_run_id,last_read_completed_at from wechat_session_bindings where id=:bid'), {'bid':cfg['rows'][0]['binding_id']}).one()
                     assert completion[0] == flow and completion[1] is not None, 'Original read lacks durable completion'
                 engine.dispose()
-                requests = [json.loads(s) for s in (folder/'candidate-exe-http.jsonl').read_text().splitlines()]
+                requests = [json.loads(s) for s in (folder/'candidate-exe-http.jsonl').read_text(encoding='utf-8').splitlines()]
                 assert any(r['path'].endswith('/messages/ingest') and r['status'] == 200 for r in requests)
                 assert any(r['path'].endswith('/inflight-flow/finish') and r['status'] == 200 for r in requests)
                 assert not any(r['path'].endswith('/inflight-flow/start') or r['path'].endswith('/claim-send') for r in requests)

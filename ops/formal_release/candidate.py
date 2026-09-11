@@ -20,6 +20,7 @@ ACCEPT_JOB = "Accept exact Windows candidate"
 ROOT = Path(__file__).resolve().parents[2]
 # Exact exceptions, deliberately not entire scripts/tests/directories.
 RETEST_ONLY = {
+    "ops/formal_release/reuse_completed_candidate_cases.py",
     "ops/formal_release/verify.py",
     "ops/formal_release/receiver.py",
     "ops/formal_release/tests/test_delivery.py",
