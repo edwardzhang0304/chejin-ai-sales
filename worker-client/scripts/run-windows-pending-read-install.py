@@ -159,6 +159,7 @@ def normal_close(proc):
     user.PostMessageW.argtypes = [wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM]
     user.PostMessageW.restype = wintypes.BOOL
     user.GetWindowThreadProcessId.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.DWORD)]
+    user.IsWindowVisible.argtypes = [wintypes.HWND]
     windows = []
     callback_type = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
     def capture(hwnd, unused):
@@ -268,9 +269,9 @@ def run(args):
                 after = snapshot(data); assert_identity(exited, after)
                 assert after['binding']['run_status'] == 'faulted' and after['control']['pause_requested']
                 assert all(r['status'] == 'confirmed' for r in after['outbox'])
-                receipt = after['receipts']['inflight_finish_receipt:'+flow]
-                assert receipt['conversation_id'] == cfg['rows'][0]['conversation_id']
-                assert receipt['terminal_kind'] == 'read_confirmed' and receipt['read_completion']['completed_at']
+                # Successful finish removes the temporary local receipt. Its
+                # durable backend completion, original Outbox and HTTP finish
+                # acknowledgment are the evidence after reconciliation.
                 with gate.QtPage(debug) as page:
                     page.click_button('打开设置'); page.wait_text('V'+descriptor['version']); page.screenshot(folder/'after.png')
                 from sqlalchemy import create_engine, text
@@ -278,6 +279,8 @@ def run(args):
                 with engine.connect() as db:
                     state = db.execute(text('select inflight_flow_state,run_status from workers where id=:wid'), {'wid':cfg['worker']['id']}).one()
                     assert not state[0] and state[1] == 'faulted', state
+                    completion = db.execute(text('select last_read_run_id,last_read_completed_at from wechat_session_bindings where id=:bid'), {'bid':cfg['rows'][0]['binding_id']}).one()
+                    assert completion[0] == flow and completion[1] is not None, 'Original read lacks durable completion'
                 engine.dispose()
                 requests = [json.loads(s) for s in (folder/'candidate-exe-http.jsonl').read_text().splitlines()]
                 assert any(r['path'].endswith('/messages/ingest') and r['status'] == 200 for r in requests)
