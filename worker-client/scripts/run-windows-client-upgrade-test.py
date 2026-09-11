@@ -1,4 +1,4 @@
-"""Exercise the shipped 0.9.73 GUI and updater against the exact signed ZIP.
+"""Exercise the shipped 0.9.74 GUI and updater against the exact signed ZIP.
 
 Only the isolated Windows runner is used. Both EXEs are untouched; the backend
 is the candidate application with synthetic SQLite data and loopback TLS.
@@ -24,8 +24,8 @@ import time
 import urllib.request
 
 ROOT = Path(__file__).resolve().parents[2]
-OLD_EXE_SHA = "09be639d7e0ff31a75f6aeb914ff86d5b9f0245314c1ad139441888dbe6bb45c"
-OLD_UPDATER_SHA = "20d7f7bea07e0e6ad74fb1f4cb0ff941cb2437afdc698c6f61cd27f35d215092"
+OLD_EXE_SHA = "908942f2111e9a04bb4f900938143baf66f32cd5a5ddf988f656fa6676d2826e"
+OLD_UPDATER_SHA = "b103354cdf810036f9804d42f7a48f37e6ee1704072821daf6df16d696412251"
 WORKER_ID = "formal-upgrade-isolated-worker"
 INSTANCE_ID = "formal-upgrade-isolated-instance"
 TOKEN = "synthetic-loopback-worker-token"
@@ -322,7 +322,7 @@ def run_case(args, status):
     before = preserved_values(data)
     checkpoints = {"synthetic_test_data_only": True, "seeded": before}
     processes = []
-    report = {"current_version": "0.9.73", "target_version": "0.9.74", "initial_run_status": status,
+    report = {"current_version": "0.9.74", "target_version": "0.9.75", "initial_run_status": status,
               "old_exe_sha256": OLD_EXE_SHA, "old_updater_sha256": OLD_UPDATER_SHA,
               "target_zip_sha256": digest(args.archive), "status": "failed"}
     log = (case / "process.log").open("w", encoding="utf-8")
@@ -355,10 +355,63 @@ def run_case(args, status):
         wait_for(debug_ready, "original Worker UI")
         with QtPage(debug_port) as page:
             page.click_button("打开设置")
-            page.wait_text("V0.9.73")
+            page.wait_text("V0.9.74")
             page.screenshot(case / "before.png")
             checkpoints["before_button"] = preserved_values(data)
             assert_preserved(before, checkpoints["before_button"])
+            if args.manual_install:
+                # A normal WM_CLOSE invokes the original Qt close/shutdown path.
+                # Only this isolated test process is targeted, never terminated for installation.
+                import ctypes
+                from ctypes import wintypes
+                user32 = ctypes.windll.user32
+                user32.PostMessageW.argtypes = [wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM]
+                user32.PostMessageW.restype = wintypes.BOOL
+                user32.GetWindowThreadProcessId.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.DWORD)]
+                user32.IsWindowVisible.argtypes = [wintypes.HWND]
+                windows = []
+                callback_type = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+                def capture(hwnd, _):
+                    pid = wintypes.DWORD()
+                    user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+                    if pid.value == old.pid and user32.IsWindowVisible(hwnd):
+                        windows.append(hwnd)
+                    return True
+                callback = callback_type(capture)
+                user32.EnumWindows(callback, 0)
+                assert windows, "Original client visible window not found"
+                for hwnd in windows:
+                    assert user32.PostMessageW(hwnd, 0x0010, 0, 0), "Normal close request failed"
+                assert old.wait(timeout=90) == 0, "Original client did not close normally"
+                checkpoints["after_normal_exit"] = preserved_values(data)
+                assert_preserved(before, checkpoints["after_normal_exit"])
+                sys.path.insert(0, str(ROOT / "worker-client"))
+                from chejin_worker_client.models import ClientRelease
+                from chejin_worker_client.release_package_contract import verify_release_signature, load_trusted_release_keys, verify_staged_package
+                descriptor = read_json(args.release)
+                release = ClientRelease.from_api({**descriptor, "latest_version": descriptor["version"], "update_available": True})
+                verify_release_signature(release, trusted_keys=load_trusted_release_keys(Path(spec["public_keys"])))
+                manifest = verify_staged_package(release, args.target_package_root)
+                # Install to a new program directory, retaining the same explicit old data directory.
+                installed = case / "new-install" / "CheJinWorkerClient"
+                shutil.copytree(args.target_package_root, installed)
+                verify_staged_package(release, installed)
+                old = subprocess.Popen([str(installed / "CheJinWorkerClient.exe")], env=env, cwd=installed, stdout=log, stderr=log)
+                processes.append(old)
+                wait_for(debug_ready, "new manually installed Worker UI")
+                with QtPage(debug_port) as new_page:
+                    new_page.click_button("打开设置")
+                    new_page.wait_text("V0.9.75")
+                    new_page.screenshot(case / "after.png")
+                checkpoints["after_manual_install"] = preserved_values(data)
+                assert_preserved(before, checkpoints["after_manual_install"])
+                assert old.poll() is None
+                report.update(status="passed", mode="preserve_data_manual_install", original_worker_exited=True,
+                              normal_close_used=True, protected_data_preserved=True, target_ui_confirmed=True,
+                              target_commit=manifest["git_commit"], target_program_manifest_verified=True,
+                              paused_intent_and_idle_gate_preserved=True, real_settings_button_clicked=False,
+                              original_updater_used=False, original_data_directory_reused=True)
+                return report
             page.click_button("检查更新")
             report["real_settings_button_clicked"] = True
             # The original coordinator owns plan creation and normal shutdown.
@@ -383,12 +436,12 @@ def run_case(args, status):
             assert old.poll() is not None, "Original Worker did not exit"
             plan_path = Path(state["plan_path"])
             plan = read_json(plan_path)
-            assert plan["schema_version"] == 2 and plan["current_version"] == "0.9.73"
+            assert plan["schema_version"] == 2 and plan["current_version"] == "0.9.74"
             assert plan["old_pid"] == old.pid
             assert digest(plan_path.parent / "CheJinUpdater.exe") == OLD_UPDATER_SHA
             assert plan["safe_boundary"]["safe"] is True
             marker = read_json(plan["healthy_marker_path"])
-            assert marker["healthy"] is True and marker["version"] == "0.9.74"
+            assert marker["healthy"] is True and marker["version"] == "0.9.75"
             assert marker["runtime_health"]["binding_state"] == "bound"
             for name in ("task_runner", "c2_listener", "thread_monitor"):
                 health = marker["runtime_health"]["threads"][name]
@@ -400,13 +453,13 @@ def run_case(args, status):
             assert_preserved(before, checkpoints["after_reconciliation"])
             target_manifest = read_json(current / "update-package-manifest.json")
             assert target_manifest["git_commit"] == read_json(args.release)["git_commit"]
-            assert target_manifest["version"] == "0.9.74"
+            assert target_manifest["version"] == "0.9.75"
             with QtPage(debug_port) as new_page:
                 new_page.click_button("打开设置")
-                new_page.wait_text("V0.9.74")
+                new_page.wait_text("V0.9.75")
                 new_page.screenshot(case / "after.png")
             requests = [json.loads(line) for line in Path(spec["requests"]).read_text().splitlines()]
-            assert any(r["kind"] == "latest" and r["current_version"] == "0.9.73" and r["status"] == 200 for r in requests)
+            assert any(r["kind"] == "latest" and r["current_version"] == "0.9.74" and r["status"] == 200 for r in requests)
             assert any(r["kind"] == "download" and r["status"] == 200 for r in requests)
             report.update(status="passed", original_worker_exited=True, original_updater_used=True,
                           protected_data_preserved=True, target_ui_confirmed=True, actual_backend_download=True,
@@ -450,6 +503,8 @@ def main():
     parser.add_argument("--archive", type=Path)
     parser.add_argument("--release", type=Path)
     parser.add_argument("--work-root", type=Path)
+    parser.add_argument("--manual-install", action="store_true")
+    parser.add_argument("--target-package-root", type=Path)
     args = parser.parse_args()
     if args.serve_driver_fixture:
         serve_driver_fixture()
@@ -464,9 +519,12 @@ def main():
         raise SystemExit("Requires original Windows EXEs on a Windows runner")
     for name in ("old_package_root", "old_source_root", "archive", "release", "work_root"):
         setattr(args, name, getattr(args, name).resolve())
+    if args.manual_install:
+        assert args.target_package_root is not None
+        args.target_package_root = args.target_package_root.resolve()
     results = [run_case(args, status) for status in ("paused", "faulted")]
     write_json(args.work_root / "upgrade-result.json", {"status": "passed", "cases": results})
-    print("Original 0.9.73 GUI -> signed 0.9.74: paused and faulted cases passed")
+    print("Preserve-data manual install passed" if args.manual_install else "Original 0.9.74 GUI -> signed 0.9.75: paused and faulted cases passed")
 
 
 if __name__ == "__main__":

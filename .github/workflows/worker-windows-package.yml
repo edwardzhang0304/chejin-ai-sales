@@ -23,7 +23,7 @@ on:
       current_client_version:
         description: Exact installed client version whose updater and trust must accept the package
         required: true
-        default: '0.9.73'
+        default: '0.9.74'
       formal_run_id:
         description: Successful formal package run ID (stage_existing only)
         default: ''
@@ -67,7 +67,7 @@ jobs:
           python-version: '3.12.10'
       - name: Run formal delivery regression tests before release work
         run: |
-          python -m pip install --disable-pip-version-check 'cryptography>=42.0,<46' 'PyYAML==6.0.2'
+          python -m pip install --disable-pip-version-check 'cryptography>=42.0,<46' 'PyYAML==6.0.2' 'SQLAlchemy>=2.0,<3'
           python -m unittest discover -s ops/formal_release/tests -v
       - name: Validate dispatch without executing input as shell code
         env:
@@ -138,6 +138,23 @@ jobs:
           } else { Write-Output "Native handoff source checks reused from verified identical source; fresh Qt driver smoke passed" }
           Add-Content -Path $env:GITHUB_PATH -Value (Join-Path $PWD ".venv/Scripts")
 
+      - name: Native Windows long-path negative and repaired controls
+        shell: powershell
+        working-directory: worker-client
+        run: |
+          $ErrorActionPreference = "Stop"
+          $registry = "HKLM:\SYSTEM\CurrentControlSet\Control\FileSystem"
+          $before = (Get-ItemProperty -Path $registry -Name LongPathsEnabled).LongPathsEnabled
+          try {
+            Set-ItemProperty -Path $registry -Name LongPathsEnabled -Value 0
+            $env:CHEJIN_TEST_NATIVE_LEGACY_PATH_LIMIT = "1"
+            .\.venv\Scripts\python.exe -m pytest tests/test_update_long_paths.py::test_native_windows_legacy_limit_and_fixed_extraction -q --junitxml "$env:RUNNER_TEMP/native-long-path.xml"
+            if ($LASTEXITCODE -ne 0) { throw "Native long-path regression failed before packaging" }
+          } finally {
+            Set-ItemProperty -Path $registry -Name LongPathsEnabled -Value $before
+            Remove-Item Env:CHEJIN_TEST_NATIVE_LEGACY_PATH_LIMIT -ErrorAction SilentlyContinue
+          }
+
       - name: Run shared source checks
         if: env.CHEJIN_SOURCE_CHECK_RECEIPT == ''
         uses: ./.github/actions/worker-release-checks
@@ -176,7 +193,7 @@ jobs:
           $exePath = [string]$manifest.exe_path
 
           .\scripts\validate-package.ps1 -PackageDir $packageDir
-          if ($manifest.version -ne "0.9.74") {
+          if ($manifest.version -ne "0.9.75") {
             throw "unexpected version: $($manifest.version)"
           }
           if ($manifest.default_api_base_url -ne "https://jiangsuchejin.com/api") {
@@ -292,7 +309,7 @@ jobs:
             throw "packaged startup crash did not create the default diagnostic"
           }
           $startupCrash = Get-Content -Encoding UTF8 $defaultStartupDiagnostic | Select-Object -Last 1 | ConvertFrom-Json
-          if ($startupCrash.version -ne "0.9.74" -or $startupCrash.build_commit -ne $env:GITHUB_SHA) {
+          if ($startupCrash.version -ne "0.9.75" -or $startupCrash.build_commit -ne $env:GITHUB_SHA) {
             throw "startup crash diagnostic build identity mismatch"
           }
           foreach ($requiredField in @("timestamp", "windows_version", "exception_type", "traceback")) {
@@ -324,11 +341,11 @@ jobs:
           $manifest = Get-Content -Raw -Encoding UTF8 $manifestPath | ConvertFrom-Json
           $packageDir = [string]$manifest.package_dir
           $releaseDir = Join-Path $PWD "dist\release"
-          $zipName = "chejin-worker-v0.9.74-windows-x64.zip"
+          $zipName = "chejin-worker-v0.9.75-windows-x64.zip"
           $zipPath = Join-Path $releaseDir $zipName
-          $deliveryManifestPath = Join-Path $releaseDir "chejin-worker-v0.9.74-windows-x64.delivery.json"
-          $signedReleasePath = Join-Path $releaseDir "chejin-worker-v0.9.74-windows-x64.release.json"
-          $sha256Path = Join-Path $releaseDir "chejin-worker-v0.9.74-windows-x64.sha256.txt"
+          $deliveryManifestPath = Join-Path $releaseDir "chejin-worker-v0.9.75-windows-x64.delivery.json"
+          $signedReleasePath = Join-Path $releaseDir "chejin-worker-v0.9.75-windows-x64.release.json"
+          $sha256Path = Join-Path $releaseDir "chejin-worker-v0.9.75-windows-x64.sha256.txt"
 
           New-Item -ItemType Directory -Force -Path $releaseDir | Out-Null
           Compress-Archive -Path $packageDir -DestinationPath $zipPath -CompressionLevel Optimal -Force
@@ -441,7 +458,7 @@ jobs:
           .\.venv\Scripts\python.exe .\scripts\sign-client-release.py `
             --archive $zipPath `
             --package-manifest $verifiedUpdateManifestPath `
-            --version "0.9.74" `
+            --version "0.9.75" `
             --git-commit $env:GITHUB_SHA `
             --artifact-storage-key "gray/windows-x64/$zipName" `
             --published-at ((Get-Date).ToUniversalTime().ToString("o")) `
@@ -491,6 +508,13 @@ jobs:
             ${{ runner.temp }}/chejin-original-client-upgrade/*/after.png
             ${{ runner.temp }}/chejin-original-client-upgrade/**/worker-startup.jsonl
             ${{ runner.temp }}/chejin-original-client-upgrade/**/update-result.json
+            ${{ runner.temp }}/native-long-path.xml
+            ${{ runner.temp }}/chejin-manual-install/**/result.json
+            ${{ runner.temp }}/chejin-manual-install/upgrade-result.json
+            ${{ runner.temp }}/chejin-manual-install/*/data-checkpoints.json
+            ${{ runner.temp }}/chejin-manual-install/*/before.png
+            ${{ runner.temp }}/chejin-manual-install/*/after.png
+            ${{ runner.temp }}/chejin-manual-install/**/process.log
             ${{ runner.temp }}/native-prebuild.xml
             ${{ runner.temp }}/source-checks-partial.json
             ${{ runner.temp }}/source-checks-complete.json
@@ -566,30 +590,30 @@ jobs:
         run: |
           python ops/formal_release/candidate.py verify --folder worker-client/dist/release
           if ($LASTEXITCODE -ne 0) { throw "Candidate invalid or build inputs changed; rebuild required" }
-          Expand-Archive -LiteralPath worker-client/dist/release/chejin-worker-v0.9.74-windows-x64.zip -DestinationPath (Join-Path $env:RUNNER_TEMP "candidate-extracted")
+          Expand-Archive -LiteralPath worker-client/dist/release/chejin-worker-v0.9.75-windows-x64.zip -DestinationPath (Join-Path $env:RUNNER_TEMP "candidate-extracted")
 
-      - name: Fetch immutable 0.9.73 source for existing-data fixtures
+      - name: Fetch immutable 0.9.74 source for existing-data fixtures
         uses: actions/checkout@v4
         with:
-          ref: ae8ab50c249f110f17efc4cead97d30bc6fa985b
+          ref: 22d6efaf0167e8f614ecef2159f9fb57d15259ae
           path: .old-source
           persist-credentials: false
 
-      - name: Fetch original 0.9.73 formal artifact inside GitHub
+      - name: Fetch original 0.9.74 formal artifact inside GitHub
         uses: actions/download-artifact@v4
         with:
-          artifact-ids: '10106315724'
-          run-id: '34356623642'
+          artifact-ids: '10150925814'
+          run-id: '34473973307'
           github-token: ${{ github.token }}
           path: old-artifact
           merge-multiple: true
 
-      - name: Verify immutable 0.9.73 ZIP before extracting
+      - name: Verify immutable 0.9.74 ZIP before extracting
         shell: powershell
         run: |
-          $zip = Join-Path $PWD "old-artifact\chejin-worker-v0.9.73-windows-x64.zip"
-          if ((Get-FileHash $zip -Algorithm SHA256).Hash -ne "F0C21004EC8D3D3371CF9D05BDD4E92AAA36D925794FD6D45B576C0BA4446E70") { throw "0.9.73 formal ZIP identity mismatch" }
-          Expand-Archive -LiteralPath $zip -DestinationPath (Join-Path $env:RUNNER_TEMP "old-073-release")
+          $zip = Join-Path $PWD "old-artifact\chejin-worker-v0.9.74-windows-x64.zip"
+          if ((Get-FileHash $zip -Algorithm SHA256).Hash -ne "0A581D84309AD5DE5ED22BFA4FF3F2EC530F7DF46150A481EEE381171923E247") { throw "0.9.74 formal ZIP identity mismatch" }
+          Expand-Archive -LiteralPath $zip -DestinationPath (Join-Path $env:RUNNER_TEMP "old-074-release")
 
       - name: Exercise real updater process switch and rollback
         shell: powershell
@@ -602,31 +626,45 @@ jobs:
             throw "real updater process switch/rollback test failed"
           }
 
-      - name: Exercise original 0.9.73 settings update against exact signed ZIP
+      - name: Exercise original 0.9.74 settings update against exact signed ZIP
         shell: powershell
         working-directory: worker-client
         run: |
           $ErrorActionPreference = "Stop"
           .\.venv\Scripts\python.exe scripts/run-windows-client-upgrade-test.py `
-            --old-package-root (Join-Path $env:RUNNER_TEMP "old-073-release\CheJinWorkerClient") `
+            --old-package-root (Join-Path $env:RUNNER_TEMP "old-074-release\CheJinWorkerClient") `
             --old-source-root (Join-Path $env:GITHUB_WORKSPACE ".old-source\worker-client") `
-            --archive dist/release/chejin-worker-v0.9.74-windows-x64.zip `
-            --release dist/release/chejin-worker-v0.9.74-windows-x64.release.json `
+            --archive dist/release/chejin-worker-v0.9.75-windows-x64.zip `
+            --release dist/release/chejin-worker-v0.9.75-windows-x64.release.json `
             --work-root (Join-Path $env:RUNNER_TEMP "chejin-original-client-upgrade")
           if ($LASTEXITCODE -ne 0) { throw "Original client button upgrade failed; production publication blocked" }
           .\.venv\Scripts\python.exe ../ops/formal_release/candidate.py accept --folder dist/release `
             --report (Join-Path $env:RUNNER_TEMP "chejin-original-client-upgrade/upgrade-result.json")
           if ($LASTEXITCODE -ne 0) { throw "Candidate acceptance identity failed" }
 
+      - name: Verify preserve-data manual installation from original 0.9.74
+        shell: powershell
+        working-directory: worker-client
+        run: |
+          .\.venv\Scripts\python.exe scripts/run-windows-client-upgrade-test.py `
+            --manual-install `
+            --old-package-root (Join-Path $env:RUNNER_TEMP "old-074-release\CheJinWorkerClient") `
+            --old-source-root (Join-Path $env:GITHUB_WORKSPACE ".old-source\worker-client") `
+            --target-package-root (Join-Path $env:RUNNER_TEMP "candidate-extracted\CheJinWorkerClient") `
+            --archive dist/release/chejin-worker-v0.9.75-windows-x64.zip `
+            --release dist/release/chejin-worker-v0.9.75-windows-x64.release.json `
+            --work-root (Join-Path $env:RUNNER_TEMP "chejin-manual-install")
+          if ($LASTEXITCODE -ne 0) { throw "Preserve-data manual installation failed" }
+
       - name: Upload verified Windows client
         uses: actions/upload-artifact@v4
         with:
-          name: chejin-worker-v0.9.74-windows-x64-${{ github.sha }}-${{ github.run_attempt }}
+          name: chejin-worker-v0.9.75-windows-x64-${{ github.sha }}-${{ github.run_attempt }}
           path: |
-            worker-client/dist/release/chejin-worker-v0.9.74-windows-x64.zip
-            worker-client/dist/release/chejin-worker-v0.9.74-windows-x64.delivery.json
-            worker-client/dist/release/chejin-worker-v0.9.74-windows-x64.release.json
-            worker-client/dist/release/chejin-worker-v0.9.74-windows-x64.sha256.txt
+            worker-client/dist/release/chejin-worker-v0.9.75-windows-x64.zip
+            worker-client/dist/release/chejin-worker-v0.9.75-windows-x64.delivery.json
+            worker-client/dist/release/chejin-worker-v0.9.75-windows-x64.release.json
+            worker-client/dist/release/chejin-worker-v0.9.75-windows-x64.sha256.txt
           if-no-files-found: error
           compression-level: 0
           retention-days: 14
@@ -647,6 +685,13 @@ jobs:
             ${{ runner.temp }}/chejin-original-client-upgrade/*/after.png
             ${{ runner.temp }}/chejin-original-client-upgrade/**/worker-startup.jsonl
             ${{ runner.temp }}/chejin-original-client-upgrade/**/update-result.json
+            ${{ runner.temp }}/native-long-path.xml
+            ${{ runner.temp }}/chejin-manual-install/**/result.json
+            ${{ runner.temp }}/chejin-manual-install/upgrade-result.json
+            ${{ runner.temp }}/chejin-manual-install/*/data-checkpoints.json
+            ${{ runner.temp }}/chejin-manual-install/*/before.png
+            ${{ runner.temp }}/chejin-manual-install/*/after.png
+            ${{ runner.temp }}/chejin-manual-install/**/process.log
             ${{ runner.temp }}/native-prebuild.xml
             ${{ runner.temp }}/chejin-updater-real-process/native-data-lock-tests.xml
             ${{ runner.temp }}/chejin-updater-real-process/**/update-result.json
@@ -701,7 +746,7 @@ jobs:
         env:
           ACCEPTANCE_COMMIT: ${{ steps.source.outputs.commit }}
         run: |
-          python -m pip install --disable-pip-version-check 'PyYAML==6.0.2'
+          python -m pip install --disable-pip-version-check 'PyYAML==6.0.2' 'SQLAlchemy>=2.0,<3'
           python ops/formal_release/candidate.py delivery-source --folder formal-artifact
       - name: Transfer, verify or publish through restricted receiver
         env:

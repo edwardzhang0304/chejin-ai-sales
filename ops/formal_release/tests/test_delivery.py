@@ -249,7 +249,7 @@ class GateTests(unittest.TestCase):
 
     def test_missing_receiver_or_approval_blocks_before_build(self):
         valid = {'GITHUB_REF':'refs/heads/codex/gray-release-0.9.x','RELEASE_APPROVED':'true',
-                 'RELEASE_REASON':'fixture','DELIVERY_MODE':'build_and_stage','CURRENT_VERSION':'0.9.73',
+                 'RELEASE_REASON':'fixture','DELIVERY_MODE':'build_and_stage','CURRENT_VERSION':'0.9.74',
                  'FORMAL_SSH_KEY':'fixture','FORMAL_SSH_HOST':'example.test','FORMAL_SSH_PORT':'22','FORMAL_KNOWN_HOSTS':'fixture'}
         validate_dispatch.validate(valid)
         for old_version in ('0.9.67', '0.9.68'):
@@ -355,7 +355,11 @@ class RegistrationTests(unittest.TestCase):
                     else:
                         transaction.commit()
                 registry=Mock();storage=Mock()
+                def ready(session):
+                    if active: raise RuntimeError('WORKERS_NOT_DRAINED')
+                    return {'ready': True, 'preserved_queued_tasks': 1}
                 modules={
+                    'app.services.release_readiness':types.SimpleNamespace(assert_release_ready=ready),
                     'sqlalchemy':types.SimpleNamespace(text=lambda s:s),
                     'app.contracts.c2':types.SimpleNamespace(contract_revision=lambda:contract,contract_sha256=lambda:'f'*64),
                     'app.core.database':types.SimpleNamespace(SessionLocal=types.SimpleNamespace(begin=begin)),

@@ -324,7 +324,7 @@ class PackagingScriptsTest(unittest.TestCase):
         self.assertIn("app_name = [string]$manifest.app_name", workflow)
         self.assertIn("default_api_base_url = [string]$manifest.default_api_base_url", workflow)
         self.assertIn("delivery ZIP executable SHA256 mismatch", workflow)
-        self.assertIn("chejin-worker-v0.9.74-windows-x64.delivery.json", workflow)
+        self.assertIn("chejin-worker-v0.9.75-windows-x64.delivery.json", workflow)
         self.assertNotIn("CHEJIN_VISION_CLIENT_API_KEY", workflow)
         self.assertIn('vision_credential_source -ne "worker_backend"', workflow)
         self.assertIn('vision_live_probe_check -ne "runtime_after_binding"', workflow)
@@ -352,7 +352,7 @@ class PackagingScriptsTest(unittest.TestCase):
             workflow,
         )
         self.assertIn("--artifact-storage-key", workflow)
-        self.assertIn("chejin-worker-v0.9.74-windows-x64.release.json", workflow)
+        self.assertIn("chejin-worker-v0.9.75-windows-x64.release.json", workflow)
         self.assertIn("must not contain a temporary download URL", workflow)
 
     def test_formal_update_package_contains_independent_updater_and_real_process_gate(self):
@@ -1154,19 +1154,33 @@ class PackagingScriptsTest(unittest.TestCase):
                         "shared_current_frame_top_fragment_boundary",
                         "image_sampling_excludes_partial_prefix_before_components",
                         "dense_multi_avatar_image_candidate_explicit_failure",
-                        "typed_current_frame_failure_cli_evidence",
-                    ],
+                        "typed_current_frame_failure_cli_evidence"
+                    ]
+                },
+                {
+                    "source_commit": "3b0276efcdc72442df2ffba150dced909e53f238",
+                    "scope": [
+                        "initial_authoritative_history_suffix_without_new_messages",
+                        "initial_history_suffix_opt_in_preserves_action_and_send_policy",
+                        "generated_schema_for_initial_history_suffix_contract"
+                    ]
+                },
+                {
+                    "source_commit": "64377f2dcb32d4b4f3e29ba08431599b7c4cf5e8",
+                    "scope": [
+                        "c2_contract_0_9_75_generated_schema"
+                    ]
                 },
             ],
         )
         self.assertEqual(
             provenance["current_release"],
             {
-                "version": "0.9.74",
-                "source_commit": "e996a4a9099b86cd1e5ae8371c05a082906c5bc3",
-                "contract_revision": "0.9.74",
-                "contract_sha256": "e968efce01e506d6883f5f6b7dc2112a69236bd42fc3e9ce277b30afe40427e5",
-                "scope": "0.9.74 generated schema plus reviewed current-frame boundary, shared partial-prefix handling, complete-image retention and typed frame-error evidence. Worker/backend retain business identity, Flow settlement and no-resend ownership."
+                "version": "0.9.75",
+                "source_commit": "64377f2dcb32d4b4f3e29ba08431599b7c4cf5e8",
+                "contract_revision": "0.9.75",
+                "contract_sha256": "bcb1af09321339b159cc02581f5938e402f16094465933645c71bd7dc0eadcf1",
+                "scope": "0.9.75 generated schema; reviewed 3b0276e initial authoritative history suffix and unchanged action/send policy retained. Worker owns long-path update compatibility and fault messages."
             },
         )
         self.assertIn(
@@ -1595,7 +1609,7 @@ class PackagingScriptsTest(unittest.TestCase):
         self.assertIn('$packageDir = [string]$manifest.package_dir', workflow)
         self.assertIn('$exePath = [string]$manifest.exe_path', workflow)
         self.assertNotIn('dist\\车金Worker客户端', workflow)
-        self.assertIn('version -ne "0.9.74"', workflow)
+        self.assertIn('version -ne "0.9.75"', workflow)
         self.assertIn('tests_status -ne "passed"', workflow)
         self.assertIn('@("--omniauto-sidecar", "--help")', workflow)
         self.assertIn('@("--omniauto-ocr-probe")', workflow)

@@ -41,7 +41,21 @@ def run_fixed(args, **kwargs):
     return result.stdout
 
 
+def require_publication_approval(folder, meta):
+    # A reviewed operator receipt is local/root-owned, never taken from the artifact.
+    from build_admin import validate_browser_receipt
+    from maintenance import BLOCK, INCLUDE, SNIPPET, SITE, validate_ingress
+    require(SNIPPET.exists() and SNIPPET.read_text() == BLOCK and INCLUDE in SITE.read_text(), "PERSISTENT_MAINTENANCE_REQUIRED")
+    validate_ingress()
+    approval = json.loads((folder / "production-approval.json").read_text())
+    require(approval.get("version") == meta["version"] and approval.get("commit") == meta["commit"] and approval.get("sha256") == meta["sha256"], "PRODUCTION_APPROVAL_IDENTITY_MISMATCH")
+    require(approval.get("button_upgrade_accepted") is True, "BUTTON_UPGRADE_NOT_ACCEPTED")
+    require(approval.get("old_nginx_workers_drained") is True, "INGRESS_NOT_DRAINED")
+    validate_browser_receipt(approval["admin_candidate"], approval["admin_browser_receipt"])
+
+
 def publish(folder, meta, verified, config, check_only):
+    require_publication_approval(folder, meta)
     require(run_fixed(["docker", "inspect", config["container"], "--format", "{{.State.Health.Status}}"], text=True).strip() == "healthy", "BACKEND_UNHEALTHY")
     stem, _ = identity(meta)
     # Only root-owned, verified files cross into the container. No script from the ZIP runs.
