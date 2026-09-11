@@ -145,8 +145,8 @@ def validate_prefix(run, jobs, log):
     require(job['conclusion']=='failure', 'UNEXPECTED_PREFIX_JOB')
     for name in ('Fail fast on native Windows handoff checks','Native Windows long-path negative and repaired controls'):
         require(any(s['name']==name and s['conclusion']=='success' for s in job['steps']), 'NATIVE_PREFIX_NOT_PASSED')
-    for index in (1,2):
-        require('end-action id=__self.__run_'+str(index)+';outcome=success;conclusion=success;' in log, 'SHARED_PREFIX_NOT_PASSED')
+    for step_id in ('__self.__run','__self.__run_2'):
+        require('end-action id='+step_id+';outcome=success;conclusion=success;' in log, 'SHARED_PREFIX_NOT_PASSED')
     require('test_v16_component_ui_assets_are_packaged' in log and 'FAILED (failures=1)' in log
             and 'end-action id=__self.__run_3;outcome=failure;conclusion=failure;' in log, 'UNEXPECTED_SHARED_PREFIX_FAILURE')
     return ['credentials']
