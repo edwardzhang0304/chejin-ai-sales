@@ -37,12 +37,12 @@ def git(*args):
     return subprocess.check_output(['git', *args], cwd=ROOT)
 
 
-def fingerprint(ref, *, repair=False):
+def fingerprint(ref, *, repair=False, repair_files=None):
     entries=[]
     for row in git('ls-tree','-rz',ref).split(b'\0'):
         if not row: continue
         _,name=row.split(b'\t',1)
-        if repair and name.decode() in REPAIR_FILES: continue
+        if repair and name.decode() in (REPAIR_FILES if repair_files is None else repair_files): continue
         entries.append(row.decode())
     return hashlib.sha256(json.dumps(entries,ensure_ascii=False).encode()).hexdigest()
 
@@ -77,9 +77,13 @@ def load_receipt(path):
     require(receipt['run_id']==os.environ.get('GITHUB_RUN_ID'), 'RECEIPT_RUN_MISMATCH')
     require(receipt['run_attempt']==os.environ.get('GITHUB_RUN_ATTEMPT'), 'RECEIPT_ATTEMPT_MISMATCH')
     require(set(receipt['completed_suites'])<=set(SUITES), 'UNKNOWN_REUSED_SUITE')
-    require(receipt.get('mode') in {'same_run_complete','verified_partial_source'}, 'UNVERIFIED_RECEIPT_MODE')
+    require(receipt.get('mode') in {'same_run_complete','verified_partial_source','verified_shared_prefix'}, 'UNVERIFIED_RECEIPT_MODE')
     if receipt['mode']=='same_run_complete':
         require(set(receipt['completed_suites'])==set(SUITES), 'INCOMPLETE_CURRENT_RUN')
+    elif receipt['mode']=='verified_shared_prefix':
+        require(receipt.get('original_run')==PREFIX_RUN and receipt.get('original_commit')==PREFIX_COMMIT
+                and receipt.get('native_stage')=='passed' and receipt.get('native_long_path')=='passed'
+                and set(receipt['completed_suites'])=={'credentials'}, 'INVALID_PREFIX_RECEIPT')
     else:
         require(receipt.get('original_run')==ORIGINAL_RUN and receipt.get('original_commit')==ORIGINAL_COMMIT
                 and receipt.get('native_stage')=='passed' and receipt.get('shared_stage')=='passed'
@@ -95,6 +99,8 @@ def complete(path, suites):
 
 
 def resolve(run_id, output):
+    if run_id == PREFIX_RUN:
+        return resolve_prefix(run_id, output)
     require(run_id==ORIGINAL_RUN, 'UNSUPPORTED_REUSE_RUN')
     require(os.environ.get('GITHUB_ACTIONS')=='true' and os.environ.get('GITHUB_REPOSITORY')==REPO,'TRUSTED_CI_REQUIRED')
     require(fingerprint(ORIGINAL_COMMIT,repair=True)==fingerprint('HEAD',repair=True),'REUSED_SOURCE_CHANGED')
@@ -108,7 +114,65 @@ def resolve(run_id, output):
       'original_run':run_id,'original_commit':ORIGINAL_COMMIT,'original_log_sha256':hashlib.sha256(log.encode()).hexdigest(),
       'native_stage':'passed','shared_stage':'passed','unittest_passed':1108,'ui_bridge_passed':4,'add_friend_passed':47}
     save(output,receipt)
+    export_flags({'CHEJIN_SHARED_CHECKS_COMPLETE':'true'})
     print(json.dumps({'source_reuse':'verified','original_run':run_id,'completed_suites':suites}))
+
+
+
+PREFIX_RUN = '34567516324'
+PREFIX_COMMIT = 'ae23705c3317c7ebd2970879b9e57756c5f889c0'
+PREFIX_REPAIRS = {
+ 'ops/formal_release/tests/test_candidate.py',
+ '.github/workflows/worker-windows-package.yml', '.github/actions/worker-release-checks/action.yml',
+ 'ops/formal_release/source_check_reuse.py', 'ops/formal_release/tests/test_source_check_reuse.py',
+ 'ops/formal_release/install.sh', 'ops/formal_release/maintenance.py',
+ 'ops/formal_release/tests/test_release_environment.py', 'worker-client/tests/test_ui_contract.py',
+ *[p for p in REPAIR_FILES if p.startswith('deliverables/')],
+}
+
+
+def export_flags(flags):
+    with open(os.environ['GITHUB_ENV'], 'a', encoding='utf-8') as out:
+        for key, value in flags.items(): out.write(key+'='+value+'\n')
+
+
+def validate_prefix(run, jobs, log):
+    require(str(run['id'])==PREFIX_RUN and run['head_sha']==PREFIX_COMMIT
+            and run['head_branch']=='codex/gray-release-0.9.x' and run['event']=='workflow_dispatch'
+            and run['path']=='.github/workflows/worker-windows-package.yml' and run['status']=='completed', 'UNTRUSTED_PREFIX_RUN')
+    job=next(j for j in jobs if j['name']=='Build signed formal Windows package')
+    require(job['conclusion']=='failure', 'UNEXPECTED_PREFIX_JOB')
+    for name in ('Fail fast on native Windows handoff checks','Native Windows long-path negative and repaired controls'):
+        require(any(s['name']==name and s['conclusion']=='success' for s in job['steps']), 'NATIVE_PREFIX_NOT_PASSED')
+    for index in (1,2):
+        require('end-action id=__self.__run_'+str(index)+';outcome=success;conclusion=success;' in log, 'SHARED_PREFIX_NOT_PASSED')
+    require('test_v16_component_ui_assets_are_packaged' in log and 'FAILED (failures=1)' in log
+            and 'end-action id=__self.__run_3;outcome=failure;conclusion=failure;' in log, 'UNEXPECTED_SHARED_PREFIX_FAILURE')
+    return ['credentials']
+
+
+def resolve_prefix(run_id, output):
+    require(os.environ.get('GITHUB_ACTIONS')=='true' and os.environ.get('GITHUB_REPOSITORY')==REPO,'TRUSTED_CI_REQUIRED')
+    require(fingerprint(PREFIX_COMMIT,repair=True,repair_files=PREFIX_REPAIRS)==fingerprint('HEAD',repair=True,repair_files=PREFIX_REPAIRS), 'REUSED_PREFIX_SOURCE_CHANGED')
+    # Skip conditions may change; commands and dependencies from reused stages may not.
+    import yaml
+    def definition(ref, path): return yaml.load(git('show',ref+':'+path),Loader=yaml.BaseLoader)
+    old=definition(PREFIX_COMMIT,'.github/workflows/worker-windows-package.yml')['jobs']['package']
+    new=definition('HEAD','.github/workflows/worker-windows-package.yml')['jobs']['package']
+    require([{k:v for k,v in step.items() if k!='if'} for step in old['steps']]==[{k:v for k,v in step.items() if k!='if'} for step in new['steps']], 'REUSED_WINDOWS_COMMANDS_CHANGED')
+    path='.github/actions/worker-release-checks/action.yml'
+    require([{k:v for k,v in step.items() if k!='if'} for step in definition(PREFIX_COMMIT,path)['runs']['steps']]==[{k:v for k,v in step.items() if k!='if'} for step in definition('HEAD',path)['runs']['steps']], 'REUSED_SHARED_COMMANDS_CHANGED')
+    def api(path):return json.loads(subprocess.check_output(['gh','api',f'repos/{REPO}/'+path],text=True,encoding='utf-8'))
+    run=api('actions/runs/'+run_id);jobs=api('actions/runs/'+run_id+'/jobs?per_page=100')['jobs']
+    log=subprocess.check_output(['gh','run','view',run_id,'--repo',REPO,'--log-failed'],text=True,encoding='utf-8')
+    suites=validate_prefix(run,jobs,log)
+    receipt={'schema_version':1,'current_commit':git('rev-parse','HEAD').decode().strip(),
+      'current_tree_sha256':fingerprint('HEAD'),'run_id':os.environ['GITHUB_RUN_ID'],'run_attempt':os.environ['GITHUB_RUN_ATTEMPT'],
+      'mode':'verified_shared_prefix','completed_suites':suites,'original_run':run_id,'original_commit':PREFIX_COMMIT,
+      'original_log_sha256':hashlib.sha256(log.encode()).hexdigest(),'native_stage':'passed','native_long_path':'passed'}
+    save(output,receipt)
+    export_flags({'CHEJIN_SHARED_CREDENTIALS_REUSED':'true','CHEJIN_SHARED_SETTLEMENT_REUSED':'true','CHEJIN_LONG_PATH_REUSED':'true'})
+    print(json.dumps({'source_reuse':'verified_shared_prefix','original_run':run_id,'failed_and_unexecuted_checks':'must_run'}))
 
 
 if __name__=='__main__':

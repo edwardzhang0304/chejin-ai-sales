@@ -4,6 +4,7 @@ runs:
   using: composite
   steps:
     - name: Run credential security gate
+      if: github.workflow != 'Worker Windows package gate' || env.CHEJIN_SHARED_CREDENTIALS_REUSED != 'true'
       working-directory: worker-client
       shell: powershell
       run: |
@@ -14,6 +15,7 @@ runs:
         }
 
     - name: Run affected Worker and backend read-settlement tests
+      if: github.workflow != 'Worker Windows package gate' || env.CHEJIN_SHARED_SETTLEMENT_REUSED != 'true'
       working-directory: .
       shell: powershell
       run: |

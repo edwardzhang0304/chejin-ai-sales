@@ -57,11 +57,18 @@ def main():
     try:subprocess.run(['nginx','-t'],capture_output=True,check=True)
     except Exception:
         atomic(site,before);atomic(SNIPPET,previous if a.operation=='enable' else BLOCK);raise
-    old=old_workers();subprocess.run(['systemctl','reload','nginx'],check=True)
-    until=time.monotonic()+60
-    while old.intersection(old_workers()):
-        if time.monotonic()>until:raise RuntimeError('OLD_NGINX_WORKERS_NOT_DRAINED; maintenance remains applied')
-        time.sleep(1)
+    try:
+        old=old_workers();subprocess.run(['systemctl','reload','nginx'],check=True)
+        until=time.monotonic()+60
+        while old.intersection(old_workers()):
+            if time.monotonic()>until:raise RuntimeError('OLD_NGINX_WORKERS_NOT_DRAINED')
+            time.sleep(1)
+    except Exception:
+        # A failed unfreeze must not leave an inactive persistent configuration.
+        atomic(SNIPPET,BLOCK)
+        subprocess.run(['nginx','-t'],capture_output=True,check=True)
+        subprocess.run(['systemctl','reload','nginx'],check=True)
+        raise RuntimeError('RELOAD_OR_DRAIN_FAILED; freeze restored; verify ingress before continuing')
     result={'maintenance':'active' if a.operation=='enable' else 'inactive','persistent':True,'old_workers_drained':True,'scope':'public_grant_endpoints','snippet_sha256':hashlib.sha256(SNIPPET.read_bytes()).hexdigest()}
     (evidence/('maintenance-'+a.operation+'.json')).write_text(json.dumps(result,indent=2));print(json.dumps(result))
 if __name__=='__main__':main()

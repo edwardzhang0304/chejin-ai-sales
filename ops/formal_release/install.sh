@@ -1,6 +1,6 @@
 #!/bin/sh
 # Run from a reviewed bundle on the production host; no runtime configuration edits.
-# Required bundle: receiver.py verify.py register.py, baseline/<version>/chejin_worker_client,
+# Required bundle: receiver.py verify.py register.py maintenance.py build_admin.py, baseline/<version>/chejin_worker_client,
 # stage.pub, promote.pub, and trusted-public-keys.json copied from existing trust.
 set -eu
 bundle=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
@@ -15,7 +15,7 @@ if getent passwd "$user" >/dev/null; then
   exit 1
 fi
 python3 -c 'import cryptography'
-for file in receiver.py verify.py register.py disable.sh stage.pub promote.pub trusted-public-keys.json; do
+for file in receiver.py verify.py register.py maintenance.py build_admin.py disable.sh stage.pub promote.pub trusted-public-keys.json; do
   test -f "$bundle/$file"
 done
 python3 - "$bundle" <<'PY'
@@ -31,7 +31,7 @@ for version in ('0.9.69',):
 PY
 install -d -m 755 "$target"
 install -m 700 "$bundle/disable.sh" "$target/disable.sh"
-install -m 644 "$bundle/receiver.py" "$bundle/verify.py" "$bundle/register.py" "$target/"
+install -m 644 "$bundle/receiver.py" "$bundle/verify.py" "$bundle/register.py" "$bundle/maintenance.py" "$bundle/build_admin.py" "$target/"
 cp -R "$bundle/baseline" "$target/baseline"
 chown -R root:root "$target"
 chmod -R go-w "$target"
