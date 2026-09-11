@@ -210,6 +210,14 @@
         "dense_multi_avatar_image_candidate_explicit_failure",
         "typed_current_frame_failure_cli_evidence"
       ]
+    },
+    {
+      "source_commit": "3b0276efcdc72442df2ffba150dced909e53f238",
+      "scope": [
+        "initial_authoritative_history_suffix_without_new_messages",
+        "initial_history_suffix_opt_in_preserves_action_and_send_policy",
+        "generated_schema_for_initial_history_suffix_contract"
+      ]
     }
   ],
   "chejin_overlays": [
@@ -242,10 +250,10 @@
   ],
   "current_release": {
     "version": "0.9.74",
-    "source_commit": "e996a4a9099b86cd1e5ae8371c05a082906c5bc3",
+    "source_commit": "3b0276efcdc72442df2ffba150dced909e53f238",
     "contract_revision": "0.9.74",
-    "contract_sha256": "e968efce01e506d6883f5f6b7dc2112a69236bd42fc3e9ce277b30afe40427e5",
-    "scope": "0.9.74 generated schema plus reviewed current-frame boundary, shared partial-prefix handling, complete-image retention and typed frame-error evidence. Worker/backend retain business identity, Flow settlement and no-resend ownership."
+    "contract_sha256": "2dae0f829281be7978d2647d6557f22c41229b48d462f110db606b1c7791f6e6",
+    "scope": "Unreleased reviewed integration: initial authoritative history-only suffix acceptance and derived contract hash; prior 0.9.74 current-frame and complete-image protections retained. Action/pre-send callers retain default behavior. Native Windows and formal delivery pending; published 0.9.74 artifacts unchanged."
   },
   "historical_integrations": [
     {

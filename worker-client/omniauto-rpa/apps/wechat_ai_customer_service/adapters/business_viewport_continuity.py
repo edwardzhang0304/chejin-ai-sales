@@ -26,6 +26,7 @@ BUSINESS_VIEWPORT_CONTINUITY_RESULTS = frozenset(
         "business_sequence_equal",
         "unique_tail_append",
         "unique_viewport_slide_with_tail_append",
+        "unique_history_suffix_without_new_messages",
         "continuity_context_expansion_required",
         "business_sequence_not_continuous",
     }
@@ -246,11 +247,14 @@ def _compare_business_viewport_continuity_direct(
     old_top_boundary_complete: bool = False,
     new_top_boundary_complete: bool = False,
     context_expansion_used: bool = False,
+    allow_history_suffix: bool = False,
 ) -> dict[str, Any]:
     """Compare two business viewports without geometry or durable-ID guesses.
 
-    A unique slide is an old *suffix* equal to a new *prefix* with a non-empty
-    new tail.  Repeated facts remain ambiguous unless the overlap contains a
+    A unique slide is an old *suffix* equal to a new *prefix*. Historical
+    checkpoint reads may explicitly accept an empty new tail; action and
+    pre-send callers retain their existing non-empty-tail requirement.
+    Repeated facts remain ambiguous unless the overlap contains a
     strong boundary token shared by exactly one old row and one new row.  The
     caller may retry once after a bounded read-only context expansion; this
     pure function never performs UI work itself.
@@ -377,9 +381,8 @@ def _compare_business_viewport_continuity_direct(
         old_start = len(old) - overlap_size
         if old_keys[old_start:] != new_keys[:overlap_size]:
             continue
-        if overlap_size >= len(new):
-            # A slide without a non-empty new tail is not a new-message
-            # continuation and must not be accepted by this relation.
+        if overlap_size >= len(new) and not allow_history_suffix:
+            # Action/pre-send continuity does not opt into history-only reads.
             continue
         raw_candidates.append(
             {
@@ -426,7 +429,9 @@ def _compare_business_viewport_continuity_direct(
         old_start = int(candidate["old_start"])
         overlap_size = int(candidate["overlap_size"])
         relation = (
-            "unique_tail_append"
+            "unique_history_suffix_without_new_messages"
+            if overlap_size == len(new)
+            else "unique_tail_append"
             if candidate["complete_old_prefix"]
             else "unique_viewport_slide_with_tail_append"
         )
@@ -480,6 +485,7 @@ def compare_business_viewport_continuity(
     expanded_context_boundary_tokens: (
         dict[int, set[str] | list[str] | tuple[str, ...]] | None
     ) = None,
+    allow_history_suffix: bool = False,
 ) -> dict[str, Any]:
     """The single public pure continuity comparator.
 
@@ -498,6 +504,7 @@ def compare_business_viewport_continuity(
         old_top_boundary_complete=old_top_boundary_complete,
         new_top_boundary_complete=new_top_boundary_complete,
         context_expansion_used=context_expansion_used,
+        allow_history_suffix=allow_history_suffix,
     )
     if (
         direct.get("relation")
