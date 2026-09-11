@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       release_approved:
-        description: Formal release is approved; required source tests run in this workflow
+        description: Formal release is approved; reviewed source evidence is required
         required: true
         type: boolean
         default: false
@@ -18,7 +18,7 @@ on:
         options: [build_and_stage, retest_candidate, stage_existing, check_staged, publish_staged]
         default: build_and_stage
       source_reuse_run_id:
-        description: Optional verified prior source-check run; never skips unfinished or changed checks
+        description: Passed source-evidence run (or complete legacy formal source run); empty finds matching evidence
         default: ''
       current_client_version:
         description: Exact installed client version whose updater and trust must accept the package
@@ -65,10 +65,23 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12.10'
-      - name: Run formal delivery regression tests before release work
+      - name: Verify reusable release-tool and source evidence
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_RUN_ID: ${{ inputs.source_reuse_run_id }}
         run: |
-          python -m pip install --disable-pip-version-check 'cryptography>=42.0,<46' 'PyYAML==6.0.2' 'SQLAlchemy>=2.0,<3'
-          python -m unittest discover -s ops/formal_release/tests -v
+          if [ "$DELIVERY_MODE" = build_and_stage ]; then
+            python ops/formal_release/source_evidence.py resolve --source-run "$SOURCE_RUN_ID" --output "$RUNNER_TEMP/formal-source-evidence.json"
+          else
+            python ops/formal_release/source_evidence.py tools
+          fi
+      - uses: actions/upload-artifact@v4
+        if: inputs.delivery_mode == 'build_and_stage'
+        with:
+          name: formal-source-evidence-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/formal-source-evidence.json
+          retention-days: 90
+          if-no-files-found: error
       - name: Validate dispatch without executing input as shell code
         env:
           FORMAL_SSH_KEY: ${{ secrets.FORMAL_SSH_KEY }}
@@ -106,19 +119,13 @@ jobs:
             worker-client/requirements.txt
             worker-client/requirements-test.txt
 
-      - name: Resolve immutable completed source-check evidence
-        if: inputs.source_reuse_run_id != ''
-        shell: powershell
-        env:
-          GH_TOKEN: ${{ github.token }}
-          REUSE_RUN_ID: ${{ inputs.source_reuse_run_id }}
-        run: |
-          $receipt = Join-Path $env:RUNNER_TEMP "source-checks-partial.json"
-          python ops/formal_release/source_check_reuse.py --run-id $env:REUSE_RUN_ID --output $receipt
-          if ($LASTEXITCODE -ne 0) { throw "Source reuse evidence rejected" }
-          "CHEJIN_SOURCE_CHECK_RECEIPT=$receipt" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+      - name: Download evidence verified by this run
+        uses: actions/download-artifact@v4
+        with:
+          name: formal-source-evidence-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/formal-source-evidence
 
-      - name: Fail fast on native Windows handoff checks
+      - name: Prepare build environment and verify source evidence
         shell: powershell
         working-directory: worker-client
         run: |
@@ -127,47 +134,17 @@ jobs:
           $env:PYTHONIOENCODING = "utf-8"
           $env:PYTHONPATH = $PWD.Path
           $env:CHEJIN_WORKER_HOME = Join-Path $env:RUNNER_TEMP "chejin-native-prebuild"
+          $receipt = Join-Path $env:RUNNER_TEMP "formal-source-evidence/formal-source-evidence.json"
+          $env:CHEJIN_FORMAL_SOURCE_RECEIPT = $receipt
+          python ../ops/formal_release/source_evidence.py verify
+          if ($LASTEXITCODE -ne 0) { throw "Formal source evidence rejected; no fallback full tests" }
+          "CHEJIN_FORMAL_SOURCE_RECEIPT=$receipt" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
           python -m venv .venv
           .\.venv\Scripts\python.exe -m pip install --disable-pip-version-check -r requirements.txt -r requirements-test.txt -r ../backend/requirements.txt "websockets==15.0.1" "PyYAML==6.0.2" httpx2
-          if ($LASTEXITCODE -ne 0) { throw "Native gate dependencies failed" }
+          if ($LASTEXITCODE -ne 0) { throw "Build dependencies failed" }
           .\.venv\Scripts\python.exe scripts/run-windows-client-upgrade-test.py --driver-smoke (Join-Path $env:RUNNER_TEMP "qt-driver-prebuild")
           if ($LASTEXITCODE -ne 0) { throw "Qt GUI driver prebuild gate failed" }
-          if (-not $env:CHEJIN_SOURCE_CHECK_RECEIPT) {
-            .\.venv\Scripts\python.exe -m pytest tests/test_update_handoff_baseline.py tests/test_post_update_health.py tests/test_update_shutdown_ui.py tests/test_legacy_update_handoff.py tests/test_windows_upgrade_gate_data.py -q --junitxml "$env:RUNNER_TEMP/native-prebuild.xml"
-            if ($LASTEXITCODE -ne 0) { throw "Native handoff prebuild gate failed" }
-          } else { Write-Output "Native handoff source checks reused from verified identical source; fresh Qt driver smoke passed" }
           Add-Content -Path $env:GITHUB_PATH -Value (Join-Path $PWD ".venv/Scripts")
-
-      - name: Native Windows long-path negative and repaired controls
-        if: env.CHEJIN_LONG_PATH_REUSED != 'true'
-        shell: powershell
-        working-directory: worker-client
-        run: |
-          $ErrorActionPreference = "Stop"
-          $registry = "HKLM:\SYSTEM\CurrentControlSet\Control\FileSystem"
-          $before = (Get-ItemProperty -Path $registry -Name LongPathsEnabled).LongPathsEnabled
-          try {
-            Set-ItemProperty -Path $registry -Name LongPathsEnabled -Value 0
-            $env:CHEJIN_TEST_NATIVE_LEGACY_PATH_LIMIT = "1"
-            .\.venv\Scripts\python.exe -m pytest tests/test_update_long_paths.py::test_native_windows_legacy_limit_and_fixed_extraction -q --junitxml "$env:RUNNER_TEMP/native-long-path.xml"
-            if ($LASTEXITCODE -ne 0) { throw "Native long-path regression failed before packaging" }
-          } finally {
-            Set-ItemProperty -Path $registry -Name LongPathsEnabled -Value $before
-            Remove-Item Env:CHEJIN_TEST_NATIVE_LEGACY_PATH_LIMIT -ErrorAction SilentlyContinue
-          }
-
-      - name: Run shared source checks
-        if: env.CHEJIN_SHARED_CHECKS_COMPLETE != 'true'
-        uses: ./.github/actions/worker-release-checks
-
-      - name: Finish source checks once before compilation
-        shell: powershell
-        working-directory: worker-client
-        run: |
-          $receipt = Join-Path $env:RUNNER_TEMP "source-checks-complete.json"
-          .\.venv\Scripts\python.exe run_checks.py --write-receipt $receipt
-          if ($LASTEXITCODE -ne 0) { throw "Source checks failed before compilation" }
-          "CHEJIN_SOURCE_CHECK_RECEIPT=$receipt" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
       - name: Build and run packaged runtime probes
         shell: powershell
@@ -437,6 +414,7 @@ jobs:
             file_count = [int]$manifest.file_count
             package_bytes = [long]$manifest.package_bytes
             tests_status = [string]$manifest.tests_status
+            source_test_evidence = $manifest.source_test_evidence
             preflight_status = [string]$manifest.preflight_status
             vision_credential_embedded = [bool]$manifest.vision_credential_embedded
             vision_credential_source = [string]$manifest.vision_credential_source
@@ -454,7 +432,7 @@ jobs:
             omniauto_tree_sha256 = [string]$manifest.packaged_omniauto_tree_sha256
             created_at = (Get-Date).ToUniversalTime().ToString("o")
           }
-          $deliveryManifest | ConvertTo-Json -Depth 5 | Set-Content -Encoding UTF8 $deliveryManifestPath
+          $deliveryManifest | ConvertTo-Json -Depth 12 | Set-Content -Encoding UTF8 $deliveryManifestPath
           "$($zipHash.ToLowerInvariant())  $zipName" | Set-Content -Encoding ASCII $sha256Path
           .\.venv\Scripts\python.exe .\scripts\sign-client-release.py `
             --archive $zipPath `
@@ -517,8 +495,7 @@ jobs:
             ${{ runner.temp }}/chejin-manual-install/*/after.png
             ${{ runner.temp }}/chejin-manual-install/**/process.log
             ${{ runner.temp }}/native-prebuild.xml
-            ${{ runner.temp }}/source-checks-partial.json
-            ${{ runner.temp }}/source-checks-complete.json
+            ${{ runner.temp }}/formal-source-evidence/formal-source-evidence.json
             ${{ runner.temp }}/chejin-updater-real-process/native-data-lock-tests.xml
             ${{ runner.temp }}/chejin-updater-real-process/**/update-result.json
             ${{ runner.temp }}/chejin-updater-real-process/**/worker-startup.jsonl

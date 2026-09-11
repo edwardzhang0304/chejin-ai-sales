@@ -230,7 +230,7 @@ class SelectionAndWorkflowTests(unittest.TestCase):
         self.assertIn("needs.acceptance.result == 'success'", jobs["deliver"]["if"])
         self.assertFalse(any("build-windows.ps1" in step.get("run", "") for step in jobs["acceptance"]["steps"]))
         names = [step.get("name") for step in jobs["package"]["steps"]]
-        self.assertLess(names.index("Fail fast on native Windows handoff checks"), names.index("Build and run packaged runtime probes"))
+        self.assertLess(names.index("Prepare build environment and verify source evidence"), names.index("Build and run packaged runtime probes"))
 
     def test_retest_requires_candidate_run_and_configured_old_client(self):
         env = {"GITHUB_REF": "refs/heads/codex/gray-release-0.9.x", "RELEASE_APPROVED": "true",
