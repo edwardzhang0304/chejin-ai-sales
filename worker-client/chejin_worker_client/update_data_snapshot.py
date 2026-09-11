@@ -234,6 +234,11 @@ def _binding(plan: dict[str, Any]) -> dict[str, Any]:
 
 def capture_data_baseline(plan: dict[str, Any], plan_path: Path, token: str) -> dict[str, Any]:
     path = baseline_path(plan, plan_path)
+    handoff = (plan.get('safe_boundary') or {}).get('pending_read_handoff')
+    if handoff is not None:
+        from .pending_read_recovery import inspect_pending_read
+        if inspect_pending_read(Path(plan['data_dir'])) != handoff:
+            raise RuntimeError('UPDATE_PENDING_READ_HANDOFF_CHANGED')
     # A permanent create-once marker makes interrupted capture fail closed too.
     try:
         with path.with_suffix(".capture-started").open("x", encoding="utf-8") as f:
@@ -246,6 +251,8 @@ def capture_data_baseline(plan: dict[str, Any], plan_path: Path, token: str) -> 
         raise RuntimeError("UPDATE_DATA_BASELINE_ALREADY_EXISTS")
     payload = {**_binding(plan), "captured_after_old_exit": True,
                "snapshot": protected_update_snapshot(data_dir=Path(plan["data_dir"]), digest_key=token)}
+    if handoff is not None:
+        payload['pending_read_handoff'] = handoff
     temporary = path.with_suffix(".tmp")
     with temporary.open("x", encoding="utf-8") as f:
         json.dump({"payload": payload, "auth": authenticate(payload, token)}, f, ensure_ascii=False)

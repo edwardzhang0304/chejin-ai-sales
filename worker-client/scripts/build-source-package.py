@@ -215,6 +215,8 @@ def build(
             PROJECT_ROOT / "contracts" / "c2_contract_v3.json",
             "worker-client/contracts/c2_contract_v3.json",
         )
+        for recovery_contract in sorted((PROJECT_ROOT / "contracts" / "recovery").glob("*.json")):
+            archive.write(recovery_contract, "worker-client/contracts/recovery/" + recovery_contract.name)
         archive.write(
             PROJECT_ROOT
             / "contracts"

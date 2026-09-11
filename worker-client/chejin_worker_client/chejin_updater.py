@@ -211,13 +211,21 @@ def validate_update_plan(plan_path: Path, token: str) -> dict[str, Any]:
         )
     forbidden_truthy = (
         "current_task",
-        "inflight_flow_id",
         "task_lease_active",
         "ui_lock_active",
         "sidecar_active",
     )
     if any(bool(safe_boundary.get(key)) for key in forbidden_truthy):
         raise ClientUpdateError("UPDATE_INSTALL_FAILED", "更新计划仍包含运行中的业务动作")
+    handoff = safe_boundary.get('pending_read_handoff')
+    if handoff is not None:
+        if (not isinstance(handoff, dict) or handoff.get('protocol_version') != 1
+                or safe_boundary.get('confirmed_run_status') != 'faulted'
+                or handoff.get('flow_id') != safe_boundary.get('inflight_flow_id')
+                or not handoff.get('outbox_sha256')):
+            raise ClientUpdateError('UPDATE_INSTALL_FAILED', '故障读取交接证明无效')
+    elif safe_boundary.get('inflight_flow_id'):
+        raise ClientUpdateError('UPDATE_INSTALL_FAILED', '原流程尚未结束且没有可验证交接')
     blocker_counts = (
         "waiting_ledger",
         "pending_c2_outbox",
@@ -232,6 +240,9 @@ def validate_update_plan(plan_path: Path, token: str) -> dict[str, Any]:
         )
     except (TypeError, ValueError) as exc:
         raise ClientUpdateError("UPDATE_INSTALL_FAILED", "更新计划业务阻断计数无效") from exc
+    if handoff is not None:
+        has_durable_blocker = any(int(safe_boundary.get(k) or 0) != 0 for k in blocker_counts
+                                  if k not in {'waiting_ledger', 'pending_c2_outbox'})
     if has_durable_blocker:
         raise ClientUpdateError("UPDATE_INSTALL_FAILED", "更新计划仍包含未结算业务记录")
     release = _release_from_plan(plan)
@@ -246,7 +257,11 @@ def validate_update_plan(plan_path: Path, token: str) -> dict[str, Any]:
     verify_release_signature(release, trusted_keys=load_trusted_release_keys())
     if hash_file(archive) != str(release.artifact_sha256 or "").lower():
         raise ClientUpdateError("UPDATE_PACKAGE_HASH_MISMATCH", "Updater重新校验更新包失败")
-    verify_staged_package(release, staged)
+    package_manifest = verify_staged_package(release, staged)
+    if handoff is not None:
+        from .pending_read_recovery import accepts_handoff
+        if not accepts_handoff(package_manifest.get('pending_read_recovery'), handoff):
+            raise ClientUpdateError('UPDATE_PACKAGE_INCOMPATIBLE', '签名目标包未声明可恢复原读取合同')
     return {
         **plan,
         "health_timeout_seconds": health_timeout_seconds,

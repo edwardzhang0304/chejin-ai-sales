@@ -17,6 +17,7 @@ COPY backend/configs ./configs
 COPY backend/scripts ./scripts
 COPY backend/docker/entrypoint.sh /entrypoint.sh
 COPY contracts/c2_contract_v3.json ./contracts/c2_contract_v3.json
+COPY contracts/recovery ./contracts/recovery
 COPY worker-client/omniauto-rpa ./omniauto-rpa
 
 RUN chmod +x /entrypoint.sh

@@ -1085,6 +1085,8 @@ class UpdateCoordinator:
                 if binding and binding.run_status == "faulted":
                     self._fault_after_request = True
                 boundary = self.runner.update_install_safety_snapshot()
+                if not boundary.get('safe') and (prepared.get('package_manifest') or {}).get('pending_read_recovery'):
+                    boundary = self.runner.update_pending_read_handoff_snapshot(prepared['package_manifest'])
                 if boundary.get("safe") is True:
                     self._start_install(waiting, release, request_root, boundary)
                     return

@@ -3,6 +3,7 @@ from datetime import timedelta, timezone
 from sqlalchemy import and_, or_, select
 from sqlalchemy.orm import Session
 
+from app.contracts.c2 import contract_revision, contract_sha256
 from app.core.request_context import ActorContext
 from app.enums import TaskStatus
 from app.errors import AppError
@@ -87,30 +88,9 @@ def _bound_sales(db: Session, worker_id: str) -> Sales | None:
     return db.scalar(select(Sales).where(Sales.worker_id == worker_id, Sales.deleted_at.is_(None)))
 
 
-def fault_recovery_readiness(db: Session, worker: Worker) -> dict:
-    """One server gate for the heartbeat projection and explicit recovery.
-
-    The transition calls this under the existing Worker row lock. Read related
-    work without taking inverse Task/Conversation locks; recovery never settles
-    or deletes any of it on behalf of the original owner.
-    """
-    reason = ""
-    if worker.client_binding_state != "bound" or not worker.client_instance_id:
-        reason = "客户端绑定未就绪"
-    elif computed_online_status(worker) != "online":
-        reason = "等待客户端重新连接"
-    elif (worker.inflight_flow_state or {}).get("flow_id"):
-        reason = "等待原流程正常结束"
-    elif worker.current_task or worker.running_status != "idle":
-        reason = "等待原任务正常结束"
-    elif (worker.local_lock_summary or {}).get("locked"):
-        reason = "等待界面操作锁释放"
-    elif db.scalar(select(Task.id).where(
-        or_(Task.worker_id == worker.id, Task.lease_owner_worker_id == worker.id),
-        or_(Task.status == "running", Task.lease_expires_at > utcnow()),
-    ).limit(1)):
-        reason = "等待原任务或租约结算"
-    elif db.scalar(select(ReplyAction.id).outerjoin(
+def has_unsettled_worker_send(db: Session, worker: Worker) -> bool:
+    """Shared receipt-settlement barrier; an accepted unknown stays no-resend."""
+    return bool(db.scalar(select(ReplyAction.id).outerjoin(
         Conversation, ReplyAction.conversation_id == Conversation.conversation_id
     ).where(
         or_(ReplyAction.claimed_by_worker_id == worker.id, Conversation.worker_id == worker.id),
@@ -136,7 +116,33 @@ def fault_recovery_readiness(db: Session, worker: Worker) -> dict:
                 ).correlate(ReplyAction).exists(),
             ),
         ),
+    ).limit(1)))
+
+
+def fault_recovery_readiness(db: Session, worker: Worker) -> dict:
+    """One server gate for the heartbeat projection and explicit recovery.
+
+    The transition calls this under the existing Worker row lock. Read related
+    work without taking inverse Task/Conversation locks; recovery never settles
+    or deletes any of it on behalf of the original owner.
+    """
+    reason = ""
+    if worker.client_binding_state != "bound" or not worker.client_instance_id:
+        reason = "客户端绑定未就绪"
+    elif computed_online_status(worker) != "online":
+        reason = "等待客户端重新连接"
+    elif (worker.inflight_flow_state or {}).get("flow_id"):
+        reason = "等待原流程正常结束"
+    elif worker.current_task or worker.running_status != "idle":
+        reason = "等待原任务正常结束"
+    elif (worker.local_lock_summary or {}).get("locked"):
+        reason = "等待界面操作锁释放"
+    elif db.scalar(select(Task.id).where(
+        or_(Task.worker_id == worker.id, Task.lease_owner_worker_id == worker.id),
+        or_(Task.status == "running", Task.lease_expires_at > utcnow()),
     ).limit(1)):
+        reason = "等待原任务或租约结算"
+    elif has_unsettled_worker_send(db, worker):
         reason = "存在尚未确认的发送结果，需先完成原回执结算"
     elif worker.rpa_component_status != "ready" or worker.wechat_status != "logged_in":
         reason = "等待自动化组件和微信连接正常"
@@ -176,6 +182,8 @@ def worker_summary(db: Session, worker: Worker | None, *, include_token: bool = 
     }
     if worker.run_status == "faulted":
         data["fault_recovery"] = fault_recovery_readiness(db, worker)
+        from app.services.read_recovery_service import recovery_capability_for_worker
+        data["pending_read_recovery"] = recovery_capability_for_worker(db, worker)
     if include_token:
         data["worker_token"] = decrypt_worker_token(worker.worker_token_encrypted)
     return data
@@ -463,6 +471,8 @@ def start_inflight_flow(
         "conversation_id": payload.conversation_id,
         "unread_generation": payload.unread_generation,
         "authorization_revision": payload.authorization_revision,
+        "contract_revision": contract_revision(),
+        "contract_sha256": contract_sha256(),
         "registered_at": utcnow().isoformat(),
         "pause_requested_at": None,
     }
