@@ -7117,12 +7117,14 @@ class TaskRunnerTest(unittest.TestCase):
             load_runtime_control()["inflight_flow_id"],
             flow_id,
         )
-        self.assertGreaterEqual(
+        # While fault-status synchronization is offline, do not submit a
+        # technical finish that the backend must reject for still being running.
+        self.assertEqual(
             sum(
                 event.startswith(f"finish:{flow_id}:technical_failed")
                 for event in api.inflight_flow_events
             ),
-            1,
+            0,
         )
         fault = load_c2_state(
             runner._restart_recovery_fault_key(flow_id)

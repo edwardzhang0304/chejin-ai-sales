@@ -5583,6 +5583,21 @@ class TaskRunner:
         conversation_id: str | None = None,
         error_code: str | None = None,
     ) -> None:
+        if terminal_kind == "technical_failed":
+            # Every entry, including a persisted old finish request, must stop
+            # locally and obtain the backend fault state before fault settlement.
+            # set_run_status owns durable pause, sync retries and UI status. A
+            # failed save/sync leaves this finish intent pending; never send a
+            # terminal request whose backend precondition is known to be false.
+            fault_confirmed = (
+                self.binding is not None
+                and self.binding.run_status == "faulted"
+                and self._backend_confirmed_run_status == "faulted"
+                and not self._pending_run_status_sync
+                and not self._run_status_persistence_pending
+            )
+            if not fault_confirmed and not self.set_run_status("faulted"):
+                raise RuntimeError("RUNTIME_INFLIGHT_FAULT_STATUS_SYNC_PENDING")
         self.api.finish_inflight_flow(
             binding,
             flow_id=flow_id,
@@ -6456,6 +6471,33 @@ class TaskRunner:
         flow_kind = str(load_runtime_control().get("inflight_flow_kind") or "")
         receipt = load_c2_state(self._inflight_finish_receipt_key(flow_id)) or {}
         try:
+            if (
+                flow_kind == "c2_read"
+                and terminal_kind == "technical_failed"
+                and error_code in {
+                    "MESSAGE_OBSERVATION_MAPPING_INCOMPLETE",
+                    "MESSAGE_OBSERVATION_MAPPING_INCOMPLETE:FACT_SETTLEMENT_REQUIRED",
+                }
+                and conversation_id
+            ):
+                # A pre-fix client can leave an immutable, valid read behind a
+                # rejected finish. Reuse its existing Outbox owner, without UI,
+                # before closing the Flow that authorizes that fact delivery.
+                if has_pending_c2_outbox_for_read_run_id(flow_id):
+                    if not list_c2_outbox_waiting(read_run_id=flow_id):
+                        raise RuntimeError("RUNTIME_INFLIGHT_C2_OUTBOX_PENDING")
+                    delivered = self._replay_c2_outbox(binding, read_run_id=flow_id)
+                    if not delivered and not c2_outbox_capability_error_for_read_run_id(flow_id):
+                        raise RuntimeError("RUNTIME_INFLIGHT_C2_OUTBOX_PENDING")
+                receipt = load_c2_state(self._inflight_finish_receipt_key(flow_id)) or {}
+                completion = receipt.get("read_completion") or {}
+                if (
+                    receipt.get("conversation_id") == conversation_id
+                    and receipt.get("terminal_kind") == "read_confirmed"
+                    and completion.get("result") in {"new_facts", "no_change"}
+                    and completion.get("completed_at")
+                ):
+                    terminal_kind, error_code = "read_confirmed", None
             self._finish_inflight_flow(
                 binding,
                 flow_id,
@@ -13187,7 +13229,19 @@ class TaskRunner:
             # so a crash/replay cannot promote retry_required to read_confirmed.
             receipt_key = self._inflight_finish_receipt_key(str(payload.get("read_run_id") or ""))
             previous_receipt = load_c2_state(receipt_key) or {}
-            if previous_receipt.get("terminal_kind") != "technical_failed" and (
+            corrected_historical_rejection = (
+                previous_receipt.get("terminal_kind") == "technical_failed"
+                and previous_receipt.get("error_code") in {
+                    "MESSAGE_OBSERVATION_MAPPING_INCOMPLETE",
+                    "MESSAGE_OBSERVATION_MAPPING_INCOMPLETE:FACT_SETTLEMENT_REQUIRED",
+                }
+                and not previous_receipt.get("read_completion")
+                and previous_receipt.get("conversation_id") == payload.get("conversation_id")
+                and load_runtime_control().get("inflight_flow_id") == payload.get("read_run_id")
+                and terminal_kind == "read_confirmed"
+                and bool(read_completion.get("completed_at"))
+            )
+            if (previous_receipt.get("terminal_kind") != "technical_failed" or corrected_historical_rejection) and (
                 previous_receipt.get("terminal_kind") != "read_cancelled"
                 or terminal_kind in {"read_cancelled", "technical_failed"}
             ):
@@ -13653,12 +13707,12 @@ class TaskRunner:
             },
         )
 
-    def _replay_c2_outbox(self, binding: Binding) -> bool:
+    def _replay_c2_outbox(self, binding: Binding, *, read_run_id: str | None = None) -> bool:
         with self.c2_outbox_lock:
-            return self._replay_c2_outbox_locked(binding)
+            return self._replay_c2_outbox_locked(binding, read_run_id=read_run_id)
 
-    def _replay_c2_outbox_locked(self, binding: Binding) -> bool:
-        waiting = list_c2_outbox_waiting(limit=20)
+    def _replay_c2_outbox_locked(self, binding: Binding, *, read_run_id: str | None = None) -> bool:
+        waiting = list_c2_outbox_waiting(limit=20, read_run_id=read_run_id)
         for item in waiting:
             payload = item.get("payload") if isinstance(item.get("payload"), dict) else {}
             outbox_id = str(item.get("outbox_id") or "")
@@ -13808,7 +13862,10 @@ class TaskRunner:
                 "C2 Outbox 已重传原结构化结果，没有重新执行微信操作。",
                 metadata={"outbox_id": outbox_id, "conversation_id": item.get("conversation_id")},
             )
-        return not has_pending_c2_outbox()
+        return not (
+            has_pending_c2_outbox_for_read_run_id(read_run_id)
+            if read_run_id is not None else has_pending_c2_outbox()
+        )
 
     def _filter_confirmed_messages(self, payload: dict[str, Any]) -> dict[str, Any]:
         filtered = dict(payload)

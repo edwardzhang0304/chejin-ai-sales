@@ -3,7 +3,7 @@ import pytest
 from test_task_runner import (FakeApi, FakeBridge,
                               identity_checkpoint_for_facts)
 from chejin_worker_client.models import Binding, WechatReadTarget, RpaResult
-from chejin_worker_client.storage import load_runtime_control, load_c2_state, read_logs
+from chejin_worker_client.storage import load_runtime_control, load_c2_state, read_logs, save_binding
 
 
 @pytest.fixture
@@ -29,6 +29,8 @@ def test_identity_gate_preserves_actual_backend_terminal(harness, read_result, e
     bridge.get_messages_payloads = [{'messages': [{'id': 'now', 'type': 'text', 'sender_role': 'customer', 'content': '完全不同的新画面'}]}]
     runner, _ = harness.make_runner(api, bridge)
     binding = Binding('worker-test', 'test-token', 'instance-test', run_status='running')
+    runner.binding = binding
+    save_binding(binding)
     target = WechatReadTarget(conversation_id='conv-gate', display_name='CJTEST01', remark_code='CJTEST01',
         rpa_session_key='test-session', authorization_revision='revision-conv-gate', unread_generation=1,
         raw={'identity_checkpoint': identity_checkpoint_for_facts('conv-gate', [{'content': '已读旧画面'}])})
@@ -38,7 +40,9 @@ def test_identity_gate_preserves_actual_backend_terminal(harness, read_result, e
     assert len(api.message_payloads) == 1 and api.message_payloads[0]['messages'] == []
     assert any(':'+terminal+':' in x for x in api.inflight_flow_events), api.inflight_flow_events
     assert not load_runtime_control()['inflight_flow_id']
-    assert not any(x['event'] == 'inflight_flow_finish_failed' for x in read_logs(limit=100))
+    flow_id = next(x.split(':', 2)[2] for x in api.inflight_flow_events if x.startswith('start:c2_read:'))
+    assert not any(x['event'] == 'inflight_flow_finish_failed' and x.get('metadata', {}).get('flow_id') == flow_id
+                   for x in read_logs(limit=100))
 
 
 def test_confirmed_gate_replay_reuses_durable_retry_receipt(harness):

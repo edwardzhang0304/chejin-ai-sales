@@ -4,7 +4,9 @@
 
 合同号：0.9.75
 
-文档修订：r5（2026-09-11）
+文档修订：r10（2026-09-11）
+
+本轮r9/r10历史OCR、AI回复来源及故障收尾修复已通过独立源码复审，按用户授权纳入现有灰度分支；只集成已审代码、测试和对应文档，应用/合同仍为0.9.75。正式版本组合与Windows实际发送仍待验收，未批准部署。原始复审证据及计数见版本记录r10。
 
 主版本与已发布合同保持一致；仅修改文档时只递增修订次数。以下旧编号为历史修订记录。
 
@@ -588,6 +590,10 @@ active flow 改为 `draining`、写入 `pause_requested_at`；不得接受暂停
 - `technical_failed`、`read_cancelled`：沿用既有技术故障和无效线索取消结算条件，仍校验原身份、撤销依据及动作事实；不是任意失败的清除通道。
 
 **读取回执接线（已随0.9.72源码集成）**：消息或身份门禁请求 HTTP 成功，只代表后端接收。Worker 必须透传响应的 `read_completion`；在 Outbox 标记 confirmed 前，将其结果、错误码、conversation 和对应 terminal 持久化到同一 flow 的既有结束回执。`new_facts/no_change` 才是 `read_confirmed`，`retry_required` 不得因“已有 Outbox”被改成成功。收尾期间收到的更新回执和重启时已确认的门禁重放也采用该回执；原 technical_failed/取消优先级及未结算屏障保持。真正 HTTP 失败保留原 Outbox，不能忽略 409、伪造成功或清除未结算账本。日志记录后端 result 与请求 terminal，不能将请求接收误写成“已转人工”。
+
+**技术失败收尾顺序与历史误拒绝恢复（r9，本地实现待联合验收）**：`technical_failed`进入原Flow结束入口时，先由既有接单状态保存/同步入口持久化本地`faulted`及停止保护，并取得后端同状态确认，才提交技术终态。保存失败、状态上报超时或响应丢失均保留同一Flow和原结束请求，由原循环重试；不能带着`running`持续请求技术结束，也不能以补偿请求恢复接单。
+
+仅对既有`MESSAGE_OBSERVATION_MAPPING_INCOMPLETE`（含其`:FACT_SETTLEMENT_REQUIRED`形式）的旧本地技术回执：若同一Flow仍有待传Outbox，原恢复者在原互斥保护下通过既有Outbox入口按退避重传该Flow的原结果，保留原payload、客户和身份，不读取/点击微信。只有后端实际接受同一读取、返回`read_completion=new_facts/no_change`和完成时间，且旧技术回执没有已存在的后端完成证明，才可先持久化新证明，再更正该Flow为`read_confirmed`。缺证明、不同客户/Flow或真实拒绝均不走成功；取消和其他技术回执规则不放宽。真正技术拒绝仍进入故障终态，保留未接受事实，不自动解除故障。
 
 **旧错误回执恢复（已复审并随0.9.72源码集成）**：上一轮的新回执保存仅能防止再次写错，不能据此宣称已解决旧版留下的 confirmed Outbox / read_confirmed 回执。恢复必须先通过既有线程互斥、同一客户及未结算 Journal/Ledger/Outbox/sent_ack 屏障，再使用原 finish 接口。仅在 `c2_read + read_confirmed` 缺少新式读取证明，且后端明确返回 `409 / WORKER_INFLIGHT_FLOW_NOT_SETTLED` 时，查询原 `API-C2-03` 核实本次读取的真实结算。
 
@@ -1802,6 +1808,10 @@ Windows 本地 `next_sequence` 不是消息身份的唯一事实源。`API-C2-02
 普通水平空白和英文单词间换行仍折叠为一个空格。该规则不得执行 NFKC 或改写全角标点，
 所有未包含视觉换行的 `0.9.8` 历史正文必须保持原哈希，升级不得要求清理 Ledger、Outbox
 或后端身份检查点。
+
+**历史全帧正文一致性与身份摘要分工（r9，r10补齐已完成语音）**：上段身份摘要规则不改；已按原身份唯一对齐的`historical + text/system`观察，在后端`_validate_non_delivered_frame_observations`核对持久化正文时，调用既有OmniAuto纯模块`message_viewport_projection.normalized_projection_text`，与客户端对OCR呈现差异的处理保持一致，不复制第二份规则。OCR空白差异不应单独否决已经匹配的历史槽位。客户归属、`source_message_key`、发送方、消息类型和完整帧分区仍逐项核对；真正正文/数字/小数点差异仍拒绝。不得使用会删除全部标点的候选结构签名代替正文核对（例如`12.8`不能等于`128`），也不得改写历史正文、消息编号、新消息事实或发送正文哈希。
+
+r10补充：已入库`item_state=completed`、无失败错误的历史语音，在本帧仍是`voice_transcript + transcribed`且非failed时，其转写正文使用同一`normalized_projection_text`核对。角色、类型、原消息身份及Worker原媒体身份转移证明仍须成立；失败或尚未转写语音不获得该宽容规则，当前读取新语音仍经原动作和回执入库。不重做OCR、语音动作或改写旧正文。单条媒体缺少原身份转移所需上下文时，原门禁仍保留，本轮不扩展该规则。
 
 Worker 每次读取目标时固定执行：
 
@@ -3847,9 +3857,14 @@ allow_listening=true`。迁移脚本必须输出每类数量和记录 ID，支�
 Worker发送AI回复前登记reply_action_id、reply_text_hash、send_started_at、send_finished_at。
 桌面端同步出我方消息时在 V3 合同中统一标记为 `self`；旧 `sales / sales_candidate / ai_worker` 只作兼容输入，不作为新事件正式值。
 能与本机已确认发送回执的稳定消息身份严格对应时，标记sender_source=ai，不作为人工销售回复。
-不能对应AI回执的self消息只能先认定为“人工销售候选事实”；是否解除现有handoff，必须证明该消息发生在本轮handoff之后。
+附带AI回执但无法验证时，只记既有ai_identity_unconfirmed_guard，不附着ReplyAction、不计销售回复、不解除handoff。
+无本地AI回执且无尚未对账的AI发送时，self消息才可认作人工销售候选；解除handoff仍须证明发生在该handoff之后。
 解除成功后Conversation状态转sales_replied_waiting_user，取消当前AI回复动作；ai_enabled只作为明确关闭全部自动化的硬开关，不因一条销售回复自动关闭。普通实时AI回复由会话状态门禁阻断，召回到期后仍可进入recall_precheck。
 ```
+
+**AI原回执与OCR呈现分开核验（r10，本地实现待验收）**：本机稳定气泡回执仍须匹配原`reply_action_id`、客户、`source_message_key`、稳定编号、允许的动作状态、时间及一次消费规则；必须为文字气泡。回执`reply_text_hash`须严格等于服务端Action保存的哈希，且服务端原`reply_text`按原发送合同重新计算仍须相等，不能用更宽容规则校验许可或改写原文。随后仅将原发送正文和当前OCR正文分别经既有`normalized_projection_text`比较；空格/换行呈现差异不改变原发送身份，真实正文和小数点差异仍不能验证为AI。
+
+回执存在但为空、格式错误或校验不通过时，复用既有`ai_identity_unconfirmed_guard`，在原raw_payload记`ai_reply_receipt_validation=rejected`；不能落为已证实human、计入`last_sales_reply_at`或关闭人工接管。有效已sent回执为ai，待ack/未知发送沿用ai_pending_ack/ai_unreconciled；不重发、不新增状态枚举或恢复框架。没有未决AI发送的真实销售消息、已消费AI回执之后的销售消息仍按原规则处理；不能靠文字一样推断AI身份。
 
 上述“必须由后续销售消息解除”只适用于 L3 业务接管和人工 `pause`。仅由 L2 身份、历史
 缺口或技术恢复失败形成的旧 handoff，在一次新的权威读取证明 `reply_safe_suffix` 完整且

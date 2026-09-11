@@ -591,6 +591,20 @@ class StorageTest(unittest.TestCase):
         self.assertEqual(len(set(outbox_ids)), 4)
         self.assertEqual(len(self.storage.list_c2_outbox_waiting()), 4)
 
+    def test_outbox_recovery_scope_filters_before_limit_and_preserves_backoff(self):
+        ids = []
+        for flow in ("other-flow", "recover-this-flow"):
+            payload = self._outbox_payload([self._outbox_message("source-" + flow, flow)])
+            payload["read_run_id"] = flow
+            ids.append(self.storage.enqueue_c2_outbox(payload))
+        self.assertEqual(self.storage.list_c2_outbox_waiting(limit=1)[0]["outbox_id"], ids[0])
+        scoped = self.storage.list_c2_outbox_waiting(limit=1, read_run_id="recover-this-flow")
+        self.assertEqual([r["outbox_id"] for r in scoped], [ids[1]])
+        self.storage.mark_c2_outbox_attempt(ids[1])
+        self.storage.mark_c2_outbox_capability_paused(ids[1], "MESSAGE_OBSERVATION_MAPPING_INCOMPLETE")
+        self.assertEqual(self.storage.list_c2_outbox_waiting(read_run_id="recover-this-flow"), [])
+        self.assertEqual(self.storage.load_c2_outbox_entry(ids[0])["status"], "waiting")
+
     def test_same_source_keys_with_changed_immutable_fact_collide(self):
         original = self._outbox_payload(
             [self._outbox_message("source-a", "A")]
