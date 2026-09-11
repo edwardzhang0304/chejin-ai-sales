@@ -107,6 +107,19 @@ class CandidateTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "ACCEPTANCE_IDENTITY_MISMATCH"):
                 candidate.delivery_source(self.folder, commit, run)
 
+    def test_classification_change_must_still_verify_original_record(self):
+        with patch('candidate.recorded_input_exclusions', return_value={'test-only.py'}), patch(
+                'candidate.source_inputs', side_effect=['new-classification', 'c' * 64, 'new-classification']):
+            candidate.verify_candidate(self.folder, self.build, '123', self.retest)
+        with patch('candidate.recorded_input_exclusions', return_value={'test-only.py'}), patch(
+                'candidate.source_inputs', side_effect=['new-classification', 'tampered-record']):
+            with self.assertRaisesRegex(ValueError, 'RECORDED_BUILD_INPUTS_MISMATCH'):
+                candidate.verify_candidate(self.folder, self.build, '123', self.retest)
+        with patch('candidate.recorded_input_exclusions', return_value={'test-only.py'}), patch(
+                'candidate.source_inputs', side_effect=['new-classification', 'c' * 64, 'changed-runtime']):
+            with self.assertRaisesRegex(ValueError, 'BUILD_INPUTS_CHANGED'):
+                candidate.verify_candidate(self.folder, self.build, '123', self.retest)
+
     def test_legacy_verified_artifact_still_requires_original_commit(self):
         self.assertEqual(candidate.delivery_source(self.folder, self.build, "123"), self.build)
         with self.assertRaisesRegex(ValueError, "LEGACY_BUILD_IDENTITY_MISMATCH"):

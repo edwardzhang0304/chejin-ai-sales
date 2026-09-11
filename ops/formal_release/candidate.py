@@ -51,7 +51,7 @@ def read(path):
     return json.loads(Path(path).read_text(encoding="utf-8-sig"))
 
 
-def source_inputs(ref, root=ROOT):
+def source_inputs(ref, root=ROOT, exclusions=None):
     """Hash Git objects, not a Windows checkout's CRLF or generated files."""
     import yaml
     require(COMMIT.fullmatch(ref), "INVALID_SOURCE_COMMIT")
@@ -62,7 +62,7 @@ def source_inputs(ref, root=ROOT):
             continue
         info, raw_name = entry.split(b"\t", 1)
         name = raw_name.decode("utf-8")
-        if name in RETEST_ONLY | DOCS or name == "rules.md" or name.startswith("rules/"):
+        if name in (RETEST_ONLY | DOCS if exclusions is None else exclusions) or name == "rules.md" or name.startswith("rules/"):
             continue
         if name == WORKFLOW:
             raw = subprocess.check_output(["git", "show", f"{ref}:{name}"], cwd=root)
@@ -76,6 +76,24 @@ def source_inputs(ref, root=ROOT):
         else:
             result[name] = info.decode("ascii")  # Includes file mode and submodule object ID.
     return hashlib.sha256(json.dumps(result, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
+
+
+def recorded_input_exclusions(ref, root=ROOT):
+    """Read literal classification from the immutable producer, never execute it.
+
+    A tooling-classification correction must still authenticate the saved
+    fingerprint under its original rules before comparing runtime inputs.
+    """
+    import ast
+    raw = subprocess.check_output(["git", "show", f"{ref}:ops/formal_release/candidate.py"], cwd=root)
+    tree = ast.parse(raw)
+    values = {node.targets[0].id: ast.literal_eval(node.value) for node in tree.body
+              if isinstance(node, ast.Assign) and len(node.targets) == 1
+              and isinstance(node.targets[0], ast.Name) and node.targets[0].id in {"RETEST_ONLY", "DOCS"}}
+    require(set(values) == {"RETEST_ONLY", "DOCS"}
+            and all(isinstance(v, set) and all(isinstance(p, str) for p in v) for v in values.values()),
+            "UNKNOWN_RECORDED_INPUT_CLASSIFICATION")
+    return values["RETEST_ONLY"] | values["DOCS"]
 
 
 def select_candidate(run, jobs, artifacts):
@@ -129,8 +147,11 @@ def verify_candidate(folder, build_commit, build_run_id, acceptance_commit):
     proof = read(folder / "candidate.json")
     require(proof["schema_version"] == 1 and proof["build_commit"] == build_commit
             and proof["build_run_id"] == str(build_run_id), "CANDIDATE_PROVENANCE_MISMATCH")
-    require(source_inputs(build_commit) == proof["build_inputs_sha256"] == source_inputs(acceptance_commit),
-            "BUILD_INPUTS_CHANGED_REBUILD_REQUIRED")
+    original = source_inputs(build_commit)
+    if original != proof["build_inputs_sha256"]:
+        require(source_inputs(build_commit, exclusions=recorded_input_exclusions(build_commit)) == proof["build_inputs_sha256"],
+                "RECORDED_BUILD_INPUTS_MISMATCH")
+    require(original == source_inputs(acceptance_commit), "BUILD_INPUTS_CHANGED_REBUILD_REQUIRED")
     return validate_files(folder, proof)
 
 
