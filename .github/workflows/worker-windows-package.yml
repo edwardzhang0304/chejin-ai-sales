@@ -489,7 +489,6 @@ jobs:
             ${{ runner.temp }}/chejin-original-client-upgrade/**/update-result.json
             ${{ runner.temp }}/native-long-path.xml
             ${{ runner.temp }}/chejin-manual-install/**/result.json
-            ${{ runner.temp }}/reused-completed-cases.json
             ${{ runner.temp }}/chejin-pending-read-install/result.json
             ${{ runner.temp }}/chejin-pending-read-install/*.log
             ${{ runner.temp }}/chejin-pending-read-install/*-http.jsonl
