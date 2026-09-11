@@ -66,5 +66,13 @@ class SharedPrefixReuseTests(unittest.TestCase):
         for bad in (log.replace('__run_1;outcome=success','__run_1;outcome=failure'),log.replace('__run_2;outcome=success','__run_2;outcome=failure'),log.replace('FAILED (failures=1)','FAILED (errors=1)')):
             with self.assertRaises(ValueError):reuse.validate_prefix(run,jobs,bad)
         with self.assertRaises(ValueError):reuse.validate_prefix({**run,'head_sha':'a'*40},jobs,log)
-        for path in ('worker-client/chejin_worker_client/update.py','worker-client/tests/test_update_long_paths.py','worker-client/requirements.txt','backend/app/services/release_readiness.py'):
+        for path in ('worker-client/chejin_worker_client/update.py','worker-client/tests/test_update_long_paths.py','worker-client/requirements.txt','backend/app/services/task_service.py'):
             self.assertNotIn(path,reuse.PREFIX_REPAIRS)
+
+    def test_reused_commands_cannot_change_and_need_no_optional_yaml(self):
+        workflow='.github/workflows/worker-windows-package.yml';action='.github/actions/worker-release-checks/action.yml'
+        old_w=reuse.git('show',reuse.PREFIX_COMMIT+':'+workflow).decode();new_w=(ROOT/workflow).read_text()
+        old_a=reuse.git('show',reuse.PREFIX_COMMIT+':'+action).decode();new_a=(ROOT/action).read_text()
+        reuse.validate_prefix_commands(old_w,new_w,old_a,new_a)
+        with self.assertRaises(ValueError):reuse.validate_prefix_commands(old_w,new_w.replace('3.12.10','3.13.0'),old_a,new_a)
+        with self.assertRaises(ValueError):reuse.validate_prefix_commands(old_w,new_w,old_a,new_a.replace('python -m pytest','echo bypass'))
