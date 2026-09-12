@@ -145,8 +145,11 @@ def check_baseline(plan, folder):
 def execute_case(name, plan_path, folder, old_root, target, old_source, work):
     plan = load(plan_path); stem = f"chejin-worker-v{plan['version']}-windows-x64"
     case_root = work / name
+    # GUI seeding imports the Worker package; recovery also needs the old backend repository.
+    source_root = old_source if name == 'pending_read' else old_source / 'worker-client'
+    require((source_root / ('backend' if name == 'pending_read' else 'chejin_worker_client')).is_dir(), 'OLD_SOURCE_LAYOUT_MISMATCH')
     command = [sys.executable, str(ROOT / (PENDING if name == 'pending_read' else GUI)), '--plan', str(plan_path),
-               '--old-package-root', str(old_root), '--old-source-root', str(old_source),
+               '--old-package-root', str(old_root), '--old-source-root', str(source_root),
                '--target-package-root', str(target), '--archive', str(folder / (stem + '.zip')),
                '--release', str(folder / (stem + '.release.json')), '--work-root', str(case_root)]
     if name != 'pending_read':

@@ -205,3 +205,16 @@ def test_installer_imports_baseline_dependencies_before_writes(tmp_path):
     missing=check();assert missing.returncode!=0 and 'update_filesystem' in missing.stderr
     shutil.copyfile(ROOT/'worker-client/chejin_worker_client/update_filesystem.py',package/'update_filesystem.py')
     complete=check();assert complete.returncode==0,complete.stderr
+
+
+@pytest.mark.parametrize('name,expected', [('manual_paused','worker-client'),('manual_faulted','worker-client'),('pending_read','')])
+def test_case_dispatch_passes_each_driver_its_actual_source_root(tmp_path,name,expected):
+    p=plan();p['recovery']='pending_read';plan_path=tmp_path/'plan.json';plan_path.write_text(json.dumps(p))
+    work=tmp_path/'work';work.mkdir()
+    with patch.object(ac.subprocess,'run') as run:
+        run.return_value.returncode=0
+        ac.execute_case(name,plan_path,tmp_path,tmp_path,tmp_path,ROOT,work)
+        args=run.call_args.args[0]
+        actual=Path(args[args.index('--old-source-root')+1])
+        assert actual==ROOT/expected
+        assert (actual/('backend/app' if name=='pending_read' else 'chejin_worker_client/models.py')).exists()
