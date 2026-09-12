@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from app.contracts.c2 import IMAGE_FORBIDDEN_FIELD_PREFIXES
+
 from datetime import datetime, timedelta, timezone
 import base64
 import binascii
@@ -179,12 +181,6 @@ IMAGE_UNDERSTANDING_AUDIT_FIELDS = set(
 )
 VISUAL_BRIDGE_FIELDS = set(IMAGE_PERSISTENCE_POLICY.get("visual_bridge_input_allowed_fields") or [])
 IMAGE_FORBIDDEN_FIELD_NAMES = set(IMAGE_PERSISTENCE_POLICY.get("forbidden_field_names") or [])
-IMAGE_FORBIDDEN_FIELD_PREFIXES = (
-    "provider_response",
-    "raw_provider_response",
-    "retry_response",
-    "initial_response",
-)
 AI_REPLY_RECEIPT_CLOCK_SKEW = timedelta(minutes=5)
 READ_TARGET_FAILURE_RESULTS = {"target_not_confirmed", "search_not_found", "search_ambiguous"}
 READ_REASON_PRIORITY = {

@@ -10,6 +10,11 @@ from .shared_rules import contract_rules
 
 
 CONTRACT_FILENAME = "c2_contract_v3.json"
+IMAGE_FORBIDDEN_FIELD_PREFIXES = contract_rules.IMAGE_FORBIDDEN_FIELD_PREFIXES
+
+
+def pre_send_reidentification_errors() -> frozenset[str]:
+    return contract_rules.pre_send_reidentification_errors(c2_contract_v3())
 
 
 def _contract_candidates() -> list[Path]:

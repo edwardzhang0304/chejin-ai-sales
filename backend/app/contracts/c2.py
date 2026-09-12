@@ -9,6 +9,11 @@ from app.contracts.shared_rules import shared_adapter
 
 
 CONTRACT_FILENAME = "c2_contract_v3.json"
+IMAGE_FORBIDDEN_FIELD_PREFIXES = shared_adapter("contract_rules").IMAGE_FORBIDDEN_FIELD_PREFIXES
+
+
+def pre_send_reidentification_errors() -> frozenset[str]:
+    return shared_adapter("contract_rules").pre_send_reidentification_errors(c2_contract_v3())
 
 
 @lru_cache(maxsize=1)

@@ -1673,6 +1673,13 @@ class FakeApi:
         return replace(task, status="failed", error_code=receipt["error_code"],
                        raw={**task.raw, "failure_receipt": dict(receipt)})
 
+    def settle_task_success(self, binding: Binding, receipt: dict):
+        task = (self.complete_already_friend(binding, receipt["task_id"])
+                if receipt["result_code"] == "already_friend" else
+                self.complete_invite_sent(binding, receipt["task_id"]))
+        return replace(task, status="completed", result_code=receipt["result_code"],
+                       raw={**task.raw, "success_receipt": dict(receipt)})
+
     def upload_evidence(self, binding: Binding, task_id: str, content: str, **kwargs):
         self.evidence_payloads.append({"task_id": task_id, "content": content, **kwargs})
         self.events.append(f"evidence:{kwargs.get('error_code')}")

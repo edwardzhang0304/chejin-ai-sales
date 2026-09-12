@@ -7,6 +7,20 @@ import math
 from typing import Any
 
 
+IMAGE_FORBIDDEN_FIELD_PREFIXES = (
+    "provider_response", "raw_provider_response", "retry_response", "initial_response",
+)
+
+
+def pre_send_reidentification_errors(payload: dict[str, Any]) -> frozenset[str]:
+    section = payload.get("pre_send_message_viewport_contract")
+    if not isinstance(section, dict):
+        raise RuntimeError("Invalid C2 pre_send_message_viewport_contract")
+    return contract_values(section, "pre_send_specific_errors") - {
+        "C2_PRE_SEND_LAYOUT_INVALID", "C2_PRE_SEND_FACT_CHECKPOINT_INVALID",
+    }
+
+
 def contract_values(payload: dict[str, Any], key: str) -> frozenset[str]:
     values = payload.get(key)
     if not isinstance(values, list):

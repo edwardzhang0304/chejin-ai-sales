@@ -431,16 +431,36 @@ def _separator_content_start(
     start = max(0, edge_y - 2)
     end = min(image.height, edge_y + max(6, measured_row_height))
     previous = [_pixel_luma(image.getpixel((x, start))) for x in columns]
-    last_transition = None
+    entry = None
+    before_line = None
+    exit_row = None
+    exit_values = None
     stable_rows = 0
     for y in range(start + 1, end):
         value = [_pixel_luma(image.getpixel((x, y))) for x in columns]
-        if sum(abs(a-b) >= 4.0 for a,b in zip(value, previous)) >= len(columns)-1:
-            last_transition, stable_rows = y, 0
-        elif last_transition is not None:
-            stable_rows += 1
+        if entry is None:
+            # Entry still requires a nearly full-width structural line.
+            if sum(abs(a-b) >= 4.0 for a,b in zip(value, previous)) >= len(columns)-1:
+                entry, before_line = value, previous
+        else:
+            # Measure its content-facing exit independently in each column.
+            # A clipped bubble can cover a minority of columns below the line;
+            # it must not cause the line itself to become the content boundary.
+            returned = [i for i, (v, line, before) in enumerate(zip(value, entry, before_line))
+                        if abs(v-line) >= 4.0 and (v-line)*(line-before) < 0]
+            if len(returned) > len(columns)//2:
+                if exit_row is not None and sum(
+                    abs(value[i]-exit_values[i]) < 4.0 for i in returned
+                ) > len(columns)//2:
+                    stable_rows += 1
+                else:
+                    exit_row, exit_values, stable_rows = y, value, 0
+                if stable_rows >= 2:
+                    return exit_row
+            else:
+                exit_row, exit_values, stable_rows = None, None, 0
         previous = value
-    return last_transition if stable_rows >= 2 else None
+    return None
 
 
 def _topmost_sidebar_operation_row_anchors(

@@ -110,6 +110,19 @@ def _detect(image: Any, viewport: list[int], scale: float) -> dict[str, Any]:
     pad = max(1, round(2 * scale))
     for contour, (x, y, w, h) in objects:
         bounds = [left + x, top + y, left + x + w, top + y + h]
+        # A thin connected L-shaped window edge can span both avatar lanes.
+        # Require the actual contour to hug the full viewport perimeter; an
+        # attached avatar/media object protrudes inward and stays unresolved.
+        border_width = max(1, round(3 * scale))
+        if x == y == 0 and w == mask.shape[1] and h == mask.shape[0]:
+            points = contour.reshape(-1, 2)
+            perimeter_distance = np.minimum.reduce((
+                points[:, 0], points[:, 1], w-1-points[:, 0], h-1-points[:, 1],
+            ))
+            if (bool(np.all(perimeter_distance < border_width))
+                    and abs(float(cv2.contourArea(contour))) <= 2*(w+h)*border_width):
+                table["excluded"].append({"bounds": bounds, "reason": "viewport_connected_border"})
+                continue
         if (table["top_fragments"] and bounds[1] < table["readable_top"]
                 and 0 < x and x+w < mask.shape[1]):
             # The actual viewport cuts this external object. Its visible

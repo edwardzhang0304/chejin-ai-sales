@@ -47,6 +47,7 @@ class TaskLeaseRenewRequest(BaseModel):
 
 class TaskCompleteRequest(BaseModel):
     remark: str | None = Field(default=None, max_length=1000)
+    settlement_only: bool = False
 
 
 class TaskFailRequest(BaseModel):

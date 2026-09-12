@@ -439,6 +439,24 @@ class WorkerApiClient:
             self._forget_confirmed_task_lease(task.id, token)
         return task
 
+    def settle_task_success(self, binding: Binding, receipt: dict[str, Any]) -> Task:
+        """Confirm the saved C1 result without acquiring another action lease."""
+        result_code = receipt["result_code"]
+        if result_code not in {"invite_sent", "already_friend"}:
+            raise ValueError("TASK_SUCCESS_RECEIPT_MISMATCH")
+        token = int(receipt["lease_fencing_token"])
+        payload = self._request(
+            "POST", f"/tasks/{receipt['task_id']}/{result_code.replace('_', '-')}",
+            binding=binding,
+            json={"remark": receipt["remark"], "settlement_only": True},
+            extra_headers={"X-Task-Lease-Fencing-Token": str(token),
+                           "X-Inflight-Flow-Id": receipt["flow_id"]},
+        )
+        task = Task.from_api(payload)
+        if task.raw.get("success_receipt") == receipt:
+            self._forget_confirmed_task_lease(task.id, token)
+        return task
+
     def upload_evidence(
         self,
         binding: Binding,
