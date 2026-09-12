@@ -101,6 +101,20 @@ def backend_process(source, folder, label, *, reject_legacy=False):
             process.wait(timeout=15)
 
 
+def _replace_worker_fragment(script, old, new):
+    # These edits instrument the real Worker driver. A changed upstream driver
+    # must fail setup, not silently omit a UI guard or response-loss injection.
+    count = script.count(old)
+    assert count == 1, f"Worker fixture anchor must occur once; got {count}: {old!r}"
+    return script.replace(old, new, 1)
+
+
+@pytest.mark.parametrize("script", ["missing", "anchor anchor"])
+def test_worker_fixture_rejects_missing_or_ambiguous_instrumentation(script):
+    with pytest.raises(AssertionError, match="Worker fixture anchor must occur once"):
+        _replace_worker_fragment(script, "anchor", "instrumented")
+
+
 @pytest.mark.parametrize('transport', ['normal', 'ingest_response_lost', 'finish_response_lost', 'backend_rejects_then_recovers'])
 def test_original_075_pending_read_survives_upgrade_and_changed_desktop(tmp_path, transport):
     configured = os.environ.get('CHEJIN_OLD_075_ROOT')
@@ -118,8 +132,8 @@ def test_original_075_pending_read_survives_upgrade_and_changed_desktop(tmp_path
         db.get(WechatSessionBinding, row['binding_id']).sales_id = sales.id
         db.commit()
     # All desktop entry points fail if recovery tries to use the changed list.
-    script = WORKER.replace("if mode == 'legacy' or", "if mode == 'legacy_disabled' or")
-    script = script.replace('runner.binding = binding', '''runner.binding = binding
+    script = WORKER
+    script = _replace_worker_fragment(script, 'runner.binding = binding', '''runner.binding = binding
 live_recovered = None
 bridge.current_conversation_id = "customer-B"
 bridge.current_list_order = ["customer-B", "customer-A"]
@@ -134,14 +148,14 @@ if mode.startswith('restart'):
         if hasattr(bridge, name):
             setattr(bridge, name, forbidden_ui)
 ''')
-    script = script.replace('with db_connection() as conn:', '''if mode == 'old_fault':
+    script = _replace_worker_fragment(script, 'with db_connection() as conn:', '''if mode == 'old_fault':
     assert runner.set_run_status('faulted')
 with db_connection() as conn:''')
-    script = script.replace('            runner.stop_for_update(timeout_seconds=5)', '''            live_recovered = {'can_start': runner._can_start_new_flow(), 'status': runner.binding.run_status,
+    script = _replace_worker_fragment(script, '            runner.stop_for_update(timeout_seconds=5)', '''            live_recovered = {'can_start': runner._can_start_new_flow(), 'status': runner.binding.run_status,
                               'saved_status': load_binding().run_status, 'flow_id': load_runtime_control()['inflight_flow_id']}
             runner.stop_for_update(timeout_seconds=5)''')
-    script = script.replace("'/read-targets'))", "'/read-targets', '/tasks/pull', '/claim'))")
-    script = script.replace('    response = send(request, **kwargs)', '''    response = send(request, **kwargs)
+    script = _replace_worker_fragment(script, "'/read-targets'))", "'/read-targets', '/tasks/pull', '/claim'))")
+    script = _replace_worker_fragment(script, '    response = send(request, **kwargs)', '''    response = send(request, **kwargs)
     lost_ingest = mode == 'restart_ingest_response_lost' and request.url.endswith('/messages/ingest')
     lost_finish = mode == 'restart_finish_response_lost' and request.url.endswith('/inflight-flow/finish')
     if (lost_ingest or lost_finish) and response.status_code == 200 and not injections:
@@ -149,7 +163,7 @@ with db_connection() as conn:''')
         injections.append('accepted_response_lost')
         raise TimeoutError('controlled response loss AFTER backend accepted original request')
 ''')
-    script = script.replace("    if mode.startswith('restart'):", """    if mode == 'handoff':
+    script = _replace_worker_fragment(script, "    if mode.startswith('restart'):", """    if mode == 'handoff':
         from chejin_worker_client.pending_read_recovery import package_recovery_capability
         bridge.sidecar_active = lambda: False  # No desktop process in this isolated boundary.
         runner.set_update_new_work_gate(True, update_request_id='recovery-test')
@@ -157,7 +171,7 @@ with db_connection() as conn:''')
         result = runner.update_pending_read_handoff_snapshot({'pending_read_recovery': package_recovery_capability()})
         runner.set_update_new_work_gate(False)
     elif mode.startswith('restart'):""")
-    script = script.replace("'physical_sends': len(bridge.sent_replies)", "'live_recovered': live_recovered, 'ui_attempts': ui_attempts, 'desktop': {'current': bridge.current_conversation_id, 'order': bridge.current_list_order}, 'physical_sends': len(bridge.sent_replies)")
+    script = _replace_worker_fragment(script, "'physical_sends': len(bridge.sent_replies)", "'live_recovered': live_recovered, 'ui_attempts': ui_attempts, 'desktop': {'current': bridge.current_conversation_id, 'order': bridge.current_list_order}, 'physical_sends': len(bridge.sent_replies)")
     (tmp_path / 'worker.py').write_text(script)
 
     def run(source, url, label, frame, mode):

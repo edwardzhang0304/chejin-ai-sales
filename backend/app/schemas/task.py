@@ -53,6 +53,7 @@ class TaskFailRequest(BaseModel):
     error_code: str = Field(min_length=1, max_length=64)
     failure_step: str | None = Field(default=None, max_length=64)
     failure_remark: str | None = Field(default=None, max_length=1000)
+    settlement_only: bool = False
 
 
 class TaskEvidenceRequest(BaseModel):

@@ -13,6 +13,8 @@ from collections import Counter
 import hashlib
 from typing import Any
 
+from .message_contract import normalize_voice_duration
+
 from .message_viewport_projection import (
     SEND_CONTEXT_BUSINESS_DIGEST_SCHEMA_VERSION,
     normalized_business_message_sequence,
@@ -34,22 +36,7 @@ BUSINESS_VIEWPORT_CONTINUITY_RESULTS = frozenset(
 
 
 def _normalized_voice_duration(value: object) -> str:
-    text = str(value or "").strip().lower()
-    for suffix in ("seconds", "second", "secs", "sec", "秒", "s"):
-        if text.endswith(suffix):
-            text = text[: -len(suffix)].strip()
-            break
-    try:
-        number = float(text)
-    except (TypeError, ValueError):
-        return ""
-    if number <= 0:
-        return ""
-    return (
-        str(int(number))
-        if number.is_integer()
-        else format(number, ".3f").rstrip("0").rstrip(".")
-    )
+    return normalize_voice_duration(value)
 
 
 def _native_source_message_id(observation: dict[str, Any]) -> str:

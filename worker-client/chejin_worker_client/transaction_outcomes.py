@@ -6,6 +6,16 @@ from pathlib import Path
 
 from .api import ApiError
 from .c2_contract import c2_contract_v3, contract_values
+from .shared_rules import contract_rules
+
+
+FRAME_TECHNICAL_ERROR_CODES = frozenset({
+    "C2_AVATAR_EVIDENCE_INVALID",
+    "OMNIAUTO_OBSERVATION_CONTRACT_INVALID",
+    "C2_IMAGE_OBSERVATION_FAILED",
+    "C2_PRE_SEND_LAYOUT_INVALID",
+    "WECHAT_UI_LAYOUT_UNRESOLVED",
+})
 
 
 class FlowOutcomeAccumulator:
@@ -290,40 +300,19 @@ def merge_item_outcomes(
 
 
 def classify_outbox_recovery(value: BaseException | str | None) -> str:
-    """Normalize transport failures or a backend-owned recovery_action."""
+    """Honor the server action, then shared code/status rules; retain transport retry."""
 
-    contract = c2_contract_v3().get("outbox_recovery_contract")
+    payload = c2_contract_v3()
+    contract = payload.get("outbox_recovery_contract")
     if not isinstance(contract, dict):
         raise RuntimeError("Invalid C2 outbox_recovery_contract")
-    allowed = {
-        str(value)
-        for value in (contract.get("actions") or [])
-    }
     if isinstance(value, BaseException) and not isinstance(value, ApiError):
         return str(contract.get("transport_error_action") or "retry")
-    action = str(
-        value.recovery_action if isinstance(value, ApiError) else value or ""
-    ).strip()
-    if action in allowed:
-        return action
-    if isinstance(value, ApiError):
-        code = str(value.code or "").strip()
-        for field, mapped_action in (
-            ("identity_quarantined_codes", "identity_quarantined"),
-            ("refresh_and_rebuild_codes", "refresh_and_rebuild"),
-            ("split_and_retry_codes", "split_and_retry"),
-            ("target_terminated_codes", "target_terminated"),
-            ("conversation_terminated_codes", "conversation_terminated"),
-            ("capability_paused_codes", "capability_paused"),
-        ):
-            if code in {
-                str(item)
-                for item in (contract.get(field) or [])
-            }:
-                return mapped_action
-    return str(
-        contract.get("unknown_api_error_action")
-        or "capability_paused"
+    return contract_rules.recovery_action_for_error(
+        payload,
+        value.code if isinstance(value, ApiError) else "",
+        value.status_code if isinstance(value, ApiError) else 0,
+        value.recovery_action if isinstance(value, ApiError) else value,
     )
 
 

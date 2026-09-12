@@ -336,6 +336,14 @@ def fail_task(
         worker_service.validate_inflight_continuation(worker, x_inflight_flow_id)
         actor = worker_actor_context(request, worker_id=worker.id, worker_name=worker.worker_name)
         is_pending_reply_recovery = task.status == "pending" and task.task_type == "chat_reply"
+        if payload.settlement_only:
+            data = task_service.settle_add_friend_failure(
+                db, task_id, worker.id, x_client_instance_id,
+                x_inflight_flow_id, x_task_lease_fencing_token,
+                payload.error_code, payload.failure_step, payload.failure_remark, actor,
+            )
+            db.commit()
+            return ok(data)
         if not is_pending_reply_recovery:
             task_service.validate_task_lease(
                 task,

@@ -168,6 +168,7 @@ from .sequence_alignment import (
     require_selected_only_media_reservation,
 )
 from .transaction_outcomes import (
+    FRAME_TECHNICAL_ERROR_CODES,
     FlowOutcomeAccumulator,
     classify_action_result,
     classify_outbox_recovery,
@@ -2658,13 +2659,7 @@ class TaskLeaseGuard:
         if self.thread and self.thread.is_alive():
             self.thread.join(timeout=2.0)
 
-C2_FRAME_TECHNICAL_ERROR_CODES = {
-    "C2_AVATAR_EVIDENCE_INVALID",
-    "OMNIAUTO_OBSERVATION_CONTRACT_INVALID",
-    "C2_IMAGE_OBSERVATION_FAILED",
-    "C2_PRE_SEND_LAYOUT_INVALID",
-    "WECHAT_UI_LAYOUT_UNRESOLVED",
-}
+C2_FRAME_TECHNICAL_ERROR_CODES = FRAME_TECHNICAL_ERROR_CODES
 
 C2_LOCATE_TERMINAL_ERROR_CODES = C2_FRAME_TECHNICAL_ERROR_CODES | {
     "C2_VISIBLE_TARGET_AMBIGUOUS",
@@ -4536,7 +4531,7 @@ class TaskRunner:
 
     def update_pending_read_handoff_snapshot(self, package_manifest: dict[str, Any]) -> dict[str, Any]:
         """Preserve one stopped read for a proven compatible target."""
-        from .pending_read_recovery import inspect_pending_read, accepts_handoff
+        from .pending_read_recovery import inspect_pending_read, accepts_handoff, backend_accepts_handoff
         with self._restart_recovery_lock:
             snapshot = self.update_install_safety_snapshot()
             if snapshot['safe']:
@@ -4553,10 +4548,7 @@ class TaskRunner:
                     return snapshot
                 profile = self.api.set_run_status(self.binding, 'faulted')
                 capability = profile.pending_read_recovery
-                if (profile.run_status != 'faulted' or not capability.get('ready')
-                        or not accepts_handoff(capability, handoff)
-                        or any(capability.get(k) != handoff[k] for k in
-                               ('flow_id', 'conversation_id', 'worker_id', 'client_instance_id'))):
+                if profile.run_status != 'faulted' or not backend_accepts_handoff(capability, handoff):
                     return snapshot
                 return {**snapshot, 'safe': True, 'settlement_complete': False,
                         'backend_stopped_confirmed_or_unbound': True, 'confirmed_run_status': 'faulted',
@@ -5499,6 +5491,21 @@ class TaskRunner:
             self._pending_flow_finish = dict(request)
             if self.current_task or self.current_ui_lock or lock_summary().get("locked"):
                 return True
+            receipt = load_c2_state(self._inflight_finish_receipt_key(request["flow_id"])) or {}
+            if receipt.get("task_failure"):
+                if time.monotonic() < self._flow_finish_retry_at:
+                    return True
+                try:
+                    self._deliver_add_friend_failure(binding, request["flow_id"])
+                except Exception as exc:
+                    self._flow_finish_stage = "dependencies"
+                    self._flow_finish_retry_at = time.monotonic() + self._flow_finish_retry_delay
+                    self._flow_finish_retry_delay = min(30.0, self._flow_finish_retry_delay * 2)
+                    append_log("WARN", "task_failure_receipt_retry_pending",
+                               "原任务失败回执尚未确认，保留原流程并等待补传。",
+                               task_id=request["flow_id"],
+                               error_code=str(getattr(exc, "code", None) or type(exc).__name__))
+                    return True
             # Durable dependency inspection keeps its original immediate
             # fault detection. Outbox/authorization recovery owns its retry
             # clocks; the finish backoff must not postpone a local conflict.
@@ -5557,6 +5564,9 @@ class TaskRunner:
             return True
 
     def _assert_inflight_finish_ready(self, flow_id: str, terminal_kind: str) -> None:
+        receipt = load_c2_state(self._inflight_finish_receipt_key(flow_id)) or {}
+        if receipt.get("task_failure") and receipt.get("task_failure_confirmed") is not True:
+            raise RuntimeError("RUNTIME_INFLIGHT_TASK_FAILURE_PENDING")
         if self.current_ui_lock is not None or bool(lock_summary().get("locked")):
             raise RuntimeError("RUNTIME_INFLIGHT_FINISH_BEFORE_UI_UNLOCK")
         if terminal_kind in {
@@ -6502,16 +6512,14 @@ class TaskRunner:
         conversation_id: str | None = None, error_code: str | None = None,
     ) -> None:
         """Shared HTTP failure and exact legacy-proof handling for every retry."""
+        from .pending_read_recovery import MAPPING_ERRORS, inspect_pending_read, backend_accepts_handoff
         flow_kind = str(load_runtime_control().get("inflight_flow_kind") or "")
         receipt = load_c2_state(self._inflight_finish_receipt_key(flow_id)) or {}
         try:
             if (
                 flow_kind == "c2_read"
                 and terminal_kind == "technical_failed"
-                and error_code in {
-                    "MESSAGE_OBSERVATION_MAPPING_INCOMPLETE",
-                    "MESSAGE_OBSERVATION_MAPPING_INCOMPLETE:FACT_SETTLEMENT_REQUIRED",
-                }
+                and error_code in MAPPING_ERRORS
                 and conversation_id
             ):
                 # A pre-fix client can leave an immutable, valid read behind a
@@ -6524,12 +6532,9 @@ class TaskRunner:
                     if cross_contract:
                         if not self.set_run_status('faulted'):
                             raise RuntimeError('RUNTIME_INFLIGHT_FAULT_STATUS_SYNC_PENDING')
-                        from .pending_read_recovery import inspect_pending_read, accepts_handoff
                         handoff = inspect_pending_read(CONFIG.app_dir)
                         capability = self._backend_pending_read_recovery
-                        if (not capability.get('ready') or not accepts_handoff(capability, handoff)
-                                or any(capability.get(k) != handoff[k] for k in
-                                       ('flow_id', 'conversation_id', 'worker_id', 'client_instance_id'))):
+                        if not backend_accepts_handoff(capability, handoff):
                             raise RuntimeError('RUNTIME_INFLIGHT_CONTRACT_RECOVERY_NOT_READY')
                     if not pending:
                         raise RuntimeError("RUNTIME_INFLIGHT_C2_OUTBOX_PENDING")
@@ -7427,8 +7432,95 @@ class TaskRunner:
         ):
             remove_action_journal(journal_path)
 
+    def _save_add_friend_failure(self, binding: Binding, task: Task, result: RpaResult) -> None:
+        """Write the original result and finish dependency before any HTTP call."""
+        with self._restart_recovery_lock:
+            if load_runtime_control().get("inflight_flow_id") != task.id:
+                raise RuntimeError("TASK_FAILURE_RECEIPT_MISMATCH")
+            key = self._inflight_finish_receipt_key(task.id)
+            saved = load_c2_state(key) or {}
+            failure = {
+                "task_id": task.id, "task_type": "add_friend", "flow_id": task.id,
+                "worker_id": binding.worker_id, "client_instance_id": binding.client_instance_id,
+                "lease_fencing_token": task.lease_fencing_token,
+                "error_code": result.error_code or "OTHER",
+                "failure_step": result.failure_step, "failure_remark": result.message,
+            }
+            if saved.get("task_failure") and saved["task_failure"] != failure:
+                raise RuntimeError("TASK_FAILURE_RECEIPT_MISMATCH")
+            save_c2_state(key, {
+                **saved, "task_failure": failure,
+                "task_failure_confirmed": saved.get("task_failure_confirmed") is True,
+                "terminal_kind": "task_terminal", "finish_stage": "dependencies",
+                "finish_request": {
+                    "flow_id": task.id, "worker_id": binding.worker_id,
+                    "client_instance_id": binding.client_instance_id,
+                    "terminal_kind": "task_terminal", "conversation_id": None, "error_code": None,
+                },
+            })
+
+    def _deliver_add_friend_failure(self, binding: Binding, flow_id: str) -> Task | None:
+        """Replay only the saved failure; confirmation precedes journal cleanup."""
+        with self._restart_recovery_lock:
+            key = self._inflight_finish_receipt_key(flow_id)
+            saved = load_c2_state(key) or {}
+            failure = saved.get("task_failure")
+            if not failure:
+                return None
+            local_flow_id = load_runtime_control().get("inflight_flow_id")
+            if (failure.get("task_id") != flow_id or failure.get("flow_id") != flow_id
+                    or failure.get("task_type") != "add_friend"
+                    or failure.get("worker_id") != binding.worker_id
+                    or failure.get("client_instance_id") != binding.client_instance_id
+                    or (local_flow_id != flow_id and (
+                        local_flow_id or saved.get("task_failure_confirmed") is not True))):
+                raise RuntimeError("TASK_FAILURE_RECEIPT_MISMATCH")
+            # The process may have exited between saving this failure and
+            # saving its stop state. Recover that decision before any receipt
+            # confirmation/Flow finish, including an already-confirmed receipt.
+            stop_status = (
+                "faulted" if failure["error_code"] in FRAME_TECHNICAL_ERROR_CODES
+                else "paused" if failure["error_code"] in ENV_STOP_ERRORS else None
+            )
+            if stop_status:
+                if binding.run_status == "faulted":
+                    stop_status = "faulted"
+                if (binding.run_status != stop_status
+                        or not load_runtime_control().get("pause_requested")
+                        or self._run_status_persistence_pending):
+                    self.set_run_status(stop_status)
+            if saved.get("task_failure_confirmed") is True:
+                return None
+            task = self.api.settle_task_failure(binding, failure)
+            if (task.id != flow_id or task.raw.get("failure_receipt") != failure
+                    or not (task.status == "failed" and task.error_code == failure["error_code"]
+                            or task.status == "cancelled" and task.raw.get("cancel_reason") == "LEAD_INVALID")):
+                raise RuntimeError("TASK_FAILURE_RECEIPT_UNCONFIRMED")
+            path = action_journal_path("add_friend", flow_id)
+            if read_action_journal(path) and action_journal_phase(path) != "trigger_attempted":
+                remove_action_journal(path)
+            save_c2_state(key, {**saved, "task_failure_confirmed": True})
+            append_log("INFO", "task_failure_receipt_confirmed", "原任务失败结果已获后端确认，继续结束原流程。", task_id=flow_id)
+            return task
+
     def _handle_failed_result(self, binding: Binding, task: Task, result: RpaResult) -> None:
-        failed = self.api.fail_task(binding, task.id, result.error_code or "OTHER", result.failure_step, result.message)
+        frame_failed = result.error_code in FRAME_TECHNICAL_ERROR_CODES
+        try:
+            if task.task_type == "add_friend":
+                self._save_add_friend_failure(binding, task, result)
+        finally:
+            # A storage failure must still stop intake; never send an unsaved receipt.
+            if frame_failed:
+                self.set_run_status("faulted")
+            elif result.error_code in ENV_STOP_ERRORS:
+                self.set_run_status("paused")
+        failed = (
+            self._deliver_add_friend_failure(binding, task.id)
+            if task.task_type == "add_friend"
+            else self.api.fail_task(binding, task.id, result.error_code or "OTHER", result.failure_step, result.message)
+        )
+        if failed is None:
+            return
         if failed.status == "cancelled" and failed.raw.get("cancel_reason") == "LEAD_INVALID":
             append_log("INFO", "task_cancelled", "已停止跟进：线索无效", task_id=task.id, error_code="LEAD_INVALID")
             self.on_result(result)
@@ -7458,8 +7550,9 @@ class TaskRunner:
             "incident_evidence_path": str((log_result or {}).get("evidence_path") or ""),
         }
         self.on_result(result)
-        if result.error_code in ENV_STOP_ERRORS:
-            self.set_run_status("paused")
+        if frame_failed:
+            self.on_error("客户端发生技术故障，已停止接单。")
+        elif result.error_code in ENV_STOP_ERRORS:
             self.on_error("运行环境异常，已暂停接单。")
 
     def _settle_chat_reply_context_failure_before_unlock(
@@ -13754,12 +13847,11 @@ class TaskRunner:
         ):
             return
         from .c2_contract import contract_revision
+        from .pending_read_recovery import MAPPING_ERRORS
         original = load_c2_state(self._inflight_finish_receipt_key(read_run_id)) or {}
         if (payload.get('contract_revision') != contract_revision()
                 and original.get('terminal_kind') == 'technical_failed'
-                and original.get('error_code') in {
-                    'MESSAGE_OBSERVATION_MAPPING_INCOMPLETE',
-                    'MESSAGE_OBSERVATION_MAPPING_INCOMPLETE:FACT_SETTLEMENT_REQUIRED'}
+                and original.get('error_code') in MAPPING_ERRORS
                 and original.get('conversation_id') == conversation_id
                 and not original.get('read_completion')):
             # Keep the original recovery receipt, even if this retry is rejected.
@@ -22071,7 +22163,7 @@ class TaskRunner:
             evidence = (result.get("final_messages") or result.get("initial_messages")
                         or result.get("messages") or result.get("target_confirmation") or {})
             evidence = evidence if isinstance(evidence, dict) else {}
-            frame_failed = result.get("error_code") in C2_FRAME_TECHNICAL_ERROR_CODES
+            frame_failed = result.get("error_code") in FRAME_TECHNICAL_ERROR_CODES
             partial_alignment_failed = bool(evidence.get("top_message_fragment")) and result.get("error_code") in {
                 "MESSAGE_CROSS_ROUND_IDENTITY_AMBIGUOUS",
                 "C2_PRE_SEND_MESSAGE_SEQUENCE_ALIGNMENT_FAILED",

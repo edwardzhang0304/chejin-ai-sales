@@ -1667,6 +1667,12 @@ class FakeApi:
         self.events.append(f"fail:{error_code}:{failure_step}")
         return self.task
 
+    def settle_task_failure(self, binding: Binding, receipt: dict):
+        task = self.fail_task(binding, receipt["task_id"], receipt["error_code"],
+                              receipt["failure_step"], receipt["failure_remark"])
+        return replace(task, status="failed", error_code=receipt["error_code"],
+                       raw={**task.raw, "failure_receipt": dict(receipt)})
+
     def upload_evidence(self, binding: Binding, task_id: str, content: str, **kwargs):
         self.evidence_payloads.append({"task_id": task_id, "content": content, **kwargs})
         self.events.append(f"evidence:{kwargs.get('error_code')}")
@@ -4839,7 +4845,7 @@ class TaskRunnerTest(unittest.TestCase):
         self.assertEqual(api.evidence_payloads[0]["evidence_path"], "C:/runtime/latest/review.html")
         self.assertEqual(api.evidence_payloads[0]["metadata"]["current_step"], "invite_sent")
 
-    def test_environment_failure_pauses_worker_after_failed_report(self):
+    def test_environment_failure_pauses_worker_before_failed_report(self):
         task = Task(id="task-2", task_type="add_friend", status="pending", phone="13800000000")
         api = FakeApi(task)
         bridge = FakeBridge(
@@ -4860,6 +4866,7 @@ class TaskRunnerTest(unittest.TestCase):
         self.assertIn("evidence:WECHAT_WINDOW_NOT_FOUND", api.events)
         self.assertIn("paused", api.run_status_updates)
         self.assertEqual(binding.run_status, "paused")
+        self.assertLess(api.events.index("run_status:paused"), api.events.index("fail:WECHAT_WINDOW_NOT_FOUND:wechat_window_found"))
         self.assertTrue(any("运行环境异常" in item for item in seen["errors"]))
 
     def test_phone_not_found_does_not_pause_worker_after_failed_report(self):
@@ -4883,7 +4890,7 @@ class TaskRunnerTest(unittest.TestCase):
         self.assertNotIn("paused", api.run_status_updates)
         self.assertEqual(binding.run_status, "running")
 
-    def test_preclick_layout_failure_does_not_pause_worker_after_failed_report(self):
+    def test_preclick_layout_failure_faults_worker_and_reports_failed_task(self):
         task = Task(id="task-layout", task_type="add_friend", status="pending", phone="13800000000")
         api = FakeApi(task)
         bridge = FakeBridge(
@@ -4901,8 +4908,8 @@ class TaskRunnerTest(unittest.TestCase):
         runner.tick_once()
 
         self.assertIn("fail:WECHAT_UI_LAYOUT_UNRESOLVED:window_layout_calibration", api.events)
-        self.assertNotIn("paused", api.run_status_updates)
-        self.assertEqual(binding.run_status, "running")
+        self.assertIn("faulted", api.run_status_updates)
+        self.assertEqual(binding.run_status, "faulted")
 
     def test_paused_worker_only_sends_heartbeat(self):
         task = Task(id="task-3", task_type="add_friend", status="pending", phone="13800000000")

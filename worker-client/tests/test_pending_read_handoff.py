@@ -12,6 +12,8 @@ from types import SimpleNamespace
 import subprocess
 import sys
 import shutil
+from threading import RLock
+from unittest.mock import Mock
 
 import pytest
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
@@ -151,6 +153,53 @@ def test_target_must_sign_recovery_capability_and_preserve_action_barriers(tmp_p
     manifest_path.write_text(json.dumps(manifest))
     with pytest.raises(ClientUpdateError):
         validate_update_plan(path, token)
+
+
+@pytest.mark.parametrize('field', [
+    'waiting_ledger', 'pending_c2_outbox', 'pending_sqlite_action_journal',
+    'pending_file_action_journal', 'pending_sent_ack', 'action_journal_state_unavailable',
+])
+def test_handoff_validates_all_counts_before_applying_read_exception(tmp_path, monkeypatch, field):
+    plan, path, token, _, _ = signed_handoff_plan(tmp_path, monkeypatch)
+    plan['safe_boundary'][field] = 'not-a-count'
+    path.write_text(json.dumps(plan))
+    with pytest.raises(ClientUpdateError) as error:
+        validate_update_plan(path, token)
+    assert error.value.code == 'UPDATE_INSTALL_FAILED'
+    assert '业务阻断计数无效' in str(error.value)
+
+
+@pytest.mark.parametrize('changed_field', [
+    None, 'ready', 'flow_id', 'conversation_id', 'worker_id', 'client_instance_id', 'contracts',
+])
+def test_worker_handoff_requires_backend_proof_for_same_owner(tmp_path, monkeypatch, changed_field):
+    from chejin_worker_client import task_runner as module
+    data = tmp_path / 'data'
+    handoff = pending(data, monkeypatch)
+    capability = {**handoff, 'ready': True}
+    if changed_field:
+        capability[changed_field] = False if changed_field == 'ready' else 'mismatch'
+        if changed_field == 'contracts': capability[changed_field] = []
+    runner = object.__new__(module.TaskRunner)
+    runner.binding = storage.load_binding()
+    runner._restart_recovery_lock = RLock()
+    runner._run_status_persistence_pending = False
+    runner._fault_recovery_processing = False
+    stopped = {'safe': False, 'new_work_blocked': True, 'inflight_flow_id': 'read-A'}
+    runner.update_install_safety_snapshot = Mock(return_value=stopped)
+    runner.api = SimpleNamespace(set_run_status=Mock(return_value=SimpleNamespace(
+        run_status='faulted', pending_read_recovery=capability,
+    )))
+    monkeypatch.setattr(module, 'CONFIG', SimpleNamespace(app_dir=data))
+    result = runner.update_pending_read_handoff_snapshot({'pending_read_recovery': package_recovery_capability()})
+    runner.api.set_run_status.assert_called_once_with(runner.binding, 'faulted')
+    if changed_field:
+        assert result == stopped and 'handoff_check_error' not in result
+    else:
+        assert result['safe'] and not result['settlement_complete']
+        assert result['pending_read_handoff'] == handoff
+    assert storage.load_binding().run_status == 'faulted'
+    assert storage.load_runtime_control()['inflight_flow_id'] == 'read-A'
 
 
 def test_valid_signature_does_not_make_an_unsupported_target_compatible(tmp_path, monkeypatch):
