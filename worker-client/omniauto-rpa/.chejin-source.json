@@ -258,6 +258,12 @@
         "shared_pre_send_error_and_image_prefix_rules",
         "shared_customer_self_voice_geometry"
       ]
+    },
+    {
+      "source_commit": "4c137ed558d8113da731b557eb4ed8f3256f15df",
+      "scope": [
+        "c2_contract_0_9_79_generated_schema"
+      ]
     }
   ],
   "chejin_overlays": [
@@ -290,11 +296,11 @@
     "persisted_c1_failure_receipt_settlement_and_stop_recovery_contract"
   ],
   "current_release": {
-    "version": "0.9.78",
-    "source_commit": "d4f94f614da581e6a92bca99113b3d849289f547",
-    "contract_revision": "0.9.78",
-    "contract_sha256": "b4151ab61fb5d90688e1e0ac187cc767acaee1617cb420be3028acc52ccf7eab",
-    "scope": "Schema revision only after reviewed cumulative C1 recovery and shared rules cdffdc1 / c1b1725; runtime unchanged during release preparation."
+    "version": "0.9.79",
+    "source_commit": "4c137ed558d8113da731b557eb4ed8f3256f15df",
+    "contract_revision": "0.9.79",
+    "contract_sha256": "8cf3e2819f829f8f9930f429a369c80cca6530d618910a7468611d518a67cf70",
+    "scope": "Unreleased 0.9.79 candidate; reviewed C1 success settlement and chat-border correction from e8dee2f1a0af513ff394e5a8fc494f0d715be008; runtime source 5988723d7c67cb381af69a68eacaaf36cad3263b. Schema-only version synchronization; no package or deployment performed."
   },
   "historical_integrations": [
     {
