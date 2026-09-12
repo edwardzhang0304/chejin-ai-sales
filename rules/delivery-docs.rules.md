@@ -34,10 +34,10 @@
 
 | 范围 | 必查路径 |
 |---|---|
-| 产品 | `deliverables/AI智能客服售前跟进系统_PRD_运营后台统一版_v0.9.78.md` |
-| 技术 | `deliverables/AI智能客服售前跟进系统_技术方案手册_v0.9.78.md` |
+| 产品 | `deliverables/AI智能客服售前跟进系统_PRD_运营后台统一版_v0.9.79.md` |
+| 技术 | `deliverables/AI智能客服售前跟进系统_技术方案手册_v0.9.79.md` |
 | 版本记录 | `deliverables/AI智能客服售前跟进系统_版本更新记录.md` |
-| 全流程图 | `deliverables/AI智能客服售前跟进系统_全流程图_v0.9.78.puml` |
+| 全流程图 | `deliverables/AI智能客服售前跟进系统_全流程图_v0.9.79.puml` |
 | UI 静态稿 | `website/` |
 | 前端工程 | `frontend/` |
 | 后端工程 | `backend/` |

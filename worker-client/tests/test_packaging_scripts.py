@@ -1173,11 +1173,16 @@ class PackagingScriptsTest(unittest.TestCase):
                     ]
                 },
                 {'source_commit': '405c0c1344ad97a38d4f4b9bda2c3e84ec657900', 'scope': ['c2_contract_0_9_76_generated_schema']},
+                {'source_commit': '454dbc2866351755385786aa8b7a04afcf1bb7cc', 'scope': ['c2_contract_0_9_77_generated_schema']},
+                {'source_commit': 'c1b1725085a6e1476822b06d4c46fb8c633f3b1f', 'scope': ['shared_contract_interpretation_rules', 'shared_message_and_voice_normalization_rules']},
+                {'source_commit': 'd4f94f614da581e6a92bca99113b3d849289f547', 'scope': ['c2_contract_0_9_78_generated_schema']},
+                {'source_commit': '5988723d7c67cb381af69a68eacaaf36cad3263b', 'scope': ['startup_separator_measured_content_exit', 'viewport_connected_border_exclusion', 'shared_pre_send_error_and_image_prefix_rules', 'shared_customer_self_voice_geometry']},
+                {'source_commit': '4c137ed558d8113da731b557eb4ed8f3256f15df', 'scope': ['c2_contract_0_9_79_generated_schema']},
             ],
         )
         self.assertEqual(
             provenance["current_release"],
-            {'version': '0.9.76', 'source_commit': '405c0c1344ad97a38d4f4b9bda2c3e84ec657900', 'contract_revision': '0.9.76', 'contract_sha256': 'fd5fff1004dea3adaedbfc4a8db700a4852977f2900ba5dd0d67f9f40f7fd68b', 'scope': 'Schema revision only; OmniAuto runtime unchanged. Reviewed Chejin 821517d historical OCR, AI attribution and fault settlement fixes.'},
+            {'version': '0.9.79', 'source_commit': '4c137ed558d8113da731b557eb4ed8f3256f15df', 'contract_revision': '0.9.79', 'contract_sha256': '8cf3e2819f829f8f9930f429a369c80cca6530d618910a7468611d518a67cf70', 'scope': 'Unreleased 0.9.79 candidate; reviewed C1 success settlement and chat-border correction from e8dee2f1a0af513ff394e5a8fc494f0d715be008; runtime source 5988723d7c67cb381af69a68eacaaf36cad3263b. Schema-only version synchronization; no package or deployment performed.'},
         )
         self.assertIn(
             "strict_current_screen_without_history_scroll",
@@ -1192,7 +1197,7 @@ class PackagingScriptsTest(unittest.TestCase):
             provenance["chejin_overlays"],
         )
         self.assertIn(
-            "add_friend_preclick_layout_failure_non_pausing_contract",
+            "add_friend_technical_failure_stops_intake_contract",
             provenance["chejin_overlays"],
         )
         self.assertIn(
