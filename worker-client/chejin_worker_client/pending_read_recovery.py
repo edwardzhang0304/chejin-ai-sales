@@ -40,6 +40,17 @@ def accepts_handoff(capability: dict, handoff: dict) -> bool:
                 and all(c in capability.get('contracts', []) for c in handoff['contracts']))
 
 
+def backend_accepts_handoff(capability: dict, handoff: dict) -> bool:
+    """Require the backend's ready proof for this exact stopped read owner."""
+    return bool(
+        accepts_handoff(capability, handoff)
+        and capability.get('ready')
+        and all(capability.get(key) == handoff[key] for key in (
+            'flow_id', 'conversation_id', 'worker_id', 'client_instance_id',
+        ))
+    )
+
+
 def inspect_pending_read(data_dir: Path) -> dict:
     """One SQLite read transaction; called again after all old writers exit.
 

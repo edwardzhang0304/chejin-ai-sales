@@ -9,6 +9,7 @@ import secrets
 import time
 import uuid
 from typing import Any
+
 from zoneinfo import ZoneInfo
 
 from sqlalchemy import func, select
@@ -33,6 +34,7 @@ from app.models.worker import Worker
 from app.services.ai_adapter import AIEngineDecision, get_ai_engine_adapter
 from app.services.feishu_service import enqueue_handoff_notification
 from app.services.message_contract import (
+    normalize_voice_duration,
     canonical_message_identity_text,
     canonical_reply_text,
     reply_text_hash,
@@ -151,22 +153,7 @@ def _observation_for_message(message: MessageEvent) -> dict[str, Any]:
 
 
 def _normalize_voice_duration(value: object) -> str:
-    text = str(value or "").strip().lower()
-    for suffix in ("seconds", "second", "secs", "sec", "秒", "s"):
-        if text.endswith(suffix):
-            text = text[: -len(suffix)].strip()
-            break
-    try:
-        number = float(text)
-    except (TypeError, ValueError):
-        return ""
-    if number <= 0:
-        return ""
-    return (
-        str(int(number))
-        if number.is_integer()
-        else format(number, ".3f").rstrip("0").rstrip(".")
-    )
+    return normalize_voice_duration(value)
 
 
 def _observation_voice_duration(observation: dict[str, Any]) -> str:

@@ -1041,7 +1041,7 @@ class C2ContractTests(unittest.TestCase):
             "CUSTOMER_HIGH_INTENT",
         )
 
-    def test_outbox_recovery_uses_only_backend_action(self):
+    def test_outbox_recovery_prefers_backend_action_then_shared_status_rules(self):
         for recovery_action in (
             "retry",
             "refresh_and_rebuild",
@@ -1066,7 +1066,7 @@ class C2ContractTests(unittest.TestCase):
             classify_outbox_recovery(
                 ApiError("UNKNOWN", "missing action", 503, {})
             ),
-            "capability_paused",
+            "retry",
         )
         self.assertEqual(
             classify_outbox_recovery(ConnectionError("offline")),

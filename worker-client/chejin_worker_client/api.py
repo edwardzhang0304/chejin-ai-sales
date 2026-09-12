@@ -424,6 +424,21 @@ class WorkerApiClient:
         self._forget_confirmed_task_lease(task_id, token)
         return task
 
+    def settle_task_failure(self, binding: Binding, receipt: dict[str, Any]) -> Task:
+        """Send a saved C1 failure with its original Flow and fencing identity."""
+        token = int(receipt["lease_fencing_token"])
+        payload = self._request(
+            "POST", f"/tasks/{receipt['task_id']}/fail", binding=binding,
+            json={"error_code": receipt["error_code"], "failure_step": receipt["failure_step"],
+                  "failure_remark": receipt["failure_remark"], "settlement_only": True},
+            extra_headers={"X-Task-Lease-Fencing-Token": str(token),
+                           "X-Inflight-Flow-Id": receipt["flow_id"]},
+        )
+        task = Task.from_api(payload)
+        if task.raw.get("failure_receipt") == receipt:
+            self._forget_confirmed_task_lease(task.id, token)
+        return task
+
     def upload_evidence(
         self,
         binding: Binding,

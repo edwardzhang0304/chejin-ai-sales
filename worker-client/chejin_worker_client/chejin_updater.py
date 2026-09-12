@@ -235,15 +235,13 @@ def validate_update_plan(plan_path: Path, token: str) -> dict[str, Any]:
         "action_journal_state_unavailable",
     )
     try:
-        has_durable_blocker = any(
-            int(safe_boundary.get(key) or 0) != 0 for key in blocker_counts
-        )
+        counts = {key: int(safe_boundary.get(key) or 0) for key in blocker_counts}
     except (TypeError, ValueError) as exc:
         raise ClientUpdateError("UPDATE_INSTALL_FAILED", "更新计划业务阻断计数无效") from exc
-    if handoff is not None:
-        has_durable_blocker = any(int(safe_boundary.get(k) or 0) != 0 for k in blocker_counts
-                                  if k not in {'waiting_ledger', 'pending_c2_outbox'})
-    if has_durable_blocker:
+    # Only read facts can be carried across the handoff. Parse every count once,
+    # including those two fields, before checking which records block install.
+    handoff_counts = {'waiting_ledger', 'pending_c2_outbox'} if handoff is not None else set()
+    if any(count != 0 for key, count in counts.items() if key not in handoff_counts):
         raise ClientUpdateError("UPDATE_INSTALL_FAILED", "更新计划仍包含未结算业务记录")
     release = _release_from_plan(plan)
     # The archive is already local.  A presigned download URL is deliberately
