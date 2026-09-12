@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from .c2_contract import IMAGE_FORBIDDEN_FIELD_PREFIXES
+
 import hashlib
 import json
 import re
@@ -41,12 +43,7 @@ from .message_viewport_projection import (
 IMAGE_PERSISTENCE_POLICY = dict(c2_contract_v3().get("image_persistence_policy") or {})
 IMAGE_RUNTIME_FIELDS = set(IMAGE_PERSISTENCE_POLICY.get("forbidden_field_names") or [])
 
-IMAGE_RUNTIME_FIELD_PREFIXES = (
-    "provider_response",
-    "raw_provider_response",
-    "retry_response",
-    "initial_response",
-)
+IMAGE_RUNTIME_FIELD_PREFIXES = IMAGE_FORBIDDEN_FIELD_PREFIXES
 
 FORMAL_C2_REMARK_CODE_RE = re.compile(r"CJ[A-Z0-9]{6}")
 

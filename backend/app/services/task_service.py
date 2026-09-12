@@ -2,6 +2,7 @@ from datetime import datetime, timedelta, timezone
 import hashlib
 import re
 from typing import Any
+from app.contracts.c2 import pre_send_reidentification_errors
 from uuid import UUID
 
 from sqlalchemy import case, func, or_, select
@@ -1114,18 +1115,7 @@ def complete_task(db: Session, task_id: str, result_code: TaskResultCode, remark
     return task_to_detail(get_task_or_404(db, task.id))
 
 
-_PRE_SEND_REIDENTIFICATION_ERRORS = {
-    "C2_PRE_SEND_TEXT_CONTENT_UNREADABLE",
-    "C2_PRE_SEND_MESSAGE_SEQUENCE_ALIGNMENT_FAILED",
-    "C2_PRE_SEND_MESSAGE_ROLE_UNCONFIRMED",
-    "C2_PRE_SEND_VOICE_TARGET_NOT_FOUND",
-    "C2_PRE_SEND_VOICE_TARGET_AMBIGUOUS",
-    "C2_PRE_SEND_IMAGE_TARGET_NOT_FOUND",
-    "C2_PRE_SEND_IMAGE_TARGET_AMBIGUOUS",
-    "C2_PRE_SEND_MESSAGE_VIEWPORT_CHANGED_AGAIN",
-    "C2_PRE_SEND_SYSTEM_CONTENT_UNREADABLE",
-    "C2_PRE_SEND_SYSTEM_CLASSIFICATION_UNRESOLVED",
-}
+_PRE_SEND_REIDENTIFICATION_ERRORS = set(pre_send_reidentification_errors())
 _PENDING_CHAT_REPLY_RECOVERY_ERRORS = {
     "C2_REPLY_CONTEXT_MISSING",
     "C2_REPLY_TARGET_NOT_AUTHORIZED",
@@ -1152,10 +1142,39 @@ def settle_add_friend_failure(
     error_code: str, failure_step: str | None, failure_remark: str | None,
     actor: ActorContext,
 ) -> dict[str, Any]:
-    """Acknowledge only the original C1 failure; never grant a lease or UI work."""
+    return _settle_add_friend_result(
+        db, task_id, worker_id, client_instance_id, flow_id, lease_fencing_token,
+        "failure", {"error_code": error_code, "failure_step": failure_step,
+                    "failure_remark": failure_remark}, actor,
+    )
+
+
+def settle_add_friend_success(
+    db: Session, task_id: str, worker_id: str, client_instance_id: str | None,
+    flow_id: str | None, lease_fencing_token: int | None,
+    result_code: TaskResultCode, remark: str | None, actor: ActorContext,
+) -> dict[str, Any]:
+    if result_code not in {TaskResultCode.invite_sent, TaskResultCode.already_friend}:
+        raise AppError("TASK_RESULT_CODE_INVALID", "add_friend 任务结果码不合法", 400)
+    return _settle_add_friend_result(
+        db, task_id, worker_id, client_instance_id, flow_id, lease_fencing_token,
+        "success", {"result_code": result_code.value, "remark": remark}, actor,
+    )
+
+
+def _settle_add_friend_result(
+    db: Session, task_id: str, worker_id: str, client_instance_id: str | None,
+    flow_id: str | None, lease_fencing_token: int | None,
+    kind: str, details: dict[str, Any], actor: ActorContext,
+) -> dict[str, Any]:
+    """Settle an original C1 result; no lease renewal or new desktop permission."""
     from app.models.audit import OperationLog
     from app.services.followup_eligibility import lock_leads
     from app.services.worker_service import _lock_worker, validate_inflight_continuation
+
+    mismatch = f"TASK_{kind.upper()}_RECEIPT_MISMATCH"
+    event_type = f"task_{kind}_receipt_confirmed"
+    receipt_field = f"{kind}_receipt"
 
     # Same root lock order as invalidation and Flow finish: Lead -> Worker -> Task.
     lock_leads(db, [db.scalar(select(Task.lead_id).where(Task.id == task_id))])
@@ -1167,7 +1186,7 @@ def settle_add_friend_failure(
             or not client_instance_id or worker.client_instance_id != client_instance_id
             or flow_id != task.id or (worker.inflight_flow_state or {}).get("flow_id") != flow_id
             or (worker.inflight_flow_state or {}).get("flow_kind") != "task"):
-        raise AppError("TASK_FAILURE_RECEIPT_MISMATCH", "失败回执与原任务或流程不一致", 409)
+        raise AppError(mismatch, "回执与原任务或流程不一致", 409)
     validate_inflight_continuation(worker, flow_id)
     token = int(lease_fencing_token or 0)
     if token <= 0 or token != int(task.lease_fencing_token or 0):
@@ -1175,42 +1194,45 @@ def settle_add_friend_failure(
     receipt = {
         "task_id": task.id, "task_type": task.task_type, "flow_id": flow_id,
         "worker_id": worker.id, "client_instance_id": client_instance_id,
-        "lease_fencing_token": token, "error_code": error_code,
-        "failure_step": failure_step, "failure_remark": failure_remark,
+        "lease_fencing_token": token, **details,
     }
     identity = {**receipt, "bound_at": (
         worker.bound_at.replace(tzinfo=timezone.utc).isoformat() if worker.bound_at else None
     )}
+    def settled_state():
+        if kind == "success":
+            return {"status": task.status, "result_code": task.result_code,
+                    "error_code": task.error_code, "cancel_reason": task.cancel_reason}
+        return {"status": task.status, "error_code": task.error_code,
+                "failure_step": task.failure_step, "failure_remark": task.failure_remark,
+                "cancel_reason": task.cancel_reason}
+
     prior = db.scalar(select(OperationLog).where(
-        OperationLog.event_type == "task_failure_receipt_confirmed",
+        OperationLog.event_type == event_type,
         OperationLog.target_id == task.id, OperationLog.operator_id == worker.id,
     ).order_by(OperationLog.created_at.desc(), OperationLog.id.desc()).limit(1))
     if prior is not None:
-        if prior.before_data != identity or prior.after_data != {
-            "status": task.status, "error_code": task.error_code,
-            "failure_step": task.failure_step, "failure_remark": task.failure_remark,
-            "cancel_reason": task.cancel_reason,
-        }:
-            raise AppError("TASK_FAILURE_RECEIPT_MISMATCH", "失败回执与已确认记录不一致", 409)
-        return {**task_to_detail(task), "failure_receipt": receipt}
+        if prior.before_data != identity or prior.after_data != settled_state():
+            raise AppError(mismatch, "回执与已确认记录不一致", 409)
+        return {**task_to_detail(task), receipt_field: receipt}
     # Expiry prohibits another physical action, not settlement by the unchanged
     # original owner/fencing generation. No token/expiry is renewed here.
     if (task.status != TaskStatus.running.value
             or task.lease_owner_worker_id != worker.id
             or task.lease_owner_client_instance_id != client_instance_id):
-        raise AppError("TASK_LEASE_OWNER_MISMATCH", "原任务租约归属已变化，不能补交失败", 409)
-    result = fail_task(db, task.id, error_code, failure_step, failure_remark, actor)
+        raise AppError("TASK_LEASE_OWNER_MISMATCH", "原任务租约归属已变化，不能补交结果", 409)
+    result = (
+        complete_task(db, task.id, TaskResultCode(details["result_code"]), details["remark"], actor)
+        if kind == "success" else
+        fail_task(db, task.id, details["error_code"], details["failure_step"], details["failure_remark"], actor)
+    )
     write_log(
-        db, actor, event_type="task_failure_receipt_confirmed", module="tasks",
+        db, actor, event_type=event_type, module="tasks",
         target_type="task", target_id=task.id, lead_id=task.lead_id,
-        before_data=identity, after_data={
-            "status": task.status, "error_code": task.error_code,
-            "failure_step": task.failure_step, "failure_remark": task.failure_remark,
-            "cancel_reason": task.cancel_reason,
-        },
+        before_data=identity, after_data=settled_state(),
     )
     db.flush()
-    return {**result, "failure_receipt": receipt}
+    return {**result, receipt_field: receipt}
 
 
 def fail_task(

@@ -5843,7 +5843,7 @@ def visual_voice_component_has_transcribed_layout_below(
     return False
 
 
-def visual_customer_voice_component_overlaps_text(
+def _visual_voice_component_overlaps_text(
     component: dict[str, Any],
     ocr_items: list[dict[str, Any]],
     image_size: tuple[int, int],
@@ -5872,6 +5872,18 @@ def visual_customer_voice_component_overlaps_text(
             return True
     return False
 
+
+
+def visual_customer_voice_component_overlaps_text(
+    component: dict[str, Any],
+    ocr_items: list[dict[str, Any]],
+    image_size: tuple[int, int],
+    *,
+    layout_snapshot: dict[str, Any] | None = None,
+) -> bool:
+    return _visual_voice_component_overlaps_text(
+        component, ocr_items, image_size, layout_snapshot=layout_snapshot,
+    )
 
 def find_visual_self_voice_context_anchor_targets(
     image: Image.Image,
@@ -6013,28 +6025,9 @@ def visual_self_voice_component_overlaps_text(
     *,
     layout_snapshot: dict[str, Any] | None = None,
 ) -> bool:
-    left = float(component.get("left") or 0)
-    top = float(component.get("top") or 0)
-    right = float(component.get("right") or 0)
-    bottom = float(component.get("bottom") or 0)
-    if right <= left or bottom <= top:
-        return False
-    expanded_left = left - 8
-    expanded_top = top - 8
-    expanded_right = right + 8
-    expanded_bottom = bottom + 8
-    for item in ocr_items:
-        text = str(item.get("text") or "").strip()
-        if not text or voice_duration_item_like(item) or voice_transcribe_button_text_like(text) or is_message_noise(text):
-            continue
-        if not voice_transcribe_item_is_in_chat_surface(item, image_size, layout_snapshot=layout_snapshot):
-            continue
-        center_x = float(item.get("center_x") or 0)
-        center_y = float(item.get("center_y") or 0)
-        if expanded_left <= center_x <= expanded_right and expanded_top <= center_y <= expanded_bottom:
-            return True
-    return False
-
+    return _visual_voice_component_overlaps_text(
+        component, ocr_items, image_size, layout_snapshot=layout_snapshot,
+    )
 
 def voice_target_matches_parsed_message(
     target: dict[str, Any],

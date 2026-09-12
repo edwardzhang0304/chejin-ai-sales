@@ -75,12 +75,13 @@ class UiContractTest(unittest.TestCase):
                 text.rindex("startup_update = take_update_startup_context()"),
                 text.rindex("auto_start_runtime=not is_post_update"),
             )
-            callback = text[text.rindex("def finish_post_update_startup()") :]
-            self.assertIn("window.start_runtime_services()", callback)
-            self.assertIn("health_gate.observe(", callback)
-            self.assertIn("window.post_update_runtime_health_snapshot()", callback)
-            self.assertIn("QTimer.singleShot(250, finish_post_update_startup)", callback)
+            self.assertIn("runtime_startup.schedule_post_update_startup(", text)
+            self.assertIn("window, startup_update, QTimer.singleShot", text)
             self.assertIn("if auto_start_runtime:", text)
+        shared = (ROOT / "chejin_worker_client/runtime_startup.py").read_text(encoding="utf-8")
+        self.assertLess(shared.index("window.start_runtime_services()"), shared.index("health_gate.observe("))
+        self.assertIn("window.post_update_runtime_health_snapshot()", shared)
+        self.assertIn("single_shot(250, finish_post_update_startup)", shared)
 
     def test_web_settings_exposes_manual_update_for_bound_or_unbound_client(self):
         web_ui = (ROOT / "chejin_worker_client" / "web_ui.py").read_text(

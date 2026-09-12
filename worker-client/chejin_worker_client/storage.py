@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from .c2_contract import IMAGE_FORBIDDEN_FIELD_PREFIXES
+
 import hashlib
 import json
 import sqlite3
@@ -940,12 +942,7 @@ _OUTBOX_FORBIDDEN_KEYS = set(
     (c2_contract_v3().get("image_persistence_policy") or {}).get("forbidden_field_names") or []
 )
 
-_OUTBOX_FORBIDDEN_KEY_PREFIXES = (
-    "provider_response",
-    "raw_provider_response",
-    "retry_response",
-    "initial_response",
-)
+_OUTBOX_FORBIDDEN_KEY_PREFIXES = IMAGE_FORBIDDEN_FIELD_PREFIXES
 
 
 def _assert_outbox_text_only(value: Any, *, path: str = "payload") -> None:

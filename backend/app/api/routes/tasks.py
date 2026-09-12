@@ -274,13 +274,21 @@ def invite_sent(
         task = task_service.get_task_or_404(db, task_id)
         worker = worker_service.authenticate_worker_client(db, task.worker_id or "", x_worker_token, x_client_instance_id)
         worker_service.validate_inflight_continuation(worker, x_inflight_flow_id)
+        actor = worker_actor_context(request, worker_id=worker.id, worker_name=worker.worker_name)
+        if payload.settlement_only:
+            data = task_service.settle_add_friend_success(
+                db, task_id, worker.id, x_client_instance_id,
+                x_inflight_flow_id, x_task_lease_fencing_token,
+                TaskResultCode.invite_sent, payload.remark, actor,
+            )
+            db.commit()
+            return ok(data)
         task_service.validate_task_lease(
             task,
             worker_id=worker.id,
             client_instance_id=x_client_instance_id,
             lease_fencing_token=x_task_lease_fencing_token,
         )
-        actor = worker_actor_context(request, worker_id=worker.id, worker_name=worker.worker_name)
         data = task_service.complete_task(db, task_id, TaskResultCode.invite_sent, payload.remark, actor)
         db.commit()
         return ok(data)
@@ -304,13 +312,21 @@ def already_friend(
         task = task_service.get_task_or_404(db, task_id)
         worker = worker_service.authenticate_worker_client(db, task.worker_id or "", x_worker_token, x_client_instance_id)
         worker_service.validate_inflight_continuation(worker, x_inflight_flow_id)
+        actor = worker_actor_context(request, worker_id=worker.id, worker_name=worker.worker_name)
+        if payload.settlement_only:
+            data = task_service.settle_add_friend_success(
+                db, task_id, worker.id, x_client_instance_id,
+                x_inflight_flow_id, x_task_lease_fencing_token,
+                TaskResultCode.already_friend, payload.remark, actor,
+            )
+            db.commit()
+            return ok(data)
         task_service.validate_task_lease(
             task,
             worker_id=worker.id,
             client_instance_id=x_client_instance_id,
             lease_fencing_token=x_task_lease_fencing_token,
         )
-        actor = worker_actor_context(request, worker_id=worker.id, worker_name=worker.worker_name)
         data = task_service.complete_task(db, task_id, TaskResultCode.already_friend, payload.remark, actor)
         db.commit()
         return ok(data)
