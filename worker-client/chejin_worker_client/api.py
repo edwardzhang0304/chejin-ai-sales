@@ -568,6 +568,8 @@ class WorkerApiClient:
         process_run_id: str | None = None,
     ) -> dict[str, Any]:
         headers: dict[str, str] = {}
+        if payload.get("read_run_id"):
+            headers["X-Inflight-Flow-Id"] = str(payload["read_run_id"])
         if settlement_token:
             headers["X-C2-Settlement-Token"] = settlement_token
         if process_run_id:

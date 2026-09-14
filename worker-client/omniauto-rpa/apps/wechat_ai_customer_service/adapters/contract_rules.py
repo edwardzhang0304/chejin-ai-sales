@@ -2,8 +2,10 @@
 from __future__ import annotations
 
 import hashlib
+import hmac
 import json
 import math
+import re
 from typing import Any
 
 
@@ -55,6 +57,29 @@ def contract_sha256(payload: dict[str, Any]) -> str:
         separators=(",", ":"),
     ).encode("utf-8")
     return hashlib.sha256(canonical).hexdigest()
+
+
+def contract_rules_sha256(payload: dict[str, Any]) -> str:
+    """Fingerprint every rule; a release label is not a business rule."""
+    return contract_sha256({key: value for key, value in payload.items() if key != "contract_revision"})
+
+
+def equivalent_contract(
+    current: dict[str, Any], revision: Any, sha256: Any,
+) -> dict[str, Any] | None:
+    """Verify the sender's complete contract without rewriting its evidence.
+
+    Only the release label may differ. A changed rule, missing hash or an
+    invented revision paired with a different contract's hash is rejected.
+    The returned validator input preserves the sender's original revision.
+    """
+    if (not isinstance(revision, str) or len(revision) > 64
+            or not re.fullmatch(r"(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)", revision)):
+        return None
+    if not isinstance(sha256, str) or not re.fullmatch(r"[0-9a-fA-F]{64}", sha256):
+        return None
+    candidate = {**current, "contract_revision": revision}
+    return candidate if hmac.compare_digest(contract_sha256(candidate), sha256.lower()) else None
 
 
 def contract_row_rules(payload: dict[str, Any]) -> dict[str, dict[str, Any]]:
