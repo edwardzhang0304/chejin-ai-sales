@@ -19028,6 +19028,11 @@ def _register_layout_snapshot(
         "vertical_candidates": list(layout.get("vertical_candidates") or []),
     }
     snapshot["calibration_id"] = str(calibration.get("calibration_id") or "")
+    snapshot["startup_calibration_evidence"] = {
+        "screenshot_path": str(calibration.get("screenshot_path") or ""),
+        "result_path": str(calibration.get("evidence_path") or ""),
+        "calibrated_at": calibration.get("calibrated_at"),
+    }
     snapshot["coordinate_map"] = {
         "owner": "omniauto",
         "calibration_schema_version": str(calibration.get("schema_version") or ""),
@@ -19291,9 +19296,17 @@ def build_and_store_startup_calibration(
             "reason": "exact_visible_client_capture_unavailable",
             "no_clicks_performed": True,
         }
+    # Normal startup does not pass --artifact-dir. Persist the exact input
+    # frame anyway, and keep each run separate from the replaceable active map.
+    evidence_root = (
+        Path(artifact_dir)
+        if artifact_dir
+        else STARTUP_CALIBRATION_PATH.parent / "artifacts" / "startup_layout_calibration"
+    )
+    evidence_dir = evidence_root / win32_ocr_layout.new_frame_id(hwnd)
     screenshot_path = save_screenshot_artifact(
         image,
-        artifact_dir=artifact_dir,
+        artifact_dir=evidence_dir,
         label="startup_layout_calibration",
     )
     enhanced = ImageEnhance.Contrast(image.convert("RGB")).enhance(1.35)
@@ -19320,6 +19333,13 @@ def build_and_store_startup_calibration(
         dpi_scale=window_dpi_scale(hwnd),
         capture_mode=win32_ocr_layout.CAPTURE_MODE_CLIENT_AREA,
         screenshot_path=screenshot_path,
+    )
+    calibration["evidence_path"] = str(evidence_dir / "calibration.json")
+    # Archive unsuccessful recognition as well. A later successful startup
+    # must not overwrite the pixels and boundary scores from this attempt.
+    win32_ocr_layout.write_startup_layout_calibration(
+        Path(calibration["evidence_path"]),
+        calibration,
     )
     win32_ocr_layout.write_startup_layout_calibration(
         STARTUP_CALIBRATION_PATH,

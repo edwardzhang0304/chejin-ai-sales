@@ -7,6 +7,7 @@ from typing import Any, Callable
 
 from apps.wechat_ai_customer_service.adapters.add_friend_locator import make_locator_result, normalize_bounds, normalize_point
 from apps.wechat_ai_customer_service.adapters.add_friend_ocr import compact_ocr_text
+from apps.wechat_ai_customer_service.adapters.circle_plus_icon import circle_plus_icon_candidates
 
 
 def point_in_bounds(x: int, y: int, bounds: list[int]) -> bool:
@@ -70,6 +71,8 @@ def vision_plus_icon_candidates(
     *,
     search_bounds: list[int],
 ) -> list[dict[str, Any]]:
+    # Preserve this heuristic for startup region construction. The action
+    # locator below uses circle-plus matching inside that unchanged region.
     if image is None or not hasattr(image, "crop"):
         return []
     if not isinstance(search_bounds, list) or len(search_bounds) < 4:
@@ -154,7 +157,7 @@ def plus_entry_target(
     )
     safe_bounds = normalize_bounds(dynamic_sidebar_header_bounds) if has_dynamic_header else [0, 0, 0, 0]
     candidates = (
-        vision_plus_icon_candidates(screenshot, image_size, search_bounds=safe_bounds)
+        circle_plus_icon_candidates(screenshot, search_bounds=safe_bounds)
         if has_dynamic_header
         else []
     )
