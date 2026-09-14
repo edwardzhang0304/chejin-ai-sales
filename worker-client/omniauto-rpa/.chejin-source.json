@@ -296,6 +296,12 @@
         "portable_rule_hash_and_original_sender_contract_validation",
         "rule_change_and_mislabelled_contract_rejection_checks"
       ]
+    },
+    {
+      "source_commit": "439326f95d1efccb46e00fbba6dcf03d815cdbdf",
+      "scope": [
+        "c2_contract_0_9_80_generated_schema"
+      ]
     }
   ],
   "chejin_overlays": [
@@ -328,11 +334,11 @@
     "persisted_c1_failure_receipt_settlement_and_stop_recovery_contract"
   ],
   "current_release": {
-    "version": "0.9.79",
-    "source_commit": "4c137ed558d8113da731b557eb4ed8f3256f15df",
-    "contract_revision": "0.9.79",
-    "contract_sha256": "8cf3e2819f829f8f9930f429a369c80cca6530d618910a7468611d518a67cf70",
-    "scope": "Unreleased 0.9.79 candidate; reviewed C1 success settlement and chat-border correction from e8dee2f1a0af513ff394e5a8fc494f0d715be008; runtime source 5988723d7c67cb381af69a68eacaaf36cad3263b. Schema-only version synchronization; no package or deployment performed."
+    "version": "0.9.80",
+    "source_commit": "439326f95d1efccb46e00fbba6dcf03d815cdbdf",
+    "contract_revision": "0.9.80",
+    "contract_sha256": "43f8c07e3660d790c39f3b348dcce9fb1e2c0bed243b41cff6669a658995e380",
+    "scope": "Unreleased 0.9.80 formal candidate based on reviewed b572943; runtime source 9134e763e50701288c4bbc427ca7eb968e60dd08. Manual preservation from 0.9.78; Windows acceptance pending."
   },
   "historical_integrations": [
     {
