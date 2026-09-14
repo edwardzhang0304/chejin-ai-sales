@@ -402,6 +402,15 @@ def start_inflight_flow(
         require_conversation_followup(db, payload.conversation_id)
     else:
         require_followup(db, db.scalar(select(Task.lead_id).where(Task.id == payload.flow_id)))
+    task_owner_check = None
+    if payload.flow_kind == "task":
+        from app.services.task_ownership import lock_sales, require_task_owner
+        task = db.get(Task, payload.flow_id)
+        if task is not None and task.task_type == "add_friend":
+            lock_sales(db, [task.sales_id])
+            task = db.scalar(select(Task).where(Task.id == payload.flow_id)
+                             .with_for_update().execution_options(populate_existing=True))
+            task_owner_check = task
     binding = None
     if payload.conversation_id:
         # Lock the conversation binding before the Worker row.  Recovery-hold
@@ -439,6 +448,8 @@ def start_inflight_flow(
             payload.authorization_revision != token_for_revision(binding.id, int(binding.authorization_revision or 1))
         ):
             raise AppError("MESSAGE_AUTHORIZATION_REVISION_EXPIRED", "读取票已撤销，不能启动新流程", 409)
+    if task_owner_check is not None:
+        require_task_owner(db, task_owner_check, worker.id, allow_started=True)
     worker = _lock_worker(db, worker.id)
     if worker.run_status != "running":
         raise AppError("WORKER_NOT_ACCEPTING_TASKS", "Worker 已暂停，不能开始新流程", 409)

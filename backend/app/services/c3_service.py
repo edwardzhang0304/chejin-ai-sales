@@ -709,15 +709,15 @@ def _brain_plan_vehicle_ids(payload: dict[str, Any]) -> list[str]:
     return sorted(vehicle_ids)
 
 
-def _vehicle_fact_query(vehicle_ids: list[str]):
+def _vehicle_fact_query(vehicle_ids: list[str] | None = None):
     settings = get_settings()
-    return select(KnowledgeItem).where(
+    query = select(KnowledgeItem).where(
         KnowledgeItem.tenant_id == settings.omniauto_knowledge_tenant,
         KnowledgeItem.layer == "product_master",
         KnowledgeItem.category_id == "products",
         KnowledgeItem.product_id == "",
-        KnowledgeItem.item_id.in_(vehicle_ids),
     )
+    return query.where(KnowledgeItem.item_id.in_(vehicle_ids)) if vehicle_ids is not None else query
 
 
 def _vehicle_fact_fingerprint(db: Session, vehicle: KnowledgeItem) -> str:
@@ -770,11 +770,12 @@ def _snapshot_action_vehicle_facts(
     *,
     action: ReplyAction,
     payload: dict[str, Any],
+    generation_vehicle_facts: dict[str, dict[str, str]],
 ) -> list[str]:
     vehicle_ids = _brain_plan_vehicle_ids(payload)
     if not vehicle_ids:
         return []
-    vehicles = list(db.scalars(_vehicle_fact_query(vehicle_ids).order_by(KnowledgeItem.item_id).with_for_update()))
+    vehicles = list(db.scalars(_vehicle_fact_query(vehicle_ids).order_by(KnowledgeItem.item_id).with_for_update().execution_options(populate_existing=True)))
     by_id = {vehicle.item_id: vehicle for vehicle in vehicles}
     unavailable = [vehicle_id for vehicle_id in vehicle_ids if vehicle_id not in by_id or by_id[vehicle_id].status != "active"]
     if unavailable:
@@ -784,13 +785,25 @@ def _snapshot_action_vehicle_facts(
             409,
             {"vehicle_ids": unavailable, "suggested_action": "regenerate"},
         )
+    # Never certify old generated text with a fresh catalog fingerprint. Only
+    # referenced vehicles must be unchanged across this generation attempt;
+    # unrelated catalog edits must not cancel the answer. New/changed entries
+    # encountered mid-generation get a fresh attempt, not a guessed version.
+    stale = [vehicle_id for vehicle_id in vehicle_ids
+             if generation_vehicle_facts.get(vehicle_id) != {
+                 "fact_fingerprint": _vehicle_fact_fingerprint(db, by_id[vehicle_id]),
+                 "updated_at": by_id[vehicle_id].updated_at.isoformat(),
+             }]
+    if stale:
+        raise AppError(VEHICLE_FACT_STALE_CODE, "生成期间引用车辆资料已变化，请重新生成", 409,
+                       {"vehicle_ids": stale, "suggested_action": "regenerate"})
     for vehicle_id in vehicle_ids:
         vehicle = by_id[vehicle_id]
         db.add(
             ReplyActionVehicleFact(
                 reply_action_id=action.id,
                 vehicle_id=vehicle_id,
-                fact_fingerprint=_vehicle_fact_fingerprint(db, vehicle),
+                fact_fingerprint=generation_vehicle_facts[vehicle_id]["fact_fingerprint"],
                 vehicle_updated_at=vehicle.updated_at,
             )
         )
@@ -3290,6 +3303,23 @@ def generate_for_batch(
     # provider network call. New customer/sales facts can then supersede this
     # generation while the model is thinking instead of waiting on our lock.
     generation_attempt = int(batch.generation_attempt_count or 0)
+    generation_vehicle_facts = {
+        vehicle.item_id: {
+            "fact_fingerprint": _vehicle_fact_fingerprint(db, vehicle),
+            # The payload uses second-resolution metadata. A -> B -> A within
+            # one second must still invalidate a model that may have read B.
+            "updated_at": vehicle.updated_at.isoformat(),
+        }
+        for vehicle in db.scalars(_vehicle_fact_query().where(KnowledgeItem.status == "active"))
+    }
+    # Internal, server-owned evidence for this attempt; not an LLM assertion.
+    # Each retry refreshes this guard. It contains hashes, not duplicated car
+    # records, and never holds catalog locks during a Provider call.
+    context["vehicle_fact_generation_snapshot"] = {
+        "generation_attempt": generation_attempt,
+        "vehicles": generation_vehicle_facts,
+    }
+    batch.ai_request_snapshot = dict(context)
     previous_ai_response_snapshot = (
         dict(batch.ai_response_snapshot)
         if isinstance(batch.ai_response_snapshot, dict)
@@ -3483,7 +3513,8 @@ def generate_for_batch(
             db.add(action)
             db.flush()
             try:
-                _snapshot_action_vehicle_facts(db, action=action, payload=payload)
+                _snapshot_action_vehicle_facts(db, action=action, payload=payload,
+                                               generation_vehicle_facts=generation_vehicle_facts)
             except AppError as exc:
                 db.delete(action)
                 db.flush()

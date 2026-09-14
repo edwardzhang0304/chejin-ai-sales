@@ -18,6 +18,7 @@ from test_lead_followup_eligibility import isolated_db, http_api, fixture_rows
 from app.api.response import error_response
 from app.core.database import SessionLocal
 from app.models.task import Task
+from task_ownership_fixtures import owned_add_friend_task
 from app.models.worker import Worker
 from app.enums import ContactType
 from app.services.lead_service import _contact_model
@@ -95,7 +96,7 @@ def test_c1_technical_fault_must_not_consume_next_customer(http_api,tmp_path,cod
         for index,row in enumerate(rows):
             db.add(_contact_model(row['lead_id'],ContactType.phone,
                                   contact_utils.normalize_phone(f'1380000888{index}'),True))
-            db.add(Task(lead_id=row['lead_id'],worker_id=worker['id'],task_type='add_friend',status='pending'))
+            db.add(owned_add_friend_task(db, lead_id=row['lead_id'],worker_id=worker['id'],task_type='add_friend',status='pending'))
         db.commit()
     # Get base URL from an actual response, without peeking into the fixture closure.
     base=http_api.get('/healthz').url.rsplit('/healthz',1)[0]+'/api'

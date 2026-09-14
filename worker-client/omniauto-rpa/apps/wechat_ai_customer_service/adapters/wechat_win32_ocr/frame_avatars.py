@@ -182,11 +182,20 @@ def _detect(image: Any, viewport: list[int], scale: float) -> dict[str, Any]:
             continue
         # Check an exterior ring, never the occupancy of the avatar's interior.
         # This admits white space/holes but rejects an object attached to a bubble.
-        if x < pad or y < pad or x + w + pad > mask.shape[1] or y + h + pad > mask.shape[0]:
+        if x < pad or x + w + pad > mask.shape[1] or y + h + pad > mask.shape[0]:
             table["unresolved"].append({**diagnostic, "reason": "exterior_boundary_clipped"})
             continue
-        ring = mask[y-pad:y+h+pad, x-pad:x+w+pad].copy()
-        ring[pad:pad+h, pad:pad+w] = 0
+        # A full contour can have less top background than the preferred
+        # DPI-scaled ring. Touching/clipped contours were handled above;
+        # here y > 0, so require all of the visible top strip to be clear.
+        # Never sample the header outside the viewport or assume missing
+        # pixels are background. Side/bottom margins keep their full pad.
+        top_pad = min(pad, y)
+        if top_pad < pad and bool(mask[:y, x-pad:x+w+pad].any()):
+            table["unresolved"].append({**diagnostic, "reason": "outer_boundary_not_confirmed"})
+            continue
+        ring = mask[y-top_pad:y+h+pad, x-pad:x+w+pad].copy()
+        ring[top_pad:top_pad+h, pad:pad+w] = 0
         ring_area = ring.size - w*h
         isolation = 1.0 - float(ring.sum()) / ring_area
         # A closed outer contour must span all four sides, not just the bounding

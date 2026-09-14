@@ -167,9 +167,8 @@ def _validate_worker_for_binding(db: Session, worker_id: str, sales_id: str) -> 
 
 
 def bind_worker(db: Session, sales_id: str, payload: SalesWorkerBindRequest, actor: ActorContext) -> dict:
-    sales = db.get(Sales, sales_id)
-    if not sales or sales.deleted_at:
-        raise AppError("SALES_NOT_FOUND", "销售不存在", 404)
+    from app.services.task_ownership import prepare_sales_rebinding, synchronize_unstarted_task
+    sales, tasks, executors = prepare_sales_rebinding(db, sales_id, payload.worker_id)
 
     before = {"worker_id": sales.worker_id}
     if payload.worker_id:
@@ -191,10 +190,9 @@ def bind_worker(db: Session, sales_id: str, payload: SalesWorkerBindRequest, act
         before_data=before,
         after_data=after,
     )
-    if after["worker_id"]:
-        from app.services.task_service import unblock_sales_worker_tasks
-
-        unblock_sales_worker_tasks(db, sales.id, after["worker_id"], actor)
+    for task in tasks:
+        synchronize_unstarted_task(db, task, actor, executors=executors)
+    db.flush()
     return get_sales_detail(db, sales.id)
 
 
@@ -212,6 +210,9 @@ def update_sales(db: Session, sales_id: str, payload: SalesUpdate, actor: ActorC
     data = payload.model_dump(exclude_unset=True)
     worker_id_provided = "worker_id" in data
     worker_id = data.pop("worker_id", None)
+    if worker_id_provided:
+        # Acquire the lead/sales/task/Worker locks before flushing sales edits.
+        bind_worker(db, sales.id, SalesWorkerBindRequest(worker_id=worker_id), actor)
     phone_changed = False
     normalized_phone: str | None = None
     if "phone" in data:
@@ -230,9 +231,6 @@ def update_sales(db: Session, sales_id: str, payload: SalesUpdate, actor: ActorC
             sales_id=sales.id,
             normalized_phone=normalized_phone,
         )
-    if worker_id_provided:
-        bind_worker(db, sales.id, SalesWorkerBindRequest(worker_id=worker_id), actor)
-
     after = {
         "sales_name": sales.sales_name,
         "phone": _mask_phone(sales.phone),
