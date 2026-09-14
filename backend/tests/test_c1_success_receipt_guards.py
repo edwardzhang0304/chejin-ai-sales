@@ -4,6 +4,7 @@ from datetime import timedelta
 import pytest
 from sqlalchemy import select
 from test_lead_followup_eligibility import isolated_db,http_api,fixture_rows
+from task_ownership_fixtures import owned_add_friend_task
 import test_worker_failure_consistency as submitted
 from test_c1_success_receipt_http import BOUNDARY
 from app.core.database import SessionLocal
@@ -20,7 +21,7 @@ def pending_success(http_api,tmp_path,monkeypatch):
     worker,rows=fixture_rows()
     with SessionLocal() as db:
         db.add(_contact_model(rows[0]['lead_id'],ContactType.phone,contact_utils.normalize_phone('13800005555'),True))
-        db.add(Task(lead_id=rows[0]['lead_id'],worker_id=worker['id'],task_type='add_friend',status='pending'));db.commit()
+        db.add(owned_add_friend_task(db, lead_id=rows[0]['lead_id'],worker_id=worker['id'],task_type='add_friend',status='pending'));db.commit()
     monkeypatch.setattr(submitted,'COMMON',submitted.COMMON.replace('raise ConnectionError(',"raise __import__('requests').ConnectionError(")+BOUNDARY)
     request={'base_url':http_api.get('/healthz').url.removesuffix('/healthz')+'/api','worker_id':worker['id'],'token':worker['worker_token'],'result_code':'invite_sent','interruption':'invite-sent:before'}
     receipt=submitted.run_worker(tmp_path,"""
