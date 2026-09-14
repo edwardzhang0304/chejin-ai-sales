@@ -104,7 +104,13 @@ def serve(cfg, source, label):
     c3_service.get_ai_engine_adapter = ControlledModel
     @app.middleware('http')
     async def record(request, call_next):
-        response = await call_next(request)
+        if label == 'old-exe' and request.url.path.endswith(('/messages/ingest', '/inflight-flow/finish')):
+            # Keep original Outbox pending while inspecting/closing the old EXE.
+            # This loopback-only transport fault is removed for candidate-exe.
+            from starlette.responses import JSONResponse
+            response = JSONResponse({'code': 'FIXTURE_INGEST_UNAVAILABLE', 'message': 'controlled original-EXE transport outage'}, status_code=503)
+        else:
+            response = await call_next(request)
         if '/workers/' in request.url.path:
             with (Path(cfg['folder']) / (label + '-http.jsonl')).open('a', encoding='utf-8') as log:
                 log.write(json.dumps({'path': request.url.path, 'method': request.method, 'status': response.status_code}) + '\n')
@@ -199,7 +205,18 @@ def create_pending_fixture(cfg, env):
     tree = ast.parse((ROOT / 'backend/tests/test_c2_historical_ocr_settlement.py').read_text(encoding='utf-8'))
     values = {n.targets[0].id: ast.literal_eval(n.value) for n in tree.body if isinstance(n, ast.Assign)
               and isinstance(n.targets[0], ast.Name) and n.targets[0].id in {'WORKER', 'OLD_TEXT', 'NEW_QUESTION'}}
-    script = values['WORKER'].replace('with db_connection() as conn:', "if mode == 'old_paused':\n    assert runner.set_run_status('paused')\nwith db_connection() as conn:")
+    # Use the reviewed driver's transport-corruption mode, not an old OCR bug
+    # that newer original versions may already have fixed. Durable payloads
+    # and original Worker/EXE code remain untouched.
+    script = values['WORKER']
+    marker = '    response = send(request, **kwargs)'
+    assert script.count(marker) == 1
+    script = script.replace(marker, """    if mode == 'rejected' and request.url.endswith('/inflight-flow/finish'):
+        # Isolated transport outage keeps the real original finish receipt durable.
+        import requests
+        injections.append('fixture_finish_transport_unavailable')
+        raise requests.ConnectionError('controlled original finish transport outage')
+""" + marker)
     folder = Path(cfg['folder']); path = folder / 'synthetic-old-worker.py'; path.write_text(script, encoding='utf-8')
     def fixture_op(name):
         subprocess.run([sys.executable, __file__, '--fixture-operation', name, '--config', cfg['config_path']], env=env, check=True)
@@ -218,11 +235,12 @@ def create_pending_fixture(cfg, env):
     with backend(cfg, cfg['old_source'], 'fixture-old', env):
         first = run('seed', history); assert first['result']['ok']
         fixture_op('next-turn')
-        stuck = run('old_paused', frame)
-        assert stuck['saved_status'] == 'paused' and stuck['runtime']['inflight_flow_id']
+        stuck = run('rejected', frame)
+        assert stuck['saved_status'] == 'faulted' and stuck['runtime']['inflight_flow_id']
+        assert any(row['status'] != 'confirmed' for row in stuck['outbox']), 'No original pending Outbox'
         assert any(e['status'] == 409 and e['response']['code'] == 'MESSAGE_OBSERVATION_MAPPING_INCOMPLETE' for e in stuck['exchanges'] if e['url'].endswith('/messages/ingest'))
     gate.write_json(folder / 'fixture-identity.json', {'original_source': cfg['old_sha'], 'synthetic_only': True,
-        'flow_id': stuck['runtime']['inflight_flow_id'], 'initial_status': 'paused', 'windows_exe_tested': False})
+        'flow_id': stuck['runtime']['inflight_flow_id'], 'initial_status': 'faulted', 'fixture_fault': 'transport-only observation corruption and unavailable finish; original EXE ingestion/finish temporarily unavailable', 'windows_exe_tested': False})
 
 
 def run(args):
