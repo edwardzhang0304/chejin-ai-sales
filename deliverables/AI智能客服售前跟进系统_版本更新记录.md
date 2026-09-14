@@ -1,4 +1,168 @@
+当前状态：统一恢复 r7 已通过架构师4号独立源码复审；2026-09-15 用户明确授权提交推送，r8 登记本次双仓源码交付。包含恢复逻辑、客户端顶部/正文/按钮状态和四文档，沿原灰度分支提交。未打包或发布；Windows 和高磊现场仍待验收。
 # AI智能客服售前跟进系统 版本更新记录
+
+文档版本：v0.9.80；合同基线：0.9.80；文档修订：r8（2026-09-15，已审 r7 源码按用户授权提交；联合 Windows 与现场待验，未发布）。
+
+## 2026-09-15 统一故障收尾与恢复接单（已审源码提交）
+
+- 用户在独立源码复审通过后明确授权“提交推送”。本次只交付已审 r7 实现、合成测试、客户端状态文案、四份权威文档与来源清单；不打包、不部署、不操作生产数据，不推送采证脚本、客户附件及本机数据库。
+- 沿用车金 `codex/gray-release-0.9.x` 与自有 OmniAuto `codex/gray-release-0.9.x-source`，普通快进推送，不覆盖主工作区其他修改。车金基线 `dc751f1732125442a48dc3949efb8a4b8674874e`；OmniAuto 来源 `cbfc9b9adac20ed8762aeae51be444344a6efc7d` 接在 `439326f95d1efccb46e00fbba6dcf03d815cdbdf` 后，3 份共享文件与内置副本逐字一致。来源清单只追加本次集成，保留宿主差异和已发布 current_release。
+- 提交前逐文件核对复审通过的 41 个实现/测试文件，集合 SHA256 `03b923a3215f588ceb7774d523a3971125b18ac406b9b9577fac51a2e735390a` 不变；除四文档交付状态和来源登记外无追加实现。复用独立复审的 165 次正向执行通过及 1 次反向预期失败，不重复未变更业务回归；原始失败和各项验证边界继续保留，详见下方 r7 复审记录。
+- 提交使用 `[skip ci]`，不触发新包；应用/合同仍保留 0.9.80 候选基线标签，完整候选合同 SHA256 `27fe180017be887caf40a1947c9204aeb52bceaa06db5667eb120414fc4bf393` 与正式 0.9.80 不同。正式联合版本另定，后端、Worker、共享合同和 OmniAuto 必须同候选联合验收，不能单独更新一端。
+- 提交推送回执保存在本机 `/private/tmp/chejin-unified-recovery-push-20260915/push-result.json`，车金最终提交以本条所在提交及远端回执为准。Windows 原生按钮、实际微信新任务、保留高磊原数据安装与现场恢复仍待验收。本次源码提交不代表现场已恢复。
+
+以下 r7 及更早章节保留当时状态；其中“未授权提交/尚未提交”不覆盖本次用户授权和源码交付记录。
+
+
+## 2026-09-14 统一恢复 r7：有效客户与旧媒体合同，独立源码复审通过
+
+### r7 独立源码复审结果回填
+
+架构师4号已独立确认四项 P1 对应场景闭环，未发现新的源码阻塞项，允许同候选进入联合 Windows 验收。报告：`/private/tmp/chejin-unified-recovery-independent-20260914-ONlhdP/review_v0.3_20260914.md`；机器索引：同目录 `verification-r7-independent.json`。41份源码/测试文件、3份共享文件与报告哈希一致，已审实现指纹及完整合同 SHA 与下方 r7 登记一致。本次仅回填四份文档结论，产品源码和测试不改，不重复运行已通过的业务测试。
+
+独立执行165次正向测试通过，另1次关闭自然调度在 Automatic reply absent（0!=1）按预期失败；场景有重叠，不写成165个独立业务场景。临时PG库全部清理，测试SQLite和首次失败证据保留。
+
+结论边界保留：有效客户已有普通Outbox两组只验到ready；专用旧合同为合法协议夹具，非销售原库/旧EXE；UI49项主要是静态合同，r6实际React点击只复用未改范围，Qt桥接有替身。source_digest负例只证明单字段身份矛盾被解析拒绝，不能扩写为任意一致篡改验证。Windows正式包、保留数据安装、高磊原数据、原生按钮与真实微信新任务/Flow收尾仍待验；后端、Worker、共享合同及OmniAuto必须同候选联合验收。此次复审不授权提交、推送、打包、部署或生产数据修改。
+
+下方实现与自测登记保留当时过程；其中“待独立复审”仅指送审时状态，当前源码复审结论以本回填为准。
+
+
+
+架构师 r6 独立报告 `/private/tmp/chejin-unified-recovery-independent-20260914-ONlhdP/review_v0.2_20260914.md` 确认原 P1-01/02 对应六个对照通过、媒体/归属16项通过；同时提出新 P1-03/04，r6 整体仍未通过。本轮已核对并补齐这两个具体遗漏，没有据此宣称所有媒体或现场已验。
+
+- P1-03：客户仍有效、已结束原 Flow、只有确定媒体 Journal/Ledger 时，旧代码错误地要求撤销日志。现在把原归属判断抽为共享 `_original_read_owner`，有效授权与已撤销授权分别核验。仍要求同 Worker/实例/绑定/原 Flow；旧调用缺 read_run 只接受唯一可证明历史 Flow。响应仅允许原事实结算，不能重开 Flow、变 running 或执行微信。
+- P1-04：专用 Outbox 原来直接校验当前完整合同。现在在原归属、专用 token 校验之后接同一受限冻结合同解析器，原 JSON、版本、SHA 均不改。原全字段校验继续生效；不匹配仍拒绝。进一步查到幂等提前返回会跳过错误合同校验，现把同一校验放到幂等返回前，仅针对 fact_only，技术结算分支不改。
+- UI 继续复用 r6 的统一状态：“已停止接单→可以恢复接单→正在恢复接单→接单中”；没有另外新增按钮或恢复线程。原浏览器点击证据按 r6 已验范围复用，本轮后端资格和合同修正没有冒充新的 Windows UI 验收。
+
+候选及共享目录不变，基线仍 dc751f1732125442a48dc3949efb8a4b8674874e / 439326f95d1efccb46e00fbba6dcf03d815cdbdf；实现/测试集合 SHA256=`03b923a3215f588ceb7774d523a3971125b18ac406b9b9577fac51a2e735390a`，完整合同 SHA256=`27fe180017be887caf40a1947c9204aeb52bceaa06db5667eb120414fc4bf393`。逐文件及依赖见 `/private/tmp/chejin-unified-recovery-evidence-20260914/source-provenance.json`，r6 输入另存 source-provenance-r6.json，不能覆盖历史复审输入。3 份共享文件逐字一致，生成 Schema 检查通过。**本轮未提交、推送、打包、部署或写生产；0.9.80 只是候选基线标签，正式联合版本未确定。**
+
+证据根目录 `/private/tmp/chejin-unified-recovery-evidence-20260914`；命令/JUnit/子进程数据及 cleanup.json 留在各运行目录；各组有重叠，不相加：
+
+| 运行 | 实际范围与结果 |
+|---|---|
+| r7-review-baseline | 未修正 r6 上原独立8例：4失败4通过，准确复现有效客户无 Outbox 两例、正式旧合同两例；原记录保留。 |
+| r7-original-rechecks | 原独立8例修正后通过；合并旧保护共19通过1失败。失败是旧负例把“有效客户没有撤销日志”也当成非法。已拆清有效正例与“客户已作废但缺撤销凭据”负例，没有删身份保护。 |
+| r7-media-matrix-1 | 42通过：原拥有者8组、专用协议记录16组、分片2组、媒体入口4组、归属拒绝12组。原媒体无 Outbox 先由生产拥有者生成记录再退出，新进程同 SQLite；有效/作废的语音和图片均恢复。 |
+| r7-fact-matrix-eligible | 专用协议16组从一开始设为正常 AI 跟进资格，全部通过：当前/正式旧合同×完成/失败×有效/作废×语音/图片。原 Outbox 不变，Ledger 真实终态/确认保持，显式开始后 B 完成、锁/Flow/租约释放。 |
+| r7-original-frozen-worker | 原架构师完整 Worker 的当前/正式旧合同四个对照原样通过，后续 B 完成。 |
+| r7-contract-guards / r7-contract-guards-final | 旧兼容/准入44项及新保护首次5项通过；1项源键矛盾在 Pydantic 层实际400，而测试误期望409。改为该具体分支明确要求400，其余明确409，6项复验通过。 |
+| r7-contract-replay-before | 已结算重放6例：5个错误合同仍返回200，1个源身份矛盾由解析器拒绝；保留此真实失败。幂等之前补同一完整合同校验。 |
+| r7-final-media-contract | 最后 34 项通过，包括首次/已结算重放12个拒绝例、16组专用媒体完整下一单、既有 read-authorization/fact_settlement API。正确旧合同成功、错误合同拒绝，没有依赖修改运行中数据。 |
+| r7-related-regression | 原业务结算/接口及原0.9.75同库正式自然异步恢复41项通过；204项非本轮定向范围未选中。 |
+| r7-worker-shared-ui.xml | 原SQLite结算、完整规则交接和UI合同49项通过；本轮未改UI运行代码。 |
+
+范围必须如实区分：原拥有者8组中，有效客户且已有普通 Outbox 的两组只证明 ready=true、账本/Journal结清、保持faulted；正常 A 可能生成优先回复，未测试其实际发送或强求下一单为 B。其他6组原拥有者测试及16组专用协议测试验证显式 Start 命令到 B 完成；Windows物理为严格替身。专用完成/失败旧合同是事先建立并按冻结合同验证的协议输入夹具，不是销售原SQLite或旧媒体EXE回放。媒体动作未知状态仍按既有保护保留，未把未知伪装确定失败。
+
+所有失败保留；没有先作废有效客户、重开原 Flow、改 running、清记录或手写成功序列证明制造通过。r7机器索引见 `/private/tmp/chejin-unified-recovery-evidence-20260914/verification-r7.json`。独立复审尚待完成，Windows原生Qt/WebEngine、真实微信动作、正式包/安装交接及高磊现场仍未验收。下面 r6/r5 为当时记录，本节覆盖其“待返回”的当前状态，不修改审查人的历史结论。
+
+## 2026-09-14 统一恢复 r6：修正复审两个 P1，待独立复审
+
+本轮修正原分片事实漏计、已结束媒体 Flow 被活动准入阻挡；增加真实 Worker 分进程恢复验证，并同步两套客户端顶部和正文状态。复用原服务、原媒体拥有者、原 Ledger/Outbox 与“开始接单”，无新恢复引擎、线程、销售修复步骤。**本地自测已完成，不等于独立复审通过或现场恢复；未提交、推送、打包、部署、修改生产数据。**
+
+源码目录仍为 `/private/tmp/chejin-unified-recovery-impl-20260914`，共享目录为 `/private/tmp/omniauto-unified-recovery-impl-20260914`，基线不变。r6 实现/测试集合 SHA256=`9493b882839ca6436ad89d4d5ac50e596ef76b95b7d2e17cc77e6855914cc511`；候选完整合同 SHA256=`9e22f5ddbd31997287c4c2d3c0c249f06f2b145a5cb77a24da5290b4b092d01e`；逐文件与依赖清单见 `/private/tmp/chejin-unified-recovery-evidence-20260914/source-provenance-r6.json`。3 个共享文件逐字一致，生成 Schema 检查通过。标签仍为本地 0.9.80 基线，并非正式包合同；将来须客户端与后端联合发布，新正式版本未确定。
+
+| 复审项 | 修正与实际证据 |
+|---|---|
+| UR-P1-01 / UR-05 | 合并原 accepted MessageEvent 与后续取消证明，严格校验同批次完整无交叉覆盖；正式 Worker 不重发 confirmed 第一片。原复审两个真实 Worker 分片对照通过，开始后下一单完成。原接口测试的额外 POST 移到自然完成之后，只验证幂等。 |
+| UR-P1-02 / UR-09 | 原活动/结束媒体归属和撤销凭证由路由/锁内服务共用；可选原 read_run 显式识别，旧调用唯一历史记录才允许。语音/图片活动和已结束专用入口对照通过，另补完整 Worker 及拒绝错误归属测试。 |
+| 真实 Worker 新发现 | 原 Ledger 缺授权时取同原 Flow Journal/原 Outbox 的真实旧授权；冲突拒绝。专用媒体载荷经原增量计划附原 Ledger 状态；普通 Outbox 调回既有媒体拥有者。测试未在启动后改记录、重开 Flow 或伪造 slot/序列证明。 |
+| 原界面 | TaskRunner 同快照派生顶部状态，原生 Qt/Web UI 同步。实际 React 鼠标点击：禁用→可以恢复接单→正在恢复接单→接单中；后台确认 B 任务 completed/invite_sent、Flow 与租约释放，重启不重复旧提交。 |
+
+证据根目录为 `/private/tmp/chejin-unified-recovery-evidence-20260914`，每个数据库运行目录保留命令、JUnit、过程记录及 cleanup.json；以下运行有重叠，**不相加冒充总数**：
+
+- `r6-review-baseline`：未修正 r5 上 3 个原业务反例失败、3 个对照通过；失败原样保留。`r6-review-first`：同 6 个对照通过。
+- `r6-final-business`：52 项通过，含真实 Worker 分片、媒体、原业务取消、传输及保存异常；最终媒体准入收口后 `r6-owner-guards` 10 项通过，错授权/Flow/实例/换绑/缺结束或撤销记录均拒绝，`r6-media-final-guards` 6 项重新通过。
+- `r6-media-process-restart-1`：4 项完成态语音/图片 × 有无普通 Outbox。准备进程通过原 Worker 读取/媒体拥有者生成 Journal、Ledger 和可用 Outbox 后退出；新进程打开同 SQLite 恢复，显式开始后完成 B。仅窗口/语音/Vision 物理边界受控；媒体动作结果、消息身份和序列证据由原实现产生。
+- `r6-failed-media-1`：2 项已失败媒体事实结算及下一单通过；这是明确已失败协议输入夹具，不冒充旧 EXE 实际生成或真实 OCR。原 failed 结果保持 failed，不升级成 completed。最终 6 项媒体复跑同时覆盖这两项。
+- `r6-worker-regression-2.xml`：107 项通过、3 子检查通过，329 非本轮定向用例未选中。生产 JS 构建、Schema 检查、33 份变更 Python 语法、桥接 4 项 Node 测试和 diff 格式检查通过；流程图未在本机渲染。
+- `r6-browser-start-2`：原 0.9.80 完整源码重现→候选接续同 SQLite/PostgreSQL→浏览器实际点击原 Start 方法→B 完成→再启动不重复。`ui-command.json`、`after-candidate.json`、`verified.json`、`restart-evidence.json`留证。Qt 消息传输替身、B 微信物理动作替身；未取得高磊原 SQLite，原附件 4 条消息保持、隔离身份差异由 fixture-provenance.json 说明。
+- `r6-original-075-positive`：完整原 0.9.75 同库升级与正式自然异步派发正例 1 项通过，模型为替身；未放宽旧版本/完整规则兼容门禁。
+- 三类消融均在业务断言按预期失败：`r6-ablation-backend` 原请求仍409；`r6-ablation-worker` HTTP成功但旧 Outbox 仍 waiting；`r6-ablation-automatic`合法原消息恢复后 ReplyAction=0。对应正例均通过，不把导入/准备失败计入消融有效证据。
+
+失败与纠正也保留：早期手建媒体夹具没有真实序列证据，不能用于证明原流程；一次人工填证明补丁被自动审批拒绝，补丁未执行，改用原 Worker 生成。随后原拥有者测试先暴露旧授权来源和缺 slot 状态两个产品缺口，再修正并重跑。图片边界替身缺失正式 Vision request_style、单元测试 Journal 与 Ledger 授权互相矛盾等夹具问题只改正确前提，原安全校验不放宽。`r6-media-original-owner-*`、`r6-worker-regression.xml`等初期失败不删除；同进程4通过再提升为分进程4通过。`r6-browser-start`因人工验收未在限定时间内解除受控503而超时，重跑另建目录并保留原失败，不归因产品。
+
+r5 独立复审报告仍为 `/private/tmp/chejin-unified-recovery-independent-20260914-ONlhdP/review_v0.1_20260914.md`，不修改审查人的结论。r6 待其重新独立复跑；未批准发布。Windows 正式 EXE、Qt/WebEngine、真实微信动作、安装数据交接和高磊现场仍须分别验收。r5 证据和结论以下作为历史保留，不能用当时总数宣称本轮 P1 已审结。
+
+## 2026-09-14 统一故障收尾与接单恢复：r5本地源码候选
+
+原事故“旧Flow结束后客户作废”已通过原0.9.80代码重现，再由候选沿用同一测试SQLite和后端数据库完成结算、明确开始接单、下一合法客户B任务完成及重启不重复。**源码自测可交复审；未提交、推送、打包、部署或修改生产数据，未宣称Windows/高磊现场通过。**
+
+实现目录：`/private/tmp/chejin-unified-recovery-impl-20260914`；基线`dc751f1732125442a48dc3949efb8a4b8674874e`（正式业务源码a3484fac）。OmniAuto独立目录：`/private/tmp/omniauto-unified-recovery-impl-20260914`，基线`439326f95d1efccb46e00fbba6dcf03d815cdbdf`；3个共享文件逐字一致。两处均未提交，不能把候选改动冒充原提交内容。实现/测试文件集合SHA256=`132a125d969916c6b9e6cfaf5f98d3e136c73920106e41d86608505b0fc878b9`；完整逐文件SHA与Python/Node/依赖版本：`/private/tmp/chejin-unified-recovery-evidence-20260914/source-provenance-r5.json`。合同标签仍0.9.80，候选完整SHA=`c203c98294e06802d212fcceaf9b90347b665ccf7f5ea62bf38dcd52622789c8`，与正式包不同，后端与客户端须联合发新版本。
+
+实现为原入口内的共享资格判定、原始载荷证明、SQLite原子收尾及统一屏障。保留旧合同/交接门禁、ActionJournal和SentAck独立结算；无新恢复线程、服务或引擎。补齐原心跳能力刷新、提交成功后异常重入、同客户多批隔离证明（含旧版仅有会话索引的原证明迁存），以及未捕获回调异常不能把faulted降为paused。原组件UI和原生UI都读同一个恢复原因；原按钮点击经既有恢复代次和锁内重查，故障未结清时不拉新单。
+
+### 入口到共享规则的核对
+
+全量静态检索覆盖Worker及backend/app，83个函数命中（含嵌套辅助函数，不是83个独立功能）；完整文件、函数和行号在`/private/tmp/chejin-unified-recovery-evidence-20260914/final-entry-inventory.json`。没有只搜索C2后停止；下表按实际职责合并显示。
+
+| 实际入口/调用点 | 统一规则与验收编号 |
+|---|---|
+| `runtime_supervision._pause_locally/report_unhandled_exception`、`emergency_stop.trigger_emergency_stop`、TaskRunner线程监控/失败入口 | 立即停新动作，故障持久化；UR-01/14/15/16 |
+| 两套UI启动、profile/signal、`toggle_run_status/set_accepting`，models/API的状态映射 | 只读统一检查/明确调用原恢复；UR-15/16 |
+| `start/tick_once/_tick_once/_can_start_new_flow/_apply_local_run_status/_sync_pending_run_status/set_run_status`，自动时段及更新恢复入口 | 故障优先、原代次、先保存后开放；UR-14/15/16/18 |
+| `_request_fault_recovery/_process_fault_recovery/_check_fault_recovery/_publish_fault_recovery`和后端`worker_summary/fault_recovery_readiness/set_worker_run_status` | 心跳显示与点击共用条件，锁内复核；UR-08/15/16/17/18 |
+| 原任务`_deliver_add_friend_result/_handle_failed_result`及任务claim，发送上下文失败/`_wait_and_send_current_c3_batch_impl`、原SentAck拥有者 | 原动作结果补交，不重做微信；UR-01/09/10/11 |
+| `_reconcile_restart_inflight_flow_locked/_recover_inflight_sqlite_facts/_finish_recovery_request/_retry_pending_flow_finish`及`finish_inflight_flow` | 原Flow/原回执与新Flow区分；保留旧保护，新证明只结束匹配原Flow；UR-02/03/04/05/06/13/14 |
+| `_recover_restart_physical_action_journals/_recover_pending_image_transaction/_recover_pending_media_transaction`和`settle_identity_terminal_gate` | 媒体/unknown的原专用无UI结算，不冒充普通文字取消；UR-09/10/12 |
+| 原read/Outbox replay和`_attempt_c2_outbox_delivery`，路由`validate_message_continuation`、服务`cancelled_read_admission/settle_cancelled_read` | 原绑定与撤销证明、锁内同裁决、原消息身份/合同、固定分片覆盖；UR-02—08/11/12/17 |
+| `unsettled_c2_outbox_rows/has_pending_c2_outbox*`、事务屏障、`update_install_business_blockers/inspect_pending_read/prune_terminal_outboxes` | 全局待办和合法局部隔离共用判定；父分片不代表子分片完成；UR-05/06/09/12/14/16 |
+| Updater计划/健康/数据快照/UpdateCoordinator收尾与恢复、`update_pending_read_handoff_snapshot` | 原数据与单写入者，受限兼容，故障不自动开始；UR-08/14/15；扩大按钮升级不在本轮 |
+| 后端绑定/心跳/reset、发送续办授权和Flow continuation | 当前认证与旧事权限分离，旧绑定/其他Worker不获新工作许可；UR-07/08/10/13/17 |
+
+### UR矩阵与证据
+
+以下均是**源码测试范围**。`B`为`backend/tests/`，`W`为`worker-client/tests/`；证据根目录`/private/tmp/chejin-unified-recovery-evidence-20260914`，完整命令、JUnit、子进程日志和请求响应留在各子目录。模型和Windows物理动作使用已标明的替身；HTTP/PostgreSQL/SQLite/TaskRunner采用正式实现。
+
+| 编号 | 测试节点/执行证据 | 已观察的业务结果 |
+|---|---|---|
+| UR-01 | B/test_c1_failure_receipt_recovery.py、test_c1_stop_intent_recovery.py；existing-matrix-1与corrected-existing-fixtures | 成功/失败回执丢失后原拥有者补交，任务与Flow完成，无重复申请 |
+| UR-02 | B/test_read_business_settlement.py::test_valid_original_read_recovery_automatically_creates_a_reply（active/draining/ended）；B/test_pending_read_upgrade_recovery.py | 合法原事实接收、自然生成回复后才探测幂等；原0.9.75真实Worker恢复有异步正反例 |
+| UR-03 | original-sales-final/fixture-provenance.json、before-original.json、after-candidate.json、verified.json；新取消HTTP测试 | 原4条消息保持，正式证明+Ledger收尾；A零新增消息/回复/任务/UI，故障不自动恢复 |
+| UR-04 | B/test_read_business_settlement.py::test_invalidation_and_ingest_are_ordered_by_the_same_business_lock；real_worker[active_flow] | 双HTTP争真实PostgreSQL锁；接收先行则保留4条，作废先行则取消4条；活动原Flow自动收尾 |
+| UR-05 | test_partition_receipts_preserve_accepted_facts_and_require_complete_group_before_finish；real_worker[partitions]；W/test_read_settlement_storage.py | 先接受部分保持ID；接受/取消互斥全覆盖；父子分片和首子响应丢失自动接续；confirmed Ledger不改 |
+| UR-06 | real_worker[response_lost/save_before/save_inside/save_after_commit]；W/test_read_settlement_storage.py | 同一证明重放；事务内故障独立只读连接仍见4 waiting/0终态；提交后异常验证已保存结果；下一单均完成 |
+| UR-07 | test_restoring_customer_does_not_revive_revoked_original_batch（2种先后） | 恢复客户不复活旧授权/旧批次；无新增消息和回复 |
+| UR-08 | test_terminal_settlement_rejects_unproven_ownership、W/test_read_settlement_storage.py、B/test_read_recovery_admission.py | Token/实例/绑定时间/Flow/客户/授权/合同/载荷/覆盖/证明错误拒绝；正确原归属同时通过 |
+| UR-09 | B/test_legacy_media_recovery_api.py；W/test_task_runner.py媒体/隔离16项；W/test_storage.py::test_two_proven_quarantines_keep_their_own_evidence | 保留媒体原事实和动作结果；身份未明阻断；同客户两批已证明隔离不相互覆盖 |
+| UR-10 | B/test_flow_finish_recovery.py、test_finish_dependency_recovery.py；W/test_api.py | 原发送回执、unknown与任务租约依赖按原终态验证；迟到回执不复活租约；无盲重发 |
+| UR-11 | real_worker[html_502/json_503/disconnect/timeout]及既有Flow/C1失败回执案例 | 3次传输失败按退避接续，间隔实际断言且心跳继续；网络恢复后真实下一单完成 |
+| UR-12 | real_worker[old_backend]、合同变化/缺能力测试、非法证明/损坏已保存证明测试 | 缺新能力期间不提交必失败请求，心跳刷新后自动接续；永久取消/不兼容/未知证明不混为成功，UI说明原因 |
+| UR-13 | test_committed_settlement_replay_preserves_a_different_current_flow_after_restore；B/test_flow_finish_recovery.py | 用正式API恢复并登记新Flow后，旧证明幂等重放不清新Flow；结束响应丢失安全接续 |
+| UR-14 | original-sales-final同SQLite替换及restart-evidence.json；B/test_pending_read_upgrade_recovery.py；W/test_pending_read_handoff.py、runtime_supervision | 旧进程结束后新进程接原数据；受限升级/重启单拥有者；异常兜底保存faulted |
+| UR-15 | B/test_worker_fault_recovery.py全部恢复/保存点/竞态参数；W/test_runtime_supervision.py | 保存前后异常、补偿失败、迟到回调、暂停/新故障/更新、重复点击均不能提前接单 |
+| UR-16 | browser-mouse-2、browser-keyboard-1/ui-command.json与verified.json；后端ready门禁参数 | 真React按钮禁用→自动可用→鼠标或Tab/回车→checking→running，实际下一单完成；组件/微信/独立待办仍阻断 |
+| UR-17 | B/test_pending_read_upgrade_recovery.py的当前B/列表重排禁UI探针；test_fault_settlement_is_local_to_its_worker | 旧A不读取/定位/发送；另一Worker心跳/正常拉取不受影响，不能代A取消 |
+| UR-18 | original-sales-final及两组browser的verified.json、restart-evidence.json | 原0.9.80重现失败→同一测试数据候选收尾→明确开始→B真实pull/claim/结果/Flow结束；锁和租约释放，再启无旧ingest/claim |
+
+最终去重JUnit索引：`/private/tmp/chejin-unified-recovery-evidence-20260914/final-test-index.json`。常规回归和存储/合同检查按受影响范围运行；没有把单元测试条数当成实机验收。组件桥接4项Node测试及生产资源构建通过，`git diff --check`/语法检查通过。流程图仅做文本结构/版本一致性检查，本机无PlantUML渲染器，未声称渲染通过。
+
+三类独立移除验证均在业务断言失败：`ablation-backend-proof-2`关闭取消资格出口后原请求仍409；`ablation-worker-final`关闭Worker终态消费后原Outbox仍waiting，下一单正例失败；`ablation-automatic-dispatch`关闭合法客户自然派发后ReplyAction为0，自动生成正例失败。初次插件导入失败不计入反向证据。
+
+失败记录完整保留：初期真实Worker测试查出心跳能力不刷新及提交后异常导致非法状态跳转；多批隔离和回调异常降级均先有失败测试再修复。既有13项夹具失败在未改动正式0.9.80上复现过代表项，分别是C1未准备销售归属、旧媒体夹具缺当下登记必填字段；仅修夹具建立正确前提，主流程仍走正式服务。自动回复新例首次复用转人工夹具，按规则不生成回复，随后新增从一开始就具备正常AI跟进资格的夹具，未在主流程中清转人工或手动生成回复。UI首次探针错误地同步断言异步恢复，改为等待真实任务结果，不更改业务断言。证明单元例按既有空状态返回{}修正空值断言。所有这些失败都未删除或包装成通过。
+
+### 原事故差异与交付边界
+
+事故原SQLite未提供；`original-sales-final`使用完整原0.9.80源码和正式业务API重建故障，之后候选接续该同一SQLite/PostgreSQL。附件4条messages完整保留；Worker/实例/绑定/客户/短码/授权使用隔离身份，脱敏authorization_read_reason按read_reason恢复、无继续批次的continuation_token按None恢复，详见fixture-provenance.json。它是可追溯重建，**不是高磊原电脑同数据验收**。
+
+浏览器使用实际打包React资源及原`web_ui.set_accepting`方法，只有Qt消息传输替换为本机测试HTTP，运行结果接正式TaskRunner/WorkerApiClient/SQLite/PostgreSQL；微信物理执行为严格只允许新客户B一次的替身。正式Windows原生WebEngine/Qt按钮、真实微信动作、安装包与高磊现场仍待验收。未修改/开放更广自动升级路径；新软件版本与来源提交仍待确认。本轮完成本地实现与自测，独立架构复审尚未通过，禁止据此发布。
+
+已核实「架构师4号」为用户同一车金项目的本地任务，并交回本地复审入口；工具确认接收。独立复审结果仍待返回，不视为审查通过或发布授权。
+
+以下r4为已批准的原设计记录，保留当时“待实施”状态，不覆盖上述r5本地候选状态。
+
+## 2026-09-14 r4历史设计与开发安排（当时未实施）
+
+- 用户批准：先由架构师更新技术文档，再安排**客户端工程师11号**实现统一流程；不交给10号。复用现有停止、结算和恢复入口，不新建维修平台，不把清数据交给销售。
+- 本次事故依据：工程师已确认旧Flow结束后客户于18:06:25被作废，18:07起原4条消息因授权失效遭拒，缺少后续终态导致0.9.80持续故障。此处登记用户转述的根因；本轮为文档设计，没有再次执行事故复现或读取/修改生产数据。既有“同规则兼容恢复通过”不能证明这个组合已闭环。
+- 设计：接单开关、旧事结算、历史留证分开；业务有效则原样补交，业务作废则后端核对原归属后正式作废未接受部分；已确认动作和未知结果不能伪装未执行。复用Outbox终态并增加可校验结算证明，运行中/断网/重启/升级共用原协调入口。结清不自动接单，仍按原按钮、唯一门禁和先保存后放行。
+- 权威变更：技术方案15.8.4.4（规则、协议、调用点、UR-01—UR-18验收矩阵）；PRD11.3.4（产品边界）；全流程图r4（活动/已结束Flow、业务作废、原子保存、失败和明确恢复分支）。旧章节保留历史语义，重叠设计以r4为准；没有第五份平行方案。
+- 文档基线：正式0.9.80发布记录提交`dc751f1732125442a48dc3949efb8a4b8674874e`；其成品源码为`a3484fac8a9cc7c50048702a36005f169f15fb46`。主工作区有其他未提交修改，本轮在独立工作目录`/private/tmp/chejin-unified-recovery-20260914-F75RC1`仅更新四文档；它是待集成修订，不覆盖主工作区其他改动或封存发布证据。工程师须把四份r4差异并入实际实现候选，不覆盖更晚的有效修订。
+- 验收目标：原事故同数据、真实HTTP/PostgreSQL/Worker循环/SQLite、正式异步正反例、原记录终态和下一位合法客户真正领取/业务回执/Flow与锁租约收尾。关闭新增作废出口、Worker终态消费、合法客户异步调度时，各自正例必须按预期失败。入口映射及每项证据缺失，不得仅以总通过数声明“全部闭环”。Windows原生恢复、实际发送和现场同机结果仍须单列验收。
+- 当前状态：**仅设计文档已更新，代码待实施、源码复审及Windows验收待执行；未提交、推送、打包、部署或修改生产数据。** 本轮不升应用/机器合同版本，不承诺0.9.80线上已修复或未知场景永不出错。新增后端与客户端协议必须共同实施和联合发布；正式版本号另行确认，不能静默改成“规则相同”。
+- 文档自检：仅四份权威文档发生差异；主版本/r4、交叉章节引用、18个唯一验收编号、复用Outbox枚举、流程图新增分支嵌套及`git diff --check`通过。这是文档一致性检查，不是业务测试；本机无PlantUML渲染器，未渲染流程图，不冒充图形验收。
+- 已向「客户端工程师11号」任务`01a09da8-cf07-7fa2-a420-cd7875d2f3dd`发送完整开发安排，消息工具确认接收；包含四文档路径/基线、后端与Worker联动、原事故与18组验收、防假测试及不得提交发布的边界。未通知10号；工程师实施和复审完成状态另行登记。
+
+以下为0.9.80 r3及更早的历史记录；发布完成不表示上述r4待实施方案已发布。
 
 0.9.80正式联合发布完成（2026-09-14，文档修订r3）：Windows正式包、生产Docker后端和机器合同统一0.9.80。用户确认实际起点0.9.78、正常退出并保留原数据，本轮采用保留数据安装（强升），不开放按钮升级。原装0.9.78的暂停/故障安装及合成待补交读取恢复通过；真实客户已结束Flow的现场恢复、实际接单及微信发送仍待现场确认。后台资产与源码未变，复用生产/api资产；本次真实登录、刷新会话、车辆页面、退出通过。公网完整下载与SHA通过，维护解除，最终健康/就绪为200、容器healthy且重启0次。账号、绑定、知识、业务数据、2条正常排队任务及Brain/DeepSeek配置保持。未备份、未自动回滚、未清库。
 

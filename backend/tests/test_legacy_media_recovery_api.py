@@ -69,6 +69,15 @@ def start_read_flow(
     *,
     flow_kind: str = "c2_read",
 ) -> None:
+    if flow_kind == 'c2_read':
+        # Historical pre-registration fixture only. Current registration
+        # correctly rejects missing customer identity; it cannot manufacture
+        # this old state. The settlement under test still uses real HTTP/DB.
+        with SessionLocal() as db:
+            owner = db.get(Worker, worker['id'])
+            owner.inflight_flow_state = {'flow_id': flow_id, 'flow_kind': flow_kind, 'status': 'active'}
+            db.commit()
+        return
     response = client.post(
         f"/api/workers/{worker['id']}/inflight-flow/start",
         json={"flow_id": flow_id, "flow_kind": flow_kind},

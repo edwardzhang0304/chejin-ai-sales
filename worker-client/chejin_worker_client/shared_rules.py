@@ -10,6 +10,7 @@ if str(_OMNIAUTO_ROOT) not in sys.path:
 from apps.wechat_ai_customer_service.adapters import (  # noqa: E402
     contract_rules,
     message_contract,
+    read_settlement,
 )
 
-__all__ = ["contract_rules", "message_contract"]
+__all__ = ["contract_rules", "message_contract", "read_settlement"]

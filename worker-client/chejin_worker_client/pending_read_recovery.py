@@ -25,13 +25,14 @@ def package_recovery_capability() -> dict:
     canonical = json.dumps(legacy, ensure_ascii=False, sort_keys=True, separators=(',', ':')).encode()
     if hashlib.sha256(canonical).hexdigest() != LEGACY_SHA256:
         raise RuntimeError('RECOVERY_CONTRACT_CORRUPTED')
-    if {k: v for k, v in legacy.items() if k != 'contract_revision'} != {
-            k: v for k, v in current.items() if k != 'contract_revision'}:
+    if contract_rules.read_recovery_contract(current, legacy['contract_revision'], LEGACY_SHA256) != legacy:
         raise RuntimeError('RECOVERY_CONTRACT_SEMANTICS_CHANGED')
     return {'protocol_version': PROTOCOL,
         'compatible_rules_sha256': contract_rules.contract_rules_sha256(current),
         'contracts': [
         {'revision': legacy['contract_revision'], 'sha256': LEGACY_SHA256},
+        {'revision': '0.9.78', 'sha256': 'b4151ab61fb5d90688e1e0ac187cc767acaee1617cb420be3028acc52ccf7eab'},
+        {'revision': '0.9.80', 'sha256': '43f8c07e3660d790c39f3b348dcce9fb1e2c0bed243b41cff6669a658995e380'},
         {'revision': current['contract_revision'], 'sha256': contract_sha256()},
     ]}
 
@@ -95,7 +96,8 @@ def inspect_pending_read(data_dir: Path) -> dict:
         require(conversation_id)
         require(db.execute('SELECT COUNT(*) FROM c2_action_journal').fetchone()[0] == 0)
         require(db.execute("SELECT COUNT(*) FROM reply_send_ack_outbox WHERE status IN ('intent','waiting','capability_paused')").fetchone()[0] == 0)
-        rows = db.execute("SELECT * FROM c2_ingest_outbox WHERE status != 'confirmed'").fetchall()
+        from .storage import unsettled_c2_outbox_rows
+        rows = unsettled_c2_outbox_rows(db)
         require(rows)
         contracts, digests, covered = [], {}, set()
         for row in rows:

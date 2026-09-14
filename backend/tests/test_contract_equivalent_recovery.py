@@ -45,8 +45,8 @@ def use_contract(payload, pair):
             use_contract(item, pair)
 
 
-def prepared_read(revision='0.9.78', *, closed=False, message_count=4):
-    worker, rows = fixture_rows()
+def prepared_read(revision='0.9.78', *, closed=False, message_count=4, eligible=False):
+    worker, rows = fixture_rows(eligible=eligible)
     row = rows[0]
     with SessionLocal() as db:
         binding = db.get(WechatSessionBinding, row['binding_id'])
@@ -55,6 +55,7 @@ def prepared_read(revision='0.9.78', *, closed=False, message_count=4):
         remark = binding.remark_code
     flow = 'read-compatible-original'
     payload = _v3_ingest_payload(target, remark, read_run_id=flow,
+        read_reason='waiting_user_reply' if eligible else 'waiting_sales_reply',
         messages=[_v3_message(f'original-message-{i}', role='customer', message_type='text',
                               content=f'测试消息 {i}', screen_order=i) for i in range(1, message_count + 1)])
     use_contract(payload, contract_pair(revision))

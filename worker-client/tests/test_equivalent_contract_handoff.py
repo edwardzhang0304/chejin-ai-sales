@@ -18,7 +18,7 @@ def pair(revision, *, different_rule=False):
             sort_keys=True, separators=(',', ':')).encode()).hexdigest()}
 
 
-@pytest.mark.parametrize('revision', ['0.9.78', '0.9.80', '0.10.12'])
+@pytest.mark.parametrize('revision', ['0.9.78', '0.9.81', '0.10.12'])
 def test_handoff_inherits_identical_rules_without_new_manifest_version_entries(revision):
     capability = package_recovery_capability()
     original = copy.deepcopy(capability)

@@ -254,13 +254,12 @@ class UiContractTest(unittest.TestCase):
             "本地已停止接收新工作，当前客户继续安全处理；后端暂停状态正在重试同步。",
             web_ui,
         )
-        self.assertIn("后端故障状态未同步", web_ui)
+        self.assertIn('model["metaText"] = recovery["reason"]', web_ui)
         self.assertIn('return "client-faulted"', web_ui)
-        self.assertIn("客户端发生故障，已停止接单。", component_ui)
-        self.assertIn("当前暂不能恢复接单。", component_ui)
-        self.assertIn("可点击“开始接单”尝试恢复。", component_ui)
+        self.assertIn('model.faultRecovery?.reason', component_ui)
+        self.assertIn('已停止接单，暂不能恢复。正在检查恢复条件。', component_ui)
         self.assertIn('screen === "client-faulted"', component_ui)
-        self.assertIn('"客户端故障" if is_faulted', classic_ui)
+        self.assertIn("recovery['statusText'] if is_faulted", classic_ui)
         self.assertNotIn("本地微信操作已停止", web_ui)
         self.assertFalse((ROOT / "web-ui-src").exists())
         self.assertTrue((ROOT / "chejin_worker_client" / "web_assets" / "index.html").exists())

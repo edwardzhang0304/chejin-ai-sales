@@ -53,7 +53,7 @@ def main() -> int:
     # Capability is declared only when the actual candidate contains both
     # exact contract resources; source files alone are not delivery evidence.
     for pair in recovery['contracts']:
-        relative = ('c2_contract_v3.json' if pair['revision'] == args.version.strip()
+        relative = ('c2_contract_v3.json' if pair == recovery['contracts'][-1]
                     else 'recovery/c2_contract_v3_' + pair['revision'] + '.json')
         packaged = next((base / relative for base in (root / '_internal/contracts', root / 'contracts')
                          if (base / relative).is_file()), None)

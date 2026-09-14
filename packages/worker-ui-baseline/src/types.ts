@@ -24,7 +24,7 @@ export type WorkerClientScreen =
   | "schedule-settings"
   | "logs";
 
-export type WorkerReceiveState = "接单中" | "暂停接单" | "离线";
+export type WorkerReceiveState = "接单中" | "暂停接单" | "离线" | "客户端故障" | "已停止接单" | "可以恢复接单" | "正在恢复接单";
 export type WorkerConnectionState = "连接正常" | "连接异常";
 export type AutomationState = "可用" | "不可用";
 export type WechatState = "已连接" | "未连接";

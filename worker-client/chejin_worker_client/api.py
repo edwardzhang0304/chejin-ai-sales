@@ -502,6 +502,7 @@ class WorkerApiClient:
         action_kind: str | None = None,
         source_message_key_digest: str | None = None,
         original_authorization_revision: str | None = None,
+        original_read_run_id: str | None = None,
     ) -> dict[str, Any]:
         query_values: dict[str, str] = {}
         if continuation_batch_id and continuation_token:
@@ -513,6 +514,7 @@ class WorkerApiClient:
             "original_authorization_revision": (
                 original_authorization_revision
             ),
+            "original_read_run_id": original_read_run_id,
         }
         query_values.update(
             {

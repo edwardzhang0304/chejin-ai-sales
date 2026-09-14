@@ -689,11 +689,7 @@ function ClientFaultedScreen({ model, onStartAccepting }: Pick<WorkerClientBasel
         <header className="cw-workspace-head workspace-head"><ConnectionLine model={model} /></header>
         <StatusSummary model={model} />
         <CurrentProcess
-          message={model.faultRecovery?.checking
-            ? "客户端发生故障，已停止接单。正在尝试恢复接单。"
-            : model.faultRecovery?.ready
-              ? "客户端发生故障，已停止接单。可点击“开始接单”尝试恢复。"
-              : "客户端发生故障，已停止接单。当前暂不能恢复接单。"}
+          message={model.faultRecovery?.reason || "已停止接单，暂不能恢复。正在检查恢复条件。"}
           state="error"
         />
         <Dock state="暂停接单" disabled={!model.faultRecovery?.ready || model.faultRecovery.checking} onStartAccepting={onStartAccepting} />

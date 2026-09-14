@@ -148,6 +148,7 @@ from .storage import (
     request_runtime_pause,
     set_update_new_work_gate,
     set_c2_outbox_error,
+    settle_c2_outbox,
     set_reply_send_ack_error,
     transition_c2_outbox,
     terminate_waiting_c2_image_ledger,
@@ -6509,6 +6510,13 @@ class TaskRunner:
         flow_kind = str(load_runtime_control().get("inflight_flow_kind") or "")
         receipt = load_c2_state(self._inflight_finish_receipt_key(flow_id)) or {}
         try:
+            # New protocol only: the receipt was written atomically with the
+            # validated proof and original Ledger. Preserve all legacy guards.
+            if (flow_kind == 'c2_read' and receipt.get('terminal_kind') == 'read_cancelled'
+                    and receipt.get('conversation_id') == conversation_id
+                    and receipt.get('recovery_settlement_proof_id')
+                    and not has_pending_c2_outbox_for_read_run_id(flow_id)):
+                terminal_kind, error_code = 'read_cancelled', receipt['error_code']
             if (
                 flow_kind == "c2_read"
                 and terminal_kind == "technical_failed"
@@ -6629,7 +6637,10 @@ class TaskRunner:
     def fault_recovery_state(self) -> dict[str, Any]:
         """UI reads the last background check; clicking always rechecks it."""
         with self._run_status_intent_lock:
-            return dict(self._fault_recovery_state)
+            state = dict(self._fault_recovery_state)
+            state['statusText'] = ('正在恢复接单' if state.get('checking') else
+                                   '可以恢复接单' if state.get('ready') else '已停止接单')
+            return state
 
     def _check_fault_recovery(self) -> dict[str, Any]:
         reason = ""
@@ -6645,7 +6656,18 @@ class TaskRunner:
         elif self._restart_backend_probe_pending or self._restart_recovery_flow_id:
             reason = "正在核对上次未完成的流程"
         elif not snapshot["settlement_complete"]:
-            reason = "原任务、回执或操作尚未结算，正在按原流程处理"
+            from .storage import c2_outbox_recovery_blocker
+            blocker = c2_outbox_recovery_blocker()
+            if snapshot['pending_c2_outbox'] and self._backend_pending_read_recovery.get('terminal_settlement_protocol_version') != 1:
+                reason = '正在等待匹配的服务版本，旧记录已保留。'
+            elif blocker == 'MESSAGE_CONTRACT_REVISION_MISMATCH':
+                reason = '暂不能恢复：旧记录与服务规则不兼容，原数据已保留。'
+            elif blocker and blocker != 'C2_RECOVERY_BACKEND_UPGRADE_REQUIRED':
+                reason = '暂不能恢复：旧记录尚未通过身份或结果校验，原数据已保留。'
+            elif snapshot['pending_file_action_journal'] or snapshot['pending_sqlite_action_journal'] or snapshot['pending_sent_ack']:
+                reason = '暂不能恢复：上次微信操作的结果还没有确认。'
+            else:
+                reason = '已停止接单，正在处理旧记录。处理完成后可开始接单。'
         elif not self.post_update_runtime_health_snapshot()["ready"]:
             reason = "后台线程尚未就绪，请重新启动客户端后检查"
         elif not self._recovery_heartbeat_at or time.monotonic() - self._recovery_heartbeat_at > max(5, self.heartbeat_interval_seconds * 2):
@@ -6656,7 +6678,7 @@ class TaskRunner:
             reason = str(self._backend_fault_recovery.get("reason") or "等待后端原任务结算")
         elif self.last_rpa_component_status != "ready" or self.last_wechat_status != "logged_in":
             reason = "等待自动化组件和微信连接正常"
-        return {"ready": not reason, "checking": False, "reason": reason or "客户端发生故障，已停止接单。可点击“开始接单”尝试恢复。"}
+        return {"ready": not reason, "checking": False, "reason": reason or "旧记录已处理完成，可以点击“开始接单”恢复。"}
 
     def _publish_fault_recovery(self) -> None:
         if not self.binding or self.binding.run_status != "faulted":
@@ -7018,6 +7040,7 @@ class TaskRunner:
             )
             self._recovery_heartbeat_at = time.monotonic()
             self._backend_fault_recovery = dict(profile.fault_recovery)
+            self._backend_pending_read_recovery = dict(profile.pending_read_recovery)
             self._backend_confirmed_run_status = (
                 str(profile.run_status or "") or None
             )
@@ -11132,6 +11155,7 @@ class TaskRunner:
         *,
         flow_id: str,
         conversation_id: str,
+        original_authorization_revision: str | None = None,
     ) -> Literal["settled", "retry", "blocked"]:
         """Settle all media in one committed worker-sequence order."""
 
@@ -11193,24 +11217,28 @@ class TaskRunner:
             if len(physical_transactions) == 1
             else f"media-fact-{source_digest[:32]}"
         )
-        original_revision = next(
-            (
-                str(
-                    (entry.get("result") or {}).get(
-                        "authorization_revision"
-                    )
-                    or ""
-                ).strip()
-                for entry in ordered_entries
-                if str(
-                    (entry.get("result") or {}).get(
-                        "authorization_revision"
-                    )
-                    or ""
-                ).strip()
-            ),
-            f"recovery-{source_digest[:16]}",
+        original_revisions = {
+            str((entry.get('result') or {}).get('authorization_revision') or '').strip()
+            for entry in ordered_entries
+        }
+        if original_authorization_revision:
+            original_revisions.add(original_authorization_revision)
+        # Released Ledger rows omit the ticket but the original physical
+        # ActionJournal retains it. Read that same Flow's recorded authority;
+        # never replace it with the customer's current (possibly restored) one.
+        original_revisions.update(
+            str((journal.get('prepare_evidence') or {}).get('authorization_revision') or '').strip()
+            for _path, journal in self._physical_action_journals_for_flow(flow_id)
+            if journal.get('conversation_id') == conversation_id
         )
+        original_revisions.discard('')
+        if len(original_revisions) > 1:
+            self._pause_for_restart_flow_reconciliation(binding,
+                error_code='C2_MEDIA_FACT_RECOVERY_AUTHORIZATION_CONFLICT',
+                message='旧媒体记录的原授权不一致，已保留现场并停止接单。',
+                local_flow_id=flow_id, backend_flow_id='', metadata={'conversation_id': conversation_id})
+            return 'blocked'
+        original_revision = next(iter(original_revisions), f'recovery-{source_digest[:16]}')
         try:
             authorization = self.api.get_wechat_read_authorization(
                 binding,
@@ -11219,6 +11247,7 @@ class TaskRunner:
                 action_kind=action_kind,
                 source_message_key_digest=source_digest,
                 original_authorization_revision=original_revision,
+                original_read_run_id=flow_id,
             )
         except Exception as exc:
             if (
@@ -11485,9 +11514,7 @@ class TaskRunner:
             "old_tail_fully_consumed": True,
             "new_suffix_observation_ids": [],
         }
-        payload = build_message_ingest_payload(
-            target,
-            {
+        recovery_frame = {
                 "observation_schema_version": 3,
                 "authoritative_frame_source": "action_journal_recovery",
                 "ui_frame_invalidated": False,
@@ -11504,9 +11531,13 @@ class TaskRunner:
                 "sequence_alignment_evidence": (
                     recovery_alignment_evidence
                 ),
-            },
-            read_run_id=origin_read_run_id,
-        )
+            }
+        recovery_plan = self._build_final_slot_incremental_plan(target=target,
+            sidecar_payload=recovery_frame, read_run_id=origin_read_run_id)
+        if recovery_plan['identity_errors']:
+            return False
+        recovery_frame['slot_ledger_states'] = recovery_plan['slot_ledger_states']
+        payload = build_message_ingest_payload(target, recovery_frame, read_run_id=origin_read_run_id)
         payload_source_keys = sorted(
             str(item.get("source_message_key") or "").strip()
             for item in (payload.get("messages") or [])
@@ -13096,6 +13127,14 @@ class TaskRunner:
                 "result": {},
                 "already_confirmed": True,
             }
+        if (binding.run_status == 'faulted' and payload.get('authorization_scope') != 'fact_settlement'
+                and self._backend_pending_read_recovery.get('terminal_settlement_protocol_version') != 1):
+            if outbox_entry.get('last_error') != 'C2_RECOVERY_BACKEND_UPGRADE_REQUIRED':
+                set_c2_outbox_error(outbox_id, 'C2_RECOVERY_BACKEND_UPGRADE_REQUIRED')
+                append_log('INFO', 'c2_recovery_capability_wait', '正在等待匹配的服务版本，原消息已保留。',
+                           error_code='C2_RECOVERY_BACKEND_UPGRADE_REQUIRED')
+            return {'ok': False, 'outbox_id': outbox_id, 'recovery_action': 'capability_paused',
+                    'error_code': 'C2_RECOVERY_BACKEND_UPGRADE_REQUIRED'}
         mark_c2_outbox_attempt(outbox_id)
         try:
             settlement_token: str | None = None
@@ -13118,6 +13157,7 @@ class TaskRunner:
                     original_authorization_revision=str(
                         payload.get("authorization_revision") or ""
                     ),
+                    original_read_run_id=str(payload.get("read_run_id") or ""),
                 )
                 if (
                     str(authorization.get("recovery_decision") or "")
@@ -13152,11 +13192,54 @@ class TaskRunner:
                 payload,
                 **ingest_kwargs,
             )
+            if isinstance(result, dict) and (
+                'recovery_settlement' in result
+                or result.get('recovery_action') in {'conversation_terminated', 'target_terminated'}
+            ):
+                capability = self._backend_pending_read_recovery
+                if (capability.get('terminal_settlement_protocol_version') != 1
+                        or capability.get('worker_id') != binding.worker_id
+                        or capability.get('client_instance_id') != binding.client_instance_id
+                        or not capability.get('bound_at')):
+                    raise ValueError('C2_RECOVERY_BACKEND_IDENTITY_MISSING')
+                settle_c2_outbox(outbox_id, result, binding, server_bound_at=capability['bound_at'])
+                return {'ok': True, 'outbox_id': outbox_id, 'result': result, 'business_settled': True}
         except Exception as exc:
+            persisted = load_c2_outbox_entry(outbox_id) or {}
+            if persisted.get('status') in {'conversation_terminated', 'target_terminated'}:
+                # SQLite commit may have succeeded before the caller failed.
+                # Revalidate durable proof instead of retrying a transition
+                # from a terminal row (which would crash the owner thread).
+                saved_result = load_c2_state('read_settlement:' + outbox_id) or {}
+                try:
+                    capability = self._backend_pending_read_recovery
+                    if (capability.get('worker_id') != binding.worker_id
+                            or capability.get('client_instance_id') != binding.client_instance_id
+                            or capability.get('terminal_settlement_protocol_version') != 1):
+                        raise ValueError('C2_RECOVERY_BACKEND_IDENTITY_MISSING')
+                    settle_c2_outbox(outbox_id, saved_result, binding, server_bound_at=capability['bound_at'])
+                except Exception as proof_error:
+                    append_log('ERROR', 'c2_saved_settlement_unverified', '原结算记录暂不能核验，继续停止新工作。',
+                               error_code='C2_RECOVERY_SAVED_PROOF_UNVERIFIED',
+                               metadata={'outbox_id': outbox_id, 'exception_type': type(proof_error).__name__})
+                    return {'ok': False, 'outbox_id': outbox_id, 'recovery_action': 'capability_paused',
+                            'error_code': 'C2_RECOVERY_SAVED_PROOF_UNVERIFIED'}
+                return {'ok': True, 'outbox_id': outbox_id, 'result': saved_result, 'business_settled': True}
             error_code = str(
                 exc.code if isinstance(exc, ApiError) else type(exc).__name__
             )
             recovery_action = classify_outbox_recovery(exc)
+            if (error_code == 'C2_FACT_SETTLEMENT_REQUIRED'
+                    and payload.get('authorization_scope') != 'fact_settlement'):
+                # The ordinary Outbox stays immutable. Its existing media
+                # owner submits the committed Ledger result with its own token;
+                # the next ordinary retry only reconciles accepted source keys.
+                media_status = self._recover_pending_media_transaction(binding,
+                    flow_id=str(payload.get('read_run_id') or ''),
+                    conversation_id=str(payload.get('conversation_id') or ''),
+                    original_authorization_revision=str(payload.get('authorization_revision') or ''))
+                if media_status in {'settled', 'retry'}:
+                    recovery_action = 'retry'
             if recovery_action == "identity_quarantined":
                 conversation_id = str(
                     payload.get("conversation_id") or ""

@@ -1168,6 +1168,7 @@ class WorkerWindow(QMainWindow):
         run_status = self.binding.run_status if self.binding else "paused"
         is_running = run_status == "running"
         is_faulted = run_status == "faulted"
+        recovery = self.runner.fault_recovery_state()
         online = self.connection_status == "online"
         offline = self.connection_status == "offline"
         profile = self.profile
@@ -1186,7 +1187,7 @@ class WorkerWindow(QMainWindow):
         display_task = active_task or self.last_task
         result = self.last_result
         if is_faulted:
-            headline = "客户端故障，已停止接单"
+            headline = recovery['statusText']
         elif self.runner.run_status_sync_error and not is_running:
             headline = "已在本机暂停，后端同步失败"
         elif offline:
@@ -1218,7 +1219,7 @@ class WorkerWindow(QMainWindow):
         run_status_kind = "danger" if is_faulted else ("paused" if offline else "accepting" if is_running else "paused")
         self.run_status_tile.set_value(
             (
-                "客户端故障"
+                recovery['statusText']
                 if is_faulted
                 else "接单中"
                 if is_running
@@ -1238,7 +1239,7 @@ class WorkerWindow(QMainWindow):
         self.run_button.setText(run_text)
         self.dock_button.setText(run_text)
         self.dock_status.setText(
-            "客户端故障" if is_faulted else "接单中" if is_running else "暂停接单"
+            recovery['statusText'] if is_faulted else "接单中" if is_running else "暂停接单"
         )
         self.run_button.setObjectName("secondarySmall" if is_running else "primarySmall")
         self.dock_button.setObjectName("secondary" if is_running else "primary")
@@ -1295,10 +1296,12 @@ class WorkerWindow(QMainWindow):
             self.dock.setProperty("dockState", "normal")
         self.run_button.setEnabled(not offline)
         if is_faulted:
-            recovery = self.runner.fault_recovery_state()
             self.run_button.setEnabled(not offline and recovery["ready"])
             self.dock_button.setEnabled(not offline and recovery["ready"])
             self.headline_label.setText(recovery["reason"])
+            if not has_task_context:
+                self.empty_title.setText(recovery['statusText'])
+                self.empty_text.setText(recovery["reason"])
         self.dock.style().unpolish(self.dock)
         self.dock.style().polish(self.dock)
         self.dock_button.style().unpolish(self.dock_button)

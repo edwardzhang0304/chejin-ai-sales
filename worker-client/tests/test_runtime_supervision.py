@@ -12,6 +12,12 @@ from unittest.mock import patch
 
 
 class RuntimeSupervisionTest(unittest.TestCase):
+    def test_unhandled_callback_cannot_downgrade_a_persisted_fault(self):
+        from chejin_worker_client.models import Binding
+        self.storage.save_binding(Binding('worker-runtime', 'runtime-token', 'runtime-client', run_status='faulted'))
+        self.runtime.report_unhandled_exception('qt_callback', RuntimeError, RuntimeError('new callback fault'), None)
+        self.assertEqual(self.storage.load_binding().run_status, 'faulted')
+
     def setUp(self) -> None:
         self.tmp = tempfile.TemporaryDirectory()
         self.previous_home = os.environ.get("CHEJIN_WORKER_HOME")
@@ -104,7 +110,7 @@ class RuntimeSupervisionTest(unittest.TestCase):
                 exc.__traceback__,
             )
 
-        self.assertEqual(self.storage.load_binding().run_status, "paused")
+        self.assertEqual(self.storage.load_binding().run_status, "faulted")
         _, path = self._incident_for_event("worker_unhandled_exception")
         with zipfile.ZipFile(path) as archive:
             trace = archive.read("traceback.txt").decode("utf-8")
@@ -161,7 +167,7 @@ class RuntimeSupervisionTest(unittest.TestCase):
             )
 
         self.assertTrue(emergency_stop_requested())
-        self.assertEqual(self.storage.load_binding().run_status, "paused")
+        self.assertEqual(self.storage.load_binding().run_status, "faulted")
         self.assertEqual(runner.binding.run_status, "running")
         self.assertFalse(runner._can_start_new_flow(runner.binding))
         runner.tick_once()

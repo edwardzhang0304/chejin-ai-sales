@@ -1282,11 +1282,12 @@ def _fact_settlement_payload(
     settlement_mode: str,
     messages: list[dict],
     action_kind: str = "image",
+    original_read_run_id: str | None = None,
 ) -> dict:
     payload = _v3_ingest_payload(
         binding,
         remark_code,
-        read_run_id=f"recovery:{transaction_id}",
+        read_run_id=original_read_run_id or f"recovery:{transaction_id}",
         messages=messages,
     )
     for message in payload["messages"]:

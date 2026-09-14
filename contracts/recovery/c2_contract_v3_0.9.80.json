@@ -162,116 +162,202 @@
     "timing_source_inventory": [
       {
         "source": "backend.process_stage_runs",
-        "writers": ["backend_observability_service", "worker_api_obs_01"],
-        "readers": ["api_obs_02"],
+        "writers": [
+          "backend_observability_service",
+          "worker_api_obs_01"
+        ],
+        "readers": [
+          "api_obs_02"
+        ],
         "standard_stage": "all_applicable_standard_stages",
         "diagnostic_use": true,
         "disposition": "keep_source"
       },
       {
         "source": "worker.worker_telemetry.sqlite3",
-        "fields": ["telemetry_stage_events", "telemetry_process_links", "telemetry_stage_attempts", "telemetry_authority_snapshots", "upload_attempt_count", "delivery_state", "quarantine_metadata"],
-        "writers": ["worker_telemetry"],
-        "readers": ["worker_telemetry_uploader", "new_evidence_pending_quarantine_and_backend_authority_snapshot"],
+        "fields": [
+          "telemetry_stage_events",
+          "telemetry_process_links",
+          "telemetry_stage_attempts",
+          "telemetry_authority_snapshots",
+          "upload_attempt_count",
+          "delivery_state",
+          "quarantine_metadata"
+        ],
+        "writers": [
+          "worker_telemetry"
+        ],
+        "readers": [
+          "worker_telemetry_uploader",
+          "new_evidence_pending_quarantine_and_backend_authority_snapshot"
+        ],
         "standard_stage": "all_worker_emitted_standard_stages",
         "diagnostic_use": true,
         "disposition": "keep_source"
       },
       {
         "source": "worker.task_runner.flow_timing.phases",
-        "fields": ["name", "duration_seconds", "completed", "failed", "error_code"],
-        "writers": ["task_runner_c2_read"],
-        "readers": ["enqueue_c2_flow_timing_stages"],
+        "fields": [
+          "name",
+          "duration_seconds",
+          "completed",
+          "failed",
+          "error_code"
+        ],
+        "writers": [
+          "task_runner_c2_read"
+        ],
+        "readers": [
+          "enqueue_c2_flow_timing_stages"
+        ],
         "standard_stage": "c2.target_locate|c2.message_read|c2.voice_transcription|c2.image_vision",
         "diagnostic_use": true,
         "disposition": "map_once"
       },
       {
         "source": "worker.c2_message_read_timing_and_ingest_evidence_timing",
-        "writers": ["task_runner_c2_read"],
-        "readers": ["legacy_uat_timing_projection"],
+        "writers": [
+          "task_runner_c2_read"
+        ],
+        "readers": [
+          "legacy_uat_timing_projection"
+        ],
         "standard_stage": "none_after_standard_mapping",
         "diagnostic_use": false,
         "disposition": "delete_duplicate"
       },
       {
         "source": "sidecar.timing_timing_ms_ocr_total_duration_ms",
-        "writers": ["omniauto_sidecar"],
-        "readers": ["worker_standard_mapper", "incident_diagnostics"],
+        "writers": [
+          "omniauto_sidecar"
+        ],
+        "readers": [
+          "worker_standard_mapper",
+          "incident_diagnostics"
+        ],
         "standard_stage": "source_for_owning_non_reply_send_stage_and_internal_diagnostic_for_reply_send",
         "diagnostic_use": true,
         "disposition": "keep_source"
       },
       {
         "source": "worker.sidecar_standard_stage_mapping",
-        "writers": ["worker_standard_mapper"],
-        "readers": ["worker_telemetry_uploader"],
+        "writers": [
+          "worker_standard_mapper"
+        ],
+        "readers": [
+          "worker_telemetry_uploader"
+        ],
         "standard_stage": "owning_non_reply_send_c1_c2_c3_or_c4_stage",
         "diagnostic_use": false,
         "disposition": "map_once"
       },
       {
         "source": "brain.stage_timings_stage_timeline_latency_trace",
-        "writers": ["omniauto_brain"],
-        "readers": ["brain_adapter_diagnostics", "incident_diagnostics"],
+        "writers": [
+          "omniauto_brain"
+        ],
+        "readers": [
+          "brain_adapter_diagnostics",
+          "incident_diagnostics"
+        ],
         "standard_stage": "source_for_c3.brain_generate|c4.brain_generate",
         "diagnostic_use": true,
         "disposition": "keep_source"
       },
       {
         "source": "adapter.brain_standard_stage_mapping",
-        "writers": ["brain_adapter"],
-        "readers": ["backend.process_stage_runs"],
+        "writers": [
+          "brain_adapter"
+        ],
+        "readers": [
+          "backend.process_stage_runs"
+        ],
         "standard_stage": "c3.brain_generate|c4.brain_generate",
         "diagnostic_use": false,
         "disposition": "map_once"
       },
       {
         "source": "vision.duration_ms_total_duration_ms",
-        "writers": ["omniauto_vision"],
-        "readers": ["worker_standard_mapper", "incident_diagnostics"],
+        "writers": [
+          "omniauto_vision"
+        ],
+        "readers": [
+          "worker_standard_mapper",
+          "incident_diagnostics"
+        ],
         "standard_stage": "source_for_c2.image_vision",
         "diagnostic_use": true,
         "disposition": "keep_source"
       },
       {
         "source": "worker.vision_standard_stage_mapping",
-        "writers": ["worker_standard_mapper"],
-        "readers": ["worker_telemetry_uploader"],
+        "writers": [
+          "worker_standard_mapper"
+        ],
+        "readers": [
+          "worker_telemetry_uploader"
+        ],
         "standard_stage": "c2.image_vision",
         "diagnostic_use": false,
         "disposition": "map_once"
       },
       {
         "source": "add_friend_and_send_action_timing",
-        "fields": ["timing_ms", "timing", "send_timing", "send_observability"],
-        "writers": ["omniauto_add_friend", "omniauto_send"],
-        "readers": ["worker_standard_mapper", "incident_diagnostics"],
+        "fields": [
+          "timing_ms",
+          "timing",
+          "send_timing",
+          "send_observability"
+        ],
+        "writers": [
+          "omniauto_add_friend",
+          "omniauto_send"
+        ],
+        "readers": [
+          "worker_standard_mapper",
+          "incident_diagnostics"
+        ],
         "standard_stage": "source_for_c1.add_friend_execute_and_internal_diagnostic_only_for_reply_send",
         "diagnostic_use": true,
         "disposition": "keep_source"
       },
       {
         "source": "worker.add_friend_stage_perf_counter",
-        "writers": ["worker_stage_timer"],
-        "readers": ["worker_telemetry_uploader"],
+        "writers": [
+          "worker_stage_timer"
+        ],
+        "readers": [
+          "worker_telemetry_uploader"
+        ],
         "standard_stage": "c1.add_friend_execute",
         "diagnostic_use": false,
         "disposition": "map_once"
       },
       {
         "source": "worker.reply_send_outer_stage_timer",
-        "writers": ["worker_stage_timer"],
-        "readers": ["worker_telemetry_uploader"],
+        "writers": [
+          "worker_stage_timer"
+        ],
+        "readers": [
+          "worker_telemetry_uploader"
+        ],
         "standard_stage": "c3.reply_send_confirm|c4.reply_send_confirm",
         "diagnostic_use": false,
         "disposition": "map_once"
       },
       {
         "source": "published_legacy_uat_timing_files",
-        "fields": ["timing/flow_timing.json", "timing/brain.json", "timing/send_confirm_ocr.json"],
-        "writers": ["released_pre_1_1_evidence_collectors"],
-        "readers": ["legacy_incident_tools_only"],
+        "fields": [
+          "timing/flow_timing.json",
+          "timing/brain.json",
+          "timing/send_confirm_ocr.json"
+        ],
+        "writers": [
+          "released_pre_1_1_evidence_collectors"
+        ],
+        "readers": [
+          "legacy_incident_tools_only"
+        ],
         "standard_stage": "none",
         "diagnostic_use": true,
         "disposition": "history_read_only"
@@ -291,7 +377,10 @@
       "lock_the_group_role_from_one_unique_explicit_avatar_component",
       "emit_one_complete_text_observation"
     ],
-    "required_anchor_roles": ["customer", "self"],
+    "required_anchor_roles": [
+      "customer",
+      "self"
+    ],
     "explicit_avatar_required": true,
     "conflicting_or_multiple_avatar_components_behavior": "do_not_merge",
     "continuation_rule_owner": "reuse_the_single_v0_9_56_sidecar_text_continuation_rule_without_a_second_threshold_set",
@@ -320,7 +409,11 @@
     "frame_avatar_evidence_contract": {
       "release": "0.9.64",
       "owner": "omniauto_sidecar_single_raw_frame_avatar_table",
-      "consumers": ["text", "voice", "image"],
+      "consumers": [
+        "text",
+        "voice",
+        "image"
+      ],
       "search_columns": "derived_from_valid_current_chat_layout_and_dpi_not_each_ocr_row",
       "candidate_rule": "independent_outer_boundary_background_isolation_and_plausible_scale_never_union_of_search_region_pixels_or_square_shape_alone",
       "interior_rule": "white_space_and_disconnected_internal_colours_do_not_invalidate_a_confirmed_outer_boundary",
@@ -330,7 +423,14 @@
       "unresolved_rule": "invalid_frame_or_layout_clipped_candidate_detector_exception_or_conflicting_association_is_technical_failure_not_absence",
       "error_code": "C2_AVATAR_EVIDENCE_INVALID",
       "noise_rule": "positively_excluded_bubble_or_window_edge_noise_does_not_block_ordinary_continuation",
-      "unchanged": ["text_continuation_tolerances", "cross_frame_identity", "media_orchestration", "six_read_only_send_confirmations", "send_match_threshold", "unknown_ack_no_resend"]
+      "unchanged": [
+        "text_continuation_tolerances",
+        "cross_frame_identity",
+        "media_orchestration",
+        "six_read_only_send_confirmations",
+        "send_match_threshold",
+        "unknown_ack_no_resend"
+      ]
     },
     "forbidden_shortcuts": [
       "duplicated_or_modified_text_continuation_thresholds",
@@ -371,7 +471,11 @@
     "worker_role": "persist_path_transport_contract_validation_and_execution_only",
     "single_runtime_path": true,
     "capture_mode": "client_area",
-    "forbidden_capture_modes": ["print_window", "desktop_fullscreen", "offscreen"],
+    "forbidden_capture_modes": [
+      "print_window",
+      "desktop_fullscreen",
+      "offscreen"
+    ],
     "required_fields": [
       "calibration_id",
       "schema_version",
@@ -399,13 +503,25 @@
       "executable"
     ],
     "normalization_profiles": {
-      "100%": [800, 852],
-      "125%": [1000, 1065],
-      "150%": [1200, 1278],
+      "100%": [
+        800,
+        852
+      ],
+      "125%": [
+        1000,
+        1065
+      ],
+      "150%": [
+        1200,
+        1278
+      ],
       "other": "round([800,852] * dpi_scale)"
     },
     "position_rule": "current_monitor.work_area.origin + round([12,12] * dpi_scale)",
-    "minimum_actual_client_size": [700, 720],
+    "minimum_actual_client_size": [
+      700,
+      720
+    ],
     "reference_map_revision": "gray-v0.9.20-region-local",
     "business_frame_identity_field": "frame_id",
     "calibration_identity_field": "calibration_id",
@@ -428,11 +544,22 @@
   },
   "runtime_control_contract": {
     "local_settings_key": "runtime_control_v1",
-    "flow_kinds": ["task", "c2_read", "chat_reply"],
-    "backend_states": ["active", "draining"],
+    "flow_kinds": [
+      "task",
+      "c2_read",
+      "chat_reply"
+    ],
+    "backend_states": [
+      "active",
+      "draining"
+    ],
     "continuation_header": "X-Inflight-Flow-Id",
     "start_scope": {
-      "c2_read_required_fields": ["conversation_id", "unread_generation", "authorization_revision"],
+      "c2_read_required_fields": [
+        "conversation_id",
+        "unread_generation",
+        "authorization_revision"
+      ],
       "conversation_id_rule": "every_scoped_c2_or_c3_flow_must_be_bound_to_the_authorized_conversation_before_any_recovery_hold_or_recall_transition",
       "unread_generation_rule": "c2_read_must_carry_the_exact_backend_issued_unread_generation"
     },
@@ -449,7 +576,10 @@
     "pause_rule": "reject_new_work_and_allow_only_the_exact_registered_flow_to_settle",
     "emergency_stop_rule": "prevent_every_not_yet_started_wechat_ui_action",
     "finish_request": {
-      "required_fields": ["flow_id", "terminal_kind"],
+      "required_fields": [
+        "flow_id",
+        "terminal_kind"
+      ],
       "terminal_kinds": [
         "task_terminal",
         "read_confirmed",
@@ -478,7 +608,11 @@
       "sent_at",
       "reply_text_hash"
     ],
-    "boundary_relations": ["before_or_equal", "after", "unknown"],
+    "boundary_relations": [
+      "before_or_equal",
+      "after",
+      "unknown"
+    ],
     "recoverable_gate_codes": [
       "MESSAGE_IDENTITY_UNCONFIRMED",
       "MESSAGE_CROSS_ROUND_IDENTITY_AMBIGUOUS",
@@ -555,8 +689,20 @@
     "same_generation_rule": "a_repeated_visible_badge_for_the_same_semantic_evidence_must_not_reset_read_backoff",
     "identical_preview_rule": "when_a_new_generation_cannot_be_proven_from_stable_evidence_wait_until_the_normal_read_due_time"
   },
-  "sender_roles": ["customer", "self", "system", "unknown"],
-  "message_types": ["text", "image", "voice", "system", "file", "unknown"],
+  "sender_roles": [
+    "customer",
+    "self",
+    "system",
+    "unknown"
+  ],
+  "message_types": [
+    "text",
+    "image",
+    "voice",
+    "system",
+    "file",
+    "unknown"
+  ],
   "row_kinds": [
     "text_bubble",
     "voice_bubble",
@@ -573,8 +719,16 @@
     "image_bubble",
     "system_message"
   ],
-  "chat_message_row_kinds": ["text_bubble", "voice_transcript", "image_bubble"],
-  "voice_states": ["not_voice", "untranscribed", "transcribed"],
+  "chat_message_row_kinds": [
+    "text_bubble",
+    "voice_transcript",
+    "image_bubble"
+  ],
+  "voice_states": [
+    "not_voice",
+    "untranscribed",
+    "transcribed"
+  ],
   "action_phases": [
     "not_attempted",
     "cancelled_before_trigger",
@@ -610,17 +764,23 @@
     "missing_phase_fallback": "trigger_attempted",
     "business_completion": {
       "send": {
-        "completed_states": ["sent"],
+        "completed_states": [
+          "sent"
+        ],
         "unconfirmed_result": "unknown",
         "unconfirmed_error_code": "SEND_RESULT_UNKNOWN"
       },
       "voice": {
-        "completed_states": ["completed"],
+        "completed_states": [
+          "completed"
+        ],
         "unconfirmed_result": "failed",
         "unconfirmed_error_code": "VOICE_TRANSCRIBE_RESULT_UNCONFIRMED"
       },
       "image": {
-        "completed_states": ["completed"],
+        "completed_states": [
+          "completed"
+        ],
         "unconfirmed_result": "failed",
         "unconfirmed_error_code": "IMAGE_UNDERSTANDING_RESULT_UNCONFIRMED"
       }
@@ -629,7 +789,10 @@
   },
   "item_outcome_contract": {
     "key_field": "source_message_key",
-    "terminal_results": ["completed", "failed"],
+    "terminal_results": [
+      "completed",
+      "failed"
+    ],
     "merge_rule": "completed and failed outcomes are monotonic; later empty or partial results cannot erase prior outcomes",
     "conflict_rule": "a source_message_key cannot change terminal result inside one flow"
   },
@@ -639,8 +802,16 @@
     "system",
     "unknown"
   ],
-  "item_states": ["completed", "failed"],
-  "flow_states": ["completed", "partial", "failed", "cancelled"],
+  "item_states": [
+    "completed",
+    "failed"
+  ],
+  "flow_states": [
+    "completed",
+    "partial",
+    "failed",
+    "cancelled"
+  ],
   "reply_text_contract": {
     "owner": "shared_machine_contract",
     "normalization": "unicode_whitespace_collapse",
@@ -747,76 +918,252 @@
     "text_bubble": {
       "ingestible": true,
       "message_type": "text",
-      "allowed_sender_roles": ["customer", "self"],
-      "allowed_sender_role_sources": ["same_row_avatar"],
-      "discovery_allowed_sender_roles": ["customer", "self", "system", "unknown"],
-      "discovery_allowed_sender_role_sources": ["same_row_avatar", "system", "unknown"],
-      "allowed_voice_states": ["not_voice"],
-      "required_fields": ["observation_id", "row_kind", "sender_role", "sender_role_source", "message_type", "voice_state", "content_clean", "source_message"]
+      "allowed_sender_roles": [
+        "customer",
+        "self"
+      ],
+      "allowed_sender_role_sources": [
+        "same_row_avatar"
+      ],
+      "discovery_allowed_sender_roles": [
+        "customer",
+        "self",
+        "system",
+        "unknown"
+      ],
+      "discovery_allowed_sender_role_sources": [
+        "same_row_avatar",
+        "system",
+        "unknown"
+      ],
+      "allowed_voice_states": [
+        "not_voice"
+      ],
+      "required_fields": [
+        "observation_id",
+        "row_kind",
+        "sender_role",
+        "sender_role_source",
+        "message_type",
+        "voice_state",
+        "content_clean",
+        "source_message"
+      ]
     },
     "voice_bubble": {
       "ingestible": false,
       "failed_ingestible": true,
       "message_type": "voice",
-      "allowed_sender_roles": ["customer", "self"],
-      "allowed_sender_role_sources": ["same_row_avatar"],
-      "allowed_voice_states": ["untranscribed", "transcribed"],
-      "required_fields": ["observation_id", "row_kind", "sender_role", "sender_role_source", "message_type", "voice_state"],
-      "failed_required_fields": ["observation_id", "row_kind", "sender_role", "sender_role_source", "message_type", "voice_state", "item_state", "voice_anchor_key", "error_code", "reason_detail", "source_message"]
+      "allowed_sender_roles": [
+        "customer",
+        "self"
+      ],
+      "allowed_sender_role_sources": [
+        "same_row_avatar"
+      ],
+      "allowed_voice_states": [
+        "untranscribed",
+        "transcribed"
+      ],
+      "required_fields": [
+        "observation_id",
+        "row_kind",
+        "sender_role",
+        "sender_role_source",
+        "message_type",
+        "voice_state"
+      ],
+      "failed_required_fields": [
+        "observation_id",
+        "row_kind",
+        "sender_role",
+        "sender_role_source",
+        "message_type",
+        "voice_state",
+        "item_state",
+        "voice_anchor_key",
+        "error_code",
+        "reason_detail",
+        "source_message"
+      ]
     },
     "voice_transcript": {
       "ingestible": true,
       "failed_ingestible": true,
       "message_type": "voice",
-      "allowed_sender_roles": ["customer", "self"],
-      "allowed_sender_role_sources": ["parent_voice"],
-      "allowed_voice_states": ["transcribed"],
-      "required_fields": ["observation_id", "row_kind", "sender_role", "sender_role_source", "message_type", "voice_state", "content_clean", "parent_voice_anchor_key", "source_message"],
-      "failed_required_fields": ["observation_id", "row_kind", "sender_role", "sender_role_source", "message_type", "voice_state", "item_state", "parent_voice_anchor_key", "error_code", "reason_detail", "source_message"]
+      "allowed_sender_roles": [
+        "customer",
+        "self"
+      ],
+      "allowed_sender_role_sources": [
+        "parent_voice"
+      ],
+      "allowed_voice_states": [
+        "transcribed"
+      ],
+      "required_fields": [
+        "observation_id",
+        "row_kind",
+        "sender_role",
+        "sender_role_source",
+        "message_type",
+        "voice_state",
+        "content_clean",
+        "parent_voice_anchor_key",
+        "source_message"
+      ],
+      "failed_required_fields": [
+        "observation_id",
+        "row_kind",
+        "sender_role",
+        "sender_role_source",
+        "message_type",
+        "voice_state",
+        "item_state",
+        "parent_voice_anchor_key",
+        "error_code",
+        "reason_detail",
+        "source_message"
+      ]
     },
     "image_bubble": {
       "ingestible": true,
       "failed_ingestible": true,
       "message_type": "image",
-      "allowed_sender_roles": ["customer", "self"],
-      "allowed_sender_role_sources": ["same_row_avatar"],
-      "allowed_voice_states": ["not_voice"],
-      "discovery_required_fields": ["observation_id", "row_kind", "sender_role", "sender_role_source", "message_type", "voice_state", "bubble_rect", "image_physical_anchor", "source_message"],
-      "required_fields": ["observation_id", "row_kind", "sender_role", "sender_role_source", "message_type", "voice_state", "content_clean", "image_physical_anchor", "customer_image_understanding", "visual_bridge_input", "source_message"],
-      "failed_required_fields": ["observation_id", "row_kind", "sender_role", "sender_role_source", "message_type", "voice_state", "item_state", "image_physical_anchor", "error_code", "reason_detail", "source_message"],
+      "allowed_sender_roles": [
+        "customer",
+        "self"
+      ],
+      "allowed_sender_role_sources": [
+        "same_row_avatar"
+      ],
+      "allowed_voice_states": [
+        "not_voice"
+      ],
+      "discovery_required_fields": [
+        "observation_id",
+        "row_kind",
+        "sender_role",
+        "sender_role_source",
+        "message_type",
+        "voice_state",
+        "bubble_rect",
+        "image_physical_anchor",
+        "source_message"
+      ],
+      "required_fields": [
+        "observation_id",
+        "row_kind",
+        "sender_role",
+        "sender_role_source",
+        "message_type",
+        "voice_state",
+        "content_clean",
+        "image_physical_anchor",
+        "customer_image_understanding",
+        "visual_bridge_input",
+        "source_message"
+      ],
+      "failed_required_fields": [
+        "observation_id",
+        "row_kind",
+        "sender_role",
+        "sender_role_source",
+        "message_type",
+        "voice_state",
+        "item_state",
+        "image_physical_anchor",
+        "error_code",
+        "reason_detail",
+        "source_message"
+      ],
       "terminal_non_ingestible_item_states": []
     },
     "system_message": {
       "ingestible": true,
       "message_type": "system",
-      "allowed_sender_roles": ["system"],
-      "allowed_sender_role_sources": ["system"],
-      "allowed_voice_states": ["not_voice"],
-      "required_fields": ["observation_id", "row_kind", "sender_role", "sender_role_source", "message_type", "voice_state", "content_clean", "source_message"]
+      "allowed_sender_roles": [
+        "system"
+      ],
+      "allowed_sender_role_sources": [
+        "system"
+      ],
+      "allowed_voice_states": [
+        "not_voice"
+      ],
+      "required_fields": [
+        "observation_id",
+        "row_kind",
+        "sender_role",
+        "sender_role_source",
+        "message_type",
+        "voice_state",
+        "content_clean",
+        "source_message"
+      ]
     },
     "call_event": {
       "ingestible": false,
       "message_type": "system",
-      "allowed_sender_roles": ["system"],
-      "allowed_sender_role_sources": ["system"],
-      "allowed_voice_states": ["not_voice"],
-      "required_fields": ["observation_id", "row_kind", "sender_role", "sender_role_source", "message_type", "voice_state"]
+      "allowed_sender_roles": [
+        "system"
+      ],
+      "allowed_sender_role_sources": [
+        "system"
+      ],
+      "allowed_voice_states": [
+        "not_voice"
+      ],
+      "required_fields": [
+        "observation_id",
+        "row_kind",
+        "sender_role",
+        "sender_role_source",
+        "message_type",
+        "voice_state"
+      ]
     },
     "system_banner": {
       "ingestible": false,
       "message_type": "system",
-      "allowed_sender_roles": ["system"],
-      "allowed_sender_role_sources": ["system"],
-      "allowed_voice_states": ["not_voice"],
-      "required_fields": ["observation_id", "row_kind", "sender_role", "sender_role_source", "message_type", "voice_state"]
+      "allowed_sender_roles": [
+        "system"
+      ],
+      "allowed_sender_role_sources": [
+        "system"
+      ],
+      "allowed_voice_states": [
+        "not_voice"
+      ],
+      "required_fields": [
+        "observation_id",
+        "row_kind",
+        "sender_role",
+        "sender_role_source",
+        "message_type",
+        "voice_state"
+      ]
     },
     "unknown": {
       "ingestible": false,
       "message_type": "unknown",
-      "allowed_sender_roles": ["unknown"],
-      "allowed_sender_role_sources": ["unknown"],
-      "allowed_voice_states": ["not_voice"],
-      "required_fields": ["observation_id", "row_kind", "sender_role", "sender_role_source", "message_type", "voice_state"]
+      "allowed_sender_roles": [
+        "unknown"
+      ],
+      "allowed_sender_role_sources": [
+        "unknown"
+      ],
+      "allowed_voice_states": [
+        "not_voice"
+      ],
+      "required_fields": [
+        "observation_id",
+        "row_kind",
+        "sender_role",
+        "sender_role_source",
+        "message_type",
+        "voice_state"
+      ]
     }
   },
   "required_request_fields": [
@@ -852,8 +1199,15 @@
     "raw_payload"
   ],
   "message_position_schema": {
-    "required_fields": ["screen_order", "frame_source", "order_source"],
-    "order_sources": ["visual_top", "observation_index_fallback"],
+    "required_fields": [
+      "screen_order",
+      "frame_source",
+      "order_source"
+    ],
+    "order_sources": [
+      "visual_top",
+      "observation_index_fallback"
+    ],
     "safety_rule": "screen_order may sort messages, but only visual_top may prove that one message is physically below another for state or handoff decisions"
   },
   "authoritative_frame_source_values": [
@@ -867,7 +1221,9 @@
     "final_read_rule": "required when the initial complete frame was invalidated by any voice or image UI action or by an observed concurrent page change, and must represent the latest stable complete frame before ingest or Brain",
     "action_journal_recovery_rule": "allowed only for fact settlement reconstructed without reading or operating the current WeChat UI",
     "voice_orchestrator_entry_rule": "voice prepare or execute may be called only when the current authoritative observations contain an executable untranscribed voice not already terminally settled",
-    "forbidden_values": ["voice_execute_final"],
+    "forbidden_values": [
+      "voice_execute_final"
+    ],
     "invalid_error_code": "C2_AUTHORITATIVE_FRAME_SOURCE_INVALID"
   },
   "target_location_recovery_contract": {
@@ -942,9 +1298,17 @@
   "recovery_attempt_rule": "only a real checkpoint merge or a different-read-run stable reread may increment the reply-boundary recovery hold; transport retry, duplicate read_run, pause, offline, or timeout must not increment it",
   "batch_continuation_rule": "continuation_batch_id and continuation_token must be present together and may only advance the exact backend-issued batch",
   "flow_gate_detail_schema": {
-    "required_fields": ["error_code", "position_source"],
-    "optional_position_fields": ["min_screen_order", "max_screen_order"],
-    "optional_subject_fields": ["subject_sender_role"],
+    "required_fields": [
+      "error_code",
+      "position_source"
+    ],
+    "optional_position_fields": [
+      "min_screen_order",
+      "max_screen_order"
+    ],
+    "optional_subject_fields": [
+      "subject_sender_role"
+    ],
     "strong_position_sources": [
       "slot_ledger_visual_top",
       "identity_error_visual_top",
@@ -1008,7 +1372,10 @@
       "OLD_FAILED",
       "OLD_COMPLETED"
     ],
-    "order_sources": ["visual_top", "observation_index_fallback"],
+    "order_sources": [
+      "visual_top",
+      "observation_index_fallback"
+    ],
     "identity_rule": "source_message_key is the only cross-round slot identity and screen_order is ordering evidence only",
     "read_run_ownership_rule": "origin_read_run_id is immutable fact ownership; fact_scope is derived only by comparing it with the active read_run_id",
     "delivery_independence_rule": "delivery_state and item_state must never determine fact_scope or history continuity",
@@ -1033,14 +1400,24 @@
       "max_provider_attempts": 2,
       "process_overhead_seconds": 15,
       "production_requires_https": true,
-      "development_modes": ["dev", "test", "development", "mock"],
-      "development_http_hosts": ["127.0.0.1", "localhost"],
+      "development_modes": [
+        "dev",
+        "test",
+        "development",
+        "mock"
+      ],
+      "development_http_hosts": [
+        "127.0.0.1",
+        "localhost"
+      ],
       "allowed_combinations": [
         {
           "provider": "anthropic_compatible",
           "host": "aiself.vip",
           "request_style": "anthropic_messages_vision",
-          "models": ["doubao-seed-2-0-lite-260428"]
+          "models": [
+            "doubao-seed-2-0-lite-260428"
+          ]
         }
       ]
     },
@@ -1149,9 +1526,13 @@
           {
             "if": {
               "properties": {
-                "applied": {"const": true}
+                "applied": {
+                  "const": true
+                }
               },
-              "required": ["applied"]
+              "required": [
+                "applied"
+              ]
             },
             "then": {
               "properties": {
@@ -1165,32 +1546,75 @@
           }
         ],
         "properties": {
-          "schema_version": {"type": "integer", "const": 1},
-          "enabled": {"type": "boolean"},
-          "applied": {"type": "boolean"},
-          "adoptable": {"type": "boolean"},
-          "reason": {"type": "string", "maxLength": 160},
-          "provider": {"type": "string", "maxLength": 300},
+          "schema_version": {
+            "type": "integer",
+            "const": 1
+          },
+          "enabled": {
+            "type": "boolean"
+          },
+          "applied": {
+            "type": "boolean"
+          },
+          "adoptable": {
+            "type": "boolean"
+          },
+          "reason": {
+            "type": "string",
+            "maxLength": 160
+          },
+          "provider": {
+            "type": "string",
+            "maxLength": 300
+          },
           "request_style": {
             "type": "string",
-            "enum": ["anthropic_messages_vision", "openai_chat_vision"]
+            "enum": [
+              "anthropic_messages_vision",
+              "openai_chat_vision"
+            ]
           },
-          "model": {"type": "string", "maxLength": 160},
-          "vision_summary": {"type": "string", "maxLength": 2000},
+          "model": {
+            "type": "string",
+            "maxLength": 160
+          },
+          "vision_summary": {
+            "type": "string",
+            "maxLength": 2000
+          },
           "image_ocr_text": {
             "type": "array",
             "maxItems": 20,
-            "items": {"type": "string", "maxLength": 500}
+            "items": {
+              "type": "string",
+              "maxLength": 500
+            }
           },
           "classification": {
             "type": "object",
             "additionalProperties": false,
-            "required": ["is_vehicle", "vehicle_confidence", "unknown", "non_vehicle_reason"],
+            "required": [
+              "is_vehicle",
+              "vehicle_confidence",
+              "unknown",
+              "non_vehicle_reason"
+            ],
             "properties": {
-              "is_vehicle": {"type": "boolean"},
-              "vehicle_confidence": {"type": "number", "minimum": 0, "maximum": 1},
-              "unknown": {"type": "boolean"},
-              "non_vehicle_reason": {"type": "string", "maxLength": 300}
+              "is_vehicle": {
+                "type": "boolean"
+              },
+              "vehicle_confidence": {
+                "type": "number",
+                "minimum": 0,
+                "maximum": 1
+              },
+              "unknown": {
+                "type": "boolean"
+              },
+              "non_vehicle_reason": {
+                "type": "string",
+                "maxLength": 300
+              }
             }
           },
           "entities": {
@@ -1208,24 +1632,42 @@
               "brand_candidates": {
                 "type": "array",
                 "maxItems": 8,
-                "items": {"type": "string", "maxLength": 120}
+                "items": {
+                  "type": "string",
+                  "maxLength": 120
+                }
               },
               "series_candidates": {
                 "type": "array",
                 "maxItems": 8,
-                "items": {"type": "string", "maxLength": 120}
+                "items": {
+                  "type": "string",
+                  "maxLength": 120
+                }
               },
               "model_clues": {
                 "type": "array",
                 "maxItems": 12,
-                "items": {"type": "string", "maxLength": 200}
+                "items": {
+                  "type": "string",
+                  "maxLength": 200
+                }
               },
-              "body_type": {"type": "string", "maxLength": 120},
-              "color": {"type": "string", "maxLength": 120},
+              "body_type": {
+                "type": "string",
+                "maxLength": 120
+              },
+              "color": {
+                "type": "string",
+                "maxLength": 120
+              },
               "year_clues": {
                 "type": "array",
                 "maxItems": 8,
-                "items": {"type": "string", "maxLength": 60}
+                "items": {
+                  "type": "string",
+                  "maxLength": 60
+                }
               }
             }
           },
@@ -1239,20 +1681,41 @@
               "needs_clarification"
             ],
             "properties": {
-              "wants_catalog_match": {"type": "boolean"},
-              "wants_similar_recommendation": {"type": "boolean"},
-              "wants_general_chat": {"type": "boolean"},
-              "needs_clarification": {"type": "boolean"}
+              "wants_catalog_match": {
+                "type": "boolean"
+              },
+              "wants_similar_recommendation": {
+                "type": "boolean"
+              },
+              "wants_general_chat": {
+                "type": "boolean"
+              },
+              "needs_clarification": {
+                "type": "boolean"
+              }
             }
           },
           "bridge": {
             "type": "object",
             "additionalProperties": false,
-            "required": ["normalized_vehicle_query", "brain_mode", "catalog_lookup_mode"],
+            "required": [
+              "normalized_vehicle_query",
+              "brain_mode",
+              "catalog_lookup_mode"
+            ],
             "properties": {
-              "normalized_vehicle_query": {"type": "string", "maxLength": 500},
-              "brain_mode": {"type": "string", "maxLength": 120},
-              "catalog_lookup_mode": {"type": "string", "maxLength": 120}
+              "normalized_vehicle_query": {
+                "type": "string",
+                "maxLength": 500
+              },
+              "brain_mode": {
+                "type": "string",
+                "maxLength": 120
+              },
+              "catalog_lookup_mode": {
+                "type": "string",
+                "maxLength": 120
+              }
             }
           },
           "catalog_alignment": {
@@ -1266,11 +1729,27 @@
               "uncertain_reason"
             ],
             "properties": {
-              "selected_product_id": {"type": "string", "maxLength": 128},
-              "selected_product_name": {"type": "string", "maxLength": 200},
-              "alignment_confidence": {"type": "number", "minimum": 0, "maximum": 1},
-              "alignment_reason": {"type": "string", "maxLength": 500},
-              "uncertain_reason": {"type": "string", "maxLength": 500}
+              "selected_product_id": {
+                "type": "string",
+                "maxLength": 128
+              },
+              "selected_product_name": {
+                "type": "string",
+                "maxLength": 200
+              },
+              "alignment_confidence": {
+                "type": "number",
+                "minimum": 0,
+                "maximum": 1
+              },
+              "alignment_reason": {
+                "type": "string",
+                "maxLength": 500
+              },
+              "uncertain_reason": {
+                "type": "string",
+                "maxLength": 500
+              }
             }
           },
           "audit": {
@@ -1285,13 +1764,34 @@
               "catalog_identity_candidate_count"
             ],
             "properties": {
-              "latency_ms": {"type": "integer", "minimum": 0, "maximum": 3600000},
-              "used_fallback": {"type": "boolean"},
-              "provider_error": {"type": "string", "maxLength": 128},
-              "retry_error": {"type": "string", "maxLength": 128},
-              "retry_after_non_json": {"type": "boolean"},
-              "catalog_identity_candidate_count": {"type": "integer", "minimum": 0, "maximum": 1000},
-              "image_sha256": {"type": "string", "pattern": "^(|[0-9a-f]{64})$"}
+              "latency_ms": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 3600000
+              },
+              "used_fallback": {
+                "type": "boolean"
+              },
+              "provider_error": {
+                "type": "string",
+                "maxLength": 128
+              },
+              "retry_error": {
+                "type": "string",
+                "maxLength": 128
+              },
+              "retry_after_non_json": {
+                "type": "boolean"
+              },
+              "catalog_identity_candidate_count": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 1000
+              },
+              "image_sha256": {
+                "type": "string",
+                "pattern": "^(|[0-9a-f]{64})$"
+              }
             }
           }
         }
@@ -1311,17 +1811,37 @@
           "source_message_ids"
         ],
         "properties": {
-          "schema_version": {"type": "integer", "const": 1},
-          "present": {"type": "boolean"},
-          "vision_summary": {"type": "string", "maxLength": 2000},
+          "schema_version": {
+            "type": "integer",
+            "const": 1
+          },
+          "present": {
+            "type": "boolean"
+          },
+          "vision_summary": {
+            "type": "string",
+            "maxLength": 2000
+          },
           "classification": {
             "type": "object",
             "additionalProperties": false,
-            "required": ["is_vehicle", "vehicle_confidence", "unknown"],
+            "required": [
+              "is_vehicle",
+              "vehicle_confidence",
+              "unknown"
+            ],
             "properties": {
-              "is_vehicle": {"type": "boolean"},
-              "vehicle_confidence": {"type": "number", "minimum": 0, "maximum": 1},
-              "unknown": {"type": "boolean"}
+              "is_vehicle": {
+                "type": "boolean"
+              },
+              "vehicle_confidence": {
+                "type": "number",
+                "minimum": 0,
+                "maximum": 1
+              },
+              "unknown": {
+                "type": "boolean"
+              }
             }
           },
           "catalog_assist": {
@@ -1333,13 +1853,22 @@
               "exact_candidate_name"
             ],
             "properties": {
-              "normalized_vehicle_query": {"type": "string", "maxLength": 500},
+              "normalized_vehicle_query": {
+                "type": "string",
+                "maxLength": 500
+              },
               "candidate_names": {
                 "type": "array",
                 "maxItems": 3,
-                "items": {"type": "string", "maxLength": 200}
+                "items": {
+                  "type": "string",
+                  "maxLength": 200
+                }
               },
-              "exact_candidate_name": {"type": "string", "maxLength": 200}
+              "exact_candidate_name": {
+                "type": "string",
+                "maxLength": 200
+              }
             }
           },
           "intent_hints": {
@@ -1351,35 +1880,55 @@
               "needs_clarification"
             ],
             "properties": {
-              "wants_catalog_match": {"type": "boolean"},
-              "wants_similar_recommendation": {"type": "boolean"},
-              "needs_clarification": {"type": "boolean"}
+              "wants_catalog_match": {
+                "type": "boolean"
+              },
+              "wants_similar_recommendation": {
+                "type": "boolean"
+              },
+              "needs_clarification": {
+                "type": "boolean"
+              }
             }
           },
           "vehicle_image_retrieval": {
             "type": "object",
             "additionalProperties": false,
-            "required": ["matched", "candidate_names"],
+            "required": [
+              "matched",
+              "candidate_names"
+            ],
             "properties": {
-              "matched": {"type": "boolean"},
+              "matched": {
+                "type": "boolean"
+              },
               "candidate_names": {
                 "type": "array",
                 "maxItems": 3,
-                "items": {"type": "string", "maxLength": 200}
+                "items": {
+                  "type": "string",
+                  "maxLength": 200
+                }
               }
             }
           },
           "source_message_ids": {
             "type": "array",
             "maxItems": 3,
-            "items": {"type": "string", "maxLength": 128}
+            "items": {
+              "type": "string",
+              "maxLength": 128
+            }
           }
         }
       }
     }
   },
   "image_persistence_policy": {
-    "allowed_raw_payload_fields": ["customer_image_understanding", "visual_bridge_input"],
+    "allowed_raw_payload_fields": [
+      "customer_image_understanding",
+      "visual_bridge_input"
+    ],
     "customer_image_understanding_allowed_fields": [
       "schema_version",
       "enabled",
@@ -1446,13 +1995,21 @@
       "dedupe_key",
       "ingest_result"
     ],
-    "ingest_results": ["ingested", "duplicated", "ignored"],
+    "ingest_results": [
+      "ingested",
+      "duplicated",
+      "ignored"
+    ],
     "source_message_key_owner": "worker",
     "confirmation_rule": "worker_must_confirm_local_ledger_by_exact_source_message_key"
   },
   "image_transaction_recovery_contract": {
     "authorization_endpoint": "GET /api/workers/{worker_id}/wechat/conversations/{conversation_id}/read-authorization",
-    "decisions": ["allowed", "retry_later", "target_terminated"],
+    "decisions": [
+      "allowed",
+      "retry_later",
+      "target_terminated"
+    ],
     "decision_field": "recovery_decision",
     "allowed_target_field": "target",
     "not_attempted_rule": "an image action journal whose every item is explicitly not_attempted may be removed locally before the global transaction barrier only when it is a pure action intent with no terminal payload, no completed or failed ledger fact, and no corresponding outbox record; any formed completed or failed fact must enter settlement regardless of action_phase",
@@ -1679,7 +2236,14 @@
           "manual_recovery": false
         }
       },
-      "retry_backoff_seconds": [1, 2, 5, 10, 30, 60],
+      "retry_backoff_seconds": [
+        1,
+        2,
+        5,
+        10,
+        30,
+        60
+      ],
       "max_retry_interval_seconds": 60,
       "transitions": {
         "retry": "retry_waiting",
@@ -1695,7 +2259,15 @@
         "confirmed": "confirmed"
       }
     },
-    "retry_statuses": [408, 425, 429, 500, 502, 503, 504],
+    "retry_statuses": [
+      408,
+      425,
+      429,
+      500,
+      502,
+      503,
+      504
+    ],
     "unknown_api_error_action": "capability_paused",
     "transport_error_action": "retry",
     "retryable_compatibility_rule": "data.retryable is display-only for legacy clients and must not drive new Worker recovery."
@@ -1896,10 +2468,26 @@
     "owner": "worker",
     "scope": "cross_round_historical_identity_post_action_receipt_commit_and_new_suffix_only",
     "forbidden_scope": "must_not_be_used_as_a_first_media_action_gate_that_requires_durable_identity_before_the_action",
-    "pre_sequence_sources": ["action_frame", "checkpoint", "empty_checkpoint"],
-    "identity_states": ["committed", "selected_action", "frame_local_unselected"],
-    "alignment_statuses": ["unique", "ambiguous", "unresolved", "not_required"],
-    "strong_anchor_fields": ["native_source_message_id", "confirmed_action_mapping"],
+    "pre_sequence_sources": [
+      "action_frame",
+      "checkpoint",
+      "empty_checkpoint"
+    ],
+    "identity_states": [
+      "committed",
+      "selected_action",
+      "frame_local_unselected"
+    ],
+    "alignment_statuses": [
+      "unique",
+      "ambiguous",
+      "unresolved",
+      "not_required"
+    ],
+    "strong_anchor_fields": [
+      "native_source_message_id",
+      "confirmed_action_mapping"
+    ],
     "frame_visual_field": "frame_visual_id",
     "frame_visual_rule": "diagnostic_and_same_frame_action_evidence_only_never_cross_round_identity_or_contradiction",
     "required_evidence_fields": [
@@ -2251,7 +2839,10 @@
   },
   "voice_action_binding_contract": {
     "owner": "omniauto",
-    "stages": ["prepare", "execute"],
+    "stages": [
+      "prepare",
+      "execute"
+    ],
     "prepare_ui_action_performed": false,
     "required_prepare_response_fields": [
       "pre_frame_id",
@@ -2309,9 +2900,19 @@
       "binding_confirmed"
     ],
     "confirmed_mapping_rule": "action_id_reserved_id_action_token_pre_observation_id_and_exactly_one_post_observation_id_must_match_the_execute_request_before_binding_confirmed",
-    "binding_statuses": ["confirmed", "ambiguous", "failed"],
-    "identity_bound_terminal_statuses": ["confirmed", "failed"],
-    "identity_unbound_statuses": ["not_attempted", "ambiguous"],
+    "binding_statuses": [
+      "confirmed",
+      "ambiguous",
+      "failed"
+    ],
+    "identity_bound_terminal_statuses": [
+      "confirmed",
+      "failed"
+    ],
+    "identity_unbound_statuses": [
+      "not_attempted",
+      "ambiguous"
+    ],
     "confirmed_methods": [
       "actual_action_result"
     ],
@@ -2319,7 +2920,9 @@
     "actual_action_result_rule": "one_physical_action_count_one_unique_result_candidate_one_actual_post_transcript_business_signature_and_one_complete_receipt_must_match_the_worker_reservation_before_commit",
     "popup_state_query_rule": "a_win32_popup_hwnd_query_exception_is_popup_window_state_unknown_and_must_never_be_reported_as_closed",
     "post_click_wait_rule": "both_successful_and_failed_click_verification_enter_the_same_passive_transcript_evidence_wait_for_at_most_24_frames_or_120_seconds_without_a_second_transcribe_click",
-    "forbidden_compatibility_fields": ["tracking_candidate_counts"],
+    "forbidden_compatibility_fields": [
+      "tracking_candidate_counts"
+    ],
     "cancel_before_trigger_rule": "token_or_target_revalidation_failure_must_return_cancelled_before_trigger_with_zero_ui_actions_and_burn_the_reservation",
     "ambiguous_terminal_rule": "persist_the_journal_without_body_binding_or_repeat_click_then_set_flow_technical_failed_and_worker_faulted_with_zero_handoff_and_brain_calls",
     "worker_behavior": "validate_one_actual_action_result_receipt_without_anchor_coordinate_tracking_or_alternate_identity_reconstruction",
@@ -2348,139 +2951,5 @@
     "worker_behavior": "forward_only_when_present",
     "missing_behavior": "exclude_from_scan_result_and_record_missing_session_key_excluded_count",
     "forbidden_behavior": "worker_must_not_synthesize_session_identity_from_title_index_or_preview"
-  },
-  "terminal_read_settlement_contract": {
-    "protocol_version": 1,
-    "capability_field": "pending_read_recovery.terminal_settlement_protocol_version",
-    "endpoint": "POST /api/workers/{worker_id}/wechat/messages/ingest",
-    "original_json_digest": "sha256(UTF-8 json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(comma,colon)))",
-    "http_success_means": "settlement_completed_not_read_success",
-    "recovery_actions": [
-      "conversation_terminated",
-      "target_terminated"
-    ],
-    "accepted_keys_field": "accepted_source_message_keys",
-    "coverage_rule": "accepted and cancelled sets are disjoint and cover exactly the immutable partition",
-    "partition_group_field": "evidence.ingest_partition.expected_source_message_keys",
-    "flow_completion_coverage": "original accepted MessageEvent partition evidence plus business cancellation receipts; confirmed partitions are never reposted to manufacture proof",
-    "media_recovery_owner": {
-      "authorization_endpoint": "GET /api/workers/{worker_id}/wechat/conversations/{conversation_id}/read-authorization",
-      "original_read_run_id": "optional query; exact historical flow, or one uniquely proven ended flow for released callers",
-      "admission": "same worker, instance, server binding and original active or finished flow; original authorization is either still valid or has exact revocation proof; checked again under business locks",
-      "payload": "original committed media identity, outcome and slot origin, delivered through the existing fact_settlement token channel",
-      "contract_validation": "immutable sender payload uses the same supported full frozen contract resolver as ordinary read recovery; changed rules or unknown revision and digest pairs remain rejected",
-      "new_ui_or_running_permission": false
-    },
-    "proof_schema": {
-      "type": "object",
-      "required": [
-        "protocol_version",
-        "proof_id",
-        "disposition",
-        "reason_code",
-        "worker_id",
-        "client_instance_id",
-        "bound_at",
-        "flow_id",
-        "conversation_id",
-        "authorization_revision",
-        "contract_revision",
-        "contract_sha256",
-        "payload_sha256",
-        "partition_index",
-        "partition_count",
-        "source_message_keys",
-        "settled_at"
-      ],
-      "properties": {
-        "protocol_version": {
-          "const": 1
-        },
-        "proof_id": {
-          "type": "string",
-          "minLength": 1
-        },
-        "disposition": {
-          "const": "business_cancelled"
-        },
-        "reason_code": {
-          "type": "string",
-          "minLength": 1
-        },
-        "worker_id": {
-          "type": "string",
-          "minLength": 1
-        },
-        "client_instance_id": {
-          "type": "string",
-          "minLength": 1
-        },
-        "bound_at": {
-          "type": "string",
-          "minLength": 1
-        },
-        "flow_id": {
-          "type": "string",
-          "minLength": 1
-        },
-        "conversation_id": {
-          "type": "string",
-          "minLength": 1
-        },
-        "authorization_revision": {
-          "type": "string",
-          "minLength": 1
-        },
-        "contract_revision": {
-          "type": "string",
-          "minLength": 1
-        },
-        "contract_sha256": {
-          "type": "string",
-          "pattern": "^[0-9a-f]{64}$"
-        },
-        "payload_sha256": {
-          "type": "string",
-          "pattern": "^[0-9a-f]{64}$"
-        },
-        "partition_index": {
-          "type": "integer",
-          "minimum": 1
-        },
-        "partition_count": {
-          "type": "integer",
-          "minimum": 1
-        },
-        "source_message_keys": {
-          "type": "array",
-          "items": {
-            "type": "string",
-            "minLength": 1
-          },
-          "uniqueItems": true
-        },
-        "settled_at": {
-          "type": "string",
-          "minLength": 1
-        }
-      },
-      "additionalProperties": false
-    },
-    "safe_settlement_rule": {
-      "confirmed": "real backend acceptance",
-      "identity_quarantined": "matching durable scoped quarantine",
-      "split_completed": "all original child partitions safely settled",
-      "target_terminated": "validated terminal proof durably stored with matching Ledger",
-      "conversation_terminated": "validated terminal proof durably stored with matching Ledger"
-    },
-    "local_atomic_writes": [
-      "original_outbox_terminal",
-      "matching_waiting_ledger",
-      "proof_index",
-      "matching_active_read_finish_receipt"
-    ],
-    "recovery_requires_explicit_start": true,
-    "released_read_rules_sha256": "bd5f2a2fadcae7575651617ce642f35594ae5da931eede673efe979308e6079f",
-    "compatibility_scope": "original registered or proven ended read only; unchanged frozen read validation; no new UI authorization"
   }
 }

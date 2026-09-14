@@ -82,6 +82,26 @@ def equivalent_contract(
     return candidate if hmac.compare_digest(contract_sha256(candidate), sha256.lower()) else None
 
 
+RELEASED_READ_RULES_SHA256 = 'bd5f2a2fadcae7575651617ce642f35594ae5da931eede673efe979308e6079f'
+
+
+def read_recovery_contract(current: dict, revision: Any, sha256: Any) -> dict | None:
+    """Explicit additive terminal-protocol migration, restricted by its caller.
+
+    All previously published read rules must match the frozen fingerprint.
+    This does not admit old clients to new work or claim full-rule equivalence.
+    Any later change to message rules requires another reviewed migration.
+    """
+    same = equivalent_contract(current, revision, sha256)
+    if same is not None:
+        return same
+    protocol = current.get('terminal_read_settlement_contract') or {}
+    original = {key: value for key, value in current.items() if key != 'terminal_read_settlement_contract'}
+    if protocol.get('protocol_version') != 1 or contract_rules_sha256(original) != RELEASED_READ_RULES_SHA256:
+        return None
+    return equivalent_contract(original, revision, sha256)
+
+
 def contract_row_rules(payload: dict[str, Any]) -> dict[str, dict[str, Any]]:
     values = payload.get("row_rules")
     if not isinstance(values, dict):
