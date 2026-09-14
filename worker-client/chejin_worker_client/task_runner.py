@@ -4585,9 +4585,11 @@ class TaskRunner:
                     **({"authorization_revision": authorization_revision} if authorization_revision else {}),
                 )
             except ApiError as exc:
-                if exc.code != "LEAD_INVALID":
+                if exc.code != "LEAD_INVALID" and not (
+                    flow_kind == "task" and exc.code == "TASK_WORKER_MISMATCH"
+                ):
                     raise
-                self._last_new_flow_block_reason = "LEAD_INVALID"
+                self._last_new_flow_block_reason = exc.code
                 return False
             self._backend_inflight_flow_state = dict(backend_state)
             try:
@@ -6593,10 +6595,14 @@ class TaskRunner:
                     metadata={"error": str(exc)},
                 )
 
-    def _apply_local_run_status(self, run_status: str) -> None:
+    def _apply_local_run_status(self, run_status: str) -> tuple[str, int] | None:
         if not self.binding:
             return
         with self._run_status_intent_lock:
+            # The caller can have checked before waiting for this lock. Resolve
+            # fault priority at the same boundary that persists the intention.
+            if run_status == "paused" and self.binding.run_status == "faulted":
+                run_status = "faulted"
             try:
                 if run_status in {"paused", "faulted"}:
                     self._run_status_revision += 1
@@ -6613,10 +6619,12 @@ class TaskRunner:
                     save_binding(candidate)
                     clear_runtime_pause()
                     self.binding.run_status = run_status  # type: ignore[assignment]
+                    self._run_status_revision += 1
             except Exception:
                 self._run_status_persistence_pending = True
                 raise
             self._run_status_persistence_pending = False
+            return run_status, self._run_status_revision
 
     def fault_recovery_state(self) -> dict[str, Any]:
         """UI reads the last background check; clicking always rechecks it."""
@@ -6810,8 +6818,12 @@ class TaskRunner:
         if run_status in {"paused", "faulted"}:
             # Pause drains the registered flow. Emergency stop remains the
             # separate fail-safe for not-yet-started physical actions.
-            self._apply_local_run_status(run_status)
-        revision = self._run_status_revision
+            run_status, revision = self._apply_local_run_status(run_status)
+        else:
+            with self._run_status_intent_lock:
+                if self.binding.run_status == "faulted":
+                    return self._request_fault_recovery()
+                revision = self._run_status_revision
         try:
             if run_status == "running" and not self._refresh_vision_credential(self.binding):
                 return False
@@ -6850,53 +6862,54 @@ class TaskRunner:
             )
             return True
         except Exception as exc:
-            if revision != self._run_status_revision:
-                self._pending_run_status_sync = self.binding.run_status
+            with self._run_status_intent_lock:
+                if revision != self._run_status_revision:
+                    self._pending_run_status_sync = self.binding.run_status
+                    return False
+                if run_status in {"paused", "faulted"}:
+                    self._pending_run_status_sync = run_status
+                    self.run_status_sync_error = str(exc)
+                    is_faulted = run_status == "faulted"
+                    self.on_error(
+                        (
+                            "本地已进入客户端故障状态；后端故障状态尚未同步，"
+                            "客户端保持故障并自动重试同步。"
+                        )
+                        if is_faulted
+                        else (
+                            "本地已停止接收新工作；暂停状态尚未同步到后端，"
+                            "当前客户仍会安全处理完，后端状态将自动重试同步。"
+                        )
+                    )
+                    append_log(
+                        "WARN",
+                        (
+                            "run_status_fault_sync_pending"
+                            if is_faulted
+                            else "run_status_pause_sync_pending"
+                        ),
+                        (
+                            "本地客户端故障门禁已生效，后端故障状态同步失败并进入自动重试。"
+                            if is_faulted
+                            else "本地新工作门禁已生效，后端暂停同步失败并进入自动重试。"
+                        ),
+                        error_code="RUN_STATUS_SYNC_FAILED",
+                        metadata={
+                            "requested_run_status": run_status,
+                            "error": str(exc),
+                        },
+                    )
+                else:
+                    self._apply_local_run_status("paused")
+                    self.on_error(f"开始接单失败，仍保持暂停：{exc}")
+                    append_log(
+                        "WARN",
+                        "run_status_start_rejected",
+                        "后端未确认开始接单，本地继续保持暂停。",
+                        error_code="RUN_STATUS_SYNC_FAILED",
+                        metadata={"error": str(exc)},
+                    )
                 return False
-            if run_status in {"paused", "faulted"}:
-                self._pending_run_status_sync = run_status
-                self.run_status_sync_error = str(exc)
-                is_faulted = run_status == "faulted"
-                self.on_error(
-                    (
-                        "本地已进入客户端故障状态；后端故障状态尚未同步，"
-                        "客户端保持故障并自动重试同步。"
-                    )
-                    if is_faulted
-                    else (
-                        "本地已停止接收新工作；暂停状态尚未同步到后端，"
-                        "当前客户仍会安全处理完，后端状态将自动重试同步。"
-                    )
-                )
-                append_log(
-                    "WARN",
-                    (
-                        "run_status_fault_sync_pending"
-                        if is_faulted
-                        else "run_status_pause_sync_pending"
-                    ),
-                    (
-                        "本地客户端故障门禁已生效，后端故障状态同步失败并进入自动重试。"
-                        if is_faulted
-                        else "本地新工作门禁已生效，后端暂停同步失败并进入自动重试。"
-                    ),
-                    error_code="RUN_STATUS_SYNC_FAILED",
-                    metadata={
-                        "requested_run_status": run_status,
-                        "error": str(exc),
-                    },
-                )
-            else:
-                self._apply_local_run_status("paused")
-                self.on_error(f"开始接单失败，仍保持暂停：{exc}")
-                append_log(
-                    "WARN",
-                    "run_status_start_rejected",
-                    "后端未确认开始接单，本地继续保持暂停。",
-                    error_code="RUN_STATUS_SYNC_FAILED",
-                    metadata={"error": str(exc)},
-                )
-            return False
 
     def _loop(self) -> None:
         append_log("INFO", "client_started", "Worker 客户端任务循环启动。")
@@ -7029,6 +7042,12 @@ class TaskRunner:
                             self.run_status_sync_error = (
                                 "后端尚未确认客户端故障状态"
                             )
+                elif profile.run_status == "faulted":
+                    # A fresh server fault must repair old clients' persisted
+                    # paused intent, not be hidden by pending pause retries.
+                    self._apply_local_run_status("faulted")
+                    self._pending_run_status_sync = None
+                    self.run_status_sync_error = None
                 elif self._pending_run_status_sync in {"paused", "faulted"}:
                     pending_run_status = self._pending_run_status_sync
                     if profile.run_status == pending_run_status and not self._run_status_persistence_pending:

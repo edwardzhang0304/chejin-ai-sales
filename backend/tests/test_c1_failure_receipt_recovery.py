@@ -13,6 +13,7 @@ from test_lead_followup_eligibility import isolated_db, http_api, fixture_rows
 import test_worker_failure_consistency as submitted
 from app.core.database import SessionLocal
 from app.models.task import Task
+from task_ownership_fixtures import owned_add_friend_task
 from app.models.worker import Worker
 from app.enums import ContactType
 from app.services.lead_service import _contact_model
@@ -34,7 +35,7 @@ def test_one_lost_failure_request_eventually_settles_without_ui(http_api, tmp_pa
         for index, row in enumerate(rows):
             db.add(_contact_model(row["lead_id"], ContactType.phone,
                                  contact_utils.normalize_phone(f"1380000777{index}"), True))
-            db.add(Task(lead_id=row["lead_id"], worker_id=worker["id"], task_type="add_friend", status="pending"))
+            db.add(owned_add_friend_task(db, lead_id=row["lead_id"], worker_id=worker["id"], task_type="add_friend", status="pending"))
         db.commit()
     base = http_api.get("/healthz").url.removesuffix("/healthz") + "/api"
     request = {"base_url": base, "worker_id": worker["id"], "token": worker["worker_token"],
@@ -103,7 +104,7 @@ def test_original_failure_receipt_survives_loss(http_api, tmp_path, monkeypatch,
         for index, row in enumerate(rows):
             db.add(_contact_model(row["lead_id"], ContactType.phone,
                                  contact_utils.normalize_phone(f"1380000666{index}"), True))
-            db.add(Task(lead_id=row["lead_id"], worker_id=worker["id"], task_type="add_friend", status="pending"))
+            db.add(owned_add_friend_task(db, lead_id=row["lead_id"], worker_id=worker["id"], task_type="add_friend", status="pending"))
         db.commit()
     base = http_api.get("/healthz").url.removesuffix("/healthz") + "/api"
     request = {"base_url": base, "worker_id": worker["id"], "token": worker["worker_token"],

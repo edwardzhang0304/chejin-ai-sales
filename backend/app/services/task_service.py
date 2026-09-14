@@ -5,7 +5,7 @@ from typing import Any
 from app.contracts.c2 import pre_send_reidentification_errors
 from uuid import UUID
 
-from sqlalchemy import case, func, or_, select
+from sqlalchemy import case, func, or_, select, and_
 from sqlalchemy.orm import Session, object_session, selectinload
 
 from app.core.request_context import ActorContext
@@ -763,9 +763,13 @@ def _active_add_friend_task(db: Session, lead_id: str) -> Task | None:
 
 
 def _resolve_sales_and_worker(db: Session, lead: Lead, sales_id: str | None, worker_id: str | None) -> tuple[Sales | None, Worker | None]:
-    sales = db.get(Sales, sales_id or lead.sales_id) if (sales_id or lead.sales_id) else None
+    from app.services.task_ownership import lock_sales
+    selected_sales_id = sales_id or lead.sales_id
+    sales = lock_sales(db, [selected_sales_id]).get(selected_sales_id)
     worker: Worker | None = None
-    selected_worker_id = worker_id or (sales.worker_id if sales else None)
+    selected_worker_id = sales.worker_id if sales else None
+    if worker_id and worker_id != selected_worker_id:
+        raise AppError("TASK_WORKER_MISMATCH", "加好友任务必须使用所属销售当前绑定的 Worker", 409)
     if selected_worker_id:
         worker = db.get(Worker, selected_worker_id)
         if worker and (worker.deleted_at or not worker.enabled):
@@ -831,48 +835,6 @@ def create_add_friend_task_for_lead(db: Session, lead: Lead, actor: ActorContext
     return get_task_or_404(db, result["task"]["id"]) if result.get("task") else None
 
 
-def unblock_sales_worker_tasks(db: Session, sales_id: str, worker_id: str, actor: ActorContext) -> int:
-    from app.services.followup_eligibility import lock_leads, followup_block_reason
-    lock_leads(db, db.scalars(select(Task.lead_id).where(Task.sales_id == sales_id)))
-    worker = db.get(Worker, worker_id)
-    if not worker or worker.deleted_at or not worker.enabled:
-        return 0
-    rows = list(
-        db.scalars(
-            select(Task)
-            .where(
-                Task.sales_id == sales_id,
-                Task.task_type == TaskType.add_friend.value,
-                Task.status == TaskStatus.blocked.value,
-                Task.block_code == TaskBlockCode.SALES_WORKER_NOT_BOUND.value,
-                Task.deleted_at.is_(None),
-            )
-            .with_for_update()
-        )
-    )
-    unblocked_count = 0
-    for task in rows:
-        if followup_block_reason(db, task.lead_id):
-            continue
-        unblocked_count += 1
-        before = task.status
-        task.status = TaskStatus.pending.value
-        task.worker_id = worker.id
-        task.block_code = None
-        task.updated_by = str(actor.operator_id)
-        _write_event(db, task, TaskEventType.unblocked, actor=actor, from_status=before, to_status=task.status, remark="销售已绑定 Worker")
-        _write_task_log(
-            db,
-            actor,
-            "task_unblocked",
-            task,
-            before_data={"status": before, "block_code": TaskBlockCode.SALES_WORKER_NOT_BOUND.value},
-            after_data={"status": task.status, "worker_id": worker.id},
-        )
-    db.flush()
-    return unblocked_count
-
-
 def add_comment(db: Session, task_id: str, content: str, actor: ActorContext) -> dict[str, Any]:
     task = get_task_or_404(db, task_id)
     note = TaskNote(task_id=task.id, content=content, operator_id=str(actor.operator_id), operator_name=actor.operator_name)
@@ -884,7 +846,11 @@ def add_comment(db: Session, task_id: str, content: str, actor: ActorContext) ->
 
 
 def cancel_task(db: Session, task_id: str, reason: str | None, actor: ActorContext) -> dict[str, Any]:
-    task = get_task_or_404(db, task_id)
+    from app.services.followup_eligibility import lock_leads
+    lock_leads(db, [db.scalar(select(Task.lead_id).where(Task.id == task_id))])
+    task = db.scalar(_task_claim_statement(task_id).execution_options(populate_existing=True))
+    if task is None:
+        raise AppError("TASK_NOT_FOUND", "任务不存在", 404)
     if task.status not in CANCELLABLE_TASK_STATUSES:
         raise AppError("TASK_CANCEL_NOT_ALLOWED", "仅 blocked、pending、running 任务可取消，终态任务不可取消", 409)
     before = task.status
@@ -917,18 +883,22 @@ def claim_task(
     # transactions can both observe pending and issue different leases.
     from app.services.followup_eligibility import require_followup
     require_followup(db, db.scalar(select(Task.lead_id).where(Task.id == task_id)))
-    task = db.scalar(_task_claim_statement(task_id))
+    from app.services.task_ownership import lock_sales, require_task_owner, unclaimed_add_friend
+    lock_sales(db, [db.scalar(select(Task.sales_id).where(Task.id == task_id,
+                                                         Task.task_type == "add_friend"))])
+    task = db.scalar(_task_claim_statement(task_id).execution_options(populate_existing=True))
     if not task:
         raise AppError("TASK_NOT_FOUND", "任务不存在", 404)
     if task.status != TaskStatus.pending.value:
         raise AppError("TASK_CLAIM_NOT_ALLOWED", "仅 pending 任务可领取", 409)
+    if task.task_type == "add_friend" and not unclaimed_add_friend(task):
+        raise AppError("TASK_CLAIM_NOT_ALLOWED", "任务已有执行记录，须按原身份收尾，不可重新领取", 409)
+    require_task_owner(db, task, worker_id)
     worker = db.get(Worker, worker_id)
     if not worker or worker.deleted_at:
         raise AppError("WORKER_NOT_FOUND", "Worker 不存在", 404)
     if not worker.enabled:
         raise AppError("WORKER_DISABLED_CANNOT_CLAIM", "已停用 Worker 不可领取任务", 400)
-    if task.worker_id and task.worker_id != worker.id:
-        raise AppError("TASK_WORKER_MISMATCH", "该任务已指定其他 Worker", 409)
     if task.task_type == TaskType.chat_reply.value:
         from app.services.c3_service import validate_chat_reply_task_claim
 
@@ -1052,26 +1022,34 @@ def pull_task_for_worker(db: Session, worker: Worker) -> dict[str, Any]:
     if not can_claim:
         return {"mode": "idle", "can_claim": False, "reason": reason, "task": None}
 
-    candidates = list(db.scalars(
-        select(Task)
-        .options(*_task_load_options())
-        .where(
-            Task.worker_id == worker.id,
-            Task.status == TaskStatus.pending.value,
-            Task.deleted_at.is_(None),
-        )
-        .order_by(
-            case(
-                (Task.task_type == TaskType.chat_reply.value, 0),
-                else_=1,
-            ),
-            Task.created_at.asc(),
-            Task.id.asc(),
-        )
-    ))
     from app.services.followup_eligibility import lock_leads, followup_block_reason
-    lock_leads(db, [task.lead_id for task in candidates])
-    pending_task = next((task for task in candidates if not followup_block_reason(db, task.lead_id)), None)
+    from app.services.task_ownership import lock_sales, lock_task_executors, task_owner_matches, synchronize_unstarted_task, unclaimed_add_friend
+    # Include old pending assignments for this sales person's current machine.
+    # Reconcile only never-started C1 rows; terminal/leased work never migrates.
+    candidate_ids = list(db.scalars(select(Task.id).where(
+        Task.deleted_at.is_(None),
+        Task.status.in_([TaskStatus.pending.value, TaskStatus.blocked.value]),
+        or_(Task.worker_id == worker.id,
+            and_(Task.task_type == TaskType.add_friend.value,
+                 Task.sales_id.in_(select(Sales.id).where(Sales.worker_id == worker.id,
+                                                         Sales.deleted_at.is_(None))))),
+    )))
+    lock_leads(db, db.scalars(select(Task.lead_id).where(Task.id.in_(candidate_ids))))
+    lock_sales(db, db.scalars(select(Task.sales_id).where(Task.id.in_(candidate_ids),
+                                                         Task.task_type == "add_friend")))
+    candidates = list(db.scalars(select(Task).options(*_task_load_options())
+                                .where(Task.id.in_(candidate_ids)).order_by(Task.id)
+                                .with_for_update().execution_options(populate_existing=True)))
+    executors = lock_task_executors(db, candidates, worker_ids=[worker.id])
+    for task in candidates:
+        synchronize_unstarted_task(db, task, SYSTEM_TASK_LEASE_ACTOR, executors=executors)
+    candidates.sort(key=lambda task: (0 if task.task_type == TaskType.chat_reply.value else 1,
+                                      task.created_at, task.id))
+    pending_task = next((task for task in candidates
+                         if task.status == TaskStatus.pending.value
+                         and (task.task_type != "add_friend" or unclaimed_add_friend(task))
+                         and not followup_block_reason(db, task.lead_id, lock=False)
+                         and task_owner_matches(db, task, worker.id, executors=executors)), None)
     return {
         "mode": "pending" if pending_task else "idle",
         "can_claim": bool(pending_task),

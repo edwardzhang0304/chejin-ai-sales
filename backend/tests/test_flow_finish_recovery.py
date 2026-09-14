@@ -17,6 +17,7 @@ import test_c3_api as c3t
 from app.core.database import SessionLocal
 from app.models.c3 import ReplyAction, SentAck
 from app.models.task import Task
+from task_ownership_fixtures import owned_add_friend_task
 from app.models.worker import Worker
 
 
@@ -153,7 +154,7 @@ def test_live_owner_retries_finalization_after_one_transport_failure(http_api, m
     monkeypatch.setattr(c3t, 'client', http_api)
     worker = c3t._create_worker()
     with SessionLocal() as db:
-        task = Task(worker_id=worker['id'], task_type='add_friend', status='pending')
+        task = owned_add_friend_task(db, worker_id=worker['id'], task_type='add_friend', status='pending')
         db.add(task); db.commit(); task_id=task.id
     url = http_api.get('/healthz').url.removesuffix('/healthz')
     request = tmp_path/'request.json'
