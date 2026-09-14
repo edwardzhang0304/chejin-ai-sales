@@ -1,0 +1,19 @@
+{
+  "source_sha256": "01641fa4e9f299358f1e161f940e1ee79ebdf3567ea4ee15ecef8d35306a100f",
+  "source_date": "2026-09-14",
+  "source_size": [
+    784,
+    844
+  ],
+  "crop_bounds": [
+    60,
+    0,
+    300,
+    93
+  ],
+  "expected_plus_center": [
+    214,
+    57
+  ],
+  "description": "Original sidebar header only: search control and circle-plus, no chat content. The production appearance reference comes from a different (September 9) frame."
+}

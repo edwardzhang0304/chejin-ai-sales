@@ -1294,6 +1294,7 @@ def build_startup_layout_calibration(
         "capture_mode": str(capture_mode or ""),
         **{name: normalize_rect(regions.get(name)) for name in REQUIRED_LAYOUT_REGION_NAMES},
         "anchors": [dict(item) for item in layout.get("anchors") or []],
+        "vertical_candidates": [dict(item) for item in layout.get("vertical_candidates") or []],
         "confidence": max(0.0, min(1.0, float(layout.get("confidence") or 0.0))),
         "conflicts": list(dict.fromkeys(conflicts)),
         "calibrated_at": time.time(),

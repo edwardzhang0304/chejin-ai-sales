@@ -460,7 +460,8 @@ def add_friend_plus_entry_target(
         )
     except win32_ocr_window_layout.LayoutSnapshotError:
         mapped_reference = {}
-    if mapped_reference and search_anchor_bounds:
+    visual_match = bool(target.get("executable") and target.get("source") == "vision_plus_icon")
+    if not visual_match and mapped_reference and search_anchor_bounds:
         mapped_point = list(mapped_reference["image_point"])
         mapped_bounds = list(mapped_reference["region_bounds"])
         search_top = int(search_anchor_bounds[1])
@@ -476,7 +477,7 @@ def add_friend_plus_entry_target(
         target["strategy"] = "gray_v0_9_20_region_reference_map"
         target["source"] = "startup_calibration_region_map"
         target["executable"] = True
-    elif mapped_reference:
+    elif not visual_match and mapped_reference:
         target["point"] = [0, 0]
         target["x"] = 0
         target["y"] = 0
@@ -504,6 +505,7 @@ def add_friend_plus_entry_target(
         {
             "layout_snapshot_id": snapshot_id,
             "calibration_id": str((layout_snapshot or {}).get("calibration_id") or ""),
+            "startup_calibration_evidence": dict((layout_snapshot or {}).get("startup_calibration_evidence") or {}),
             "frame_id": str((layout_snapshot or {}).get("frame_id") or ""),
             "hwnd": int((layout_snapshot or {}).get("hwnd") or 0),
             "capture_mode": str((layout_snapshot or {}).get("capture_mode") or ""),

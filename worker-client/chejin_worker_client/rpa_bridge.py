@@ -1229,6 +1229,7 @@ class RpaBridge:
             "layout_snapshot_id",
             "layout_confidence",
             "layout_conflicts",
+            "startup_calibration_evidence",
             "conflicts",
             "no_clicks_performed",
         }
