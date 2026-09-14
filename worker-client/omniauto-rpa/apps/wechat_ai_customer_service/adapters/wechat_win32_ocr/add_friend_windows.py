@@ -669,6 +669,19 @@ def find_add_friend_search_result_item(
         return None
     return min(candidates, key=lambda item: (abs(float(item.get("center_y") or 0.0) - height * 0.30), float(item.get("left") or 0.0)))
 
+def _find_add_contact_action_item(
+    ocr_items: list[dict[str, Any]], image_size: tuple[int, int],
+) -> dict[str, Any] | None:
+    # Classification and clicking must admit the same action. In particular,
+    # the top-level 添加朋友 window title is not an add-contact button.
+    return find_add_friend_action_item(
+        ocr_items,
+        ("添加到通讯录", "添加至通讯录", "添加通讯录", "添加朋友"),
+        image_size,
+        min_y_ratio=0.15,
+        max_y_ratio=0.95,
+    )
+
 def classify_add_friend_ocr_surface(ocr_items: list[dict[str, Any]], image_size: tuple[int, int]) -> dict[str, Any]:
     text = add_friend_surface_text(ocr_items)
     phone_not_found_tokens = (
@@ -685,12 +698,15 @@ def classify_add_friend_ocr_surface(ocr_items: list[dict[str, Any]], image_size:
     restricted_tokens = ("操作频繁", "账号异常", "账号安全", "被限制", "限制使用")
     if add_friend_text_has_any(text, restricted_tokens):
         return {"state": "account_restricted", "result_code": "", "error_code": ERROR_ACCOUNT_RESTRICTED}
-    if find_add_friend_action_item(ocr_items, ("添加到通讯录", "添加至通讯录", "添加朋友"), image_size):
+    if _find_add_contact_action_item(ocr_items, image_size):
         return {"state": "add_contact_entry", "result_code": "", "error_code": ""}
     if find_add_friend_action_item(ocr_items, ("发送",), image_size, min_y_ratio=0.35):
         if add_friend_text_has_any(text, ("朋友验证", "发送添加朋友申请", "申请添加朋友", "备注名", "标签")):
             return {"state": "invite_form", "result_code": "", "error_code": ""}
-    if add_friend_text_has_any(text, ("发消息", "音视频通话", "视频号")) and not add_friend_text_has_any(text, ("添加到通讯录", "添加朋友")):
+    # Require an actual messaging action label, not profile prose or 视频号.
+    # A real add-contact action has already taken precedence above; the window
+    # title must not veto otherwise valid existing-friend evidence.
+    if any(add_friend_item_text(item) in ("发消息", "音视频通话") for item in ocr_items):
         return {"state": "already_friend", "result_code": RESULT_ALREADY_FRIEND, "error_code": ""}
     if find_add_friend_search_result_item(ocr_items, "", image_size):
         return {"state": "search_results", "result_code": "", "error_code": ""}
@@ -1148,13 +1164,7 @@ def add_friend_search_result_add_contact_target(
     snapshot_id = str((layout_snapshot or {}).get("layout_snapshot_id") or "")
     if not surface_bounds or not snapshot_id or not bool((layout_snapshot or {}).get("executable")):
         return None
-    item = find_add_friend_action_item(
-        ocr_items,
-        ("添加到通讯录", "添加至通讯录", "添加通讯录", "添加朋友"),
-        image_size,
-        min_y_ratio=0.15,
-        max_y_ratio=0.95,
-    )
+    item = _find_add_contact_action_item(ocr_items, image_size)
     if item is None:
         return None
     center_x, center_y = add_friend_item_center(item)
