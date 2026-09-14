@@ -24,7 +24,7 @@ def test_legacy_admission_is_bound_to_stopped_original_read(case):
         owner.inflight_flow_state = {'flow_id': 'old-read', 'flow_kind': 'c2_read', 'conversation_id': rows[0]['conversation_id'],
                                      'status': 'draining', 'registered_at': utcnow().isoformat(), 'unread_generation': 7}
         payload = SimpleNamespace(contract_revision=read_recovery.LEGACY_REVISION, contract_sha256=read_recovery.LEGACY_SHA256,
-            read_run_id='old-read', conversation_id=rows[0]['conversation_id'], unread_generation=7, authorization_scope=None)
+            read_run_id='old-read', conversation_id=rows[0]['conversation_id'], unread_generation=7, authorization_scope=None, messages=[])
         if case == 'running': owner.run_status = 'running'
         if case == 'wrong_flow': payload.read_run_id = 'new-read'
         if case == 'wrong_customer': payload.conversation_id = rows[1]['conversation_id']
@@ -36,7 +36,7 @@ def test_legacy_admission_is_bound_to_stopped_original_read(case):
         if case == 'fact_settlement': payload.authorization_scope = 'fact_settlement'
         if case == 'no_flow': owner.inflight_flow_state = {}
         if case == 'task_in_progress': owner.current_task = 'synthetic-task'
-        if case == 'legacy':
+        if case in {'legacy', 'new_registered_flow'}:
             assert service.select_settlement_contract(db, owner, payload)['contract_revision'] == '0.9.75'
         else:
             with pytest.raises(AppError) as error:

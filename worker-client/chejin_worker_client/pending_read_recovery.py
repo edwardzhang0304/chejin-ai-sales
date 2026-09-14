@@ -4,11 +4,13 @@ import json
 from pathlib import Path
 
 from .update_data_snapshot import _read_transaction
+from .shared_rules import contract_rules
 
 PROTOCOL = 1
 LEGACY_SHA256 = 'bcb1af09321339b159cc02581f5938e402f16094465933645c71bd7dc0eadcf1'
 MAPPING_ERRORS = {'MESSAGE_OBSERVATION_MAPPING_INCOMPLETE',
                   'MESSAGE_OBSERVATION_MAPPING_INCOMPLETE:FACT_SETTLEMENT_REQUIRED'}
+RECOVERABLE_READ_ERRORS = MAPPING_ERRORS | {'MESSAGE_CONTRACT_REVISION_MISMATCH'}
 
 
 def package_recovery_capability() -> dict:
@@ -26,18 +28,29 @@ def package_recovery_capability() -> dict:
     if {k: v for k, v in legacy.items() if k != 'contract_revision'} != {
             k: v for k, v in current.items() if k != 'contract_revision'}:
         raise RuntimeError('RECOVERY_CONTRACT_SEMANTICS_CHANGED')
-    return {'protocol_version': PROTOCOL, 'contracts': [
+    return {'protocol_version': PROTOCOL,
+        'compatible_rules_sha256': contract_rules.contract_rules_sha256(current),
+        'contracts': [
         {'revision': legacy['contract_revision'], 'sha256': LEGACY_SHA256},
         {'revision': current['contract_revision'], 'sha256': contract_sha256()},
     ]}
 
 
 def accepts_handoff(capability: dict, handoff: dict) -> bool:
-    return bool(isinstance(capability, dict)
-                and capability.get('protocol_version') == PROTOCOL
-                and handoff.get('protocol_version') == PROTOCOL
-                and handoff.get('contracts')
-                and all(c in capability.get('contracts', []) for c in handoff['contracts']))
+    if not (isinstance(capability, dict) and isinstance(handoff, dict)
+            and capability.get('protocol_version') == PROTOCOL
+            and handoff.get('protocol_version') == PROTOCOL
+            and isinstance(handoff.get('contracts'), list) and handoff['contracts']):
+        return False
+    from .c2_contract import c2_contract_v3
+    current = c2_contract_v3()
+    same_rules = capability.get('compatible_rules_sha256') == contract_rules.contract_rules_sha256(current)
+    declared = capability.get('contracts')
+    if not isinstance(declared, list):
+        return False
+    return all(isinstance(pair, dict) and (pair in declared or (
+        same_rules and contract_rules.equivalent_contract(current, pair.get('revision'), pair.get('sha256')) is not None
+    )) for pair in handoff['contracts'])
 
 
 def backend_accepts_handoff(capability: dict, handoff: dict) -> bool:
@@ -76,7 +89,7 @@ def inspect_pending_read(data_dir: Path) -> dict:
         require(flow_id and control.get('inflight_flow_kind') == 'c2_read')
         receipt = state('inflight_finish_receipt:' + flow_id)
         require(receipt.get('terminal_kind') == 'technical_failed'
-                and receipt.get('error_code') in MAPPING_ERRORS
+                and receipt.get('error_code') in RECOVERABLE_READ_ERRORS
                 and not receipt.get('read_completion'))
         conversation_id = receipt.get('conversation_id')
         require(conversation_id)

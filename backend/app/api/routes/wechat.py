@@ -241,7 +241,11 @@ def ingest_messages(
 ):
     ingest_started = time.perf_counter()
     worker = worker_service.authenticate_worker_client(db, worker_id, x_worker_token, x_client_instance_id)
-    worker_service.validate_inflight_continuation(worker, x_inflight_flow_id)
+    if payload.authorization_scope == "fact_settlement":
+        worker_service.validate_inflight_continuation(worker, x_inflight_flow_id)
+    else:
+        from app.services.read_recovery_service import validate_message_continuation
+        validate_message_continuation(db, worker, payload, x_inflight_flow_id)
     telemetry_process_run_id: str | None = None
     telemetry_trace_id = get_request_id()
     telemetry_ingest_stage_key = (

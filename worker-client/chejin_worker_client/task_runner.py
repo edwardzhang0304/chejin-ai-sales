@@ -6505,14 +6505,14 @@ class TaskRunner:
         conversation_id: str | None = None, error_code: str | None = None,
     ) -> None:
         """Shared HTTP failure and exact legacy-proof handling for every retry."""
-        from .pending_read_recovery import MAPPING_ERRORS, inspect_pending_read, backend_accepts_handoff
+        from .pending_read_recovery import RECOVERABLE_READ_ERRORS, inspect_pending_read, backend_accepts_handoff
         flow_kind = str(load_runtime_control().get("inflight_flow_kind") or "")
         receipt = load_c2_state(self._inflight_finish_receipt_key(flow_id)) or {}
         try:
             if (
                 flow_kind == "c2_read"
                 and terminal_kind == "technical_failed"
-                and error_code in MAPPING_ERRORS
+                and error_code in RECOVERABLE_READ_ERRORS
                 and conversation_id
             ):
                 # A pre-fix client can leave an immutable, valid read behind a
@@ -13887,11 +13887,11 @@ class TaskRunner:
         ):
             return
         from .c2_contract import contract_revision
-        from .pending_read_recovery import MAPPING_ERRORS
+        from .pending_read_recovery import RECOVERABLE_READ_ERRORS
         original = load_c2_state(self._inflight_finish_receipt_key(read_run_id)) or {}
         if (payload.get('contract_revision') != contract_revision()
                 and original.get('terminal_kind') == 'technical_failed'
-                and original.get('error_code') in MAPPING_ERRORS
+                and original.get('error_code') in RECOVERABLE_READ_ERRORS
                 and original.get('conversation_id') == conversation_id
                 and not original.get('read_completion')):
             # Keep the original recovery receipt, even if this retry is rejected.

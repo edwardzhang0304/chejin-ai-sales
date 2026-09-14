@@ -4222,7 +4222,7 @@ def ingest_messages(db: Session, worker: Worker, payload: WechatMessageIngestReq
             WechatSessionBinding.conversation_id == payload.conversation_id,
             WechatSessionBinding.worker_id == worker.id,
             WechatSessionBinding.deleted_at.is_(None),
-        ).with_for_update()
+        ).with_for_update().execution_options(populate_existing=True)
     )
     if not binding or binding.bind_status != BIND_STATUS_BOUND or not binding.allow_listening or not _clean_locator(binding.remark_code):
         raise AppError("MESSAGE_CONVERSATION_NOT_BOUND", "会话未绑定，不能入库消息", 409)
@@ -4256,6 +4256,10 @@ def ingest_messages(db: Session, worker: Worker, payload: WechatMessageIngestReq
     if locked_worker is None:
         raise AppError("WORKER_NOT_FOUND", "Worker 不存在", 404)
     worker = locked_worker
+    from app.services.read_recovery_service import validate_message_continuation, record_closed_read_recovery
+    closed_read = validate_message_continuation(db, worker, payload, payload.read_run_id)
+    if closed_read is not None:
+        record_closed_read_recovery(db, worker, payload, closed_read)
     inflight_state = dict(worker.inflight_flow_state or {})
     if str(inflight_state.get("flow_id") or "").strip():
         if (

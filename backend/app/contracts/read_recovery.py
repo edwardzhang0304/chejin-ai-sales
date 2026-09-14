@@ -9,9 +9,14 @@ from functools import lru_cache
 from pathlib import Path
 
 from app.contracts.c2 import c2_contract_v3, contract_sha256
+from app.contracts.shared_rules import shared_adapter
 
 LEGACY_REVISION = "0.9.75"
 LEGACY_SHA256 = "bcb1af09321339b159cc02581f5938e402f16094465933645c71bd7dc0eadcf1"
+
+
+def compatible_read_contract(revision, sha256) -> dict | None:
+    return shared_adapter("contract_rules").equivalent_contract(c2_contract_v3(), revision, sha256)
 
 
 @lru_cache(maxsize=1)
@@ -36,7 +41,9 @@ def legacy_read_contract() -> dict:
 def read_recovery_capability() -> dict:
     legacy = legacy_read_contract()
     current = c2_contract_v3()
-    return {'protocol_version': 1, 'contracts': [
+    return {'protocol_version': 1,
+        'compatible_rules_sha256': shared_adapter("contract_rules").contract_rules_sha256(current),
+        'contracts': [
         {'revision': legacy['contract_revision'], 'sha256': LEGACY_SHA256},
         {'revision': current['contract_revision'], 'sha256': contract_sha256()},
     ]}
