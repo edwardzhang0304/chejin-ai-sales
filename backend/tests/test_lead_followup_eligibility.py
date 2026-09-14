@@ -59,7 +59,7 @@ def isolated_db():
     Base.metadata.create_all(engine)
 
 
-def fixture_rows():
+def fixture_rows(*, eligible=False):
     """Persist a historical listening customer and another unaffected customer."""
     response = client.post('/api/workers', json={'worker_name':'Followup synthetic Worker','enabled':True})
     assert response.status_code == 200, response.text
@@ -75,16 +75,24 @@ def fixture_rows():
         worker.wechat_status='logged_in'
         worker.last_heartbeat_at=utcnow()
         values=[]
+        sales_id = None
+        if eligible:
+            from app.models.sales import Sales
+            sales = Sales(sales_name='Eligible test sales', phone='13800009992', worker_id=w['id'], enabled=True)
+            db.add(sales); db.flush()
+            sales_id = sales.id
         for index in range(2):
             lead=Lead(customer_name='Synthetic',status='assigned',source_type='manual',source_name_snapshot='test',created_by='test',updated_by='test')
             db.add(lead);db.flush()
-            conversation=Conversation(lead_id=lead.id,worker_id=worker.id,status='waiting_sales_reply')
+            initial_status = 'waiting_user_reply' if eligible else 'waiting_sales_reply'
+            conversation=Conversation(lead_id=lead.id,worker_id=worker.id,sales_id=sales_id,status=initial_status)
             db.add(conversation);db.flush()
-            db.add(HandoffEvent(conversation_id=conversation.conversation_id,handoff_reason_code="AI_ENGINE_RETRY_EXHAUSTED",notify_status="succeeded"))
+            if not eligible:
+                db.add(HandoffEvent(conversation_id=conversation.conversation_id,handoff_reason_code="AI_ENGINE_RETRY_EXHAUSTED",notify_status="succeeded"))
             binding=WechatSessionBinding(conversation_id=conversation.conversation_id,lead_id=lead.id,
                 worker_id=worker.id,remark_code=['CJ3N95EU','CJDZSKVN'][index],display_name='Synthetic',
                 rpa_session_key=f'test-{index}',row_fingerprint=f'row-{index}',bind_status='bound',
-                listen_status='listening',allow_listening=True,last_read_conversation_status='waiting_sales_reply',next_read_due_at=utcnow()-timedelta(minutes=5))
+                sales_id=sales_id,listen_status='listening',allow_listening=True,last_read_conversation_status=initial_status,next_read_due_at=utcnow()-timedelta(minutes=5))
             db.add(binding);db.flush()
             values.append({'lead_id':lead.id,'conversation_id':conversation.conversation_id,'binding_id':binding.id})
         db.commit()

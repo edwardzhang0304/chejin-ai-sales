@@ -2348,5 +2348,139 @@
     "worker_behavior": "forward_only_when_present",
     "missing_behavior": "exclude_from_scan_result_and_record_missing_session_key_excluded_count",
     "forbidden_behavior": "worker_must_not_synthesize_session_identity_from_title_index_or_preview"
+  },
+  "terminal_read_settlement_contract": {
+    "protocol_version": 1,
+    "capability_field": "pending_read_recovery.terminal_settlement_protocol_version",
+    "endpoint": "POST /api/workers/{worker_id}/wechat/messages/ingest",
+    "original_json_digest": "sha256(UTF-8 json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(comma,colon)))",
+    "http_success_means": "settlement_completed_not_read_success",
+    "recovery_actions": [
+      "conversation_terminated",
+      "target_terminated"
+    ],
+    "accepted_keys_field": "accepted_source_message_keys",
+    "coverage_rule": "accepted and cancelled sets are disjoint and cover exactly the immutable partition",
+    "partition_group_field": "evidence.ingest_partition.expected_source_message_keys",
+    "flow_completion_coverage": "original accepted MessageEvent partition evidence plus business cancellation receipts; confirmed partitions are never reposted to manufacture proof",
+    "media_recovery_owner": {
+      "authorization_endpoint": "GET /api/workers/{worker_id}/wechat/conversations/{conversation_id}/read-authorization",
+      "original_read_run_id": "optional query; exact historical flow, or one uniquely proven ended flow for released callers",
+      "admission": "same worker, instance, server binding and original active or finished flow; original authorization is either still valid or has exact revocation proof; checked again under business locks",
+      "payload": "original committed media identity, outcome and slot origin, delivered through the existing fact_settlement token channel",
+      "contract_validation": "immutable sender payload uses the same supported full frozen contract resolver as ordinary read recovery; changed rules or unknown revision and digest pairs remain rejected",
+      "new_ui_or_running_permission": false
+    },
+    "proof_schema": {
+      "type": "object",
+      "required": [
+        "protocol_version",
+        "proof_id",
+        "disposition",
+        "reason_code",
+        "worker_id",
+        "client_instance_id",
+        "bound_at",
+        "flow_id",
+        "conversation_id",
+        "authorization_revision",
+        "contract_revision",
+        "contract_sha256",
+        "payload_sha256",
+        "partition_index",
+        "partition_count",
+        "source_message_keys",
+        "settled_at"
+      ],
+      "properties": {
+        "protocol_version": {
+          "const": 1
+        },
+        "proof_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "disposition": {
+          "const": "business_cancelled"
+        },
+        "reason_code": {
+          "type": "string",
+          "minLength": 1
+        },
+        "worker_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "client_instance_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "bound_at": {
+          "type": "string",
+          "minLength": 1
+        },
+        "flow_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "conversation_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "authorization_revision": {
+          "type": "string",
+          "minLength": 1
+        },
+        "contract_revision": {
+          "type": "string",
+          "minLength": 1
+        },
+        "contract_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "payload_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "partition_index": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "partition_count": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "source_message_keys": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "uniqueItems": true
+        },
+        "settled_at": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "additionalProperties": false
+    },
+    "safe_settlement_rule": {
+      "confirmed": "real backend acceptance",
+      "identity_quarantined": "matching durable scoped quarantine",
+      "split_completed": "all original child partitions safely settled",
+      "target_terminated": "validated terminal proof durably stored with matching Ledger",
+      "conversation_terminated": "validated terminal proof durably stored with matching Ledger"
+    },
+    "local_atomic_writes": [
+      "original_outbox_terminal",
+      "matching_waiting_ledger",
+      "proof_index",
+      "matching_active_read_finish_receipt"
+    ],
+    "recovery_requires_explicit_start": true,
+    "released_read_rules_sha256": "bd5f2a2fadcae7575651617ce642f35594ae5da931eede673efe979308e6079f",
+    "compatibility_scope": "original registered or proven ended read only; unchanged frozen read validation; no new UI authorization"
   }
 }

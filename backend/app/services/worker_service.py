@@ -182,8 +182,8 @@ def worker_summary(db: Session, worker: Worker | None, *, include_token: bool = 
     }
     if worker.run_status == "faulted":
         data["fault_recovery"] = fault_recovery_readiness(db, worker)
-        from app.services.read_recovery_service import recovery_capability_for_worker
-        data["pending_read_recovery"] = recovery_capability_for_worker(db, worker)
+    from app.services.read_recovery_service import recovery_capability_for_worker
+    data["pending_read_recovery"] = recovery_capability_for_worker(db, worker)
     if include_token:
         data["worker_token"] = decrypt_worker_token(worker.worker_token_encrypted)
     return data
@@ -695,7 +695,10 @@ def finish_inflight_flow(
                 or not payload.conversation_id or not proof):
             raise AppError("WORKER_INFLIGHT_FLOW_NOT_SETTLED", "缺少同一读取流程的线索撤销依据", 409)
         from app.services.followup_eligibility import revoked_read_facts_settled
-        if not revoked_read_facts_settled(db, locked_binding, payload.flow_id):
+        from app.services.read_recovery_service import business_settlement_complete
+        terminal_settled = business_settlement_complete(db, worker, payload.flow_id, payload.conversation_id)
+        if not (terminal_settled if terminal_settled is not None
+                else revoked_read_facts_settled(db, locked_binding, payload.flow_id)):
             raise AppError("WORKER_INFLIGHT_FLOW_NOT_SETTLED", "撤销流程的原动作事实尚未结算", 409)
         write_log(db, actor, event_type="worker_inflight_read_cancelled", module="worker",
                   target_type="worker", target_id=worker.id,

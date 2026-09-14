@@ -2,7 +2,7 @@ import logging
 import time
 import uuid
 
-from fastapi import APIRouter, BackgroundTasks, Depends, Header, Query
+from fastapi import APIRouter, BackgroundTasks, Depends, Header, Query, Request
 from sqlalchemy.orm import Session
 
 from app.api.response import ok
@@ -29,6 +29,10 @@ def _ingest_telemetry_terminal(
     data: object,
 ) -> tuple[str, str | None]:
     """Project the customer-processing terminal, not merely the HTTP result."""
+
+    settlement = data.get('recovery_settlement') if isinstance(data, dict) else None
+    if isinstance(settlement, dict) and settlement.get('disposition') == 'business_cancelled':
+        return 'cancelled', settlement.get('reason_code')
 
     message_batch = data.get("message_batch") if isinstance(data, dict) else None
     batch_status = (
@@ -161,6 +165,7 @@ def read_authorization(
         default=None,
         max_length=128,
     ),
+    original_read_run_id: str | None = Query(default=None, max_length=128),
     db: Session = Depends(get_db),
     continuation_token: str | None = Header(
         default=None,
@@ -180,7 +185,11 @@ def read_authorization(
         x_worker_token,
         x_client_instance_id,
     )
-    worker_service.validate_inflight_continuation(worker, x_inflight_flow_id)
+    from app.services.read_recovery_service import validate_media_recovery_continuation
+    validate_media_recovery_continuation(db, worker, conversation_id=conversation_id,
+        original_revision=original_authorization_revision, presented_flow_id=x_inflight_flow_id,
+        recovery_transaction_id=recovery_transaction_id, action_kind=action_kind,
+        source_message_key_digest=source_message_key_digest, original_flow_id=original_read_run_id)
     try:
         data = wechat_service.read_authorization_for_worker(
             db,
@@ -192,6 +201,8 @@ def read_authorization(
             action_kind=action_kind,
             source_message_key_digest=source_message_key_digest,
             original_authorization_revision=original_authorization_revision,
+            original_read_run_id=original_read_run_id,
+            presented_flow_id=x_inflight_flow_id,
         )
         db.commit()
         return ok(data)
@@ -221,11 +232,17 @@ def confirm_friend_activation(
         raise
 
 
+async def _original_ingest_json(request: Request) -> dict:
+    # Preserve omitted fields: model defaults are not part of the Outbox digest.
+    return await request.json()
+
+
 @router.post("/workers/{worker_id}/wechat/messages/ingest")
 def ingest_messages(
     worker_id: str,
     payload: WechatMessageIngestRequest,
     background_tasks: BackgroundTasks,
+    original_json: dict = Depends(_original_ingest_json),
     db: Session = Depends(get_db),
     x_worker_token: str | None = Header(default=None, alias="X-Worker-Token"),
     x_client_instance_id: str | None = Header(default=None, alias="X-Client-Instance-Id"),
@@ -242,7 +259,13 @@ def ingest_messages(
     ingest_started = time.perf_counter()
     worker = worker_service.authenticate_worker_client(db, worker_id, x_worker_token, x_client_instance_id)
     if payload.authorization_scope == "fact_settlement":
-        worker_service.validate_inflight_continuation(worker, x_inflight_flow_id)
+        from app.services.read_recovery_service import validate_media_recovery_continuation
+        validate_media_recovery_continuation(db, worker, conversation_id=payload.conversation_id,
+            original_revision=payload.authorization_revision, presented_flow_id=x_inflight_flow_id,
+            recovery_transaction_id=payload.evidence.recovery_transaction_id,
+            action_kind=payload.evidence.action_kind,
+            source_message_key_digest=payload.evidence.source_message_key_digest,
+            original_flow_id=payload.read_run_id)
     else:
         from app.services.read_recovery_service import validate_message_continuation
         validate_message_continuation(db, worker, payload, x_inflight_flow_id)
@@ -293,9 +316,10 @@ def ingest_messages(
                 worker,
                 payload,
                 settlement_token=x_c2_settlement_token,
+                presented_flow_id=x_inflight_flow_id,
             )
             if payload.authorization_scope == "fact_settlement"
-            else wechat_service.ingest_messages(db, worker, payload)
+            else wechat_service.ingest_messages(db, worker, payload, raw_payload=original_json)
         )
         # The HTTP request may safely persist a handoff gate while the
         # customer process itself fails. Do not report that as success.

@@ -2511,6 +2511,8 @@ def read_authorization_for_worker(
     action_kind: str | None = None,
     source_message_key_digest: str | None = None,
     original_authorization_revision: str | None = None,
+    original_read_run_id: str | None = None,
+    presented_flow_id: str | None = None,
 ) -> dict:
     """Lightweight long-action authorization check without target discovery data."""
     from app.services.followup_eligibility import conversation_lead_id, lock_leads
@@ -2519,8 +2521,15 @@ def read_authorization_for_worker(
     binding = db.scalar(
         select(WechatSessionBinding).where(
             WechatSessionBinding.conversation_id == conversation_id,
-        )
+        ).with_for_update().execution_options(populate_existing=True)
     )
+    worker = db.scalar(select(Worker).where(Worker.id == worker.id).with_for_update()
+                       .execution_options(populate_existing=True))
+    from app.services.read_recovery_service import validate_media_recovery_continuation
+    validate_media_recovery_continuation(db, worker, conversation_id=conversation_id,
+        original_revision=original_authorization_revision, presented_flow_id=presented_flow_id,
+        recovery_transaction_id=recovery_transaction_id, action_kind=action_kind,
+        source_message_key_digest=source_message_key_digest, original_flow_id=original_read_run_id)
     recovery_fields = (
         str(recovery_transaction_id or "").strip(),
         str(action_kind or "").strip(),
@@ -2550,14 +2559,6 @@ def read_authorization_for_worker(
                 == transaction_id,
             )
         )
-        from app.services.followup_eligibility import followup_block_reason, revoked_flow_proof
-        if binding is not None and existing is None and (
-            followup_block_reason(db, binding.lead_id)
-            or (binding.followup_invalidated_revision is not None and original_revision != _authorization_revision(binding))
-        ):
-            original_flow_id = str((worker.inflight_flow_state or {}).get("flow_id") or "")
-            if not revoked_flow_proof(db, binding, original_flow_id, original_revision):
-                raise AppError("MESSAGE_AUTHORIZATION_REVISION_EXPIRED", "缺少原在途动作的撤销凭证，不能取得结算许可", 409)
         settlement_mode = (
             existing.settlement_mode
             if existing
@@ -3989,6 +3990,7 @@ def settle_messages_without_ui(
     payload: WechatMessageIngestRequest,
     *,
     settlement_token: str | None,
+    presented_flow_id: str | None = None,
 ) -> dict[str, object]:
     """Persist recovered media facts without touching conversation state.
 
@@ -3997,6 +3999,19 @@ def settle_messages_without_ui(
     recall, or read-completion transition.
     """
 
+    from app.services.followup_eligibility import conversation_lead_id, lock_leads
+    from app.services.read_recovery_service import validate_media_recovery_continuation
+    lock_leads(db, [conversation_lead_id(db, payload.conversation_id)])
+    db.scalar(select(WechatSessionBinding).where(
+        WechatSessionBinding.conversation_id == payload.conversation_id).with_for_update())
+    worker = db.scalar(select(Worker).where(Worker.id == worker.id).with_for_update()
+                       .execution_options(populate_existing=True))
+    validate_media_recovery_continuation(db, worker, conversation_id=payload.conversation_id,
+        original_revision=payload.authorization_revision, presented_flow_id=presented_flow_id,
+        recovery_transaction_id=payload.evidence.recovery_transaction_id,
+        action_kind=payload.evidence.action_kind,
+        source_message_key_digest=payload.evidence.source_message_key_digest,
+        original_flow_id=payload.read_run_id)
     evidence_payload = payload.evidence.model_dump(mode="json")
     transaction_id = str(
         evidence_payload.get("recovery_transaction_id") or ""
@@ -4040,6 +4055,13 @@ def settle_messages_without_ui(
         source_message_key_digest=source_digest,
         settlement_mode=requested_mode,
     )
+    if settlement.settlement_mode == 'fact_only':
+        # Ownership and the dedicated token were checked above. Validate the
+        # immutable sender contract on first submission AND idempotent replay.
+        # Unknown pairs retain the strict current-contract rejection.
+        from app.contracts.read_recovery import compatible_read_contract
+        _validate_v3_request_contract(payload, contract=compatible_read_contract(
+            payload.contract_revision, payload.contract_sha256))
     if settlement.status == "settled":
         return _settlement_response(
             settlement,
@@ -4109,7 +4131,6 @@ def settle_messages_without_ui(
             "事实补录必须携带原始完整消息",
             409,
         )
-    _validate_v3_request_contract(payload)
     ordered_messages = _ordered_v3_messages(payload)
     slot_origin_read_run_ids = _slot_origin_read_run_ids(
         evidence_payload
@@ -4214,7 +4235,8 @@ def settle_messages_without_ui(
     )
 
 
-def ingest_messages(db: Session, worker: Worker, payload: WechatMessageIngestRequest) -> dict:
+def ingest_messages(db: Session, worker: Worker, payload: WechatMessageIngestRequest,
+                    *, raw_payload: dict | None = None) -> dict:
     from app.services.followup_eligibility import conversation_lead_id, lock_leads, revoked_flow_proof
     lock_leads(db, [conversation_lead_id(db, payload.conversation_id)])
     binding = db.scalar(
@@ -4233,12 +4255,6 @@ def ingest_messages(db: Session, worker: Worker, payload: WechatMessageIngestReq
         raise AppError("MESSAGE_TARGET_IDENTITY_MISSING", "V3 消息缺少读取目标短码", 409)
     if observed_remark_code and observed_remark_code != _clean_locator(binding.remark_code):
         raise AppError("MESSAGE_TARGET_IDENTITY_MISMATCH", "读取目标与绑定会话不一致，已拒绝入库", 409)
-    revoked_settlement = revoked_flow_proof(db, binding, payload.read_run_id, str(payload.authorization_revision or ""))
-    from app.services.followup_eligibility import require_followup
-    if not revoked_settlement:
-        require_followup(db, binding.lead_id)
-    if str(payload.authorization_revision or "") != _authorization_revision(binding) and not revoked_settlement:
-        raise AppError("MESSAGE_AUTHORIZATION_REVISION_EXPIRED", "读取授权已过期，已拒绝旧任务入库", 409)
     if int(payload.unread_generation or 0) > int(
         binding.unread_generation or 0
     ):
@@ -4256,8 +4272,20 @@ def ingest_messages(db: Session, worker: Worker, payload: WechatMessageIngestReq
     if locked_worker is None:
         raise AppError("WORKER_NOT_FOUND", "Worker 不存在", 404)
     worker = locked_worker
-    from app.services.read_recovery_service import validate_message_continuation, record_closed_read_recovery
+    from app.services.read_recovery_service import (
+        CancelledRead, validate_message_continuation, record_closed_read_recovery, settle_cancelled_read,
+    )
     closed_read = validate_message_continuation(db, worker, payload, payload.read_run_id)
+    if isinstance(closed_read, CancelledRead):
+        if raw_payload is None:
+            raise AppError('C2_RECOVERY_ORIGINAL_JSON_REQUIRED', '结算缺少原始请求载荷', 409)
+        return settle_cancelled_read(db, worker, payload, closed_read, raw_payload)
+    revoked_settlement = revoked_flow_proof(db, binding, payload.read_run_id, str(payload.authorization_revision or ""))
+    from app.services.followup_eligibility import require_followup
+    if not revoked_settlement:
+        require_followup(db, binding.lead_id)
+    if str(payload.authorization_revision or "") != _authorization_revision(binding) and not revoked_settlement:
+        raise AppError("MESSAGE_AUTHORIZATION_REVISION_EXPIRED", "读取授权已过期，已拒绝旧任务入库", 409)
     if closed_read is not None:
         record_closed_read_recovery(db, worker, payload, closed_read)
     inflight_state = dict(worker.inflight_flow_state or {})

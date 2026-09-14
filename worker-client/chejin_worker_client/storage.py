@@ -61,24 +61,62 @@ def _c2_outbox_states() -> set[str]:
 
 
 def _c2_outbox_terminal_states() -> set[str]:
-    state_machine = (
-        c2_contract_v3().get("outbox_recovery_contract") or {}
-    ).get("state_machine")
-    properties = (
-        state_machine.get("state_properties")
-        if isinstance(state_machine, dict)
-        else {}
-    )
-    return {
-        str(state)
-        for state, definition in (
-            properties.items()
-            if isinstance(properties, dict)
-            else []
-        )
-        if isinstance(definition, dict)
-        and definition.get("automatic_retry") is False
-    }
+    # Scheduling labels alone do not prove safe settlement. The shared DB
+    # projection below checks their required durable evidence before release.
+    return {'confirmed', 'identity_quarantined', 'split_completed',
+            'target_terminated', 'conversation_terminated'}
+
+
+def unsettled_c2_outbox_rows(conn: sqlite3.Connection, *, read_run_id: str | None = None) -> list[dict]:
+    """One predicate for restart, dependencies, upgrade and recovery readiness."""
+    from .shared_rules import read_settlement
+    rows = [dict(row) for row in conn.execute('SELECT * FROM c2_ingest_outbox')]
+    state_rows = conn.execute("SELECT key,value FROM c2_runtime_state WHERE key LIKE 'read_settlement:%' OR key LIKE 'identity_quarantine:%' OR key LIKE 'identity_quarantine_outbox:%'")
+    states = {row['key']: json.loads(row['value']) for row in state_rows}
+    safe = {row['outbox_id'] for row in rows if row['status'] == 'confirmed'}
+    payloads = {}
+    for row in rows:
+        try:
+            payload = json.loads(row['payload_json'])
+            payloads[row['outbox_id']] = payload
+            if row['status'] in read_settlement.TERMINAL_ACTIONS:
+                result = states.get('read_settlement:' + row['outbox_id']) or {}
+                proof = result.get('recovery_settlement') or {}
+                read_settlement.validate_settlement(payload, result, worker_id=proof.get('worker_id'),
+                    client_instance_id=proof.get('client_instance_id'), bound_at=proof.get('bound_at'))
+                if result['recovery_action'] == row['status']:
+                    safe.add(row['outbox_id'])
+            elif row['status'] == 'identity_quarantined':
+                scope = states.get('identity_quarantine:' + row['conversation_id']) or {}
+                proof = states.get('identity_quarantine_outbox:' + row['outbox_id']) or scope
+                if (scope.get('active') is True and proof.get('active') is True
+                        and proof.get('outbox_id') == row['outbox_id']
+                        and proof.get('read_run_id') == row['read_run_id']
+                        and proof.get('conversation_id') == row['conversation_id']
+                        and set(_c2_outbox_message_keys(payload)).issubset(proof.get('source_message_keys') or [])):
+                    safe.add(row['outbox_id'])
+        except (ValueError, TypeError, KeyError, AttributeError):
+            # Corruption is a current blocker, never an empty queue.
+            continue
+    for parent in rows:
+        if parent['status'] != 'split_completed' or parent['outbox_id'] not in payloads:
+            continue
+        expected = set(_c2_outbox_message_keys(payloads[parent['outbox_id']]))
+        children = []
+        for child in rows:
+            body = payloads.get(child['outbox_id']) or {}
+            part = (body.get('evidence') or {}).get('ingest_partition') or {}
+            if (child['outbox_id'] != parent['outbox_id'] and part.get('group_id') == parent['read_run_id']
+                    and child['conversation_id'] == parent['conversation_id']
+                    and set(part.get('expected_source_message_keys') or []) == expected):
+                children.append((child, part, body))
+        if (children and all(child['outbox_id'] in safe for child, _, _ in children)
+                and all(part.get('count') == len(children) for _, part, _ in children)
+                and {part.get('index') for _, part, _ in children} == set(range(1, len(children) + 1))
+                and set().union(*(set(_c2_outbox_message_keys(body)) for _, _, body in children)) == expected):
+            safe.add(parent['outbox_id'])
+    return [row for row in rows if row['outbox_id'] not in safe
+            and (read_run_id is None or row['read_run_id'] == read_run_id)]
 
 
 def _outbox_backoff_seconds(attempt_count: int) -> int:
@@ -2101,18 +2139,7 @@ def list_c2_outbox_waiting(
 
 def has_pending_c2_outbox() -> bool:
     with db_connection() as conn:
-        row = conn.execute(
-            """
-            SELECT 1
-            FROM c2_ingest_outbox
-            WHERE status IN (
-              'waiting', 'retry_waiting', 'refresh_pending',
-              'rebuild_pending', 'split_pending', 'capability_paused'
-            )
-            LIMIT 1
-            """
-        ).fetchone()
-        return row is not None
+        return bool(unsettled_c2_outbox_rows(conn))
 
 
 def has_pending_c2_outbox_for_read_run_id(read_run_id: str) -> bool:
@@ -2120,19 +2147,15 @@ def has_pending_c2_outbox_for_read_run_id(read_run_id: str) -> bool:
     if not clean_id:
         return False
     with db_connection() as conn:
-        row = conn.execute(
-            """
-            SELECT 1 FROM c2_ingest_outbox
-            WHERE read_run_id = ?
-              AND status IN (
-                'waiting', 'retry_waiting', 'refresh_pending',
-                'rebuild_pending', 'split_pending', 'capability_paused'
-              )
-            LIMIT 1
-            """,
-            (clean_id,),
-        ).fetchone()
-    return row is not None
+        return bool(unsettled_c2_outbox_rows(conn, read_run_id=clean_id))
+
+
+def c2_outbox_recovery_blocker() -> str:
+    """Current capability failure for display, independent of retry due time."""
+    with db_connection() as conn:
+        row = conn.execute("""SELECT last_error FROM c2_ingest_outbox
+            WHERE status='capability_paused' ORDER BY updated_at DESC LIMIT 1""").fetchone()
+    return str(row['last_error'] or '') if row else ''
 
 
 def c2_outbox_capability_error_for_read_run_id(
@@ -2348,6 +2371,72 @@ def mark_c2_outbox_attempt(outbox_id: str, error: str | None = None) -> None:
             """,
             (str(error or "") or None, utc_now_iso(), str(outbox_id)),
         )
+        conn.commit()
+
+
+def settle_c2_outbox(outbox_id: str, result: dict, binding: Binding, *, server_bound_at: str) -> None:
+    """Validate and persist one server settlement with its exact waiting facts.
+
+    No payload mutation or new state machine. Existing runtime-state storage
+    indexes the proof; all writes share the Outbox/Ledger SQLite transaction.
+    """
+    from .shared_rules import read_settlement
+    with db_connection() as conn:
+        conn.execute('BEGIN IMMEDIATE')
+        row = conn.execute('SELECT * FROM c2_ingest_outbox WHERE outbox_id=?', (outbox_id,)).fetchone()
+        if row is None:
+            raise ValueError('C2_RECOVERY_OUTBOX_MISSING')
+        payload = json.loads(row['payload_json'])
+        proof = read_settlement.validate_settlement(payload, result, worker_id=binding.worker_id,
+            client_instance_id=binding.client_instance_id, bound_at=server_bound_at)
+        key = 'read_settlement:' + outbox_id
+        prior = conn.execute('SELECT value FROM c2_runtime_state WHERE key=?', (key,)).fetchone()
+        if prior:
+            if json.loads(prior['value']) != result or row['status'] != result['recovery_action']:
+                raise ValueError('C2_RECOVERY_SAVED_PROOF_CONFLICT')
+            return
+        if row['status'] in {'confirmed', 'split_completed', 'identity_quarantined', *read_settlement.TERMINAL_ACTIONS}:
+            raise ValueError('C2_RECOVERY_OUTBOX_STATE_CONFLICT')
+        accepted = set(result['accepted_source_message_keys'])
+        cancelled = set(proof['source_message_keys'])
+        now = utc_now_iso()
+        for source_key in sorted(accepted | cancelled):
+            ledger = conn.execute('SELECT * FROM c2_message_ledger WHERE conversation_id=? AND source_message_key=?',
+                                  (payload['conversation_id'], source_key)).fetchone()
+            if ledger is None or ledger['origin_read_run_id'] != payload['read_run_id']:
+                raise ValueError('C2_RECOVERY_LEDGER_OWNER_MISMATCH')
+            if ledger['ingest_state'] == 'confirmed':
+                if source_key in cancelled:
+                    raise ValueError('C2_RECOVERY_CONFIRMED_FACT_CONFLICT')
+                continue
+            if ledger['ingest_state'] != 'waiting':
+                raise ValueError('C2_RECOVERY_LEDGER_STATE_CONFLICT')
+            saved_result = json.loads(ledger['result_json'])
+            saved_result['recovery_settlement'] = {'proof_id': proof['proof_id'],
+                'reason_code': proof['reason_code'], 'disposition': 'accepted' if source_key in accepted else 'business_cancelled'}
+            conn.execute('''UPDATE c2_message_ledger SET terminal_state=?, ingest_state=?, result_json=?, updated_at=?
+                            WHERE conversation_id=? AND source_message_key=? AND origin_read_run_id=? AND ingest_state='waiting' ''',
+                (ledger['terminal_state'] if source_key in accepted else 'failed',
+                 'confirmed' if source_key in accepted else 'not_required',
+                 json.dumps(saved_result, ensure_ascii=False), now, payload['conversation_id'], source_key, payload['read_run_id']))
+        conn.execute('UPDATE c2_ingest_outbox SET status=?, last_error=?, next_attempt_at=NULL, updated_at=? WHERE outbox_id=?',
+                     (result['recovery_action'], proof['reason_code'], now, outbox_id))
+        conn.execute('INSERT INTO c2_runtime_state(key, value, updated_at) VALUES (?, ?, ?)',
+                     (key, json.dumps(result, ensure_ascii=False), now))
+        # Only an actually active matching read may change its local finish
+        # request. Ended Flow history and a different current Flow stay intact.
+        control_row = conn.execute('SELECT value FROM client_settings WHERE key=?', (RUNTIME_CONTROL_KEY,)).fetchone()
+        control = json.loads(control_row['value']) if control_row else {}
+        if control.get('inflight_flow_id') == payload['read_run_id']:
+            receipt_key = 'inflight_finish_receipt:' + payload['read_run_id']
+            prior_receipt = conn.execute('SELECT value FROM c2_runtime_state WHERE key=?', (receipt_key,)).fetchone()
+            receipt = json.loads(prior_receipt['value']) if prior_receipt else {}
+            if not receipt.get('read_completion') and receipt.get('conversation_id', payload['conversation_id']) == payload['conversation_id']:
+                receipt.update(terminal_kind='read_cancelled', conversation_id=payload['conversation_id'],
+                               error_code=proof['reason_code'], recovery_settlement_proof_id=proof['proof_id'])
+                conn.execute('''INSERT INTO c2_runtime_state(key,value,updated_at) VALUES (?,?,?)
+                                ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at''',
+                             (receipt_key, json.dumps(receipt, ensure_ascii=False), now))
         conn.commit()
 
 
@@ -2752,6 +2841,20 @@ def quarantine_legacy_malformed_c2_outbox(
                 "source_message_keys": sorted(source_message_keys),
                 "quarantined_at": now,
             }
+            # Keep each batch's exact proof when another batch of the same
+            # customer refreshes the existing conversation quarantine index.
+            previous_row = conn.execute('SELECT value FROM c2_runtime_state WHERE key=?', (state_key,)).fetchone()
+            previous = json.loads(previous_row['value']) if previous_row else {}
+            if previous.get('active') is True and previous.get('outbox_id') and previous.get('conversation_id') == conversation_id:
+                conn.execute(
+                    'INSERT OR IGNORE INTO c2_runtime_state(key,value,updated_at) VALUES (?,?,?)',
+                    ('identity_quarantine_outbox:' + previous['outbox_id'], previous_row['value'], now),
+                )
+            conn.execute(
+                "INSERT INTO c2_runtime_state(key,value,updated_at) VALUES (?,?,?)",
+                ('identity_quarantine_outbox:' + clean_outbox_id,
+                 json.dumps(state_value, ensure_ascii=False), now),
+            )
             conn.execute(
                 """
                 INSERT INTO c2_runtime_state (key, value, updated_at)
@@ -2907,17 +3010,7 @@ def update_install_business_blockers() -> dict[str, int]:
                     "SELECT COUNT(*) FROM c2_message_ledger WHERE ingest_state = 'waiting'"
                 ).fetchone()[0]
             ),
-            "pending_c2_outbox": int(
-                conn.execute(
-                    """
-                    SELECT COUNT(*) FROM c2_ingest_outbox
-                    WHERE status IN (
-                      'waiting', 'retry_waiting', 'refresh_pending',
-                      'rebuild_pending', 'split_pending', 'capability_paused'
-                    )
-                    """
-                ).fetchone()[0]
-            ),
+            "pending_c2_outbox": len(unsettled_c2_outbox_rows(conn)),
             "pending_sqlite_action_journal": int(
                 conn.execute("SELECT COUNT(*) FROM c2_action_journal").fetchone()[0]
             ),
@@ -3090,38 +3183,26 @@ def prune_terminal_outboxes(
             ),
         ):
             placeholders = ",".join("?" for _ in terminal_statuses)
-            cursor = conn.execute(
-                f"""
-                DELETE FROM {table}
-                WHERE status IN ({placeholders})
-                  AND updated_at < ?
-                """,
-                (*terminal_statuses, cutoff),
-            )
-            removed = max(0, int(cursor.rowcount or 0))
-            terminal_rows = conn.execute(
-                f"""
-                SELECT {identity_column}
-                FROM {table}
-                WHERE status IN ({placeholders})
-                ORDER BY updated_at DESC
-                LIMIT -1 OFFSET ?
-                """,
-                (*terminal_statuses, keep_limit),
-            ).fetchall()
-            stale_ids = [str(row[identity_column]) for row in terminal_rows]
-            if stale_ids:
-                id_placeholders = ",".join("?" for _ in stale_ids)
-                cursor = conn.execute(
-                    f"""
-                    DELETE FROM {table}
-                    WHERE {identity_column} IN ({id_placeholders})
-                      AND status IN ({placeholders})
-                    """,
-                    (*stale_ids, *terminal_statuses),
-                )
-                removed += max(0, int(cursor.rowcount or 0))
-            deleted[table] = removed
+            rows = [dict(row) for row in conn.execute(
+                f"SELECT * FROM {table} WHERE status IN ({placeholders}) ORDER BY updated_at DESC",
+                terminal_statuses)]
+            blocked = ({row['outbox_id'] for row in unsettled_c2_outbox_rows(conn)}
+                       if table == 'c2_ingest_outbox' else set())
+            settled = [row for row in rows if row[identity_column] not in blocked]
+            stale = {row[identity_column] for index, row in enumerate(settled)
+                     if row['updated_at'] < cutoff or index >= keep_limit}
+            if table == 'c2_ingest_outbox':
+                # Retaining a split parent also retains its child evidence.
+                retained_groups = {row['read_run_id'] for row in rows
+                                   if row['status'] == 'split_completed' and row['outbox_id'] not in stale}
+                for row in rows:
+                    payload = json.loads(row['payload_json'])
+                    partition = (payload.get('evidence') or {}).get('ingest_partition') or {}
+                    if partition.get('group_id') in retained_groups:
+                        stale.discard(row['outbox_id'])
+            for identity in stale:
+                conn.execute(f"DELETE FROM {table} WHERE {identity_column}=?", (identity,))
+            deleted[table] = len(stale)
         conn.commit()
     return deleted
 

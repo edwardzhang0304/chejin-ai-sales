@@ -57,9 +57,11 @@ def _pause_locally() -> str:
         binding = load_binding()
         if binding is None:
             return "binding_missing"
-        binding.run_status = "paused"
+        # Emergency stop closes the live process immediately. Persist the
+        # fault too, so a restart cannot turn it into an ordinary pause/start.
+        binding.run_status = "faulted"
         save_binding(binding)
-        return "paused"
+        return "faulted"
     except Exception as exc:
         return f"pause_failed:{type(exc).__name__}"
 
@@ -96,7 +98,7 @@ def report_unhandled_exception(
         return append_log(
             "ERROR",
             "worker_unhandled_exception",
-            f"{origin} 出现未捕获异常，客户端已自动暂停。",
+            f"{origin} 出现未捕获异常，客户端已停止接单并保留故障状态。",
             error_code="WORKER_UNHANDLED_EXCEPTION",
             metadata={
                 "origin": str(origin or "unknown"),

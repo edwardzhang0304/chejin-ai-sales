@@ -590,8 +590,9 @@ class WorkerWebWindow(QMainWindow):
         profile = self.profile
         offline = self.connection_status == "offline"
         schedule_active = self.is_accept_schedule_active()
+        recovery = self.runner.fault_recovery_state()
         receive_state = (
-            "客户端故障"
+            recovery['statusText']
             if run_status == "faulted"
             else "接单中"
             if run_status == "running" and schedule_active
@@ -605,7 +606,7 @@ class WorkerWebWindow(QMainWindow):
             "status": {
                 "sellerName": self._seller_name(profile),
                 "receiveState": (
-                    "客户端故障"
+                    recovery['statusText']
                     if run_status == "faulted"
                     else "离线"
                     if offline
@@ -619,7 +620,7 @@ class WorkerWebWindow(QMainWindow):
             },
             "listener": self._listener_model(),
             "localLock": lock_summary(),
-            "task": self._task_model_for_screen(display_task, offline, run_status),
+            "task": self._task_model_for_screen(display_task, offline, run_status, recovery),
             "runningSteps": self._running_steps(),
             "completedSteps": self._completed_steps(),
             "failedSteps": self._failed_steps(),
@@ -636,7 +637,7 @@ class WorkerWebWindow(QMainWindow):
             "logs": _log_rows(),
             "latestIncident": latest_incident() or {},
             "update": dict(self.update_state),
-            "faultRecovery": self.runner.fault_recovery_state(),
+            "faultRecovery": recovery,
         }
 
     def _listener_model(self) -> dict[str, Any]:
@@ -653,20 +654,17 @@ class WorkerWebWindow(QMainWindow):
             "lastError": stats.get("last_error"),
         }
 
-    def _task_model_for_screen(self, task: Task | None, offline: bool, run_status: str) -> dict[str, str]:
+    def _task_model_for_screen(
+        self, task: Task | None, offline: bool, run_status: str, recovery: dict[str, Any],
+    ) -> dict[str, str]:
         model = _task_model(task)
         if self.runner.flow_finish_wait_reason:
             model["statusText"] = "等待流程结束确认"
             model["metaText"] = self.runner.flow_finish_wait_reason
             return model
         if run_status == "faulted":
-            model["statusText"] = "客户端故障"
-            model["metaText"] = (
-                "客户端发生技术故障，已停止领取新任务；故障证据已保留。"
-                "后端故障状态未同步时会自动重试。"
-                if self.runner.run_status_sync_error
-                else "客户端发生技术故障，已停止领取新任务；故障证据已保留，请查看本机日志。"
-            )
+            model["statusText"] = recovery['statusText']
+            model["metaText"] = recovery["reason"]
             return model
         if self.runner.run_status_sync_error and run_status == "paused":
             model["statusText"] = "暂停接单 · 同步失败"

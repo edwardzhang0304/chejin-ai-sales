@@ -1013,6 +1013,7 @@ def completed_image_process_result(
     content: str,
     image_sha256: str,
     action_frame_observations: list[dict] | None = None,
+    request_style: str | None = None,
 ):
     """Return a Vision side effect that persists the production receipt."""
 
@@ -1065,6 +1066,7 @@ def completed_image_process_result(
                 "customer_image_understanding": {
                     "schema_version": 1,
                     "vision_summary": content,
+                    **({'request_style': request_style} if request_style else {}),
                 },
                 "visual_bridge_input": {"summary": content},
                 "confirmed_action_mapping": confirmed_mapping,
@@ -1084,6 +1086,7 @@ def completed_image_process_result(
             "customer_image_understanding": {
                 "schema_version": 1,
                 "vision_summary": content,
+                **({'request_style': request_style} if request_style else {}),
             },
             "visual_bridge_input": {"summary": content},
             "transaction": {
@@ -1232,6 +1235,7 @@ def initialize_confirmed_image_recovery_journal(
     action_id: str,
     stable_id: str,
     observation_id: str,
+    authorization_revision: str = 'revision-image-recovery',
 ) -> Path:
     image_sha256 = hashlib.sha256(
         f"confirmed-image:{action_id}".encode("utf-8")
@@ -1290,7 +1294,7 @@ def initialize_confirmed_image_recovery_journal(
             }
         ],
         prepare_evidence={
-            "authorization_revision": "revision-image-recovery",
+            "authorization_revision": authorization_revision,
             "remark_code": "CJIMGREC",
             "frame_action_binding": {
                 "selected_action_token": f"token:{action_id}",
@@ -1750,6 +1754,7 @@ class FakeApi:
         action_kind: str | None = None,
         source_message_key_digest: str | None = None,
         original_authorization_revision: str | None = None,
+        original_read_run_id: str | None = None,
     ):
         self.events.append(f"read_authorization:{conversation_id}")
         if conversation_id in self.read_authorization_overrides:
@@ -7201,6 +7206,7 @@ class TaskRunnerTest(unittest.TestCase):
             action_id=action_id,
             stable_id=stable_id,
             observation_id=observation_id,
+            authorization_revision=target.authorization_revision,
         )
         commit_action_journal_item_identity(
             journal_path,

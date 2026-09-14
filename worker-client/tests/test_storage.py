@@ -9,6 +9,28 @@ from datetime import datetime, timedelta, timezone
 
 
 class StorageTest(unittest.TestCase):
+    def test_two_proven_quarantines_keep_their_own_evidence(self):
+        for index in range(2):
+            payload = {
+                'conversation_id': 'same-customer', 'read_run_id': f'read-{index}',
+                'authorization_revision': 'original',
+                'messages': [{'source_message_key': f'source-{index}', 'message_type': 'text',
+                              'dedupe_key': f'dedupe-{index}', 'content': 'original'}],
+            }
+            self.storage.save_c2_ledger_terminal(conversation_id='same-customer',
+                source_message_key=f'source-{index}', origin_read_run_id=f'read-{index}',
+                dedupe_key=f'dedupe-{index}', message_type='text', terminal_state='completed', ingest_state='waiting')
+            outbox = self.storage.enqueue_c2_outbox(payload)
+            self.storage.quarantine_legacy_malformed_c2_outbox(outbox, error='C2_SEQUENCE_ALIGNMENT_EVIDENCE_INVALID')
+            self.assertFalse(self.storage.has_pending_c2_outbox())
+            self.assertEqual(self.storage.load_c2_outbox_entry(outbox)['payload'], payload)
+            if index == 0:
+                # Released clients had only the conversation proof. Preserve
+                # that original representation when adding the next batch.
+                with self.storage.db_connection() as conn:
+                    conn.execute('DELETE FROM c2_runtime_state WHERE key=?', ('identity_quarantine_outbox:' + outbox,))
+                    conn.commit()
+
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.previous_home = os.environ.get("CHEJIN_WORKER_HOME")
@@ -964,7 +986,7 @@ class StorageTest(unittest.TestCase):
             max_terminal_rows=5000,
         )
 
-        self.assertEqual(result["c2_ingest_outbox"], 4)
+        self.assertEqual(result["c2_ingest_outbox"], 1) # Unproven terminal labels must not be pruned.
         self.assertEqual(result["reply_send_ack_outbox"], 0)
         with self.storage.db_connection() as conn:
             c2_rows = {
@@ -982,6 +1004,9 @@ class StorageTest(unittest.TestCase):
         self.assertEqual(
             c2_rows,
             {
+                "c2-old-split": "split_completed",
+                "c2-old-target-terminal": "target_terminated",
+                "c2-old-conversation-terminal": "conversation_terminated",
                 "c2-old-quarantined": "capability_paused",
                 "c2-old-waiting": "waiting",
                 "c2-recent-confirmed": "confirmed",

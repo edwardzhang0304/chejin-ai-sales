@@ -16,6 +16,7 @@ from app.models.worker import Worker
 from app.enums import ContactType
 from app.services.lead_service import _contact_model
 from app.services import contact_utils
+from task_ownership_fixtures import owned_add_friend_task
 
 
 def backend_state(worker_id):
@@ -45,7 +46,7 @@ def test_saved_technical_failure_cannot_restart_intake_without_click(http_api, t
         for index, row in enumerate(rows):
             db.add(_contact_model(row['lead_id'], ContactType.phone,
                                  contact_utils.normalize_phone(f'1380000444{index}'), True))
-            db.add(Task(lead_id=row['lead_id'], worker_id=worker['id'],
+            db.add(owned_add_friend_task(db, lead_id=row['lead_id'], worker_id=worker['id'],
                         task_type='add_friend', status='pending'))
         db.commit()
     request = {'base_url': http_api.get('/healthz').url.removesuffix('/healthz') + '/api',
