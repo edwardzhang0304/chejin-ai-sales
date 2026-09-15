@@ -336,6 +336,12 @@
         "immutable_frame_pixel_evidence_independent_of_pre_send_roi_acceleration",
         "fixed_transform_pixel_region_and_real_ocr_negative_controls"
       ]
+    },
+    {
+      "source_commit": "a0e6095b9de2fef9e18c480aaada15fed0348878",
+      "scope": [
+        "c2_contract_0_9_83_generated_schema"
+      ]
     }
   ],
   "chejin_overlays": [
@@ -368,11 +374,13 @@
     "persisted_c1_failure_receipt_settlement_and_stop_recovery_contract"
   ],
   "current_release": {
-    "version": "0.9.82",
-    "source_commit": "c37a155353712bd2567f486b645858a39dc4bac3",
-    "contract_revision": "0.9.82",
-    "contract_sha256": "4046ad50e7be1260969ffb9076b7fc515695dee962cfed37f45a293bb22e6309",
-    "scope": "Formal manual preservation release from reviewed 8bb8224; runtime source 51c3b19 retained; actual original 0.9.81. No historic compatibility matrix or button publication; Windows acceptance pending."
+    "version": "0.9.83",
+    "source_commit": "a0e6095b9de2fef9e18c480aaada15fed0348878",
+    "contract_revision": "0.9.83",
+    "contract_sha256": "1241f5bbe6916e8ead87b223ffa71c8811ff505d35d1e51d123a01a8c8ae1254",
+    "scope": [
+      "c2_contract_0_9_83_generated_schema"
+    ]
   },
   "historical_integrations": [
     {
