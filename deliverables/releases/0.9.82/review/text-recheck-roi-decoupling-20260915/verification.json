@@ -1,0 +1,147 @@
+{
+  "created_at": "2026-09-15T09:25:09.610097+00:00",
+  "status": "local_source_verification_passed",
+  "scope": "P2 separate immutable frame evidence from pre-send ROI optimization switch",
+  "document_revision": "0.9.82 r6",
+  "passed_unique_this_round": 16,
+  "reports": [
+    {
+      "file": "roi-matrix.xml",
+      "sha256": "f7bf2931f978cb17aae1b7a62b489c23b862be777eb78635f671a0ec1608496c",
+      "passed": 4,
+      "test_ids": [
+        "worker-client.tests.test_text_bubble_recheck::test_real_original_reaches_ingest_or_original_fault_and_automatic_cleanup[roi-on-True]",
+        "worker-client.tests.test_text_bubble_recheck::test_real_original_reaches_ingest_or_original_fault_and_automatic_cleanup[roi-on-False]",
+        "worker-client.tests.test_text_bubble_recheck::test_real_original_reaches_ingest_or_original_fault_and_automatic_cleanup[roi-off-True]",
+        "worker-client.tests.test_text_bubble_recheck::test_real_original_reaches_ingest_or_original_fault_and_automatic_cleanup[roi-off-False]"
+      ]
+    },
+    {
+      "file": "roi-off-boundaries.xml",
+      "sha256": "905634d9018863d4c1164ddc7079ce740febc64673bd67b814c5429504123b74",
+      "passed": 6,
+      "test_ids": [
+        "worker-client.tests.test_text_bubble_recheck::test_aligned_real_frame_has_zero_additional_capture_or_local_ocr",
+        "worker-client.tests.test_text_bubble_recheck::test_pre_send_real_recheck_keeps_new_customer_question_as_new",
+        "worker-client.tests.test_text_bubble_recheck::test_real_saved_frame_binding_rejects_tampering_without_capture[pixels]",
+        "worker-client.tests.test_text_bubble_recheck::test_real_saved_frame_binding_rejects_tampering_without_capture[geometry]",
+        "worker-client.tests.test_text_bubble_recheck::test_real_saved_frame_binding_rejects_tampering_without_capture[expired]",
+        "worker-client.tests.test_text_bubble_recheck::test_real_saved_frame_binding_rejects_tampering_without_capture[ocr_file]"
+      ]
+    },
+    {
+      "file": "adjacent-regression.xml",
+      "sha256": "9cdd1f72c8bcd5c7e1a1edb3f8b87317642281b1b72ce74051daec4a28bd86f6",
+      "passed": 6,
+      "test_ids": [
+        "worker-client.tests.test_wechat_send_safety.WechatSendSafetyTest::test_formal_reuse_switches_restore_full_frame_ocr_paths",
+        "worker-client.tests.test_wechat_send_safety.WechatSendSafetyTest::test_messages_payload_applies_confirmed_reply_recovery_before_observations",
+        "worker-client.tests.test_wechat_send_safety.WechatSendSafetyTest::test_same_frame_full_ocr_replay_authenticates_saved_pixels_without_capture",
+        "worker-client.tests.test_wechat_send_safety.WechatSendSafetyTest::test_same_frame_full_ocr_replay_rejects_tampered_pixels_before_ocr",
+        "worker-client.tests.test_rpa_bridge.RpaBridgeTest::test_formal_pre_send_switch_disables_bridge_roi_and_replay",
+        "worker-client.tests.test_task_runner.TaskRunnerTest::test_formal_pre_send_roi_switch_off_keeps_worker_on_original_read"
+      ]
+    }
+  ],
+  "expected_failure_before": {
+    "file": "before.xml",
+    "sha256": "bb26de363f4ad63cf64cb436599e453a0e1c3efa077049e1f99d6876de3ca0ee",
+    "count": 1,
+    "reason": "same original positive with normal initial read and ROI off: MESSAGE_CROSS_ROUND_IDENTITY_AMBIGUOUS",
+    "product_source": {
+      "path": "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/adapters/wechat_win32_ocr_sidecar.py",
+      "sha256": "892a49e68fbde9bc8976b7295c93d1929a0533b0969ca93163f4215cf2526fae"
+    }
+  },
+  "matrix": [
+    {
+      "path": "/private/tmp/chejin-text-recheck-roi-matrix-20260915/test_real_original_reaches_ing0/acceptance.json",
+      "sha256": "0b227c8d6562a9ce62c118a1317c4c8bf18f6d05547f7ae9e9d4a9472fb75d8e",
+      "roi_reuse_enabled": true,
+      "text_recheck_enabled": true,
+      "ok": true,
+      "error_code": null,
+      "new_customer_message_count": 1,
+      "captures": 2
+    },
+    {
+      "path": "/private/tmp/chejin-text-recheck-roi-matrix-20260915/test_real_original_reaches_ing1/acceptance.json",
+      "sha256": "c1227a66adfcef86d2ba1ed15df2dae9522fcab8cb22eaccd81cf02a97d53e1b",
+      "roi_reuse_enabled": true,
+      "text_recheck_enabled": false,
+      "ok": false,
+      "error_code": "MESSAGE_CROSS_ROUND_IDENTITY_AMBIGUOUS",
+      "new_customer_message_count": null,
+      "captures": 1
+    },
+    {
+      "path": "/private/tmp/chejin-text-recheck-roi-matrix-20260915/test_real_original_reaches_ing2/acceptance.json",
+      "sha256": "ed2a1128de8babf15a1f09853e8a012ce87897c1763e3b625b0c4ba97a73784b",
+      "roi_reuse_enabled": false,
+      "text_recheck_enabled": true,
+      "ok": true,
+      "error_code": null,
+      "new_customer_message_count": 1,
+      "captures": 2
+    },
+    {
+      "path": "/private/tmp/chejin-text-recheck-roi-matrix-20260915/test_real_original_reaches_ing3/acceptance.json",
+      "sha256": "ab72d28329526ab9612dd2326b6ad0efa079fd024a4f07f90647a2eb280bbf09",
+      "roi_reuse_enabled": false,
+      "text_recheck_enabled": false,
+      "ok": false,
+      "error_code": "MESSAGE_CROSS_ROUND_IDENTITY_AMBIGUOUS",
+      "new_customer_message_count": null,
+      "captures": 1
+    }
+  ],
+  "source_sha256": {
+    "worker-client/chejin_worker_client/rpa_bridge.py": "ab96d3e1056e27301b4b454c74e13dd428fcfc22c957ca356489b25d33b8ce5d",
+    "worker-client/chejin_worker_client/storage.py": "c26e981db0fabf896b80a57f64a497c72e43a21a61f7317ff33705c284201373",
+    "worker-client/chejin_worker_client/task_runner.py": "fd15256b690412d28e9a8a278eca86f75d28e07f4fef1deb9c6a067da588d196",
+    "worker-client/chejin_worker_client/text_recheck.py": "e5fb7cb48d55a741bc361d2f48a107cae81e81159d75b3552e3832fb3bf77dc2",
+    "worker-client/tests/test_text_bubble_recheck.py": "111e3d6e852f576ac1e510bed181948a0066c6bedc42e15d49f2cc843f4e8330",
+    "worker-client/tests/fixtures/text_recheck_process.py": "86409a00a2443033e6ebae077f0ef21d8951aa7ac18ec30381ea9ec3e5451736",
+    "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/adapters/wechat_win32_ocr_sidecar.py": "2bae3af8a043ec5e0aeb6e18a02068b67e7f03a64bdd95997e4ba4bccb079804",
+    "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/adapters/wechat_win32_ocr/text_bubble_recheck.py": "bfe794a3ba6042e143709a89b955c53c1b41868e546bfd73c3930c594e77ef21",
+    "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/tests/test_complete_text_bubble_recheck.py": "0aa5bb7a3153e1c5939373f3cd9520f58f2254c8cd2406cf6215546ea3d3fd39",
+    "worker-client/tests/test_wechat_send_safety.py": "cae0ebcb33ba2ab25a7d9b0029b25d6f2e02a7d37898deb71785a8b14bb48a5a"
+  },
+  "changed_since_r5": [
+    "worker-client/tests/test_text_bubble_recheck.py",
+    "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/adapters/wechat_win32_ocr_sidecar.py"
+  ],
+  "shared_byte_identical": true,
+  "previous_verification": "../text-recheck-20260915/verification.json",
+  "previous_109": "Historical r5 source verification, independently rerun by architect; not counted again as current r6 tests.",
+  "architect_review": {
+    "path": "/private/tmp/chejin-text-recheck-architect-20260915-AYtlTY/review.md",
+    "sha256": "9359166341fb1a7eb348690efc473c0cb87b4f49d2f1588b3c3d0971d0bfb0a1"
+  },
+  "behavior": {
+    "pixel_evidence": "present whenever captured image exists; hash/HWND/geometry/DPI/age validation retained",
+    "roi_off": "full OCR; no pre_send_frame_reuse marker, chat ROI flag or old optimization replay",
+    "text_recheck": "same one-round quota and strict comparison; no new switch or bypass"
+  },
+  "real": [
+    "original PNG and RapidOCR",
+    "ordinary initial read without --text-recheck-capture",
+    "Sidecar subprocess, Worker comparison and SQLite",
+    "ROI-off pre-send new-question classification",
+    "ROI-off aligned read performs zero additional capture/local OCR",
+    "ROI-off invalid frame bindings are rejected"
+  ],
+  "substituted": [
+    "Windows physical capture/window environment",
+    "HTTP/backend domain replies via FakeApi"
+  ],
+  "limitations": [
+    "No Windows binary/native Start receiving button/actual WeChat sending validation",
+    "No real HTTP/PostgreSQL settlement validation",
+    "Disabled-new-branch control uses FakeApi default read_confirmed Flow reply despite local fault; proves local rejection/cleanup only, not production technical_failed receipt settlement"
+  ],
+  "committed": false,
+  "pushed": false,
+  "packaged": false,
+  "deployed": false
+}

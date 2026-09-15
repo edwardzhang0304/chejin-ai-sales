@@ -1,0 +1,804 @@
+{
+  "created_at": "2026-09-15T09:05:19.604949+00:00",
+  "status": "local_source_verification_passed",
+  "committed": false,
+  "pushed": false,
+  "packaged": false,
+  "deployed": false,
+  "design": "技术方案6.0.3.3.4 / v0.9.82 r4; implementation/docs r5",
+  "passed_unique": 109,
+  "reports": [
+    {
+      "report": "real-incident-worker.xml",
+      "sha256": "5f1357728ab45547c90bfeca38614ad27c72167afb6a0b470151c07fb36f75ea",
+      "passed": 27,
+      "test_ids": [
+        "worker-client.tests.test_text_bubble_recheck::test_real_original_reaches_ingest_or_original_fault_and_automatic_cleanup[True]",
+        "worker-client.tests.test_text_bubble_recheck::test_real_original_reaches_ingest_or_original_fault_and_automatic_cleanup[False]",
+        "worker-client.tests.test_text_bubble_recheck::test_recheck_quota_atomic_restart_corruption_and_other_entry",
+        "worker-client.tests.test_text_bubble_recheck::test_boundary_failure_never_adopts_or_reopens_and_cleans_flow[capture]",
+        "worker-client.tests.test_text_bubble_recheck::test_boundary_failure_never_adopts_or_reopens_and_cleans_flow[ocr_timeout]",
+        "worker-client.tests.test_text_bubble_recheck::test_boundary_failure_never_adopts_or_reopens_and_cleans_flow[pause]",
+        "worker-client.tests.test_text_bubble_recheck::test_boundary_failure_never_adopts_or_reopens_and_cleans_flow[new_fault]",
+        "worker-client.tests.test_text_bubble_recheck::test_boundary_failure_never_adopts_or_reopens_and_cleans_flow[update]",
+        "worker-client.tests.test_text_bubble_recheck::test_boundary_failure_never_adopts_or_reopens_and_cleans_flow[rebind]",
+        "worker-client.tests.test_text_bubble_recheck::test_boundary_failure_never_adopts_or_reopens_and_cleans_flow[authorization]",
+        "worker-client.tests.test_text_bubble_recheck::test_boundary_failure_never_adopts_or_reopens_and_cleans_flow[target]",
+        "worker-client.tests.test_text_bubble_recheck::test_boundary_failure_never_adopts_or_reopens_and_cleans_flow[lock]",
+        "worker-client.tests.test_text_bubble_recheck::test_aligned_real_frame_has_zero_additional_capture_or_local_ocr",
+        "worker-client.tests.test_text_bubble_recheck::test_pre_send_real_recheck_keeps_new_customer_question_as_new",
+        "worker-client.tests.test_text_bubble_recheck::test_final_read_real_ocr_uses_same_quota_as_initial_and_pre_send[False]",
+        "worker-client.tests.test_text_bubble_recheck::test_final_read_real_ocr_uses_same_quota_as_initial_and_pre_send[True]",
+        "worker-client.tests.test_text_bubble_recheck::test_real_local_ocr_still_different_keeps_original_failure",
+        "worker-client.tests.test_text_bubble_recheck::test_new_question_arriving_between_frames_is_not_lost",
+        "worker-client.tests.test_text_bubble_recheck::test_real_saved_frame_binding_rejects_tampering_without_capture[pixels]",
+        "worker-client.tests.test_text_bubble_recheck::test_real_saved_frame_binding_rejects_tampering_without_capture[geometry]",
+        "worker-client.tests.test_text_bubble_recheck::test_real_saved_frame_binding_rejects_tampering_without_capture[expired]",
+        "worker-client.tests.test_text_bubble_recheck::test_real_saved_frame_binding_rejects_tampering_without_capture[ocr_file]",
+        "worker-client.tests.test_text_bubble_recheck::test_synthetic_selector_never_changes_a_character_or_accepts_identity[before0-after0-expected0]",
+        "worker-client.tests.test_text_bubble_recheck::test_synthetic_selector_never_changes_a_character_or_accepts_identity[before1-after1-expected1]",
+        "worker-client.tests.test_text_bubble_recheck::test_synthetic_selector_never_changes_a_character_or_accepts_identity[before2-after2-expected2]",
+        "worker-client.tests.test_text_bubble_recheck::test_synthetic_selector_never_changes_a_character_or_accepts_identity[before3-after3-expected3]",
+        "worker-client.tests.test_text_bubble_recheck::test_synthetic_selector_never_changes_a_character_or_accepts_identity[before4-after4-expected4]"
+      ]
+    },
+    {
+      "report": "shared-ocr.xml",
+      "sha256": "5e4b7e65541622e90f3e0762309318cbbf8336cf495c2b6ea403e30d30ec8cc4",
+      "passed": 11,
+      "test_ids": [
+        "apps.wechat_ai_customer_service.tests.test_complete_text_bubble_recheck::test_full_background_component_extends_past_missing_line_end[color0]",
+        "apps.wechat_ai_customer_service.tests.test_complete_text_bubble_recheck::test_full_background_component_extends_past_missing_line_end[color1]",
+        "apps.wechat_ai_customer_service.tests.test_complete_text_bubble_recheck::test_full_background_component_extends_past_missing_line_end[color2]",
+        "apps.wechat_ai_customer_service.tests.test_complete_text_bubble_recheck::test_uncertain_pixels_are_never_guessed[clipped]",
+        "apps.wechat_ai_customer_service.tests.test_complete_text_bubble_recheck::test_uncertain_pixels_are_never_guessed[background]",
+        "apps.wechat_ai_customer_service.tests.test_complete_text_bubble_recheck::test_uncertain_pixels_are_never_guessed[two_observations]",
+        "apps.wechat_ai_customer_service.tests.test_complete_text_bubble_recheck::test_uncertain_pixels_are_never_guessed[media]",
+        "apps.wechat_ai_customer_service.tests.test_complete_text_bubble_recheck::test_uncertain_pixels_are_never_guessed[unknown_role]",
+        "apps.wechat_ai_customer_service.tests.test_complete_text_bubble_recheck::test_uncertain_pixels_are_never_guessed[ambiguous_id]",
+        "apps.wechat_ai_customer_service.tests.test_complete_text_bubble_recheck::test_real_ocr_negative_keeps_changed_number_and_negation[\\u9884\\u7b979\\u4e07-\\u9884\\u7b978\\u4e07]",
+        "apps.wechat_ai_customer_service.tests.test_complete_text_bubble_recheck::test_real_ocr_negative_keeps_changed_number_and_negation[\\u4e0d\\u53ef\\u4ee5-\\u53ef\\u4ee5]"
+      ]
+    },
+    {
+      "report": "runner-regression.xml",
+      "sha256": "5fecb29f5057ae7c7e13d848abb716077c6feb06719f5f429e126fb4694ce7b0",
+      "passed": 16,
+      "test_ids": [
+        "worker-client.tests.test_task_runner.TaskRunnerTest::test_confirmed_media_receipt_carries_only_inside_same_read_flow",
+        "worker-client.tests.test_task_runner.TaskRunnerTest::test_equal_media_rows_never_inherit_committed_worker_identity",
+        "worker-client.tests.test_task_runner.TaskRunnerTest::test_first_viewport_change_consumes_only_reidentification_budget",
+        "worker-client.tests.test_task_runner.TaskRunnerTest::test_formal_pre_send_roi_switch_off_keeps_worker_on_original_read",
+        "worker-client.tests.test_task_runner.TaskRunnerTest::test_image_pushed_out_before_full_reread_is_technical_failed",
+        "worker-client.tests.test_task_runner.TaskRunnerTest::test_menu_confirmed_text_survives_reread_and_other_image_finishes",
+        "worker-client.tests.test_task_runner.TaskRunnerTest::test_post_vision_refresh_selects_bottommost_new_image_in_same_ui_lease",
+        "worker-client.tests.test_task_runner.TaskRunnerTest::test_pre_send_context_guard_accepts_geometry_only_frame_drift",
+        "worker-client.tests.test_task_runner.TaskRunnerTest::test_pre_send_context_guard_requires_one_coherent_production_snapshot",
+        "worker-client.tests.test_task_runner.TaskRunnerTest::test_pre_send_invalid_layout_blocks_empty_friend_welcome",
+        "worker-client.tests.test_task_runner.TaskRunnerTest::test_pre_send_invalid_layout_blocks_ordinary_reply",
+        "worker-client.tests.test_task_runner.TaskRunnerTest::test_pre_send_invalid_layout_blocks_terminal_media_equivalence",
+        "worker-client.tests.test_task_runner.TaskRunnerTest::test_pre_send_roi_never_treats_three_different_messages_as_unchanged",
+        "worker-client.tests.test_task_runner.TaskRunnerTest::test_pre_send_roi_role_failure_uses_same_frame_full_ocr_before_send",
+        "worker-client.tests.test_task_runner.TaskRunnerTest::test_pre_send_roi_sequence_failure_full_ocr_same_frame_precedes_reread",
+        "worker-client.tests.test_task_runner.TaskRunnerTest::test_pre_send_valid_guard_from_another_frame_is_rejected_before_send"
+      ]
+    },
+    {
+      "report": "related-regression.xml",
+      "sha256": "4fd39b695ecc8d7616fd2c63aa7a28a435dc15109d3c44d961dee787ee61f162",
+      "passed": 50,
+      "test_ids": [
+        "worker-client.tests.test_c2_identity_gate_receipts::test_identity_gate_preserves_actual_backend_terminal[retry_required-C2_UNREAD_RESULT_INCONCLUSIVE-retry_required]",
+        "worker-client.tests.test_c2_identity_gate_receipts::test_identity_gate_preserves_actual_backend_terminal[technical_failed-C2_UNREAD_RESULT_REPEATEDLY_INCONCLUSIVE-technical_failed]",
+        "worker-client.tests.test_c2_identity_gate_receipts::test_identity_gate_preserves_actual_backend_terminal[new_facts-None-read_confirmed]",
+        "worker-client.tests.test_c2_identity_gate_receipts::test_confirmed_gate_replay_reuses_durable_retry_receipt",
+        "worker-client.tests.test_c2_identity_gate_receipts::test_failed_gate_delivery_keeps_outbox_and_is_not_reported_success",
+        "worker-client.tests.test_c2_identity_gate_receipts::test_legacy_receipt_is_not_rewritten_without_exact_backend_proof[other_flow]",
+        "worker-client.tests.test_c2_identity_gate_receipts::test_legacy_receipt_is_not_rewritten_without_exact_backend_proof[other_customer]",
+        "worker-client.tests.test_c2_identity_gate_receipts::test_legacy_receipt_is_not_rewritten_without_exact_backend_proof[no_completion_time]",
+        "worker-client.tests.test_c2_identity_gate_receipts::test_legacy_receipt_is_not_rewritten_without_exact_backend_proof[no_retry_time]",
+        "worker-client.tests.test_c2_identity_gate_receipts::test_legacy_receipt_is_not_rewritten_without_exact_backend_proof[wrong_error]",
+        "worker-client.tests.test_c2_identity_gate_receipts::test_legacy_receipt_is_not_rewritten_without_exact_backend_proof[unknown_result]",
+        "worker-client.tests.test_c2_identity_gate_receipts::test_legacy_receipt_is_not_rewritten_without_exact_backend_proof[technical_result]",
+        "worker-client.tests.test_c2_identity_gate_receipts::test_legacy_receipt_is_not_rewritten_without_exact_backend_proof[network]",
+        "worker-client.tests.test_history_suffix_continuity::test_visible_unique_history_suffix_has_no_new_identity[11-5]",
+        "worker-client.tests.test_history_suffix_continuity::test_visible_unique_history_suffix_has_no_new_identity[3-1]",
+        "worker-client.tests.test_history_suffix_continuity::test_visible_unique_history_suffix_has_no_new_identity[30-20]",
+        "worker-client.tests.test_history_suffix_continuity::test_unproved_or_changed_suffix_remains_blocked[old0-new0-True]",
+        "worker-client.tests.test_history_suffix_continuity::test_unproved_or_changed_suffix_remains_blocked[old1-new1-True]",
+        "worker-client.tests.test_history_suffix_continuity::test_unproved_or_changed_suffix_remains_blocked[old2-new2-True]",
+        "worker-client.tests.test_history_suffix_continuity::test_unproved_or_changed_suffix_remains_blocked[old3-new3-True]",
+        "worker-client.tests.test_history_suffix_continuity::test_unproved_or_changed_suffix_remains_blocked[old4-new4-False]",
+        "worker-client.tests.test_history_suffix_continuity::test_unproved_or_changed_suffix_remains_blocked[old5-new5-True]",
+        "worker-client.tests.test_history_suffix_continuity::test_unproved_or_changed_suffix_remains_blocked[old6-new6-False]",
+        "worker-client.tests.test_history_suffix_continuity::test_new_tail_is_still_the_only_new_work",
+        "worker-client.tests.test_history_suffix_continuity::test_action_and_pre_send_default_policy_remains_strict",
+        "worker-client.tests.test_history_suffix_continuity::test_shared_contract_advertises_scoped_history_relation",
+        "worker-client.tests.test_history_suffix_continuity::test_only_initial_checkpoint_alignment_opts_in",
+        "worker-client.tests.test_send_result_evidence::test_public_send_preserves_process_result_and_outcome[sent]",
+        "worker-client.tests.test_send_result_evidence::test_public_send_preserves_process_result_and_outcome[failed]",
+        "worker-client.tests.test_send_result_evidence::test_public_send_preserves_process_result_and_outcome[unknown]",
+        "worker-client.tests.test_send_result_evidence::test_evidence_check_accepts_nested_and_legacy_results_without_mutation[nested0-False]",
+        "worker-client.tests.test_send_result_evidence::test_evidence_check_accepts_nested_and_legacy_results_without_mutation[nested1-True]",
+        "worker-client.tests.test_send_result_evidence::test_evidence_check_accepts_nested_and_legacy_results_without_mutation[nested2-True]",
+        "worker-client.tests.test_send_result_evidence::test_evidence_check_accepts_nested_and_legacy_results_without_mutation[nested3-True]",
+        "worker-client.tests.test_send_result_evidence::test_evidence_check_accepts_nested_and_legacy_results_without_mutation[sent-False]",
+        "worker-client.tests.test_send_result_evidence::test_evidence_check_accepts_nested_and_legacy_results_without_mutation[failed-True]",
+        "worker-client.tests.test_send_result_evidence::test_evidence_check_accepts_nested_and_legacy_results_without_mutation[unknown-True]",
+        "worker-client.tests.test_send_result_evidence::test_evidence_check_accepts_nested_and_legacy_results_without_mutation[None-False]",
+        "worker-client.tests.test_send_result_evidence::test_evidence_check_accepts_nested_and_legacy_results_without_mutation[nested8-False]",
+        "worker-client.tests.test_send_result_evidence::test_evidence_check_accepts_nested_and_legacy_results_without_mutation[nested9-False]",
+        "worker-client.tests.test_send_result_evidence::test_evidence_check_accepts_nested_and_legacy_results_without_mutation[nested10-False]",
+        "worker-client.tests.test_send_result_evidence::test_evidence_check_accepts_nested_and_legacy_results_without_mutation[nested11-False]",
+        "worker-client.tests.test_send_result_evidence::test_task_runner_send_result_reaches_normal_ack_without_recovery",
+        "worker-client.tests.test_business_viewport_continuity::test_complete_prefix_with_one_explanation_is_tail_append",
+        "worker-client.tests.test_business_viewport_continuity::test_repeated_weak_images_do_not_select_longest_overlap",
+        "worker-client.tests.test_business_viewport_continuity::test_same_duration_voices_do_not_select_longest_overlap",
+        "worker-client.tests.test_business_viewport_continuity::test_unique_strong_boundary_proves_normal_viewport_slide",
+        "worker-client.tests.test_business_viewport_continuity::test_equal_weak_full_viewport_requires_context",
+        "worker-client.tests.test_business_viewport_continuity::test_confirmed_empty_viewport_is_equal_but_unproved_empty_is_not",
+        "worker-client.tests.test_business_viewport_continuity::test_production_has_one_continuity_decider_and_one_voice_merge_owner"
+      ]
+    },
+    {
+      "report": "same-frame-regression.xml",
+      "sha256": "e1fd7738df05908a0bd8f8105f514502ae07d153db9c4879897129f39e22f6f2",
+      "passed": 2,
+      "test_ids": [
+        "worker-client.tests.test_wechat_send_safety.WechatSendSafetyTest::test_same_frame_full_ocr_replay_authenticates_saved_pixels_without_capture",
+        "worker-client.tests.test_wechat_send_safety.WechatSendSafetyTest::test_same_frame_full_ocr_replay_rejects_tampered_pixels_before_ocr"
+      ]
+    },
+    {
+      "report": "send-gate-regression.xml",
+      "sha256": "220f0713a6d69deeb99a214a33cbd90c060559a73465d4d6b28d26cc1cb6bff6",
+      "passed": 3,
+      "test_ids": [
+        "worker-client.tests.test_task_runner.TaskRunnerTest::test_chat_reply_pre_send_refresh_supersedes_when_new_customer_message_arrives",
+        "worker-client.tests.test_task_runner.TaskRunnerTest::test_pre_send_checkpoint_new_voice_suffix_transcribes_once_and_replaces_reply",
+        "worker-client.tests.test_task_runner.TaskRunnerTest::test_pre_send_checkpoint_unique_text_suffix_ingests_only_new_fact"
+      ]
+    }
+  ],
+  "source": {
+    "worker_base": "3c59b668d6ee3307441d5b5c49bbf70ec056e842",
+    "shared_base": "51c3b19cd38b4dff27ac7037a35e6f39f34f182f",
+    "shared_byte_identical": true,
+    "sha256": {
+      "worker-client/chejin_worker_client/rpa_bridge.py": "ab96d3e1056e27301b4b454c74e13dd428fcfc22c957ca356489b25d33b8ce5d",
+      "worker-client/chejin_worker_client/storage.py": "c26e981db0fabf896b80a57f64a497c72e43a21a61f7317ff33705c284201373",
+      "worker-client/chejin_worker_client/task_runner.py": "fd15256b690412d28e9a8a278eca86f75d28e07f4fef1deb9c6a067da588d196",
+      "worker-client/chejin_worker_client/text_recheck.py": "e5fb7cb48d55a741bc361d2f48a107cae81e81159d75b3552e3832fb3bf77dc2",
+      "worker-client/tests/test_text_bubble_recheck.py": "a859212a3744196a1cc9abba142e2b76db081a151d644044bc89dfa68c45ae27",
+      "worker-client/tests/fixtures/text_recheck_process.py": "86409a00a2443033e6ebae077f0ef21d8951aa7ac18ec30381ea9ec3e5451736",
+      "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/adapters/wechat_win32_ocr_sidecar.py": "892a49e68fbde9bc8976b7295c93d1929a0533b0969ca93163f4215cf2526fae",
+      "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/adapters/wechat_win32_ocr/text_bubble_recheck.py": "bfe794a3ba6042e143709a89b955c53c1b41868e546bfd73c3930c594e77ef21",
+      "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/tests/test_complete_text_bubble_recheck.py": "0aa5bb7a3153e1c5939373f3cd9520f58f2254c8cd2406cf6215546ea3d3fd39"
+    }
+  },
+  "original_png": {
+    "path": "/private/tmp/chejin-gaolei-incidents6-20260915/INC-20260915T072555-23a486ebf6/evidence/db86888619d68119629f138922ef6fed0a31275598cb18329058f9c33789fb49-send_guard_1789457144266.png",
+    "sha256": "db86888619d68119629f138922ef6fed0a31275598cb18329058f9c33789fb49",
+    "modified": false
+  },
+  "fixture": {
+    "path": "/private/tmp/chejin-gaolei-incidents6-20260915/text-recheck-fixture.json",
+    "sha256": "cb61e77972035fc14a8fcc23cb0d77328f62edfc14c76a2829cff2c8ba26a78b",
+    "checkpoint": "6 exact original pre-send checkpoint projections/commit records; final confirmed reply reconstructed from original text/hash and ack confirmation timestamp, not a captured complete HTTP response",
+    "final_entry_boundary": "explicit fixture historical origin_read_run_id; committed baseline built using production identity routines",
+    "ocr_child_inputs": "PNG and Windows calibration/geometry only; no checkpoint/history/expected answer"
+  },
+  "runtime": {
+    "rapidocr-onnxruntime": "1.4.4",
+    "onnxruntime": "1.20.1",
+    "Pillow": "12.3.0",
+    "numpy": "1.26.4",
+    "pytest": "8.3.5"
+  },
+  "transform": {
+    "padding": 8,
+    "scale": 2,
+    "resample": "lanczos",
+    "color_tolerance": 3,
+    "attempts_per_read_run": 1,
+    "crop": "physical complete bubble from fresh pixels; no historical text as OCR answer"
+  },
+  "real": [
+    "original PNG OCR and positive/disabled-branch negative",
+    "Sidecar CLI child process, same-frame regrouping/role/contract",
+    "Worker initial/pre-send entry and final-read subroutine",
+    "SQLite claim/identity/outbox",
+    "public-read success/failure Flow completion and UI lease release",
+    "production diagnostic ZIP export"
+  ],
+  "substituted": [
+    "Windows HWND/window geometry and physical capture",
+    "HTTP/domain backend replies via FakeApi",
+    "legacy send-gate regression uses external WeChat observations"
+  ],
+  "not_verified": [
+    "Windows real application/package and field OCR",
+    "production backend HTTP/database settlement",
+    "native Start receiving button and physical WeChat send with this candidate"
+  ],
+  "boundaries": [
+    "final-read subroutine lease is caller-owned; its test releases that outer lease and does not claim automatic full-flow cleanup",
+    "injected new fault with no backend recovery capability preserves pending outbox/Flow; only UI lease releases",
+    "same-byte screenshots are deduplicated in export, both source paths retained",
+    "pre-send original-image test verifies new question classification; existing actual send decision path separately verifies superseding old reply",
+    "original branch disabled control is not an old Windows binary replay"
+  ],
+  "private_replays": "/private/tmp/chejin-text-recheck-acceptance-20260915",
+  "measured_rechecks": [
+    {
+      "case": "test_boundary_failure_never_ad0",
+      "database": "/private/tmp/chejin-text-recheck-acceptance-20260915/test_boundary_failure_never_ad0/worker_client.sqlite3",
+      "adopted": false,
+      "consumed": true,
+      "duration_ms": 591,
+      "original_frame_id": "frame:1671991658072083:ed68ff579b59df6c:9277c6005948d787",
+      "fresh_frame_id": null,
+      "local_report": null,
+      "regions": [],
+      "relation": null,
+      "new_suffix_indexes": null
+    },
+    {
+      "case": "test_boundary_failure_never_ad1",
+      "database": "/private/tmp/chejin-text-recheck-acceptance-20260915/test_boundary_failure_never_ad1/worker_client.sqlite3",
+      "adopted": false,
+      "consumed": true,
+      "duration_ms": 8565,
+      "original_frame_id": "frame:1672000450653666:9263e9a7cdc1a422:9277c6005948d787",
+      "fresh_frame_id": "frame:1672009018050583:c05ab020d9180bd5:9277c6005948d787",
+      "local_report": null,
+      "regions": [],
+      "relation": null,
+      "new_suffix_indexes": null
+    },
+    {
+      "case": "test_boundary_failure_never_ad2",
+      "database": "/private/tmp/chejin-text-recheck-acceptance-20260915/test_boundary_failure_never_ad2/worker_client.sqlite3",
+      "adopted": false,
+      "consumed": true,
+      "duration_ms": 14078,
+      "original_frame_id": "frame:1672017572055541:f075a7fc8a6d23a1:9277c6005948d787",
+      "fresh_frame_id": "frame:1672026392669416:340f96dcbc69775b:9277c6005948d787",
+      "local_report": "/private/tmp/chejin-text-recheck-acceptance-20260915/test_boundary_failure_never_ad2/artifacts/wechat_c2/messages/text-recheck-a6f3cad5f6fd4f988d762e9bdbb70ea7/text_bubble_recheck.json",
+      "regions": [
+        {
+          "bubble_rect": [
+            385,
+            501,
+            712,
+            613
+          ],
+          "crop_rect": [
+            377,
+            493,
+            720,
+            621
+          ],
+          "padding": 8,
+          "scale": 2,
+          "resample": "lanczos",
+          "crop_path": "/private/tmp/chejin-text-recheck-acceptance-20260915/test_boundary_failure_never_ad2/artifacts/wechat_c2/messages/text-recheck-a6f3cad5f6fd4f988d762e9bdbb70ea7/bubble_0.png"
+        }
+      ],
+      "relation": null,
+      "new_suffix_indexes": null
+    },
+    {
+      "case": "test_boundary_failure_never_ad3",
+      "database": "/private/tmp/chejin-text-recheck-acceptance-20260915/test_boundary_failure_never_ad3/worker_client.sqlite3",
+      "adopted": false,
+      "consumed": true,
+      "duration_ms": 14503,
+      "original_frame_id": "frame:1672040241339708:3b8e385cde5feeba:9277c6005948d787",
+      "fresh_frame_id": "frame:1672049431422541:e0d998d8bc832890:9277c6005948d787",
+      "local_report": "/private/tmp/chejin-text-recheck-acceptance-20260915/test_boundary_failure_never_ad3/artifacts/wechat_c2/messages/text-recheck-80942b6e444d4a1b9b9ab873736ff4bb/text_bubble_recheck.json",
+      "regions": [
+        {
+          "bubble_rect": [
+            385,
+            501,
+            712,
+            613
+          ],
+          "crop_rect": [
+            377,
+            493,
+            720,
+            621
+          ],
+          "padding": 8,
+          "scale": 2,
+          "resample": "lanczos",
+          "crop_path": "/private/tmp/chejin-text-recheck-acceptance-20260915/test_boundary_failure_never_ad3/artifacts/wechat_c2/messages/text-recheck-80942b6e444d4a1b9b9ab873736ff4bb/bubble_0.png"
+        }
+      ],
+      "relation": null,
+      "new_suffix_indexes": null
+    },
+    {
+      "case": "test_boundary_failure_never_ad4",
+      "database": "/private/tmp/chejin-text-recheck-acceptance-20260915/test_boundary_failure_never_ad4/worker_client.sqlite3",
+      "adopted": false,
+      "consumed": true,
+      "duration_ms": 15150,
+      "original_frame_id": "frame:1672063310647958:9a9e4bc175407122:9277c6005948d787",
+      "fresh_frame_id": "frame:1672072976751375:4cc672b9fd718369:9277c6005948d787",
+      "local_report": "/private/tmp/chejin-text-recheck-acceptance-20260915/test_boundary_failure_never_ad4/artifacts/wechat_c2/messages/text-recheck-9227e0d7a6af47c9b4d269532951dada/text_bubble_recheck.json",
+      "regions": [
+        {
+          "bubble_rect": [
+            385,
+            501,
+            712,
+            613
+          ],
+          "crop_rect": [
+            377,
+            493,
+            720,
+            621
+          ],
+          "padding": 8,
+          "scale": 2,
+          "resample": "lanczos",
+          "crop_path": "/private/tmp/chejin-text-recheck-acceptance-20260915/test_boundary_failure_never_ad4/artifacts/wechat_c2/messages/text-recheck-9227e0d7a6af47c9b4d269532951dada/bubble_0.png"
+        }
+      ],
+      "relation": null,
+      "new_suffix_indexes": null
+    },
+    {
+      "case": "test_boundary_failure_never_ad5",
+      "database": "/private/tmp/chejin-text-recheck-acceptance-20260915/test_boundary_failure_never_ad5/worker_client.sqlite3",
+      "adopted": false,
+      "consumed": true,
+      "duration_ms": 14749,
+      "original_frame_id": "frame:1672087438219875:9527236ed72eaef6:9277c6005948d787",
+      "fresh_frame_id": "frame:1672096597689041:7a52f3af1eb1a1e8:9277c6005948d787",
+      "local_report": "/private/tmp/chejin-text-recheck-acceptance-20260915/test_boundary_failure_never_ad5/artifacts/wechat_c2/messages/text-recheck-65399c254f0742d9a5027cbc5345cefa/text_bubble_recheck.json",
+      "regions": [
+        {
+          "bubble_rect": [
+            385,
+            501,
+            712,
+            613
+          ],
+          "crop_rect": [
+            377,
+            493,
+            720,
+            621
+          ],
+          "padding": 8,
+          "scale": 2,
+          "resample": "lanczos",
+          "crop_path": "/private/tmp/chejin-text-recheck-acceptance-20260915/test_boundary_failure_never_ad5/artifacts/wechat_c2/messages/text-recheck-65399c254f0742d9a5027cbc5345cefa/bubble_0.png"
+        }
+      ],
+      "relation": null,
+      "new_suffix_indexes": null
+    },
+    {
+      "case": "test_boundary_failure_never_ad6",
+      "database": "/private/tmp/chejin-text-recheck-acceptance-20260915/test_boundary_failure_never_ad6/worker_client.sqlite3",
+      "adopted": false,
+      "consumed": true,
+      "duration_ms": 15318,
+      "original_frame_id": "frame:1672111069572250:89686226363acdb5:9277c6005948d787",
+      "fresh_frame_id": "frame:1672120690169500:3b00e3a736856933:9277c6005948d787",
+      "local_report": "/private/tmp/chejin-text-recheck-acceptance-20260915/test_boundary_failure_never_ad6/artifacts/wechat_c2/messages/text-recheck-726de3d67fc24d30b3448b6a8a7b18f9/text_bubble_recheck.json",
+      "regions": [
+        {
+          "bubble_rect": [
+            385,
+            501,
+            712,
+            613
+          ],
+          "crop_rect": [
+            377,
+            493,
+            720,
+            621
+          ],
+          "padding": 8,
+          "scale": 2,
+          "resample": "lanczos",
+          "crop_path": "/private/tmp/chejin-text-recheck-acceptance-20260915/test_boundary_failure_never_ad6/artifacts/wechat_c2/messages/text-recheck-726de3d67fc24d30b3448b6a8a7b18f9/bubble_0.png"
+        }
+      ],
+      "relation": null,
+      "new_suffix_indexes": null
+    },
+    {
+      "case": "test_boundary_failure_never_ad7",
+      "database": "/private/tmp/chejin-text-recheck-acceptance-20260915/test_boundary_failure_never_ad7/worker_client.sqlite3",
+      "adopted": false,
+      "consumed": true,
+      "duration_ms": 15306,
+      "original_frame_id": "frame:1672135228850500:b8cbd23283862610:9277c6005948d787",
+      "fresh_frame_id": "frame:1672144430912416:e8af0382f27562d6:9277c6005948d787",
+      "local_report": "/private/tmp/chejin-text-recheck-acceptance-20260915/test_boundary_failure_never_ad7/artifacts/wechat_c2/messages/text-recheck-48e3c64e7e854131a1e8de6848804b62/text_bubble_recheck.json",
+      "regions": [
+        {
+          "bubble_rect": [
+            385,
+            501,
+            712,
+            613
+          ],
+          "crop_rect": [
+            377,
+            493,
+            720,
+            621
+          ],
+          "padding": 8,
+          "scale": 2,
+          "resample": "lanczos",
+          "crop_path": "/private/tmp/chejin-text-recheck-acceptance-20260915/test_boundary_failure_never_ad7/artifacts/wechat_c2/messages/text-recheck-48e3c64e7e854131a1e8de6848804b62/bubble_0.png"
+        }
+      ],
+      "relation": null,
+      "new_suffix_indexes": null
+    },
+    {
+      "case": "test_boundary_failure_never_ad8",
+      "database": "/private/tmp/chejin-text-recheck-acceptance-20260915/test_boundary_failure_never_ad8/worker_client.sqlite3",
+      "adopted": false,
+      "consumed": true,
+      "duration_ms": 14289,
+      "original_frame_id": "frame:1672159119753333:c7d8ae5b24141b7d:9277c6005948d787",
+      "fresh_frame_id": "frame:1672168337038666:b1814b29a545acfb:9277c6005948d787",
+      "local_report": "/private/tmp/chejin-text-recheck-acceptance-20260915/test_boundary_failure_never_ad8/artifacts/wechat_c2/messages/text-recheck-3710a3dccbfd473eaebdae3906c27c8c/text_bubble_recheck.json",
+      "regions": [
+        {
+          "bubble_rect": [
+            385,
+            501,
+            712,
+            613
+          ],
+          "crop_rect": [
+            377,
+            493,
+            720,
+            621
+          ],
+          "padding": 8,
+          "scale": 2,
+          "resample": "lanczos",
+          "crop_path": "/private/tmp/chejin-text-recheck-acceptance-20260915/test_boundary_failure_never_ad8/artifacts/wechat_c2/messages/text-recheck-3710a3dccbfd473eaebdae3906c27c8c/bubble_0.png"
+        }
+      ],
+      "relation": null,
+      "new_suffix_indexes": null
+    },
+    {
+      "case": "test_boundary_failure_never_adcurrent",
+      "database": "/private/tmp/chejin-text-recheck-acceptance-20260915/test_boundary_failure_never_adcurrent/worker_client.sqlite3",
+      "adopted": false,
+      "consumed": true,
+      "duration_ms": 14289,
+      "original_frame_id": "frame:1672159119753333:c7d8ae5b24141b7d:9277c6005948d787",
+      "fresh_frame_id": "frame:1672168337038666:b1814b29a545acfb:9277c6005948d787",
+      "local_report": "/private/tmp/chejin-text-recheck-acceptance-20260915/test_boundary_failure_never_ad8/artifacts/wechat_c2/messages/text-recheck-3710a3dccbfd473eaebdae3906c27c8c/text_bubble_recheck.json",
+      "regions": [
+        {
+          "bubble_rect": [
+            385,
+            501,
+            712,
+            613
+          ],
+          "crop_rect": [
+            377,
+            493,
+            720,
+            621
+          ],
+          "padding": 8,
+          "scale": 2,
+          "resample": "lanczos",
+          "crop_path": "/private/tmp/chejin-text-recheck-acceptance-20260915/test_boundary_failure_never_ad8/artifacts/wechat_c2/messages/text-recheck-3710a3dccbfd473eaebdae3906c27c8c/bubble_0.png"
+        }
+      ],
+      "relation": null,
+      "new_suffix_indexes": null
+    },
+    {
+      "case": "test_final_read_real_ocr_uses_0",
+      "database": "/private/tmp/chejin-text-recheck-acceptance-20260915/test_final_read_real_ocr_uses_0/worker_client.sqlite3",
+      "adopted": true,
+      "consumed": true,
+      "duration_ms": 12421,
+      "original_frame_id": "frame:1672227720177416:ca82509ea3845474:9277c6005948d787",
+      "fresh_frame_id": "frame:1672235393909791:0c16c53a4c9340c9:9277c6005948d787",
+      "local_report": "/private/tmp/chejin-text-recheck-acceptance-20260915/test_final_read_real_ocr_uses_0/artifacts/wechat_c2/messages/text-recheck-b6f1bf75d1f048e4b4e3440b3144ac3e/text_bubble_recheck.json",
+      "regions": [
+        {
+          "bubble_rect": [
+            385,
+            501,
+            712,
+            613
+          ],
+          "crop_rect": [
+            377,
+            493,
+            720,
+            621
+          ],
+          "padding": 8,
+          "scale": 2,
+          "resample": "lanczos",
+          "crop_path": "/private/tmp/chejin-text-recheck-acceptance-20260915/test_final_read_real_ocr_uses_0/artifacts/wechat_c2/messages/text-recheck-b6f1bf75d1f048e4b4e3440b3144ac3e/bubble_0.png"
+        }
+      ],
+      "relation": "business_sequence_equal",
+      "new_suffix_indexes": []
+    },
+    {
+      "case": "test_new_question_arriving_bet0",
+      "database": "/private/tmp/chejin-text-recheck-acceptance-20260915/test_new_question_arriving_bet0/worker_client.sqlite3",
+      "adopted": true,
+      "consumed": true,
+      "duration_ms": 11221,
+      "original_frame_id": "frame:1672290264340625:69c1cc3e2961ee85:3eb5abca0b66fa46",
+      "fresh_frame_id": "frame:1672297187139875:adad11272cee97b3:9277c6005948d787",
+      "local_report": "/private/tmp/chejin-text-recheck-acceptance-20260915/test_new_question_arriving_bet0/artifacts/wechat_c2/messages/text-recheck-4233d4bac3e84d7783acfe14db4cd067/text_bubble_recheck.json",
+      "regions": [
+        {
+          "bubble_rect": [
+            385,
+            501,
+            712,
+            613
+          ],
+          "crop_rect": [
+            377,
+            493,
+            720,
+            621
+          ],
+          "padding": 8,
+          "scale": 2,
+          "resample": "lanczos",
+          "crop_path": "/private/tmp/chejin-text-recheck-acceptance-20260915/test_new_question_arriving_bet0/artifacts/wechat_c2/messages/text-recheck-4233d4bac3e84d7783acfe14db4cd067/bubble_0.png"
+        }
+      ],
+      "relation": "unique_viewport_slide_with_tail_append",
+      "new_suffix_indexes": [
+        5
+      ]
+    },
+    {
+      "case": "test_new_question_arriving_betcurrent",
+      "database": "/private/tmp/chejin-text-recheck-acceptance-20260915/test_new_question_arriving_betcurrent/worker_client.sqlite3",
+      "adopted": true,
+      "consumed": true,
+      "duration_ms": 11221,
+      "original_frame_id": "frame:1672290264340625:69c1cc3e2961ee85:3eb5abca0b66fa46",
+      "fresh_frame_id": "frame:1672297187139875:adad11272cee97b3:9277c6005948d787",
+      "local_report": "/private/tmp/chejin-text-recheck-acceptance-20260915/test_new_question_arriving_bet0/artifacts/wechat_c2/messages/text-recheck-4233d4bac3e84d7783acfe14db4cd067/text_bubble_recheck.json",
+      "regions": [
+        {
+          "bubble_rect": [
+            385,
+            501,
+            712,
+            613
+          ],
+          "crop_rect": [
+            377,
+            493,
+            720,
+            621
+          ],
+          "padding": 8,
+          "scale": 2,
+          "resample": "lanczos",
+          "crop_path": "/private/tmp/chejin-text-recheck-acceptance-20260915/test_new_question_arriving_bet0/artifacts/wechat_c2/messages/text-recheck-4233d4bac3e84d7783acfe14db4cd067/bubble_0.png"
+        }
+      ],
+      "relation": "unique_viewport_slide_with_tail_append",
+      "new_suffix_indexes": [
+        5
+      ]
+    },
+    {
+      "case": "test_pre_send_real_recheck_kee0",
+      "database": "/private/tmp/chejin-text-recheck-acceptance-20260915/test_pre_send_real_recheck_kee0/worker_client.sqlite3",
+      "adopted": true,
+      "consumed": true,
+      "duration_ms": 13120,
+      "original_frame_id": "frame:1672194774222166:8e77c9a66738d7ef:9277c6005948d787",
+      "fresh_frame_id": "frame:1672202951102833:baf29e4597b2ee7d:9277c6005948d787",
+      "local_report": "/private/tmp/chejin-text-recheck-acceptance-20260915/test_pre_send_real_recheck_kee0/artifacts/wechat_c2/messages/text-recheck-26f8c7e7b69049ecb4482aa7b80e9273/text_bubble_recheck.json",
+      "regions": [
+        {
+          "bubble_rect": [
+            385,
+            501,
+            712,
+            613
+          ],
+          "crop_rect": [
+            377,
+            493,
+            720,
+            621
+          ],
+          "padding": 8,
+          "scale": 2,
+          "resample": "lanczos",
+          "crop_path": "/private/tmp/chejin-text-recheck-acceptance-20260915/test_pre_send_real_recheck_kee0/artifacts/wechat_c2/messages/text-recheck-26f8c7e7b69049ecb4482aa7b80e9273/bubble_0.png"
+        }
+      ],
+      "relation": null,
+      "new_suffix_indexes": null
+    },
+    {
+      "case": "test_pre_send_real_recheck_keecurrent",
+      "database": "/private/tmp/chejin-text-recheck-acceptance-20260915/test_pre_send_real_recheck_keecurrent/worker_client.sqlite3",
+      "adopted": true,
+      "consumed": true,
+      "duration_ms": 13120,
+      "original_frame_id": "frame:1672194774222166:8e77c9a66738d7ef:9277c6005948d787",
+      "fresh_frame_id": "frame:1672202951102833:baf29e4597b2ee7d:9277c6005948d787",
+      "local_report": "/private/tmp/chejin-text-recheck-acceptance-20260915/test_pre_send_real_recheck_kee0/artifacts/wechat_c2/messages/text-recheck-26f8c7e7b69049ecb4482aa7b80e9273/text_bubble_recheck.json",
+      "regions": [
+        {
+          "bubble_rect": [
+            385,
+            501,
+            712,
+            613
+          ],
+          "crop_rect": [
+            377,
+            493,
+            720,
+            621
+          ],
+          "padding": 8,
+          "scale": 2,
+          "resample": "lanczos",
+          "crop_path": "/private/tmp/chejin-text-recheck-acceptance-20260915/test_pre_send_real_recheck_kee0/artifacts/wechat_c2/messages/text-recheck-26f8c7e7b69049ecb4482aa7b80e9273/bubble_0.png"
+        }
+      ],
+      "relation": null,
+      "new_suffix_indexes": null
+    },
+    {
+      "case": "test_real_local_ocr_still_diff0",
+      "database": "/private/tmp/chejin-text-recheck-acceptance-20260915/test_real_local_ocr_still_diff0/worker_client.sqlite3",
+      "adopted": false,
+      "consumed": true,
+      "duration_ms": 11732,
+      "original_frame_id": "frame:1672265531445541:139645f589015575:9277c6005948d787",
+      "fresh_frame_id": "frame:1672272884488166:d8a180091ccc37dd:9277c6005948d787",
+      "local_report": "/private/tmp/chejin-text-recheck-acceptance-20260915/test_real_local_ocr_still_diff0/artifacts/wechat_c2/messages/text-recheck-34430bbf0ff14131b985f9578c46b948/text_bubble_recheck.json",
+      "regions": [
+        {
+          "bubble_rect": [
+            385,
+            501,
+            712,
+            613
+          ],
+          "crop_rect": [
+            377,
+            493,
+            720,
+            621
+          ],
+          "padding": 8,
+          "scale": 2,
+          "resample": "lanczos",
+          "crop_path": "/private/tmp/chejin-text-recheck-acceptance-20260915/test_real_local_ocr_still_diff0/artifacts/wechat_c2/messages/text-recheck-34430bbf0ff14131b985f9578c46b948/bubble_0.png"
+        }
+      ],
+      "relation": "continuity_context_expansion_required",
+      "new_suffix_indexes": []
+    },
+    {
+      "case": "test_real_local_ocr_still_diffcurrent",
+      "database": "/private/tmp/chejin-text-recheck-acceptance-20260915/test_real_local_ocr_still_diffcurrent/worker_client.sqlite3",
+      "adopted": false,
+      "consumed": true,
+      "duration_ms": 11732,
+      "original_frame_id": "frame:1672265531445541:139645f589015575:9277c6005948d787",
+      "fresh_frame_id": "frame:1672272884488166:d8a180091ccc37dd:9277c6005948d787",
+      "local_report": "/private/tmp/chejin-text-recheck-acceptance-20260915/test_real_local_ocr_still_diff0/artifacts/wechat_c2/messages/text-recheck-34430bbf0ff14131b985f9578c46b948/text_bubble_recheck.json",
+      "regions": [
+        {
+          "bubble_rect": [
+            385,
+            501,
+            712,
+            613
+          ],
+          "crop_rect": [
+            377,
+            493,
+            720,
+            621
+          ],
+          "padding": 8,
+          "scale": 2,
+          "resample": "lanczos",
+          "crop_path": "/private/tmp/chejin-text-recheck-acceptance-20260915/test_real_local_ocr_still_diff0/artifacts/wechat_c2/messages/text-recheck-34430bbf0ff14131b985f9578c46b948/bubble_0.png"
+        }
+      ],
+      "relation": "continuity_context_expansion_required",
+      "new_suffix_indexes": []
+    },
+    {
+      "case": "test_real_original_reaches_ing0",
+      "database": "/private/tmp/chejin-text-recheck-acceptance-20260915/test_real_original_reaches_ing0/worker_client.sqlite3",
+      "adopted": true,
+      "consumed": true,
+      "duration_ms": 16218,
+      "original_frame_id": "frame:1671959204025166:5317e8ded87d2834:9277c6005948d787",
+      "fresh_frame_id": "frame:1671968103481958:29451dd2d704ae4a:9277c6005948d787",
+      "local_report": "/private/tmp/chejin-text-recheck-acceptance-20260915/test_real_original_reaches_ing0/artifacts/wechat_c2/messages/text-recheck-6de5b45a514e4ca781c2463887adbb6d/text_bubble_recheck.json",
+      "regions": [
+        {
+          "bubble_rect": [
+            385,
+            501,
+            712,
+            613
+          ],
+          "crop_rect": [
+            377,
+            493,
+            720,
+            621
+          ],
+          "padding": 8,
+          "scale": 2,
+          "resample": "lanczos",
+          "crop_path": "/private/tmp/chejin-text-recheck-acceptance-20260915/test_real_original_reaches_ing0/artifacts/wechat_c2/messages/text-recheck-6de5b45a514e4ca781c2463887adbb6d/bubble_0.png"
+        }
+      ],
+      "relation": "unique_viewport_slide_with_tail_append",
+      "new_suffix_indexes": [
+        5
+      ]
+    }
+  ],
+  "test_fixture_corrections": [
+    {
+      "artifacts": "/private/tmp/chejin-text-recheck-tests-20260915",
+      "reason": "original ack sent_at null; reconstructed HTTP boundary must use confirmed update timestamp and recent_ai_sent reason"
+    },
+    {
+      "artifacts": "/private/tmp/chejin-text-recheck-boundaries-20260915",
+      "reason": "new-fault fixture has no recovery capability, so assert original pending records rather than fabricated completion; pre-send fixture requires full checkpoint projection"
+    },
+    {
+      "artifacts": "/private/tmp/chejin-text-recheck-boundaries2-20260915",
+      "reason": "pre-send subflow fixture needs the pre_send_refresh step; update injection keyword corrected and verified to execute"
+    },
+    {
+      "artifacts": "/private/tmp/chejin-text-recheck-final-export-20260915",
+      "reason": "export content dedup keeps one PNG with two index references; final-read fixture lacked finalized identities and HTTP origins; incorrect test call to instance hash method"
+    },
+    {
+      "artifacts": "/private/tmp/chejin-text-recheck-final-export2-20260915",
+      "reason": "final-read backend origin fixture still incomplete"
+    },
+    {
+      "artifacts": "/private/tmp/chejin-text-recheck-final3-20260915",
+      "reason": "new baseline planner precondition exposed missing authoritative_frame_source in direct-entry fixture"
+    }
+  ]
+}

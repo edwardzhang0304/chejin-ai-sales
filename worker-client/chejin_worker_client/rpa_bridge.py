@@ -255,6 +255,7 @@ class RpaBridge:
         expected_confirmed_self_text: str = "",
         chat_fact_roi_ocr: bool = False,
         same_frame_full_ocr_evidence: dict[str, Any] | None = None,
+        text_recheck_capture: bool = False,
         history_mode: str = "",
         anchor_ids: list[str] | None = None,
         anchor_content_keys: list[str] | None = None,
@@ -320,6 +321,8 @@ class RpaBridge:
         ]
         if normalized_history_mode:
             args[1:1] = ["--history-mode", normalized_history_mode]
+        if text_recheck_capture:
+            args.append("--text-recheck-capture")
         for values, flag in (
             (anchor_ids, "--anchor-id"),
             (anchor_content_keys, "--anchor-content-key"),
@@ -371,6 +374,30 @@ class RpaBridge:
         payload.setdefault("target_mode", normalized_target_mode or "visible")
         payload.setdefault("remark_code", remark_code)
         return payload
+
+    def recheck_text_bubbles(
+        self, *, stage: str, payload: dict[str, Any], observation_ids: list[str],
+        remark_code: str, cancel_check: CancellationCheck | None = None,
+    ) -> dict[str, Any]:
+        """Sidecar validates pixels or OCRs a saved frame; Worker supplies only references."""
+        artifact_dir = CONFIG.app_dir / "artifacts" / "wechat_c2" / "messages" / f"text-recheck-{uuid.uuid4().hex}"
+        artifact_dir.mkdir(parents=True, exist_ok=True)
+        request_path = artifact_dir / "request.json"
+        # Never send checkpoint text/answers to the recognizer.
+        request_path.write_text(json.dumps({"stage": stage, "payload": {
+            key: payload.get(key) for key in (
+                "ok", "frame_observation", "observations", "text_recheck_frame_path",
+                "text_recheck_frame_sha256",
+                "observation_validation_errors",
+            )}, "observation_ids": observation_ids}, ensure_ascii=False), encoding="utf-8")
+        result = self._call_omniauto([
+            "messages", "--target", remark_code, "--remark-code", remark_code,
+            "--target-mode", "current", "--text-recheck-request", str(request_path),
+            "--artifact-dir", str(artifact_dir),
+        ], timeout=50, cancel_check=cancel_check)
+        result.setdefault("artifact_dir", str(artifact_dir))
+        result.setdefault("sidecar_run_id", f"text-recheck-{artifact_dir.name}")
+        return result
 
     def locate_chat(
         self,
@@ -976,7 +1003,18 @@ class RpaBridge:
                               "timeout_seconds": timeout, **exception_details(exc)},
                 )
                 raise
-            failed = result.get("ok") is not True or result.get("send_result") in {"failed", "unknown"}
+            # Win32 sends return a nested envelope; older adapters use a
+            # scalar. Inspect it without changing the business result.
+            send_result = result.get("send_result")
+            send_failed = False
+            if isinstance(send_result, dict):
+                send_failed = send_result.get("ok") is False
+                send_result = send_result.get("result")
+            failed = (
+                result.get("ok") is not True
+                or send_failed
+                or send_result in ("failed", "unknown")
+            )
             if failed:
                 record_failure(
                     "rpa_action_failed",

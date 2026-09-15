@@ -710,6 +710,20 @@ def finish_runtime_flow(flow_id: str) -> dict[str, Any]:
     return _mutate_runtime_control(mutate)
 
 
+def claim_read_recheck(read_run_id: str, *, kind: str, evidence: dict[str, Any] | None = None) -> bool:
+    """All continuity rereads share one durable claim; corrupt/existing rows stay spent."""
+    if not str(read_run_id or "").strip():
+        return False
+    with db_connection() as conn:
+        cursor = conn.execute(
+            "INSERT OR IGNORE INTO c2_runtime_state (key,value,updated_at) VALUES (?,?,?)",
+            (f"read_recheck:{read_run_id}", json.dumps({"read_run_id": read_run_id,
+                "kind": kind, "consumed": True, "evidence": evidence or {}}, ensure_ascii=False), utc_now_iso()),
+        )
+        conn.commit()
+        return cursor.rowcount == 1
+
+
 def save_c2_state(key: str, value: dict[str, Any]) -> None:
     clean_key = str(key or "").strip()
     if not clean_key:
