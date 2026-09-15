@@ -164,7 +164,13 @@ def _main(resources: ExitStack) -> int:
             from .update_data_access import acquire_data_access
             try:
                 access = acquire_data_access(CONFIG.app_dir)
-            except RuntimeError:
+            except RuntimeError as exc:
+                from .client_update import update_root
+                from .update_diagnostics import record_update_startup_failure
+
+                record_update_startup_failure(
+                    update_root() / "startup.json", phase="data_access_gate", exc=exc, exit_code=3,
+                )
                 return 3
             if access is not None:
                 resources.callback(access.close)

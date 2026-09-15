@@ -1,3 +1,61 @@
+# 本轮交付：失败采证独立复审通过，按授权提交推送
+
+文档版本：v0.9.81；合同基线：0.9.81；文档修订：r5（2026-09-15，独立源码复审通过，按用户授权提交推送；未打包、未发布，Windows 与现场待验）。
+
+架构师4号独立复审通过，FE-P2-01/02 在本次源码候选中关闭。所报 137 项全部独立重跑通过，另补 6 项控制测试通过，合计 143 项；5 次 subtest 单列，不追加。原反例未改断言，代码质量未发现新增阻塞项。复审报告 `/private/tmp/chejin-evidence-architect-20260915-XFtSUy/review_v0.2_20260915.md`（SHA256 `49f1a41eb050158e3f485f9ba11ef3174c1edb382b0f71a5e97a57ee15a0b4b4`），索引为同目录 `verification-r2.json`。
+
+用户在复审通过后明确授权“提交推送”。本次仅交付已审采证实现、合成回归测试、内置界面资源、四文档和来源登记；不包含销售附件、数据库和一次性采证脚本，不打包、不部署、不操作生产数据。
+
+- 车金目标：`edwardzhang0304/chejin-ai-sales` 的 `codex/gray-release-0.9.x`，推送前远端基线 `d5ed7cb04759a47319bf05607d061052e01da6fa`。最终提交以本条所在提交和推送回执为准。
+- OmniAuto 目标：用户自有 `edwardzhang0304/omniauto` 的 `codex/gray-release-0.9.x-source`，推送前基线 `f07af25a5a1b29eabe6a1fac8ab9ec8e962d97fd`；本轮共享提交 `51c3b19cd38b4dff27ac7037a35e6f39f34f182f`。共享文件 SHA256 `308b00a8c97ebae0f3d83301b5b3f7a81dfaa33ac52716df7a288f62ec11d2b8`。
+- 已审 31 个文件与复审清单全部匹配；回填仅改四文档与 `.chejin-source.json`，产品和测试字节保持。来源清单保留 current_release 和原 0.9.81 合同，不把源码推送登记为新版发布。
+- 独立证据复用：`r2-original.xml` 8 项、`r2-regression.xml` 129 项及 `r2-controls.xml` 6 项，共 143 项、另 5 次 subtest。原失败与两轮审计均保留；无业务回归重跑。此前 Node 6 项沿用，不计入本轮 143。
+- 使用 `[skip ci]` 普通快进推送，不覆盖远端历史或修改主工作区。回执 `/private/tmp/chejin-failure-evidence-push-20260915/push-result.json` 登记最终提交、远端核对及文件指纹。
+
+本轮源码问题关闭不等于 Windows 包、真实原生导出或高磊现场问题已解决；正式包和现场仍待验。未授权或执行发版。
+
+以下 r4 及更早内容保留当时状态，其“待复审/未提交”等历史表述不覆盖本次用户授权与交付记录。
+
+# 本轮修订：FE-P2-01/02 修复待复审
+
+文档版本：v0.9.81；合同基线：0.9.81；文档修订：r4（2026-09-15，按独立审计修复 FE-P2-01/02，自测通过、待独立复审；未提交、未打包、未发布）。
+
+架构师独立审计确认 r3 存在两个 P2：接口采证的字段过滤被日志自动补入异常全文绕过；附加诊断文件读取失败使可用证据也无法导出。修复前原公开入口反例实跑为 3 失败、1 通过（JSON/HTML 对应同一个缺陷），不以 r3 已通过用例覆盖这次发现。
+
+审计依据：`/private/tmp/chejin-evidence-architect-20260915-XFtSUy/review_v0.1_20260915.md`。审计报告与公开/内部反例未修改。只收拢错误全文记录策略及逐文件读取容错；三个产品模块、一个新回归文件及四文档更新，未修改业务状态或共享 Sidecar。继续使用原独立工作区和源码基线。
+
+- 修复前 `/private/tmp/chejin-evidence-p2-before.xml`：原公开入口 4 项中 3 失败、1 通过；响应正文进入 SQLite/ZIP/导出，以及单文件拒读导致公共导出返回空路径均重现。
+- 修复后 `/private/tmp/chejin-evidence-p2-after.xml`：选定 137 项 Python 用例全部通过，另 5 次 subtest 不追加计数。包含原审计公开与内部链全部 8 项、持久化组合回归 16 项、原采证边界 20 项及日志/API/存储/监督/凭据上下游。
+- 最终兼容写法使用既有 `sys.exc_info()`，对应 `/private/tmp/chejin-evidence-p2-final.xml` 20 项重跑通过。它们与上述 137 重叠，不追加计数。
+- 组合回归补齐非已知 Token 的 JSON/HTML 响应标记、完整/受限异常记录、普通与更新诊断/截图/原故障包读取拒绝或消失，以及附加诊断/图片写入目标 ZIP 失败。目标失败时正式 Qt 导出返回错误，旧目标文件和原故障包字节保持、临时包清理；源文件失败时 ZIP 有效且包含可用日志、证据和遗漏原因。
+- 机器索引 `/private/tmp/chejin-evidence-p2-verification.json` 记录源码指纹及实际测试用例。此前 Node 6 项仅复用，因为界面与内置资源未改；未重跑全量业务或 Windows 测试。
+
+当前结论为工程师自测修复，不能代替独立复审通过。未提交、未推送、未打包、未部署、未操作销售原库；Windows 原生采证和导出仍待后续正式包验收。
+
+以下 r3 记录保留当时状态，其通过数量不是对本次两个缺口的免责或全分支覆盖证明。
+
+# 本轮修订：客户端失败采证补齐（未发布）
+
+文档版本：v0.9.81；合同基线：0.9.81；文档修订：r3（2026-09-15，客户端失败采证补齐，源码本地已实现；未提交、未打包、未发布）。
+
+本轮按用户要求补齐失败证据并复核客户端失败出口。正式线上仍为原 0.9.81；下述能力属于未发布修改，不表示高磊当前 EXE 已生效，也不表示已查明 11:06 首次状态检测失败的底层原因。保留原接单、暂停、恢复、门禁、微信操作和接口结果。
+
+本轮源码基线 `d5ed7cb04759a47319bf05607d061052e01da6fa`，独立工作区 `/private/tmp/chejin-failure-evidence-20260915`，分支 `codex/failure-evidence-20260915`。共享 Sidecar 同步到 `/private/tmp/omniauto-failure-evidence-20260915`（基线 `f07af25a5a1b29eabe6a1fac8ab9ec8e962d97fd`）。原主工作区、其他任务的未提交修改、生产数据和已发布来源不改。
+
+已补齐运行时检测原图/结果、WARN 与带错误码失败、HTTP 拒绝与传输异常、界面脚本/渲染错误、状态与诊断写入失败、重复故障新截图和最新日志导出。界面按钮为“导出故障与最新日志”，嵌入 JS 已重新生成。集中证据模块与现有采证器复用；无新的业务恢复/微信操作流程。
+
+验证结果：去重后 **243 个 Python 测试、6 个 Node 界面测试通过**；另有 5 次 subtest 成功，仅作补充，不再累加。Python 受影响范围涵盖 API/RpaBridge/启动图/采证/留存/Journal/观测/存储/监督/导出与界面/更新状态及诊断。未运行完整 Worker、OmniAuto、后端或后台前端全量测试。
+
+- `/private/tmp/chejin-failure-evidence-final.xml`：226 通过、1 项旧 UI 测试条件未对齐；`/private/tmp/chejin-failure-evidence-ui-final.xml`：纠正测试替身后 15 通过。旧测试在未修改正式源码上同样失败，原因是替身缺少 0.9.81 的 `statusText` 且断言旧故障文案；没有修改产品状态逻辑来通过测试。
+- `/private/tmp/chejin-failure-evidence-credentials-update.xml`：14 通过、1 项旧诊断容量断言需改为本轮轮换规则；`/private/tmp/chejin-failure-evidence-update-final.xml`：该项重跑通过，核对旧文件保留和新错误写入，脱敏断言保留。
+- `/private/tmp/chejin-failure-evidence-http.xml`：1 项真实 HTTP 409 通过；首次本机受限环境禁止监听回环端口，获准后重跑成功，环境失败不计入通过数。
+- `/private/tmp/chejin-evidence-ablation-probe.xml`：换回完整旧 RpaBridge 后，两个公开 probe 场景在“缺少失败日志/事件”处失败；`/private/tmp/chejin-evidence-ablation-warn.xml`：换回旧 storage 后，两项 WARN 在缺少 incident_id 处失败。四项预期负例单列，不计正例。准备反向环境时缺少共享模块/合同的导入失败已排除，不能充当有效负例。
+- 汇总 `/private/tmp/chejin-failure-evidence-verification.json`；静态清单 `/private/tmp/chejin-failure-evidence-audit-inventory.json`。`npm run test:runtime` 6 项通过，内置 Worker JS 构建成功；上述工具/截图替身不等于 Windows GUI 验收。
+
+没有将销售附件、数据库或一次性采证脚本纳入源码。正式 Windows 包、现场原图采集/原生导出、对高磊机器的实际生效均待后续版本验收。此次采证修复不能回补已经缺失的历史现场，也未把“RPA_COMPONENT_UNAVAILABLE”底层触发原因写成已确认。
+
+以下发布记录保留当时事实。
+
 # 当前正式发布：0.9.81
 
 0.9.81正式联合发布完成（2026-09-15，文档版本v0.9.81，合同0.9.81，文档修订r2）：用户选择从实际0.9.80保留数据安装（强升），已确认正常退出且高磊保留故障状态。本次正式EXE的暂停安装、故障安装及原装0.9.80待补交读取恢复三项均通过；原身份、原数据、Outbox字节及停止接单状态保持，原读取已完成。生产Docker后端与合同已切换到0.9.81；后台源码未变、生产同源/api资产核对后复用，真实登录、刷新保持会话、车辆页和退出通过。公网完整ZIP下载及哈希通过，维护已解除；健康/就绪200，容器healthy、重启0次。账号、绑定、知识、业务、4条正常排队任务和Brain/DeepSeek配置保留。未备份、未自动回滚、未清库。

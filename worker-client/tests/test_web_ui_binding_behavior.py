@@ -127,7 +127,7 @@ class _Runner:
         pass
 
     def fault_recovery_state(self):
-        return {"ready": False, "checking": False, "reason": "等待检查"}
+        return {"ready": False, "checking": False, "reason": "等待检查", "statusText": "客户端故障"}
 
 
 class WebUiBindingBehaviorTest(unittest.TestCase):
@@ -527,11 +527,8 @@ class WebUiBindingBehaviorTest(unittest.TestCase):
             payload["model"]["task"]["statusText"],
             "客户端故障",
         )
-        self.assertIn(
-            "后端故障状态未同步",
-            payload["model"]["task"]["metaText"],
-        )
-        self.assertIn("故障证据已保留", payload["model"]["task"]["metaText"])
+        # 0.9.81 displays the runner's unified recovery reason verbatim.
+        self.assertEqual(payload["model"]["task"]["metaText"], "等待检查")
         self.assertNotIn(
             "暂停接单",
             payload["model"]["task"]["statusText"],

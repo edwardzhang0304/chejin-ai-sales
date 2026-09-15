@@ -506,7 +506,10 @@ def load_accept_schedule() -> dict[str, Any]:
         return dict(DEFAULT_ACCEPT_SCHEDULE)
     try:
         payload = json.loads(row["value"])
-    except json.JSONDecodeError:
+    except json.JSONDecodeError as exc:
+        from .failure_evidence import record_capture_failure
+
+        record_capture_failure("storage.load_accept_schedule", exc)
         return dict(DEFAULT_ACCEPT_SCHEDULE)
     return _normalize_schedule(payload if isinstance(payload, dict) else None)
 
@@ -564,7 +567,10 @@ def load_runtime_control() -> dict[str, Any]:
         return dict(DEFAULT_RUNTIME_CONTROL)
     try:
         payload = json.loads(row["value"])
-    except (json.JSONDecodeError, TypeError):
+    except (json.JSONDecodeError, TypeError) as exc:
+        from .failure_evidence import record_capture_failure
+
+        record_capture_failure("storage.load_runtime_control", exc)
         return dict(DEFAULT_RUNTIME_CONTROL)
     return _normalize_runtime_control(payload)
 def _mutate_runtime_control(
@@ -732,7 +738,10 @@ def load_c2_state(key: str) -> dict[str, Any]:
         return {}
     try:
         payload = json.loads(row["value"])
-    except json.JSONDecodeError:
+    except json.JSONDecodeError as exc:
+        from .failure_evidence import record_capture_failure
+
+        record_capture_failure("storage.load_c2_state", exc)
         return {}
     return payload if isinstance(payload, dict) else {}
 
@@ -2261,7 +2270,10 @@ def has_c2_outbox_for_source_keys(
     for row in rows:
         try:
             payload = json.loads(row["payload_json"] or "{}")
-        except (json.JSONDecodeError, TypeError):
+        except (json.JSONDecodeError, TypeError) as exc:
+            from .failure_evidence import record_capture_failure
+
+            record_capture_failure("storage.has_c2_outbox_for_source_keys", exc)
             return True
         actual = {
             str(item.get("source_message_key") or "").strip()
@@ -3233,10 +3245,26 @@ def append_log(
     error_code: str | None = None,
     metadata: dict[str, Any] | None = None,
     force_incident: bool = False,
+    include_exception_text: bool = True,
 ) -> dict[str, Any]:
+    """Record a log; filtered boundaries can forbid explicit and implicit traceback text."""
     record_id = str(uuid.uuid4())
     stored_metadata = dict(metadata or {})
-    if str(level or "").upper() == "ERROR" or force_incident:
+    # A failure remains evidence-worthy even when its caller can recover and
+    # deliberately logs WARN/INFO. Log severity is not the capture contract.
+    capture_incident = bool(
+        force_incident or error_code
+        or str(level or "").upper() in {"ERROR", "WARN", "WARNING"}
+    )
+    if not include_exception_text:
+        # Filtering is a caller policy, not a missing-field default to fill in.
+        stored_metadata.pop("traceback", None)
+        exc = sys.exc_info()[1]
+        if exc is not None:
+            from .failure_evidence import exception_details
+
+            stored_metadata.update(exception_details(exc))
+    elif capture_incident:
         if not stored_metadata.get("traceback"):
             exc_type, exc, exc_traceback = sys.exc_info()
             if exc_type is not None and exc is not None and exc_traceback is not None:
@@ -3271,7 +3299,7 @@ def append_log(
         conn.commit()
     prune_logs()
     incident: dict[str, Any] | None = None
-    if str(level or "").upper() == "ERROR" or force_incident:
+    if capture_incident:
         try:
             from .incident_evidence import schedule_incident, start_incident_worker
 
@@ -3287,6 +3315,9 @@ def append_log(
             )
         except Exception as exc:
             stored_metadata["incident_capture_error"] = type(exc).__name__
+            from .failure_evidence import record_capture_failure
+
+            record_capture_failure(event, exc)
         else:
             stored_metadata.update(incident)
         with db_connection() as conn:

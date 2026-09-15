@@ -91,7 +91,12 @@ def _atomic_write_json(path: Path, payload: dict[str, Any]) -> None:
 def _read_json(path: Path) -> dict[str, Any]:
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
+    except FileNotFoundError:
+        return {}
+    except (OSError, json.JSONDecodeError) as exc:
+        from .failure_evidence import record_capture_failure
+
+        record_capture_failure("incident.read_json", exc)
         return {}
     return payload if isinstance(payload, dict) else {}
 
@@ -238,15 +243,19 @@ def _path_candidates(value: Any, *, key: str = "") -> Iterable[Path]:
     ):
         return
     candidate = Path(value)
-    if candidate.exists() and _inside_app_dir(candidate):
+    if _inside_app_dir(candidate):
         yield candidate
 
 
-def _evidence_files(paths: Iterable[Path]) -> list[Path]:
+def _evidence_files(paths: Iterable[Path], *, omissions: list[dict] | None = None) -> list[Path]:
     files: list[Path] = []
     seen: set[Path] = set()
     total = 0
     for candidate in paths:
+        if not candidate.exists():
+            if omissions is not None:
+                omissions.append({"path": str(candidate), "reason": "source_missing"})
+            continue
         children = candidate.rglob("*") if candidate.is_dir() else (candidate,)
         for path in children:
             if not path.is_file() or not _inside_app_dir(path):
@@ -260,14 +269,71 @@ def _evidence_files(paths: Iterable[Path]) -> list[Path]:
                 continue
             try:
                 size = resolved.stat().st_size
-            except OSError:
+            except OSError as exc:
+                if omissions is not None:
+                    omissions.append({"path": str(path), "reason": type(exc).__name__})
                 continue
             if size > MAX_EVIDENCE_BYTES or total + size > MAX_EVIDENCE_BYTES:
+                if omissions is not None:
+                    omissions.append({"path": str(path), "reason": "evidence_size_limit"})
                 continue
             seen.add(resolved)
             files.append(resolved)
             total += size
     return files
+
+
+def _read_evidence_file(
+    path: Path, secrets: set[str], omissions: list[dict], *, max_bytes: int | None = None,
+) -> bytes | None:
+    """Only source read failures are omissions; archive writes must propagate."""
+    is_text = path.suffix.lower() in _ALLOWED_TEXT_SUFFIXES
+    try:
+        if max_bytes is not None and path.stat().st_size > max_bytes:
+            omissions.append({"path": str(path), "reason": "evidence_size_limit"})
+            return None
+        data = path.read_text(encoding="utf-8", errors="replace") if is_text else path.read_bytes()
+    except OSError as exc:
+        omissions.append({"path": str(path), "reason": type(exc).__name__,
+                          "operation": "read_source", "errno": exc.errno,
+                          "winerror": getattr(exc, "winerror", None)})
+        return None
+    return _redact_text(data, secrets).encode("utf-8") if is_text else data
+
+
+def _write_evidence_files(
+    archive: zipfile.ZipFile, files: Iterable[Path], secrets: set[str],
+    *, origin_files: set[Path], omissions: list[dict],
+) -> dict[str, Any]:
+    """Content-address files so merged occurrences retain new frames only."""
+    entries = []
+    names = set(archive.namelist())
+    remaining = MAX_EVIDENCE_BYTES - sum(
+        item.file_size for item in archive.infolist() if item.filename.startswith("evidence/")
+    )
+    for path in files:
+        data = _read_evidence_file(path, secrets, omissions, max_bytes=MAX_EVIDENCE_BYTES)
+        if data is None:
+            continue
+        digest = hashlib.sha256(data).hexdigest()
+        name = f"evidence/{digest}-{path.name}"
+        if name not in names:
+            if len(data) > remaining:
+                omissions.append({"path": str(path), "reason": "evidence_size_limit"})
+                continue
+            archive.writestr(name, data)
+            names.add(name)
+            remaining -= len(data)
+        entries.append({"source_path": str(path), "archive_path": name, "sha256": digest,
+                        "scope": "origin" if path in origin_files else "recent_log_context"})
+    origin_screenshots = [item["archive_path"] for item in entries
+                          if item["scope"] == "origin"
+                          and Path(item["source_path"]).suffix.lower() in _ALLOWED_BINARY_SUFFIXES]
+    return {
+        "files": entries, "omissions": omissions, "origin_screenshots": origin_screenshots,
+        "screenshot_status": "included" if origin_screenshots else "unavailable",
+        "screenshot_reason": None if origin_screenshots else "origin_did_not_provide_a_readable_screenshot",
+    }
 
 
 def _write_json(archive: zipfile.ZipFile, name: str, value: Any, secrets: set[str]) -> None:
@@ -509,6 +575,8 @@ def mark_incident_recovered(
     """Close active dedupe groups so a later recurrence gets a new ID."""
 
     expected_ids = _related_ids(metadata or {})
+    expected_context = {key: str(value) for key, value in (metadata or {}).items()
+                        if key in {"origin", "thread_kind", "reason"} and value}
     changed = 0
     with _LOCK:
         state = _incident_state()
@@ -522,6 +590,8 @@ def mark_incident_recovered(
                 str(scope.get(key) or "") != str(item)
                 for key, item in expected_ids.items()
             ):
+                continue
+            if any(str(scope.get(key) or "") != value for key, value in expected_context.items()):
                 continue
             value["active"] = False
             value["recovered_at"] = datetime.now(timezone.utc).isoformat()
@@ -614,11 +684,15 @@ def _minimal_incident(request: dict[str, Any], error: BaseException) -> Path | N
         "build": _build_identity(),
         "traceback": request.get("traceback") or "",
         "evidence_capture_error": type(error).__name__,
+        "failure_context": request.get("metadata") or {},
         "degraded": True,
     }
     try:
         _atomic_write_json(path, dict(redact_diagnostic(payload)))
-    except OSError:
+    except OSError as exc:
+        from .failure_evidence import record_capture_failure
+
+        record_capture_failure("incident.minimal_write", exc, error_code=str(request.get("error_code") or ""))
         return None
     return path
 
@@ -635,10 +709,12 @@ def _create_incident_package(request: dict[str, Any]) -> Path:
     storage = _storage()
     logs = storage.read_logs(limit=MAX_LOG_ROWS)
     context = request.get("metadata") if isinstance(request.get("metadata"), dict) else {}
+    omissions: list[dict] = []
     evidence_paths = list(_path_candidates(context))
+    origin_files = set(_evidence_files(evidence_paths))
     for row in logs[:50]:
         evidence_paths.extend(_path_candidates(row.get("metadata") or {}))
-    evidence_files = _evidence_files(evidence_paths)
+    evidence_files = _evidence_files(evidence_paths, omissions=omissions)
     sidecar_run_id = str(context.get("sidecar_run_id") or "") or None
     state = _incident_state()
     fingerprint_state = state["fingerprints"].get(str(request.get("fingerprint") or ""))
@@ -716,21 +792,10 @@ def _create_incident_package(request: dict[str, Any]) -> Path:
                 secrets,
             ),
         )
-        for index, path in enumerate(evidence_files, start=1):
-            name = f"evidence/{index:03d}-{path.name}"
-            try:
-                if path.suffix.lower() in _ALLOWED_TEXT_SUFFIXES:
-                    archive.writestr(
-                        name,
-                        _redact_text(
-                            path.read_text(encoding="utf-8", errors="replace"),
-                            secrets,
-                        ),
-                    )
-                else:
-                    archive.write(path, name)
-            except OSError:
-                continue
+        evidence_index = _write_evidence_files(
+            archive, evidence_files, secrets, origin_files=origin_files, omissions=omissions,
+        )
+        _write_json(archive, "evidence-index/initial.json", evidence_index, secrets)
     os.replace(temporary, output)
     return output
 
@@ -768,8 +833,10 @@ def _record_completed_request(request: dict[str, Any], path: Path) -> None:
     if record_id:
         try:
             _storage().update_log_incident_path(record_id, incident_id, str(path))
-        except Exception:
-            pass
+        except Exception as exc:
+            from .failure_evidence import record_capture_failure
+
+            record_capture_failure("incident.update_log_incident_path", exc)
 
 
 def _process_pending_request(path: Path) -> bool:
@@ -813,6 +880,12 @@ def _append_occurrence_atomically(
                 occurrence,
                 secrets,
             )
+            omissions: list[dict] = []
+            files = _evidence_files(_path_candidates(occurrence.get("metadata") or {}), omissions=omissions)
+            evidence_index = _write_evidence_files(
+                archive, files, secrets, origin_files=set(files), omissions=omissions,
+            )
+            _write_json(archive, f"evidence-index/{occurrence_id}.json", evidence_index, secrets)
         with zipfile.ZipFile(temporary, "r") as archive:
             if archive.testzip() is not None:
                 raise zipfile.BadZipFile("INCIDENT_OCCURRENCE_APPEND_CRC_FAILED")
@@ -849,7 +922,10 @@ def _process_pending_occurrence(path: Path) -> bool:
             _atomic_write_json(minimal, dict(redact_diagnostic(payload)))
         else:
             return False
-    except (OSError, zipfile.BadZipFile):
+    except (OSError, zipfile.BadZipFile) as exc:
+        from .failure_evidence import record_capture_failure
+
+        record_capture_failure("incident.append_occurrence", exc)
         return False
     path.unlink(missing_ok=True)
     return True
@@ -943,6 +1019,59 @@ def prune_incidents() -> dict[str, int]:
             if changed:
                 _write_incident_state(state)
     return {"removed": removed, "remaining": len(candidates), "bytes": total}
+def export_diagnostic_bundle(destination: Path, incident: dict[str, str] | None = None) -> Path:
+    """Export a fresh, redacted snapshot even if no new incident was generated."""
+    source = Path(incident["evidence_path"]) if incident else None
+    if source is not None and (
+        not _inside_app_dir(source) or destination.resolve() == source.resolve()
+    ):
+        raise ValueError("DIAGNOSTIC_EXPORT_SOURCE_INVALID")
+    secrets = _known_secret_values()
+    omissions: list[dict] = []
+    try:
+        logs = _storage().read_logs(limit=_storage().MAX_LOGS)
+    except Exception as exc:
+        from .failure_evidence import exception_details, record_capture_failure
+
+        logs = []
+        omissions.append({"reason": "latest_logs_unavailable", **exception_details(exc)})
+        record_capture_failure("export.latest_logs", exc)
+    pending = [_read_json(path) for path in sorted(_pending_directory().glob("INC-*.json"))]
+    context = {"recent_logs": logs[:50], "pending_incidents": pending}
+    files = _evidence_files(_path_candidates(context), omissions=omissions)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    temporary = destination.with_name(f".{destination.name}.{uuid.uuid4().hex}.tmp")
+    try:
+        with zipfile.ZipFile(temporary, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+            exported_at = datetime.now(timezone.utc).isoformat()
+            _write_json(archive, "export.json", {
+                "exported_at": exported_at, "build": _build_identity(),
+                "incident": incident, "log_count": len(logs),
+                "log_first_at": logs[-1].get("created_at") if logs else None,
+                "log_last_at": logs[0].get("created_at") if logs else None,
+                "log_limit": _storage().MAX_LOGS,
+            }, secrets)
+            _write_json(archive, "logs/latest_logs.json", logs, secrets)
+            _write_json(archive, "pending_incidents.json", pending, secrets)
+            from .client_update import update_root
+
+            attachments = [(source, f"incidents/{source.name}")] if source is not None else []
+            attachments.extend((path, f"diagnostics/{path.name}")
+                               for path in incident_directory().glob("evidence-recorder-failures*.jsonl"))
+            attachments.extend((path, f"diagnostics/update/{path.name}")
+                               for path in update_root().glob("worker-startup*.jsonl"))
+            for path, member in attachments:
+                data = _read_evidence_file(path, secrets, omissions)
+                if data is not None:
+                    archive.writestr(member, data)
+            index = _write_evidence_files(archive, files, secrets, origin_files=set(), omissions=omissions)
+            _write_json(archive, "evidence-index/export.json", index, secrets)
+        os.replace(temporary, destination)
+    finally:
+        temporary.unlink(missing_ok=True)
+    return destination
+
+
 def latest_incident() -> dict[str, str] | None:
     try:
         payload = json.loads((incident_directory() / "latest.json").read_text(encoding="utf-8"))

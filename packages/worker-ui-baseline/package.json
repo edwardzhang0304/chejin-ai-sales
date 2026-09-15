@@ -6,7 +6,7 @@
   "scripts": {
     "build:worker-assets": "node ./scripts/build-worker-assets.mjs",
     "build:preview": "node ./scripts/build-preview.mjs",
-    "test:runtime": "node --test ./tests/runtime-bridge-state.test.mjs"
+    "test:runtime": "node --test ./tests/runtime-*.test.mjs"
   },
   "peerDependencies": {
     "react": "^19.0.0",

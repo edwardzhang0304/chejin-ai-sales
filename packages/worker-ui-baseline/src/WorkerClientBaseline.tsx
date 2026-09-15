@@ -804,7 +804,7 @@ function LogsScreen({
           </div>
         </header>
         <div className="cw-incident-actions">
-          <button type="button" onClick={onExportLatestIncident}>导出最近故障</button>
+          <button type="button" onClick={onExportLatestIncident}>导出故障与最新日志</button>
           <button type="button" onClick={onOpenIncidentDirectory}>打开证据目录</button>
         </div>
         {model.latestIncident?.incident_id ? (

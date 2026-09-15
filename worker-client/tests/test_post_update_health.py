@@ -247,7 +247,9 @@ def test_startup_evidence_is_bounded_and_does_not_copy_exception_text(tmp_path, 
     assert b"secret" not in before and b"chat text" not in before
     monkeypatch.setattr(diagnostics, "MAX_DIAGNOSTIC_BYTES", len(before))
     diagnostics.record_update_startup_failure(plan_path, phase="test", exc=RuntimeError("UPDATE_FAILED"))
-    assert path.read_bytes() == before
+    assert path.with_suffix(".previous.jsonl").read_bytes() == before
+    assert json.loads(path.read_bytes())["error_code"] == "UPDATE_FAILED"
+    assert len(path.read_bytes()) <= diagnostics.MAX_DIAGNOSTIC_BYTES
 
 
 def test_runtime_must_remain_alive_across_stable_window_before_marker(

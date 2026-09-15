@@ -2641,7 +2641,19 @@ def status_payload(hwnd: int, probe: dict[str, Any], *, artifact_dir: str | None
             "compat_reason": "rpa_primary",
             "error": str(geometry_check.get("error") or "WeChat window geometry is not ready for capture."),
         }
-    screenshot, path = capture_wechat(hwnd, artifact_dir=artifact_dir, label="status")
+    # Status evidence must not turn a working WeChat into an unavailable one
+    # merely because saving the diagnostic PNG failed.
+    screenshot, path = capture_wechat(hwnd, label="status")
+    screenshot_evidence = {"status": "not_requested"}
+    if artifact_dir:
+        try:
+            path = save_screenshot_artifact(screenshot, artifact_dir=artifact_dir, label="status")
+            screenshot_evidence = {"status": "saved", "path": path}
+        except OSError as exc:
+            screenshot_evidence = {
+                "status": "save_failed", "exception_type": type(exc).__name__,
+                "errno": getattr(exc, "errno", None),
+            }
     ocr_items = run_ocr(screenshot)
     login_like = quick_login_like(ocr_items, geometry=geometry)
     if login_like:
@@ -2650,6 +2662,7 @@ def status_payload(hwnd: int, probe: dict[str, Any], *, artifact_dir: str | None
             "online": False,
             "adapter": "win32_ocr",
             "state": "login_window_detected",
+            "screenshot_evidence": screenshot_evidence,
             "window_probe": probe,
             "geometry": geometry,
             "focus_guard": focus_guard,
@@ -2665,6 +2678,7 @@ def status_payload(hwnd: int, probe: dict[str, Any], *, artifact_dir: str | None
             "online": False,
             "adapter": "win32_ocr",
             "state": "blank_render_detected",
+            "screenshot_evidence": screenshot_evidence,
             "reason": "blank_render",
             "window_probe": probe,
             "geometry": geometry,
@@ -2682,6 +2696,7 @@ def status_payload(hwnd: int, probe: dict[str, Any], *, artifact_dir: str | None
             "online": False,
             "adapter": "win32_ocr",
             "state": "auxiliary_shell_window_detected",
+            "screenshot_evidence": screenshot_evidence,
             "reason": "auxiliary_shell_window",
             "window_probe": probe,
             "geometry": geometry,
@@ -2697,6 +2712,7 @@ def status_payload(hwnd: int, probe: dict[str, Any], *, artifact_dir: str | None
         "online": True,
         "adapter": "win32_ocr",
         "state": "main_window_compat",
+        "screenshot_evidence": screenshot_evidence,
         "window_probe": probe,
         "geometry": geometry,
         "focus_guard": focus_guard,
