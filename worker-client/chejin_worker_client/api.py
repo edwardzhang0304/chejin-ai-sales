@@ -8,6 +8,7 @@ from urllib.parse import urlencode, urlsplit
 import requests
 
 from .config import CONFIG
+from .failure_evidence import api_failure_evidence
 from .models import Binding, ClientRelease, ReplySendClaim, Task, WechatReadTarget, WorkerProfile
 
 
@@ -99,45 +100,46 @@ class WorkerApiClient:
 
     def get_vision_credential(self, binding: Binding) -> str:
         """Secret-bearing HTTP response: no redirects, raw error text or persistence."""
-        url = urlsplit(self.base_url)
-        if url.username or url.password or url.query or url.fragment or not (
-            url.scheme == "https" or (
-                url.scheme == "http" and url.hostname in {"127.0.0.1", "localhost", "::1"}
-            )
-        ):
-            raise ApiError("VISION_CREDENTIAL_HTTPS_REQUIRED", "Vision 配置接口要求 HTTPS", 0)
-        identity = (binding.worker_id, binding.client_instance_id)
-        try:
-            response = self.session.get(
-                f"{self.base_url}/workers/{binding.worker_id}/vision-credential",
-                headers={"X-Worker-Token": binding.worker_token, "X-Client-Instance-Id": binding.client_instance_id},
-                timeout=self.timeout, allow_redirects=False,
-            )
-        except requests.RequestException:
-            raise ApiError("VISION_CREDENTIAL_NETWORK_FAILED", "Vision 配置获取失败，请检查网络", 0) from None
-        try:
-            if response.status_code in {401, 404}:
-                raise ApiError("WORKER_CLIENT_BINDING_INVALID", "绑定已失效，请重新绑定。", response.status_code)
-            if response.status_code != 200:
-                code = "VISION_CREDENTIAL_FETCH_FAILED"
-                if response.status_code == 503:
-                    code = "VISION_CREDENTIAL_DECRYPT_FAILED"
-                raise ApiError(code, "Vision 配置获取失败", response.status_code)
+        with api_failure_evidence("GET", f"/workers/{binding.worker_id}/vision-credential"):
+            url = urlsplit(self.base_url)
+            if url.username or url.password or url.query or url.fragment or not (
+                url.scheme == "https" or (
+                    url.scheme == "http" and url.hostname in {"127.0.0.1", "localhost", "::1"}
+                )
+            ):
+                raise ApiError("VISION_CREDENTIAL_HTTPS_REQUIRED", "Vision 配置接口要求 HTTPS", 0)
+            identity = (binding.worker_id, binding.client_instance_id)
             try:
-                envelope = response.json()
-                data = envelope["data"]
-                if envelope["code"] != "OK" or (data["worker_id"], data["client_instance_id"]) != identity:
-                    raise ValueError()
-                configured, key = data["configured"], data["vision_api_key"]
-                if configured is False and key is None:
-                    return ""
-                if configured is not True or not isinstance(key, str) or not key.strip() or len(key) > 8192 or "\r" in key or "\n" in key:
-                    raise ValueError()
-                return key
-            except (ValueError, KeyError, TypeError):
-                raise ApiError("VISION_CREDENTIAL_RESPONSE_INVALID", "Vision 配置响应无效", 502) from None
-        finally:
-            response.close()
+                response = self.session.get(
+                    f"{self.base_url}/workers/{binding.worker_id}/vision-credential",
+                    headers={"X-Worker-Token": binding.worker_token, "X-Client-Instance-Id": binding.client_instance_id},
+                    timeout=self.timeout, allow_redirects=False,
+                )
+            except requests.RequestException:
+                raise ApiError("VISION_CREDENTIAL_NETWORK_FAILED", "Vision 配置获取失败，请检查网络", 0) from None
+            try:
+                if response.status_code in {401, 404}:
+                    raise ApiError("WORKER_CLIENT_BINDING_INVALID", "绑定已失效，请重新绑定。", response.status_code)
+                if response.status_code != 200:
+                    code = "VISION_CREDENTIAL_FETCH_FAILED"
+                    if response.status_code == 503:
+                        code = "VISION_CREDENTIAL_DECRYPT_FAILED"
+                    raise ApiError(code, "Vision 配置获取失败", response.status_code)
+                try:
+                    envelope = response.json()
+                    data = envelope["data"]
+                    if envelope["code"] != "OK" or (data["worker_id"], data["client_instance_id"]) != identity:
+                        raise ValueError()
+                    configured, key = data["configured"], data["vision_api_key"]
+                    if configured is False and key is None:
+                        return ""
+                    if configured is not True or not isinstance(key, str) or not key.strip() or len(key) > 8192 or "\r" in key or "\n" in key:
+                        raise ValueError()
+                    return key
+                except (ValueError, KeyError, TypeError):
+                    raise ApiError("VISION_CREDENTIAL_RESPONSE_INVALID", "Vision 配置响应无效", 502) from None
+            finally:
+                response.close()
 
     def heartbeat(
         self,
@@ -600,40 +602,41 @@ class WorkerApiClient:
     ) -> dict[str, Any]:
         """Upload side-channel telemetry without changing normal API timeout state."""
 
-        headers = {
-            "Content-Type": "application/json",
-            "X-Worker-Token": binding.worker_token,
-            "X-Client-Instance-Id": binding.client_instance_id,
-        }
-        # A private Session avoids sharing connection-pool state with the
-        # business API client from the telemetry daemon thread.
-        with requests.Session() as isolated_session:
-            response = isolated_session.post(
-                (
-                    f"{self.base_url}/workers/{binding.worker_id}"
-                    "/observability/stage-events"
-                ),
-                headers=headers,
-                json={"events": events},
-                timeout=self.timeout if timeout is None else timeout,
-            )
-        try:
-            envelope = response.json()
-        except ValueError as exc:
-            raise ApiError(
-                "HTTP_ERROR",
-                response.text or "观测接口响应不是 JSON",
-                response.status_code,
-            ) from exc
-        if response.status_code >= 400 or envelope.get("code") != "OK":
-            raise ApiError(
-                str(envelope.get("code") or "API_ERROR"),
-                str(envelope.get("message") or "观测上报失败"),
-                response.status_code,
-                envelope.get("data"),
-                envelope.get("trace_id"),
-            )
-        return dict(envelope.get("data") or {})
+        with api_failure_evidence("POST", f"/workers/{binding.worker_id}/observability/stage-events"):
+            headers = {
+                "Content-Type": "application/json",
+                "X-Worker-Token": binding.worker_token,
+                "X-Client-Instance-Id": binding.client_instance_id,
+            }
+            # A private Session avoids sharing connection-pool state with the
+            # business API client from the telemetry daemon thread.
+            with requests.Session() as isolated_session:
+                response = isolated_session.post(
+                    (
+                        f"{self.base_url}/workers/{binding.worker_id}"
+                        "/observability/stage-events"
+                    ),
+                    headers=headers,
+                    json={"events": events},
+                    timeout=self.timeout if timeout is None else timeout,
+                )
+            try:
+                envelope = response.json()
+            except ValueError as exc:
+                raise ApiError(
+                    "HTTP_ERROR",
+                    response.text or "观测接口响应不是 JSON",
+                    response.status_code,
+                ) from exc
+            if response.status_code >= 400 or envelope.get("code") != "OK":
+                raise ApiError(
+                    str(envelope.get("code") or "API_ERROR"),
+                    str(envelope.get("message") or "观测上报失败"),
+                    response.status_code,
+                    envelope.get("data"),
+                    envelope.get("trace_id"),
+                )
+            return dict(envelope.get("data") or {})
 
     def _request(
         self,
@@ -645,30 +648,31 @@ class WorkerApiClient:
         extra_headers: dict[str, str] | None = None,
         timeout: float | None = None,
     ) -> Any:
-        headers = {"Content-Type": "application/json"}
-        if binding:
-            headers["X-Worker-Token"] = binding.worker_token
-            headers["X-Client-Instance-Id"] = binding.client_instance_id
-            if self.inflight_flow_id:
-                headers["X-Inflight-Flow-Id"] = self.inflight_flow_id
-        headers.update(extra_headers or {})
-        response = self.session.request(
-            method,
-            f"{self.base_url}{path}",
-            headers=headers,
-            json=json,
-            timeout=self.timeout if timeout is None else timeout,
-        )
-        try:
-            envelope = response.json()
-        except ValueError as exc:
-            raise ApiError("HTTP_ERROR", response.text or "服务端响应不是 JSON", response.status_code) from exc
-        if response.status_code >= 400 or envelope.get("code") != "OK":
-            raise ApiError(
-                str(envelope.get("code") or "API_ERROR"),
-                str(envelope.get("message") or "接口调用失败"),
-                response.status_code,
-                envelope.get("data"),
-                envelope.get("trace_id"),
+        with api_failure_evidence(method, path):
+            headers = {"Content-Type": "application/json"}
+            if binding:
+                headers["X-Worker-Token"] = binding.worker_token
+                headers["X-Client-Instance-Id"] = binding.client_instance_id
+                if self.inflight_flow_id:
+                    headers["X-Inflight-Flow-Id"] = self.inflight_flow_id
+            headers.update(extra_headers or {})
+            response = self.session.request(
+                method,
+                f"{self.base_url}{path}",
+                headers=headers,
+                json=json,
+                timeout=self.timeout if timeout is None else timeout,
             )
-        return envelope.get("data")
+            try:
+                envelope = response.json()
+            except ValueError as exc:
+                raise ApiError("HTTP_ERROR", response.text or "服务端响应不是 JSON", response.status_code) from exc
+            if response.status_code >= 400 or envelope.get("code") != "OK":
+                raise ApiError(
+                    str(envelope.get("code") or "API_ERROR"),
+                    str(envelope.get("message") or "接口调用失败"),
+                    response.status_code,
+                    envelope.get("data"),
+                    envelope.get("trace_id"),
+                )
+            return envelope.get("data")

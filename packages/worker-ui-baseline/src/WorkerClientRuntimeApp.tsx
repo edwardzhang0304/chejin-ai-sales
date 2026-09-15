@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { WorkerClientBaseline } from "./WorkerClientBaseline";
 import { connectRuntimeBridge } from "./runtimeBridgeState.mjs";
+import { installRuntimeFailureEvidence } from "./runtimeFailureEvidence.mjs";
 import type { WorkerClientModel, WorkerClientScreen } from "./types";
 
 interface BridgeState {
@@ -13,6 +14,7 @@ interface BridgeState {
 }
 
 interface CheJinBridge {
+  reportUiFailure?(payload: string): void;
   initialState(callback: (payload: string) => void): void;
   changeScreen(screen: WorkerClientScreen): void;
   goBack(): void;
@@ -33,6 +35,8 @@ interface CheJinBridge {
     connect(callback: (payload: string) => void): void;
   };
 }
+
+const failureEvidence = installRuntimeFailureEvidence(window);
 
 declare global {
   interface Window {
@@ -122,6 +126,7 @@ function App() {
     if (!window.QWebChannel || !window.qt?.webChannelTransport) return;
     new window.QWebChannel(window.qt.webChannelTransport, (channel) => {
       const nextBridge = channel.objects.chejinBridge;
+      failureEvidence.attach(nextBridge);
       setBridge(nextBridge);
       connectRuntimeBridge(nextBridge, (nextState: BridgeState) => setState(nextState));
     });

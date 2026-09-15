@@ -10,6 +10,7 @@ import json
 import os
 from pathlib import Path
 import re
+import sys
 import time
 import traceback
 
@@ -56,11 +57,14 @@ def record_update_startup_failure(
         data = json.dumps(record, ensure_ascii=True, separators=(",", ":")) + "\n"
         path.parent.mkdir(parents=True, exist_ok=True)
         current_size = path.stat().st_size if path.exists() else 0
-        if current_size + len(data.encode("utf-8")) > MAX_DIAGNOSTIC_BYTES:
-            return
+        if path.exists() and current_size + len(data.encode("utf-8")) > MAX_DIAGNOSTIC_BYTES:
+            path.replace(path.with_suffix(".previous.jsonl"))
         with path.open("a", encoding="utf-8") as handle:
             handle.write(data)
     except Exception:
         # A full disk, permissions or a malformed exception must never alter
         # startup validation, task settlement or the rollback decision.
-        pass
+        try:
+            sys.stderr.write(data if "data" in locals() else "update_diagnostic_write_failed\n")
+        except Exception:
+            pass

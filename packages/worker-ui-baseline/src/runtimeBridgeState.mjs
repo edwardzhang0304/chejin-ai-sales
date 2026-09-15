@@ -13,9 +13,13 @@ export function connectRuntimeBridge(bridge, onState) {
     try {
       parsed = JSON.parse(payload);
     } catch {
+      bridge.reportUiFailure?.(JSON.stringify({ kind: "bridge_invalid_json" }));
       return;
     }
-    if (!parsed || typeof parsed.screen !== "string" || !parsed.model) return;
+    if (!parsed || typeof parsed.screen !== "string" || !parsed.model) {
+      bridge.reportUiFailure?.(JSON.stringify({ kind: "bridge_invalid_state" }));
+      return;
+    }
     const revision = Number.isFinite(parsed.revision) ? Number(parsed.revision) : 0;
     if (revision < latestRevision) return;
     latestRevision = revision;

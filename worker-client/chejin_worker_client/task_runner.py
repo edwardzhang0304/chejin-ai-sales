@@ -6988,6 +6988,7 @@ class TaskRunner:
         if not self.current_task and not ui_action_active:
             self._maybe_cleanup_artifacts()
         previous_wechat_status = self.last_wechat_status
+        previous_rpa_status = self.last_rpa_component_status
         probe_performed = False
         if probe_due and not ui_action_active:
             rpa_status, wechat_status = self.bridge.probe()
@@ -6995,6 +6996,20 @@ class TaskRunner:
             self.last_rpa_component_status = rpa_status
             self.last_wechat_status = wechat_status
             self.last_rpa_probe_at = time.monotonic()
+            if (rpa_status, wechat_status) != (previous_rpa_status, previous_wechat_status):
+                probe_result = getattr(self.bridge, "last_probe_payload", {}) or {}
+                append_log(
+                    "INFO", "rpa_probe_state_changed", "微信状态检测结果发生变化。",
+                    metadata={
+                        "previous_rpa_status": previous_rpa_status,
+                        "previous_wechat_status": previous_wechat_status,
+                        "rpa_component_status": rpa_status, "wechat_status": wechat_status,
+                        "probe_state": probe_result.get("state"),
+                        "probe_error_code": probe_result.get("error_code"),
+                        "probe_reason": probe_result.get("reason"),
+                        "startup_window_normalization_state": probe_result.get("startup_window_normalization_state"),
+                    },
+                )
         else:
             rpa_status = self.last_rpa_component_status or "unavailable"
             wechat_status = self.last_wechat_status or "unknown"

@@ -13,6 +13,7 @@ from typing import Any, Callable, Iterator
 
 from .api import ApiError
 from .config import CONFIG
+from .failure_evidence import record_capture_failure
 from .c2_contract import c2_contract_v3
 from .models import Binding
 
@@ -238,7 +239,8 @@ def remember_process_run(
                 (str(local_run_id),),
             ).fetchone()
         return bool(row and str(row["process_run_id"]) == str(process_run_id))
-    except Exception:
+    except Exception as diagnostic_error:
+        record_capture_failure("telemetry.remember_process_run", diagnostic_error)
         return False
 
 
@@ -256,7 +258,8 @@ def load_process_run(
                 (str(local_run_id),),
             ).fetchone()
         return str(row["process_run_id"]) if row else None
-    except Exception:
+    except Exception as diagnostic_error:
+        record_capture_failure("telemetry.load_process_run", diagnostic_error)
         return None
 
 
@@ -309,7 +312,8 @@ def next_local_stage_attempt(
             _prune_stage_attempts(conn)
             conn.commit()
         return attempt
-    except Exception:
+    except Exception as diagnostic_error:
+        record_capture_failure("telemetry.next_local_stage_attempt", diagnostic_error)
         return 1
 
 
@@ -389,7 +393,8 @@ def enqueue_stage_event(
                 (event["stage_run_id"], payload, utc_iso_now()),
             )
         return True
-    except Exception:
+    except Exception as diagnostic_error:
+        record_capture_failure("telemetry.enqueue_stage_event", diagnostic_error)
         return False
 
 
@@ -416,7 +421,8 @@ def pending_stage_events(
                 (ready_at, batch_size),
             ).fetchall()
         return [json.loads(str(row["payload_json"])) for row in rows]
-    except Exception:
+    except Exception as diagnostic_error:
+        record_capture_failure("telemetry.pending_stage_events", diagnostic_error)
         return []
 
 
@@ -448,7 +454,8 @@ def quarantined_stage_events(
             }
             for row in rows
         ]
-    except Exception:
+    except Exception as diagnostic_error:
+        record_capture_failure("telemetry.quarantined_stage_events", diagnostic_error)
         return []
 
 
@@ -521,7 +528,8 @@ def remember_authority_snapshots(
                 (MAX_AUTHORITY_SNAPSHOTS,),
             )
         return len(bounded)
-    except Exception:
+    except Exception as diagnostic_error:
+        record_capture_failure("telemetry.remember_authority_snapshots", diagnostic_error)
         return 0
 
 
@@ -540,7 +548,8 @@ def authority_snapshots(
                 """
             ).fetchall()
         return [json.loads(str(row["report_json"])) for row in rows]
-    except Exception:
+    except Exception as diagnostic_error:
+        record_capture_failure("telemetry.authority_snapshots", diagnostic_error)
         return []
 
 
@@ -654,6 +663,7 @@ def flush_stage_events(
         _delete_uploaded(stage_run_ids, db_path=db_path)
         return len(events)
     except Exception as error:
+        record_capture_failure("telemetry.flush_stage_events", error)
         if _permanent_rejection(error):
             uploaded = 0
             # A rejected batch does not identify the invalid member. Retry
@@ -675,6 +685,7 @@ def flush_stage_events(
                     _delete_uploaded([stage_run_id], db_path=db_path)
                     uploaded += 1
                 except Exception as item_error:
+                    record_capture_failure("telemetry.flush_stage_events", item_error)
                     try:
                         if _permanent_rejection(item_error):
                             _quarantine_rejected(
@@ -684,12 +695,14 @@ def flush_stage_events(
                             )
                         else:
                             _defer_failed([stage_run_id], db_path=db_path)
-                    except Exception:
+                    except Exception as diagnostic_error:
+                        record_capture_failure("telemetry.flush_stage_events", diagnostic_error)
                         pass
             return uploaded
         try:
             _defer_failed(stage_run_ids, db_path=db_path)
-        except Exception:
+        except Exception as diagnostic_error:
+            record_capture_failure("telemetry.flush_stage_events", diagnostic_error)
             pass
         return 0
 
@@ -722,7 +735,8 @@ def schedule_stage_event_upload(
     try:
         thread_factory(target=run, name="chejin-telemetry-upload", daemon=True).start()
         return True
-    except Exception:
+    except Exception as diagnostic_error:
+        record_capture_failure("telemetry.schedule_stage_event_upload", diagnostic_error)
         with _UPLOAD_LOCK:
             _UPLOAD_ACTIVE = False
         return False
@@ -843,7 +857,8 @@ def abandon_buffered_running_stages(*, db_path: Path | None = None) -> int:
                 )
                 count += 1
         return count
-    except Exception:
+    except Exception as diagnostic_error:
+        record_capture_failure("telemetry.abandon_buffered_running_stages", diagnostic_error)
         return 0
 
 

@@ -11,6 +11,7 @@ from types import TracebackType
 from typing import Any
 
 from .config import CONFIG
+from .failure_evidence import record_capture_failure
 from .emergency_stop import reset_emergency_stop_for_tests, trigger_emergency_stop
 from .incident_evidence import start_incident_worker
 from .storage import append_log, load_binding, save_binding
@@ -35,7 +36,10 @@ def _read_marker() -> dict[str, Any]:
         import json
 
         payload = json.loads(_marker_path().read_text(encoding="utf-8"))
-    except (OSError, ValueError):
+    except FileNotFoundError:
+        return {}
+    except (OSError, ValueError) as exc:
+        record_capture_failure("runtime.read_marker", exc)
         return {}
     return payload if isinstance(payload, dict) else {}
 
@@ -93,8 +97,8 @@ def report_unhandled_exception(
                 }
             )
             _write_marker(marker)
-        except OSError:
-            pass
+        except OSError as marker_error:
+            record_capture_failure("runtime.crash_marker", marker_error)
         return append_log(
             "ERROR",
             "worker_unhandled_exception",
@@ -111,6 +115,10 @@ def report_unhandled_exception(
             },
             force_incident=True,
         )
+    except Exception as capture_error:
+        record_capture_failure("worker_unhandled_exception", exc, error_code="WORKER_UNHANDLED_EXCEPTION")
+        record_capture_failure("unhandled_exception_recorder", capture_error)
+        return {}
     finally:
         _REPORTING.active = False
 

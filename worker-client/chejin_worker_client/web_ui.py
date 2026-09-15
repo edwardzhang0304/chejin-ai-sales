@@ -19,7 +19,8 @@ from PySide6.QtWidgets import QFileDialog, QMainWindow
 from . import __version__, runtime_startup
 from .api import WorkerApiClient
 from .config import CONFIG
-from .incident_evidence import incident_by_id, incident_directory, latest_incident
+from .failure_evidence import exception_details, record_capture_failure, record_ui_failure
+from .incident_evidence import export_diagnostic_bundle, incident_by_id, incident_directory, latest_incident
 from .models import Binding, RpaResult, RpaStep, Task, WorkerProfile, task_type_title
 from .qt_application import GuardedQApplication
 from .rpa_bridge import RpaBridge
@@ -172,6 +173,10 @@ class WorkerWebBridge(QObject):
         return self.window.state_json()
 
     @Slot(str)
+    def reportUiFailure(self, payload: str) -> None:
+        record_ui_failure(self.window, payload)
+
+    @Slot(str)
     def changeScreen(self, screen: str) -> None:
         self.window.change_screen(screen)
 
@@ -307,6 +312,14 @@ class WorkerWebWindow(QMainWindow):
         self.channel.registerObject("chejinBridge", self.bridge)
 
         self.view = QWebEngineView(self)
+        self.view.renderProcessTerminated.connect(
+            lambda status, code: record_ui_failure(self, json.dumps({
+                "kind": "renderer_terminated", "exit_code": code,
+            }))
+        )
+        self.view.loadFinished.connect(
+            lambda ok: None if ok else record_ui_failure(self, '{"kind":"page_load_failed"}')
+        )
         self.view.page().setWebChannel(self.channel)
         self.view.page().setBackgroundColor(QColor(0, 0, 0, 0))
         self.view.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
@@ -459,12 +472,13 @@ class WorkerWebWindow(QMainWindow):
                         "Worker 界面状态投影失败；业务线程继续运行并保留上一份可用界面状态。",
                         error_code="UI_STATE_PROJECTION_FAILED",
                         metadata={
-                            "exception_type": type(exc).__name__,
+                            **exception_details(exc),
                             "current_step": self.runner.current_step or "",
                         },
                     )
-                except Exception:
-                    pass
+                except Exception as capture_exc:
+                    record_capture_failure("ui_state_projection_failed", capture_exc,
+                                           error_code="UI_STATE_PROJECTION_FAILED")
             cached = str(
                 getattr(self, "_last_successful_state_json", "") or ""
             )
@@ -911,36 +925,33 @@ class WorkerWebWindow(QMainWindow):
         self._publish()
 
     def _export_incident(self, incident: dict[str, str] | None, *, dialog_title: str) -> str:
-        if not incident:
-            self.on_error("当前没有可导出的故障证据包。")
-            return ""
-        source = Path(incident["evidence_path"])
         destination, _ = QFileDialog.getSaveFileName(
             self,
             dialog_title,
-            str(Path.home() / "Downloads" / source.name),
+            str(Path.home() / "Downloads" / f"worker-diagnostics-{datetime.now():%Y%m%d-%H%M%S}.zip"),
             "ZIP 文件 (*.zip)",
         )
         if not destination:
             return ""
         try:
             target = Path(destination)
-            target.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(source, target)
-        except OSError as exc:
-            append_log(
-                "ERROR",
+            export_diagnostic_bundle(target, incident)
+        except Exception as exc:
+            from .failure_evidence import exception_details, record_failure
+
+            record_failure(
                 "incident_export_failed",
-                str(exc),
+                message="故障与最新日志导出失败。",
                 error_code="INCIDENT_EXPORT_FAILED",
+                metadata=exception_details(exc),
             )
             self.on_error("故障证据导出失败。")
             return ""
         append_log(
             "INFO",
             "incident_exported",
-            "故障证据已导出。",
-            metadata={"incident_id": incident.get("incident_id"), "export_path": str(target)},
+            "故障证据与导出时的最新日志已导出。",
+            metadata={"incident_id": (incident or {}).get("incident_id"), "export_path": str(target)},
         )
         self._publish()
         return str(target)
@@ -948,7 +959,7 @@ class WorkerWebWindow(QMainWindow):
     def export_latest_incident(self) -> str:
         return self._export_incident(
             latest_incident(),
-            dialog_title="导出最近一次故障证据",
+            dialog_title="导出故障与最新日志",
         )
 
     def export_incident(self, incident_id: str) -> str:

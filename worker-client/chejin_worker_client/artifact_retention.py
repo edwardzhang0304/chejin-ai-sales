@@ -48,6 +48,11 @@ def _is_relative_to(path: Path, root: Path) -> bool:
 
 def _flow_directories(root: Path) -> list[Path]:
     candidates: set[Path] = set()
+    for category in ("rpa_probes", "ui_failures"):
+        category_root = root / category
+        if category_root.is_dir():
+            candidates.update(child for child in category_root.iterdir()
+                              if child.is_dir() and not child.is_symlink())
     c2_root = root / "wechat_c2"
     for category in ("sessions", "messages", "voice"):
         category_root = c2_root / category
@@ -138,8 +143,10 @@ def record_artifact_outcome(artifact_dir: Path | None, result: dict) -> bool:
                     "retention_class": marker["retention_class"],
                 },
             )
-        except Exception:
-            pass
+        except Exception as capture_exc:
+            from .failure_evidence import record_capture_failure
+
+            record_capture_failure("artifact_retention_marker_failed", capture_exc)
         return False
     return True
 

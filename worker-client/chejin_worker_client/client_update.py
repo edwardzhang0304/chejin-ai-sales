@@ -123,13 +123,20 @@ class UpdateStateStore:
             except FileNotFoundError:
                 return {"schema_version": UPDATE_SCHEMA_VERSION, "state": "idle"}
             except (OSError, json.JSONDecodeError) as exc:
+                from .update_diagnostics import record_update_startup_failure
+
+                record_update_startup_failure(self.state_path, phase="update_state_read", exc=exc)
                 raise ClientUpdateError(
                     "UPDATE_STATE_INVALID",
                     "本地更新状态不可读",
                     data={"error_type": type(exc).__name__},
                 ) from exc
             if not isinstance(payload, dict) or payload.get("state") not in UPDATE_STATES:
-                raise ClientUpdateError("UPDATE_STATE_INVALID", "本地更新状态格式不合法")
+                from .update_diagnostics import record_update_startup_failure
+
+                error = ClientUpdateError("UPDATE_STATE_INVALID", "本地更新状态格式不合法")
+                record_update_startup_failure(self.state_path, phase="update_state_read", exc=error)
+                raise error
             return payload
 
     def save(self, payload: dict[str, Any]) -> dict[str, Any]:

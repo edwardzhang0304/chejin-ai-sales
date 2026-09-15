@@ -72,7 +72,12 @@ def _atomic_write(path: Path, payload: dict[str, Any]) -> None:
 def read_action_journal(path: str | Path) -> dict[str, Any]:
     try:
         payload = json.loads(Path(path).read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError, TypeError, ValueError):
+    except FileNotFoundError:
+        return {}
+    except (OSError, json.JSONDecodeError, TypeError, ValueError) as exc:
+        from .failure_evidence import record_capture_failure
+
+        record_capture_failure("read_action_journal", exc)
         return {}
     return payload if isinstance(payload, dict) else {}
 

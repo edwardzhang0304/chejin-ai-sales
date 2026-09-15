@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import threading
@@ -14,6 +15,7 @@ from typing import Any, Callable
 from .config import CONFIG
 from .emergency_stop import emergency_stop_requested
 from .artifact_retention import record_artifact_outcome
+from .failure_evidence import exception_details, mark_failure_recovered, record_capture_failure, record_failure
 from .action_journal import (
     action_journal_path,
     action_journal_phase,
@@ -921,13 +923,6 @@ class RpaBridge:
         timeout: int = 30,
         cancel_check: CancellationCheck | None = None,
     ) -> dict[str, Any]:
-        if emergency_stop_requested():
-            return {
-                "ok": False,
-                "state": "action_cancelled",
-                "error_code": "WORKER_EMERGENCY_STOPPED",
-                "message": "The worker emergency stop is active.",
-            }
         original_cancel_check = cancel_check
 
         def emergency_aware_cancel_check() -> bool | str:
@@ -937,17 +932,77 @@ class RpaBridge:
                 return False
             return original_cancel_check()
 
+        args = list(args)
+        action = str(args[0] if args else "unknown")
         artifact_dir = self._artifact_dir_from_args(args)
+        probe_directory: Path | None = None
+        # Keep the exact status frame until the result is known. Successful
+        # probes are discarded; failed probes retain their original pixels.
+        if action == "status" and artifact_dir is None:
+            try:
+                probe_directory = (
+                    CONFIG.app_dir / "artifacts" / "rpa_probes"
+                    / f"{time.strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:10]}"
+                )
+                probe_directory.mkdir(parents=True, exist_ok=False)
+                artifact_dir = probe_directory
+                args.extend(["--artifact-dir", str(artifact_dir)])
+            except OSError as exc:
+                record_capture_failure("rpa_probe_directory", exc)
+                probe_directory = None
         resolved_artifact_dir = artifact_dir.resolve() if artifact_dir is not None else None
         if resolved_artifact_dir is not None:
             with self._active_artifact_dirs_lock:
                 self._active_artifact_dirs.add(resolved_artifact_dir)
         try:
-            result = self._call_omniauto_process(
-                args,
-                timeout=timeout,
-                cancel_check=emergency_aware_cancel_check,
-            )
+            started_at = time.monotonic()
+            try:
+                if emergency_stop_requested():
+                    result = {
+                        "ok": False, "state": "action_cancelled",
+                        "error_code": "WORKER_EMERGENCY_STOPPED",
+                        "message": "The worker emergency stop is active.",
+                    }
+                else:
+                    result = self._call_omniauto_process(
+                        args, timeout=timeout,
+                        cancel_check=emergency_aware_cancel_check,
+                    )
+            except Exception as exc:
+                record_failure(
+                    "rpa_action_failed", error_code="RPA_ACTION_EXCEPTION",
+                    message="微信执行组件抛出异常，保留原异常处理流程。",
+                    metadata={"origin": action, "artifact_dir": str(artifact_dir or ""),
+                              "timeout_seconds": timeout, **exception_details(exc)},
+                )
+                raise
+            failed = result.get("ok") is not True or result.get("send_result") in {"failed", "unknown"}
+            if failed:
+                record_failure(
+                    "rpa_action_failed",
+                    error_code=str(result.get("error_code") or "RPA_ACTION_FAILED"),
+                    message="微信执行组件未成功完成，本次原始结果和可用截图已进入取证。",
+                    metadata={
+                        "origin": action, "artifact_dir": str(artifact_dir or ""),
+                        "timeout_seconds": timeout,
+                        "elapsed_ms": round((time.monotonic() - started_at) * 1000),
+                        "result": result,
+                    },
+                )
+            else:
+                mark_failure_recovered("rpa_action_failed", action)
+                if probe_directory is not None:
+                    try:
+                        shutil.rmtree(probe_directory)
+                    except OSError as exc:
+                        record_capture_failure("successful_probe_cleanup", exc)
+            screenshot_evidence = result.get("screenshot_evidence")
+            if isinstance(screenshot_evidence, dict) and screenshot_evidence.get("status") == "save_failed":
+                record_failure(
+                    "rpa_screenshot_save_failed", error_code="EVIDENCE_SCREENSHOT_SAVE_FAILED",
+                    message="状态检测原结果保持不变，但截图保存失败。",
+                    metadata={"origin": action, "capture_error": result["screenshot_evidence"]},
+                )
             try:
                 record_artifact_outcome(artifact_dir, result)
             except Exception as exc:
@@ -963,8 +1018,8 @@ class RpaBridge:
                             "artifact_dir": str(artifact_dir or ""),
                         },
                     )
-                except Exception:
-                    pass
+                except Exception as capture_exc:
+                    record_capture_failure("artifact_retention_marker_failed", capture_exc)
             return result
         finally:
             if resolved_artifact_dir is not None:
