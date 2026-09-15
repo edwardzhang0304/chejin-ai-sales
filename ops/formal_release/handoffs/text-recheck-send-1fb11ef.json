@@ -1,0 +1,187 @@
+{
+  "schema_version": 1,
+  "repository": "edwardzhang0304/chejin-ai-sales",
+  "reviewed_commit": "1fb11ef38125506692b7d29bffc1b8ebf3d77561",
+  "target_version": "0.9.83",
+  "approval": "Owner authorizes formal preserved-data manual release (strong upgrade) on 2026-09-15; confirms actual 0.9.82 and normal exit in response to version/exit/pending-state question. No button upgrade or historical compatibility matrix; reuse reviewed source evidence, verify exact binary separately.",
+  "original_verification_sha256": "e51bfb19fed2a371b56b87837ec8fa5469d916d9b9e0a175b7759105c3532382",
+  "source_sha256": {
+    "worker-client/chejin_worker_client/rpa_bridge.py": "ab96d3e1056e27301b4b454c74e13dd428fcfc22c957ca356489b25d33b8ce5d",
+    "worker-client/chejin_worker_client/storage.py": "c26e981db0fabf896b80a57f64a497c72e43a21a61f7317ff33705c284201373",
+    "worker-client/chejin_worker_client/task_runner.py": "fd15256b690412d28e9a8a278eca86f75d28e07f4fef1deb9c6a067da588d196",
+    "worker-client/chejin_worker_client/text_recheck.py": "e5fb7cb48d55a741bc361d2f48a107cae81e81159d75b3552e3832fb3bf77dc2",
+    "worker-client/tests/test_text_bubble_recheck.py": "111e3d6e852f576ac1e510bed181948a0066c6bedc42e15d49f2cc843f4e8330",
+    "worker-client/tests/fixtures/text_recheck_process.py": "86409a00a2443033e6ebae077f0ef21d8951aa7ac18ec30381ea9ec3e5451736",
+    "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/adapters/wechat_win32_ocr_sidecar.py": "2bae3af8a043ec5e0aeb6e18a02068b67e7f03a64bdd95997e4ba4bccb079804",
+    "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/adapters/wechat_win32_ocr/text_bubble_recheck.py": "bfe794a3ba6042e143709a89b955c53c1b41868e546bfd73c3930c594e77ef21",
+    "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/tests/test_complete_text_bubble_recheck.py": "0aa5bb7a3153e1c5939373f3cd9520f58f2254c8cd2406cf6215546ea3d3fd39",
+    "worker-client/tests/test_wechat_send_safety.py": "cae0ebcb33ba2ab25a7d9b0029b25d6f2e02a7d37898deb71785a8b14bb48a5a",
+    "worker-client/tests/test_send_result_evidence.py": "6cbb9594881e14fbf8710598d58e3d12f3f6c7d62012f8fc55cb4a5c81344661",
+    "worker-client/tests/fixtures/send_result_process.py": "f7dd70a0ffe0ee1c26e1c8d72b71ab816f171ed216b1ed5d75f6e511f9b69777"
+  },
+  "checks": [
+    {
+      "name": "text-recheck-roi-decoupling-20260915/roi-matrix.xml",
+      "original_xml_sha256": "f7bf2931f978cb17aae1b7a62b489c23b862be777eb78635f671a0ec1608496c",
+      "count": 4,
+      "cases": [
+        {
+          "name": "worker-client.tests.test_text_bubble_recheck::test_real_original_reaches_ingest_or_original_fault_and_automatic_cleanup[roi-on-True]",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_text_bubble_recheck::test_real_original_reaches_ingest_or_original_fault_and_automatic_cleanup[roi-on-False]",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_text_bubble_recheck::test_real_original_reaches_ingest_or_original_fault_and_automatic_cleanup[roi-off-True]",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_text_bubble_recheck::test_real_original_reaches_ingest_or_original_fault_and_automatic_cleanup[roi-off-False]",
+          "result": "passed"
+        }
+      ]
+    },
+    {
+      "name": "text-recheck-roi-decoupling-20260915/roi-off-boundaries.xml",
+      "original_xml_sha256": "905634d9018863d4c1164ddc7079ce740febc64673bd67b814c5429504123b74",
+      "count": 6,
+      "cases": [
+        {
+          "name": "worker-client.tests.test_text_bubble_recheck::test_aligned_real_frame_has_zero_additional_capture_or_local_ocr",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_text_bubble_recheck::test_pre_send_real_recheck_keeps_new_customer_question_as_new",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_text_bubble_recheck::test_real_saved_frame_binding_rejects_tampering_without_capture[pixels]",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_text_bubble_recheck::test_real_saved_frame_binding_rejects_tampering_without_capture[geometry]",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_text_bubble_recheck::test_real_saved_frame_binding_rejects_tampering_without_capture[expired]",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_text_bubble_recheck::test_real_saved_frame_binding_rejects_tampering_without_capture[ocr_file]",
+          "result": "passed"
+        }
+      ]
+    },
+    {
+      "name": "text-recheck-roi-decoupling-20260915/adjacent-regression.xml",
+      "original_xml_sha256": "9cdd1f72c8bcd5c7e1a1edb3f8b87317642281b1b72ce74051daec4a28bd86f6",
+      "count": 6,
+      "cases": [
+        {
+          "name": "worker-client.tests.test_wechat_send_safety.WechatSendSafetyTest::test_formal_reuse_switches_restore_full_frame_ocr_paths",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_wechat_send_safety.WechatSendSafetyTest::test_messages_payload_applies_confirmed_reply_recovery_before_observations",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_wechat_send_safety.WechatSendSafetyTest::test_same_frame_full_ocr_replay_authenticates_saved_pixels_without_capture",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_wechat_send_safety.WechatSendSafetyTest::test_same_frame_full_ocr_replay_rejects_tampered_pixels_before_ocr",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_rpa_bridge.RpaBridgeTest::test_formal_pre_send_switch_disables_bridge_roi_and_replay",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_task_runner.TaskRunnerTest::test_formal_pre_send_roi_switch_off_keeps_worker_on_original_read",
+          "result": "passed"
+        }
+      ]
+    },
+    {
+      "name": "send-result-20260915/final-regression.xml",
+      "original_xml_sha256": "212d3142423f3e1715d40ace7486d35af777639064b4444e4fe01bf2f2f4825a",
+      "count": 16,
+      "cases": [
+        {
+          "name": "worker-client.tests.test_send_result_evidence::test_public_send_preserves_process_result_and_outcome[sent]",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_send_result_evidence::test_public_send_preserves_process_result_and_outcome[failed]",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_send_result_evidence::test_public_send_preserves_process_result_and_outcome[unknown]",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_send_result_evidence::test_evidence_check_accepts_nested_and_legacy_results_without_mutation[nested0-False]",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_send_result_evidence::test_evidence_check_accepts_nested_and_legacy_results_without_mutation[nested1-True]",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_send_result_evidence::test_evidence_check_accepts_nested_and_legacy_results_without_mutation[nested2-True]",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_send_result_evidence::test_evidence_check_accepts_nested_and_legacy_results_without_mutation[nested3-True]",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_send_result_evidence::test_evidence_check_accepts_nested_and_legacy_results_without_mutation[sent-False]",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_send_result_evidence::test_evidence_check_accepts_nested_and_legacy_results_without_mutation[failed-True]",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_send_result_evidence::test_evidence_check_accepts_nested_and_legacy_results_without_mutation[unknown-True]",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_send_result_evidence::test_evidence_check_accepts_nested_and_legacy_results_without_mutation[None-False]",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_send_result_evidence::test_evidence_check_accepts_nested_and_legacy_results_without_mutation[nested8-False]",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_send_result_evidence::test_evidence_check_accepts_nested_and_legacy_results_without_mutation[nested9-False]",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_send_result_evidence::test_evidence_check_accepts_nested_and_legacy_results_without_mutation[nested10-False]",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_send_result_evidence::test_evidence_check_accepts_nested_and_legacy_results_without_mutation[nested11-False]",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_send_result_evidence::test_task_runner_send_result_reaches_normal_ack_without_recovery",
+          "result": "passed"
+        }
+      ]
+    }
+  ],
+  "environment": {
+    "source": "Engineering local Python, real OCR/Sidecar subprocess and SQLite; independently reviewed r6 source hashes match integrated commit. Send evidence final targeted 16 cases reused; no physical Windows send engine in those tests.",
+    "checks_reused": 32,
+    "checks_reexecuted": 0,
+    "not_counted": "r5 historical 109 checks and send-result broader 81 historical totals are not added.",
+    "not_verified": "Physical Windows OCR/WeChat send, native Start receiving and production HTTP/database task settlement; formal binary installation verified separately."
+  }
+}
