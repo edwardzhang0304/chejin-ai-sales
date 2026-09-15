@@ -322,6 +322,12 @@
       "scope": [
         "runtime_status_probe_failure_screenshot_evidence"
       ]
+    },
+    {
+      "source_commit": "c37a155353712bd2567f486b645858a39dc4bac3",
+      "scope": [
+        "c2_contract_0_9_82_generated_schema"
+      ]
     }
   ],
   "chejin_overlays": [
@@ -354,11 +360,11 @@
     "persisted_c1_failure_receipt_settlement_and_stop_recovery_contract"
   ],
   "current_release": {
-    "version": "0.9.81",
-    "source_commit": "f07af25a5a1b29eabe6a1fac8ab9ec8e962d97fd",
-    "contract_revision": "0.9.81",
-    "contract_sha256": "d652b5fdf57cc4555f739ef31c3b32a75a3c05ea1a72df8f1e5f656abb9560d9",
-    "scope": "0.9.81 formal candidate from reviewed 58c90b3, runtime source cbfc9b9. Manual preservation from original 0.9.80; Windows and production acceptance pending."
+    "version": "0.9.82",
+    "source_commit": "c37a155353712bd2567f486b645858a39dc4bac3",
+    "contract_revision": "0.9.82",
+    "contract_sha256": "4046ad50e7be1260969ffb9076b7fc515695dee962cfed37f45a293bb22e6309",
+    "scope": "Formal manual preservation release from reviewed 8bb8224; runtime source 51c3b19 retained; actual original 0.9.81. No historic compatibility matrix or button publication; Windows acceptance pending."
   },
   "historical_integrations": [
     {
