@@ -86,9 +86,11 @@ from .pre_send_checkpoint import (
 )
 from .models import Binding, ReplySendClaim, RpaResult, RpaStep, Task, WechatReadTarget, WorkerProfile
 from .rpa_bridge import RpaBridge
+from .text_recheck import differing_text_observation_ids
 from .storage import (
     archive_legacy_media_flow_records,
     append_log,
+    claim_read_recheck,
     checkpoint_c2_action_outcomes,
     clear_c2_state,
     clear_c2_action_journal,
@@ -9101,6 +9103,106 @@ class TaskRunner:
             ).strip(),
         }
 
+    def _recheck_text_alignment_once(
+        self, *, binding: Binding, target: WechatReadTarget, read_run_id: str,
+        payload: dict[str, Any], decision: Any, compare: Callable,
+        succeeded: Callable[[Any], bool], cancel_check: Callable[[], bool],
+        enforce_read_targets: bool,
+    ) -> tuple[dict[str, Any], Any]:
+        """A single pre-terminal re-observation, never an action/recovery retry."""
+        reference = list(payload.get("_text_recheck_old_projection") or [])
+        selected = differing_text_observation_ids(reference, payload)
+        if (not selected or not hasattr(self.bridge, "recheck_text_bubbles")
+                or load_c2_state(f"read_recheck:{read_run_id}")
+                or has_pending_reply_send_ack_outbox()
+                or has_pending_c2_outbox_for_read_run_id(read_run_id)):
+            return payload, decision
+        revision = self._run_status_revision
+        binding_identity = (binding.worker_id, binding.client_instance_id, binding.bound_at)
+        authorization = (target.conversation_id, target.remark_code, target.authorization_revision)
+
+        def cancelled() -> bool:
+            active = self.binding
+            runtime = load_runtime_control()
+            return bool(cancel_check() or not active or active.run_status != "running"
+                        or self._run_status_revision != revision
+                        or (active.worker_id, active.client_instance_id, active.bound_at) != binding_identity
+                        or (target.conversation_id, target.remark_code, target.authorization_revision) != authorization
+                        or runtime.get("pause_requested") or runtime.get("update_no_new_work")
+                        or self._fault_recovery_processing)
+
+        def still_authorized() -> bool:
+            return not cancelled() and (not enforce_read_targets or self._backend_still_allows_read_target(binding, target)) and not cancelled()
+
+        evidence: dict[str, Any] = {"original_frame": payload.get("frame_observation"),
+                                  "original_decision": decision, "selected_observation_ids": selected}
+        started = time.perf_counter()
+        consumed = False
+        try:
+            if not still_authorized():
+                return payload, decision
+            admission = self.bridge.recheck_text_bubbles(stage="validate", payload=payload,
+                observation_ids=selected, remark_code=target.remark_code or "", cancel_check=cancelled)
+            evidence["admission"] = admission
+            if admission.get("ok") is not True or not still_authorized():
+                return payload, decision
+            consumed = claim_read_recheck(read_run_id, kind="complete_text_bubble", evidence=evidence)
+            if not consumed:
+                return payload, decision
+            fresh = self.bridge.get_messages(display_name=target.remark_code or target.display_name,
+                rpa_session_key="", remark_code=target.remark_code or "", target_mode="current",
+                text_recheck_capture=True, max_duration_seconds=20, cancel_check=cancelled)
+            evidence["fresh_frame"] = fresh.get("frame_observation")
+            evidence["fresh_artifact_dir"] = fresh.get("artifact_dir")
+            evidence["capture_result"] = {key: fresh.get(key) for key in ("ok", "error_code", "reason")}
+            evidence["capture_result"]["contract_error"] = sidecar_contract_error(fresh)
+            if (fresh.get("ok") is not True or evidence["capture_result"]["contract_error"]
+                    or not fresh.get("frame_observation") or not still_authorized()):
+                return payload, decision
+            fresh["authoritative_frame_source"] = payload.get("authoritative_frame_source") or "initial_read"
+            fresh["authoritative_frame_reason"] = "local_text_recheck"
+            fresh["ui_frame_invalidated"] = False
+            compared, new_decision = compare(fresh)
+            evidence["fresh_decision"] = new_decision
+            if not succeeded(new_decision):
+                selected = differing_text_observation_ids(reference, fresh)
+                if not selected or not still_authorized():
+                    return payload, decision
+                local = self.bridge.recheck_text_bubbles(stage="ocr", payload=fresh,
+                    observation_ids=selected, remark_code=target.remark_code or "", cancel_check=cancelled)
+                evidence["local_result"] = local.get("local_text_recheck") or local
+                evidence["local_contract_error"] = sidecar_contract_error(local)
+                if (local.get("ok") is not True or evidence["local_contract_error"]
+                        or local.get("frame_observation", {}).get("frame_id") != fresh["frame_observation"]["frame_id"]
+                        or not still_authorized()):
+                    return payload, decision
+                local["authoritative_frame_source"] = fresh["authoritative_frame_source"]
+                local["authoritative_frame_reason"] = "local_text_recheck"
+                local["ui_frame_invalidated"] = False
+                compared, new_decision = compare(local)
+            evidence["final_decision"] = new_decision
+            evidence["final_continuity"] = compared.get("business_continuity_evidence")
+            evidence["final_alignment"] = compared.get("sequence_alignment_evidence")
+            if not succeeded(new_decision) or not still_authorized():
+                return payload, decision
+            evidence["adopted"] = True
+            compared["text_recheck_evidence"] = evidence
+            return compared, new_decision
+        except Exception as exc:
+            # Keep the original mismatch and its original receipt/Flow cleanup.
+            evidence["exception_type"] = type(exc).__name__
+            return payload, decision
+        finally:
+            evidence.update({"consumed": consumed, "duration_ms": round((time.perf_counter()-started)*1000)})
+            payload["text_recheck_evidence"] = evidence
+            if consumed:
+                save_c2_state(f"read_recheck:{read_run_id}", {"read_run_id": read_run_id,
+                    "kind": "complete_text_bubble", "consumed": True, "evidence": evidence})
+                append_log("INFO" if evidence.get("adopted") else "WARN", "c2_text_recheck_completed",
+                    "完整文字气泡复核完成。", metadata={"read_run_id": read_run_id,
+                    "conversation_id": target.conversation_id, "text_recheck_evidence": evidence},
+                    force_incident=not bool(evidence.get("adopted")))
+
     def _expand_pre_send_continuity_context_once(
         self,
         *,
@@ -9109,8 +9211,11 @@ class TaskRunner:
         locate_payload: dict[str, Any],
         expected_confirmed_self_text: str,
         cancel_check: Callable[[], bool] | None,
+        read_run_id: str = "",
     ) -> dict[str, Any]:
         """Perform the single read-only continuity expansion transaction."""
+        if not claim_read_recheck(read_run_id, kind="pre_send_context"):
+            return {"ok": False, "reason": "read_recheck_already_consumed"}
 
         context = (
             target.raw.get("pre_send_fact_checkpoint_context")
@@ -9258,6 +9363,7 @@ class TaskRunner:
         pre_payload: dict[str, Any],
         cancel_check: Callable[[], bool] | None,
         operation_phase: C2ReadOperationPhase,
+        read_run_id: str = "",
     ) -> dict[str, Any]:
         """Run the one bounded, read-only media continuity expansion.
 
@@ -9267,6 +9373,8 @@ class TaskRunner:
         Worker continuity comparator verifies it.
         """
 
+        if not claim_read_recheck(read_run_id, kind="media_context"):
+            return {"ok": False, "reason": "read_recheck_already_consumed"}
         anchor_ids, anchor_contents, max_history = (
             _continuity_expansion_search_terms(pre_payload)
         )
@@ -9483,6 +9591,10 @@ class TaskRunner:
             "checkpoint_unique_prefix_with_suffix",
             "checkpoint_unique_viewport_slide_with_suffix",
         }:
+            prepared["_text_recheck_old_projection"] = [
+                dict(item.get("business_projection") or {})
+                for item in checkpoint.get("committed_tail") or []
+            ]
             return prepared, comparison
 
         prefix_count = int(comparison.get("current_prefix_count") or 0)
@@ -10059,6 +10171,7 @@ class TaskRunner:
             "unique_history_suffix_without_new_messages",
         }:
             prepared["business_continuity_evidence"] = continuity
+            prepared["_text_recheck_old_projection"] = old_projection
             return prepared, [
                 {
                     "error_code": "MESSAGE_CROSS_ROUND_IDENTITY_AMBIGUOUS",
@@ -10360,7 +10473,8 @@ class TaskRunner:
         cancel_check: Callable[[], bool] | None = None,
     ) -> tuple[dict[str, Any] | None, list[dict[str, Any]], str]:
         """Reread the current chat once and let backend identity win."""
-
+        if not claim_read_recheck(read_run_id, kind="backend_checkpoint"):
+            return None, [], "MESSAGE_CROSS_ROUND_IDENTITY_AMBIGUOUS"
         refreshed = self.bridge.get_messages(
             display_name=target_label,
             rpa_session_key="",
@@ -14483,6 +14597,9 @@ class TaskRunner:
         authoritative_frame_source: str = "initial_read",
         ui_frame_invalidated: bool = False,
     ) -> dict[str, Any]:
+        # Once terminal reporting starts, a later nested/restarted caller must
+        # not turn that same read into a new screenshot/repair transaction.
+        claim_read_recheck(read_run_id, kind="terminal_identity_failure")
         normalized_errors = [
             {
                 "observation_id": str(item.get("observation_id") or ""),
@@ -16423,6 +16540,7 @@ class TaskRunner:
                 },
                 cancel_check=cancel_check,
                 operation_phase=operation_phase,
+                read_run_id=flow_outcomes.origin_read_run_id,
             )
             if expansion.get("ok") is True:
                 expansion_payload = dict(expansion.get("payload") or {})
@@ -19096,6 +19214,7 @@ class TaskRunner:
                     pre_payload=before_payload,
                     cancel_check=action_cancel_requested,
                     operation_phase=operation_phase,
+                    read_run_id=flow_outcomes.origin_read_run_id,
                 )
                 if expansion.get("ok") is True:
                     return (
@@ -20226,6 +20345,7 @@ class TaskRunner:
                     pre_payload=continuity_payload,
                     cancel_check=action_cancel_requested,
                     operation_phase=operation_phase,
+                    read_run_id=flow_outcomes.origin_read_run_id,
                 )
                 if expansion.get("ok") is True:
                     authoritative_payload = dict(
@@ -20723,6 +20843,28 @@ class TaskRunner:
                         )
                     ),
                 )
+                if continuity.get("relation") not in {
+                    "business_sequence_equal", "unique_tail_append", "unique_viewport_slide_with_tail_append",
+                }:
+                    refreshed["_text_recheck_old_projection"] = _business_projection_for_payload(current_payload)
+                    refreshed["authoritative_frame_source"] = "final_read"
+
+                    def compare_final_text_frame(candidate: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
+                        result = compare_business_viewport_continuity(
+                            _business_projection_for_payload(current_payload), _business_projection_for_payload(candidate),
+                            old_boundary_tokens=_business_boundary_tokens_for_payload(current_payload, committed_only=True),
+                            new_boundary_tokens=_business_boundary_tokens_for_payload(candidate, committed_only=False),
+                        )
+                        return {**candidate, "business_continuity_evidence": result}, result
+
+                    refreshed, continuity = self._recheck_text_alignment_once(
+                        binding=binding, target=target, read_run_id=flow_outcomes.origin_read_run_id,
+                        payload=refreshed, decision=continuity, compare=compare_final_text_frame,
+                        succeeded=lambda result: result.get("relation") in {
+                            "business_sequence_equal", "unique_tail_append", "unique_viewport_slide_with_tail_append"},
+                        cancel_check=action_cancel_requested, enforce_read_targets=enforce_read_targets,
+                    )
+                    raw_refreshed_observations = list(refreshed.get("observations") or [])
                 if (
                     continuity.get("relation")
                     == "continuity_context_expansion_required"
@@ -20733,6 +20875,7 @@ class TaskRunner:
                         pre_payload=current_payload,
                         cancel_check=action_cancel_requested,
                         operation_phase=operation_phase,
+                        read_run_id=flow_outcomes.origin_read_run_id,
                     )
                     if expansion.get("ok") is True:
                         expansion_payload = dict(
@@ -20921,7 +21064,7 @@ class TaskRunner:
             refreshed["authoritative_frame_source"] = "final_read"
             refreshed["ui_frame_invalidated"] = bool(
                 current_payload.get("ui_frame_invalidated")
-            )
+            ) if refreshed.get("authoritative_frame_reason") != "local_text_recheck" else False
             if image_reidentification_used:
                 refreshed[
                     "pre_send_reidentification_attempts"
@@ -23708,6 +23851,7 @@ class TaskRunner:
                 if (
                     not frame_id
                     or frame_id in same_frame_full_ocr_attempted
+                    or load_c2_state(f"read_recheck:{read_run_id}").get("kind") == "complete_text_bubble"
                     or not str(evidence.get("screenshot_path") or "").strip()
                 ):
                     return None
@@ -23844,6 +23988,16 @@ class TaskRunner:
                         read_run_id=read_run_id,
                     )
                 )
+                if (checkpoint_comparison.get("send_context_guard_validation") or {}).get("ok") is True:
+                    sidecar_payload, checkpoint_comparison = self._recheck_text_alignment_once(
+                        binding=binding, target=target, read_run_id=read_run_id,
+                        payload=sidecar_payload, decision=checkpoint_comparison,
+                        compare=lambda frame: self._compare_pre_send_fact_checkpoint_frame(
+                            target=target, sidecar_payload=frame, read_run_id=read_run_id),
+                        succeeded=lambda result: result.get("comparison_result") in {
+                            "checkpoint_equal", "checkpoint_unique_prefix_with_suffix", "checkpoint_unique_viewport_slide_with_suffix"},
+                        cancel_check=action_cancel_requested, enforce_read_targets=enforce_read_targets,
+                    )
                 guard_validation = (
                     checkpoint_comparison.get(
                         "send_context_guard_validation"
@@ -23997,6 +24151,7 @@ class TaskRunner:
                                 expected_confirmed_self_text
                             ),
                             cancel_check=action_cancel_requested,
+                            read_run_id=read_run_id,
                         )
                     )
                     expanded_payload = (
@@ -24104,6 +24259,7 @@ class TaskRunner:
                     legacy_checkpoint_reread_allowed
                     and checkpoint_comparison.get("comparison_result")
                     == "checkpoint_not_continuous"
+                    and claim_read_recheck(read_run_id, kind="legacy_pre_send")
                 ):
                     initial_checkpoint_comparison = dict(
                         checkpoint_comparison
@@ -24433,6 +24589,15 @@ class TaskRunner:
                         read_run_id=read_run_id,
                     )
                 )
+                if initial_identity_errors:
+                    sidecar_payload, initial_identity_errors = self._recheck_text_alignment_once(
+                        binding=binding, target=target, read_run_id=read_run_id,
+                        payload=sidecar_payload, decision=initial_identity_errors,
+                        compare=lambda frame: self._align_initial_identity_frame(
+                            target=target, sidecar_payload=frame, read_run_id=read_run_id),
+                        succeeded=lambda errors: not errors, cancel_check=action_cancel_requested,
+                        enforce_read_targets=enforce_read_targets,
+                    )
             if initial_identity_errors:
                 checkpoint_error_evidence = initial_identity_errors[0].get(
                     "pre_send_fact_checkpoint_comparison"

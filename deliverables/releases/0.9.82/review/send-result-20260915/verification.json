@@ -1,0 +1,528 @@
+{
+  "scope": "Second incident finding only: send-result evidence type error",
+  "base_commit": "3c59b668d6ee3307441d5b5c49bbf70ec056e842",
+  "source_hashes": {
+    "worker-client/chejin_worker_client/rpa_bridge.py": "6e6c82e12c1bad0154148b8d0c0d63ca853c2f3f02ff07eed7fc3ec637dc8794",
+    "worker-client/tests/test_send_result_evidence.py": "6cbb9594881e14fbf8710598d58e3d12f3f6c7d62012f8fc55cb4a5c81344661",
+    "worker-client/tests/fixtures/send_result_process.py": "f7dd70a0ffe0ee1c26e1c8d72b71ab816f171ed216b1ed5d75f6e511f9b69777"
+  },
+  "reports_sha256": {
+    "before.xml": "5db1e94b5bccc3bda27984ba24c323c44a854947c63802839556e16a622716da",
+    "caller-before.xml": "278e4cf6a29ba744ad00d374fb19e8c58cbff59732537b87f74c1c96749db91e",
+    "direct.xml": "262069efd0a021ff882c7926ce20d5136d0f852eebdce94204069435d10a8037",
+    "http-retry.xml": "8eb349ad757fd5f3afdcc3670c6d8da5a6071107ef7c4ef09b7dee5a8c1215a6",
+    "caller.xml": "d35b587c32dc4d24a89e32ba1c0734dc8161e6d027ca1eafa732081f6a826fc3",
+    "probe.xml": "b1921f04e0c018819d09c3f15db59d9200aad4ce6b23edca63a6d7de49fb03bd",
+    "final-regression.xml": "212d3142423f3e1715d40ace7486d35af777639064b4444e4fe01bf2f2f4825a"
+  },
+  "unique_passed": 81,
+  "new_regressions": 16,
+  "negative_controls": {
+    "before.xml": "9 TypeError failures / 6 passes on original product code",
+    "caller-before.xml": "same caller test on original b21ad558 could not reach normal sent acknowledgement"
+  },
+  "environment_retry": "direct.xml: 75 pass, 2 localhost bind PermissionError; only those 2 rerun with loopback permission and passed in http-retry.xml",
+  "test_boundaries": [
+    "TaskRunner.tick_once executes scheduling, send-result mapping and SQLite sent acknowledgement unchanged. API and unrelated WeChat observations use existing external fixtures.",
+    "RpaBridge.send_reply uses real Popen, JSON parsing, evidence recording, active-process cleanup and downstream classification.",
+    "The external send child uses the current production mock adapter envelope; unsuccessful results are injected only at this external boundary. This is not execution of the Windows send engine.",
+    "One child invocation is asserted; failure/unknown evidence and successful normal ack without recovery are asserted."
+  ],
+  "not_verified": [
+    "Windows physical send",
+    "real production API acknowledgement",
+    "field fault recovery",
+    "OCR mismatch finding 1"
+  ],
+  "product_files_changed": 1,
+  "committed": false,
+  "released": false,
+  "tests": [
+    {
+      "class": "worker-client.tests.test_send_result_evidence",
+      "test": "test_public_send_preserves_process_result_and_outcome[sent]",
+      "passed": true,
+      "report": "final-regression.xml"
+    },
+    {
+      "class": "worker-client.tests.test_send_result_evidence",
+      "test": "test_public_send_preserves_process_result_and_outcome[failed]",
+      "passed": true,
+      "report": "final-regression.xml"
+    },
+    {
+      "class": "worker-client.tests.test_send_result_evidence",
+      "test": "test_public_send_preserves_process_result_and_outcome[unknown]",
+      "passed": true,
+      "report": "final-regression.xml"
+    },
+    {
+      "class": "worker-client.tests.test_send_result_evidence",
+      "test": "test_evidence_check_accepts_nested_and_legacy_results_without_mutation[nested0-False]",
+      "passed": true,
+      "report": "final-regression.xml"
+    },
+    {
+      "class": "worker-client.tests.test_send_result_evidence",
+      "test": "test_evidence_check_accepts_nested_and_legacy_results_without_mutation[nested1-True]",
+      "passed": true,
+      "report": "final-regression.xml"
+    },
+    {
+      "class": "worker-client.tests.test_send_result_evidence",
+      "test": "test_evidence_check_accepts_nested_and_legacy_results_without_mutation[nested2-True]",
+      "passed": true,
+      "report": "final-regression.xml"
+    },
+    {
+      "class": "worker-client.tests.test_send_result_evidence",
+      "test": "test_evidence_check_accepts_nested_and_legacy_results_without_mutation[nested3-True]",
+      "passed": true,
+      "report": "final-regression.xml"
+    },
+    {
+      "class": "worker-client.tests.test_send_result_evidence",
+      "test": "test_evidence_check_accepts_nested_and_legacy_results_without_mutation[sent-False]",
+      "passed": true,
+      "report": "final-regression.xml"
+    },
+    {
+      "class": "worker-client.tests.test_send_result_evidence",
+      "test": "test_evidence_check_accepts_nested_and_legacy_results_without_mutation[failed-True]",
+      "passed": true,
+      "report": "final-regression.xml"
+    },
+    {
+      "class": "worker-client.tests.test_send_result_evidence",
+      "test": "test_evidence_check_accepts_nested_and_legacy_results_without_mutation[unknown-True]",
+      "passed": true,
+      "report": "final-regression.xml"
+    },
+    {
+      "class": "worker-client.tests.test_send_result_evidence",
+      "test": "test_evidence_check_accepts_nested_and_legacy_results_without_mutation[None-False]",
+      "passed": true,
+      "report": "final-regression.xml"
+    },
+    {
+      "class": "worker-client.tests.test_send_result_evidence",
+      "test": "test_evidence_check_accepts_nested_and_legacy_results_without_mutation[nested8-False]",
+      "passed": true,
+      "report": "final-regression.xml"
+    },
+    {
+      "class": "worker-client.tests.test_send_result_evidence",
+      "test": "test_evidence_check_accepts_nested_and_legacy_results_without_mutation[nested9-False]",
+      "passed": true,
+      "report": "final-regression.xml"
+    },
+    {
+      "class": "worker-client.tests.test_send_result_evidence",
+      "test": "test_evidence_check_accepts_nested_and_legacy_results_without_mutation[nested10-False]",
+      "passed": true,
+      "report": "final-regression.xml"
+    },
+    {
+      "class": "worker-client.tests.test_send_result_evidence",
+      "test": "test_evidence_check_accepts_nested_and_legacy_results_without_mutation[nested11-False]",
+      "passed": true,
+      "report": "final-regression.xml"
+    },
+    {
+      "class": "worker-client.tests.test_rpa_bridge.RpaBridgeTest",
+      "test": "test_add_friend_bridge_never_accepts_ok_true_with_failed_status",
+      "passed": true,
+      "report": "direct.xml"
+    },
+    {
+      "class": "worker-client.tests.test_rpa_bridge.RpaBridgeTest",
+      "test": "test_add_friend_confirmed_click_survives_post_click_ocr_failure",
+      "passed": true,
+      "report": "direct.xml"
+    },
+    {
+      "class": "worker-client.tests.test_rpa_bridge.RpaBridgeTest",
+      "test": "test_add_friend_confirmed_click_survives_post_click_screenshot_failure",
+      "passed": true,
+      "report": "direct.xml"
+    },
+    {
+      "class": "worker-client.tests.test_rpa_bridge.RpaBridgeTest",
+      "test": "test_add_friend_confirmed_journal_recovers_without_second_click",
+      "passed": true,
+      "report": "direct.xml"
+    },
+    {
+      "class": "worker-client.tests.test_rpa_bridge.RpaBridgeTest",
+      "test": "test_add_friend_explicit_restriction_overrides_confirmed_success",
+      "passed": true,
+      "report": "direct.xml"
+    },
+    {
+      "class": "worker-client.tests.test_rpa_bridge.RpaBridgeTest",
+      "test": "test_add_friend_triggered_journal_blocks_second_physical_attempt",
+      "passed": true,
+      "report": "direct.xml"
+    },
+    {
+      "class": "worker-client.tests.test_rpa_bridge.RpaBridgeTest",
+      "test": "test_all_ui_flows_do_not_request_window_policy_after_startup",
+      "passed": true,
+      "report": "direct.xml"
+    },
+    {
+      "class": "worker-client.tests.test_rpa_bridge.RpaBridgeTest",
+      "test": "test_artifact_marker_failure_does_not_replace_successful_business_result",
+      "passed": true,
+      "report": "direct.xml"
+    },
+    {
+      "class": "worker-client.tests.test_rpa_bridge.RpaBridgeTest",
+      "test": "test_bridge_same_frame_replay_uses_original_artifact_directory",
+      "passed": true,
+      "report": "direct.xml"
+    },
+    {
+      "class": "worker-client.tests.test_rpa_bridge.RpaBridgeTest",
+      "test": "test_call_omniauto_preserves_specific_cancellation_reason",
+      "passed": true,
+      "report": "direct.xml"
+    },
+    {
+      "class": "worker-client.tests.test_rpa_bridge.RpaBridgeTest",
+      "test": "test_call_omniauto_protects_artifact_directory_until_process_finishes",
+      "passed": true,
+      "report": "direct.xml"
+    },
+    {
+      "class": "worker-client.tests.test_rpa_bridge.RpaBridgeTest",
+      "test": "test_call_omniauto_terminates_running_sidecar_when_cancelled",
+      "passed": true,
+      "report": "direct.xml"
+    },
+    {
+      "class": "worker-client.tests.test_rpa_bridge.RpaBridgeTest",
+      "test": "test_default_sidecar_script_points_to_omniauto_sidecar",
+      "passed": true,
+      "report": "direct.xml"
+    },
+    {
+      "class": "worker-client.tests.test_rpa_bridge.RpaBridgeTest",
+      "test": "test_diagnostic_event_artifact_becomes_step_evidence_path",
+      "passed": true,
+      "report": "direct.xml"
+    },
+    {
+      "class": "worker-client.tests.test_rpa_bridge.RpaBridgeTest",
+      "test": "test_failure_metadata_keeps_nested_ocr_and_layout_reasons",
+      "passed": true,
+      "report": "direct.xml"
+    },
+    {
+      "class": "worker-client.tests.test_rpa_bridge.RpaBridgeTest",
+      "test": "test_formal_pre_send_switch_disables_bridge_roi_and_replay",
+      "passed": true,
+      "report": "direct.xml"
+    },
+    {
+      "class": "worker-client.tests.test_rpa_bridge.RpaBridgeTest",
+      "test": "test_frozen_runtime_dispatches_sidecar_through_packaged_executable",
+      "passed": true,
+      "report": "direct.xml"
+    },
+    {
+      "class": "worker-client.tests.test_rpa_bridge.RpaBridgeTest",
+      "test": "test_inflight_transaction_defers_map_binding_without_worker_gate",
+      "passed": true,
+      "report": "direct.xml"
+    },
+    {
+      "class": "worker-client.tests.test_rpa_bridge.RpaBridgeTest",
+      "test": "test_mock_bridge_emits_add_friend_steps_and_result",
+      "passed": true,
+      "report": "direct.xml"
+    },
+    {
+      "class": "worker-client.tests.test_rpa_bridge.RpaBridgeTest",
+      "test": "test_mock_bridge_wechat_diagnostics_is_noop",
+      "passed": true,
+      "report": "direct.xml"
+    },
+    {
+      "class": "worker-client.tests.test_rpa_bridge.RpaBridgeTest",
+      "test": "test_new_transaction_defers_map_binding_without_worker_sidecar_gate",
+      "passed": true,
+      "report": "direct.xml"
+    },
+    {
+      "class": "worker-client.tests.test_rpa_bridge.RpaBridgeTest",
+      "test": "test_new_transaction_never_preflights_geometry_or_dpi",
+      "passed": true,
+      "report": "direct.xml"
+    },
+    {
+      "class": "worker-client.tests.test_rpa_bridge.RpaBridgeTest",
+      "test": "test_probe_latches_non_not_found_normalization_failure_without_moving_again",
+      "passed": true,
+      "report": "direct.xml"
+    },
+    {
+      "class": "worker-client.tests.test_rpa_bridge.RpaBridgeTest",
+      "test": "test_probe_normalizes_only_once_then_uses_passive_status",
+      "passed": true,
+      "report": "direct.xml"
+    },
+    {
+      "class": "worker-client.tests.test_rpa_bridge.RpaBridgeTest",
+      "test": "test_probe_retries_startup_normalization_until_wechat_appears",
+      "passed": true,
+      "report": "direct.xml"
+    },
+    {
+      "class": "worker-client.tests.test_rpa_bridge.RpaBridgeTest",
+      "test": "test_probe_reuses_successful_startup_calibration_observation",
+      "passed": true,
+      "report": "direct.xml"
+    },
+    {
+      "class": "worker-client.tests.test_rpa_bridge.RpaBridgeTest",
+      "test": "test_real_add_friend_passes_cancel_check_to_sidecar_process",
+      "passed": true,
+      "report": "direct.xml"
+    },
+    {
+      "class": "worker-client.tests.test_rpa_bridge.RpaBridgeTest",
+      "test": "test_real_bridge_accepts_confirmed_journal_written_by_sidecar_process",
+      "passed": true,
+      "report": "direct.xml"
+    },
+    {
+      "class": "worker-client.tests.test_rpa_bridge.RpaBridgeTest",
+      "test": "test_real_bridge_calls_omniauto_entry_click_plan_with_formal_fields",
+      "passed": true,
+      "report": "direct.xml"
+    },
+    {
+      "class": "worker-client.tests.test_rpa_bridge.RpaBridgeTest",
+      "test": "test_real_bridge_emits_preflight_steps_before_sidecar_call",
+      "passed": true,
+      "report": "direct.xml"
+    },
+    {
+      "class": "worker-client.tests.test_rpa_bridge.RpaBridgeTest",
+      "test": "test_real_bridge_get_messages_can_search_by_remark_code",
+      "passed": true,
+      "report": "direct.xml"
+    },
+    {
+      "class": "worker-client.tests.test_rpa_bridge.RpaBridgeTest",
+      "test": "test_real_bridge_json_round_trip_reaches_sidecar_final_guard",
+      "passed": true,
+      "report": "direct.xml"
+    },
+    {
+      "class": "worker-client.tests.test_rpa_bridge.RpaBridgeTest",
+      "test": "test_real_bridge_list_sessions_returns_artifact_evidence",
+      "passed": true,
+      "report": "direct.xml"
+    },
+    {
+      "class": "worker-client.tests.test_rpa_bridge.RpaBridgeTest",
+      "test": "test_real_bridge_locate_chat_can_search_by_remark_code",
+      "passed": true,
+      "report": "direct.xml"
+    },
+    {
+      "class": "worker-client.tests.test_rpa_bridge.RpaBridgeTest",
+      "test": "test_real_bridge_locate_chat_visible_passes_ascii_json_candidate",
+      "passed": true,
+      "report": "direct.xml"
+    },
+    {
+      "class": "worker-client.tests.test_rpa_bridge.RpaBridgeTest",
+      "test": "test_real_bridge_marks_only_requested_pre_send_locate_for_chat_roi",
+      "passed": true,
+      "report": "direct.xml"
+    },
+    {
+      "class": "worker-client.tests.test_rpa_bridge.RpaBridgeTest",
+      "test": "test_real_bridge_marks_only_requested_pre_send_read_for_chat_roi",
+      "passed": true,
+      "report": "direct.xml"
+    },
+    {
+      "class": "worker-client.tests.test_rpa_bridge.RpaBridgeTest",
+      "test": "test_real_bridge_rejects_missing_formal_payload_before_sidecar_call",
+      "passed": true,
+      "report": "direct.xml"
+    },
+    {
+      "class": "worker-client.tests.test_rpa_bridge.RpaBridgeTest",
+      "test": "test_real_bridge_send_reply_calls_omniauto_send_action",
+      "passed": true,
+      "report": "direct.xml"
+    },
+    {
+      "class": "worker-client.tests.test_rpa_bridge.RpaBridgeTest",
+      "test": "test_source_runtime_dispatches_sidecar_through_python",
+      "passed": true,
+      "report": "direct.xml"
+    },
+    {
+      "class": "worker-client.tests.test_rpa_bridge.RpaBridgeTest",
+      "test": "test_startup_probe_geometry_rejects_incomplete_or_non_positive_rectangles",
+      "passed": true,
+      "report": "direct.xml"
+    },
+    {
+      "class": "worker-client.tests.test_rpa_bridge.RpaBridgeTest",
+      "test": "test_task_rejects_masked_phone_as_search_phone",
+      "passed": true,
+      "report": "direct.xml"
+    },
+    {
+      "class": "worker-client.tests.test_rpa_bridge.RpaBridgeTest",
+      "test": "test_voice_prepare_is_read_only_and_execute_carries_exact_token",
+      "passed": true,
+      "report": "direct.xml"
+    },
+    {
+      "class": "worker-client.tests.test_evidence_review_regressions",
+      "test": "test_public_update_check_keeps_body_out_of_diagnostic[True]",
+      "passed": true,
+      "report": "http-retry.xml"
+    },
+    {
+      "class": "worker-client.tests.test_evidence_review_regressions",
+      "test": "test_public_update_check_keeps_body_out_of_diagnostic[False]",
+      "passed": true,
+      "report": "http-retry.xml"
+    },
+    {
+      "class": "worker-client.tests.test_evidence_review_regressions",
+      "test": "test_public_export_keeps_available_data_when_optional_file_is_unreadable[False]",
+      "passed": true,
+      "report": "direct.xml"
+    },
+    {
+      "class": "worker-client.tests.test_evidence_review_regressions",
+      "test": "test_public_export_keeps_available_data_when_optional_file_is_unreadable[True]",
+      "passed": true,
+      "report": "direct.xml"
+    },
+    {
+      "class": "worker-client.tests.test_evidence_review_regressions",
+      "test": "test_explicit_exception_text_policy_is_honored_by_storage[False]",
+      "passed": true,
+      "report": "direct.xml"
+    },
+    {
+      "class": "worker-client.tests.test_evidence_review_regressions",
+      "test": "test_explicit_exception_text_policy_is_honored_by_storage[True]",
+      "passed": true,
+      "report": "direct.xml"
+    },
+    {
+      "class": "worker-client.tests.test_evidence_review_regressions",
+      "test": "test_export_uses_same_source_read_policy[PermissionError-runtime_diagnostic]",
+      "passed": true,
+      "report": "direct.xml"
+    },
+    {
+      "class": "worker-client.tests.test_evidence_review_regressions",
+      "test": "test_export_uses_same_source_read_policy[PermissionError-update_diagnostic]",
+      "passed": true,
+      "report": "direct.xml"
+    },
+    {
+      "class": "worker-client.tests.test_evidence_review_regressions",
+      "test": "test_export_uses_same_source_read_policy[PermissionError-screenshot]",
+      "passed": true,
+      "report": "direct.xml"
+    },
+    {
+      "class": "worker-client.tests.test_evidence_review_regressions",
+      "test": "test_export_uses_same_source_read_policy[PermissionError-incident]",
+      "passed": true,
+      "report": "direct.xml"
+    },
+    {
+      "class": "worker-client.tests.test_evidence_review_regressions",
+      "test": "test_export_uses_same_source_read_policy[FileNotFoundError-runtime_diagnostic]",
+      "passed": true,
+      "report": "direct.xml"
+    },
+    {
+      "class": "worker-client.tests.test_evidence_review_regressions",
+      "test": "test_export_uses_same_source_read_policy[FileNotFoundError-update_diagnostic]",
+      "passed": true,
+      "report": "direct.xml"
+    },
+    {
+      "class": "worker-client.tests.test_evidence_review_regressions",
+      "test": "test_export_uses_same_source_read_policy[FileNotFoundError-screenshot]",
+      "passed": true,
+      "report": "direct.xml"
+    },
+    {
+      "class": "worker-client.tests.test_evidence_review_regressions",
+      "test": "test_export_uses_same_source_read_policy[FileNotFoundError-incident]",
+      "passed": true,
+      "report": "direct.xml"
+    },
+    {
+      "class": "worker-client.tests.test_evidence_review_regressions",
+      "test": "test_public_export_reports_target_write_failure_without_replacing_destination[diagnostics/]",
+      "passed": true,
+      "report": "direct.xml"
+    },
+    {
+      "class": "worker-client.tests.test_evidence_review_regressions",
+      "test": "test_public_export_reports_target_write_failure_without_replacing_destination[evidence/]",
+      "passed": true,
+      "report": "direct.xml"
+    },
+    {
+      "class": "worker-client.tests.test_transaction_outcomes",
+      "test": "test_action_local_identity_is_replaced_without_adding_an_outbox_item",
+      "passed": true,
+      "report": "direct.xml"
+    },
+    {
+      "class": "worker-client.tests.test_transaction_outcomes",
+      "test": "test_confirmed_text_candidate_receipt_is_read_run_local_and_not_outbox_fact",
+      "passed": true,
+      "report": "direct.xml"
+    },
+    {
+      "class": "worker-client.tests.test_transaction_outcomes",
+      "test": "test_confirmed_text_candidate_receipt_rejects_another_read_run",
+      "passed": true,
+      "report": "direct.xml"
+    },
+    {
+      "class": "worker-client.tests.test_send_result_evidence",
+      "test": "test_task_runner_send_result_reaches_normal_ack_without_recovery",
+      "passed": true,
+      "report": "final-regression.xml"
+    },
+    {
+      "class": "worker-client.tests.test_failure_evidence_boundaries",
+      "test": "test_runtime_probe_real_child_retains_exact_frame_and_cause[blank-blank_render_detected]",
+      "passed": true,
+      "report": "probe.xml"
+    },
+    {
+      "class": "worker-client.tests.test_failure_evidence_boundaries",
+      "test": "test_runtime_probe_real_child_retains_exact_frame_and_cause[ocr_error-win32_ocr_failed]",
+      "passed": true,
+      "report": "probe.xml"
+    },
+    {
+      "class": "worker-client.tests.test_failure_evidence_boundaries",
+      "test": "test_successful_probe_does_not_accumulate_screenshots",
+      "passed": true,
+      "report": "probe.xml"
+    }
+  ]
+}

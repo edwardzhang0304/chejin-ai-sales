@@ -625,6 +625,8 @@ def main() -> int:
             "persisted pre-send frame."
         ),
     )
+    parser.add_argument("--text-recheck-request", default="")
+    parser.add_argument("--text-recheck-capture", action="store_true")
     parser.add_argument("--history-mode", default="", help="History loading strategy, e.g. anchor_until_found.")
     parser.add_argument("--anchor-id", action="append", default=[], help="Message id anchor to stop bounded history search.")
     parser.add_argument("--anchor-content-key", action="append", default=[], help="Normalized customer message content key anchor.")
@@ -1358,6 +1360,10 @@ def run_action(args: argparse.Namespace) -> dict[str, Any]:
             failure["dpi_awareness"] = dpi_awareness
             return failure
     passive_probe = use_passive_probe_mode(action)
+    local_text_recheck = bool(
+        getattr(args, "text_recheck_request", "")
+        or getattr(args, "text_recheck_capture", False)
+    )
     active_business_action = action in ACTIVE_BUSINESS_ACTIONS
     probe = ensure_visible_wechat_window(interactive=action == "normalize-window")
     if not probe.get("visible_main_windows"):
@@ -1421,9 +1427,10 @@ def run_action(args: argparse.Namespace) -> dict[str, Any]:
         # Preserve the gray-v0.9.20 production entry order.  Activation is an
         # entry action only; popup/menu HWNDs may legitimately become the
         # foreground target later in the unchanged business transaction.
-        activate_window(hwnd)
+        if not local_text_recheck:
+            activate_window(hwnd)
         probe["business_window_activation"] = {
-            "attempted": True,
+            "attempted": not local_text_recheck,
             "hwnd": hwnd,
             "success_gate_added": False,
         }
@@ -1733,6 +1740,15 @@ def run_action(args: argparse.Namespace) -> dict[str, Any]:
                         result["initial_messages_frame_age_seconds"] = seed.get("age_seconds")
         return result
     if action == "messages":
+        if local_text_recheck:
+            if (str(args.target_mode or "") != "current"
+                    or not str(args.remark_code or "").strip()
+                    or str(args.history_mode or "")
+                    or str(args.expected_confirmed_self_text or "")):
+                return {"ok": False, "error_code": "MESSAGE_CROSS_ROUND_IDENTITY_AMBIGUOUS",
+                        "reason": "text_recheck_current_text_only_required"}
+            if getattr(args, "text_recheck_request", ""):
+                return replay_text_bubble_request(hwnd, probe, args)
         clean_sidecar_run_id = str(getattr(args, "sidecar_run_id", "") or "").strip()
         c2_targeted_action = bool(args.target and (clean_sidecar_run_id or str(args.remark_code or "").strip()))
         target_mode = str(args.target_mode or "").strip().lower() or "visible"
@@ -1878,6 +1894,7 @@ def run_action(args: argparse.Namespace) -> dict[str, Any]:
                 getattr(args, "chat_fact_roi_ocr", False)
                 and same_frame_seed is None
             ),
+            retain_text_recheck_frame=bool(getattr(args, "text_recheck_capture", False)),
         )
         if args.target:
             if single_frame_confirmation:
@@ -3149,6 +3166,7 @@ def messages_payload(
     expected_confirmed_self_text: str = "",
     seed_snapshot: dict[str, Any] | None = None,
     chat_fact_roi_ocr: bool = False,
+    retain_text_recheck_frame: bool = False,
 ) -> dict[str, Any]:
     mode = str(history_mode or "").strip().lower()
     if isinstance(seed_snapshot, dict):
@@ -3451,14 +3469,13 @@ def messages_payload(
         "ocr_items_count": len(ocr_items),
         "target_confirmation": target_confirmation,
     }
-    if (
-        screenshot is not None
-        and env_flag("CHEJIN_C3_PRE_SEND_ROI_REUSE_ENABLED", default=True)
-    ):
+    # Pixel evidence also authorizes text rechecks on ordinary full-OCR reads.
+    # Retain it independently of the optional pre-send acceleration path.
+    if screenshot is not None:
         replayed_frame_observation = (
             latest.get("frame_observation")
             if str(latest_ocr_plan.get("source") or "")
-            == "same_frame_full_fallback"
+            in {"same_frame_full_fallback", "local_text_bubble_recheck"}
             and isinstance(latest.get("frame_observation"), dict)
             else None
         )
@@ -3491,6 +3508,10 @@ def messages_payload(
         )
         payload["frame_observation"] = frame_observation
         payload["frame_id"] = str(frame_observation.get("frame_id") or "")
+    if (
+        screenshot is not None
+        and env_flag("CHEJIN_C3_PRE_SEND_ROI_REUSE_ENABLED", default=True)
+    ):
         payload["pre_send_frame_reuse"] = {
             "fast_path_attempted": True,
             "fast_path_used": True,
@@ -3511,6 +3532,12 @@ def messages_payload(
             ],
         }
     if artifact_dir:
+        if retain_text_recheck_frame:
+            frame_path = Path(artifact_dir) / "text_recheck_frame.json"
+            frame_path.write_text(json.dumps({"payload": payload, "ocr_items": ocr_items},
+                                            ensure_ascii=False), encoding="utf-8")
+            payload["text_recheck_frame_path"] = str(frame_path)
+            payload["text_recheck_frame_sha256"] = hashlib.sha256(frame_path.read_bytes()).hexdigest()
         try:
             review_path = write_messages_frame_review(
                 Path(artifact_dir), payload, screenshot=screenshot, ocr_items=ocr_items,
@@ -9309,14 +9336,14 @@ def run_ocr_for_sidebar_search_results(
     }
 
 
-def load_verified_same_frame_full_ocr_seed(
+def _load_verified_frame_pixels(
     hwnd: int,
     raw_evidence: str,
     *,
     artifact_dir: str | None,
     target: str,
 ) -> dict[str, Any]:
-    """Re-OCR one authenticated pre-send screenshot without recapturing UI."""
+    """Validate one saved physical frame without OCR or recapturing UI."""
 
     try:
         evidence = json.loads(str(raw_evidence or ""))
@@ -9445,6 +9472,117 @@ def load_verified_same_frame_full_ocr_seed(
             "reason": "same_frame_layout_invalid",
             "layout_snapshot": layout_snapshot,
         }
+    return {"ok": True, "screenshot": screenshot, "screenshot_path": str(evidence_path),
+            "frame_observation": evidence, "layout_snapshot": layout_snapshot}
+
+
+def replay_text_bubble_request(hwnd: int, probe: dict[str, Any], args: argparse.Namespace) -> dict[str, Any]:
+    """Validate a saved region or re-observe it, with zero physical UI actions."""
+    from apps.wechat_ai_customer_service.adapters.wechat_win32_ocr.text_bubble_recheck import (
+        locate_complete_bubbles, recognize_regions,
+    )
+
+    report: dict[str, Any] = {"ui_action_performed": False, "new_capture_performed": False}
+    output_dir = Path(args.artifact_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        request = json.loads(Path(args.text_recheck_request).read_text(encoding="utf-8"))
+        stage = request["stage"]
+        original = request["payload"]
+        evidence = original["frame_observation"]
+        source_dir = Path(evidence["screenshot_path"]).parent
+        loaded = _load_verified_frame_pixels(hwnd, json.dumps(evidence),
+                                             artifact_dir=str(source_dir), target=args.remark_code)
+        if loaded.get("ok") is not True:
+            return loaded
+        screenshot = loaded["screenshot"]
+        snapshot = loaded["layout_snapshot"]
+        if frame_avatars.avatar_table(screenshot, snapshot).get("state") != "complete":
+            raise ValueError("text_recheck_avatar_invalid")
+        if original.get("ok") is not True or original.get("observation_validation_errors"):
+            raise ValueError("text_recheck_original_frame_invalid")
+        regions = locate_complete_bubbles(screenshot, original["observations"],
+                                         request["observation_ids"], snapshot["message_viewport_bounds"])
+        report.update({"stage": stage, "frame_observation": evidence, "regions": regions})
+        if stage == "validate":
+            report["ok"] = True
+            return report
+        if stage != "ocr":
+            raise ValueError("text_recheck_stage_invalid")
+        frame_path = Path(original["text_recheck_frame_path"])
+        if frame_path.resolve().parent != source_dir.resolve():
+            raise ValueError("text_recheck_frame_path_invalid")
+        frame_bytes = frame_path.read_bytes()
+        if not hmac.compare_digest(hashlib.sha256(frame_bytes).hexdigest(),
+                                   str(original.get("text_recheck_frame_sha256") or "")):
+            raise ValueError("text_recheck_frame_digest_changed")
+        frame = json.loads(frame_bytes)
+        if frame["payload"].get("frame_observation") != evidence:
+            raise ValueError("text_recheck_frame_binding_changed")
+        if frame["payload"].get("observations") != original["observations"]:
+            raise ValueError("text_recheck_observations_changed")
+        started = time.perf_counter()
+        for index, region in enumerate(regions):
+            crop_path = output_dir / f"bubble_{index}.png"
+            screenshot.crop(tuple(region["crop_rect"])).save(crop_path)
+            region["crop_path"] = str(crop_path)
+        local = recognize_regions(screenshot, regions, lambda image: run_ocr_traced(
+            image, "complete_text_bubble_recheck", source="local_text_bubble_recheck", region="roi"))
+        report.update({"regions": local, "duration_ms": round((time.perf_counter()-started)*1000)})
+        def selected_row(item: dict[str, Any]) -> bool:
+            return any(r["bubble_rect"][0] <= item["center_x"] <= r["bubble_rect"][2]
+                       and r["bubble_rect"][1] <= item["center_y"] <= r["bubble_rect"][3] for r in regions)
+        items = [dict(item) for item in frame["ocr_items"] if not selected_row(item)]
+        items.extend(item for region in local for item in region["ocr_items"])
+        items.sort(key=lambda item: (item["top"], item["left"]))
+        parsed = parse_current_chat_frame_messages(items, screenshot.size, target=args.target, screenshot=screenshot)
+        seed = {"screenshot": screenshot, "screenshot_path": evidence["screenshot_path"],
+                "ocr_items": items, "messages": parsed, "frame_observation": evidence,
+                "ocr_plan": {"source": "local_text_bubble_recheck", "regions": ["full_frame", "complete_text_bubbles"],
+                             "ocr_call_count": len(local)}, "ocr_call_count": len(local)}
+        result = messages_payload(hwnd, probe, target=args.target, history_load_times=0,
+                                  artifact_dir=str(output_dir), confirm_target=args.remark_code,
+                                  seed_snapshot=seed)
+        if result.get("ok") is not True or result.get("observation_validation_errors"):
+            raise ValueError("text_recheck_regroup_validation_failed")
+        before = original["observations"]
+        after = result["observations"]
+        if len(before) != len(after):
+            raise ValueError("text_recheck_regroup_not_unique")
+        selected_ids = set(request["observation_ids"])
+        for old, new in zip(before, after):
+            if old["sender_role"] != new["sender_role"] or old["message_type"] != new["message_type"]:
+                raise ValueError("text_recheck_role_or_type_changed")
+            if old["observation_id"] not in selected_ids and old.get("content_clean") != new.get("content_clean"):
+                raise ValueError("text_recheck_unselected_observation_changed")
+        report["ok"] = True
+        result["local_text_recheck"] = report
+        return result
+    except Exception as exc:
+        report.update({"ok": False, "error_code": "MESSAGE_CROSS_ROUND_IDENTITY_AMBIGUOUS",
+                       "reason": str(exc) if isinstance(exc, ValueError) else "text_recheck_failed",
+                       "exception_type": type(exc).__name__})
+        return report
+    finally:
+        report_path = output_dir / "text_bubble_recheck.json"
+        report["recheck_report_path"] = str(report_path)
+        report_path.write_text(json.dumps(report, ensure_ascii=False, default=str), encoding="utf-8")
+
+
+def load_verified_same_frame_full_ocr_seed(
+    hwnd: int,
+    raw_evidence: str,
+    *,
+    artifact_dir: str | None,
+    target: str,
+) -> dict[str, Any]:
+    """Re-OCR one authenticated pre-send screenshot without recapturing UI."""
+    loaded = _load_verified_frame_pixels(hwnd, raw_evidence, artifact_dir=artifact_dir, target=target)
+    if loaded.get("ok") is not True:
+        return loaded
+    screenshot = loaded["screenshot"]
+    evidence_path = Path(loaded["screenshot_path"])
+    evidence = loaded["frame_observation"]
     ocr_started = time.perf_counter()
     ocr_items = run_ocr_traced(
         screenshot,
@@ -22394,6 +22532,8 @@ def run_sidecar_cli(argv: list[str] | None = None) -> dict[str, Any]:
             "persisted pre-send frame."
         ),
     )
+    parser.add_argument("--text-recheck-request", default="")
+    parser.add_argument("--text-recheck-capture", action="store_true")
     parser.add_argument("--history-mode", default="", help="History loading strategy, e.g. anchor_until_found.")
     parser.add_argument("--anchor-id", action="append", default=[], help="Message id anchor to stop bounded history search.")
     parser.add_argument("--anchor-content-key", action="append", default=[], help="Normalized customer message content key anchor.")

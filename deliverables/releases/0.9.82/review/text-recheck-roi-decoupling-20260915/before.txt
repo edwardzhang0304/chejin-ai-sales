@@ -1,0 +1,11 @@
+F                                                                        [100%]
+=================================== FAILURES ===================================
+_ test_real_original_reaches_ingest_or_original_fault_and_automatic_cleanup[roi-off-True] _
+worker-client/tests/test_text_bubble_recheck.py:111: in test_real_original_reaches_ingest_or_original_fault_and_automatic_cleanup
+    assert result["ok"], result
+E   AssertionError: {'error_code': 'MESSAGE_CROSS_ROUND_IDENTITY_AMBIGUOUS', 'handoff_created': False, 'initial_messages': {'_text_recheck...0260915_171929_message-20260915_171929-97cedba1', 'authoritative_frame_source': 'initial_read', ...}, 'ok': False, ...}
+E   assert False
+- generated xml file: /private/tmp/chejin-send-result-fix-20260915/deliverables/releases/0.9.82/review/text-recheck-roi-decoupling-20260915/before.xml -
+=========================== short test summary info ============================
+FAILED worker-client/tests/test_text_bubble_recheck.py::test_real_original_reaches_ingest_or_original_fault_and_automatic_cleanup[roi-off-True]
+1 failed in 6.41s

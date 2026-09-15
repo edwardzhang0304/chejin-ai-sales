@@ -1,0 +1,10 @@
+...........                                                              [100%]
+=============================== warnings summary ===============================
+../chejin-selfcheck-20260914-m9CwVZ/venv/lib/python3.12/site-packages/_pytest/config/__init__.py:1441
+  /private/tmp/chejin-selfcheck-20260914-m9CwVZ/venv/lib/python3.12/site-packages/_pytest/config/__init__.py:1441: PytestConfigWarning: Unknown config option: asyncio_mode
+  
+    self._warn_or_fail_if_strict(f"Unknown config option: {key}\n")
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+- generated xml file: /private/tmp/chejin-send-result-fix-20260915/deliverables/releases/0.9.82/review/text-recheck-20260915/shared-ocr.xml -
+11 passed, 1 warning in 4.01s

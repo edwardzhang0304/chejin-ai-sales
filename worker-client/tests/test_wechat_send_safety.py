@@ -4338,7 +4338,12 @@ class WechatSendSafetyTest(unittest.TestCase):
         )
         self.assertIn("frame_id", payload["frame_observation"])
         self.assertNotIn("pre_send_frame_reuse", fallback_payload)
-        self.assertNotIn("frame_observation", fallback_payload)
+        self.assertIn("frame_id", fallback_payload["frame_observation"])
+        self.assertEqual(
+            fallback_payload["frame_observation"]["screenshot_sha256"],
+            payload["frame_observation"]["screenshot_sha256"],
+        )
+        self.assertEqual(fallback_payload["observations"], payload["observations"])
 
     def test_daemon_preserves_confirmed_reply_text_for_all_c2_read_actions(self):
         expected = "已确认发送的 AI 回复"
