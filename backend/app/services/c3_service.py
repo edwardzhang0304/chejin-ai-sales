@@ -34,6 +34,11 @@ from app.models.wechat import MessageEvent, WechatSessionBinding
 from app.models.worker import Worker
 from app.services.ai_adapter import AIEngineDecision, get_ai_engine_adapter
 from app.services.feishu_service import enqueue_handoff_notification
+from app.services.reply_sequence_policy import segments_for_decision
+from app.services.reply_sequence_service import (
+    advance_after_sent_ack, cancel_remaining, lock_sequence_conversation,
+    require_current_segment, sequence_summary, supports_reply_sequence,
+)
 from app.services.message_contract import (
     normalize_voice_duration,
     canonical_message_identity_text,
@@ -525,6 +530,7 @@ def _build_pre_send_fact_checkpoint(
 
 def _checkpoint_tail_from_latest_complete_frame(
     ordered_messages: list[MessageEvent],
+    *, frame_evidence: dict | None = None,
 ) -> list[MessageEvent]:
     """Project the latest complete Worker frame onto Brain-visible facts.
 
@@ -565,6 +571,8 @@ def _checkpoint_tail_from_latest_complete_frame(
         if isinstance(source_message.evidence, dict)
         else {}
     )
+    if frame_evidence is not None:
+        evidence = frame_evidence
     observations = evidence.get("observations")
     slot_states = evidence.get("slot_ledger_states")
     if (
@@ -649,7 +657,7 @@ def _checkpoint_tail_from_latest_complete_frame(
             return []
         seen_event_ids.add(matched_id)
         projected.append(matched)
-    if projected and source_message in projected:
+    if projected and (frame_evidence is not None or source_message in projected):
         return projected
     return []
 
@@ -679,7 +687,10 @@ def _pre_send_fact_checkpoint_response(
         if isinstance(batch.ai_request_snapshot, dict)
         else {}
     )
-    checkpoint = snapshot.get("pre_send_fact_checkpoint")
+    checkpoint = (action.pre_send_fact_checkpoint if action is not None else None)
+    if action is not None and action.segment_index > 1 and not checkpoint:
+        return {"pre_send_fact_checkpoint_pending": True}
+    checkpoint = checkpoint or snapshot.get("pre_send_fact_checkpoint")
     if not isinstance(checkpoint, dict) or not checkpoint:
         return {}
     digest = _canonical_sha256(checkpoint)
@@ -970,6 +981,11 @@ def message_batch_continuation_authorization(
             )
         )
     )
+    interruption = (batch.ai_response_snapshot or {}).get("reply_sequence_interrupt") or {}
+    interrupted_read = bool(interruption.get("flow_id")
+        and interruption.get("worker_id") == worker.id
+        and (worker.inflight_flow_state or {}).get("flow_id") == interruption["flow_id"]
+        and not batch.superseded_by_batch_id)
     allowed = bool(
         token_matches
         and revision_matches
@@ -982,10 +998,13 @@ def message_batch_continuation_authorization(
         and conversation
         and (
             conversation.status == "ai_active"
+            or interrupted_read
+            or (action and action.segment_count > 1 and sendable
+                and conversation.status in {"waiting_user_reply", "recalled_waiting_user"})
             or reply_then_handoff_sendable
         )
         and not batch.superseded_by_batch_id
-        and (processing or sendable)
+        and (processing or sendable or interrupted_read)
     )
     return {
         "allowed": allowed,
@@ -1166,6 +1185,9 @@ def _reply_action_to_dict(action: ReplyAction | None) -> dict[str, Any] | None:
         "status": action.status,
         "current": action.current,
         "generation_no": action.generation_no,
+        "segment_index": action.segment_index,
+        "segment_count": action.segment_count,
+        "predecessor_reply_action_id": action.predecessor_reply_action_id,
         "decision": action.decision,
         "reply_text": action.reply_text,
         "reply_text_hash": action.reply_text_hash,
@@ -1288,6 +1310,7 @@ def _supersede_action_for_stale_vehicle_facts(
         action,
         reason=f"{VEHICLE_FACT_STALE_REASON}：{','.join(vehicle_ids)}",
     )
+    cancel_remaining(db, action, VEHICLE_FACT_STALE_CODE)
 
 
 def invalidate_vehicle_dependent_reply_actions(db: Session, vehicle_id: str) -> list[str]:
@@ -1378,6 +1401,13 @@ def _supersede_open_actions(db: Session, conversation_id: str, *, reason: str) -
 
 def supersede_open_reply_actions_for_new_inbound(db: Session, conversation_id: str) -> None:
     _supersede_open_actions(db, conversation_id, reason="客户新消息到来，旧回复动作作废")
+    for action in db.scalars(select(ReplyAction).where(
+        ReplyAction.conversation_id == conversation_id, ReplyAction.status == "sending",
+        ReplyAction.segment_count > 1, ReplyAction.deleted_at.is_(None))):
+        batch = db.get(MessageBatch, action.batch_id)
+        batch.status = "superseded"
+        batch.active = False
+        batch.error_code = "MESSAGE_BATCH_SUPERSEDED"
 
 
 def cancel_open_reply_actions_for_conversation_change(db: Session, conversation_id: str, *, reason: str) -> None:
@@ -2930,7 +2960,8 @@ def _create_chat_reply_task(db: Session, *, binding: WechatSessionBinding, actio
         return existing
     task = Task(
         task_type=TaskType.chat_reply.value,
-        status=TaskStatus.pending.value,
+        status=TaskStatus.pending.value if action.segment_index == 1 else TaskStatus.blocked.value,
+        block_code=None if action.segment_index == 1 else "REPLY_PREDECESSOR_NOT_SENT",
         lead_id=binding.lead_id,
         sales_id=binding.sales_id,
         worker_id=binding.worker_id,
@@ -3474,17 +3505,21 @@ def generate_for_batch(
         reply_then_handoff = decision.decision == "reply_then_handoff"
         handoff_decision = decision if reply_then_handoff else None
         final_reply_text = _final_send_text(decision.reply_text)
+        try:
+            segments = segments_for_decision(final_reply_text, payload)
+        except ValueError:
+            segments = []
         valid_guard_results = (
             {"handoff", "pass", "rewrite_passed"}
             if reply_then_handoff
             else {"pass", "rewrite_passed"}
         )
-        if not final_reply_text or decision.guard_result not in valid_guard_results:
+        if not segments or decision.guard_result not in valid_guard_results:
             decision = AIEngineDecision(
                 decision="retry_later",
                 risk_flags=["ai_contract_invalid"],
                 guard_result="failed",
-                error_code="AI_ENGINE_CONTRACT_INVALID",
+                error_code="REPLY_SEQUENCE_REWRITE_REQUIRED" if final_reply_text and not segments else "AI_ENGINE_CONTRACT_INVALID",
                 suggested_action="retry_later",
                 raw_payload=payload,
             )
@@ -3497,13 +3532,15 @@ def generate_for_batch(
                 status="queued",
                 current=True,
                 generation_no=batch.generation_no,
+                segment_index=1,
+                segment_count=len(segments),
                 decision=(
                     "reply_then_handoff"
                     if reply_then_handoff
                     else "send_reply"
                 ),
-                reply_text=final_reply_text,
-                reply_text_hash=_hash_text(final_reply_text),
+                reply_text=segments[0],
+                reply_text_hash=_hash_text(segments[0]),
                 confidence=decision.confidence,
                 risk_flags=decision.risk_flags or [],
                 evidence_refs=decision.evidence_refs or [],
@@ -3557,6 +3594,24 @@ def generate_for_batch(
                 )
             else:
                 task = _create_chat_reply_task(db, binding=binding, action=action)
+                predecessor = action
+                for index, segment in enumerate(segments[1:], start=2):
+                    following = ReplyAction(
+                        batch_id=batch.id, conversation_id=binding.conversation_id,
+                        status="queued", current=False, generation_no=batch.generation_no,
+                        segment_index=index, segment_count=len(segments),
+                        predecessor_reply_action_id=predecessor.id, decision=action.decision,
+                        reply_text=segment, reply_text_hash=_hash_text(segment),
+                        confidence=action.confidence, risk_flags=action.risk_flags,
+                        evidence_refs=action.evidence_refs, guard_result=action.guard_result,
+                        expire_at=expire_at, ai_payload=payload,
+                    )
+                    db.add(following)
+                    db.flush()
+                    _snapshot_action_vehicle_facts(db, action=following, payload=payload,
+                                                  generation_vehicle_facts=generation_vehicle_facts)
+                    _create_chat_reply_task(db, binding=binding, action=following)
+                    predecessor = following
                 batch.status = "reply_action_created"
                 batch.active = False
                 batch.retryable = False
@@ -3592,9 +3647,18 @@ def generate_for_batch(
                     batch.error_code = handoff_reason_code
                     batch.suggested_action = "claim_send"
                     batch.generated_at = utcnow()
+                if len(segments) > 1 and not supports_reply_sequence(db.get(Worker, binding.worker_id)):
+                    action.status = "cancelled"
+                    action.error_code = "WORKER_REPLY_SEQUENCE_UNSUPPORTED"
+                    _cancel_task_for_action(db, action, reason=action.error_code)
+                    cancel_remaining(db, action, action.error_code)
+                    batch.status = "cancelled"
+                    batch.decision = "no_action"
+                    batch.error_code = action.error_code
+                    batch.suggested_action = "upgrade_worker"
                 db.flush()
                 result = {
-                    "decision": action.decision,
+                    "decision": batch.decision,
                     "batch": _batch_to_dict(batch),
                     "reply_action_id": action.id,
                     "reply_action": _reply_action_to_dict(action),
@@ -3702,6 +3766,7 @@ def validate_chat_reply_task_claim(
             409,
             {"conversation_id": action.conversation_id, "suggested_action": "claim_from_c2_conversation_flow"},
         )
+    require_current_segment(db, action, worker)
     if action.status != "queued":
         raise AppError("REPLY_ACTION_CLAIM_CONFLICT", "reply_action 当前状态不允许领取任务", 409, {"status": action.status, "suggested_action": "do_not_send"})
     if _is_past(action.expire_at):
@@ -3731,6 +3796,7 @@ def claim_send(
     followup_conversation_id = db.scalar(select(ReplyAction.conversation_id).where(ReplyAction.id == reply_action_id))
     if followup_conversation_id:
         require_conversation_followup(db, followup_conversation_id)
+        lock_sequence_conversation(db, followup_conversation_id)
         from app.services.followup_eligibility import conversation_lead_id, revoked_reply_action
         if revoked_reply_action(db, conversation_lead_id(db, followup_conversation_id), reply_action_id):
             raise AppError("LEAD_INVALID", "旧发送许可已撤销，仅允许结算原回执", 409)
@@ -3785,6 +3851,9 @@ def claim_send(
             "suggested_action": "reconcile_sent_ack_without_resend",
             **_pre_send_fact_checkpoint_response(batch, action),
         }
+    require_current_segment(db, action, db.get(Worker, worker_id))
+    if action.segment_index > 1 and not action.pre_send_fact_checkpoint:
+        raise AppError("REPLY_SEQUENCE_FRESH_READ_REQUIRED", "需要重新读取会话确认前一段", 409)
     if action.status != "queued":
         raise AppError("REPLY_ACTION_CLAIM_CONFLICT", "reply_action 已被领取或不可发送", 409, {"status": action.status, "suggested_action": "do_not_send"})
     stale_vehicle_ids = _stale_action_vehicle_ids(db, action, locked_vehicles=locked_vehicles)
@@ -3870,6 +3939,8 @@ def sent_ack(db: Session, *, reply_action_id: str, payload: Any) -> dict[str, An
     from app.services.followup_eligibility import revoked_reply_action
     followup_lead_id = conversation_lead_id(db, followup_conversation_id) if followup_conversation_id else None
     followup_cancelled = bool(followup_block_reason(db, followup_lead_id)) or revoked_reply_action(db, followup_lead_id, reply_action_id)
+    if followup_conversation_id:
+        lock_sequence_conversation(db, followup_conversation_id)
     existing = db.scalar(select(SentAck).where(SentAck.reply_action_id == reply_action_id))
     if existing:
         return {"duplicated": True, "ack": _sent_ack_to_dict(existing), "error_code": "SEND_ACK_DUPLICATED", "suggested_action": "use_existing_ack"}
@@ -3971,8 +4042,8 @@ def sent_ack(db: Session, *, reply_action_id: str, payload: Any) -> dict[str, An
         task.error_code = None
         task.completed_at = action.sent_at
         conversation.reply_count = (conversation.reply_count or 0) + 1
-        conversation.last_outbound_at = action.sent_at
-        conversation.last_ai_reply_at = action.sent_at
+        conversation.last_outbound_at = max(filter(None, [_aware_datetime(conversation.last_outbound_at), _aware_datetime(action.sent_at)]))
+        conversation.last_ai_reply_at = max(filter(None, [_aware_datetime(conversation.last_ai_reply_at), _aware_datetime(action.sent_at)]))
         batch = db.get(MessageBatch, action.batch_id)
         claim_boundary = _aware_datetime(action.sending_claimed_at)
         last_inbound = _aware_datetime(conversation.last_inbound_at)
@@ -3993,8 +4064,8 @@ def sent_ack(db: Session, *, reply_action_id: str, payload: Any) -> dict[str, An
                 conversation.status = "waiting_sales_reply"
                 conversation.next_recall_at = None
         elif not followup_cancelled and not newer_customer_turn and not newer_sales_turn:
-            conversation.status = "waiting_user_reply"
-            if batch and batch.trigger_type == "recall":
+            conversation.status = "recalled_waiting_user" if batch and batch.trigger_type == "recall" else "waiting_user_reply"
+            if batch and batch.trigger_type == "recall" and action.segment_index == 1:
                 conversation.status = "recalled_waiting_user"
                 conversation.recall_origin_status = None
                 conversation.recall_cycle_id = None
@@ -4013,7 +4084,7 @@ def sent_ack(db: Session, *, reply_action_id: str, payload: Any) -> dict[str, An
             )
         finish_task_and_release_worker(task)
         _write_event(db, task, TaskEventType.completed, from_status=before, to_status=task.status, worker_id=payload.worker_id, remark=payload.remark)
-    elif shared_adapter("send_interruption").confirmed_customer_interruption(
+    elif action.segment_count <= 1 and shared_adapter("send_interruption").confirmed_customer_interruption(
         send_result=payload.send_result, action_phase=payload.action_phase,
         error_code=payload.error_code, evidence=payload.evidence or {},
         target=binding.remark_code,
@@ -4032,7 +4103,9 @@ def sent_ack(db: Session, *, reply_action_id: str, payload: Any) -> dict[str, An
         task.failed_at = utcnow()
         finish_task_and_release_worker(task)
         _write_event(db, task, TaskEventType.failed, from_status=before, to_status=task.status, worker_id=payload.worker_id, remark=payload.remark)
-        if action.error_code not in TECHNICAL_SEND_FAILURE_NO_HANDOFF_CODES:
+        from app.services.reply_sequence_service import settle_customer_interrupted_segment
+        customer_interrupted = settle_customer_interrupted_segment(db, action, payload)
+        if not customer_interrupted and action.error_code not in TECHNICAL_SEND_FAILURE_NO_HANDOFF_CODES:
             _create_send_failure_handoff(
                 db,
                 action=action,
@@ -4061,6 +4134,11 @@ def sent_ack(db: Session, *, reply_action_id: str, payload: Any) -> dict[str, An
         )
 
     db.flush()
+    if payload.send_result == "sent":
+        advance_after_sent_ack(db, action, followup_cancelled=followup_cancelled)
+    else:
+        cancel_remaining(db, action, action.error_code or "SEND_RESULT_UNKNOWN")
+    db.flush()
     return {"duplicated": False, "ack": _sent_ack_to_dict(ack), "reply_action": _reply_action_to_dict(action), "task": task_to_detail(get_task_or_404(db, task.id))}
 
 
@@ -4074,6 +4152,7 @@ def recover_stale_sending_reply_action(
     followup_conversation_id = db.scalar(select(ReplyAction.conversation_id).where(ReplyAction.id == reply_action_id))
     if followup_conversation_id:
         lock_leads(db, [conversation_lead_id(db, followup_conversation_id)])
+        lock_sequence_conversation(db, followup_conversation_id)
     action = db.scalar(
         select(ReplyAction)
         .where(
@@ -4138,6 +4217,7 @@ def recover_stale_sending_reply_action(
         error_code="SEND_ACK_TIMEOUT",
         send_result="unknown",
     )
+    cancel_remaining(db, action, "SEND_ACK_TIMEOUT")
     db.flush()
     return True
 
@@ -4165,6 +4245,10 @@ def get_message_batch_for_worker(db: Session, *, worker: Worker, batch_id: str) 
             ReplyAction.deleted_at.is_(None),
         )
     )
+    if action and action.segment_count > 1:
+        from app.services.reply_sequence_service import settle_unavailable_sequence
+        settle_unavailable_sequence(db, batch=batch, worker=worker)
+        db.flush()
     task = db.scalar(select(Task).where(Task.reply_action_id == action.id, Task.deleted_at.is_(None))) if action else None
     handoff = db.scalar(
         select(HandoffEvent).where(HandoffEvent.batch_id == batch.id, HandoffEvent.deleted_at.is_(None))
@@ -4182,6 +4266,7 @@ def get_message_batch_for_worker(db: Session, *, worker: Worker, batch_id: str) 
         "batch_status": batch.status,
         "processing": processing,
         "terminal": not processing,
+        "reply_sequence": sequence_summary(db, batch),
         "conversation_id": batch.conversation_id,
         "trigger_type": batch.trigger_type,
         "decision": batch.decision,

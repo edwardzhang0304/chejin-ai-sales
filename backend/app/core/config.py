@@ -54,6 +54,8 @@ class Settings(BaseSettings):
     internal_service_token: str = "dev-only-internal-service-token-change-before-production"
     c3_ai_adapter_mode: str = "real"
     c3_reply_action_ttl_seconds: int = 300
+    c3_reply_segment_max_chars: int = 108
+    c3_reply_max_segments: int = 3
     c3_omniauto_root: str = "/app/omniauto-rpa"
     c3_omniauto_config_path: str | None = None
     c3_omniauto_provider: str | None = None
@@ -134,6 +136,8 @@ class Settings(BaseSettings):
             raise ValueError("车辆图片数量和像素限制必须大于 0")
         if self.vehicle_excel_max_rows < 1:
             raise ValueError("车辆 Excel 最大行数必须至少为 1")
+        if self.c3_reply_segment_max_chars < 1 or not 1 <= self.c3_reply_max_segments <= 3:
+            raise ValueError("回复字符上限必须为正数，分段数量必须在 1—3 之间")
         if self.feishu_http_timeout_seconds <= 0:
             raise ValueError("飞书 HTTP 超时时间必须大于 0")
         if not self.feishu_base_url.startswith("https://"):

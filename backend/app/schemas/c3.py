@@ -14,6 +14,11 @@ class MessageBatchGenerateRequest(BaseModel):
     force: bool = False
 
 
+class ReplySequenceInterruptRequest(BaseModel):
+    frame_id: str = Field(min_length=1, max_length=256)
+    observation_ids: list[str] = Field(min_length=1, max_length=100)
+
+
 class ReplyActionClaimSendRequest(BaseModel):
     task_id: str = Field(min_length=1, max_length=36)
     worker_id: str = Field(min_length=1, max_length=36)

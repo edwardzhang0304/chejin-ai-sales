@@ -1845,6 +1845,14 @@ def _build_message_ingest_payload_v3(
         candidate = slot.get("candidate")
         if not isinstance(candidate, dict):
             continue
+        if authoritative_evidence_observations is not None:
+            # Only new facts are serialized, but positions still refer to the
+            # complete frame used by the slot ledger and backend checkpoint.
+            observation_id = str((slot.get("observation") or {}).get("observation_id") or "").strip()
+            full_fact = business_projection_by_observation_id.get(observation_id)
+            if not isinstance(full_fact, dict) or type(full_fact.get("screen_order")) is not int:
+                raise ValueError("C2_AUTHORITATIVE_OBSERVATIONS_INVALID")
+            screen_order = full_fact["screen_order"] + 1
         rect = slot.get("rect")
         message_position: dict[str, Any] = {
             "screen_order": screen_order,
