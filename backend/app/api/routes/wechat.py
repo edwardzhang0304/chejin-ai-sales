@@ -2,6 +2,8 @@ import logging
 import time
 import uuid
 
+from app.schemas.c3 import ReplySequenceInterruptRequest
+
 from fastapi import APIRouter, BackgroundTasks, Depends, Header, Query, Request
 from sqlalchemy.orm import Session
 
@@ -441,6 +443,7 @@ def get_message_batch(
                     background_tasks.add_task(_generate_message_batch, batch_id, attempt)
             if claim.get("terminal"):
                 data = c3_service.get_message_batch_for_worker(db, worker=worker, batch_id=batch_id)
+        db.commit()
         return ok(data)
     except Exception:
         db.rollback()
@@ -495,3 +498,24 @@ def lead_wechat_bindings(
     _admin_auth: None = Depends(require_admin_auth),
 ):
     return ok(wechat_service.get_bindings_by_lead(db, lead_id))
+
+
+# C3-SEQ-01: cancellation only; this request is not a customer-message fact.
+
+
+@router.post("/workers/{worker_id}/wechat/message-batches/{batch_id}/interrupt-reply-sequence")
+def interrupt_reply_sequence(worker_id: str, batch_id: str, payload: ReplySequenceInterruptRequest,
+                             db: Session = Depends(get_db),
+                             x_worker_token: str | None = Header(default=None, alias="X-Worker-Token"),
+                             x_client_instance_id: str | None = Header(default=None, alias="X-Client-Instance-Id"),
+                             x_inflight_flow_id: str | None = Header(default=None, alias="X-Inflight-Flow-Id")):
+    from app.services.reply_sequence_service import interrupt_sequence
+    try:
+        worker = worker_service.authenticate_worker_client(db, worker_id, x_worker_token, x_client_instance_id)
+        data = interrupt_sequence(db, worker=worker, batch_id=batch_id, flow_id=x_inflight_flow_id,
+                                  evidence=payload.model_dump())
+        db.commit()
+        return ok(data)
+    except Exception:
+        db.rollback()
+        raise

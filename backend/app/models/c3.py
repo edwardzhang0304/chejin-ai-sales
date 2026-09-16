@@ -108,6 +108,10 @@ Index(
 
 class ReplyAction(Base, TimestampMixin):
     __tablename__ = "reply_actions"
+    __table_args__ = (
+        CheckConstraint("segment_count BETWEEN 1 AND 3 AND segment_index BETWEEN 1 AND segment_count",
+                        name="ck_reply_actions_segment_range"),
+    )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
     batch_id: Mapped[str] = mapped_column(String(36), nullable=False)
@@ -116,6 +120,10 @@ class ReplyAction(Base, TimestampMixin):
     current: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     generation_no: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     decision: Mapped[str] = mapped_column(String(32), nullable=False, default="send_reply")
+    segment_index: Mapped[int] = mapped_column(Integer, nullable=False, default=1, server_default="1")
+    segment_count: Mapped[int] = mapped_column(Integer, nullable=False, default=1, server_default="1")
+    predecessor_reply_action_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    pre_send_fact_checkpoint: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     reply_text: Mapped[str | None] = mapped_column(Text, nullable=True)
     reply_text_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
     confidence: Mapped[float | None] = mapped_column(Float, nullable=True)
@@ -138,7 +146,7 @@ class ReplyAction(Base, TimestampMixin):
 Index("idx_reply_actions_batch_status", ReplyAction.batch_id, ReplyAction.status)
 Index("idx_reply_actions_conversation_created", ReplyAction.conversation_id, ReplyAction.created_at.desc())
 Index("idx_reply_actions_status_expire", ReplyAction.status, ReplyAction.expire_at)
-Index("uq_reply_actions_batch_generation", ReplyAction.batch_id, ReplyAction.generation_no, unique=True)
+Index("uq_reply_actions_batch_generation_segment", ReplyAction.batch_id, ReplyAction.generation_no, ReplyAction.segment_index, unique=True)
 Index(
     "uq_reply_actions_current_batch",
     ReplyAction.batch_id,

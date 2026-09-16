@@ -4745,6 +4745,10 @@ def voice_duration_text_like(text: str) -> bool:
 
 
 def voice_duration_item_like(item: dict[str, Any]) -> bool:
+    if item.get("_voice_transcript_region"):
+        return False
+    if item.get("_voice_duration_region"):
+        return True
     text = str(item.get("text") or "")
     if voice_duration_text_like(text):
         return True
@@ -5217,6 +5221,56 @@ def combined_voice_transcript_matches_clicked_anchor(
     )
 
 
+def _combined_voice_comparison_rects(
+    message: dict[str, Any], anchor: dict[str, Any] | None,
+) -> tuple[tuple[float, float, float, float], tuple[float, float, float, float], str] | None:
+    """Compare like geometry; an OCR duration box is not the expanded text box.
+
+    The marker remains a current-frame locator, never a durable identity. Keep
+    the caller's role, local-region and unique-candidate checks. Older records
+    without per-item OCR geometry retain their original comparison.
+    """
+    anchor_rect = voice_context_anchor_rect_bounds(anchor)
+    message_rect = message_rect_bounds(message)
+    if not anchor_rect or not message_rect:
+        return None
+    item = (anchor or {}).get("item")
+    items = message.get("ocr_items")
+    if not isinstance(item, dict) or not isinstance(items, list) or not items:
+        return anchor_rect, message_rect, "legacy_record_bounds"
+    try:
+        marker_rect = tuple(float(item[key]) for key in ("left", "top", "right", "bottom"))
+    except (KeyError, TypeError, ValueError):
+        return anchor_rect, message_rect, "legacy_record_bounds"
+    if not (marker_rect[2] > marker_rect[0] and marker_rect[3] > marker_rect[1]):
+        return None
+    if not (voice_duration_item_like(item) or (
+        item.get("message_type") == "voice"
+        and re.fullmatch(r"\d{1,3}", voice_transcribe_compact_text(str(item.get("text") or "")))
+    )):
+        return anchor_rect, message_rect, "legacy_record_bounds"
+    markers = [row for row in items if isinstance(row, dict) and voice_duration_item_like(row)]
+    if message_is_combined_voice_transcript_record(message) and items:
+        # A numeric transcript below the header is text, even when the raw OCR
+        # token also resembles a duration. Duplicate header markers still fail.
+        header_bottom = float(items[0].get("bottom") or 0)
+        if (items[0] not in markers and re.fullmatch(
+            r"\d{1,3}", voice_transcribe_compact_text(str(items[0].get("text") or ""))
+        ) and str(items[0].get("text")) == str(message.get("voice_duration_text"))):
+            markers.append(items[0])
+        markers = [row for row in markers if float(row.get("top") or 0) < header_bottom]
+    if len(markers) != 1:
+        return None
+    try:
+        current_rect = tuple(float(markers[0][key]) for key in ("left", "top", "right", "bottom"))
+    except (KeyError, TypeError, ValueError):
+        return None
+    if not (message_rect[0] <= current_rect[0] < current_rect[2] <= message_rect[2]
+            and message_rect[1] <= current_rect[1] < current_rect[3] <= message_rect[3]):
+        return None
+    return marker_rect, current_rect, "voice_duration_marker"
+
+
 def combined_voice_transcript_anchor_match_evidence(
     message: dict[str, Any],
     anchor: dict[str, Any] | None,
@@ -5239,11 +5293,11 @@ def combined_voice_transcript_anchor_match_evidence(
     if not voice_message_role_matches_clicked_anchor(message, anchor, image_size):
         evidence["reason"] = "role_or_voice_structure_mismatch"
         return evidence
-    message_rect = message_rect_bounds(message)
-    anchor_rect = voice_context_anchor_rect_bounds(anchor)
-    if not message_rect or not anchor_rect:
+    comparison = _combined_voice_comparison_rects(message, anchor)
+    if comparison is None:
         evidence["reason"] = "missing_layout_bounds"
         return evidence
+    anchor_rect, message_rect, evidence["comparison_basis"] = comparison
     role = voice_anchor_sender_role(anchor, image_size)
     anchor_left, anchor_top, anchor_right, anchor_bottom = anchor_rect
     message_left, message_top, message_right, message_bottom = message_rect
@@ -5266,8 +5320,11 @@ def combined_voice_transcript_anchor_match_evidence(
             continue
         if not voice_message_role_matches_clicked_anchor(candidate, anchor, image_size):
             continue
-        candidate_rect = message_rect_bounds(candidate)
-        if not candidate_rect:
+        candidate_comparison = _combined_voice_comparison_rects(candidate, anchor)
+        if candidate_comparison is None:
+            continue
+        candidate_anchor_rect, candidate_rect, _ = candidate_comparison
+        if candidate_anchor_rect != anchor_rect:
             continue
         candidate_left, candidate_top, candidate_right, candidate_bottom = candidate_rect
         lane_delta = abs(candidate_right - anchor_right) if role == "self" else abs(candidate_left - anchor_left)
@@ -5358,7 +5415,7 @@ def message_is_plausible_voice_transcript_for_anchor(
     content = str(message.get("content_clean") or message.get("content") or "").strip()
     if not content:
         return False
-    if voice_duration_text_like(content):
+    if voice_duration_text_like(content) and not message_is_combined_voice_transcript_record(message):
         return False
     if voice_transcribe_button_text_like(content) or voice_transcribe_collapse_text_like(content):
         return False
@@ -8478,6 +8535,10 @@ def message_group_starts_with_voice_duration(group: list[dict[str, Any]]) -> boo
     second = group[1]
     if not voice_duration_item_like(first):
         return False
+    if (second.get("_voice_transcript_region") or {}).get("parent") == [
+        float(first.get(key) or 0) for key in ("left", "top", "right", "bottom")
+    ]:
+        return True
     first_bottom = float(first.get("bottom") or 0)
     second_top = float(second.get("top") or 0)
     gap = second_top - first_bottom
@@ -18139,7 +18200,7 @@ def build_send_fact_snapshot_from_frame(
         for index, observation in enumerate(observations)
         if isinstance(observation, dict)
         and str(observation.get("row_kind") or "")
-        in {"text_bubble", "voice_transcript", "image_bubble", "system_message"}
+        in {"text_bubble", "voice_bubble", "voice_transcript", "image_bubble", "system_message"}
     ]
     frame_observation = immutable_frame_pixel_evidence(
         screenshot,
@@ -20397,6 +20458,17 @@ def parse_messages_from_ocr(
             )
         ]
 
+    if screenshot is not None and any(
+        re.fullmatch(r"\d{1,3}[\"“”″']?", voice_transcribe_compact_text(str(row.get("text") or "")))
+        for row in rows
+    ):
+        from apps.wechat_ai_customer_service.adapters.wechat_win32_ocr.voice_regions import numeric_transcript_regions
+        for index, region in numeric_transcript_regions(rows, screenshot, message_bounds).items():
+            rows[index] = {**rows[index], "_voice_transcript_region": region}
+            for parent_index, parent in enumerate(rows):
+                if [float(parent.get(key) or 0) for key in ("left", "top", "right", "bottom")] == region["parent"]:
+                    rows[parent_index] = {**parent, "_voice_duration_region": True}
+
     grouped: list[list[dict[str, Any]]] = []
     normalized_conversation_type = infer_conversation_type(target)
     strict_private_text_grouping = bool(
@@ -20410,6 +20482,13 @@ def parse_messages_from_ocr(
         previous = grouped[-1][-1]
         previous_side = str(previous.get("side") or "unknown")
         vertical_gap = float(item["top"]) - float(previous["bottom"])
+        if (item.get("_voice_transcript_region") or {}).get("parent") == [
+            float(grouped[-1][0].get(key) or 0) for key in ("left", "top", "right", "bottom")
+        ]:
+            evidence = list(item.get("sender_role_evidence") or [])
+            evidence.append("voice_transcript_inherits_parent_role")
+            grouped[-1].append({**item, "side": grouped[-1][0]["side"], "sender_role_evidence": evidence})
+            continue
         if message_line_continues_voice_transcript_group(item, grouped[-1], vertical_gap):
             evidence = list(item.get("sender_role_evidence") or [])
             evidence.append("voice_transcript_inherits_parent_role")
