@@ -1,0 +1,347 @@
+{
+  "schema_version": 1,
+  "repository": "edwardzhang0304/chejin-ai-sales",
+  "reviewed_commit": "62261fd08b8e61399589967ab830e81c267d7d49",
+  "target_version": "0.9.85",
+  "approval": "Owner authorizes formal Windows preserved-data manual strong upgrade from actual 0.9.84, matching production backend/admin. Owner confirms normal exit and no pending local work. Reuse scope-approved independent source review; physical Windows invite acceptance remains pending.",
+  "original_verification_sha256": "5dddba1fc9dab7a3b28b160da7482bfd66cb300a5b76c4c920b4461d00016152",
+  "source_sha256": {
+    "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/adapters/add_friend_layout.py": "9763c4401410eb595cc407ef0bd0df4171892e4781e3a01217454d00c515e0e6",
+    "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/tests/test_add_friend_remark_caret.py": "800c3d1f87a7ba76736b223272d4dbe5ee3d4e14b0fd72f53710a2fe6612a919"
+  },
+  "checks": [
+    {
+      "name": "targeted/results.xml",
+      "original_xml_sha256": "23e746233393cf8ce019761719aab2f9061a93d88e651f1d2da76ca7a8978a1f",
+      "count": 23,
+      "cases": [
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_add_friend_remark_caret::test_only_one_trailing_caret_after_eight_characters[CJTRSFZT-True]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_add_friend_remark_caret::test_only_one_trailing_caret_after_eight_characters[CJTRSFZT|-True]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_add_friend_remark_caret::test_only_one_trailing_caret_after_eight_characters[cjtrsfzt|-True]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_add_friend_remark_caret::test_only_one_trailing_caret_after_eight_characters[ CJTRSFZT| -True]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_add_friend_remark_caret::test_only_one_trailing_caret_after_eight_characters[CJTRSFZ-False]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_add_friend_remark_caret::test_only_one_trailing_caret_after_eight_characters[CJTRSFZ|-False]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_add_friend_remark_caret::test_only_one_trailing_caret_after_eight_characters[CJTRSFZT9-False]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_add_friend_remark_caret::test_only_one_trailing_caret_after_eight_characters[CJTRSFZTI-False]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_add_friend_remark_caret::test_only_one_trailing_caret_after_eight_characters[CJTRSFZTl-False]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_add_friend_remark_caret::test_only_one_trailing_caret_after_eight_characters[CJTRSFZT1-False]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_add_friend_remark_caret::test_only_one_trailing_caret_after_eight_characters[|CJTRSFZT-False]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_add_friend_remark_caret::test_only_one_trailing_caret_after_eight_characters[CJTR|SFZT-False]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_add_friend_remark_caret::test_only_one_trailing_caret_after_eight_characters[CJTRSFZT||-False]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_add_friend_remark_caret::test_only_one_trailing_caret_after_eight_characters[CJTRSFZT\\uff5c-False]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_add_friend_remark_caret::test_only_one_trailing_caret_after_eight_characters[CJTRSFZ!-False]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_add_friend_remark_caret::test_confidence_field_scope_and_uniqueness_still_apply[items0-True]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_add_friend_remark_caret::test_confidence_field_scope_and_uniqueness_still_apply[items1-False]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_add_friend_remark_caret::test_confidence_field_scope_and_uniqueness_still_apply[items2-False]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_add_friend_remark_caret::test_confidence_field_scope_and_uniqueness_still_apply[items3-False]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_add_friend_remark_caret::test_confidence_field_scope_and_uniqueness_still_apply[items4-False]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_add_friend_remark_caret::test_caret_does_not_bypass_greeting_verification",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_add_friend_remark_caret::test_original_image_real_ocr_retains_caret_but_verification_passes",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_add_friend_remark_caret::test_original_form_reaches_confirm_once_without_refill",
+          "result": "passed"
+        }
+      ]
+    },
+    {
+      "name": "independent_final/results.xml",
+      "original_xml_sha256": "cb2961154b07082604b40aa6f7a31087254bb9fd8557784abcae096f69f22ae3",
+      "count": 2,
+      "cases": [
+        {
+          "name": "chejin-remark-caret-audit-20260916-uKH3aO.test_independent_boundary::test_only_documented_trailing_pipe_changes_behavior",
+          "result": "passed"
+        },
+        {
+          "name": "chejin-remark-caret-audit-20260916-uKH3aO.test_independent_boundary::test_original_package_smoke_failure_preexists",
+          "result": "passed"
+        }
+      ]
+    },
+    {
+      "name": "full_gate/results.xml",
+      "original_xml_sha256": "1b90e9b6ed22df20e7cd2fe45008e6a1c251666f77174bf94ceb2ba5376cddb1",
+      "count": 2,
+      "cases": [
+        {
+          "name": "chejin-remark-caret-audit-20260916-uKH3aO.test_full_gate::test_original_pixels_through_complete_validation_gate[False]",
+          "result": "passed"
+        },
+        {
+          "name": "chejin-remark-caret-audit-20260916-uKH3aO.test_full_gate::test_original_pixels_through_complete_validation_gate[True]",
+          "result": "passed"
+        }
+      ]
+    },
+    {
+      "name": "engineering/smoke.xml",
+      "original_xml_sha256": "fdb857f035766bb3af2ec561383018c874b9b70467f1fbc1caa8c5e44eea7be8",
+      "count": 46,
+      "cases": [
+        {
+          "name": "apps.wechat_ai_customer_service.tests.run_add_friend_package_smoke::test_required_files_exist",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.run_add_friend_package_smoke::test_requirements_cover_live_imports",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.run_add_friend_package_smoke::test_entry_click_script_defaults_are_low_disturbance",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.run_add_friend_package_smoke::test_entry_click_script_is_main_review_entry",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.run_add_friend_package_smoke::test_entry_click_latest_check_script_contract",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.run_add_friend_package_smoke::test_add_friend_readme_formal_contract",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.run_add_friend_package_smoke::test_add_friend_artifact_layout_contract",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.run_add_friend_package_smoke::test_add_friend_route_manifest_contract",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.run_add_friend_package_smoke::test_entry_click_field_contract",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.run_add_friend_package_smoke::test_add_friend_payload_builder_contract",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.run_add_friend_package_smoke::test_add_friend_step_event_report_contract",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.run_add_friend_package_smoke::test_entry_click_validation_failure_report_uses_native_events",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.run_add_friend_package_smoke::test_add_friend_flow_events_contract",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.run_add_friend_package_smoke::test_add_friend_flow_context_contract",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.run_add_friend_package_smoke::test_add_friend_already_friend_terminal_event_contract",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.run_add_friend_package_smoke::test_already_friend_residual_dialog_is_closed_once",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.run_add_friend_package_smoke::test_already_friend_close_failure_does_not_hide_success_or_claim_closed",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.run_add_friend_package_smoke::test_sidecar_uses_flow_context_for_entry_click",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.run_add_friend_package_smoke::test_add_friend_flow_forwards_action_journal_on_every_query_path",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.run_add_friend_package_smoke::test_sidecar_uses_add_friend_payload_builders",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.run_add_friend_package_smoke::test_add_friend_preflight_blocks_unready_window",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.run_add_friend_package_smoke::test_add_friend_formal_preclick_requires_foreground_and_main_surface",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.run_add_friend_package_smoke::test_add_friend_calibration_mode_contract",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.run_add_friend_package_smoke::test_entry_click_task_outcome_contract",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.run_add_friend_package_smoke::test_add_friend_actions_contract",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.run_add_friend_package_smoke::test_invite_form_locator_contract",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.run_add_friend_package_smoke::test_invite_form_input_click_failure_blocks_keyboard_actions",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.run_add_friend_package_smoke::test_invite_form_stable_first_field_preserves_snapshot_for_second_field",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.run_add_friend_package_smoke::test_invite_form_field_verification_blocks_confirm_click",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.run_add_friend_package_smoke::test_invite_form_failed_field_retries_once_before_confirm",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.run_add_friend_package_smoke::test_invite_form_reuses_stable_snapshot_between_greeting_and_remark",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.run_add_friend_package_smoke::test_discovered_search_dialog_frame_is_forwarded_without_recapture",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.run_add_friend_package_smoke::test_invite_confirm_uses_durable_action_journal_before_click",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.run_add_friend_package_smoke::test_post_confirm_residual_dialog_uses_only_exact_top_title",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.run_add_friend_package_smoke::test_post_confirm_residual_dialog_is_closed_once_when_title_ocr_misses",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.run_add_friend_package_smoke::test_post_confirm_close_click_failure_is_not_reported_as_closed",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.run_add_friend_package_smoke::test_post_confirm_visible_window_is_not_reported_closed_when_verify_ocr_misses",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.run_add_friend_package_smoke::test_query_verify_invalid_dialog_handle_returns_structured_failure",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.run_add_friend_package_smoke::test_search_clear_reacquires_current_frame_target_and_fails_closed",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.run_add_friend_package_smoke::test_add_friend_search_targets_never_fall_back_to_unbounded_clicks",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.run_add_friend_package_smoke::test_add_friend_primary_locator_contract",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.run_add_friend_package_smoke::test_add_friend_live_window_paths_pass_screenshot_to_plus_locator",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.run_add_friend_package_smoke::test_add_friend_ocr_contract",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.run_add_friend_package_smoke::test_add_friend_pacing_tier_contract",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.run_add_friend_package_smoke::test_add_friend_result_mapping_contract",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.run_add_friend_package_smoke::test_add_friend_screenshot_artifact_contract",
+          "result": "passed"
+        }
+      ]
+    }
+  ],
+  "environment": {
+    "checks_reused": 73,
+    "checks_reexecuted": 0,
+    "source": "23 targeted cases including original incident pixels with real OCR and formal invite form boundary; 2 independent boundary controls (660 comparisons), 2 full-gate old/new controls; 46 unchanged existing positive regression cases. Windows capture/keyboard/clipboard/mouse controlled.",
+    "known_failure": {
+      "case": "apps.wechat_ai_customer_service.tests.run_add_friend_package_smoke::test_sidecar_add_friend_helpers_import",
+      "baseline_reproduced": true,
+      "classification": "Existing surface-classification assertion mismatch, unknown versus add_contact_entry; independently reproduced on original d5c7a39 without fix; outside changed remark validation. Not counted passed.",
+      "evidence_sha256": "8c84485c357e58d526e2952d37847006627ae6bfd65fcc24d8f59778487b3e47"
+    },
+    "negative_controls": "Two original-pixel cases fail with old code as expected; preserved separately, not counted positive. Reviewer initial harness failure superseded by independent_final.",
+    "not_verified": "Native Windows actual invitation sent, customer installation; formal package and original 0.9.84 manual install require separate acceptance."
+  }
+}
