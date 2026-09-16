@@ -1,7 +1,11 @@
-' 当前文档版本v0.9.83；合同0.9.83；文档修订r3（2026-09-16，仅文档整理）。
+' 当前文档版本v0.9.83；合同0.9.83；文档修订r8（2026-09-16，用户授权提交推送已审源码；Windows待验）。
 ' Windows正式包与匹配后端已发布；保留数据强升；现场OCR、接单、微信发送与任务收尾仍待验。
+' r6已审源码按r8提交推送；未打包/发布。仅技术方案6.9.1的同次S0→S1受限缩短，不改停单/恢复/转人工规则。
+' r5整文件同步误带入的车金启动标定/加好友坐标变化已撤回；两仓各自原行为保留，共同增量一致。
+' 架构师4号独立复审通过，原范围P2关闭；提交来源与证据见版本记录r8。用户仅授权提交推送，DI-08待验。
+' r8只登记源码交付，流程语义不变，未重新渲染流程图。
 @startuml
-title 车金 AI 全流程图 v0.9.83（合同0.9.83；文档r3；正式强升已发布）
+title 车金 AI 全流程图 v0.9.83（合同0.9.83；文档r8；正式基线已发布，动态输入r6源码已提交/Windows待验）
 
 skinparam monochrome true
 skinparam shadowing false
@@ -684,7 +688,8 @@ loop Worker运行中；每次循环最多完成一个会话事务
                 完整图片不得静默丢失；候选跨多个已确认头像行时走现有图片错误、拒绝整帧。
                 Worker仅用原checkpoint及已确认发送回执唯一对齐，无历史不得当空会话。
                 初次读取完整当前序列唯一等于历史末尾且有强边界：空新增后缀，原no_change收尾；不误停。
-                动作后和发送前比较不启用历史末尾分支。
+                动作后和其他发送阶段不启用历史末尾分支；
+                r6本地实现例外仅为6.9.1证明成立的同次S0→S1视口缩短。
                 r5本地实现：可定位完整文字差异先按6.0.3.3.4最多一次局部复核。
                 顶部仍不能对齐/不满足复核准入：按后端真实门禁回执结束Flow并faulted，不自动重搜。
                 帧证据技术异常：ERROR/incident留证，原technical_failed与持久化收尾；零补发。
@@ -1263,30 +1268,63 @@ loop Worker运行中；每次循环最多完成一个会话事务
                 Reply --> W: send_token + approved reply_text
                 W -> L: 持久化possible_ai_send\naction_phase=not_attempted
                 W -> OA: send approved reply\n禁止Worker自行改写
-                OA -> WX: 输入并触发发送
-                OA -> OA: 发送物理点击前先落盘\naction_phase=trigger_attempted\n落盘失败则禁止点击
-                OA -> WX: 截图校验
-                WX --> OA: 发送结果画面
-                OA -> OA: 当前原图复用唯一头像检测与文字分组\n不得为发送确认另造头像或拼接算法
-                OA -> OA: 全屏OCR确认右侧文字\n若漏识别且结构候选为图片\n仅对最底部同排头像=self的候选做局部增强OCR\n有可读文字先归为text\n再以格式规范化+双向高重合度确认AI归属
-                note right of OA
-                  最多6次只读结果确认，包含已有首次S2快照；
-                  首次成功即结束，失败后最多补5帧，不补发。
-                  本轮不调整确认次数/等待/看门狗；
-                  上限耗尽仍不明确则沿原unknown回执收口。
-                end note
-                alt 新增右侧气泡身份确认
-                  OA --> W: action_phase=confirmed + sent
-                  W -> L: 可靠写入sent_ack Outbox\nsend_result=sent + 稳定气泡凭证
-                  W -> Reply: sent-ack(send_result=sent)
-                else 有证据证明发送从未触发
+                OA -> WX: 新截图S0：输入前基线
+                WX --> OA: 同一目标当前画面
+                OA -> OA: 当前分界/标题/私聊/原权威上下文校验\n保留完整S0与稳定身份，不截短旧凭证
+                alt S0校验通过且允许输入
+                  OA -> WX: 输入获批正文，尚不发送
+                  OA -> WX: 新截图S1：输入完成后的当前画面
+                  WX --> OA: 输入框可能变高/到上限内部滚动
+                  OA -> OA: 共用组件实测当前聊天/输入分界\n冻结同帧布局供OCR/头像/残片/草稿共用
+                  OA -> OA: 原共用连续性比较\n完整相等，或已证明缩短且唯一对应S0末尾\n保留最新末条、无新增、顶部残片有原证据
+                  note right of OA
+                    r6本地实现：1,2,3,4,5→3,4,5可有条件通过；
+                    →3,4,5,6或同文新事实/身份多解不得发送。
+                    顶部半截不手补、不随意丢；不全局开启历史末尾放行。
+                    关闭ROI加速仍执行边界/身份核验；三时点不得混帧。
+                  end note
+                  alt S1及原最终焦点/正文/授权检查全部通过
+                    OA -> OA: 物理触发前可靠写action_phase=trigger_attempted\n落盘失败禁止触发，沿原未发送失败出口
+                    alt trigger_attempted落盘成功
+                      OA -> WX: 仅执行一次物理发送
+                      OA -> WX: 按原发送结果路径取新截图S2
+                      WX --> OA: 发送结果画面/输入框可能缩回
+                      OA -> OA: 同帧动态边界＋唯一头像检测与文字分组\n缩回重现的旧消息仍按S0/稳定身份认作历史
+                      OA -> OA: 全屏OCR确认右侧文字\n漏识别且结构候选为图片时沿原局部增强\n新增尾部气泡＋正文归属＋输入框状态共同确认
+                      note right of OA
+                        最多6次只读结果确认，包含已有首次S2快照；
+                        首次成功即结束，失败后最多补5帧，不补发。
+                        不调整次数/等待/看门狗，证据不足仍unknown。
+                        S0→S1的缩短放行不能代替S2发送完成证据。
+                      end note
+                      alt 新增右侧气泡身份确认
+                        OA --> W: action_phase=confirmed + sent
+                        W -> L: 可靠写入sent_ack Outbox\nsend_result=sent + 稳定气泡凭证
+                        W -> Reply: sent-ack(send_result=sent)
+                      else 有证据证明发送从未触发
+                        OA --> W: action_phase=not_attempted + failed
+                        W -> L: 可靠写入sent_ack Outbox\nsend_result=failed + 未触发证据
+                        W -> Reply: sent-ack(send_result=failed)
+                      else 已触发但截图/OCR/进程结果不确定
+                        OA --> W: action_phase=trigger_attempted + unknown
+                        W -> L: 可靠写入sent_ack Outbox\nsend_result=unknown + 现有证据
+                        W -> Reply: sent-ack(send_result=unknown)\n禁止自动补发
+                      end
+                    else Journal写入失败
+                      OA --> W: 零物理发送＋原失败分类\n不进入S2成功确认
+                      W -> L: 沿原本地失败保护保存事实\n保存失败保持阻断，不伪造已落盘
+                      W -> Reply: 仅在原可靠保存条件满足后结算\n不重试微信发送
+                    end
+                  else 新消息/旧末条变化/分界不明/身份不明
+                    OA -> WX: 仅清理可证明属于本次程序的草稿\n确认清空；无法确认沿原阻断，不误删人工输入
+                    OA --> W: 未触发发送＋原错误分类＋原图/比较/清理证据
+                    W -> L: 沿原规则可靠保存未发送终态回执\n新消息作废/技术故障分类和状态机不改
+                    W -> Reply: 沿原失败/作废结算入口\n不新增转人工豁免或自动补发
+                  end
+                else S0不通过
                   OA --> W: action_phase=not_attempted + failed
-                  W -> L: 可靠写入sent_ack Outbox\nsend_result=failed + 未触发证据
+                  W -> L: 零输入/零触发；可靠保存原失败回执
                   W -> Reply: sent-ack(send_result=failed)
-                else 已触发但截图/OCR/进程结果不确定
-                  OA --> W: action_phase=trigger_attempted + unknown
-                  W -> L: 可靠写入sent_ack Outbox\nsend_result=unknown + 现有证据
-                  W -> Reply: sent-ack(send_result=unknown)\n禁止自动补发
                 end
                 alt sent_ack已获后端确认
                   Reply -> DB: reply_action终态\n按send_result更新任务和会话
