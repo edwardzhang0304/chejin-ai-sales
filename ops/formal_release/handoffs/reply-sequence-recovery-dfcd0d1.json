@@ -1,0 +1,744 @@
+{
+  "schema_version": 1,
+  "repository": "edwardzhang0304/chejin-ai-sales",
+  "reviewed_commit": "0717bc1a91824df19eddf66ec9bf0f5789d46c53",
+  "target_version": "0.9.86",
+  "approval": "Architect independently approved exact dfcd0d1 / b232a06 runtime, owner authorized routine source/delivery metadata and existing candidate-only packaging acceptance. Reviewed base adds only listed provenance and delivery docs to approved runtime. No tools/business changes or production/public release. Owner explicitly excludes 0.9.81-0.9.84 compatibility.",
+  "original_verification_sha256": "a6be3a1886a4204438b7c193de3cd9ebf6c942fdacba73848abc5bd93235314f",
+  "source_sha256": {
+    "backend/alembic/versions/20260916_0035_reply_sequence.py": "7ce57651815f3b7217d407a68917101e036301b55f30c5c2793db67525c22103",
+    "backend/app/api/routes/wechat.py": "2b3cb67a94433a448c8b9c2e8d5c8edf7b2202889a4c0f88fdc250d71e077143",
+    "backend/app/contracts/read_recovery.py": "e08608ac8cd1493af4647570c010cda22fd899d07f9b83b2c3f54f2f5cd60f04",
+    "backend/app/core/config.py": "afa362648ca37f4479c5ad22543431c47cf91e9463f196a54a3c254f34667680",
+    "backend/app/models/c3.py": "536c7310721c530c93fe8027d69ee9ced2469370868635e2a0bbfdb896f6f3be",
+    "backend/app/schemas/c3.py": "eaf674fdb0bd4c08c733892e9f6f40e3f2fa910f5db9d7438a178344df8b532c",
+    "backend/app/services/ai_adapter.py": "586e2ff95f75a508a3c88e6ec327caf7d81f89dd11206119b6c8a62ea1bc16ab",
+    "backend/app/services/c3_service.py": "ff30e8b51be2fd79b6e263d12f57b7a8e05ee6c8446a574ac464e387163b8ecc",
+    "backend/app/services/reply_sequence_policy.py": "481297710a8e7ab6842a453b20bf5cf7092570ec3d160131d9a6ac67ea278f11",
+    "backend/app/services/reply_sequence_service.py": "b6a450528a1e704e5f7612fd530105067f2f072c274f3c31189af292d3a937df",
+    "backend/app/services/task_service.py": "7cab53c6644dc4fad70f1e3c5fa7be8168768c866862a3c4e693710e3e3b0db0",
+    "backend/app/services/wechat_service.py": "abea73f34c3ade9d39c8ee14fd64efecd4581923e33eba86c223348a8070359c",
+    "backend/app/services/worker_service.py": "0c8df91386b084ede8be6da42ff64fa1ff657292ea9a6269f2e84c9b1abcbb8f",
+    "backend/requirements.txt": "39aea2fbc2791d8fbb55af61b319fd071de572e75df9f16b0a92984d99f0d3cb",
+    "backend/tests/reply_sequence_heartbeat.py": "9aa3fb4d7b0adab00ea19c6c2e0af93bb5025d6ebdc1abfc621a97c0408dbc04",
+    "backend/tests/reply_sequence_media_desktop.py": "06ef20a21e31db4d7e8e616d535b10df3576ea669b6b570e1f23a128a6716b7e",
+    "backend/tests/test_pre_send_checkpoint_order.py": "9a572a1df92587ecbad0bd7f605325190d11c09dfad71e269f1e8843678ad1bc",
+    "backend/tests/test_reply_sequence_after_read_pixels.py": "eb070f883f97921be30a92f2af427885ea09a4795e569b3cabe844c96b955cff",
+    "backend/tests/test_reply_sequence_brain_provider.py": "b173e2f8a779f3184eb7273f28633b087149172795e88d86fb6daf25e985c768",
+    "backend/tests/test_reply_sequence_cancellation.py": "270d7c6636c7f547b4e3c293abed6e7abe776cb962647057df49c896008ab023",
+    "backend/tests/test_reply_sequence_http.py": "87a7c774da3accfdb0ea91f0623b0ea5d6178421e14db25754b038ecb9941257",
+    "backend/tests/test_reply_sequence_interruption_policy.py": "fb51bfbff60052da17b58bacf5cbbbdb62a6e3e3ee6ff3aaef2a02ad08cbb56e",
+    "backend/tests/test_reply_sequence_media_pixels.py": "d9c914eece498ce38b68babfe27c07a0ff74037ed87e1d205946f4d4825803f5",
+    "backend/tests/test_reply_sequence_migration.py": "14d6fc41fe57e5e86625c10253e63c29be29ec081ebe95ab003937ddd4780281",
+    "backend/tests/test_reply_sequence_numeric_voice_pixels.py": "0e95db3e69dc7bf36639603aff1ce615cae1546d7c6fe0f102a1e47657007b12",
+    "backend/tests/test_reply_sequence_ocr_pixels.py": "27608a77244933faf4eb27e6bf7c1af01d6100cfd8f846fa91f66cfcba67a64c",
+    "backend/tests/test_reply_sequence_policy.py": "eb21a616a4cb5938010c5a9dc739298394431e63f66cd987f3ed207e0fb1858a",
+    "backend/tests/test_reply_sequence_worker.py": "a67342855ed369b92699096a652589240be19a81ff5c060a9770d830cf30bea8",
+    "backend/tests/test_sequence_read_recovery.py": "64edc51230eefa91ec842b6092dc9fae8cd84eff9e4883191c0cf34a23dd86ca",
+    "backend/tests/worker_sequence_recovery_probe.py": "431f0691eaa6841a5e0ac8b7fa2f84dc98302384ddde5687d030479357beb459",
+    "contracts/c2_contract_v3.json": "fe10507bef74d7e0fb81174679258a6885f428a9dca9fa4d4825924ad363c14d",
+    "contracts/recovery/c2_contract_v3_0.9.85.json": "2d622740aec299ec5ce5ddc2b40c30ae3575285a172a384ff8d137c3d796e090",
+    "worker-client/chejin_worker_client/api.py": "21135fe7ca210fbd76f475e99bb47789df09fe551c373dfa0712d30f3acfa11f",
+    "worker-client/chejin_worker_client/pending_read_recovery.py": "6337a5038488fcfd4c7db00d87ba97a4ca22f1509fc4f14f688c314d9c22f935",
+    "worker-client/chejin_worker_client/reply_sequence_runtime.py": "a7d258135093532f521581caf2d3a7b661b2ca1115f150c4bebffcacadc7bdde",
+    "worker-client/chejin_worker_client/task_runner.py": "f3f349def263a89f3d9366631094db1cdb19e859e23acad02be6561886789757",
+    "worker-client/chejin_worker_client/wechat_c2.py": "3824becb72a265458546767b3d61bdf4c4aa025a53ea1ea08dd4ab367207ff5f",
+    "worker-client/omniauto-rpa/.chejin-source.json": "b2eb36079b5f9466b26ffde9f1bafdf7bdde99c5042691515d9fb093965131fc",
+    "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/adapters/chejin_c2_observation_schema.generated.json": "bd3c02158255bf344abc8d63c529ca6bf7ba49a1a05c3bc590cfb09b1b5e8437",
+    "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/adapters/contract_rules.py": "d9aa130b0a89ece5551de07ac83ae8dc43fef256b497b77b5097d461f329203a",
+    "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/adapters/reply_sequence.py": "ab79c85346218c2cf53ce736c5eece1cd8039e5816c313d478d2a3cf8fd8a18f",
+    "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/adapters/wechat_win32_ocr/voice_regions.py": "9a5edcce2bea140d1bb7c9b53e4bf64d83cf2810e1ce3e90be14ea151096bfd3",
+    "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/adapters/wechat_win32_ocr_sidecar.py": "69841372f857b5bbc331177a72358726fd2cbeec9dce1f87539863ede25fee03",
+    "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/workflows/customer_service_brain.py": "52cc6660d85d7c264dfde75ed0219b2869a14d4679a344c937759592dd7d9224",
+    "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/workflows/customer_service_brain_contract.py": "2c64c663a022fefe3e065e3226a5d4e367acf05fe18497086cbb0dfba2383331",
+    "worker-client/requirements-test.txt": "a0e201ecda2bc871726ea3bb5db9cfe6b2109f60d8da88eecf910b790794b03d",
+    "worker-client/requirements.txt": "476b56f174e1bfe1941aa0c24d494c5973ec829a60f99f1bcfca625a30aabf0b",
+    "worker-client/tests/test_numeric_voice_regions.py": "fb3ea2d31a0c25d7bb0295938edd3bceecba5cd068f2591ecc8bbe3d99da957c",
+    "worker-client/tests/test_pending_read_handoff.py": "166d00a0ed172fd3aef8f44ff1ff56f4213a2064c394f5fbb49d8de638de7cca",
+    "worker-client/tests/test_pre_send_suffix_positions.py": "a804719479e79916fba9457ac1ddfd1c0497f9bc7b5f84e9c9fb67b3ead1091a",
+    "worker-client/tests/test_reply_sequence_read_reuse.py": "81e0f09db67f3711a32444aaaed58f51b73a7bc3cbab7f1bea9078f29adc7963",
+    "worker-client/tests/test_sequence_recovery_contract.py": "c6e0466eabb2a25322d8ad04c664e7b6e93e2bb255591a3b55f1747b769dbbff",
+    "worker-client/tests/test_voice_transcript_marker_geometry.py": "218fc2ebc22d5f01c9a3511adcbfe575ab638aef40a50a28b547adf0bb4582d8"
+  },
+  "checks": [
+    {
+      "name": "conflict_rules_verified",
+      "original_xml_sha256": "56cb87503272557b2be4e497bfd457ebd1cd6bdcd7bf276a4cfb4a297b7d662d",
+      "count": 63,
+      "cases": [
+        {
+          "name": "tests.test_customer_interrupt_settlement::test_customer_interruption_cancels_and_duplicate_does_not_override_newer_state",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_customer_interrupt_settlement::test_uncertain_or_sales_interrupt_does_not_auto_continue[sales]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_customer_interrupt_settlement::test_uncertain_or_sales_interrupt_does_not_auto_continue[cleanup_failed]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_customer_interrupt_settlement::test_uncertain_or_sales_interrupt_does_not_auto_continue[unknown]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_customer_interrupt_settlement::test_uncertain_or_sales_interrupt_does_not_auto_continue[wrong_target]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_customer_interrupt_settlement::test_uncertain_or_sales_interrupt_does_not_auto_continue[missing_proof]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_customer_interrupt_settlement::test_safe_interruption_cannot_restore_revoked_listening[ai_disabled]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_customer_interrupt_settlement::test_safe_interruption_cannot_restore_revoked_listening[closed]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_customer_interrupt_settlement::test_safe_interruption_cannot_restore_revoked_listening[binding_disabled]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_customer_interrupt_settlement::test_safe_interruption_cannot_restore_revoked_listening[human_takeover]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_reply_sequence_interruption_policy::test_only_customer_append_with_cleared_owned_draft_can_continue",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_reply_sequence_interruption_policy::test_uncertain_or_non_customer_change_keeps_original_failure_handling[possibly_sent]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_reply_sequence_interruption_policy::test_uncertain_or_non_customer_change_keeps_original_failure_handling[cleanup_failed]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_reply_sequence_interruption_policy::test_uncertain_or_non_customer_change_keeps_original_failure_handling[not_owned]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_reply_sequence_interruption_policy::test_uncertain_or_non_customer_change_keeps_original_failure_handling[focus_unknown]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_reply_sequence_interruption_policy::test_uncertain_or_non_customer_change_keeps_original_failure_handling[ambiguous]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_reply_sequence_interruption_policy::test_uncertain_or_non_customer_change_keeps_original_failure_handling[different_frame]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_reply_sequence_interruption_policy::test_uncertain_or_non_customer_change_keeps_original_failure_handling[partial_tail]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_reply_sequence_interruption_policy::test_uncertain_or_non_customer_change_keeps_original_failure_handling[no_new_message]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_reply_sequence_interruption_policy::test_uncertain_or_non_customer_change_keeps_original_failure_handling[new_sales]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_reply_sequence_interruption_policy::test_uncertain_or_non_customer_change_keeps_original_failure_handling[bad_observation_id]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_reply_sequence_interruption_policy::test_uncertain_or_non_customer_change_keeps_original_failure_handling[bad_digest]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_reply_sequence_interruption_policy::test_uncertain_or_non_customer_change_keeps_original_failure_handling[wrong_code]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_reply_sequence_interruption_policy::test_uncertain_or_non_customer_change_keeps_original_failure_handling[unknown_phase]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_reply_sequence_interruption_policy::test_uncertain_or_non_customer_change_keeps_original_failure_handling[malformed]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_reply_sequence_interruption_policy::test_image_pending_receipt_is_not_a_business_completion_or_relaxed_terminal_rule",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_reply_sequence_interruption_policy::test_before_input_customer_append_needs_no_fabricated_cleanup",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_reply_sequence_interruption_policy::test_before_input_unproven_state_cannot_cancel_as_customer_interruption[journal_missing]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_reply_sequence_interruption_policy::test_before_input_unproven_state_cannot_cancel_as_customer_interruption[possibly_sent]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_reply_sequence_interruption_policy::test_before_input_unproven_state_cannot_cancel_as_customer_interruption[draft_present]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_reply_sequence_interruption_policy::test_before_input_unproven_state_cannot_cancel_as_customer_interruption[draft_unknown]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_reply_sequence_interruption_policy::test_before_input_unproven_state_cannot_cancel_as_customer_interruption[different_capture]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_reply_sequence_interruption_policy::test_before_input_unproven_state_cannot_cancel_as_customer_interruption[frame_missing]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_reply_sequence_interruption_policy::test_before_input_unproven_state_cannot_cancel_as_customer_interruption[unknown_change]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_reply_sequence_interruption_policy::test_before_input_unproven_state_cannot_cancel_as_customer_interruption[new_sales]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_reply_sequence_interruption_policy::test_before_input_unproven_state_cannot_cancel_as_customer_interruption[bad_digest]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_reply_sequence_interruption_policy::test_before_input_unproven_state_cannot_cancel_as_customer_interruption[wrong_state]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_reply_sequence_worker::test_worker_sends_and_settles_three_segments_without_test_intervention[normal]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_reply_sequence_worker::test_worker_sends_and_settles_three_segments_without_test_intervention[handoff]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_reply_sequence_worker::test_worker_sends_and_settles_three_segments_without_test_intervention[recall]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_reply_sequence_worker::test_worker_sends_and_settles_three_segments_without_test_intervention[inbound]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_reply_sequence_worker::test_worker_sends_and_settles_three_segments_without_test_intervention[pause]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_reply_sequence_worker::test_worker_sends_and_settles_three_segments_without_test_intervention[pause_network]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_reply_sequence_worker::test_worker_sends_and_settles_three_segments_without_test_intervention[lost_request]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_reply_sequence_worker::test_worker_sends_and_settles_three_segments_without_test_intervention[lost_response]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_reply_sequence_worker::test_worker_sends_and_settles_three_segments_without_test_intervention[voice]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_reply_sequence_worker::test_worker_sends_and_settles_three_segments_without_test_intervention[image]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_reply_sequence_worker::test_worker_sends_and_settles_three_segments_without_test_intervention[voice_full]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_reply_sequence_worker::test_worker_sends_and_settles_three_segments_without_test_intervention[image_full]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_reply_sequence_worker::test_worker_sends_and_settles_three_segments_without_test_intervention[typing_first]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_reply_sequence_worker::test_worker_sends_and_settles_three_segments_without_test_intervention[typing_second]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_reply_sequence_worker::test_worker_sends_and_settles_three_segments_without_test_intervention[typing_request_loss]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_reply_sequence_worker::test_worker_sends_and_settles_three_segments_without_test_intervention[typing_response_loss]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_reply_sequence_worker::test_worker_sends_and_settles_three_segments_without_test_intervention[tamper_origin]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_reply_sequence_worker::test_worker_sends_and_settles_three_segments_without_test_intervention[tamper_content]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_reply_sequence_worker::test_missing_reusable_frame_keeps_sending_protected_but_fails_ocr_optimization",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_reply_sequence_worker::test_missing_required_step_breaks_complete_continuation[image_full-continuity]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_reply_sequence_worker::test_missing_required_step_breaks_complete_continuation[image_full-generation]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_reply_sequence_worker::test_missing_required_step_breaks_complete_continuation[typing_first-generation]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_reply_sequence_worker::test_missing_required_step_breaks_complete_continuation[typing_first-server_interruption]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_reply_sequence_worker::test_native_image_fact_recovers_same_sqlite_without_second_physical_action[request]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_reply_sequence_worker::test_native_image_fact_recovers_same_sqlite_without_second_physical_action[response]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_reply_sequence_worker::test_removing_recovered_tail_collection_breaks_image_restart_continuation",
+          "result": "passed"
+        }
+      ]
+    },
+    {
+      "name": "combined_pixels_verified",
+      "original_xml_sha256": "8198e0c9b32c08a9d73b311753bdabaa9ae3017a01e05b85d5d520bf76eb7766",
+      "count": 3,
+      "cases": [
+        {
+          "name": "tests.test_reply_sequence_after_read_pixels::test_customer_arrives_after_continuation_read[text-True]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_reply_sequence_numeric_voice_pixels::test_numeric_voice_interrupt_continues[same_value_duration_and_body]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_reply_sequence_ocr_pixels::test_three_segments_real_ocr_call_count[True]",
+          "result": "passed"
+        }
+      ]
+    },
+    {
+      "name": "single-b1ed0a3f",
+      "original_xml_sha256": "895208f7430de0f7f672de161fe368202cf2081432f8fa267ebe4d65a7dd35c6",
+      "count": 4,
+      "cases": [
+        {
+          "name": "tests.test_customer_interrupt_http::test_customer_interrupt_continues_ai_reply[normal]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_customer_interrupt_http::test_customer_interrupt_continues_ai_reply[restart_loss]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_customer_interrupt_http::test_customer_interrupt_continues_ai_reply[paused]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_customer_interrupt_http::test_customer_interrupt_continues_ai_reply[no_auto_callback]",
+          "result": "passed"
+        }
+      ]
+    },
+    {
+      "name": "reviewed_recovery_contract_87",
+      "original_xml_sha256": "3acc354fbd1213375049235cd48d3de86d0e54dac21f5cd1f31b1323a907fe38",
+      "count": 87,
+      "cases": [
+        {
+          "name": "tests.test_sequence_read_recovery::test_original_contract_read_recovers_same_sqlite_and_settles_once[False-0.9.75]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_sequence_read_recovery::test_original_contract_read_recovers_same_sqlite_and_settles_once[False-0.9.78]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_sequence_read_recovery::test_original_contract_read_recovers_same_sqlite_and_settles_once[False-0.9.80]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_sequence_read_recovery::test_original_contract_read_recovers_same_sqlite_and_settles_once[False-0.9.85]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_sequence_read_recovery::test_original_contract_read_recovers_same_sqlite_and_settles_once[True-0.9.75]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_sequence_read_recovery::test_original_contract_read_recovers_same_sqlite_and_settles_once[True-0.9.78]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_sequence_read_recovery::test_original_contract_read_recovers_same_sqlite_and_settles_once[True-0.9.80]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_sequence_read_recovery::test_original_contract_read_recovers_same_sqlite_and_settles_once[True-0.9.85]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_sequence_read_recovery::test_disabling_migration_blocks_real_recovery_then_same_sqlite_retries[False]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_sequence_read_recovery::test_disabling_migration_blocks_real_recovery_then_same_sqlite_retries[True]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_sequence_read_recovery::test_frozen_read_rejects_invalid_proof_and_unsettled_sends[worker]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_sequence_read_recovery::test_frozen_read_rejects_invalid_proof_and_unsettled_sends[customer]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_sequence_read_recovery::test_frozen_read_rejects_invalid_proof_and_unsettled_sends[flow]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_sequence_read_recovery::test_frozen_read_rejects_invalid_proof_and_unsettled_sends[sha]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_sequence_read_recovery::test_frozen_read_rejects_invalid_proof_and_unsettled_sends[changed_read_rule]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_sequence_read_recovery::test_frozen_read_rejects_invalid_proof_and_unsettled_sends[unknown_rule]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_sequence_read_recovery::test_frozen_read_rejects_invalid_proof_and_unsettled_sends[missing_finish]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_sequence_read_recovery::test_frozen_read_rejects_invalid_proof_and_unsettled_sends[sending]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_sequence_read_recovery::test_frozen_read_rejects_invalid_proof_and_unsettled_sends[unknown_send_result]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_sequence_read_recovery::test_frozen_fact_only_keeps_its_dedicated_authorization[0.9.75]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_sequence_read_recovery::test_frozen_fact_only_keeps_its_dedicated_authorization[0.9.78]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_sequence_read_recovery::test_frozen_fact_only_keeps_its_dedicated_authorization[0.9.80]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_sequence_read_recovery::test_frozen_fact_only_keeps_its_dedicated_authorization[0.9.85]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_actual_released_read_migrates_without_claiming_full_equivalence[0.9.75]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_actual_released_read_migrates_without_claiming_full_equivalence[0.9.78]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_actual_released_read_migrates_without_claiming_full_equivalence[0.9.80]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_actual_released_read_migrates_without_claiming_full_equivalence[0.9.85]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_future_rule_changes_cannot_use_the_reviewed_migration[identity]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_future_rule_changes_cannot_use_the_reviewed_migration[sequence_limit]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_future_rule_changes_cannot_use_the_reviewed_migration[sequence_unknown]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_future_rule_changes_cannot_use_the_reviewed_migration[sequence_missing]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_future_rule_changes_cannot_use_the_reviewed_migration[storage]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_future_rule_changes_cannot_use_the_reviewed_migration[terminal]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_future_rule_changes_cannot_use_the_reviewed_migration[unknown]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_published_085_resource_must_be_the_actual_release[missing]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_published_085_resource_must_be_the_actual_release[corrupt]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_published_085_resource_must_be_the_actual_release[development_085]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_removing_migration_or_085_declaration_breaks_the_positive[migration]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_removing_migration_or_085_declaration_breaks_the_positive[085_declaration]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_handoff_inherits_identical_rules_without_new_manifest_version_entries[0.9.78]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_handoff_inherits_identical_rules_without_new_manifest_version_entries[0.9.81]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_handoff_inherits_identical_rules_without_new_manifest_version_entries[0.10.12]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_handoff_never_infers_compatibility_from_version_number_alone[different_rule]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_handoff_never_infers_compatibility_from_version_number_alone[hash]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_handoff_never_infers_compatibility_from_version_number_alone[revision]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_handoff_never_infers_compatibility_from_version_number_alone[target_rules]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_handoff_never_infers_compatibility_from_version_number_alone[missing_capability]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_actual_rule_change_invalidates_old_hash_even_when_release_label_is_unchanged",
+          "result": "passed"
+        },
+        {
+          "name": "::test_old_manifest_readers_keep_the_explicit_contract_list",
+          "result": "passed"
+        },
+        {
+          "name": "::test_handoff_refuses_unproven_or_physical_data[other_customer]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_handoff_refuses_unproven_or_physical_data[other_flow]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_handoff_refuses_unproven_or_physical_data[missing_fact]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_handoff_refuses_unproven_or_physical_data[bad_payload]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_handoff_refuses_unproven_or_physical_data[physical_journal]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_handoff_refuses_unproven_or_physical_data[running]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_handoff_refuses_unproven_or_physical_data[unfinished_action]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_handoff_refuses_unproven_or_physical_data[pending_send]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_program_switch_or_rollback_preserves_pending_data[False]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_program_switch_or_rollback_preserves_pending_data[True]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_pending_facts_change_after_handoff_prevents_baseline_and_replacement",
+          "result": "passed"
+        },
+        {
+          "name": "::test_target_must_sign_recovery_capability_and_preserve_action_barriers",
+          "result": "passed"
+        },
+        {
+          "name": "::test_handoff_validates_all_counts_before_applying_read_exception[waiting_ledger]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_handoff_validates_all_counts_before_applying_read_exception[pending_c2_outbox]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_handoff_validates_all_counts_before_applying_read_exception[pending_sqlite_action_journal]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_handoff_validates_all_counts_before_applying_read_exception[pending_file_action_journal]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_handoff_validates_all_counts_before_applying_read_exception[pending_sent_ack]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_handoff_validates_all_counts_before_applying_read_exception[action_journal_state_unavailable]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_worker_handoff_requires_backend_proof_for_same_owner[None]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_worker_handoff_requires_backend_proof_for_same_owner[ready]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_worker_handoff_requires_backend_proof_for_same_owner[flow_id]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_worker_handoff_requires_backend_proof_for_same_owner[conversation_id]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_worker_handoff_requires_backend_proof_for_same_owner[worker_id]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_worker_handoff_requires_backend_proof_for_same_owner[client_instance_id]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_worker_handoff_requires_backend_proof_for_same_owner[contracts]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_valid_signature_does_not_make_an_unsupported_target_compatible",
+          "result": "passed"
+        },
+        {
+          "name": "::test_new_worker_initialization_then_real_baseline_and_handoff_validation[valid]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_new_worker_initialization_then_real_baseline_and_handoff_validation[initialization_changes_fact]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_new_worker_initialization_then_real_baseline_and_handoff_validation[unsupported_runtime]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_manifest_capability_requires_actual_packaged_contracts[0.9.75-complete]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_manifest_capability_requires_actual_packaged_contracts[0.9.75-missing]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_manifest_capability_requires_actual_packaged_contracts[0.9.75-corrupt]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_manifest_capability_requires_actual_packaged_contracts[0.9.85-complete]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_manifest_capability_requires_actual_packaged_contracts[0.9.85-missing]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_manifest_capability_requires_actual_packaged_contracts[0.9.85-corrupt]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_contract_rejection_never_downgrades_a_persisted_fault[running-paused]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_contract_rejection_never_downgrades_a_persisted_fault[paused-paused]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_contract_rejection_never_downgrades_a_persisted_fault[faulted-faulted]",
+          "result": "passed"
+        }
+      ]
+    }
+  ],
+  "environment": {
+    "checks_reused": 157,
+    "checks_reexecuted": 0,
+    "frozen_tracked_files_verified": 1012,
+    "nontracked_audit_inputs": [],
+    "source": "63 conflict and recovery cases, 3 real OCR combined cases, 4 single-response HTTP cases. Negative controls included as explicit test assertions. Formal Worker, HTTP, PostgreSQL, SQLite and asynchronous callbacks; model and physical Windows I/O controlled.",
+    "known_limitations": [
+      "Single digit 5 OCR miss user-deferred.",
+      "Physical WeChat sends and target Windows EXE business scenarios not verified by source evidence."
+    ],
+    "not_verified": "Native Windows short/multisegment/interruption/network-restart business sends remain pending; 0.9.81-0.9.84 compatibility excluded by owner; original 0.9.85 package acceptance separately required.",
+    "additional_recovery_evidence": "87 independently reviewed tests on formal HTTP/PostgreSQL/Worker and same SQLite, synthetic historical records, model/physical WeChat not executed; includes existing package manifest resource positive/negative checks with synthetic EXE bytes."
+  },
+  "reviewed_runtime_commit": "dfcd0d13f597c1f816020042d2914bf864ad2029",
+  "reviewed_shared_commit": "b232a061674fc70246fe094c9a8b66cb3eba952f",
+  "approved_metadata_diff": [
+    "deliverables/AI智能客服售前跟进系统_PRD_运营后台统一版_v0.9.86.md",
+    "deliverables/AI智能客服售前跟进系统_全流程图_v0.9.86.puml",
+    "deliverables/AI智能客服售前跟进系统_技术方案手册_v0.9.86.md",
+    "deliverables/AI智能客服售前跟进系统_版本更新记录.md",
+    "worker-client/omniauto-rpa/.chejin-source.json"
+  ],
+  "original_recovery_verification_sha256": "57b3743d85d51c582b526823cd03942aa02c1e30611130dd245cc1fba1e034d4"
+}
