@@ -586,6 +586,11 @@ class WorkerApiClient:
             extra_headers=headers or None,
         )
 
+    def interrupt_reply_sequence(self, binding: Binding, batch_id: str, *, frame_id: str, observation_ids: list[str]) -> dict[str, Any]:
+        return self._request("POST",
+            f"/workers/{binding.worker_id}/wechat/message-batches/{batch_id}/interrupt-reply-sequence",
+            binding=binding, json={"frame_id": frame_id, "observation_ids": observation_ids})
+
     def get_wechat_message_batch(self, binding: Binding, batch_id: str) -> dict[str, Any]:
         return self._request(
             "GET",

@@ -357,7 +357,7 @@ def _freeze(events):
     )
     batch.ai_request_snapshot = {"pre_send_fact_checkpoint": checkpoint}
     return batch, c3_service._pre_send_fact_checkpoint_response(
-        batch, SimpleNamespace(id="synthetic-action")
+        batch, SimpleNamespace(id="synthetic-action", segment_index=1, pre_send_fact_checkpoint=None)
     )
 
 
@@ -407,7 +407,7 @@ def test_rebased_checkpoint_stays_frozen_and_digest_guard_remains():
     assert [e.raw_payload for e in events] == before
     events[0].raw_payload["business_projection"]["screen_order"] = 99
     assert c3_service._pre_send_fact_checkpoint_response(
-        batch, SimpleNamespace(id="synthetic-action")
+        batch, SimpleNamespace(id="synthetic-action", segment_index=1, pre_send_fact_checkpoint=None)
     ) == response
     altered = deepcopy(response)
     altered["pre_send_fact_checkpoint"]["committed_tail"][0]["business_projection"]["screen_order"] = 99
@@ -422,7 +422,7 @@ def test_old_frozen_bad_checkpoint_is_not_silently_rewritten_on_read():
     # Historical snapshot fixture: previous backend had already frozen order 5.
     batch.ai_request_snapshot["pre_send_fact_checkpoint"]["committed_tail"][0]["business_projection"]["screen_order"] = 5
     before = deepcopy(batch.ai_request_snapshot)
-    response = c3_service._pre_send_fact_checkpoint_response(batch, SimpleNamespace(id="synthetic-action"))
+    response = c3_service._pre_send_fact_checkpoint_response(batch, SimpleNamespace(id="synthetic-action", segment_index=1, pre_send_fact_checkpoint=None))
     assert batch.ai_request_snapshot == before
     assert response["pre_send_fact_checkpoint"] == before["pre_send_fact_checkpoint"]
     assert _binding_error(response) == "checkpoint_item_invalid"

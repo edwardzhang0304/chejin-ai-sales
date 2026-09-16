@@ -785,6 +785,10 @@ def finish_inflight_flow(
                 "handoff_created": False,
             },
         )
+    if payload.conversation_id:
+        from app.services.reply_sequence_service import require_sequence_settled_for_flow
+        require_sequence_settled_for_flow(db, conversation_id=payload.conversation_id,
+                                         technical_failed=worker.run_status == "faulted")
     worker.inflight_flow_state = {}
     db.flush()
     if locked_binding is not None:
