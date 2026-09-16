@@ -1,0 +1,369 @@
+{
+  "schema_version": 1,
+  "repository": "edwardzhang0304/chejin-ai-sales",
+  "reviewed_commit": "3416d02bc894df2220da5c28e00075a930f15b2b",
+  "target_version": "0.9.86",
+  "approval": "User delegated candidate Windows packaging and acceptance after architect merge review. Routine version/schema/provenance metadata only. No production deployment, public release or sales installation authorized. Reuse reviewed evidence, no unrelated business rerun.",
+  "original_verification_sha256": "a6be3a1886a4204438b7c193de3cd9ebf6c942fdacba73848abc5bd93235314f",
+  "source_sha256": {
+    "worker-client/requirements.txt": "476b56f174e1bfe1941aa0c24d494c5973ec829a60f99f1bcfca625a30aabf0b",
+    "worker-client/requirements-test.txt": "a0e201ecda2bc871726ea3bb5db9cfe6b2109f60d8da88eecf910b790794b03d",
+    "contracts/c2_contract_v3.json": "232b1e474143cdf29e46b47d2b514a0fa29a79a45c5b2a20e25bb13d1d067dd9",
+    "backend/requirements.txt": "39aea2fbc2791d8fbb55af61b319fd071de572e75df9f16b0a92984d99f0d3cb",
+    "worker-client/tests/test_reply_sequence_read_reuse.py": "81e0f09db67f3711a32444aaaed58f51b73a7bc3cbab7f1bea9078f29adc7963",
+    "worker-client/tests/test_pre_send_suffix_positions.py": "a804719479e79916fba9457ac1ddfd1c0497f9bc7b5f84e9c9fb67b3ead1091a",
+    "worker-client/tests/test_numeric_voice_regions.py": "fb3ea2d31a0c25d7bb0295938edd3bceecba5cd068f2591ecc8bbe3d99da957c",
+    "worker-client/tests/test_voice_transcript_marker_geometry.py": "218fc2ebc22d5f01c9a3511adcbfe575ab638aef40a50a28b547adf0bb4582d8",
+    "worker-client/chejin_worker_client/reply_sequence_runtime.py": "a7d258135093532f521581caf2d3a7b661b2ca1115f150c4bebffcacadc7bdde",
+    "worker-client/chejin_worker_client/task_runner.py": "f3f349def263a89f3d9366631094db1cdb19e859e23acad02be6561886789757",
+    "worker-client/chejin_worker_client/api.py": "21135fe7ca210fbd76f475e99bb47789df09fe551c373dfa0712d30f3acfa11f",
+    "worker-client/chejin_worker_client/wechat_c2.py": "3824becb72a265458546767b3d61bdf4c4aa025a53ea1ea08dd4ab367207ff5f",
+    "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/workflows/customer_service_brain.py": "52cc6660d85d7c264dfde75ed0219b2869a14d4679a344c937759592dd7d9224",
+    "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/workflows/customer_service_brain_contract.py": "2c64c663a022fefe3e065e3226a5d4e367acf05fe18497086cbb0dfba2383331",
+    "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/adapters/wechat_win32_ocr_sidecar.py": "69841372f857b5bbc331177a72358726fd2cbeec9dce1f87539863ede25fee03",
+    "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/adapters/reply_sequence.py": "ab79c85346218c2cf53ce736c5eece1cd8039e5816c313d478d2a3cf8fd8a18f",
+    "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/adapters/chejin_c2_observation_schema.generated.json": "4f87b55366507a820f2cc9ea807138b5cee3055912426acfab06e15f888c7e1d",
+    "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/adapters/wechat_win32_ocr/voice_regions.py": "9a5edcce2bea140d1bb7c9b53e4bf64d83cf2810e1ce3e90be14ea151096bfd3",
+    "backend/tests/test_pre_send_checkpoint_order.py": "9a572a1df92587ecbad0bd7f605325190d11c09dfad71e269f1e8843678ad1bc",
+    "backend/tests/test_reply_sequence_brain_provider.py": "b173e2f8a779f3184eb7273f28633b087149172795e88d86fb6daf25e985c768",
+    "backend/tests/test_reply_sequence_policy.py": "eb21a616a4cb5938010c5a9dc739298394431e63f66cd987f3ed207e0fb1858a",
+    "backend/tests/test_reply_sequence_after_read_pixels.py": "eb070f883f97921be30a92f2af427885ea09a4795e569b3cabe844c96b955cff",
+    "backend/tests/test_reply_sequence_worker.py": "a67342855ed369b92699096a652589240be19a81ff5c060a9770d830cf30bea8",
+    "backend/tests/test_reply_sequence_migration.py": "14d6fc41fe57e5e86625c10253e63c29be29ec081ebe95ab003937ddd4780281",
+    "backend/tests/test_reply_sequence_numeric_voice_pixels.py": "0e95db3e69dc7bf36639603aff1ce615cae1546d7c6fe0f102a1e47657007b12",
+    "backend/tests/test_reply_sequence_cancellation.py": "270d7c6636c7f547b4e3c293abed6e7abe776cb962647057df49c896008ab023",
+    "backend/tests/test_reply_sequence_http.py": "87a7c774da3accfdb0ea91f0623b0ea5d6178421e14db25754b038ecb9941257",
+    "backend/tests/reply_sequence_heartbeat.py": "9aa3fb4d7b0adab00ea19c6c2e0af93bb5025d6ebdc1abfc621a97c0408dbc04",
+    "backend/tests/reply_sequence_media_desktop.py": "06ef20a21e31db4d7e8e616d535b10df3576ea669b6b570e1f23a128a6716b7e",
+    "backend/tests/test_reply_sequence_interruption_policy.py": "fb51bfbff60052da17b58bacf5cbbbdb62a6e3e3ee6ff3aaef2a02ad08cbb56e",
+    "backend/tests/test_reply_sequence_ocr_pixels.py": "27608a77244933faf4eb27e6bf7c1af01d6100cfd8f846fa91f66cfcba67a64c",
+    "backend/tests/test_reply_sequence_media_pixels.py": "d9c914eece498ce38b68babfe27c07a0ff74037ed87e1d205946f4d4825803f5",
+    "backend/app/core/config.py": "afa362648ca37f4479c5ad22543431c47cf91e9463f196a54a3c254f34667680",
+    "backend/app/models/c3.py": "536c7310721c530c93fe8027d69ee9ced2469370868635e2a0bbfdb896f6f3be",
+    "backend/app/schemas/c3.py": "eaf674fdb0bd4c08c733892e9f6f40e3f2fa910f5db9d7438a178344df8b532c",
+    "backend/app/services/reply_sequence_service.py": "b6a450528a1e704e5f7612fd530105067f2f072c274f3c31189af292d3a937df",
+    "backend/app/services/task_service.py": "7cab53c6644dc4fad70f1e3c5fa7be8168768c866862a3c4e693710e3e3b0db0",
+    "backend/app/services/ai_adapter.py": "586e2ff95f75a508a3c88e6ec327caf7d81f89dd11206119b6c8a62ea1bc16ab",
+    "backend/app/services/c3_service.py": "ff30e8b51be2fd79b6e263d12f57b7a8e05ee6c8446a574ac464e387163b8ecc",
+    "backend/app/services/worker_service.py": "0c8df91386b084ede8be6da42ff64fa1ff657292ea9a6269f2e84c9b1abcbb8f",
+    "backend/app/services/wechat_service.py": "abea73f34c3ade9d39c8ee14fd64efecd4581923e33eba86c223348a8070359c",
+    "backend/app/services/reply_sequence_policy.py": "481297710a8e7ab6842a453b20bf5cf7092570ec3d160131d9a6ac67ea278f11",
+    "backend/app/api/routes/wechat.py": "2b3cb67a94433a448c8b9c2e8d5c8edf7b2202889a4c0f88fdc250d71e077143",
+    "backend/alembic/versions/20260916_0035_reply_sequence.py": "7ce57651815f3b7217d407a68917101e036301b55f30c5c2793db67525c22103"
+  },
+  "checks": [
+    {
+      "name": "conflict_rules_verified",
+      "original_xml_sha256": "56cb87503272557b2be4e497bfd457ebd1cd6bdcd7bf276a4cfb4a297b7d662d",
+      "count": 63,
+      "cases": [
+        {
+          "name": "tests.test_customer_interrupt_settlement::test_customer_interruption_cancels_and_duplicate_does_not_override_newer_state",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_customer_interrupt_settlement::test_uncertain_or_sales_interrupt_does_not_auto_continue[sales]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_customer_interrupt_settlement::test_uncertain_or_sales_interrupt_does_not_auto_continue[cleanup_failed]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_customer_interrupt_settlement::test_uncertain_or_sales_interrupt_does_not_auto_continue[unknown]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_customer_interrupt_settlement::test_uncertain_or_sales_interrupt_does_not_auto_continue[wrong_target]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_customer_interrupt_settlement::test_uncertain_or_sales_interrupt_does_not_auto_continue[missing_proof]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_customer_interrupt_settlement::test_safe_interruption_cannot_restore_revoked_listening[ai_disabled]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_customer_interrupt_settlement::test_safe_interruption_cannot_restore_revoked_listening[closed]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_customer_interrupt_settlement::test_safe_interruption_cannot_restore_revoked_listening[binding_disabled]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_customer_interrupt_settlement::test_safe_interruption_cannot_restore_revoked_listening[human_takeover]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_reply_sequence_interruption_policy::test_only_customer_append_with_cleared_owned_draft_can_continue",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_reply_sequence_interruption_policy::test_uncertain_or_non_customer_change_keeps_original_failure_handling[possibly_sent]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_reply_sequence_interruption_policy::test_uncertain_or_non_customer_change_keeps_original_failure_handling[cleanup_failed]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_reply_sequence_interruption_policy::test_uncertain_or_non_customer_change_keeps_original_failure_handling[not_owned]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_reply_sequence_interruption_policy::test_uncertain_or_non_customer_change_keeps_original_failure_handling[focus_unknown]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_reply_sequence_interruption_policy::test_uncertain_or_non_customer_change_keeps_original_failure_handling[ambiguous]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_reply_sequence_interruption_policy::test_uncertain_or_non_customer_change_keeps_original_failure_handling[different_frame]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_reply_sequence_interruption_policy::test_uncertain_or_non_customer_change_keeps_original_failure_handling[partial_tail]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_reply_sequence_interruption_policy::test_uncertain_or_non_customer_change_keeps_original_failure_handling[no_new_message]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_reply_sequence_interruption_policy::test_uncertain_or_non_customer_change_keeps_original_failure_handling[new_sales]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_reply_sequence_interruption_policy::test_uncertain_or_non_customer_change_keeps_original_failure_handling[bad_observation_id]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_reply_sequence_interruption_policy::test_uncertain_or_non_customer_change_keeps_original_failure_handling[bad_digest]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_reply_sequence_interruption_policy::test_uncertain_or_non_customer_change_keeps_original_failure_handling[wrong_code]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_reply_sequence_interruption_policy::test_uncertain_or_non_customer_change_keeps_original_failure_handling[unknown_phase]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_reply_sequence_interruption_policy::test_uncertain_or_non_customer_change_keeps_original_failure_handling[malformed]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_reply_sequence_interruption_policy::test_image_pending_receipt_is_not_a_business_completion_or_relaxed_terminal_rule",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_reply_sequence_interruption_policy::test_before_input_customer_append_needs_no_fabricated_cleanup",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_reply_sequence_interruption_policy::test_before_input_unproven_state_cannot_cancel_as_customer_interruption[journal_missing]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_reply_sequence_interruption_policy::test_before_input_unproven_state_cannot_cancel_as_customer_interruption[possibly_sent]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_reply_sequence_interruption_policy::test_before_input_unproven_state_cannot_cancel_as_customer_interruption[draft_present]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_reply_sequence_interruption_policy::test_before_input_unproven_state_cannot_cancel_as_customer_interruption[draft_unknown]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_reply_sequence_interruption_policy::test_before_input_unproven_state_cannot_cancel_as_customer_interruption[different_capture]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_reply_sequence_interruption_policy::test_before_input_unproven_state_cannot_cancel_as_customer_interruption[frame_missing]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_reply_sequence_interruption_policy::test_before_input_unproven_state_cannot_cancel_as_customer_interruption[unknown_change]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_reply_sequence_interruption_policy::test_before_input_unproven_state_cannot_cancel_as_customer_interruption[new_sales]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_reply_sequence_interruption_policy::test_before_input_unproven_state_cannot_cancel_as_customer_interruption[bad_digest]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_reply_sequence_interruption_policy::test_before_input_unproven_state_cannot_cancel_as_customer_interruption[wrong_state]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_reply_sequence_worker::test_worker_sends_and_settles_three_segments_without_test_intervention[normal]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_reply_sequence_worker::test_worker_sends_and_settles_three_segments_without_test_intervention[handoff]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_reply_sequence_worker::test_worker_sends_and_settles_three_segments_without_test_intervention[recall]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_reply_sequence_worker::test_worker_sends_and_settles_three_segments_without_test_intervention[inbound]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_reply_sequence_worker::test_worker_sends_and_settles_three_segments_without_test_intervention[pause]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_reply_sequence_worker::test_worker_sends_and_settles_three_segments_without_test_intervention[pause_network]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_reply_sequence_worker::test_worker_sends_and_settles_three_segments_without_test_intervention[lost_request]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_reply_sequence_worker::test_worker_sends_and_settles_three_segments_without_test_intervention[lost_response]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_reply_sequence_worker::test_worker_sends_and_settles_three_segments_without_test_intervention[voice]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_reply_sequence_worker::test_worker_sends_and_settles_three_segments_without_test_intervention[image]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_reply_sequence_worker::test_worker_sends_and_settles_three_segments_without_test_intervention[voice_full]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_reply_sequence_worker::test_worker_sends_and_settles_three_segments_without_test_intervention[image_full]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_reply_sequence_worker::test_worker_sends_and_settles_three_segments_without_test_intervention[typing_first]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_reply_sequence_worker::test_worker_sends_and_settles_three_segments_without_test_intervention[typing_second]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_reply_sequence_worker::test_worker_sends_and_settles_three_segments_without_test_intervention[typing_request_loss]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_reply_sequence_worker::test_worker_sends_and_settles_three_segments_without_test_intervention[typing_response_loss]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_reply_sequence_worker::test_worker_sends_and_settles_three_segments_without_test_intervention[tamper_origin]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_reply_sequence_worker::test_worker_sends_and_settles_three_segments_without_test_intervention[tamper_content]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_reply_sequence_worker::test_missing_reusable_frame_keeps_sending_protected_but_fails_ocr_optimization",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_reply_sequence_worker::test_missing_required_step_breaks_complete_continuation[image_full-continuity]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_reply_sequence_worker::test_missing_required_step_breaks_complete_continuation[image_full-generation]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_reply_sequence_worker::test_missing_required_step_breaks_complete_continuation[typing_first-generation]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_reply_sequence_worker::test_missing_required_step_breaks_complete_continuation[typing_first-server_interruption]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_reply_sequence_worker::test_native_image_fact_recovers_same_sqlite_without_second_physical_action[request]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_reply_sequence_worker::test_native_image_fact_recovers_same_sqlite_without_second_physical_action[response]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_reply_sequence_worker::test_removing_recovered_tail_collection_breaks_image_restart_continuation",
+          "result": "passed"
+        }
+      ]
+    },
+    {
+      "name": "combined_pixels_verified",
+      "original_xml_sha256": "8198e0c9b32c08a9d73b311753bdabaa9ae3017a01e05b85d5d520bf76eb7766",
+      "count": 3,
+      "cases": [
+        {
+          "name": "tests.test_reply_sequence_after_read_pixels::test_customer_arrives_after_continuation_read[text-True]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_reply_sequence_numeric_voice_pixels::test_numeric_voice_interrupt_continues[same_value_duration_and_body]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_reply_sequence_ocr_pixels::test_three_segments_real_ocr_call_count[True]",
+          "result": "passed"
+        }
+      ]
+    },
+    {
+      "name": "single-b1ed0a3f",
+      "original_xml_sha256": "895208f7430de0f7f672de161fe368202cf2081432f8fa267ebe4d65a7dd35c6",
+      "count": 4,
+      "cases": [
+        {
+          "name": "tests.test_customer_interrupt_http::test_customer_interrupt_continues_ai_reply[normal]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_customer_interrupt_http::test_customer_interrupt_continues_ai_reply[restart_loss]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_customer_interrupt_http::test_customer_interrupt_continues_ai_reply[paused]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_customer_interrupt_http::test_customer_interrupt_continues_ai_reply[no_auto_callback]",
+          "result": "passed"
+        }
+      ]
+    }
+  ],
+  "environment": {
+    "checks_reused": 70,
+    "checks_reexecuted": 0,
+    "frozen_tracked_files_verified": 1012,
+    "nontracked_audit_inputs": [],
+    "source": "63 conflict and recovery cases, 3 real OCR combined cases, 4 single-response HTTP cases. Negative controls included as explicit test assertions. Formal Worker, HTTP, PostgreSQL, SQLite and asynchronous callbacks; model and physical Windows I/O controlled.",
+    "known_limitations": [
+      "Single digit 5 OCR miss user-deferred.",
+      "Physical WeChat sends and target Windows EXE business scenarios not verified by source evidence."
+    ],
+    "not_verified": "Windows actual short/multisegment send, interruption replacement, receipt network/restart recovery; separate package/runtime and manual preservation checks pending."
+  }
+}
