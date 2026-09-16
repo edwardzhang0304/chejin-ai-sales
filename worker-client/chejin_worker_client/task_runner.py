@@ -562,6 +562,46 @@ def _pre_send_suffix_only_payload(
     return result
 
 
+def _confirmed_pre_send_prefix_slots(target, payload, read_run_id, order_source):
+    """Carry existing settlement evidence, without assigning old rows new IDs."""
+    count = int(payload.get("pre_send_fact_checkpoint_prefix_count") or 0)
+    if count <= 0:
+        return []
+    context = (target.raw or {}).get("pre_send_fact_checkpoint_context") or {}
+    frozen = (context.get("checkpoint") or {}).get("committed_tail") or []
+    comparison = payload.get("pre_send_fact_checkpoint_comparison") or {}
+    current = ordered_message_viewport_observations(payload.get("observations") or [])
+    if comparison.get("comparison_result") not in {
+        "checkpoint_equal", "checkpoint_unique_prefix_with_suffix", "checkpoint_unique_viewport_slide_with_suffix",
+    } or comparison.get("current_prefix_count") != count:
+        raise ValueError("C2_SEQUENCE_ALIGNMENT_PAIR_INVALID")
+    states = []
+    for pair in comparison.get("matched_pairs") or []:
+        old, new = pair.get("pre_sequence_index"), pair.get("post_sequence_index")
+        if (type(old) is not int or type(new) is not int or not 0 <= old < len(frozen)
+                or not 0 <= new < count or new >= len(current)):
+            raise ValueError("C2_SEQUENCE_ALIGNMENT_PAIR_INVALID")
+        fact, observation = frozen[old], current[new]
+        source_key = str(fact.get("source_message_key") or "")
+        ledger = load_c2_ledger_entry(target.conversation_id, source_key) if source_key else None
+        if (not ledger or ledger.get("ingest_state") != "confirmed" or not ledger.get("origin_read_run_id")
+                or fact.get("sender_role") != observation.get("sender_role")
+                or fact.get("message_type") != observation.get("message_type")):
+            raise ValueError("C2_PRE_SEND_CHECKPOINT_NOT_CONTINUOUS")
+        states.append({
+            "observation_id": observation["observation_id"], "screen_order": new + 1,
+            "order_source": order_source, "row_kind": observation["row_kind"],
+            "sender_role": observation["sender_role"], "source_message_key": source_key,
+            "origin_read_run_id": ledger["origin_read_run_id"],
+            "fact_scope": "current_read_run" if ledger["origin_read_run_id"] == read_run_id else "historical",
+            "delivery_state": "backend_confirmed", "item_state": ledger["terminal_state"],
+            "history_source": "local_ledger",
+        })
+    if sorted(s["screen_order"] for s in states) != list(range(1, count + 1)) or len({s["source_message_key"] for s in states}) != count:
+        raise ValueError("C2_SEQUENCE_ALIGNMENT_PAIR_INVALID")
+    return states
+
+
 def pre_send_new_suffix_validation(
     observations: list[Any] | None,
     alignment_evidence: dict[str, Any] | None,
@@ -1902,6 +1942,7 @@ def _image_flow_action_slot_continuity(
     image_flow_action_slot: dict[str, Any],
     expanded_observations: list[Any] | None = None,
     context_expansion_used: bool = False,
+    checkpoint_boundary_tokens: dict[int, set[str]] | None = None,
 ) -> dict[str, Any]:
     """Apply the sole Worker-owned post-image continuity decision.
 
@@ -1948,6 +1989,9 @@ def _image_flow_action_slot_continuity(
         and int(baseline_continuity.get("new_count") or 0)
         == len(pre_sequence)
     )
+    pre_boundary_tokens = _business_boundary_tokens_for_payload(pre_payload, committed_only=True)
+    for index, tokens in (checkpoint_boundary_tokens or {}).items():
+        pre_boundary_tokens.setdefault(index, set()).update(tokens)
     if not invariant_ok:
         decision = {
             "relation": "business_sequence_not_continuous",
@@ -1960,10 +2004,7 @@ def _image_flow_action_slot_continuity(
         decision = compare_business_viewport_continuity(
             pre_sequence,
             post_sequence,
-            old_boundary_tokens=_business_boundary_tokens_for_payload(
-                pre_payload,
-                committed_only=True,
-            ),
+            old_boundary_tokens=pre_boundary_tokens,
             new_boundary_tokens=_business_boundary_tokens_for_payload(
                 pre_payload,
                 post_observations,
@@ -2033,6 +2074,7 @@ def _image_action_frame_to_reread_continuity(
     post_observations: list[Any],
     expanded_observations: list[Any] | None = None,
     context_expansion_used: bool = False,
+    checkpoint_boundary_tokens: dict[int, set[str]] | None = None,
 ) -> dict[str, Any]:
     """Map the actual clicked image row into the mandatory full reread.
 
@@ -2044,16 +2086,16 @@ def _image_action_frame_to_reread_continuity(
     action_payload = {
         "observations": list(action_frame_observations),
     }
+    action_boundary_tokens = _business_boundary_tokens_for_payload(action_payload, committed_only=True)
+    for index, tokens in (checkpoint_boundary_tokens or {}).items():
+        action_boundary_tokens.setdefault(index, set()).update(tokens)
     decision = compare_business_viewport_continuity(
         _business_projection_for_payload(action_payload),
         _business_projection_for_payload(
             action_payload,
             post_observations,
         ),
-        old_boundary_tokens=_business_boundary_tokens_for_payload(
-            action_payload,
-            committed_only=True,
-        ),
+        old_boundary_tokens=action_boundary_tokens,
         new_boundary_tokens=_business_boundary_tokens_for_payload(
             action_payload,
             post_observations,
@@ -5406,6 +5448,11 @@ class TaskRunner:
         conversation_id: str | None = None,
         error_code: str | None = None,
     ) -> None:
+        from .reply_sequence_runtime import flow_sequence_status, sequence_needs_continuation
+        if terminal_kind != "technical_failed" and binding.run_status != "faulted":
+            sequence_status = flow_sequence_status(self, binding, flow_id)
+            if sequence_needs_continuation(sequence_status, flow_id):
+                return
         # One owner across task, C2 and restart recovery, including local
         # cleanup. Save intent before HTTP so a lost response survives restart.
         with self._restart_recovery_lock:
@@ -5651,6 +5698,7 @@ class TaskRunner:
         if load_runtime_control().get("inflight_flow_id"):
             finish_runtime_flow(flow_id)
         clear_c2_state(self._inflight_finish_receipt_key(flow_id))
+        clear_c2_state(f"reply_sequence_flow:{flow_id}")
         self._backend_inflight_flow_state = {}
         if self._restart_recovery_flow_id == flow_id:
             self._restart_recovery_flow_id = None
@@ -6373,6 +6421,20 @@ class TaskRunner:
         flow_kind = str(
             load_runtime_control().get("inflight_flow_kind") or ""
         ).strip()
+        from .reply_sequence_runtime import flow_sequence_status, sequence_needs_continuation
+        sequence_status = flow_sequence_status(self, binding, flow_id)
+        if binding.run_status != "faulted" and sequence_needs_continuation(sequence_status, flow_id):
+            return
+        if (
+            sequence_status
+            and (sequence_status.get("reply_sequence") or {}).get("terminal") is True
+            and not self._c2_sent_ack_barrier_ready(
+                binding, reason="reply_sequence_finish",
+            )
+        ):
+            # A server-accepted ack may still be waiting locally after a lost
+            # response. Replay it before generic restart finish validation.
+            return
         receipt = load_c2_state(self._inflight_finish_receipt_key(flow_id))
         journal_entries = self._physical_action_journals_for_flow(flow_id)
         conversation_ids = self._restart_flow_conversation_ids(
@@ -7031,6 +7093,7 @@ class TaskRunner:
         elif probe_performed and wechat_status == "logged_in":
             mark_incident_recovered("wechat_window_missing")
         local_lock = lock_summary()
+        local_lock["capabilities"] = {**(local_lock.get("capabilities") or {}), "reply_sequence_version": 1}
         vision_capability = load_c2_state("vision_preflight")
         if vision_capability:
             local_lock = {
@@ -7148,6 +7211,17 @@ class TaskRunner:
             # stop all future heartbeats.
             self._handle_restart_recovery_exception(binding, exc)
             return
+        if rpa_status == "ready" and wechat_status == "logged_in" and not ui_action_active:
+            from .reply_sequence_runtime import resume_reply_sequence
+            try:
+                if resume_reply_sequence(self, binding):
+                    return
+            except Exception as exc:
+                if self._legacy_media_error_is_retryable(exc):
+                    append_log("WARN", "reply_sequence_resume_retrying", "分段回复原流程保留，等待连接恢复。")
+                else:
+                    self._handle_restart_recovery_exception(binding, exc)
+                return
         if not restart_flow_ready:
             return
 
@@ -8490,7 +8564,11 @@ class TaskRunner:
             "send_result": payload.get("send_result"),
             "guard": payload.get("guard"),
             "context_validation": payload.get("context_validation"),
+            "action_journal": payload.get("action_journal"),
             "send_baseline": {
+                **({key: send_baseline.get(key) for key in (
+                    "ok", "input_region", "frame_observation", "send_context_guard", "message_sequence",
+                )} if payload.get("state") == "send_context_changed_before_input" else {}),
                 "screenshot_path": send_baseline.get("screenshot_path"),
                 "message_viewport_change_digest": baseline_guard.get(
                     "message_viewport_change_digest"
@@ -9484,6 +9562,7 @@ class TaskRunner:
         target: WechatReadTarget,
         sidecar_payload: dict[str, Any],
         read_run_id: str,
+        comparison_only: bool = False,
     ) -> tuple[dict[str, Any], dict[str, Any]]:
         """Compare facts without re-running committed-message identity."""
 
@@ -9501,17 +9580,48 @@ class TaskRunner:
             if isinstance(context.get("checkpoint"), dict)
             else {}
         )
+        # A settled voice action already supplies a complete post-action
+        # business frame. It is valid for fact comparison, while remaining
+        # invalidated for subsequent physical actions. Never reuse its
+        # pre-action guard or clear ui_frame_invalidated on the payload.
+        voice_result = prepared.get("voice_transcription") or {}
+        settled_voice_frame = bool(
+            comparison_only
+            and isinstance(voice_result, dict)
+            and voice_result.get("voice_action_stage") == "execute"
+            and voice_result.get("transcript_binding_status") == "confirmed"
+            and (voice_result.get("confirmed_action_mapping") or {}).get("binding_confirmed") is True
+            and prepared.get("final_frame_reusable") is True
+            and prepared.get("post_frame_id")
+            and prepared.get("post_frame_id") == voice_result.get("post_frame_id")
+            and (prepared.get("business_continuity_evidence") or {}).get("relation") in {
+                "business_sequence_equal", "unique_tail_append",
+                "unique_viewport_slide_with_tail_append",
+            }
+        )
         frame_id = str(
-            prepared.get("frame_id")
+            (prepared.get("post_frame_id") if settled_voice_frame else "")
+            or prepared.get("frame_id")
             or prepared.get("sidecar_run_id")
             or prepared.get("run_id")
             or ""
         ).strip()
         send_context_guard = (
+            voice_result.get("message_viewport_change_evidence")
+            if settled_voice_frame
+            else
             prepared.get("send_context_guard")
             if isinstance(prepared.get("send_context_guard"), dict)
             else {}
         )
+        if settled_voice_frame and isinstance(send_context_guard, dict):
+            # The voice viewport proof has one digest; the send guard adds
+            # aliases for that same digest and last row. Adapt only locally.
+            send_context_guard = dict(send_context_guard)
+            send_context_guard.setdefault("sequence_sha256", send_context_guard.get("message_viewport_change_digest"))
+            sequence = send_context_guard.get("sequence")
+            if isinstance(sequence, list):
+                send_context_guard.setdefault("bottom", sequence[-1] if sequence else None)
         send_context_guard_validation = (
             _validate_pre_send_context_guard(
                 send_context_guard,
@@ -9530,7 +9640,10 @@ class TaskRunner:
                 prepared.get("authoritative_frame_source") or ""
             ).strip()
             in {"initial_read", "final_read"}
-            and prepared.get("ui_frame_invalidated") is not True
+            # Invalidation forbids another physical action using this frame;
+            # it does not erase the immutable facts of a fully proved frame.
+            # Callers that reuse a frame for sending separately reject it.
+            and (prepared.get("ui_frame_invalidated") is not True or comparison_only)
             and not bool(prepared.get("history_gap"))
             and not list(prepared.get("flow_gate_errors") or [])
             and not list(
@@ -9586,6 +9699,8 @@ class TaskRunner:
             send_context_guard_validation
         )
         prepared["pre_send_fact_checkpoint_comparison"] = comparison
+        if comparison_only:
+            return prepared, comparison
         if comparison.get("comparison_result") not in {
             "checkpoint_equal",
             "checkpoint_unique_prefix_with_suffix",
@@ -10242,10 +10357,14 @@ class TaskRunner:
                 }
             )
         try:
+            flow_id = str(load_runtime_control().get("inflight_flow_id") or "")
+            sequence_state = load_c2_state(f"reply_sequence_flow:{flow_id}")
             observations = _apply_worker_identity_from_continuity(
                 old_identity_observations,
                 observations,
                 continuity,
+                current_flow_read_run_id=(flow_id if sequence_state.get("conversation_id") == target.conversation_id
+                    and self._can_continue_inflight_flow(flow_id) else None),
             )
         except ValueError as exc:
             if str(exc) != "C2_CONTINUITY_MAPPING_INVALID":
@@ -13656,6 +13775,8 @@ class TaskRunner:
                     ),
                     "read_completion": read_completion,
                 })
+        from .reply_sequence_runtime import remember_ingested_replacement
+        remember_ingested_replacement(payload, normalized_result)
         self._mark_ingest_ledger_confirmed(payload, normalized_result)
         self._consume_confirmed_ai_reply_receipts(
             payload=payload,
@@ -14724,36 +14845,28 @@ class TaskRunner:
         clean_read_run_id = str(read_run_id or "").strip()
         if not clean_read_run_id:
             raise ValueError("C2_READ_RUN_ID_MISSING")
-        checkpoint_prefix_count = max(
-            0,
-            int(
-                sidecar_payload.get(
-                    "pre_send_fact_checkpoint_prefix_count"
-                )
-                or 0
-            ),
-        )
-        if checkpoint_prefix_count <= 0 and isinstance(target.raw, dict):
-            checkpoint_context = target.raw.get(
-                "pre_send_fact_checkpoint_context"
+        checkpoint_context = (target.raw or {}).get("pre_send_fact_checkpoint_context")
+        if isinstance(checkpoint_context, dict) and checkpoint_context.get("checkpoint"):
+            # Media actions return a fresh frame. Recheck that frame against
+            # the frozen facts; an earlier frame's count/pairs are not proof.
+            _, comparison = self._compare_pre_send_fact_checkpoint_frame(
+                target=target,
+                sidecar_payload=sidecar_payload,
+                read_run_id=clean_read_run_id,
+                comparison_only=True,
             )
-            checkpoint = (
-                checkpoint_context.get("checkpoint")
-                if isinstance(checkpoint_context, dict)
-                and isinstance(
-                    checkpoint_context.get("checkpoint"), dict
-                )
-                else {}
+            if comparison.get("comparison_result") not in {
+                "checkpoint_equal", "checkpoint_unique_prefix_with_suffix",
+                "checkpoint_unique_viewport_slide_with_suffix",
+            }:
+                raise ValueError("C2_PRE_SEND_CHECKPOINT_NOT_CONTINUOUS")
+            sidecar_payload["pre_send_fact_checkpoint_comparison"] = comparison
+            sidecar_payload["pre_send_fact_checkpoint_prefix_count"] = int(
+                comparison.get("current_prefix_count") or 0
             )
-            committed_tail = checkpoint.get("committed_tail")
-            if isinstance(committed_tail, list) and committed_tail:
-                checkpoint_prefix_count = len(committed_tail)
-                # Media execute/final-read payloads are fresh Sidecar objects.
-                # Restore only this Worker-owned phase marker; no historical
-                # identity is copied into the observations themselves.
-                sidecar_payload[
-                    "pre_send_fact_checkpoint_prefix_count"
-                ] = checkpoint_prefix_count
+        checkpoint_prefix_count = max(0, int(
+            sidecar_payload.get("pre_send_fact_checkpoint_prefix_count") or 0
+        ))
         preliminary_source = _pre_send_suffix_only_payload(sidecar_payload)
         preliminary_payload = build_preliminary_slot_payload(
             target,
@@ -14809,7 +14922,9 @@ class TaskRunner:
             for slot in order_authoritative_slots(slots)
         ]
 
-        states: list[dict[str, Any]] = []
+        states: list[dict[str, Any]] = _confirmed_pre_send_prefix_slots(
+            target, sidecar_payload, clean_read_run_id, frame_order_source,
+        )
         provisional_continuity_states: list[dict[str, Any]] = []
         identity_errors: list[dict[str, Any]] = []
         new_image_observation_ids: set[str] = set()
@@ -16237,6 +16352,29 @@ class TaskRunner:
                 "raw_terminal_state": "cancelled",
                 "terminal_state": "cancelled",
             }
+        if (
+            normalized.get("state") == "completed"
+            and normalized.get("business_state")
+            == "confirmed_result_pending_continuity"
+            and normalized.get("business_result_confirmed") is False
+            and action_phase == "confirmed"
+            and normalized.get("_image_identity_receipt_confirmed") is True
+        ):
+            # The copy/Vision result is durable, but is not a business
+            # terminal. The normal full-frame continuity and identity checks
+            # below must run before the terminal classifier may see it.
+            return {
+                "result": normalized,
+                "transaction": transaction,
+                "diagnostics": diagnostics,
+                "action_outcome": {},
+                "action_phase": action_phase,
+                "removed_from_final_screen": False,
+                "action_was_attempted": True,
+                "ui_frame_invalidated": ui_frame_invalidated,
+                "raw_terminal_state": "completed",
+                "terminal_state": "completed",
+            }
         action_outcome = classify_action_result(
             "image",
             {
@@ -16414,6 +16552,21 @@ class TaskRunner:
             and str(item.get("row_kind") or "").strip().lower()
             == "image_bubble"
         ]
+        checkpoint_boundary_tokens: dict[int, set[str]] = {}
+        checkpoint_context = (target.raw or {}).get("pre_send_fact_checkpoint_context") or {}
+        if checkpoint_context.get("checkpoint"):
+            _, checkpoint_comparison = self._compare_pre_send_fact_checkpoint_frame(
+                target=target, sidecar_payload=pre_payload,
+                read_run_id=flow_outcomes.origin_read_run_id, comparison_only=True,
+            )
+            if checkpoint_comparison.get("old_tail_fully_consumed") is True:
+                frozen = checkpoint_context["checkpoint"].get("committed_tail") or []
+                for pair in checkpoint_comparison.get("matched_pairs") or []:
+                    tokens = set(frozen[pair["pre_sequence_index"]].get("strong_boundary_tokens") or [])
+                    if tokens:
+                        checkpoint_boundary_tokens[pair["post_sequence_index"]] = tokens
+        # These are immutable fact boundaries from an actual comparison.
+        # They do not assign historical IDs to fresh OCR/action rows.
         pre_to_action_continuity = (
             {
                 "ok": False,
@@ -16431,8 +16584,14 @@ class TaskRunner:
                 pre_payload=pre_payload,
                 post_observations=action_frame_observations,
                 image_flow_action_slot=slot,
+                checkpoint_boundary_tokens=checkpoint_boundary_tokens,
             )
         )
+        action_checkpoint_tokens = {
+            pair["new_index"]: checkpoint_boundary_tokens[pair["old_index"]]
+            for pair in pre_to_action_continuity.get("matched_pairs") or []
+            if pair.get("old_index") in checkpoint_boundary_tokens
+        } if pre_to_action_continuity.get("ok") is True else {}
         action_frame_identity_observations: list[Any] = []
         if (
             len(action_result_indexes) != 1
@@ -16504,6 +16663,7 @@ class TaskRunner:
                         action_frame_identity_observations
                     ),
                     post_observations=post_observations,
+                    checkpoint_boundary_tokens=action_checkpoint_tokens,
                 )
                 continuity["pre_to_action_continuity"] = (
                     pre_to_action_continuity
@@ -16559,6 +16719,7 @@ class TaskRunner:
                         or []
                     ),
                     context_expansion_used=True,
+                    checkpoint_boundary_tokens=action_checkpoint_tokens,
                 )
                 continuity["pre_to_action_continuity"] = (
                     pre_to_action_continuity
@@ -16646,11 +16807,6 @@ class TaskRunner:
                 "continuity_evidence": continuity,
             }
 
-        image_action = (
-            copy.deepcopy(pending.get("action_outcome"))
-            if isinstance(pending.get("action_outcome"), dict)
-            else {}
-        )
         if (
             len(action_result_indexes) != 1
             or len(action_result_raw_indexes) != 1
@@ -16818,7 +16974,18 @@ class TaskRunner:
                 "continuity_evidence": continuity,
             }
 
-        image_action["source_message_key"] = source_key
+        # Only Worker can promote the physical receipt, after the full-frame
+        # continuity, committed image identity and Journal commit above.
+        image_action = classify_action_result(
+            "image",
+            {
+                **result,
+                "business_state": "completed",
+                "business_result_confirmed": True,
+                "evidence": result_transaction,
+            },
+            source_message_key=source_key,
+        )
         image_evidence = dict(image_action.get("evidence") or {})
         image_evidence.update(
             {
@@ -18257,13 +18424,24 @@ class TaskRunner:
     ) -> dict[str, Any]:
         previous_task = self.current_task
         try:
-            return self._wait_and_send_current_c3_batch_impl(
-                binding=binding,
-                target=target,
-                batch_id=batch_id,
-                cancel_check=cancel_check,
-                recovered_task=recovered_task,
-            )
+            while True:
+                result = self._wait_and_send_current_c3_batch_impl(
+                    binding=binding, target=target, batch_id=batch_id,
+                    cancel_check=cancel_check, recovered_task=recovered_task,
+                )
+                status = result.get("batch") or {}
+                action = status.get("reply_action") or {}
+                if not (result.get("sent") and result.get("ack_confirmed")
+                        and int(action.get("segment_count") or 1) > int(action.get("segment_index") or 1)):
+                    return result
+                # The preceding task's confirmed receipt is the only way to
+                # advance. Keep this C2 Flow/UI lease; release only its task lease.
+                self._stop_task_lease_guard()
+                self.current_task = None
+                self.on_task(None)
+                recovered_task = None
+                batch_id = str(status.get("batch_id") or batch_id)
+
         finally:
             # A normal C2 flow starts without a service task and claims the
             # chat_reply only when Brain is ready. Recovery flows already own
@@ -18313,9 +18491,24 @@ class TaskRunner:
                     }
                 time.sleep(max(0.1, CONFIG.c3_brain_poll_interval_seconds))
                 continue
+            sequence = status.get("reply_sequence") or {}
+            flow_id = str(load_runtime_control().get("inflight_flow_id") or "")
+            if flow_id and (int(sequence.get("segment_count") or 0) > 1
+                            or load_c2_state(f"reply_sequence_flow:{flow_id}")):
+                save_c2_state(f"reply_sequence_flow:{flow_id}", {
+                    "batch_id": current_batch_id, "conversation_id": target.conversation_id,
+                    "segment_count": int(sequence.get("segment_count") or 0),
+                })
+            if sequence.get("terminal") is True:
+                return {"ok": True, "batch": status, "sent": False, "reason": "reply_sequence_terminal"}
             self._apply_batch_continuation_to_target(status, target)
-            if not status.get("processing") and status.get("decision") != "send_reply":
+            if not status.get("processing") and status.get("decision") not in {"send_reply", "reply_then_handoff"}:
                 return {"ok": True, "batch": status, "sent": False}
+            sequence_action = status.get("reply_action") or {}
+            if (int(sequence_action.get("segment_index") or 1) > 1
+                    and (binding.run_status != "running" or load_runtime_control().get("pause_requested")
+                         or load_runtime_control().get("update_no_new_work"))):
+                return {"ok": True, "batch": status, "sent": False, "reason": "reply_sequence_paused"}
             if not self._batch_authorization_allows_target(status, target):
                 return {
                     "ok": False,
@@ -18354,6 +18547,43 @@ class TaskRunner:
                     self.current_ui_lock.update_step("c3_brain_waiting")
                 time.sleep(max(0.1, CONFIG.c3_brain_poll_interval_seconds))
                 continue
+            continuation_read = None
+            continuation_flow_id = ""
+            continuation_lease = None
+            if status.get("pre_send_fact_checkpoint_pending"):
+                # A continuation read is real capture + C2 ingest, never an
+                # expected bubble appended to the previous frozen checkpoint.
+                # The previous action's checkpoint remains in SQLite, but its
+                # pre-send prefix marker cannot scope this new full C2 read.
+                target.raw.pop("pre_send_fact_checkpoint_context", None)
+                continuation_flow_id = str(load_runtime_control().get("inflight_flow_id") or "")
+                continuation_lease = self.current_ui_lock
+                observation = self._read_one_wechat_target(
+                    binding, target, current_step="reply_sequence_read",
+                    operation_phase=C2_AUTHORIZED_READ_PHASE,
+                    allow_during_current_task=True, enforce_read_targets=True,
+                    held_lease=self.current_ui_lock, current_only=True, wait_for_brain=False,
+                )
+                if not observation.get("ok") or not observation.get("result"):
+                    error = observation.get("error_code") or "REPLY_SEQUENCE_FRESH_READ_REQUIRED"
+                    settled = self._settle_chat_reply_context_failure_before_unlock(
+                        binding, task_id=str(task_payload.get("id") or ""), source_error_code=error,
+                        evidence={"reply_sequence_read": observation})
+                    return {"ok": False, "batch": status, "error_code": error, "reply_task_settled": settled}
+                replacement = (observation.get("result") or {}).get("message_batch") or {}
+                if replacement.get("batch_id") and replacement["batch_id"] != current_batch_id:
+                    current_batch_id = str(replacement["batch_id"])
+                    continue
+                continuation_read = observation
+                status = self.api.get_wechat_message_batch(binding, current_batch_id)
+                if (status.get("reply_sequence") or {}).get("terminal") is True:
+                    return {"ok": True, "batch": status, "sent": False, "reason": "reply_sequence_cancelled"}
+                if status.get("pre_send_fact_checkpoint_pending"):
+                    settled = self._settle_chat_reply_context_failure_before_unlock(
+                        binding, task_id=str(task_payload.get("id") or ""),
+                        source_error_code="REPLY_SEQUENCE_FRESH_READ_REQUIRED", evidence={"batch_id": current_batch_id})
+                    return {"ok": False, "batch": status, "error_code": "REPLY_SEQUENCE_FRESH_READ_REQUIRED",
+                            "reply_task_settled": settled}
             checkpoint_binding = self._bind_pre_send_fact_checkpoint(
                 status=status,
                 target=target,
@@ -18386,17 +18616,28 @@ class TaskRunner:
             # Reuse the only complete C2 fact flow under the lease already held.
             # It may transcribe voice and run Vision, but it may only validate the
             # current chat; pre-send refresh must never search or switch sessions.
-            refresh_read = self._read_one_wechat_target(
-                binding,
-                target,
-                current_step="pre_send_refresh",
-                operation_phase=C2_PRE_SEND_REFRESH_PHASE,
-                allow_during_current_task=True,
-                enforce_read_targets=True,
-                held_lease=self.current_ui_lock,
-                current_only=True,
-                wait_for_brain=False,
+            from .reply_sequence_runtime import reuse_continuation_read
+            refresh_read = reuse_continuation_read(
+                self, target, continuation_read,
+                flow_id=continuation_flow_id, lease=continuation_lease,
             )
+            if refresh_read is None:
+                refresh_read = self._read_one_wechat_target(
+                    binding,
+                    target,
+                    current_step="pre_send_refresh",
+                    operation_phase=C2_PRE_SEND_REFRESH_PHASE,
+                    allow_during_current_task=True,
+                    enforce_read_targets=True,
+                    held_lease=self.current_ui_lock,
+                    current_only=True,
+                    wait_for_brain=False,
+                )
+            else:
+                append_log("INFO", "reply_sequence_pre_send_read_reused",
+                           "段间读取已与新冻结清单核对，复用本次画面。",
+                           metadata={"batch_id": current_batch_id,
+                                     "frame_id": (refresh_read.get("send_identity_frame") or {}).get("frame_id")})
             if not refresh_read.get("ok"):
                 reply_task_settled = (
                     self._settle_chat_reply_context_failure_before_unlock(
@@ -18415,6 +18656,30 @@ class TaskRunner:
                     "batch": status,
                     "pre_send_refresh": refresh_read,
                     "reply_task_settled": reply_task_settled,
+                }
+            # A successful media read may supersede the old reply without
+            # returning a reusable send frame. Follow the backend replacement
+            # first; its own fresh read/claim/guard still run on the next loop.
+            if int(refresh_read.get("new_self_message_count") or 0) > 0:
+                return {
+                    "ok": True,
+                    "batch": status,
+                    "sent": False,
+                    "reason": "sales_replied_during_brain_wait",
+                }
+            refresh_result = refresh_read.get("result") if isinstance(refresh_read.get("result"), dict) else {}
+            replacement = refresh_result.get("message_batch") if isinstance(refresh_result, dict) else None
+            if isinstance(replacement, dict) and replacement.get("batch_id") and replacement.get("batch_id") != current_batch_id:
+                current_batch_id = str(replacement["batch_id"])
+                last_status_fingerprint = ""
+                last_progress_at = time.monotonic()
+                continue
+            if int(refresh_read.get("new_customer_message_count") or 0) > 0:
+                return {
+                    "ok": False,
+                    "error_code": "C3_REPLACEMENT_BATCH_MISSING",
+                    "batch": status,
+                    "pre_send_refresh": refresh_read,
                 }
             expected_context_guard = (
                 refresh_read.get("send_context_guard")
@@ -18464,27 +18729,6 @@ class TaskRunner:
                         expected_guard_validation
                     ),
                     "reply_task_settled": reply_task_settled,
-                }
-            if int(refresh_read.get("new_self_message_count") or 0) > 0:
-                return {
-                    "ok": True,
-                    "batch": status,
-                    "sent": False,
-                    "reason": "sales_replied_during_brain_wait",
-                }
-            refresh_result = refresh_read.get("result") if isinstance(refresh_read.get("result"), dict) else {}
-            replacement = refresh_result.get("message_batch") if isinstance(refresh_result, dict) else None
-            if isinstance(replacement, dict) and replacement.get("batch_id") and replacement.get("batch_id") != current_batch_id:
-                current_batch_id = str(replacement["batch_id"])
-                last_status_fingerprint = ""
-                last_progress_at = time.monotonic()
-                continue
-            if int(refresh_read.get("new_customer_message_count") or 0) > 0:
-                return {
-                    "ok": False,
-                    "error_code": "C3_REPLACEMENT_BATCH_MISSING",
-                    "batch": status,
-                    "pre_send_refresh": refresh_read,
                 }
             pre_send_frame_id = str(
                 send_identity_frame.get("frame_id") or ""
@@ -18733,6 +18977,7 @@ class TaskRunner:
                         and recovered_result.get("send_result") == "sent"
                     ),
                     "reason": "duplicate_send_claim_suppressed",
+                    "ack_confirmed": ack_confirmed,
                 }
             reserved_send_stable_id = self._reserve_worker_sequence(
                 target,
@@ -19038,11 +19283,31 @@ class TaskRunner:
                     reconciliation_state="ai_unreconciled",
                     physical_send_confirmed=False,
                 )
-            self._queue_and_submit_reply_send_ack(
+            from apps.wechat_ai_customer_service.adapters.reply_sequence import confirmed_customer_interruption
+            from .reply_sequence_runtime import remember_customer_interruption, reread_after_interruption
+            customer_interrupted = (
+                int((status.get("reply_action") or {}).get("segment_count") or 1) > 1
+                and confirmed_customer_interruption(error_code=error_code, action_phase=action_phase, evidence=evidence)
+            )
+            if customer_interrupted:
+                remember_customer_interruption(str(load_runtime_control().get("inflight_flow_id") or ""))
+            ack_confirmed = self._queue_and_submit_reply_send_ack(
                 binding, claim, send_result=send_result, action_phase=action_phase, reply_text_hash=actual_hash,
                 sidecar_run_id=run_id, evidence=evidence, error_code=error_code,
                 remark="发送结果未知，禁止自动补发。" if send_result == "unknown" else "发送失败。",
             )
+            if customer_interrupted and ack_confirmed:
+                self._stop_task_lease_guard()
+                self.current_task = None
+                self.on_task(None)
+                observed = reread_after_interruption(self, binding, target)
+                if not observed.get("ok"):
+                    return observed
+                replacement = (observed.get("result") or {}).get("message_batch") or {}
+                if replacement.get("batch_id") and replacement["batch_id"] != current_batch_id:
+                    current_batch_id = str(replacement["batch_id"])
+                    continue
+                return {"ok": True, "batch": status, "sent": False, "reason": "customer_interruption_read_complete"}
             if error_code in SEND_CONTEXT_TECHNICAL_ERRORS:
                 self.set_run_status("faulted")
                 self.on_error(
@@ -20683,10 +20948,10 @@ class TaskRunner:
                 expected_confirmed_self_text=(
                     self._confirmed_ai_reply_text_for_read(target)
                 ),
-                chat_fact_roi_ocr=(
-                    operation_phase == C2_PRE_SEND_REFRESH_PHASE
-                    and CONFIG.c3_pre_send_roi_reuse_enabled
-                ),
+                # Match Vision's full-frame OCR mode. Changing to ROI here
+                # can split one text bubble across two different OCR rows.
+                # This is the existing mandatory read, not an extra capture.
+                chat_fact_roi_ocr=False,
                 max_duration_seconds=20,
                 cancel_check=action_cancel_requested,
             )
@@ -24734,6 +24999,8 @@ class TaskRunner:
                     "target_confirmation": locate_payload,
                     "initial_messages": sidecar_payload,
                 }
+            from .reply_sequence_runtime import interrupt_on_new_customer
+            interrupt_on_new_customer(self, binding, target, sidecar_payload)
             initial_read_observations = list(sidecar_payload.get("observations") or [])
             excluded_voice_anchor_keys: set[str] = set()
             voice_item_outcomes: list[dict[str, Any]] = []
@@ -25272,6 +25539,8 @@ class TaskRunner:
                     "fact_ingest_ok": True,
                     "conversation_flow_ok": True,
                     "conversation_terminal_state": "no_new_facts",
+                    **({"_reply_sequence_frame": dict(sidecar_payload)}
+                       if current_step == "reply_sequence_read" else {}),
                     "send_context_guard": (
                         sidecar_payload.get("send_context_guard")
                         if isinstance(sidecar_payload.get("send_context_guard"), dict)
@@ -25591,6 +25860,8 @@ class TaskRunner:
                 "fact_ingest_ok": fact_ingest_ok,
                 "conversation_flow_ok": conversation_flow_ok,
                 "conversation_terminal_state": conversation_terminal_state,
+                **({"_reply_sequence_frame": dict(sidecar_payload)}
+                   if current_step == "reply_sequence_read" else {}),
                 "send_context_guard": (
                     sidecar_payload.get("send_context_guard")
                     if isinstance(sidecar_payload.get("send_context_guard"), dict)

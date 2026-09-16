@@ -1006,7 +1006,7 @@ def _maybe_run_customer_service_brain_within_time_budget(
 
     stage_started = time.time()
     raw_plan = result.get("brain_plan") if isinstance(result.get("brain_plan"), dict) else {}
-    plan = normalize_brain_plan(raw_plan, max_segments=int(settings.get("max_reply_segments") or 3))
+    plan = normalize_brain_plan(raw_plan, max_segments=int(settings.get("max_reply_segments") or 3), preserve_all_segments=settings.get("reply_sequence_version") == 1)
     coerced_fallback = coerce_usable_fallback_existing_plan(plan)
     if coerced_fallback:
         payload["brain_fallback_existing_coerced"] = coerced_fallback
@@ -1075,7 +1075,7 @@ def _maybe_run_customer_service_brain_within_time_budget(
             payload["invalid_plan_same_capture_retry"] = compact_invalid_plan_retry_result(invalid_retry_result)
             if invalid_retry_result.get("ok") and isinstance(invalid_retry_result.get("brain_plan"), dict):
                 stage_started = time.time()
-                retry_plan = normalize_brain_plan(invalid_retry_result["brain_plan"], max_segments=int(settings.get("max_reply_segments") or 3))
+                retry_plan = normalize_brain_plan(invalid_retry_result["brain_plan"], max_segments=int(settings.get("max_reply_segments") or 3), preserve_all_segments=settings.get("reply_sequence_version") == 1)
                 retry_coerced_fallback = coerce_usable_fallback_existing_plan(retry_plan)
                 if retry_coerced_fallback:
                     payload["retry_brain_fallback_existing_coerced"] = retry_coerced_fallback
@@ -1128,7 +1128,7 @@ def _maybe_run_customer_service_brain_within_time_budget(
             payload["plan_validation_repair"] = compact_repair_result(repair_result)
             if repair_result.get("ok") and isinstance(repair_result.get("brain_plan"), dict):
                 stage_started = time.time()
-                repaired_plan = normalize_brain_plan(repair_result["brain_plan"], max_segments=int(settings.get("max_reply_segments") or 3))
+                repaired_plan = normalize_brain_plan(repair_result["brain_plan"], max_segments=int(settings.get("max_reply_segments") or 3), preserve_all_segments=settings.get("reply_sequence_version") == 1)
                 repaired_coerced_fallback = coerce_usable_fallback_existing_plan(repaired_plan)
                 if repaired_coerced_fallback:
                     payload["repaired_brain_fallback_existing_coerced"] = repaired_coerced_fallback
@@ -1217,7 +1217,7 @@ def _maybe_run_customer_service_brain_within_time_budget(
                         stage_started = time.time()
                         quality_retry_plan = normalize_brain_plan(
                             quality_retry_result["brain_plan"],
-                            max_segments=int(settings.get("max_reply_segments") or 3),
+                            max_segments=int(settings.get("max_reply_segments") or 3), preserve_all_segments=settings.get("reply_sequence_version") == 1,
                         )
                         quality_retry_coerced_fallback = coerce_usable_fallback_existing_plan(quality_retry_plan)
                         if quality_retry_coerced_fallback:
@@ -1351,7 +1351,7 @@ def _maybe_run_customer_service_brain_within_time_budget(
         payload["quality_repair"] = compact_repair_result(repair_result)
         if repair_result.get("ok") and isinstance(repair_result.get("brain_plan"), dict):
             stage_started = time.time()
-            repaired_plan = normalize_brain_plan(repair_result["brain_plan"], max_segments=int(settings.get("max_reply_segments") or 3))
+            repaired_plan = normalize_brain_plan(repair_result["brain_plan"], max_segments=int(settings.get("max_reply_segments") or 3), preserve_all_segments=settings.get("reply_sequence_version") == 1)
             repaired_coerced_fallback = coerce_usable_fallback_existing_plan(repaired_plan)
             if repaired_coerced_fallback:
                 payload["repaired_brain_fallback_existing_coerced"] = repaired_coerced_fallback
@@ -1547,7 +1547,7 @@ def _maybe_run_customer_service_brain_within_time_budget(
         payload["guard_repair"] = compact_repair_result(repair_result)
         if repair_result.get("ok") and isinstance(repair_result.get("brain_plan"), dict):
             stage_started = time.time()
-            repaired_plan = normalize_brain_plan(repair_result["brain_plan"], max_segments=int(settings.get("max_reply_segments") or 3))
+            repaired_plan = normalize_brain_plan(repair_result["brain_plan"], max_segments=int(settings.get("max_reply_segments") or 3), preserve_all_segments=settings.get("reply_sequence_version") == 1)
             repaired_coerced_fallback = coerce_usable_fallback_existing_plan(repaired_plan)
             if repaired_coerced_fallback:
                 payload["guard_repaired_brain_fallback_existing_coerced"] = repaired_coerced_fallback
@@ -1632,7 +1632,7 @@ def _maybe_run_customer_service_brain_within_time_budget(
                     stage_started_retry = time.time()
                     guard_quality_retry_plan = normalize_brain_plan(
                         guard_quality_retry_result["brain_plan"],
-                        max_segments=int(settings.get("max_reply_segments") or 3),
+                        max_segments=int(settings.get("max_reply_segments") or 3), preserve_all_segments=settings.get("reply_sequence_version") == 1,
                     )
                     guard_quality_retry_coerced_fallback = coerce_usable_fallback_existing_plan(guard_quality_retry_plan)
                     if guard_quality_retry_coerced_fallback:
@@ -3030,8 +3030,21 @@ def build_brain_prompt_pack(*, settings: dict[str, Any], brain_input: dict[str, 
     ).strip()
     if semantic_instruction:
         system = f"{system}{semantic_instruction}"
+    if settings.get("reply_sequence_version") == 1:
+        from apps.wechat_ai_customer_service.adapters.reply_sequence import reply_sequence_instruction
+        system += reply_sequence_instruction(
+            max_chars=int(settings["reply_sequence_max_chars"]),
+            max_segments=int(settings["reply_sequence_max_segments"]),
+        )
+    response_schema = BRAIN_RESPONSE_SCHEMA_PROMPT
+    if settings.get("reply_sequence_version") == 1:
+        response_schema = response_schema.replace(
+            "最多3条且每条不超过96个中文字符",
+            f"最多{int(settings['reply_sequence_max_segments'])}条且每条不超过{int(settings['reply_sequence_max_chars'])}个实际字符（含标点、空白）",
+        )
     return {
         "schema_version": 1,
+        "response_schema": response_schema,
         "system": system,
         "user": {
             "task": "生成 BrainPlan，不要直接绕过guard发送。",
@@ -3666,7 +3679,7 @@ def load_customer_service_persona_prompt() -> str:
 
 
 def build_brain_user_content(prompt_pack: dict[str, Any]) -> str:
-    return json.dumps(prompt_pack.get("user", {}), ensure_ascii=False) + "\n\n" + BRAIN_RESPONSE_SCHEMA_PROMPT
+    return json.dumps(prompt_pack.get("user", {}), ensure_ascii=False) + "\n\n" + str(prompt_pack.get("response_schema") or BRAIN_RESPONSE_SCHEMA_PROMPT)
 
 
 def estimate_prompt_pack(prompt_pack: dict[str, Any], *, user_content: str | None = None) -> dict[str, int]:
@@ -3895,6 +3908,7 @@ POST_REPAIR_CONTEXT_ANCHOR_DETERMINISTIC_QUALITY_ERRORS = {
     "missing_context_product_recommendation",
 }
 POST_REPAIR_HARD_DETERMINISTIC_QUALITY_ERRORS = {
+    "reply_sequence_rewrite_required",
     "empty_visible_reply",
     "customer_visible_ai_identity_leak",
     "trailing_ellipsis_or_truncation",

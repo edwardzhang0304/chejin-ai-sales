@@ -787,7 +787,7 @@ def normalize_guard_action(value: Any, *, needs_handoff: bool = False) -> str:
     return action
 
 
-def normalize_reply_segments(value: Any, *, max_segments: int = 3) -> list[str]:
+def normalize_reply_segments(value: Any, *, max_segments: int = 3, preserve_all: bool = False) -> list[str]:
     """Return clean, complete reply segments.
 
     The model is expected to output 1-3 short WeChat messages. If it returns a
@@ -805,9 +805,9 @@ def normalize_reply_segments(value: Any, *, max_segments: int = 3) -> list[str]:
             continue
         text = remove_trailing_ellipsis(text)
         text = sanitize_forbidden_commitment_echo(text)
-        if text and text not in segments:
+        if text and (preserve_all or text not in segments):
             segments.append(text)
-        if len(segments) >= max(1, int(max_segments or 3)):
+        if not preserve_all and len(segments) >= max(1, int(max_segments or 3)):
             break
     return segments
 
@@ -1047,14 +1047,14 @@ def is_uncertainty_boundary_fact_claim(*, fact_type: str, value_text: str, sourc
     )
 
 
-def normalize_brain_plan(raw_plan: dict[str, Any] | None, *, max_segments: int = 3) -> dict[str, Any]:
+def normalize_brain_plan(raw_plan: dict[str, Any] | None, *, max_segments: int = 3, preserve_all_segments: bool = False) -> dict[str, Any]:
     plan = dict(raw_plan) if isinstance(raw_plan, dict) else {}
     risk = normalize_mapping(plan.get("risk"))
     needs_handoff = bool(risk.get("needs_handoff") or plan.get("needs_handoff"))
     answer_mode = normalize_answer_mode(plan.get("answer_mode"))
     if answer_mode == "handoff":
         needs_handoff = True
-    segments = normalize_reply_segments(plan.get("reply_segments") or plan.get("reply"), max_segments=max_segments)
+    segments = normalize_reply_segments(plan.get("reply_segments") or plan.get("reply"), max_segments=max_segments, preserve_all=preserve_all_segments)
     action = normalize_guard_action(plan.get("recommended_action"), needs_handoff=needs_handoff)
     if answer_mode == "fallback_existing":
         action = "fallback_existing"
@@ -1193,6 +1193,18 @@ def verify_brain_reply_quality(
     """
 
     cfg = settings if isinstance(settings, dict) else {}
+    # A physical-message limit is a hard delivery contract, including handoff
+    # boundary replies. It must not become a soft warning after a repair.
+    if cfg.get("reply_sequence_version") == 1 and plan.get("reply_segments"):
+        from apps.wechat_ai_customer_service.adapters.reply_sequence import pack_reply_sequence, reply_sequence_instruction
+        limits = {"max_chars": int(cfg["reply_sequence_max_chars"]),
+                  "max_segments": int(cfg["reply_sequence_max_segments"])}
+        try:
+            pack_reply_sequence(normalize_space(join_reply_segments(plan["reply_segments"])),
+                                plan["reply_segments"], **limits)
+        except ValueError:
+            return {"ok": False, "errors": ["reply_sequence_rewrite_required"], "warnings": [],
+                    "repair_instruction": reply_sequence_instruction(**limits)}
     if cfg.get("quality_verifier_enabled", True) is False:
         return {"ok": True, "errors": [], "warnings": [], "repair_instruction": ""}
     action = str(plan.get("recommended_action") or "send_reply")
@@ -1358,6 +1370,8 @@ def verify_brain_reply_quality(
         errors.append(str(trade_in_check["error"]))
 
     total_limit = int(cfg.get("quality_reply_max_chars") or DEFAULT_QUALITY_REPLY_MAX_CHARS)
+    if cfg.get("reply_sequence_version") == 1:
+        total_limit = int(cfg["reply_sequence_max_chars"]) * int(cfg["reply_sequence_max_segments"])
     total_chars = visible_content_char_count(clean_reply)
     if is_mixed_topic_customer_message(question) and len(plan.get("reply_segments", []) or []) >= 2:
         total_limit = max(total_limit, int(cfg.get("quality_mixed_topic_reply_max_chars") or DEFAULT_QUALITY_MIXED_TOPIC_REPLY_MAX_CHARS))

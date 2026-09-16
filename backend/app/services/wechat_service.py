@@ -3631,7 +3631,7 @@ def _validate_v3_request_contract(payload: WechatMessageIngestRequest, *, contra
         if slot is None:
             return False
         if (
-            slot.fact_scope == "historical"
+            slot.fact_scope in {"historical", "current_read_run"}
             and slot.delivery_state == "backend_confirmed"
         ):
             return True
@@ -3704,7 +3704,8 @@ def _validate_non_delivered_frame_observations(
         if not bool(rule.get("ingestible")):
             continue
         if slot.fact_scope == "historical" or (
-            is_final_partition and slot.fact_scope == "current_read_run"
+            slot.fact_scope == "current_read_run"
+            and (is_final_partition or slot.delivery_state == "backend_confirmed")
         ):
             settled_slots.append(slot)
     if not settled_slots:
@@ -3745,7 +3746,7 @@ def _validate_non_delivered_frame_observations(
         )
         if (
             event is not None
-            and slot.fact_scope == "historical"
+            and (slot.fact_scope == "historical" or slot.delivery_state == "backend_confirmed")
             and (
                 observed_type in {"text", "system"}
                 or (
@@ -3771,6 +3772,8 @@ def _validate_non_delivered_frame_observations(
         if (
             not isinstance(observation, dict)
             or event is None
+            or (slot.fact_scope == "current_read_run" and slot.delivery_state == "backend_confirmed"
+                and (event.read_run_id != payload.read_run_id or slot.origin_read_run_id != payload.read_run_id))
             or str(event.sender_role or "").strip().lower()
             != str(observation.get("sender_role") or "").strip().lower()
             or str(event.message_type or "").strip().lower()
@@ -4864,6 +4867,8 @@ def ingest_messages(db: Session, worker: Worker, payload: WechatMessageIngestReq
                 conversation.next_recall_at = None
                 if open_handoff_active:
                     conversation.status = "waiting_sales_reply"
+                    from app.services.c3_service import supersede_open_reply_actions_for_new_inbound
+                    supersede_open_reply_actions_for_new_inbound(db, binding.conversation_id)
                 else:
                     conversation.status = "ai_active"
                     new_customer_message_ids.append(message.id)
@@ -5343,6 +5348,18 @@ def ingest_messages(db: Session, worker: Worker, payload: WechatMessageIngestReq
                 details_by_code=flow_gate_details_by_code,
             )
         )
+    if (continuation_authorization_matches and not open_handoff_active
+            and not handoff_flow_gates and not temporary_capability_gates
+            and _complete_authoritative_viewport_confirmed(evidence_payload)
+            and (not partitioned or partition_final)):
+        from app.services.reply_sequence_service import interrupted_customer_tail
+        recovered_sequence_tail = interrupted_customer_tail(
+            db, batch_id=continuation_batch_id, flow_id=payload.read_run_id,
+            worker_id=worker.id, conversation_id=payload.conversation_id,
+            visible_message_orders=_visible_existing_message_orders(
+                db, conversation_id=payload.conversation_id, evidence_payload=evidence_payload),
+        )
+        new_customer_message_ids = list(dict.fromkeys([*recovered_sequence_tail, *new_customer_message_ids]))
     if identity_recovery_result is not None:
         message_batch = identity_recovery_result
     if open_handoff_active:
@@ -5529,6 +5546,10 @@ def ingest_messages(db: Session, worker: Worker, payload: WechatMessageIngestReq
         complete_viewport_confirmed = (
             _complete_authoritative_viewport_confirmed(evidence_payload)
         )
+        if complete_viewport_confirmed and not flow_gate_errors:
+            from app.services.reply_sequence_service import freeze_next_checkpoint_from_read
+            freeze_next_checkpoint_from_read(db, conversation_id=binding.conversation_id,
+                                             frame_evidence=evidence_payload)
         terminal_media_failure_codes = {
             "C2_VOICE_TRANSCRIBE_FAILED",
             "C2_IMAGE_UNDERSTANDING_FAILED",

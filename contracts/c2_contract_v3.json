@@ -2732,7 +2732,7 @@
     "portable_dependency_rule": "the_shared_pure_comparator_must_import_no_chejin_worker_client_UI_network_storage_or_durable_identity_owner; worker_and_independent_omniauto_sidecar_must_import_the_same_implementation",
     "sidecar_verification_rule": "sidecar_may_only_verify_the_worker_bound_credential_against_the_latest_frame_through_the_shared_pure_comparator_and_must_never_define_a_second_algorithm_bind_durable_identity_or_fabricate_a_worker_comparison_result",
     "purpose": "compare_the_facts_used_by_one_brain_reply_with_one_fresh_complete_ordered_wechat_tail_without_reidentifying_committed_messages",
-    "storage": "MessageBatch.ai_request_snapshot.pre_send_fact_checkpoint",
+    "storage": "MessageBatch.ai_request_snapshot.pre_send_fact_checkpoint_for_first_segment; ReplyAction.pre_send_fact_checkpoint_for_later_segments",
     "worker_comparison_result_path": "pre_send_fact_checkpoint_comparison",
     "worker_comparison_result_nested_duplicate_forbidden": true,
     "final_send_guard_binding_rule": "worker_must_bind_the_exact_top_level_pre_send_fact_checkpoint_comparison_and_its_matched_checkpoint_boundary_tokens_before_S0_S1_S2; a_missing_or_invalid_binding_is_C3_SEND_CONTEXT_GUARD_INVALID",
@@ -3085,5 +3085,40 @@
     "recovery_requires_explicit_start": true,
     "released_read_rules_sha256": "bd5f2a2fadcae7575651617ce642f35594ae5da931eede673efe979308e6079f",
     "compatibility_scope": "original registered or proven ended read only; unchanged frozen read validation; no new UI authorization"
+  },
+  "c3_reply_sequence_contract": {
+    "capability": {
+      "name": "reply_sequence_version",
+      "supported_version": 1
+    },
+    "default_max_sent_characters": 108,
+    "max_segments": 3,
+    "character_unit": "Unicode_code_points_of_canonical_final_send_text_including_punctuation_and_spaces",
+    "author": "Brain_only_existing_bounded_repair_and_Guard",
+    "group_key": [
+      "batch_id",
+      "generation_no"
+    ],
+    "action_fields": [
+      "segment_index",
+      "segment_count",
+      "predecessor_reply_action_id",
+      "pre_send_fact_checkpoint"
+    ],
+    "old_single_defaults": {
+      "segment_index": 1,
+      "segment_count": 1
+    },
+    "advance": "only_committed_sent_ack_sent_releases_exactly_one_next_task; duplicated_ack_is_idempotent",
+    "checkpoint": "first_uses_batch_snapshot; later_requires_real_complete_C2_read_containing_confirmed_predecessor_AI_bubble; freeze_per_action",
+    "same_read_confirmed_rows": "an_omitted_current_read_run_row_requires_backend_confirmed_plus_exact_database_source_identity_role_type_and_canonical_content_for_the_same_read_run; never_trust_confirmation_flag_alone",
+    "interrupt_endpoint": "POST /api/workers/{worker_id}/wechat/message-batches/{batch_id}/interrupt-reply-sequence",
+    "interrupt_rule": "reliably_identified_new_customer_suffix_cancels_unsent_group_before_media_analysis; original_triggered_action_settles_original_receipt; never_create_message_facts_from_interrupt",
+    "interrupt_read_continuation": "only_original_active_flow_worker_conversation_revision_and_listening_authorization_may_finish_current_read; no_cancelled_action_can_be_claimed_or_sent",
+    "worker": "same_Flow_UI_lock; pause_before_next_claim; restart_replay_receipts_then_normal_running_loop_rereads_and_continues_only_eligible_unsent_segments",
+    "failure": "unknown_never_resend; technical_fault_retains_stop_policy; terminal_non_success_cancels_tail",
+    "old_worker": "cancel_multisegment_without_fault_WORKER_REPLY_SEQUENCE_UNSUPPORTED",
+    "summary": "reply_sequence.terminal_means_all_actions_settled; existing_batch_terminal_still_means_generation_finished",
+    "in_progress_segment": "unchanged_existing_single_reply_input_guard_cancellation_draft_and_receipt_rules; no_new_forced_typing_interruption_or_cleanup"
   }
 }

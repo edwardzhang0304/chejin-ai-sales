@@ -363,6 +363,9 @@ def _brain_retry_instruction(message_batch: dict) -> str:
         else {}
     )
     error_code = str(previous.get("error_code") or "").strip()
+    if error_code == "REPLY_SEQUENCE_REWRITE_REQUIRED":
+        from app.services.reply_sequence_policy import sequence_instruction
+        return sequence_instruction()
     if error_code != "AI_ENGINE_NO_VISIBLE_REPLY":
         return ""
     return NO_VISIBLE_REPLY_RECOVERY_INSTRUCTION
@@ -488,6 +491,8 @@ class RealOmniAutoAIEngineAdapter:
                     "suggested_action": "restore_formal_deepseek_route",
                 },
             )
+        from app.services.reply_sequence_policy import sequence_policy
+        brain.update(sequence_policy())
         config["customer_service_brain"] = brain
         return config
 

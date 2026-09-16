@@ -275,6 +275,9 @@ def _reply_action_summary(action: ReplyAction | None) -> dict[str, Any] | None:
         "status": action.status,
         "current": action.current,
         "generation_no": action.generation_no,
+        "segment_index": action.segment_index,
+        "segment_count": action.segment_count,
+        "predecessor_reply_action_id": action.predecessor_reply_action_id,
         "decision": action.decision,
         "reply_text_hash": action.reply_text_hash,
         "confidence": action.confidence,
@@ -1276,6 +1279,8 @@ def fail_task(
                 action.current = False
                 action.error_code = error_code
                 action.suggested_action = "wait_for_new_authorization"
+                from app.services.reply_sequence_service import cancel_remaining
+                cancel_remaining(db, action, error_code)
                 batch = db.get(MessageBatch, action.batch_id)
                 if batch and not batch.deleted_at:
                     batch.status = "cancelled"
