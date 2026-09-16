@@ -19,32 +19,28 @@ def compatible_read_contract(revision, sha256) -> dict | None:
     return shared_adapter("contract_rules").read_recovery_contract(c2_contract_v3(), revision, sha256)
 
 
-@lru_cache(maxsize=1)
-def legacy_read_contract() -> dict:
+def _load_frozen_contract(revision: str) -> dict:
     roots = (Path('/app/contracts'), Path(__file__).resolve().parents[3] / 'contracts')
-    path = next((r / 'recovery/c2_contract_v3_0.9.75.json' for r in roots
-                 if (r / 'recovery/c2_contract_v3_0.9.75.json').is_file()), None)
+    relative = f'recovery/c2_contract_v3_{revision}.json'
+    path = next((r / relative for r in roots if (r / relative).is_file()), None)
     if path is None:
         raise RuntimeError('RECOVERY_CONTRACT_MISSING')
-    value = json.loads(path.read_text(encoding='utf-8'))
+    return json.loads(path.read_text(encoding='utf-8'))
+
+
+@lru_cache(maxsize=1)
+def legacy_read_contract() -> dict:
+    value = _load_frozen_contract(LEGACY_REVISION)
     encoded = json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(',', ':')).encode()
     if hashlib.sha256(encoded).hexdigest() != LEGACY_SHA256:
         raise RuntimeError('RECOVERY_CONTRACT_CORRUPTED')
-    # Reuse the structural validator only while every business rule is equal.
-    # A later semantic change requires a separately reviewed migration/validator.
+    # Reuse the original validator only through the reviewed settlement migration.
     if compatible_read_contract(value['contract_revision'], LEGACY_SHA256) != value:
         raise RuntimeError('RECOVERY_CONTRACT_SEMANTICS_CHANGED')
     return value
 
 
 def read_recovery_capability() -> dict:
-    legacy = legacy_read_contract()
-    current = c2_contract_v3()
-    return {'protocol_version': 1,
-        'compatible_rules_sha256': shared_adapter("contract_rules").contract_rules_sha256(current),
-        'contracts': [
-        {'revision': legacy['contract_revision'], 'sha256': LEGACY_SHA256},
-        {'revision': '0.9.78', 'sha256': 'b4151ab61fb5d90688e1e0ac187cc767acaee1617cb420be3028acc52ccf7eab'},
-        {'revision': '0.9.80', 'sha256': '43f8c07e3660d790c39f3b348dcce9fb1e2c0bed243b41cff6669a658995e380'},
-        {'revision': current['contract_revision'], 'sha256': contract_sha256()},
-    ]}
+    rules = shared_adapter('contract_rules')
+    frozen = {revision: _load_frozen_contract(revision) for revision, _ in rules.RELEASED_READ_CONTRACTS}
+    return rules.recovery_contract_capability(c2_contract_v3(), frozen)

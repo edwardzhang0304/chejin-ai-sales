@@ -14,27 +14,16 @@ RECOVERABLE_READ_ERRORS = MAPPING_ERRORS | {'MESSAGE_CONTRACT_REVISION_MISMATCH'
 
 
 def package_recovery_capability() -> dict:
-    from .c2_contract import c2_contract_v3, contract_sha256, _contract_candidates
-    current = c2_contract_v3()
-    path = next((p.parent / 'recovery/c2_contract_v3_0.9.75.json'
-                 for p in _contract_candidates()
-                 if (p.parent / 'recovery/c2_contract_v3_0.9.75.json').is_file()), None)
-    if path is None:
-        raise RuntimeError('RECOVERY_CONTRACT_MISSING')
-    legacy = json.loads(path.read_text(encoding='utf-8'))
-    canonical = json.dumps(legacy, ensure_ascii=False, sort_keys=True, separators=(',', ':')).encode()
-    if hashlib.sha256(canonical).hexdigest() != LEGACY_SHA256:
-        raise RuntimeError('RECOVERY_CONTRACT_CORRUPTED')
-    if contract_rules.read_recovery_contract(current, legacy['contract_revision'], LEGACY_SHA256) != legacy:
-        raise RuntimeError('RECOVERY_CONTRACT_SEMANTICS_CHANGED')
-    return {'protocol_version': PROTOCOL,
-        'compatible_rules_sha256': contract_rules.contract_rules_sha256(current),
-        'contracts': [
-        {'revision': legacy['contract_revision'], 'sha256': LEGACY_SHA256},
-        {'revision': '0.9.78', 'sha256': 'b4151ab61fb5d90688e1e0ac187cc767acaee1617cb420be3028acc52ccf7eab'},
-        {'revision': '0.9.80', 'sha256': '43f8c07e3660d790c39f3b348dcce9fb1e2c0bed243b41cff6669a658995e380'},
-        {'revision': current['contract_revision'], 'sha256': contract_sha256()},
-    ]}
+    from .c2_contract import c2_contract_v3, _contract_candidates
+    frozen = {}
+    for revision, _ in contract_rules.RELEASED_READ_CONTRACTS:
+        relative = f'recovery/c2_contract_v3_{revision}.json'
+        path = next((p.parent / relative for p in _contract_candidates()
+                     if (p.parent / relative).is_file()), None)
+        if path is None:
+            raise RuntimeError('RECOVERY_CONTRACT_MISSING')
+        frozen[revision] = json.loads(path.read_text(encoding='utf-8'))
+    return contract_rules.recovery_contract_capability(c2_contract_v3(), frozen)
 
 
 def accepts_handoff(capability: dict, handoff: dict) -> bool:
