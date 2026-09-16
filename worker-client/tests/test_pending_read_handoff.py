@@ -243,13 +243,14 @@ def test_new_worker_initialization_then_real_baseline_and_handoff_validation(tmp
 
 
 @pytest.mark.parametrize('case', ['complete', 'missing', 'corrupt'])
-def test_manifest_capability_requires_actual_packaged_contracts(tmp_path, case):
+@pytest.mark.parametrize('revision', ['0.9.75', '0.9.85'])
+def test_manifest_capability_requires_actual_packaged_contracts(tmp_path, case, revision):
     root = Path(__file__).resolve().parents[1]
     package = tmp_path / 'package'; package.mkdir()
     for name in ('CheJinWorkerClient.exe', 'CheJinUpdater.exe'):
         (package / name).write_bytes(b'synthetic executable; manifest test only')
     shutil.copytree(root.parent / 'contracts', package / '_internal/contracts')
-    legacy = package / '_internal/contracts/recovery/c2_contract_v3_0.9.75.json'
+    legacy = package / f'_internal/contracts/recovery/c2_contract_v3_{revision}.json'
     if case == 'missing': legacy.unlink()
     if case == 'corrupt': legacy.write_text('{}')
     output = package / 'update-package-manifest.json'

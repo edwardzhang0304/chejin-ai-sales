@@ -84,9 +84,33 @@ def equivalent_contract(
 
 RELEASED_READ_RULES_SHA256 = 'bd5f2a2fadcae7575651617ce642f35594ae5da931eede673efe979308e6079f'
 
+# Reviewed sequence v1 -> published 0.9.85 -> pre-terminal read rules.
+# These fingerprints exclude only the release label. Changing any other rule
+# requires another reviewed migration, not an update to the old fingerprint.
+_SEQUENCE_V1_RULES_SHA256 = '26e8dabaa29677d6f4e5d845688c34916c5723b63ad93dae944031bc1b0b1320'
+_PUBLISHED_085_RULES_SHA256 = '6ee655ac27557a0c24070b1218b34eab094f2e8d89011a8ea115e155b2aa6b75'
+RELEASED_READ_CONTRACTS = (
+    ('0.9.75', 'bcb1af09321339b159cc02581f5938e402f16094465933645c71bd7dc0eadcf1'),
+    ('0.9.78', 'b4151ab61fb5d90688e1e0ac187cc767acaee1617cb420be3028acc52ccf7eab'),
+    ('0.9.80', '43f8c07e3660d790c39f3b348dcce9fb1e2c0bed243b41cff6669a658995e380'),
+    # Actual published 80988ea contract, not the same-labelled sequence dev tree.
+    ('0.9.85', '891f245e353c78e0a9f0b24e607be8bdbb2b59fc993e9df2935f0f416ff8f186'),
+)
+
+
+def _sequence_read_predecessor(current: dict) -> dict | None:
+    if contract_rules_sha256(current) != _SEQUENCE_V1_RULES_SHA256:
+        return None
+    previous = {key: value for key, value in current.items() if key != 'c3_reply_sequence_contract'}
+    previous['pre_send_fact_checkpoint_contract'] = {
+        **current['pre_send_fact_checkpoint_contract'],
+        'storage': 'MessageBatch.ai_request_snapshot.pre_send_fact_checkpoint',
+    }
+    return previous if contract_rules_sha256(previous) == _PUBLISHED_085_RULES_SHA256 else None
+
 
 def read_recovery_contract(current: dict, revision: Any, sha256: Any) -> dict | None:
-    """Explicit additive terminal-protocol migration, restricted by its caller.
+    """Reviewed read-settlement migrations, restricted by their caller.
 
     All previously published read rules must match the frozen fingerprint.
     This does not admit old clients to new work or claim full-rule equivalence.
@@ -95,11 +119,42 @@ def read_recovery_contract(current: dict, revision: Any, sha256: Any) -> dict | 
     same = equivalent_contract(current, revision, sha256)
     if same is not None:
         return same
+    if 'c3_reply_sequence_contract' in current:
+        previous = _sequence_read_predecessor(current)
+        if previous is None:
+            return None
+        # Only the validator input is reconstructed. Stored evidence retains
+        # its original bytes/version/SHA; this never authorizes new work.
+        current = previous
+        same = equivalent_contract(current, revision, sha256)
+        if same is not None:
+            return same
     protocol = current.get('terminal_read_settlement_contract') or {}
     original = {key: value for key, value in current.items() if key != 'terminal_read_settlement_contract'}
     if protocol.get('protocol_version') != 1 or contract_rules_sha256(original) != RELEASED_READ_RULES_SHA256:
         return None
     return equivalent_contract(original, revision, sha256)
+
+
+def recovery_contract_capability(current: dict, frozen_contracts: dict[str, dict]) -> dict:
+    """Build identical backend/package declarations from verified resources.
+
+    Hosts own resource I/O and original-Flow/fact-only authorization. This pure
+    function checks every declared historical resource and reviewed migration.
+    """
+    pairs = []
+    for revision, sha256 in RELEASED_READ_CONTRACTS:
+        historical = frozen_contracts.get(revision)
+        if historical is None:
+            raise RuntimeError('RECOVERY_CONTRACT_MISSING')
+        if contract_sha256(historical) != sha256:
+            raise RuntimeError('RECOVERY_CONTRACT_CORRUPTED')
+        if read_recovery_contract(current, revision, sha256) != historical:
+            raise RuntimeError('RECOVERY_CONTRACT_SEMANTICS_CHANGED')
+        pairs.append({'revision': revision, 'sha256': sha256})
+    pairs.append({'revision': contract_revision(current), 'sha256': contract_sha256(current)})
+    return {'protocol_version': 1, 'compatible_rules_sha256': contract_rules_sha256(current),
+            'contracts': pairs}
 
 
 def contract_row_rules(payload: dict[str, Any]) -> dict[str, dict[str, Any]]:
