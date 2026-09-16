@@ -233,6 +233,8 @@ class RuntimeProcessTimeline:
                 "reply_sent": ("done", "确认并回传结果", "回复已发送"),
                 "no_change": ("done", "本次检查完成", "没有新消息"),
                 "no_reply": ("done", "服务端判断无需回复", "本次处理完成"),
+                "customer_interrupted": ("done", "客户有新消息，旧回复已取消", "等待重新读取并生成回复"),
+                "interruption_ack_pending": ("done", "旧回复未发送，等待结果确认", "确认后重新读取客户消息"),
                 "handoff": ("done", "已转人工", "等待销售处理"),
                 "completed": ("done", "本次处理完成", "消息已回传"),
                 "failed": ("error", "本次处理失败", "处理已停止"),

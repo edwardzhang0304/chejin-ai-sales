@@ -165,3 +165,21 @@ def test_task_runner_publishes_step_changes_as_ui_only_events() -> None:
         "target_chat_locating",
         "voice_transcribe_current_chat",
     ]
+
+
+def test_customer_interruption_is_not_presented_as_a_failure_or_handoff() -> None:
+    for confirmed, terminal, title in (
+        (True, "customer_interrupted", "客户有新消息，旧回复已取消"),
+        (False, "interruption_ack_pending", "旧回复未发送，等待结果确认"),
+    ):
+        result = {"ok": True, "brain_result": {
+            "ok": True, "sent": False, "customer_interrupted": True, "ack_confirmed": confirmed,
+        }}
+        assert TaskRunner._runtime_terminal_for_result(result) == terminal
+        timeline = RuntimeProcessTimeline()
+        timeline.apply(_customer_event("customer_started"))
+        timeline.apply(_customer_event("customer_completed", terminal_state=terminal))
+        steps = timeline.customer_model()
+        assert steps[-1]["title"] == title
+        assert steps[-1]["state"] == "done"
+        assert all("失败" not in step["title"] and "转人工" not in step["title"] for step in steps)

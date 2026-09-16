@@ -1,0 +1,149 @@
+{
+  "date": "2026-09-16",
+  "status": "scoped source self-tests passed; independent review and Windows acceptance pending",
+  "base_commit": "865866c48f100189c4f363dc9f05fbc70eb7999e",
+  "shared_commit": "0cdf482651d01c3296cb1899aebc6ed1c0d3a248",
+  "branches": [
+    "codex/gray-release-0.9.x",
+    "codex/gray-release-0.9.x-source"
+  ],
+  "boundary": {
+    "real": [
+      "production Worker",
+      "RapidOCR",
+      "socket HTTP",
+      "isolated PostgreSQL 127.0.0.1:55490/composer_test",
+      "Worker SQLite",
+      "new-process startup recovery",
+      "existing C2 state-target queue",
+      "backend Brain orchestration"
+    ],
+    "controlled": [
+      "Windows screenshot/input/clipboard/foreground",
+      "model response",
+      "initial historical messages"
+    ],
+    "not_verified": [
+      "Windows physical input/send",
+      "real AI model response quality",
+      "production deployment",
+      "independent review"
+    ]
+  },
+  "unique_positive_tests": 89,
+  "shared_mirror_repeat_tests": 29,
+  "reports": [
+    {
+      "file": "unit.xml",
+      "passed": 65,
+      "sha256": "a1fc37a7eea80dc2bdf3fdb028aacb909af4fed22720eae4b3b21895730790af"
+    },
+    {
+      "file": "settlement.xml",
+      "passed": 10,
+      "sha256": "344076c66b3535a418ff68bcc3ea5f933e86a6779bb8315d9b0fe4e6a73381da"
+    },
+    {
+      "file": "adjacent-c3.xml",
+      "passed": 9,
+      "sha256": "1edfca9c3a8f972ecb387d76f9e28fa063538b92ac59f7aa058aa24f498ffd9e"
+    },
+    {
+      "file": "restart-and-pause.xml",
+      "passed": 2,
+      "sha256": "e54193c9c281950efdf96fe771703f2b6de8f373c46472474c5563bccbcf8a61"
+    },
+    {
+      "file": "http-continuation-and-send.xml",
+      "passed": 3,
+      "sha256": "76dac70a5fef68d254025e1a76efeb7d110c3fc0a20c415f9c96a6a8db9a9a80"
+    },
+    {
+      "file": "shared-mirror.xml",
+      "passed": 29,
+      "sha256": "3ea7b232e02f2325c6558037fc6ef7eb84c61ed38af7924c5d7d12d42e658f7a"
+    }
+  ],
+  "scenarios": [
+    {
+      "scenario": "restart_loss",
+      "evidence_path": "/private/tmp/chejin-customer-interrupt-restart2/test_customer_interrupt_contin0/child/test_customer_interrupt_contin0/continuation.json",
+      "sha256": "13aa048d3d1d1025221a8665c72e8681681b34e78c82823564634b3330809be3",
+      "old_reply_sent_count": 0,
+      "new_reply_sent_count": 1,
+      "tasks": [
+        "cancelled",
+        "completed"
+      ],
+      "handoff_count": 0,
+      "conversation": "waiting_user_reply",
+      "pending_ack": false,
+      "flow": null,
+      "brain_generation_count": 2
+    },
+    {
+      "scenario": "paused",
+      "evidence_path": "/private/tmp/chejin-customer-interrupt-restart2/test_customer_interrupt_contin1/child/test_customer_interrupt_contin0/continuation.json",
+      "sha256": "9a986836e2247fe56930ded92c5dd4459658dac9c0059976f84a77a1d5eda94b",
+      "old_reply_sent_count": 0,
+      "new_reply_sent_count": 1,
+      "tasks": [
+        "cancelled",
+        "completed"
+      ],
+      "handoff_count": 0,
+      "conversation": "waiting_user_reply",
+      "pending_ack": false,
+      "flow": null,
+      "brain_generation_count": 2
+    },
+    {
+      "scenario": "normal",
+      "evidence_path": "/private/tmp/chejin-customer-interrupt-final-http/test_customer_interrupt_contin0/child/test_customer_interrupt_contin0/continuation.json",
+      "sha256": "040472516dbd7cb145700f54eac6a5b5a24c2da53aba14c781ce3af0c09f775b",
+      "old_reply_sent_count": 0,
+      "new_reply_sent_count": 1,
+      "tasks": [
+        "cancelled",
+        "completed"
+      ],
+      "handoff_count": 0,
+      "conversation": "waiting_user_reply",
+      "pending_ack": false,
+      "flow": null,
+      "brain_generation_count": 2
+    }
+  ],
+  "negative_control": {
+    "file": "negative-control.xml.gz",
+    "expected_failed_tests": 1,
+    "actual_failed_tests": 1,
+    "method": "disable only new backend receipt interpretation; identical business assertion fails with old action failed instead of superseded",
+    "not_counted_as_positive": true
+  },
+  "source_sha256": {
+    "backend/app/services/c3_service.py": "0c807ceb2d859b4f10d87fc7ad2e00852a6f003a778079ef45a1f2d01e6e81f9",
+    "backend/tests/test_dynamic_composer_http.py": "c09c81cd8c186b5aa82c64d91f141ddc946866d28a1b3a8c738c65faf6ad5311",
+    "worker-client/chejin_worker_client/runtime_process_timeline.py": "830e732d074e459248c7389267115770973545b1d00c46eeb398cac0417211cd",
+    "worker-client/chejin_worker_client/shared_rules.py": "16927f37aae0a3d96d5096d53db44ba9aa4b542d115b044f7fd52266e58b68d7",
+    "worker-client/chejin_worker_client/task_runner.py": "b48fbd889c2307c394111bf10e3ee5a56b43671b9f27a3f4748fccdf80c650a0",
+    "worker-client/tests/test_runtime_process_timeline.py": "ddc250eac5780ebfb5b943090d845b6e435c125703d19691c3f84b9fd33c730e",
+    "backend/tests/test_customer_interrupt_http.py": "89dcbbd40d7af0aa1b228a2c308f5fe4ac2f23c1880a53460e3b38d94ad7cf9d",
+    "backend/tests/test_customer_interrupt_settlement.py": "e3e57e2f8cde4e7633867858ba5ec01e63f9f7b9c18da1863c8f224dee17469c",
+    "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/adapters/send_interruption.py": "84889a5f5b2f8cbfcc25d5f3afcf342117fa7ce7607dc72f518d4aac6a7748ca",
+    "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/tests/test_send_interruption.py": "db1b616bef100d0f0b7b389cde3e22d293dab267c28791e36f119d363017658a"
+  },
+  "product_scope": "existing C3 unsent customer interruption settlement + Worker projection + shared proof classifier; no add-friend or Sidecar send guard edits",
+  "branch_cleanup": {
+    "deleted_local_branches_in_each_repo": [
+      "codex/customer-interrupt-20260916",
+      "codex/dynamic-composer-20260916",
+      "codex/dynamic-composer-r6-20260916"
+    ],
+    "count": 6,
+    "uncommitted_files_preserved": true
+  },
+  "no_production_data_changes": true,
+  "no_package_or_deployment": true,
+  "development_runs": "Earlier fixture setup/type/assertion failures were fixed before final runs; only listed zero-failure reports count as passing."
+}

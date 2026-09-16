@@ -16,6 +16,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
+from app.contracts.shared_rules import shared_adapter
 from app.enums import TaskEventType, TaskResultCode, TaskStatus, TaskType
 from app.errors import AppError
 from app.models.base import utcnow
@@ -3831,6 +3832,38 @@ def claim_send(
     }
 
 
+def _settle_customer_interruption(
+    db: Session, *, action: ReplyAction, binding: WechatSessionBinding,
+    conversation: Conversation, followup_cancelled: bool,
+) -> None:
+    """Cancel only the unsent action and durably schedule the existing reader."""
+    action.status = "superseded"
+    action.current = False
+    action.error_code = "C3_CONTEXT_CHANGED_BEFORE_SEND"
+    action.suggested_action = "regenerate"
+    batch = db.get(MessageBatch, action.batch_id)
+    if batch:
+        batch.status = "superseded"
+        batch.active = False
+        batch.retryable = False
+        batch.error_code = "MESSAGE_BATCH_SUPERSEDED"
+        batch.suggested_action = "regenerate"
+    _cancel_task_for_action(db, action, reason="客户追加消息，尚未发送的旧回复作废，重新读取后生成回复。")
+    # A receipt is not new read permission. Never undo pause, human takeover,
+    # a disabled binding, or a concurrently revoked/closed conversation.
+    if (
+        not followup_cancelled and conversation.ai_enabled
+        and conversation.status == "ai_active"
+        and binding.bind_status == "bound" and binding.allow_listening
+        and binding.listen_status in {"listening", "degraded"}
+        and not open_handoff_events_for_conversation(db, action.conversation_id, for_update=True)
+    ):
+        conversation.status = "waiting_user_reply"
+        conversation.next_recall_at = None
+        binding.next_read_due_at = utcnow()
+        binding.no_change_read_count = 0
+
+
 def sent_ack(db: Session, *, reply_action_id: str, payload: Any) -> dict[str, Any]:
     from app.services.followup_eligibility import conversation_lead_id, followup_block_reason
     followup_conversation_id = db.scalar(select(ReplyAction.conversation_id).where(ReplyAction.id == reply_action_id))
@@ -3980,6 +4013,15 @@ def sent_ack(db: Session, *, reply_action_id: str, payload: Any) -> dict[str, An
             )
         finish_task_and_release_worker(task)
         _write_event(db, task, TaskEventType.completed, from_status=before, to_status=task.status, worker_id=payload.worker_id, remark=payload.remark)
+    elif shared_adapter("send_interruption").confirmed_customer_interruption(
+        send_result=payload.send_result, action_phase=payload.action_phase,
+        error_code=payload.error_code, evidence=payload.evidence or {},
+        target=binding.remark_code,
+    ):
+        _settle_customer_interruption(
+            db, action=action, binding=binding, conversation=conversation,
+            followup_cancelled=followup_cancelled,
+        )
     elif payload.send_result == "failed":
         action.status = "failed"
         action.error_code = payload.error_code or "RPA_SEND_REPLY_FAILED"
