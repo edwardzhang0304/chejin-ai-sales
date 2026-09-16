@@ -156,6 +156,7 @@ from apps.wechat_ai_customer_service.wechat_message_envelope import (
     build_message_envelope,
 )
 from apps.wechat_ai_customer_service.adapters.wechat_win32_ocr import frame_avatars
+from apps.wechat_ai_customer_service.adapters.wechat_win32_ocr import composer_viewport
 from apps.wechat_ai_customer_service.adapters.wechat_win32_ocr import geometry as win32_ocr_geometry
 from apps.wechat_ai_customer_service.adapters.wechat_win32_ocr import capture as win32_ocr_capture
 from apps.wechat_ai_customer_service.adapters.wechat_win32_ocr import env_config as win32_ocr_env
@@ -10795,6 +10796,11 @@ def send_payload(
         if isinstance(baseline_snapshot.get("frame_observation"), dict)
         else {}
     )
+    # Freeze the validated S0 layout before the next physical capture invalidates
+    # the store entry. The full S0 snapshot remains the receipt baseline as well.
+    baseline_layout = _LAYOUT_SNAPSHOT_STORE.get(
+        str((baseline_snapshot.get("send_context_guard") or {}).get("layout_snapshot_id") or "")
+    ) or {}
 
     send_mode = DEFAULT_SEND_MODE
     settings = adapt_humanized_input_settings(humanized_input_settings(), text)
@@ -10920,6 +10926,34 @@ def send_payload(
                 else None
             ),
         )
+        if not validation_result.get("ok"):
+            current_layout = _LAYOUT_SNAPSHOT_STORE.get(
+                str((snapshot.get("send_context_guard") or {}).get("layout_snapshot_id") or "")
+            ) or {}
+            crop_evidence = composer_viewport.composer_frame_scope(
+                baseline_layout, current_layout, baseline_frame, snapshot_frame,
+            )
+            if crop_evidence.get("ok"):
+                candidate = validate_send_context_guard(
+                    expected_context_guard, snapshot.get("send_context_guard"),
+                    current_observations=snapshot.get("observations"),
+                    allow_history_suffix=True,
+                )
+                if candidate.get("ok"):
+                    crop_evidence = composer_viewport.composer_suffix_geometry(
+                        baseline_snapshot, snapshot, baseline_layout, current_layout,
+                        candidate["worker_continuity_decision"],
+                    )
+                    if crop_evidence.get("ok"):
+                        validation_result = candidate
+                else:
+                    validation_result = candidate
+                if not validation_result.get("ok"):
+                    validation_result["composer_continuity_candidate"] = {
+                        "reason": candidate.get("reason"),
+                        "decision": candidate.get("worker_continuity_decision"),
+                    }
+            validation_result["composer_crop_evidence"] = crop_evidence
         return {
             **validation_result,
             "snapshot": snapshot,
@@ -17513,6 +17547,7 @@ def validate_send_context_guard(
     current: dict[str, Any] | None,
     *,
     current_observations: list[dict[str, Any]] | None,
+    allow_history_suffix: bool = False,
 ) -> dict[str, Any]:
     """Verify S0/S1/S2 through the shared pure continuity comparator.
 
@@ -17611,12 +17646,40 @@ def validate_send_context_guard(
             continuity_contract.get("old_top_boundary_complete")
             and not current_sequence
         ),
+        allow_history_suffix=allow_history_suffix,
     )
     relation = str(decision.get("relation") or "")
-    if relation != "business_sequence_equal":
+    # Content signatures cannot distinguish a lone old tail from an identical
+    # new occurrence. Worker-generated IDs are not native message identities.
+    current_tokens = _shared_boundary_tokens_for_observations(
+        current_observations, committed_only=False,
+    )
+    single_native_boundary = bool(
+        len(current_sequence) == 1
+        and any(token.startswith("native:") for token in
+                old_tokens.get(len(expected_sequence) - 1, set()).intersection(current_tokens.get(0, set())))
+    )
+    history_suffix = bool(
+        allow_history_suffix
+        and relation == "unique_history_suffix_without_new_messages"
+        and 0 < len(current_sequence) < len(expected_sequence)
+        and (len(current_sequence) > 1 or single_native_boundary)
+        and decision.get("new_suffix_indexes") == []
+        and decision.get("matched_pairs") == [
+            {"old_index": len(expected_sequence) - len(current_sequence) + index,
+             "new_index": index}
+            for index in range(len(current_sequence))
+        ]
+    )
+    if relation != "business_sequence_equal" and not history_suffix:
         return {
             "ok": False,
-            "reason": "message_sequence_changed_or_unresolved",
+            "reason": (
+                "single_visible_tail_identity_unproven"
+                if allow_history_suffix and relation == "unique_history_suffix_without_new_messages"
+                and len(current_sequence) == 1 and not single_native_boundary
+                else "message_sequence_changed_or_unresolved"
+            ),
             "error_code": "C3_CONTEXT_CHANGED_BEFORE_SEND",
             "continuity_relation": relation,
             "continuity_reason": str(decision.get("reason") or ""),
@@ -17630,7 +17693,7 @@ def validate_send_context_guard(
         }
     return {
         "ok": True,
-        "reason": "message_sequence_unchanged",
+        "reason": "history_suffix_unchanged" if history_suffix else "message_sequence_unchanged",
         "message_count": len(current_sequence),
         "sequence_sha256": current_payload.get("sequence_sha256"),
         "bottom": current_payload.get("bottom"),
@@ -19136,6 +19199,16 @@ def _register_layout_snapshot(
             "conflicts": [] if calibration_matches else ["startup_calibration_missing_or_stale"],
             "vertical_candidates": [],
         }
+        if calibration_matches:
+            measured = win32_ocr_layout.measure_business_input_regions(image, calibration)
+            layout = {
+                **measured,
+                "anchors": [
+                    *[anchor for anchor in calibration.get("anchors") or []
+                      if anchor.get("name") not in {"input_separator", "input_text_region"}],
+                    *measured["anchors"],
+                ],
+            }
         required_region_names = win32_ocr_layout.REQUIRED_LAYOUT_REGION_NAMES
         surface_kind = "wechat_main_business_frame"
     screen_profile = screen_work_area(hwnd)

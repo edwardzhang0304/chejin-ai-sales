@@ -1,0 +1,37 @@
+{
+  "date": "2026-09-16",
+  "reviewer": "架构师4号",
+  "decision": "source_review_passed",
+  "closed_findings": ["P2-host-layout-overlay-regression"],
+  "car_candidate": "/private/tmp/chejin-dynamic-composer-r6-20260916",
+  "shared_candidate": "/private/tmp/omniauto-dynamic-composer-r6-20260916",
+  "car_base": "809b343755bcffdc59a9c8845cdc568466089671",
+  "shared_base": "a0e6095b9de2fef9e18c480aaada15fed0348878",
+  "window_layout_sha256": {
+    "car": "9a27924e0f08d0e6eb4884eea4fc4f09bdbbff797a97852e10e5c64635d29aa3",
+    "shared": "0141f884ced4f573b03c6de8801a10b2f177a7a657087cab4af39fd74efb960d"
+  },
+  "scope_verification": {
+    "script": "audit_sources.py",
+    "all_non_dynamic_layout_bytes_match_each_formal_baseline": true,
+    "dynamic_measurement_bytes_same_in_both_repositories_and_r5": true,
+    "shared_r5_to_r6_changes": [],
+    "only_car_product_change_from_r5": "restore three pre-existing host layout differences",
+    "source_and_original_fingerprints_verified": 20,
+    "provenance_only_adds_note": true,
+    "current_release_unchanged": true,
+    "both_diff_checks_passed": true
+  },
+  "independent_new_run": {"xml": "affected.xml", "passed": 19, "failed": 0, "skipped": 0},
+  "controls_not_included_in_new_run_count": [
+    {"xml": "r5-negative.xml", "passed": 0, "failed": 2, "expected": true},
+    {"xml": "released-control.xml", "passed": 2, "failed": 0}
+  ],
+  "reused_not_rerun": {"dynamic_cases": 36, "adjacent_cases": 101, "http_pg_sqlite_cases": 4, "total": 141,
+    "source": "/private/tmp/chejin-dynamic-composer-review-20260916-0t6lnb",
+    "xml_hashes_and_passed_cases_verified": true},
+  "windows_DI08": "pending",
+  "release_authorized": false,
+  "product_code_modified_by_reviewer": false,
+  "database_operations_this_revision": false
+}
