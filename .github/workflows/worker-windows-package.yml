@@ -48,7 +48,7 @@ jobs:
       env:
         GH_TOKEN: ${{ github.token }}
       run: python ops/formal_release/release_plan.py --preflight
-    - name: Validate dispatch without executing input as shell code
+    - name: Validate dispatch and prepare server capacity before building
       env:
         FORMAL_SSH_KEY: ${{ secrets.FORMAL_SSH_KEY }}
         FORMAL_SSH_HOST: ${{ secrets.FORMAL_SSH_HOST }}
@@ -59,6 +59,14 @@ jobs:
         role=stage
         case "$DELIVERY_MODE" in check_staged|publish_staged) role=promote ;; esac
         python3 ops/formal_release/deliver.py preflight --role "$role" --current-version "$CURRENT_VERSION"
+    - name: Retain server preflight receipt
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: formal-server-preflight-${{ github.run_id }}-${{ github.run_attempt }}
+        path: formal-result.json
+        retention-days: 90
+        if-no-files-found: ignore
     outputs:
       target_version: ${{ steps.plan.outputs.TARGET_VERSION }}
       current_version: ${{ steps.plan.outputs.CURRENT_VERSION }}

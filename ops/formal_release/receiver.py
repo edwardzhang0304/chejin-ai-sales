@@ -93,7 +93,15 @@ def handle(request, stream, role, config):
         if request.get("release_route") == "manual":
             require(all(config.get(k) for k in ("manual_download_origin", "manual_download_root", "manual_download_site"))
                     and Path(__file__).with_name("manual_readiness.py").is_file(), "MANUAL_RECEIVER_NOT_CONFIGURED")
-        return {"receiver_version": 2, "old_client_baseline": "passed", "routes": ["button", "manual"]}
+        result = {"receiver_version": 3, "old_client_baseline": "passed", "routes": ["button", "manual"]}
+        if request.get("prepare_capacity"):
+            require(role == "stage", "ROLE_DENIED")
+            from capacity import prepare
+            root = Path(config["staging_root"])
+            with (root / ".lock").open("a") as lock:
+                fcntl.flock(lock, fcntl.LOCK_EX)
+                result.update(prepare(config, request.get("current_version"), request.get("target_version")))
+        return result
     require(operation in allowed, "ROLE_DENIED")
     root = Path(config["staging_root"])
     root.mkdir(mode=0o700, parents=True, exist_ok=True)
@@ -104,11 +112,25 @@ def handle(request, stream, role, config):
             meta = request["metadata"]
             _, total = identity(meta)
             check_descriptor(meta, request["descriptor"], config)
+            from capacity import check_transfer
             token = stage_id(meta)
             folder = root / token
             if folder.exists():
                 require(json.loads((folder / "metadata.json").read_text()) == meta, "IDENTITY_CONFLICT")
+                # A retry reuses complete verified chunks. Do not demand space for them again.
+                missing = total
+                if (folder / 'verified.json').is_file():
+                    missing = 0
+                else:
+                    for name, info in meta['files'].items():
+                        for index in range((info['size'] + CHUNK - 1) // CHUNK):
+                            part = folder / (name + f'.part{index}')
+                            length = min(CHUNK, info['size'] - index * CHUNK)
+                            if not part.is_symlink() and part.is_file() and part.stat().st_size == length:
+                                missing -= length
+                check_transfer(config, total, missing)
                 return {"stage_id": token}
+            check_transfer(config, total)
             used = sum(p.stat().st_size for p in root.rglob("*") if p.is_file())
             require(used + total <= config.get("staging_limit_bytes", 4 * 1024 ** 3), "STAGING_QUOTA")
             require(shutil.disk_usage(root).free > 4 * 1024 ** 3, "INSUFFICIENT_DISK")
