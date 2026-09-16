@@ -362,6 +362,12 @@
       "scope": [
         "coherent_controlled_composer_draft_fixture_and_real_ocr_regression_tests"
       ]
+    },
+    {
+      "source_commit": "280a976801e7dc862ec99924c5fe306be83457ec",
+      "scope": [
+        "c2_contract_0_9_84_generated_schema"
+      ]
     }
   ],
   "chejin_overlays": [
@@ -394,12 +400,12 @@
     "persisted_c1_failure_receipt_settlement_and_stop_recovery_contract"
   ],
   "current_release": {
-    "version": "0.9.83",
-    "source_commit": "a0e6095b9de2fef9e18c480aaada15fed0348878",
-    "contract_revision": "0.9.83",
-    "contract_sha256": "1241f5bbe6916e8ead87b223ffa71c8811ff505d35d1e51d123a01a8c8ae1254",
+    "version": "0.9.84",
+    "source_commit": "280a976801e7dc862ec99924c5fe306be83457ec",
+    "contract_revision": "0.9.84",
+    "contract_sha256": "0a06c165d10e12b85b1b5f2f60d0297eb3c7871b8fea5892406c62e2f2d1484a",
     "scope": [
-      "c2_contract_0_9_83_generated_schema"
+      "c2_contract_0_9_84_generated_schema"
     ]
   },
   "historical_integrations": [
