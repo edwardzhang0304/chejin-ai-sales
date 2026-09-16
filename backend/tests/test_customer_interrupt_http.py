@@ -1,4 +1,4 @@
-"""Real Worker/OCR/HTTP/PG/SQLite continuation; desktop I/O and model controlled."""
+"""Real Worker/OCR/HTTP/PG/SQLite and BackgroundTasks; desktop/model controlled."""
 import json
 import os
 from pathlib import Path
@@ -14,6 +14,51 @@ import dynamic_composer_desktop as fixture
 OLD_REPLY = "好的，我帮您看看"
 NEW_REPLY = "好的，按十五万预算重新筛选电车。"
 FRAME_FACTORY = fixture.derived_frames
+
+
+def observe_async_generation(monkeypatch, *, remove_callback=False):
+    """Exercise the production scheduling branch, substituting only the model."""
+    from starlette.background import BackgroundTasks
+    from app.api.routes import wechat as routes
+    from app.core.config import get_settings
+    from app.services import c3_service
+    from app.services.ai_adapter import MockOmniAutoAIEngineAdapter
+
+    monkeypatch.setattr(get_settings(), "c3_ai_adapter_mode", "real")
+    monkeypatch.setattr(c3_service, "get_ai_engine_adapter", lambda: MockOmniAutoAIEngineAdapter())
+    events = {"scheduled": [], "executed": [], "suppressed": []}
+    native_generate = routes._generate_message_batch
+    native_add = BackgroundTasks.add_task
+
+    def generate(batch_id, attempt):
+        events["executed"].append({"batch_id": batch_id, "attempt": attempt})
+        return native_generate(batch_id, attempt)
+
+    def add(background, callback, *args, **kwargs):
+        if callback is generate:
+            event = {"batch_id": args[0], "attempt": args[1]}
+            if remove_callback and events["scheduled"]:
+                events["suppressed"].append(event)
+                return None
+            events["scheduled"].append(event)
+        return native_add(background, callback, *args, **kwargs)
+
+    monkeypatch.setattr(routes, "_generate_message_batch", generate)
+    monkeypatch.setattr(BackgroundTasks, "add_task", add)
+    return events
+
+
+def assert_business_continuation(record):
+    """The negative control must fail these same business assertions."""
+    assert record["enter_texts"] == [NEW_REPLY], "new reply was not sent exactly once"
+    calls = record["brain_calls"]
+    assert len(calls) == 2 and "十五万元" in json.dumps(calls[-1]["batch"], ensure_ascii=False)
+    assert "市区通勤" in json.dumps(calls[-1]["context"], ensure_ascii=False)
+    assert record["handoffs"] == []
+    assert record["tasks"] == ["cancelled", "completed"]
+    assert sum("十五万元" in (m or "") for m in record["messages"]) == 1
+    assert record["conversation"] == "waiting_user_reply"
+    assert not record["pending_ack"] and not record["flow"]
 
 
 class PersistentDesktop(fixture.Desktop):
@@ -132,12 +177,14 @@ def resume_in_new_process(base, directory):
     assert not record["pending_ack"] and not record["flow"], record
 
 
-@pytest.mark.parametrize("scenario", ["normal", "restart_loss", "paused"])
+@pytest.mark.parametrize("scenario", ["normal", "restart_loss", "paused", "no_auto_callback"])
 def test_customer_interrupt_continues_ai_reply(tmp_path, request, monkeypatch, scenario):
     if os.environ.get("CHEJIN_INTERRUPT_HTTP_CHILD") != "1":
         env = {**os.environ, "CHEJIN_INTERRUPT_HTTP_CHILD": "1", "CHEJIN_COMPOSER_HTTP_CHILD": "1",
                "CHEJIN_WORKER_HOME": str(tmp_path / "worker"), "CHEJIN_COMPOSER_WORKER_SOURCE": str(ROOT),
                "CHEJIN_C2_ENABLED": "false", "CHEJIN_OBSERVABILITY_ENABLED": "false",
+               "CHEJIN_C3_BRAIN_NO_PROGRESS_WATCHDOG_SECONDS": "3",
+               "CHEJIN_C3_BRAIN_POLL_INTERVAL_SECONDS": "0.1",
                "PYTHONDONTWRITEBYTECODE": "1",
                "PYTHONPATH": os.pathsep.join(str(ROOT / p) for p in
                    ("backend", "backend/tests", "worker-client", "worker-client/omniauto-rpa"))}
@@ -196,6 +243,7 @@ def test_customer_interrupt_continues_ai_reply(tmp_path, request, monkeypatch, s
     monkeypatch.setattr(fixture, "Desktop", RecordingDesktop)
     monkeypatch.setattr(task_runner, "TaskRunner", RecordingRunner)
     monkeypatch.setattr(MockOmniAutoAIEngineAdapter, "generate_reply_decision", generate)
+    async_events = observe_async_generation(monkeypatch, remove_callback=scenario == "no_auto_callback")
     if os.environ.get("CHEJIN_INTERRUPT_NEGATIVE_CONTROL") == "1":
         # Disable only the new backend interpretation; real generic failed path must reproduce the bug.
         monkeypatch.setattr(shared_adapter("send_interruption"), "confirmed_customer_interruption", lambda **kw: False)
@@ -241,7 +289,7 @@ def test_customer_interrupt_continues_ai_reply(tmp_path, request, monkeypatch, s
         outcome = {"enter_texts": desktop.enter_texts, "runtime_events": runtime_events,
                    "pending_ack": storage.has_pending_reply_send_ack_outbox(),
                    "flow": storage.load_runtime_control().get("inflight_flow_id")}
-    record = {**outcome, "scenario": scenario, "brain_calls": brain_calls}
+    record = {**outcome, "scenario": scenario, "brain_calls": brain_calls, "async_events": async_events}
     with backend.SessionLocal() as db:
         record["actions"] = [{"status": a.status, "text": a.reply_text} for a in db.query(backend.ReplyAction).all()]
         record["handoffs"] = [h.handoff_reason_code for h in db.query(backend.HandoffEvent).all()]
@@ -250,12 +298,17 @@ def test_customer_interrupt_continues_ai_reply(tmp_path, request, monkeypatch, s
         record["conversation"] = db.query(backend.Conversation).one().status
         assert db.query(backend.SentAck).filter_by(reply_action_id=old_id).count() == 1
     (tmp_path / "continuation.json").write_text(json.dumps(record, ensure_ascii=False, indent=2, default=str))
-    assert outcome["enter_texts"] == [NEW_REPLY], record
-    assert len(brain_calls) == 2 and "十五万元" in json.dumps(brain_calls[-1]["batch"], ensure_ascii=False), record
-    assert "市区通勤" in json.dumps(brain_calls[-1]["context"], ensure_ascii=False), record
-    assert record["handoffs"] == [], record
-    assert record["tasks"] == ["cancelled", "completed"], record
-    assert sum("十五万元" in (m or "") for m in record["messages"]) == 1, record
-    assert record["conversation"] == "waiting_user_reply", record
-    assert not outcome["pending_ack"] and not outcome["flow"], record
     runner.stop_for_update(timeout_seconds=5)
+    if scenario == "no_auto_callback":
+        assert len(async_events["scheduled"]) == len(async_events["executed"]) == 1, record
+        assert len(async_events["suppressed"]) == 1 and len(brain_calls) == 1, record
+        assert outcome["enter_texts"] == [], record
+        assert sum("十五万元" in (m or "") for m in record["messages"]) == 1, record
+        with pytest.raises(AssertionError, match="new reply was not sent exactly once"):
+            assert_business_continuation(record)
+    else:
+        assert len(async_events["scheduled"]) == len(async_events["executed"]) == 2, record
+        assert async_events["scheduled"] == async_events["executed"], record
+        assert len({event["batch_id"] for event in async_events["executed"]}) == 2, record
+        assert async_events["suppressed"] == [], record
+        assert_business_continuation(record)

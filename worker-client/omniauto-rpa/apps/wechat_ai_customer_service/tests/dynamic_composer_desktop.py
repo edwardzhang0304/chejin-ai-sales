@@ -21,6 +21,9 @@ from test_dynamic_composer import sidecar, install_desktop, register, incident_i
 REPLY = ("您好，10万预算的话，油车和电车各有侧重：家里能装充电桩、平时市区通勤多，电车用起来更省；"
          "经常跑长途或充电不方便，油车更省心。 按咱们10万预算，可以看丰田bz7 2026款 600 Pro，"
          "纯电，9.88万；或者丰田卡罗拉2019款，燃油，4.88万。 您平时主要是市区代步还是跑长途多？我帮您再缩小范围。")
+# REPLY is overridden by short-reply HTTP fixtures. Only the original text
+# may reuse the incident's long-draft pixels; other text must be rendered.
+_INCIDENT_REPLY_TEXT = REPLY
 
 
 def worker_imports():
@@ -91,7 +94,7 @@ def derived_frames(*, movement=185, reduction=240, new_kind="", reply=REPLY, fin
         # Restore the actual toolbar separately from the growing input.
         frame.paste(original.crop((305,801,774,829)),(305,801))
         if typing:
-            if reply==REPLY:
+            if reply==_INCIDENT_REPLY_TEXT:
                 frame.paste(draft.crop((313,685,766,789)), (313,input_top+10))
             else:
                 lines,current=[],""

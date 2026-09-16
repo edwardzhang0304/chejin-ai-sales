@@ -1,0 +1,31 @@
+{
+  "date": "2026-09-16",
+  "authorization": "用户明确要求：提交推送灰度分支",
+  "review_status": "independent source review and r10 follow-up review passed",
+  "review_report": "/private/tmp/chejin-interrupt-r10-review-20260916-Q0BlpP/review_v0.1_20260916.md",
+  "review_report_sha256": "452a4d8d02f88a6a1f8debefe64f91b89ec97361c41b009f69cf766ed8019d56",
+  "chejin_product_commit": "eff500e34e6686b7a927cc75e01cf3fbd97d84a6",
+  "shared_product_commit": "0cdf482651d01c3296cb1899aebc6ed1c0d3a248",
+  "shared_test_commit": "f418b5dc2ab8650f2a19debd09f4fb55d43f479e",
+  "chejin_branch": "codex/gray-release-0.9.x",
+  "shared_branch": "codex/gray-release-0.9.x-source",
+  "chejin_test_and_document_commit": "containing commit",
+  "frozen_fingerprints_verified": 20,
+  "reviewed_product_and_test_files_unchanged": true,
+  "additional_work": "source registration, four-document delivery metadata and immutable independent audit artifacts only",
+  "test_reuse": "Reuse reviewed 91 source positives/two controls and r10 six positives/two controls; r10 reviewer independently reran two OCR checks. No repeated business tests for metadata-only submission.",
+  "not_authorized_or_performed": [
+    "package",
+    "release tag",
+    "deployment",
+    "production data changes"
+  ],
+  "acceptance_pending": [
+    "joint backend/client release",
+    "Windows physical input/interruption/send"
+  ],
+  "review_artifacts_sha256": {
+    "evidence-check.json": "fe029076d40c153c8c21d259998e488385bca5060c9191d2b499079a2cb47d19",
+    "independent-ocr.xml": "dc133680ed7b3823ddb1c14e9c10c1c45055486e6e633584cd5b2daf613140ab"
+  }
+}
