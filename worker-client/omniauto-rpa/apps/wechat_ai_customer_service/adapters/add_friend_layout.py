@@ -473,6 +473,9 @@ def high_confidence_eight_char_code_visible(
     candidates: list[dict[str, Any]] = []
     for item in items:
         text = compact_ocr_text(item.get("text"))
+        # A focused edit can OCR as the eight-character code followed by its caret.
+        if len(text) == 9 and text.endswith("|"):
+            text = text[:-1]
         confidence = float(item.get("confidence") or 0.0)
         if re.fullmatch(r"[a-z0-9]{8}", text) and confidence >= minimum_confidence:
             candidates.append({"text": text, "confidence": confidence})
