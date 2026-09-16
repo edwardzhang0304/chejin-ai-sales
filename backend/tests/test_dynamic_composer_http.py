@@ -124,6 +124,17 @@ def _drive_composer_http(tmp_path, request, monkeypatch, scenario, *, expect_pen
                                                  observations=committed,read_reason="waiting_user_reply")
     response=api.session.post(f"{base}/workers/{worker['id']}/wechat/messages/ingest",json=seeded,headers=backend._worker_headers(worker))
     assert response.status_code==200,response.text
+    # Real BackgroundTasks generates after returning HTTP. Wait only for the
+    # initial approved-reply fixture; never invoke generation from the test.
+    initial_batch_id=response.json()["data"]["message_batch"]["batch_id"]
+    deadline=time.monotonic()+10
+    while time.monotonic()<deadline:
+        with backend.SessionLocal() as db:
+            if db.query(backend.ReplyAction).filter_by(batch_id=initial_batch_id, current=True, status="queued").count():
+                break
+        time.sleep(.02)
+    else:
+        raise AssertionError("Initial actual generation did not produce an approved reply")
     with backend.SessionLocal() as db:
         action=db.query(backend.ReplyAction).filter_by(conversation_id=conversation_id,current=True).one()
         # Approved Brain output is a setup fixture, never a settlement shortcut.

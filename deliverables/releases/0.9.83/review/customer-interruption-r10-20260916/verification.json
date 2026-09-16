@@ -1,0 +1,124 @@
+{
+  "date": "2026-09-16",
+  "scope": "E1 actual BackgroundTasks regression and E2 coherent draft pixels; tests/docs only",
+  "reviewed_chejin_commit": "eff500e34e6686b7a927cc75e01cf3fbd97d84a6",
+  "reviewed_shared_commit": "0cdf482651d01c3296cb1899aebc6ed1c0d3a248",
+  "independent_review": {
+    "path": "/private/tmp/chejin-interrupt-fix-review-20260916-HsVpoE/review_v0.1_20260916.md",
+    "sha256": "190961a54e138c47eae9cd50f4a6eaf28d9b551c8f9cd60ba37264be2cef89d1",
+    "positive": 91,
+    "negative_controls": 2,
+    "not_added_to_current_counts": true
+  },
+  "current_positive_cases": 6,
+  "current_negative_controls": 2,
+  "shared_mirror_repeat_cases": 2,
+  "counting": "2 real-OCR/pixel cases + 3 asynchronous business positives + 1 original successful-send regression; no_auto_callback is an expected-failing business assertion checked by a passing outer test; old backend control is a preserved pytest failure",
+  "async_scenarios": [
+    {
+      "scenario": "normal",
+      "scheduled": 2,
+      "executed": 2,
+      "suppressed": 0,
+      "model_calls": 2,
+      "physical_send_calls": 1,
+      "tasks": [
+        "cancelled",
+        "completed"
+      ],
+      "handoff_count": 0,
+      "pending_ack": false,
+      "flow": null,
+      "private_evidence": "/private/tmp/chejin-interrupt-r10-async/test_customer_interrupt_contin0/child/test_customer_interrupt_contin0/continuation.json",
+      "sha256": "d0da059aed228574d04a5b6b04ebebd18891c67656bd23cc3bbadb07e4c1ca0b"
+    },
+    {
+      "scenario": "restart_loss",
+      "scheduled": 2,
+      "executed": 2,
+      "suppressed": 0,
+      "model_calls": 2,
+      "physical_send_calls": 1,
+      "tasks": [
+        "cancelled",
+        "completed"
+      ],
+      "handoff_count": 0,
+      "pending_ack": false,
+      "flow": null,
+      "private_evidence": "/private/tmp/chejin-interrupt-r10-async/test_customer_interrupt_contin1/child/test_customer_interrupt_contin0/continuation.json",
+      "sha256": "4b53a4b1ba7d6da1c39367fb12dc55ff63c84c532c741fafa24da8a79a4aae6d"
+    },
+    {
+      "scenario": "paused",
+      "scheduled": 2,
+      "executed": 2,
+      "suppressed": 0,
+      "model_calls": 2,
+      "physical_send_calls": 1,
+      "tasks": [
+        "cancelled",
+        "completed"
+      ],
+      "handoff_count": 0,
+      "pending_ack": false,
+      "flow": null,
+      "private_evidence": "/private/tmp/chejin-interrupt-r10-async/test_customer_interrupt_contin2/child/test_customer_interrupt_contin0/continuation.json",
+      "sha256": "e7ecd0b7a12db8fed46cf53d1880ba8bb5139052bb5b0e8770823c9865b7380a"
+    },
+    {
+      "scenario": "no_auto_callback",
+      "scheduled": 1,
+      "executed": 1,
+      "suppressed": 1,
+      "model_calls": 1,
+      "physical_send_calls": 0,
+      "tasks": [
+        "cancelled"
+      ],
+      "handoff_count": 0,
+      "pending_ack": false,
+      "flow": null,
+      "private_evidence": "/private/tmp/chejin-interrupt-r10-async/test_customer_interrupt_contin3/child/test_customer_interrupt_contin0/continuation.json",
+      "sha256": "34d46df431a280c3432a5007d66c414aa5bc1a472c1094fb61624cb84f685ff3"
+    }
+  ],
+  "product_files_unchanged_sha256": {
+    "backend/app/services/c3_service.py": "0c807ceb2d859b4f10d87fc7ad2e00852a6f003a778079ef45a1f2d01e6e81f9",
+    "worker-client/chejin_worker_client/runtime_process_timeline.py": "830e732d074e459248c7389267115770973545b1d00c46eeb398cac0417211cd",
+    "worker-client/chejin_worker_client/shared_rules.py": "16927f37aae0a3d96d5096d53db44ba9aa4b542d115b044f7fd52266e58b68d7",
+    "worker-client/chejin_worker_client/task_runner.py": "b48fbd889c2307c394111bf10e3ee5a56b43671b9f27a3f4748fccdf80c650a0",
+    "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/adapters/send_interruption.py": "84889a5f5b2f8cbfcc25d5f3afcf342117fa7ce7607dc72f518d4aac6a7748ca"
+  },
+  "modified_test_sha256": {
+    "backend/tests/test_customer_interrupt_http.py": "ee3448b0059bf42f2e59ee2cff720b1164ed5c5a3800af8affbec71d71c05fa6",
+    "backend/tests/test_dynamic_composer_http.py": "25bd96de1154f651fe9957d8c8af944f2cb0aba312c084690f1a2a24d5fb47a9",
+    "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/tests/dynamic_composer_desktop.py": "812adeefc61d710a313f9444db9feb2d4d98cfe574323501574ff4d8b14c778d",
+    "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/tests/test_composer_desktop_fixture.py": "02f1837a8adad2850d9fd026ba9e6da99596d93825df7f29e665583e104fc45f"
+  },
+  "reports": {
+    "legacy-send-and-old-backend-control.xml.gz": "5d16a32dd7d77439fe23d3def4b9d966384017e863120898e0059464f2376f27",
+    "draft-consistency.xml": "6a0367267b6387cfb798003aeaf7821c97143d294d3eaede8b2071ab6ab51d02",
+    "async-continuation.xml": "8373f8735fa840b60014997ba3a5fe71fb0c7d7837e7f5021be1a4b3f535c2ce",
+    "shared-draft-consistency.xml": "145ae5414625364269374d1bc1ed97f7c5867577b970d4bb6471c46246aff9dd"
+  },
+  "visual_checked": [
+    "draft-consistency crops for old and new reply",
+    "normal/desktop/004-send_input_probe_1.png shows the short draft"
+  ],
+  "environment": "Real RapidOCR, Worker, Sidecar, HTTP, isolated PG :55490/composer_test, SQLite, BackgroundTasks and restart process. Controlled desktop I/O and model output. Existing C2 state-target iteration invoked once; periodic scanning disabled.",
+  "branches": [
+    "codex/gray-release-0.9.x",
+    "codex/gray-release-0.9.x-source"
+  ],
+  "not_performed": [
+    "new product edits",
+    "new branches",
+    "commit",
+    "push",
+    "package",
+    "production deployment",
+    "Windows acceptance"
+  ],
+  "pending": "Lightweight review of these test/doc fingerprints; Windows physical sending and joint delivery acceptance."
+}
