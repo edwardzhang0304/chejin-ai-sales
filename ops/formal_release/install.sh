@@ -1,6 +1,6 @@
 #!/bin/sh
 # Run from a reviewed bundle on the production host; no runtime configuration edits.
-# Required bundle: receiver.py verify.py register.py maintenance.py build_admin.py manual_publication.py manual_readiness.py, baseline/<version>/chejin_worker_client,
+# Required bundle: capacity.py receiver.py verify.py register.py maintenance.py build_admin.py manual_publication.py manual_readiness.py, baseline/<version>/chejin_worker_client,
 # stage.pub, promote.pub, and trusted-public-keys.json copied from existing trust.
 set -eu
 bundle=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
@@ -15,7 +15,7 @@ if getent passwd "$user" >/dev/null; then
   exit 1
 fi
 python3 -c 'import cryptography'
-for file in receiver.py verify.py register.py maintenance.py build_admin.py manual_publication.py manual_readiness.py disable.sh stage.pub promote.pub trusted-public-keys.json; do
+for file in capacity.py receiver.py verify.py register.py maintenance.py build_admin.py manual_publication.py manual_readiness.py disable.sh stage.pub promote.pub trusted-public-keys.json; do
   test -f "$bundle/$file"
 done
 python3 - "$bundle" <<'PY'
@@ -36,7 +36,7 @@ for version in versions:
 PY
 install -d -m 755 "$target"
 install -m 700 "$bundle/disable.sh" "$target/disable.sh"
-install -m 644 "$bundle/receiver.py" "$bundle/verify.py" "$bundle/register.py" "$bundle/maintenance.py" "$bundle/build_admin.py" "$bundle/manual_publication.py" "$bundle/manual_readiness.py" "$target/"
+install -m 644 "$bundle/capacity.py" "$bundle/receiver.py" "$bundle/verify.py" "$bundle/register.py" "$bundle/maintenance.py" "$bundle/build_admin.py" "$bundle/manual_publication.py" "$bundle/manual_readiness.py" "$target/"
 cp -R "$bundle/baseline" "$target/baseline"
 chown -R root:root "$target"
 chmod -R go-w "$target"
@@ -71,6 +71,8 @@ config={'staging_root':'/var/lib/chejin-formal-staging','container':'chejin-lead
         'manual_download_root':'/srv/chejin-update/www',
         'manual_download_site':'/etc/nginx/sites-enabled/update.jiangsuchejin.com.conf',
         'api_origin':'https://jiangsuchejin.com/api','staging_limit_bytes':4*1024**3}
+# Conservatively protect all installed baselines until operators register the rollback set.
+config['capacity']={'protected_versions':sorted(config['client_baselines'])}
 p=Path('/etc/chejin-formal-release.json');p.write_text(json.dumps(config)+'\n');p.chmod(0o600)
 PY
 python3 -m py_compile "$target/receiver.py" "$target/verify.py" "$target/register.py"

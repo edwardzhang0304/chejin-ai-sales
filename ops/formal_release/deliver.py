@@ -205,9 +205,14 @@ def main():
         else:
             remote = Remote(args.role if args.operation == "preflight" else "stage" if args.operation == "stage" else "promote")
             if args.operation == "preflight":
+                preparing = args.role == "stage" and os.environ.get("DELIVERY_MODE") in {"build_only", "build_and_stage"}
                 result.update(remote({"operation": "preflight", "current_version": args.current_version,
-                                      "release_route": os.environ.get("RELEASE_ROUTE")}))
+                                      "release_route": os.environ.get("RELEASE_ROUTE"),
+                                      "prepare_capacity": preparing, "target_version": os.environ.get("TARGET_VERSION")}))
                 require(result.get("receiver_version", 0) >= 2, "RECEIVER_TOOL_UPDATE_REQUIRED")
+                if preparing:
+                    require(result.get("receiver_version", 0) >= 3 and result.get("capacity_prepared") is True,
+                            "CAPACITY_PREBUILD_GATE_REQUIRED")
             elif args.operation == "stage":
                 meta, desc = metadata(args.folder, args.current_version, args.run_id, args.commit)
                 result.update(stage(args.folder, meta, desc, remote))
