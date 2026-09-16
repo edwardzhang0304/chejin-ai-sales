@@ -11,6 +11,7 @@ from apps.wechat_ai_customer_service.adapters import (  # noqa: E402
     contract_rules,
     message_contract,
     read_settlement,
+    send_interruption,
 )
 
-__all__ = ["contract_rules", "message_contract", "read_settlement"]
+__all__ = ["contract_rules", "message_contract", "read_settlement", "send_interruption"]

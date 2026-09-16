@@ -4059,6 +4059,8 @@ class TaskRunner:
         )
         if brain_result.get("sent") is True:
             return "reply_sent"
+        if brain_result.get("customer_interrupted") is True:
+            return "customer_interrupted" if brain_result.get("ack_confirmed") else "interruption_ack_pending"
         conversation_state = str(
             result.get("conversation_terminal_state") or ""
         ).lower()
@@ -8014,6 +8016,11 @@ class TaskRunner:
                 cancel_check=recovery_cancel_requested,
                 recovered_task=task if mode == "running" else None,
             )
+            if result.get("customer_interrupted"):
+                self._emit_runtime_process({
+                    "event": "customer_completed", **self._runtime_process_context,
+                    "terminal_state": self._runtime_terminal_for_result({"brain_result": result}),
+                })
             self.on_result(
                 RpaResult(
                     ok=bool(result.get("ok")),
@@ -13053,6 +13060,8 @@ class TaskRunner:
             )
         if brain_result.get("sent") is True:
             return True, "reply_sent", None
+        if brain_result.get("customer_interrupted") is True:
+            return True, "customer_interrupted", None
         batch = (
             brain_result.get("batch")
             if isinstance(brain_result.get("batch"), dict)
@@ -18964,12 +18973,19 @@ class TaskRunner:
             evidence = self._send_evidence(sidecar_result, target=target.remark_code or target.display_name)
             run_id = str(sidecar_result.get("sidecar_run_id") or sidecar_result.get("run_id") or "") or None
             action_outcome = classify_action_result("send", sidecar_result)
+            from .shared_rules import send_interruption
+            customer_interrupted = send_interruption.confirmed_customer_interruption(
+                send_result=action_outcome["result"],
+                action_phase=action_outcome["action_phase"],
+                error_code=action_outcome.get("error_code"), evidence=evidence,
+                target=target.remark_code or target.display_name,
+            )
             record_reply_stage(
                 sidecar_payload=sidecar_result,
                 stage_status=(
                     "succeeded"
                     if action_outcome["result"] == "sent"
-                    else "failed"
+                    else "cancelled" if customer_interrupted else "failed"
                 ),
                 error_code=(
                     None
@@ -19038,11 +19054,20 @@ class TaskRunner:
                     reconciliation_state="ai_unreconciled",
                     physical_send_confirmed=False,
                 )
-            self._queue_and_submit_reply_send_ack(
+            ack_confirmed = self._queue_and_submit_reply_send_ack(
                 binding, claim, send_result=send_result, action_phase=action_phase, reply_text_hash=actual_hash,
                 sidecar_run_id=run_id, evidence=evidence, error_code=error_code,
-                remark="发送结果未知，禁止自动补发。" if send_result == "unknown" else "发送失败。",
+                remark=("客户追加消息，旧回复未发送，程序草稿已清理，等待重新读取。"
+                        if customer_interrupted else "发送结果未知，禁止自动补发。"
+                        if send_result == "unknown" else "发送失败。"),
             )
+            if customer_interrupted:
+                # Backend schedules the normal reader in the same ack
+                # transaction. No ephemeral retry queue or resend of this
+                # action: pending ack/Flow barriers also cover process restart.
+                return {"ok": True, "batch": status, "sent": False,
+                        "customer_interrupted": True, "ack_confirmed": ack_confirmed,
+                        "reason": "customer_interrupted_before_send"}
             if error_code in SEND_CONTEXT_TECHNICAL_ERRORS:
                 self.set_run_status("faulted")
                 self.on_error(

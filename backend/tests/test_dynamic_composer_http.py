@@ -36,6 +36,11 @@ def test_worker_composer_http_settlement(tmp_path,request,monkeypatch,scenario):
         assert result.returncode == 0,result.stdout+result.stderr
         return
 
+    _drive_composer_http(tmp_path, request, monkeypatch, scenario)
+
+
+def _drive_composer_http(tmp_path, request, monkeypatch, scenario, *, expect_pending_ack=False):
+    """Shared real-I/O harness; each caller asserts its business outcome."""
     import test_c3_api as backend
     import test_wechat_c2_api as c2
     from dynamic_composer_desktop import Desktop,derived_frames,REPLY,sidecar
@@ -168,6 +173,8 @@ print(json.dumps({'calls':calls,'pending_ack':storage.has_pending_reply_send_ack
         record["restart"]=json.loads(restarted.stdout.splitlines()[-1])
         assert record["restart"]["calls"]==[],record
         assert not record["restart"]["pending_ack"] and not record["restart"]["flow"],record
+    elif expect_pending_ack:
+        assert storage.has_pending_reply_send_ack_outbox(), record
     else:
         assert not storage.has_pending_reply_send_ack_outbox(),record
         assert not storage.load_runtime_control().get("inflight_flow_id"),record
@@ -177,5 +184,7 @@ print(json.dumps({'calls':calls,'pending_ack':storage.has_pending_reply_send_ack
         record["backend"]={"receipts":[a.send_result for a in receipts],"task":db.get(backend.Task,task_id).status,
                             "action":db.get(backend.ReplyAction,action_id).status,"flow":db.get(Worker,worker["id"]).inflight_flow_state}
         assert [a.send_result for a in receipts]==["sent" if scenario=="response_loss" else scenario],record
-        assert not (record["backend"]["flow"] or {}).get("flow_id"),record
+        if not expect_pending_ack:
+            assert not (record["backend"]["flow"] or {}).get("flow_id"),record
     (tmp_path/"evidence.json").write_text(json.dumps(record,ensure_ascii=False,indent=2,default=str))
+    return runner, desktop, record
