@@ -1,0 +1,1127 @@
+{
+  "revision": "dynamic-composer-r6",
+  "status": "affected_self_tests_passed_independent_rereview_pending",
+  "committed": false,
+  "published": false,
+  "chejin_base": "809b343755bcffdc59a9c8845cdc568466089671",
+  "shared_base": "a0e6095b9de2fef9e18c480aaada15fed0348878",
+  "worktrees": [
+    "/private/tmp/chejin-dynamic-composer-r6-20260916",
+    "/private/tmp/omniauto-dynamic-composer-r6-20260916"
+  ],
+  "scope": "Restore Chejin startup calibration and plus_entry host baseline. Keep dynamic-composer implementation unchanged. No add-friend feature change.",
+  "frozen_r5_snapshot": {
+    "path": "/private/tmp/chejin-dynamic-composer-r6-evidence-20260916/r5-snapshot.json",
+    "all_original_fingerprints_unchanged": true
+  },
+  "r5_to_r6_changes": [
+    {
+      "path": "/private/tmp/chejin-dynamic-composer-r6-20260916/deliverables/AI智能客服售前跟进系统_PRD_运营后台统一版_v0.9.83.md",
+      "r5_sha256": "65063a7c8ae34dfb169033381285fe05455ec87f24baef1c95a828f5e914c16c",
+      "r6_sha256": "dc9ca1a8bd9d446c21e271600a71dbfa6e24ad915c4c04bb06d60f0363896279"
+    },
+    {
+      "path": "/private/tmp/chejin-dynamic-composer-r6-20260916/deliverables/AI智能客服售前跟进系统_全流程图_v0.9.83.puml",
+      "r5_sha256": "4ad174423d8913eb686980d056ee7d9a97026d23fe555dcbc9806df2dab14e20",
+      "r6_sha256": "fd9ef4514f6a8860c68a4667311e0e0d63487c86841afe7aa671d47f4646da54"
+    },
+    {
+      "path": "/private/tmp/chejin-dynamic-composer-r6-20260916/deliverables/AI智能客服售前跟进系统_技术方案手册_v0.9.83.md",
+      "r5_sha256": "2ac73235193c5dc504bd3f9af4ffb18fe8898689b3c287eaf393975e3d3e333d",
+      "r6_sha256": "c8c8477dcd24163f10a544bcbb5374b8510f970f6bd6d895a1d85cfe25ec2da3"
+    },
+    {
+      "path": "/private/tmp/chejin-dynamic-composer-r6-20260916/deliverables/AI智能客服售前跟进系统_版本更新记录.md",
+      "r5_sha256": "196065f3496592853fae0bbcc9201d44cbb00d9e37c6fe366fe4532a4985c821",
+      "r6_sha256": "41e9e9c163e3a5b2b1ca1b4e409386b64e25808f38cc57482fc1b1cdac0ecca5"
+    },
+    {
+      "path": "/private/tmp/chejin-dynamic-composer-r6-20260916/worker-client/omniauto-rpa/apps/wechat_ai_customer_service/adapters/wechat_win32_ocr/window_layout.py",
+      "r5_sha256": "0141f884ced4f573b03c6de8801a10b2f177a7a657087cab4af39fd74efb960d",
+      "r6_sha256": "9a27924e0f08d0e6eb4884eea4fc4f09bdbbff797a97852e10e5c64635d29aa3"
+    }
+  ],
+  "source_fingerprints": [
+    {
+      "path": "/private/tmp/chejin-dynamic-composer-r6-20260916/backend/tests/test_dynamic_composer_http.py",
+      "sha256": "bf560c4a4e97b47803d55a4b1dddcaff525599926d48b32449c427d23313b0a5"
+    },
+    {
+      "path": "/private/tmp/chejin-dynamic-composer-r6-20260916/deliverables/AI智能客服售前跟进系统_PRD_运营后台统一版_v0.9.83.md",
+      "sha256": "dc9ca1a8bd9d446c21e271600a71dbfa6e24ad915c4c04bb06d60f0363896279"
+    },
+    {
+      "path": "/private/tmp/chejin-dynamic-composer-r6-20260916/deliverables/AI智能客服售前跟进系统_全流程图_v0.9.83.puml",
+      "sha256": "fd9ef4514f6a8860c68a4667311e0e0d63487c86841afe7aa671d47f4646da54"
+    },
+    {
+      "path": "/private/tmp/chejin-dynamic-composer-r6-20260916/deliverables/AI智能客服售前跟进系统_技术方案手册_v0.9.83.md",
+      "sha256": "c8c8477dcd24163f10a544bcbb5374b8510f970f6bd6d895a1d85cfe25ec2da3"
+    },
+    {
+      "path": "/private/tmp/chejin-dynamic-composer-r6-20260916/deliverables/AI智能客服售前跟进系统_版本更新记录.md",
+      "sha256": "41e9e9c163e3a5b2b1ca1b4e409386b64e25808f38cc57482fc1b1cdac0ecca5"
+    },
+    {
+      "path": "/private/tmp/chejin-dynamic-composer-r6-20260916/worker-client/omniauto-rpa/.chejin-source.json",
+      "sha256": "f1e0115c9635b63dfc29026ae9b4b4dd0e950ddb95d86ceec093fa11f1fc22f9"
+    },
+    {
+      "path": "/private/tmp/chejin-dynamic-composer-r6-20260916/worker-client/omniauto-rpa/apps/wechat_ai_customer_service/adapters/wechat_win32_ocr/composer_viewport.py",
+      "sha256": "7bbb96086825f83ae65517078e860e1d5544aae93e131aeb1e718e6f1336114d"
+    },
+    {
+      "path": "/private/tmp/chejin-dynamic-composer-r6-20260916/worker-client/omniauto-rpa/apps/wechat_ai_customer_service/adapters/wechat_win32_ocr/window_layout.py",
+      "sha256": "9a27924e0f08d0e6eb4884eea4fc4f09bdbbff797a97852e10e5c64635d29aa3"
+    },
+    {
+      "path": "/private/tmp/chejin-dynamic-composer-r6-20260916/worker-client/omniauto-rpa/apps/wechat_ai_customer_service/adapters/wechat_win32_ocr_sidecar.py",
+      "sha256": "c6034b78b35a4be0e87a1559f962d78f9a308b144ff8f5d2e700b77f7a01eaf8"
+    },
+    {
+      "path": "/private/tmp/chejin-dynamic-composer-r6-20260916/worker-client/omniauto-rpa/apps/wechat_ai_customer_service/tests/dynamic_composer_desktop.py",
+      "sha256": "2603e77a2449d24c928471ff2fad52aa07c74bc42fce161bc1cef15f0625dfec"
+    },
+    {
+      "path": "/private/tmp/chejin-dynamic-composer-r6-20260916/worker-client/omniauto-rpa/apps/wechat_ai_customer_service/tests/test_dynamic_composer.py",
+      "sha256": "91ae5c5f309359ef2cac7de82cbf75ab0c6649f8dd19e5d8d0684a1200772eb7"
+    },
+    {
+      "path": "/private/tmp/chejin-dynamic-composer-r6-20260916/worker-client/tests/test_preserve_host_layout.py",
+      "sha256": "1c987eac00a95f961d33bac811cb7fef5b459be9237931a50bf9a30836745178"
+    },
+    {
+      "path": "/private/tmp/omniauto-dynamic-composer-r6-20260916/apps/wechat_ai_customer_service/adapters/wechat_win32_ocr/composer_viewport.py",
+      "sha256": "7bbb96086825f83ae65517078e860e1d5544aae93e131aeb1e718e6f1336114d"
+    },
+    {
+      "path": "/private/tmp/omniauto-dynamic-composer-r6-20260916/apps/wechat_ai_customer_service/adapters/wechat_win32_ocr/window_layout.py",
+      "sha256": "0141f884ced4f573b03c6de8801a10b2f177a7a657087cab4af39fd74efb960d"
+    },
+    {
+      "path": "/private/tmp/omniauto-dynamic-composer-r6-20260916/apps/wechat_ai_customer_service/adapters/wechat_win32_ocr_sidecar.py",
+      "sha256": "c6034b78b35a4be0e87a1559f962d78f9a308b144ff8f5d2e700b77f7a01eaf8"
+    },
+    {
+      "path": "/private/tmp/omniauto-dynamic-composer-r6-20260916/apps/wechat_ai_customer_service/tests/dynamic_composer_desktop.py",
+      "sha256": "2603e77a2449d24c928471ff2fad52aa07c74bc42fce161bc1cef15f0625dfec"
+    },
+    {
+      "path": "/private/tmp/omniauto-dynamic-composer-r6-20260916/apps/wechat_ai_customer_service/tests/test_dynamic_composer.py",
+      "sha256": "91ae5c5f309359ef2cac7de82cbf75ab0c6649f8dd19e5d8d0684a1200772eb7"
+    }
+  ],
+  "common_files": [
+    {
+      "relative": "apps/wechat_ai_customer_service/adapters/wechat_win32_ocr/window_layout.py",
+      "host_sha256": "9a27924e0f08d0e6eb4884eea4fc4f09bdbbff797a97852e10e5c64635d29aa3",
+      "shared_sha256": "0141f884ced4f573b03c6de8801a10b2f177a7a657087cab4af39fd74efb960d",
+      "file_identical": false
+    },
+    {
+      "relative": "apps/wechat_ai_customer_service/adapters/wechat_win32_ocr/composer_viewport.py",
+      "host_sha256": "7bbb96086825f83ae65517078e860e1d5544aae93e131aeb1e718e6f1336114d",
+      "shared_sha256": "7bbb96086825f83ae65517078e860e1d5544aae93e131aeb1e718e6f1336114d",
+      "file_identical": true
+    },
+    {
+      "relative": "apps/wechat_ai_customer_service/adapters/wechat_win32_ocr_sidecar.py",
+      "host_sha256": "c6034b78b35a4be0e87a1559f962d78f9a308b144ff8f5d2e700b77f7a01eaf8",
+      "shared_sha256": "c6034b78b35a4be0e87a1559f962d78f9a308b144ff8f5d2e700b77f7a01eaf8",
+      "file_identical": true
+    },
+    {
+      "relative": "apps/wechat_ai_customer_service/tests/test_dynamic_composer.py",
+      "host_sha256": "91ae5c5f309359ef2cac7de82cbf75ab0c6649f8dd19e5d8d0684a1200772eb7",
+      "shared_sha256": "91ae5c5f309359ef2cac7de82cbf75ab0c6649f8dd19e5d8d0684a1200772eb7",
+      "file_identical": true
+    },
+    {
+      "relative": "apps/wechat_ai_customer_service/tests/dynamic_composer_desktop.py",
+      "host_sha256": "2603e77a2449d24c928471ff2fad52aa07c74bc42fce161bc1cef15f0625dfec",
+      "shared_sha256": "2603e77a2449d24c928471ff2fad52aa07c74bc42fce161bc1cef15f0625dfec",
+      "file_identical": true
+    }
+  ],
+  "host_baseline_proof": [
+    {
+      "root": "/private/tmp/chejin-dynamic-composer-r6-20260916",
+      "baseline": "809b343755bcffdc59a9c8845cdc568466089671",
+      "only_added_functions": [
+        "_continuous_horizontal_edge",
+        "measure_business_input_regions"
+      ],
+      "all_other_source_bytes_match_baseline": true,
+      "baseline_source_sha256": "ab83a248a77c7de701291924b98983cd7339b7aad93bd7209f3feeecfe709674"
+    },
+    {
+      "root": "/private/tmp/omniauto-dynamic-composer-r6-20260916",
+      "baseline": "a0e6095b9de2fef9e18c480aaada15fed0348878",
+      "only_added_functions": [
+        "_continuous_horizontal_edge",
+        "measure_business_input_regions"
+      ],
+      "all_other_source_bytes_match_baseline": true,
+      "baseline_source_sha256": "100db6cca0c0ad65e16dbc27525cf505711fb0db5c44b12342b5a984decd537a"
+    }
+  ],
+  "common_measurement_added_source_sha256": "ae916ffb075541960f4bb69e240f013395a9c0dc23603b8470e03a8766681854",
+  "host_differences": {
+    "chejin": {
+      "schema": "0.9.35",
+      "incident_reference_point": [
+        273,
+        45
+      ]
+    },
+    "shared": {
+      "schema": "0.9.23",
+      "pre_existing_plus_anchor_y_override": true
+    },
+    "cause": "Different existing host baselines; never require whole-file identity."
+  },
+  "actual_r6_run": {
+    "path": "/private/tmp/chejin-dynamic-composer-r6-evidence-20260916/affected.xml",
+    "sha256": "74d4f3eae1e737d6543d0993d51466cbc63c139f72ff20bdac9bec791e37d936",
+    "tests": 19,
+    "cases": [
+      {
+        "class": "",
+        "name": "test_startup_schema_stays_at_host_baseline",
+        "outcome": "passed"
+      },
+      {
+        "class": "",
+        "name": "test_add_friend_fallback_coordinates_stay_at_host_baseline",
+        "outcome": "passed"
+      },
+      {
+        "class": ".StartupCalibrationEvidenceTest",
+        "name": "test_explicit_artifact_directory_is_honored",
+        "outcome": "passed"
+      },
+      {
+        "class": ".StartupCalibrationEvidenceTest",
+        "name": "test_later_startup_does_not_overwrite_previous_frame_or_result",
+        "outcome": "passed"
+      },
+      {
+        "class": ".StartupCalibrationEvidenceTest",
+        "name": "test_public_startup_without_artifact_flag_saves_exact_input_and_links_incident",
+        "outcome": "passed"
+      },
+      {
+        "class": ".StartupCalibrationEvidenceTest",
+        "name": "test_result_write_failure_preserves_existing_active_calibration",
+        "outcome": "passed"
+      },
+      {
+        "class": ".StartupCalibrationEvidenceTest",
+        "name": "test_unresolved_boundaries_still_keep_raw_image_and_failure_result",
+        "outcome": "passed"
+      },
+      {
+        "class": ".StartupCalibrationEvidenceTest",
+        "name": "test_unwritable_destination_does_not_claim_a_saved_calibration",
+        "outcome": "passed"
+      },
+      {
+        "class": ".CirclePlusIconTest",
+        "name": "test_brightness_and_supported_scale_changes",
+        "outcome": "passed"
+      },
+      {
+        "class": ".CirclePlusIconTest",
+        "name": "test_multiple_icons_remain_multiple_candidates",
+        "outcome": "passed"
+      },
+      {
+        "class": ".CirclePlusIconTest",
+        "name": "test_old_narrow_region_is_not_expanded",
+        "outcome": "passed"
+      },
+      {
+        "class": ".CirclePlusIconTest",
+        "name": "test_public_click_route_uses_match_or_unchanged_region_estimate",
+        "outcome": "passed"
+      },
+      {
+        "class": ".CirclePlusIconTest",
+        "name": "test_real_gray_strokes_are_recognized_without_search_icon_false_positive",
+        "outcome": "passed"
+      },
+      {
+        "class": ".CirclePlusIconTest",
+        "name": "test_translated_region_returns_image_coordinates",
+        "outcome": "passed"
+      },
+      {
+        "class": ".CirclePlusIconTest",
+        "name": "test_visible_search_control_without_plus_does_not_match",
+        "outcome": "passed"
+      },
+      {
+        "class": "apps.wechat_ai_customer_service.tests.test_dynamic_composer",
+        "name": "test_original_three_frames_real_registration_and_ocr[True]",
+        "outcome": "passed"
+      },
+      {
+        "class": "apps.wechat_ai_customer_service.tests.test_dynamic_composer",
+        "name": "test_original_three_frames_real_registration_and_ocr[False]",
+        "outcome": "passed"
+      },
+      {
+        "class": "apps.wechat_ai_customer_service.tests.test_dynamic_composer",
+        "name": "test_original_draft_fails_with_old_registration_regions",
+        "outcome": "passed"
+      },
+      {
+        "class": "apps.wechat_ai_customer_service.tests.test_dynamic_composer",
+        "name": "test_original_three_frames_through_actual_send_checks",
+        "outcome": "passed"
+      }
+    ]
+  },
+  "new_run_passed": 19,
+  "controls_not_added_to_pass_count": {
+    "frozen_r5_negative": {
+      "path": "/private/tmp/chejin-dynamic-composer-r6-evidence-20260916/r5-negative.xml",
+      "sha256": "e04cd9e2735a652004f243daa8ea9f7bb15503dbdef211f7c57b7194879754f6",
+      "tests": 2,
+      "cases": [
+        {
+          "class": "worker-client.tests.test_preserve_host_layout",
+          "name": "test_startup_schema_stays_at_host_baseline",
+          "outcome": "failed"
+        },
+        {
+          "class": "worker-client.tests.test_preserve_host_layout",
+          "name": "test_add_friend_fallback_coordinates_stay_at_host_baseline",
+          "outcome": "failed"
+        }
+      ]
+    },
+    "formal_baseline_positive": {
+      "path": "/private/tmp/chejin-dynamic-composer-r6-evidence-20260916/released-control.xml",
+      "sha256": "ce76532beb4a72cb634d347412bbf19eb88845856dc3b3ad87286123481d7ee4",
+      "tests": 2,
+      "cases": [
+        {
+          "class": "worker-client.tests.test_preserve_host_layout",
+          "name": "test_startup_schema_stays_at_host_baseline",
+          "outcome": "passed"
+        },
+        {
+          "class": "worker-client.tests.test_preserve_host_layout",
+          "name": "test_add_friend_fallback_coordinates_stay_at_host_baseline",
+          "outcome": "passed"
+        }
+      ]
+    }
+  },
+  "reused_not_rerun": [
+    {
+      "xml": "/private/tmp/chejin-dynamic-composer-review-20260916-0t6lnb/ocr.xml",
+      "sha256": "a8c89ce4344dc27e3f65e2dcd08783d9ac0586478a15e74de347129af7836233",
+      "reused_count": 36,
+      "cases": [
+        {
+          "class": "apps.wechat_ai_customer_service.tests.test_dynamic_composer",
+          "name": "test_unmeasured_boundary_cannot_inherit_startup_success[missing]",
+          "outcome": "passed"
+        },
+        {
+          "class": "apps.wechat_ai_customer_service.tests.test_dynamic_composer",
+          "name": "test_unmeasured_boundary_cannot_inherit_startup_success[ambiguous]",
+          "outcome": "passed"
+        },
+        {
+          "class": "apps.wechat_ai_customer_service.tests.test_dynamic_composer",
+          "name": "test_derived_history_and_partial_top_real_send_chain[True-185]",
+          "outcome": "passed"
+        },
+        {
+          "class": "apps.wechat_ai_customer_service.tests.test_dynamic_composer",
+          "name": "test_derived_history_and_partial_top_real_send_chain[True-160]",
+          "outcome": "passed"
+        },
+        {
+          "class": "apps.wechat_ai_customer_service.tests.test_dynamic_composer",
+          "name": "test_derived_history_and_partial_top_real_send_chain[False-185]",
+          "outcome": "passed"
+        },
+        {
+          "class": "apps.wechat_ai_customer_service.tests.test_dynamic_composer",
+          "name": "test_derived_history_and_partial_top_real_send_chain[False-160]",
+          "outcome": "passed"
+        },
+        {
+          "class": "apps.wechat_ai_customer_service.tests.test_dynamic_composer",
+          "name": "test_history_suffix_disabled_reproduces_false_block[185]",
+          "outcome": "passed"
+        },
+        {
+          "class": "apps.wechat_ai_customer_service.tests.test_dynamic_composer",
+          "name": "test_history_suffix_disabled_reproduces_false_block[160]",
+          "outcome": "passed"
+        },
+        {
+          "class": "apps.wechat_ai_customer_service.tests.test_dynamic_composer",
+          "name": "test_new_fact_during_input_never_triggers_send[customer]",
+          "outcome": "passed"
+        },
+        {
+          "class": "apps.wechat_ai_customer_service.tests.test_dynamic_composer",
+          "name": "test_new_fact_during_input_never_triggers_send[same]",
+          "outcome": "passed"
+        },
+        {
+          "class": "apps.wechat_ai_customer_service.tests.test_dynamic_composer",
+          "name": "test_new_fact_during_input_never_triggers_send[sales]",
+          "outcome": "passed"
+        },
+        {
+          "class": "apps.wechat_ai_customer_service.tests.test_dynamic_composer",
+          "name": "test_new_fact_during_input_never_triggers_send[image]",
+          "outcome": "passed"
+        },
+        {
+          "class": "apps.wechat_ai_customer_service.tests.test_dynamic_composer",
+          "name": "test_cleanup_failure_keeps_block_and_owned_draft",
+          "outcome": "passed"
+        },
+        {
+          "class": "apps.wechat_ai_customer_service.tests.test_dynamic_composer",
+          "name": "test_composer_scope_rejects_stale_or_changed_geometry[dpi]",
+          "outcome": "passed"
+        },
+        {
+          "class": "apps.wechat_ai_customer_service.tests.test_dynamic_composer",
+          "name": "test_composer_scope_rejects_stale_or_changed_geometry[window]",
+          "outcome": "passed"
+        },
+        {
+          "class": "apps.wechat_ai_customer_service.tests.test_dynamic_composer",
+          "name": "test_composer_scope_rejects_stale_or_changed_geometry[timepoint]",
+          "outcome": "passed"
+        },
+        {
+          "class": "apps.wechat_ai_customer_service.tests.test_dynamic_composer",
+          "name": "test_composer_scope_rejects_stale_or_changed_geometry[calibration]",
+          "outcome": "passed"
+        },
+        {
+          "class": "apps.wechat_ai_customer_service.tests.test_dynamic_composer",
+          "name": "test_composer_scope_rejects_stale_or_changed_geometry[boundary]",
+          "outcome": "passed"
+        },
+        {
+          "class": "apps.wechat_ai_customer_service.tests.test_dynamic_composer",
+          "name": "test_suffix_uses_original_identity_contract[single]",
+          "outcome": "passed"
+        },
+        {
+          "class": "apps.wechat_ai_customer_service.tests.test_dynamic_composer",
+          "name": "test_suffix_uses_original_identity_contract[native_single]",
+          "outcome": "passed"
+        },
+        {
+          "class": "apps.wechat_ai_customer_service.tests.test_dynamic_composer",
+          "name": "test_suffix_uses_original_identity_contract[duplicates]",
+          "outcome": "passed"
+        },
+        {
+          "class": "apps.wechat_ai_customer_service.tests.test_dynamic_composer",
+          "name": "test_suffix_uses_original_identity_contract[weak]",
+          "outcome": "passed"
+        },
+        {
+          "class": "apps.wechat_ai_customer_service.tests.test_dynamic_composer",
+          "name": "test_suffix_uses_original_identity_contract[changed_tail]",
+          "outcome": "passed"
+        },
+        {
+          "class": "apps.wechat_ai_customer_service.tests.test_dynamic_composer",
+          "name": "test_suffix_uses_original_identity_contract[missing_tail]",
+          "outcome": "passed"
+        },
+        {
+          "class": "apps.wechat_ai_customer_service.tests.test_dynamic_composer",
+          "name": "test_suffix_uses_original_identity_contract[new_voice]",
+          "outcome": "passed"
+        },
+        {
+          "class": "apps.wechat_ai_customer_service.tests.test_dynamic_composer",
+          "name": "test_derived_dpi_registration_uses_current_pixels[1.25]",
+          "outcome": "passed"
+        },
+        {
+          "class": "apps.wechat_ai_customer_service.tests.test_dynamic_composer",
+          "name": "test_derived_dpi_registration_uses_current_pixels[1.5]",
+          "outcome": "passed"
+        },
+        {
+          "class": "apps.wechat_ai_customer_service.tests.test_dynamic_composer",
+          "name": "test_derived_dpi_registration_uses_current_pixels[2.0]",
+          "outcome": "passed"
+        },
+        {
+          "class": "apps.wechat_ai_customer_service.tests.test_dynamic_composer",
+          "name": "test_final_focus_checks_full_draft_not_visible_fragment[8]",
+          "outcome": "passed"
+        },
+        {
+          "class": "apps.wechat_ai_customer_service.tests.test_dynamic_composer",
+          "name": "test_final_focus_checks_full_draft_not_visible_fragment[154]",
+          "outcome": "passed"
+        },
+        {
+          "class": "apps.wechat_ai_customer_service.tests.test_dynamic_composer",
+          "name": "test_final_focus_checks_full_draft_not_visible_fragment[1800]",
+          "outcome": "passed"
+        },
+        {
+          "class": "apps.wechat_ai_customer_service.tests.test_dynamic_composer",
+          "name": "test_manual_scroll_displacement_does_not_authorize_suffix",
+          "outcome": "passed"
+        },
+        {
+          "class": "apps.wechat_ai_customer_service.tests.test_dynamic_composer",
+          "name": "test_journal_write_failure_prevents_enter",
+          "outcome": "passed"
+        },
+        {
+          "class": "apps.wechat_ai_customer_service.tests.test_dynamic_composer",
+          "name": "test_short_and_multiline_full_send_chain[\\u597d\\u7684\\uff0c\\u6211\\u5e2e\\u60a8\\u770b\\u770b]",
+          "outcome": "passed"
+        },
+        {
+          "class": "apps.wechat_ai_customer_service.tests.test_dynamic_composer",
+          "name": "test_short_and_multiline_full_send_chain[\\u60a8\\u597d\\uff0c\\u5e02\\u533a\\u901a\\u52e4\\u53ef\\u4ee5\\u5148\\u8003\\u8651\\u5145\\u7535\\u6761\\u4ef6\\u3002\\n\\u65b9\\u4fbf\\u7684\\u8bdd\\u8bf4\\u8bf4\\u6bcf\\u5929\\u7684\\u901a\\u52e4\\u8ddd\\u79bb\\uff0c\\u6211\\u518d\\u5e2e\\u60a8\\u6bd4\\u8f83\\u3002]",
+          "outcome": "passed"
+        },
+        {
+          "class": "apps.wechat_ai_customer_service.tests.test_dynamic_composer",
+          "name": "test_partial_top_pixels_must_come_from_old_frame",
+          "outcome": "passed"
+        }
+      ],
+      "not_rerun_in_r6": true
+    },
+    {
+      "xml": "/private/tmp/chejin-dynamic-composer-review-20260916-0t6lnb/adjacent.xml",
+      "sha256": "b65d0203547d19e2eeb64c623ee5f9a978405b2572a86a7a050e51f8814d528b",
+      "reused_count": 101,
+      "cases": [
+        {
+          "class": "worker-client.tests.test_wechat_send_safety.WechatSendSafetyTest",
+          "name": "test_action_journal_failure_never_presses_enter",
+          "outcome": "passed"
+        },
+        {
+          "class": "worker-client.tests.test_wechat_send_safety.WechatSendSafetyTest",
+          "name": "test_all_pre_send_pacing_finishes_before_final_frame_capture",
+          "outcome": "passed"
+        },
+        {
+          "class": "worker-client.tests.test_wechat_send_safety.WechatSendSafetyTest",
+          "name": "test_authorized_reread_only_retypes_the_matching_confirmed_ai_reply",
+          "outcome": "passed"
+        },
+        {
+          "class": "worker-client.tests.test_wechat_send_safety.WechatSendSafetyTest",
+          "name": "test_blank_window_after_physical_send_is_always_unknown",
+          "outcome": "passed"
+        },
+        {
+          "class": "worker-client.tests.test_wechat_send_safety.WechatSendSafetyTest",
+          "name": "test_chat_fact_roi_insufficient_evidence_falls_back_on_same_frame",
+          "outcome": "passed"
+        },
+        {
+          "class": "worker-client.tests.test_wechat_send_safety.WechatSendSafetyTest",
+          "name": "test_chat_fact_roi_ocr_reads_only_three_calibrated_regions",
+          "outcome": "passed"
+        },
+        {
+          "class": "worker-client.tests.test_wechat_send_safety.WechatSendSafetyTest",
+          "name": "test_clipboard_confirmed_program_draft_reuses_existing_focus_without_second_click",
+          "outcome": "passed"
+        },
+        {
+          "class": "worker-client.tests.test_wechat_send_safety.WechatSendSafetyTest",
+          "name": "test_confirmed_program_draft_is_cleared_after_input_confirmation_failure",
+          "outcome": "passed"
+        },
+        {
+          "class": "worker-client.tests.test_wechat_send_safety.WechatSendSafetyTest",
+          "name": "test_copyback_exception_after_select_all_releases_selection",
+          "outcome": "passed"
+        },
+        {
+          "class": "worker-client.tests.test_wechat_send_safety.WechatSendSafetyTest",
+          "name": "test_current_locate_reuses_three_roi_frame_as_message_seed",
+          "outcome": "passed"
+        },
+        {
+          "class": "worker-client.tests.test_wechat_send_safety.WechatSendSafetyTest",
+          "name": "test_daemon_preserves_confirmed_reply_text_for_all_c2_read_actions",
+          "outcome": "passed"
+        },
+        {
+          "class": "worker-client.tests.test_wechat_send_safety.WechatSendSafetyTest",
+          "name": "test_enhanced_recovery_cannot_turn_an_old_image_candidate_into_new_send_fact",
+          "outcome": "passed"
+        },
+        {
+          "class": "worker-client.tests.test_wechat_send_safety.WechatSendSafetyTest",
+          "name": "test_enter_exception_after_journal_is_trigger_attempted_unknown",
+          "outcome": "passed"
+        },
+        {
+          "class": "worker-client.tests.test_wechat_send_safety.WechatSendSafetyTest",
+          "name": "test_focused_blank_visual_input_reaches_one_enter_with_journal",
+          "outcome": "passed"
+        },
+        {
+          "class": "worker-client.tests.test_wechat_send_safety.WechatSendSafetyTest",
+          "name": "test_formal_reuse_switches_restore_full_frame_ocr_paths",
+          "outcome": "passed"
+        },
+        {
+          "class": "worker-client.tests.test_wechat_send_safety.WechatSendSafetyTest",
+          "name": "test_formal_send_failure_is_reported_from_the_single_visual_path",
+          "outcome": "passed"
+        },
+        {
+          "class": "worker-client.tests.test_wechat_send_safety.WechatSendSafetyTest",
+          "name": "test_formal_send_payload_has_one_visual_locator",
+          "outcome": "passed"
+        },
+        {
+          "class": "worker-client.tests.test_wechat_send_safety.WechatSendSafetyTest",
+          "name": "test_formal_send_uses_visual_input_then_enter_without_uia",
+          "outcome": "passed"
+        },
+        {
+          "class": "worker-client.tests.test_wechat_send_safety.WechatSendSafetyTest",
+          "name": "test_format_drift_on_old_row_cannot_become_new_send_fact",
+          "outcome": "passed"
+        },
+        {
+          "class": "worker-client.tests.test_wechat_send_safety.WechatSendSafetyTest",
+          "name": "test_generic_journal_rejects_missing_or_uninitialized_file",
+          "outcome": "passed"
+        },
+        {
+          "class": "worker-client.tests.test_wechat_send_safety.WechatSendSafetyTest",
+          "name": "test_generic_journal_updates_matching_voice_item_before_click",
+          "outcome": "passed"
+        },
+        {
+          "class": "worker-client.tests.test_wechat_send_safety.WechatSendSafetyTest",
+          "name": "test_green_send_button_is_readiness_evidence_not_click_target",
+          "outcome": "passed"
+        },
+        {
+          "class": "worker-client.tests.test_wechat_send_safety.WechatSendSafetyTest",
+          "name": "test_green_send_button_never_overrides_changed_context",
+          "outcome": "passed"
+        },
+        {
+          "class": "worker-client.tests.test_wechat_send_safety.WechatSendSafetyTest",
+          "name": "test_image_guard_keeps_geometry_jitter_out_of_business_and_contradiction_checks",
+          "outcome": "passed"
+        },
+        {
+          "class": "worker-client.tests.test_wechat_send_safety.WechatSendSafetyTest",
+          "name": "test_incident_long_text_recovery_completes_sent_confirmation_chain",
+          "outcome": "passed"
+        },
+        {
+          "class": "worker-client.tests.test_wechat_send_safety.WechatSendSafetyTest",
+          "name": "test_independent_omniauto_send_guard_has_no_worker_dependency",
+          "outcome": "passed"
+        },
+        {
+          "class": "worker-client.tests.test_wechat_send_safety.WechatSendSafetyTest",
+          "name": "test_input_exception_never_deletes_coincidentally_matching_human_draft",
+          "outcome": "passed"
+        },
+        {
+          "class": "worker-client.tests.test_wechat_send_safety.WechatSendSafetyTest",
+          "name": "test_message_arriving_during_wait_is_seen_in_final_frame_and_blocks_enter",
+          "outcome": "passed"
+        },
+        {
+          "class": "worker-client.tests.test_wechat_send_safety.WechatSendSafetyTest",
+          "name": "test_messages_payload_applies_confirmed_reply_recovery_before_observations",
+          "outcome": "passed"
+        },
+        {
+          "class": "worker-client.tests.test_wechat_send_safety.WechatSendSafetyTest",
+          "name": "test_mismatched_copyback_releases_selection_without_editing_draft",
+          "outcome": "passed"
+        },
+        {
+          "class": "worker-client.tests.test_wechat_send_safety.WechatSendSafetyTest",
+          "name": "test_missing_green_send_button_does_not_block_verified_enter",
+          "outcome": "passed"
+        },
+        {
+          "class": "worker-client.tests.test_wechat_send_safety.WechatSendSafetyTest",
+          "name": "test_nonempty_send_guard_rejects_missing_worker_comparison_binding",
+          "outcome": "passed"
+        },
+        {
+          "class": "worker-client.tests.test_wechat_send_safety.WechatSendSafetyTest",
+          "name": "test_post_input_frame_is_reused_for_context_check",
+          "outcome": "passed"
+        },
+        {
+          "class": "worker-client.tests.test_wechat_send_safety.WechatSendSafetyTest",
+          "name": "test_post_input_full_ocr_is_reused_for_context_check",
+          "outcome": "passed"
+        },
+        {
+          "class": "worker-client.tests.test_wechat_send_safety.WechatSendSafetyTest",
+          "name": "test_post_send_enhanced_ocr_low_overlap_does_not_confirm_ai_reply",
+          "outcome": "passed"
+        },
+        {
+          "class": "worker-client.tests.test_wechat_send_safety.WechatSendSafetyTest",
+          "name": "test_post_send_enhanced_ocr_nearby_text_is_text_but_not_ai_reply",
+          "outcome": "passed"
+        },
+        {
+          "class": "worker-client.tests.test_wechat_send_safety.WechatSendSafetyTest",
+          "name": "test_post_send_enhanced_ocr_one_real_character_change_is_high_overlap_text",
+          "outcome": "passed"
+        },
+        {
+          "class": "worker-client.tests.test_wechat_send_safety.WechatSendSafetyTest",
+          "name": "test_post_send_enhanced_ocr_recovers_exact_self_text_from_image_candidate",
+          "outcome": "passed"
+        },
+        {
+          "class": "worker-client.tests.test_wechat_send_safety.WechatSendSafetyTest",
+          "name": "test_post_send_enhanced_ocr_recovers_incident_fullwidth_question_mark",
+          "outcome": "passed"
+        },
+        {
+          "class": "worker-client.tests.test_wechat_send_safety.WechatSendSafetyTest",
+          "name": "test_post_send_enhanced_ocr_retypes_readable_self_only",
+          "outcome": "passed"
+        },
+        {
+          "class": "worker-client.tests.test_wechat_send_safety.WechatSendSafetyTest",
+          "name": "test_post_send_enhanced_ocr_without_readable_text_stays_image",
+          "outcome": "passed"
+        },
+        {
+          "class": "worker-client.tests.test_wechat_send_safety.WechatSendSafetyTest",
+          "name": "test_post_send_global_ocr_text_wins_without_redundant_local_ocr",
+          "outcome": "passed"
+        },
+        {
+          "class": "worker-client.tests.test_wechat_send_safety.WechatSendSafetyTest",
+          "name": "test_post_send_local_ocr_cannot_replace_self_candidate_without_avatar_confirmation",
+          "outcome": "passed"
+        },
+        {
+          "class": "worker-client.tests.test_wechat_send_safety.WechatSendSafetyTest",
+          "name": "test_post_send_snapshot_wires_structural_candidate_recovery_into_sequence",
+          "outcome": "passed"
+        },
+        {
+          "class": "worker-client.tests.test_wechat_send_safety.WechatSendSafetyTest",
+          "name": "test_pre_enter_s1_roi_message_miss_uses_same_frame_full_ocr",
+          "outcome": "passed"
+        },
+        {
+          "class": "worker-client.tests.test_wechat_send_safety.WechatSendSafetyTest",
+          "name": "test_pre_enter_target_switch_blocks_even_when_message_region_is_identical",
+          "outcome": "passed"
+        },
+        {
+          "class": "worker-client.tests.test_wechat_send_safety.WechatSendSafetyTest",
+          "name": "test_s0_s1_s2_share_geometry_free_business_comparison",
+          "outcome": "passed"
+        },
+        {
+          "class": "worker-client.tests.test_wechat_send_safety.WechatSendSafetyTest",
+          "name": "test_same_frame_full_ocr_replay_authenticates_saved_pixels_without_capture",
+          "outcome": "passed"
+        },
+        {
+          "class": "worker-client.tests.test_wechat_send_safety.WechatSendSafetyTest",
+          "name": "test_same_frame_full_ocr_replay_rejects_tampered_pixels_before_ocr",
+          "outcome": "passed"
+        },
+        {
+          "class": "worker-client.tests.test_wechat_send_safety.WechatSendSafetyTest",
+          "name": "test_send_action_current_only_gate_precedes_all_send_work",
+          "outcome": "passed"
+        },
+        {
+          "class": "worker-client.tests.test_wechat_send_safety.WechatSendSafetyTest",
+          "name": "test_send_blocks_before_enter_when_s1_reuses_s0_frame_id",
+          "outcome": "passed"
+        },
+        {
+          "class": "worker-client.tests.test_wechat_send_safety.WechatSendSafetyTest",
+          "name": "test_send_business_order_never_uses_frame_local_observation_id",
+          "outcome": "passed"
+        },
+        {
+          "class": "worker-client.tests.test_wechat_send_safety.WechatSendSafetyTest",
+          "name": "test_send_business_projection_does_not_second_merge_raw_voice_rows",
+          "outcome": "passed"
+        },
+        {
+          "class": "worker-client.tests.test_wechat_send_safety.WechatSendSafetyTest",
+          "name": "test_send_context_full_ocr_still_insufficient_blocks_before_enter",
+          "outcome": "passed"
+        },
+        {
+          "class": "worker-client.tests.test_wechat_send_safety.WechatSendSafetyTest",
+          "name": "test_send_context_guard_absorbs_small_ocr_bounds_jitter",
+          "outcome": "passed"
+        },
+        {
+          "class": "worker-client.tests.test_wechat_send_safety.WechatSendSafetyTest",
+          "name": "test_send_context_guard_blocks_new_message_after_final_refresh",
+          "outcome": "passed"
+        },
+        {
+          "class": "worker-client.tests.test_wechat_send_safety.WechatSendSafetyTest",
+          "name": "test_send_context_guard_blocks_new_message_without_raw_pixel_hash",
+          "outcome": "passed"
+        },
+        {
+          "class": "worker-client.tests.test_wechat_send_safety.WechatSendSafetyTest",
+          "name": "test_send_context_guard_ignores_every_legacy_64_bucket_boundary",
+          "outcome": "passed"
+        },
+        {
+          "class": "worker-client.tests.test_wechat_send_safety.WechatSendSafetyTest",
+          "name": "test_send_context_guard_ignores_sidebar_only_visual_change",
+          "outcome": "passed"
+        },
+        {
+          "class": "worker-client.tests.test_wechat_send_safety.WechatSendSafetyTest",
+          "name": "test_send_context_guard_still_blocks_each_business_fact_change",
+          "outcome": "passed"
+        },
+        {
+          "class": "worker-client.tests.test_wechat_send_safety.WechatSendSafetyTest",
+          "name": "test_send_context_roi_message_miss_falls_back_on_same_frame",
+          "outcome": "passed"
+        },
+        {
+          "class": "worker-client.tests.test_wechat_send_safety.WechatSendSafetyTest",
+          "name": "test_send_context_sequence_ignores_ocr_format_only_differences",
+          "outcome": "passed"
+        },
+        {
+          "class": "worker-client.tests.test_wechat_send_safety.WechatSendSafetyTest",
+          "name": "test_send_journal_is_persisted_before_enter_trigger",
+          "outcome": "passed"
+        },
+        {
+          "class": "worker-client.tests.test_wechat_send_safety.WechatSendSafetyTest",
+          "name": "test_send_ocr_format_canonicalization_matrix",
+          "outcome": "passed"
+        },
+        {
+          "class": "worker-client.tests.test_wechat_send_safety.WechatSendSafetyTest",
+          "name": "test_send_ocr_high_overlap_threshold_boundaries",
+          "outcome": "passed"
+        },
+        {
+          "class": "worker-client.tests.test_wechat_send_safety.WechatSendSafetyTest",
+          "name": "test_send_receipt_roi_miss_falls_back_on_same_post_send_frame",
+          "outcome": "passed"
+        },
+        {
+          "class": "worker-client.tests.test_wechat_send_safety.WechatSendSafetyTest",
+          "name": "test_send_reply_match_count_requires_self_role_and_exact_normalized_text",
+          "outcome": "passed"
+        },
+        {
+          "class": "worker-client.tests.test_wechat_send_safety.WechatSendSafetyTest",
+          "name": "test_send_reuses_one_baseline_and_first_post_send_confirmation_frame",
+          "outcome": "passed"
+        },
+        {
+          "class": "worker-client.tests.test_wechat_send_safety.WechatSendSafetyTest",
+          "name": "test_send_uses_three_distinct_physical_frame_ids",
+          "outcome": "passed"
+        },
+        {
+          "class": "worker-client.tests.test_wechat_send_safety.WechatSendSafetyTest",
+          "name": "test_sent_confirmation_requests_enhanced_recovery_only_for_post_send_snapshot",
+          "outcome": "passed"
+        },
+        {
+          "class": "worker-client.tests.test_wechat_send_safety.WechatSendSafetyTest",
+          "name": "test_sent_confirmation_requires_new_matching_bubble_and_empty_input",
+          "outcome": "passed"
+        },
+        {
+          "class": "worker-client.tests.test_wechat_send_safety.WechatSendSafetyTest",
+          "name": "test_sent_confirmation_returns_unknown_when_only_window_is_readable",
+          "outcome": "passed"
+        },
+        {
+          "class": "worker-client.tests.test_wechat_send_safety.WechatSendSafetyTest",
+          "name": "test_short_real_draft_inside_text_region_still_blocks_send",
+          "outcome": "passed"
+        },
+        {
+          "class": "worker-client.tests.test_wechat_send_safety.WechatSendSafetyTest",
+          "name": "test_sidebar_search_candidate_cannot_hide_full_window_blocker",
+          "outcome": "passed"
+        },
+        {
+          "class": "worker-client.tests.test_wechat_send_safety.WechatSendSafetyTest",
+          "name": "test_sidecar_guard_does_not_decide_cross_frame_image_identity",
+          "outcome": "passed"
+        },
+        {
+          "class": "worker-client.tests.test_wechat_send_safety.WechatSendSafetyTest",
+          "name": "test_sidecar_uses_the_single_shared_business_projection_object",
+          "outcome": "passed"
+        },
+        {
+          "class": "worker-client.tests.test_wechat_send_safety.WechatSendSafetyTest",
+          "name": "test_toolbar_pixels_are_excluded_from_draft_detection_but_click_surface_is_preserved",
+          "outcome": "passed"
+        },
+        {
+          "class": "worker-client.tests.test_wechat_send_safety.WechatSendSafetyTest",
+          "name": "test_uia_screen_coordinates_use_screen_to_client",
+          "outcome": "passed"
+        },
+        {
+          "class": "worker-client.tests.test_wechat_send_safety.WechatSendSafetyTest",
+          "name": "test_unconfirmed_cleanup_becomes_hard_send_block",
+          "outcome": "passed"
+        },
+        {
+          "class": "worker-client.tests.test_wechat_send_safety.WechatSendSafetyTest",
+          "name": "test_unknown_input_draft_is_preserved_without_any_delete_key",
+          "outcome": "passed"
+        },
+        {
+          "class": "worker-client.tests.test_wechat_send_safety.WechatSendSafetyTest",
+          "name": "test_unproven_or_changed_draft_is_never_cleared",
+          "outcome": "passed"
+        },
+        {
+          "class": "worker-client.tests.test_wechat_send_safety.WechatSendSafetyTest",
+          "name": "test_viewport_digest_does_not_repair_unmerged_visual_voice_hint",
+          "outcome": "passed"
+        },
+        {
+          "class": "worker-client.tests.test_wechat_send_safety.WechatSendSafetyTest",
+          "name": "test_viewport_digest_orders_facts_by_screen_not_detector_order",
+          "outcome": "passed"
+        },
+        {
+          "class": "worker-client.tests.test_wechat_send_safety.WechatSendSafetyTest",
+          "name": "test_visible_miss_reuses_one_baseline_for_remark_search",
+          "outcome": "passed"
+        },
+        {
+          "class": "worker-client.tests.test_wechat_send_safety.WechatSendSafetyTest",
+          "name": "test_visual_input_uses_green_as_evidence_and_enter_as_trigger",
+          "outcome": "passed"
+        },
+        {
+          "class": "worker-client.tests.test_wechat_send_safety.WechatSendSafetyTest",
+          "name": "test_voice_journal_terminal_update_covers_every_physical_alias_item",
+          "outcome": "passed"
+        },
+        {
+          "class": "worker-client.tests.test_wechat_send_safety.WechatSendSafetyTest",
+          "name": "test_voice_prepare_reuses_confirmed_reply_text_recovery",
+          "outcome": "passed"
+        },
+        {
+          "class": "worker-client.tests.test_history_suffix_continuity",
+          "name": "test_visible_unique_history_suffix_has_no_new_identity[11-5]",
+          "outcome": "passed"
+        },
+        {
+          "class": "worker-client.tests.test_history_suffix_continuity",
+          "name": "test_visible_unique_history_suffix_has_no_new_identity[3-1]",
+          "outcome": "passed"
+        },
+        {
+          "class": "worker-client.tests.test_history_suffix_continuity",
+          "name": "test_visible_unique_history_suffix_has_no_new_identity[30-20]",
+          "outcome": "passed"
+        },
+        {
+          "class": "worker-client.tests.test_history_suffix_continuity",
+          "name": "test_unproved_or_changed_suffix_remains_blocked[old0-new0-True]",
+          "outcome": "passed"
+        },
+        {
+          "class": "worker-client.tests.test_history_suffix_continuity",
+          "name": "test_unproved_or_changed_suffix_remains_blocked[old1-new1-True]",
+          "outcome": "passed"
+        },
+        {
+          "class": "worker-client.tests.test_history_suffix_continuity",
+          "name": "test_unproved_or_changed_suffix_remains_blocked[old2-new2-True]",
+          "outcome": "passed"
+        },
+        {
+          "class": "worker-client.tests.test_history_suffix_continuity",
+          "name": "test_unproved_or_changed_suffix_remains_blocked[old3-new3-True]",
+          "outcome": "passed"
+        },
+        {
+          "class": "worker-client.tests.test_history_suffix_continuity",
+          "name": "test_unproved_or_changed_suffix_remains_blocked[old4-new4-False]",
+          "outcome": "passed"
+        },
+        {
+          "class": "worker-client.tests.test_history_suffix_continuity",
+          "name": "test_unproved_or_changed_suffix_remains_blocked[old5-new5-True]",
+          "outcome": "passed"
+        },
+        {
+          "class": "worker-client.tests.test_history_suffix_continuity",
+          "name": "test_unproved_or_changed_suffix_remains_blocked[old6-new6-False]",
+          "outcome": "passed"
+        },
+        {
+          "class": "worker-client.tests.test_history_suffix_continuity",
+          "name": "test_new_tail_is_still_the_only_new_work",
+          "outcome": "passed"
+        },
+        {
+          "class": "worker-client.tests.test_history_suffix_continuity",
+          "name": "test_action_and_pre_send_default_policy_remains_strict",
+          "outcome": "passed"
+        },
+        {
+          "class": "worker-client.tests.test_history_suffix_continuity",
+          "name": "test_shared_contract_advertises_scoped_history_relation",
+          "outcome": "passed"
+        },
+        {
+          "class": "worker-client.tests.test_history_suffix_continuity",
+          "name": "test_only_initial_checkpoint_alignment_opts_in",
+          "outcome": "passed"
+        }
+      ],
+      "not_rerun_in_r6": true
+    },
+    {
+      "xml": "/private/tmp/chejin-dynamic-composer-review-20260916-0t6lnb/http.xml",
+      "sha256": "884431f8386a66b95364448e28cd620ea3ed3741be21c74cc1cb121dd5f94a23",
+      "reused_count": 4,
+      "cases": [
+        {
+          "class": "tests.test_dynamic_composer_http",
+          "name": "test_worker_composer_http_settlement[sent]",
+          "outcome": "passed"
+        },
+        {
+          "class": "tests.test_dynamic_composer_http",
+          "name": "test_worker_composer_http_settlement[failed]",
+          "outcome": "passed"
+        },
+        {
+          "class": "tests.test_dynamic_composer_http",
+          "name": "test_worker_composer_http_settlement[unknown]",
+          "outcome": "passed"
+        },
+        {
+          "class": "tests.test_dynamic_composer_http",
+          "name": "test_worker_composer_http_settlement[response_loss]",
+          "outcome": "passed"
+        }
+      ],
+      "not_rerun_in_r6": true
+    }
+  ],
+  "reused_count": 141,
+  "reuse_justification": "Both common measurement helpers, Sidecar, composer helper, tests, backend product code, dependency inputs and original PNGs unchanged; all other layout source byte-identical to respective formal host baseline. Changed startup/add-friend scope and real frame registration/OCR rerun in r6. Reuse applies only to recorded controlled boundaries, not Windows acceptance.",
+  "http_test_unchanged": {
+    "path": "/private/tmp/chejin-dynamic-composer-r6-20260916/backend/tests/test_dynamic_composer_http.py",
+    "sha256": "bf560c4a4e97b47803d55a4b1dddcaff525599926d48b32449c427d23313b0a5"
+  },
+  "originals": [
+    {
+      "label": "before_input",
+      "path": "/private/tmp/chejin-gaolei-incidents7-20260916/INC-20260916T023355-0692f53b16/evidence/db1d59ed6f8aef2193abbdbc912f3437b193ca6761ab936b99e7364387efc31c-send_baseline_1789525980197.png",
+      "sha256": "db1d59ed6f8aef2193abbdbc912f3437b193ca6761ab936b99e7364387efc31c"
+    },
+    {
+      "label": "after_input",
+      "path": "/private/tmp/chejin-gaolei-incidents7-20260916/INC-20260916T023355-0692f53b16/evidence/cc794d64cba32513f41130cd519591f30ea9cb54ec39f2ffd8e4c16dd4955088-send_input_probe_1_1789526021729.png",
+      "sha256": "cc794d64cba32513f41130cd519591f30ea9cb54ec39f2ffd8e4c16dd4955088"
+    },
+    {
+      "label": "after_cleanup",
+      "path": "/private/tmp/chejin-gaolei-incidents7-20260916/INC-20260916T023355-0692f53b16/evidence/78a4da9b3d4c0e365c8243fe8a4369a360c54d2f0029f740e8a1f414b1a6cdb2-send_program_draft_cleanup_1789526034264.png",
+      "sha256": "78a4da9b3d4c0e365c8243fe8a4369a360c54d2f0029f740e8a1f414b1a6cdb2"
+    }
+  ],
+  "scope_boundaries_unchanged_from_r5": {
+    "DI01": "original PNGs, real frame registration/RapidOCR/parse/S0-S1; old-boundary mutation fails. No real sent original exists; unchanged S2 correctly unknown.",
+    "DI02": "controlled full send for short/wrapped/154 chars; final exact clipboard checks 8/154/1800 full values and rejects fragments. Real Windows input height limit/internal scroll pending.",
+    "DI03": "derived pixels: full old rows disappear and clipped top; real send pipeline sent, independent suffix-disabled controls fail. Not Windows scrolling evidence.",
+    "DI04": "new customer/same text/sales/image zero Enter through send chain; pure voice/weak/repeated/missing/changed tail/native identity checks; manual-scroll and changed clipped pixels rejected. Windows live arrivals pending.",
+    "DI05": "successful S2 with preserved full S0, cleanup/collapse and cleanup failure; original unchanged S2 not falsely sent. Real scene/database message-history repeat read pending Windows gate.",
+    "DI06": "derived 1.25/1.5/2.0 DPI pixels measured correctly; runtime scope mutations rejected, ROI/full paths pass. Native Windows device matrix pending.",
+    "DI07": "real Worker/Sidecar/RapidOCR, socket HTTP, PostgreSQL, SQLite: sent/failed/unknown/lost-response and new-process retry; one receipt, no repeated physical action, flow closed.",
+    "DI08": "NOT RUN: no Windows desktop. No actual customer send or production settlement claim."
+  },
+  "controlled_boundaries": [
+    "Win32 foreground/geometry/mouse/Unicode keyboard/clipboard",
+    "captured original or explicitly derived PNGs",
+    "typing delay",
+    "Brain mock approved text as fixture",
+    "historical committed identity seed and admin setup authentication"
+  ],
+  "not_replaced": [
+    "frame registration",
+    "current boundary measurement",
+    "RapidOCR",
+    "avatar/message parser",
+    "target confirmation",
+    "Worker continuity binding",
+    "shared continuity comparator",
+    "input/final clipboard verification",
+    "Sidecar send transaction and receipt confirmation",
+    "Worker task execution",
+    "Worker auth/claim-send/sent-ack",
+    "PostgreSQL/SQLite journals and Outbox",
+    "Flow finish and restart recovery"
+  ],
+  "remaining_conservative_rejections": [
+    "only one visible tail without independently supplied native identity",
+    "no unique strong boundary or repeated ambiguous overlap",
+    "boundary missing/ambiguous",
+    "missing prefix still visible or inconsistent/excess movement",
+    "partial top source image unavailable or pixels changed"
+  ],
+  "warnings": [
+    "pytest asyncio_mode option absent in OCR-only venv",
+    "existing Starlette/httpx/anyio deprecation warnings"
+  ],
+  "DI08": "NOT RUN. Actual Windows native layout and actual WeChat send/production settlement remain pending.",
+  "source_registration_current_release_unchanged": true,
+  "independent_r5_review": {
+    "path": "/private/tmp/chejin-dynamic-composer-review-20260916-0t6lnb/review.md",
+    "sha256": "763f667327e414a3822a7435f9decb22294de8f4065f2174843d159e8ef22376",
+    "decision": "P2 scope regression; not passed despite 158 passing tests"
+  },
+  "db": "No database/network operations in r6; prior isolated container already removed."
+}

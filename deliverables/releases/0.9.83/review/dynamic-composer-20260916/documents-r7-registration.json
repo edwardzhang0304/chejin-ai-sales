@@ -1,0 +1,33 @@
+{
+  "revision": "documents-r7-only",
+  "source_revision": "dynamic-composer-r6",
+  "source_review": "passed",
+  "changed": [
+    {
+      "path": "/private/tmp/chejin-dynamic-composer-r6-20260916/deliverables/AI智能客服售前跟进系统_PRD_运营后台统一版_v0.9.83.md",
+      "r6_sha256": "dc9ca1a8bd9d446c21e271600a71dbfa6e24ad915c4c04bb06d60f0363896279",
+      "r7_sha256": "26d409fbf26a7abb45297f1c8a35edd96b5cc017bdd27659c9b4c5d82a82fdf1"
+    },
+    {
+      "path": "/private/tmp/chejin-dynamic-composer-r6-20260916/deliverables/AI智能客服售前跟进系统_全流程图_v0.9.83.puml",
+      "r6_sha256": "fd9ef4514f6a8860c68a4667311e0e0d63487c86841afe7aa671d47f4646da54",
+      "r7_sha256": "7ecc8f11d5e6c8a99e9005d70b1f85c7aeea442c8e05aa2cc445b4c256eb25a2"
+    },
+    {
+      "path": "/private/tmp/chejin-dynamic-composer-r6-20260916/deliverables/AI智能客服售前跟进系统_技术方案手册_v0.9.83.md",
+      "r6_sha256": "c8c8477dcd24163f10a544bcbb5374b8510f970f6bd6d895a1d85cfe25ec2da3",
+      "r7_sha256": "ee7c6213cc0cf925302384d950bf46954fbf4cdf9b921e31fdf5f5321480e9b5"
+    },
+    {
+      "path": "/private/tmp/chejin-dynamic-composer-r6-20260916/deliverables/AI智能客服售前跟进系统_版本更新记录.md",
+      "r6_sha256": "41e9e9c163e3a5b2b1ca1b4e409386b64e25808f38cc57482fc1b1cdac0ecca5",
+      "r7_sha256": "a82ab8df200b7f4480349b3aadc5414c9487451b5a6b9084f501e7b5013f8f48"
+    }
+  ],
+  "all_reviewed_product_and_test_fingerprints_unchanged": true,
+  "tests_rerun": false,
+  "committed": false,
+  "published": false,
+  "independent_review": "/private/tmp/chejin-dynamic-composer-r6-review-20260916-OlBu8g/review.md",
+  "DI08": "pending"
+}

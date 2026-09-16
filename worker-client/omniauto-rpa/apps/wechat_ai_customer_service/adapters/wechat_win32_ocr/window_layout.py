@@ -417,6 +417,77 @@ def _qualified_edge_confidence(score: float, *, threshold: float) -> float:
     return min(0.97, 0.78 + (margin / 180.0))
 
 
+def _continuous_horizontal_edge(image: Any, *, left: int, right: int, y: int) -> bool:
+    """Reject text strokes that happen to hit the coarse sampling columns.
+
+    A composer outline has a long uninterrupted horizontal edge. At larger
+    DPI, draft glyphs can hit six of seven sampled columns but still consist
+    of many short strokes. Inspect the actual span rather than their count.
+    """
+    longest = run = 0
+    for x in range(left, right):
+        difference = abs(_pixel_luma(image.getpixel((x, y - 1)))
+                         - _pixel_luma(image.getpixel((x, y + 1))))
+        run = run + 1 if difference >= 4.0 else 0
+        longest = max(longest, run)
+    return longest >= (right - left) * 0.80
+
+
+def measure_business_input_regions(image: Any, calibration: Mapping[str, Any]) -> dict[str, Any]:
+    """Measure the composer boundary once on this business frame's pixels.
+
+    Startup owns the shell and toolbar. The composer top is content-dependent:
+    copying its startup value into a new frame would include an expanded draft
+    in the message viewport. No OCR, re-calibration or UI operation occurs here.
+    """
+    regions = {name: normalize_rect(calibration.get(name))
+               for name in REQUIRED_LAYOUT_REGION_NAMES}
+    header = regions["chat_header_bounds"]
+    viewport = regions["message_viewport_bounds"]
+    editable = regions["input_bounds"]
+    toolbar = regions["toolbar_bounds"]
+    evidence: dict[str, Any] = {
+        "ok": False, "regions": regions, "anchors": [], "confidence": 0.0,
+        "conflicts": [], "vertical_candidates": [],
+    }
+    validation = validate_layout_regions(regions, image_size=image.size)
+    if not calibration.get("executable") or not validation.get("ok"):
+        evidence["conflicts"] = ["startup_calibration_missing_or_stale"]
+        return evidence
+    scale = float(calibration.get("dpi_scale") or 1.0)
+    candidates = [item for item in _full_width_horizontal_separator_candidates(
+        image, left=viewport[0], right=viewport[2],
+    ) if header[3] + 24 * scale < item[0] < toolbar[1] - 32 * scale
+        and _continuous_horizontal_edge(image, left=viewport[0], right=viewport[2], y=item[0])]
+    evidence["vertical_candidates"] = [list(item) for item in candidates]
+    if len(candidates) != 1:
+        evidence["conflicts"] = [
+            "input_boundary_missing" if not candidates else "input_boundary_ambiguous"
+        ]
+        return evidence
+    top, score = candidates[0]
+    # Preserve the existing click-surface inset and bottom-toolbar exclusion;
+    # only the current shared boundary moves. Draft text detection derives its
+    # own insets from this same frozen result.
+    inset = editable[1] - viewport[3]
+    regions["message_viewport_bounds"] = [*viewport[:3], top]
+    regions["input_bounds"] = [editable[0], top + inset, editable[2], editable[3]]
+    validation = validate_layout_regions(regions, image_size=image.size)
+    evidence.update(
+        ok=bool(validation.get("ok")),
+        confidence=min(float(calibration.get("confidence") or 0.0),
+                       _qualified_edge_confidence(score, threshold=24.0)),
+        anchors=[{"name": "input_separator", "y": top,
+                  "source": "current_frame_full_width_separator"},
+                 {"name": "input_text_region", "bounds": regions["input_bounds"],
+                  "source": "current_frame_input_separator"}],
+        conflicts=list(validation.get("missing") or [])
+                  + list(validation.get("invalid") or [])
+                  + list(validation.get("conflicts") or []),
+    )
+    return evidence
+
+
 def _separator_content_start(
     image: Any, *, left: int, right: int, edge_y: int, measured_row_height: int,
 ) -> int | None:

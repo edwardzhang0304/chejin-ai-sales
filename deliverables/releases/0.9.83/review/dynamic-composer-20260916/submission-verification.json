@@ -1,0 +1,87 @@
+{
+  "date": "2026-09-16",
+  "authorization": "user requested commit and push",
+  "shared_source_commit": "83a64be0b9d8b292a08a7a2dbe6adc4132afec7e",
+  "shared_branch": "codex/gray-release-0.9.x-source",
+  "chejin_branch": "codex/gray-release-0.9.x",
+  "review_decision": "r6 source review passed, host overlay P2 closed",
+  "runtime_and_tests_match_reviewed_fingerprints": true,
+  "provenance_validated": true,
+  "current_release_unchanged": true,
+  "independent_r6_passed": 19,
+  "self_r6_passed": 19,
+  "do_not_sum_self_and_independent_counts": true,
+  "reused_r5_not_rerun": 141,
+  "controls": "same two tests: frozen r5 fails twice; released baseline passes twice",
+  "fresh_business_tests_on_submission": 0,
+  "source_registration_only_adds_real_shared_commit_and_note": true,
+  "published": false,
+  "Windows_DI08": "pending",
+  "raw_customer_images_databases_not_included": true,
+  "evidence_files": [
+    {
+      "name": "self-r6-verification.json",
+      "original": "/private/tmp/chejin-dynamic-composer-r6-evidence-20260916/verification.json",
+      "sha256": "59c3e00caa794488b27f47796cdd99cd33a55f153bf8d0ce1b69890d2df4f876"
+    },
+    {
+      "name": "documents-r7-registration.json",
+      "original": "/private/tmp/chejin-dynamic-composer-r6-evidence-20260916/documents-r7-registration.json",
+      "sha256": "1294c265e405e820c3cd918e9c7e39c53b1aa6d105fa4f4f91f1e2360f06ffbd"
+    },
+    {
+      "name": "self-r6-affected.xml",
+      "original": "/private/tmp/chejin-dynamic-composer-r6-evidence-20260916/affected.xml",
+      "sha256": "74d4f3eae1e737d6543d0993d51466cbc63c139f72ff20bdac9bec791e37d936"
+    },
+    {
+      "name": "self-r5-negative.xml.gz",
+      "original": "/private/tmp/chejin-dynamic-composer-r6-evidence-20260916/r5-negative.xml",
+      "original_xml_sha256": "e04cd9e2735a652004f243daa8ea9f7bb15503dbdef211f7c57b7194879754f6",
+      "sha256": "8080d7f8cba71026cec6acc7ab1746b316acd54fbf4dce59c4ae663835ffb8f7",
+      "storage": "gzip preserving exact original pytest XML bytes, including traceback whitespace"
+    },
+    {
+      "name": "self-released-control.xml",
+      "original": "/private/tmp/chejin-dynamic-composer-r6-evidence-20260916/released-control.xml",
+      "sha256": "ce76532beb4a72cb634d347412bbf19eb88845856dc3b3ad87286123481d7ee4"
+    },
+    {
+      "name": "independent-r6-verification.json",
+      "original": "/private/tmp/chejin-dynamic-composer-r6-review-20260916-OlBu8g/verification.json",
+      "sha256": "c51e9ac6e230e17f662e972c19e9f697998faf41d9404510d66f3ddea401eb56"
+    },
+    {
+      "name": "independent-r6-affected.xml",
+      "original": "/private/tmp/chejin-dynamic-composer-r6-review-20260916-OlBu8g/affected.xml",
+      "sha256": "d7978396cfcb81572d62fa80fd789c541a2722efd24417d998be880269f07895"
+    },
+    {
+      "name": "independent-r5-negative.xml.gz",
+      "original": "/private/tmp/chejin-dynamic-composer-r6-review-20260916-OlBu8g/r5-negative.xml",
+      "original_xml_sha256": "5d4c083fcada882e61a2b8736cd398546d7390e9b7d6cbc315631ec08698f491",
+      "sha256": "0b56021f2086b279be25f3894895b18c20ae5c4c56c880fa2457c86d6580203c",
+      "storage": "gzip preserving exact original pytest XML bytes, including traceback whitespace"
+    },
+    {
+      "name": "independent-released-control.xml",
+      "original": "/private/tmp/chejin-dynamic-composer-r6-review-20260916-OlBu8g/released-control.xml",
+      "sha256": "a3faa4b2036dea60916203576de000b38a4cfbf46e25278682dc56916d149499"
+    },
+    {
+      "name": "reused-r5-ocr.xml",
+      "original": "/private/tmp/chejin-dynamic-composer-review-20260916-0t6lnb/ocr.xml",
+      "sha256": "a8c89ce4344dc27e3f65e2dcd08783d9ac0586478a15e74de347129af7836233"
+    },
+    {
+      "name": "reused-r5-adjacent.xml",
+      "original": "/private/tmp/chejin-dynamic-composer-review-20260916-0t6lnb/adjacent.xml",
+      "sha256": "b65d0203547d19e2eeb64c623ee5f9a978405b2572a86a7a050e51f8814d528b"
+    },
+    {
+      "name": "reused-r5-http.xml",
+      "original": "/private/tmp/chejin-dynamic-composer-review-20260916-0t6lnb/http.xml",
+      "sha256": "884431f8386a66b95364448e28cd620ea3ed3741be21c74cc1cb121dd5f94a23"
+    }
+  ]
+}
