@@ -37,8 +37,8 @@ class SequenceModel:
             raw_payload={"omniauto_brain_result":{"brain_plan":{"reply_segments":PARTS}}})
 
 
-@pytest.mark.parametrize("reuse", [True, False])
-def test_three_segments_real_ocr_call_count(http_api, monkeypatch, async_generation, tmp_path, reuse):
+@pytest.mark.parametrize("reuse,new_friend", [(True, False), (False, False), (True, True)])
+def test_three_segments_real_ocr_call_count(http_api, monkeypatch, async_generation, tmp_path, reuse, new_friend):
     fixture_dir = os.environ.get("CHEJIN_SEQUENCE_DESKTOP_FIXTURE")
     if not fixture_dir:
         pytest.skip("requires explicitly supplied private desktop fixture")
@@ -110,10 +110,26 @@ def test_three_segments_real_ocr_call_count(http_api, monkeypatch, async_generat
     monkeypatch.setattr(fixtures, "client", http_api)
     monkeypatch.setattr(c3_service, "get_ai_engine_adapter", SequenceModel)
     worker = fixtures._create_worker(); fixtures._create_sales(worker["id"])
-    fixtures._create_lead(remark_code="CJMKZUTH"); session = fixtures._scan(worker, remark_code="CJMKZUTH")
+    fixtures._create_lead(remark_code="CJMKZUTH")
+    if new_friend:
+        # Real C1 completion establishes the initial activation state. Do not
+        # replace the production friend-confirm HTTP or seed it as activated.
+        from app.models.task import Task
+        with SessionLocal() as db:
+            friend_task = db.scalar(select(Task).where(Task.task_type == "add_friend")).id
+        claim = http_api.post(f"/api/tasks/{friend_task}/claim", headers=fixtures._worker_headers(worker),
+                              json={"worker_id": worker["id"]})
+        assert claim.status_code == 200, claim.text
+        done = http_api.post(f"/api/tasks/{friend_task}/invite-sent", headers=fixtures._task_lease_headers(worker, claim),
+                             json={"remark": "Synthetic historical invitation completed"})
+        assert done.status_code == 200, done.text
+    session = fixtures._scan(worker, remark_code="CJMKZUTH")
     with SessionLocal() as db:
         conv = db.get(Conversation,session["conversation_id"])
-        conv.friend_state = "friend_active"; conv.status = "waiting_user_reply"
+        if new_friend:
+            assert conv.friend_state == conv.status == "friend_request_sent"
+        else:
+            conv.friend_state = "friend_active"; conv.status = "waiting_user_reply"
         db.get(Worker,worker["id"]).local_lock_summary = {"capabilities":{"reply_sequence_version":1}}
         db.commit()
     api = WorkerApiClient(http_api.get("/healthz").url.removesuffix("/healthz") + "/api")
@@ -167,3 +183,6 @@ def test_three_segments_real_ocr_call_count(http_api, monkeypatch, async_generat
     assert read_steps.count("reply_sequence_read") == 2, read_steps
     assert read_steps.count("pre_send_refresh") == (1 if reuse else 3), read_steps
     assert all(s["ocr_count"] > 0 for s in sends), sends
+    if new_friend:
+        activation_calls = [call for call in wire if call["path"].endswith("/activation-confirm")]
+        assert len(activation_calls) == 1 and activation_calls[0]["status"] == 200, wire

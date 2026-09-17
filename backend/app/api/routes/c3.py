@@ -66,6 +66,15 @@ def claim_send(
 ):
     try:
         worker = worker_service.authenticate_worker_client(db, payload.worker_id, x_worker_token, x_client_instance_id)
+        if payload.settlement_only:
+            from app.services.reply_settlement_permit import original_permit
+            data = original_permit(
+                db, worker=worker, reply_action_id=reply_action_id,
+                task_id=payload.task_id, client_instance_id=x_client_instance_id,
+                flow_id=x_inflight_flow_id, lease_fencing_token=x_task_lease_fencing_token,
+            )
+            db.commit()
+            return ok(data)
         worker_service.validate_inflight_continuation(worker, x_inflight_flow_id)
         data = c3_service.claim_send(
             db,
@@ -99,6 +108,13 @@ def sent_ack(
 ):
     try:
         worker = worker_service.authenticate_worker_client(db, payload.worker_id, x_worker_token, x_client_instance_id or payload.client_instance_id)
+        if "pre_send_read_failure" in payload.evidence:
+            from app.services.pre_send_read_recovery import settle
+            data = settle(db, worker=worker, payload=payload, task_id=payload.task_id,
+                          reply_action_id=reply_action_id, flow_id=x_inflight_flow_id,
+                          client_instance_id=x_client_instance_id or payload.client_instance_id)
+            db.commit()
+            return ok(data)
         worker_service.validate_inflight_continuation(worker, x_inflight_flow_id)
         data = c3_service.sent_ack(db, reply_action_id=reply_action_id, payload=payload)
         db.commit()

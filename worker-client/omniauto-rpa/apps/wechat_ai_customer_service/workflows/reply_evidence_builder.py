@@ -236,6 +236,7 @@ def apply_chejin_knowledge_release(
     target_state: dict[str, Any],
     *,
     query_text: str,
+    current_query_text: str | None = None,
 ) -> None:
     """Project one immutable Chejin release into the existing evidence pack.
 
@@ -333,11 +334,15 @@ def apply_chejin_knowledge_release(
     # their literal text.  Rebuild both from the customer query plus the
     # release-projected evidence so the retired runtime is not a hidden second
     # decision source.
+    # Retrieval needs history for elliptical questions; current intent does
+    # not inherit words spoken by the AI in that history. None preserves the
+    # existing exported call contract, while an explicit empty turn stays empty.
+    intent_text = query_text if current_query_text is None else current_query_text
     intent_tags = normalize_pre_purchase_vehicle_tags(
-        detect_intent_tags(query_text),
-        query_text,
+        detect_intent_tags(intent_text),
+        intent_text,
     )
-    safety = build_safety_summary(intent_tags, evidence, query_text)
+    safety = build_safety_summary(intent_tags, evidence, intent_text)
     knowledge["intent_tags"] = intent_tags
     knowledge["safety"] = safety
     evidence_pack["intent_tags"] = intent_tags

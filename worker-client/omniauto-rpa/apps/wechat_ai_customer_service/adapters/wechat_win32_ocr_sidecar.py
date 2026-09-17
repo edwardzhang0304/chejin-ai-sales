@@ -23,6 +23,7 @@ import subprocess
 import sys
 import time
 import unicodedata
+from uuid import uuid4
 from ctypes import wintypes
 from datetime import datetime, timezone
 from pathlib import Path
@@ -628,6 +629,8 @@ def main() -> int:
     )
     parser.add_argument("--text-recheck-request", default="")
     parser.add_argument("--text-recheck-capture", action="store_true")
+    parser.add_argument("--input-safety-observation", action="store_true")
+    parser.add_argument("--input-safety-request-id", default="")
     parser.add_argument("--history-mode", default="", help="History loading strategy, e.g. anchor_until_found.")
     parser.add_argument("--anchor-id", action="append", default=[], help="Message id anchor to stop bounded history search.")
     parser.add_argument("--anchor-content-key", action="append", default=[], help="Normalized customer message content key anchor.")
@@ -1314,6 +1317,20 @@ def parse_visible_session_candidate_arg(raw: Any) -> dict[str, Any] | None:
 
 def run_action(args: argparse.Namespace) -> dict[str, Any]:
     action = str(args.action or "").strip().lower()
+    input_safety_only = bool(getattr(args, "input_safety_observation", False))
+    if input_safety_only and (
+        action != "messages" or str(args.target_mode or "") != "current"
+        or not str(args.remark_code or "").strip()
+        or not str(getattr(args, "input_safety_request_id", "") or "").strip()
+        or args.history_load_times != 0 or args.max_scroll_steps != 0
+        or args.max_snapshots != 1 or args.restore_to_latest is not False
+        or args.history_mode or args.anchor_id or args.anchor_content_key or args.reply_content_key
+        or args.expected_confirmed_self_text or getattr(args, "chat_fact_roi_ocr", False)
+        or getattr(args, "same_frame_full_ocr_evidence", "")
+        or getattr(args, "text_recheck_request", "") or getattr(args, "text_recheck_capture", False)
+    ):
+        return {"ok": False, "error_code": "INPUT_SAFETY_OBSERVATION_ARGUMENT_CONFLICT",
+                "ui_action_performed": False}
     if action not in set(SIDECAR_ACTION_CHOICES):
         return {
             "ok": False,
@@ -1428,10 +1445,10 @@ def run_action(args: argparse.Namespace) -> dict[str, Any]:
         # Preserve the gray-v0.9.20 production entry order.  Activation is an
         # entry action only; popup/menu HWNDs may legitimately become the
         # foreground target later in the unchanged business transaction.
-        if not local_text_recheck:
+        if not local_text_recheck and not input_safety_only:
             activate_window(hwnd)
         probe["business_window_activation"] = {
-            "attempted": not local_text_recheck,
+            "attempted": not local_text_recheck and not input_safety_only,
             "hwnd": hwnd,
             "success_gate_added": False,
         }
@@ -1741,6 +1758,11 @@ def run_action(args: argparse.Namespace) -> dict[str, Any]:
                         result["initial_messages_frame_age_seconds"] = seed.get("age_seconds")
         return result
     if action == "messages":
+        if input_safety_only:
+            return input_safety_observation_payload(
+                hwnd, target=str(args.remark_code).strip(),
+                request_id=str(args.input_safety_request_id).strip(), artifact_dir=args.artifact_dir,
+            )
         if local_text_recheck:
             if (str(args.target_mode or "") != "current"
                     or not str(args.remark_code or "").strip()
@@ -3145,6 +3167,48 @@ def sessions_payload(
     }
 
 
+def input_safety_observation_payload(hwnd: int, *, target: str, request_id: str,
+                                     artifact_dir: str | None = None) -> dict[str, Any]:
+    """Observe only current identity + input pixels; never parse chat history.
+
+    One new capture and full-frame OCR are shared by title and input checks.
+    There is no activation, scroll, search, clipboard or media operation here.
+    """
+    observation = {"version": 1, "request_id": request_id, "target": target,
+                   "status": "unverified", "frame_observation": None,
+                   "target_confirmation": {}, "input_region": {}}
+    try:
+        screenshot, path = capture_wechat(hwnd, artifact_dir=artifact_dir, label="input_safety")
+        geometry = get_window_geometry(hwnd)
+        frame = immutable_frame_pixel_evidence(screenshot, hwnd=hwnd, geometry=geometry, screenshot_path=path)
+        observation["frame_observation"] = frame
+        observation["image_size"] = list(screenshot.size)
+        items = run_ocr_traced(screenshot, "input_safety_observation", region="full", source="fresh_frame")
+        target_confirmation = validate_active_send_target(
+            hwnd, target, exact=False, screenshot=screenshot, ocr_items=items,
+            screenshot_path=path, artifact_dir=artifact_dir,
+        )
+        observation["target_confirmation"] = target_confirmation
+        if not c2_target_activation_confirmed(target_confirmation) or target_confirmation.get("blind_send"):
+            observation["status"] = "target_not_observed"
+        else:
+            region = input_text_region_state(screenshot, items, geometry=geometry)
+            observation["input_region"] = region
+            bounds = region.get("bounds") or []
+            valid_bounds = (len(bounds) == 4 and all(type(value) is int for value in bounds)
+                            and 0 <= bounds[0] < bounds[2] <= screenshot.size[0]
+                            and 0 <= bounds[1] < bounds[3] <= screenshot.size[1])
+            if valid_bounds and not region.get("error") and not region.get("error_code"):
+                if region.get("has_visible_text") is False and region.get("reason") == "input_region_blank":
+                    observation["status"] = "empty"
+                elif region.get("has_visible_text") is True:
+                    observation["status"] = "not_empty"
+    except Exception as exc:
+        observation.update(status="unverified", failure_reason=type(exc).__name__)
+    return {"ok": observation["status"] != "unverified", "state": "input_safety_observed",
+            "input_safety_observation": observation, "ui_action_performed": False}
+
+
 def messages_payload(
     hwnd: int,
     probe: dict[str, Any],
@@ -3195,13 +3259,15 @@ def messages_payload(
             artifact_dir=artifact_dir,
         )
     else:
-        snapshots = capture_message_history_snapshots(
-            hwnd,
-            target=target,
-            history_load_times=history_load_times,
-            artifact_dir=artifact_dir,
-            chat_fact_roi_ocr=chat_fact_roi_ocr,
-        )
+        from apps.wechat_ai_customer_service.adapters.pre_send_read_failure import ReadCallFailed
+        try:
+            snapshots = capture_message_history_snapshots(
+                hwnd, target=target, history_load_times=history_load_times,
+                artifact_dir=artifact_dir, chat_fact_roi_ocr=chat_fact_roi_ocr,
+            )
+        except ReadCallFailed as exc:
+            return {"ok": False, "state": "message_read_call_failed", "error_code": "MESSAGE_READ_FAILED",
+                    "read_call_failure": exc.evidence, "error": str(exc), "target": target}
         history_load = {
             "ok": True,
             "mode": "fixed_load_times",
@@ -8699,20 +8765,21 @@ def capture_message_history_snapshots(
     snapshots: list[dict[str, Any]] = []
 
     def capture(label: str) -> None:
-        screenshot, path = capture_wechat(hwnd, artifact_dir=artifact_dir, label=label)
+        from apps.wechat_ai_customer_service.adapters.pre_send_read_failure import read_call
+        screenshot, path = read_call("capture", capture_wechat, hwnd, artifact_dir=artifact_dir, label=label)
         ocr_started = time.perf_counter()
         if chat_fact_roi_ocr and env_flag(
             "CHEJIN_C3_PRE_SEND_ROI_REUSE_ENABLED",
             default=True,
         ):
-            ocr_items, ocr_plan = run_ocr_for_chat_fact_frame(
+            ocr_items, ocr_plan = read_call("read", run_ocr_for_chat_fact_frame,
                 screenshot,
                 purpose=label,
                 source="capture_message_history_snapshots",
                 enabled=True,
             )
         else:
-            ocr_items = run_ocr(screenshot)
+            ocr_items = read_call("read", run_ocr, screenshot)
             ocr_plan = {
                 "source": "full",
                 "regions": ["full_frame"],
@@ -10626,6 +10693,13 @@ def send_payload(
     timing: dict[str, Any] = {}
     ocr_trace_token = _ocr_trace_start()
     send_payload_started = _sidecar_timing_start(timing, "send_payload")
+    read_call_failure: dict[str, Any] | None = None
+
+    def failed_read(stage: str, code: str, exc: Exception) -> dict[str, Any] | None:
+        from apps.wechat_ai_customer_service.adapters.pre_send_read_failure import ReadCallFailed
+        if not isinstance(exc, ReadCallFailed):
+            return None
+        return {**exc.evidence, "stage": stage, "error_code": code}
 
     def finish(payload: dict[str, Any]) -> dict[str, Any]:
         _sidecar_timing_finish(timing, "send_payload", send_payload_started)
@@ -10693,6 +10767,20 @@ def send_payload(
                 for key, value in journal_result.items()
                 if key != "payload"
             }
+        if (read_call_failure is not None and journal_result.get("ok") is True
+                and journal_phase == action_phase == "not_attempted"
+                and not physical_send_triggered):
+            visual = (payload.get("guard") or {}).get("visual") or {}
+            cleared = visual.get("draft_clear") or {}
+            input_state = "unverified"
+            if cleared.get("ok") is True and cleared.get("cleared") is True:
+                input_state = "cleared"
+            payload["pre_send_read_failure_fact"] = {
+                **read_call_failure, "input_state": input_state,
+                "input_progress": ("may_have_started" if read_call_failure["stage"] == "before_trigger" else "not_started"),
+                "physical_send_triggered": False, "action_phase": "not_attempted",
+                "phase_proof": {"ok": True, "source": "action_journal", "action_phase": "not_attempted"},
+            }
         if isinstance(send_result, dict):
             send_result["action_phase"] = action_phase
             existing = send_result.get("timing")
@@ -10740,6 +10828,7 @@ def send_payload(
             expected_context_guard=expected_context_guard,
         )
     except Exception as exc:
+        read_call_failure = failed_read("before_input", "SEND_BASELINE_UNAVAILABLE", exc)
         _sidecar_timing_finish(timing, "send_baseline_snapshot", baseline_started)
         return finish({
             "ok": False,
@@ -10841,7 +10930,10 @@ def send_payload(
             ),
             "target": target,
             "guard": baseline_snapshot.get("validation"),
-            "context_validation": baseline_context_validation,
+            "context_validation": {
+                **baseline_context_validation,
+                "expected_context_guard": expected_context_guard,
+            },
             "send_baseline": baseline_snapshot,
             "error": "The visible message sequence changed after the final C2 refresh.",
         })
@@ -10896,6 +10988,7 @@ def send_payload(
         screenshot_path: str | None = None,
         ocr_items: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
+        nonlocal read_call_failure
         try:
             if screenshot is None:
                 snapshot = capture_send_fact_snapshot(
@@ -10921,6 +11014,7 @@ def send_payload(
                     expected_context_guard=expected_context_guard,
                 )
         except Exception as exc:
+            read_call_failure = failed_read("before_trigger", "C3_SEND_PRE_CLICK_CONTEXT_UNAVAILABLE", exc)
             return {
                 "ok": False,
                 "reason": "pre_trigger_context_snapshot_failed",
@@ -18019,7 +18113,8 @@ def capture_send_fact_snapshot(
     receipt_baseline_message_sequence: list[dict[str, Any]] | None = None,
     receipt_text: str = "",
 ) -> dict[str, Any]:
-    screenshot, path = capture_wechat(hwnd, artifact_dir=artifact_dir, label=label)
+    from apps.wechat_ai_customer_service.adapters.pre_send_read_failure import read_call
+    screenshot, path = read_call("capture", capture_wechat, hwnd, artifact_dir=artifact_dir, label=label)
     return build_send_fact_snapshot_from_frame(
         hwnd,
         target=target,
@@ -18052,6 +18147,7 @@ def build_send_fact_snapshot_from_frame(
     receipt_baseline_message_sequence: list[dict[str, Any]] | None = None,
     receipt_text: str = "",
 ) -> dict[str, Any]:
+    from apps.wechat_ai_customer_service.adapters.pre_send_read_failure import read_call
     supplied_ocr_items = ocr_items is not None
     ocr_plan: dict[str, Any] = {
         "source": "supplied",
@@ -18064,14 +18160,14 @@ def build_send_fact_snapshot_from_frame(
             "CHEJIN_C3_SEND_FRAME_LOCAL_REUSE_ENABLED",
             default=True,
         ):
-            ocr_items, ocr_plan = run_ocr_for_chat_fact_frame(
+            ocr_items, ocr_plan = read_call("read", run_ocr_for_chat_fact_frame,
                 screenshot,
                 purpose=f"{label}_chat_fact",
                 source="build_send_fact_snapshot_from_frame",
                 enabled=True,
             )
         else:
-            ocr_items = run_ocr_traced(
+            ocr_items = read_call("read", run_ocr_traced,
                 screenshot,
                 f"{label}_full_ocr",
                 source="build_send_fact_snapshot_from_frame",
@@ -18102,7 +18198,7 @@ def build_send_fact_snapshot_from_frame(
     ):
         # Insufficient ROI evidence falls back on the same immutable pixels.
         # A second physical capture here would mix timepoints and is forbidden.
-        ocr_items = run_ocr_traced(
+        ocr_items = read_call("read", run_ocr_traced,
             screenshot,
             f"{label}_chat_fact_fallback_full",
             source="build_send_fact_snapshot_from_frame",
@@ -22686,6 +22782,8 @@ def run_sidecar_cli(argv: list[str] | None = None) -> dict[str, Any]:
     )
     parser.add_argument("--text-recheck-request", default="")
     parser.add_argument("--text-recheck-capture", action="store_true")
+    parser.add_argument("--input-safety-observation", action="store_true")
+    parser.add_argument("--input-safety-request-id", default="")
     parser.add_argument("--history-mode", default="", help="History loading strategy, e.g. anchor_until_found.")
     parser.add_argument("--anchor-id", action="append", default=[], help="Message id anchor to stop bounded history search.")
     parser.add_argument("--anchor-content-key", action="append", default=[], help="Normalized customer message content key anchor.")

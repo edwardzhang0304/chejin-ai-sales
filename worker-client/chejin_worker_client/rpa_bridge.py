@@ -264,8 +264,18 @@ class RpaBridge:
         max_snapshots: int = 1,
         restore_to_latest: bool = True,
         max_duration_seconds: int = 12,
+        input_safety_observation: bool = False,
+        input_safety_request_id: str = "",
         cancel_check: CancellationCheck | None = None,
     ) -> dict[str, Any]:
+        if input_safety_observation and (
+            target_mode != "current" or not remark_code or not input_safety_request_id
+            or max_scroll_steps != 0 or max_snapshots != 1 or restore_to_latest
+            or history_mode or anchor_ids or anchor_content_keys or reply_content_keys
+            or expected_confirmed_self_text or chat_fact_roi_ocr
+            or same_frame_full_ocr_evidence or text_recheck_capture
+        ):
+            raise ValueError("INPUT_SAFETY_OBSERVATION_ARGUMENT_CONFLICT")
         if self.mode == "mock":
             return {
                 "ok": True,
@@ -321,6 +331,8 @@ class RpaBridge:
         ]
         if normalized_history_mode:
             args[1:1] = ["--history-mode", normalized_history_mode]
+        if input_safety_observation:
+            args.extend(["--input-safety-observation", "--input-safety-request-id", input_safety_request_id])
         if text_recheck_capture:
             args.append("--text-recheck-capture")
         for values, flag in (

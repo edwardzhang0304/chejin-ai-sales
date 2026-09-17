@@ -24,6 +24,7 @@ from app.schemas.lead import MarkInvalidRequest
 from app.services import lead_service, wechat_service
 from app.services.followup_eligibility import require_followup
 from app.errors import AppError
+from task_ownership_fixtures import owned_add_friend_task
 
 client = TestClient(app)
 
@@ -118,7 +119,7 @@ def test_real_http_invalid_never_dispatched_and_cannot_be_claimed(http_api,histo
     w,rows=fixture_rows();task_ids=[]
     with SessionLocal() as db:
         for row in rows:
-            task=Task(lead_id=row['lead_id'],worker_id=w['id'],task_type='add_friend',status='pending')
+            task=owned_add_friend_task(db,lead_id=row['lead_id'],worker_id=w['id'],task_type='add_friend',status='pending')
             db.add(task);db.flush();task_ids.append(task.id)
         db.commit()
     before=http_api.get(f"/api/workers/{w['id']}/tasks/pull",headers=headers(w))
@@ -268,15 +269,16 @@ def test_original_read_facts_settle_but_old_ticket_never_starts_new_flow(restore
     for _ in range(2):
         r=client.post(f"/api/workers/{w['id']}/wechat/messages/ingest",json=payload,headers=headers(w,flow))
         assert r.status_code==200,r.text
-        assert r.json()['data']['state_transition_applied'] is False
-        assert r.json()['data']['read_completion']['result']=='cancelled'
+        assert r.json()['data']['recovery_action']=='conversation_terminated'
+        assert r.json()['data']['recovery_settlement']['disposition']=='business_cancelled'
     r=client.post(f"/api/workers/{w['id']}/inflight-flow/finish",json={
         'flow_id':flow,'terminal_kind':'read_cancelled','conversation_id':row['conversation_id'],'error_code':'LEAD_INVALID'},headers=headers(w,flow))
     assert r.status_code==200,r.text
     r=client.post(f"/api/workers/{w['id']}/inflight-flow/start",json={**start,'flow_id':'old-ticket-new-flow'},headers=headers(w))
     assert r.status_code==409
     with SessionLocal() as db:
-        assert db.scalar(select(func.count()).select_from(MessageEvent).where(MessageEvent.conversation_id==row['conversation_id']))==1
+        # An untriggered old read is cancelled, not ingested as a new fact.
+        assert db.scalar(select(func.count()).select_from(MessageEvent).where(MessageEvent.conversation_id==row['conversation_id']))==0
         assert db.scalar(select(func.count()).select_from(MessageBatch))==0
         assert db.scalar(select(func.count()).select_from(ReplyAction))==0
 
@@ -295,6 +297,10 @@ def test_revoked_media_uses_original_settlement_then_finishes_without_new_reply(
         'flow_id': flow, 'flow_kind': 'c2_read', 'conversation_id': row['conversation_id'],
         'unread_generation': 0, 'authorization_revision': old_token})
     assert response.status_code == 200, response.text
+    # Freeze the payload while its original authorization is still valid.
+    payload = _fact_settlement_payload({'id': row['binding_id'], 'conversation_id': row['conversation_id']}, 'CJ3N95EU',
+        transaction_id=transaction, source_keys=[source], settlement_mode='fact_only',
+        messages=[_v3_failed_image_message(source, role='customer', screen_order=1, reason='C2_IMAGE_SOURCE_INVALID')])
     invalidate(row['lead_id'])
     params = {'recovery_transaction_id': transaction, 'action_kind': 'image',
               'source_message_key_digest': hashlib.sha256(source.encode()).hexdigest(),
@@ -306,9 +312,6 @@ def test_revoked_media_uses_original_settlement_then_finishes_without_new_reply(
     assert authorized.status_code == 200, authorized.text
     permission = authorized.json()['data']
     assert permission['recovery_decision'] == 'settle_without_ui' and permission['settlement_mode'] == 'fact_only'
-    payload = _fact_settlement_payload({'id': row['binding_id'], 'conversation_id': row['conversation_id']}, 'CJ3N95EU',
-        transaction_id=transaction, source_keys=[source], settlement_mode='fact_only',
-        messages=[_v3_failed_image_message(source, role='customer', screen_order=1, reason='C2_IMAGE_SOURCE_INVALID')])
     payload['read_run_id'] = flow
     payload['evidence']['slot_ledger_states'][0]['origin_read_run_id'] = flow
     receipt_headers = {**headers(w, flow), 'X-C2-Settlement-Token': permission['settlement_token']}
@@ -588,7 +591,7 @@ def test_real_http_worker_subprocess_automatically_cancels_and_releases(tmp_path
     w,rows=fixture_rows()
     if case == "task_after_action":
         with SessionLocal() as db:
-            task=Task(lead_id=rows[0]['lead_id'],worker_id=w['id'],task_type='add_friend',status='pending')
+            task=owned_add_friend_task(db,lead_id=rows[0]['lead_id'],worker_id=w['id'],task_type='add_friend',status='pending')
             db.add(task);db.flush();w['test_task_id']=task.id;db.commit()
     sock=socket.socket();sock.bind(('127.0.0.1',0));port=sock.getsockname()[1]
     server=uvicorn.Server(uvicorn.Config(app,log_level='error',lifespan='off'))

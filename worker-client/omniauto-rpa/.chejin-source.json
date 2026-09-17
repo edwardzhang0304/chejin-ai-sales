@@ -396,6 +396,19 @@
         "brain_final_serialized_prompt_delivery_regressions"
       ],
       "review_verification_sha256": "1f53aa0c9a47757746a72a5c5b209f4807233949b00ae98dee6134812520ec62"
+    },
+    {
+      "source_commit": "b932c4dff46edb21132949838b1c86d5d76188d5",
+      "scope": [
+        "bounded_pre_send_read_failure_settlement",
+        "reply_sequence_read_without_repeated_activation",
+        "confirmed_partial_reply_recovery_context",
+        "current_turn_intent_separate_from_historical_retrieval",
+        "validated_partial_reply_context_prompt_projection"
+      ],
+      "review_verification_sha256": "131a49a3a2e665e4598854e85670adf7a6517675406c5675c16bf48b03f6fd9a",
+      "integration_base_source_commit": "2b87abd72b6ec77c17cb8875445c8b3bce07b455",
+      "host_brain_differences_preserved": true
     }
   ],
   "chejin_overlays": [

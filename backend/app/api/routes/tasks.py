@@ -349,6 +349,13 @@ def fail_task(
     try:
         task = task_service.get_task_or_404(db, task_id)
         worker = worker_service.authenticate_worker_client(db, task.worker_id or "", x_worker_token, x_client_instance_id)
+        if "pre_send_read_failure" in payload.evidence:
+            from app.services.pre_send_read_recovery import settle
+            data = settle(db, worker=worker, payload=payload, task_id=task_id,
+                          flow_id=x_inflight_flow_id, client_instance_id=x_client_instance_id,
+                          lease_fencing_token=x_task_lease_fencing_token)
+            db.commit()
+            return ok(data)
         worker_service.validate_inflight_continuation(worker, x_inflight_flow_id)
         actor = worker_actor_context(request, worker_id=worker.id, worker_name=worker.worker_name)
         is_pending_reply_recovery = task.status == "pending" and task.task_type == "chat_reply"

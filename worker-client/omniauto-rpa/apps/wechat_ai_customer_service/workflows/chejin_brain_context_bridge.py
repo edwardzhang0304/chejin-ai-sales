@@ -320,6 +320,34 @@ def build_chejin_brain_context(
     # must not derive a second semantic "current need" cache from Chinese
     # keywords; Brain receives the immutable raw history and interprets it.
     conversation_context = {"ledger_recent_messages": ledger}
+    recovery = brain_context_snapshot.get("partial_reply_recovery")
+    if recovery is not None:
+        if (not isinstance(recovery, dict) or not recovery.get("origin_batch_id")
+                or not recovery.get("origin_reply_action_id")):
+            raise ChejinBrainContextError("partial_reply_recovery_identity_missing")
+        prefix = recovery.get("confirmed_prefix")
+        if not isinstance(prefix, list) or not 1 <= len(prefix) <= 2:
+            raise ChejinBrainContextError("partial_reply_recovery_prefix_invalid")
+        by_id = {item["message_event_id"]: item for item in prior}
+        seen = set()
+        for part in prefix:
+            if not isinstance(part, dict):
+                raise ChejinBrainContextError("partial_reply_recovery_prefix_invalid")
+            event_id = part.get("message_event_id")
+            event = by_id.get(event_id)
+            if (not event or event["sender_role"] != "self" or event_id in seen
+                    or not part.get("reply_action_id")
+                    or _clean_text(part.get("text")) != event["content"]):
+                raise ChejinBrainContextError("partial_reply_recovery_history_mismatch")
+            seen.add(event_id)
+        conversation_context["partial_reply_recovery"] = {
+            "origin_batch_id": recovery["origin_batch_id"],
+            "confirmed_prefix": [{"message_event_id": part["message_event_id"],
+                                  "text": by_id[part["message_event_id"]]["content"]} for part in prefix],
+            "policy_note": "上一组回复尚未完成；以下内容已确认发送。请结合最新客户需求和当前有效资料，"
+                           "仅回答尚未答完的内容，不要重复已发部分，不要把旧草稿当作事实或待直接发送的正文。"
+                           "不要向客户提及这些内部恢复记录。",
+        }
     current_lines = []
     labels = {"customer": "客户", "self": "客服", "system": "系统"}
     for item in current:

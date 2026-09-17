@@ -69,6 +69,8 @@ def generated_payload(contract: dict) -> dict:
         "startup_layout_calibration_contract": dict(
             contract["startup_layout_calibration_contract"]
         ),
+        **({"pre_send_read_recovery_contract": contract["pre_send_read_recovery_contract"]}
+           if "pre_send_read_recovery_contract" in contract else {}),
     }
 
 

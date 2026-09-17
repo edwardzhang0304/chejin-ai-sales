@@ -5,6 +5,27 @@ go back to Brain; cutting at an arbitrary character can separate a condition
 from a promise, an amount from its unit, or a negation from its predicate.
 """
 
+from functools import lru_cache
+
+
+@lru_cache(maxsize=1)
+def _interruption_rules():
+    if __package__:
+        from . import send_interruption
+        return send_interruption
+    # The backend's existing facade loads adapters by file, including custom
+    # source roots. Resolve this dependency beside that exact loaded file.
+    import importlib.util
+    from pathlib import Path
+    spec = importlib.util.spec_from_file_location(
+        "reply_sequence_send_interruption", Path(__file__).with_name("send_interruption.py")
+    )
+    if spec is None or spec.loader is None:
+        raise RuntimeError("send_interruption rule unavailable")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
 
 def pack_reply_sequence(text: str, candidates: object, *, max_chars: int, max_segments: int) -> list[str]:
     if max_chars < 1 or not 1 <= max_segments <= 3:
@@ -41,74 +62,38 @@ def reply_sequence_instruction(*, max_chars: int, max_segments: int) -> str:
 
 
 def confirmed_customer_interruption(*, error_code: str, action_phase: str, evidence: object) -> dict | None:
-    """A cancelled draft is not a failed physical send. Consume existing proof.
+    """Keep the sequence API; the factual cancellation rule has one owner."""
+    rules = _interruption_rules()
+    _object = rules._object
 
-    A change before input needs no draft cleanup. This permits only
-    cancellation and a new authorized read, never message
-    ingestion or sending from the snapshot. Ambiguous changes retain the old
-    failure handling. Worker and server use the same rule.
-    """
-    def obj(value):
-        return value if isinstance(value, dict) else {}
-
-    if error_code != "C3_CONTEXT_CHANGED_BEFORE_SEND" or action_phase != "not_attempted":
+    target = _object(_object(evidence).get("guard")).get("confirmed_target")
+    proof = rules.customer_interruption_proof(
+        send_result="failed", action_phase=action_phase, error_code=error_code,
+        evidence=evidence, target=target,
+    )
+    if proof is None:
         return None
-    guard = obj(obj(evidence).get("guard"))
-    visual = obj(guard.get("visual"))
-    clear = obj(visual.get("draft_clear"))
-    check = obj(visual.get("context_check"))
-    snapshot = obj(check.get("snapshot"))
-    before_input = obj(evidence).get("state") == "send_context_changed_before_input"
-    if before_input:
-        snapshot = obj(obj(evidence).get("send_baseline"))
-        check = obj(obj(evidence).get("context_validation"))
-        journal = obj(obj(evidence).get("action_journal"))
-        safe_input_state = (
-            journal.get("ok") is True and journal.get("action_phase") == "not_attempted"
-            and obj(snapshot.get("input_region")).get("has_visible_text") is False
-            and bool(snapshot.get("screenshot_path"))
-            and guard.get("screenshot_path") == snapshot.get("screenshot_path")
-        )
-    else:
-        safe_input_state = (
-            visual.get("physical_send_triggered") is False
-            and clear.get("ok") is True and clear.get("cleared") is True
-            and clear.get("reason") == "confirmed_program_draft_cleared"
-            and obj(clear.get("focus_check")).get("ok") is True
-        )
-    decision = obj(check.get("worker_continuity_decision"))
-    current = obj(snapshot.get("send_context_guard"))
-    frame = obj(snapshot.get("frame_observation"))
+    snapshot, check = proof["snapshot"], proof["check"]
+    current = _object(snapshot.get("send_context_guard"))
+    frame = _object(snapshot.get("frame_observation"))
     if not (
-        guard.get("ok") is True
-        and safe_input_state
-        and snapshot.get("ok") is True and current.get("ok") is True
-        and current.get("tail_complete") is True
-        and decision.get("relation") in {"unique_tail_append", "unique_viewport_slide_with_tail_append"}
-        and check.get("continuity_relation") == decision.get("relation")
-        and check.get("error_code") == error_code
+        current.get("ok") is True and current.get("tail_complete") is True
         and isinstance(frame.get("frame_id"), str) and frame["frame_id"].strip()
-        and (before_input or frame.get("frame_id") == obj(check.get("frame_observation")).get("frame_id"))
-        and current.get("sequence_sha256")
-        and current.get("sequence_sha256") == check.get("current_sequence_sha256")
-        and check.get("expected_sequence_sha256")
-        and check.get("expected_sequence_sha256") != check.get("current_sequence_sha256")
+        and (proof["before_input"] or (
+            frame["frame_id"] == _object(check.get("frame_observation")).get("frame_id")
+            and proof["cleanup"].get("reason") == "confirmed_program_draft_cleared"
+        ))
     ):
         return None
-    sequence = current.get("sequence")
-    rows = snapshot.get("message_sequence")
-    suffix = decision.get("new_suffix_indexes")
-    if not (isinstance(sequence, list) and isinstance(rows, list)
-            and len(rows) == len(sequence) == decision.get("new_count")
-            and isinstance(suffix, list) and suffix and all(type(i) is int for i in suffix)
-            and suffix == list(range(suffix[0], len(sequence))) and suffix[0] >= 0):
+    rows, sequence = snapshot.get("message_sequence"), current.get("sequence")
+    if not isinstance(rows, list) or len(rows) != len(sequence):
         return None
     ids = []
-    for index in suffix:
-        item, row = obj(sequence[index]), obj(rows[index])
-        if (item.get("sender_role") != "customer" or row.get("sender_role") != "customer"
-                or item.get("message_type") not in {"text", "voice", "image"}
-                or not isinstance(row.get("observation_id"), str) or not row["observation_id"].strip()):
+    for index in proof["suffix"]:
+        row = _object(rows[index])
+        if (row.get("sender_role") != "customer"
+                or not isinstance(row.get("observation_id"), str)
+                or not row["observation_id"].strip()):
             return None
         ids.append(row["observation_id"])
     if len(set(ids)) != len(ids):

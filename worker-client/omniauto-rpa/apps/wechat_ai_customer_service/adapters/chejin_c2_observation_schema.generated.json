@@ -2,7 +2,7 @@
   "generated_file": true,
   "source": "contracts/c2_contract_v3.json",
   "contract_revision": "0.9.86",
-  "contract_sha256": "fa530187463e11e8cdb340417139bd44a1aa27af8137e97efd3ffdc199a71f96",
+  "contract_sha256": "1ef5d1013ad1d1b5a45f2196ab089ffe1d987d261ad382d7040fe3b052286c3e",
   "observation_schema_version": 3,
   "action_phases": [
     "not_attempted",
@@ -1331,5 +1331,776 @@
     "input_text_detection_rule": "draft_ocr_and_visual_text_detection_use_a_calibrated_proportional_inner_roi_that_excludes_the_bottom_toolbar; toolbar_pixels_never_establish_a_draft_but_text_shaped_pixels_inside_the_text_roi_do",
     "failure_error_code": "WECHAT_UI_STARTUP_CALIBRATION_FAILED",
     "failure_rule": "zero_wechat_clicks_no_message_fact_no_brain_no_business_handoff"
+  },
+  "pre_send_read_recovery_contract": {
+    "protocol_version": 1,
+    "candidate_only": true,
+    "capability_field": "local_lock_summary.capabilities.pre_send_read_recovery_version",
+    "capability_value": 1,
+    "receipt_field": "evidence.pre_send_read_failure",
+    "proof_schema": {
+      "type": "object",
+      "required": [
+        "version",
+        "reply_action_id",
+        "task_id",
+        "conversation_id",
+        "flow_id",
+        "authorization_revision",
+        "reply_text_hash",
+        "first_failure",
+        "recheck",
+        "outcome",
+        "terminal_phase_proof",
+        "input_state"
+      ],
+      "properties": {
+        "version": {
+          "type": "integer",
+          "const": 1
+        },
+        "reply_action_id": {
+          "type": "string",
+          "pattern": "\\S"
+        },
+        "task_id": {
+          "type": "string",
+          "pattern": "\\S"
+        },
+        "conversation_id": {
+          "type": "string",
+          "pattern": "\\S"
+        },
+        "flow_id": {
+          "type": "string",
+          "pattern": "\\S"
+        },
+        "authorization_revision": {
+          "type": "string",
+          "pattern": "\\S"
+        },
+        "reply_text_hash": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "outcome": {
+          "enum": [
+            "exhausted",
+            "interrupted"
+          ]
+        },
+        "input_state": {
+          "enum": [
+            "empty",
+            "cleared",
+            "remaining",
+            "unverified"
+          ]
+        },
+        "input_progress": {
+          "enum": [
+            "not_started",
+            "may_have_started"
+          ]
+        },
+        "first_failure": {
+          "type": "object",
+          "required": [
+            "stage",
+            "operation",
+            "call_status",
+            "attempt_id",
+            "error_code",
+            "failure_reason",
+            "physical_send_triggered",
+            "action_phase",
+            "phase_proof",
+            "input_state",
+            "frame_id"
+          ],
+          "properties": {
+            "stage": {
+              "enum": [
+                "pre_send_refresh",
+                "before_input",
+                "before_trigger"
+              ]
+            },
+            "operation": {
+              "enum": [
+                "capture",
+                "read"
+              ]
+            },
+            "call_status": {
+              "const": "failed"
+            },
+            "attempt_id": {
+              "type": "string",
+              "pattern": "\\S"
+            },
+            "error_code": {
+              "type": "string",
+              "pattern": "\\S"
+            },
+            "failure_reason": {
+              "type": "string",
+              "pattern": "\\S"
+            },
+            "no_frame_reason": {
+              "type": "string",
+              "pattern": "\\S"
+            },
+            "physical_send_triggered": {
+              "const": false
+            },
+            "action_phase": {
+              "const": "not_attempted"
+            },
+            "phase_proof": {
+              "type": "object",
+              "required": [
+                "source",
+                "ok",
+                "action_phase"
+              ],
+              "properties": {
+                "source": {
+                  "enum": [
+                    "action_journal",
+                    "read_only_before_claim"
+                  ]
+                },
+                "ok": {
+                  "const": true
+                },
+                "action_phase": {
+                  "const": "not_attempted"
+                }
+              }
+            },
+            "input_state": {
+              "enum": [
+                "empty",
+                "cleared",
+                "remaining",
+                "unverified"
+              ]
+            },
+            "input_progress": {
+              "enum": [
+                "not_started",
+                "may_have_started"
+              ]
+            },
+            "frame_id": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "pattern": "\\S"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "allOf": [
+            {
+              "if": {
+                "properties": {
+                  "frame_id": {
+                    "type": "null"
+                  }
+                }
+              },
+              "then": {
+                "required": [
+                  "no_frame_reason"
+                ]
+              }
+            },
+            {
+              "if": {
+                "properties": {
+                  "phase_proof": {
+                    "properties": {
+                      "source": {
+                        "const": "read_only_before_claim"
+                      }
+                    }
+                  }
+                }
+              },
+              "then": {
+                "properties": {
+                  "stage": {
+                    "const": "pre_send_refresh"
+                  }
+                }
+              }
+            }
+          ]
+        },
+        "terminal_phase_proof": {
+          "type": "object",
+          "required": [
+            "source",
+            "ok",
+            "action_phase"
+          ],
+          "properties": {
+            "source": {
+              "enum": [
+                "action_journal",
+                "read_only_before_claim"
+              ]
+            },
+            "ok": {
+              "const": true
+            },
+            "action_phase": {
+              "const": "not_attempted"
+            }
+          }
+        },
+        "recheck": {
+          "type": "object",
+          "required": [
+            "budget_state",
+            "started"
+          ],
+          "properties": {
+            "budget_state": {
+              "enum": [
+                "consumed",
+                "persist_failed"
+              ]
+            },
+            "started": {
+              "type": "boolean"
+            },
+            "failure": {
+              "anyOf": [
+                {
+                  "type": "object",
+                  "required": [
+                    "stage",
+                    "operation",
+                    "call_status",
+                    "attempt_id",
+                    "error_code",
+                    "failure_reason",
+                    "physical_send_triggered",
+                    "action_phase",
+                    "phase_proof",
+                    "input_state",
+                    "frame_id"
+                  ],
+                  "properties": {
+                    "stage": {
+                      "enum": [
+                        "pre_send_refresh",
+                        "before_input",
+                        "before_trigger"
+                      ]
+                    },
+                    "operation": {
+                      "enum": [
+                        "capture",
+                        "read"
+                      ]
+                    },
+                    "call_status": {
+                      "const": "failed"
+                    },
+                    "attempt_id": {
+                      "type": "string",
+                      "pattern": "\\S"
+                    },
+                    "error_code": {
+                      "type": "string",
+                      "pattern": "\\S"
+                    },
+                    "failure_reason": {
+                      "type": "string",
+                      "pattern": "\\S"
+                    },
+                    "no_frame_reason": {
+                      "type": "string",
+                      "pattern": "\\S"
+                    },
+                    "physical_send_triggered": {
+                      "const": false
+                    },
+                    "action_phase": {
+                      "const": "not_attempted"
+                    },
+                    "phase_proof": {
+                      "type": "object",
+                      "required": [
+                        "source",
+                        "ok",
+                        "action_phase"
+                      ],
+                      "properties": {
+                        "source": {
+                          "enum": [
+                            "action_journal",
+                            "read_only_before_claim"
+                          ]
+                        },
+                        "ok": {
+                          "const": true
+                        },
+                        "action_phase": {
+                          "const": "not_attempted"
+                        }
+                      }
+                    },
+                    "input_state": {
+                      "enum": [
+                        "empty",
+                        "cleared",
+                        "remaining",
+                        "unverified"
+                      ]
+                    },
+                    "input_progress": {
+                      "enum": [
+                        "not_started",
+                        "may_have_started"
+                      ]
+                    },
+                    "frame_id": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "pattern": "\\S"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    }
+                  },
+                  "allOf": [
+                    {
+                      "if": {
+                        "properties": {
+                          "frame_id": {
+                            "type": "null"
+                          }
+                        }
+                      },
+                      "then": {
+                        "required": [
+                          "no_frame_reason"
+                        ]
+                      }
+                    },
+                    {
+                      "if": {
+                        "properties": {
+                          "phase_proof": {
+                            "properties": {
+                              "source": {
+                                "const": "read_only_before_claim"
+                              }
+                            }
+                          }
+                        }
+                      },
+                      "then": {
+                        "properties": {
+                          "stage": {
+                            "const": "pre_send_refresh"
+                          }
+                        }
+                      }
+                    }
+                  ]
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "interruption_reason": {
+              "type": "string",
+              "pattern": "\\S"
+            }
+          },
+          "allOf": [
+            {
+              "if": {
+                "properties": {
+                  "started": {
+                    "const": true
+                  }
+                }
+              },
+              "then": {
+                "properties": {
+                  "budget_state": {
+                    "const": "consumed"
+                  }
+                }
+              },
+              "else": {
+                "properties": {
+                  "failure": {
+                    "type": "null"
+                  }
+                }
+              }
+            }
+          ]
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "outcome": {
+                "const": "exhausted"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "recheck": {
+                "required": [
+                  "failure"
+                ],
+                "properties": {
+                  "started": {
+                    "const": true
+                  },
+                  "failure": {
+                    "type": "object",
+                    "required": [
+                      "stage",
+                      "operation",
+                      "call_status",
+                      "attempt_id",
+                      "error_code",
+                      "failure_reason",
+                      "physical_send_triggered",
+                      "action_phase",
+                      "phase_proof",
+                      "input_state",
+                      "frame_id"
+                    ],
+                    "properties": {
+                      "stage": {
+                        "enum": [
+                          "pre_send_refresh",
+                          "before_input",
+                          "before_trigger"
+                        ]
+                      },
+                      "operation": {
+                        "enum": [
+                          "capture",
+                          "read"
+                        ]
+                      },
+                      "call_status": {
+                        "const": "failed"
+                      },
+                      "attempt_id": {
+                        "type": "string",
+                        "pattern": "\\S"
+                      },
+                      "error_code": {
+                        "type": "string",
+                        "pattern": "\\S"
+                      },
+                      "failure_reason": {
+                        "type": "string",
+                        "pattern": "\\S"
+                      },
+                      "no_frame_reason": {
+                        "type": "string",
+                        "pattern": "\\S"
+                      },
+                      "physical_send_triggered": {
+                        "const": false
+                      },
+                      "action_phase": {
+                        "const": "not_attempted"
+                      },
+                      "phase_proof": {
+                        "type": "object",
+                        "required": [
+                          "source",
+                          "ok",
+                          "action_phase"
+                        ],
+                        "properties": {
+                          "source": {
+                            "enum": [
+                              "action_journal",
+                              "read_only_before_claim"
+                            ]
+                          },
+                          "ok": {
+                            "const": true
+                          },
+                          "action_phase": {
+                            "const": "not_attempted"
+                          }
+                        }
+                      },
+                      "input_state": {
+                        "enum": [
+                          "empty",
+                          "cleared",
+                          "remaining",
+                          "unverified"
+                        ]
+                      },
+                      "input_progress": {
+                        "enum": [
+                          "not_started",
+                          "may_have_started"
+                        ]
+                      },
+                      "frame_id": {
+                        "anyOf": [
+                          {
+                            "type": "string",
+                            "pattern": "\\S"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      }
+                    },
+                    "allOf": [
+                      {
+                        "if": {
+                          "properties": {
+                            "frame_id": {
+                              "type": "null"
+                            }
+                          }
+                        },
+                        "then": {
+                          "required": [
+                            "no_frame_reason"
+                          ]
+                        }
+                      },
+                      {
+                        "if": {
+                          "properties": {
+                            "phase_proof": {
+                              "properties": {
+                                "source": {
+                                  "const": "read_only_before_claim"
+                                }
+                              }
+                            }
+                          }
+                        },
+                        "then": {
+                          "properties": {
+                            "stage": {
+                              "const": "pre_send_refresh"
+                            }
+                          }
+                        }
+                      }
+                    ]
+                  }
+                }
+              }
+            }
+          },
+          "else": {
+            "properties": {
+              "recheck": {
+                "required": [
+                  "interruption_reason"
+                ]
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "terminal_phase_proof": {
+                "properties": {
+                  "source": {
+                    "const": "read_only_before_claim"
+                  }
+                }
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "first_failure": {
+                "properties": {
+                  "stage": {
+                    "const": "pre_send_refresh"
+                  }
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+    "budget_rule": "one_extra_fresh_read_per_original_reply_action_committed_before_attempt_shared_across_pre_send_refresh_S0_S1_and_restart",
+    "missing_evidence_rule": "old_path_unchanged",
+    "invalid_evidence_rule": "reject_without_fallback_or_handoff",
+    "phase_rule": "original_journal_or_server_proven_never_claimed_only;_missing_or_contradictory_is_not_not_attempted",
+    "receipt_selection": "server_ever_issued_token_requires_original_sent_ack_otherwise_original_task_fail",
+    "pending_rule": "server_owned_original_unanswered_demand_consumed_only_by_fresh_authoritative_C2_after_explicit_fault_recovery;_all_OLD_may_create_new_batch_but_never_new_messages_or_revive_old_actions",
+    "settlement_only": {
+      "request_field": "settlement_only",
+      "default": false,
+      "strict_boolean": true,
+      "response_required": {
+        "settlement_only": true,
+        "send_allowed": false
+      },
+      "response_fields": [
+        "settlement_only",
+        "send_allowed",
+        "reply_action_id",
+        "task_id",
+        "conversation_id",
+        "flow_id",
+        "lease_fencing_token",
+        "send_token",
+        "reply_text_hash",
+        "action_status",
+        "ack"
+      ],
+      "identity_source": "ReplyAction.ai_payload.send_claim_identity_or_intact_original_claim_task_lease_and_server_Flow",
+      "query_rule": "read_existing_permit_only_no_renewal_state_change_new_authorization_or_reply_body",
+      "worker_rule": "independent_receipt_parser;_ordinary_ReplySendClaim_and_send_entry_reject",
+      "errors": [
+        "REPLY_ACTION_ORIGINAL_PERMIT_MISSING",
+        "REPLY_ACTION_SETTLEMENT_IDENTITY_UNCONFIRMED",
+        "WORKER_PRE_SEND_READ_RECOVERY_UNSUPPORTED",
+        "REPLY_SETTLEMENT_PERMIT_CANNOT_SEND"
+      ]
+    },
+    "input_safety_observation_schema": {
+      "type": "object",
+      "required": [
+        "version",
+        "request_id",
+        "target",
+        "status",
+        "frame_observation",
+        "target_confirmation",
+        "input_region"
+      ],
+      "properties": {
+        "version": {
+          "type": "integer",
+          "const": 1
+        },
+        "request_id": {
+          "type": "string",
+          "pattern": "\\S"
+        },
+        "target": {
+          "type": "string",
+          "pattern": "\\S"
+        },
+        "status": {
+          "enum": [
+            "empty",
+            "not_empty",
+            "unverified",
+            "target_not_observed"
+          ]
+        },
+        "frame_observation": {
+          "type": [
+            "object",
+            "null"
+          ]
+        },
+        "target_confirmation": {
+          "type": "object"
+        },
+        "input_region": {
+          "type": "object"
+        },
+        "image_size": {
+          "type": "array",
+          "items": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "minItems": 2,
+          "maxItems": 2
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "status": {
+                "const": "empty"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "image_size"
+            ],
+            "properties": {
+              "frame_observation": {
+                "type": "object",
+                "required": [
+                  "frame_id",
+                  "screenshot_sha256",
+                  "screenshot_path",
+                  "hwnd"
+                ]
+              },
+              "input_region": {
+                "required": [
+                  "bounds",
+                  "has_visible_text",
+                  "reason"
+                ],
+                "properties": {
+                  "has_visible_text": {
+                    "const": false
+                  },
+                  "reason": {
+                    "const": "input_region_blank"
+                  }
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+    "input_safety_observation": {
+      "optional": true,
+      "transport": "messages",
+      "mode": "current",
+      "max_snapshots": 1,
+      "max_scroll_steps": 0,
+      "restore_to_latest": false,
+      "fresh_frame": true,
+      "ui_actions_allowed": false,
+      "clears_only_original_pending_input": true,
+      "explicit_start_still_required": true
+    }
   }
 }

@@ -16,37 +16,66 @@ def confirmed_customer_interruption(
     *, send_result: str, action_phase: str, error_code: str,
     evidence: dict, target: str,
 ) -> bool:
+    return customer_interruption_proof(
+        send_result=send_result, action_phase=action_phase, error_code=error_code,
+        evidence=evidence, target=target,
+    ) is not None
+
+
+def customer_interruption_proof(
+    *, send_result: str, action_phase: str, error_code: str,
+    evidence: object, target: str,
+) -> dict | None:
+    """Facts shared by single and segmented replies, without choosing a flow."""
     if (send_result, action_phase, error_code) != (
         "failed", "not_attempted", "C3_CONTEXT_CHANGED_BEFORE_SEND"
     ) or not target:
-        return False
+        return None
+    evidence = _object(evidence)
     guard = _object(_object(evidence).get("guard"))
     visual = _object(guard.get("visual"))
     cleanup = _object(visual.get("draft_clear"))
     focus = _object(cleanup.get("focus_check"))
     check = _object(visual.get("context_check"))
     snapshot = _object(check.get("snapshot"))
+    before_input = evidence.get("state") == "send_context_changed_before_input"
+    if before_input:
+        check = _object(evidence.get("context_validation"))
+        snapshot = _object(evidence.get("send_baseline"))
+        journal = _object(evidence.get("action_journal"))
+        safe_input = (
+            journal.get("ok") is True
+            and journal.get("action_phase") == "not_attempted"
+            and _object(snapshot.get("input_region")).get("has_visible_text") is False
+            and bool(snapshot.get("screenshot_path"))
+            and guard.get("screenshot_path") == snapshot.get("screenshot_path")
+        )
+        old_guard = _object(check.get("expected_context_guard"))
+    else:
+        safe_input = (
+            visual.get("physical_send_triggered") is False
+            and visual.get("error_code") == error_code
+            and cleanup.get("ok") is True and cleanup.get("cleared") is True
+            and focus.get("ok") is True
+            and focus.get("expected_length") == focus.get("observed_length")
+            and type(focus.get("expected_length")) is int
+            and type(focus.get("observed_length")) is int
+            and focus["expected_length"] > 0
+            and _object(cleanup.get("input_region")).get("has_visible_text") is False
+        )
+        old_guard = _object(_object(guard.get("send_baseline")).get("send_context_guard"))
     validation = _object(snapshot.get("validation"))
     if not (
         guard.get("ok") is True
         and guard.get("confirmed_target") == target
         and guard.get("conversation_type") == "private"
-        and visual.get("physical_send_triggered") is False
-        and visual.get("error_code") == error_code
-        and cleanup.get("ok") is True and cleanup.get("cleared") is True
-        and focus.get("ok") is True
-        and focus.get("expected_length") == focus.get("observed_length")
-        and type(focus.get("expected_length")) is int
-        and type(focus.get("observed_length")) is int
-        and focus["expected_length"] > 0
-        and _object(cleanup.get("input_region")).get("has_visible_text") is False
+        and safe_input
         and check.get("ok") is False and check.get("error_code") == error_code
         and snapshot.get("ok") is True and validation.get("ok") is True
         and validation.get("confirmed_target") == target
         and validation.get("conversation_type") == "private"
     ):
-        return False
-    old_guard = _object(_object(guard.get("send_baseline")).get("send_context_guard"))
+        return None
     new_guard = _object(snapshot.get("send_context_guard"))
     old, new = old_guard.get("sequence"), new_guard.get("sequence")
     decision = _object(check.get("worker_continuity_decision"))
@@ -63,29 +92,32 @@ def confirmed_customer_interruption(
         or check.get("expected_sequence_sha256") != old_guard["sequence_sha256"]
         or check.get("current_sequence_sha256") != new_guard["sequence_sha256"]
     ):
-        return False
+        return None
     candidates = decision.get("overlap_candidates")
     pairs, suffix = decision.get("matched_pairs"), decision.get("new_suffix_indexes")
     if (not isinstance(candidates, list) or len(candidates) != 1
         or _object(candidates[0]).get("has_unique_strong_boundary") is not True
         or not isinstance(pairs, list) or not pairs
         or not isinstance(suffix, list) or not suffix):
-        return False
+        return None
     start = len(old) - len(pairs)
     if (start < 0 or len(pairs) >= len(new)
         or pairs != [{"old_index": start + i, "new_index": i} for i in range(len(pairs))]
         or suffix != list(range(len(pairs), len(new)))):
-        return False
+        return None
     # Confirm that the evidence actually describes the comparator's declared
     # overlap/new tail. These projections already exclude screen position.
     fields = ("sender_role", "message_type", "normalized_content_signature", "media_state")
     for pair in pairs:
         a, b = _object(old[pair["old_index"]]), _object(new[pair["new_index"]])
         if not a.get("normalized_content_signature") or any(a.get(k) != b.get(k) for k in fields):
-            return False
-    return all(
+            return None
+    if not all(
         _object(new[i]).get("sender_role") == "customer"
         and _object(new[i]).get("message_type") in ("text", "voice", "image")
         and bool(_object(new[i]).get("normalized_content_signature"))
         for i in suffix
-    )
+    ):
+        return None
+    return {"snapshot": snapshot, "check": check, "suffix": suffix,
+            "before_input": before_input, "cleanup": cleanup}
