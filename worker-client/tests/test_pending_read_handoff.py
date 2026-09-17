@@ -243,7 +243,7 @@ def test_new_worker_initialization_then_real_baseline_and_handoff_validation(tmp
 
 
 @pytest.mark.parametrize('case', ['complete', 'missing', 'corrupt'])
-@pytest.mark.parametrize('revision', ['0.9.75', '0.9.85'])
+@pytest.mark.parametrize('revision', ['0.9.75', '0.9.85', '0.9.86'])
 def test_manifest_capability_requires_actual_packaged_contracts(tmp_path, case, revision):
     root = Path(__file__).resolve().parents[1]
     package = tmp_path / 'package'; package.mkdir()
@@ -264,6 +264,41 @@ def test_manifest_capability_requires_actual_packaged_contracts(tmp_path, case, 
     else:
         assert result.returncode != 0 and not output.exists()
         assert 'packaged recovery contract ' + ('missing' if case == 'missing' else 'mismatch') in result.stderr
+
+
+def test_manifest_entry_with_087_label_declares_exact_published_086_resource(tmp_path):
+    # Run the unchanged manifest script and runtime modules under the intended
+    # release label. Synthetic EXEs test inventory only, not Windows startup.
+    root = Path(__file__).resolve().parents[1]
+    runtime = tmp_path / 'runtime'
+    shutil.copytree(root / 'chejin_worker_client', runtime / 'worker-client/chejin_worker_client',
+                    ignore=shutil.ignore_patterns('__pycache__'))
+    adapters = Path('omniauto-rpa/apps/wechat_ai_customer_service/adapters')
+    shutil.copytree(root / adapters, runtime / 'worker-client' / adapters,
+                    ignore=shutil.ignore_patterns('__pycache__'))
+    script = runtime / 'worker-client/scripts/generate-update-package-manifest.py'
+    script.parent.mkdir(parents=True)
+    shutil.copyfile(root / 'scripts/generate-update-package-manifest.py', script)
+    shutil.copytree(root.parent / 'contracts', runtime / 'contracts')
+    contract_path = runtime / 'contracts/c2_contract_v3.json'
+    current = json.loads(contract_path.read_text())
+    current['contract_revision'] = '0.9.87'
+    contract_path.write_text(json.dumps(current, ensure_ascii=False), encoding='utf-8')
+    package = tmp_path / 'package'
+    shutil.copytree(runtime / 'contracts', package / '_internal/contracts')
+    for name in ('CheJinWorkerClient.exe', 'CheJinUpdater.exe'):
+        (package / name).write_bytes(b'synthetic executable; manifest test only')
+    output = package / 'update-package-manifest.json'
+    result = subprocess.run([sys.executable, str(script), '--package-root', str(package),
+                             '--version', '0.9.87', '--git-commit', 'a' * 40,
+                             '--output', str(output)], capture_output=True, text=True, timeout=10)
+    assert result.returncode == 0, result.stderr
+    manifest = json.loads(output.read_text())
+    capability = manifest['pending_read_recovery']
+    assert manifest['version'] == capability['contracts'][-1]['revision'] == '0.9.87'
+    assert {'revision': '0.9.86', 'sha256':
+            'fa530187463e11e8cdb340417139bd44a1aa27af8137e97efd3ffdc199a71f96'} in capability['contracts']
+    assert '_internal/contracts/recovery/c2_contract_v3_0.9.86.json' in manifest['files']
 
 
 @pytest.mark.parametrize('status,expected', [('running', 'paused'), ('paused', 'paused'), ('faulted', 'faulted')])

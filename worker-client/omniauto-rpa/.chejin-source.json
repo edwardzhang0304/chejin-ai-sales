@@ -409,6 +409,16 @@
       "review_verification_sha256": "131a49a3a2e665e4598854e85670adf7a6517675406c5675c16bf48b03f6fd9a",
       "integration_base_source_commit": "2b87abd72b6ec77c17cb8875445c8b3bce07b455",
       "host_brain_differences_preserved": true
+    },
+    {
+      "source_commit": "421627bf8e8fab78f379f0f91db84fec3e769225",
+      "scope": [
+        "exact_pre_send_read_recovery_predecessor",
+        "published_086_read_recovery_declaration"
+      ],
+      "review_verification_sha256": "be4928764c63a1ad4a7a1fcc1b3203466d80dc6513bdf0fc678abdc662bfe9f9",
+      "integration_base_source_commit": "b932c4dff46edb21132949838b1c86d5d76188d5",
+      "host_brain_differences_preserved": true
     }
   ],
   "chejin_overlays": [

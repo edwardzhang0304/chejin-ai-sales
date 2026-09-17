@@ -355,6 +355,13 @@ def recovery_capability_for_worker(db: Session, worker: Worker) -> dict:
             'client_instance_id': worker.client_instance_id}
 
 
+def _matches_registered_read_contract(selected: dict, registration: dict) -> bool:
+    # Historical settlement compatibility is not equivalence between two
+    # independently accepted contracts. Only a release label may differ here.
+    return isinstance(registration, dict) and shared_adapter('contract_rules').equivalent_contract(
+        selected, registration.get('contract_revision'), registration.get('contract_sha256')) is not None
+
+
 def select_settlement_contract(
     db: Session, worker: Worker, payload: WechatMessageIngestRequest,
 ) -> dict | None:
@@ -365,11 +372,11 @@ def select_settlement_contract(
         raise AppError('MESSAGE_CONTRACT_REVISION_MISMATCH', '消息规则与当前合同不兼容，原始消息已保留', 409)
     flow = dict(worker.inflight_flow_state or {})
     registered = flow.get('contract_revision')
-    registered_compatible = (registered is not None
-                            and compatible_read_contract(registered, flow.get('contract_sha256')) is not None)
+    registered_compatible = _matches_registered_read_contract(selected, flow)
     # A stopped pre-registration read retains its existing recovery scope.
     # Newer registered reads may continue while running when all rules match.
-    legacy_stopped = registered is None and recovery_capability_for_worker(db, worker)['ready']
+    legacy_stopped = (registered is None and flow.get('contract_sha256') is None
+                      and recovery_capability_for_worker(db, worker)['ready'])
     closed = not flow.get('flow_id') and closed_read_recovery(db, worker, payload) is not None
     active_original = (
         (registered_compatible or legacy_stopped)
@@ -413,11 +420,12 @@ def closed_read_recovery(
     Changed authorization, a later read, another active task or send must wait
     for their own recovery path. This is not general admission for ended flows.
     """
+    selected = compatible_read_contract(payload.contract_revision, payload.contract_sha256)
     if (worker.run_status not in {'faulted', 'paused'} or (worker.inflight_flow_state or {}).get('flow_id')
             or worker.current_task or worker.running_status != 'idle'
             or (worker.local_lock_summary or {}).get('locked')
             or payload.authorization_scope == 'fact_settlement' or not payload.messages
-            or compatible_read_contract(payload.contract_revision, payload.contract_sha256) is None):
+            or selected is None):
         return None
     finish = db.scalar(select(OperationLog).where(
         OperationLog.event_type == 'worker_inflight_finished',
@@ -432,6 +440,12 @@ def closed_read_recovery(
             or proof.get('client_instance_id') != worker.client_instance_id or proof.get('bound_at') != bound_at
             or _utc(payload.evidence.finished_at) > _utc(finish.created_at)):
         return None
+    metadata = finish.extra_metadata or {}
+    if ('registered_read_contract' in metadata
+            and not _matches_registered_read_contract(selected, metadata['registered_read_contract'])):
+        return None
+    # Published finishes without this metadata retain the existing bounded
+    # original-failure proof below. New registered Flows always record it.
     binding = db.scalar(select(WechatSessionBinding).where(
         WechatSessionBinding.worker_id == worker.id,
         WechatSessionBinding.conversation_id == payload.conversation_id,

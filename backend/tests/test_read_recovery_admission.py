@@ -36,7 +36,7 @@ def test_legacy_admission_is_bound_to_stopped_original_read(case):
         if case == 'fact_settlement': payload.authorization_scope = 'fact_settlement'
         if case == 'no_flow': owner.inflight_flow_state = {}
         if case == 'task_in_progress': owner.current_task = 'synthetic-task'
-        if case in {'legacy', 'new_registered_flow'}:
+        if case == 'legacy':
             assert service.select_settlement_contract(db, owner, payload)['contract_revision'] == '0.9.75'
         else:
             with pytest.raises(AppError) as error:

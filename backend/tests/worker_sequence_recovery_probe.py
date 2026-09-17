@@ -94,7 +94,15 @@ try:
     if req.get('expect_rejected'):
         assert result['outbox'] != 'confirmed'
         assert result['blockers']['pending_c2_outbox'] > 0
-        assert not any(e['path'].endswith('/inflight-flow/finish') for e in exchanges)
+        assert result['blockers']['waiting_ledger'] == len(payload['messages'])
+        assert not result['recovery']['ready']
+        finishes = [e for e in exchanges if e['path'].endswith('/inflight-flow/finish')]
+        if req.get('allow_original_technical_finish'):
+            assert all(e['body']['terminal_kind'] == 'technical_failed'
+                       and e['body']['flow_id'] == payload['read_run_id'] for e in finishes)
+        else:
+            assert not finishes
+        assert not any(e['path'].endswith(('/tasks/pull', '/claim')) for e in exchanges)
     else:
         assert result['outbox'] == 'confirmed', result
         assert not result['runtime'].get('inflight_flow_id'), result
