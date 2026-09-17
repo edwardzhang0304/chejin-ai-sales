@@ -26,7 +26,7 @@ from test_lead_followup_eligibility import fixture_rows, headers, isolated_db, h
 from test_wechat_c2_api import _v3_ingest_payload, _v3_message, _fact_settlement_payload, _v3_failed_voice_message
 
 ROOT = Path(__file__).resolve().parents[2]
-VERSIONS = ('0.9.75', '0.9.78', '0.9.80', '0.9.85')
+VERSIONS = ('0.9.75', '0.9.78', '0.9.80', '0.9.85', '0.9.86')
 
 
 def frozen(revision):
@@ -118,20 +118,29 @@ def test_original_contract_read_recovers_same_sqlite_and_settles_once(http_api, 
 
 
 @pytest.mark.parametrize('closed', [False, True])
-def test_disabling_migration_blocks_real_recovery_then_same_sqlite_retries(http_api, monkeypatch, tmp_path, closed):
-    worker, row, payload = prepared_frozen_read(http_api, monkeypatch, '0.9.85', closed)
+@pytest.mark.parametrize('revision', ['0.9.85', '0.9.86'])
+def test_disabling_migration_blocks_real_recovery_then_same_sqlite_retries(http_api, monkeypatch, tmp_path, closed, revision):
+    worker, row, payload = prepared_frozen_read(http_api, monkeypatch, revision, closed)
     request = {'worker': worker, 'payload': payload, 'closed': closed,
                'url': http_api.get('/healthz').url.removesuffix('/healthz')}
     worker_process(tmp_path, request, 'capture')
     with monkeypatch.context() as disabled:
-        disabled.setattr(shared_adapter('contract_rules'), '_sequence_read_predecessor', lambda current: None)
-        rejected = worker_process(tmp_path, {**request, 'expect_rejected': True}, 'blocked')
+        predecessor = '_pre_send_read_predecessor' if revision == '0.9.86' else '_sequence_read_predecessor'
+        disabled.setattr(shared_adapter('contract_rules'), predecessor, lambda current: None)
+        # A same-labelled development server may accept the original technical
+        # failure receipt before ingestion; this must not settle the read or
+        # resume work. Actual cross-release recovery retains the stricter gate.
+        from app.contracts.c2 import contract_revision
+        rejected = worker_process(tmp_path, {**request, 'expect_rejected': True,
+            'allow_original_technical_finish': revision == contract_revision()}, 'blocked')
         # The same success assertion used by the positive is false while the
         # migration is off, before any retry under restored production rules.
         with pytest.raises(AssertionError):
             assert rejected['outbox'] == 'confirmed'
         with SessionLocal() as db:
             assert db.scalar(select(func.count(MessageEvent.id))) == 0
+            assert db.scalar(select(func.count(ReplyAction.id))) == 0
+            assert db.get(Worker, worker['id']).run_status == 'faulted'
     recovered = worker_process(tmp_path, request, 'retry')
     assert recovered['outbox'] == 'confirmed'
     assert rejected['before_sha256'] == rejected['after_sha256'] == recovered['before_sha256'] == recovered['after_sha256']
@@ -139,8 +148,9 @@ def test_disabling_migration_blocks_real_recovery_then_same_sqlite_retries(http_
 
 @pytest.mark.parametrize('damage', ['worker', 'customer', 'flow', 'sha', 'changed_read_rule', 'unknown_rule',
                                   'missing_finish', 'sending', 'unknown_send_result'])
-def test_frozen_read_rejects_invalid_proof_and_unsettled_sends(http_api, monkeypatch, damage):
-    worker, row, original = prepared_frozen_read(http_api, monkeypatch, '0.9.85', True)
+@pytest.mark.parametrize('revision', ['0.9.85', '0.9.86'])
+def test_frozen_read_rejects_invalid_proof_and_unsettled_sends(http_api, monkeypatch, damage, revision):
+    worker, row, original = prepared_frozen_read(http_api, monkeypatch, revision, True)
     payload = copy.deepcopy(original)
     supplied = headers(worker, payload['read_run_id'])
     if damage == 'worker': supplied['X-Worker-Token'] = 'other-worker-token'
@@ -150,10 +160,10 @@ def test_frozen_read_rejects_invalid_proof_and_unsettled_sends(http_api, monkeyp
         supplied['X-Inflight-Flow-Id'] = payload['read_run_id']
     if damage == 'sha': payload['contract_sha256'] = '0' * 64
     if damage in ('changed_read_rule', 'unknown_rule'):
-        altered = frozen('0.9.85')
+        altered = frozen(revision)
         if damage == 'unknown_rule': altered['unreviewed_rule'] = True
         else: altered['message_identity_contract']['duplicate_identity_invariants'].remove('sender_role')
-        use_contract(payload, {'contract_revision': '0.9.85', 'contract_sha256': shared_adapter('contract_rules').contract_sha256(altered)})
+        use_contract(payload, {'contract_revision': revision, 'contract_sha256': shared_adapter('contract_rules').contract_sha256(altered)})
     with SessionLocal() as db:
         if damage == 'missing_finish':
             db.delete(db.scalar(select(OperationLog).where(OperationLog.event_type == 'worker_inflight_finished')))

@@ -88,6 +88,7 @@ RELEASED_READ_RULES_SHA256 = 'bd5f2a2fadcae7575651617ce642f35594ae5da931eede673e
 # These fingerprints exclude only the release label. Changing any other rule
 # requires another reviewed migration, not an update to the old fingerprint.
 _SEQUENCE_V1_RULES_SHA256 = '26e8dabaa29677d6f4e5d845688c34916c5723b63ad93dae944031bc1b0b1320'
+_PRE_SEND_READ_V1_RULES_SHA256 = 'fbf33b38f2d9493f02534d71720be355c7cdfe69ad903b7ceb39dc10c2396a7a'
 _PUBLISHED_085_RULES_SHA256 = '6ee655ac27557a0c24070b1218b34eab094f2e8d89011a8ea115e155b2aa6b75'
 RELEASED_READ_CONTRACTS = (
     ('0.9.75', 'bcb1af09321339b159cc02581f5938e402f16094465933645c71bd7dc0eadcf1'),
@@ -95,7 +96,18 @@ RELEASED_READ_CONTRACTS = (
     ('0.9.80', '43f8c07e3660d790c39f3b348dcce9fb1e2c0bed243b41cff6669a658995e380'),
     # Actual published 80988ea contract, not the same-labelled sequence dev tree.
     ('0.9.85', '891f245e353c78e0a9f0b24e607be8bdbb2b59fc993e9df2935f0f416ff8f186'),
+    # Published ccbc56b: sequence v1, before pre-send read recovery was added.
+    ('0.9.86', 'fa530187463e11e8cdb340417139bd44a1aa27af8137e97efd3ffdc199a71f96'),
 )
+
+
+def _pre_send_read_predecessor(current: dict) -> dict | None:
+    # Only reconstruct the original read validator. Do not admit the new
+    # pre-send proof/receipt rules to an old Flow or change stored evidence.
+    if contract_rules_sha256(current) != _PRE_SEND_READ_V1_RULES_SHA256:
+        return None
+    previous = {key: value for key, value in current.items() if key != 'pre_send_read_recovery_contract'}
+    return previous if contract_rules_sha256(previous) == _SEQUENCE_V1_RULES_SHA256 else None
 
 
 def _sequence_read_predecessor(current: dict) -> dict | None:
@@ -119,6 +131,14 @@ def read_recovery_contract(current: dict, revision: Any, sha256: Any) -> dict | 
     same = equivalent_contract(current, revision, sha256)
     if same is not None:
         return same
+    if 'pre_send_read_recovery_contract' in current:
+        previous = _pre_send_read_predecessor(current)
+        if previous is None:
+            return None
+        current = previous
+        same = equivalent_contract(current, revision, sha256)
+        if same is not None:
+            return same
     if 'c3_reply_sequence_contract' in current:
         previous = _sequence_read_predecessor(current)
         if previous is None:

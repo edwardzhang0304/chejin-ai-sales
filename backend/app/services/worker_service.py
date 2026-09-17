@@ -839,6 +839,12 @@ def finish_inflight_flow(
         db, actor, event_type="worker_inflight_finished", module="worker",
         target_type="worker_flow", target_id=payload.flow_id,
         after_data=finish_identity,
+        metadata={"registered_read_contract": {
+            "contract_revision": current.get("contract_revision"),
+            "contract_sha256": current.get("contract_sha256"),
+        }} if flow_kind == "c2_read" and (
+            current.get("contract_revision") is not None or current.get("contract_sha256") is not None
+        ) else None,
     )
     db.flush()
     return {"finished": True, "flow_id": payload.flow_id}

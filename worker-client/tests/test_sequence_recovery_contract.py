@@ -10,7 +10,7 @@ from chejin_worker_client.pending_read_recovery import accepts_handoff, package_
 from chejin_worker_client.shared_rules import contract_rules as rules
 
 ROOT = Path(__file__).resolve().parents[2]
-VERSIONS = ('0.9.75', '0.9.78', '0.9.80', '0.9.85')
+VERSIONS = ('0.9.75', '0.9.78', '0.9.80', '0.9.85', '0.9.86')
 
 
 def frozen_contracts():
@@ -66,3 +66,49 @@ def test_removing_migration_or_085_declaration_breaks_the_positive(monkeypatch, 
     else: monkeypatch.setattr(rules, 'RELEASED_READ_CONTRACTS', tuple(p for p in rules.RELEASED_READ_CONTRACTS if p[0] != '0.9.85'))
     with pytest.raises((RuntimeError, AssertionError)):
         test_actual_released_read_migrates_without_claiming_full_equivalence('0.9.85')
+
+
+@pytest.mark.parametrize('release_label', ['0.9.86', '0.9.87'])
+def test_pre_send_read_extension_preserves_published_086_validator(release_label):
+    current = {**c2_contract_v3(), 'contract_revision': release_label}
+    before = copy.deepcopy(current)
+    historical = frozen_contracts()['0.9.86']
+    pair = {'revision': '0.9.86', 'sha256': rules.contract_sha256(historical)}
+    assert pair['sha256'] == 'fa530187463e11e8cdb340417139bd44a1aa27af8137e97efd3ffdc199a71f96'
+    assert 'pre_send_read_recovery_contract' not in historical
+    assert rules.equivalent_contract(current, **pair) is None
+    assert rules.read_recovery_contract(current, **pair) == historical
+    capability = rules.recovery_contract_capability(current, frozen_contracts())
+    assert pair in capability['contracts']
+    assert accepts_handoff(capability, {'protocol_version': 1, 'contracts': [pair]})
+    assert current == before
+
+
+@pytest.mark.parametrize('field,value', [
+    ('protocol_version', 2), ('receipt_field', 'unreviewed_receipt'),
+    ('proof_schema', {}), ('unreviewed_rule', True),
+])
+def test_changed_pre_send_rules_cannot_reuse_086_migration(field, value):
+    current = copy.deepcopy(c2_contract_v3())
+    current['pre_send_read_recovery_contract'][field] = value
+    historical = frozen_contracts()['0.9.86']
+    assert rules.read_recovery_contract(current, '0.9.86', rules.contract_sha256(historical)) is None
+    with pytest.raises(RuntimeError, match='RECOVERY_CONTRACT_SEMANTICS_CHANGED'):
+        rules.recovery_contract_capability(current, frozen_contracts())
+
+
+@pytest.mark.parametrize('damage', ['missing', 'corrupt', 'same_label_development'])
+def test_published_086_resource_cannot_be_replaced_by_development_contract(damage):
+    frozen = frozen_contracts()
+    if damage == 'missing': del frozen['0.9.86']
+    elif damage == 'corrupt': frozen['0.9.86']['unreviewed_rule'] = True
+    else: frozen['0.9.86'] = {**c2_contract_v3(), 'contract_revision': '0.9.86'}
+    expected = 'MISSING' if damage == 'missing' else 'CORRUPTED'
+    with pytest.raises(RuntimeError, match='RECOVERY_CONTRACT_' + expected):
+        rules.recovery_contract_capability(c2_contract_v3(), frozen)
+
+
+def test_disabling_pre_send_migration_breaks_published_086_positive(monkeypatch):
+    monkeypatch.setattr(rules, '_pre_send_read_predecessor', lambda current: None)
+    with pytest.raises(AssertionError):
+        test_pre_send_read_extension_preserves_published_086_validator('0.9.87')
