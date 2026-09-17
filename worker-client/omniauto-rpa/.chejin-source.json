@@ -388,6 +388,14 @@
       ],
       "reviewed_product_commit": "dfcd0d13f597c1f816020042d2914bf864ad2029",
       "review_verification_sha256": "57b3743d85d51c582b526823cd03942aa02c1e30611130dd245cc1fba1e034d4"
+    },
+    {
+      "source_commit": "2b87abd72b6ec77c17cb8875445c8b3bce07b455",
+      "scope": [
+        "brain_current_intent_non_authoritative_strategy_hint",
+        "brain_final_serialized_prompt_delivery_regressions"
+      ],
+      "review_verification_sha256": "1f53aa0c9a47757746a72a5c5b209f4807233949b00ae98dee6134812520ec62"
     }
   ],
   "chejin_overlays": [

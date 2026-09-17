@@ -113,7 +113,7 @@ def run_contract_checks() -> int:
         check_brain_input_marks_social_turn_context_priority(),
         check_brain_input_treats_ocr_speaker_prefix_as_metadata(),
         check_quality_gate_rejects_fresh_greeting_for_delay_followup(),
-        check_quality_gate_rejects_over_eager_business_redirect_after_social_fatigue(),
+        check_quality_gate_records_social_fatigue_review_without_blocking(),
         check_quality_gate_warns_thin_social_or_common_sense_reply_without_blocking(),
         check_quality_gate_allows_business_appointment_after_social_fatigue(),
         check_quality_gate_allows_internal_probe_boundary_under_social_fatigue(),
@@ -1665,7 +1665,7 @@ def check_quality_gate_rejects_fresh_greeting_for_delay_followup() -> CaseResult
     return CaseResult("quality_gate_rejects_fresh_greeting_for_delay_followup", True, {"errors": bad_quality.get("errors")})
 
 
-def check_quality_gate_rejects_over_eager_business_redirect_after_social_fatigue() -> CaseResult:
+def check_quality_gate_records_social_fatigue_review_without_blocking() -> CaseResult:
     fatigued_pack = fake_evidence_pack(include_product=False)
     fatigued_pack["conversation_strategy_state"] = {
         "authority": "non_authoritative_strategy_hint",
@@ -1691,9 +1691,9 @@ def check_quality_gate_rejects_over_eager_business_redirect_after_social_fatigue
         evidence_pack=fatigued_pack,
         settings={},
     )
-    assert_true(not quality.get("ok"), f"over-eager business redirect should be repaired: {quality}")
+    assert_true(quality.get("ok"), f"keyword suspicion must reach semantic review: {quality}")
     assert_true(
-        "over_eager_business_redirect_after_social_fatigue" in (quality.get("errors") or []),
+        "social_context_review:over_eager_business_redirect_after_social_fatigue" in (quality.get("warnings") or []),
         f"expected social fatigue redirect error: {quality}",
     )
     identity_resistance_plan = normalize_brain_plan(
@@ -1713,9 +1713,9 @@ def check_quality_gate_rejects_over_eager_business_redirect_after_social_fatigue
         evidence_pack=fatigued_pack,
         settings={},
     )
-    assert_true(not identity_quality.get("ok"), f"identity/resistance turn should not pull old business again: {identity_quality}")
+    assert_true(identity_quality.get("ok"), f"identity/resistance relevance requires semantic review: {identity_quality}")
     assert_true(
-        "over_eager_business_redirect_after_social_fatigue" in (identity_quality.get("errors") or []),
+        "social_context_review:over_eager_business_redirect_after_social_fatigue" in (identity_quality.get("warnings") or []),
         f"expected identity resistance redirect error: {identity_quality}",
     )
 
@@ -1729,9 +1729,9 @@ def check_quality_gate_rejects_over_eager_business_redirect_after_social_fatigue
     )
     assert_true(natural_quality.get("ok"), f"natural social companion reply should pass: {natural_quality}")
     return CaseResult(
-        "quality_gate_rejects_over_eager_business_redirect_after_social_fatigue",
+        "quality_gate_records_social_fatigue_review_without_blocking",
         True,
-        {"errors": quality.get("errors"), "identity_errors": identity_quality.get("errors")},
+        {"warnings": quality.get("warnings"), "identity_warnings": identity_quality.get("warnings")},
     )
 
 
