@@ -1273,7 +1273,9 @@ def verify_brain_reply_quality(
 
     redirect_check = check_over_eager_business_redirect_after_social_fatigue(question, clean_reply, evidence_pack or {})
     if redirect_check.get("error"):
-        errors.append(str(redirect_check["error"]))
+        # Keyword fatigue is a tone hint, not authoritative customer intent.
+        # Existing semantic review decides whether Brain must revise the reply.
+        warnings.append(f"social_context_review:{redirect_check['error']}")
     delay_followup_check = check_delay_followup_context_continuity(question, clean_reply, evidence_pack or {})
     if delay_followup_check.get("error"):
         errors.append(str(delay_followup_check["error"]))

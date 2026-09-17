@@ -391,7 +391,6 @@ def classify_conversation_strategy_signal(text: Any, *, context: dict[str, Any] 
     has_identity_probe = contains_any(clean, IDENTITY_PROBE_TERMS)
     resists_redirect = contains_any(clean, RESIST_REDIRECT_TERMS)
     has_social = contains_any(clean, SOCIAL_TERMS)
-    short_low_business = len(clean) <= 12 and not has_business and not has_hard_boundary
 
     reasons: list[str] = []
     if has_hard_boundary:
@@ -404,8 +403,6 @@ def classify_conversation_strategy_signal(text: Any, *, context: dict[str, Any] 
         reasons.append("customer_resists_business_redirect")
     if has_social:
         reasons.append("social_term")
-    if short_low_business:
-        reasons.append("short_low_business_turn")
 
     if has_hard_boundary:
         signal = "hard_boundary"
@@ -415,7 +412,7 @@ def classify_conversation_strategy_signal(text: Any, *, context: dict[str, Any] 
         signal = "identity_probe"
     elif has_business:
         signal = "business"
-    elif has_social or short_low_business:
+    elif has_social:
         signal = "social_offtopic"
     else:
         signal = "unknown_low_business"
@@ -517,7 +514,7 @@ def update_conversation_strategy_state(
         business_streak = 0
         resisted = resisted or bool(signal.get("resists_redirect"))
         reason = "hard_boundary_keeps_strategy_guarded"
-    else:
+    elif signal_name in {"social_offtopic", "identity_probe", "resist_redirect"}:
         social_streak += 1
         business_streak = 0
         if signal_name == "identity_probe":
@@ -527,6 +524,10 @@ def update_conversation_strategy_state(
         if signal_name == "resist_redirect" or signal.get("resists_redirect"):
             resisted = True
         reason = f"{signal_name}_increases_social_fatigue"
+    else:
+        # An unmatched phrase is not evidence of small talk or resistance.
+        # Keep prior observations as hints; Brain resolves the current intent.
+        reason = f"{signal_name}_does_not_increase_social_fatigue"
 
     anchor_strength = business_anchor_strength(context)
     state.update(
@@ -568,13 +569,15 @@ def build_conversation_strategy_brain_hint(state: dict[str, Any] | None) -> dict
     resisted = bool(state.get("customer_resists_business_redirect"))
     policy_note = "正常理解当前消息，必要时自然服务业务需求。"
     if mode == "soft_bridge":
-        policy_note = "客户当前偏闲聊或轻度离题。先自然回应当前问题，只能轻柔带一句业务，不要急着推车或追问预算。"
+        policy_note = "历史关键词提示可能偏闲聊。若本轮确实仍在闲聊，先自然回应，不要急着推车或追问预算。"
     elif mode == "social_companion":
-        policy_note = "客户已闲聊/试探或抗拒业务牵引。本轮优先自然回应客户感受和当前问题；不要追问预算、车型、充电条件，也不要机械拉回上一台车或未完成车源。客户重新提出业务需求时再恢复业务模式。"
+        policy_note = "仅当本轮仍在闲聊或拒绝推销时，不要追问预算、车型，也不要机械拉回上一台车。"
     elif mode == "resume_business":
         policy_note = "客户已重新提出业务意图。恢复正常业务客服模式，按商品库/正式知识/当前会话事实回答。"
     elif mode == "boundary_only":
         policy_note = "当前可能触及硬边界。仍由 Brain 生成合规边界回复；不要泄露内部机制或作出未授权承诺。"
+
+    policy_note = "关键词状态仅供语气参考，由Brain结合本轮和上下文判断意图。当前购车需求正常回答，不受历史闲聊次数限制；当前明确拒绝推销须尊重。" + policy_note
 
     return {
         "schema_version": int(state.get("schema_version") or SCHEMA_VERSION),
