@@ -1,0 +1,564 @@
+{
+  "schema_version": 1,
+  "repository": "edwardzhang0304/chejin-ai-sales",
+  "reviewed_commit": "aaecf1e63c73599fec1004472c7075b3222ad7c5",
+  "target_version": "0.9.87",
+  "approval": "User requested formal Windows package and approved engineering correction to resume. Only version/schema/provenance metadata after scoped independent r12 review.",
+  "original_verification_sha256": "be4928764c63a1ad4a7a1fcc1b3203466d80dc6513bdf0fc678abdc662bfe9f9",
+  "source_sha256": {
+    "backend/app/api/routes/c3.py": "90ab0f5066f3c06ab65cfd349a41e362063d7737f42649313bd5508b80d8be2f",
+    "backend/app/api/routes/tasks.py": "00e7e503adacaf52bf52e3b2f581f973875763894848dba2db9e4fb28dfa5119",
+    "backend/app/schemas/c3.py": "22432d766d71d1788873c434cf188b222e759045db71f28bc52e951e8dc965ab",
+    "backend/app/schemas/task.py": "78c54c33f53502fc5daa25b288912a5ff4c28e1588b16e27dc00b29d3dc3d342",
+    "backend/app/services/c3_service.py": "59f5407d316a68eca5de854acd5a618a666b4f19792a114cc890175946a65dfd",
+    "backend/app/services/pre_send_read_recovery.py": "5fd906c9bfaa175a5133558a465dbc06feb1146c1875c8872ff2cc56a2a31ac3",
+    "backend/app/services/read_recovery_service.py": "398fe2cf2f0935f5a04e4adfbcdd1f50602d69198a2cc1938916c3348e2bff5d",
+    "backend/app/services/recovery_hold_state.py": "4fd9b786dc31f72d343ed60e2cd43b24053c517934c4d4a622b6a1ac8c6438ca",
+    "backend/app/services/reply_settlement_permit.py": "61ce7251959423eb44a9804c581a61e9293bd3f19677a718a7e705d27234282a",
+    "backend/app/services/wechat_service.py": "5009ecc78f0b91c2476687f02a626cd520b5bd4325ec159b635f0cb06e3a42d6",
+    "backend/app/services/worker_service.py": "b1928fe14ae452305ba7c5069111e3b1087e6a6a18a27cc6c9953023e93dc2a4",
+    "backend/tests/test_brain_current_intent_provider.py": "c11ee8121e782727d775c5c49bb20cd4678898ec66fd1daa8d5893e32d1385bd",
+    "backend/tests/test_brain_current_intent_scope.py": "36e4682510fccb45deb527fa4d486723dfdbe2cdedfa6838116f4da8064f147a",
+    "backend/tests/test_c3_brain_context_bridge.py": "a1b27db8ba72b0c555a4f9d3ae7d7a426d7a12e2fd320bec42609d59c7b62817",
+    "backend/tests/test_identity_hold_fullflow.py": "7674a087975aa73ee55ff98d32f32193db6cfe0047501d3bee1b097bc987b111",
+    "backend/tests/test_lead_followup_eligibility.py": "b6c9660f8e228e4a37569a45a2d952915d8a7988d8af0b62466e595097aa31aa",
+    "backend/tests/test_partial_reply_recovery_boundaries.py": "bf64e3f4c9beb7e50117cf9042f0b1ce10bf1b09b4a9375fc5d400160e30152b",
+    "backend/tests/test_partial_reply_recovery_provider.py": "f80ea5f640c6218ef24b9ef053193b207ab27f0a04c5b7b97b3cc26fd1917fa0",
+    "backend/tests/test_partial_reply_recovery_worker.py": "32d64fabef821abd855c16aa6135ca3d41cf9ac9742bd60e576c163da8147642",
+    "backend/tests/test_pre_input_interruption_fullflow.py": "fb30ac8c2b71c8a9c69befe7d6d789d7c609bb03797bd6285307081b5ef64001",
+    "backend/tests/test_pre_send_read_recovery.py": "44efb5b0076545970dfb69b1c67e4f41c5387c44c71309009b449005af6fa525",
+    "backend/tests/test_pre_send_read_recovery_worker.py": "c32b7d556ba331743cc3dc70c4e6518cbc6a5388ca5c239483d5813083bf74b2",
+    "backend/tests/test_read_recovery_admission.py": "4e5757a1ddcb7ca52d27daff78572271ed9abb258e897f797017b36a4ac4f878",
+    "backend/tests/test_read_recovery_contract_scope.py": "504359ba1110c41642b3f1c6e7fabacdc6f71027f4b47e6be8bb08bab2c23791",
+    "backend/tests/test_reply_sequence_interruption_policy.py": "da7ea05c0a6c5fc09e5be9518ab14667a3fa7026205fbfc07f1cdb2554a1171f",
+    "backend/tests/test_reply_sequence_ocr_pixels.py": "9245ffe9c3699c859252fc7c5f2663ec82b9123b370e169f86da148d98bc90a3",
+    "backend/tests/test_reply_settlement_permit.py": "2b7eb04a4dbf9ff576f63aa8008477247e5c8b147128532f31a1295a52c35aec",
+    "backend/tests/test_reply_settlement_worker.py": "0a2b805f9dd8e7c58fa39761bc0ca867414199dc70ce0996af5c14e6a5121adc",
+    "backend/tests/test_sequence_read_recovery.py": "06f7e7a9687109bf3231e16a997721592f14cc3d85414514e14477e4b16aa978",
+    "backend/tests/test_strategy_intent_regression.py": "cd9d5131589caff779bd945091cc9c894b112448e99b673d643bc52774e111d3",
+    "backend/tests/worker_sequence_recovery_probe.py": "89402c39e79193530cb17dacd9bf9e1c55873e84baf744a7eb541ab8441c2a01",
+    "contracts/c2_contract_v3.json": "be462a079d7a7c3ad2b84d2ebc8faf35dac91a3f015e15d8ea3591aae1347ac8",
+    "contracts/recovery/c2_contract_v3_0.9.86.json": "fe10507bef74d7e0fb81174679258a6885f428a9dca9fa4d4825924ad363c14d",
+    "worker-client/chejin_worker_client/api.py": "684b990b3953ef1186dce364a2a2b30bf58fae4438d00835169dd75fd5e3ada4",
+    "worker-client/chejin_worker_client/models.py": "b0b1c85b973513a2b6a8b6eb1b485a900c0e8ba36ccf8eeb5512c9a0e5aafce2",
+    "worker-client/chejin_worker_client/pre_send_read_recovery.py": "c00309b2a803af88522b05b7413e55c8275467ee8a3c11a482727a306bcf7e16",
+    "worker-client/chejin_worker_client/rpa_bridge.py": "7c62c92060bdc6bc653cee24e8e8aca37140ecc681c088f7022a51bb720d6657",
+    "worker-client/chejin_worker_client/task_runner.py": "5db30976a2888a43fe738b468c7a0f60e081f422aa3e53797869fcd19d94f2e1",
+    "worker-client/omniauto-rpa/.chejin-source.json": "7b34854a4a165a0326df5c08afab460fff15d77bda23eb99b4db195125fd65f0",
+    "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/adapters/chejin_c2_observation_schema.generated.json": "837aec7509454c23b592e4691e957f401a03e9d07db374c47b5c9fddc42cbacd",
+    "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/adapters/contract_rules.py": "ef1c36efb7bbd49fbf9679cbd59fd5f12de647d972444722cbe7c1f98d7a8ebb",
+    "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/adapters/pre_send_read_failure.py": "fdc00cf365549d0e02e2586441ec5517130664ff8d658a103cab5223049002d4",
+    "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/adapters/reply_sequence.py": "d31b7f09cb4612d95508c83aaf9b98c739291002a74a44a35774433d4dc8dbec",
+    "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/adapters/send_interruption.py": "9479a7a3376449260a9da3ebadd1543ea016e395a22996ecea5d1200f40bd91b",
+    "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/adapters/wechat_win32_ocr_sidecar.py": "c4bb5651e80755a84d243a68c8ff9efaeeccdafbea44b82c967f490b0b1ba1f0",
+    "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/tests/run_customer_service_brain_contract_checks.py": "c7502223d05a30432b9a838528389559edca014daeeae17c43891a6a2b1f6f98",
+    "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/tests/test_strategy_intent_authority.py": "ea64f7a85e88da85668564e8a2a3e4a1665c563906459e74fd1abd85ea9e8dd0",
+    "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/tests/test_strategy_prompt_delivery.py": "279ecba36329b27752c2a43f281f5cca60b0422a9b5c741c9cda3e6524e8cdc1",
+    "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/workflows/chejin_brain_context_bridge.py": "3c8605e840ee9d3bfae7b3e13846db0eaf4b545c661e67b07ee4c773fac475af",
+    "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/workflows/customer_service_brain.py": "7153fda6bfaed42379fb351e648f4591bb29967b64bac6a82d5dd1cd851e2332",
+    "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/workflows/customer_service_brain_contract.py": "4b1b4e66014577128f5c7cacd1f5a5fd7cdff75b7a19f3045b51c22671804a7d",
+    "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/workflows/customer_service_conversation_strategy.py": "c47805e4a646c9e3eeb854b0b99a408226dc1f5f647abaf31da5f30395b5ea81",
+    "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/workflows/customer_service_quality_reviewer.py": "8addde3082604da956c2d2702b1bc668c70250c2caa764d4a041be5434477480",
+    "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/workflows/reply_evidence_builder.py": "08c7dd6f646826d8472d933f04ae4cf9f398e74afab324c115129cf8e0153c80",
+    "worker-client/scripts/generate-c2-observation-schema.py": "527969eea823273f7f9ba2f09bd9971580f5324214e1c66071253a2711cfc3b1",
+    "worker-client/tests/test_pending_read_handoff.py": "400abd592695c17fd86504575173ce0c790602b77a40b4d211f1e4ff608ade8f",
+    "worker-client/tests/test_pre_send_input_safety.py": "2deb0a5e68daf4815e57cca96d25ce0999da355ed217d21f64d6853c1ed30b8a",
+    "worker-client/tests/test_pre_send_read_recovery_budget.py": "b3533c7e74d7352c668d28f116c815cbe5f7e33b92b9725026bc83b2d5b1c68f",
+    "worker-client/tests/test_sequence_recovery_contract.py": "b8c7178383508c3c513fbf420dad4a92d5018248241603e278a69448a2e2bb76"
+  },
+  "checks": [
+    {
+      "name": "product_joint",
+      "original_xml_sha256": "282ea31e544a102d216e4d5d5174b842c5fa78e516935a0f781723251e784635",
+      "count": 70,
+      "cases": [
+        {
+          "name": "tests.test_strategy_intent_regression::test_intent_reaches_send_contract_without_false_handoff[greeting_then_need]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_strategy_intent_regression::test_intent_reaches_send_contract_without_false_handoff[stale_fatigue]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_strategy_intent_regression::test_intent_reaches_send_contract_without_false_handoff[explicit_refusal]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_strategy_intent_regression::test_intent_reaches_send_contract_without_false_handoff[unsupported_price]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_brain_current_intent_scope::test_historical_words_do_not_become_current_handoff_intent[\\u4f60\\u597d-\\u5ba2\\u670d\\uff1a\\u8f66\\u8f86\\u8d44\\u6599\\u9700\\u8981\\u6838\\u5b9e\\u3002]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_brain_current_intent_scope::test_historical_words_do_not_become_current_handoff_intent[\\u4f60\\u597d-\\u5ba2\\u670d\\uff1a\\u6211\\u4eec\\u4f1a\\u786e\\u8ba4\\u4e00\\u4e0b\\u3002]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_brain_current_intent_scope::test_historical_words_do_not_become_current_handoff_intent[\\u4f60\\u597d-\\u5ba2\\u670d\\uff1a\\u53ef\\u5411\\u987e\\u95ee\\u4e86\\u89e3\\u3002]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_brain_current_intent_scope::test_historical_words_do_not_become_current_handoff_intent[\\u4f60\\u597d-\\u5ba2\\u670d\\uff1a\\u4eba\\u5de5\\u786e\\u8ba4\\u4e4b\\u524d\\u4e0d\\u80fd\\u627f\\u8bfa\\u5408\\u540c\\u4f18\\u60e0\\u3002]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_brain_current_intent_scope::test_historical_words_do_not_become_current_handoff_intent[\\u4e70\\u4e8c\\u624b\\u8f66\\u8981\\u6ce8\\u610f\\u54ea\\u4e9b\\u4e8b\\u60c5\\uff1f-\\u5ba2\\u670d\\uff1a\\u8f66\\u8f86\\u8d44\\u6599\\u9700\\u8981\\u6838\\u5b9e\\u3002]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_brain_current_intent_scope::test_historical_words_do_not_become_current_handoff_intent[\\u4e70\\u4e8c\\u624b\\u8f66\\u8981\\u6ce8\\u610f\\u54ea\\u4e9b\\u4e8b\\u60c5\\uff1f-\\u5ba2\\u670d\\uff1a\\u6211\\u4eec\\u4f1a\\u786e\\u8ba4\\u4e00\\u4e0b\\u3002]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_brain_current_intent_scope::test_historical_words_do_not_become_current_handoff_intent[\\u4e70\\u4e8c\\u624b\\u8f66\\u8981\\u6ce8\\u610f\\u54ea\\u4e9b\\u4e8b\\u60c5\\uff1f-\\u5ba2\\u670d\\uff1a\\u53ef\\u5411\\u987e\\u95ee\\u4e86\\u89e3\\u3002]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_brain_current_intent_scope::test_historical_words_do_not_become_current_handoff_intent[\\u4e70\\u4e8c\\u624b\\u8f66\\u8981\\u6ce8\\u610f\\u54ea\\u4e9b\\u4e8b\\u60c5\\uff1f-\\u5ba2\\u670d\\uff1a\\u4eba\\u5de5\\u786e\\u8ba4\\u4e4b\\u524d\\u4e0d\\u80fd\\u627f\\u8bfa\\u5408\\u540c\\u4f18\\u60e0\\u3002]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_brain_current_intent_scope::test_historical_words_do_not_become_current_handoff_intent[\\u8981\\u51c6\\u5907\\u4ec0\\u4e48\\uff1f-\\u5ba2\\u670d\\uff1a\\u8f66\\u8f86\\u8d44\\u6599\\u9700\\u8981\\u6838\\u5b9e\\u3002]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_brain_current_intent_scope::test_historical_words_do_not_become_current_handoff_intent[\\u8981\\u51c6\\u5907\\u4ec0\\u4e48\\uff1f-\\u5ba2\\u670d\\uff1a\\u6211\\u4eec\\u4f1a\\u786e\\u8ba4\\u4e00\\u4e0b\\u3002]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_brain_current_intent_scope::test_historical_words_do_not_become_current_handoff_intent[\\u8981\\u51c6\\u5907\\u4ec0\\u4e48\\uff1f-\\u5ba2\\u670d\\uff1a\\u53ef\\u5411\\u987e\\u95ee\\u4e86\\u89e3\\u3002]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_brain_current_intent_scope::test_historical_words_do_not_become_current_handoff_intent[\\u8981\\u51c6\\u5907\\u4ec0\\u4e48\\uff1f-\\u5ba2\\u670d\\uff1a\\u4eba\\u5de5\\u786e\\u8ba4\\u4e4b\\u524d\\u4e0d\\u80fd\\u627f\\u8bfa\\u5408\\u540c\\u4f18\\u60e0\\u3002]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_brain_current_intent_scope::test_historical_words_do_not_become_current_handoff_intent[-\\u5ba2\\u670d\\uff1a\\u8f66\\u8f86\\u8d44\\u6599\\u9700\\u8981\\u6838\\u5b9e\\u3002]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_brain_current_intent_scope::test_historical_words_do_not_become_current_handoff_intent[-\\u5ba2\\u670d\\uff1a\\u6211\\u4eec\\u4f1a\\u786e\\u8ba4\\u4e00\\u4e0b\\u3002]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_brain_current_intent_scope::test_historical_words_do_not_become_current_handoff_intent[-\\u5ba2\\u670d\\uff1a\\u53ef\\u5411\\u987e\\u95ee\\u4e86\\u89e3\\u3002]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_brain_current_intent_scope::test_historical_words_do_not_become_current_handoff_intent[-\\u5ba2\\u670d\\uff1a\\u4eba\\u5de5\\u786e\\u8ba4\\u4e4b\\u524d\\u4e0d\\u80fd\\u627f\\u8bfa\\u5408\\u540c\\u4f18\\u60e0\\u3002]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_brain_current_intent_scope::test_current_risk_inputs_keep_the_existing_review_rules[\\u8bf7\\u8f6c\\u4eba\\u5de5]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_brain_current_intent_scope::test_current_risk_inputs_keep_the_existing_review_rules[\\u6211\\u8981\\u627e\\u4eba\\u5de5\\u987e\\u95ee]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_brain_current_intent_scope::test_current_risk_inputs_keep_the_existing_review_rules[\\u8981\\u7b7e\\u5408\\u540c\\u76d6\\u7ae0]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_brain_current_intent_scope::test_current_risk_inputs_keep_the_existing_review_rules[\\u8bf7\\u5e2e\\u6211\\u6838\\u5b9e]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_brain_current_intent_scope::test_current_risk_inputs_keep_the_existing_review_rules[\\u786e\\u8ba4\\u4e00\\u4e0b]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_brain_current_intent_scope::test_omitted_optional_input_preserves_exported_caller_contract",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_brain_current_intent_scope::test_current_input_does_not_bypass_invalid_formal_release",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_brain_current_intent_scope::test_no_managed_release_keeps_optional_integration_unchanged",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_brain_current_intent_provider::test_both_brain_paths_keep_history_without_current_handoff[\\u5728\\u5417-\\u62b1\\u6b49\\u8ba9\\u60a8\\u4e45\\u7b49\\u4e86\\uff0c\\u521a\\u624d\\u7684\\u6d88\\u606f\\u6211\\u770b\\u5230\\u4e86\\uff0c\\u60a8\\u53ef\\u4ee5\\u63a5\\u7740\\u8bf4\\u3002-True-\\u8f66\\u8f86\\u8d44\\u6599\\u9700\\u8981\\u6838\\u5b9e\\u3002]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_brain_current_intent_provider::test_both_brain_paths_keep_history_without_current_handoff[\\u5728\\u5417-\\u62b1\\u6b49\\u8ba9\\u60a8\\u4e45\\u7b49\\u4e86\\uff0c\\u521a\\u624d\\u7684\\u6d88\\u606f\\u6211\\u770b\\u5230\\u4e86\\uff0c\\u60a8\\u53ef\\u4ee5\\u63a5\\u7740\\u8bf4\\u3002-True-\\u6211\\u4eec\\u4f1a\\u786e\\u8ba4\\u4e00\\u4e0b\\u3002]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_brain_current_intent_provider::test_both_brain_paths_keep_history_without_current_handoff[\\u5728\\u5417-\\u62b1\\u6b49\\u8ba9\\u60a8\\u4e45\\u7b49\\u4e86\\uff0c\\u521a\\u624d\\u7684\\u6d88\\u606f\\u6211\\u770b\\u5230\\u4e86\\uff0c\\u60a8\\u53ef\\u4ee5\\u63a5\\u7740\\u8bf4\\u3002-True-\\u53ef\\u5411\\u987e\\u95ee\\u4e86\\u89e3\\u3002]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_brain_current_intent_provider::test_both_brain_paths_keep_history_without_current_handoff[\\u4e70\\u4e8c\\u624b\\u8f66\\u9700\\u8981\\u6ce8\\u610f\\u54ea\\u4e9b\\u4e8b\\u60c5\\uff1f-\\u60a8\\u53ef\\u4ee5\\u5148\\u8bf4\\u8bf4\\u5e73\\u65f6\\u7684\\u7528\\u8f66\\u9700\\u6c42\\u548c\\u9884\\u7b97\\uff0c\\u518d\\u9010\\u6b65\\u4e86\\u89e3\\u8f66\\u8f86\\u8d44\\u6599\\u3002-False-\\u8f66\\u8f86\\u8d44\\u6599\\u9700\\u8981\\u6838\\u5b9e\\u3002]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_brain_current_intent_provider::test_both_brain_paths_keep_history_without_current_handoff[\\u4e70\\u4e8c\\u624b\\u8f66\\u9700\\u8981\\u6ce8\\u610f\\u54ea\\u4e9b\\u4e8b\\u60c5\\uff1f-\\u60a8\\u53ef\\u4ee5\\u5148\\u8bf4\\u8bf4\\u5e73\\u65f6\\u7684\\u7528\\u8f66\\u9700\\u6c42\\u548c\\u9884\\u7b97\\uff0c\\u518d\\u9010\\u6b65\\u4e86\\u89e3\\u8f66\\u8f86\\u8d44\\u6599\\u3002-False-\\u6211\\u4eec\\u4f1a\\u786e\\u8ba4\\u4e00\\u4e0b\\u3002]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_brain_current_intent_provider::test_both_brain_paths_keep_history_without_current_handoff[\\u4e70\\u4e8c\\u624b\\u8f66\\u9700\\u8981\\u6ce8\\u610f\\u54ea\\u4e9b\\u4e8b\\u60c5\\uff1f-\\u60a8\\u53ef\\u4ee5\\u5148\\u8bf4\\u8bf4\\u5e73\\u65f6\\u7684\\u7528\\u8f66\\u9700\\u6c42\\u548c\\u9884\\u7b97\\uff0c\\u518d\\u9010\\u6b65\\u4e86\\u89e3\\u8f66\\u8f86\\u8d44\\u6599\\u3002-False-\\u53ef\\u5411\\u987e\\u95ee\\u4e86\\u89e3\\u3002]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_brain_current_intent_provider::test_current_request_still_reaches_original_guard[\\u8bf7\\u8f6c\\u4eba\\u5de5\\u5904\\u7406]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_brain_current_intent_provider::test_current_request_still_reaches_original_guard[\\u6211\\u8981\\u627e\\u4eba\\u5de5\\u987e\\u95ee]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_brain_current_intent_provider::test_current_request_still_reaches_original_guard[\\u5408\\u540c\\u76d6\\u7ae0\\u548c\\u4ed8\\u6b3e\\u600e\\u4e48\\u5b89\\u6392]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_brain_current_intent_provider::test_semantic_rejection_still_blocks_unapproved_commitment",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_partial_reply_recovery_provider::test_confirmed_partial_reply_reaches_final_provider_request",
+          "result": "passed"
+        },
+        {
+          "name": "::test_missing_keyword_does_not_mean_small_talk[\\u6211\\u60f3\\u4e70\\u4e2a\\u624b\\u52a8\\u6321]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_missing_keyword_does_not_mean_small_talk[\\u60f3\\u8981\\u624b\\u6392\\u7684]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_missing_keyword_does_not_mean_small_talk[\\u4e09\\u4e2a\\u8e0f\\u677f\\u90a3\\u79cd]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_missing_keyword_does_not_mean_small_talk[\\u4e24\\u53a2\\u7684\\u884c\\u5417]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_missing_keyword_does_not_mean_small_talk[\\u5f97\\u5e26\\u4e2a\\u5929\\u7a97]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_missing_keyword_does_not_mean_small_talk[\\u90a3\\u5c31\\u9009\\u521a\\u624d\\u90a3\\u4e2a]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_missing_keyword_does_not_mean_small_talk[]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_missing_keyword_does_not_mean_small_talk[\\u8fd9\\u662f\\u4e00\\u4e2a\\u672a\\u51fa\\u73b0\\u5728\\u4e1a\\u52a1\\u8bcd\\u8868\\u4e2d\\u7684\\u8f83\\u957f\\u672a\\u77e5\\u8868\\u8ff0]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_stale_fatigue_is_warning_and_invokes_existing_reviewer[\\u6211\\u60f3\\u4e70\\u4e2a\\u624b\\u52a8\\u6321]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_stale_fatigue_is_warning_and_invokes_existing_reviewer[\\u60f3\\u8981\\u624b\\u6392\\u7684]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_stale_fatigue_is_warning_and_invokes_existing_reviewer[\\u4e09\\u4e2a\\u8e0f\\u677f\\u90a3\\u79cd]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_stale_fatigue_is_warning_and_invokes_existing_reviewer[\\u4e24\\u53a2\\u7684\\u884c\\u5417]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_stale_fatigue_is_warning_and_invokes_existing_reviewer[\\u5f97\\u5e26\\u4e2a\\u5929\\u7a97]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_stale_fatigue_is_warning_and_invokes_existing_reviewer[\\u90a3\\u5c31\\u9009\\u521a\\u624d\\u90a3\\u4e2a]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_compact_hint_keeps_current_intent_priority[normal]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_compact_hint_keeps_current_intent_priority[soft_bridge]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_compact_hint_keeps_current_intent_priority[social_companion]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_compact_hint_keeps_current_intent_priority[resume_business]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_compact_hint_keeps_current_intent_priority[boundary_only]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_relaxed_tone_hint_does_not_authorize_unsupported_facts[\\u8fd9\\u53f0\\u552e\\u4ef75\\u4e07\\u3002]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_relaxed_tone_hint_does_not_authorize_unsupported_facts[\\u76ee\\u524d\\u6709\\u73b0\\u8f66\\u5e93\\u5b58\\u3002]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_relaxed_tone_hint_does_not_authorize_unsupported_facts[\\u8d37\\u6b3e\\u5ba1\\u6279\\u4e00\\u5b9a\\u901a\\u8fc7\\u3002]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_explicit_social_evidence_and_session_isolation_remain",
+          "result": "passed"
+        },
+        {
+          "name": "::test_intent_policy_survives_final_prompt_projection[generate-automatic]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_intent_policy_survives_final_prompt_projection[generate-lean]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_intent_policy_survives_final_prompt_projection[generate-low_authority_fast]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_intent_policy_survives_final_prompt_projection[generate-routine_product_fast]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_intent_policy_survives_final_prompt_projection[repair-automatic]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_intent_policy_survives_final_prompt_projection[repair-lean]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_intent_policy_survives_final_prompt_projection[repair-low_authority_fast]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_intent_policy_survives_final_prompt_projection[repair-routine_product_fast]",
+          "result": "passed"
+        }
+      ]
+    },
+    {
+      "name": "full_joint",
+      "original_xml_sha256": "c472647eb61457ef1772357ceee05f29696e248f737b421831535001e9ae7257",
+      "count": 1,
+      "cases": [
+        {
+          "name": "tests.test_partial_reply_recovery_worker::test_unfinished_reply_remains_eligible_after_fresh_all_old_read[1]",
+          "result": "passed"
+        }
+      ]
+    },
+    {
+      "name": "scope",
+      "original_xml_sha256": "5f43c61731c6dddaf423acc02cc8e2d924865ebce1c8658bb50ab606f66676c7",
+      "count": 26,
+      "cases": [
+        {
+          "name": "tests.test_read_recovery_contract_scope::test_read_contract_must_match_its_original_flow[False-historical-False-False]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_read_recovery_contract_scope::test_read_contract_must_match_its_original_flow[False-historical-False-True]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_read_recovery_contract_scope::test_read_contract_must_match_its_original_flow[False-current_label-True-False]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_read_recovery_contract_scope::test_read_contract_must_match_its_original_flow[False-current_label-True-True]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_read_recovery_contract_scope::test_read_contract_must_match_its_original_flow[True-historical-True-False]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_read_recovery_contract_scope::test_read_contract_must_match_its_original_flow[True-historical-True-True]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_read_recovery_contract_scope::test_read_contract_must_match_its_original_flow[True-historical_label-True-False]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_read_recovery_contract_scope::test_read_contract_must_match_its_original_flow[True-historical_label-True-True]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_read_recovery_contract_scope::test_published_closed_proof_without_new_metadata_still_recovers",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_read_recovery_contract_scope::test_present_but_invalid_original_contract_is_not_legacy[None]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_read_recovery_contract_scope::test_present_but_invalid_original_contract_is_not_legacy[damaged1]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_read_recovery_contract_scope::test_present_but_invalid_original_contract_is_not_legacy[damaged2]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_read_recovery_admission::test_legacy_admission_is_bound_to_stopped_original_read[legacy]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_read_recovery_admission::test_legacy_admission_is_bound_to_stopped_original_read[running]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_read_recovery_admission::test_legacy_admission_is_bound_to_stopped_original_read[wrong_flow]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_read_recovery_admission::test_legacy_admission_is_bound_to_stopped_original_read[wrong_customer]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_read_recovery_admission::test_legacy_admission_is_bound_to_stopped_original_read[wrong_generation]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_read_recovery_admission::test_legacy_admission_is_bound_to_stopped_original_read[wrong_digest]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_read_recovery_admission::test_legacy_admission_is_bound_to_stopped_original_read[wrong_revision]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_read_recovery_admission::test_legacy_admission_is_bound_to_stopped_original_read[new_registered_flow]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_read_recovery_admission::test_legacy_admission_is_bound_to_stopped_original_read[unknown_registered_contract]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_read_recovery_admission::test_legacy_admission_is_bound_to_stopped_original_read[fact_settlement]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_read_recovery_admission::test_legacy_admission_is_bound_to_stopped_original_read[no_flow]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_read_recovery_admission::test_legacy_admission_is_bound_to_stopped_original_read[task_in_progress]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_read_recovery_admission::test_missing_compatibility_resource_disables_recovery_without_breaking_status",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_read_recovery_admission::test_future_business_rule_change_is_not_silently_treated_as_compatible",
+          "result": "passed"
+        }
+      ]
+    },
+    {
+      "name": "recovery086",
+      "original_xml_sha256": "7af105fa142b44e14d983c110023ab0155d181e24e8fb9767e396b19b69a2b9c",
+      "count": 14,
+      "cases": [
+        {
+          "name": "tests.test_sequence_read_recovery::test_original_contract_read_recovers_same_sqlite_and_settles_once[False-0.9.86]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_sequence_read_recovery::test_original_contract_read_recovers_same_sqlite_and_settles_once[True-0.9.86]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_sequence_read_recovery::test_disabling_migration_blocks_real_recovery_then_same_sqlite_retries[0.9.86-False]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_sequence_read_recovery::test_disabling_migration_blocks_real_recovery_then_same_sqlite_retries[0.9.86-True]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_sequence_read_recovery::test_frozen_read_rejects_invalid_proof_and_unsettled_sends[0.9.86-worker]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_sequence_read_recovery::test_frozen_read_rejects_invalid_proof_and_unsettled_sends[0.9.86-customer]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_sequence_read_recovery::test_frozen_read_rejects_invalid_proof_and_unsettled_sends[0.9.86-flow]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_sequence_read_recovery::test_frozen_read_rejects_invalid_proof_and_unsettled_sends[0.9.86-sha]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_sequence_read_recovery::test_frozen_read_rejects_invalid_proof_and_unsettled_sends[0.9.86-changed_read_rule]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_sequence_read_recovery::test_frozen_read_rejects_invalid_proof_and_unsettled_sends[0.9.86-unknown_rule]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_sequence_read_recovery::test_frozen_read_rejects_invalid_proof_and_unsettled_sends[0.9.86-missing_finish]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_sequence_read_recovery::test_frozen_read_rejects_invalid_proof_and_unsettled_sends[0.9.86-sending]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_sequence_read_recovery::test_frozen_read_rejects_invalid_proof_and_unsettled_sends[0.9.86-unknown_send_result]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_sequence_read_recovery::test_frozen_fact_only_keeps_its_dedicated_authorization[0.9.86]",
+          "result": "passed"
+        }
+      ]
+    },
+    {
+      "name": "architect_original",
+      "original_xml_sha256": "0bb6d484f65bf4bf5a7e12e2ac967c7d863cf311fcbfbd59475ba6650e288cfa",
+      "count": 2,
+      "cases": [
+        {
+          "name": "test_new_flow_contract::test_fresh_087_flow_rejects_086_read_payload[True]",
+          "result": "passed"
+        },
+        {
+          "name": "test_new_flow_contract::test_fresh_087_flow_rejects_086_read_payload[False]",
+          "result": "passed"
+        }
+      ]
+    }
+  ],
+  "environment": {
+    "checks_reused": 113,
+    "checks_reexecuted": 0,
+    "source": "Original joint product/source integration plus r12 independent scope and actual-published086 recovery review. Deduplicated case identities; r11 21 rule/manifest cases retained separately. HTTP/PostgreSQL/Worker/SQLite/OCR real; model/Windows physical boundaries controlled.",
+    "not_verified": "Real external models, native Windows sends, actual customer installation; extra G/G.1/G.2 combinations remain outside evidence. Two source static failures not waived or counted as passed; safety probe without platform snapshot remains limited."
+  }
+}
