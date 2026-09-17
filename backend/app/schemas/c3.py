@@ -22,6 +22,7 @@ class ReplySequenceInterruptRequest(BaseModel):
 class ReplyActionClaimSendRequest(BaseModel):
     task_id: str = Field(min_length=1, max_length=36)
     worker_id: str = Field(min_length=1, max_length=36)
+    settlement_only: bool = Field(default=False, strict=True)
 
 
 class ReplyActionSentAckRequest(BaseModel):

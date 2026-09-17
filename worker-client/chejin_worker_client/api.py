@@ -338,7 +338,26 @@ class WorkerApiClient:
             json={"task_id": task.id, "worker_id": binding.worker_id},
             extra_headers=self._task_lease_headers(task.id),
         )
+        if payload.get("settlement_only") is True or payload.get("send_allowed") is False:
+            raise ApiError("REPLY_SETTLEMENT_PERMIT_CANNOT_SEND", "原结算许可不能用于发送", 409)
         return ReplySendClaim.from_api(payload)
+
+    def original_send_permit(self, binding: Binding, *, reply_action_id: str,
+                             task_id: str, flow_id: str, lease_fencing_token: int) -> dict[str, Any]:
+        """Read only: returned data deliberately cannot be a ReplySendClaim."""
+        payload = self._request(
+            "POST", f"/reply-actions/{reply_action_id}/claim-send", binding=binding,
+            json={"worker_id": binding.worker_id, "task_id": task_id, "settlement_only": True},
+            extra_headers={"X-Inflight-Flow-Id": flow_id,
+                           "X-Task-Lease-Fencing-Token": str(lease_fencing_token)},
+        )
+        if (payload.get("settlement_only") is not True or payload.get("send_allowed") is not False
+                or payload.get("reply_action_id") != reply_action_id or payload.get("task_id") != task_id
+                or payload.get("flow_id") != flow_id or payload.get("lease_fencing_token") != lease_fencing_token
+                or not payload.get("send_token") or not payload.get("reply_text_hash")
+                or "reply_text" in payload):
+            raise ApiError("REPLY_ACTION_SETTLEMENT_IDENTITY_UNCONFIRMED", "原许可结算响应不完整", 409)
+        return payload
 
     def sent_ack(
         self,
@@ -424,6 +443,24 @@ class WorkerApiClient:
         )
         task = Task.from_api(payload)
         self._forget_confirmed_task_lease(task_id, token)
+        return task
+
+    def settle_pre_send_read_failure(self, binding: Binding, record: dict[str, Any]) -> Task:
+        """Submit only a saved, proven pre-claim read failure using its old Flow."""
+        context, request = record["context"], record.get("request") or {}
+        fencing = int(request.get("lease_fencing_token") or 0)
+        payload = self._request(
+            "POST", f"/tasks/{context['task_id']}/fail", binding=binding,
+            json={"error_code": "C2_REPLY_CONTEXT_RECOVERY_FAILED", "failure_step": "pre_send_refresh",
+                  "failure_remark": record["proof"]["first_failure"]["failure_reason"],
+                  "evidence": {"pre_send_read_failure": record["proof"]}},
+            extra_headers={"X-Inflight-Flow-Id": context["flow_id"],
+                           **({"X-Task-Lease-Fencing-Token": str(fencing)} if fencing else {})},
+        )
+        task = Task.from_api(payload["task"])
+        if task.id != context["task_id"] or task.status not in {"failed", "cancelled"}:
+            raise ValueError("PRE_SEND_READ_FAILURE_SETTLEMENT_UNCONFIRMED")
+        self._forget_confirmed_task_lease(task.id, fencing)
         return task
 
     def settle_task_failure(self, binding: Binding, receipt: dict[str, Any]) -> Task:

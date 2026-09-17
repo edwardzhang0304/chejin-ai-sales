@@ -109,11 +109,9 @@ LISTEN_STATUS_DISABLED = "disabled"
 NEXT_ACTION_NONE = "none"
 LOW_CONFIDENCE_THRESHOLD = 0.7
 CONVERSATION_CLOSED_STATUSES = {"closed", "rejected"}
-RECOVERABLE_IDENTITY_UNRESOLVED_GATE_CODES = {
-    "MESSAGE_IDENTITY_UNCONFIRMED",
-    "MESSAGE_CROSS_ROUND_IDENTITY_AMBIGUOUS",
-    "C2_MESSAGE_HISTORY_GAP",
-}
+from app.services.recovery_hold_state import RECOVERABLE_IDENTITY_REASON_CODES
+
+RECOVERABLE_IDENTITY_UNRESOLVED_GATE_CODES = set(RECOVERABLE_IDENTITY_REASON_CODES)
 MEDIA_ACTION_TECHNICAL_FAILURE_CODES = {
     "C2_IMAGE_IDENTITY_CONTRACT_INVALID",
     "C2_VOICE_IDENTITY_CONTRACT_INVALID",
@@ -924,7 +922,12 @@ def _apply_scan_fields(binding: WechatSessionBinding, payload: WechatSessionScan
     binding.last_message_observation_id = item.last_message_observation_id
     binding.ocr_confidence = item.ocr_confidence
     binding.last_seen_at = now
-    binding.last_scan_snapshot = _scan_snapshot(payload, item)
+    prior_scan = dict(binding.last_scan_snapshot or {})
+    binding.last_scan_snapshot = {
+        **_scan_snapshot(payload, item),
+        **({"pre_send_read_pending": prior_scan["pre_send_read_pending"]}
+           if "pre_send_read_pending" in prior_scan else {}),
+    }
 
 
 def _retire_stale_session_binding(binding: WechatSessionBinding, *, replacement_binding_id: str) -> None:
@@ -5362,6 +5365,17 @@ def ingest_messages(db: Session, worker: Worker, payload: WechatMessageIngestReq
         new_customer_message_ids = list(dict.fromkeys([*recovered_sequence_tail, *new_customer_message_ids]))
     if identity_recovery_result is not None:
         message_batch = identity_recovery_result
+    if (message_batch is None and not open_handoff_active and not handoff_flow_gates
+            and not temporary_capability_gates and (not partitioned or partition_final)
+            and _complete_authoritative_viewport_confirmed(evidence_payload)):
+        from app.services.pre_send_read_recovery import collect_after_read
+        message_batch = collect_after_read(
+            db, worker=worker, binding=binding, conversation=conversation,
+            read_run_id=payload.read_run_id, customer_tail_ids=authoritative_customer_tail_ids,
+            visible_message_ids=_visible_existing_message_orders(
+                db, conversation_id=payload.conversation_id, evidence_payload=evidence_payload),
+            trace_id=get_request_id(),
+        )
     if open_handoff_active:
         if handoff_flow_gates:
             from app.services.c3_service import (

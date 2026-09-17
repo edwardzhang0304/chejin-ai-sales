@@ -212,6 +212,8 @@ class ReplySendClaim:
 
     @classmethod
     def from_api(cls, payload: dict[str, Any]) -> "ReplySendClaim":
+        if payload.get("settlement_only") is True or payload.get("send_allowed") is False:
+            raise ValueError("REPLY_SETTLEMENT_PERMIT_CANNOT_SEND")
         return cls(
             reply_action_id=str(payload.get("reply_action_id") or ""),
             task_id=str(payload.get("task_id") or ""),

@@ -55,6 +55,7 @@ class TaskFailRequest(BaseModel):
     failure_step: str | None = Field(default=None, max_length=64)
     failure_remark: str | None = Field(default=None, max_length=1000)
     settlement_only: bool = False
+    evidence: dict = Field(default_factory=dict)
 
 
 class TaskEvidenceRequest(BaseModel):

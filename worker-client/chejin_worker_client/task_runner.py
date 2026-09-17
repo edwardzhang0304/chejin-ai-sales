@@ -202,9 +202,13 @@ from .wechat_c2 import (
 C2ReadOperationPhase: TypeAlias = Literal[
     "authorized_read",
     "pre_send_refresh",
+    "reply_sequence_read",
 ]
 C2_AUTHORIZED_READ_PHASE: C2ReadOperationPhase = "authorized_read"
 C2_PRE_SEND_REFRESH_PHASE: C2ReadOperationPhase = "pre_send_refresh"
+# Full authoritative C2 ingest between segments, without repeating the initial
+# friend activation carried in the batch's immutable authorization provenance.
+C2_REPLY_SEQUENCE_READ_PHASE: C2ReadOperationPhase = "reply_sequence_read"
 
 
 def should_submit_c2_ingest_payload(
@@ -6709,6 +6713,8 @@ class TaskRunner:
             return state
 
     def _check_fault_recovery(self) -> dict[str, Any]:
+        from .pre_send_read_recovery import settlement_pending as pre_send_read_settlement_pending
+        from .pre_send_read_recovery import input_pending_records
         reason = ""
         snapshot = self.update_install_safety_snapshot()
         if not self.binding or self.binding.run_status != "faulted":
@@ -6721,6 +6727,10 @@ class TaskRunner:
             reason = "等待后端确认已停止接单"
         elif self._restart_backend_probe_pending or self._restart_recovery_flow_id:
             reason = "正在核对上次未完成的流程"
+        elif pre_send_read_settlement_pending():
+            reason = "已停止接单，正在处理旧记录。处理完成后可开始接单。"
+        elif input_pending_records():
+            reason = "暂不能恢复接单，正在核验安全状态。"
         elif not snapshot["settlement_complete"]:
             from .storage import c2_outbox_recovery_blocker
             blocker = c2_outbox_recovery_blocker()
@@ -7035,6 +7045,8 @@ class TaskRunner:
     def tick_once(self) -> None:
         try:
             self._tick_once()
+            from .pre_send_read_recovery import observe_pending_input
+            observe_pending_input(self)
             self._process_fault_recovery()
         finally:
             self._publish_fault_recovery()
@@ -7095,7 +7107,8 @@ class TaskRunner:
         elif probe_performed and wechat_status == "logged_in":
             mark_incident_recovered("wechat_window_missing")
         local_lock = lock_summary()
-        local_lock["capabilities"] = {**(local_lock.get("capabilities") or {}), "reply_sequence_version": 1}
+        local_lock["capabilities"] = {**(local_lock.get("capabilities") or {}), "reply_sequence_version": 1,
+                                      "pre_send_read_recovery_version": 1}
         vision_capability = load_c2_state("vision_preflight")
         if vision_capability:
             local_lock = {
@@ -7721,6 +7734,18 @@ class TaskRunner:
     ) -> bool:
         """Make a pre-send read failure durable before C2 may scan again."""
 
+        recovery_record = ((evidence or {}).get("pre_send_refresh") or {}).get("pre_send_read_failure_record")
+        if isinstance(recovery_record, dict):
+            from .pre_send_read_recovery import mark_settled
+            try:
+                self.api.settle_pre_send_read_failure(binding, recovery_record)
+                mark_settled(recovery_record["context"]["reply_action_id"])
+                return True
+            except Exception as exc:
+                append_log("ERROR", "pre_send_read_receipt_pending", "读取失败回执待补交，继续停止接单。",
+                           task_id=task_id, error_code=type(exc).__name__)
+                return False
+
         normalized_task_id = str(task_id or "").strip()
         normalized_source_error = str(
             source_error_code or "PRE_SEND_REFRESH_FAILED"
@@ -8021,6 +8046,16 @@ class TaskRunner:
                 wait_for_brain=False,
             )
             if not refresh.get("ok"):
+                from .pre_send_read_recovery import refresh_with_recheck
+                refresh = refresh_with_recheck(
+                    self, binding, target=target, action=action, task_id=task.id,
+                    first_result=refresh,
+                    read=lambda: self._read_one_wechat_target(
+                        binding, target, current_step="pre_send_refresh", operation_phase=C2_PRE_SEND_REFRESH_PHASE,
+                        allow_during_current_task=True, enforce_read_targets=True,
+                        held_lease=lease, current_only=True, wait_for_brain=False),
+                )
+            if not refresh.get("ok"):
                 self._settle_chat_reply_context_failure_before_unlock(
                     binding,
                     task_id=task.id,
@@ -8172,6 +8207,8 @@ class TaskRunner:
                 **ack_payload,
             )
             mark_reply_send_ack_confirmed(reply_action_id)
+            from .pre_send_read_recovery import mark_settled_if_present
+            mark_settled_if_present(reply_action_id)
             remove_action_journal(
                 self.bridge.send_transaction_journal_path(
                     reply_action_id
@@ -8277,6 +8314,9 @@ class TaskRunner:
         self,
         binding: Binding,
     ) -> bool:
+        from .pre_send_read_recovery import prepare_receipt_recovery
+        if not prepare_receipt_recovery(self, binding):
+            return False
         for record in list_reply_send_ack_outbox(limit=20):
             reply_action_id = str(record.get("reply_action_id") or "")
             if record.get("status") == "intent":
@@ -8572,9 +8612,11 @@ class TaskRunner:
             "guard": payload.get("guard"),
             "context_validation": payload.get("context_validation"),
             "action_journal": payload.get("action_journal"),
+            **({"pre_send_read_failure": payload["pre_send_read_failure"]}
+               if "pre_send_read_failure" in payload else {}),
             "send_baseline": {
                 **({key: send_baseline.get(key) for key in (
-                    "ok", "input_region", "frame_observation", "send_context_guard", "message_sequence",
+                    "ok", "validation", "input_region", "frame_observation", "send_context_guard", "message_sequence",
                 )} if payload.get("state") == "send_context_changed_before_input" else {}),
                 "screenshot_path": send_baseline.get("screenshot_path"),
                 "message_viewport_change_digest": baseline_guard.get(
@@ -18569,7 +18611,7 @@ class TaskRunner:
                 continuation_lease = self.current_ui_lock
                 observation = self._read_one_wechat_target(
                     binding, target, current_step="reply_sequence_read",
-                    operation_phase=C2_AUTHORIZED_READ_PHASE,
+                    operation_phase=C2_REPLY_SEQUENCE_READ_PHASE,
                     allow_during_current_task=True, enforce_read_targets=True,
                     held_lease=self.current_ui_lock, current_only=True, wait_for_brain=False,
                 )
@@ -18647,6 +18689,16 @@ class TaskRunner:
                            "段间读取已与新冻结清单核对，复用本次画面。",
                            metadata={"batch_id": current_batch_id,
                                      "frame_id": (refresh_read.get("send_identity_frame") or {}).get("frame_id")})
+            if not refresh_read.get("ok"):
+                from .pre_send_read_recovery import refresh_with_recheck
+                refresh_read = refresh_with_recheck(
+                    self, binding, target=target, action=status["reply_action"], task_id=reply_task_id,
+                    first_result=refresh_read,
+                    read=lambda: self._read_one_wechat_target(
+                        binding, target, current_step="pre_send_refresh", operation_phase=C2_PRE_SEND_REFRESH_PHASE,
+                        allow_during_current_task=True, enforce_read_targets=True,
+                        held_lease=self.current_ui_lock, current_only=True, wait_for_brain=False),
+                )
             if not refresh_read.get("ok"):
                 reply_task_settled = (
                     self._settle_chat_reply_context_failure_before_unlock(
@@ -18861,9 +18913,28 @@ class TaskRunner:
                     "failure_step": "before_claim_send",
                     "batch": status,
                 }
+            from .pre_send_read_recovery import record_claim_attempt, interrupt as interrupt_read_recovery
+            try:
+                tracked_read_recovery = record_claim_attempt(
+                    str(sequence_action.get("id") or ""),
+                    lease_fencing_token=self.api._task_lease_token(task.id),
+                )
+            except Exception:
+                self.set_run_status("faulted")
+                raise
             try:
                 claim = self.api.claim_send(binding, task)
-            except ApiError as exc:
+            except Exception as exc:
+                if tracked_read_recovery:
+                    try:
+                        interrupt_read_recovery(str(sequence_action.get("id") or ""), "claim_response_unavailable")
+                    finally:
+                        self.set_run_status("faulted")
+                    return {"ok": False, "error_code": getattr(exc, "code", "SEND_CLAIM_RESPONSE_UNAVAILABLE"),
+                            "failure_step": "claim_send", "batch": status,
+                            "settlement_pending": True}
+                if not isinstance(exc, ApiError):
+                    raise
                 try:
                     self.api.fail_task(binding, task.id, exc.code, "claim_send", str(exc))
                 except Exception as report_exc:
@@ -19198,15 +19269,15 @@ class TaskRunner:
                 schedule_stage_event_upload(self.api, binding)
 
             try:
-                sidecar_result = self.bridge.send_reply(
-                    target=target.remark_code or target.display_name,
-                    rpa_session_key="",
-                    text=final_send_text,
-                    task_id=task.id,
-                    reply_action_id=claim.reply_action_id,
-                    current_only=True,
-                    expected_context_guard=expected_context_guard,
-                    cancel_check=send_cancel_requested,
+                from .pre_send_read_recovery import send_with_recheck
+                sidecar_result = send_with_recheck(
+                    self, binding, target=target, claim=claim,
+                    send=lambda: self.bridge.send_reply(
+                        target=target.remark_code or target.display_name,
+                        rpa_session_key="", text=final_send_text, task_id=task.id,
+                        reply_action_id=claim.reply_action_id, current_only=True,
+                        expected_context_guard=expected_context_guard, cancel_check=send_cancel_requested,
+                    ),
                 )
             except Exception as exc:
                 record_reply_stage(
@@ -23614,6 +23685,7 @@ class TaskRunner:
             if operation_phase not in {
                 C2_AUTHORIZED_READ_PHASE,
                 C2_PRE_SEND_REFRESH_PHASE,
+                C2_REPLY_SEQUENCE_READ_PHASE,
             }:
                 return {
                     "ok": False,
@@ -24108,7 +24180,9 @@ class TaskRunner:
                     },
                     force_incident=True,
                 )
-                return {"ok": False, "error_code": code}
+                return {"ok": False, "error_code": code,
+                        **({"read_call_failure": sidecar_payload["read_call_failure"]}
+                           if isinstance(sidecar_payload.get("read_call_failure"), dict) else {})}
             same_frame_full_ocr_attempted: set[str] = set()
 
             def replay_same_frame_with_full_ocr(

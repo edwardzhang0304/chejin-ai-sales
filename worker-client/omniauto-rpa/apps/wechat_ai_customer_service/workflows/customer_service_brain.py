@@ -915,6 +915,7 @@ def _maybe_run_customer_service_brain_within_time_budget(
         evidence_pack,
         target_state,
         query_text=managed_knowledge_query,
+        current_query_text=evidence_combined,
     )
     apply_server_validated_image_products(batch, evidence_pack)
     attach_conversation_runtime_hints_to_evidence_pack(evidence_pack, target_state)

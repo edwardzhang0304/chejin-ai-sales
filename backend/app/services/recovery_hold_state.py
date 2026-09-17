@@ -11,6 +11,15 @@ from datetime import datetime
 from typing import Any
 
 
+# One lifecycle: the reasons allowed to create a temporary identity hold must
+# also be eligible for resolution by a later complete, authoritative read.
+RECOVERABLE_IDENTITY_REASON_CODES = frozenset({
+    "MESSAGE_IDENTITY_UNCONFIRMED",
+    "MESSAGE_CROSS_ROUND_IDENTITY_AMBIGUOUS",
+    "C2_MESSAGE_HISTORY_GAP",
+})
+
+
 def suspend_recovery_hold(
     binding: Any,
     *,

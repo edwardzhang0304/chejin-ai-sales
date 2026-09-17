@@ -4,17 +4,25 @@ from app.contracts.shared_rules import shared_adapter
 
 
 def evidence():
-    sequence = [dict(sender_role='customer',message_type='text') for _ in range(2)]
+    sequence = [dict(sender_role='customer',message_type='text',
+                     normalized_content_signature=f'message-{i}',media_state='') for i in range(2)]
     frame = {'frame_id':'frame-after-typing'}
-    return {'guard':{'ok':True,'visual':{
+    target = {'ok':True,'confirmed_target':'CJTEST01','conversation_type':'private'}
+    return {'guard':{**target,'send_baseline':{'send_context_guard':{
+        'sequence': [sequence[0].copy()], 'sequence_sha256':'a'*64}},'visual':{
+        'error_code':'C3_CONTEXT_CHANGED_BEFORE_SEND',
         'physical_send_triggered':False,
-        'draft_clear':{'ok':True,'cleared':True,'reason':'confirmed_program_draft_cleared','focus_check':{'ok':True}},
+        'draft_clear':{'ok':True,'cleared':True,'reason':'confirmed_program_draft_cleared',
+            'input_region':{'has_visible_text':False},
+            'focus_check':{'ok':True,'expected_length':8,'observed_length':8}},
         'context_check':{
-            'error_code':'C3_CONTEXT_CHANGED_BEFORE_SEND','continuity_relation':'unique_tail_append',
-            'worker_continuity_decision':{'relation':'unique_tail_append','new_count':2,'new_suffix_indexes':[1]},
+            'ok':False,'error_code':'C3_CONTEXT_CHANGED_BEFORE_SEND','continuity_relation':'unique_tail_append',
+            'worker_continuity_decision':{'relation':'unique_tail_append','old_count':1,'new_count':2,'new_suffix_indexes':[1],
+                'overlap_candidates':[{'has_unique_strong_boundary':True}],
+                'matched_pairs':[{'old_index':0,'new_index':0}]},
             'expected_sequence_sha256':'a'*64,'current_sequence_sha256':'b'*64,
             'frame_observation':frame,
-            'snapshot':{'ok':True,'frame_observation':frame.copy(),
+            'snapshot':{'ok':True,'validation':target.copy(),'frame_observation':frame.copy(),
                 'send_context_guard':{'ok':True,'tail_complete':True,'sequence':sequence,'sequence_sha256':'b'*64},
                 'message_sequence':[{'sender_role':'customer','observation_id':'old'},{'sender_role':'customer','observation_id':'new'}]},
         }}}}
@@ -67,8 +75,9 @@ def before_input_evidence():
     snapshot = check.pop('snapshot')
     snapshot['input_region'] = {'has_visible_text': False}
     snapshot['screenshot_path'] = '/controlled/current-frame.png'
+    check['expected_context_guard'] = value['guard']['send_baseline']['send_context_guard']
     check.pop('frame_observation')
-    return {'state': 'send_context_changed_before_input', 'guard': {'ok': True, 'screenshot_path': snapshot['screenshot_path']},
+    return {'state': 'send_context_changed_before_input', 'guard': {**snapshot['validation'], 'screenshot_path': snapshot['screenshot_path']},
         'send_baseline': snapshot, 'context_validation': check, 'action_journal': {'ok': True, 'action_phase': 'not_attempted'}}
 
 

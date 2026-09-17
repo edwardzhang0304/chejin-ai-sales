@@ -87,6 +87,28 @@ def _current_batch() -> list[dict]:
     ]
 
 
+@pytest.mark.parametrize("invalid", [None, "missing_history", "wrong_role", "wrong_text", "duplicate"])
+def test_partial_reply_recovery_preserves_verified_history_and_rejects_mismatch(invalid):
+    snapshot = _snapshot()
+    part = {"message_event_id": "history-self-1", "reply_action_id": "confirmed-action", "text": "预算大概多少"}
+    snapshot["partial_reply_recovery"] = {"origin_batch_id": "old-batch", "origin_reply_action_id": "failed-next",
+                                            "confirmed_prefix": [part]}
+    if invalid == "missing_history": part["message_event_id"] = "not-in-frozen-history"
+    elif invalid == "wrong_role": part.update(message_event_id="history-customer-1", text="家用轿车")
+    elif invalid == "wrong_text": part["text"] = "伪造的已发内容"
+    elif invalid == "duplicate": snapshot["partial_reply_recovery"]["confirmed_prefix"].append(dict(part))
+    def build():
+        return build_chejin_brain_context(brain_context_snapshot=snapshot, current_batch=_current_batch(),
+                                         expected_conversation_id="conversation-context-1")
+    if invalid:
+        with pytest.raises(ChejinBrainContextError, match="partial_reply_recovery_history_mismatch"):
+            build()
+    else:
+        result = build()
+        assert result["conversation_context"]["partial_reply_recovery"]["confirmed_prefix"][0]["text"] == part["text"]
+        assert result["prior_messages_sha256"] == snapshot["prior_messages_sha256"]
+
+
 def test_bridge_replays_one_authoritative_history_for_normal_and_fast_paths(
     monkeypatch,
 ):

@@ -2009,6 +2009,8 @@ def _build_brain_context_snapshot(
         "semantic_history_count_before_batch": semantic_count,
         "prior_messages_sha256": _brain_snapshot_sha256(prior_messages),
         "history_window_complete": len(prior_messages) == min(50, history_count),
+        **({"partial_reply_recovery": dict(batch.ai_request_snapshot["partial_reply_recovery"])}
+           if (batch.ai_request_snapshot or {}).get("partial_reply_recovery") else {}),
     }
 
 
@@ -2367,12 +2369,9 @@ def open_handoff_events_for_conversation(
     return list(db.scalars(statement).all())
 
 
-RECOVERABLE_C2_HANDOFF_REASON_CODES = frozenset(
-    {
-        "MESSAGE_CROSS_ROUND_IDENTITY_AMBIGUOUS",
-        "C2_MESSAGE_HISTORY_GAP",
-    }
-)
+from app.services.recovery_hold_state import RECOVERABLE_IDENTITY_REASON_CODES
+
+RECOVERABLE_C2_HANDOFF_REASON_CODES = RECOVERABLE_IDENTITY_REASON_CODES
 
 
 def _record_handoff_closed_best_effort(
@@ -3881,6 +3880,13 @@ def claim_send(
     action.claimed_by_worker_id = worker_id
     action.claimed_task_id = task.id
     action.sending_claimed_at = utcnow()
+    from app.services.reply_settlement_permit import claim_identity
+    identity = claim_identity(
+        worker=db.get(Worker, worker_id), binding=binding, action=action,
+        task=task, client_instance_id=client_instance_id,
+    )
+    if identity is not None:
+        action.ai_payload = {**(action.ai_payload or {}), "send_claim_identity": identity}
     task.current_step = "reply_action_claimed"
     _write_event(db, task, TaskEventType.step_updated, from_status=task.status, to_status=task.status, worker_id=worker_id, remark="claim-send 成功")
     db.flush()
