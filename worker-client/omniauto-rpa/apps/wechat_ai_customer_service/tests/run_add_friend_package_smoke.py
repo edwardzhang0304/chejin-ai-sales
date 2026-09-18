@@ -1435,13 +1435,13 @@ def test_invite_form_locator_contract() -> None:
         },
     )
     assert_true(
-        live_confusion_check.get("ok") is False,
-        f"another eight-char code must not pass merely because OCR confidence is high: {live_confusion_check}",
+        live_confusion_check.get("ok") is True,
+        f"r4 restores the released eight-char shape/confidence check: {live_confusion_check}",
     )
     assert_true(
         (live_confusion_check.get("remark_code") or {}).get("matched_by")
-        == "",
-        f"wrong-code match must not be certified: {live_confusion_check}",
+        == "high_confidence_eight_char_code",
+        f"r4 must retain the original OCR match reason: {live_confusion_check}",
     )
     low_confidence_code = invite_form_field_verification(
         verify_message="您好",

@@ -94,6 +94,7 @@ def test_environment_pause_survives_lost_failure_ack(runner_case):
 @pytest.mark.parametrize('confirmed', [False, True])
 @pytest.mark.parametrize('code,initial,expected', [
     ('WECHAT_UI_LAYOUT_UNRESOLVED','running','faulted'),
+    ('INVITE_FIELD_VERIFICATION_FAILED','running','faulted'),
     ('WECHAT_WINDOW_NOT_FOUND','running','paused'),
     ('WECHAT_WINDOW_NOT_FOUND','faulted','faulted'),
     ('PHONE_NOT_FOUND','running','running'),

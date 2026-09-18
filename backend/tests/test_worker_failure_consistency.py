@@ -61,7 +61,8 @@ class Desktop(RpaBridge):
         self.calls+=1
         assert args[0]=='add-friend-entry-click-plan-windows',args
         return {'ok':False,'task_status':'failed','error_code':request['code'],
-                'failure_step':'phone_search_finished' if request['code']=='PHONE_NOT_FOUND' else 'window_layout_calibration',
+                'failure_step':('phone_search_finished' if request['code']=='PHONE_NOT_FOUND' else
+                                'invite_fields_review' if request['code']=='INVITE_FIELD_VERIFICATION_FAILED' else 'window_layout_calibration'),
                 'message':'controlled desktop boundary; no physical click'}
 bridge=Desktop()
 bridge.mode='real'
@@ -75,7 +76,7 @@ def run_worker(tmp_path, program, request):
     script=tmp_path/'worker.py'; script.write_text(COMMON+program,encoding='utf-8')
     args=tmp_path/'input.json'; args.write_text(json.dumps(request),encoding='utf-8')
     env={**os.environ,'PYTHONPATH':str(ROOT/'worker-client'),
-         'CHEJIN_WORKER_HOME':str(tmp_path/'worker-state'),'CHEJIN_C2_ENABLED':'false',
+         'CHEJIN_WORKER_HOME':str(tmp_path/'worker-state'),'CHEJIN_C2_ENABLED':'true',
          'CHEJIN_OBSERVABILITY_ENABLED':'false','PYTHONDONTWRITEBYTECODE':'1'}
     process=subprocess.run([sys.executable,str(script),str(args)],env=env,cwd=ROOT,
                            text=True,capture_output=True,timeout=35)

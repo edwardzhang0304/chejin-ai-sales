@@ -31,6 +31,7 @@ def backend_state(worker_id):
 
 @pytest.mark.parametrize('boundary,code,expected,restart_injection', [
     pytest.param('receipt_saved','WECHAT_UI_LAYOUT_UNRESOLVED','faulted','',id='receipt_saved'),
+    pytest.param('receipt_saved','INVITE_FIELD_VERIFICATION_FAILED','faulted','',id='invite_receipt_saved'),
     pytest.param('stop_saved','WECHAT_UI_LAYOUT_UNRESOLVED','faulted','',id='stop_saved'),
     pytest.param('pause_saved','WECHAT_UI_LAYOUT_UNRESOLVED','faulted','',id='pause_saved'),
     pytest.param('binding_saved','WECHAT_UI_LAYOUT_UNRESOLVED','faulted','',id='binding_saved'),

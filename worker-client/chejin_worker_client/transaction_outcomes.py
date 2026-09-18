@@ -17,6 +17,8 @@ FRAME_TECHNICAL_ERROR_CODES = frozenset({
     "WECHAT_UI_LAYOUT_UNRESOLVED",
 })
 
+C1_TECHNICAL_ERROR_CODES = FRAME_TECHNICAL_ERROR_CODES | {"INVITE_FIELD_VERIFICATION_FAILED"}
+
 
 class FlowOutcomeAccumulator:
     """Keep irreversible item outcomes monotonic until one common finalize."""

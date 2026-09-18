@@ -18404,6 +18404,8 @@ def confirm_reply_sent(
     initial_snapshot: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     attempts: list[dict[str, Any]] = []
+    failure_seen = False
+    sending_unresolved = False
     for attempt in range(1, max(1, max_attempts) + 1):
         if attempt > 1:
             time.sleep(min(1.2, 0.35 + attempt * 0.12))
@@ -18429,13 +18431,29 @@ def confirm_reply_sent(
             continue
         snapshot["attempt"] = attempt
         attempts.append(snapshot)
-        input_blank = not bool((snapshot.get("input_region") or {}).get("has_visible_text"))
+        input_blank = (snapshot.get("input_region") or {}).get("has_visible_text") is False
         confirmed_message = find_new_matching_self_message(
             list(baseline_message_sequence or []),
             list(snapshot.get("message_sequence") or []),
             text,
+            include_status_counterevidence=True,
         )
-        if snapshot.get("ok") and input_blank and confirmed_message:
+        if snapshot.get("ok") and confirmed_message:
+            status = confirmed_message.get("send_status_evidence") or {}
+            status = status if isinstance(status, dict) else {}
+            if status.get("state") == "blocked":
+                if status.get("reason") == "red_failure":
+                    failure_seen = True
+                elif status.get("reason") == "possible_sending":
+                    sending_unresolved = True
+            elif status.get("state") == "clear":
+                sending_unresolved = False
+            # Missing evidence never clears a previously observed counterexample.
+            snapshot["send_status_confirmation"] = {
+                "failure_seen": failure_seen, "sending_unresolved": sending_unresolved,
+            }
+        if (snapshot.get("ok") and input_blank and confirmed_message
+                and not failure_seen and not sending_unresolved):
             confirmed_observation = next(
                 (
                     dict(item)

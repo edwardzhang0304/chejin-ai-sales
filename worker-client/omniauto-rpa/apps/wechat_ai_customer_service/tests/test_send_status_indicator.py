@@ -34,3 +34,15 @@ def test_unrelated_red_pixels_and_invalid_geometry():
     ImageDraw.Draw(image).ellipse((10,10,26,26),fill=(230,55,55))
     assert inspect_gutter(image,[250,100,550,180])["state"] == "clear"
     assert inspect_gutter(image,None)["state"] == "unavailable"
+
+
+@pytest.mark.parametrize('kind',['red_square','red_disk','off_center_failure','gray_text'])
+def test_unclassified_marks_are_unavailable_not_reliable_failures(kind):
+    image=Image.new('RGB',(600,300),(250,250,250));draw=ImageDraw.Draw(image)
+    if kind=='red_square':draw.rectangle((225,133,239,147),fill=(230,55,55))
+    elif kind=='red_disk':draw.ellipse((225,133,239,147),fill=(230,55,55))
+    elif kind=='off_center_failure':
+        draw.ellipse((225,120,239,132),fill=(230,55,55))
+        draw.line((232,122,232,127),fill='white');draw.point((232,130),fill='white')
+    else:draw.rectangle((225,133,234,147),fill=(140,140,140))
+    assert inspect_gutter(image,[250,100,550,180])['state']=='unavailable'

@@ -34,6 +34,7 @@ from apps.wechat_ai_customer_service.adapters.add_friend_diagnostics import (
 )
 from apps.wechat_ai_customer_service.adapters.add_friend_flow_events import add_friend_entry_click_events_from_payload
 from apps.wechat_ai_customer_service.adapters.add_friend_layout import (
+    item_center,
     plus_entry_target as layout_plus_entry_target,
     semantic_invite_form_targets,
 )
@@ -1612,6 +1613,7 @@ def close_proven_add_friend_dialog(
     current_items: list[dict[str, Any]],
     action_name: str,
     verify_label: str,
+    close_target: dict[str, Any] | None = None,
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     """Best-effort close of an HWND already proven to be Add Friend.
 
@@ -1626,7 +1628,7 @@ def close_proven_add_friend_dialog(
         current_shot.size,
         layout_snapshot=layout_snapshot,
     )
-    cleanup_target = ocr_cleanup_target or _known_add_friend_dialog_close_target(
+    cleanup_target = close_target or ocr_cleanup_target or _known_add_friend_dialog_close_target(
         current_shot.size,
         layout_snapshot=layout_snapshot,
     )
@@ -1645,7 +1647,7 @@ def close_proven_add_friend_dialog(
         ),
         "target": cleanup_target,
         "detection_source": (
-            "ocr_title"
+            "ocr_cancel_button" if close_target and close_target.get("name") == "invite_cancel_button" else "ocr_title"
             if ocr_cleanup_target is not None
             else ("known_dialog_hwnd" if cleanup_target is not None else "unknown")
         ),
@@ -2098,6 +2100,8 @@ def fill_add_friend_invite_form_and_confirm(hwnd: int, output_dir: Path, *, veri
     })
     initial_field_verification = dict(field_review['field_verification'])
     fill_retry_attempts: list[dict[str, Any]] = []
+    refill_blocked = False
+    identity_changed = False
     if not initial_field_verification.get('ok'):
         from apps.wechat_ai_customer_service.adapters.wechat_win32_ocr.field_value_readback import read_invite_fields
         readback_started = time.perf_counter()
@@ -2111,47 +2115,87 @@ def fill_add_friend_invite_form_and_confirm(hwnd: int, output_dir: Path, *, veri
                         'seconds': round(time.perf_counter() - readback_started, 3),
                         'result': field_values})
 
-        def apply_actual_values(review):
-            targets = review['targets_map']
-            snapshot = _layout_for_image(review['shot']) or {}
-            scoped_values = {}
-            for key, actual in field_values.items():
-                target_name = {'verify_message': 'invite_greeting_textarea',
-                               'remark_name': 'invite_remark_input'}[key]
-                stale = actual.get('available') and (
-                    actual.get('hwnd') != hwnd
-                    or actual.get('window_rect') != snapshot.get('window_rect')
-                    or actual.get('field_bounds') != (targets.get(target_name) or {}).get('bounds')
+        # Reads are evidence/protection against overwriting a manual edit, not
+        # an alternative verifier. Always rerun the original OCR rules on a
+        # fresh frame before the single bounded refill.
+        field_review = _ops().capture_invite_form_field_review(
+            hwnd, output_dir, label='add_friend_invite_form_readback_recheck_window',
+            verify_message=clean_verify_message, remark_name=clean_remark_name,
+            remark_code=clean_remark_code,
+        )
+        timings.append({'name': 'invite_fields_readonly_recheck_ocr',
+                        'seconds': field_review['ocr_seconds'],
+                        'ocr_count': len(field_review['ocr_items'])})
+        snapshot = _layout_for_image(field_review['shot']) or {}
+        protected_fields = set()
+        identity_changed = not add_friend_invite_form_surface_detected(field_review['ocr_items'])['has_title']
+        for field, target_name, expected in (
+            ('verify_message', 'invite_greeting_textarea', clean_verify_message),
+            ('remark_name', 'invite_remark_input', clean_remark_name),
+        ):
+            actual = field_values.get(field) or {}
+            stale = actual.get('available') and (
+                actual.get('hwnd') != hwnd
+                or actual.get('window_rect') != snapshot.get('window_rect')
+                or actual.get('field_bounds') != (field_review['targets_map'].get(target_name) or {}).get('bounds')
+            )
+            if stale or actual.get('identity_changed'):
+                identity_changed = True
+            if (field_review['field_verification'].get(field) or {}).get('ok'):
+                continue
+            if actual.get('available') is not True or actual.get('source_verified') is not True:
+                continue
+            value = actual.get('value')
+            if not isinstance(value, str):
+                continue
+            original_bounds = (before_targets_map.get(target_name) or {}).get('bounds')
+            original_items = [item for item in before_items
+                              if original_bounds and point_in_bounds(*item_center(item), original_bounds)]
+            original_items.sort(key=lambda item: (item_center(item)[1], item_center(item)[0]))
+            original_value = mapped_compact_ocr_text(''.join(str(item.get('text') or '') for item in original_items))
+            # Empty==empty means the first paste did not arrive, not a manual
+            # edit. An already correct actual value needs no further paste.
+            normalized = mapped_compact_ocr_text(value)
+            if normalized == mapped_compact_ocr_text(expected):
+                protected_fields.add(field)
+            elif normalized != original_value:
+                refill_blocked = True
+        refill_blocked = refill_blocked or identity_changed
+        field_review['field_verification']['field_readbacks'] = field_values
+        if not refill_blocked:
+            for field, target_name, expected, action_name in (
+                ('verify_message', 'invite_greeting_textarea', clean_verify_message, 'invite_greeting_retry'),
+                ('remark_name', 'invite_remark_input', clean_remark_name, 'invite_remark_retry'),
+            ):
+                check = field_review['field_verification'].get(field) or {}
+                if check.get('ok') or field in protected_fields:
+                    continue
+                target = field_review['targets_map'].get(target_name)
+                if target is None:
+                    continue
+                retry_started_at = time.perf_counter()
+                retry_result = _ops().paste_invite_form_text(hwnd, target, expected, action_name=action_name)
+                fill_retry_attempts.append({'field': field, 'result': retry_result})
+                timings.append({'name': action_name, 'seconds': round(time.perf_counter() - retry_started_at, 3), 'result': retry_result})
+                if field == 'verify_message':
+                    greeting_result = retry_result
+                else:
+                    remark_result = retry_result
+                if not retry_result.get('ok'):
+                    break
+                _ops().add_friend_paced_pause('verify', reason='after_invite_form_retry_before_review_capture')
+                # Greeting edits can move the remark again. The next field and
+                # the confirm button must both come from this new frame.
+                field_review = _ops().capture_invite_form_field_review(
+                    hwnd, output_dir, label=f'add_friend_invite_form_{field}_retry_review',
+                    verify_message=clean_verify_message, remark_name=clean_remark_name,
+                    remark_code=clean_remark_code,
                 )
-                scoped_values[key] = ({**actual, 'available': False, 'identity_changed': True,
-                                       'reason': 'field_window_changed'} if stale else actual)
-            review['field_verification'] = invite_form_field_verification(
-                verify_message=clean_verify_message, remark_name=clean_remark_name,
-                remark_code=clean_remark_code, ocr_items=review['ocr_items'],
-                field_bounds={
-                    'verify_message': (targets.get('invite_greeting_textarea') or {}).get('bounds'),
-                    'remark_name': (targets.get('invite_remark_input') or {}).get('bounds'),
-                    'remark_code': (targets.get('invite_remark_input') or {}).get('bounds'),
-                }, field_values=scoped_values,
-            )
-        apply_actual_values(field_review)
-        verified = field_review['field_verification']
-        actual_mismatch = any((verified.get(key) or {}).get('actual_value_matches') is False
-                              for key in ('verify_message', 'remark_name', 'remark_code'))
-        keyboard_read = any(value.get('requires_fresh_layout') for value in field_values.values())
-        # No reliable user-input monitor exists in this form flow. Consequently
-        # it must not overwrite a mismatching field on an OCR-only hunch.
-        # Unavailable readback/conflicting OCR gets one fresh read, not refill.
-        if not actual_mismatch and (not verified.get('ok') or keyboard_read):
-            field_review = _ops().capture_invite_form_field_review(
-                hwnd, output_dir, label='add_friend_invite_form_readback_recheck_window',
-                verify_message=clean_verify_message, remark_name=clean_remark_name,
-                remark_code=clean_remark_code,
-            )
-            apply_actual_values(field_review)
-            timings.append({'name': 'invite_fields_readonly_recheck_ocr',
-                            'seconds': field_review['ocr_seconds'],
-                            'ocr_count': len(field_review['ocr_items'])})
+                timings.append({'name': f'{action_name}_review', 'seconds': field_review['ocr_seconds'],
+                                'ocr_count': len(field_review['ocr_items'])})
+                if not add_friend_invite_form_surface_detected(field_review['ocr_items'])['has_title']:
+                    identity_changed = refill_blocked = True
+                    break
     filled_shot = field_review['shot']
     filled_path = field_review['screenshot_path']
     filled_items = field_review['ocr_items']
@@ -2181,9 +2225,39 @@ def fill_add_friend_invite_form_and_confirm(hwnd: int, output_dir: Path, *, veri
             'current_step': 'invite_form_before_confirm',
             'timings': timings,
         }
-    if not field_verification.get('ok') or not greeting_result.get('ok') or not remark_result.get('ok'):
+    if not field_verification.get('ok') or refill_blocked or not greeting_result.get('ok') or not remark_result.get('ok'):
         final_status = mapped_add_friend_failed_result(state='invite_field_verification_failed', error_code=ERROR_INVITE_FIELD_VERIFICATION_FAILED, current_step='invite_fields_review', field_verification=field_verification)
         timings.append({'name': 'invite_field_verification_gate', 'seconds': 0.0, 'result': field_verification})
+        cleanup = {'attempted': False, 'closed': False, 'reason': 'cancel_target_or_identity_unavailable'}
+        cancel_target = filled_targets_map.get('invite_cancel_button')
+        if cancel_target and not identity_changed:
+            try:
+                cleanup, cleanup_timings = close_proven_add_friend_dialog(
+                    hwnd, output_dir, current_shot=filled_shot, current_items=filled_items,
+                    action_name='failed_invite_cancel', verify_label='failed_invite_cancel_verify',
+                    close_target=cancel_target,
+                )
+                timings.extend(cleanup_timings)
+                if cleanup.get('closed') and parent_dialog_hwnd:
+                    parent_shot, _ = _ops().capture_wechat_window_visible_screen(
+                        parent_dialog_hwnd, artifact_dir=str(output_dir), label='failed_invite_parent', popup_window=True)
+                    parent_items = _ops().run_ocr_on_screen_region(parent_shot, [0, 0, *parent_shot.size])
+                    parent_target = add_friend_residual_dialog_close_target(
+                        parent_items, parent_shot.size, layout_snapshot=_layout_for_image(parent_shot))
+                    if parent_target:
+                        parent_cleanup, parent_timings = close_proven_add_friend_dialog(
+                            parent_dialog_hwnd, output_dir, current_shot=parent_shot, current_items=parent_items,
+                            action_name='failed_invite_parent_close', verify_label='failed_invite_parent_verify',
+                            close_target=parent_target,
+                        )
+                        cleanup['parent'] = parent_cleanup
+                        timings.extend(parent_timings)
+                    else:
+                        cleanup['parent'] = {'attempted': False, 'closed': False,
+                                             'reason': 'add_friend_parent_identity_unconfirmed'}
+            except Exception as exc:
+                cleanup['error'] = type(exc).__name__
+        final_status['pre_confirm_cleanup'] = cleanup
         return {'ok': False, 'state': str(final_status.get('state') or 'invite_field_verification_failed'), 'task_status': str(final_status.get('task_status') or 'failed'), 'result_code': str(final_status.get('result_code') or ''), 'error_code': str(final_status.get('error_code') or ERROR_INVITE_FIELD_VERIFICATION_FAILED), 'current_step': str(final_status.get('current_step') or 'invite_fields_review'), 'verify_message': clean_verify_message, 'remark_name': clean_remark_name, 'remark_code': clean_remark_code, 'remark_code_valid': remark_code_valid, 'legacy_remark_fallback': False, 'validation_errors': [], 'before': {'screenshot_path': before_path, 'annotated_path': before_annotated, 'targets': before_targets, 'ocr_items': add_friend_ocr_snapshots(before_items, before_shot.size)}, 'filled': {'screenshot_path': filled_path, 'annotated_path': filled_annotated, 'targets': filled_targets, 'ocr_items': add_friend_ocr_snapshots(filled_items, filled_shot.size), 'initial_field_verification': initial_field_verification, 'field_verification': field_verification, 'retry_attempts': fill_retry_attempts}, 'after': {'screenshot_path': '', 'annotated_path': '', 'ocr_items': [], 'final_status': final_status, 'skipped': True, 'reason': 'field_verification_failed_before_confirm'}, 'greeting': greeting_result, 'remark_fill': remark_result, 'field_verification': field_verification, 'fill_retry_attempts': fill_retry_attempts, 'confirm': {'ok': False, 'skipped': True, 'reason': 'field_verification_failed_before_confirm'}, 'server_report_payload': final_status.get('server_report_payload') or {'task.status': 'failed', 'task.error_code': ERROR_INVITE_FIELD_VERIFICATION_FAILED, 'task.current_step': 'invite_fields_review'}, 'timings': timings}
     pause_seconds = _ops().add_friend_paced_pause('critical_click', reason='before_invite_confirm_click')
     timings.append({'name': 'before_invite_confirm_click_pause', 'seconds': round(pause_seconds, 3)})
