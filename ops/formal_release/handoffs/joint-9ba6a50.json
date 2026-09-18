@@ -1,0 +1,848 @@
+{
+  "schema_version": 1,
+  "repository": "edwardzhang0304/chejin-ai-sales",
+  "reviewed_commit": "9ba6a508bea8be0d7ee4a5c8742d3c37599316f3",
+  "target_version": "0.9.89",
+  "approval": "User authorized formal Windows packaging; reuse independently reviewed source and results with metadata-only release bump.",
+  "original_verification_sha256": "d681cde6978628bdc9eeeccb208a458fc001f0ad7bd9e849d5250e69618cddb6",
+  "source_sha256": {
+    "backend/tests/test_c1_failure_receipt_recovery.py": "b3952e21d5906ba8a03b5afc6d2b833068b8e8baefdefd3376f7c584a9135307",
+    "backend/tests/test_c1_stop_intent_recovery.py": "b17faa503e7ef0c7b9f071cc49f9b41e4f9940e2d302fd79e57db5ca20b29239",
+    "backend/tests/test_layered_send_status_http.py": "f8b92aa8c7d6e1ed5adec0c482b07eb0c2b2ce8bce12d60a03677fa26a6c1a60",
+    "backend/tests/test_worker_failure_consistency.py": "859c6fbdfbed6433720f84f7c6b3b958e12171242cd067555685300e668687fe",
+    "worker-client/chejin_worker_client/task_runner.py": "26e62c1b87158dc23f0a3347c1308e50aa7ee510f779e64cf622cff527a13d2e",
+    "worker-client/chejin_worker_client/transaction_outcomes.py": "b68283585e1af76526c304ebd648965137a06d4c054e1c3a6ff4747896384058",
+    "worker-client/omniauto-rpa/.chejin-source.json": "e925400405364eefa5fab35a64ce2b3febfed3cb5c2612be524de353691ac1ea",
+    "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/adapters/add_friend_layout.py": "113d4dea7a79386ad74dc54a34e4ad70bcfc1dbf54975d556ea93e8389e97780",
+    "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/adapters/text_correspondence.py": "5d6191d0ce91f29103028ec432db09639d22ad896713d19fa938590f1bf1b2a8",
+    "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/adapters/wechat_win32_ocr/add_friend_windows.py": "b0d8e0c422681999777cb2a91677566de8127e955a3399baeed47671b259da12",
+    "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/adapters/wechat_win32_ocr/send_status_indicator.py": "cef09c0f91015ff58ea7d09acd99f5ffd59923ae9ceb7302162d930617937ebe",
+    "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/adapters/wechat_win32_ocr_sidecar.py": "36cb137244c2decff4439ff7ea300e32c94d279c288ed6c0598738a9229b08c5",
+    "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/tests/run_add_friend_package_smoke.py": "778824cd0e034db51d6e013b10970003f77b69c1c7e2d8b6e2e446a769a60ce1",
+    "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/tests/test_invite_bounded_retry.py": "c3237a93b0638aa541565aa7ffca67ff74f1b129eb05d6c50062027f361c3e34",
+    "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/tests/test_invite_field_readback.py": "d3e6d6eeca88ba9d6e119f5efcfde592187c576bf7adba267e8cb386b03f79d6",
+    "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/tests/test_invite_legacy_rules.py": "0aea3f47c6a2655c86bb06d142a1f38f0e331bc5493f3190ba1cd991d413542a",
+    "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/tests/test_send_status_confirmation.py": "1dc64890d091786bd0cc67ab1fd3cf3a90b8a0e1460e38942dad1761bfb6415f",
+    "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/tests/test_send_status_indicator.py": "cd83c785233df846c71dda77d0f6dbfffc0cb723a9b7f1e07941d9663b721d52",
+    "worker-client/tests/test_c1_failure_receipt.py": "3a48069c9b91abf1b10cc2d12e048fe8c3b510905e7cf8c3b82795c76395cd49"
+  },
+  "checks": [
+    {
+      "name": "local",
+      "original_xml_sha256": "eb94941b973acfa5d4f86667dc5a0fac313c4e09ae46d391e16e77f38211ffce",
+      "count": 178,
+      "cases": [
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_invite_legacy_rules::test_copied_short_code_keeps_legacy_confidence_filter_order[fragments0-True]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_invite_legacy_rules::test_copied_short_code_keeps_legacy_confidence_filter_order[fragments1-True]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_invite_legacy_rules::test_copied_short_code_keeps_legacy_confidence_filter_order[fragments2-True]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_invite_legacy_rules::test_copied_short_code_keeps_legacy_confidence_filter_order[fragments3-False]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_invite_legacy_rules::test_copied_short_code_keeps_legacy_confidence_filter_order[fragments4-True]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_invite_legacy_rules::test_copied_short_code_keeps_legacy_confidence_filter_order[fragments5-False]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_invite_legacy_rules::test_copied_short_code_keeps_legacy_confidence_filter_order[fragments6-False]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_invite_legacy_rules::test_copied_short_code_keeps_legacy_confidence_filter_order[fragments7-False]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_invite_legacy_rules::test_copied_short_code_keeps_legacy_confidence_filter_order[fragments8-False]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_invite_legacy_rules::test_copied_short_code_keeps_legacy_confidence_filter_order[fragments9-False]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_invite_legacy_rules::test_copied_short_code_keeps_legacy_confidence_filter_order[fragments10-False]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_invite_legacy_rules::test_copied_short_code_keeps_legacy_confidence_filter_order[fragments11-False]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_invite_legacy_rules::test_copied_short_code_keeps_legacy_confidence_filter_order[fragments12-True]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_invite_legacy_rules::test_copied_short_code_keeps_legacy_confidence_filter_order[fragments13-True]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_invite_legacy_rules::test_copied_short_code_keeps_legacy_confidence_filter_order[fragments14-False]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_invite_legacy_rules::test_copied_short_code_keeps_legacy_confidence_filter_order[fragments15-False]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_invite_legacy_rules::test_greeting_legacy_contains_and_nonempty_digits_branch[\\u60a8\\u597d\\uff0c\\u6211\\u662f\\u8f66\\u91d1\\u987e\\u95ee-fragments0-True]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_invite_legacy_rules::test_greeting_legacy_contains_and_nonempty_digits_branch[\\u60a8\\u597d\\uff0c\\u6211\\u662f\\u8f66\\u91d1\\u987e\\u95ee-fragments1-True]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_invite_legacy_rules::test_greeting_legacy_contains_and_nonempty_digits_branch[\\u60a8\\u597d\\uff0c\\u6211\\u662f\\u8f66\\u91d1\\u987e\\u95ee-fragments2-True]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_invite_legacy_rules::test_greeting_legacy_contains_and_nonempty_digits_branch[\\u60a8\\u597d\\uff0c\\u6211\\u662f\\u8f66\\u91d1\\u987e\\u95ee-fragments3-False]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_invite_legacy_rules::test_greeting_legacy_contains_and_nonempty_digits_branch[\\u987e\\u95ee13812345678-fragments4-True]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_invite_legacy_rules::test_greeting_legacy_contains_and_nonempty_digits_branch[\\u987e\\u95ee13812345678-fragments5-False]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_invite_legacy_rules::test_greeting_legacy_contains_and_nonempty_digits_branch[-fragments6-False]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_invite_legacy_rules::test_greeting_legacy_contains_and_nonempty_digits_branch[\\u60a8\\u597d-fragments7-False]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_invite_legacy_rules::test_non_copied_code_path_keeps_original_text_checks[\\u5ba2\\u6237CJABCDEF-CJABCDEF-\\u5ba2\\u6237CJABCDEF-True]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_invite_legacy_rules::test_non_copied_code_path_keeps_original_text_checks[\\u5ba2\\u6237CJABCDEF-CJABCDEF-CJABCDEX-False]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_invite_bounded_retry::test_moving_field_is_filled_once_at_fresh_location[0]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_invite_bounded_retry::test_moving_field_is_filled_once_at_fresh_location[22]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_invite_bounded_retry::test_moving_field_is_filled_once_at_fresh_location[37]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_invite_bounded_retry::test_moving_field_is_filled_once_at_fresh_location[64]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_invite_bounded_retry::test_greeting_retry_reflows_before_remark_retry",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_invite_bounded_retry::test_native_read_of_untouched_original_can_retry_but_changed_value_cannot[False-Original contact]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_invite_bounded_retry::test_native_read_of_untouched_original_can_retry_but_changed_value_cannot[False-Someone manually changed this]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_invite_bounded_retry::test_native_read_of_untouched_original_can_retry_but_changed_value_cannot[True-Original contact]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_invite_bounded_retry::test_native_read_of_untouched_original_can_retry_but_changed_value_cannot[True-Someone manually changed this]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_invite_bounded_retry::test_persistent_failure_cancels_but_never_confirms_or_retries_forever[closed]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_invite_bounded_retry::test_persistent_failure_cancels_but_never_confirms_or_retries_forever[still_visible]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_invite_bounded_retry::test_persistent_failure_cancels_but_never_confirms_or_retries_forever[click_failed]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_invite_bounded_retry::test_persistent_failure_cancels_but_never_confirms_or_retries_forever[exception]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_invite_bounded_retry::test_missing_cancel_anchor_does_not_guess_a_close_coordinate",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_invite_bounded_retry::test_parent_cleanup_requires_its_own_current_identity[\\u6dfb\\u52a0\\u670b\\u53cb]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_invite_bounded_retry::test_parent_cleanup_requires_its_own_current_identity[\\u5fae\\u4fe1]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_invite_bounded_retry::test_unchanged_empty_field_still_gets_its_one_refill[False]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_invite_bounded_retry::test_unchanged_empty_field_still_gets_its_one_refill[True]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_invite_bounded_retry::test_original_ocr_pass_uses_task_value_without_any_native_read[-CJABCDEX]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_invite_bounded_retry::test_original_ocr_pass_uses_task_value_without_any_native_read[-CJABCDEF|]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_invite_bounded_retry::test_original_ocr_pass_uses_task_value_without_any_native_read[\\uff0c\\u60a8\\u597d-CJABCDEX]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_invite_bounded_retry::test_original_ocr_pass_uses_task_value_without_any_native_read[\\uff0c\\u60a8\\u597d-CJABCDEF|]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_invite_bounded_retry::test_native_identity_change_never_refills_or_confirms[identity]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_invite_bounded_retry::test_native_identity_change_never_refills_or_confirms[bounds]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_invite_bounded_retry::test_native_identity_change_never_refills_or_confirms[window]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_invite_bounded_retry::test_low_confidence_readback_never_overrides_old_ocr[CJABCDEF]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_invite_bounded_retry::test_low_confidence_readback_never_overrides_old_ocr[None]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_invite_bounded_retry::test_fresh_old_ocr_pass_is_not_vetoed_by_native_text",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_invite_bounded_retry::test_refill_requires_current_invite_identity[False]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_invite_bounded_retry::test_refill_requires_current_invite_identity[True]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_invite_field_readback::test_native_reader_returns_control_value_without_knowing_expected[value]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_invite_field_readback::test_native_reader_returns_control_value_without_knowing_expected[text]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_invite_field_readback::test_copy_sequence_focus_and_compare_and_restore[normal]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_invite_field_readback::test_copy_sequence_focus_and_compare_and_restore[stale]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_invite_field_readback::test_copy_sequence_focus_and_compare_and_restore[wrong_owner]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_invite_field_readback::test_copy_sequence_focus_and_compare_and_restore[focus_change]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_invite_field_readback::test_copy_sequence_focus_and_compare_and_restore[third_party]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_invite_field_readback::test_clipboard_unknown_format_is_not_cleared_or_copied",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_invite_field_readback::test_failed_read_of_our_copy_still_restores_original",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_invite_field_readback::test_reader_selects_only_unique_field_in_current_window[normal]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_invite_field_readback::test_reader_selects_only_unique_field_in_current_window[wrong_process]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_invite_field_readback::test_reader_selects_only_unique_field_in_current_window[ambiguous]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_invite_field_readback::test_reader_selects_only_unique_field_in_current_window[foreground_changed]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_invite_field_readback::test_reader_selects_only_unique_field_in_current_window[snapshot_changed]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_send_status_indicator::test_status_gutter_counterevidence[clear-1]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_send_status_indicator::test_status_gutter_counterevidence[clear-1.5]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_send_status_indicator::test_status_gutter_counterevidence[clear-2]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_send_status_indicator::test_status_gutter_counterevidence[red_failure-1]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_send_status_indicator::test_status_gutter_counterevidence[red_failure-1.5]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_send_status_indicator::test_status_gutter_counterevidence[red_failure-2]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_send_status_indicator::test_status_gutter_counterevidence[possible_sending-1]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_send_status_indicator::test_status_gutter_counterevidence[possible_sending-1.5]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_send_status_indicator::test_status_gutter_counterevidence[possible_sending-2]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_send_status_indicator::test_unrelated_red_pixels_and_invalid_geometry",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_send_status_indicator::test_unclassified_marks_are_unavailable_not_reliable_failures[red_square]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_send_status_indicator::test_unclassified_marks_are_unavailable_not_reliable_failures[red_disk]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_send_status_indicator::test_unclassified_marks_are_unavailable_not_reliable_failures[off_center_failure]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_send_status_indicator::test_unclassified_marks_are_unavailable_not_reliable_failures[gray_text]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_send_status_confirmation::test_status_layers_with_and_without_immediate_customer_reply[False-kinds0-True-1]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_send_status_confirmation::test_status_layers_with_and_without_immediate_customer_reply[False-kinds1-True-1]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_send_status_confirmation::test_status_layers_with_and_without_immediate_customer_reply[False-kinds2-True-1]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_send_status_confirmation::test_status_layers_with_and_without_immediate_customer_reply[False-kinds3-True-2]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_send_status_confirmation::test_status_layers_with_and_without_immediate_customer_reply[False-kinds4-True-3]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_send_status_confirmation::test_status_layers_with_and_without_immediate_customer_reply[False-kinds5-False-6]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_send_status_confirmation::test_status_layers_with_and_without_immediate_customer_reply[False-kinds6-False-6]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_send_status_confirmation::test_status_layers_with_and_without_immediate_customer_reply[False-kinds7-False-6]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_send_status_confirmation::test_status_layers_with_and_without_immediate_customer_reply[False-kinds8-False-6]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_send_status_confirmation::test_status_layers_with_and_without_immediate_customer_reply[True-kinds0-True-1]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_send_status_confirmation::test_status_layers_with_and_without_immediate_customer_reply[True-kinds1-True-1]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_send_status_confirmation::test_status_layers_with_and_without_immediate_customer_reply[True-kinds2-True-1]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_send_status_confirmation::test_status_layers_with_and_without_immediate_customer_reply[True-kinds3-True-2]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_send_status_confirmation::test_status_layers_with_and_without_immediate_customer_reply[True-kinds4-True-3]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_send_status_confirmation::test_status_layers_with_and_without_immediate_customer_reply[True-kinds5-False-6]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_send_status_confirmation::test_status_layers_with_and_without_immediate_customer_reply[True-kinds6-False-6]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_send_status_confirmation::test_status_layers_with_and_without_immediate_customer_reply[True-kinds7-False-6]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_send_status_confirmation::test_status_layers_with_and_without_immediate_customer_reply[True-kinds8-False-6]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_send_status_confirmation::test_status_never_substitutes_other_success_evidence[missing-wrong_customer]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_send_status_confirmation::test_status_never_substitutes_other_success_evidence[missing-frame_failed]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_send_status_confirmation::test_status_never_substitutes_other_success_evidence[missing-draft]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_send_status_confirmation::test_status_never_substitutes_other_success_evidence[missing-missing_input]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_send_status_confirmation::test_status_never_substitutes_other_success_evidence[missing-old_bubble]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_send_status_confirmation::test_status_never_substitutes_other_success_evidence[missing-wrong_text]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_send_status_confirmation::test_status_never_substitutes_other_success_evidence[missing-two_self]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_send_status_confirmation::test_status_never_substitutes_other_success_evidence[clear-wrong_customer]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_send_status_confirmation::test_status_never_substitutes_other_success_evidence[clear-frame_failed]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_send_status_confirmation::test_status_never_substitutes_other_success_evidence[clear-draft]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_send_status_confirmation::test_status_never_substitutes_other_success_evidence[clear-missing_input]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_send_status_confirmation::test_status_never_substitutes_other_success_evidence[clear-old_bubble]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_send_status_confirmation::test_status_never_substitutes_other_success_evidence[clear-wrong_text]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_send_status_confirmation::test_status_never_substitutes_other_success_evidence[clear-two_self]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_send_status_confirmation::test_capture_error_does_not_erase_counterevidence[sending]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_send_status_confirmation::test_capture_error_does_not_erase_counterevidence[failed]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_send_status_confirmation::test_three_segments_each_use_new_baseline[kinds0]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_send_status_confirmation::test_three_segments_each_use_new_baseline[kinds1]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_send_status_confirmation::test_nonunique_alignment_rule_is_unchanged",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_post_send_customer_suffix::test_customer_after_confirmed_bubble_is_a_fresh_read_signal[text_bubble]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_post_send_customer_suffix::test_customer_after_confirmed_bubble_is_a_fresh_read_signal[image_bubble]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_post_send_customer_suffix::test_customer_after_confirmed_bubble_is_a_fresh_read_signal[voice_bubble]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_post_send_customer_suffix::test_customer_after_confirmed_bubble_is_a_fresh_read_signal[voice_transcript]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_post_send_customer_suffix::test_ambiguous_or_unproven_send_never_creates_read_intent[wrong_target]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_post_send_customer_suffix::test_ambiguous_or_unproven_send_never_creates_read_intent[draft]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_post_send_customer_suffix::test_ambiguous_or_unproven_send_never_creates_read_intent[same_frame]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_post_send_customer_suffix::test_ambiguous_or_unproven_send_never_creates_read_intent[duplicate_self]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_post_send_customer_suffix::test_ambiguous_or_unproven_send_never_creates_read_intent[old_only]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_post_send_customer_suffix::test_ambiguous_or_unproven_send_never_creates_read_intent[unknown_role]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_post_send_customer_suffix::test_ambiguous_or_unproven_send_never_creates_read_intent[wrong_body]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_post_send_customer_suffix::test_ambiguous_or_unproven_send_never_creates_read_intent[forged_candidate]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_post_send_customer_suffix::test_ambiguous_or_unproven_send_never_creates_read_intent[duplicate_observation]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_post_send_customer_suffix::test_repeated_baseline_and_clipped_old_identical_bubble_are_not_new_sends",
+          "result": "passed"
+        },
+        {
+          "name": "::test_unproven_failure_does_not_end_original_flow[missing_proof]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_unproven_failure_does_not_end_original_flow[wrong_fence]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_unproven_failure_does_not_end_original_flow[running_task]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_unproven_failure_does_not_end_original_flow[different_task]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_cannot_send_unsaved_failure_or_resume_intake",
+          "result": "passed"
+        },
+        {
+          "name": "::test_saved_failure_identity_mismatch_is_retained[worker_id]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_saved_failure_identity_mismatch_is_retained[client_instance_id]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_saved_failure_identity_mismatch_is_retained[flow_id]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_saved_failure_identity_mismatch_is_retained[task_id]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_environment_pause_survives_lost_failure_ack",
+          "result": "passed"
+        },
+        {
+          "name": "::test_saved_failure_restores_stop_before_finish_even_if_confirmed[WECHAT_UI_LAYOUT_UNRESOLVED-running-faulted-False]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_saved_failure_restores_stop_before_finish_even_if_confirmed[WECHAT_UI_LAYOUT_UNRESOLVED-running-faulted-True]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_saved_failure_restores_stop_before_finish_even_if_confirmed[INVITE_FIELD_VERIFICATION_FAILED-running-faulted-False]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_saved_failure_restores_stop_before_finish_even_if_confirmed[INVITE_FIELD_VERIFICATION_FAILED-running-faulted-True]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_saved_failure_restores_stop_before_finish_even_if_confirmed[WECHAT_WINDOW_NOT_FOUND-running-paused-False]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_saved_failure_restores_stop_before_finish_even_if_confirmed[WECHAT_WINDOW_NOT_FOUND-running-paused-True]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_saved_failure_restores_stop_before_finish_even_if_confirmed[WECHAT_WINDOW_NOT_FOUND-faulted-faulted-False]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_saved_failure_restores_stop_before_finish_even_if_confirmed[WECHAT_WINDOW_NOT_FOUND-faulted-faulted-True]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_saved_failure_restores_stop_before_finish_even_if_confirmed[PHONE_NOT_FOUND-running-running-False]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_saved_failure_restores_stop_before_finish_even_if_confirmed[PHONE_NOT_FOUND-running-running-True]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_confirmed_failure_can_finish_after_local_pointer_cleanup",
+          "result": "passed"
+        },
+        {
+          "name": "::test_unproven_success_never_releases_flow[missing_proof-invite_sent]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_unproven_success_never_releases_flow[missing_proof-already_friend]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_unproven_success_never_releases_flow[wrong_fence-invite_sent]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_unproven_success_never_releases_flow[wrong_fence-already_friend]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_unproven_success_never_releases_flow[running_task-invite_sent]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_unproven_success_never_releases_flow[running_task-already_friend]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_unproven_success_never_releases_flow[different_task-invite_sent]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_unproven_success_never_releases_flow[different_task-already_friend]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_unproven_success_never_releases_flow[wrong_result-invite_sent]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_unproven_success_never_releases_flow[wrong_result-already_friend]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_mismatched_saved_success_cannot_be_posted[worker_id]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_mismatched_saved_success_cannot_be_posted[client_instance_id]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_mismatched_saved_success_cannot_be_posted[flow_id]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_mismatched_saved_success_cannot_be_posted[task_id]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_unsaved_success_cannot_be_sent_or_release_flow",
+          "result": "passed"
+        },
+        {
+          "name": "::test_success_settlement_preserves_existing_stop[paused]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_success_settlement_preserves_existing_stop[faulted]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_requested_legacy_rule_is_not_yet_restored[greeting_contains]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_requested_legacy_rule_is_not_yet_restored[code_ocr_character]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_requested_legacy_rule_is_not_yet_restored[low_score_distractor]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_unchanged_empty_field_still_gets_its_one_refill[False]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_unchanged_empty_field_still_gets_its_one_refill[True]",
+          "result": "passed"
+        }
+      ]
+    },
+    {
+      "name": "http",
+      "original_xml_sha256": "f2f075fca7e000f81a92429dff601935877711d698813a59313534bd4f9f2a25",
+      "count": 14,
+      "cases": [
+        {
+          "name": "tests.test_c1_failure_receipt_recovery::test_one_lost_failure_request_eventually_settles_without_ui[WECHAT_UI_LAYOUT_UNRESOLVED-fail:before]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_c1_failure_receipt_recovery::test_one_lost_failure_request_eventually_settles_without_ui[WECHAT_UI_LAYOUT_UNRESOLVED-fail:after]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_c1_failure_receipt_recovery::test_one_lost_failure_request_eventually_settles_without_ui[INVITE_FIELD_VERIFICATION_FAILED-fail:before]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_c1_failure_receipt_recovery::test_one_lost_failure_request_eventually_settles_without_ui[INVITE_FIELD_VERIFICATION_FAILED-fail:after]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_c1_stop_intent_recovery::test_saved_technical_failure_cannot_restart_intake_without_click[invite_receipt_saved]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_layered_send_status_http::test_layered_status_keeps_immediate_customer_reply_and_receipt[missing-False]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_layered_send_status_http::test_layered_status_keeps_immediate_customer_reply_and_receipt[missing-True]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_layered_send_status_http::test_layered_status_keeps_immediate_customer_reply_and_receipt[sending,clear-False]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_layered_send_status_http::test_layered_status_keeps_immediate_customer_reply_and_receipt[sending,clear-True]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_layered_send_status_http::test_missing_indicator_confirmed_receipt_survives_same_sqlite_restart[lost_request]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_layered_send_status_http::test_missing_indicator_confirmed_receipt_survives_same_sqlite_restart[lost_response]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_layered_send_status_http::test_three_segments_use_formal_confirmation_and_fresh_baseline[missing]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_layered_send_status_http::test_three_segments_use_formal_confirmation_and_fresh_baseline[sending,clear]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_reply_sequence_http::test_unknown_timeout_cancels_the_remaining_group_without_resending",
+          "result": "passed"
+        }
+      ]
+    },
+    {
+      "name": "send-ocr",
+      "original_xml_sha256": "369c26811fb1ede4625206ae357bd35b36ca265c22eee16ed8e13d399e032ca2",
+      "count": 4,
+      "cases": [
+        {
+          "name": "worker-client.tests.test_frame_avatars::test_original_frame_first_confirmation_succeeds[1]",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_frame_avatars::test_original_frame_first_confirmation_succeeds[2]",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_frame_avatars::test_original_frame_first_confirmation_succeeds[3]",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_frame_avatars::test_original_frame_first_confirmation_succeeds[4]",
+          "result": "passed"
+        }
+      ]
+    }
+  ],
+  "environment": {
+    "checks_reused": 196,
+    "business_tests_reexecuted": 0,
+    "source": "Independent local178/http14/sendPNG4 original results; runtime fingerprints matched; original negatives retained",
+    "not_verified": [
+      "No Windows native input, retry, cancellation or real WeChat send.",
+      "Real failure/pending icon PNGs unavailable; pixel classifier checked only with synthetic icons.",
+      "HTTP uses real local API/PostgreSQL/Worker subprocess/SQLite; model and desktop boundaries controlled.",
+      "No full-project regression claim; previous baseline smoke failure remains in original report.",
+      "No release approval; formal production package unchanged."
+    ]
+  }
+}
