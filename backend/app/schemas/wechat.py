@@ -2,7 +2,7 @@ from datetime import datetime
 import json
 import re
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from app.contracts.message_limits import (
     C2_MESSAGE_BATCH_MAX_ITEMS,
@@ -185,6 +185,15 @@ class WechatSequenceAlignmentEvidence(BaseModel):
         default_factory=list,
         max_length=500,
     )
+    text_correspondence: dict | None = None
+
+    @field_validator("text_correspondence")
+    @classmethod
+    def validate_text_correspondence(cls, value):
+        if value is not None:
+            from app.contracts.shared_rules import shared_adapter
+            shared_adapter("historical_text_alignment").validate_proof_shape(value)
+        return value
 
     @model_validator(mode="after")
     def validate_safe_suffix(self):

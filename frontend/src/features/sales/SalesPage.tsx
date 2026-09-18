@@ -4,6 +4,7 @@ import { formatBusinessError } from "../../shared/api/client";
 import { CloseIcon } from "../../shared/ui/Icons";
 import { displayValue as display, formatRelativeHeartbeat as formatHeartbeat, optionalText } from "../../shared/utils/display";
 import { postMutationMessage, runPostMutationRefresh } from "../../shared/utils/postMutation";
+import { normalizePhoneInput, PHONE_PATTERN } from "../../shared/utils/phone";
 import { listWorkers } from "../workers/api";
 import type { WorkerItem } from "../workers/types";
 import { createSales, getSales, listSales, updateSales } from "./api";
@@ -38,8 +39,6 @@ const initialFilter: SalesFilter = {
   status: "all",
   worker: "all",
 };
-
-const PHONE_PATTERN = /^1[3-9]\d{9}$/;
 
 function statusClass(enabled: boolean) {
   return enabled ? "assigned" : "invalid";
@@ -218,7 +217,7 @@ export function SalesPage({ openIntent }: { openIntent?: SalesOpenIntent | null 
       remark: optionalText(editForm.remark),
     };
 
-    const nextPhone = editForm.phone.trim();
+    const nextPhone = normalizePhoneInput(editForm.phone);
     if (nextPhone) {
       if (!PHONE_PATTERN.test(nextPhone)) {
         setSaveError("请输入 11 位有效手机号；不修改请留空。");
@@ -412,10 +411,9 @@ export function SalesPage({ openIntent }: { openIntent?: SalesOpenIntent | null 
                       <input
                         className="edit-value"
                         value={editForm.phone}
-                        onChange={(event) => setEditForm({ ...editForm, phone: event.target.value })}
+                        onChange={(event) => setEditForm({ ...editForm, phone: normalizePhoneInput(event.target.value) })}
                         inputMode="tel"
                         autoComplete="tel"
-                        maxLength={11}
                         pattern="1[3-9][0-9]{9}"
                         placeholder="不修改请留空；修改请输入完整手机号"
                       />

@@ -1445,6 +1445,7 @@ def attach_native_committed_identity(
 
 class FakeApi:
     def __init__(self, task: Task | None, result_mode: str = "success", claim_response: Task | None = None) -> None:
+        self.task_lease_fencing_tokens: dict[str, int] = {}
         self.task = task
         self.claim_response = claim_response
         self.result_mode = result_mode

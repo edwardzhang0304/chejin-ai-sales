@@ -863,7 +863,7 @@ function renderScreen(props: WorkerClientBaselineProps) {
       <EmptyWorkbench
         screen={screen}
         model={model}
-        processText="已暂停接单"
+        processText={model.layoutRecovery?.blocked ? model.layoutRecovery.message : "已暂停接单"}
         stateText="暂停接单"
         dockState="暂停接单"
         onStartAccepting={onStartAccepting}

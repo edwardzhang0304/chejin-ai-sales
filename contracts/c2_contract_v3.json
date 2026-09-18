@@ -3891,5 +3891,78 @@
       "clears_only_original_pending_input": true,
       "explicit_start_still_required": true
     }
+  },
+  "text_correspondence_contract": {
+    "version": 1,
+    "policy_id": "historical_context_v1",
+    "capability_field": "local_lock_summary.capabilities.text_correspondence_version",
+    "evidence_field": "sequence_alignment_evidence.text_correspondence",
+    "minimum_length": 10,
+    "maximum_edit_distance": 1,
+    "minimum_similarity": 0.9,
+    "maximum_fuzzy_rows": 1,
+    "minimum_distinct_exact_anchors": 2,
+    "require_original_strong_boundary": true,
+    "entity_context": "authoritative_checkpoint_registered_fields_v1",
+    "protected_policy": "bidirectional_numeric_identifiers_units_negation_intent_commitment_registered_entities",
+    "backend_validation": "recompute_optional_proof_against_authoritative_checkpoint_without_allocating_identity",
+    "immutable_original": true,
+    "new_suffix": "never_fuzzy_match_or_rewrite",
+    "media": "completed_voice_text_only_with_original_identity_proof",
+    "expired": "bounded_refresh_then_original_read_only_settlement",
+    "unsupported": "explicit_rejection",
+    "missing": "original_exact_path",
+    "expired_recovery_action": "refresh_and_rebuild",
+    "maximum_authority_refreshes": 2
+  },
+  "historical_text_correction_pending_contract": {
+    "version": 1,
+    "evidence_field": "historical_text_correction_pending",
+    "error_code": "HISTORICAL_TEXT_CORRECTION_PENDING",
+    "read_observation": "succeeded_with_identity_mismatch_never_ocr_call_failure",
+    "eligibility": "before_input_with_original_not_attempted_proof",
+    "settlement": "original_task_fail_or_sent_ack_then_original_flow_finish",
+    "durability": "proposal_bytes_and_original_settlement_intent_one_sqlite_transaction",
+    "correction_submission": "after_original_flow_closed_fact_only_no_ui",
+    "continuation": "accepted_correction_then_explicit_start_and_fresh_complete_read",
+    "confirmed_prefix": "preserve_existing_sequence_receipts_never_resend",
+    "offline_cli_option": "--historical-text-correction-request",
+    "invalid_or_unknown_send": "original_fault_path_no_correction_shortcut"
+  },
+  "historical_text_correction_resolution_contract": {
+    "version": 1,
+    "field": "resolution",
+    "kind": "business_ended",
+    "issuer": "authenticated_backend_original_evidence_and_settlement_verified",
+    "binding": "worker_instance_conversation_binding_revision_message_proof_effective_version",
+    "outcome": "rejected_not_corrected",
+    "resume": "explicit_start_with_existing_local_and_backend_barriers",
+    "missing_or_invalid": "preserve_original_rejection_block"
+  },
+  "historical_text_correction_contract": {
+    "protocol_version": 1,
+    "operation": "historical_text_correction",
+    "capability_field": "local_lock_summary.capabilities.historical_text_correction_version",
+    "route": "/workers/{worker_id}/wechat/message-text-corrections",
+    "authorization": "current_worker_instance_binding_revision_fact_only",
+    "original_read_identity": "audit_only_never_resurrect_flow",
+    "provenance": [
+      "capture_digest",
+      "legacy_correlated"
+    ],
+    "image_max_bytes": 4194304,
+    "image_max_pixels": 20000000,
+    "request_max_bytes": 6291456,
+    "proof_max_bytes": 262144,
+    "immutable_original": true,
+    "proof_frozen_at_enqueue": true,
+    "outbox_operation": "historical_text_correction",
+    "outbox_terminal_rejection": "correction_rejected",
+    "storage": "message_text_corrections_append_only",
+    "effective_context_policy": "confirmed_versions_only",
+    "pending_read_cause": "historical_text_correction",
+    "generation_policy": "fresh_complete_read_then_existing_async_callback",
+    "old_sending_or_unknown": "busy_defer",
+    "correction_does_not_resume": true
   }
 }

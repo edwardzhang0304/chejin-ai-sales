@@ -1,4 +1,5 @@
 from app.models.audit import ExportTask, OperationLog
+from app.models.message_text_correction import MessageTextCorrection
 from app.models.auth import AdminAccount, AdminLoginThrottle, AdminSession
 from app.models.c3 import (
     Conversation,
@@ -66,6 +67,7 @@ __all__ = [
     "KnowledgePublishPreview",
     "HandoffEvent",
     "MessageEvent",
+    "MessageTextCorrection",
     "MessageBatch",
     "OperationLog",
     "ProcessStageRun",

@@ -36,6 +36,7 @@ from .action_journal import (
 )
 from .artifact_retention import cleanup_artifacts, record_artifact_outcome
 from .c2_contract import (
+    c2_contract_v3,
     contract_revision,
     formal_image_failure_code,
     observation_role_is_trusted,
@@ -59,6 +60,7 @@ from .image_phase import (
     new_image_phase_result,
 )
 from .incident_evidence import mark_incident_recovered, redact_diagnostic
+from .layout_recovery import record_result as record_layout_result, recovery_view as layout_recovery_view
 from .message_contract import (
     canonical_reply_text,
     reply_text_hash,
@@ -87,6 +89,7 @@ from .pre_send_checkpoint import (
 from .models import Binding, ReplySendClaim, RpaResult, RpaStep, Task, WechatReadTarget, WorkerProfile
 from .rpa_bridge import RpaBridge
 from .text_recheck import differing_text_observation_ids
+from .historical_alignment import checkpoint_for_target, projected_frame
 from .storage import (
     archive_legacy_media_flow_records,
     append_log,
@@ -444,6 +447,7 @@ def _bind_worker_continuity_contract_to_send_guard(
     checkpoint: dict[str, Any],
     checkpoint_comparison: dict[str, Any],
     empty_welcome_baseline: bool,
+    historical_checkpoint: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Attach evidence for the sole Worker comparator used by S0/S1/S2.
 
@@ -518,6 +522,10 @@ def _bind_worker_continuity_contract_to_send_guard(
             else {}
         ),
     }
+    if historical_checkpoint:
+        bound["worker_continuity_contract"]["historical_alignment"] = {
+            "checkpoint": historical_checkpoint, "baseline_observations": observations,
+        }
     return bound
 
 
@@ -1820,6 +1828,8 @@ def _continuity_alignment_evidence_for_suffix(
         "new_suffix_observation_ids": suffix_ids,
         "matched_pairs": pairs,
         "continuity_relation": str(continuity.get("relation") or ""),
+        **({"text_correspondence": continuity["text_correspondence"]}
+           if continuity.get("text_correspondence") else {}),
     })
 
 
@@ -4096,6 +4106,44 @@ class TaskRunner:
                 metadata={"exception_type": type(exc).__name__},
             )
 
+    def layout_recovery_state(self) -> dict[str, Any]:
+        state = load_c2_state("layout_recovery")
+        if state.get("binding_identity") and state["binding_identity"] != self._layout_binding_identity():
+            state = {}
+        return layout_recovery_view(state)
+
+    def _layout_binding_identity(self) -> dict[str, Any]:
+        binding = self.binding
+        return ({"worker_id": binding.worker_id, "client_instance_id": binding.client_instance_id,
+                 "bound_at": binding.bound_at} if binding else {})
+
+    def _observe_layout_result(self, scope: str, payload: dict[str, Any]) -> None:
+        with self._run_status_intent_lock:
+            previous = load_c2_state("layout_recovery")
+            identity = self._layout_binding_identity()
+            if previous.get("binding_identity") and previous["binding_identity"] != identity:
+                previous = {}
+            state = {**record_layout_result(previous, scope=scope, payload=payload),
+                     "binding_identity": identity}
+            if state == previous:
+                return
+            view = layout_recovery_view(state)
+            if view["blocked"] and self.binding and self.binding.run_status == "running":
+                # Diagnostic persistence cannot be a prerequisite for stopping.
+                self.set_run_status("paused")
+            save_c2_state("layout_recovery", state)
+        if not payload.get("ok") and view["attempts"]:
+            append_log(
+                "WARN", "wechat_layout_retry_limited", view["message"],
+                error_code=state.get("error_code"),
+                metadata={"scope": scope, "attempts": view["attempts"],
+                          "paused": view["blocked"],
+                          "screenshot_path": payload.get("screenshot_path"),
+                          "artifact_dir": payload.get("artifact_dir")},
+                force_incident=view["blocked"],
+            )
+        self._emit_runtime_process({"event": "layout_recovery_changed"})
+
     @staticmethod
     def _runtime_terminal_for_result(result: dict[str, Any]) -> str:
         brain_result = (
@@ -4156,12 +4204,24 @@ class TaskRunner:
         self.binding = binding
         if not self._refresh_vision_credential(binding):
             return
-        if binding.run_status == "faulted":
+        # Counters are diagnostic state belonging to one binding. A record
+        # without that ownership cannot stop a different/current binding on
+        # restart; normal in-process observations always attach the identity.
+        layout_state = load_c2_state("layout_recovery")
+        if layout_state and layout_state.get("binding_identity") != self._layout_binding_identity():
+            try:
+                save_c2_state("layout_recovery", {})
+            except Exception:
+                self._preserve_stopped_run_status("paused")
+                trigger_emergency_stop(reason="RUN_STATUS_PERSISTENCE_FAILED", origin="layout_recovery_start")
+        if (binding.run_status in {"paused", "faulted"}
+                or load_runtime_control().get("pause_requested")
+                or self.layout_recovery_state()["blocked"]):
             # A technical fault is a durable local safety decision.  If the
             # original backend status update was interrupted, a new Runner
             # must resume that update instead of accepting a stale remote
             # ``running`` heartbeat and silently reopening task intake.
-            self._pending_run_status_sync = "faulted"
+            self._preserve_stopped_run_status(binding.run_status if binding.run_status == "faulted" else "paused")
         persisted_flow_id = str(
             load_runtime_control().get("inflight_flow_id") or ""
         ).strip()
@@ -6687,8 +6747,12 @@ class TaskRunner:
                     self._fault_recovery_requested = None
                     # Stop intake immediately, including when persistence fails.
                     self.binding.run_status = run_status  # type: ignore[assignment]
-                    request_runtime_pause()
-                    save_binding(self.binding)
+                    # Either durable record can keep a restart stopped. Attempt
+                    # both even when one write fails; the caller keeps the gate.
+                    try:
+                        request_runtime_pause()
+                    finally:
+                        save_binding(self.binding)
                 else:
                     # Persist a candidate, not the shared live Binding. Neither
                     # intake nor failure compensation may observe running early.
@@ -6704,6 +6768,21 @@ class TaskRunner:
             self._run_status_persistence_pending = False
             return run_status, self._run_status_revision
 
+    def _preserve_stopped_run_status(self, run_status: str) -> bool:
+        """Shared local compensation for pause and fault recovery failures."""
+        with self._run_status_intent_lock:
+            if not self.binding:
+                return False
+            stopped = "faulted" if "faulted" in {run_status, self.binding.run_status} else "paused"
+            self._pending_run_status_sync = stopped
+            try:
+                self._apply_local_run_status(stopped)
+            except Exception as exc:
+                self.run_status_sync_error = type(exc).__name__
+                trigger_emergency_stop(reason="RUN_STATUS_PERSISTENCE_FAILED", origin="run_status")
+                return False
+            return True
+
     def fault_recovery_state(self) -> dict[str, Any]:
         """UI reads the last background check; clicking always rechecks it."""
         with self._run_status_intent_lock:
@@ -6715,6 +6794,7 @@ class TaskRunner:
     def _check_fault_recovery(self) -> dict[str, Any]:
         from .pre_send_read_recovery import settlement_pending as pre_send_read_settlement_pending
         from .pre_send_read_recovery import input_pending_records
+        from .text_correction_outbox import recovery_block_reason
         reason = ""
         snapshot = self.update_install_safety_snapshot()
         if not self.binding or self.binding.run_status != "faulted":
@@ -6727,6 +6807,8 @@ class TaskRunner:
             reason = "等待后端确认已停止接单"
         elif self._restart_backend_probe_pending or self._restart_recovery_flow_id:
             reason = "正在核对上次未完成的流程"
+        elif correction_reason := recovery_block_reason(self.binding):
+            reason = correction_reason
         elif pre_send_read_settlement_pending():
             reason = "已停止接单，正在处理旧记录。处理完成后可开始接单。"
         elif input_pending_records():
@@ -6794,6 +6876,7 @@ class TaskRunner:
             self._fault_recovery_requested = None
             self._fault_recovery_processing = True
         attempted = False
+        previous_layout_state = None
         try:
             with self._restart_recovery_lock, self._new_work_admission_lock:
                 state = self._check_fault_recovery()
@@ -6813,6 +6896,8 @@ class TaskRunner:
                             or not self._check_fault_recovery()["ready"]):
                         raise RuntimeError("恢复期间状态发生变化，继续停止接单")
                     self._backend_confirmed_run_status = "running"
+                    previous_layout_state = load_c2_state("layout_recovery")
+                    save_c2_state("layout_recovery", {})
                     self._apply_local_run_status("running")
                     self._pending_run_status_sync = None
                     self.run_status_sync_error = None
@@ -6823,27 +6908,28 @@ class TaskRunner:
         except Exception as exc:
             # A lost reply may hide a committed server transition. Keep the
             # local stop gate and reassert it; never infer success or auto-retry.
-            restore_error = None
             if attempted and self.binding:
-                with self._run_status_intent_lock:
-                    # Recovery started from faulted. Its compensation can only
-                    # reassert fault, never reuse a partially applied running.
-                    self._pending_run_status_sync = "faulted"
-                    try:
-                        self._apply_local_run_status("faulted")
-                    except Exception as restore_exc:
-                        restore_error = type(restore_exc).__name__
-                # Even when local persistence is unavailable, stop the backend.
-                # Keep pending until both local persistence and HTTP succeed.
-                self._sync_pending_run_status(force=True)
+                self._compensate_failed_resume("faulted", previous_layout_state)
             self.on_error("恢复接单失败，仍保持停止接单；请稍后重试。")
             append_log("WARN", "client_fault_recovery_rejected", "安全恢复未完成，保留故障现场。",
                        error_code=exc.code if isinstance(exc, ApiError) else "FAULT_RECOVERY_NOT_READY",
-                       metadata={"exception_type": type(exc).__name__, "local_restore_exception_type": restore_error})
+                       metadata={"exception_type": type(exc).__name__})
         finally:
             with self._run_status_intent_lock:
                 self._fault_recovery_processing = False
             self._publish_fault_recovery()
+
+    def _compensate_failed_resume(self, stopped: str, layout_state: dict | None) -> None:
+        self._preserve_stopped_run_status(stopped)
+        try:
+            if layout_state is not None:
+                save_c2_state("layout_recovery", layout_state)
+        except Exception:
+            # Preserve the original stop even if its diagnostic reason cannot
+            # be restored. A failed save never grants permission to resume.
+            trigger_emergency_stop(reason="RUN_STATUS_PERSISTENCE_FAILED", origin="layout_recovery")
+        finally:
+            self._sync_pending_run_status(force=True)
 
     def _sync_pending_run_status(self, *, force: bool = False) -> None:
         binding = self.binding
@@ -6916,12 +7002,17 @@ class TaskRunner:
         if run_status in {"paused", "faulted"}:
             # Pause drains the registered flow. Emergency stop remains the
             # separate fail-safe for not-yet-started physical actions.
-            run_status, revision = self._apply_local_run_status(run_status)
+            if not self._preserve_stopped_run_status(run_status):
+                self._sync_pending_run_status(force=True)
+                self.on_error("停止状态保存失败，客户端已紧急停止；请重启后检查。")
+                return False
+            run_status, revision = self.binding.run_status, self._run_status_revision
         else:
             with self._run_status_intent_lock:
                 if self.binding.run_status == "faulted":
                     return self._request_fault_recovery()
                 revision = self._run_status_revision
+        previous_layout_state = None
         try:
             if run_status == "running" and not self._refresh_vision_credential(self.binding):
                 return False
@@ -6934,10 +7025,15 @@ class TaskRunner:
                 if revision != self._run_status_revision:
                     self._pending_run_status_sync = self.binding.run_status
                     return False
+                self._backend_confirmed_run_status = str(profile.run_status or "") or None
+                if run_status == "running":
+                    # An explicit successful resume grants a fresh bounded attempt,
+                    # never permission to bypass the current-frame layout guards.
+                    previous_layout_state = load_c2_state("layout_recovery")
+                    save_c2_state("layout_recovery", {})
+                self._apply_local_run_status(profile.run_status)
                 self._pending_run_status_sync = None
                 self.run_status_sync_error = None
-                self._backend_confirmed_run_status = str(profile.run_status or "") or None
-                self._apply_local_run_status(profile.run_status)
                 self.on_profile(profile)
                 self._backend_inflight_flow_state = dict(
                     profile.inflight_flow_state or {}
@@ -6998,12 +7094,12 @@ class TaskRunner:
                         },
                     )
                 else:
-                    self._apply_local_run_status("paused")
+                    self._compensate_failed_resume("paused", previous_layout_state)
                     self.on_error(f"开始接单失败，仍保持暂停：{exc}")
                     append_log(
                         "WARN",
                         "run_status_start_rejected",
-                        "后端未确认开始接单，本地继续保持暂停。",
+                        "开始接单未完整保存，已保留本地暂停并向后端补偿停止状态。",
                         error_code="RUN_STATUS_SYNC_FAILED",
                         metadata={"error": str(exc)},
                     )
@@ -7108,7 +7204,9 @@ class TaskRunner:
             mark_incident_recovered("wechat_window_missing")
         local_lock = lock_summary()
         local_lock["capabilities"] = {**(local_lock.get("capabilities") or {}), "reply_sequence_version": 1,
-                                      "pre_send_read_recovery_version": 1}
+                                      "pre_send_read_recovery_version": 1,
+                                      "text_correspondence_version": 1,
+                                      "historical_text_correction_version": 1}
         vision_capability = load_c2_state("vision_preflight")
         if vision_capability:
             local_lock = {
@@ -7166,6 +7264,11 @@ class TaskRunner:
                     self._apply_local_run_status("faulted")
                     self._pending_run_status_sync = None
                     self.run_status_sync_error = None
+                elif load_runtime_control().get("pause_requested") and profile.run_status == "running":
+                    # Durable local stop intent survives a lost compensation
+                    # response and a new Runner. Only explicit resume clears it.
+                    self._preserve_stopped_run_status("paused")
+                    profile.run_status = self.binding.run_status
                 elif self._pending_run_status_sync in {"paused", "faulted"}:
                     pending_run_status = self._pending_run_status_sync
                     if profile.run_status == pending_run_status and not self._run_status_persistence_pending:
@@ -7735,6 +7838,10 @@ class TaskRunner:
         """Make a pre-send read failure durable before C2 may scan again."""
 
         recovery_record = ((evidence or {}).get("pre_send_refresh") or {}).get("pre_send_read_failure_record")
+        from .historical_correction_recovery import settle_task
+        correction_settled = settle_task(self, binding, task_id=task_id)
+        if correction_settled is not None:
+            return correction_settled
         if isinstance(recovery_record, dict):
             from .pre_send_read_recovery import mark_settled
             try:
@@ -8201,6 +8308,8 @@ class TaskRunner:
         )
         mark_reply_send_ack_attempt(reply_action_id)
         try:
+            from .post_send_customer_read import restore_read_intent
+            restore_read_intent(record)
             self.api.sent_ack(
                 binding,
                 claim,
@@ -8273,6 +8382,10 @@ class TaskRunner:
         remark: str | None = None,
         sent_at: str | None = None,
     ) -> bool:
+        from .post_send_customer_read import evidence_with_read_intent
+        evidence = evidence_with_read_intent(
+            evidence, claim=claim, send_result=send_result, action_phase=action_phase,
+        )
         finalize_reply_send_ack(
             reply_action_id=claim.reply_action_id,
             ack_payload=self._reply_send_ack_payload(
@@ -9731,6 +9844,7 @@ class TaskRunner:
                 )
                 else None
             ),
+            historical_checkpoint=checkpoint_for_target(target),
         )
         if (
             isinstance(raw_observations, list)
@@ -9788,13 +9902,19 @@ class TaskRunner:
         # copy durable identity onto a fresh OCR row here.  The serializer
         # below consumes the already-made comparison decision and emits the
         # one formal HTTP evidence shape shared by text, voice and image.
-        evidence = _checkpoint_alignment_evidence(
-            checkpoint,
-            list(prepared.get("observations") or []),
-            comparison,
-        )
+        if comparison.get("text_correspondence"):
+            prepared, alignment_errors = self._align_initial_identity_frame(
+                target=target, sidecar_payload=prepared, read_run_id=read_run_id)
+            if alignment_errors:
+                comparison.update(comparison_result="checkpoint_not_continuous",
+                    reason=alignment_errors[0].get("error_code"), old_tail_fully_consumed=False)
+                return prepared, comparison
+            evidence = prepared["sequence_alignment_evidence"]
+        else:
+            evidence = _checkpoint_alignment_evidence(
+                checkpoint, list(prepared.get("observations") or []), comparison)
         prepared["sequence_alignment_evidence"] = evidence
-        if comparison.get("comparison_result") in {
+        if not comparison.get("text_correspondence") and comparison.get("comparison_result") in {
             "checkpoint_unique_prefix_with_suffix",
             "checkpoint_unique_viewport_slide_with_suffix",
         }:
@@ -9899,8 +10019,14 @@ class TaskRunner:
             for item in (checkpoint.get("recent_messages") or [])
             if isinstance(item, dict)
         ]
+        historical_checkpoint = checkpoint_for_target(target)
+        if historical_checkpoint:
+            from .shared_rules import historical_text_alignment
+            recent = historical_text_alignment.comparison_entries(historical_checkpoint)
         pre_sequence: list[dict[str, Any]] = []
         for index, item in enumerate(recent):
+            from apps.wechat_ai_customer_service.adapters.historical_text_correction import checkpoint_comparison
+            item = checkpoint_comparison(item)
             stable_id = str(item.get("stable_id") or "").strip()
             if not stable_id:
                 continue
@@ -10328,6 +10454,23 @@ class TaskRunner:
                 _confirmed_empty_business_viewport(prepared, target)
             ),
         )
+        if historical_checkpoint and continuity.get("relation") not in {
+            "business_sequence_equal", "unique_tail_append",
+            "unique_viewport_slide_with_tail_append", "unique_history_suffix_without_new_messages",
+        }:
+            try:
+                projected, proof = projected_frame(historical_checkpoint, observations,
+                    pre_frame_id=f"checkpoint:{target.authorization_revision}", post_frame_id=f"frame:{frame_id}")
+                if proof:
+                    candidate = compare_business_viewport_continuity(old_projection, projected,
+                        old_boundary_tokens=old_boundary_tokens,
+                        new_boundary_tokens=_business_boundary_tokens_for_payload(prepared, observations, committed_only=False),
+                        allow_history_suffix=True)
+                    if candidate.get("relation") in {"business_sequence_equal", "unique_tail_append",
+                            "unique_viewport_slide_with_tail_append", "unique_history_suffix_without_new_messages"}:
+                        continuity = {**candidate, "text_correspondence": proof}
+            except ValueError as exc:
+                return prepared, [{"error_code": str(exc), "reason": "historical_checkpoint_invalid"}]
         if str(continuity.get("relation") or "") not in {
             "business_sequence_equal",
             "unique_tail_append",
@@ -12364,6 +12507,7 @@ class TaskRunner:
             if not self._can_start_new_flow(binding):
                 return
             payload = build_scan_result_payload(sidecar_payload)
+            self._observe_layout_result("scan", sidecar_payload)
             admission_evidence = (
                 (payload.get("evidence") or {}).get("c2_conversation_admission")
                 if isinstance(payload.get("evidence"), dict)
@@ -12493,7 +12637,9 @@ class TaskRunner:
             )
             self._emit_runtime_process(
                 {
-                    "event": "scan_completed",
+                    "event": "scan_failed" if payload.get("scan_failed") else "scan_completed",
+                    "error_code": payload.get("error_code"),
+                    "description": self.layout_recovery_state()["message"],
                     "visible_hit_count": len(self.visible_hit_queue),
                     "session_count": self.c2_stats["last_scan_sessions"],
                 }
@@ -13865,6 +14011,15 @@ class TaskRunner:
         payload: dict[str, Any],
         outbox_id: str,
     ) -> bool:
+        entry = load_c2_outbox_entry(outbox_id) or {}
+        alignment = (payload.get("evidence") or {}).get("sequence_alignment_evidence") or {}
+        if alignment.get("text_correspondence"):
+            maximum = (c2_contract_v3().get("text_correspondence_contract") or {}).get("maximum_authority_refreshes", 2)
+            if int(entry.get("refresh_attempt_count") or 0) > maximum:
+                mark_c2_outbox_capability_paused(outbox_id, "TEXT_CORRESPONDENCE_REFRESH_EXHAUSTED")
+                self._pause_for_permanent_outbox_contract_error(binding)
+                self._record_permanent_outbox_flow_failure(payload, error_code="TEXT_CORRESPONDENCE_REFRESH_EXHAUSTED")
+                return False
         evidence = (
             payload.get("evidence")
             if isinstance(payload.get("evidence"), dict)
@@ -13904,6 +14059,23 @@ class TaskRunner:
             authorization.get("authorization_revision") or ""
         )
         refreshed_evidence = dict(refreshed.get("evidence") or {})
+        if alignment.get("text_correspondence"):
+            from .historical_alignment import refreshed_correspondence
+            try:
+                proof = refreshed_correspondence(payload, authorization.get("identity_checkpoint"))
+            except (KeyError, TypeError, ValueError):
+                proof = None
+            if proof is None:
+                set_c2_outbox_error(outbox_id, "TEXT_CORRESPONDENCE_CHECKPOINT_EXPIRED")
+                return False
+            alignment = dict(refreshed_evidence.get("sequence_alignment_evidence") or {})
+            save_c2_state(f"text_correspondence_refresh:{outbox_id}:{entry.get('refresh_attempt_count', 0)}", {
+                "original_proof": alignment.get("text_correspondence"), "refreshed_proof": proof,
+                "read_run_id": payload.get("read_run_id"), "conversation_id": payload.get("conversation_id"),
+                "messages_unchanged": True,
+            })
+            alignment["text_correspondence"] = proof
+            refreshed_evidence["sequence_alignment_evidence"] = alignment
         refreshed_evidence["authorization_read_reason"] = str(
             authorization.get("read_reason") or ""
         )
@@ -14321,6 +14493,15 @@ class TaskRunner:
     def _replay_c2_outbox_locked(self, binding: Binding, *, read_run_id: str | None = None) -> bool:
         waiting = list_c2_outbox_waiting(limit=20, read_run_id=read_run_id)
         for item in waiting:
+            if item.get("operation", "ingest") == "historical_text_correction":
+                from .text_correction_outbox import replay_one
+                if not replay_one(self.api, binding, item, finish_flow=lambda proof: self._finish_recovery_request(
+                    binding, proof["flow_id"], terminal_kind="technical_failed",
+                    conversation_id=proof["conversation_id"], error_code="HISTORICAL_TEXT_CORRECTION_PENDING")):
+                    return False
+                continue
+            if item.get("operation", "ingest") != "ingest":
+                return False
             payload = item.get("payload") if isinstance(item.get("payload"), dict) else {}
             outbox_id = str(item.get("outbox_id") or "")
             if not payload or not outbox_id:
@@ -18566,13 +18747,32 @@ class TaskRunner:
                 continue
             sequence = status.get("reply_sequence") or {}
             flow_id = str(load_runtime_control().get("inflight_flow_id") or "")
+            sequence_state = load_c2_state(f"reply_sequence_flow:{flow_id}") if flow_id else {}
             if flow_id and (int(sequence.get("segment_count") or 0) > 1
-                            or load_c2_state(f"reply_sequence_flow:{flow_id}")):
+                            or sequence_state):
                 save_c2_state(f"reply_sequence_flow:{flow_id}", {
+                    **(sequence_state if sequence_state.get("batch_id") == current_batch_id else {}),
                     "batch_id": current_batch_id, "conversation_id": target.conversation_id,
                     "segment_count": int(sequence.get("segment_count") or 0),
                 })
             if sequence.get("terminal") is True:
+                control = load_runtime_control()
+                if (sequence_state.get("read_after_interruption")
+                        and sequence_state.get("batch_id") == current_batch_id
+                        and binding.run_status == "running"
+                        and not control.get("pause_requested") and not control.get("update_no_new_work")
+                        and not has_pending_reply_send_ack_outbox()):
+                    self._stop_task_lease_guard()
+                    self.current_task = None
+                    self.on_task(None)
+                    from .reply_sequence_runtime import reread_after_interruption
+                    observed = reread_after_interruption(self, binding, target)
+                    if not observed.get("ok"):
+                        return observed
+                    replacement = (observed.get("result") or {}).get("message_batch") or {}
+                    if replacement.get("batch_id") and replacement["batch_id"] != current_batch_id:
+                        current_batch_id = str(replacement["batch_id"])
+                        continue
                 return {"ok": True, "batch": status, "sent": False, "reason": "reply_sequence_terminal"}
             self._apply_batch_continuation_to_target(status, target)
             if not status.get("processing") and status.get("decision") not in {"send_reply", "reply_then_handoff"}:
@@ -18856,6 +19056,7 @@ class TaskRunner:
                         else {}
                     ),
                     empty_welcome_baseline=empty_welcome_baseline,
+                    historical_checkpoint=checkpoint_for_target(target),
                 )
             )
             if (
@@ -22829,6 +23030,8 @@ class TaskRunner:
                 raise
             if target.raw.get("followup_block_reason") == "LEAD_INVALID":
                 result = {**result, "ok": False, "error_code": "LEAD_INVALID"}
+            if operation_phase == C2_AUTHORIZED_READ_PHASE:
+                self._observe_layout_result(f"read:{target.conversation_id}", result)
             evidence = (result.get("final_messages") or result.get("initial_messages")
                         or result.get("messages") or result.get("target_confirmation") or {})
             evidence = evidence if isinstance(evidence, dict) else {}
@@ -25017,6 +25220,11 @@ class TaskRunner:
                     if operation_phase == C2_PRE_SEND_REFRESH_PHASE
                     else original_code
                 )
+                from .historical_correction_recovery import prepare as prepare_historical_correction
+                prepare_historical_correction(self, binding=binding, target=target,
+                    read_run_id=read_run_id, payload=sidecar_payload,
+                    defer_task_settlement=(operation_phase in {C2_PRE_SEND_REFRESH_PHASE, C2_REPLY_SEQUENCE_READ_PHASE}
+                        or current_step == "reply_sequence_resume"))
                 self.c2_stats["last_error"] = code
                 settle_message_read_phase(succeeded=False, error_code=code)
                 append_log(

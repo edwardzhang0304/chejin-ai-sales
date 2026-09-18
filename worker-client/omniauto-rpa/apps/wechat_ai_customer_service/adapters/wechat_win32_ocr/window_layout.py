@@ -48,6 +48,7 @@ ADD_FRIEND_ENTRY_LAYOUT_REGION_NAMES = (
     "sidebar_bounds",
     "sidebar_header_bounds",
 )
+NAVIGATION_LAYOUT_REGION_NAMES = (*ADD_FRIEND_ENTRY_LAYOUT_REGION_NAMES, "session_list_bounds")
 
 
 class LayoutSnapshotError(RuntimeError):
@@ -417,18 +418,32 @@ def _qualified_edge_confidence(score: float, *, threshold: float) -> float:
     return min(0.97, 0.78 + (margin / 180.0))
 
 
-def _continuous_horizontal_edge(image: Any, *, left: int, right: int, y: int) -> bool:
+def _continuous_horizontal_edge(image: Any, *, left: int, right: int, y: int, dpi_scale: float = 1.0) -> bool:
     """Reject text strokes that happen to hit the coarse sampling columns.
 
-    A composer outline has a long uninterrupted horizontal edge. At larger
+    A composer outline has a nearly continuous horizontal edge. At larger
     DPI, draft glyphs can hit six of seven sampled columns but still consist
     of many short strokes. Inspect the actual span rather than their count.
     """
-    longest = run = 0
+    # Anti-aliased text next to the outline can hide a few pixels. Bridge
+    # only tiny holes, with a total budget: repeated glyph strokes must never
+    # become a boundary simply by joining all of their gaps.
+    longest = run = gap = bridged = 0
+    max_gap = max(1, round(4 * dpi_scale))
+    gap_budget = max(max_gap, int((right - left) * 0.02))
     for x in range(left, right):
         difference = abs(_pixel_luma(image.getpixel((x, y - 1)))
                          - _pixel_luma(image.getpixel((x, y + 1))))
-        run = run + 1 if difference >= 4.0 else 0
+        if difference >= 4.0:
+            if gap > max_gap or bridged + gap > gap_budget:
+                run = bridged = 0
+            elif run:
+                run += gap
+                bridged += gap
+            run += 1
+            gap = 0
+        else:
+            gap += 1
         longest = max(longest, run)
     return longest >= (right - left) * 0.80
 
@@ -458,7 +473,7 @@ def measure_business_input_regions(image: Any, calibration: Mapping[str, Any]) -
     candidates = [item for item in _full_width_horizontal_separator_candidates(
         image, left=viewport[0], right=viewport[2],
     ) if header[3] + 24 * scale < item[0] < toolbar[1] - 32 * scale
-        and _continuous_horizontal_edge(image, left=viewport[0], right=viewport[2], y=item[0])]
+        and _continuous_horizontal_edge(image, left=viewport[0], right=viewport[2], y=item[0], dpi_scale=scale)]
     evidence["vertical_candidates"] = [list(item) for item in candidates]
     if len(candidates) != 1:
         evidence["conflicts"] = [

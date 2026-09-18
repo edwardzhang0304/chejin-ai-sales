@@ -151,6 +151,9 @@ def validate_sequence_alignment_evidence(
     }
     if not required or not required.issubset(value):
         raise ValueError("C2_SEQUENCE_ALIGNMENT_EVIDENCE_INVALID")
+    if value.get("text_correspondence") is not None:
+        from apps.wechat_ai_customer_service.adapters.historical_text_alignment import validate_proof_shape
+        validate_proof_shape(value["text_correspondence"])
 
     source = str(value.get("pre_sequence_source") or "").strip()
     status = str(value.get("alignment_status") or "").strip()

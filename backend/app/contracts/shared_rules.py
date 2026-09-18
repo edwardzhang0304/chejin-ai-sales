@@ -1,7 +1,10 @@
 """Load pure rules from the OmniAuto source already shipped with the backend."""
 
 from functools import lru_cache
-import importlib.util
+import hashlib
+import importlib
+import sys
+from types import ModuleType
 from pathlib import Path
 
 from app.core.config import get_settings
@@ -9,12 +12,16 @@ from app.core.config import get_settings
 
 @lru_cache(maxsize=8)
 def _load_module(path: str):
-    spec = importlib.util.spec_from_file_location("chejin_shared_" + Path(path).stem, path)
-    if spec is None or spec.loader is None:
-        raise RuntimeError(f"Shared rules are unavailable: {Path(path).name}")
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
+    source = Path(path)
+    # Give sibling pure modules a real package so their relative imports keep
+    # working. Scope by the configured directory; custom roots must not reuse
+    # modules from a different source checkout already imported in the process.
+    package_name = "chejin_shared_" + hashlib.sha256(str(source.parent).encode()).hexdigest()[:16]
+    package = ModuleType(package_name)
+    package.__path__ = [str(source.parent)]
+    package.__package__ = package_name
+    sys.modules.setdefault(package_name, package)
+    return importlib.import_module(package_name + "." + source.stem)
 
 
 def shared_adapter(name: str):

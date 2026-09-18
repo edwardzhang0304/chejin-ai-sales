@@ -221,6 +221,9 @@ def freeze_next_checkpoint_from_read(db: Session, *, conversation_id: str, frame
         ReplyAction.deleted_at.is_(None)))
     if action is None or action.pre_send_fact_checkpoint:
         return
+    from app.services.message_effective_text import require_current_context
+    batch = db.get(MessageBatch, action.batch_id)
+    require_current_context(db, batch)
     ack = db.scalar(select(SentAck).where(SentAck.reply_action_id == action.predecessor_reply_action_id))
     if ack is None or ack.send_result != "sent":
         return
@@ -231,7 +234,7 @@ def freeze_next_checkpoint_from_read(db: Session, *, conversation_id: str, frame
                and (message.raw_payload or {}).get("sender_source") == "ai" for message in tail):
         return
     checkpoint = _build_pre_send_fact_checkpoint(
-        batch=db.get(MessageBatch, action.batch_id), ordered_messages=tail,
+        db=db, batch=batch, ordered_messages=tail,
         authoritative_frame_source=str(frame_evidence.get("authoritative_frame_source") or ""),
     )
     if checkpoint["tail_complete"]:

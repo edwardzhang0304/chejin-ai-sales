@@ -128,7 +128,7 @@ class RuntimeProcessTimeline:
                     "_phase": "scan_error",
                     "state": "error",
                     "title": "首屏扫描失败",
-                    "description": str(event.get("error_code") or "扫描未完成。"),
+                    "description": str(event.get("description") or event.get("error_code") or "扫描未完成。"),
                     "finalText": "本次检查失败",
                 }
             )

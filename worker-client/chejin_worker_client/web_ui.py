@@ -553,6 +553,8 @@ class WorkerWebWindow(QMainWindow):
         schedule_active = self.is_accept_schedule_active()
         if self.runner.flow_finish_wait_reason:
             return "running"
+        if self.binding.run_status == "paused" and self.runner.layout_recovery_state()["blocked"] and not self._runtime_flow_active_for_display():
+            return "paused-empty"
         if self.current_task and (self.binding.run_status == "paused" or not schedule_active):
             return "paused-running"
         if self.current_task:
@@ -652,6 +654,7 @@ class WorkerWebWindow(QMainWindow):
             "latestIncident": latest_incident() or {},
             "update": dict(self.update_state),
             "faultRecovery": recovery,
+            "layoutRecovery": self.runner.layout_recovery_state(),
         }
 
     def _listener_model(self) -> dict[str, Any]:

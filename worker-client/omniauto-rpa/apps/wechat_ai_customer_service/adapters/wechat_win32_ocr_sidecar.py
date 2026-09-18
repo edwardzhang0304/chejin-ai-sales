@@ -628,6 +628,7 @@ def main() -> int:
         ),
     )
     parser.add_argument("--text-recheck-request", default="")
+    parser.add_argument("--historical-text-correction-request", default="")
     parser.add_argument("--text-recheck-capture", action="store_true")
     parser.add_argument("--input-safety-observation", action="store_true")
     parser.add_argument("--input-safety-request-id", default="")
@@ -1317,6 +1318,12 @@ def parse_visible_session_candidate_arg(raw: Any) -> dict[str, Any] | None:
 
 def run_action(args: argparse.Namespace) -> dict[str, Any]:
     action = str(args.action or "").strip().lower()
+    original_request = getattr(args, "historical_text_correction_request", "")
+    if original_request:
+        if action != "messages":
+            return {"ok": False, "error_code": "HISTORICAL_TEXT_CORRECTION_ARGUMENT_INVALID"}
+        from apps.wechat_ai_customer_service.adapters.historical_text_correction import replay_original_image_request
+        return replay_original_image_request(original_request, args.artifact_dir, ocr_runner=run_ocr)
     input_safety_only = bool(getattr(args, "input_safety_observation", False))
     if input_safety_only and (
         action != "messages" or str(args.target_mode or "") != "current"
@@ -2937,6 +2944,8 @@ def immutable_frame_pixel_evidence(
         sidebar = image
     full_digest = hashlib.sha256(bytes(image.tobytes())).hexdigest()
     sidebar_digest = hashlib.sha256(bytes(sidebar.tobytes())).hexdigest()
+    from apps.wechat_ai_customer_service.adapters.historical_text_correction import captured_png_evidence
+    png_evidence = captured_png_evidence(screenshot_path, raw_rgb_sha256=full_digest)
     captured_at_monotonic = (
         float(captured_monotonic)
         if captured_monotonic is not None
@@ -2949,6 +2958,7 @@ def immutable_frame_pixel_evidence(
             f"frame:{time.monotonic_ns()}:{os.urandom(8).hex()}:{full_digest[:16]}"
         ),
         "screenshot_sha256": full_digest,
+        "png_byte_evidence": png_evidence,
         "hwnd": int(hwnd or 0),
         "geometry": {
             key: int(geometry.get(key) or 0)
@@ -3011,7 +3021,7 @@ def sessions_payload(
             "reason": blocking_reason,
             "error": f"WeChat session list is blocked by: {blocking_reason}",
         }
-    search_snapshot = layout_snapshot_for_image(screenshot)
+    search_snapshot = navigation_layout_snapshot_for_image(screenshot)
     query = sidebar_search_query_text(items, screenshot.size, geometry=geometry, layout_snapshot=search_snapshot)
     placeholder_visible = sidebar_search_box_evidence(items, geometry=geometry, layout_snapshot=search_snapshot).get("ok")
     query_present = bool(query) and not (placeholder_visible and sidebar_search_clear_residue_allows_candidate_probe(query))
@@ -3028,7 +3038,7 @@ def sessions_payload(
             "error": "Sidebar search is still open; this frame is not a session-list scan.",
         }
     sessions = parse_sessions_from_ocr(items, screenshot.size, screenshot=screenshot)
-    session_layout_snapshot = layout_snapshot_for_image(screenshot) or {}
+    session_layout_snapshot = navigation_layout_snapshot_for_image(screenshot) or {}
     if not sessions and not bool(session_layout_snapshot.get("valid")):
         layout_builder = (
             session_layout_snapshot.get("layout_builder")
@@ -3065,7 +3075,7 @@ def sessions_payload(
             ),
         }
     session_snapshot_id = str(
-        (layout_snapshot_metadata(hwnd).get("snapshot") or {}).get("layout_snapshot_id") or ""
+        (navigation_layout_snapshot_for_image(screenshot) or {}).get("layout_snapshot_id") or ""
     )
     for session in sessions:
         if isinstance(session, dict):
@@ -9433,7 +9443,7 @@ def run_ocr_for_sidebar_search_results(
             "ocr_call_count": 1,
             "fallback_reason": "roi_disabled",
         }
-    snapshot = layout_snapshot_for_image(screenshot) or {}
+    snapshot = navigation_layout_snapshot_for_image(screenshot) or {}
     try:
         bounds = list(win32_ocr_layout.required_region(snapshot, "sidebar_bounds"))
     except win32_ocr_layout.LayoutSnapshotError:
@@ -14098,7 +14108,7 @@ def ensure_main_session_list(
         back_target = detect_session_subview_back_target(
             ocr_items,
             screenshot.size,
-            layout_snapshot=(layout_snapshot_metadata(hwnd).get("snapshot") or {}),
+            layout_snapshot=(navigation_layout_snapshot_for_image(screenshot) or {}),
         )
         if not back_target:
             break
@@ -14108,7 +14118,7 @@ def ensure_main_session_list(
             int(back_target["y"]),
             bounds=list(back_target.get("bounds") or []),
             expected_snapshot_id=str(
-                (layout_snapshot_metadata(hwnd).get("snapshot") or {}).get("layout_snapshot_id") or ""
+                (navigation_layout_snapshot_for_image(screenshot) or {}).get("layout_snapshot_id") or ""
             ),
         )
         humanized_action_sleep(280, 480)
@@ -14417,7 +14427,7 @@ def sidebar_search_focus_indicator_detected(
         return False
     try:
         header = win32_ocr_layout.required_region(
-            layout_snapshot_for_image(screenshot), "sidebar_header_bounds"
+            navigation_layout_snapshot_for_image(screenshot), "sidebar_header_bounds"
         )
     except win32_ocr_layout.LayoutSnapshotError:
         return False
@@ -14629,7 +14639,7 @@ def dismiss_sidebar_search_state(
         before_surface = target_switch_surface_state(before_shot, before_items, geometry=active_geometry)
         if not before_surface.get("ok"):
             return {**result, "ok": False, "reason": "search_cleanup_surface_blocked", "surface": before_surface}
-        current_snapshot = layout_snapshot_for_image(before_shot) or {}
+        current_snapshot = navigation_layout_snapshot_for_image(before_shot) or {}
         search_target = sidebar_search_cleanup_input_target(
             before_items,
             layout_snapshot=current_snapshot,
@@ -14671,7 +14681,7 @@ def dismiss_sidebar_search_state(
             cleared_items,
             cleared_shot.size,
             geometry=active_geometry,
-            layout_snapshot=layout_snapshot_for_image(cleared_shot),
+            layout_snapshot=navigation_layout_snapshot_for_image(cleared_shot),
         )
         if not blank_target:
             return {**result, "ok": False, "reason": "safe_header_blank_target_not_found", "search_target": search_target}
@@ -14682,7 +14692,7 @@ def dismiss_sidebar_search_state(
             bounds=blank_target["bounds"],
             action_name="sidebar_search_dismiss_header_blank_click",
             expected_snapshot_id=str(
-                (layout_snapshot_for_image(cleared_shot) or {}).get("layout_snapshot_id") or ""
+                (navigation_layout_snapshot_for_image(cleared_shot) or {}).get("layout_snapshot_id") or ""
             ),
         )
         if not blank_click.get("ok"):
@@ -14722,10 +14732,10 @@ def dismiss_sidebar_search_state(
         last_search_state = sidebar_search_state_detected(shot, items, geometry=active_geometry)
         result["search_state"] = last_search_state
         result["search_box_evidence"] = sidebar_search_box_evidence(
-            items, geometry=active_geometry, layout_snapshot=layout_snapshot_for_image(shot),
+            items, geometry=active_geometry, layout_snapshot=navigation_layout_snapshot_for_image(shot),
         )
         query_text = sidebar_search_query_text(
-            items, shot.size, geometry=active_geometry, layout_snapshot=layout_snapshot_for_image(shot),
+            items, shot.size, geometry=active_geometry, layout_snapshot=navigation_layout_snapshot_for_image(shot),
         )
         result["query_empty"] = not bool(query_text) or bool(
             result["search_box_evidence"].get("ok") and sidebar_search_clear_residue_allows_candidate_probe(query_text)
@@ -14840,7 +14850,7 @@ def clear_sidebar_search_box_without_select_all(
     search_box_evidence = sidebar_search_box_evidence(
         evidence_items,
         geometry=active_geometry,
-        layout_snapshot=(layout_snapshot_metadata(hwnd).get("snapshot") or {}),
+        layout_snapshot=(navigation_layout_snapshot_for_image(evidence_shot) or {}),
     )
     if not evidence_surface.get("ok") or not search_box_evidence.get("ok"):
         return {
@@ -14860,7 +14870,7 @@ def clear_sidebar_search_box_without_select_all(
         bounds=bounds,
         action_name="sidebar_search_box_click",
         expected_snapshot_id=str(
-            (layout_snapshot_metadata(hwnd).get("snapshot") or {}).get("layout_snapshot_id") or ""
+            (navigation_layout_snapshot_for_image(evidence_shot) or {}).get("layout_snapshot_id") or ""
         ),
     )
     if not click_result.get("ok"):
@@ -14935,11 +14945,11 @@ def clear_sidebar_search_box_without_select_all(
         clear_items,
         clear_shot.size,
         geometry=active_geometry,
-        layout_snapshot=layout_snapshot_for_image(clear_shot),
+        layout_snapshot=navigation_layout_snapshot_for_image(clear_shot),
     )
     refocus_result: dict[str, Any] = {}
     if clear_surface.get("ok") and not clear_state.get("detected") and not clear_query_text:
-        clear_snapshot = layout_snapshot_for_image(clear_shot) or {}
+        clear_snapshot = navigation_layout_snapshot_for_image(clear_shot) or {}
         fresh_refocus_target = sidebar_search_input_target_from_ocr(
             clear_items,
             clear_shot.size,
@@ -14992,7 +15002,7 @@ def clear_sidebar_search_box_without_select_all(
             refocus_items,
             refocus_shot.size,
             geometry=active_geometry,
-            layout_snapshot=layout_snapshot_for_image(refocus_shot),
+            layout_snapshot=navigation_layout_snapshot_for_image(refocus_shot),
         )
         refocus_result = {
             "click": refocus_click,
@@ -15091,7 +15101,7 @@ def type_sidebar_search_query(
             verify_items,
             verify_shot.size,
             geometry=active_geometry,
-            layout_snapshot=layout_snapshot_for_image(verify_shot),
+            layout_snapshot=navigation_layout_snapshot_for_image(verify_shot),
         )
         if not surface.get("ok") or not search_state.get("detected"):
             return {
@@ -15184,7 +15194,7 @@ def nudge_sidebar_search_query_for_results(
         items,
         shot.size,
         geometry=active_geometry,
-        layout_snapshot=layout_snapshot_for_image(shot),
+        layout_snapshot=navigation_layout_snapshot_for_image(shot),
     )
     if not surface.get("ok") or not search_state.get("detected"):
         return {
@@ -15777,7 +15787,7 @@ def validate_active_selected_session_target(
         screenshot.size,
         target=target,
         exact=exact,
-        layout_snapshot=layout_snapshot_for_image(screenshot),
+        layout_snapshot=navigation_layout_snapshot_for_image(screenshot),
     )
     return {
         "ok": bool(matched),
@@ -16056,7 +16066,7 @@ def open_chat_by_remark_code_search(
         baseline_items,
         baseline_shot.size,
         geometry=geometry,
-        layout_snapshot=(layout_snapshot_metadata(hwnd).get("snapshot") or {}),
+        layout_snapshot=(navigation_layout_snapshot_for_image(baseline_shot) or {}),
     )
     if not search_target:
         return finish(False, "sidebar_search_target_unresolved")
@@ -16173,11 +16183,11 @@ def open_chat_by_remark_code_search(
         search_items,
         search_shot.size,
         clean_remark,
-        layout_snapshot=layout_snapshot_for_image(search_shot),
+        layout_snapshot=navigation_layout_snapshot_for_image(search_shot),
     )
     sessions = parse_sessions_from_ocr(search_items, search_shot.size, screenshot=search_shot)
     search_snapshot_id = str(
-        (layout_snapshot_metadata(hwnd).get("snapshot") or {}).get("layout_snapshot_id") or ""
+        (navigation_layout_snapshot_for_image(search_shot) or {}).get("layout_snapshot_id") or ""
     )
     for candidate in sessions:
         if isinstance(candidate, dict):
@@ -16207,7 +16217,7 @@ def open_chat_by_remark_code_search(
             search_items,
             search_shot.size,
             clean_remark,
-            layout_snapshot=layout_snapshot_for_image(search_shot),
+            layout_snapshot=navigation_layout_snapshot_for_image(search_shot),
         )
         sessions = parse_sessions_from_ocr(
             search_items,
@@ -16296,7 +16306,7 @@ def open_chat_by_remark_code_search(
                 search_items,
                 search_shot.size,
                 clean_remark,
-                layout_snapshot=layout_snapshot_for_image(search_shot),
+                layout_snapshot=navigation_layout_snapshot_for_image(search_shot),
             )
             sessions = parse_sessions_from_ocr(search_items, search_shot.size, screenshot=search_shot)
             session_matches = search_result_sessions_matching_remark_code(sessions, clean_remark)
@@ -16319,7 +16329,7 @@ def open_chat_by_remark_code_search(
                     search_items,
                     search_shot.size,
                     clean_remark,
-                    layout_snapshot=layout_snapshot_for_image(search_shot),
+                    layout_snapshot=navigation_layout_snapshot_for_image(search_shot),
                 )
                 sessions = parse_sessions_from_ocr(
                     search_items,
@@ -16336,7 +16346,7 @@ def open_chat_by_remark_code_search(
             search_items,
             search_shot.size,
             clean_remark,
-            layout_snapshot=layout_snapshot_for_image(search_shot),
+            layout_snapshot=navigation_layout_snapshot_for_image(search_shot),
         )
         if fallback_candidate:
             matches = [fallback_candidate]
@@ -16512,7 +16522,7 @@ def open_chat(
         ocr_items,
         screenshot.size,
         geometry=geometry,
-        layout_snapshot=(layout_snapshot_metadata(hwnd).get("snapshot") or {}),
+        layout_snapshot=(navigation_layout_snapshot_for_image(screenshot) or {}),
     )
     search_x, search_y = ([int(value) for value in search_target["point"]] if search_target else [0, 0])
     _sidecar_timing_finish(timing, "open_chat_geometry", geometry_started)
@@ -17287,139 +17297,16 @@ def validate_post_send_target(
     }
 
 
-def normalized_send_confirmation_text(value: Any) -> str:
-    return re.sub(r"\s+", "", str(value or "")).strip()
-
-
-_SEND_OCR_PUNCTUATION_TRANSLATION = str.maketrans(
-    {
-        "。": ".",
-        "｡": ".",
-        "、": ",",
-        "､": ",",
-        "“": '"',
-        "”": '"',
-        "„": '"',
-        "‟": '"',
-        "「": '"',
-        "」": '"',
-        "『": '"',
-        "』": '"',
-        "‘": "'",
-        "’": "'",
-        "‚": "'",
-        "‛": "'",
-        "—": "-",
-        "–": "-",
-        "―": "-",
-        "−": "-",
-        "‐": "-",
-        "‑": "-",
-        "…": "...",
-        "‥": "..",
-        "【": "[",
-        "】": "]",
-        "〔": "[",
-        "〕": "]",
-    }
+# Public compatibility names share one scene-specific rule with the backend.
+from apps.wechat_ai_customer_service.adapters.text_correspondence import (
+    normalized_send_confirmation_text,
+    _SEND_OCR_PUNCTUATION_TRANSLATION,
+    SEND_OCR_MIN_EXPECTED_COVERAGE, SEND_OCR_MIN_OBSERVED_COVERAGE,
+    SEND_OCR_MIN_SIMILARITY, SEND_OCR_MIN_MATCHING_CHARACTERS,
+    SEND_OCR_MAX_REQUIRED_CONTIGUOUS_MATCH,
+    _normalized_send_ocr_correspondence_text, _send_ocr_has_readable_text,
+    _send_ocr_text_correspondence,
 )
-SEND_OCR_MIN_EXPECTED_COVERAGE = 0.80
-SEND_OCR_MIN_OBSERVED_COVERAGE = 0.80
-SEND_OCR_MIN_SIMILARITY = 0.80
-SEND_OCR_MIN_MATCHING_CHARACTERS = 4
-SEND_OCR_MAX_REQUIRED_CONTIGUOUS_MATCH = 8
-
-
-def _normalized_send_ocr_correspondence_text(value: Any) -> str:
-    """Canonicalize OCR presentation differences without rewriting content."""
-
-    normalized = unicodedata.normalize("NFKC", str(value or ""))
-    normalized = normalized.translate(_SEND_OCR_PUNCTUATION_TRANSLATION)
-    normalized = "".join(
-        character
-        for character in normalized
-        if not character.isspace()
-        and unicodedata.category(character) != "Cf"
-        and ord(character) not in {0xFE0E, 0xFE0F}
-    )
-    normalized = re.sub(r"\.{2,}", "...", normalized)
-    return normalized.casefold()
-
-
-def _send_ocr_has_readable_text(value: Any) -> bool:
-    normalized = _normalized_send_ocr_correspondence_text(value)
-    return bool(re.search(r"[0-9a-z\u3400-\u9fff]", normalized))
-
-
-def _send_ocr_text_correspondence(
-    expected_text: Any,
-    observed_text: Any,
-) -> dict[str, Any]:
-    """Correlate OCR text with the just-triggered AI reply.
-
-    Message type and send ownership are deliberately separate decisions. A
-    readable self-side OCR result is text even when this correspondence check
-    fails. Send ownership additionally requires high ordered overlap in both
-    directions so a short shared phrase inside unrelated text cannot confirm
-    a send.
-    """
-
-    raw_expected = normalized_send_confirmation_text(expected_text)
-    raw_observed = normalized_send_confirmation_text(observed_text)
-    expected = _normalized_send_ocr_correspondence_text(expected_text)
-    observed = _normalized_send_ocr_correspondence_text(observed_text)
-    matcher = SequenceMatcher(None, expected, observed, autojunk=False)
-    blocks = [block for block in matcher.get_matching_blocks() if block.size > 0]
-    matching_characters = sum(block.size for block in blocks)
-    longest_matching_block = max((block.size for block in blocks), default=0)
-    expected_coverage = (
-        matching_characters / len(expected) if expected else 0.0
-    )
-    observed_coverage = (
-        matching_characters / len(observed) if observed else 0.0
-    )
-    similarity = matcher.ratio() if expected and observed else 0.0
-    normalized_exact = bool(expected and observed and expected == observed)
-    min_comparable_length = min(len(expected), len(observed))
-    required_contiguous_match = min(
-        SEND_OCR_MAX_REQUIRED_CONTIGUOUS_MATCH,
-        max(SEND_OCR_MIN_MATCHING_CHARACTERS, int(min_comparable_length * 0.20)),
-    )
-    high_overlap = bool(
-        expected
-        and observed
-        and matching_characters >= SEND_OCR_MIN_MATCHING_CHARACTERS
-        and longest_matching_block >= required_contiguous_match
-        and expected_coverage >= SEND_OCR_MIN_EXPECTED_COVERAGE
-        and observed_coverage >= SEND_OCR_MIN_OBSERVED_COVERAGE
-        and similarity >= SEND_OCR_MIN_SIMILARITY
-    )
-    accepted = bool(normalized_exact or high_overlap)
-    if normalized_exact and raw_expected == raw_observed:
-        reason = "exact_program_text"
-    elif normalized_exact:
-        reason = "unicode_normalized_exact_program_text"
-    elif high_overlap:
-        reason = "high_overlap_program_text"
-    elif not expected or not observed:
-        reason = "ocr_text_empty"
-    else:
-        reason = "ocr_text_low_overlap"
-    result: dict[str, Any] = {
-        "accepted": accepted,
-        "exact": normalized_exact,
-        "raw_exact": bool(raw_expected and raw_expected == raw_observed),
-        "reason": reason,
-        "expected_length": len(expected),
-        "observed_length": len(observed),
-        "matching_characters": matching_characters,
-        "longest_matching_block": longest_matching_block,
-        "required_contiguous_match": required_contiguous_match,
-        "expected_coverage": round(expected_coverage, 6),
-        "observed_coverage": round(observed_coverage, 6),
-        "similarity": round(similarity, 6),
-    }
-    return result
 
 
 def basic_chat_layout_evidence(screenshot: Any) -> dict[str, Any]:
@@ -17803,6 +17690,26 @@ def validate_send_context_guard(
         ),
         allow_history_suffix=allow_history_suffix,
     )
+    historical = continuity_contract.get("historical_alignment")
+    if decision.get("relation") != "business_sequence_equal" and isinstance(historical, dict):
+        from apps.wechat_ai_customer_service.adapters.historical_text_alignment import comparison_projection
+        try:
+            baseline_rows = historical["baseline_observations"]
+            checkpoint = historical["checkpoint"]
+            if normalized_business_message_sequence(baseline_rows, message_viewport_bounds=None) != expected_sequence:
+                raise ValueError("historical_guard_baseline_changed")
+            projected_old, old_proof = comparison_projection(checkpoint, baseline_rows,
+                pre_frame_id="checkpoint:send-guard", post_frame_id="send-guard:baseline")
+            projected_new, new_proof = comparison_projection(checkpoint, current_observations,
+                pre_frame_id="checkpoint:send-guard", post_frame_id="send-guard:current")
+            if old_proof or new_proof:
+                decision = _shared_compare_business_viewport_continuity(projected_old, projected_new,
+                    old_boundary_tokens=old_tokens,
+                    new_boundary_tokens=_shared_boundary_tokens_for_observations(current_observations, committed_only=False),
+                    allow_history_suffix=allow_history_suffix)
+                decision["text_correspondence"] = {"baseline": old_proof, "current": new_proof}
+        except (ValueError, KeyError, TypeError) as exc:
+            return {"ok": False, "reason": str(exc), "error_code": "C3_SEND_CONTEXT_GUARD_INVALID"}
     relation = str(decision.get("relation") or "")
     # Content signatures cannot distinguish a lone old tail from an identical
     # new occurrence. Worker-generated IDs are not native message identities.
@@ -18298,6 +18205,14 @@ def build_send_fact_snapshot_from_frame(
         and str(observation.get("row_kind") or "")
         in {"text_bubble", "voice_bubble", "voice_transcript", "image_bubble", "system_message"}
     ]
+    if recover_expected_self_text:
+        from apps.wechat_ai_customer_service.adapters.wechat_win32_ocr.send_status_indicator import inspect_gutter
+        layout = layout_snapshot_for_image(screenshot) or {}
+        for row in message_sequence:
+            if row["sender_role"] in {"self", "sales"} and row["row_kind"] == "text_bubble":
+                row["send_status_evidence"] = inspect_gutter(
+                    screenshot, row.get("bubble_rect"), dpi_scale=layout.get("dpi_scale") or 1.0,
+                )
     frame_observation = immutable_frame_pixel_evidence(
         screenshot,
         hwnd=hwnd,
@@ -18473,89 +18388,7 @@ def build_send_fact_snapshot_from_frame(
     return snapshot
 
 
-def find_new_matching_self_message(
-    baseline_sequence: list[dict[str, Any]],
-    current_sequence: list[dict[str, Any]],
-    text: str,
-) -> dict[str, Any] | None:
-    """Find an added bottom-most self bubble by ordered visual facts, not counts."""
-
-    def signature(item: dict[str, Any]) -> tuple[str, str, str]:
-        return (
-            str(item.get("row_kind") or ""),
-            str(item.get("sender_role") or ""),
-            _normalized_send_ocr_correspondence_text(
-                item.get("content_normalized")
-            ),
-        )
-
-    before = [item for item in baseline_sequence if isinstance(item, dict)]
-    after = [item for item in current_sequence if isinstance(item, dict)]
-    before_signatures = [signature(item) for item in before]
-    after_signatures = [signature(item) for item in after]
-    rows = len(before_signatures) + 1
-    columns = len(after_signatures) + 1
-    lcs = [[0] * columns for _ in range(rows)]
-    for before_index in range(len(before_signatures) - 1, -1, -1):
-        for after_index in range(len(after_signatures) - 1, -1, -1):
-            if before_signatures[before_index] == after_signatures[after_index]:
-                lcs[before_index][after_index] = 1 + lcs[before_index + 1][after_index + 1]
-            else:
-                lcs[before_index][after_index] = max(
-                    lcs[before_index + 1][after_index],
-                    lcs[before_index][after_index + 1],
-                )
-    matched_after: set[int] = set()
-    before_index = 0
-    after_index = 0
-    while before_index < len(before_signatures) and after_index < len(after_signatures):
-        if before_signatures[before_index] == after_signatures[after_index]:
-            matched_after.add(after_index)
-            before_index += 1
-            after_index += 1
-        elif lcs[before_index + 1][after_index] >= lcs[before_index][after_index + 1]:
-            before_index += 1
-        else:
-            after_index += 1
-
-    baseline_observation_ids = {
-        str(item.get("observation_id") or "")
-        for item in before
-        if str(item.get("observation_id") or "")
-    }
-    candidates = [
-        (index, item)
-        for index, item in enumerate(after)
-        if index not in matched_after
-        and str(item.get("row_kind") or "") == "text_bubble"
-        and str(item.get("sender_role") or "") in {"self", "sales"}
-        and _send_ocr_text_correspondence(
-            text,
-            item.get("content_normalized"),
-        )["accepted"]
-        and (
-            not str(item.get("recovered_from_structural_observation_id") or "")
-            or str(item.get("recovered_from_structural_observation_id") or "")
-            not in baseline_observation_ids
-        )
-    ]
-    if not candidates:
-        return None
-    candidate_index, candidate = candidates[-1]
-    later_chat_messages = [
-        item
-        for item in after[candidate_index + 1 :]
-        if str(item.get("row_kind") or "")
-        in {"text_bubble", "voice_transcript", "image_bubble"}
-    ]
-    if later_chat_messages:
-        return None
-    result = dict(candidate)
-    result["send_text_correspondence"] = _send_ocr_text_correspondence(
-        text,
-        candidate.get("content_normalized"),
-    )
-    return result
+from apps.wechat_ai_customer_service.adapters.text_correspondence import find_new_matching_self_message
 
 
 def confirm_reply_sent(
@@ -19423,9 +19256,27 @@ def _register_layout_snapshot(
         "reference_map_revision": str(calibration.get("reference_map_revision") or ""),
         "device_profile": device_profile,
     }
-    previous_id = _LATEST_LAYOUT_SNAPSHOT_BY_HWND.get(int(hwnd))
-    if previous_id:
-        _LAYOUT_SNAPSHOT_STORE.invalidate(previous_id, reason="new_frame_captured")
+    _LAYOUT_SNAPSHOT_STORE.invalidate_hwnd(int(hwnd), reason="new_frame_captured")
+    if not generic_popup and calibration_matches:
+        # A chat's composer cannot invalidate the calibrated sidebar. Give
+        # navigation its own same-frame, region-limited action capability;
+        # the full snapshot remains invalid when message/input measurement fails.
+        navigation = win32_ocr_layout.build_layout_snapshot(
+            hwnd=int(hwnd), frame_id=snapshot["frame_id"], capture_mode=capture_mode,
+            image_size=image_size, capture_screen_origin=capture_screen_origin,
+            window_rect=geometry, client_rect=client_geometry,
+            client_screen_origin=client_origin, dpi_scale=current_dpi,
+            regions={name: calibration.get(name) for name in win32_ocr_layout.NAVIGATION_LAYOUT_REGION_NAMES},
+            anchors=[anchor for anchor in calibration.get("anchors") or []
+                     if anchor.get("name") in {"nav_separator", "sidebar_separator", "sidebar_search_anchor", "startup_plus_pixel_anchor"}],
+            confidence=float(calibration.get("confidence") or 0.0), executable=True,
+            screenshot_path=screenshot_path, surface_kind="wechat_navigation",
+            required_region_names=win32_ocr_layout.NAVIGATION_LAYOUT_REGION_NAMES,
+        )
+        for key in ("calibration_id", "startup_calibration_evidence", "coordinate_map"):
+            navigation[key] = snapshot[key]
+        snapshot["navigation_snapshot_id"] = navigation["layout_snapshot_id"]
+        _LAYOUT_SNAPSHOT_STORE.put(navigation)
     _LAYOUT_SNAPSHOT_STORE.put(snapshot)
     _LATEST_LAYOUT_SNAPSHOT_BY_HWND[int(hwnd)] = str(snapshot["layout_snapshot_id"])
     _LAYOUT_SNAPSHOT_ID_BY_IMAGE_ID[id(image)] = str(snapshot["layout_snapshot_id"])
@@ -19446,14 +19297,22 @@ def layout_snapshot_for_image(image: Any) -> dict[str, Any] | None:
     return _LAYOUT_SNAPSHOT_STORE.get(snapshot_id)
 
 
+def navigation_layout_snapshot_for_image(image: Any) -> dict[str, Any] | None:
+    """Same capture and calibration, sidebar only; never grants chat access."""
+    snapshot = layout_snapshot_for_image(image)
+    if snapshot and snapshot.get("navigation_snapshot_id"):
+        return _LAYOUT_SNAPSHOT_STORE.get(snapshot["navigation_snapshot_id"])
+    return snapshot
+
+
 def finalize_add_friend_entry_layout_snapshot(
     image: Any,
     items: list[dict[str, Any]],
 ) -> dict[str, Any] | None:
-    """Return the existing business frame; startup owns global regions."""
+    """Return this frame's navigation capability; startup owns shell regions."""
 
     del items
-    return layout_snapshot_for_image(image)
+    return navigation_layout_snapshot_for_image(image)
 
 
 def _sidebar_search_semantic_candidates(
@@ -19505,9 +19364,7 @@ def layout_snapshot_metadata(hwnd: int) -> dict[str, Any]:
 
 
 def invalidate_layout_snapshot(hwnd: int, *, reason: str) -> None:
-    snapshot_id = _LATEST_LAYOUT_SNAPSHOT_BY_HWND.get(int(hwnd or 0))
-    if snapshot_id:
-        _LAYOUT_SNAPSHOT_STORE.invalidate(snapshot_id, reason=reason)
+    _LAYOUT_SNAPSHOT_STORE.invalidate_hwnd(int(hwnd or 0), reason=reason)
 
 
 def invalidate_all_layout_snapshots(*, reason: str) -> None:
@@ -19535,6 +19392,8 @@ def _current_click_snapshot(hwnd: int, *, expected_snapshot_id: str = "") -> tup
             "reason": str(snapshot.get("invalidated_reason") or "layout_snapshot_invalidated"),
             "layout_snapshot_id": str(snapshot.get("layout_snapshot_id") or ""),
         }
+    if expected_snapshot_id == snapshot.get("navigation_snapshot_id"):
+        snapshot = _LAYOUT_SNAPSHOT_STORE.get(expected_snapshot_id) or snapshot
     if expected_snapshot_id and str(snapshot.get("layout_snapshot_id") or "") != str(expected_snapshot_id):
         return None, {
             "ok": False,
@@ -19911,7 +19770,7 @@ def sidebar_visible_list_enhanced_ocr_items(
     width, height = image_size
     if width <= 0 or height <= 0:
         return []
-    snapshot = layout_snapshot or layout_snapshot_for_image(screenshot) or {}
+    snapshot = layout_snapshot or navigation_layout_snapshot_for_image(screenshot) or {}
     session_bounds = win32_ocr_layout.normalize_rect(snapshot.get("session_list_bounds"))
     if not bool(snapshot.get("valid")) or session_bounds[2] <= session_bounds[0]:
         return []
@@ -19973,7 +19832,7 @@ def session_list_ocr_items(
     enhanced_items = sidebar_visible_list_enhanced_ocr_items(
         screenshot,
         image_size,
-        layout_snapshot=layout_snapshot_for_image(screenshot),
+        layout_snapshot=navigation_layout_snapshot_for_image(screenshot),
     )
     if enhanced_items:
         items.extend(enhanced_items)
@@ -20031,7 +19890,7 @@ def parse_sessions_from_ocr(
     layout_snapshot: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     width, height = image_size
-    snapshot = layout_snapshot or layout_snapshot_for_image(screenshot) or {}
+    snapshot = layout_snapshot or navigation_layout_snapshot_for_image(screenshot) or {}
     session_bounds = win32_ocr_layout.normalize_rect(snapshot.get("session_list_bounds"))
     if not bool(snapshot.get("valid")) or session_bounds[2] <= session_bounds[0]:
         return []
@@ -22781,6 +22640,7 @@ def run_sidecar_cli(argv: list[str] | None = None) -> dict[str, Any]:
         ),
     )
     parser.add_argument("--text-recheck-request", default="")
+    parser.add_argument("--historical-text-correction-request", default="")
     parser.add_argument("--text-recheck-capture", action="store_true")
     parser.add_argument("--input-safety-observation", action="store_true")
     parser.add_argument("--input-safety-request-id", default="")

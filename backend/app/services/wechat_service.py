@@ -543,6 +543,9 @@ def _identity_checkpoint(
         if match:
             max_sequence = max(max_sequence, int(match.group(1)))
     recent_messages: list[dict[str, object]] = []
+    from app.services.message_effective_text import effective_versions, comparison_views, text_sha256
+    effective = effective_versions(db, events)
+    comparison = {view.id: view for view in comparison_views(db, events)}
     for message in reversed(events):
         raw_payload = (
             message.raw_payload
@@ -561,6 +564,17 @@ def _identity_checkpoint(
         )
         recent_messages.append(
             {
+                "message_event_id": message.id,
+                "original_text_sha256": text_sha256(message.content or ""),
+                "effective_text": effective[message.id],
+                "effective_comparison": ({
+                    "normalized_content_hash": _message_identity_summary(
+                        sender_role=message.sender_role, message_type=message.message_type,
+                        content=comparison[message.id].content, raw_payload=comparison[message.id].raw_payload,
+                    )["normalized_content_hash"],
+                    "alignment_signature": _checkpoint_alignment_signature(comparison[message.id]),
+                    "business_projection": comparison[message.id].raw_payload.get("business_projection") or {},
+                } if effective[message.id]["version"] else None),
                 "stable_id": stable_id,
                 "source_message_key": str(message.source_message_key or ""),
                 "origin_read_run_id": str(message.read_run_id or ""),
@@ -630,11 +644,17 @@ def _identity_checkpoint(
                 ),
             }
         )
-    return {
-        "version": 3,
-        "next_sequence_floor": max_sequence + 1,
-        "recent_messages": recent_messages,
-    }
+    checkpoint = {"version": 3, "conversation_id": conversation_id,
+                  "next_sequence_floor": max_sequence + 1, "recent_messages": recent_messages}
+    current_binding = db.scalar(select(WechatSessionBinding).where(
+        WechatSessionBinding.conversation_id == conversation_id,
+        WechatSessionBinding.deleted_at.is_(None)))
+    if current_binding:
+        from app.services.text_correspondence_context import build_context
+        from app.contracts.shared_rules import shared_adapter
+        checkpoint["text_correspondence_context"] = build_context(db, current_binding)
+        checkpoint["checkpoint_digest"] = shared_adapter("text_correspondence").checkpoint_digest(checkpoint)
+    return checkpoint
 
 
 def _ai_reply_boundary(db: Session, *, conversation_id: str) -> dict:
@@ -1875,6 +1895,7 @@ def _read_target_payload(
     binding: WechatSessionBinding,
     *,
     read_reason: str,
+    identity_checkpoint: dict | None = None,
 ) -> dict:
     from app.services.c3_service import (
         RECOVERABLE_C2_HANDOFF_REASON_CODES,
@@ -1913,6 +1934,7 @@ def _read_target_payload(
     )
     target = {
         "conversation_id": binding.conversation_id,
+        "binding_id": binding.id,
         "lead_id": binding.lead_id,
         "sales_id": binding.sales_id,
         "remark_code": binding.remark_code,
@@ -1926,7 +1948,7 @@ def _read_target_payload(
         "consumed_unread_generation": int(
             binding.consumed_unread_generation or 0
         ),
-        "identity_checkpoint": _identity_checkpoint(
+        "identity_checkpoint": identity_checkpoint if identity_checkpoint is not None else _identity_checkpoint(
             db,
             conversation_id=binding.conversation_id,
         ),
@@ -2416,6 +2438,7 @@ def read_authorization_snapshot(
             db,
             binding,
             read_reason=str(read_reason),
+            identity_checkpoint=checkpoint,
         )
     return result
 
@@ -3666,6 +3689,8 @@ def _validate_v3_request_contract(payload: WechatMessageIngestRequest, *, contra
 def _validate_non_delivered_frame_observations(
     db: Session,
     payload: WechatMessageIngestRequest,
+    *,
+    worker: Worker | None = None,
 ) -> None:
     """Prove every non-delivered settled frame row is already persisted.
 
@@ -3674,6 +3699,8 @@ def _validate_non_delivered_frame_observations(
     Worker declaration alone must never be enough to suppress a new fact.
     """
 
+    from app.services.historical_text_alignment import verified_pairs
+    text_pairs = verified_pairs(db, payload, worker=worker)
     mapped_observation_ids = {
         str(
             (item.raw_payload or {}).get("observation", {}).get(
@@ -3729,6 +3756,8 @@ def _validate_non_delivered_frame_observations(
         ).all()
         if str(event.source_message_key or "").strip()
     }
+    from app.services.message_effective_text import effective_versions
+    effective = effective_versions(db, list(existing_by_source_key.values()))
     invalid: list[str] = []
     for slot in settled_slots:
         observation_id = str(slot.observation_id or "").strip()
@@ -3742,7 +3771,7 @@ def _validate_non_delivered_frame_observations(
         content_mismatch = bool(
             event is not None
             and observed_type in {"text", "voice", "system"}
-            and _normalized_contract_text(event.content)
+            and _normalized_contract_text(effective[event.id]["text"])
             != _normalized_contract_text(
                 (observation or {}).get("content_clean")
             )
@@ -3769,9 +3798,11 @@ def _validate_non_delivered_frame_observations(
             # Use the shared text normalization, not the looser candidate
             # signature which drops all punctuation (12.8 must not equal 128).
             content_mismatch = (
-                normalized_projection_text(event.content)
+                normalized_projection_text(effective[event.id]["text"])
                 != normalized_projection_text((observation or {}).get("content_clean"))
             )
+            if (str(slot.source_message_key or ""), observation_id) in text_pairs:
+                content_mismatch = False
         if (
             not isinstance(observation, dict)
             or event is None
@@ -4332,7 +4363,7 @@ def ingest_messages(db: Session, worker: Worker, payload: WechatMessageIngestReq
     from app.services.read_recovery_service import select_settlement_contract
     settlement_contract = select_settlement_contract(db, worker, payload)
     _validate_v3_request_contract(payload, contract=settlement_contract)
-    _validate_non_delivered_frame_observations(db, payload)
+    _validate_non_delivered_frame_observations(db, payload, worker=worker)
     ordered_messages = _ordered_v3_messages(payload)
     evidence_payload = payload.evidence.model_dump(mode="json")
     slot_origin_read_run_ids = _slot_origin_read_run_ids(
@@ -5522,6 +5553,16 @@ def ingest_messages(db: Session, worker: Worker, payload: WechatMessageIngestReq
                 trace_id=get_request_id(),
                 stable_key=cycle_id,
             )
+    if (continuation_authorization_matches and isinstance(message_batch, dict)
+            and message_batch.get("batch_id") and not open_handoff_active
+            and not handoff_flow_gates and not temporary_capability_gates):
+        from app.services.post_send_customer_read import attach_confirmed_prefix
+        attach_confirmed_prefix(
+            db, old_batch_id=continuation_batch_id, new_batch_id=message_batch["batch_id"],
+            worker_id=worker.id, flow_id=payload.read_run_id, conversation_id=payload.conversation_id,
+            visible_message_orders=_visible_existing_message_orders(
+                db, conversation_id=payload.conversation_id, evidence_payload=evidence_payload),
+        )
     if origin_recall_cycle_id:
         recall_batch_active = False
         if isinstance(message_batch, dict) and message_batch.get("batch_id"):

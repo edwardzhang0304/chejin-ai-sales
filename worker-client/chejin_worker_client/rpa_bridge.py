@@ -411,6 +411,23 @@ class RpaBridge:
         result.setdefault("sidecar_run_id", f"text-recheck-{artifact_dir.name}")
         return result
 
+    def recheck_original_message(self, *, original: dict, authorization: dict,
+                                 image_path: str, cancel_check: CancellationCheck | None = None) -> dict:
+        """Re-OCR immutable saved pixels in OmniAuto, with no desktop action."""
+        directory = CONFIG.app_dir / "artifacts" / "wechat_c2" / "messages" / f"original-recheck-{uuid.uuid4().hex}"
+        directory.mkdir(parents=True, exist_ok=True)
+        request_path = directory / "request.json"
+        request_path.write_text(json.dumps({"original": original, "authorization": authorization,
+            "image_path": image_path}, ensure_ascii=False), encoding="utf-8")
+        result = self._call_omniauto(["messages", "--historical-text-correction-request", str(request_path),
+            "--artifact-dir", str(directory)], timeout=60, cancel_check=cancel_check)
+        if result.get("ok") is not True:
+            raise ValueError(result.get("error_code") or "HISTORICAL_TEXT_CORRECTION_OCR_FAILED")
+        expected = directory / "original-ocr-proposal.json"
+        if Path(result.get("proposal_path") or "").resolve() != expected.resolve():
+            raise ValueError("HISTORICAL_TEXT_CORRECTION_OCR_OUTPUT_INVALID")
+        return json.loads(expected.read_text(encoding="utf-8"))
+
     def locate_chat(
         self,
         *,

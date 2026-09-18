@@ -100,11 +100,11 @@ def _tenant_id() -> str:
     return get_settings().omniauto_knowledge_tenant
 
 
-def _invalidate_pending_vehicle_replies(db: Session, vehicle_id: str) -> list[str]:
+def _invalidate_pending_vehicle_replies(db: Session, vehicle_id: str, *, image_order_only: bool = False) -> list[str]:
     # Local import keeps Product Master independent from C3 module import order.
     from app.services.c3_service import invalidate_vehicle_dependent_reply_actions
 
-    return invalidate_vehicle_dependent_reply_actions(db, vehicle_id)
+    return invalidate_vehicle_dependent_reply_actions(db, vehicle_id, image_order_only=image_order_only)
 
 
 def knowledge_runtime_readiness(db: Session) -> dict:
@@ -674,7 +674,7 @@ def get_vehicle_image(db: Session, image_id: str) -> tuple[VehicleImage, Path]:
 def reorder_vehicle_images(db: Session, vehicle_id: str, image_ids: list[str], actor: ActorContext) -> dict:
     _vehicle_or_404(db, vehicle_id, lock=True)
     images = _images(db, vehicle_id)
-    if set(image_ids) != {item.id for item in images}:
+    if len(image_ids) != len(images) or len(set(image_ids)) != len(image_ids) or set(image_ids) != {item.id for item in images}:
         raise AppError("VEHICLE_IMAGE_ORDER_INCOMPLETE", "排序必须包含该车辆的全部图片且不能包含其他图片", 409)
     order_changed = image_ids != [item.id for item in images]
     by_id = {item.id: item for item in images}
@@ -690,7 +690,7 @@ def reorder_vehicle_images(db: Session, vehicle_id: str, image_ids: list[str], a
         after_data={"image_ids": image_ids},
     )
     if order_changed:
-        _invalidate_pending_vehicle_replies(db, vehicle_id)
+        _invalidate_pending_vehicle_replies(db, vehicle_id, image_order_only=True)
     db.flush()
     return {"items": [_image_dict(by_id[image_id]) for image_id in image_ids]}
 

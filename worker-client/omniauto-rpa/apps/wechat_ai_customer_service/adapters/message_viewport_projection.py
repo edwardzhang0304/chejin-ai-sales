@@ -23,54 +23,11 @@ SEND_CONTEXT_ROW_KINDS = {
 MESSAGE_VIEWPORT_DIGEST_SCHEMA_VERSION = 3
 SEND_CONTEXT_BUSINESS_DIGEST_SCHEMA_VERSION = 3
 
-_OCR_PUNCTUATION_TRANSLATION = str.maketrans(
-    {
-        "。": ".",
-        "｡": ".",
-        "、": ",",
-        "､": ",",
-        "“": '"',
-        "”": '"',
-        "„": '"',
-        "‟": '"',
-        "「": '"',
-        "」": '"',
-        "『": '"',
-        "』": '"',
-        "‘": "'",
-        "’": "'",
-        "‚": "'",
-        "‛": "'",
-        "—": "-",
-        "–": "-",
-        "―": "-",
-        "−": "-",
-        "‐": "-",
-        "‑": "-",
-        "…": "...",
-        "‥": "..",
-        "【": "[",
-        "】": "]",
-        "〔": "[",
-        "〕": "]",
-    }
+from .text_correspondence import (
+    _OCR_PUNCTUATION_TRANSLATION,  # Preserve the existing module symbol.
+    business_comparison_text,
+    normalized_projection_text,
 )
-
-
-def normalized_projection_text(value: Any) -> str:
-    """Normalize OCR presentation without inventing message content."""
-
-    normalized = unicodedata.normalize("NFKC", str(value or ""))
-    normalized = normalized.translate(_OCR_PUNCTUATION_TRANSLATION)
-    normalized = "".join(
-        character
-        for character in normalized
-        if not character.isspace()
-        and unicodedata.category(character) != "Cf"
-        and ord(character) not in {0xFE0E, 0xFE0F}
-    )
-    normalized = re.sub(r"\.{2,}", "...", normalized)
-    return normalized.casefold()
 
 
 def _message_rect_values(value: Any) -> list[float] | None:
@@ -101,13 +58,8 @@ def stable_business_content_signature(
 
     row_kind = str(observation.get("row_kind") or "").strip().lower()
     if row_kind in {"text_bubble", "voice_transcript", "system_message"}:
-        normalized = normalized_projection_text(
+        normalized = business_comparison_text(
             observation.get("content_clean")
-        )
-        normalized = "".join(
-            character
-            for character in normalized
-            if not unicodedata.category(character).startswith("P")
         )
         return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
     if row_kind == "voice_bubble":

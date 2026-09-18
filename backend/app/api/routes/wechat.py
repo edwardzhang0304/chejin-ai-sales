@@ -3,6 +3,7 @@ import time
 import uuid
 
 from app.schemas.c3 import ReplySequenceInterruptRequest
+from app.schemas.message_text_correction import MessageTextCorrectionRequest
 
 from fastapi import APIRouter, BackgroundTasks, Depends, Header, Query, Request
 from sqlalchemy.orm import Session
@@ -237,6 +238,27 @@ def confirm_friend_activation(
 async def _original_ingest_json(request: Request) -> dict:
     # Preserve omitted fields: model defaults are not part of the Outbox digest.
     return await request.json()
+
+
+@router.post("/workers/{worker_id}/wechat/message-text-corrections")
+def correct_historical_text(
+    worker_id: str,
+    payload: MessageTextCorrectionRequest,
+    db: Session = Depends(get_db),
+    x_worker_token: str | None = Header(default=None, alias="X-Worker-Token"),
+    x_client_instance_id: str | None = Header(default=None, alias="X-Client-Instance-Id"),
+    x_inflight_flow_id: str | None = Header(default=None, alias="X-Inflight-Flow-Id"),
+):
+    from app.services.message_text_correction_service import append_correction
+    worker = worker_service.authenticate_worker_client(db, worker_id, x_worker_token, x_client_instance_id)
+    try:
+        data = append_correction(db, worker=worker, payload=payload,
+            client_instance_id=x_client_instance_id, current_flow_id=x_inflight_flow_id)
+        db.commit()
+        return ok(data)
+    except Exception:
+        db.rollback()
+        raise
 
 
 @router.post("/workers/{worker_id}/wechat/messages/ingest")

@@ -44,6 +44,11 @@ DEFAULT_RUNTIME_CONTROL = {
 }
 TIME_RE = re.compile(r"^\d{2}:\d{2}$")
 T = TypeVar("T")
+C2_OUTBOX_METADATA_COLUMNS = (
+    "outbox_id, conversation_id, authorization_revision, read_run_id, payload_json, "
+    "operation, status, attempt_count, refresh_attempt_count, last_error, "
+    "next_attempt_at, created_at, updated_at"
+)
 
 
 def _c2_outbox_states() -> set[str]:
@@ -64,13 +69,17 @@ def _c2_outbox_terminal_states() -> set[str]:
     # Scheduling labels alone do not prove safe settlement. The shared DB
     # projection below checks their required durable evidence before release.
     return {'confirmed', 'identity_quarantined', 'split_completed',
-            'target_terminated', 'conversation_terminated'}
+            'target_terminated', 'conversation_terminated', 'correction_rejected'}
 
 
 def unsettled_c2_outbox_rows(conn: sqlite3.Connection, *, read_run_id: str | None = None) -> list[dict]:
     """One predicate for restart, dependencies, upgrade and recovery readiness."""
     from .shared_rules import read_settlement
-    rows = [dict(row) for row in conn.execute('SELECT * FROM c2_ingest_outbox')]
+    from .text_correction_outbox import terminal_receipt_matches
+    rows = [dict(row) for row in conn.execute(f'SELECT {C2_OUTBOX_METADATA_COLUMNS} FROM c2_ingest_outbox')]
+    corrections = [row for row in rows if row['operation'] == 'historical_text_correction']
+    unknown = [row for row in rows if row['operation'] not in {'ingest', 'historical_text_correction'}]
+    rows = [row for row in rows if row['operation'] == 'ingest']
     state_rows = conn.execute("SELECT key,value FROM c2_runtime_state WHERE key LIKE 'read_settlement:%' OR key LIKE 'identity_quarantine:%' OR key LIKE 'identity_quarantine_outbox:%'")
     states = {row['key']: json.loads(row['value']) for row in state_rows}
     safe = {row['outbox_id'] for row in rows if row['status'] == 'confirmed'}
@@ -115,8 +124,12 @@ def unsettled_c2_outbox_rows(conn: sqlite3.Connection, *, read_run_id: str | Non
                 and {part.get('index') for _, part, _ in children} == set(range(1, len(children) + 1))
                 and set().union(*(set(_c2_outbox_message_keys(body)) for _, _, body in children)) == expected):
             safe.add(parent['outbox_id'])
-    return [row for row in rows if row['outbox_id'] not in safe
-            and (read_run_id is None or row['read_run_id'] == read_run_id)]
+    unsettled = [row for row in rows if row['outbox_id'] not in safe
+                 and (read_run_id is None or row['read_run_id'] == read_run_id)]
+    if read_run_id is None:
+        unsettled.extend(row for row in corrections if not terminal_receipt_matches(conn, row))
+        unsettled.extend(unknown)
+    return unsettled
 
 
 def _outbox_backoff_seconds(attempt_count: int) -> int:
@@ -326,6 +339,10 @@ def init_db(conn: sqlite3.Connection) -> None:
         str(row["name"])
         for row in conn.execute("PRAGMA table_info(c2_ingest_outbox)").fetchall()
     }
+    if "operation" not in outbox_columns:
+        conn.execute("ALTER TABLE c2_ingest_outbox ADD COLUMN operation TEXT NOT NULL DEFAULT 'ingest'")
+    if "correction_image" not in outbox_columns:
+        conn.execute("ALTER TABLE c2_ingest_outbox ADD COLUMN correction_image BLOB")
     if "refresh_attempt_count" not in outbox_columns:
         conn.execute(
             "ALTER TABLE c2_ingest_outbox "
@@ -357,7 +374,7 @@ def init_db(conn: sqlite3.Connection) -> None:
     conn.execute(
         "UPDATE c2_ingest_outbox "
         "SET status = 'capability_paused', next_attempt_at = COALESCE(next_attempt_at, ?) "
-        "WHERE status IN ('quarantined', 'abandoned', 'payload_terminated')",
+        "WHERE operation = 'ingest' AND status IN ('quarantined', 'abandoned', 'payload_terminated')",
         (utc_now_iso(),),
     )
     conn.execute(
@@ -1558,7 +1575,7 @@ def c2_flow_conversation_ids(read_run_id: str) -> list[str]:
             UNION
             SELECT conversation_id
             FROM c2_ingest_outbox
-            WHERE read_run_id = ?
+            WHERE operation = 'ingest' AND read_run_id = ?
             UNION
             SELECT conversation_id
             FROM c2_action_journal
@@ -1615,7 +1632,7 @@ def legacy_media_flow_snapshot(read_run_id: str) -> dict[str, Any]:
             SELECT outbox_id, conversation_id, authorization_revision,
                    read_run_id, payload_json, status, created_at
             FROM c2_ingest_outbox
-            WHERE read_run_id = ?
+            WHERE operation = 'ingest' AND read_run_id = ?
             ORDER BY outbox_id
             """,
             (clean_read_run_id,),
@@ -1681,7 +1698,7 @@ def flow_has_pre_cutover_media_records(read_run_id: str) -> bool:
               UNION ALL
               SELECT created_at
               FROM c2_ingest_outbox
-              WHERE read_run_id = ?
+              WHERE operation = 'ingest' AND read_run_id = ?
             ) AS legacy_candidates
             WHERE created_at < ?
             LIMIT 1
@@ -1788,7 +1805,7 @@ def archive_legacy_media_flow_records(
                 (clean_flow_id, clean_flow_id),
             )
             conn.execute(
-                "DELETE FROM c2_ingest_outbox WHERE read_run_id = ?",
+                "DELETE FROM c2_ingest_outbox WHERE operation = 'ingest' AND read_run_id = ?",
                 (clean_flow_id,),
             )
             archived = {
@@ -2114,7 +2131,7 @@ def enqueue_c2_outbox(payload: dict[str, Any]) -> str:
         )
         if cursor.rowcount == 0:
             existing = conn.execute(
-                "SELECT payload_json FROM c2_ingest_outbox WHERE outbox_id = ?",
+                "SELECT payload_json FROM c2_ingest_outbox WHERE operation = 'ingest' AND outbox_id = ?",
                 (outbox_id,),
             ).fetchone()
             if not existing:
@@ -2135,7 +2152,7 @@ def list_c2_outbox_waiting(
         rows = conn.execute(
             """
             SELECT outbox_id, conversation_id, authorization_revision, read_run_id,
-                   payload_json, status, attempt_count, refresh_attempt_count,
+                   payload_json, operation, status, attempt_count, refresh_attempt_count,
                    last_error, next_attempt_at, created_at, updated_at
             FROM c2_ingest_outbox
             WHERE status IN (
@@ -2143,7 +2160,7 @@ def list_c2_outbox_waiting(
               'rebuild_pending', 'split_pending', 'capability_paused'
             )
               AND (next_attempt_at IS NULL OR next_attempt_at <= ?)
-              AND (? IS NULL OR read_run_id = ?)
+              AND (? IS NULL OR (operation = 'ingest' AND read_run_id = ?))
             ORDER BY created_at ASC
             LIMIT ?
             """,
@@ -2194,7 +2211,7 @@ def c2_outbox_capability_error_for_read_run_id(
             """
             SELECT last_error
             FROM c2_ingest_outbox
-            WHERE read_run_id = ?
+            WHERE operation = 'ingest' AND read_run_id = ?
               AND status = 'capability_paused'
             ORDER BY updated_at DESC, created_at DESC
             LIMIT 1
@@ -2214,7 +2231,7 @@ def has_c2_outbox_for_read_run_id(read_run_id: str) -> bool:
         row = conn.execute(
             """
             SELECT 1 FROM c2_ingest_outbox
-            WHERE read_run_id = ?
+            WHERE operation = 'ingest' AND read_run_id = ?
             LIMIT 1
             """,
             (clean_id,),
@@ -2277,7 +2294,7 @@ def has_c2_outbox_for_source_keys(
             """
             SELECT payload_json
             FROM c2_ingest_outbox
-            WHERE conversation_id = ?
+            WHERE operation = 'ingest' AND conversation_id = ?
             """,
             (str(conversation_id),),
         ).fetchall()
@@ -2313,7 +2330,7 @@ def load_c2_outbox_origin_read_run_ids(
             """
             SELECT read_run_id, payload_json
             FROM c2_ingest_outbox
-            WHERE conversation_id = ?
+            WHERE operation = 'ingest' AND conversation_id = ?
             ORDER BY created_at ASC, outbox_id ASC
             """,
             (str(conversation_id),),
@@ -2365,7 +2382,7 @@ def load_c2_outbox_entry(outbox_id: str) -> dict[str, Any] | None:
         row = conn.execute(
             """
             SELECT outbox_id, conversation_id, authorization_revision,
-                   read_run_id, payload_json, status, attempt_count,
+                   read_run_id, payload_json, operation, status, attempt_count,
                    refresh_attempt_count, last_error, next_attempt_at,
                    created_at, updated_at
             FROM c2_ingest_outbox
@@ -2409,7 +2426,7 @@ def settle_c2_outbox(outbox_id: str, result: dict, binding: Binding, *, server_b
     from .shared_rules import read_settlement
     with db_connection() as conn:
         conn.execute('BEGIN IMMEDIATE')
-        row = conn.execute('SELECT * FROM c2_ingest_outbox WHERE outbox_id=?', (outbox_id,)).fetchone()
+        row = conn.execute("SELECT * FROM c2_ingest_outbox WHERE operation = 'ingest' AND outbox_id=?", (outbox_id,)).fetchone()
         if row is None:
             raise ValueError('C2_RECOVERY_OUTBOX_MISSING')
         payload = json.loads(row['payload_json'])
@@ -2445,7 +2462,7 @@ def settle_c2_outbox(outbox_id: str, result: dict, binding: Binding, *, server_b
                 (ledger['terminal_state'] if source_key in accepted else 'failed',
                  'confirmed' if source_key in accepted else 'not_required',
                  json.dumps(saved_result, ensure_ascii=False), now, payload['conversation_id'], source_key, payload['read_run_id']))
-        conn.execute('UPDATE c2_ingest_outbox SET status=?, last_error=?, next_attempt_at=NULL, updated_at=? WHERE outbox_id=?',
+        conn.execute("UPDATE c2_ingest_outbox SET status=?, last_error=?, next_attempt_at=NULL, updated_at=? WHERE operation = 'ingest' AND outbox_id=?",
                      (result['recovery_action'], proof['reason_code'], now, outbox_id))
         conn.execute('INSERT INTO c2_runtime_state(key, value, updated_at) VALUES (?, ?, ?)',
                      (key, json.dumps(result, ensure_ascii=False), now))
@@ -2506,7 +2523,7 @@ def refresh_c2_outbox_payload(
             """
             SELECT payload_json
             FROM c2_ingest_outbox
-            WHERE outbox_id = ? AND status = 'refresh_pending'
+            WHERE operation = 'ingest' AND outbox_id = ? AND status = 'refresh_pending'
             """,
             (str(outbox_id),),
         ).fetchone()
@@ -2522,7 +2539,7 @@ def refresh_c2_outbox_payload(
             SET authorization_revision = ?, payload_json = ?,
                 status = ?, last_error = NULL, next_attempt_at = NULL,
                 updated_at = ?
-            WHERE outbox_id = ? AND status = 'refresh_pending'
+            WHERE operation = 'ingest' AND outbox_id = ? AND status = 'refresh_pending'
             """,
             (
                 authorization_revision,
@@ -2553,7 +2570,7 @@ def prepare_c2_outbox_payload(
             """
             SELECT payload_json
             FROM c2_ingest_outbox
-            WHERE outbox_id = ?
+            WHERE operation = 'ingest' AND outbox_id = ?
               AND status IN (
                 'waiting', 'retry_waiting', 'refresh_pending',
                 'rebuild_pending', 'split_pending', 'capability_paused'
@@ -2572,7 +2589,7 @@ def prepare_c2_outbox_payload(
             UPDATE c2_ingest_outbox
             SET payload_json = ?, status = 'waiting', last_error = NULL,
                 next_attempt_at = NULL, updated_at = ?
-            WHERE outbox_id = ?
+            WHERE operation = 'ingest' AND outbox_id = ?
               AND status IN (
                 'waiting', 'retry_waiting', 'refresh_pending',
                 'rebuild_pending', 'split_pending', 'capability_paused'
@@ -2623,7 +2640,7 @@ def replace_c2_outbox_with_partitions(
         )
     with db_connection() as conn:
         parent = conn.execute(
-            "SELECT status FROM c2_ingest_outbox WHERE outbox_id = ?",
+            "SELECT status FROM c2_ingest_outbox WHERE operation = 'ingest' AND outbox_id = ?",
             (str(outbox_id),),
         ).fetchone()
         if not parent or str(parent["status"]) != "split_pending":
@@ -2642,7 +2659,7 @@ def replace_c2_outbox_with_partitions(
             )
             if cursor.rowcount == 0:
                 existing = conn.execute(
-                    "SELECT payload_json FROM c2_ingest_outbox WHERE outbox_id = ?",
+                    "SELECT payload_json FROM c2_ingest_outbox WHERE operation = 'ingest' AND outbox_id = ?",
                     (row[0],),
                 ).fetchone()
                 if not existing:
@@ -2656,7 +2673,7 @@ def replace_c2_outbox_with_partitions(
             UPDATE c2_ingest_outbox
             SET status = 'split_completed', last_error = NULL,
                 next_attempt_at = NULL, updated_at = ?
-            WHERE outbox_id = ? AND status = 'split_pending'
+            WHERE operation = 'ingest' AND outbox_id = ? AND status = 'split_pending'
             """,
             (now, str(outbox_id)),
         )
@@ -2678,7 +2695,7 @@ def transition_c2_outbox(
             """
             SELECT attempt_count
             FROM c2_ingest_outbox
-            WHERE outbox_id = ?
+            WHERE operation = 'ingest' AND outbox_id = ?
             """,
             (str(outbox_id),),
         ).fetchone()
@@ -2694,7 +2711,7 @@ def transition_c2_outbox(
             UPDATE c2_ingest_outbox
             SET status = ?, last_error = ?, next_attempt_at = ?, updated_at = ?,
                 refresh_attempt_count = refresh_attempt_count + ?
-            WHERE outbox_id = ?
+            WHERE operation = 'ingest' AND outbox_id = ?
               AND status IN (
                 'waiting', 'retry_waiting', 'refresh_pending',
                 'rebuild_pending', 'split_pending', 'capability_paused'
@@ -2772,7 +2789,7 @@ def quarantine_legacy_malformed_c2_outbox(
             """
             SELECT conversation_id, read_run_id, payload_json, status
             FROM c2_ingest_outbox
-            WHERE outbox_id = ?
+            WHERE operation = 'ingest' AND outbox_id = ?
             """,
             (clean_outbox_id,),
         ).fetchone()
@@ -2823,7 +2840,7 @@ def quarantine_legacy_malformed_c2_outbox(
             UPDATE c2_ingest_outbox
             SET status = 'identity_quarantined', last_error = ?,
                 next_attempt_at = NULL, updated_at = ?
-            WHERE outbox_id = ?
+            WHERE operation = 'ingest' AND outbox_id = ?
               AND status IN (
                 'waiting', 'retry_waiting', 'refresh_pending',
                 'rebuild_pending', 'split_pending', 'capability_paused'
@@ -3210,7 +3227,7 @@ def prune_terminal_outboxes(
         ):
             placeholders = ",".join("?" for _ in terminal_statuses)
             rows = [dict(row) for row in conn.execute(
-                f"SELECT * FROM {table} WHERE status IN ({placeholders}) ORDER BY updated_at DESC",
+                f"SELECT {C2_OUTBOX_METADATA_COLUMNS if table == 'c2_ingest_outbox' else '*'} FROM {table} WHERE status IN ({placeholders}) ORDER BY updated_at DESC",
                 terminal_statuses)]
             blocked = ({row['outbox_id'] for row in unsettled_c2_outbox_rows(conn)}
                        if table == 'c2_ingest_outbox' else set())
