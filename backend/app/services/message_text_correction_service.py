@@ -110,7 +110,11 @@ def append_correction(db, *, worker, payload, client_instance_id, current_flow_i
         return _result(prior, duplicated=True)
     pending_actions = [a for a in actions if a.status in {"draft", "guarding", "queued"}]
     task_by_action = {task.reply_action_id: task for task in tasks}
-    if (any(a.status in {"sending", "unknown_send_result"} for a in actions)
+    # Closing an obsolete proposal uses fault_recovery_readiness below to
+    # distinguish settled unknown receipts from outstanding sends. A live
+    # history correction retains the stricter unknown-send barrier.
+    blocking_send_states = {"sending"} if business_ended else {"sending", "unknown_send_result"}
+    if (any(a.status in blocking_send_states for a in actions)
             or any(a.send_token or a.sending_claimed_at for a in pending_actions)
             or any(t.status != "pending" or t.claimed_at or t.lease_owner_worker_id
                    for a in pending_actions if (t := task_by_action.get(a.id)))
