@@ -13405,7 +13405,14 @@ class TaskRunner:
         save_binding(binding)
         if self.binding is not None:
             self.binding.run_status = stopped_status
-        self._pending_run_status_sync = stopped_status
+        # Replaying the same rejected Outbox must not revoke an already
+        # confirmed stop. A competing start intent still needs a new stop.
+        if (
+            getattr(self, "_backend_confirmed_run_status", None) != stopped_status
+            or getattr(self, "_pending_run_status_sync", None)
+            not in {None, stopped_status}
+        ):
+            self._pending_run_status_sync = stopped_status
 
     def _attempt_c2_outbox_delivery(
         self,
@@ -14098,10 +14105,22 @@ class TaskRunner:
                 if persisted_read_run_id
                 else False
             )
+            gate_only = (
+                persisted_payload.get("messages") == []
+                and persisted_evidence.get("observations") == []
+                and persisted_evidence.get("slot_ledger_states") == []
+                and isinstance(persisted_evidence.get("flow_gate_errors"), list)
+                and bool(persisted_evidence["flow_gate_errors"])
+                and all(
+                    isinstance(code, str) and bool(code.strip())
+                    for code in persisted_evidence["flow_gate_errors"]
+                )
+                and not persisted_evidence.get("failed_voice_source_keys")
+            )
             if (
                 persisted_messages
                 or persisted_slot_states
-                or has_persisted_ledger
+                or (has_persisted_ledger and not gate_only)
             ) and persisted_alignment is None:
                 # A released Outbox is immutable evidence.  Missing sequence
                 # proof cannot be reconstructed locally without guessing at
@@ -14109,6 +14128,9 @@ class TaskRunner:
                 raise ValueError(
                     "C2_SEQUENCE_ALIGNMENT_EVIDENCE_INVALID"
                 )
+            # An empty failure report introduces no message identity. A
+            # segmented reply can have earlier Ledger facts in this same
+            # read Flow; those facts retain their own immutable evidence.
             if persisted_alignment is not None:
                 persisted_observations = (
                     persisted_evidence.get("observations")
