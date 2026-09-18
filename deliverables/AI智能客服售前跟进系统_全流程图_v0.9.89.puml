@@ -1,3 +1,5 @@
+' 当前0.9.89/r2（2026-09-19）：正式包及匹配合同后端已发布，后台同源资源复用并通过真实登录/刷新/车辆/退出；公网完整哈希通过，维护已解除。
+' 保留数据强升，未开放按钮；客户Windows补填/取消/失败和转圈图标/真实发送仍待验。下方旧注释为历史时点。
 ' 当前候选0.9.89/r1，9ba6a50与d2d3cf6完整继承之前历史；本轮强升准备。以下旧记录保留历史。
 ' 当前文档0.9.88/r6：用户已授权将r5已审源码提交推送原灰度；未升版/打包/部署，Windows待验。
 ' 车金接在b670e981之后，保留此前完整灰度链；共享来源d2d3cf63aee147b73aed3aa61d5aa92967468e32。仅交付登记，流程不变。
@@ -57,7 +59,7 @@
 ' r10不改变产品流程；只固化画面一致性与正式BackgroundTasks测试，产品指纹保持已审eff500e/0cdf482。
 ' r11仅来源和交付登记；沿用已审流程，未改图示语义，未重新渲染；不发包/部署。
 @startuml
-title 车金 AI 全流程图 v0.9.89（r1准备；生产仍0.9.88）
+title 车金 AI 全流程图 v0.9.89（r2已生产发布；保留数据强升；现场实发待验）
 
 skinparam monochrome true
 skinparam shadowing false
@@ -1535,7 +1537,7 @@ endlegend
 ' r4 已确认规则：销售换绑 -> 已开始/旧 Flow 未结算则拒绝 -> 原机器结算后再换绑；未开始随销售新 Worker 或等待；完成记录不动。
 
 @startuml evidence_tolerance_r9
-title v0.9.88（r3已发布）补审P1实现视图（来源0.9.87/r12源码复审）：D1—D7、D1-H与恢复L1/L2
+title v0.9.89（r2已发布）已复审实现视图：D1—D7、D1-H与恢复L1/L2
 skinparam monochrome true
 skinparam shadowing false
 start
