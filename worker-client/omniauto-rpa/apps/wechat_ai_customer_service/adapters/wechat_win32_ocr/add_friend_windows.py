@@ -2099,78 +2099,59 @@ def fill_add_friend_invite_form_and_confirm(hwnd: int, output_dir: Path, *, veri
     initial_field_verification = dict(field_review['field_verification'])
     fill_retry_attempts: list[dict[str, Any]] = []
     if not initial_field_verification.get('ok'):
-        if not (initial_field_verification.get('verify_message') or {}).get('ok'):
-            retry_started_at = time.perf_counter()
-            retry_result = _ops().paste_invite_form_text(
-                hwnd,
-                field_review['targets_map']['invite_greeting_textarea'],
-                clean_verify_message,
-                action_name='invite_greeting_retry',
-                preserve_layout_snapshot=True,
+        from apps.wechat_ai_customer_service.adapters.wechat_win32_ocr.field_value_readback import read_invite_fields
+        readback_started = time.perf_counter()
+        field_values = read_invite_fields(hwnd, {
+            field: field_review['targets_map'][target]
+            for field, target in (('verify_message', 'invite_greeting_textarea'),
+                                  ('remark_name', 'invite_remark_input'))
+            if target in field_review['targets_map']
+        }, ops=_ops())
+        timings.append({'name': 'invite_fields_actual_value_read',
+                        'seconds': round(time.perf_counter() - readback_started, 3),
+                        'result': field_values})
+
+        def apply_actual_values(review):
+            targets = review['targets_map']
+            snapshot = _layout_for_image(review['shot']) or {}
+            scoped_values = {}
+            for key, actual in field_values.items():
+                target_name = {'verify_message': 'invite_greeting_textarea',
+                               'remark_name': 'invite_remark_input'}[key]
+                stale = actual.get('available') and (
+                    actual.get('hwnd') != hwnd
+                    or actual.get('window_rect') != snapshot.get('window_rect')
+                    or actual.get('field_bounds') != (targets.get(target_name) or {}).get('bounds')
+                )
+                scoped_values[key] = ({**actual, 'available': False, 'identity_changed': True,
+                                       'reason': 'field_window_changed'} if stale else actual)
+            review['field_verification'] = invite_form_field_verification(
+                verify_message=clean_verify_message, remark_name=clean_remark_name,
+                remark_code=clean_remark_code, ocr_items=review['ocr_items'],
+                field_bounds={
+                    'verify_message': (targets.get('invite_greeting_textarea') or {}).get('bounds'),
+                    'remark_name': (targets.get('invite_remark_input') or {}).get('bounds'),
+                    'remark_code': (targets.get('invite_remark_input') or {}).get('bounds'),
+                }, field_values=scoped_values,
             )
-            fill_retry_attempts.append({
-                'field': 'verify_message',
-                'result': retry_result,
-            })
-            if retry_result.get('ok'):
-                greeting_result = retry_result
-            timings.append({
-                'name': 'retry_invite_greeting_text',
-                'seconds': round(time.perf_counter() - retry_started_at, 3),
-                'result': retry_result,
-            })
-        remark_check = initial_field_verification.get('remark_name') or {}
-        code_check = initial_field_verification.get('remark_code') or {}
-        if not remark_check.get('ok') or not code_check.get('ok'):
-            if 'invite_remark_input' not in field_review['targets_map']:
-                return {
-                    'ok': False,
-                    'state': 'layout_unresolved',
-                    'task_status': 'failed',
-                    'error_code': 'WECHAT_UI_LAYOUT_UNRESOLVED',
-                    'current_step': 'invite_form_before_remark_retry',
-                    'timings': timings,
-                }
-            retry_started_at = time.perf_counter()
-            retry_result = _ops().paste_invite_form_text(
-                hwnd,
-                field_review['targets_map']['invite_remark_input'],
-                clean_remark_name,
-                action_name='invite_remark_retry',
-            )
-            fill_retry_attempts.append({
-                'field': 'remark_name',
-                'result': retry_result,
-            })
-            if retry_result.get('ok'):
-                remark_result = retry_result
-            timings.append({
-                'name': 'retry_invite_remark_text',
-                'seconds': round(time.perf_counter() - retry_started_at, 3),
-                'result': retry_result,
-            })
-        if fill_retry_attempts:
-            pause_seconds = _ops().add_friend_paced_pause(
-                'verify',
-                reason='after_invite_form_retry_before_review_capture',
-            )
-            timings.append({
-                'name': 'after_invite_form_retry_before_review_capture_pause',
-                'seconds': round(pause_seconds, 3),
-            })
+        apply_actual_values(field_review)
+        verified = field_review['field_verification']
+        actual_mismatch = any((verified.get(key) or {}).get('actual_value_matches') is False
+                              for key in ('verify_message', 'remark_name', 'remark_code'))
+        keyboard_read = any(value.get('requires_fresh_layout') for value in field_values.values())
+        # No reliable user-input monitor exists in this form flow. Consequently
+        # it must not overwrite a mismatching field on an OCR-only hunch.
+        # Unavailable readback/conflicting OCR gets one fresh read, not refill.
+        if not actual_mismatch and (not verified.get('ok') or keyboard_read):
             field_review = _ops().capture_invite_form_field_review(
-                hwnd,
-                output_dir,
-                label='add_friend_invite_form_retry_filled_before_confirm_window',
-                verify_message=clean_verify_message,
-                remark_name=clean_remark_name,
+                hwnd, output_dir, label='add_friend_invite_form_readback_recheck_window',
+                verify_message=clean_verify_message, remark_name=clean_remark_name,
                 remark_code=clean_remark_code,
             )
-            timings.append({
-                'name': 'invite_form_retry_filled_ocr',
-                'seconds': field_review['ocr_seconds'],
-                'ocr_count': len(field_review['ocr_items']),
-            })
+            apply_actual_values(field_review)
+            timings.append({'name': 'invite_fields_readonly_recheck_ocr',
+                            'seconds': field_review['ocr_seconds'],
+                            'ocr_count': len(field_review['ocr_items'])})
     filled_shot = field_review['shot']
     filled_path = field_review['screenshot_path']
     filled_items = field_review['ocr_items']

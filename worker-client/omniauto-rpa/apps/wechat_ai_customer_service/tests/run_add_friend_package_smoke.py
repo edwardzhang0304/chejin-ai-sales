@@ -1397,6 +1397,7 @@ def test_invite_form_locator_contract() -> None:
         remark_name="客户-CJ8K2P",
         remark_code="CJ8K2P",
         ocr_items=[ocr_item("我是车金二手车张伟", 40, 122, 260, 152), ocr_item("客户-CJ8K2P", 40, 330, 180, 358)],
+        field_bounds={"verify_message": [30, 110, 430, 210], "remark_name": [30, 290, 430, 360], "remark_code": [30, 290, 430, 360]},
     )
     assert_true(field_check.get("ok") is True, f"field verification should pass visible OCR text: {field_check}")
     multiline_check = invite_form_field_verification(
@@ -1434,13 +1435,13 @@ def test_invite_form_locator_contract() -> None:
         },
     )
     assert_true(
-        live_confusion_check.get("ok") is True,
-        f"unique high-confidence eight-char pasted code should tolerate V/W OCR confusion: {live_confusion_check}",
+        live_confusion_check.get("ok") is False,
+        f"another eight-char code must not pass merely because OCR confidence is high: {live_confusion_check}",
     )
     assert_true(
         (live_confusion_check.get("remark_code") or {}).get("matched_by")
-        == "high_confidence_eight_char_code",
-        f"short-code verification mode missing: {live_confusion_check}",
+        == "",
+        f"wrong-code match must not be certified: {live_confusion_check}",
     )
     low_confidence_code = invite_form_field_verification(
         verify_message="您好",
@@ -1571,28 +1572,17 @@ def test_invite_form_field_verification_blocks_confirm_click() -> None:
     )
 
 
-def test_invite_form_failed_field_retries_once_before_confirm() -> None:
-    source = (
-        PROJECT_ROOT
-        / "apps/wechat_ai_customer_service/adapters/wechat_win32_ocr/add_friend_windows.py"
-    ).read_text(encoding="utf-8")
-    section = source.split(
-        "def fill_add_friend_invite_form_and_confirm", 1
-    )[1].split("def type_add_friend_query_like_human_for_entry", 1)[0]
-    retry_index = section.find("action_name='invite_greeting_retry'")
-    final_gate_index = section.find("if not field_verification.get('ok')")
-    confirm_index = section.find("action_name='invite_confirm_button_click'")
-    assert_true(retry_index >= 0, "missing one-time greeting retry")
-    assert_true(final_gate_index >= 0, "missing final field verification gate")
-    assert_true(confirm_index >= 0, "missing invite confirm click")
-    assert_true(
-        retry_index < final_gate_index < confirm_index,
-        "retry and final verification must happen before confirm click",
-    )
-    assert_true(
-        "fill_retry_attempts" in section,
-        "retry evidence must be retained for diagnostics",
-    )
+def test_invite_form_failed_field_reads_actual_value_before_confirm() -> None:
+    # Full behavior is exercised by test_invite_field_readback; retain this
+    # package wiring check for the read-only fallback and final safety gate.
+    source = (PROJECT_ROOT / "apps/wechat_ai_customer_service/adapters/wechat_win32_ocr/add_friend_windows.py").read_text(encoding="utf-8")
+    section = source.split("def fill_add_friend_invite_form_and_confirm",1)[1].split("def type_add_friend_query_like_human_for_entry",1)[0]
+    read_index=section.find("field_values = read_invite_fields")
+    gate_index=section.find("if not field_verification.get('ok')")
+    confirm_index=section.find("action_name='invite_confirm_button_click'")
+    assert_true(0 <= read_index < gate_index < confirm_index, "actual-value read must precede confirm gate")
+    assert_true("action_name='invite_greeting_retry'" not in section, "OCR alone cannot authorize overwriting a field")
+    assert_true("action_name='invite_remark_retry'" not in section, "OCR alone cannot authorize overwriting a remark")
 
 
 def test_invite_form_reuses_stable_snapshot_between_greeting_and_remark() -> None:
@@ -1708,7 +1698,7 @@ def test_invite_form_reuses_stable_snapshot_between_greeting_and_remark() -> Non
             ]
             items.append(
                 {
-                    "text": "CJAZBKWW",
+                    "text": "CJAZBKWV",
                     "left": 40,
                     "top": 310,
                     "right": 150,
@@ -3074,7 +3064,7 @@ def main() -> int:
         test_invite_form_input_click_failure_blocks_keyboard_actions,
         test_invite_form_stable_first_field_preserves_snapshot_for_second_field,
         test_invite_form_field_verification_blocks_confirm_click,
-        test_invite_form_failed_field_retries_once_before_confirm,
+        test_invite_form_failed_field_reads_actual_value_before_confirm,
         test_invite_form_reuses_stable_snapshot_between_greeting_and_remark,
         test_discovered_search_dialog_frame_is_forwarded_without_recapture,
         test_invite_confirm_uses_durable_action_journal_before_click,

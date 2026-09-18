@@ -88,6 +88,10 @@ RELEASED_READ_RULES_SHA256 = 'bd5f2a2fadcae7575651617ce642f35594ae5da931eede673e
 # These fingerprints exclude only the release label. Changing any other rule
 # requires another reviewed migration, not an update to the old fingerprint.
 _SEQUENCE_V1_RULES_SHA256 = '26e8dabaa29677d6f4e5d845688c34916c5723b63ad93dae944031bc1b0b1320'
+_HISTORICAL_CORRECTION_V1_RULES_SHA256 = '6d9dac87d16e91211145927d38b1ccbc1ee32c835d64dd1fca3dbcf4d5315891'
+_TEXT_CORRESPONDENCE_V1_RULES_SHA256 = 'c5154ddaad1494673d0507800762871821eeb7af6da7327ce3bf0a778156bece'
+_CORRECTION_PENDING_V1_RULES_SHA256 = '8cb4d6d2e3cc5df3760f36529216eb6419e4074264a403adb0e7393090bf05ae'
+_CORRECTION_RESOLUTION_V1_RULES_SHA256 = '8623691392df801c7d6fdf8c12268d9fa75f8b213cea3f967c47a2e042e63ef8'
 _PRE_SEND_READ_V1_RULES_SHA256 = 'fbf33b38f2d9493f02534d71720be355c7cdfe69ad903b7ceb39dc10c2396a7a'
 _PUBLISHED_085_RULES_SHA256 = '6ee655ac27557a0c24070b1218b34eab094f2e8d89011a8ea115e155b2aa6b75'
 RELEASED_READ_CONTRACTS = (
@@ -96,6 +100,7 @@ RELEASED_READ_CONTRACTS = (
     ('0.9.80', '43f8c07e3660d790c39f3b348dcce9fb1e2c0bed243b41cff6669a658995e380'),
     # Actual published 80988ea contract, not the same-labelled sequence dev tree.
     ('0.9.85', '891f245e353c78e0a9f0b24e607be8bdbb2b59fc993e9df2935f0f416ff8f186'),
+    ('0.9.87', 'bdd71a5bb3b6b517db1cf693066eb9652b962e58d33de855a862a0961cbf2ece'),
     # Published ccbc56b: sequence v1, before pre-send read recovery was added.
     ('0.9.86', 'fa530187463e11e8cdb340417139bd44a1aa27af8137e97efd3ffdc199a71f96'),
 )
@@ -131,6 +136,47 @@ def read_recovery_contract(current: dict, revision: Any, sha256: Any) -> dict | 
     same = equivalent_contract(current, revision, sha256)
     if same is not None:
         return same
+    if 'historical_text_correction_resolution_contract' in current:
+        if contract_rules_sha256(current) != _CORRECTION_RESOLUTION_V1_RULES_SHA256:
+            return None
+        previous = {key: value for key, value in current.items() if key != 'historical_text_correction_resolution_contract'}
+        if contract_rules_sha256(previous) != _CORRECTION_PENDING_V1_RULES_SHA256:
+            return None
+        current = previous
+        same = equivalent_contract(current, revision, sha256)
+        if same is not None:
+            return same
+    if 'historical_text_correction_pending_contract' in current:
+        if contract_rules_sha256(current) != _CORRECTION_PENDING_V1_RULES_SHA256:
+            return None
+        previous = {key: value for key, value in current.items() if key != 'historical_text_correction_pending_contract'}
+        if contract_rules_sha256(previous) != _TEXT_CORRESPONDENCE_V1_RULES_SHA256:
+            return None
+        current = previous
+        same = equivalent_contract(current, revision, sha256)
+        if same is not None:
+            return same
+    if 'text_correspondence_contract' in current:
+        if contract_rules_sha256(current) != _TEXT_CORRESPONDENCE_V1_RULES_SHA256:
+            return None
+        previous = {key: value for key, value in current.items() if key != 'text_correspondence_contract'}
+        if contract_rules_sha256(previous) != _HISTORICAL_CORRECTION_V1_RULES_SHA256:
+            return None
+        current = previous
+        same = equivalent_contract(current, revision, sha256)
+        if same is not None:
+            return same
+    if 'historical_text_correction_contract' in current:
+        if contract_rules_sha256(current) != _HISTORICAL_CORRECTION_V1_RULES_SHA256:
+            return None
+        previous = {key: value for key, value in current.items()
+                    if key != 'historical_text_correction_contract'}
+        if contract_rules_sha256(previous) != _PRE_SEND_READ_V1_RULES_SHA256:
+            return None
+        current = previous
+        same = equivalent_contract(current, revision, sha256)
+        if same is not None:
+            return same
     if 'pre_send_read_recovery_contract' in current:
         previous = _pre_send_read_predecessor(current)
         if previous is None:
@@ -255,6 +301,11 @@ def recovery_action_for_error(
     if explicit in {str(value) for value in (contract.get("actions") or [])}:
         return explicit
     code = str(error_code or "").strip()
+    correspondence = payload.get("text_correspondence_contract") or {}
+    if (code == "TEXT_CORRESPONDENCE_CHECKPOINT_EXPIRED"
+            and correspondence.get("version") == 1
+            and correspondence.get("expired_recovery_action") == "refresh_and_rebuild"):
+        return "refresh_and_rebuild"
     code_groups = (
         ("identity_quarantined_codes", "identity_quarantined"),
         ("refresh_and_rebuild_codes", "refresh_and_rebuild"),

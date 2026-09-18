@@ -119,6 +119,34 @@ def test_backend_and_worker_share_code_priority_and_http_fallback(status):
     assert classify_outbox_recovery(ApiError('UNRECOGNIZED', '', status, {'recovery_action': 'invalid'})) == expected
 
 
+def test_correspondence_expiry_uses_optional_contract_at_final_http_boundary():
+    from app.api.response import error_response
+    current = backend_contract.c2_contract_v3()
+    code = 'TEXT_CORRESPONDENCE_CHECKPOINT_EXPIRED'
+    assert backend_contract.recovery_action_for_error(code, 409) == 'refresh_and_rebuild'
+    assert classify_outbox_recovery(ApiError(code, '', 409)) == 'refresh_and_rebuild'
+    response = json.loads(error_response(409, code, 'expired').body)
+    assert response['data']['recovery_action'] == 'refresh_and_rebuild'
+    legacy = {k: v for k, v in current.items() if k != 'text_correspondence_contract'}
+    assert contract_rules.recovery_action_for_error(legacy, code, 409) == 'capability_paused'
+
+
+def test_custom_shared_roots_keep_relative_imports_isolated(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    from app.contracts import shared_rules
+    modules = []
+    for label in ('first', 'second'):
+        root = tmp_path / label
+        adapters = root / 'apps/wechat_ai_customer_service/adapters'
+        adapters.mkdir(parents=True)
+        (adapters / 'sibling.py').write_text(f'VALUE = {label!r}\n')
+        (adapters / 'probe.py').write_text('from .sibling import VALUE\n')
+        monkeypatch.setattr(shared_rules, 'get_settings', lambda root=root: SimpleNamespace(c3_omniauto_root=str(root)))
+        modules.append(shared_rules.shared_adapter('probe'))
+    assert [module.VALUE for module in modules] == ['first', 'second']
+    assert modules[0].__package__ != modules[1].__package__
+
+
 @pytest.mark.parametrize('layout', ['source', 'packaged'])
 def test_shared_rules_load_from_isolated_distributed_runtime(tmp_path, layout):
     """Use production imports in a copied runtime, with no repository on sys.path."""
@@ -132,15 +160,16 @@ def test_shared_rules_load_from_isolated_distributed_runtime(tmp_path, layout):
     shutil.copytree(ROOT / 'contracts', contract_dir)
     target = package / 'omniauto-rpa/apps/wechat_ai_customer_service/adapters'
     target.mkdir(parents=True)
-    for name in ('contract_rules.py', 'message_contract.py'):
+    for name in ('contract_rules.py', 'message_contract.py', 'read_settlement.py', 'send_interruption.py'):
         shutil.copy2(ROOT / 'worker-client/omniauto-rpa/apps/wechat_ai_customer_service/adapters' / name, target / name)
     # The updater must remain importable without loading the RPA/UI adapter stack.
     script = '''
-import json
+import json, sys
 from chejin_worker_client.c2_contract import contract_sha256
 from chejin_worker_client.message_contract import canonical_message_identity_text
 from chejin_worker_client.pending_read_recovery import package_recovery_capability
 import chejin_worker_client.chejin_updater
+assert not any(name.endswith(('.historical_text_alignment', '.historical_text_correction', '.wechat_win32_ocr_sidecar')) for name in sys.modules)
 assert canonical_message_identity_text('混动\\n车型') == '混动车型'
 print(json.dumps({'sha': contract_sha256(), 'recovery': package_recovery_capability()}))
 '''

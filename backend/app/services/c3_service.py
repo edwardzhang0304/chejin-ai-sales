@@ -17,6 +17,7 @@ from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
 from app.contracts.shared_rules import shared_adapter
+from app.services.vehicle_fact_policy import is_image_order_independent, policy_for_generated_group
 from app.enums import TaskEventType, TaskResultCode, TaskStatus, TaskType
 from app.errors import AppError
 from app.models.base import utcnow
@@ -45,6 +46,7 @@ from app.services.message_contract import (
     canonical_reply_text,
     reply_text_hash,
 )
+from app.services.message_effective_text import comparison_views, effective_context_digest, require_current_context
 from app.services.task_service import _write_event, finish_task_and_release_worker, get_task_or_404, task_to_detail
 
 
@@ -340,7 +342,10 @@ def _build_pre_send_fact_checkpoint(
     baseline_kind: str = "message_tail",
     authoritative_frame_source: str = "",
     tail_complete: bool | None = None,
+    db: Session | None = None,
 ) -> dict[str, Any]:
+    if db is not None:
+        ordered_messages = comparison_views(db, ordered_messages)
     fact_items: list[dict[str, Any]] = []
     complete = True
     for message in ordered_messages:
@@ -732,27 +737,27 @@ def _vehicle_fact_query(vehicle_ids: list[str] | None = None):
     return query.where(KnowledgeItem.item_id.in_(vehicle_ids)) if vehicle_ids is not None else query
 
 
+def _vehicle_fact_fingerprints(db: Session, vehicle: KnowledgeItem) -> dict[str, str]:
+    images = list(db.scalars(select(VehicleImage).where(
+        VehicleImage.tenant_id == vehicle.tenant_id,
+        VehicleImage.vehicle_id == vehicle.item_id,
+    ).order_by(VehicleImage.sort_order, VehicleImage.id)))
+    base = {"status": vehicle.status, "payload": vehicle.payload or {}}
+    old_images = [{"sha256": image.sha256, "sort_order": image.sort_order} for image in images]
+    stable_images = [{key: getattr(image, key) for key in (
+        "id", "sha256", "storage_key", "original_filename", "content_type", "size_bytes",
+    )} for image in sorted(images, key=lambda image: image.id)]
+    return {key: _canonical_sha256({**base, "images": rows}) for key, rows in (
+        ("fact_fingerprint", old_images), ("image_order_independent_fingerprint", stable_images),
+    )}
+
+
 def _vehicle_fact_fingerprint(db: Session, vehicle: KnowledgeItem) -> str:
-    images = list(
-        db.scalars(
-            select(VehicleImage)
-            .where(
-                VehicleImage.tenant_id == vehicle.tenant_id,
-                VehicleImage.vehicle_id == vehicle.item_id,
-            )
-            .order_by(VehicleImage.sort_order, VehicleImage.id)
-        )
-    )
-    value = {
-        "status": vehicle.status,
-        "payload": vehicle.payload or {},
-        "images": [
-            {"sha256": image.sha256, "sort_order": image.sort_order}
-            for image in images
-        ],
-    }
-    serialized = json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str)
-    return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
+    return _vehicle_fact_fingerprints(db, vehicle)["fact_fingerprint"]
+
+
+def _action_vehicle_fingerprint_key(action: ReplyAction) -> str:
+    return "image_order_independent_fingerprint" if is_image_order_independent(action.ai_payload) else "fact_fingerprint"
 
 
 def _lock_vehicle_facts_for_action(db: Session, reply_action_id: str) -> list[KnowledgeItem]:
@@ -801,11 +806,12 @@ def _snapshot_action_vehicle_facts(
     # referenced vehicles must be unchanged across this generation attempt;
     # unrelated catalog edits must not cancel the answer. New/changed entries
     # encountered mid-generation get a fresh attempt, not a guessed version.
+    fingerprint_key = _action_vehicle_fingerprint_key(action)
     stale = [vehicle_id for vehicle_id in vehicle_ids
-             if generation_vehicle_facts.get(vehicle_id) != {
-                 "fact_fingerprint": _vehicle_fact_fingerprint(db, by_id[vehicle_id]),
-                 "updated_at": by_id[vehicle_id].updated_at.isoformat(),
-             }]
+             if (generation_vehicle_facts.get(vehicle_id, {}).get(fingerprint_key)
+                 != _vehicle_fact_fingerprints(db, by_id[vehicle_id])[fingerprint_key]
+                 or generation_vehicle_facts.get(vehicle_id, {}).get("updated_at")
+                 != by_id[vehicle_id].updated_at.isoformat())]
     if stale:
         raise AppError(VEHICLE_FACT_STALE_CODE, "生成期间引用车辆资料已变化，请重新生成", 409,
                        {"vehicle_ids": stale, "suggested_action": "regenerate"})
@@ -815,7 +821,7 @@ def _snapshot_action_vehicle_facts(
             ReplyActionVehicleFact(
                 reply_action_id=action.id,
                 vehicle_id=vehicle_id,
-                fact_fingerprint=generation_vehicle_facts[vehicle_id]["fact_fingerprint"],
+                fact_fingerprint=generation_vehicle_facts[vehicle_id][fingerprint_key],
                 vehicle_updated_at=vehicle.updated_at,
             )
         )
@@ -847,7 +853,7 @@ def _stale_action_vehicle_ids(
         for snapshot in snapshots
         if snapshot.vehicle_id not in by_id
         or by_id[snapshot.vehicle_id].status != "active"
-        or _vehicle_fact_fingerprint(db, by_id[snapshot.vehicle_id]) != snapshot.fact_fingerprint
+        or _vehicle_fact_fingerprints(db, by_id[snapshot.vehicle_id])[_action_vehicle_fingerprint_key(action)] != snapshot.fact_fingerprint
     ]
 
 
@@ -1313,7 +1319,7 @@ def _supersede_action_for_stale_vehicle_facts(
     cancel_remaining(db, action, VEHICLE_FACT_STALE_CODE)
 
 
-def invalidate_vehicle_dependent_reply_actions(db: Session, vehicle_id: str) -> list[str]:
+def invalidate_vehicle_dependent_reply_actions(db: Session, vehicle_id: str, *, image_order_only: bool = False) -> list[str]:
     action_ids = set(
         db.scalars(
             select(ReplyActionVehicleFact.reply_action_id)
@@ -1353,6 +1359,8 @@ def invalidate_vehicle_dependent_reply_actions(db: Session, vehicle_id: str) -> 
     )
     for action in actions:
         if action.status in SUPERSEDABLE_ACTION_STATUSES and action.current:
+            if image_order_only and is_image_order_independent(action.ai_payload) and not _stale_action_vehicle_ids(db, action):
+                continue
             _supersede_action_for_stale_vehicle_facts(db, action, vehicle_ids=[vehicle_id])
     db.flush()
     return [action.id for action in actions if action.error_code == VEHICLE_FACT_STALE_CODE]
@@ -1965,7 +1973,9 @@ def _build_brain_context_snapshot(
         if isinstance(batch.ai_request_snapshot, dict)
         else None
     )
-    if isinstance(existing, dict) and existing:
+    digest = effective_context_digest(db, binding.conversation_id)
+    if (isinstance(existing, dict) and existing
+            and (batch.ai_request_snapshot or {}).get("effective_context_digest", "") == digest):
         return dict(existing)
 
     current_ids = [str(value) for value in (batch.message_event_ids or [])]
@@ -1989,7 +1999,7 @@ def _build_brain_context_snapshot(
     )
     history_count = len(all_history_rows)
     window_rows = all_history_rows[-50:]
-    prior_messages = [_brain_snapshot_message(item) for item in window_rows]
+    prior_messages = [_brain_snapshot_message(item) for item in comparison_views(db, window_rows)]
     # Only the frozen 50-event window can be rendered into history_text.
     # Counting older, deliberately excluded rows would incorrectly report a
     # lost history when the retained window legitimately contains no semantic
@@ -2053,8 +2063,10 @@ def _build_ai_context(db: Session, binding: WechatSessionBinding, conversation: 
         )
     )
     history_rows.reverse()
+    effective_rows = {item.id: item for item in comparison_views(db, [*messages, *history_rows])}
 
     def compact_message(item: MessageEvent) -> dict[str, Any]:
+        item = effective_rows[item.id]
         raw = item.raw_payload if isinstance(item.raw_payload, dict) else {}
         result: dict[str, Any] = {
             "id": item.id,
@@ -2129,6 +2141,7 @@ def _build_ai_context(db: Session, binding: WechatSessionBinding, conversation: 
         return result
 
     context = {
+        "effective_context_digest": effective_context_digest(db, binding.conversation_id),
         # The immutable snapshot has one canonical storage location in
         # MessageBatch.ai_request_snapshot.  The Adapter receives it
         # explicitly below; do not duplicate it under conversation where a
@@ -2166,6 +2179,7 @@ def _build_ai_context(db: Session, binding: WechatSessionBinding, conversation: 
         )
         if batch.trigger_type == "friend_welcome" and not history_rows:
             frozen_checkpoint = _build_pre_send_fact_checkpoint(
+                db=db,
                 batch=batch,
                 ordered_messages=[],
                 baseline_kind="friend_welcome_empty",
@@ -2177,6 +2191,7 @@ def _build_ai_context(db: Session, binding: WechatSessionBinding, conversation: 
             # rows that are no longer visible in the authoritative WeChat
             # viewport and would manufacture a false pre-send prefix.
             frozen_checkpoint = _build_pre_send_fact_checkpoint(
+                db=db,
                 batch=batch,
                 ordered_messages=checkpoint_tail,
                 baseline_kind="message_tail",
@@ -3220,11 +3235,14 @@ def generate_for_batch(
             if exc.code != "LEAD_INVALID":
                 raise
             return {"run": False, "terminal": True, "decision": "no_action", "error_code": "LEAD_INVALID"}
+        lock_sequence_conversation(db, followup_conversation_id)
     batch = db.scalar(select(MessageBatch).where(MessageBatch.id == batch_id, MessageBatch.deleted_at.is_(None)).with_for_update())
     if not batch:
         raise AppError("MESSAGE_BATCH_NOT_FOUND", "消息批次不存在", 404)
     if batch.status == "cancelled" and batch.suggested_action == "LEAD_INVALID":
         return {"decision": "no_action", "error_code": "LEAD_INVALID", "task_id": None}
+    if batch.status == "cancelled" and batch.error_code == "HISTORICAL_TEXT_CORRECTED":
+        return {"decision": "no_action", "error_code": batch.error_code, "task_id": None}
     if expected_generation_attempt is not None and (
         batch.status != "generating"
         or int(batch.generation_attempt_count or 0) != int(expected_generation_attempt)
@@ -3336,7 +3354,7 @@ def generate_for_batch(
     generation_attempt = int(batch.generation_attempt_count or 0)
     generation_vehicle_facts = {
         vehicle.item_id: {
-            "fact_fingerprint": _vehicle_fact_fingerprint(db, vehicle),
+            **_vehicle_fact_fingerprints(db, vehicle),
             # The payload uses second-resolution metadata. A -> B -> A within
             # one second must still invalidate a model that may have read B.
             "updated_at": vehicle.updated_at.isoformat(),
@@ -3411,6 +3429,7 @@ def generate_for_batch(
         if exc.code != "LEAD_INVALID":
             raise
         return {"decision": "no_action", "error_code": "LEAD_INVALID", "reply_action_id": None, "task_id": None}
+    lock_sequence_conversation(db, followup_conversation_id)
     batch = db.scalar(
         select(MessageBatch)
         .where(
@@ -3448,6 +3467,7 @@ def generate_for_batch(
     if (
         batch.status != "generating"
         or int(batch.generation_attempt_count or 0) != generation_attempt
+        or context.get("effective_context_digest", "") != effective_context_digest(db, batch.conversation_id)
     ):
         batch.ai_response_snapshot = _record_stale_generation_attempt_diagnostics(
             batch,
@@ -3523,6 +3543,12 @@ def generate_for_batch(
                 raw_payload=payload,
             )
         else:
+            # Reserved metadata is written only by the backend, for the entire
+            # group after inspecting the runtime evidence and actual segments.
+            payload.pop("vehicle_fact_policy", None)
+            vehicle_policy = policy_for_generated_group(context, payload, segments)
+            if vehicle_policy:
+                payload["vehicle_fact_policy"] = vehicle_policy
             _supersede_open_actions(db, binding.conversation_id, reason="生成新的当前回复动作")
             expire_at = utcnow() + timedelta(seconds=get_settings().c3_reply_action_ttl_seconds)
             action = ReplyAction(
@@ -3851,6 +3877,7 @@ def claim_send(
             **_pre_send_fact_checkpoint_response(batch, action),
         }
     require_current_segment(db, action, db.get(Worker, worker_id))
+    require_current_context(db, batch)
     if action.segment_index > 1 and not action.pre_send_fact_checkpoint:
         raise AppError("REPLY_SEQUENCE_FRESH_READ_REQUIRED", "需要重新读取会话确认前一段", 409)
     if action.status != "queued":
@@ -4141,7 +4168,13 @@ def sent_ack(db: Session, *, reply_action_id: str, payload: Any) -> dict[str, An
 
     db.flush()
     if payload.send_result == "sent":
-        advance_after_sent_ack(db, action, followup_cancelled=followup_cancelled)
+        from app.services.post_send_customer_read import settle as settle_post_send_customer_read
+        customer_after_send = settle_post_send_customer_read(
+            db, action=action, payload=payload, binding=binding,
+            conversation=conversation, followup_cancelled=followup_cancelled,
+        )
+        if not customer_after_send:
+            advance_after_sent_ack(db, action, followup_cancelled=followup_cancelled)
     else:
         cancel_remaining(db, action, action.error_code or "SEND_RESULT_UNKNOWN")
     db.flush()

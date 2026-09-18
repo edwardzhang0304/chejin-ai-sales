@@ -83,6 +83,7 @@ export interface WorkerLogRow {
 }
 
 export interface WorkerClientModel {
+  layoutRecovery?: { blocked: boolean; attempts: number; message: string };
   faultRecovery?: { ready: boolean; checking: boolean; reason: string };
   workerId: string;
   workerToken: string;

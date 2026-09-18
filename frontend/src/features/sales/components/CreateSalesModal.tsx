@@ -2,6 +2,7 @@ import { FormEvent, useState } from "react";
 
 import { useLockBodyScroll } from "../../../shared/hooks/useLockBodyScroll";
 import { optionalText } from "../../../shared/utils/display";
+import { normalizePhoneInput, PHONE_PATTERN } from "../../../shared/utils/phone";
 import type { SalesCreatePayload, SalesWorkerSummary } from "../types";
 
 type Props = {
@@ -11,8 +12,6 @@ type Props = {
   onClose: () => void;
   onSubmit: (payload: SalesCreatePayload) => Promise<boolean>;
 };
-
-const PHONE_PATTERN = /^1[3-9]\d{9}$/;
 
 export function CreateSalesModal({ submitting, error, workerOptions, onClose, onSubmit }: Props) {
   useLockBodyScroll();
@@ -26,7 +25,7 @@ export function CreateSalesModal({ submitting, error, workerOptions, onClose, on
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    const normalizedPhone = phone.trim();
+    const normalizedPhone = normalizePhoneInput(phone);
     if (!PHONE_PATTERN.test(normalizedPhone)) {
       setValidationError("请输入 11 位有效手机号。");
       return;
@@ -76,10 +75,9 @@ export function CreateSalesModal({ submitting, error, workerOptions, onClose, on
                 </span>
                 <input
                   value={phone}
-                  onChange={(event) => setPhone(event.target.value)}
+                  onChange={(event) => setPhone(normalizePhoneInput(event.target.value))}
                   inputMode="tel"
                   autoComplete="tel"
-                  maxLength={11}
                   pattern="1[3-9][0-9]{9}"
                   placeholder="请输入 11 位手机号"
                   required

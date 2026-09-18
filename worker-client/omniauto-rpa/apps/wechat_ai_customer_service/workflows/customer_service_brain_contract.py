@@ -800,11 +800,13 @@ def normalize_reply_segments(value: Any, *, max_segments: int = 3, preserve_all:
     else:
         raw_segments = split_reply_like_text(str(value or ""))
     for raw in raw_segments:
-        text = normalize_space(raw)
+        # Keep the model's line boundaries: a preceding negation must not
+        # acquire scope over a separate statement when whitespace is cleaned.
+        text = "\n".join(sanitize_forbidden_commitment_echo(line)
+                         for line in raw.splitlines() if line.strip())
         if not text:
             continue
         text = remove_trailing_ellipsis(text)
-        text = sanitize_forbidden_commitment_echo(text)
         if text and (preserve_all or text not in segments):
             segments.append(text)
         if not preserve_all and len(segments) >= max(1, int(max_segments or 3)):
@@ -813,7 +815,7 @@ def normalize_reply_segments(value: Any, *, max_segments: int = 3, preserve_all:
 
 
 def split_reply_like_text(text: str) -> list[str]:
-    clean = normalize_space(text)
+    clean = "\n".join(normalize_space(line) for line in text.splitlines() if line.strip())
     if not clean:
         return []
     parts = re.split(r"(?<=[。！？!?])\s*", clean)
@@ -1360,7 +1362,7 @@ def verify_brain_reply_quality(
         if cargo_fit_check.get("error"):
             errors.append(str(cargo_fit_check["error"]))
     if has_product_evidence and contains_any(question, CARGO_TOPIC_TERMS):
-        cargo_capacity_check = check_unverified_cargo_capacity_claim(clean_reply, evidence_pack or {})
+        cargo_capacity_check = check_unverified_cargo_capacity_claim("\n".join(plan.get("reply_segments") or []), evidence_pack or {}, current_message=question)
         if cargo_capacity_check.get("error"):
             errors.append(str(cargo_capacity_check["error"]))
 
@@ -2925,32 +2927,15 @@ def collect_available_cargo_fit_candidates(evidence_pack: dict[str, Any], *, bud
     return candidates
 
 
-def check_unverified_cargo_capacity_claim(reply: str, evidence_pack: dict[str, Any]) -> dict[str, Any]:
-    """Block affirmative cargo-fit claims when no dimensions are available."""
+def check_unverified_cargo_capacity_claim(reply: str, evidence_pack: dict[str, Any], *, current_message: str = "") -> dict[str, Any]:
+    """Reject ungrounded affirmative predicates, preserving local scope."""
+    from cargo_claim_scope import has_unsupported_cargo_assertion
 
     if cargo_dimension_evidence_available(evidence_pack):
         return {}
-    check_text = str(reply or "")
-    for neutral_phrase in ("能不能塞下", "能不能装下", "能否塞下", "能否装下", "是否塞下", "是否装下"):
-        check_text = check_text.replace(neutral_phrase, "")
-    affirmative_terms = (
-        "大概率能塞",
-        "大概率能装",
-        "基本能塞",
-        "基本能装",
-        "应该能塞",
-        "应该能装",
-        "能塞下",
-        "能装下",
-        "塞得下",
-        "装得下",
-        "够装",
-        "问题不大",
-    )
-    if contains_any(check_text, affirmative_terms):
+    if has_unsupported_cargo_assertion(reply, current_message=current_message):
         return {"error": "unverified_cargo_capacity_affirmative_claim"}
     return {}
-
 
 def cargo_dimension_evidence_available(evidence_pack: dict[str, Any]) -> bool:
     dimension_terms = ("后备厢容积", "后备箱容积", "放倒后", "装载尺寸", "容积", "尺寸", "长", "宽", "高", "mm", "cm", "l")

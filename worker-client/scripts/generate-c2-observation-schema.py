@@ -69,6 +69,14 @@ def generated_payload(contract: dict) -> dict:
         "startup_layout_calibration_contract": dict(
             contract["startup_layout_calibration_contract"]
         ),
+        **({"historical_text_correction_contract": contract["historical_text_correction_contract"]}
+           if "historical_text_correction_contract" in contract else {}),
+        **({"text_correspondence_contract": contract["text_correspondence_contract"]}
+           if "text_correspondence_contract" in contract else {}),
+        **({"historical_text_correction_pending_contract": contract["historical_text_correction_pending_contract"]}
+           if "historical_text_correction_pending_contract" in contract else {}),
+        **({"historical_text_correction_resolution_contract": contract["historical_text_correction_resolution_contract"]}
+           if "historical_text_correction_resolution_contract" in contract else {}),
         **({"pre_send_read_recovery_contract": contract["pre_send_read_recovery_contract"]}
            if "pre_send_read_recovery_contract" in contract else {}),
     }

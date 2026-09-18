@@ -463,6 +463,22 @@ class WorkerApiClient:
         self._forget_confirmed_task_lease(task.id, fencing)
         return task
 
+    def settle_historical_text_correction_pending(self, binding: Binding, intent: dict[str, Any]) -> dict:
+        """Original task/permit receipt only; never authorizes another send."""
+        proof = intent["proof"]
+        token = int(intent.get("lease_fencing_token") or 0)
+        response = self._request("POST", f"/tasks/{proof['task_id']}/fail", binding=binding,
+            json={"error_code": "HISTORICAL_TEXT_CORRECTION_PENDING", "failure_step": "pre_send_refresh",
+                "failure_remark": "旧消息原图复核待后端确认", "evidence": {"historical_text_correction_pending": proof}},
+            extra_headers={"X-Inflight-Flow-Id": proof["flow_id"],
+                **({"X-Task-Lease-Fencing-Token": str(token)} if token else {})})
+        task = response.get("task") or {}
+        if (task.get("id") != proof["task_id"] or task.get("status") not in {"failed", "cancelled"}
+                or (response.get("reply_action") or {}).get("id") != proof["reply_action_id"]):
+            raise ValueError("OCR_CORRECTION_SETTLEMENT_UNCONFIRMED")
+        self._forget_confirmed_task_lease(proof["task_id"], token)
+        return response
+
     def settle_task_failure(self, binding: Binding, receipt: dict[str, Any]) -> Task:
         """Send a saved C1 failure with its original Flow and fencing identity."""
         token = int(receipt["lease_fencing_token"])
@@ -622,6 +638,13 @@ class WorkerApiClient:
             json=payload,
             extra_headers=headers or None,
         )
+
+    def post_wechat_message_text_correction(self, binding: Binding, payload: dict[str, Any]) -> dict[str, Any]:
+        # _request may attach the actual active Flow. The historical source read
+        # is audit identity only and must never become X-Inflight-Flow-Id.
+        return self._request("POST",
+            f"/workers/{binding.worker_id}/wechat/message-text-corrections",
+            binding=binding, json=payload)
 
     def interrupt_reply_sequence(self, binding: Binding, batch_id: str, *, frame_id: str, observation_ids: list[str]) -> dict[str, Any]:
         return self._request("POST",

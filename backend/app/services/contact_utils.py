@@ -10,7 +10,8 @@ from app.core.config import get_settings
 from app.errors import AppError
 
 
-PHONE_RE = re.compile(r"^1[3-9]\d{9}$")
+PHONE_RE = re.compile(r"^1[3-9][0-9]{9}$")
+PHONE_FORMAT_WHITESPACE = re.compile(r"[ \u3000\u00a0\t\r\n]")
 EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 
 
@@ -48,7 +49,7 @@ def decrypt_for_p0(encrypted: str) -> str:
 
 
 def normalize_phone(phone: str) -> NormalizedContact:
-    normalized = re.sub(r"\D", "", phone.strip())
+    normalized = PHONE_FORMAT_WHITESPACE.sub("", phone)
     if not normalized:
         raise AppError("LEAD_PHONE_REQUIRED", "请输入手机号", 400)
     if not PHONE_RE.fullmatch(normalized):

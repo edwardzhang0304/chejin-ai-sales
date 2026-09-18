@@ -129,6 +129,9 @@ class _Runner:
     def fault_recovery_state(self):
         return {"ready": False, "checking": False, "reason": "等待检查", "statusText": "客户端故障"}
 
+    def layout_recovery_state(self):
+        return {"blocked": False, "attempts": 0, "message": ""}
+
 
 class WebUiBindingBehaviorTest(unittest.TestCase):
     def test_pending_finish_uses_existing_timeline_until_confirmation(self):

@@ -3,7 +3,7 @@ from collections.abc import Awaitable, Callable
 from contextlib import asynccontextmanager
 from typing import Any
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import text
@@ -30,8 +30,11 @@ settings = get_settings()
 logger = logging.getLogger(__name__)
 
 
-class MessageIngestBodyTooLarge(Exception):
-    pass
+class MessageIngestBodyTooLarge(HTTPException):
+    """Preserve 413 when FastAPI handles exceptions while reading the body."""
+    def __init__(self, code, message, max_bytes):
+        super().__init__(status_code=413, detail=message)
+        self.code, self.message, self.max_bytes = code, message, max_bytes
 
 
 def _recover_observability_on_startup_best_effort() -> int:
@@ -65,11 +68,15 @@ class C2IngestBodyLimitMiddleware:
         receive: Callable[[], Awaitable[dict[str, Any]]],
         send: Callable[[dict[str, Any]], Awaitable[None]],
     ) -> None:
-        if scope.get("type") != "http" or not str(scope.get("path") or "").endswith(
-            "/wechat/messages/ingest"
-        ):
+        path = str(scope.get("path") or "")
+        correction = path.endswith("/wechat/message-text-corrections")
+        if scope.get("type") != "http" or not (path.endswith("/wechat/messages/ingest") or correction):
             await self.app(scope, receive, send)
             return
+
+        max_bytes = 6 * 1024 * 1024 if correction else self.max_bytes
+        error_code = "HISTORICAL_TEXT_CORRECTION_TOO_LARGE" if correction else "MESSAGE_INGEST_REQUEST_TOO_LARGE"
+        error_message = "原图纠错请求超过大小限制" if correction else "消息入库请求超过大小限制"
 
         headers = {
             key.lower(): value
@@ -80,12 +87,12 @@ class C2IngestBodyLimitMiddleware:
             content_length = int(raw_length or b"0")
         except ValueError:
             content_length = 0
-        if content_length > self.max_bytes:
+        if content_length > max_bytes:
             await error_response(
                 413,
-                "MESSAGE_INGEST_REQUEST_TOO_LARGE",
-                "消息入库请求超过大小限制",
-                {"max_bytes": self.max_bytes},
+                error_code,
+                error_message,
+                {"max_bytes": max_bytes},
             )(scope, receive, send)
             return
 
@@ -96,8 +103,8 @@ class C2IngestBodyLimitMiddleware:
             message = await receive()
             if message.get("type") == "http.request":
                 received += len(message.get("body") or b"")
-                if received > self.max_bytes:
-                    raise MessageIngestBodyTooLarge
+                if received > max_bytes:
+                    raise MessageIngestBodyTooLarge(error_code, error_message, max_bytes)
             return message
 
         try:
@@ -105,9 +112,9 @@ class C2IngestBodyLimitMiddleware:
         except MessageIngestBodyTooLarge:
             await error_response(
                 413,
-                "MESSAGE_INGEST_REQUEST_TOO_LARGE",
-                "消息入库请求超过大小限制",
-                {"max_bytes": self.max_bytes},
+                error_code,
+                error_message,
+                {"max_bytes": max_bytes},
             )(scope, receive, send)
 
 
@@ -187,6 +194,11 @@ def create_app() -> FastAPI:
         finally:
             reset_request_id(token)
 
+    @app.exception_handler(MessageIngestBodyTooLarge)
+    async def ingest_size_error_handler(request: Request, exc: MessageIngestBodyTooLarge):
+        return error_response(413, exc.code, exc.message, {"max_bytes": exc.max_bytes},
+                              trace_id=getattr(request.state, "request_id", None))
+
     @app.exception_handler(AppError)
     async def app_error_handler(request: Request, exc: AppError):
         trace_id = getattr(request.state, "request_id", None)
@@ -206,7 +218,7 @@ def create_app() -> FastAPI:
                 trace_id=trace_id,
             )
         errors = exc.errors()
-        if request.url.path.endswith("/vision-credential") or (
+        if request.url.path.endswith(("/vision-credential", "/wechat/message-text-corrections")) or (
             request.method == "POST" and request.url.path == f"{settings.api_prefix}/workers"
         ):
             # Malformed credential bodies can contain secrets even when an error
@@ -217,7 +229,7 @@ def create_app() -> FastAPI:
     @app.exception_handler(Exception)
     async def unhandled_error_handler(request: Request, exc: Exception):
         trace_id = getattr(request.state, "request_id", None)
-        credential_request = request.url.path.endswith("/vision-credential") or (
+        credential_request = request.url.path.endswith(("/vision-credential", "/wechat/message-text-corrections")) or (
             request.method == "POST" and request.url.path == f"{settings.api_prefix}/workers"
         )
         if credential_request:

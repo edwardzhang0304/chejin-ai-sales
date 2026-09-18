@@ -349,7 +349,7 @@ def fail_task(
     try:
         task = task_service.get_task_or_404(db, task_id)
         worker = worker_service.authenticate_worker_client(db, task.worker_id or "", x_worker_token, x_client_instance_id)
-        if "pre_send_read_failure" in payload.evidence:
+        if "pre_send_read_failure" in payload.evidence or "historical_text_correction_pending" in payload.evidence:
             from app.services.pre_send_read_recovery import settle
             data = settle(db, worker=worker, payload=payload, task_id=task_id,
                           flow_id=x_inflight_flow_id, client_instance_id=x_client_instance_id,

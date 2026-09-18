@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+import unicodedata
 from typing import Any, Callable
 
 from apps.wechat_ai_customer_service.adapters.add_friend_locator import make_locator_result, normalize_bounds, normalize_point
@@ -429,6 +430,7 @@ def field_text_visible(
     ocr_items: list[dict[str, Any]] | None,
     *,
     bounds: list[int] | None = None,
+    exact: bool = False,
 ) -> dict[str, Any]:
     clean_expected = compact_ocr_text(expected)
     items = [item for item in (ocr_items or []) if isinstance(item, dict)]
@@ -447,11 +449,13 @@ def field_text_visible(
     )
     digits_expected = "".join(ch for ch in str(expected or "") if ch.isdigit())
     digits_surface = "".join(ch for ch in surface if ch.isdigit())
-    ok = bool(clean_expected and clean_expected in surface) or bool(digits_expected and digits_expected in digits_surface)
+    ok = bool(clean_expected and clean_expected == surface) if exact else (
+        bool(clean_expected and clean_expected in surface) or bool(digits_expected and digits_expected in digits_surface)
+    )
     return {
         "ok": ok,
         "expected_length": len(str(expected or "")),
-        "matched_by": "ocr_text" if clean_expected and clean_expected in surface else "digits" if digits_expected and digits_expected in digits_surface else "",
+        "matched_by": ("ocr_text" if clean_expected and clean_expected in surface else "digits") if ok else "",
         "scoped_to_field": bool(bounds),
         "ocr_fragment_count": len(ordered_items),
     }
@@ -462,6 +466,7 @@ def high_confidence_eight_char_code_visible(
     *,
     bounds: list[int] | None = None,
     minimum_confidence: float = 0.90,
+    expected_code: str | None = None,
 ) -> dict[str, Any]:
     items = [item for item in (ocr_items or []) if isinstance(item, dict)]
     if bounds:
@@ -477,13 +482,15 @@ def high_confidence_eight_char_code_visible(
         if len(text) == 9 and text.endswith("|"):
             text = text[:-1]
         confidence = float(item.get("confidence") or 0.0)
-        if re.fullmatch(r"[a-z0-9]{8}", text) and confidence >= minimum_confidence:
+        if re.fullmatch(r"[a-z0-9]{8}", text):
             candidates.append({"text": text, "confidence": confidence})
     selected = candidates[0] if len(candidates) == 1 else None
+    ok = bool(selected and selected["confidence"] >= minimum_confidence
+              and (expected_code is None or selected["text"] == compact_ocr_text(expected_code)))
     return {
-        "ok": selected is not None,
+        "ok": ok,
         "expected_length": 8,
-        "matched_by": "high_confidence_eight_char_code" if selected else "",
+        "matched_by": "high_confidence_eight_char_code" if ok else "",
         "scoped_to_field": bool(bounds),
         "ocr_fragment_count": len(items),
         "short_code_candidate_count": len(candidates),
@@ -500,12 +507,14 @@ def invite_form_field_verification(
     remark_code: str,
     ocr_items: list[dict[str, Any]] | None,
     field_bounds: dict[str, list[int]] | None = None,
+    field_values: dict[str, dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     scoped_bounds = field_bounds or {}
     verify_result = field_text_visible(
         verify_message,
         ocr_items,
         bounds=scoped_bounds.get("verify_message"),
+        exact=True,
     )
     clean_remark_name = compact_ocr_text(remark_name)
     clean_remark_code = compact_ocr_text(remark_code)
@@ -517,6 +526,7 @@ def invite_form_field_verification(
         code_result = high_confidence_eight_char_code_visible(
             ocr_items,
             bounds=scoped_bounds.get("remark_code"),
+            expected_code=remark_code,
         )
         remark_result = dict(code_result)
     else:
@@ -530,11 +540,43 @@ def invite_form_field_verification(
             ocr_items,
             bounds=scoped_bounds.get("remark_code"),
         )
+    # Reliable field reads supplement OCR; they never change its recorded text.
+    # A contradictory actual value is a veto even if OCR claimed success.
+    def field_value(value: str) -> str:
+        return unicodedata.normalize("NFKC", value).replace("\r\n", "\n").replace("\r", "\n").strip()
+
+    values = field_values or {}
+    for key, expected, result in (("verify_message", verify_message, verify_result),
+                                   ("remark_name", remark_name, remark_result)):
+        actual = values.get(key) or {}
+        if actual.get("available") is not True or actual.get("source_verified") is not True:
+            continue
+        raw = actual.get("value")
+        if not isinstance(raw, str):
+            continue
+        same = (field_value(raw) == field_value(expected))
+        if key == "remark_name" and copied_eight_char_code:
+            same = raw.strip().casefold() == str(expected).strip().casefold()
+            # Low confidence can be replaced only when OCR has the same whole
+            # code. An OCR/readback contradiction requires the caller's one
+            # fresh capture, never a guessed character correction.
+            same_ocr = code_result.get("observed_text") == clean_remark_code
+            code_result.update(ok=bool(same and same_ocr), actual_value_matches=same)
+            if code_result["ok"]:
+                code_result["matched_by"] = str(actual.get("method") or "field_value")
+            result.update(code_result)
+        else:
+            result.update(ok=same, actual_value_matches=same)
+            if same:
+                result["matched_by"] = str(actual.get("method") or "field_value")
+        result["field_readback"] = dict(actual)
     return {
-        "ok": bool(verify_result.get("ok")) and bool(remark_result.get("ok")) and bool(code_result.get("ok")),
+        "ok": (bool(verify_result.get("ok")) and bool(remark_result.get("ok")) and bool(code_result.get("ok"))
+               and not any(value.get("identity_changed") for value in values.values())),
         "verify_message": verify_result,
         "remark_name": remark_result,
         "remark_code": code_result,
-        "method": "ocr_surface_text_visibility",
+        "method": "ocr_and_field_value_v1" if field_values else "ocr_surface_text_visibility",
+        "field_readbacks": dict(values),
         "copied_eight_char_code_mode": copied_eight_char_code,
     }

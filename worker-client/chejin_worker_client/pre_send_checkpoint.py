@@ -445,6 +445,7 @@ def _compare_checkpoint_business_continuity_v5(
     current_empty_viewport_confirmed: bool,
     context_expansion_used: bool,
     expanded_context_observations: list[Any] | None,
+    historical_checkpoint: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     frozen = [
         dict(item)
@@ -543,6 +544,22 @@ def _compare_checkpoint_business_continuity_v5(
             else None
         ),
     )
+    correspondence = None
+    if historical_checkpoint and decision.get("relation") not in {
+        "business_sequence_equal", "unique_tail_append", "unique_viewport_slide_with_tail_append",
+    }:
+        from .historical_alignment import projected_frame
+        try:
+            projected, proof = projected_frame(historical_checkpoint, ordered_current,
+                pre_frame_id=before_frame_id, post_frame_id=after_frame_id)
+        except ValueError as exc:
+            return {**base, "reason": str(exc)}
+        if proof:
+            candidate = compare_business_viewport_continuity(old_projection, projected,
+                old_boundary_tokens=old_tokens, new_boundary_tokens=current_tokens)
+            if candidate.get("relation") in {"business_sequence_equal", "unique_tail_append",
+                                             "unique_viewport_slide_with_tail_append"}:
+                decision, correspondence = candidate, proof
     relation = str(decision.get("relation") or "")
     result_map = {
         "business_sequence_equal": "checkpoint_equal",
@@ -617,6 +634,7 @@ def _compare_checkpoint_business_continuity_v5(
         },
         "current_prefix_count": prefix_count,
         "continuity_relation": relation,
+        **({"text_correspondence": correspondence} if correspondence else {}),
         "overlap_candidates": list(
             decision.get("overlap_candidates") or []
         ),
@@ -633,6 +651,7 @@ def compare_checkpoint_to_observations(
     current_empty_viewport_confirmed: bool = False,
     context_expansion_used: bool = False,
     expanded_context_observations: list[Any] | None = None,
+    historical_checkpoint: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     return _compare_checkpoint_business_continuity_v5(
         checkpoint,
@@ -645,4 +664,5 @@ def compare_checkpoint_to_observations(
         ),
         context_expansion_used=context_expansion_used,
         expanded_context_observations=expanded_context_observations,
+        historical_checkpoint=historical_checkpoint,
     )

@@ -24,6 +24,20 @@ PENDING = "pre_send_read_pending"
 RECEIPT = "pre_send_read_failure_receipt"
 
 
+def pending_sources(value):
+    if not isinstance(value, dict):
+        return []
+    sources = value.get("sources")
+    return list(sources) if isinstance(sources, list) else [value]
+
+
+def pack_pending_sources(sources):
+    if len(sources) == 1:
+        return sources[0]
+    status = "pending" if any(s.get("status") == "pending" for s in sources) else "consumed"
+    return {"status": status, "sources": sources}
+
+
 def _reject(message="发送前读取失败证明与原动作不一致"):
     raise AppError("PRE_SEND_READ_FAILURE_PROOF_INVALID", message, 409)
 
@@ -38,10 +52,12 @@ def settle(db, *, worker, payload, task_id, flow_id, client_instance_id,
     from app.services.task_service import finish_task_and_release_worker, task_to_detail, _write_event
     from app.enums import TaskEventType
 
+    correction = "historical_text_correction_pending" in payload.evidence
     try:
-        proof = shared_adapter("pre_send_read_failure").validate_proof(
-            payload.evidence["pre_send_read_failure"]
-        )
+        if correction and "pre_send_read_failure" in payload.evidence:
+            raise ValueError("mutually_exclusive_proofs")
+        proof = shared_adapter("historical_correction_pending" if correction else "pre_send_read_failure").validate_proof(
+            payload.evidence["historical_text_correction_pending" if correction else "pre_send_read_failure"])
     except (KeyError, TypeError, ValueError):
         _reject()
     if proof["task_id"] != task_id or (reply_action_id and proof["reply_action_id"] != reply_action_id):
@@ -84,6 +100,21 @@ def settle(db, *, worker, payload, task_id, flow_id, client_instance_id,
     capability = ((worker.local_lock_summary or {}).get("capabilities") or {}).get("pre_send_read_recovery_version")
     if type(capability) is not int or capability != 1:
         _reject("当前客户端没有声明发送前读取恢复能力")
+    if correction:
+        capability = ((worker.local_lock_summary or {}).get("capabilities") or {}).get("historical_text_correction_version")
+        if type(capability) is not int or capability != 1:
+            _reject("当前客户端没有声明历史文字纠错能力")
+        original = db.get(MessageEvent, proof["proposal"]["message_event_id"])
+        if (not original or original.conversation_id != action.conversation_id
+                or original.worker_id != worker.id or original.binding_id != binding.id
+                or original.source_message_key != proof["proposal"]["source_message_key"]
+                or original.read_run_id != proof["proposal"]["original_read_run_id"]):
+            _reject("待纠错来源与原会话不一致")
+        from app.services.message_effective_text import effective_versions, text_sha256
+        if (text_sha256(original.content or '') != proof['proposal']['original_text_sha256']
+                or ((original.raw_payload or {}).get('observation') or {}).get('observation_id') != proof['proposal']['original_observation_id']
+                or effective_versions(db, [original])[original.id]['version'] != proof['proposal']['expected_effective_version']):
+            _reject("待纠错原消息或有效版本已改变")
     if worker.run_status != "faulted":
         _reject("技术故障必须先保存停止接单状态")
     inflight = dict(worker.inflight_flow_state or {})
@@ -127,10 +158,10 @@ def settle(db, *, worker, payload, task_id, flow_id, client_instance_id,
     blocked = (bool(followup_block_reason(db, task.lead_id)) or binding.worker_id != worker.id
                or proof["authorization_revision"] != token_for_revision(binding.id, int(binding.authorization_revision or 1)))
     before = task.status
-    error = str(payload.error_code or proof["first_failure"]["error_code"])
+    error = "HISTORICAL_TEXT_CORRECTION_PENDING" if correction else str(payload.error_code or proof["first_failure"]["error_code"])
     task.status = "cancelled" if blocked or task.status == "cancelled" else "failed"
     task.error_code = error
-    task.failure_step = proof["first_failure"]["stage"]
+    task.failure_step = ("before_input" if reply_action_id else "pre_send_refresh") if correction else proof["first_failure"]["stage"]
     task.failure_remark = getattr(payload, "failure_remark", None) or getattr(payload, "remark", None)
     if task.status == "cancelled":
         task.cancelled_at = task.cancelled_at or utcnow()
@@ -161,7 +192,12 @@ def settle(db, *, worker, payload, task_id, flow_id, client_instance_id,
                        "worker_id": worker.id, "binding_id": binding.id,
                        "message_event_ids": ids, "created_at": utcnow().isoformat(),
                        "last_outbound_at": conversation.last_outbound_at.isoformat() if conversation.last_outbound_at else None}
-            binding.last_scan_snapshot = {**(binding.last_scan_snapshot or {}), PENDING: pending}
+            if correction:
+                pending["required_correction"] = {**proof["proposal"], "status": "pending"}
+            scan = dict(binding.last_scan_snapshot or {})
+            existing = [s for s in pending_sources(scan.get(PENDING)) if s.get("status") == "pending"]
+            scan[PENDING] = pack_pending_sources([*existing, pending])
+            binding.last_scan_snapshot = scan
             binding.next_read_due_at = utcnow()
             binding.no_change_read_count = 0
         if conversation.status == "ai_active":
@@ -191,6 +227,25 @@ def settle(db, *, worker, payload, task_id, flow_id, client_instance_id,
 
 def collect_after_read(db, *, worker, binding, conversation, read_run_id,
                        customer_tail_ids, visible_message_ids, trace_id=None):
+    """Consume each retained cause in one transaction and one active batch."""
+    scan = dict(binding.last_scan_snapshot or {})
+    sources = [dict(source) for source in pending_sources(scan.get(PENDING))]
+    result = None
+    for source in sources:
+        if source.get("status") == "pending":
+            current = _collect_one_after_read(db, worker=worker, binding=binding,
+                conversation=conversation, read_run_id=read_run_id,
+                customer_tail_ids=customer_tail_ids, visible_message_ids=visible_message_ids,
+                trace_id=trace_id, pending=source)
+            result = current or result
+    if sources:
+        scan[PENDING] = pack_pending_sources(sources)
+        binding.last_scan_snapshot = scan
+    return result
+
+
+def _collect_one_after_read(db, *, worker, binding, conversation, read_run_id,
+                           customer_tail_ids, visible_message_ids, trace_id, pending):
     """Consume pending demand only inside a fresh, complete C2 ingest.
 
     The caller already holds the ordinary C2 scope locks and has rejected
@@ -201,10 +256,6 @@ def collect_after_read(db, *, worker, binding, conversation, read_run_id,
     from app.services.followup_eligibility import followup_block_reason
     from app.services.knowledge_management_service import current_release_for_batch
 
-    scan = dict(binding.last_scan_snapshot or {})
-    pending = scan.get(PENDING)
-    if not isinstance(pending, dict) or pending.get("status") != "pending":
-        return None
     flow = worker.inflight_flow_state or {}
     if (worker.run_status != "running" or flow.get("flow_kind") != "c2_read"
             or flow.get("status") != "active" or flow.get("flow_id") != read_run_id
@@ -212,10 +263,8 @@ def collect_after_read(db, *, worker, binding, conversation, read_run_id,
         return None
 
     def finish(reason, batch_id=None):
-        scan[PENDING] = {**pending, "status": "consumed" if batch_id else "closed",
-                         "resolution": reason, "read_run_id": read_run_id,
-                         "resolved_at": utcnow().isoformat(), "resolved_batch_id": batch_id}
-        binding.last_scan_snapshot = scan
+        pending.update(status="consumed" if batch_id else "closed", resolution=reason,
+                       read_run_id=read_run_id, resolved_at=utcnow().isoformat(), resolved_batch_id=batch_id)
 
     if (pending.get("worker_id") != worker.id or pending.get("binding_id") != binding.id
             or binding.worker_id != worker.id or not binding.allow_listening
@@ -226,14 +275,27 @@ def collect_after_read(db, *, worker, binding, conversation, read_run_id,
             or c3.open_handoff_events_for_conversation(db, binding.conversation_id, for_update=True)):
         finish("business_blocked")
         return None
-    origin = db.get(ReplyAction, pending.get("reply_action_id"))
+    historical = pending.get("cause") == "historical_text_correction"
+    origin = db.get(ReplyAction, pending["reply_action_id"]) if pending.get("reply_action_id") else None
     old_batch = db.get(MessageBatch, pending.get("batch_id"))
-    if (not origin or not old_batch or origin.batch_id != old_batch.id
+    if historical:
+        from app.services.message_text_correction_service import validate_pending_source
+        validate_pending_source(db, pending, binding.conversation_id, old_batch, origin)
+    elif (not origin or not old_batch or origin.batch_id != old_batch.id
             or origin.conversation_id != binding.conversation_id
             or old_batch.conversation_id != binding.conversation_id
             or old_batch.active or origin.status not in {"failed", "cancelled"}
             or not (origin.ai_payload or {}).get(RECEIPT)):
         _reject("待回复事项的原结算不完整")
+    required = pending.get("required_correction")
+    if required:
+        from app.models.message_text_correction import MessageTextCorrection
+        accepted = db.get(MessageTextCorrection, required.get("correction_id"))
+        if (required.get("status") != "accepted" or not accepted
+                or accepted.conversation_id != binding.conversation_id
+                or accepted.message_event_id != required.get("message_event_id")
+                or accepted.proof_sha256 != required.get("proof_sha256")):
+            return None
     last_outbound = conversation.last_outbound_at.isoformat() if conversation.last_outbound_at else None
     ids = list(dict.fromkeys(pending.get("message_event_ids") or []))
     if not ids or not set(ids).issubset(set(old_batch.message_event_ids or [])):
@@ -247,18 +309,20 @@ def collect_after_read(db, *, worker, binding, conversation, read_run_id,
     # A confirmed prefix of THIS interrupted generation is unfinished AI work,
     # not a sales takeover or an answer to a later question. The association is
     # server-validated at ingest; text similarity alone never grants this.
+    generation_no = origin.generation_no if origin else pending["generation_no"]
+    segment_index = origin.segment_index if origin else pending["segment_index"]
     prefix = list(db.execute(select(ReplyAction, SentAck).join(
         SentAck, SentAck.reply_action_id == ReplyAction.id).where(
         ReplyAction.batch_id == old_batch.id,
-        ReplyAction.generation_no == origin.generation_no,
-        ReplyAction.segment_index < origin.segment_index,
+        ReplyAction.generation_no == generation_no,
+        ReplyAction.segment_index < segment_index,
         ReplyAction.deleted_at.is_(None), ReplyAction.status == "sent",
         SentAck.send_result == "sent", SentAck.action_phase == "confirmed",
         SentAck.reply_text_hash == ReplyAction.reply_text_hash,
         SentAck.task_id == ReplyAction.claimed_task_id,
     ).order_by(ReplyAction.segment_index)))
     prefix_actions = {a.id: a for a, ack in prefix}
-    if [a.segment_index for a, ack in prefix] != list(range(1, origin.segment_index)):
+    if [a.segment_index for a, ack in prefix] != list(range(1, segment_index)):
         # Unknown or unconfirmed earlier sends must not be retried by recovery.
         return None
 
@@ -283,7 +347,7 @@ def collect_after_read(db, *, worker, binding, conversation, read_run_id,
             ReplyAction, ReplyAction.id == SentAck.reply_action_id).where(
             ReplyAction.conversation_id == binding.conversation_id,
             ReplyAction.id.not_in(prefix_actions), SentAck.send_result.in_(["sent", "unknown"]),
-            SentAck.created_at > origin.updated_at).limit(1))
+            SentAck.created_at > (origin.updated_at if origin else old_batch.updated_at)).limit(1))
         if not reconciled_prefix or later_send:
             finish("reply_already_observed")
             return None
@@ -302,7 +366,13 @@ def collect_after_read(db, *, worker, binding, conversation, read_run_id,
             event.conversation_id != binding.conversation_id or event.sender_role != "customer"
             for event in events)):
         _reject("待回复事项与当前客户事实不一致")
-    trigger = "pre-send-recovery:" + origin.id
+    if historical or required:
+        from app.services.message_effective_text import effective_context_digest
+        identity = pending.get("reply_action_id") or old_batch.id
+        digest = effective_context_digest(db, binding.conversation_id)
+        trigger = "ocr-recovery:" + hashlib.sha256(f"{identity}:{digest}".encode()).hexdigest()
+    else:
+        trigger = "pre-send-recovery:" + origin.id
     current = c3._active_batch(db, binding.conversation_id)
     if current is None:
         current = db.scalar(select(MessageBatch).where(
@@ -326,7 +396,7 @@ def collect_after_read(db, *, worker, binding, conversation, read_run_id,
         current.message_count = len(current.message_event_ids)
     if prefix_events and current.status == "collecting":
         current.ai_request_snapshot = {**(current.ai_request_snapshot or {}), "partial_reply_recovery": {
-            "origin_batch_id": old_batch.id, "origin_reply_action_id": origin.id,
+            "origin_batch_id": old_batch.id, "origin_reply_action_id": origin.id if origin else None,
             "confirmed_prefix": [{"reply_action_id": (e.raw_payload or {})["ai_reply_action_id"],
                 "message_event_id": e.id, "text": e.content} for e in prefix_events],
         }}

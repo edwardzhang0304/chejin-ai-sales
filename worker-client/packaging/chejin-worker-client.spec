@@ -117,6 +117,7 @@ a = Analysis(
         "rapidocr_onnxruntime",
         "onnxruntime",
         "uiautomation",
+        "win32clipboard",
         "pyperclip",
         "pywinauto",
         "psutil",

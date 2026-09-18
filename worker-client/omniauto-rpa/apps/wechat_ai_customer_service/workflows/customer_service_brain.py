@@ -2243,10 +2243,12 @@ def attach_conversation_runtime_hints_to_evidence_pack(evidence_pack: dict[str, 
 
 
 def compact_brain_input(brain_input: dict[str, Any]) -> dict[str, Any]:
+    from apps.wechat_ai_customer_service.adapters.image_order_dependencies import input_dependency_evidence
     current = brain_input.get("current_message") if isinstance(brain_input.get("current_message"), dict) else {}
     evidence = brain_input.get("evidence") if isinstance(brain_input.get("evidence"), dict) else {}
     return {
         "target": brain_input.get("target", {}),
+        "input_dependency_evidence": input_dependency_evidence(brain_input),
         "message_ids": current.get("message_ids", []),
         "clean_text": str(current.get("clean_text") or "")[:300],
         "referenced_context_count": len(current.get("referenced_context", []) or []),

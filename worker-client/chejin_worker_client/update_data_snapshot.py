@@ -136,6 +136,23 @@ def _hash_file(path: Path) -> str:
     return digest.hexdigest()
 
 
+def _correction_columns_snapshot(conn, digest_key):
+    """Optional extension: old/default-only databases keep their v2 shape."""
+    columns = {row["name"] for row in conn.execute('PRAGMA table_info("c2_ingest_outbox")')}
+    if not {"operation", "correction_image"}.issubset(columns):
+        return {}
+    result = {}
+    for row in conn.execute("""SELECT outbox_id,operation,correction_image FROM c2_ingest_outbox
+            WHERE operation != 'ingest' OR correction_image IS NOT NULL"""):
+        blob = row["correction_image"]
+        result[authenticate(row["outbox_id"], digest_key)] = authenticate({
+            "operation": row["operation"],
+            "image_sha256": hashlib.sha256(blob).hexdigest() if blob is not None else None,
+            "image_bytes": len(blob) if blob is not None else None,
+        }, digest_key)
+    return result
+
+
 def _reject_evidence_alias(path: Path) -> None:
     if path.is_symlink() or (hasattr(path, "is_junction") and path.is_junction()):
         raise RuntimeError("UPDATE_PROTECTED_FILE_SNAPSHOT_INVALID")
@@ -158,6 +175,7 @@ def protected_update_snapshot(*, data_dir: Path | None = None, digest_key: str =
                     } for row in rows
                 },
             }
+        corrections = _correction_columns_snapshot(conn, digest_key)
     files = {}
     for relative_root in PROTECTED_FILE_ROOTS:
         root = directory / relative_root
@@ -178,6 +196,8 @@ def protected_update_snapshot(*, data_dir: Path | None = None, digest_key: str =
                     relative = path.relative_to(directory).as_posix()
                     files[relative] = {"size": path.stat().st_size, "sha256": _hash_file(path)}
     payload = {"snapshot_schema_version": PROTECTED_SNAPSHOT_SCHEMA_VERSION, "tables": tables, "files": files}
+    if corrections:
+        payload["correction_columns_v1"] = corrections
     return {**payload, "snapshot_sha256": authenticate(payload, digest_key)}
 
 
@@ -192,6 +212,8 @@ def assert_protected_update_snapshot(expected: dict[str, Any], *, data_dir: Path
             raise RuntimeError("UPDATE_PROTECTED_FILE_SNAPSHOT_INVALID")
     actual = protected_update_snapshot(data_dir=data_dir, digest_key=digest_key)
     differences = []
+    if expected.get("correction_columns_v1", {}) != actual.get("correction_columns_v1", {}):
+        differences.append({"table": "c2_ingest_outbox", "correction_columns_changed": True})
     for table, metadata in tables.items():
         current = actual["tables"][table]
         if metadata != current:

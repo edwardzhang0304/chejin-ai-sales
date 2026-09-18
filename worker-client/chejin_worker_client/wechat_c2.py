@@ -10,6 +10,8 @@ from datetime import datetime, timezone
 from typing import Any
 
 from .models import WechatReadTarget
+
+
 from .message_identity_commit import (
     CommittedMessage,
     IdentityCommitRejection,
@@ -46,6 +48,19 @@ IMAGE_RUNTIME_FIELDS = set(IMAGE_PERSISTENCE_POLICY.get("forbidden_field_names")
 IMAGE_RUNTIME_FIELD_PREFIXES = IMAGE_FORBIDDEN_FIELD_PREFIXES
 
 FORMAL_C2_REMARK_CODE_RE = re.compile(r"CJ[A-Z0-9]{6}")
+
+
+def _original_png_evidence(payload: dict) -> dict:
+    frame = payload.get("frame_observation") or {}
+    captured = frame.get("png_byte_evidence") or {}
+    if (frame.get("screenshot_path") == payload.get("screenshot_path")
+            and captured.get("state") == "captured"
+            and re.fullmatch(r"[0-9a-f]{64}", str(captured.get("sha256") or ""))
+            and captured.get("digest_recorded_at")):
+        return {"screenshot_sha256": captured["sha256"],
+                "screenshot_digest_recorded_at": captured["digest_recorded_at"],
+                "screenshot_digest_provenance": "capture_digest"}
+    return {"screenshot_digest_provenance": "capture_unavailable"}
 
 
 def _is_sha256(value: object) -> bool:
@@ -1956,6 +1971,7 @@ def _build_message_ingest_payload_v3(
                 dict(item) for item in full_business_projection
             ],
             "sidecar_run_id": message_sidecar_id,
+            **_original_png_evidence(sidecar_payload),
             "artifact_dir": sidecar_payload.get("artifact_dir"),
             "review_path": sidecar_payload.get("review_path"),
             "screenshot": sidecar_payload.get("screenshot_path"),
