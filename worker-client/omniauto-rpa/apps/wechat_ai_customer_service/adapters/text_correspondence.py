@@ -316,7 +316,7 @@ def _send_ocr_text_correspondence(
 _SEND_CHAT_KINDS = {'text_bubble', 'voice_bubble', 'voice_transcript', 'image_bubble'}
 
 
-def find_new_matching_self_message(baseline_sequence, current_sequence, text):
+def find_new_matching_self_message(baseline_sequence, current_sequence, text, *, include_status_counterevidence=False):
     """Unique suffix/prefix baseline plus exactly one newly added self bubble.
 
     A customer's response after that bubble does not undo the physical send.
@@ -341,7 +341,9 @@ def find_new_matching_self_message(baseline_sequence, current_sequence, text):
         return None
     index,candidate=own[0]
     status = candidate.get('send_status_evidence')
-    if status is not None and (not isinstance(status, dict) or status.get('state') != 'clear'):
+    if (not include_status_counterevidence and isinstance(status, dict)
+            and status.get('state') == 'blocked'
+            and status.get('reason') in {'red_failure', 'possible_sending'}):
         return None
     correspondence=_send_ocr_text_correspondence(text,candidate.get('content_normalized'))
     if candidate.get('row_kind')!='text_bubble' or not correspondence['accepted']:

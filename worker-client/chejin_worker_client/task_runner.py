@@ -175,6 +175,7 @@ from .sequence_alignment import (
     require_selected_only_media_reservation,
 )
 from .transaction_outcomes import (
+    C1_TECHNICAL_ERROR_CODES,
     FRAME_TECHNICAL_ERROR_CODES,
     FlowOutcomeAccumulator,
     classify_action_result,
@@ -7746,7 +7747,7 @@ class TaskRunner:
             # stop state. Restore the stop decision before any settlement.
             error_code = receipt.get("error_code") if kind == "failure" else None
             stop_status = (
-                "faulted" if error_code in FRAME_TECHNICAL_ERROR_CODES
+                "faulted" if error_code in C1_TECHNICAL_ERROR_CODES
                 else "paused" if error_code in ENV_STOP_ERRORS else None
             )
             if stop_status:
@@ -7776,7 +7777,7 @@ class TaskRunner:
             return task
 
     def _handle_failed_result(self, binding: Binding, task: Task, result: RpaResult) -> None:
-        frame_failed = result.error_code in FRAME_TECHNICAL_ERROR_CODES
+        frame_failed = result.error_code in (C1_TECHNICAL_ERROR_CODES if task.task_type == "add_friend" else FRAME_TECHNICAL_ERROR_CODES)
         try:
             if task.task_type == "add_friend":
                 self._save_add_friend_failure(binding, task, result)

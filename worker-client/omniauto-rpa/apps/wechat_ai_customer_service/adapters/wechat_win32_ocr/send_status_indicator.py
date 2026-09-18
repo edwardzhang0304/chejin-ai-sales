@@ -48,6 +48,7 @@ def inspect_gutter(image, bubble_rect, *, dpi_scale=1.0):
                 masks["red_failure"].add((x, y))
             elif max(red, green, blue) - min(red, green, blue) <= 25 and 75 <= red <= 200:
                 masks["possible_sending"].add((x, y))
+    uncertain_marks = False
     for kind, mask in masks.items():
         for points in _components(mask):
             xs, ys = zip(*points)
@@ -56,9 +57,29 @@ def inspect_gutter(image, bubble_rect, *, dpi_scale=1.0):
             if (not 5 * scale <= min(width, height) <= 24 * scale
                     or max(width, height) > 26 * scale or not .6 <= width / height <= 1.7):
                 continue
+            uncertain_marks = True
             density = len(points) / (width * height)
+            centered = abs(roi[1] + (y0 + y1) / 2 - center) <= 8 * scale
+            if not centered:
+                continue
             if kind == "red_failure":
-                matched = density >= .35
+                # A red patch alone is not a reliable failure icon. Require
+                # the central pale exclamation stem and separate dot inside
+                # the compact red shape, all in this bubble's status gutter.
+                cx = (x0 + x1) / 2
+                pale = {(x, y) for y in range(y0 + max(1, round(height * .15)), y1)
+                        for x in range(x0, x1 + 1)
+                        if abs(x - cx) <= width * .22 and min(crop.getpixel((x, y))) >= 215}
+                parts = sorted(_components(pale), key=lambda part: min(y for _, y in part))
+                matched = False
+                if .35 <= density <= .85 and len(parts) == 2:
+                    stem, dot = parts
+                    stem_w = max(x for x, _ in stem) - min(x for x, _ in stem) + 1
+                    stem_h = max(y for _, y in stem) - min(y for _, y in stem) + 1
+                    dot_w = max(x for x, _ in dot) - min(x for x, _ in dot) + 1
+                    dot_h = max(y for _, y in dot) - min(y for _, y in dot) + 1
+                    matched = (stem_h >= 2 * scale and stem_h >= stem_w
+                               and max(stem_w, dot_w, dot_h) <= 4 * scale)
             else:
                 # A pending spinner is a hollow arc, not arbitrary gray text.
                 cx, cy = (x0 + x1) / 2, (y0 + y1) / 2
@@ -68,4 +89,6 @@ def inspect_gutter(image, bubble_rect, *, dpi_scale=1.0):
             if matched:
                 return {"state": "blocked", "reason": kind, "roi": roi,
                         "indicator_bounds": [roi[0] + x0, roi[1] + y0, roi[0] + x1 + 1, roi[1] + y1 + 1]}
+    if uncertain_marks:
+        return {"state": "unavailable", "reason": "send_status_marks_unclassified", "roi": roi}
     return {"state": "clear", "roi": roi}

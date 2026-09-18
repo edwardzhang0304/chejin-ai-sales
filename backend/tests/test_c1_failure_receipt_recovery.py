@@ -29,7 +29,8 @@ def snapshot(worker_id):
 
 
 @pytest.mark.parametrize("interruption", ["fail:before", "fail:after"])
-def test_one_lost_failure_request_eventually_settles_without_ui(http_api, tmp_path, monkeypatch, interruption):
+@pytest.mark.parametrize("code", ["WECHAT_UI_LAYOUT_UNRESOLVED", "INVITE_FIELD_VERIFICATION_FAILED"])
+def test_one_lost_failure_request_eventually_settles_without_ui(http_api, tmp_path, monkeypatch, interruption, code):
     worker, rows = fixture_rows()
     with SessionLocal() as db:
         for index, row in enumerate(rows):
@@ -39,7 +40,7 @@ def test_one_lost_failure_request_eventually_settles_without_ui(http_api, tmp_pa
         db.commit()
     base = http_api.get("/healthz").url.removesuffix("/healthz") + "/api"
     request = {"base_url": base, "worker_id": worker["id"], "token": worker["worker_token"],
-               "code": "WECHAT_UI_LAYOUT_UNRESOLVED", "interruption": interruption}
+               "code": code, "interruption": interruption}
     live = submitted.run_worker(tmp_path, r'''
 import time
 runner.tick_once()
@@ -82,6 +83,7 @@ print(json.dumps(result,default=str))
     assert not restarted["backend"]["flow"].get("flow_id"), restarted
     assert not restarted["runtime"].get("inflight_flow_id"), restarted
     assert sum(t["status"] == "failed" for t in restarted["backend"]["tasks"]) == 1
+    assert {t["code"] for t in restarted["backend"]["tasks"] if t["status"] == "failed"} == {code}
     assert sum(t["status"] == "pending" for t in restarted["backend"]["tasks"]) == 1
 
 
