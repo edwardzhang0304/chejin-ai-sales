@@ -468,6 +468,25 @@
       "scope": [
         "c2_contract_0_9_89_generated_schema"
       ]
+    },
+    {
+      "source_repository": "edwardzhang0304/omniauto",
+      "source_branch": "codex/gray-release-0.9.x-source",
+      "source_commit": "f07966184b8161bf0dac0b7f9fda804296dffdca",
+      "scope": [
+        "engineer11_recovery_and_correction_contract_integration",
+        "interruption_correspondence_and_read_settlement"
+      ]
+    },
+    {
+      "source_repository": "edwardzhang0304/omniauto",
+      "source_branch": "codex/gray-release-0.9.x-source",
+      "source_commit": "fd1c1f0b4ec9b674d2889bb12074d5e0a28168d0",
+      "scope": [
+        "confirmed_avatar_masked_chat_ocr_input",
+        "same_frame_raw_avatar_provenance",
+        "preserved_layout_and_avatar_exception_classification"
+      ]
     }
   ],
   "chejin_overlays": [

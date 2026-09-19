@@ -157,6 +157,7 @@ from apps.wechat_ai_customer_service.wechat_message_envelope import (
     build_message_envelope,
 )
 from apps.wechat_ai_customer_service.adapters.wechat_win32_ocr import frame_avatars
+from apps.wechat_ai_customer_service.adapters.wechat_win32_ocr import avatar_text_input
 from apps.wechat_ai_customer_service.adapters.wechat_win32_ocr import composer_viewport
 from apps.wechat_ai_customer_service.adapters.wechat_win32_ocr import geometry as win32_ocr_geometry
 from apps.wechat_ai_customer_service.adapters.wechat_win32_ocr import capture as win32_ocr_capture
@@ -1038,7 +1039,7 @@ def locate_chat_target_for_c2(
                 == "chat_fact_roi"
             ):
                 fallback_started = time.perf_counter()
-                current_items = run_ocr_traced(
+                current_items = _run_chat_text_ocr(
                     current_shot,
                     "current_chat_fact_fallback_full",
                     source="locate_chat_target_for_c2",
@@ -1068,7 +1069,7 @@ def locate_chat_target_for_c2(
                 chat_fact_seed = {
                     "screenshot": current_shot,
                     "screenshot_path": current_path,
-                    "ocr_items": list(current_items),
+                    "ocr_items": current_items,
                     "ocr_plan": dict(current_plan),
                     "ocr_call_count": int(
                         current_plan.get("ocr_call_count") or 0
@@ -1301,6 +1302,7 @@ def locate_chat_target_for_c2(
             ),
         )
     return finish(ok=True, validation=validation)
+
 
 
 def parse_visible_session_candidate_arg(raw: Any) -> dict[str, Any] | None:
@@ -1710,7 +1712,7 @@ def run_action(args: argparse.Namespace) -> dict[str, Any]:
             )
             if isinstance(seed, dict):
                 screenshot = seed.get("screenshot")
-                ocr_items = list(seed.get("ocr_items") or [])
+                ocr_items = seed.get("ocr_items", [])
                 if screenshot is not None and ocr_items:
                     parsed_messages = parse_current_chat_frame_messages(
                         ocr_items,
@@ -2176,6 +2178,7 @@ def run_action(args: argparse.Namespace) -> dict[str, Any]:
             ).strip(),
         )
     return {"ok": False, "online": False, "adapter": "win32_ocr", "state": "unsupported_action"}
+
 
 
 def use_passive_probe_mode(action: str) -> bool:
@@ -3297,6 +3300,22 @@ def messages_payload(
         }
     )
     screenshot = latest.get("screenshot")
+    if screenshot is not None and not avatar_text_input.matches(
+        screenshot, layout_snapshot_for_image(screenshot), ocr_items
+    ):
+        # A legacy/plain seed cannot certify which pixels its text came from.
+        # Rebuild only from the same frame, within the existing full fallback.
+        ocr_items = _run_chat_text_ocr(screenshot, "messages_seed_fallback_full", source="messages_payload")
+        latest["ocr_items"] = ocr_items
+        latest["messages"] = parse_current_chat_frame_messages(
+            ocr_items, screenshot.size, target=target, screenshot=screenshot)
+        latest["visible_untranscribed_voice"] = visible_untranscribed_voice_hint(
+            screenshot, ocr_items, screenshot.size, parsed_messages=latest["messages"])
+        latest_ocr_plan = {"source": "full_fallback", "regions": ["full_frame"],
+                           "ocr_call_count": int(latest_ocr_plan.get("ocr_call_count") or 0) + 1,
+                           "fallback_reason": "avatar_preprocessing_source_mismatch"}
+        latest["ocr_plan"] = latest_ocr_plan
+        latest["ocr_call_count"] = latest_ocr_plan["ocr_call_count"]
     geometry = get_window_geometry(hwnd)
     page_fingerprint = ocr_page_fingerprint(ocr_items, geometry=geometry)
     target_confirmation: dict[str, Any] = {}
@@ -3319,7 +3338,7 @@ def messages_payload(
             # Reuse the exact same screenshot for the diagnostic full-window
             # fallback.  Never recapture and silently compare another frame.
             fallback_started = time.perf_counter()
-            ocr_items = run_ocr_traced(
+            ocr_items = _run_chat_text_ocr(
                 screenshot,
                 "messages_chat_fact_fallback_full",
                 source="messages_payload",
@@ -3579,7 +3598,7 @@ def messages_payload(
                 "ocr_cache_key": (
                     f"{frame_observation['frame_id']}:"
                     f"{'+'.join(latest_ocr_plan.get('regions') or ['full_frame'])}:"
-                    "rapidocr:default"
+                    "rapidocr:default" + avatar_text_input.cache_suffix(ocr_items)
                 ),
             }
         )
@@ -3611,7 +3630,8 @@ def messages_payload(
     if artifact_dir:
         if retain_text_recheck_frame:
             frame_path = Path(artifact_dir) / "text_recheck_frame.json"
-            frame_path.write_text(json.dumps({"payload": payload, "ocr_items": ocr_items},
+            frame_path.write_text(json.dumps({"payload": payload, "ocr_items": ocr_items,
+                                             "text_ocr_preprocessing": avatar_text_input.saved_source(ocr_items)},
                                             ensure_ascii=False), encoding="utf-8")
             payload["text_recheck_frame_path"] = str(frame_path)
             payload["text_recheck_frame_sha256"] = hashlib.sha256(frame_path.read_bytes()).hexdigest()
@@ -3624,6 +3644,7 @@ def messages_payload(
         except Exception as exc:
             payload["review_error"] = repr(exc)
     return payload
+
 
 
 def _voice_action_frame_id(image: Image.Image, screenshot_path: str) -> str:
@@ -3708,7 +3729,7 @@ def prepare_voice_action_payload(
         artifact_dir=artifact_dir,
         label="voice_action_prepare",
     )
-    ocr_items = run_ocr(screenshot)
+    ocr_items = _run_chat_text_ocr(screenshot, "prepare_voice_action_payload")
     image_size = getattr(screenshot, "size", (0, 0))
     layout_evidence = basic_chat_layout_evidence(screenshot)
     if layout_evidence.get("ok") is not True:
@@ -3904,6 +3925,7 @@ def prepare_voice_action_payload(
         "screenshot_path": screenshot_path,
         "ui_action_performed": False,
     }
+
 
 
 def _bind_voice_transcripts_for_action(
@@ -4223,7 +4245,7 @@ def _wait_for_voice_transcript_evidence(
             artifact_dir=artifact_dir,
             label=f"voice_action_execute_after_{evidence_read + 1}",
         )
-        final_items = run_ocr(final_screenshot)
+        final_items = _run_chat_text_ocr(final_screenshot, "voice_transcript_evidence")
         final_size = getattr(final_screenshot, "size", image_size)
         final_messages = parse_current_chat_frame_messages(
             final_items,
@@ -4266,6 +4288,7 @@ def _wait_for_voice_transcript_evidence(
             max(0.0, time.monotonic() - started_at),
         ),
     }
+
 
 
 def execute_voice_action_payload(
@@ -4349,7 +4372,7 @@ def execute_voice_action_payload(
             **request_identity_evidence,
         }
     screenshot, screenshot_path = capture_wechat(hwnd, artifact_dir=artifact_dir, label="voice_action_execute_before")
-    ocr_items = run_ocr(screenshot)
+    ocr_items = _run_chat_text_ocr(screenshot, "execute_voice_action_payload")
     image_size = getattr(screenshot, "size", (0, 0))
     layout_evidence = basic_chat_layout_evidence(screenshot)
     if layout_evidence.get("ok") is not True:
@@ -4775,6 +4798,7 @@ def execute_voice_action_payload(
         "observations": build_message_observations_v3(final_messages),
         "ui_action_performed": True,
     }
+
 
 
 def voice_transcribe_compact_text(text: str) -> str:
@@ -8782,14 +8806,14 @@ def capture_message_history_snapshots(
             "CHEJIN_C3_PRE_SEND_ROI_REUSE_ENABLED",
             default=True,
         ):
-            ocr_items, ocr_plan = read_call("read", run_ocr_for_chat_fact_frame,
+            ocr_items, ocr_plan = _read_chat_fact_ocr(run_ocr_for_chat_fact_frame,
                 screenshot,
                 purpose=label,
                 source="capture_message_history_snapshots",
                 enabled=True,
             )
         else:
-            ocr_items = read_call("read", run_ocr, screenshot)
+            ocr_items = _read_chat_fact_ocr(_run_chat_text_ocr, screenshot, label)
             ocr_plan = {
                 "source": "full",
                 "regions": ["full_frame"],
@@ -8834,6 +8858,7 @@ def capture_message_history_snapshots(
     return snapshots
 
 
+
 def capture_message_history_snapshots_until_anchor(
     hwnd: int,
     *,
@@ -8874,7 +8899,7 @@ def capture_message_history_snapshots_until_anchor(
     def capture(label: str) -> None:
         screenshot, path = capture_wechat(hwnd, artifact_dir=artifact_dir, label=label)
         ocr_started = time.perf_counter()
-        ocr_items = run_ocr(screenshot)
+        ocr_items = _run_chat_text_ocr(screenshot, "capture_message_history_snapshots_until_anchor")
         ocr_total_duration_ms = round(
             (time.perf_counter() - ocr_started) * 1000
         )
@@ -8975,6 +9000,7 @@ def capture_message_history_snapshots_until_anchor(
             scroll_chat_to_latest(hwnd, attempts=max(10, int(history_load.get("scroll_steps") or 0) * 5 + 5))
             history_load["restored_to_latest"] = True
     return snapshots, history_load
+
 
 
 def merge_message_history_snapshots(snapshots: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -9353,6 +9379,34 @@ def _deduplicate_mapped_ocr_items(
     return result
 
 
+def _read_chat_fact_ocr(function, *args, **kwargs):
+    """Keep layout admission failures out of the retryable OCR I/O category."""
+    from apps.wechat_ai_customer_service.adapters.pre_send_read_failure import ReadCallFailed, read_call
+    try:
+        return read_call("read", function, *args, **kwargs)
+    except ReadCallFailed as exc:
+        # These checks now precede OCR; retain their original structured error.
+        if isinstance(exc.__cause__, (frame_avatars.AvatarEvidenceError, win32_ocr_layout.LayoutSnapshotError)):
+            raise exc.__cause__ from None
+        raise
+
+
+def _run_chat_text_ocr(
+    screenshot: Any, purpose: str, *, source: str = "", diagnostic_fallback: bool = False,
+) -> list[dict[str, Any]]:
+    """Only OCR sees the derived image; callers retain the original frame."""
+    try:
+        derived, info = avatar_text_input.prepare(screenshot, layout_snapshot_for_image(screenshot))
+    except frame_avatars.AvatarEvidenceError:
+        if not diagnostic_fallback:
+            raise
+        # A title/navigation diagnostic is not conditional on avatar admission.
+        # Unmarked results cannot later be reused as clean message facts.
+        return run_ocr_traced(screenshot, purpose, source=source)
+    items = run_ocr_traced(derived, purpose, source=source)
+    return avatar_text_input.record(screenshot, items, info, ["full_frame"])
+
+
 def run_ocr_for_chat_fact_frame(
     screenshot: Any,
     *,
@@ -9371,7 +9425,7 @@ def run_ocr_for_chat_fact_frame(
     """
 
     if not enabled:
-        items = run_ocr_traced(
+        items = _run_chat_text_ocr(
             screenshot,
             f"{purpose}_full",
             source=source,
@@ -9408,9 +9462,10 @@ def run_ocr_for_chat_fact_frame(
         }
 
     mapped: list[dict[str, Any]] = []
+    derived, preprocessing = avatar_text_input.prepare(screenshot, snapshot)
     for name in region_names:
         region_items = run_ocr_on_screen_region(
-            screenshot,
+            derived,
             bounds_by_name[name],
             purpose=f"{purpose}_{name}",
             source=source,
@@ -9418,7 +9473,9 @@ def run_ocr_for_chat_fact_frame(
         for item in region_items:
             item["ocr_region_name"] = name
         mapped.extend(region_items)
-    return _deduplicate_mapped_ocr_items(mapped), {
+    mapped = avatar_text_input.record(screenshot, _deduplicate_mapped_ocr_items(mapped),
+                                     preprocessing, bounds_by_name)
+    return mapped, {
         "source": "chat_fact_roi",
         "regions": list(region_names),
         "region_bounds": bounds_by_name,
@@ -9660,12 +9717,15 @@ def replay_text_bubble_request(hwnd: int, probe: dict[str, Any], args: argparse.
             raise ValueError("text_recheck_frame_binding_changed")
         if frame["payload"].get("observations") != original["observations"]:
             raise ValueError("text_recheck_observations_changed")
+        base_source = avatar_text_input.verify_saved_source(
+            screenshot, snapshot, frame["ocr_items"], frame.get("text_ocr_preprocessing"))
         started = time.perf_counter()
         for index, region in enumerate(regions):
             crop_path = output_dir / f"bubble_{index}.png"
             screenshot.crop(tuple(region["crop_rect"])).save(crop_path)
             region["crop_path"] = str(crop_path)
-        local = recognize_regions(screenshot, regions, lambda image: run_ocr_traced(
+        text_image, preprocessing = avatar_text_input.prepare(screenshot, snapshot)
+        local = recognize_regions(text_image, regions, lambda image: run_ocr_traced(
             image, "complete_text_bubble_recheck", source="local_text_bubble_recheck", region="roi"))
         report.update({"regions": local, "duration_ms": round((time.perf_counter()-started)*1000)})
         def selected_row(item: dict[str, Any]) -> bool:
@@ -9674,6 +9734,8 @@ def replay_text_bubble_request(hwnd: int, probe: dict[str, Any], args: argparse.
         items = [dict(item) for item in frame["ocr_items"] if not selected_row(item)]
         items.extend(item for region in local for item in region["ocr_items"])
         items.sort(key=lambda item: (item["top"], item["left"]))
+        items = avatar_text_input.record(screenshot, items, preprocessing,
+                                        {"base_source": base_source, "local_regions": local})
         parsed = parse_current_chat_frame_messages(items, screenshot.size, target=args.target, screenshot=screenshot)
         seed = {"screenshot": screenshot, "screenshot_path": evidence["screenshot_path"],
                 "ocr_items": items, "messages": parsed, "frame_observation": evidence,
@@ -9723,7 +9785,7 @@ def load_verified_same_frame_full_ocr_seed(
     evidence_path = Path(loaded["screenshot_path"])
     evidence = loaded["frame_observation"]
     ocr_started = time.perf_counter()
-    ocr_items = run_ocr_traced(
+    ocr_items = _run_chat_text_ocr(
         screenshot,
         "pre_send_same_frame_fallback_full",
         source="same_frame_full_ocr_replay",
@@ -9790,6 +9852,7 @@ def load_verified_same_frame_full_ocr_seed(
     }
 
 
+
 def enhanced_ocr_items_for_structural_chat_candidate(
     screenshot: Any,
     bounds: list[float] | tuple[float, ...],
@@ -9822,7 +9885,8 @@ def enhanced_ocr_items_for_structural_chat_candidate(
     right = max(left + 1, min(int(width), int(raw_right) + padding))
     bottom = max(top + 1, min(int(height), int(raw_bottom) + padding))
     try:
-        crop = screenshot.crop((left, top, right, bottom)).convert("RGB")
+        text_image, _preprocessing = avatar_text_input.prepare(screenshot, layout_snapshot_for_image(screenshot))
+        crop = text_image.crop((left, top, right, bottom)).convert("RGB")
         crop = ImageEnhance.Contrast(crop).enhance(1.55)
         crop = ImageEnhance.Sharpness(crop).enhance(1.45)
         scale = 2.0
@@ -10064,7 +10128,7 @@ def run_ocr_for_active_send_target(
     if not active_send_target_roi_ocr_enabled():
         timing["validate_active_send_target_roi_enabled"] = False
         full_started = _sidecar_timing_start(timing, "validate_active_send_target_full_ocr")
-        items = run_ocr_traced(screenshot, "active_send_target_validation", source="validate_active_send_target")
+        items = _run_chat_text_ocr(screenshot, "active_send_target_validation", source="validate_active_send_target", diagnostic_fallback=True)
         _sidecar_timing_finish(timing, "validate_active_send_target_full_ocr", full_started)
         return items, "full", None
 
@@ -10092,7 +10156,7 @@ def run_ocr_for_active_send_target(
             return roi_items, "roi", blank_render
         timing["validate_active_send_target_roi_decision"] = "fallback_empty_roi"
         full_started = _sidecar_timing_start(timing, "validate_active_send_target_full_ocr")
-        items = run_ocr_traced(screenshot, "active_send_target_validation_fallback_full", source="validate_active_send_target")
+        items = _run_chat_text_ocr(screenshot, "active_send_target_validation_fallback_full", source="validate_active_send_target", diagnostic_fallback=True)
         _sidecar_timing_finish(timing, "validate_active_send_target_full_ocr", full_started)
         return items, "full_fallback", None
 
@@ -10122,9 +10186,10 @@ def run_ocr_for_active_send_target(
         return roi_items, "roi_rejected", None
     timing["validate_active_send_target_roi_decision"] = "fallback_uncertain"
     full_started = _sidecar_timing_start(timing, "validate_active_send_target_full_ocr")
-    items = run_ocr_traced(screenshot, "active_send_target_validation_fallback_full", source="validate_active_send_target")
+    items = _run_chat_text_ocr(screenshot, "active_send_target_validation_fallback_full", source="validate_active_send_target", diagnostic_fallback=True)
     _sidecar_timing_finish(timing, "validate_active_send_target_full_ocr", full_started)
     return items, "full_fallback", None
+
 
 
 def add_friend_menu_text_matches(text: str, tokens: tuple[str, ...]) -> bool:
@@ -14353,9 +14418,10 @@ def remember_target_ready_prevalidation_ocr_seed(
         "exact": bool(exact),
         "geometry_key": list(target_ready_geometry_cache_key(geometry)),
         "screenshot": screenshot,
-        "ocr_items": list(ocr_items),
+        "ocr_items": ocr_items,
         "screenshot_path": str(screenshot_path or ""),
     }
+
 
 
 def consume_target_ready_prevalidation_ocr_seed(
@@ -14393,12 +14459,21 @@ def consume_target_ready_prevalidation_ocr_seed(
     ocr_items = cached.get("ocr_items")
     if screenshot is None or not isinstance(ocr_items, list) or not ocr_items:
         return None
+    source_rebuilt = not avatar_text_input.matches(screenshot, layout_snapshot_for_image(screenshot), ocr_items)
+    if source_rebuilt:
+        ocr_items = _run_chat_text_ocr(screenshot, "target_ready_seed_fallback_full",
+                                     source="consume_target_ready_prevalidation_ocr_seed")
     return {
         "screenshot": screenshot,
-        "ocr_items": list(ocr_items),
+        "ocr_items": ocr_items,
         "screenshot_path": str(cached.get("screenshot_path") or ""),
         "age_seconds": round(age, 4),
+        "ocr_call_count": int(source_rebuilt),
+        "ocr_plan": {"source": "full_fallback" if source_rebuilt else "supplied",
+                     "regions": ["full_frame"], "ocr_call_count": int(source_rebuilt),
+                     "fallback_reason": "avatar_preprocessing_source_mismatch" if source_rebuilt else ""},
     }
+
 
 
 def target_search_fallback_enabled() -> bool:
@@ -15466,16 +15541,17 @@ def write_messages_frame_review(
             item for item in (ocr_items or [])
             if ocr_item_center_in_bounds(item, viewport)
         ] if viewport else []
-        # Extend the existing local frame artifact, not telemetry or backend
-        # payloads. Preserve original OCR including excluded avatar lettering
-        # so a later failure can be replayed without reconstructing its text.
+        # Preserve the actual OCR rows and their input source alongside the
+        # original pixels/table. Do not imply that derived OCR read raw pixels.
         rows.append(_targeting_review_row(
-            title="03 原始文字与头像归属",
-            purpose="区分原始识别、头像内文字排除和最终气泡归并。",
-            expected="只排除完全位于已确认头像内部的 OCR 行，原始证据仍保留。",
+            title="03 文字识别来源与原图头像归属",
+            purpose="记录正文副本OCR、原图头像证据及最终气泡归并。",
+            expected="副本只遮已确认头像；原图、原头像表和既有整行排除保护保留。",
             detection={
                 "layout_snapshot": snapshot,
                 "avatar_table": table,
+                "text_ocr_preprocessing": getattr(ocr_items, "provenance", None),
+                "text_ocr_input": "derived_avatar_mask" if isinstance(ocr_items, avatar_text_input.Rows) else "unprocessed_or_legacy",
                 "message_ocr_items": [
                     {
                         **item,
@@ -16976,7 +17052,7 @@ def validate_active_send_target(
     timing["validate_active_send_target_screenshot_width"] = int(getattr(screenshot, "size", (0, 0))[0] or 0)
     timing["validate_active_send_target_screenshot_height"] = int(getattr(screenshot, "size", (0, 0))[1] or 0)
     if supplied_frame:
-        ocr_items = list(ocr_items or [])
+        ocr_items = ocr_items if ocr_items is not None else []
         ocr_source = (
             "supplied_roi"
             if any(
@@ -17236,6 +17312,7 @@ def validate_active_send_target(
         "geometry": geometry,
         "screenshot_path": path,
     })
+
 
 
 def validate_post_send_target(
@@ -18054,7 +18131,6 @@ def build_send_fact_snapshot_from_frame(
     receipt_baseline_message_sequence: list[dict[str, Any]] | None = None,
     receipt_text: str = "",
 ) -> dict[str, Any]:
-    from apps.wechat_ai_customer_service.adapters.pre_send_read_failure import read_call
     supplied_ocr_items = ocr_items is not None
     ocr_plan: dict[str, Any] = {
         "source": "supplied",
@@ -18062,19 +18138,26 @@ def build_send_fact_snapshot_from_frame(
         "ocr_call_count": 0,
         "fallback_reason": "",
     }
+    if supplied_ocr_items and not avatar_text_input.matches(
+        screenshot, layout_snapshot_for_image(screenshot), ocr_items
+    ):
+        ocr_items = _read_chat_fact_ocr(_run_chat_text_ocr, screenshot,
+                             f"{label}_supplied_fallback_full", source="build_send_fact_snapshot_from_frame")
+        ocr_plan = {"source": "full_fallback", "regions": ["full_frame"], "ocr_call_count": 1,
+                    "fallback_reason": "avatar_preprocessing_source_mismatch"}
     if ocr_items is None:
         if env_flag(
             "CHEJIN_C3_SEND_FRAME_LOCAL_REUSE_ENABLED",
             default=True,
         ):
-            ocr_items, ocr_plan = read_call("read", run_ocr_for_chat_fact_frame,
+            ocr_items, ocr_plan = _read_chat_fact_ocr(run_ocr_for_chat_fact_frame,
                 screenshot,
                 purpose=f"{label}_chat_fact",
                 source="build_send_fact_snapshot_from_frame",
                 enabled=True,
             )
         else:
-            ocr_items = read_call("read", run_ocr_traced,
+            ocr_items = _read_chat_fact_ocr(_run_chat_text_ocr,
                 screenshot,
                 f"{label}_full_ocr",
                 source="build_send_fact_snapshot_from_frame",
@@ -18105,7 +18188,7 @@ def build_send_fact_snapshot_from_frame(
     ):
         # Insufficient ROI evidence falls back on the same immutable pixels.
         # A second physical capture here would mix timepoints and is forbidden.
-        ocr_items = read_call("read", run_ocr_traced,
+        ocr_items = _read_chat_fact_ocr(_run_chat_text_ocr,
             screenshot,
             f"{label}_chat_fact_fallback_full",
             source="build_send_fact_snapshot_from_frame",
@@ -18231,7 +18314,7 @@ def build_send_fact_snapshot_from_frame(
             "ocr_cache_key": (
                 f"{frame_observation['frame_id']}:"
                 f"{'+'.join(ocr_plan.get('regions') or ['unknown'])}:"
-                "rapidocr:default"
+                "rapidocr:default" + avatar_text_input.cache_suffix(ocr_items)
             ),
         }
     )
@@ -18327,7 +18410,7 @@ def build_send_fact_snapshot_from_frame(
         # screenshot.  The full-frame pass may recover evidence hidden by an
         # ROI miss, but the existing context/receipt decisions remain the
         # only authority to continue or stop the send transaction.
-        full_ocr_items = run_ocr_traced(
+        full_ocr_items = _run_chat_text_ocr(
             screenshot,
             f"{label}_chat_fact_fallback_full",
             source="build_send_fact_snapshot_from_frame",
@@ -18367,7 +18450,7 @@ def build_send_fact_snapshot_from_frame(
             }
             full_frame_observation["ocr_cache_key"] = (
                 f"{full_frame_observation.get('frame_id') or ''}:"
-                "full_frame:rapidocr:default"
+                "full_frame:rapidocr:default" + avatar_text_input.cache_suffix(full_ocr_items)
             )
         full_frame_reuse = (
             full_snapshot.get("frame_local_reuse")
@@ -18386,6 +18469,7 @@ def build_send_fact_snapshot_from_frame(
         full_snapshot["frame_local_reuse"] = full_frame_reuse
         return full_snapshot
     return snapshot
+
 
 
 from apps.wechat_ai_customer_service.adapters.text_correspondence import find_new_matching_self_message

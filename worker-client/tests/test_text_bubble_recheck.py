@@ -250,6 +250,18 @@ def test_pre_send_real_recheck_keeps_new_customer_question_as_new(incident):
     context["checkpoint"]["committed_tail"].append(last)
     context["binding"]["checkpoint_digest"] = canonical_sha256(context["checkpoint"])
     target.raw["pre_send_fact_checkpoint_context"] = context
+    # The checkpoint declares committed history; prepare its matching local
+    # ledger too. This is fixture setup, not a real HTTP history-ingest test.
+    for fact in context["checkpoint"]["committed_tail"]:
+        storage.save_c2_ledger_terminal(
+            conversation_id=target.conversation_id,
+            source_message_key=fact["source_message_key"],
+            origin_read_run_id="fixture-confirmed-history-read",
+            dedupe_key=None,
+            message_type=fact["message_type"],
+            terminal_state=fact["item_state"],
+            ingest_state="confirmed",
+        )
     result = runner._read_one_wechat_target(binding, target, enforce_read_targets=True,
         wait_for_brain=False, current_step="pre_send_refresh", current_only=True,
         operation_phase=C2_PRE_SEND_REFRESH_PHASE)

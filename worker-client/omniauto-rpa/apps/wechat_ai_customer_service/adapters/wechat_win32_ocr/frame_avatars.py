@@ -64,18 +64,24 @@ def avatar_table(image: Any, layout: dict[str, Any] | None) -> dict[str, Any]:
         return _invalid("raw_frame_or_layout_invalid:" + type(exc).__name__)
 
 
+def _background_color(pixels: Any) -> Any:
+    """The same measured frame background for avatar detection and OCR input."""
+    import numpy as np
+    # The modal coarse RGB colour is the chat background, not the border of an
+    # OCR-driven crop (which can consist mostly of the green bubble itself).
+    sample = pixels[::3, ::3].reshape(-1, 3)
+    colours, counts = np.unique(sample // 8, axis=0, return_counts=True)
+    modal = colours[int(counts.argmax())]
+    return np.median(sample[np.all(sample // 8 == modal, axis=1)], axis=0)
+
+
 def _detect(image: Any, viewport: list[int], scale: float) -> dict[str, Any]:
     import cv2
     import numpy as np
 
     left, top, right, bottom = viewport
     pixels = np.asarray(image.convert("RGB"), dtype=np.int16)[top:bottom, left:right]
-    # The modal coarse RGB colour is the chat background, not the border of an
-    # OCR-driven crop (which can consist mostly of the green bubble itself).
-    sample = pixels[::3, ::3].reshape(-1, 3)
-    colours, counts = np.unique(sample // 8, axis=0, return_counts=True)
-    modal = colours[int(counts.argmax())]
-    background = np.median(sample[np.all(sample // 8 == modal, axis=1)], axis=0)
+    background = _background_color(pixels)
     mask = (np.abs(pixels - background).mean(axis=2) >= BACKGROUND_DISTANCE).astype("uint8")
     # External contours keep holes/colour islands inside an enclosing avatar.
     # No dilation/closing is permitted to join separate external objects.
