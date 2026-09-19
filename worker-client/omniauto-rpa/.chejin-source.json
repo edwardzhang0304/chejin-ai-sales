@@ -495,6 +495,18 @@
       "scope": [
         "c2_contract_0_9_90_generated_schema"
       ]
+    },
+    {
+      "source_repository": "edwardzhang0304/omniauto",
+      "source_branch": "codex/gray-release-0.9.x-source",
+      "source_commit": "f97489d19307595b187420c4e599b76f10efb755",
+      "scope": [
+        "avatar_detection_original_recognition_masked",
+        "send_request_file_admission_and_launch_evidence",
+        "pre_send_setup_recovery_v1_contract_rules_and_schema"
+      ],
+      "status": "reviewed_source_integration_not_released",
+      "review_evidence": "/private/tmp/cj-sp-r3-review-20260920-QWkTk2/review_v0.3_20260920.md"
     }
   ],
   "chejin_overlays": [

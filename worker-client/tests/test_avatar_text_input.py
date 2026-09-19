@@ -87,8 +87,10 @@ def test_ordinary_full_and_roi_keep_original_call_budget(enabled, expected):
     # This fixture supplies the existing semantic shell, not OCR or avatar outputs.
     layout.update(chat_header_bounds=[348, 0, raw.width, 110])
     calls = []
-    def ocr(image):
-        calls.append(image)
+    def ocr(image, *, recognition_image=None):
+        assert recognition_image is not None
+        assert recognition_image.size == image.size
+        calls.append(recognition_image)
         return []
     with patch.object(s, "layout_snapshot_for_image", return_value=layout), patch.object(s, "run_ocr", side_effect=ocr):
         rows, plan = s.run_ocr_for_chat_fact_frame(raw, purpose="test", source="test", enabled=enabled)
@@ -266,7 +268,7 @@ def recheck_frames(request,real_frames,tmp_path_factory):
     return result,raw,layout,png,frame
 
 
-def run_local_recheck(case,tmp_path,stage,mutate=None):
+def run_local_recheck(case,tmp_path,stage,mutate=None,selected_index=-1):
     import argparse,hashlib
     payload,raw,layout,png,original_frame=case
     original=copy.deepcopy(payload);frame=copy.deepcopy(original_frame)
@@ -277,7 +279,7 @@ def run_local_recheck(case,tmp_path,stage,mutate=None):
     if stage=='validate':
         original.pop('text_recheck_frame_path',None)
         original.pop('text_recheck_frame_sha256',None)
-    request={'stage':stage,'payload':original,'observation_ids':[original['observations'][-1]['observation_id']]}
+    request={'stage':stage,'payload':original,'observation_ids':[original['observations'][selected_index]['observation_id']]}
     request_path=tmp_path/'request.json';request_path.write_text(json.dumps(request,ensure_ascii=False))
     target=original['target_confirmation']['confirmed_target']
     args=argparse.Namespace(artifact_dir=str(tmp_path/'result'),text_recheck_request=str(request_path),target=target,remark_code=target)

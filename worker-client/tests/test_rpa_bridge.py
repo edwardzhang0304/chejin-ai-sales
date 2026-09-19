@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import hashlib
+import uuid
 import os
 import shutil
 import tempfile
@@ -50,6 +52,18 @@ class RpaBridgeTest(unittest.TestCase):
             CONFIG.app_dir / "transactions" / "actions" / "add_friend",
             ignore_errors=True,
         )
+
+    @staticmethod
+    def _prepare_send(bridge, task_id, text):
+        action = uuid.uuid4().hex
+        initialize_action_journal(bridge.send_transaction_journal_path(action),
+            action_kind="send", transaction_id=action, conversation_id="test-conversation",
+            canonical_action_id=action, reserved_worker_stable_id="test-reserved",
+            items=[{"journal_item_id":action}], prepare_evidence={"pre_send_setup_context":{
+                "task_id":task_id,"reply_action_id":action,"conversation_id":"test-conversation",
+                "flow_id":task_id,"authorization_revision":"test-binding:1",
+                "reply_text_hash":hashlib.sha256(text.encode()).hexdigest()}})
+        return action
 
     @staticmethod
     def _confirm_add_friend_journal(
@@ -343,6 +357,8 @@ class RpaBridgeTest(unittest.TestCase):
                 rpa_session_key="session-1",
                 text="测试回复",
                 task_id="task-1",
+                reply_action_id=self._prepare_send(bridge, "task-1", "测试回复"),
+                expected_context_guard={},
             )
 
         self.assertEqual(
@@ -699,6 +715,7 @@ class RpaBridgeTest(unittest.TestCase):
                 rpa_session_key="wx:rpa:v1:a",
                 text="服务端批准文本",
                 task_id="task-chat",
+                reply_action_id=self._prepare_send(bridge, "task-chat", "服务端批准文本"),
                 expected_context_guard={
                     "schema_version": 1,
                     "sequence": [],
@@ -716,7 +733,8 @@ class RpaBridgeTest(unittest.TestCase):
         self.assertIn("wx:rpa:v1:a", captured["args"])
         self.assertIn("--text", captured["args"])
         self.assertIn("服务端批准文本", captured["args"])
-        self.assertIn("--expected-context-guard", captured["args"])
+        self.assertNotIn("--expected-context-guard", captured["args"])
+        self.assertIn("--expected-context-guard-file", captured["args"])
         self.assertEqual(captured["timeout"], 180)
 
     def test_real_bridge_json_round_trip_reaches_sidecar_final_guard(self):
@@ -765,11 +783,14 @@ class RpaBridgeTest(unittest.TestCase):
         captured: dict[str, object] = {}
 
         def fake_call_omniauto(args, timeout=30, cancel_check=None):
-            serialized = args[args.index("--expected-context-guard") + 1]
-            captured["serialized"] = serialized
-            parsed = production_sidecar.parse_expected_send_context_guard(
-                serialized
-            )
+            from apps.wechat_ai_customer_service.adapters import send_request_file, send_setup_contract
+            path, raw = send_request_file.read_package(args[args.index("--expected-context-guard-file") + 1])
+            package = send_setup_contract.validate_package(raw,filename=path.name,
+                sha256=args[args.index("--expected-context-guard-sha256") + 1],
+                task_id=args[args.index("--send-task-id") + 1],reply_action_id=args[args.index("--send-action-id") + 1],
+                target=args[args.index("--target") + 1],text=args[args.index("--text") + 1])
+            parsed = package["expected_context_guard"]
+            captured["serialized"] = json.dumps(parsed, ensure_ascii=False)
             captured["parsed"] = parsed
             current_observation = {
                 **observation,
@@ -811,6 +832,7 @@ class RpaBridgeTest(unittest.TestCase):
                 rpa_session_key="wx:rpa:v1:a",
                 text="服务端批准文本",
                 task_id="task-send-guard-json-round-trip",
+                reply_action_id=self._prepare_send(bridge, "task-send-guard-json-round-trip", "服务端批准文本"),
                 expected_context_guard=expected_guard,
             )
 

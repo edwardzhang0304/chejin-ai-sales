@@ -95,7 +95,9 @@ _CORRECTION_RECHECK_V1_RULES_SHA256 = 'ea8b203ac06247f0635abba2fc5971652bea5e954
 _CORRECTION_RESOLUTION_V1_RULES_SHA256 = '8623691392df801c7d6fdf8c12268d9fa75f8b213cea3f967c47a2e042e63ef8'
 _PRE_SEND_READ_V1_RULES_SHA256 = 'fbf33b38f2d9493f02534d71720be355c7cdfe69ad903b7ceb39dc10c2396a7a'
 _PUBLISHED_085_RULES_SHA256 = '6ee655ac27557a0c24070b1218b34eab094f2e8d89011a8ea115e155b2aa6b75'
+_PRE_SEND_SETUP_V1_RULES_SHA256 = '943d7a887278e3acbdacb6dac2991688eac54c011cc11b667f0108159ceef9fd'
 RELEASED_READ_CONTRACTS = (
+    ('0.9.90', 'da151196e1f6ceeb83a19057d516eb9654974ffe5dc644c76f19b960864302b0'),
     ('0.9.89', 'aed5f736db2af32854d2bb5449ccc79479897eaf6bb5224d1c2bbb2d8dd0d311'),
     ('0.9.75', 'bcb1af09321339b159cc02581f5938e402f16094465933645c71bd7dc0eadcf1'),
     ('0.9.78', 'b4151ab61fb5d90688e1e0ac187cc767acaee1617cb420be3028acc52ccf7eab'),
@@ -138,6 +140,16 @@ def read_recovery_contract(current: dict, revision: Any, sha256: Any) -> dict | 
     same = equivalent_contract(current, revision, sha256)
     if same is not None:
         return same
+    if 'pre_send_setup_recovery_contract' in current:
+        if contract_rules_sha256(current) != _PRE_SEND_SETUP_V1_RULES_SHA256:
+            return None
+        previous = {key: value for key, value in current.items() if key != 'pre_send_setup_recovery_contract'}
+        if contract_rules_sha256(previous) != _CORRECTION_RECHECK_V1_RULES_SHA256:
+            return None
+        current = previous
+        same = equivalent_contract(current, revision, sha256)
+        if same is not None:
+            return same
     if 'historical_text_correction_recheck_contract' in current:
         if contract_rules_sha256(current) != _CORRECTION_RECHECK_V1_RULES_SHA256:
             return None

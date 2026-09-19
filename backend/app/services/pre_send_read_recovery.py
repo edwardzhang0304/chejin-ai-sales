@@ -52,12 +52,21 @@ def settle(db, *, worker, payload, task_id, flow_id, client_instance_id,
     from app.services.task_service import finish_task_and_release_worker, task_to_detail, _write_event
     from app.enums import TaskEventType
 
+    setup = "pre_send_setup_failure" in payload.evidence
     correction = "historical_text_correction_pending" in payload.evidence
     try:
-        if correction and "pre_send_read_failure" in payload.evidence:
+        if sum(key in payload.evidence for key in (
+                "pre_send_setup_failure", "pre_send_read_failure", "historical_text_correction_pending")) != 1:
             raise ValueError("mutually_exclusive_proofs")
-        proof = shared_adapter("historical_correction_pending" if correction else "pre_send_read_failure").validate_proof(
-            payload.evidence["historical_text_correction_pending" if correction else "pre_send_read_failure"])
+        if setup:
+            from app.contracts.c2 import c2_contract_v3
+            proof = shared_adapter("send_setup_contract").validate_proof(
+                payload.evidence["pre_send_setup_failure"], contract=c2_contract_v3())
+            if not reply_action_id or payload.error_code != proof["error_code"]:
+                raise ValueError("setup_requires_original_sent_ack")
+        else:
+            proof = shared_adapter("historical_correction_pending" if correction else "pre_send_read_failure").validate_proof(
+                payload.evidence["historical_text_correction_pending" if correction else "pre_send_read_failure"])
     except (KeyError, TypeError, ValueError):
         _reject()
     if proof["task_id"] != task_id or (reply_action_id and proof["reply_action_id"] != reply_action_id):
@@ -97,7 +106,8 @@ def settle(db, *, worker, payload, task_id, flow_id, client_instance_id,
     batch = db.get(MessageBatch, action.batch_id)
     if binding is None or batch is None or conversation is None:
         _reject()
-    capability = ((worker.local_lock_summary or {}).get("capabilities") or {}).get("pre_send_read_recovery_version")
+    capability = ((worker.local_lock_summary or {}).get("capabilities") or {}).get(
+        "pre_send_setup_recovery_version" if setup else "pre_send_read_recovery_version")
     if type(capability) is not int or capability != 1:
         _reject("当前客户端没有声明发送前读取恢复能力")
     if correction:
@@ -118,6 +128,16 @@ def settle(db, *, worker, payload, task_id, flow_id, client_instance_id,
     if worker.run_status != "faulted":
         _reject("技术故障必须先保存停止接单状态")
     inflight = dict(worker.inflight_flow_state or {})
+    if setup:
+        original_contract = shared_adapter("contract_rules").equivalent_contract(
+            c2_contract_v3(), inflight.get("contract_revision"), inflight.get("contract_sha256"))
+        if (original_contract is None
+                or (original_contract.get("pre_send_setup_recovery_contract") or {}).get("protocol_version") != 1):
+            _reject("原流程合同未具备匹配的启动证明规则")
+        try:
+            shared_adapter("send_setup_contract").validate_proof(proof, contract=original_contract)
+        except (KeyError, TypeError, ValueError):
+            _reject()
     if not (flow_id and proof["flow_id"] == flow_id == inflight.get("flow_id")
             and inflight.get("status") in {"active", "draining"}
             and (inflight.get("conversation_id") == action.conversation_id
@@ -158,10 +178,12 @@ def settle(db, *, worker, payload, task_id, flow_id, client_instance_id,
     blocked = (bool(followup_block_reason(db, task.lead_id)) or binding.worker_id != worker.id
                or proof["authorization_revision"] != token_for_revision(binding.id, int(binding.authorization_revision or 1)))
     before = task.status
-    error = "HISTORICAL_TEXT_CORRECTION_PENDING" if correction else str(payload.error_code or proof["first_failure"]["error_code"])
+    error = (proof["error_code"] if setup else "HISTORICAL_TEXT_CORRECTION_PENDING" if correction
+             else str(payload.error_code or proof["first_failure"]["error_code"]))
     task.status = "cancelled" if blocked or task.status == "cancelled" else "failed"
     task.error_code = error
-    task.failure_step = ("before_input" if reply_action_id else "pre_send_refresh") if correction else proof["first_failure"]["stage"]
+    task.failure_step = ("send_setup" if setup else ("before_input" if reply_action_id else "pre_send_refresh")
+                         if correction else proof["first_failure"]["stage"])
     task.failure_remark = getattr(payload, "failure_remark", None) or getattr(payload, "remark", None)
     if task.status == "cancelled":
         task.cancelled_at = task.cancelled_at or utcnow()

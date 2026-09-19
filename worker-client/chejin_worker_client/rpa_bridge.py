@@ -13,6 +13,9 @@ from pathlib import Path
 from typing import Any, Callable
 
 from .config import CONFIG
+from .c2_contract import c2_contract_v3
+from .update_filesystem import update_filesystem_path
+from apps.wechat_ai_customer_service.adapters import send_request_file, send_setup_contract, send_launch_journal
 from .emergency_stop import emergency_stop_requested
 from .artifact_retention import record_artifact_outcome
 from .failure_evidence import exception_details, mark_failure_recovered, record_capture_failure, record_failure
@@ -655,42 +658,67 @@ class RpaBridge:
                     "method": "mock",
                 },
             }
-        artifact_dir = CONFIG.app_dir / "artifacts" / "tasks" / task_id / "chat_reply" / time.strftime("%Y%m%d_%H%M%S")
-        artifact_dir.mkdir(parents=True, exist_ok=True)
-        args = [
-            "send",
-            "--target",
-            target,
-            "--session-key",
-            rpa_session_key,
-            "--text",
-            text,
-            "--artifact-dir",
-            str(artifact_dir),
-        ]
-        if reply_action_id:
-            journal_path = self.send_transaction_journal_path(reply_action_id)
-            journal_path.parent.mkdir(parents=True, exist_ok=True)
-            args.extend(["--action-journal", str(journal_path)])
-        if current_only:
-            args.append("--current-only")
-        if isinstance(expected_context_guard, dict):
-            args.extend(
-                [
-                    "--expected-context-guard",
-                    json.dumps(
-                        expected_context_guard,
-                        ensure_ascii=True,
-                        sort_keys=True,
-                        separators=(",", ":"),
-                    ),
-                ]
-            )
-        return self._call_omniauto(
-            args,
-            timeout=180,
-            cancel_check=cancel_check,
-        )
+        journal_path = update_filesystem_path(self.send_transaction_journal_path(reply_action_id))
+        attempt = send_launch_journal.begin(journal_path, task_id=task_id, action_id=reply_action_id)
+        try:
+            raw = send_setup_contract.package_bytes(request_id=attempt["request_id"], task_id=task_id,
+                reply_action_id=reply_action_id, target=target, text=text, expected_context_guard=expected_context_guard)
+            reference = send_request_file.write_package(raw, request_id=attempt["request_id"], app_dir=CONFIG.app_dir,
+                before_write=lambda ref: send_launch_journal.record_request(journal_path, attempt["launch_attempt_id"], ref))
+        except (OSError, ValueError, TypeError) as exc:
+            return self._send_preparation_failure(journal_path, attempt, exc)
+        # Persist the actual path before any subsequent preparation can fail.
+        send_launch_journal.update(journal_path, attempt["launch_attempt_id"], allowed={"preparing"},
+                                   process_state="prepared", request=reference)
+        try:
+            artifact_dir = update_filesystem_path(CONFIG.app_dir / "artifacts" / "tasks" / task_id / "chat_reply" / time.strftime("%Y%m%d_%H%M%S"))
+            artifact_dir.mkdir(parents=True, exist_ok=True)
+            args = ["send", "--target", target, "--session-key", rpa_session_key, "--text", text,
+                    "--artifact-dir", str(artifact_dir), "--action-journal", str(journal_path),
+                    "--expected-context-guard-file", reference["path"], "--expected-context-guard-sha256", reference["sha256"],
+                    "--send-task-id", task_id, "--send-action-id", reply_action_id]
+            if current_only:
+                args.append("--current-only")
+            send_request_file.validate_command(self._sidecar_command(args))
+        except (OSError, ValueError) as exc:
+            return self._send_preparation_failure(journal_path, attempt, exc)
+        result = self._call_omniauto(args, timeout=180, cancel_check=cancel_check)
+        # The process has exited. Do not modify its journal while it can act.
+        proven = send_launch_journal.proof(journal_path, contract=c2_contract_v3())
+        if proven:
+            return {**result, **send_launch_journal.failure_result(journal_path, contract=c2_contract_v3())}
+        journal, _ = send_launch_journal.read(journal_path)
+        current = journal["send_launch_attempts"][-1]
+        if current["process_state"] == "creating":
+            outcome = result.get("send_result")
+            outcome = outcome if isinstance(outcome, dict) else {}
+            from apps.wechat_ai_customer_service.adapters.pre_send_read_failure import read_failure_valid
+            read_failure = result.get("pre_send_read_failure_fact")
+            phase = result.get("action_phase", outcome.get("action_phase"))
+            physical = result.get("physical_send_triggered", outcome.get("physical_send_triggered"))
+            if physical is None and read_failure_valid(read_failure) and phase == "not_attempted":
+                # The original OCR proof already states this. Preserve its
+                # existing bounded recheck, without inventing another budget.
+                physical = read_failure["physical_send_triggered"]
+            send_launch_journal.update(journal_path, attempt["launch_attempt_id"], allowed={"creating"},
+                process_state="finished", action_phase=phase, physical_send_triggered=physical,
+                read_failure_fact=read_failure if read_failure_valid(read_failure) else None,
+                error_code=result.get("error_code"))
+        return {**result, "send_request_files": send_launch_journal.references(journal_path)}
+
+    @staticmethod
+    def _send_preparation_failure(journal_path, attempt, exc):
+        send_launch_journal.fail(journal_path, attempt["launch_attempt_id"],
+            error_code="RPA_SEND_REQUEST_PREPARE_FAILED", process_state="not_called",
+            reason=type(exc).__name__ + ":" + str(exc))
+        result = send_launch_journal.failure_result(journal_path, contract=c2_contract_v3())
+        # Preparation can fail before the ordinary process diagnostics run.
+        # Record references and proof only, never the full conversation guard.
+        record_failure("rpa_action_failed", error_code=result["error_code"],
+            message="发送资料准备失败，原动作尚未执行，故障证据已保留。",
+            metadata={"origin": "send", "result": result,
+                      "root_failures": getattr(exc, "failures", [])})
+        return result
 
     def run_add_friend(
         self,
@@ -1135,6 +1163,11 @@ class RpaBridge:
         cancel_check: CancellationCheck | None = None,
     ) -> dict[str, Any]:
         if not self.sidecar_script.exists():
+            if args and args[0] == "send" and "--expected-context-guard-file" in args:
+                journal_path = args[args.index("--action-journal") + 1]
+                journal, _ = send_launch_journal.read(journal_path)
+                return self._send_preparation_failure(journal_path,
+                    journal["send_launch_attempts"][-1], FileNotFoundError("send Sidecar is unavailable"))
             return {"ok": False, "error_code": "RPA_COMPONENT_NOT_READY", "message": f"sidecar 不存在：{self.sidecar_script}"}
         command = self._sidecar_command(args)
         sidecar_env = os.environ.copy()
@@ -1156,16 +1189,32 @@ class RpaBridge:
                     env=sidecar_env,
                 )
             else:
-                process = subprocess.Popen(
-                    command,
-                    cwd=str(self._omniauto_root()),
-                    text=True,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE,
-                    encoding="utf-8",
-                    errors="replace",
-                    env=sidecar_env,
-                )
+                launch = None
+                if args and args[0] == "send" and "--expected-context-guard-file" in args:
+                    journal_path = args[args.index("--action-journal") + 1]
+                    journal, _ = send_launch_journal.read(journal_path)
+                    launch = journal["send_launch_attempts"][-1]
+                    send_request_file.validate_command(command)
+                    send_launch_journal.update(journal_path, launch["launch_attempt_id"],
+                        allowed={"prepared"}, process_state="creating")
+                try:
+                    process = subprocess.Popen(
+                        command,
+                        cwd=str(self._omniauto_root()),
+                        text=True,
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.PIPE,
+                        encoding="utf-8",
+                        errors="replace",
+                        env=sidecar_env,
+                    )
+                except OSError as exc:
+                    if launch is None:
+                        raise
+                    send_launch_journal.fail(journal_path, launch["launch_attempt_id"],
+                        error_code="RPA_SEND_PROCESS_NOT_STARTED", process_state="create_failed",
+                        reason=type(exc).__name__ + ":" + str(exc))
+                    return send_launch_journal.failure_result(journal_path, contract=c2_contract_v3())
                 deadline = time.monotonic() + max(1, int(timeout))
                 while True:
                     cancel_reason = cancel_check()

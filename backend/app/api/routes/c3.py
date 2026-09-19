@@ -108,7 +108,7 @@ def sent_ack(
 ):
     try:
         worker = worker_service.authenticate_worker_client(db, payload.worker_id, x_worker_token, x_client_instance_id or payload.client_instance_id)
-        if "pre_send_read_failure" in payload.evidence or "historical_text_correction_pending" in payload.evidence:
+        if any(key in payload.evidence for key in ("pre_send_read_failure", "historical_text_correction_pending", "pre_send_setup_failure")):
             from app.services.pre_send_read_recovery import settle
             data = settle(db, worker=worker, payload=payload, task_id=payload.task_id,
                           reply_action_id=reply_action_id, flow_id=x_inflight_flow_id,

@@ -36,6 +36,7 @@ def provenance(raw: Any, layout: dict[str, Any] | None) -> dict[str, Any]:
         rectangles.append(list(bounds))
     rectangles.sort()
     return {"method": "avatar_mask_v1", "raw_rgb_sha256": hashlib.sha256(raw.convert("RGB").tobytes()).hexdigest(),
+            "ocr_pipeline": "raw_detection_masked_recognition_v1",
             "image_size": list(raw.size),
             "frame_id": layout.get("frame_id"), "layout_snapshot_id": layout.get("layout_snapshot_id"),
             "viewport": viewport, "dpi_scale": layout.get("dpi_scale"),
@@ -118,6 +119,10 @@ def verify_saved_source(raw: Any, layout: dict[str, Any], rows: Any, saved: Any)
     expected = provenance(raw, layout)
     stable = ("method", "raw_rgb_sha256", "image_size", "viewport", "dpi_scale", "rectangles", "mask_sha256")
     if any(source.get(key) != expected[key] for key in stable):
+        raise ValueError("text_recheck_preprocessing_source_mismatch")
+    # Historical saved frames remain readable under the old evidence contract;
+    # a present pipeline marker must match. Process-local reuse is always exact.
+    if source.get("ocr_pipeline", expected["ocr_pipeline"]) != expected["ocr_pipeline"]:
         raise ValueError("text_recheck_preprocessing_source_mismatch")
     if saved.get("rows_sha256") != _digest(rows):
         raise ValueError("text_recheck_preprocessing_rows_mismatch")

@@ -85,8 +85,8 @@ def test_two_capture_failures_stop_and_settle(http_api, monkeypatch, async_gener
     bridge=RpaBridge();bridge.mode="real"
     sends=[];wire=[];ocr=[];errors=[]
     native_ocr=fixture.sidecar.run_ocr
-    def counted_ocr(image):
-        rows=native_ocr(image);ocr.append({"size":list(image.size),"rows":len(rows)});return rows
+    def counted_ocr(image,**kwargs):
+        rows=native_ocr(image,**kwargs);ocr.append({"size":list(image.size),"rows":len(rows)});return rows
     monkeypatch.setattr(fixture.sidecar,"run_ocr",counted_ocr)
     native_wire=client.session.send
     def exchange(request,**kw):
@@ -98,9 +98,22 @@ def test_two_capture_failures_stop_and_settle(http_api, monkeypatch, async_gener
         def option(name,default=""):return args[args.index(name)+1] if name in args else default
         if args[0]=="send":
             assert lock_summary()["locked"]
+            # This controlled process boundary accepts the same file through
+            # production admission before exercising the unchanged real OCR.
+            from argparse import Namespace
+            from apps.wechat_ai_customer_service.adapters import send_launch_journal as launches, send_request_admission
+            journal_path=option("--action-journal")
+            journal,_=launches.read(journal_path)
+            launches.update(journal_path,journal['send_launch_attempts'][-1]['launch_attempt_id'],
+                allowed={'prepared'},process_state='creating')
+            admitted,rejected=send_request_admission.admit(Namespace(action='send',target=option('--target'),text=option('--text'),
+                action_journal=journal_path,expected_context_guard='',expected_context_guard_file=option('--expected-context-guard-file'),
+                expected_context_guard_sha256=option('--expected-context-guard-sha256'),send_task_id=option('--send-task-id'),
+                send_action_id=option('--send-action-id')))
+            assert rejected is None,rejected
             value=fixture.sidecar.send_payload(calibration["hwnd"],{},target=option("--target"),text=option("--text"),exact=True,
                 skip_send_rate_guard=True,artifact_dir=str(tmp_path/"desktop"),
-                expected_context_guard=json.loads(option("--expected-context-guard","{}")),action_journal_path=option("--action-journal"))
+                expected_context_guard=admitted,action_journal_path=option("--action-journal"))
             sends.append(value)
         else:
             assert args[0] in {"messages","open-chat"}
@@ -185,7 +198,10 @@ def test_two_capture_failures_stop_and_settle(http_api, monkeypatch, async_gener
             # above. Drive the ordinary C2 scheduler again if it correctly
             # yields to that thread; never bypass locks or create a reply.
             queue_attempts=0
-            deadline=time.monotonic()+15
+            # A real high-priority task pull can win the admission race and
+            # start the unchanged 45s C2 cooldown. Observe natural retry after
+            # that cooldown instead of treating 15s as a recovery deadline.
+            deadline=time.monotonic()+max(60,task_runner.CONFIG.c2_message_failure_cooldown_seconds+30)
             while time.monotonic()<deadline:
                 queue_attempts+=1
                 runner._read_state_target_queue(binding,targets=targets)
