@@ -1,0 +1,778 @@
+{
+  "schema_version": 1,
+  "repository": "edwardzhang0304/chejin-ai-sales",
+  "reviewed_commit": "759dbd08fe193c2d792396bfe9938a60378bc089",
+  "target_version": "0.9.90",
+  "approval": "User authorized formal Windows preserve-data manual release; reuse reviewed matching results; original 0.9.89 closed with no pending local items.",
+  "original_verification_sha256": "1ae7404f08736248b0f87a31f6909c17f60c56c0364c3c8ff70310f75d1dc64d",
+  "source_sha256": {
+    "backend/app/api/response.py": "3910dd3563d315a9b65d8447d2cde06132b2f7c5e12f8c627bbfa1796119211b",
+    "backend/app/api/routes/wechat.py": "2724e06944b7de4a0ce652a09e65a2043d36d9d1130e862d86dfc0a572a8e9b1",
+    "backend/app/main.py": "03ab6e4ed3c88bc447cf719c6ebeedfa4d7828f0248b1bae76aada9a7bfc07a2",
+    "backend/app/services/message_text_correction_service.py": "a08ad2fd90755f0ea3ad7d95edfd3caf64eca5e0f889f124f1926a9489cf02b6",
+    "backend/app/services/read_recovery_service.py": "e216d6a49f342def1618119f03077697dc56643038471c0ebc6d9fc720c7ce52",
+    "backend/app/services/wechat_service.py": "ca20cb162c7e1fca00b06d979b49aa888e91af29b3f14c03d86ef469966fbe57",
+    "backend/tests/test_avatar_mask_http.py": "7854297248dae334dd83c40dfcd8cea3142c4b26c3d348d570b66218108512d9",
+    "backend/tests/test_closed_read_receipts.py": "5acbcb194bbc363c9c04f5a6941f5f53b80402473cd58d46d1c92d8108cc8af3",
+    "backend/tests/test_interruption_text_correspondence.py": "156e2dbc0f962ee5a18a5de05efeae59bc00e8dc4a638a72a3a6045d454e3a29",
+    "backend/tests/test_rejected_correction_recheck.py": "99abfba54ee1bb1cbc3aa626c8926784f88742b95fbc3f6bc2f73ff7f3b494d3",
+    "backend/tests/worker_business_settlement_probe.py": "f19029fd9eb418780097f12fcf3f885f5146129ca1747b0253eda5ff0bfb16ad",
+    "contracts/c2_contract_v3.json": "65ba3c9fad1847a57253712cb973162ea17858f3f5234c3cdb62751a81aa8bed",
+    "contracts/recovery/c2_contract_v3_0.9.89.json": "47f6fc0cb942b1be9847cfda7f9de0aaaaebbf0198ba3af7743e85f0b9daff51",
+    "worker-client/chejin_worker_client/api.py": "0147b8db82b98cb8bf44cda58d7948b5d3dba4587a41554c14d1b0dd467cf4ea",
+    "worker-client/chejin_worker_client/storage.py": "ddfea93e4b261f671df48b20c2a9d3675e8ab49411b11f6468ad7df390012080",
+    "worker-client/chejin_worker_client/task_runner.py": "fcb8e976b15d5fcd9939d49579b535b4f245e8409118167b80b068d4ed7a862a",
+    "worker-client/chejin_worker_client/text_correction_outbox.py": "93aabb370948e1c4e9682180995fb1d925f7466858a69e0066895af511c21f64",
+    "worker-client/omniauto-rpa/.chejin-source.json": "8d13bb74e44190d2d590d65d034165981e53dbb1e65a9c3c52525a08574638a1",
+    "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/adapters/chejin_c2_observation_schema.generated.json": "7916a21873684b27d54355325274d6e4d7d82759bbb3f6862243bf2f533962be",
+    "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/adapters/contract_rules.py": "1f5c858e27c6eb08b46bc255915478eb251393ba8c72ab65ff8701f566aff2cb",
+    "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/adapters/read_settlement.py": "5d781d8fcf7bb1b1c9a0ddc4ba3df0843082d4be79bf3038172e1829392bbf6c",
+    "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/adapters/send_interruption.py": "ad2b2a326c693f7040bb826339af5f2938a3853383bcdd90243c64c045806931",
+    "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/adapters/wechat_win32_ocr/avatar_text_input.py": "a4c30c76d6f37a38a22ebaba65b0d256d6571c92788608ccf79f31cd8e413f22",
+    "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/adapters/wechat_win32_ocr/frame_avatars.py": "d9cd9ed4a9bedea751cb41810c20a7021f436b06782f48359149b370de2ea63a",
+    "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/adapters/wechat_win32_ocr_sidecar.py": "89a4b7a2e1aa4b8dbc7c3625daa6063c2228f0ce95ce02a637a434bfe9b292a9",
+    "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/tests/test_interruption_correspondence.py": "74504aa36d494e50131067a2a088278bdffa122a409cfde9dac7032aeb8b4efb",
+    "worker-client/scripts/generate-c2-observation-schema.py": "282742aaa2a860dfbb0f6b250f344a8e7df34ef4bcfd46e70b4d6f448e60c315",
+    "worker-client/tests/test_avatar_ocr_failure_boundary.py": "0f271483a73457096f1d9121e7aab7713a949a89b4f9746e6187c1af6874f19f",
+    "worker-client/tests/test_avatar_text_input.py": "34561208106c71543677a7d661447398cea389b5d627b2e20b7afa61e3449e37",
+    "worker-client/tests/test_text_bubble_recheck.py": "a2b381d7f528450529159381ca32efb79c6b83fecbd51dca5791e7361d3bbc6f",
+    "worker-client/tests/test_text_correction_outbox.py": "22a4f75afdfea852da5e0d41c8a6bf4d2a315ba11f4426f62498150efa070e20",
+    "worker-client/tests/test_wechat_win32_ocr_sidecar_voice.py": "fa6b830679d8986a7f6a4ecd2c15a9d6817b7f491f98f6febc2e08dfbae6447f"
+  },
+  "checks": [
+    {
+      "name": "local",
+      "original_xml_sha256": "b24851642141577e0fbb5a09493f18299bdf9d33e08db5c2a8e8b441eef53195",
+      "count": 72,
+      "cases": [
+        {
+          "name": "::test_only_avatar_pixels_change_and_original_role_survives[1.0-customer]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_only_avatar_pixels_change_and_original_role_survives[1.0-self]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_only_avatar_pixels_change_and_original_role_survives[1.25-customer]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_only_avatar_pixels_change_and_original_role_survives[1.25-self]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_only_avatar_pixels_change_and_original_role_survives[1.5-customer]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_only_avatar_pixels_change_and_original_role_survives[1.5-self]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_real_body_letters_and_adjacent_pixels_are_not_removed_by_word",
+          "result": "passed"
+        },
+        {
+          "name": "::test_no_confirmed_avatar_keeps_pixels_and_invalid_layout_is_not_empty_success",
+          "result": "passed"
+        },
+        {
+          "name": "::test_cache_provenance_rejects_raw_copied_modified_and_wrong_frame_results",
+          "result": "passed"
+        },
+        {
+          "name": "::test_ordinary_full_and_roi_keep_original_call_budget[False-1]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_ordinary_full_and_roi_keep_original_call_budget[True-3]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_pure_target_diagnostic_can_run_without_avatar_and_cannot_certify_body",
+          "result": "passed"
+        },
+        {
+          "name": "::test_original_png_through_real_ocr_and_formal_messages",
+          "result": "passed"
+        },
+        {
+          "name": "::test_disable_preprocessing_reproduces_original_avatar_split",
+          "result": "passed"
+        },
+        {
+          "name": "::test_send_snapshot_sources_keep_budget_and_all_facts[roi-3]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_send_snapshot_sources_keep_budget_and_all_facts[full-1]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_send_snapshot_sources_keep_budget_and_all_facts[supplied-0]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_send_snapshot_sources_keep_budget_and_all_facts[legacy-1]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_send_snapshot_sources_keep_budget_and_all_facts[wrong_frame-1]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_target_seed_consumed_once_without_recapture[False]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_target_seed_consumed_once_without_recapture[True]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_enhanced_region_uses_same_mask_then_existing_scale_and_mapping",
+          "result": "passed"
+        },
+        {
+          "name": "::test_real_ocr_keeps_same_letters_inside_message_bubble",
+          "result": "passed"
+        },
+        {
+          "name": "::test_validate_needs_no_local_ocr_source_or_file[full]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_real_local_ocr_merges_with_verified_base_after_new_layout_ids[full]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_old_or_inconsistent_saved_ocr_is_rejected_before_any_new_ocr[full-missing]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_old_or_inconsistent_saved_ocr_is_rejected_before_any_new_ocr[full-method]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_old_or_inconsistent_saved_ocr_is_rejected_before_any_new_ocr[full-pixels]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_old_or_inconsistent_saved_ocr_is_rejected_before_any_new_ocr[full-size]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_old_or_inconsistent_saved_ocr_is_rejected_before_any_new_ocr[full-viewport]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_old_or_inconsistent_saved_ocr_is_rejected_before_any_new_ocr[full-dpi]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_old_or_inconsistent_saved_ocr_is_rejected_before_any_new_ocr[full-rectangles]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_old_or_inconsistent_saved_ocr_is_rejected_before_any_new_ocr[full-regions]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_old_or_inconsistent_saved_ocr_is_rejected_before_any_new_ocr[full-rows]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_validate_needs_no_local_ocr_source_or_file[roi]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_real_local_ocr_merges_with_verified_base_after_new_layout_ids[roi]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_old_or_inconsistent_saved_ocr_is_rejected_before_any_new_ocr[roi-missing]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_old_or_inconsistent_saved_ocr_is_rejected_before_any_new_ocr[roi-method]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_old_or_inconsistent_saved_ocr_is_rejected_before_any_new_ocr[roi-pixels]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_old_or_inconsistent_saved_ocr_is_rejected_before_any_new_ocr[roi-size]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_old_or_inconsistent_saved_ocr_is_rejected_before_any_new_ocr[roi-viewport]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_old_or_inconsistent_saved_ocr_is_rejected_before_any_new_ocr[roi-dpi]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_old_or_inconsistent_saved_ocr_is_rejected_before_any_new_ocr[roi-rectangles]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_old_or_inconsistent_saved_ocr_is_rejected_before_any_new_ocr[roi-regions]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_old_or_inconsistent_saved_ocr_is_rejected_before_any_new_ocr[roi-rows]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_layout_rejection_is_not_an_ocr_io_failure[full]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_layout_rejection_is_not_an_ocr_io_failure[roi]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_real_ocr_io_exception_still_uses_read_failure[full]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_real_ocr_io_exception_still_uses_read_failure[roi]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_send_layout_rejection_does_not_become_retryable_read_failure[full]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_send_layout_rejection_does_not_become_retryable_read_failure[roi]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_uncertified_cached_rows_keep_layout_error[full]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_uncertified_cached_rows_keep_layout_error[roi]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_roi_confirmation_fallback_preserves_semantic_exception[avatar]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_roi_confirmation_fallback_preserves_semantic_exception[layout]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_send_ocr_io_failure_keeps_existing_proof[full]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_send_ocr_io_failure_keeps_existing_proof[roi]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_send_ocr_io_failure_keeps_existing_proof[supplied]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_send_ocr_io_failure_keeps_existing_proof[fallback]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_capture_failure_keeps_existing_proof",
+          "result": "passed"
+        },
+        {
+          "name": "::test_one_budget_across_threads_stages_and_restart",
+          "result": "passed"
+        },
+        {
+          "name": "::test_budget_persistence_failure_never_authorizes_retry",
+          "result": "passed"
+        },
+        {
+          "name": "::test_corrupt_budget_does_not_grant_another_attempt[broken-json]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_corrupt_budget_does_not_grant_another_attempt[{}]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_corrupt_budget_does_not_grant_another_attempt[[]]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_two_no_image_failures_keep_actual_attempts",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_interruption_correspondence::test_reuses_verified_d1_without_overwriting_original_text[None]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_interruption_correspondence::test_reuses_verified_d1_without_overwriting_original_text[missing_checkpoint]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_interruption_correspondence::test_reuses_verified_d1_without_overwriting_original_text[proof]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_interruption_correspondence::test_reuses_verified_d1_without_overwriting_original_text[observation]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_interruption_correspondence::test_reuses_verified_d1_without_overwriting_original_text[unsafe_draft]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_interruption_correspondence::test_reuses_verified_d1_without_overwriting_original_text[negation]",
+          "result": "passed"
+        }
+      ]
+    },
+    {
+      "name": "local-retry",
+      "original_xml_sha256": "3dc7d5ab9a0a0c5ea84c3b79a899cf02670758c1493582cdb59df67af0f51df3",
+      "count": 44,
+      "cases": [
+        {
+          "name": "worker-client.tests.test_text_bubble_recheck::test_pre_send_real_recheck_keeps_new_customer_question_as_new",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_text_correction_outbox::test_business_closure_must_match_original_owner_and_proposal[None]",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_text_correction_outbox::test_business_closure_must_match_original_owner_and_proposal[worker_id]",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_text_correction_outbox::test_business_closure_must_match_original_owner_and_proposal[client_instance_id]",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_text_correction_outbox::test_business_closure_must_match_original_owner_and_proposal[conversation_id]",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_text_correction_outbox::test_business_closure_must_match_original_owner_and_proposal[binding_id]",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_text_correction_outbox::test_business_closure_must_match_original_owner_and_proposal[authorization_revision]",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_text_correction_outbox::test_business_closure_must_match_original_owner_and_proposal[message_event_id]",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_text_correction_outbox::test_business_closure_must_match_original_owner_and_proposal[proof_sha256]",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_text_correction_outbox::test_business_closure_must_match_original_owner_and_proposal[expected_effective_version]",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_text_correction_outbox::test_business_closure_must_match_original_owner_and_proposal[original_work_settled]",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_text_correction_outbox::test_business_closure_must_match_original_owner_and_proposal[version]",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_text_correction_outbox::test_business_closure_must_match_original_owner_and_proposal[extra]",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_text_correction_outbox::test_resolution_contract_extension_does_not_relax_original_recovery_rules",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_text_correction_outbox::test_correction_upgrade_snapshot_detects_blob_or_operation_change",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_text_correction_outbox::test_correction_ui_reason_tracks_durable_pending_and_rejected",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_text_correction_outbox::test_old_settlement_and_flow_finish_precede_correction",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_text_correction_outbox::test_correction_retains_successful_read_but_cannot_replace_another_failure[read_confirmed]",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_text_correction_outbox::test_correction_retains_successful_read_but_cannot_replace_another_failure[technical_failed]",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_text_correction_outbox::test_correction_does_not_own_or_settle_original_flow",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_text_correction_outbox::test_correction_alone_is_not_a_read_artifact_and_ordinary_mutations_reject_it",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_text_correction_outbox::test_permanent_rejection_gets_own_terminal_receipt_without_resuming[400]",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_text_correction_outbox::test_permanent_rejection_gets_own_terminal_receipt_without_resuming[401]",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_text_correction_outbox::test_permanent_rejection_gets_own_terminal_receipt_without_resuming[403]",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_text_correction_outbox::test_permanent_rejection_gets_own_terminal_receipt_without_resuming[404]",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_text_correction_outbox::test_permanent_rejection_gets_own_terminal_receipt_without_resuming[413]",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_text_correction_outbox::test_permanent_rejection_gets_own_terminal_receipt_without_resuming[422]",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_text_correction_outbox::test_transient_errors_back_off_the_frozen_proposal[409]",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_text_correction_outbox::test_transient_errors_back_off_the_frozen_proposal[429]",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_text_correction_outbox::test_transient_errors_back_off_the_frozen_proposal[500]",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_text_correction_outbox::test_transient_errors_back_off_the_frozen_proposal[503]",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_text_correction_outbox::test_restart_replays_persisted_proof_in_a_new_python_process",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_text_correction_outbox::test_invalid_acceptance_cannot_release_queue[event]",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_text_correction_outbox::test_invalid_acceptance_cannot_release_queue[text]",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_text_correction_outbox::test_invalid_acceptance_cannot_release_queue[version]",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_text_correction_outbox::test_invalid_acceptance_cannot_release_queue[missing_id]",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_text_correction_outbox::test_confirmed_label_alone_does_not_release_or_prune_correction",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_text_correction_outbox::test_api_never_uses_historical_read_as_active_flow",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_text_correction_outbox::test_rejected_correction_recheck_preserves_original_and_backs_off[network]",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_text_correction_outbox::test_rejected_correction_recheck_preserves_original_and_backs_off[old_server]",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_text_correction_outbox::test_rejected_correction_recheck_preserves_original_and_backs_off[invalid_resolution]",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_text_correction_outbox::test_rejected_correction_recheck_preserves_original_and_backs_off[valid_resolution]",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_text_correction_outbox::test_rejected_correction_recheck_preserves_original_and_backs_off[unexpected_accept]",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_text_correction_outbox::test_recheck_extension_accepts_only_frozen_predecessors",
+          "result": "passed"
+        }
+      ]
+    },
+    {
+      "name": "http",
+      "original_xml_sha256": "a1e6342c84f964180d0e6c645988e9c5b78c432d6702d5901cbdac2b088ab99b",
+      "count": 47,
+      "cases": [
+        {
+          "name": "tests.test_avatar_mask_http::test_original_avatar_frame_automatically_continues_after_confirmed_reply",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_closed_read_receipts::test_closed_failure_receipt_is_idempotent_and_never_creates_facts[False]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_closed_read_receipts::test_closed_failure_receipt_is_idempotent_and_never_creates_facts[True]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_closed_read_receipts::test_failure_receipt_does_not_admit_unproven_or_fact_payload[no_finish]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_closed_read_receipts::test_failure_receipt_does_not_admit_unproven_or_fact_payload[owner]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_closed_read_receipts::test_failure_receipt_does_not_admit_unproven_or_fact_payload[bound_at]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_closed_read_receipts::test_failure_receipt_does_not_admit_unproven_or_fact_payload[contract]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_closed_read_receipts::test_failure_receipt_does_not_admit_unproven_or_fact_payload[time]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_closed_read_receipts::test_failure_receipt_does_not_admit_unproven_or_fact_payload[scope]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_closed_read_receipts::test_failure_receipt_does_not_admit_unproven_or_fact_payload[terminal]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_closed_read_receipts::test_failure_receipt_does_not_admit_unproven_or_fact_payload[missing_gate]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_closed_read_receipts::test_failure_receipt_does_not_admit_unproven_or_fact_payload[observation]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_closed_read_receipts::test_failure_receipt_does_not_admit_unproven_or_fact_payload[message]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_closed_read_receipts::test_failure_receipt_does_not_admit_unproven_or_fact_payload[active_flow]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_closed_read_receipts::test_failure_receipt_does_not_admit_unproven_or_fact_payload[instance]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_closed_read_receipts::test_failure_receipt_does_not_admit_unproven_or_fact_payload[header]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_closed_read_receipts::test_saved_business_receipt_survives_deleted_binding_without_reviving_customer[None]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_closed_read_receipts::test_saved_business_receipt_survives_deleted_binding_without_reviving_customer[payload]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_closed_read_receipts::test_saved_business_receipt_survives_deleted_binding_without_reviving_customer[instance]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_closed_read_receipts::test_saved_business_receipt_survives_deleted_binding_without_reviving_customer[bound_at]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_closed_read_receipts::test_recovery_loop_explicit_start_claims_and_finishes_next_task[normal-failure]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_closed_read_receipts::test_recovery_loop_explicit_start_claims_and_finishes_next_task[normal-saved_business]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_closed_read_receipts::test_recovery_loop_explicit_start_claims_and_finishes_next_task[response_lost-failure]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_closed_read_receipts::test_recovery_loop_explicit_start_claims_and_finishes_next_task[response_lost-saved_business]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_interruption_text_correspondence::test_no_new_customer_message_still_passes_same_guard[False]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_interruption_text_correspondence::test_no_new_customer_message_still_passes_same_guard[True]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_interruption_text_correspondence::test_validated_customer_append_must_not_become_handoff[before_input-False]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_interruption_text_correspondence::test_validated_customer_append_must_not_become_handoff[before_input-True]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_interruption_text_correspondence::test_validated_customer_append_must_not_become_handoff[before_trigger-False]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_interruption_text_correspondence::test_validated_customer_append_must_not_become_handoff[before_trigger-True]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_interruption_text_correspondence::test_correspondence_claim_cannot_override_changed_or_unsafe_evidence[proof]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_interruption_text_correspondence::test_correspondence_claim_cannot_override_changed_or_unsafe_evidence[observation]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_interruption_text_correspondence::test_correspondence_claim_cannot_override_changed_or_unsafe_evidence[old_sequence]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_interruption_text_correspondence::test_correspondence_claim_cannot_override_changed_or_unsafe_evidence[decision]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_interruption_text_correspondence::test_correspondence_claim_cannot_override_changed_or_unsafe_evidence[customer_role]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_interruption_text_correspondence::test_correspondence_claim_cannot_override_changed_or_unsafe_evidence[draft]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_interruption_text_correspondence::test_correspondence_claim_cannot_override_changed_or_unsafe_evidence[target]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_interruption_text_correspondence::test_correspondence_interruption_reaches_automatic_new_reply[False]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_interruption_text_correspondence::test_correspondence_interruption_reaches_automatic_new_reply[True]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_layered_send_status_http::test_layered_status_keeps_immediate_customer_reply_and_receipt[missing-False]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_layered_send_status_http::test_layered_status_keeps_immediate_customer_reply_and_receipt[missing-True]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_layered_send_status_http::test_layered_status_keeps_immediate_customer_reply_and_receipt[sending,clear-False]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_layered_send_status_http::test_layered_status_keeps_immediate_customer_reply_and_receipt[sending,clear-True]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_layered_send_status_http::test_missing_indicator_confirmed_receipt_survives_same_sqlite_restart[lost_request]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_layered_send_status_http::test_missing_indicator_confirmed_receipt_survives_same_sqlite_restart[lost_response]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_layered_send_status_http::test_three_segments_use_formal_confirmation_and_fresh_baseline[missing]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_layered_send_status_http::test_three_segments_use_formal_confirmation_and_fresh_baseline[sending,clear]",
+          "result": "passed"
+        }
+      ]
+    },
+    {
+      "name": "http-correction",
+      "original_xml_sha256": "3b6dc6de3f9ac94167af93bc3ccf67d03acc725f29aa39873d599b7734ba455a",
+      "count": 11,
+      "cases": [
+        {
+          "name": "tests.test_rejected_correction_recheck::test_busy_http_instruction_agrees_with_worker_retry",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_rejected_correction_recheck::test_closed_customer_is_not_global_block_after_old_rejection[False]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_rejected_correction_recheck::test_closed_customer_is_not_global_block_after_old_rejection[True]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_rejected_correction_recheck::test_resolution_lookup_never_applies_correction_or_bypasses_guards[active_business]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_rejected_correction_recheck::test_resolution_lookup_never_applies_correction_or_bypasses_guards[invalid_proof]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_rejected_correction_recheck::test_resolution_lookup_never_applies_correction_or_bypasses_guards[unsettled_send]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_rejected_correction_recheck::test_http_flags_and_worker_use_identical_recovery_rule[HISTORICAL_TEXT_CORRECTION_BUSY-409-retry]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_rejected_correction_recheck::test_http_flags_and_worker_use_identical_recovery_rule[HISTORICAL_TEXT_CORRECTION_BUSY-422-capability_paused]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_rejected_correction_recheck::test_http_flags_and_worker_use_identical_recovery_rule[UNKNOWN_TEST_ERROR-409-capability_paused]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_rejected_correction_recheck::test_http_flags_and_worker_use_identical_recovery_rule[UNKNOWN_TEST_ERROR-503-retry]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_rejected_correction_recheck::test_http_flags_and_worker_use_identical_recovery_rule[MESSAGE_CONTRACT_REVISION_MISMATCH-500-capability_paused]",
+          "result": "passed"
+        }
+      ]
+    }
+  ],
+  "environment": {
+    "checks_reused": 174,
+    "business_tests_reexecuted": 0,
+    "source": "Independent integrated116 worker/shared and58 HTTP/PostgreSQL final results; retry identity normalization documented; original failed/skipped results retained.",
+    "not_verified": [
+      "Windows native UI, actual WeChat sends and real provider calls remain onsite acceptance.",
+      "No full-project regression claim.",
+      "Initial environment/fixture failures are retained in original XML and replaced only by exact test identity final results."
+    ]
+  }
+}

@@ -1,3 +1,5 @@
+' 当前文档v0.9.90/r1：正式保留数据强升准备；759dbd0/fd1c1f0完整包含11号与AM已审修复，未上线。
+' Windows原装0.9.89已关闭无待处理；复用116+58结果，成品/安装/部署待验；以下为历史记录。
 ' 当前文档v0.9.89/r4：已审AM头像OCR与11号收尾/合同修复联合灰度，未发布；生产保持r2。
 ' 历史0.9.89/r3（2026-09-19）已知缺陷修复候选，未提交/发布；生产仍为下方r2。
 ' 已结算凭据/纯失败报告回补；旧纠错拒绝只查询结清证明；D1插话核验同证据；busy409共用retry。
@@ -62,7 +64,7 @@
 ' r10不改变产品流程；只固化画面一致性与正式BackgroundTasks测试，产品指纹保持已审eff500e/0cdf482。
 ' r11仅来源和交付登记；沿用已审流程，未改图示语义，未重新渲染；不发包/部署。
 @startuml
-title 车金 AI 全流程图 v0.9.89（r4已审源码联合灰度；生产仍r2；Windows实发待验）
+title 车金 AI 全流程图 v0.9.90（r1正式发布准备；Windows成品待验）
 
 skinparam monochrome true
 skinparam shadowing false
@@ -1552,7 +1554,7 @@ endlegend
 ' r4 已确认规则：销售换绑 -> 已开始/旧 Flow 未结算则拒绝 -> 原机器结算后再换绑；未开始随销售新 Worker 或等待；完成记录不动。
 
 @startuml evidence_tolerance_r9
-title v0.9.89（r2已发布）已复审实现视图：D1—D7、D1-H与恢复L1/L2
+title v0.9.90（r1正式发布准备）已复审实现视图：D1—D7、D1-H与恢复L1/L2
 skinparam monochrome true
 skinparam shadowing false
 start
