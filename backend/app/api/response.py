@@ -17,8 +17,8 @@ def error_retryable(status_code: int) -> bool:
 
 def error_response(status_code: int, code: str, message: str, data: Any = None, trace_id: str | None = None) -> JSONResponse:
     details = dict(data) if isinstance(data, dict) else {}
-    details["retryable"] = error_retryable(status_code)
     recovery_action = recovery_action_for_error(code, status_code)
+    details["retryable"] = recovery_action == "retry"
     details["recovery_action"] = recovery_action
     # Authorization termination never proves that a previously formed local
     # fact was persisted.  Only the explicit fact-settlement response may

@@ -3964,16 +3964,5 @@
     "generation_policy": "fresh_complete_read_then_existing_async_callback",
     "old_sending_or_unknown": "busy_defer",
     "correction_does_not_resume": true
-  },
-  "historical_text_correction_recheck_contract": {
-    "version": 1,
-    "route": "/workers/{worker_id}/wechat/message-text-corrections/resolution",
-    "request": "original_frozen_correction_request",
-    "mode": "resolution_only_never_apply_correction",
-    "eligibility": "durable_rejected_correction",
-    "result": "existing_business_ended_resolution",
-    "durability": "immutable_rejection_and_separate_resolution_receipt",
-    "retry": "existing_outbox_backoff_preserve_original_until_valid_resolution",
-    "resume": "explicit_start_with_existing_local_and_backend_barriers"
   }
 }

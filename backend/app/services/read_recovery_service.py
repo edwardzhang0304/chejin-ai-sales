@@ -21,6 +21,74 @@ from app.schemas.wechat import WechatMessageIngestRequest
 from app.services.worker_service import has_unsettled_worker_send
 
 TERMINAL_EVENT = 'worker_read_business_settled'
+FAILURE_RECEIPT_EVENT = 'worker_closed_read_failure_received'
+
+
+def completed_read_receipt(db: Session, worker: Worker, payload: WechatMessageIngestRequest,
+                           raw_payload: dict | None) -> OperationLog | None:
+    """Return a receipt, never permission to read, send or revive a customer.
+
+    A new pure failure receipt is transient until the existing ingest transaction
+    adds it under the Worker lock. A committed receipt remains replayable even
+    when the original business rows have since been removed.
+    """
+    if (raw_payload is None or worker.client_binding_state != 'bound' or not worker.enabled
+            or worker.deleted_at or not worker.bound_at or not worker.client_instance_id):
+        return None
+    rules = shared_adapter('read_settlement')
+    selected = compatible_read_contract(payload.contract_revision, payload.contract_sha256)
+    if selected is None:
+        return None
+    from app.services.wechat_service import _validate_v3_request_contract
+    records = list(db.scalars(select(OperationLog).where(
+        OperationLog.event_type.in_([TERMINAL_EVENT, FAILURE_RECEIPT_EVENT]),
+        OperationLog.operator_id == worker.id, OperationLog.target_id == payload.read_run_id,
+        OperationLog.target_type == 'worker_flow').order_by(OperationLog.created_at)))
+    identity = {'payload_sha256': rules.payload_sha256(raw_payload),
+                'worker_id': worker.id, 'client_instance_id': worker.client_instance_id,
+                'bound_at': _utc(worker.bound_at).isoformat(), 'conversation_id': payload.conversation_id}
+    for record in records:
+        saved = record.after_data or {}
+        if record.event_type == FAILURE_RECEIPT_EVENT:
+            if saved.get('identity') != identity or not rules.is_failure_report(raw_payload):
+                raise AppError('C2_RECOVERY_BATCH_CONFLICT', '原失败报告或归属已变化', 409)
+        else:
+            # Different original partitions retain their own receipts.
+            if (saved.get('identity') or {}).get('payload_sha256') != identity['payload_sha256']:
+                continue
+            try:
+                rules.validate_settlement(raw_payload, saved.get('response') or {}, worker_id=worker.id,
+                    client_instance_id=worker.client_instance_id, bound_at=worker.bound_at)
+            except (ValueError, TypeError, KeyError) as exc:
+                raise AppError('C2_RECOVERY_OWNER_MISMATCH', '原结算凭据与当前归属不匹配', 409) from exc
+        _validate_v3_request_contract(payload, contract=selected)
+        return record
+    if records or not rules.is_failure_report(raw_payload):
+        return None
+    if worker.run_status not in {'faulted', 'paused'} or (worker.inflight_flow_state or {}).get('flow_id'):
+        return None
+    finish = db.scalar(select(OperationLog).where(
+        OperationLog.event_type == 'worker_inflight_finished', OperationLog.target_type == 'worker_flow',
+        OperationLog.operator_id == worker.id, OperationLog.target_id == payload.read_run_id)
+        .order_by(OperationLog.created_at.desc()).limit(1))
+    proof = (finish.after_data or {}) if finish else {}
+    if (not finish or proof.get('terminal_kind') != 'technical_failed' or not proof.get('error_code')
+            or proof.get('flow_id') != payload.read_run_id
+            or proof.get('conversation_id') != payload.conversation_id
+            or proof.get('client_instance_id') != worker.client_instance_id
+            or proof.get('bound_at') != identity['bound_at']
+            or _utc(payload.evidence.finished_at) > _utc(finish.created_at)
+            or not _matches_registered_read_contract(selected,
+                (finish.extra_metadata or {}).get('registered_read_contract') or {})):
+        return None
+    _validate_v3_request_contract(payload, contract=selected)
+    response = {'ingested_count': 0, 'duplicated_count': 0, 'ignored_count': 0, 'results': [],
+        'next_action': 'none', 'read_completion': {'result': 'technical_failed',
+            'error_code': proof['error_code'], 'completed_at': finish.created_at.isoformat()}}
+    return OperationLog(event_type=FAILURE_RECEIPT_EVENT, module='wechat', target_type='worker_flow',
+        target_id=payload.read_run_id, operator_id=worker.id,
+        after_data={'identity': identity, 'response': response},
+        extra_metadata={'original_finish_id': finish.id})
 
 
 @dataclass(frozen=True)
@@ -481,10 +549,12 @@ def closed_read_recovery(
 
 def validate_message_continuation(
     db: Session, worker: Worker, payload: WechatMessageIngestRequest,
-    presented_flow_id: str | None,
+    presented_flow_id: str | None, *, raw_payload: dict | None = None,
 ) -> OperationLog | CancelledRead | None:
     from app.services.worker_service import validate_inflight_continuation
     if presented_flow_id in (None, payload.read_run_id):
+        if completed_read_receipt(db, worker, payload, raw_payload) is not None:
+            return None
         cancelled = cancelled_read_admission(db, worker, payload)
         if cancelled is not None:
             return cancelled

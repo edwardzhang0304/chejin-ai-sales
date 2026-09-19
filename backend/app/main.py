@@ -69,7 +69,7 @@ class C2IngestBodyLimitMiddleware:
         send: Callable[[dict[str, Any]], Awaitable[None]],
     ) -> None:
         path = str(scope.get("path") or "")
-        correction = path.endswith("/wechat/message-text-corrections")
+        correction = path.endswith(("/wechat/message-text-corrections", "/wechat/message-text-corrections/resolution"))
         if scope.get("type") != "http" or not (path.endswith("/wechat/messages/ingest") or correction):
             await self.app(scope, receive, send)
             return
@@ -218,7 +218,7 @@ def create_app() -> FastAPI:
                 trace_id=trace_id,
             )
         errors = exc.errors()
-        if request.url.path.endswith(("/vision-credential", "/wechat/message-text-corrections")) or (
+        if request.url.path.endswith(("/vision-credential", "/wechat/message-text-corrections", "/wechat/message-text-corrections/resolution")) or (
             request.method == "POST" and request.url.path == f"{settings.api_prefix}/workers"
         ):
             # Malformed credential bodies can contain secrets even when an error
@@ -229,7 +229,7 @@ def create_app() -> FastAPI:
     @app.exception_handler(Exception)
     async def unhandled_error_handler(request: Request, exc: Exception):
         trace_id = getattr(request.state, "request_id", None)
-        credential_request = request.url.path.endswith(("/vision-credential", "/wechat/message-text-corrections")) or (
+        credential_request = request.url.path.endswith(("/vision-credential", "/wechat/message-text-corrections", "/wechat/message-text-corrections/resolution")) or (
             request.method == "POST" and request.url.path == f"{settings.api_prefix}/workers"
         )
         if credential_request:

@@ -16,8 +16,7 @@ INVALIDATED = "HISTORICAL_TEXT_CORRECTED"
 
 
 def _busy():
-    raise AppError("HISTORICAL_TEXT_CORRECTION_BUSY", "原流程仍有未结算动作，稍后重新核验", 409,
-                   {"retryable": True})
+    raise AppError("HISTORICAL_TEXT_CORRECTION_BUSY", "原流程仍有未结算动作，稍后重新核验", 409)
 
 
 def _rejected(reason, *, resolution=None):
@@ -31,7 +30,7 @@ def _result(row, *, duplicated):
             "effective_text": row.effective_text, "effective_text_sha256": row.effective_text_sha256}
 
 
-def append_correction(db, *, worker, payload, client_instance_id, current_flow_id=None):
+def append_correction(db, *, worker, payload, client_instance_id, current_flow_id=None, resolution_only=False):
     from app.services import c3_service as c3
     from app.services.followup_eligibility import followup_block_reason, lock_leads, token_for_revision
     from app.services.pre_send_read_recovery import PENDING, pending_sources, pack_pending_sources
@@ -69,6 +68,8 @@ def append_correction(db, *, worker, payload, client_instance_id, current_flow_i
     # the old proposal in a fact-only closure receipt after all original work
     # is settled. No correction or resumption occurs on that path.
     if not business_ended:
+        if resolution_only:
+            _rejected("business_active")
         if payload.authorization_revision != token_for_revision(binding.id, int(binding.authorization_revision or 1)):
             _rejected("current_authorization_changed")
         if binding.listen_status not in {"listening", "degraded"}:
@@ -94,6 +95,8 @@ def append_correction(db, *, worker, payload, client_instance_id, current_flow_i
         MessageTextCorrection.message_event_id == original.id,
         MessageTextCorrection.proof_sha256 == payload.proof_sha256))
     if prior:
+        if resolution_only:
+            _rejected("correction_already_accepted")
         # Still verify the frozen envelope: an alleged digest alone is not a retry.
         from app.services.message_text_correction_proof import proof_digest
         if proof_digest(payload) != prior.proof_sha256 or payload.proof.image_sha256 != prior.image_sha256:

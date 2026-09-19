@@ -639,11 +639,11 @@ class WorkerApiClient:
             extra_headers=headers or None,
         )
 
-    def post_wechat_message_text_correction(self, binding: Binding, payload: dict[str, Any]) -> dict[str, Any]:
+    def post_wechat_message_text_correction(self, binding: Binding, payload: dict[str, Any], *, resolution_only: bool = False) -> dict[str, Any]:
         # _request may attach the actual active Flow. The historical source read
         # is audit identity only and must never become X-Inflight-Flow-Id.
         return self._request("POST",
-            f"/workers/{binding.worker_id}/wechat/message-text-corrections",
+            f"/workers/{binding.worker_id}/wechat/message-text-corrections" + ("/resolution" if resolution_only else ""),
             binding=binding, json=payload)
 
     def interrupt_reply_sequence(self, binding: Binding, batch_id: str, *, frame_id: str, observation_ids: list[str]) -> dict[str, Any]:

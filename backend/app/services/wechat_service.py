@@ -4283,6 +4283,21 @@ def ingest_messages(db: Session, worker: Worker, payload: WechatMessageIngestReq
             WechatSessionBinding.deleted_at.is_(None),
         ).with_for_update().execution_options(populate_existing=True)
     )
+    locked_worker = db.scalar(
+        select(Worker)
+        .where(Worker.id == worker.id, Worker.deleted_at.is_(None))
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    )
+    if locked_worker is None:
+        raise AppError("WORKER_NOT_FOUND", "Worker 不存在", 404)
+    worker = locked_worker
+    from app.services.read_recovery_service import completed_read_receipt
+    completed = completed_read_receipt(db, worker, payload, raw_payload)
+    if completed is not None:
+        db.add(completed)
+        db.flush()
+        return completed.after_data['response']
     if not binding or binding.bind_status != BIND_STATUS_BOUND or not binding.allow_listening or not _clean_locator(binding.remark_code):
         raise AppError("MESSAGE_CONVERSATION_NOT_BOUND", "会话未绑定，不能入库消息", 409)
     if payload.contract_version != 3:
@@ -4300,15 +4315,6 @@ def ingest_messages(db: Session, worker: Worker, payload: WechatMessageIngestReq
             "读取请求携带了后端尚未签发的未读代次",
             409,
         )
-    locked_worker = db.scalar(
-        select(Worker)
-        .where(Worker.id == worker.id, Worker.deleted_at.is_(None))
-        .with_for_update()
-        .execution_options(populate_existing=True)
-    )
-    if locked_worker is None:
-        raise AppError("WORKER_NOT_FOUND", "Worker 不存在", 404)
-    worker = locked_worker
     from app.services.read_recovery_service import (
         CancelledRead, validate_message_continuation, record_closed_read_recovery, settle_cancelled_read,
     )

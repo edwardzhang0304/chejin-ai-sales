@@ -14278,18 +14278,8 @@ class TaskRunner:
                 if persisted_read_run_id
                 else False
             )
-            gate_only = (
-                persisted_payload.get("messages") == []
-                and persisted_evidence.get("observations") == []
-                and persisted_evidence.get("slot_ledger_states") == []
-                and isinstance(persisted_evidence.get("flow_gate_errors"), list)
-                and bool(persisted_evidence["flow_gate_errors"])
-                and all(
-                    isinstance(code, str) and bool(code.strip())
-                    for code in persisted_evidence["flow_gate_errors"]
-                )
-                and not persisted_evidence.get("failed_voice_source_keys")
-            )
+            from .shared_rules import read_settlement
+            gate_only = read_settlement.is_failure_report(persisted_payload)
             if (
                 persisted_messages
                 or persisted_slot_states
