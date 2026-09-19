@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any, Iterable
 
 from .config import CONFIG
+from .update_filesystem import update_filesystem_path
 from .c2_contract import c2_contract_v3
 
 
@@ -47,6 +48,7 @@ def action_journal_path(action_kind: str, transaction_id: str) -> Path:
 
 
 def _atomic_write(path: Path, payload: dict[str, Any]) -> None:
+    path = update_filesystem_path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_suffix(f"{path.suffix}.tmp-{os.getpid()}")
     encoded = json.dumps(
@@ -71,7 +73,7 @@ def _atomic_write(path: Path, payload: dict[str, Any]) -> None:
 
 def read_action_journal(path: str | Path) -> dict[str, Any]:
     try:
-        payload = json.loads(Path(path).read_text(encoding="utf-8"))
+        payload = json.loads(update_filesystem_path(Path(path)).read_text(encoding="utf-8"))
     except FileNotFoundError:
         return {}
     except (OSError, json.JSONDecodeError, TypeError, ValueError) as exc:
@@ -362,7 +364,7 @@ def list_action_journals(
     conversation_id: str | None = None,
     action_kinds: Iterable[str] = ("voice", "image"),
 ) -> list[tuple[Path, dict[str, Any]]]:
-    root = CONFIG.app_dir / "transactions" / "actions"
+    root = update_filesystem_path(CONFIG.app_dir / "transactions" / "actions")
     results: list[tuple[Path, dict[str, Any]]] = []
     normalized_conversation = str(conversation_id or "").strip()
     for action_kind in action_kinds:
@@ -385,7 +387,7 @@ def list_action_journals(
 
 def remove_action_journal(path: str | Path) -> None:
     try:
-        Path(path).unlink()
+        update_filesystem_path(Path(path)).unlink()
     except FileNotFoundError:
         return
 

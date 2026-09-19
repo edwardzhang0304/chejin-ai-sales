@@ -489,9 +489,9 @@ def _ocr_trace_record(
     _OCR_TRACE_STACK[-1].append(record)
 
 
-def run_ocr_traced(image: Any, purpose: str, *, region: str = "full", source: str = "") -> list[dict[str, Any]]:
+def run_ocr_traced(image: Any, purpose: str, *, region: str = "full", source: str = "", recognition_image: Any | None = None) -> list[dict[str, Any]]:
     started = time.perf_counter()
-    items = run_ocr(image)
+    items = run_ocr(image) if recognition_image is None else run_ocr(image, recognition_image=recognition_image)
     _ocr_trace_record(
         purpose=purpose,
         image=image,
@@ -584,6 +584,10 @@ def main() -> int:
     )
     parser.add_argument("--visible-session-candidate", default="", help="JSON row candidate from the same Worker visible-session scan.")
     parser.add_argument("--text", help="Message text for send.")
+    parser.add_argument("--expected-context-guard-file", default="")
+    parser.add_argument("--expected-context-guard-sha256", default="")
+    parser.add_argument("--send-task-id", default="")
+    parser.add_argument("--send-action-id", default="")
     parser.add_argument("--phone", default="", help="Phone number for add-friend.")
     parser.add_argument("--wechat", default="", help="WeChat ID for add-friend fallback.")
     parser.add_argument("--verify-message", default="", help="Required add-friend verification message for the entry-click route.")
@@ -652,6 +656,8 @@ def main() -> int:
     parser.add_argument("--no-restore-to-latest", dest="restore_to_latest", action="store_false")
     parser.add_argument("--artifact-dir", help="Optional directory for debug screenshots.")
     args = parser.parse_args()
+    from apps.wechat_ai_customer_service.adapters.send_request_admission import remember_cli_presence
+    remember_cli_presence(args, sys.argv[1:])
 
     captured = io.StringIO()
     try:
@@ -1320,6 +1326,10 @@ def parse_visible_session_candidate_arg(raw: Any) -> dict[str, Any] | None:
 
 def run_action(args: argparse.Namespace) -> dict[str, Any]:
     action = str(args.action or "").strip().lower()
+    from apps.wechat_ai_customer_service.adapters.send_request_admission import admit
+    file_guard, rejection = admit(args)
+    if rejection is not None:
+        return rejection
     original_request = getattr(args, "historical_text_correction_request", "")
     if original_request:
         if action != "messages":
@@ -2146,7 +2156,7 @@ def run_action(args: argparse.Namespace) -> dict[str, Any]:
             exact=bool(args.exact),
             skip_send_rate_guard=bool(args.skip_send_rate_guard),
             artifact_dir=args.artifact_dir,
-            expected_context_guard=parse_expected_send_context_guard(
+            expected_context_guard=file_guard if file_guard is not None else parse_expected_send_context_guard(
                 getattr(args, "expected_context_guard", "")
             ),
             validated_guard=None,
@@ -9325,6 +9335,7 @@ def run_ocr_on_screen_region(
     *,
     purpose: str = "screen_region",
     source: str = "run_ocr_on_screen_region",
+    recognition_image: Any | None = None,
 ) -> list[dict[str, Any]]:
     if not isinstance(bounds, (list, tuple)) or len(bounds) < 4:
         raise win32_ocr_layout.LayoutSnapshotError(
@@ -9343,7 +9354,11 @@ def run_ocr_on_screen_region(
     right = max(left + 1, min(width, right))
     bottom = max(top + 1, min(height, bottom))
     cropped = image.crop((left, top, right, bottom))
-    items = run_ocr_traced(cropped, purpose, region="roi", source=source)
+    if recognition_image is None:
+        items = run_ocr_traced(cropped, purpose, region="roi", source=source)
+    else:
+        items = run_ocr_traced(cropped, purpose, region="roi", source=source,
+                               recognition_image=recognition_image.crop((left, top, right, bottom)))
     for item in items:
         for key in ("left", "right", "center_x"):
             item[key] = float(item.get(key) or 0.0) + left
@@ -9394,7 +9409,7 @@ def _read_chat_fact_ocr(function, *args, **kwargs):
 def _run_chat_text_ocr(
     screenshot: Any, purpose: str, *, source: str = "", diagnostic_fallback: bool = False,
 ) -> list[dict[str, Any]]:
-    """Only OCR sees the derived image; callers retain the original frame."""
+    """Locate lines on the original frame; recognize only avatar-masked pixels."""
     try:
         derived, info = avatar_text_input.prepare(screenshot, layout_snapshot_for_image(screenshot))
     except frame_avatars.AvatarEvidenceError:
@@ -9403,7 +9418,7 @@ def _run_chat_text_ocr(
         # A title/navigation diagnostic is not conditional on avatar admission.
         # Unmarked results cannot later be reused as clean message facts.
         return run_ocr_traced(screenshot, purpose, source=source)
-    items = run_ocr_traced(derived, purpose, source=source)
+    items = run_ocr_traced(screenshot, purpose, source=source, recognition_image=derived)
     return avatar_text_input.record(screenshot, items, info, ["full_frame"])
 
 
@@ -9465,10 +9480,11 @@ def run_ocr_for_chat_fact_frame(
     derived, preprocessing = avatar_text_input.prepare(screenshot, snapshot)
     for name in region_names:
         region_items = run_ocr_on_screen_region(
-            derived,
+            screenshot,
             bounds_by_name[name],
             purpose=f"{purpose}_{name}",
             source=source,
+            recognition_image=derived,
         )
         for item in region_items:
             item["ocr_region_name"] = name
@@ -19829,7 +19845,7 @@ def image_information_score(image: Any) -> float:
     return win32_ocr_render.image_information_score(image)
 
 
-def run_ocr(image: Any) -> list[dict[str, Any]]:
+def run_ocr(image: Any, *, recognition_image: Any | None = None) -> list[dict[str, Any]]:
     global _OCR_ENGINE
     items, _OCR_ENGINE = win32_ocr_engine.run_ocr_with_cache(
         image,
@@ -19837,6 +19853,7 @@ def run_ocr(image: Any) -> list[dict[str, Any]]:
         engine=_OCR_ENGINE,
         import_error=_OCR_IMPORT_ERROR,
         min_confidence=OCR_MIN_CONFIDENCE,
+        recognition_image=recognition_image,
     )
     _finalize_layout_snapshot_ocr_anchors(image, items)
     return items
@@ -22518,6 +22535,11 @@ def args_for_daemon_request(request: dict[str, Any]) -> list[str]:
     text = str(request.get("text") or "")
     if action == "send" and text:
         argv.extend(["--text", text])
+    for key, flag in (("expected_context_guard_file", "--expected-context-guard-file"),
+                      ("expected_context_guard_sha256", "--expected-context-guard-sha256"),
+                      ("send_task_id", "--send-task-id"), ("send_action_id", "--send-action-id")):
+        if request.get(key):
+            argv.extend([flag, str(request[key])])
     expected_context_guard = request.get("expected_context_guard")
     if action == "send" and isinstance(expected_context_guard, dict):
         argv.extend(
@@ -22697,6 +22719,10 @@ def run_sidecar_cli(argv: list[str] | None = None) -> dict[str, Any]:
     )
     parser.add_argument("--visible-session-candidate", default="", help="JSON row candidate from the same Worker visible-session scan.")
     parser.add_argument("--text", help="Message text for send.")
+    parser.add_argument("--expected-context-guard-file", default="")
+    parser.add_argument("--expected-context-guard-sha256", default="")
+    parser.add_argument("--send-task-id", default="")
+    parser.add_argument("--send-action-id", default="")
     parser.add_argument("--phone", default="", help="Phone number for add-friend.")
     parser.add_argument("--wechat", default="", help="WeChat ID for add-friend fallback.")
     parser.add_argument("--verify-message", default="", help="Required add-friend verification message for the entry-click route.")
@@ -22770,6 +22796,8 @@ def run_sidecar_cli(argv: list[str] | None = None) -> dict[str, Any]:
     )
     parser.add_argument("--daemon", action="store_true", help="Run as stdin/stdout JSON daemon.")
     args = parser.parse_args(argv)
+    from apps.wechat_ai_customer_service.adapters.send_request_admission import remember_cli_presence
+    remember_cli_presence(args, sys.argv[1:] if argv is None else argv)
     if args.daemon:
         return {"ok": False, "state": "daemon_reentry_not_supported"}
     configure_dpi_awareness()

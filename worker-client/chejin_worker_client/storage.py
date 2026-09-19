@@ -2944,6 +2944,7 @@ def save_reply_send_intent(
     task_id: str,
     send_token: str,
     reply_text_hash: str | None = None,
+    intent_evidence: dict[str, Any] | None = None,
 ) -> None:
     if not reply_action_id or not task_id or not send_token:
         raise ValueError("REPLY_SEND_INTENT_IDENTITY_MISSING")
@@ -2955,11 +2956,14 @@ def save_reply_send_intent(
               reply_action_id, task_id, send_token, status, action_phase,
               reply_text_hash,
               ack_payload_json, attempt_count, created_at, updated_at
-            ) VALUES (?, ?, ?, 'intent', 'not_attempted', ?, NULL, 0, ?, ?)
+            ) VALUES (?, ?, ?, 'intent', 'not_attempted', ?, ?, 0, ?, ?)
             ON CONFLICT(reply_action_id) DO UPDATE SET
               task_id = excluded.task_id,
               send_token = excluded.send_token,
               reply_text_hash = excluded.reply_text_hash,
+              ack_payload_json = CASE WHEN reply_send_ack_outbox.status = 'intent'
+                THEN COALESCE(reply_send_ack_outbox.ack_payload_json, excluded.ack_payload_json)
+                ELSE reply_send_ack_outbox.ack_payload_json END,
               updated_at = excluded.updated_at
             WHERE reply_send_ack_outbox.status != 'confirmed'
             """,
@@ -2968,6 +2972,7 @@ def save_reply_send_intent(
                 task_id,
                 send_token,
                 str(reply_text_hash or "") or None,
+                json.dumps({"evidence": intent_evidence}, ensure_ascii=False) if intent_evidence is not None else None,
                 now,
                 now,
             ),
@@ -2980,13 +2985,14 @@ def finalize_reply_send_ack(
     reply_action_id: str,
     ack_payload: dict[str, Any],
 ) -> None:
-    _assert_outbox_text_only(ack_payload, path="reply_send_ack")
-    encoded = json.dumps(
-        ack_payload,
-        ensure_ascii=False,
-        separators=(",", ":"),
-    )
     with db_connection() as conn:
+        previous = conn.execute("SELECT ack_payload_json FROM reply_send_ack_outbox WHERE reply_action_id = ?",
+                                (reply_action_id,)).fetchone()
+        from .send_request_evidence import with_journal_references
+        ack_payload = with_journal_references(reply_action_id, ack_payload,
+            json.loads(previous["ack_payload_json"] or "{}") if previous else None)
+        _assert_outbox_text_only(ack_payload, path="reply_send_ack")
+        encoded = json.dumps(ack_payload, ensure_ascii=False, separators=(",", ":"))
         cursor = conn.execute(
             """
             UPDATE reply_send_ack_outbox
@@ -3241,6 +3247,9 @@ def prune_terminal_outboxes(
                 terminal_statuses)]
             blocked = ({row['outbox_id'] for row in unsettled_c2_outbox_rows(conn)}
                        if table == 'c2_ingest_outbox' else set())
+            if table == 'reply_send_ack_outbox':
+                from .send_request_evidence import retains_files
+                blocked.update(row['reply_action_id'] for row in rows if retains_files(row))
             settled = [row for row in rows if row[identity_column] not in blocked]
             stale = {row[identity_column] for index, row in enumerate(settled)
                      if row['updated_at'] < cutoff or index >= keep_limit}

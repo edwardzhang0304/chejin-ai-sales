@@ -30,10 +30,14 @@ from test_c2_identity_gate_settlement import SCRIPT, ROOT
 def test_original_avatar_frame_automatically_continues_after_confirmed_reply(
     http_api, tmp_path, monkeypatch, real_frames,
 ):
-    before = real_frames['before'][0]
-    after = real_frames['after'][0]
-    assert len(before['observations']) == 5
-    assert len(after['observations']) == 6
+    assert len(real_frames['before'][0]['observations']) == 5
+    assert len(real_frames['after'][0]['observations']) == 6
+    _check_original_frame_continuation(http_api, tmp_path, monkeypatch, real_frames)
+
+
+def _check_original_frame_continuation(http_api, tmp_path, monkeypatch, frames):
+    before = frames['before'][0]
+    after = frames['after'][0]
     text = after['observations'][-2]['content_clean']
     class Model:
         requests = []
@@ -118,5 +122,5 @@ def test_original_avatar_frame_automatically_continues_after_confirmed_reply(
         assert not list(db.scalars(select(HandoffEvent)))
         assert not db.get(Worker,w['id']).inflight_flow_state
         events=list(db.scalars(select(MessageEvent).where(MessageEvent.conversation_id==row['conversation_id'])))
-        assert len(events)==7,[(e.sender_role,e.content) for e in events]
+        assert len(events)==len(before['observations'])+2,[(e.sender_role,e.content) for e in events]
         assert all('UNI' not in (e.content or '') for e in events)

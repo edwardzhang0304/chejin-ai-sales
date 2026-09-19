@@ -25,7 +25,7 @@ def test_layout_rejection_is_not_an_ocr_io_failure(monkeypatch,tmp_path,roi):
     assert s.navigation_layout_snapshot_for_image(raw)['valid']
     calls=[]
     monkeypatch.setattr(s,'capture_wechat',lambda *a,**kw:(raw,'controlled-no-boundary.png'))
-    monkeypatch.setattr(s,'run_ocr',lambda image:calls.append('ocr') or [])
+    monkeypatch.setattr(s,'run_ocr',lambda image,**kwargs:calls.append('ocr') or [])
     monkeypatch.setenv('CHEJIN_C3_PRE_SEND_ROI_REUSE_ENABLED','1')
     try:
         result=s.messages_payload(c['hwnd'],{},target='CJTEST01',history_load_times=0,chat_fact_roi_ocr=roi)
@@ -70,7 +70,7 @@ def test_uncertified_cached_rows_keep_layout_error(monkeypatch,tmp_path,roi):
     c=calibration();install_desktop(monkeypatch,tmp_path,c)
     raw=frame(boundary=False);assert not register(raw,c)['valid']
     calls=[]
-    monkeypatch.setattr(s,'run_ocr',lambda image:calls.append('ocr') or [])
+    monkeypatch.setattr(s,'run_ocr',lambda image,**kwargs:calls.append('ocr') or [])
     monkeypatch.setenv('CHEJIN_C3_SEND_FRAME_LOCAL_REUSE_ENABLED','1' if roi else '0')
     with pytest.raises(s.frame_avatars.AvatarEvidenceError):
         s.build_send_fact_snapshot_from_frame(c['hwnd'],target='CJTEST01',text='test',exact=True,
@@ -86,7 +86,7 @@ def test_roi_confirmation_fallback_preserves_semantic_exception(monkeypatch,tmp_
     raw=frame();assert register(raw,c)['valid']
     monkeypatch.setenv('CHEJIN_C3_SEND_FRAME_LOCAL_REUSE_ENABLED','1')
     calls=[]
-    monkeypatch.setattr(s,'run_ocr',lambda image:calls.append('ocr') or [])
+    monkeypatch.setattr(s,'run_ocr',lambda image,**kwargs:calls.append('ocr') or [])
     monkeypatch.setattr(s,'validate_active_send_target',lambda *a,**kw:{'ok':False})
     prepare=s.avatar_text_input.prepare
     failure=(s.frame_avatars.AvatarEvidenceError({'reason':'controlled_fallback_admission'})
@@ -115,7 +115,7 @@ def test_send_ocr_io_failure_keeps_existing_proof(monkeypatch,tmp_path,route):
     monkeypatch.setattr(s,'validate_active_send_target',lambda *a,**kw:{'ok':False})
     calls=[]
     failure=OSError('controlled actual OCR I/O failure')
-    def ocr(image):
+    def ocr(image, **kwargs):
         calls.append(image)
         if route=='fallback' and len(calls)<=3:
             return []

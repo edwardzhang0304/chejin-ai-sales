@@ -312,6 +312,10 @@ def _write_evidence_files(
         item.file_size for item in archive.infolist() if item.filename.startswith("evidence/")
     )
     for path in files:
+        # Request inputs are exported separately with their exact bytes and
+        # short member names, including a fallback root outside app_dir.
+        if path.parent.name == "ipc" and re.fullmatch(r"[0-9a-f]{32}\.json", path.name):
+            continue
         data = _read_evidence_file(path, secrets, omissions, max_bytes=MAX_EVIDENCE_BYTES)
         if data is None:
             continue
@@ -326,6 +330,8 @@ def _write_evidence_files(
             remaining -= len(data)
         entries.append({"source_path": str(path), "archive_path": name, "sha256": digest,
                         "scope": "origin" if path in origin_files else "recent_log_context"})
+    from .send_request_evidence import export_files
+    entries.extend(export_files(archive, secrets=secrets, max_bytes=MAX_EVIDENCE_BYTES, omissions=omissions))
     origin_screenshots = [item["archive_path"] for item in entries
                           if item["scope"] == "origin"
                           and Path(item["source_path"]).suffix.lower() in _ALLOWED_BINARY_SUFFIXES]

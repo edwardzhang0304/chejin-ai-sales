@@ -7206,6 +7206,7 @@ class TaskRunner:
         local_lock = lock_summary()
         local_lock["capabilities"] = {**(local_lock.get("capabilities") or {}), "reply_sequence_version": 1,
                                       "pre_send_read_recovery_version": 1,
+                                      "pre_send_setup_recovery_version": 1,
                                       "text_correspondence_version": 1,
                                       "historical_text_correction_version": 1}
         vision_capability = load_c2_state("vision_preflight")
@@ -7599,6 +7600,8 @@ class TaskRunner:
                 },
             )
         try:
+            from .send_request_evidence import cleanup as cleanup_send_requests
+            cleanup_send_requests(self)
             outbox_result = prune_terminal_outboxes(
                 retention_days=CONFIG.outbox_terminal_retention_days,
                 max_terminal_rows=CONFIG.outbox_max_terminal_rows,
@@ -8309,6 +8312,9 @@ class TaskRunner:
         )
         mark_reply_send_ack_attempt(reply_action_id)
         try:
+            from .send_setup_recovery import stop_before_ack
+            if not stop_before_ack(self, record):
+                return False
             from .post_send_customer_read import restore_read_intent
             restore_read_intent(record)
             self.api.sent_ack(
@@ -8316,6 +8322,11 @@ class TaskRunner:
                 claim,
                 **ack_payload,
             )
+            setup_proof = (ack_payload.get("evidence") or {}).get("pre_send_setup_failure")
+            if isinstance(setup_proof, dict):
+                self._clear_possible_ai_send(
+                    conversation_id=setup_proof["conversation_id"], reply_action_id=reply_action_id,
+                )
             mark_reply_send_ack_confirmed(reply_action_id)
             from .pre_send_read_recovery import mark_settled_if_present
             mark_settled_if_present(reply_action_id)
@@ -8428,6 +8439,9 @@ class TaskRunner:
         self,
         binding: Binding,
     ) -> bool:
+        from .send_setup_recovery import prepare_receipt_recovery as prepare_setup_receipt
+        if not prepare_setup_receipt(self, binding):
+            return False
         from .pre_send_read_recovery import prepare_receipt_recovery
         if not prepare_receipt_recovery(self, binding):
             return False
@@ -8728,6 +8742,10 @@ class TaskRunner:
             "action_journal": payload.get("action_journal"),
             **({"pre_send_read_failure": payload["pre_send_read_failure"]}
                if "pre_send_read_failure" in payload else {}),
+            **({"pre_send_setup_failure": payload["pre_send_setup_failure"]}
+               if "pre_send_setup_failure" in payload else {}),
+            **({"send_request_files": payload["send_request_files"]}
+               if "send_request_files" in payload else {}),
             "send_baseline": {
                 **({key: send_baseline.get(key) for key in (
                     "ok", "validation", "input_region", "frame_observation", "send_context_guard", "message_sequence",
@@ -19165,11 +19183,14 @@ class TaskRunner:
                     "failure_step": "claim_send",
                     "batch": status,
                 }
+            from .send_setup_recovery import context_for_claim
+            setup_context = context_for_claim(claim, target)
             save_reply_send_intent(
                 reply_action_id=claim.reply_action_id,
                 task_id=claim.task_id,
                 send_token=claim.send_token,
                 reply_text_hash=claim.reply_text_hash,
+                intent_evidence={"pre_send_setup_context": setup_context},
             )
             claim_checkpoint = (
                 self._validate_claim_pre_send_fact_checkpoint(
@@ -19326,6 +19347,7 @@ class TaskRunner:
                     pre_frame_id=pre_send_frame_id,
                     canonical_action_id=claim.reply_action_id,
                     reserved_worker_stable_id=reserved_send_stable_id,
+                    prepare_evidence={"pre_send_setup_context": setup_context},
                 )
             else:
                 existing_send_journal = read_action_journal(
@@ -19494,6 +19516,9 @@ class TaskRunner:
                     ),
                 )
             except Exception as exc:
+                # Preserve the original intent even when launch-fact storage
+                # failed. Recovery must inspect it before any new action.
+                self.set_run_status("faulted")
                 record_reply_stage(
                     sidecar_payload=None,
                     stage_status="failed",
@@ -19501,6 +19526,8 @@ class TaskRunner:
                 )
                 raise
             evidence = self._send_evidence(sidecar_result, target=target.remark_code or target.display_name)
+            if "pre_send_setup_failure" in evidence:
+                self.set_run_status("faulted")
             run_id = str(sidecar_result.get("sidecar_run_id") or sidecar_result.get("run_id") or "") or None
             action_outcome = classify_action_result("send", sidecar_result)
             from .shared_rules import send_interruption

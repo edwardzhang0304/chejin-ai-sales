@@ -10,7 +10,7 @@ from chejin_worker_client.pending_read_recovery import accepts_handoff, package_
 from chejin_worker_client.shared_rules import contract_rules as rules
 
 ROOT = Path(__file__).resolve().parents[2]
-VERSIONS = ('0.9.75', '0.9.78', '0.9.80', '0.9.85', '0.9.86', '0.9.87')
+VERSIONS = ('0.9.90', '0.9.89', '0.9.75', '0.9.78', '0.9.80', '0.9.85', '0.9.86', '0.9.87')
 
 
 def frozen_contracts():

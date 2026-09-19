@@ -78,14 +78,53 @@ def run_ocr_with_cache(
     engine: Any | None,
     import_error: str = "",
     min_confidence: float = OCR_MIN_CONFIDENCE,
+    recognition_image: Any | None = None,
 ) -> tuple[list[dict[str, Any]], Any | None]:
     if engine_factory is None:
         raise RuntimeError(f"rapidocr_onnxruntime_unavailable: {import_error}")
     cached_engine = engine
     if cached_engine is None:
         cached_engine = engine_factory()
-    result, _ = cached_engine(image)
+    if recognition_image is None:
+        result, _ = cached_engine(image)
+    else:
+        result = _recognize_with_separate_input(cached_engine, image, recognition_image)
     return normalize_ocr_rows(result, min_confidence=min_confidence), cached_engine
+
+
+def _recognize_with_separate_input(engine: Any, image: Any, recognition_image: Any) -> Any:
+    """Run the installed RapidOCR stages once, with unchanged detection pixels.
+
+    Avatar masking must not change DBNet's line segmentation. Both sources use
+    RapidOCR's own resize, letterbox, crop, classification and result filtering;
+    only the recognition crops come from the masked source. The shared engine
+    is never patched and ordinary OCR calls retain its native __call__ path.
+    """
+    original = engine.load_img(image)
+    masked = engine.load_img(recognition_image)
+    if original.shape != masked.shape:
+        raise ValueError("ocr_recognition_image_size_mismatch")
+    if not engine.use_det or not engine.use_rec:
+        raise ValueError("ocr_separate_input_requires_detection_and_recognition")
+    raw_h, raw_w = original.shape[:2]
+    original, ratio_h, ratio_w = engine.preprocess(original)
+    masked, masked_h, masked_w = engine.preprocess(masked)
+    if (ratio_h, ratio_w) != (masked_h, masked_w):
+        raise ValueError("ocr_recognition_image_transform_mismatch")
+    operations = {"preprocess": {"ratio_h": ratio_h, "ratio_w": ratio_w}}
+    original, operations = engine.maybe_add_letterbox(original, operations)
+    masked, _ = engine.maybe_add_letterbox(masked, {})
+    boxes, det_elapsed = engine.auto_text_det(original)
+    if boxes is None:
+        return None
+    crops = engine.get_crop_img_list(masked, boxes)
+    cls_elapsed = 0.0
+    if engine.use_cls:
+        crops, _, cls_elapsed = engine.text_cls(crops)
+    recognized, rec_elapsed = engine.text_rec(crops, False)
+    boxes = engine._get_origin_points(boxes, operations, raw_h, raw_w)
+    result, _ = engine.get_final_res(boxes, None, recognized, det_elapsed, cls_elapsed, rec_elapsed)
+    return result
 
 
 def create_ocr_runner(engine_factory: Callable[[], Any] | None, *, import_error: str = "") -> OcrEngineRunner:
