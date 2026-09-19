@@ -1243,6 +1243,10 @@ class WechatWin32OcrVoiceSelectionTest(unittest.TestCase):
         image = Image.new("RGB", (965, 852), (247, 247, 247))
         items = [ocr_item("发送", 870, 790, 930, 820)]
         title_items = [ocr_item("CJR8S5K3 虾丸子大人", 430, 48, 650, 78)]
+        # Controlled producer output carries the same preprocessing provenance
+        # as production. A bare list is deliberately no longer reusable.
+        _, source = sidecar.avatar_text_input.prepare(image, self._semantic_layout_for_image(image))
+        items = sidecar.avatar_text_input.record(image, items, source, ["full_frame"])
         snapshot = {
             "screenshot": image,
             "screenshot_path": "messages.png",
@@ -1282,6 +1286,8 @@ class WechatWin32OcrVoiceSelectionTest(unittest.TestCase):
             ocr_item("CJR8S5K3 虾丸子大人", 430, 48, 650, 78),
             ocr_item("测试消息", 470, 300, 570, 330),
         ]
+        _, source = sidecar.avatar_text_input.prepare(image, self._semantic_layout_for_image(image))
+        items = sidecar.avatar_text_input.record(image, items, source, ["full_frame"])
         snapshot = {
             "screenshot": image,
             "screenshot_path": "messages.png",
