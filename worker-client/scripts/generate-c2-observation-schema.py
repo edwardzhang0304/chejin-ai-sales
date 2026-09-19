@@ -77,6 +77,8 @@ def generated_payload(contract: dict) -> dict:
            if "historical_text_correction_pending_contract" in contract else {}),
         **({"historical_text_correction_resolution_contract": contract["historical_text_correction_resolution_contract"]}
            if "historical_text_correction_resolution_contract" in contract else {}),
+        **({"historical_text_correction_recheck_contract": contract["historical_text_correction_recheck_contract"]}
+           if "historical_text_correction_recheck_contract" in contract else {}),
         **({"pre_send_read_recovery_contract": contract["pre_send_read_recovery_contract"]}
            if "pre_send_read_recovery_contract" in contract else {}),
     }

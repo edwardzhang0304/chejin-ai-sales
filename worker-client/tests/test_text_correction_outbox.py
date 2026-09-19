@@ -77,7 +77,7 @@ def test_resolution_contract_extension_does_not_relax_original_recovery_rules():
     from chejin_worker_client.c2_contract import c2_contract_v3
     from chejin_worker_client.shared_rules import contract_rules
     current = c2_contract_v3()
-    previous = {k: v for k, v in current.items() if k != 'historical_text_correction_resolution_contract'}
+    previous = {k: v for k, v in current.items() if k not in {'historical_text_correction_recheck_contract', 'historical_text_correction_resolution_contract'}}
     digest = contract_rules.contract_sha256(previous)
     assert contract_rules.read_recovery_contract(current, previous['contract_revision'], digest) == previous
     changed = copy.deepcopy(current)
@@ -332,3 +332,53 @@ def test_api_never_uses_historical_read_as_active_flow():
     api.inflight_flow_id = 'real-current'
     api.post_wechat_message_text_correction(binding, {'original_read_run_id':'ended-old'})
     assert calls[1]['headers']['X-Inflight-Flow-Id'] == 'real-current'
+
+
+@pytest.mark.parametrize('outcome', ['network','old_server','invalid_resolution','valid_resolution','unexpected_accept'])
+def test_rejected_correction_recheck_preserves_original_and_backs_off(harness,monkeypatch,outcome):
+    runner,api,bridge,binding,_=setup_gate(harness)
+    request,image=proposal()
+    outbox=correction.enqueue(request,image,binding)
+    correction.settle(outbox,{'outcome':'rejected','reason':'HISTORICAL_TEXT_CORRECTION_REJECTED'})
+    original=storage.load_c2_state(correction.RESULT_PREFIX+outbox)
+    initial=storage.load_c2_outbox_entry(outbox)
+    proof=historical_text_correction.closed_business_resolution(request,
+        worker_id=binding.worker_id,client_instance_id=binding.client_instance_id)
+    if outcome=='invalid_resolution': proof['client_instance_id']='foreign'
+    calls=[]
+    def endpoint(b,p,*,resolution_only=False):
+        calls.append((p,resolution_only))
+        assert resolution_only
+        if outcome=='network': raise ConnectionError('controlled disconnect')
+        if outcome=='old_server': raise ApiError('NOT_FOUND','missing',404,{})
+        if outcome=='unexpected_accept': return accepted(request)
+        raise ApiError('HISTORICAL_TEXT_CORRECTION_REJECTED','rejected',422,{'resolution':proof})
+    api.post_wechat_message_text_correction=endpoint
+    correction.replay_one(api,binding,initial)
+    saved=storage.load_c2_outbox_entry(outbox)
+    assert saved['payload']==initial['payload'] and saved['status']=='correction_rejected'
+    assert saved['last_error']==initial['last_error']
+    assert saved['attempt_count']==initial['attempt_count']+1
+    assert saved['next_attempt_at']
+    assert storage.load_c2_state(correction.RESULT_PREFIX+outbox)==original
+    assert not storage.list_c2_outbox_waiting()
+    assert bool(correction.recovery_block_reason(binding))==(outcome!='valid_resolution')
+    monkeypatch.setattr(storage,'utc_now_iso',lambda:saved['next_attempt_at'])
+    due=storage.list_c2_outbox_waiting()
+    assert bool(due)==(outcome!='valid_resolution')
+    if due:
+        correction.replay_one(api,binding,due[0])
+        assert storage.load_c2_outbox_entry(outbox)['attempt_count']==saved['attempt_count']+1
+    assert not bridge.message_reads and not bridge.sent_replies
+
+
+def test_recheck_extension_accepts_only_frozen_predecessors():
+    from chejin_worker_client.c2_contract import c2_contract_v3
+    from chejin_worker_client.shared_rules import contract_rules
+    current=c2_contract_v3()
+    previous={k:v for k,v in current.items() if k!='historical_text_correction_recheck_contract'}
+    digest=contract_rules.contract_sha256(previous)
+    assert contract_rules.read_recovery_contract(current,previous['contract_revision'],digest)==previous
+    changed=copy.deepcopy(current)
+    changed['historical_text_correction_recheck_contract']['mode']='apply_correction'
+    assert contract_rules.read_recovery_contract(changed,previous['contract_revision'],digest) is None

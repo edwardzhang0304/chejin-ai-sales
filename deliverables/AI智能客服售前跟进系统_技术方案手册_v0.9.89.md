@@ -1,7 +1,23 @@
 # AI智能客服售前跟进系统 技术方案
 
-文档版本：v0.9.89；合同基线：0.9.89；文档修订：r2（2026-09-19，正式生产已发布）。
+文档版本：v0.9.89；合同基线：0.9.89；文档修订：r3（2026-09-19，已知缺陷修复候选，未发布）。
 
+
+## 0.9.89 r3：已知收尾与三层合同缺陷修复候选（2026-09-19，未发布）
+
+范围仅为本次卡住的旧记录收尾及三项架构审计缺陷。高磊现场由用户自行恢复，本轮不操作现场和生产数据。继续在原灰度分支开发，不新建分支、不清理原记录；本修订不是发布许可。
+
+- 已结束的纯失败报告：仅 messages、observations、slot_ledger_states 均空、具备有效 flow_gate_errors，且不是媒体事实或分区补交时适用。复用共享 read_settlement.is_failure_report。后端须验证当前 Worker/实例/绑定时刻、原 Flow/客户、原注册合同和结束审计；首次收到时在原 Worker 行锁事务下登记幂等收据。只返回既有 technical_failed read_completion，不生成消息、AI 回复、微信动作或新 Flow。
+- 已保存的业务结清凭据：先在原锁顺序内查验原批次全文 SHA、原归属和既有结算规则；原客户绑定被删除也可重放同一凭据。没有凭据、原文变化或归属不符仍拒绝。Worker 将只有旧终态标签、缺失 read_settlement 凭据的历史 ingest 排回原 capability_paused 队列；不把标签当成功，不改正文、原错误或合同号。
+- D1 漏字容错叠加客户插话：共同 send_interruption 重新计算原 checkpoint、发送基线与当前观察的同一份有界 D1 对应证明及连续性，确认后沿用原取消旧回复、重读、AI 续答流程。既不直接相信前层 ok，也不再用原始 OCR 字符完全相等推翻已核验对应；新消息、否定、金额、身份与草稿安全门禁不放宽。单条和分段共用此证明。
+- 已拒绝历史纠错：原 operation/status/result 继续不可变，原队列按退避调度只读 `POST /workers/{worker_id}/wechat/message-text-corrections/resolution`，提交原冻结纠错请求。该入口复用原图、身份和结清核验，但绝不执行文字更正；仅核验通过的 business_ended 证明另存 `ocr_correction_resolution:<outbox_id>`，解除这一项阻挡。业务仍有效、404旧后端、断网、未知发送、错误凭据都保留原拒绝；原始更正不得因重查变成已接受。原队列和原恢复门禁仍是唯一流程。
+- HISTORICAL_TEXT_CORRECTION_BUSY/409：依据已有 old_sending_or_unknown=busy_defer 规则，由共同 contract_rules 返回 retry；统一 HTTP 返回 retryable=true，Worker 消费同一恢复动作。未知 409 保守暂停，不能统一放行。
+
+机器合同增加可选 historical_text_correction_recheck_contract；未升软件标签，候选 SHA 为 `41fd3b61de958e3a5574a8c93f794c766e77c126672431cfb75c06ff8a36368e`，与下方正式包 SHA 不同，禁止冒充正式0.9.89成品。保存正式0.9.89冻结合同，兼容只按精确前后规则指纹退回原只结算验证器，不改写旧载荷。生成 Schema 和共享仓同步。无新数据库表或迁移；使用原审计表与 SQLite 状态存储。
+
+客户端展示沿用原恢复门禁：收尾完成且其他本地/后端条件通过才显示可恢复；点击原“开始接单”入口后才恢复，不能自动开始。分工仍为 OmniAuto 提供画面证据、Worker 保管和执行原队列、后端核验并安排续答。遵循共享仓 `customer_visible_reply_ownership_baseline.md` 与 `customer_service_external_contract_and_optional_plugin_baseline.md`，不改图片/语音配置、模型或 API key。
+
+验证与边界见版本记录 r3；本地源码验证不等于 Windows 实机、真实模型或发布验收。
 
 ## 0.9.89 当前生产发布基线（2026-09-19，r2）
 

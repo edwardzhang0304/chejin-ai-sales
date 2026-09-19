@@ -261,6 +261,25 @@ def correct_historical_text(
         raise
 
 
+@router.post("/workers/{worker_id}/wechat/message-text-corrections/resolution")
+def resolve_rejected_correction(
+    worker_id: str, payload: MessageTextCorrectionRequest,
+    db: Session = Depends(get_db),
+    x_worker_token: str | None = Header(default=None, alias="X-Worker-Token"),
+    x_client_instance_id: str | None = Header(default=None, alias="X-Client-Instance-Id"),
+    x_inflight_flow_id: str | None = Header(default=None, alias="X-Inflight-Flow-Id"),
+):
+    # Same proof/settlement rules, but this lookup can never apply a correction.
+    from app.services.message_text_correction_service import append_correction
+    worker = worker_service.authenticate_worker_client(db, worker_id, x_worker_token, x_client_instance_id)
+    try:
+        append_correction(db, worker=worker, payload=payload, client_instance_id=x_client_instance_id,
+            current_flow_id=x_inflight_flow_id, resolution_only=True)
+        raise RuntimeError("Correction resolution must not accept a correction")
+    finally:
+        db.rollback()
+
+
 @router.post("/workers/{worker_id}/wechat/messages/ingest")
 def ingest_messages(
     worker_id: str,
@@ -292,7 +311,7 @@ def ingest_messages(
             original_flow_id=payload.read_run_id)
     else:
         from app.services.read_recovery_service import validate_message_continuation
-        validate_message_continuation(db, worker, payload, x_inflight_flow_id)
+        validate_message_continuation(db, worker, payload, x_inflight_flow_id, raw_payload=original_json)
     telemetry_process_run_id: str | None = None
     telemetry_trace_id = get_request_id()
     telemetry_ingest_stage_key = (

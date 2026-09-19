@@ -11,6 +11,7 @@ from .models import Binding, utc_now_iso
 
 OPERATION = "historical_text_correction"
 RESULT_PREFIX = "ocr_correction_result:"
+RESOLUTION_PREFIX = "ocr_correction_resolution:"
 MAX_PNG_BYTES = 4 * 1024 * 1024
 
 
@@ -141,7 +142,11 @@ def recovery_block_reason(binding):
             if row['status'] == 'correction_rejected' and terminal_receipt_matches(conn, row):
                 receipt = json.loads(conn.execute('SELECT value FROM c2_runtime_state WHERE key=?',
                     (RESULT_PREFIX + row['outbox_id'],)).fetchone()['value'])
-                if not _closed_business_matches(json.loads(row['payload_json']), receipt):
+                resolved = conn.execute('SELECT value FROM c2_runtime_state WHERE key=?',
+                    (RESOLUTION_PREFIX + row['outbox_id'],)).fetchone()
+                resolution = json.loads(resolved['value']) if resolved else receipt
+                if not (_receipt_matches(row, resolution)
+                        and _closed_business_matches(json.loads(row['payload_json']), resolution)):
                     return '原图复核未通过，旧消息已保留，需要核查故障记录。'
             if not terminal_receipt_matches(conn, row):
                 return '正在核对旧消息的原图并等待后台确认，完成后可开始接单。'
@@ -169,25 +174,41 @@ def settle(outbox_id: str, result: dict) -> None:
             raise ValueError("OCR_CORRECTION_RECEIPT_INVALID")
         prior = conn.execute("SELECT value FROM c2_runtime_state WHERE key=?", (RESULT_PREFIX + outbox_id,)).fetchone()
         if prior:
+            original = json.loads(prior['value'])
+            if (row['status'] == target == 'correction_rejected'
+                    and _receipt_matches(row, original) and _closed_business_matches(payload, receipt)):
+                # A later closure is separate from the immutable rejection.
+                key = RESOLUTION_PREFIX + outbox_id
+                old = conn.execute('SELECT value FROM c2_runtime_state WHERE key=?', (key,)).fetchone()
+                if old and json.loads(old['value']) != receipt:
+                    raise ValueError('OCR_CORRECTION_RECEIPT_CONFLICT')
+                conn.execute('INSERT OR IGNORE INTO c2_runtime_state(key,value,updated_at) VALUES(?,?,?)',
+                    (key, _canonical(receipt), now))
+                conn.commit()
+                return
             if json.loads(prior["value"]) != receipt or row["status"] != target:
                 raise ValueError("OCR_CORRECTION_RECEIPT_CONFLICT")
             return
-        if row["status"] not in {"waiting", "retry_waiting"}:
+        if row["status"] not in {"waiting", "retry_waiting", "capability_paused"}:
             raise ValueError("OCR_CORRECTION_STATE_CONFLICT")
         conn.execute("INSERT INTO c2_runtime_state(key,value,updated_at) VALUES (?,?,?)",
                      (RESULT_PREFIX + outbox_id, _canonical(receipt), now))
+        if _closed_business_matches(payload, receipt):
+            conn.execute('INSERT INTO c2_runtime_state(key,value,updated_at) VALUES (?,?,?)',
+                         (RESOLUTION_PREFIX + outbox_id, _canonical(receipt), now))
         conn.execute("UPDATE c2_ingest_outbox SET status=?,last_error=?,next_attempt_at=NULL,updated_at=? WHERE outbox_id=?",
                      (target, receipt.get("reason"), now, outbox_id))
         conn.commit()
 
 
-def _retry(outbox_id, code):
+def _retry(outbox_id, code, *, pause=False):
     with storage.db_connection() as conn:
         row = conn.execute("SELECT attempt_count FROM c2_ingest_outbox WHERE outbox_id=? AND operation=?", (outbox_id, OPERATION)).fetchone()
         if row:
-            conn.execute("""UPDATE c2_ingest_outbox SET status='retry_waiting',last_error=?,
-                next_attempt_at=?,updated_at=? WHERE outbox_id=? AND status IN ('waiting','retry_waiting')""",
-                (code, storage._next_attempt_iso(row["attempt_count"]), utc_now_iso(), outbox_id))
+            conn.execute("""UPDATE c2_ingest_outbox SET status=?,last_error=?,
+                next_attempt_at=?,updated_at=? WHERE outbox_id=? AND status IN ('waiting','retry_waiting','capability_paused')""",
+                ('capability_paused' if pause else 'retry_waiting', code,
+                 storage._next_attempt_iso(row["attempt_count"]), utc_now_iso(), outbox_id))
             conn.commit()
 
 
@@ -213,12 +234,28 @@ def replay_one(api, binding: Binding, item: dict, *, finish_flow=None) -> bool:
     from .api import ApiError
     outbox_id = item["outbox_id"]
     payload = item["payload"]
+    resolution_only = item.get('status') == 'correction_rejected'
     if payload.get("owner") != _owner(binding):
+        if resolution_only:
+            return True
         settle(outbox_id, {"outcome": "rejected", "reason": "OCR_CORRECTION_BINDING_CHANGED"})
         return True
-    storage.mark_c2_outbox_attempt(outbox_id)
+    if resolution_only:
+        original = storage.load_c2_state(RESULT_PREFIX + outbox_id)
+        if original and _closed_business_matches(payload, original):
+            settle(outbox_id, original)
+            return True
+        # Share the queue's durable backoff; never reopen or replace its result.
+        with storage.db_connection() as conn:
+            conn.execute('''UPDATE c2_ingest_outbox SET attempt_count=attempt_count+1,
+                next_attempt_at=? WHERE outbox_id=? AND operation=? AND status='correction_rejected' ''',
+                (storage._next_attempt_iso(int(item.get('attempt_count') or 0) + 1), outbox_id, OPERATION))
+            conn.commit()
+    else:
+        storage.mark_c2_outbox_attempt(outbox_id)
     try:
-        settle_original(api, binding, item)
+        if not resolution_only:
+            settle_original(api, binding, item)
         intent = payload.get("settlement_intent")
         current_flow = storage.load_runtime_control().get("inflight_flow_id")
         if intent and current_flow == intent["proof"]["flow_id"] and finish_flow:
@@ -232,11 +269,30 @@ def replay_one(api, binding: Binding, item: dict, *, finish_flow=None) -> bool:
         image_bytes = bytes(row["correction_image"] or b"") if row else b""
         _validate_request(request, image_bytes)
         result = api.post_wechat_message_text_correction(binding,
-            {**request, "image_base64": base64.b64encode(image_bytes).decode("ascii")})
+            {**request, "image_base64": base64.b64encode(image_bytes).decode("ascii")},
+            **({'resolution_only': True} if resolution_only else {}))
+        if resolution_only:
+            # This endpoint must never return an accepted correction.
+            return True
         settle(outbox_id, result)
         return True
     except ApiError as exc:
         code = exc.code if re.fullmatch(r"[A-Z0-9_]{1,100}", exc.code) else "OCR_CORRECTION_HTTP_ERROR"
+        if resolution_only:
+            data = exc.data if isinstance(exc.data, dict) else {}
+            receipt = {'outcome': 'rejected', 'reason': code, 'resolution': data.get('resolution')}
+            if (exc.status_code == 422 and code == 'HISTORICAL_TEXT_CORRECTION_REJECTED'
+                    and _closed_business_matches(payload, receipt)):
+                try:
+                    settle(outbox_id, receipt)
+                except (ValueError, TypeError, KeyError):
+                    storage.append_log('WARN', 'ocr_correction_resolution_invalid',
+                        '旧纠错的收尾凭据未通过校验，保留原拒绝记录。', metadata={'outbox_id': outbox_id})
+            return True
+        from .transaction_outcomes import classify_outbox_recovery
+        if classify_outbox_recovery(exc) == 'retry':
+            _retry(outbox_id, code)
+            return False
         if exc.status_code in {400, 401, 403, 404, 413, 422}:
             data = exc.data if isinstance(exc.data, dict) else {}
             receipt = {"outcome": "rejected", "reason": code}
@@ -249,7 +305,7 @@ def replay_one(api, binding: Binding, item: dict, *, finish_flow=None) -> bool:
                 _retry(outbox_id, "OCR_CORRECTION_LOCAL_PROOF_OR_RECEIPT_INVALID")
                 return False
             return True
-        _retry(outbox_id, code)
+        _retry(outbox_id, code, pause=True)
     except (ValueError, TypeError, KeyError):
         # A corrupted local proof or ACK is not evidence of a server rejection.
         _retry(outbox_id, "OCR_CORRECTION_LOCAL_PROOF_OR_RECEIPT_INVALID")

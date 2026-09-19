@@ -11,6 +11,19 @@ PROTOCOL_VERSION = 1
 TERMINAL_ACTIONS = frozenset({'conversation_terminated', 'target_terminated'})
 
 
+def is_failure_report(payload: dict) -> bool:
+    """A failure report contains no facts or physical-action result to settle."""
+    evidence = payload.get('evidence') or {}
+    errors = evidence.get('flow_gate_errors')
+    return (payload.get('messages') == []
+        and evidence.get('observations') == [] and evidence.get('slot_ledger_states') == []
+        and isinstance(errors, list) and bool(errors)
+        and all(isinstance(code, str) and bool(code.strip()) for code in errors)
+        and not evidence.get('failed_voice_source_keys')
+        and not evidence.get('ingest_partition')
+        and payload.get('authorization_scope') != 'fact_settlement')
+
+
 def payload_sha256(payload: dict) -> str:
     return hashlib.sha256(json.dumps(payload, ensure_ascii=False, sort_keys=True,
                                     separators=(',', ':')).encode('utf-8')).hexdigest()

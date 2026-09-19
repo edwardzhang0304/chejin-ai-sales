@@ -381,6 +381,14 @@ def init_db(conn: sqlite3.Connection) -> None:
         "UPDATE c2_message_ledger SET ingest_state = 'waiting' "
         "WHERE ingest_state = 'quarantined'"
     )
+    # Legacy terminal labels predate durable settlement receipts. Requeue only
+    # missing receipts; preserve the frozen request and never trust the label.
+    conn.execute("""UPDATE c2_ingest_outbox
+        SET status='capability_paused', next_attempt_at=COALESCE(next_attempt_at, ?)
+        WHERE operation='ingest' AND status IN ('conversation_terminated','target_terminated')
+          AND NOT EXISTS (SELECT 1 FROM c2_runtime_state s
+                          WHERE s.key='read_settlement:' || c2_ingest_outbox.outbox_id)""",
+        (utc_now_iso(),))
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS reply_send_ack_outbox (
@@ -2155,10 +2163,12 @@ def list_c2_outbox_waiting(
                    payload_json, operation, status, attempt_count, refresh_attempt_count,
                    last_error, next_attempt_at, created_at, updated_at
             FROM c2_ingest_outbox
-            WHERE status IN (
+            WHERE (status IN (
               'waiting', 'retry_waiting', 'refresh_pending',
               'rebuild_pending', 'split_pending', 'capability_paused'
-            )
+            ) OR (operation='historical_text_correction' AND status='correction_rejected'
+                AND NOT EXISTS (SELECT 1 FROM c2_runtime_state s
+                    WHERE s.key='ocr_correction_resolution:' || c2_ingest_outbox.outbox_id)))
               AND (next_attempt_at IS NULL OR next_attempt_at <= ?)
               AND (? IS NULL OR (operation = 'ingest' AND read_run_id = ?))
             ORDER BY created_at ASC

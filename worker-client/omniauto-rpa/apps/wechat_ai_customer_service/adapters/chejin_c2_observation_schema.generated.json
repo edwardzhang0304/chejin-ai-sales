@@ -2,7 +2,7 @@
   "generated_file": true,
   "source": "contracts/c2_contract_v3.json",
   "contract_revision": "0.9.89",
-  "contract_sha256": "aed5f736db2af32854d2bb5449ccc79479897eaf6bb5224d1c2bbb2d8dd0d311",
+  "contract_sha256": "41fd3b61de958e3a5574a8c93f794c766e77c126672431cfb75c06ff8a36368e",
   "observation_schema_version": 3,
   "action_phases": [
     "not_attempted",
@@ -1404,6 +1404,17 @@
     "outcome": "rejected_not_corrected",
     "resume": "explicit_start_with_existing_local_and_backend_barriers",
     "missing_or_invalid": "preserve_original_rejection_block"
+  },
+  "historical_text_correction_recheck_contract": {
+    "version": 1,
+    "route": "/workers/{worker_id}/wechat/message-text-corrections/resolution",
+    "request": "original_frozen_correction_request",
+    "mode": "resolution_only_never_apply_correction",
+    "eligibility": "durable_rejected_correction",
+    "result": "existing_business_ended_resolution",
+    "durability": "immutable_rejection_and_separate_resolution_receipt",
+    "retry": "existing_outbox_backoff_preserve_original_until_valid_resolution",
+    "resume": "explicit_start_with_existing_local_and_backend_barriers"
   },
   "pre_send_read_recovery_contract": {
     "protocol_version": 1,

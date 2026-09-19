@@ -35,6 +35,13 @@ else:
             terminal_state=message['item_state'], ingest_state='waiting')
     outbox_id = enqueue_c2_outbox(payload)
     mark_c2_outbox_capability_paused(outbox_id, 'WORKER_INFLIGHT_FLOW_MISMATCH')
+    if request.get('legacy_terminal_without_proof'):
+        from chejin_worker_client.storage import db_connection
+        with db_connection() as db:
+            # Historical input fixture only, before the real runner starts.
+            # No modern proof is supplied and no successful state is patched.
+            db.execute("UPDATE c2_ingest_outbox SET status='conversation_terminated',last_error='LEAD_INVALID' WHERE outbox_id=?",(outbox_id,))
+            db.commit()
     if request['mode'] == 'active_flow':
         from chejin_worker_client.storage import begin_runtime_flow, save_c2_state
         begin_runtime_flow(payload['read_run_id'], 'c2_read')
@@ -64,6 +71,7 @@ def old_records_settled():
     from chejin_worker_client.storage import has_pending_c2_outbox
     expected = ('confirmed' if request['mode'] == 'fact_settlement' else
                 'split_completed' if request['mode'] == 'partitions' else 'conversation_terminated')
+    expected = request.get('expected_outbox_status', expected)
     return load_c2_outbox_entry(outbox_id)['status'] == expected and not has_pending_c2_outbox()
 
 
