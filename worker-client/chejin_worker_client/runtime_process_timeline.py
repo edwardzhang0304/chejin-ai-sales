@@ -251,6 +251,13 @@ class RuntimeProcessTimeline:
             }
             if error_code:
                 terminal["description"] = error_code
+            if (terminal_state == "handoff"
+                    and event.get("handoff_reason_code") == "AI_ENGINE_RETRY_EXHAUSTED"):
+                terminal.update(
+                    title="AI 服务暂时不可用，已转人工",
+                    description="多次尝试仍未能生成回复，本轮未发送新回复。",
+                    finalText="请销售手动回复客户。",
+                )
             self.customer_steps.append(terminal)
             self.customer_active = False
             self.customer_terminal_state = terminal_state

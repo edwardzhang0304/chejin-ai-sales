@@ -18735,7 +18735,40 @@ class TaskRunner:
         last_status_fingerprint = ""
         current_batch_id = batch_id
         while True:
-            if cancel_check():
+            cancel_reason = cancel_check()
+            if cancel_reason:
+                if cancel_reason == "C2_TARGET_NOT_ALLOWED_BY_READ_TARGETS":
+                    # A completed handoff revokes the UI continuation ticket.
+                    # Read its terminal result once; this never grants a send.
+                    try:
+                        terminal = self.api.get_wechat_message_batch(binding, current_batch_id)
+                        handoff = terminal.get("handoff_event") or {}
+                        if (terminal.get("batch_id") == current_batch_id
+                                and terminal.get("conversation_id") == target.conversation_id
+                                and terminal.get("processing") is False
+                                and terminal.get("terminal") is True
+                                and terminal.get("batch_status") == "handoff_created"
+                                and terminal.get("decision") == "handoff"
+                                and handoff.get("id")
+                                and handoff.get("batch_id") == current_batch_id
+                                and handoff.get("conversation_id") == target.conversation_id
+                                and handoff.get("closed_at") is None):
+                            append_log(
+                                "INFO", "c3_batch_handoff_confirmed",
+                                "后端已确认转人工，结束本轮 AI 等待。",
+                                metadata={"batch_id": current_batch_id,
+                                          "conversation_id": target.conversation_id,
+                                          "handoff_reason_code": handoff.get("handoff_reason_code")},
+                            )
+                            return {"ok": True, "batch": terminal, "sent": False}
+                    except Exception as exc:
+                        append_log(
+                            "WARN", "c3_batch_terminal_lookup_failed",
+                            "未能确认后端最终处理结果，保留原中断状态。",
+                            metadata={"batch_id": current_batch_id,
+                                      "exception_type": type(exc).__name__},
+                            include_exception_text=False,
+                        )
                 error_code = _ui_lock_cancel_reason(self.current_ui_lock) or "WORKER_INTERRUPTED"
                 return {"ok": False, "error_code": error_code, "batch_id": current_batch_id}
             try:
@@ -23097,6 +23130,8 @@ class TaskRunner:
                 )
                 schedule_stage_event_upload(self.api, binding)
             if operation_phase == C2_AUTHORIZED_READ_PHASE:
+                brain_batch = (result.get("brain_result") or {}).get("batch") or {}
+                handoff = brain_batch.get("handoff_event") or {}
                 self._emit_runtime_process(
                     {
                         "event": "customer_completed",
@@ -23104,6 +23139,7 @@ class TaskRunner:
                             result
                         ),
                         "error_code": result.get("error_code"),
+                        "handoff_reason_code": handoff.get("handoff_reason_code"),
                         **runtime_context,
                     }
                 )
@@ -23832,10 +23868,11 @@ class TaskRunner:
             if now - last_authorization_check < 1.0:
                 return False
             last_authorization_check = now
-            return not self._backend_still_allows_read_target_lightweight(
+            allowed = self._backend_still_allows_read_target_lightweight(
                 binding,
                 target,
             )
+            return False if allowed else "C2_TARGET_NOT_ALLOWED_BY_READ_TARGETS"
 
         def settle_identity_terminal_gate(
             terminal_gate: dict[str, Any],
