@@ -28,7 +28,8 @@ TOOL_FILES = {
 }
 TOOL_DEPENDENCIES = {
     "worker-client/requirements-test.txt", "backend/requirements.txt",
-    "backend/app/services/release_readiness.py", "worker-client/chejin_worker_client/__init__.py",
+    "backend/app/services/release_readiness.py", "backend/app/services/reply_settlement_state.py",
+    "worker-client/chejin_worker_client/__init__.py",
     "worker-client/chejin_worker_client/models.py", "worker-client/chejin_worker_client/release_package_contract.py",
 }
 EXCLUDED = ("deliverables/", "output/", "rules/", "docs/")

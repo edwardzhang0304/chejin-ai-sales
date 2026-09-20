@@ -86,6 +86,9 @@ probe_mode=request.get("persistence_probe", "")
 status_posts=[]
 new_work_requests=[]
 heartbeat_samples=[]
+status_responses=[]
+emergency_ticks=[]
+settlement_network_failures=0
 save_failures=0
 restore_failures=0
 pause_failures=0
@@ -93,6 +96,7 @@ compensation_failures=0
 profile_failures=0
 boundaries=[]
 from chejin_worker_client.storage import load_runtime_control
+from chejin_worker_client.emergency_stop import emergency_stop_requested
 import chejin_worker_client.task_runner as runner_module
 original_save=runner_module.save_binding
 original_clear=runner_module.clear_runtime_pause
@@ -125,12 +129,14 @@ if probe_mode:
     runner_module.clear_runtime_pause=clear_with_failure
 class DesktopBoundary:
     def __init__(self): self.probes=0
-    def probe(self): self.probes+=1; return ("ready", "logged_in")
+    def probe(self):
+        assert not emergency_stop_requested(), "Emergency stop must not probe WeChat"
+        self.probes+=1; return ("ready", "logged_in")
     def sidecar_active(self): return False
 class Transport(WorkerApiClient):
     def __init__(self, url): super().__init__(url); self.recoveries=0; self.pulls=0
     def _request(self, method, path, **kwargs):
-        global compensation_failures
+        global compensation_failures, settlement_network_failures
         payload=kwargs.get("json") or {}
         if probe_mode and path.endswith("/run-status"):
             status_posts.append({"status":payload.get("run_status"),"recover_from_fault":payload.get("recover_from_fault",False)})
@@ -142,7 +148,17 @@ class Transport(WorkerApiClient):
             raise TimeoutError("synthetic compensation network failure")
         recovery=(kwargs.get("json") or {}).get("recover_from_fault") is True
         if path.endswith("/pull"): self.pulls+=1
+        drop = (probe_mode=="restore_retry" and restore_failures==2 and not settlement_network_failures
+                and payload.get("run_status")=="faulted" and request.get("settlement_network") in {"before","after"})
+        if drop and request["settlement_network"]=="before":
+            settlement_network_failures+=1
+            raise TimeoutError("synthetic stopped-state request not delivered")
         result=super()._request(method,path,**kwargs)
+        if probe_mode and path.endswith("/run-status"):
+            status_responses.append({**snapshot("status_response"),"backend":result.get("run_status")})
+        if drop and request["settlement_network"]=="after":
+            settlement_network_failures+=1
+            raise TimeoutError("synthetic stopped-state committed response lost")
         if probe_mode and path.endswith("/heartbeat") and runner.binding and len(heartbeat_samples)<80:
             heartbeat_samples.append({**snapshot("heartbeat"),"backend":result.get("run_status")})
         if mode=="old_backend" and isinstance(result,dict): result.pop("fault_recovery",None)
@@ -167,6 +183,13 @@ def profile_observer(profile):
         return
     if profile.run_status=="running": runner.stop()
 runner=TaskRunner(api,bridge,on_profile=profile_observer,on_status=lambda _:None,on_step=lambda _:None,on_task=lambda _:None,on_result=lambda _:None,on_error=errors.append)
+if probe_mode=="restore_retry":
+    original_tick=runner.tick_once
+    def observe_tick():
+        original_tick()
+        if emergency_stop_requested():
+            emergency_ticks.append(snapshot("emergency_tick"))
+    runner.tick_once=observe_tick
 binding=Binding(**request["binding"],run_status="faulted")
 save_binding(binding)
 if mode=="ledger":
@@ -190,10 +213,13 @@ try:
     if probe_mode:
         settled=snapshot("recovery_attempt_finished")
         heartbeats_after_attempt=len(heartbeat_samples)
-        deadline=time.monotonic()+8
+        emergency_ticks_before=len(emergency_ticks)
+        deadline=time.monotonic()+request.get("settlement_wait_seconds",8)
         while time.monotonic()<deadline:
             if probe_mode=="success" and api.pulls: break
-            if probe_mode!="success" and len(heartbeat_samples)>=heartbeats_after_attempt+3 and not runner._pending_run_status_sync and not runner._run_status_persistence_pending: break
+            observed = (len(emergency_ticks)-emergency_ticks_before if probe_mode=="restore_retry"
+                        else len(heartbeat_samples)-heartbeats_after_attempt)
+            if probe_mode!="success" and observed>=3 and not runner._pending_run_status_sync and not runner._run_status_persistence_pending: break
             time.sleep(.05)
     result={"state_before":state_before,"health_before":health_before,"before":before,"after":load_binding().run_status,"first":first,"second":second,"recoveries":api.recoveries,"probes":bridge.probes,"state":runner.fault_recovery_state(),"durable":update_install_business_blockers(),"threads":runner.post_update_runtime_health_snapshot()}
     if probe_mode:
@@ -201,7 +227,10 @@ try:
             "status_posts":status_posts,"new_work_requests":new_work_requests,"pulls":api.pulls,
             "save_failures":save_failures,"restore_failures":restore_failures,"pause_failures":pause_failures,
             "compensation_failures":compensation_failures,"profile_failures":profile_failures,
-            "boundaries":boundaries,"heartbeat_samples":heartbeat_samples,
+            "boundaries":boundaries,"heartbeat_samples":heartbeat_samples,"status_responses":status_responses,
+            "emergency_stop":emergency_stop_requested(),"emergency_ticks":emergency_ticks,
+            "emergency_ticks_after_attempt":len(emergency_ticks)-emergency_ticks_before,
+            "settlement_network_failures":settlement_network_failures,
             "heartbeats_after_attempt":len(heartbeat_samples)-heartbeats_after_attempt})
 finally:
     runner.stop_for_update(timeout_seconds=10)
@@ -209,11 +238,17 @@ print(json.dumps(result))
 '''
 
 
-@pytest.mark.parametrize("probe", ["success", "save_before", "save_after", "pause_before", "pause_after", "restore_retry", "compensation_retry", "profile_failure"])
-def test_recovery_persistence_failure_never_reopens_intake(http_api, tmp_path, probe):
+@pytest.mark.parametrize("probe,settlement_network", [
+    *[pytest.param(probe,"none",id=probe) for probe in
+      ["success","save_before","save_after","pause_before","pause_after","restore_retry","compensation_retry","profile_failure"]],
+    pytest.param("restore_retry","before",id="restore_retry_network_before"),
+    pytest.param("restore_retry","after",id="restore_retry_network_after"),
+])
+def test_recovery_persistence_failure_never_reopens_intake(http_api, tmp_path, probe, settlement_network):
     worker, _, _, url = setup_worker(http_api)
     input_file = tmp_path / "input.json"
     input_file.write_text(json.dumps({"mode":"persistence", "persistence_probe":probe, "url":url,
+        "settlement_network":settlement_network,"settlement_wait_seconds":20 if settlement_network!="none" else 8,
         "binding":{"worker_id":worker["id"], "worker_token":worker["worker_token"], "client_instance_id":"fault-test"}}))
     result = subprocess.run([sys.executable, "-c", WORKER_PROCESS, str(input_file)], capture_output=True,
         text=True, timeout=40, env={**os.environ, "PYTHONPATH":str(Path(__file__).resolve().parents[2]/"worker-client"),
@@ -240,7 +275,13 @@ def test_recovery_persistence_failure_never_reopens_intake(http_api, tmp_path, p
         assert final["memory"] == final["sqlite"] == evidence["backend_status"] == "running"
         assert final["pause"] is False and not evidence["errors"]
     else:
-        assert evidence["heartbeats_after_attempt"] >= 3
+        if probe=="restore_retry":
+            assert evidence["emergency_stop"] is True
+            assert evidence["emergency_ticks_after_attempt"] >= 3
+            assert evidence["heartbeats_after_attempt"] == 0
+            assert evidence["state"]["ready"] is False
+        else:
+            assert evidence["heartbeats_after_attempt"] >= 3
         assert evidence["errors"] == ["恢复接单失败，仍保持停止接单；请稍后重试。"]
         assert final["memory"] == final["sqlite"] == evidence["backend_status"] == "faulted"
         assert final["pause"] is True and final["can_start"] is False
@@ -251,7 +292,8 @@ def test_recovery_persistence_failure_never_reopens_intake(http_api, tmp_path, p
             assert evidence["restore_failures"] == 2
             assert evidence["settled"]["persistence_pending"] is True
             assert evidence["settled"]["pending"] == "faulted"
-            assert any(s["backend"] == "faulted" and s["persistence_pending"] for s in evidence["heartbeat_samples"])
+            assert any(s["backend"] == "faulted" and s["persistence_pending"] for s in evidence["status_responses"])
+            assert evidence["settlement_network_failures"] == int(settlement_network!="none")
         if probe == "compensation_retry":
             assert evidence["compensation_failures"] == 1
             assert evidence["settled"]["pending"] == "faulted"
