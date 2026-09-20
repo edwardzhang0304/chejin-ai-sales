@@ -89,7 +89,7 @@ from .pre_send_checkpoint import (
 from .models import Binding, ReplySendClaim, RpaResult, RpaStep, Task, WechatReadTarget, WorkerProfile
 from .rpa_bridge import RpaBridge
 from .text_recheck import differing_text_observation_ids
-from .historical_alignment import checkpoint_for_target, projected_frame
+from .historical_alignment import checkpoint_for_target, projected_frame, bind_final_frame_correspondence, save_match_review
 from .storage import (
     archive_legacy_media_flow_records,
     append_log,
@@ -1824,7 +1824,7 @@ def _continuity_alignment_evidence_for_suffix(
         "pre_frame_id": str(pre_frame_id or "").strip(),
         "post_frame_id": str(post_frame_id or "").strip(),
         "alignment_status": "unique",
-        "candidate_alignment_count": 1,
+        "candidate_alignment_count": (continuity.get("text_correspondence") or {}).get("candidate_count", 1),
         "old_tail_fully_consumed": True,
         "new_suffix_observation_ids": suffix_ids,
         "matched_pairs": pairs,
@@ -7213,7 +7213,7 @@ class TaskRunner:
         local_lock["capabilities"] = {**(local_lock.get("capabilities") or {}), "reply_sequence_version": 1,
                                       "pre_send_read_recovery_version": 1,
                                       "pre_send_setup_recovery_version": 1,
-                                      "text_correspondence_version": 1,
+                                      "text_correspondence_version": (c2_contract_v3().get("text_correspondence_contract") or {}).get("version", 1),
                                       "historical_text_correction_version": 1}
         vision_capability = load_c2_state("vision_preflight")
         if vision_capability:
@@ -9430,7 +9430,7 @@ class TaskRunner:
             compared, new_decision = compare(fresh)
             evidence["fresh_decision"] = new_decision
             if not succeeded(new_decision):
-                selected = differing_text_observation_ids(reference, fresh)
+                selected = differing_text_observation_ids(reference, compared)
                 if not selected or not still_authorized():
                     return payload, decision
                 local = self.bridge.recheck_text_bubbles(stage="ocr", payload=fresh,
@@ -9870,6 +9870,7 @@ class TaskRunner:
                 else None
             ),
             historical_checkpoint=checkpoint_for_target(target),
+            deadline=getattr(getattr(self, 'current_ui_lock', None), 'step_deadline', None),
         )
         if (
             isinstance(raw_observations, list)
@@ -9887,6 +9888,8 @@ class TaskRunner:
             send_context_guard_validation
         )
         prepared["pre_send_fact_checkpoint_comparison"] = comparison
+        if comparison.get('historical_match_diagnostics'):
+            prepared['historical_match_diagnostics'] = comparison['historical_match_diagnostics']
         if comparison_only:
             return prepared, comparison
         if comparison.get("comparison_result") not in {
@@ -9927,7 +9930,8 @@ class TaskRunner:
         # copy durable identity onto a fresh OCR row here.  The serializer
         # below consumes the already-made comparison decision and emits the
         # one formal HTTP evidence shape shared by text, voice and image.
-        if comparison.get("text_correspondence"):
+        proof = comparison.get("text_correspondence")
+        if proof and proof.get('version') == 1:
             prepared, alignment_errors = self._align_initial_identity_frame(
                 target=target, sidecar_payload=prepared, read_run_id=read_run_id)
             if alignment_errors:
@@ -9938,8 +9942,12 @@ class TaskRunner:
         else:
             evidence = _checkpoint_alignment_evidence(
                 checkpoint, list(prepared.get("observations") or []), comparison)
+            if proof:
+                # Preserve the original pre-send fact comparison: it does not
+                # transfer physical media identity from a previous read flow.
+                evidence.update(text_correspondence=proof, candidate_alignment_count=proof['candidate_count'])
         prepared["sequence_alignment_evidence"] = evidence
-        if not comparison.get("text_correspondence") and comparison.get("comparison_result") in {
+        if (not proof or proof.get('version') == 2) and comparison.get("comparison_result") in {
             "checkpoint_unique_prefix_with_suffix",
             "checkpoint_unique_viewport_slide_with_suffix",
         }:
@@ -10484,16 +10492,17 @@ class TaskRunner:
             "unique_viewport_slide_with_tail_append", "unique_history_suffix_without_new_messages",
         }:
             try:
-                projected, proof = projected_frame(historical_checkpoint, observations,
-                    pre_frame_id=f"checkpoint:{target.authorization_revision}", post_frame_id=f"frame:{frame_id}")
-                if proof:
-                    candidate = compare_business_viewport_continuity(old_projection, projected,
-                        old_boundary_tokens=old_boundary_tokens,
-                        new_boundary_tokens=_business_boundary_tokens_for_payload(prepared, observations, committed_only=False),
-                        allow_history_suffix=True)
-                    if candidate.get("relation") in {"business_sequence_equal", "unique_tail_append",
-                            "unique_viewport_slide_with_tail_append", "unique_history_suffix_without_new_messages"}:
-                        continuity = {**candidate, "text_correspondence": proof}
+                from .shared_rules import historical_text_alignment
+                diagnostics = {}
+                candidate = historical_text_alignment.validated_projection_continuity(
+                    historical_checkpoint, observations, old_projection=old_projection,
+                    old_boundary_tokens=old_boundary_tokens,
+                    pre_frame_id=f"checkpoint:{target.authorization_revision}", post_frame_id=f"frame:{frame_id}",
+                    diagnostics=diagnostics, deadline=getattr(getattr(self, 'current_ui_lock', None), 'step_deadline', None))
+                if diagnostics:
+                    prepared['historical_match_diagnostics'] = diagnostics
+                if candidate:
+                    continuity = candidate
             except ValueError as exc:
                 return prepared, [{"error_code": str(exc), "reason": "historical_checkpoint_invalid"}]
         if str(continuity.get("relation") or "") not in {
@@ -14100,6 +14109,8 @@ class TaskRunner:
                 "messages_unchanged": True,
             })
             alignment["text_correspondence"] = proof
+            if proof.get('version') == 2:
+                alignment['candidate_alignment_count'] = proof['candidate_count']
             refreshed_evidence["sequence_alignment_evidence"] = alignment
         refreshed_evidence["authorization_read_reason"] = str(
             authorization.get("read_reason") or ""
@@ -23097,7 +23108,10 @@ class TaskRunner:
                 "MESSAGE_CROSS_ROUND_IDENTITY_AMBIGUOUS",
                 "C2_PRE_SEND_MESSAGE_SEQUENCE_ALIGNMENT_FAILED",
             }
-            if not result.get("ok") and (frame_failed or partial_alignment_failed):
+            historical_alignment_failed = bool(evidence.get('historical_match_diagnostics')) and result.get('error_code') in {
+                'MESSAGE_CROSS_ROUND_IDENTITY_AMBIGUOUS', 'C2_PRE_SEND_MESSAGE_SEQUENCE_ALIGNMENT_FAILED',
+            }
+            if not result.get("ok") and (frame_failed or partial_alignment_failed or historical_alignment_failed):
                 # Locating the correct customer cannot repair invalid frame
                 # evidence. Stop new work; the existing finally block owns
                 # receipt/Flow settlement and its durable network retry.
@@ -23108,6 +23122,7 @@ class TaskRunner:
                 # Identity gates already have a backend receipt. Preserve its
                 # actual result (including retry_required) for settlement,
                 # while keeping new work stopped until explicit recovery.
+                save_match_review(target, evidence, read_run_id=read_run_id, result=result)
                 append_log(
                     "ERROR", "c2_frame_evidence_technical_failed",
                     "会话画面读取证据异常；已停止接单并保留现场，请查看本机日志。",
@@ -23118,10 +23133,13 @@ class TaskRunner:
                               "avatar_evidence": evidence.get("avatar_evidence"),
                               "observation_validation_errors": evidence.get("observation_validation_errors"),
                               "top_message_fragment": evidence.get("top_message_fragment"),
+                              "historical_match_diagnostics": evidence.get("historical_match_diagnostics"),
                               "pre_send_error_evidence": result.get("pre_send_error_evidence"),
                               "artifact_dir": evidence.get("artifact_dir")},
                     force_incident=True,
                 )
+            else:
+                save_match_review(target, evidence, read_run_id=read_run_id, result=result)
             flow_result = dict(result)
             if pre_send_stage_timer is not None:
                 pre_send_stage_timer.finish(
@@ -25835,6 +25853,8 @@ class TaskRunner:
                     if operation_phase == C2_PRE_SEND_REFRESH_PHASE
                     else sidecar_payload
                 )
+                bind_final_frame_correspondence(target, ingest_sidecar_payload,
+                    deadline=getattr(lease, 'step_deadline', None))
                 payload = build_message_ingest_payload(
                     target,
                     ingest_sidecar_payload,

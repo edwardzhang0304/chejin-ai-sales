@@ -104,6 +104,8 @@ class VoiceActionV3132Test(unittest.TestCase):
         return {
             "valid": True,
             "layout_snapshot_id": "uat-layout",
+            "image_width": 920,
+            "image_height": 991,
             "chat_header_bounds": [374, 0, 920, 114],
             "message_viewport_bounds": [374, 114, 920, 835],
             "input_bounds": [374, 835, 920, 991],
@@ -610,7 +612,7 @@ class VoiceActionV3132Test(unittest.TestCase):
                     "layout_snapshot_id": "uat-layout",
                 },
             }
-            image = Image.new("RGB", (800, 600), "white")
+            image = Image.new("RGB", (920, 991), "white")
             with patch.object(sidecar, "capture_wechat", return_value=(image, "frame-b.png")), patch.object(
                 sidecar, "run_ocr", return_value=[]
             ), patch.object(
@@ -661,7 +663,7 @@ class VoiceActionV3132Test(unittest.TestCase):
                     "click_bounds": [420, 220, 420, 250]
                 },
             }
-            image = Image.new("RGB", (800, 600), "white")
+            image = Image.new("RGB", (920, 991), "white")
             with patch.object(
                 sidecar,
                 "capture_wechat",
@@ -718,7 +720,7 @@ class VoiceActionV3132Test(unittest.TestCase):
     def test_ambiguous_result_is_quarantined_after_two_reads_and_one_click(self):
         with tempfile.TemporaryDirectory() as tmp:
             journal = self._journal(tmp)
-            image = Image.new("RGB", (800, 600), "white")
+            image = Image.new("RGB", (920, 991), "white")
             capture = Mock(
                 side_effect=[
                     (image, "execute-before.png"),
@@ -779,7 +781,7 @@ class VoiceActionV3132Test(unittest.TestCase):
     def test_click_failure_tracks_exact_voice_and_returns_finite_failed_fact(self):
         with tempfile.TemporaryDirectory() as tmp:
             journal = self._journal(tmp)
-            image = Image.new("RGB", (800, 600), "white")
+            image = Image.new("RGB", (920, 991), "white")
             candidate = {
                 "observation_id": "voice-a",
                 "voice_state": "untranscribed",

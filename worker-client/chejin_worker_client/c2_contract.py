@@ -276,7 +276,9 @@ def validate_sequence_alignment_evidence(
         candidate_count != 0 or normalized_pairs
     ):
         raise ValueError("C2_SEQUENCE_ALIGNMENT_EVIDENCE_INVALID")
-    if status == "unique" and candidate_count != 1:
+    correspondence = value.get('text_correspondence') or {}
+    expected_count = correspondence['candidate_count'] if correspondence.get('version') == 2 else 1
+    if status == "unique" and candidate_count != expected_count:
         raise ValueError("C2_SEQUENCE_ALIGNMENT_EVIDENCE_INVALID")
     if status in {"ambiguous", "unresolved"} and (
         old_tail_fully_consumed or normalized_suffix_ids

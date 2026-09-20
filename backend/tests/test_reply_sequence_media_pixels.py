@@ -107,8 +107,8 @@ def test_typing_media_interrupts_sequence_and_finishes(
         return response
     monkeypatch.setattr(api.session, 'send', observed_http)
     native_ocr = sidecar.run_ocr
-    def observed_ocr(image):
-        value = native_ocr(image)
+    def observed_ocr(image, **kwargs):
+        value = native_ocr(image, **kwargs)
         ocr_calls.append({'size': list(image.size), 'rows': len(value), 'capture': len(desktop.captures) - 1})
         return value
     monkeypatch.setattr(sidecar, 'run_ocr', observed_ocr)
@@ -134,7 +134,7 @@ def test_typing_media_interrupts_sequence_and_finishes(
             assert lock_summary()['locked']
             value = sidecar.send_payload(calibration['hwnd'], {}, target=option('--target'), text=option('--text'),
                 exact=True, skip_send_rate_guard=True, artifact_dir=str(tmp_path/'desktop'),
-                expected_context_guard=json.loads(option('--expected-context-guard', '{}')), action_journal_path=option('--action-journal'))
+                expected_context_guard=fixture.send_context_from_args(args), action_journal_path=option('--action-journal'))
             sends.append(value)
         else:
             assert args[0] in {'messages', 'open-chat'}, args

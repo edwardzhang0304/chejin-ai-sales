@@ -14,12 +14,14 @@ def _object(value: Any) -> dict:
 
 def _corresponding_sequences(old_guard, snapshot, decision):
     """Recompute D1 from the same observations; never trust a claimed match."""
-    from .historical_text_alignment import comparison_projection
+    from .historical_text_alignment import compare_historical_viewports
     from .message_viewport_projection import normalized_business_message_sequence
-    from .business_viewport_continuity import compare_business_viewport_continuity, boundary_tokens_for_observations
     contract = _object(old_guard.get('worker_continuity_contract'))
     historical = _object(contract.get('historical_alignment'))
-    baseline, current = historical.get('baseline_observations'), snapshot.get('message_sequence')
+    baseline = historical.get('baseline_observations')
+    # The compact send sequence is for receipt occurrence counting. HC needs
+    # the original observation fields, just as the Sidecar's guard does.
+    current = snapshot.get('observations', snapshot.get('message_sequence'))
     checkpoint = historical.get('checkpoint')
     if not isinstance(baseline, list) or not isinstance(current, list) or not isinstance(checkpoint, dict):
         raise ValueError('interruption_correspondence_evidence_missing')
@@ -27,20 +29,16 @@ def _corresponding_sequences(old_guard, snapshot, decision):
             or normalized_business_message_sequence(current, message_viewport_bounds=None)
             != snapshot['send_context_guard']['sequence']):
         raise ValueError('interruption_observations_changed')
-    old, old_proof = comparison_projection(checkpoint, baseline,
-        pre_frame_id='checkpoint:send-guard', post_frame_id='send-guard:baseline')
-    new, new_proof = comparison_projection(checkpoint, current,
-        pre_frame_id='checkpoint:send-guard', post_frame_id='send-guard:current')
-    if (not (old_proof or new_proof)
-            or decision['text_correspondence'] != {'baseline': old_proof, 'current': new_proof}):
-        raise ValueError('interruption_correspondence_changed')
     tokens = contract['old_boundary_tokens']
     if (not isinstance(tokens, dict) or any(not isinstance(v, list) or str(int(k)) != k for k, v in tokens.items())):
         raise ValueError('interruption_boundary_changed')
-    rebuilt = compare_business_viewport_continuity(old, new,
-        old_boundary_tokens={int(k): set(v) for k, v in tokens.items()},
-        new_boundary_tokens=boundary_tokens_for_observations(current, committed_only=False),
-        allow_history_suffix=True)
+    compared = compare_historical_viewports(checkpoint, baseline, current,
+        old_boundary_tokens={int(k): set(v) for k, v in tokens.items()})
+    if compared is None:
+        raise ValueError('interruption_correspondence_changed')
+    old, new, rebuilt = compared
+    if decision['text_correspondence'] != rebuilt['text_correspondence']:
+        raise ValueError('interruption_correspondence_changed')
     if any(rebuilt.get(k) != decision.get(k) for k in
            ('relation', 'matched_pairs', 'new_suffix_indexes', 'overlap_candidates', 'old_count', 'new_count')):
         raise ValueError('interruption_continuity_changed')

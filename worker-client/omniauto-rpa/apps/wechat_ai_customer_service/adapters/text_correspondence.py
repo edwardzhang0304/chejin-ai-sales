@@ -177,6 +177,65 @@ def historical_text_candidate(old: str, new: str, *, protected_entities: Iterabl
     return {**result, "eligible": True, "matched_by": "context_ocr", "reason": "single_unprotected_edit"}
 
 
+def validate_historical_match_policy(policy):
+    """Validate the single authority-bound HC text policy, never local defaults."""
+    fields = {"policy_id", "score_scale", "text_metric", "accept_threshold",
+              "minimum_margin", "auxiliary_mode", "policy_digest"}
+    if not isinstance(policy, dict) or set(policy) != fields:
+        raise ValueError("HISTORICAL_MATCH_POLICY_INVALID")
+    digest = hashlib.sha256(json.dumps({k: v for k, v in policy.items() if k != "policy_digest"},
+        ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False).encode()).hexdigest()
+    if not (policy["policy_id"] == "historical_text_identity_v2"
+            and policy["text_metric"] == "normalized_levenshtein_v1"
+            and policy["auxiliary_mode"] == "diagnostic_only"
+            and all(type(policy[k]) is int and 0 <= policy[k] <= 10000
+                    for k in ("score_scale", "accept_threshold", "minimum_margin"))
+            and policy["score_scale"] == 10000 and policy["policy_digest"] == digest):
+        raise ValueError("HISTORICAL_MATCH_POLICY_INVALID")
+    return policy
+
+
+def historical_confidence_scores(old, new, *, policy, deadline=None, diagnostics=None):
+    """HC r6: complete ordinary-text similarity, not message identity or truth.
+
+    Linear-space Levenshtein; common ends are trimmed only for distance. The
+    denominator always uses the original complete normalized message length.
+    """
+    import time
+
+    validate_historical_match_policy(policy)
+    if not isinstance(old, str) or not isinstance(new, str):
+        raise ValueError("HISTORICAL_CONFIDENCE_INPUT_INVALID")
+    left, right = normalized_projection_text(old), normalized_projection_text(new)
+    length = max(len(left), len(right))
+    if not left or not right:
+        raise ValueError("HISTORICAL_CONFIDENCE_EMPTY_TEXT")
+    prefix = 0
+    while prefix < min(len(left), len(right)) and left[prefix] == right[prefix]:
+        prefix += 1
+    a, b = left[prefix:], right[prefix:]
+    suffix = 0
+    while suffix < min(len(a), len(b)) and a[-1-suffix] == b[-1-suffix]:
+        suffix += 1
+    if suffix:
+        a, b = a[:-suffix], b[:-suffix]
+    if len(a) < len(b):
+        a, b = b, a
+    previous = list(range(len(b)+1))
+    for i, char in enumerate(a):
+        if deadline is not None and i % 16 == 0 and time.monotonic() >= deadline:
+            raise TimeoutError('historical correspondence execution deadline exceeded')
+        current = [i+1]
+        for j, other in enumerate(b):
+            current.append(min(previous[j]+(char != other), previous[j+1]+1, current[j]+1))
+        previous = current
+    distance = previous[-1]
+    score = 10000*(length-distance)//length
+    if diagnostics is not None:
+        diagnostics.update(length=length, edit_distance=distance, text=score)
+    return {"text": score, "score": score}
+
+
 def normalized_send_confirmation_text(value: Any) -> str:
     return re.sub(r"\s+", "", str(value or "")).strip()
 

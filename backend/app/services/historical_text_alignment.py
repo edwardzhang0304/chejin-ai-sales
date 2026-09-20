@@ -11,7 +11,7 @@ def verified_pairs(db, payload, *, worker):
     if proof is None:
         return set()
     capability = ((worker.local_lock_summary or {}).get("capabilities") or {}).get("text_correspondence_version") if worker else None
-    if type(capability) is not int or capability != 1:
+    if type(capability) is not int or capability not in {1, 2} or capability < proof.get('version', 0):
         raise AppError("TEXT_CORRESPONDENCE_UNSUPPORTED", "当前客户端未声明历史文字对应能力", 409)
     # An accepted request may have advanced the checkpoint before its response
     # was lost. Only the exact already-stored authoritative frame may reuse its
@@ -23,10 +23,17 @@ def verified_pairs(db, payload, *, worker):
         if (saved.get("sequence_alignment_evidence") == evidence.get("sequence_alignment_evidence")
                 and saved.get("observations") == evidence.get("observations")
                 and saved.get("slot_ledger_states") == evidence.get("slot_ledger_states")):
-            return {(pair["source_message_key"], pair["observation_id"]) for pair in proof["pairs"]}
+            accepted = {(pair["source_message_key"], pair["observation_id"]) for pair in proof["pairs"]}
+            if proof['version'] == 2:
+                voices = {o['observation_id'] for o in saved.get('observations', [])
+                          if o.get('row_kind') == 'voice_transcript' and o.get('voice_state') == 'transcribed'}
+                accepted.update((s['source_message_key'], s['observation_id']) for s in saved.get('slot_ledger_states', [])
+                    if s.get('observation_id') in voices and s.get('source_message_key') and s.get('fact_scope') == 'historical')
+            return accepted
     from app.services.wechat_service import _identity_checkpoint
     checkpoint = _identity_checkpoint(db, conversation_id=payload.conversation_id)
     rules = shared_adapter("historical_text_alignment")
+    checkpoint = rules.checkpoint_for_proof_version(checkpoint, proof['version'])
     continuity_rules = shared_adapter("business_viewport_continuity")
     try:
         continuity = rules.verify_correspondence(
@@ -35,24 +42,97 @@ def verified_pairs(db, payload, *, worker):
             new_boundary_tokens=continuity_rules.boundary_tokens_for_observations(
                 payload.evidence.observations, committed_only=False),
         )
-        if (alignment.pre_sequence_source != "checkpoint" or alignment.alignment_status != "unique"
+        allowed_sources = {'checkpoint', 'action_frame'} if proof['version'] == 2 else {'checkpoint'}
+        if (alignment.pre_sequence_source not in allowed_sources or alignment.alignment_status != "unique"
                 or not alignment.old_tail_fully_consumed
-                or alignment.candidate_alignment_count != 1):
+                or alignment.candidate_alignment_count != continuity.get('candidate_alignment_count', 1)):
             raise ValueError("TEXT_CORRESPONDENCE_PROOF_INVALID")
         slots = {slot.observation_id: slot for slot in payload.evidence.slot_ledger_states}
         pairs = {pair.post_observation_id: pair for pair in alignment.matched_pairs}
         entries = rules.comparison_entries(checkpoint)
-        for pair in proof["pairs"]:
+        def matches_original_slot(mapped, slot, entry):
+            if mapped.identity_state == 'committed':
+                return mapped.worker_stable_id == entry['stable_id']
+            # Original pre-send comparison deliberately makes NO physical
+            # media identity claim. Its settled slot points to a server fact;
+            # the shared proof independently checks that complete old prefix.
+            return (proof['version'] == 2 and alignment.pre_sequence_source == 'checkpoint'
+                and mapped.identity_state == 'frame_local_unselected' and not mapped.worker_stable_id
+                and slot.delivery_state == 'backend_confirmed'
+                and slot.source_message_key == entry['source_message_key'])
+
+        if proof['version'] == 2:
+            from app.services.wechat_service import _verified_ai_reply_action_for_self_message
+            rows = shared_adapter('message_viewport_projection').ordered_message_viewport_observations(payload.evidence.observations)
+            expected_mapping = [(p['old_index'], p['new_index']) for p in continuity['matched_pairs']]
+            mapped_prefix = alignment.matched_pairs[:len(expected_mapping)]
+            if ([p.post_index for p in mapped_prefix] != [j for _, j in expected_mapping]
+                    or alignment.pre_sequence_source == 'checkpoint'
+                    and [(p.pre_index, p.post_index) for p in mapped_prefix] != expected_mapping):
+                raise ValueError('TEXT_CORRESPONDENCE_PROOF_INVALID')
+            # Locally confirmed AI sends may follow the server checkpoint.
+            # They retain the original exact text + sent-receipt gate. HC
+            # neither scores them nor authorizes suppressing a customer row.
+            suffix_start = len(expected_mapping)
+            messages = {(m.raw_payload or {}).get('observation', {}).get('observation_id'): m for m in payload.messages}
+            historical_sources = {entry['source_message_key'] for entry in entries}
+            historical_ids = {entry['stable_id'] for entry in entries}
+            for offset, mapped in enumerate(alignment.matched_pairs[len(expected_mapping):]):
+                item = messages.get(mapped.post_observation_id)
+                slot = slots.get(mapped.post_observation_id)
+                if (alignment.pre_sequence_source == 'action_frame'
+                        and item and item.message_type == 'text' and item.sender_role_hint == 'customer'
+                        and slot and slot.fact_scope == 'current_read_run'
+                        and slot.origin_read_run_id == payload.read_run_id
+                        and slot.delivery_state == 'outbox_waiting'
+                        and slot.source_message_key == item.source_message_key
+                        and item.source_message_key not in historical_sources
+                        and mapped.identity_state == 'committed'
+                        and mapped.worker_stable_id not in historical_ids
+                        and mapped.worker_stable_id == (item.raw_payload.get('dedupe_basis') or {}).get('worker_stable_id')
+                        and mapped.post_index == suffix_start+offset):
+                    # New text observed before the media action remains in
+                    # this request's ingest set. It is not a historical HC
+                    # pair and cannot be omitted as already delivered.
+                    continue
+                if (alignment.pre_sequence_source == 'action_frame'
+                        and (mapped.identity_state, mapped.match_basis) in {
+                            ('selected_action','confirmed_action'), ('committed','prior_confirmed_action')}
+                        and item and item.message_type in {'voice','image'} and slot
+                        and slot.source_message_key == item.source_message_key
+                        and slot.fact_scope == 'current_read_run'
+                        and mapped.post_index == suffix_start+offset):
+                    # Only classify this as an original media-action mapping.
+                    # The unchanged V3 action/parent/result validators below
+                    # must still verify its receipt and completed/failed state.
+                    continue
+                if (alignment.pre_sequence_source == 'checkpoint' and mapped.pre_index != len(entries)+offset or mapped.post_index != suffix_start+offset
+                        or not item or item.sender_role_hint not in {'self', 'sales'}
+                        or (item.raw_payload.get('ai_reply_receipt') or {}).get('worker_stable_id') != mapped.worker_stable_id):
+                    raise ValueError('TEXT_CORRESPONDENCE_PROOF_INVALID')
+                action = _verified_ai_reply_action_for_self_message(db, conversation_id=payload.conversation_id,
+                    content=item.content, source_message_key=item.source_message_key, raw_payload=item.raw_payload)
+                if action is None or action.status != 'sent':
+                    raise ValueError('TEXT_CORRESPONDENCE_PROOF_INVALID')
+            if alignment.new_suffix_observation_ids != [r['observation_id'] for r in rows[len(alignment.matched_pairs):]]:
+                raise ValueError('TEXT_CORRESPONDENCE_PROOF_INVALID')
+            for mapped in mapped_prefix:
+                entry = entries[expected_mapping[mapped.post_index][0]]
+                slot = slots.get(mapped.post_observation_id)
+                if (not slot or slot.source_message_key != entry['source_message_key']
+                        or not matches_original_slot(mapped, slot, entry)):
+                    raise ValueError('TEXT_CORRESPONDENCE_PROOF_INVALID')
+        verified = [*proof['pairs'], *continuity.get('voice_correspondence', [])]
+        for pair in verified:
             slot, mapped = slots.get(pair["observation_id"]), pairs.get(pair["observation_id"])
             expected = entries[pair["old_index"]]
             if (not slot or not mapped or slot.source_message_key != pair["source_message_key"]
                     or mapped.post_index != pair["new_index"]
-                    or mapped.worker_stable_id != expected["stable_id"]
-                    or mapped.identity_state != "committed"
+                    or not matches_original_slot(mapped, slot, expected)
                     or not (slot.fact_scope == "historical" or slot.delivery_state == "backend_confirmed")
                     or pair["observation_id"] in alignment.new_suffix_observation_ids):
                 raise ValueError("TEXT_CORRESPONDENCE_PROOF_INVALID")
     except (ValueError, KeyError, IndexError, TypeError) as exc:
         code = "TEXT_CORRESPONDENCE_CHECKPOINT_EXPIRED" if str(exc) == "TEXT_CORRESPONDENCE_CHECKPOINT_EXPIRED" else "TEXT_CORRESPONDENCE_PROOF_INVALID"
         raise AppError(code, "历史文字对应凭证未通过权威校验", 409) from exc
-    return {(pair["source_message_key"], pair["observation_id"]) for pair in proof["pairs"]}
+    return {(pair["source_message_key"], pair["observation_id"]) for pair in verified}

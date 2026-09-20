@@ -17802,22 +17802,16 @@ def validate_send_context_guard(
     )
     historical = continuity_contract.get("historical_alignment")
     if decision.get("relation") != "business_sequence_equal" and isinstance(historical, dict):
-        from apps.wechat_ai_customer_service.adapters.historical_text_alignment import comparison_projection
+        from apps.wechat_ai_customer_service.adapters.historical_text_alignment import compare_historical_viewports
         try:
             baseline_rows = historical["baseline_observations"]
             checkpoint = historical["checkpoint"]
             if normalized_business_message_sequence(baseline_rows, message_viewport_bounds=None) != expected_sequence:
                 raise ValueError("historical_guard_baseline_changed")
-            projected_old, old_proof = comparison_projection(checkpoint, baseline_rows,
-                pre_frame_id="checkpoint:send-guard", post_frame_id="send-guard:baseline")
-            projected_new, new_proof = comparison_projection(checkpoint, current_observations,
-                pre_frame_id="checkpoint:send-guard", post_frame_id="send-guard:current")
-            if old_proof or new_proof:
-                decision = _shared_compare_business_viewport_continuity(projected_old, projected_new,
-                    old_boundary_tokens=old_tokens,
-                    new_boundary_tokens=_shared_boundary_tokens_for_observations(current_observations, committed_only=False),
-                    allow_history_suffix=allow_history_suffix)
-                decision["text_correspondence"] = {"baseline": old_proof, "current": new_proof}
+            compared = compare_historical_viewports(checkpoint, baseline_rows, current_observations,
+                old_boundary_tokens=old_tokens, allow_history_suffix=allow_history_suffix)
+            if compared:
+                decision = compared[2]
         except (ValueError, KeyError, TypeError) as exc:
             return {"ok": False, "reason": str(exc), "error_code": "C3_SEND_CONTEXT_GUARD_INVALID"}
     relation = str(decision.get("relation") or "")
