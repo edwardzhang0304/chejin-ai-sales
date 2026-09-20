@@ -1,0 +1,1522 @@
+{
+  "schema_version": 1,
+  "repository": "edwardzhang0304/chejin-ai-sales",
+  "reviewed_commit": "2ce288961b01fab2179fd571d6457779e646e0f4",
+  "target_version": "0.9.91",
+  "approval": "User authorized continuation after reviewed settlement and emergency-stop fixes were pushed; preserve historical unknown and all business data. Formal manual preserving-data route.",
+  "original_verification_sha256": "a1bd3112d6ed451983843ef459c73eb1938bc284e977e73d5a913e68325e679d",
+  "source_sha256": {
+    "contracts/c2_contract_v3.json": "0d61ceef5ef0837c07c9680c312f823fe840682670c8c2c1659b402839eb434a",
+    "worker-client/tests/test_send_request_file.py": "f5a606d2f6f70e49ec6029cd01626be4017a070cd986afda106c10bb7b4abd5f",
+    "worker-client/tests/test_send_request_export.py": "5a7fc8c05eb150790f89441362aa973cf13685f02d0fef3dde65a95be0787935",
+    "worker-client/tests/test_sequence_recovery_contract.py": "c4bc3950b854f646906a92344afb4b9bb537963d44a9804c9356040b0d74dfd1",
+    "worker-client/tests/test_avatar_recognition_segmentation.py": "0e9d344091e7adf6c59130ba87335185e101073df826a92d38d85ee6c8b42a1b",
+    "worker-client/tests/test_send_request_recovery_retention.py": "adc625f24b4b5f368da8a5e26336ac747f400f52ad5bc687c0da1e8bfdf37176",
+    "worker-client/tests/test_avatar_ocr_failure_boundary.py": "4f68622f22c7db693d0ec0fbc68c0298803f0281d14dd2531a8d6d9204bcc903",
+    "worker-client/tests/test_avatar_text_input.py": "5597694db44fc8ea47e151f9acc51948dae5f83e80277327340c89f17e119972",
+    "worker-client/tests/test_rpa_bridge.py": "dd1acae5559fa3e973cef4a3961dc94ee19e978aa0ba13790c84410aa6371c7d",
+    "worker-client/scripts/generate-c2-observation-schema.py": "d54571d01239f1cc17630b2da2881be507f8aa1e9a8c60f11cbe3d11e29906c2",
+    "worker-client/chejin_worker_client/rpa_bridge.py": "36b520b972ef1bc378cf205a3b59833f30c7d68c2e38fd4eec210212af27517e",
+    "worker-client/chejin_worker_client/send_setup_recovery.py": "ac743c8079fbcead3c40195cf57a670c4e1f29027f4d499a7b02f7ae5f5ae223",
+    "worker-client/chejin_worker_client/task_runner.py": "3cdc7262d844ac0ce7ed1794d4b8a2f53b11efb25849ad99764b7c01a28b02d3",
+    "worker-client/chejin_worker_client/incident_evidence.py": "a58a5ef4722f179566ba4917530f91a4c07f02ec7351344906a6fe3d0ca9f2b6",
+    "worker-client/chejin_worker_client/storage.py": "e9ee1156698505813622662e198041252e8ceb3ddf2dde41ace2fe741b35508d",
+    "worker-client/chejin_worker_client/action_journal.py": "4ddb14c7c47b1262d823e495555613a4a0850abe7b50ff18fae37b3e1a38a78d",
+    "worker-client/chejin_worker_client/send_request_evidence.py": "c024d02e0f5b000d67412fc2df4a1cbb6e4e2469e06eb2183c0755ab11846bd9",
+    "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/adapters/wechat_win32_ocr_sidecar.py": "4ab83b6b0893622844daf77ebc02c004b6f934e664514c4929132cba9b2cc34c",
+    "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/adapters/contract_rules.py": "52ada74d51b0107699bc16b413cf7d7b1e84d539f101c84c22e9149a5050586f",
+    "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/adapters/send_launch_journal.py": "a6f9dce5c3f3ebc8988c0e303fdc1bfb45bb9605571b0e4aee030788e39fa767",
+    "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/adapters/send_request_admission.py": "2f180499289d4dc864185cbe2b405fc087fb63316c823456c19794ecd680653c",
+    "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/adapters/chejin_c2_observation_schema.generated.json": "c0da667bbe420bc02f9ef0f733b742f0474855311216bfc2e83dda7b2d8e0bd1",
+    "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/adapters/send_request_file.py": "95ed43c40f380313571f081baeb446bfb8c17b2bb2f9aa76be3a917b450652de",
+    "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/adapters/send_setup_contract.py": "53a46af801b90239905f42146bf6fb2c6886e8cc1edf17473a8a57791afd29c3",
+    "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/adapters/wechat_win32_ocr/ocr_engine.py": "e293792b4b3f5968b7d562484120b73b6b0b87866c26774d7a323e9a3e5c8aac",
+    "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/adapters/wechat_win32_ocr/avatar_text_input.py": "1b3e4c081050a16db37cd042a6a83112f6df52dc81b14c995f539f6d12fb049b",
+    "contracts/recovery/c2_contract_v3_0.9.90.json": "a2b8eb0e8b18ee3f7cc0d7fbaa20d7c0881bbd80b9eb0e8d855b67878ae61002",
+    "backend/tests/test_pre_send_read_recovery_worker.py": "0f706c9cddb804b6c3b9af753244c4bdb87a8f8c06878e5cd555d3f81f02510b",
+    "backend/tests/test_send_setup_recovery_worker.py": "9fa575d109fd0570be5625989ffaf5880a73e2a460472329c9a6340c43473bb8",
+    "backend/tests/test_send_setup_recovery.py": "760fed2aedca3166b9aa2ab5e3abd3e9dee5ea77a00bb3e0e37ab2f6fb4138a0",
+    "backend/tests/test_avatar_segmentation_http.py": "be8185585b97e27ecba4176a035a1a241e86de5e0307817cd6d832baf8518ecf",
+    "backend/tests/test_avatar_mask_http.py": "c17818d615226e0e51db2260c93aaa371c8235e1be28c1e3461d3312920ec9d2",
+    "backend/tests/send_setup_worker_process.py": "aaeedfb8eab1ebe0af899435ba0cac25c56000b415088e779b142448bc707bfc",
+    "backend/app/services/pre_send_read_recovery.py": "8e31d3087f4060c00ac31e79d9b0a7aabc4d502e5b8b4aaddf8773b25f69d5a0",
+    "backend/app/api/routes/c3.py": "0eb4d3a71401eeb25e845db14f5a85dbf4783694a1e50ca1654da21c72da7cc6",
+    "backend/app/services/reply_settlement_state.py": "85be04ed6b5f601a5718cb57ca666489368635018a60167d9a487438ee040be0",
+    "backend/app/services/worker_service.py": "5d7c83c047c166136cf8e8b18deac83276e29a98ebf54882be3d0df70b9a1e60",
+    "backend/app/services/release_readiness.py": "d26d23aa271601ca9cebb9ed0c23d042dd38935fe8bdf69d917b88164515b3ab",
+    "backend/tests/test_send_settlement_readiness.py": "a7a0034b2820e33a9fa62a3f8a08bf97c808f47cbe842ad836b8719eeada8c4a",
+    "backend/tests/test_legacy_unknown_worker_release.py": "64db4ca754f63d95d2f152260e46020962c97ceedd821d5d191231bf38769ae6",
+    "ops/formal_release/source_evidence.py": "af0e98609d24c9b62880b2cbe94c57a6a05db47d98a4a44c5231bd032999aa9c",
+    "ops/formal_release/tests/test_source_evidence.py": "4f4b9679714114d63b60d1e1ceff850079892708971133b1cfe2dee146afea33",
+    "backend/tests/test_worker_fault_recovery.py": "0a01fae2239d510fbe2d5cf826a7ac26ffd933afce0d3059c12d36bd738b3c1a",
+    "worker-client/tests/test_task_runner.py": "06e8c5e9a1a94517e7b9550fa898ca21ee4d138409cf5819fb3787e9da05eed6",
+    "worker-client/tests/test_emergency_status_settlement.py": "a51b45dc5657d4c38d69379b0878c51d31d3635029061c1b8497c02ddaf1244a"
+  },
+  "checks": [
+    {
+      "name": "unit-r2",
+      "original_xml_sha256": "1b80c65cd4342df4d9613942fe9aa9ad8fe53d8d7e693e8c161c27ec0362fd44",
+      "count": 66,
+      "cases": [
+        {
+          "name": "worker-client.tests.test_rpa_bridge.RpaBridgeTest::test_add_friend_bridge_never_accepts_ok_true_with_failed_status",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_rpa_bridge.RpaBridgeTest::test_add_friend_confirmed_click_survives_post_click_ocr_failure",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_rpa_bridge.RpaBridgeTest::test_add_friend_confirmed_click_survives_post_click_screenshot_failure",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_rpa_bridge.RpaBridgeTest::test_add_friend_confirmed_journal_recovers_without_second_click",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_rpa_bridge.RpaBridgeTest::test_add_friend_explicit_restriction_overrides_confirmed_success",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_rpa_bridge.RpaBridgeTest::test_add_friend_triggered_journal_blocks_second_physical_attempt",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_rpa_bridge.RpaBridgeTest::test_all_ui_flows_do_not_request_window_policy_after_startup",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_rpa_bridge.RpaBridgeTest::test_artifact_marker_failure_does_not_replace_successful_business_result",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_rpa_bridge.RpaBridgeTest::test_bridge_same_frame_replay_uses_original_artifact_directory",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_rpa_bridge.RpaBridgeTest::test_call_omniauto_preserves_specific_cancellation_reason",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_rpa_bridge.RpaBridgeTest::test_call_omniauto_protects_artifact_directory_until_process_finishes",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_rpa_bridge.RpaBridgeTest::test_call_omniauto_terminates_running_sidecar_when_cancelled",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_rpa_bridge.RpaBridgeTest::test_default_sidecar_script_points_to_omniauto_sidecar",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_rpa_bridge.RpaBridgeTest::test_diagnostic_event_artifact_becomes_step_evidence_path",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_rpa_bridge.RpaBridgeTest::test_failure_metadata_keeps_nested_ocr_and_layout_reasons",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_rpa_bridge.RpaBridgeTest::test_formal_pre_send_switch_disables_bridge_roi_and_replay",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_rpa_bridge.RpaBridgeTest::test_frozen_runtime_dispatches_sidecar_through_packaged_executable",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_rpa_bridge.RpaBridgeTest::test_inflight_transaction_defers_map_binding_without_worker_gate",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_rpa_bridge.RpaBridgeTest::test_mock_bridge_emits_add_friend_steps_and_result",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_rpa_bridge.RpaBridgeTest::test_mock_bridge_wechat_diagnostics_is_noop",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_rpa_bridge.RpaBridgeTest::test_new_transaction_defers_map_binding_without_worker_sidecar_gate",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_rpa_bridge.RpaBridgeTest::test_new_transaction_never_preflights_geometry_or_dpi",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_rpa_bridge.RpaBridgeTest::test_probe_latches_non_not_found_normalization_failure_without_moving_again",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_rpa_bridge.RpaBridgeTest::test_probe_normalizes_only_once_then_uses_passive_status",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_rpa_bridge.RpaBridgeTest::test_probe_retries_startup_normalization_until_wechat_appears",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_rpa_bridge.RpaBridgeTest::test_probe_reuses_successful_startup_calibration_observation",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_rpa_bridge.RpaBridgeTest::test_real_add_friend_passes_cancel_check_to_sidecar_process",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_rpa_bridge.RpaBridgeTest::test_real_bridge_accepts_confirmed_journal_written_by_sidecar_process",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_rpa_bridge.RpaBridgeTest::test_real_bridge_calls_omniauto_entry_click_plan_with_formal_fields",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_rpa_bridge.RpaBridgeTest::test_real_bridge_emits_preflight_steps_before_sidecar_call",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_rpa_bridge.RpaBridgeTest::test_real_bridge_get_messages_can_search_by_remark_code",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_rpa_bridge.RpaBridgeTest::test_real_bridge_json_round_trip_reaches_sidecar_final_guard",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_rpa_bridge.RpaBridgeTest::test_real_bridge_list_sessions_returns_artifact_evidence",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_rpa_bridge.RpaBridgeTest::test_real_bridge_locate_chat_can_search_by_remark_code",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_rpa_bridge.RpaBridgeTest::test_real_bridge_locate_chat_visible_passes_ascii_json_candidate",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_rpa_bridge.RpaBridgeTest::test_real_bridge_marks_only_requested_pre_send_locate_for_chat_roi",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_rpa_bridge.RpaBridgeTest::test_real_bridge_marks_only_requested_pre_send_read_for_chat_roi",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_rpa_bridge.RpaBridgeTest::test_real_bridge_rejects_missing_formal_payload_before_sidecar_call",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_rpa_bridge.RpaBridgeTest::test_real_bridge_send_reply_calls_omniauto_send_action",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_rpa_bridge.RpaBridgeTest::test_source_runtime_dispatches_sidecar_through_python",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_rpa_bridge.RpaBridgeTest::test_startup_probe_geometry_rejects_incomplete_or_non_positive_rectangles",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_rpa_bridge.RpaBridgeTest::test_task_rejects_masked_phone_as_search_phone",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_rpa_bridge.RpaBridgeTest::test_voice_prepare_is_read_only_and_execute_carries_exact_token",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_pre_send_read_recovery_budget::test_one_budget_across_threads_stages_and_restart",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_pre_send_read_recovery_budget::test_budget_persistence_failure_never_authorizes_retry",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_pre_send_read_recovery_budget::test_corrupt_budget_does_not_grant_another_attempt[broken-json]",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_pre_send_read_recovery_budget::test_corrupt_budget_does_not_grant_another_attempt[{}]",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_pre_send_read_recovery_budget::test_corrupt_budget_does_not_grant_another_attempt[[]]",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_pre_send_read_recovery_budget::test_two_no_image_failures_keep_actual_attempts",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_pre_send_input_safety::test_real_cli_observes_only_current_input[empty]",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_pre_send_input_safety::test_real_cli_observes_only_current_input[one_character]",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_pre_send_input_safety::test_real_cli_observes_only_current_input[other_chat]",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_pre_send_input_safety::test_real_cli_observes_only_current_input[capture_failed]",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_pre_send_input_safety::test_real_cli_observes_only_current_input[layout_failed]",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_pre_send_input_safety::test_conflicting_bridge_arguments_fail_before_any_sidecar[conflict0]",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_pre_send_input_safety::test_conflicting_bridge_arguments_fail_before_any_sidecar[conflict1]",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_pre_send_input_safety::test_conflicting_bridge_arguments_fail_before_any_sidecar[conflict2]",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_pre_send_input_safety::test_conflicting_bridge_arguments_fail_before_any_sidecar[conflict3]",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_pre_send_input_safety::test_conflicting_bridge_arguments_fail_before_any_sidecar[conflict4]",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_pre_send_input_safety::test_same_sqlite_gate_and_readonly_worker_coordinator[normal]",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_pre_send_input_safety::test_same_sqlite_gate_and_readonly_worker_coordinator[new_fault]",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_pre_send_input_safety::test_same_sqlite_gate_and_readonly_worker_coordinator[disk_failure]",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_pre_send_input_safety::test_same_sqlite_gate_and_readonly_worker_coordinator[restart]",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_pre_send_input_safety::test_same_sqlite_gate_and_readonly_worker_coordinator[before_input]",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_pre_send_input_safety::test_same_sqlite_gate_and_readonly_worker_coordinator[known_cleared]",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_pre_send_input_safety::test_stale_observation_cannot_clear_a_new_request",
+          "result": "passed"
+        }
+      ]
+    },
+    {
+      "name": "http-r2-final",
+      "original_xml_sha256": "c4cf277b1492aa1af13e35c04fa18302f1500d379952976ce20c995bdee31803",
+      "count": 32,
+      "cases": [
+        {
+          "name": "tests.test_send_setup_recovery::test_setup_failures_settle_original_action_without_handoff[not_called]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_send_setup_recovery::test_setup_failures_settle_original_action_without_handoff[create_failed]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_send_setup_recovery::test_setup_failures_settle_original_action_without_handoff[rejected_before_ui]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_send_setup_recovery::test_invalid_setup_proofs_never_fall_back_to_ordinary_handoff[capability]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_send_setup_recovery::test_invalid_setup_proofs_never_fall_back_to_ordinary_handoff[running]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_send_setup_recovery::test_invalid_setup_proofs_never_fall_back_to_ordinary_handoff[physical]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_send_setup_recovery::test_invalid_setup_proofs_never_fall_back_to_ordinary_handoff[terminal_action]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_send_setup_recovery::test_invalid_setup_proofs_never_fall_back_to_ordinary_handoff[process_state]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_send_setup_recovery::test_invalid_setup_proofs_never_fall_back_to_ordinary_handoff[request_hash]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_send_setup_recovery::test_invalid_setup_proofs_never_fall_back_to_ordinary_handoff[outer_error]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_send_setup_recovery::test_invalid_setup_proofs_never_fall_back_to_ordinary_handoff[mutex]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_send_setup_recovery::test_equivalent_upgrade_settles_frozen_receipt_once[before_receipt]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_send_setup_recovery::test_equivalent_upgrade_settles_frozen_receipt_once[after_response_lost]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_send_setup_recovery::test_setup_upgrade_rejects_incompatible_or_terminal_original[no_sp]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_send_setup_recovery::test_setup_upgrade_rejects_incompatible_or_terminal_original[changed_rule]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_send_setup_recovery::test_setup_upgrade_rejects_incompatible_or_terminal_original[forged_revision]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_send_setup_recovery::test_setup_upgrade_rejects_incompatible_or_terminal_original[forged_sha]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_send_setup_recovery::test_setup_upgrade_rejects_incompatible_or_terminal_original[sent]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_send_setup_recovery::test_setup_upgrade_rejects_incompatible_or_terminal_original[unknown]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_send_setup_recovery::test_setup_upgrade_rejects_incompatible_or_terminal_original[identity]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_send_setup_recovery_worker::test_original_task_settles_then_explicit_start_automatically_answers_a_and_b[normal]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_send_setup_recovery_worker::test_original_task_settles_then_explicit_start_automatically_answers_a_and_b[stop_offline]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_send_setup_recovery_worker::test_original_task_settles_then_explicit_start_automatically_answers_a_and_b[ack_offline]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_send_setup_recovery_worker::test_original_task_settles_then_explicit_start_automatically_answers_a_and_b[ack_response_lost]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_send_setup_recovery_worker::test_original_task_settles_then_explicit_start_automatically_answers_a_and_b[crash_before_stop]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_send_setup_recovery_worker::test_original_task_settles_then_explicit_start_automatically_answers_a_and_b[segmented]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_send_setup_recovery_worker::test_original_task_settles_then_explicit_start_automatically_answers_a_and_b[crash_creating]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_send_setup_recovery_worker::test_original_task_settles_then_explicit_start_automatically_answers_a_and_b[crash_finished_unknown]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_send_setup_recovery_worker::test_original_task_settles_then_explicit_start_automatically_answers_a_and_b[upgrade_ack_offline]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_send_setup_recovery_worker::test_original_task_settles_then_explicit_start_automatically_answers_a_and_b[upgrade_ack_response_lost]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_pre_send_read_recovery_worker::test_two_capture_failures_stop_and_settle[capture_failure]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_pre_send_read_recovery_worker::test_two_capture_failures_stop_and_settle[resume_all_old]",
+          "result": "passed"
+        }
+      ]
+    },
+    {
+      "name": "integration-95",
+      "original_xml_sha256": "4fd09d0153cb58967a8b1fc90bdf73b7e8e776365d4732edd675bb1c232f442e",
+      "count": 95,
+      "cases": [
+        {
+          "name": "worker-client.tests.test_send_request_file::test_complete_path_budget_and_fallback[239]",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_send_request_file::test_complete_path_budget_and_fallback[240]",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_send_request_file::test_complete_path_budget_and_fallback[241]",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_send_request_file::test_complete_path_budget_and_fallback[259]",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_send_request_file::test_complete_path_budget_and_fallback[260]",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_send_request_file::test_complete_path_budget_and_fallback[261]",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_send_request_file::test_complete_path_budget_and_fallback[340]",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_send_request_file::test_real_bytes_once_and_unique_request",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_send_request_file::test_bad_file_never_reaches_ui[digest]",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_send_request_file::test_bad_file_never_reaches_ui[missing]",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_send_request_file::test_bad_file_never_reaches_ui[partial]",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_send_request_file::test_bad_file_never_reaches_ui[version]",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_send_request_file::test_bad_file_never_reaches_ui[request]",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_send_request_file::test_bad_file_never_reaches_ui[target]",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_send_request_file::test_bad_file_never_reaches_ui[text]",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_send_request_file::test_bad_file_never_reaches_ui[task]",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_send_request_file::test_bad_file_never_reaches_ui[action]",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_send_request_file::test_bad_file_never_reaches_ui[guard]",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_send_request_file::test_bad_file_never_reaches_ui[inline]",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_send_request_file::test_bad_file_never_reaches_ui[shortargs]",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_send_request_file::test_popen_failure_is_proven_and_guard_is_not_on_command",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_send_request_file::test_preparation_failure_never_creates_process[write]",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_send_request_file::test_preparation_failure_never_creates_process[fsync]",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_send_request_file::test_preparation_failure_never_creates_process[rename]",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_send_request_file::test_previous_unknown_cannot_be_overwritten_by_new_nonstart[trigger_attempted]",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_send_request_file::test_previous_unknown_cannot_be_overwritten_by_new_nonstart[confirmed]",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_send_request_file::test_previous_unknown_cannot_be_overwritten_by_new_nonstart[creating]",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_send_request_file::test_previous_unknown_cannot_be_overwritten_by_new_nonstart[finished_unknown]",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_send_request_file::test_command_counts_every_argument_including_quoting",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_send_request_file::test_cli_presence_rejects_even_empty_file_flags[argv0]",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_send_request_file::test_cli_presence_rejects_even_empty_file_flags[argv1]",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_send_request_file::test_cli_presence_rejects_even_empty_file_flags[argv2]",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_send_request_file::test_later_oserror_is_not_creation_failure",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_send_request_file::test_original_bounded_read_retry_still_uses_fresh_request",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_send_request_file::test_input_file_export_and_retention_follow_original_outbox",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_send_request_file::test_missing_component_is_prepare_failure_without_creation",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_send_request_file::test_original_incident_reconstruction_through_formal_file",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_send_request_recovery_retention::test_package_reference_survives_failure_immediately_after_atomic_write",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_send_request_recovery_retention::test_existing_ocr_receipt_recovery_preserves_committed_package_reference",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_send_request_recovery_retention::test_original_ocr_recovery_retains_files_for_sent_or_unknown[confirmed]",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_send_request_recovery_retention::test_original_ocr_recovery_retains_files_for_sent_or_unknown[trigger_attempted]",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_send_request_recovery_retention::test_all_finalization_paths_keep_refs_before_journal_removal[sent]",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_send_request_recovery_retention::test_all_finalization_paths_keep_refs_before_journal_removal[failed]",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_send_request_recovery_retention::test_all_finalization_paths_keep_refs_before_journal_removal[unknown]",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_send_request_recovery_retention::test_reference_is_durable_before_temporary_file_can_survive_crash",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_send_request_recovery_retention::test_reference_save_failure_cannot_leave_an_unregistered_file",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_send_request_recovery_retention::test_modified_file_is_retained_and_cleanup_failure_does_not_raise",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_sequence_recovery_contract::test_actual_released_read_migrates_without_claiming_full_equivalence[0.9.90]",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_sequence_recovery_contract::test_actual_released_read_migrates_without_claiming_full_equivalence[0.9.89]",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_sequence_recovery_contract::test_actual_released_read_migrates_without_claiming_full_equivalence[0.9.75]",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_sequence_recovery_contract::test_actual_released_read_migrates_without_claiming_full_equivalence[0.9.78]",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_sequence_recovery_contract::test_actual_released_read_migrates_without_claiming_full_equivalence[0.9.80]",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_sequence_recovery_contract::test_actual_released_read_migrates_without_claiming_full_equivalence[0.9.85]",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_sequence_recovery_contract::test_actual_released_read_migrates_without_claiming_full_equivalence[0.9.86]",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_sequence_recovery_contract::test_actual_released_read_migrates_without_claiming_full_equivalence[0.9.87]",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_sequence_recovery_contract::test_future_rule_changes_cannot_use_the_reviewed_migration[identity]",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_sequence_recovery_contract::test_future_rule_changes_cannot_use_the_reviewed_migration[sequence_limit]",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_sequence_recovery_contract::test_future_rule_changes_cannot_use_the_reviewed_migration[sequence_unknown]",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_sequence_recovery_contract::test_future_rule_changes_cannot_use_the_reviewed_migration[sequence_missing]",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_sequence_recovery_contract::test_future_rule_changes_cannot_use_the_reviewed_migration[storage]",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_sequence_recovery_contract::test_future_rule_changes_cannot_use_the_reviewed_migration[terminal]",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_sequence_recovery_contract::test_future_rule_changes_cannot_use_the_reviewed_migration[unknown]",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_sequence_recovery_contract::test_published_085_resource_must_be_the_actual_release[missing]",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_sequence_recovery_contract::test_published_085_resource_must_be_the_actual_release[corrupt]",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_sequence_recovery_contract::test_published_085_resource_must_be_the_actual_release[development_085]",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_sequence_recovery_contract::test_removing_migration_or_085_declaration_breaks_the_positive[migration]",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_sequence_recovery_contract::test_removing_migration_or_085_declaration_breaks_the_positive[085_declaration]",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_sequence_recovery_contract::test_pre_send_read_extension_preserves_published_086_validator[0.9.86]",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_sequence_recovery_contract::test_pre_send_read_extension_preserves_published_086_validator[0.9.87]",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_sequence_recovery_contract::test_changed_pre_send_rules_cannot_reuse_086_migration[protocol_version-2]",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_sequence_recovery_contract::test_changed_pre_send_rules_cannot_reuse_086_migration[receipt_field-unreviewed_receipt]",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_sequence_recovery_contract::test_changed_pre_send_rules_cannot_reuse_086_migration[proof_schema-value2]",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_sequence_recovery_contract::test_changed_pre_send_rules_cannot_reuse_086_migration[unreviewed_rule-True]",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_sequence_recovery_contract::test_published_086_resource_cannot_be_replaced_by_development_contract[missing]",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_sequence_recovery_contract::test_published_086_resource_cannot_be_replaced_by_development_contract[corrupt]",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_sequence_recovery_contract::test_published_086_resource_cannot_be_replaced_by_development_contract[same_label_development]",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_sequence_recovery_contract::test_disabling_pre_send_migration_breaks_published_086_positive",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_artifact_retention.ArtifactRetentionTest::test_capacity_evicts_success_before_critical",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_artifact_retention.ArtifactRetentionTest::test_cleanup_rejects_any_root_outside_worker_artifacts",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_artifact_retention.ArtifactRetentionTest::test_late_vision_failure_promotes_previously_successful_flow_to_critical",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_artifact_retention.ArtifactRetentionTest::test_marker_write_failure_is_best_effort",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_artifact_retention.ArtifactRetentionTest::test_retention_keeps_current_flow_and_uses_separate_success_failure_windows",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_send_request_export::test_registered_input_export_preserves_bytes_and_commit_state[False]",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_send_request_export::test_registered_input_export_preserves_bytes_and_commit_state[True]",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_send_request_export::test_bad_temporary_input_is_an_explicit_omission[digest]",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_send_request_export::test_bad_temporary_input_is_an_explicit_omission[read]",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_send_request_export::test_bad_temporary_input_is_an_explicit_omission[size]",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_send_request_export::test_bad_temporary_input_is_an_explicit_omission[secret]",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_send_request_export::test_bad_temporary_input_is_an_explicit_omission[path]",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_send_request_export::test_bad_temporary_input_is_an_explicit_omission[missing]",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_send_request_export::test_existing_invalid_final_never_falls_back_to_temporary",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_send_request_export::test_public_export_contains_registered_request_and_state[False]",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_send_request_export::test_public_export_contains_registered_request_and_state[True]",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_send_request_export::test_archive_write_error_is_not_reported_as_missing_source[False]",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_send_request_export::test_archive_write_error_is_not_reported_as_missing_source[True]",
+          "result": "passed"
+        }
+      ]
+    },
+    {
+      "name": "settlement-review-settlement-final",
+      "original_xml_sha256": "1e592687269cc5d7d14f0c945c3f0ca18128cd5e8a6b0835e9ec4365b94e04cf",
+      "cases": [
+        {
+          "name": "tests.test_send_settlement_readiness::test_server_terminal_is_settled_without_rewriting_unknown[lease_first]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_send_settlement_readiness::test_server_terminal_is_settled_without_rewriting_unknown[timeout_first]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_send_settlement_readiness::test_server_terminal_is_settled_without_rewriting_unknown[late_unknown_ack]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_send_settlement_readiness::test_incomplete_terminal_evidence_still_blocks_both_gates[task_running]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_send_settlement_readiness::test_incomplete_terminal_evidence_still_blocks_both_gates[task_owner]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_send_settlement_readiness::test_incomplete_terminal_evidence_still_blocks_both_gates[claim_task]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_send_settlement_readiness::test_incomplete_terminal_evidence_still_blocks_both_gates[lease_worker]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_send_settlement_readiness::test_incomplete_terminal_evidence_still_blocks_both_gates[lease_client]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_send_settlement_readiness::test_incomplete_terminal_evidence_still_blocks_both_gates[lease_expiry]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_send_settlement_readiness::test_incomplete_terminal_evidence_still_blocks_both_gates[lease_renewed]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_send_settlement_readiness::test_incomplete_terminal_evidence_still_blocks_both_gates[missing_event]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_send_settlement_readiness::test_incomplete_terminal_evidence_still_blocks_both_gates[event_owner]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_send_settlement_readiness::test_incomplete_terminal_evidence_still_blocks_both_gates[event_error]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_send_settlement_readiness::test_incomplete_terminal_evidence_still_blocks_both_gates[event_status]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_send_settlement_readiness::test_incomplete_terminal_evidence_still_blocks_both_gates[missing_handoff]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_send_settlement_readiness::test_incomplete_terminal_evidence_still_blocks_both_gates[handoff_action]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_send_settlement_readiness::test_incomplete_terminal_evidence_still_blocks_both_gates[handoff_batch]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_send_settlement_readiness::test_incomplete_terminal_evidence_still_blocks_both_gates[handoff_result]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_send_settlement_readiness::test_incomplete_terminal_evidence_still_blocks_both_gates[handoff_reason]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_send_settlement_readiness::test_incomplete_terminal_evidence_still_blocks_both_gates[no_permit]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_send_settlement_readiness::test_incomplete_terminal_evidence_still_blocks_both_gates[no_claim_time]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_send_settlement_readiness::test_incomplete_terminal_evidence_still_blocks_both_gates[wrong_error]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_send_settlement_readiness::test_incomplete_terminal_evidence_still_blocks_both_gates[sending]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_send_settlement_readiness::test_incomplete_terminal_evidence_still_blocks_both_gates[invalid_ack]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_send_settlement_readiness::test_incomplete_terminal_evidence_still_blocks_both_gates[empty_permit]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_send_settlement_readiness::test_incomplete_terminal_evidence_still_blocks_both_gates[event_predates_claim]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_send_settlement_readiness::test_incomplete_terminal_evidence_still_blocks_both_gates[handoff_predates_claim]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_send_settlement_readiness::test_incomplete_terminal_evidence_still_blocks_both_gates[handoff_conversation]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_send_settlement_readiness::test_incomplete_terminal_evidence_still_blocks_both_gates[handoff_error]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_send_settlement_readiness::test_incomplete_terminal_evidence_still_blocks_both_gates[deleted_task]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_send_settlement_readiness::test_settled_send_does_not_bypass_other_release_barriers[flow]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_send_settlement_readiness::test_settled_send_does_not_bypass_other_release_barriers[lock]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_send_settlement_readiness::test_settled_send_does_not_bypass_other_release_barriers[running]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_send_settlement_readiness::test_settled_send_does_not_bypass_other_release_barriers[notification]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_send_settlement_readiness::test_settled_send_does_not_bypass_other_release_barriers[generation]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_legacy_unknown_worker_release::test_same_sqlite_remains_stopped_until_explicit_start_then_release_gate_passes[current]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_legacy_unknown_worker_release::test_same_sqlite_remains_stopped_until_explicit_start_then_release_gate_passes[released_090]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_worker_fault_recovery::test_server_rechecks_fault_recovery_under_worker_lock[none]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_worker_fault_recovery::test_server_rechecks_fault_recovery_under_worker_lock[flow]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_worker_fault_recovery::test_server_rechecks_fault_recovery_under_worker_lock[task]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_worker_fault_recovery::test_server_rechecks_fault_recovery_under_worker_lock[lease]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_worker_fault_recovery::test_server_rechecks_fault_recovery_under_worker_lock[sending]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_worker_fault_recovery::test_server_rechecks_fault_recovery_under_worker_lock[unknown_send_result]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_worker_fault_recovery::test_server_rechecks_fault_recovery_under_worker_lock[offline]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_worker_fault_recovery::test_server_rechecks_fault_recovery_under_worker_lock[wechat]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_worker_fault_recovery::test_server_rechecks_fault_recovery_under_worker_lock[lock]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_worker_fault_recovery::test_old_client_cannot_downgrade_fault_by_bind_heartbeat_or_plain_start",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_worker_fault_recovery::test_recovery_persistence_failure_never_reopens_intake[success]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_worker_fault_recovery::test_recovery_persistence_failure_never_reopens_intake[save_before]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_worker_fault_recovery::test_recovery_persistence_failure_never_reopens_intake[save_after]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_worker_fault_recovery::test_recovery_persistence_failure_never_reopens_intake[pause_before]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_worker_fault_recovery::test_recovery_persistence_failure_never_reopens_intake[pause_after]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_worker_fault_recovery::test_recovery_persistence_failure_never_reopens_intake[restore_retry]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_worker_fault_recovery::test_recovery_persistence_failure_never_reopens_intake[compensation_retry]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_worker_fault_recovery::test_recovery_persistence_failure_never_reopens_intake[profile_failure]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_worker_fault_recovery::test_recovery_persistence_failure_never_reopens_intake[restore_retry_network_before]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_worker_fault_recovery::test_recovery_persistence_failure_never_reopens_intake[restore_retry_network_after]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_worker_fault_recovery::test_persisted_fault_recovery_through_real_worker_threads_http_sqlite[success]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_worker_fault_recovery::test_persisted_fault_recovery_through_real_worker_threads_http_sqlite[lost_ack]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_worker_fault_recovery::test_persisted_fault_recovery_through_real_worker_threads_http_sqlite[new_fault]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_worker_fault_recovery::test_persisted_fault_recovery_through_real_worker_threads_http_sqlite[pause]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_worker_fault_recovery::test_persisted_fault_recovery_through_real_worker_threads_http_sqlite[update]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_worker_fault_recovery::test_persisted_fault_recovery_through_real_worker_threads_http_sqlite[ledger]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_worker_fault_recovery::test_persisted_fault_recovery_through_real_worker_threads_http_sqlite[old_backend]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_worker_fault_recovery::test_recovery_waits_for_worker_lock_and_reads_committed_flow",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_flow_finish_recovery::test_settled_reply_does_not_permanently_block_later_fault_recovery[sent-intact-200]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_flow_finish_recovery::test_settled_reply_does_not_permanently_block_later_fault_recovery[unknown-intact-200]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_flow_finish_recovery::test_settled_reply_does_not_permanently_block_later_fault_recovery[unknown-hash_mismatch-200]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_flow_finish_recovery::test_settled_reply_does_not_permanently_block_later_fault_recovery[unknown-missing_ack-409]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_flow_finish_recovery::test_settled_reply_does_not_permanently_block_later_fault_recovery[unknown-wrong_token-409]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_flow_finish_recovery::test_settled_reply_does_not_permanently_block_later_fault_recovery[unknown-wrong_task-409]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_flow_finish_recovery::test_settled_reply_does_not_permanently_block_later_fault_recovery[unknown-sending-409]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_flow_finish_recovery::test_settled_reply_does_not_permanently_block_later_fault_recovery[unknown-task_running-409]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_flow_finish_recovery::test_settled_reply_does_not_permanently_block_later_fault_recovery[unknown-lease_present-409]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_flow_finish_recovery::test_live_owner_retries_finalization_after_one_transport_failure[control]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_flow_finish_recovery::test_live_owner_retries_finalization_after_one_transport_failure[before]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_flow_finish_recovery::test_live_owner_retries_finalization_after_one_transport_failure[after]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_flow_finish_recovery::test_finish_receipt_is_idempotent_under_concurrent_http_and_pause[running]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_flow_finish_recovery::test_finish_receipt_is_idempotent_under_concurrent_http_and_pause[paused]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_flow_finish_recovery::test_finish_receipt_is_idempotent_under_concurrent_http_and_pause[faulted]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_flow_finish_recovery::test_finish_replay_rejects_missing_or_mismatched_proof[missing_proof]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_flow_finish_recovery::test_finish_replay_rejects_missing_or_mismatched_proof[flow]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_flow_finish_recovery::test_finish_replay_rejects_missing_or_mismatched_proof[conversation]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_flow_finish_recovery::test_finish_replay_rejects_missing_or_mismatched_proof[terminal]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_flow_finish_recovery::test_finish_replay_rejects_missing_or_mismatched_proof[error]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_flow_finish_recovery::test_finish_replay_rejects_missing_or_mismatched_proof[header]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_flow_finish_recovery::test_finish_replay_rejects_missing_or_mismatched_proof[instance]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_flow_finish_recovery::test_finish_replay_rejects_missing_or_mismatched_proof[token]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_flow_finish_recovery::test_finish_replay_rejects_missing_or_mismatched_proof[binding_epoch]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_flow_finish_recovery::test_old_finish_does_not_clear_a_new_flow",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_flow_finish_recovery::test_finish_intent_survives_process_exit_without_repeating_actions[before-task]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_flow_finish_recovery::test_finish_intent_survives_process_exit_without_repeating_actions[before-c2_read]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_flow_finish_recovery::test_finish_intent_survives_process_exit_without_repeating_actions[after-task]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_flow_finish_recovery::test_finish_intent_survives_process_exit_without_repeating_actions[after-c2_read]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_flow_finish_recovery::test_first_finish_preserves_existing_flow_and_task_guards[invalid_flow_status]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_flow_finish_recovery::test_first_finish_preserves_existing_flow_and_task_guards[unfinished_task]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_release_readiness::test_real_queued_task_is_preserved_and_execution_facts_block",
+          "result": "passed"
+        }
+      ],
+      "count": 97
+    },
+    {
+      "name": "settlement-review-unit",
+      "original_xml_sha256": "dd9bf5c54d8355f4a1f2ac285634d98a2efe7b2a6c10ecc1066d597d5b4581c0",
+      "cases": [
+        {
+          "name": "worker-client.tests.test_emergency_status_settlement::test_emergency_never_synchronizes_a_start[None]",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_emergency_status_settlement::test_emergency_never_synchronizes_a_start[running]",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_emergency_status_settlement::test_stopped_sync_retries_with_original_backoff_without_wechat[paused]",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_emergency_status_settlement::test_stopped_sync_retries_with_original_backoff_without_wechat[faulted]",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_emergency_status_settlement::test_repeated_disk_failure_preserves_stop_and_retries_only_status",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_task_runner.TaskRunnerTest::test_backend_pause_returned_by_heartbeat_stops_task_pull_immediately",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_task_runner.TaskRunnerTest::test_c2_active_batch_without_valid_continuation_pauses_before_wait",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_task_runner.TaskRunnerTest::test_c2_failed_voice_faults_before_later_voice_action",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_task_runner.TaskRunnerTest::test_c2_failed_voice_faults_flow_before_image_vision",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_task_runner.TaskRunnerTest::test_c2_partial_sales_voice_faults_without_business_fact",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_task_runner.TaskRunnerTest::test_c2_partial_voice_result_faults_without_partial_ingest_or_retry",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_task_runner.TaskRunnerTest::test_c2_repeated_inconclusive_backend_terminal_faults_worker",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_task_runner.TaskRunnerTest::test_c2_scan_paused_after_sidecar_returns_closes_ui_timeline",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_task_runner.TaskRunnerTest::test_c2_voice_click_failed_faults_without_ingest",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_task_runner.TaskRunnerTest::test_claim_send_checkpoint_mismatch_faults_before_wechat_send",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_task_runner.TaskRunnerTest::test_environment_failure_pauses_worker_before_failed_report",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_task_runner.TaskRunnerTest::test_failed_voice_move_faults_before_new_voice_in_old_seat",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_task_runner.TaskRunnerTest::test_faulted_is_persisted_locally_before_backend_sync",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_task_runner.TaskRunnerTest::test_image_receipt_without_final_reread_faults_on_restart",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_task_runner.TaskRunnerTest::test_layout_invalid_settlement_faults_worker_and_preserves_error",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_task_runner.TaskRunnerTest::test_layout_invalid_without_reply_task_still_faults_worker",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_task_runner.TaskRunnerTest::test_legacy_contradictory_success_response_pauses_for_review",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_task_runner.TaskRunnerTest::test_legacy_per_target_vision_pause_state_does_not_control_c2",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_task_runner.TaskRunnerTest::test_legacy_permanent_api_error_pauses_once_without_silent_retry",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_task_runner.TaskRunnerTest::test_new_fault_wins_late_heartbeat_start_and_pause_sync_responses",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_task_runner.TaskRunnerTest::test_pause_after_brain_reply_keeps_same_flow_through_sent_ack",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_task_runner.TaskRunnerTest::test_pause_after_send_trigger_does_not_repeat_and_reaches_sent_ack",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_task_runner.TaskRunnerTest::test_pause_drains_registered_flow_but_emergency_stop_cancels_it",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_task_runner.TaskRunnerTest::test_pause_during_image_keeps_exact_read_flow_until_image_terminal",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_task_runner.TaskRunnerTest::test_pause_during_target_locating_finishes_current_read_only",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_task_runner.TaskRunnerTest::test_pause_is_local_immediately_and_retries_backend_sync",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_task_runner.TaskRunnerTest::test_paused_worker_does_not_run_c2_scan_or_read",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_task_runner.TaskRunnerTest::test_paused_worker_only_sends_heartbeat",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_task_runner.TaskRunnerTest::test_phone_not_found_does_not_pause_worker_after_failed_report",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_task_runner.TaskRunnerTest::test_pre_send_terminal_image_without_strong_boundary_faults_without_vision",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_task_runner.TaskRunnerTest::test_preclick_layout_failure_faults_worker_and_reports_failed_task",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_task_runner.TaskRunnerTest::test_restart_backend_flow_local_empty_pauses_without_pull",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_task_runner.TaskRunnerTest::test_restart_duplicate_media_sequence_pauses_without_guessing",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_task_runner.TaskRunnerTest::test_restart_local_backend_flow_id_mismatch_pauses_and_preserves_local",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_task_runner.TaskRunnerTest::test_restart_local_flow_missing_media_sequence_pauses_without_pull",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_task_runner.TaskRunnerTest::test_restart_local_flow_with_multiple_conversations_pauses",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_task_runner.TaskRunnerTest::test_restart_local_task_flow_backend_empty_pauses_and_preserves_local",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_task_runner.TaskRunnerTest::test_restart_matching_flow_with_unknown_backend_status_pauses",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_task_runner.TaskRunnerTest::test_restart_memory_and_sqlite_flow_id_mismatch_pauses",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_task_runner.TaskRunnerTest::test_restart_memory_pointer_without_sqlite_flow_pauses",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_task_runner.TaskRunnerTest::test_restart_reconciliation_pause_never_downgrades_faulted",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_task_runner.TaskRunnerTest::test_restart_unrepairable_terminal_conflict_faults_but_heartbeats",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_task_runner.TaskRunnerTest::test_restart_waiting_voice_transport_retry_does_not_pause",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_task_runner.TaskRunnerTest::test_restart_waiting_voice_without_replay_evidence_pauses_explicitly",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_task_runner.TaskRunnerTest::test_run_status_rejects_mismatched_backend_confirmation",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_task_runner.TaskRunnerTest::test_schedule_paused_worker_only_sends_heartbeat",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_task_runner.TaskRunnerTest::test_scheduler_faults_unsettled_image_journal_after_process_exit",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_task_runner.TaskRunnerTest::test_send_context_technical_failure_faults_worker_after_zero_send",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_task_runner.TaskRunnerTest::test_task_safe_wake_coalesces_repeated_events_into_one_followup_tick",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_task_runner.TaskRunnerTest::test_task_safe_wake_never_bypasses_runtime_gates",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_task_runner.TaskRunnerTest::test_unconfirmed_pre_send_failure_settlement_pauses_worker",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_task_runner.TaskRunnerTest::test_validation_error_pauses_outbox_without_rejecting_ledger",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_task_runner.TaskRunnerTest::test_voice_action_without_unique_result_faults_worker_without_handoff_or_brain",
+          "result": "passed"
+        }
+      ],
+      "count": 58
+    },
+    {
+      "name": "settlement-review-independent-boundaries-final",
+      "original_xml_sha256": "5faae97d939a94fdcf2dcece3110b5036b6aa302b300dfe38f1a55ecd5169ad2",
+      "cases": [
+        {
+          "name": "tests.test_architect_settlement_boundaries::test_one_settled_action_cannot_absolve_another_action[sending]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_architect_settlement_boundaries::test_one_settled_action_cannot_absolve_another_action[unknown_send_result]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_architect_settlement_boundaries::test_accepted_unknown_ack_still_requires_all_lease_fields_released[lease_owner_client_instance_id]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_architect_settlement_boundaries::test_accepted_unknown_ack_still_requires_all_lease_fields_released[lease_last_renewed_at]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_architect_settlement_boundaries::test_settled_emergency_restart_same_sqlite_requires_explicit_start",
+          "result": "passed"
+        }
+      ],
+      "count": 5
+    }
+  ],
+  "environment": {
+    "checks_reused": 353,
+    "business_tests_reexecuted": 0,
+    "source": "Retain prior byte-matched reviewed send/OCR coverage; frozen 11-file increment verified against independent architect evidence. Latest exact test names supersede overlaps; no full regression. Source tests used HTTP/PostgreSQL, real Worker Python threads and SQLite; no claim of native WeChat sending.",
+    "not_verified": [
+      "Windows EXE installation/restart to be accepted against this exact new artifact.",
+      "Physical customer recovery and real WeChat sending remain onsite acceptance.",
+      "Old failure logs and negative controls preserved in original evidence.",
+      "Fresh production readiness must use candidate read-only settlement condition; no data deletion or synthetic ACK."
+    ]
+  }
+}
