@@ -81,7 +81,9 @@ def confirmed_customer_interruption(*, error_code: str, action_phase: str, evide
         and isinstance(frame.get("frame_id"), str) and frame["frame_id"].strip()
         and (proof["before_input"] or (
             frame["frame_id"] == _object(check.get("frame_observation")).get("frame_id")
-            and proof["cleanup"].get("reason") == "confirmed_program_draft_cleared"
+            and proof["cleanup"].get("reason") in {
+                "confirmed_program_draft_cleared", "confirmed_program_draft_clear_requested",
+            }
         ))
     ):
         return None

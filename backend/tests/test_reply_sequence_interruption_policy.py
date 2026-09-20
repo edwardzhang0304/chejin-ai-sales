@@ -85,15 +85,13 @@ def test_before_input_customer_append_needs_no_fabricated_cleanup():
     assert decide(before_input_evidence()) == {'frame_id': 'frame-after-typing', 'observation_ids': ['new']}
 
 
-@pytest.mark.parametrize('change', ['journal_missing', 'possibly_sent', 'draft_present', 'draft_unknown',
+@pytest.mark.parametrize('change', ['journal_missing', 'possibly_sent',
     'different_capture', 'frame_missing', 'unknown_change', 'new_sales', 'bad_digest', 'wrong_state'])
 def test_before_input_unproven_state_cannot_cancel_as_customer_interruption(change):
     value = before_input_evidence()
     snapshot, check = value['send_baseline'], value['context_validation']
     if change == 'journal_missing': value.pop('action_journal')
     elif change == 'possibly_sent': value['action_journal']['action_phase'] = 'trigger_attempted'
-    elif change == 'draft_present': snapshot['input_region']['has_visible_text'] = True
-    elif change == 'draft_unknown': snapshot['input_region'] = {}
     elif change == 'different_capture': value['guard']['screenshot_path'] = '/different.png'
     elif change == 'frame_missing': snapshot['frame_observation'] = {}
     elif change == 'unknown_change': check['worker_continuity_decision']['relation'] = 'business_sequence_unresolved'
@@ -101,3 +99,19 @@ def test_before_input_unproven_state_cannot_cancel_as_customer_interruption(chan
     elif change == 'bad_digest': check['current_sequence_sha256'] = 'different'
     elif change == 'wrong_state': value['state'] = 'send_result_unknown'
     assert decide(value) is None
+
+
+@pytest.mark.parametrize('input_state', [{}, {'has_visible_text': True}, {'has_visible_text': False}])
+def test_before_input_cancel_needs_no_empty_field_proof(input_state):
+    value = before_input_evidence()
+    value['send_baseline']['input_region'] = input_state
+    assert decide(value) == {'frame_id': 'frame-after-typing', 'observation_ids': ['new']}
+
+
+@pytest.mark.parametrize('remaining', [False, True])
+def test_segmented_reply_accepts_once_only_clear(remaining):
+    value = evidence()
+    value['guard']['visual']['draft_clear'].update(
+        cleared=False, clear_attempted=True, method='select_all_backspace',
+        reason='confirmed_program_draft_clear_requested', input_region={'has_visible_text': remaining})
+    assert decide(value) == {'frame_id': 'frame-after-typing', 'observation_ids': ['new']}

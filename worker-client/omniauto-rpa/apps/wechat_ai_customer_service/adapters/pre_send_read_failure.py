@@ -39,6 +39,39 @@ def _text(value: object) -> bool:
     return isinstance(value, str) and bool(value.strip())
 
 
+def replacement_input_ready(value: object, *, context=None, target=None) -> bool:
+    """An owned draft was cleared once; fresh input must still replace/read back.
+
+    This optional fact lives inside the existing open failure object. It does
+    not change input_state to empty/cleared or grant a send/retry budget.
+    """
+    from .send_interruption import confirmed_program_draft_cleanup
+    if not isinstance(value, dict):
+        return False
+    fact = value.get("program_draft_cleanup")
+    if not isinstance(fact, dict):
+        return False
+    cleanup = fact.get("cleanup")
+    if not isinstance(cleanup, dict) or not (
+        value.get("stage") == "before_trigger"
+        and value.get("physical_send_triggered") is False
+        and value.get("action_phase") == "not_attempted"
+        and value.get("phase_proof") == {"ok": True, "source": "action_journal", "action_phase": "not_attempted"}
+        and value.get("input_progress") == "may_have_started"
+        and value.get("input_state") == "unverified"
+        and cleanup.get("clear_attempted") is True
+        and cleanup.get("cleared") is False
+        and confirmed_program_draft_cleanup(cleanup)
+        and all(_text(fact.get(k)) for k in ("target", "reply_action_id", "conversation_id"))
+        and re.fullmatch(r"[0-9a-f]{64}", str(fact.get("reply_text_hash") or ""))
+    ):
+        return False
+    if context is not None and any(fact[k] != context.get(k) for k in
+                                  ("reply_action_id", "conversation_id", "reply_text_hash")):
+        return False
+    return target is None or fact["target"] == target
+
+
 def read_failure_valid(value: object) -> bool:
     if not isinstance(value, dict):
         return False
@@ -58,6 +91,7 @@ def read_failure_valid(value: object) -> bool:
         and phase.get("source") in ("action_journal", "read_only_before_claim")
         and (phase.get("source") != "read_only_before_claim" or value.get("stage") == "pre_send_refresh")
         and value.get("input_state") in INPUT_STATES
+        and ("program_draft_cleanup" not in value or replacement_input_ready(value))
         and ("input_progress" not in value or value["input_progress"] in INPUT_PROGRESS)
         and (_text(value.get("frame_id")) or (
             value.get("frame_id") is None and _text(value.get("no_frame_reason"))
@@ -92,6 +126,10 @@ def validate_proof(value: object) -> dict:
     if failure is not None and (not recheck["started"] or not read_failure_valid(failure)
                                 or failure["attempt_id"] == first["attempt_id"]):
         raise ValueError(ERROR)
+    for observed in (first, failure):
+        if isinstance(observed, dict) and "program_draft_cleanup" in observed:
+            if not replacement_input_ready(observed, context=value):
+                raise ValueError(ERROR)
     if value.get("outcome") == "exhausted":
         if not recheck["started"] or not read_failure_valid(failure) or failure["attempt_id"] == first["attempt_id"]:
             raise ValueError(ERROR)

@@ -171,7 +171,7 @@ def test_typing_media_interrupts_sequence_and_finishes(
     # Assert the automatic chain before making any separate idempotence calls.
     assert desktop.enter_texts == [NEW_REPLY], record
     assert len(sends) == 2 and sends[0]['error_code'] == 'C3_CONTEXT_CHANGED_BEFORE_SEND', record
-    assert sends[0]['action_phase'] == 'not_attempted' and sends[0]['guard']['visual']['draft_clear']['cleared'] is True
+    assert sends[0]['action_phase'] == 'not_attempted' and sends[0]['guard']['visual']['draft_clear']['clear_attempted'] is True
     assert len(model_calls) == 2 and expected_fact in json.dumps(model_calls[-1], ensure_ascii=False, default=str)
     assert async_generation['counts'] == {'scheduled': 2, 'executed': 2, 'generated': 2}
     assert any(a.segment_count > 1 for a in actions) and [a.reply_text for a in actions if a.status == 'sent'] == [NEW_REPLY]

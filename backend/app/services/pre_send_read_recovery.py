@@ -83,6 +83,12 @@ def settle(db, *, worker, payload, task_id, flow_id, client_instance_id,
         WechatSessionBinding.deleted_at.is_(None)).with_for_update().execution_options(populate_existing=True))
     if binding is None:
         _reject()
+    if not setup and not correction:
+        rule = shared_adapter("pre_send_read_failure")
+        for observed in (proof["first_failure"], proof["recheck"].get("failure")):
+            if isinstance(observed, dict) and "program_draft_cleanup" in observed:
+                if not rule.replacement_input_ready(observed, context=proof, target=binding.remark_code):
+                    _reject()
     workers = list(db.scalars(select(Worker).where(Worker.id.in_({worker.id, binding.worker_id}))
                              .order_by(Worker.id).with_for_update().execution_options(populate_existing=True)))
     worker = next(row for row in workers if row.id == worker.id)

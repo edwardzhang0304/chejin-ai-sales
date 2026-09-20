@@ -26,6 +26,18 @@ REPLY = ("您好，10万预算的话，油车和电车各有侧重：家里能�
 _INCIDENT_REPLY_TEXT = REPLY
 
 
+def send_context_from_args(args):
+    """Decode the actual Worker request using the production file contract."""
+    from apps.wechat_ai_customer_service.adapters import send_request_file, send_setup_contract
+    def option(name):
+        return args[args.index(name) + 1]
+    path, raw = send_request_file.read_package(option("--expected-context-guard-file"))
+    package = send_setup_contract.validate_package(raw, filename=path.name,
+        sha256=option("--expected-context-guard-sha256"), task_id=option("--send-task-id"),
+        reply_action_id=option("--send-action-id"), target=option("--target"), text=option("--text"))
+    return package["expected_context_guard"]
+
+
 def worker_imports():
     configured=os.environ.get("CHEJIN_COMPOSER_WORKER_SOURCE","")
     root=Path(configured) if configured else next(
@@ -122,7 +134,7 @@ class Desktop:
         self.enter_count=0; self.keys=[]; self.captures=[]; self.clicked=[]
         self.geometry=install_desktop(monkeypatch,directory,calibration)
         monkeypatch.setattr(sidecar,"win32gui",SimpleNamespace(GetForegroundWindow=lambda:calibration["hwnd"]))
-        monkeypatch.setattr(sidecar,"win32con",SimpleNamespace(VK_CONTROL=17,VK_RETURN=13,VK_BACK=8,VK_RIGHT=39))
+        monkeypatch.setattr(sidecar,"win32con",SimpleNamespace(VK_CONTROL=17,VK_RETURN=13,VK_BACK=8,VK_DELETE=46,VK_RIGHT=39))
         monkeypatch.setattr(sidecar,"capture_wechat",self.capture)
         monkeypatch.setattr(sidecar,"sendinput_unicode_unit",self.unicode_unit)
         monkeypatch.setattr(sidecar,"human_client_click",self.click)
@@ -155,8 +167,8 @@ class Desktop:
             assert self.draft == self.reply
             self.enter_count+=1
             self.draft=""; self.selected=False
-        elif key == 8:
-            if self.cleanup_fails: raise OSError("controlled physical Backspace failure")
+        elif key in {8, 46}:
+            if key == 8 and self.cleanup_fails: raise OSError("controlled physical Backspace failure")
             self.draft="" if self.selected else self.draft[:-1]
             self.selected=False
         elif key == 39: self.selected=False

@@ -8,6 +8,7 @@ from typing import Any
 _INPUT_REGION_REASONS = {
     "input_region_blank",
     "ocr_or_dark_pixels",
+    "ocr_or_text_shape",
     "input_region_soft_blank_noise",
     "input_region_soft_blank_after_clear",
 }

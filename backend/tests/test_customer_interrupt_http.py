@@ -8,7 +8,7 @@ import time
 
 import pytest
 
-from test_dynamic_composer_http import ROOT, http_api, _drive_composer_http
+from test_dynamic_composer_http import ROOT, http_api, _drive_composer_http, controlled_send_process_started
 import dynamic_composer_desktop as fixture
 
 OLD_REPLY = "好的，我帮您看看"
@@ -73,6 +73,12 @@ class PersistentDesktop(fixture.Desktop):
         self.new_typing = self.after_new.copy()
         self.new_typing.paste(next_frames["typing"].crop((301, 700, 778, 844)), (301, 700))
         self.new_sent = self.after_new.copy()
+        # Preserve the customer's appended bubble. It occupies the bottom of
+        # the viewport; scroll history up before appending the new self bubble.
+        # Pasting directly at y=640 would erase that customer message.
+        self.new_sent.paste(self.after_new.crop((301, 161, 778, 700)), (301, 81))
+        from PIL import ImageDraw
+        ImageDraw.Draw(self.new_sent).rectangle((301, 620, 777, 699), fill=(250,250,250))
         self.new_sent.paste(next_frames["sent"].crop((310, 510, 768, 554)), (310, 640))
 
     def unicode_unit(self, unit):
@@ -88,7 +94,7 @@ class PersistentDesktop(fixture.Desktop):
         if self.enter_count:
             image, state = self.new_sent.copy(), "new_reply_sent"
         elif self.draft:
-            image = (self.new_typing if self.reply == NEW_REPLY else self.frames["typing"]).copy()
+            image = (self.new_typing if self.draft == NEW_REPLY else self.frames["typing"]).copy()
             state = "typing"
         else:
             image = (self.after_new if self.customer_arrived else self.frames["before"]).copy()
@@ -121,10 +127,11 @@ def resume_in_new_process(base, directory):
             return args[args.index(name) + 1] if name in args else default
         if args[0] == "send":
             assert lock_summary()["locked"]
+            controlled_send_process_started(args)
             payload = fixture.sidecar.send_payload(calibration["hwnd"], {}, target=option("--target"),
                 text=option("--text"), exact=True, skip_send_rate_guard=True,
                 artifact_dir=str(directory / "desktop"),
-                expected_context_guard=json.loads(option("--expected-context-guard", "{}")),
+                expected_context_guard=fixture.send_context_from_args(args),
                 action_journal_path=option("--action-journal"))
         else:
             assert args[0] in {"messages", "open-chat"}, args
@@ -177,7 +184,8 @@ def resume_in_new_process(base, directory):
     assert not record["pending_ack"] and not record["flow"], record
 
 
-@pytest.mark.parametrize("scenario", ["normal", "restart_loss", "paused", "no_auto_callback"])
+@pytest.mark.parametrize("scenario", ["normal", "restart_loss", "paused", "no_auto_callback",
+                                     "hint", "remaining_draft", "hint_no_auto_callback", "read_retry", "read_retry_no_callback"])
 def test_customer_interrupt_continues_ai_reply(tmp_path, request, monkeypatch, scenario):
     if os.environ.get("CHEJIN_INTERRUPT_HTTP_CHILD") != "1":
         env = {**os.environ, "CHEJIN_INTERRUPT_HTTP_CHILD": "1", "CHEJIN_COMPOSER_HTTP_CHILD": "1",
@@ -198,6 +206,8 @@ def test_customer_interrupt_continues_ai_reply(tmp_path, request, monkeypatch, s
 
     import test_c3_api as backend
     from chejin_worker_client import task_runner, storage
+    monkeypatch.setattr(storage, "APP_DIR", tmp_path / "worker")
+    monkeypatch.setattr(storage, "DB_FILE", tmp_path / "worker/worker_client.sqlite3")
     from app.services.ai_adapter import MockOmniAutoAIEngineAdapter, AIEngineDecision
     from app.contracts.shared_rules import shared_adapter
     assert backend.engine.url.host == "127.0.0.1" and backend.engine.url.port == 55490
@@ -212,6 +222,26 @@ def test_customer_interrupt_continues_ai_reply(tmp_path, request, monkeypatch, s
         def __init__(self, *args, **kwargs):
             super().__init__(*args, **kwargs)
             captured["desktop"] = self
+            self.cancel_clear_count = 0
+            if scenario in {"hint", "hint_no_auto_callback"}:
+                # Explicitly derived pixels: hint remains on an empty control,
+                # disappears when real text is typed, returns after sending.
+                from PIL import ImageDraw, ImageFont
+                font = ImageFont.truetype(os.environ.get("CHEJIN_COMPOSER_TEST_FONT", "/System/Library/Fonts/STHeiti Light.ttc"), 14)
+                for image in (self.frames["before"], self.after_new, self.new_sent):
+                    ImageDraw.Draw(image).text((320, 712), "按住鼠标 语音输入文字", font=font, fill=(159,159,166))
+
+        def key(self, key):
+            cancel_clear = key == 8 and self.selected and self.draft == OLD_REPLY
+            if cancel_clear:
+                self.cancel_clear_count += 1
+            if cancel_clear and scenario == "remaining_draft":
+                # Clear operation is issued, but the OS leaves the old draft.
+                # The next reply must erase it before typing, not append to it.
+                self.keys.append(key)
+                self.selected = False
+                return
+            super().key(key)
 
     class RecordingRunner(task_runner.TaskRunner):
         def __init__(self, *args, **kwargs):
@@ -243,13 +273,32 @@ def test_customer_interrupt_continues_ai_reply(tmp_path, request, monkeypatch, s
     monkeypatch.setattr(fixture, "Desktop", RecordingDesktop)
     monkeypatch.setattr(task_runner, "TaskRunner", RecordingRunner)
     monkeypatch.setattr(MockOmniAutoAIEngineAdapter, "generate_reply_decision", generate)
-    async_events = observe_async_generation(monkeypatch, remove_callback=scenario == "no_auto_callback")
+    read_failures = []
+    if scenario in {"read_retry", "read_retry_no_callback"}:
+        from apps.wechat_ai_customer_service.adapters.pre_send_read_failure import ReadCallFailed
+        native_build = fixture.sidecar.build_send_fact_snapshot_from_frame
+        def read_once(*args, **kwargs):
+            if kwargs.get("label") == "send_pre_trigger_context_reused" and not read_failures:
+                read_failures.append(kwargs["label"])
+                raise ReadCallFailed(operation="read", reason="controlled first pre-trigger read failure")
+            return native_build(*args, **kwargs)
+        monkeypatch.setattr(fixture.sidecar, "build_send_fact_snapshot_from_frame", read_once)
+    callback_disabled = scenario in {"no_auto_callback", "hint_no_auto_callback", "read_retry_no_callback"}
+    async_events = observe_async_generation(monkeypatch, remove_callback=callback_disabled)
     if os.environ.get("CHEJIN_INTERRUPT_NEGATIVE_CONTROL") == "1":
         # Disable only the new backend interpretation; real generic failed path must reproduce the bug.
         monkeypatch.setattr(shared_adapter("send_interruption"), "confirmed_customer_interruption", lambda **kw: False)
     runner, desktop, first = _drive_composer_http(tmp_path, request, monkeypatch, "failed",
-                                                expect_pending_ack=scenario == "restart_loss")
-    assert desktop.enter_texts == [] and not desktop.draft
+                                                expect_pending_ack=scenario == "restart_loss",
+                                                expected_send_calls=2 if scenario.startswith("read_retry") else 1)
+    assert desktop.enter_texts == []
+    assert desktop.draft == (OLD_REPLY if scenario == "remaining_draft" else "")
+    assert desktop.cancel_clear_count == 1
+    if scenario.startswith("read_retry"):
+        from chejin_worker_client.pre_send_read_recovery import input_pending_records
+        assert len(read_failures) == 1
+        assert not input_pending_records(), "Confirmed customer interruption must not leave stale input barrier"
+    assert all(c['label'] != 'send_program_draft_cleanup' for c in desktop.captures)
     with backend.SessionLocal() as db:
         old = db.query(backend.ReplyAction).one()
         assert old.status == "superseded" and old.current is False
@@ -299,7 +348,7 @@ def test_customer_interrupt_continues_ai_reply(tmp_path, request, monkeypatch, s
         assert db.query(backend.SentAck).filter_by(reply_action_id=old_id).count() == 1
     (tmp_path / "continuation.json").write_text(json.dumps(record, ensure_ascii=False, indent=2, default=str))
     runner.stop_for_update(timeout_seconds=5)
-    if scenario == "no_auto_callback":
+    if callback_disabled:
         assert len(async_events["scheduled"]) == len(async_events["executed"]) == 1, record
         assert len(async_events["suppressed"]) == 1 and len(brain_calls) == 1, record
         assert outcome["enter_texts"] == [], record

@@ -146,7 +146,7 @@ def test_history_suffix_disabled_reproduces_false_block(monkeypatch,tmp_path,mov
     result=desktop.run()
     assert not result["ok"] and desktop.enter_count == 0
     assert result["error_code"] == "C3_CONTEXT_CHANGED_BEFORE_SEND"
-    assert result["guard"]["visual"]["draft_clear"]["cleared"] is True
+    assert result["guard"]["visual"]["draft_clear"]["clear_attempted"] is True
     assert not desktop.draft
 
 
@@ -158,7 +158,7 @@ def test_new_fact_during_input_never_triggers_send(monkeypatch,tmp_path,kind):
     result=desktop.run()
     assert not result["ok"] and desktop.enter_count == 0
     assert result["action_phase"] == "not_attempted"
-    assert result["guard"]["visual"]["draft_clear"]["cleared"] is True
+    assert result["guard"]["visual"]["draft_clear"]["clear_attempted"] is True
 
 
 def test_cleanup_failure_keeps_block_and_owned_draft(monkeypatch,tmp_path):

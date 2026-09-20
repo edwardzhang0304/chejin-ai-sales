@@ -73,3 +73,29 @@ def test_two_no_image_failures_keep_actual_attempts(state):
     recovery.mark_settled(state["reply_action_id"])
     assert recovery.pending_records() == []
     assert recovery.reserve(state, failure())[0] is False
+
+
+@pytest.mark.parametrize('case', ['confirmed', 'unconfirmed', 'foreign_text', 'unknown', 'wrong_target', 'clear_error'])
+def test_recheck_customer_receipt_keeps_only_unresolved_input_gate(state, case):
+    from test_send_interruption import receipt
+    payload=receipt();payload.pop('target')
+    payload['reply_text_hash']=state['reply_text_hash']
+    cleanup=payload['evidence']['guard']['visual']['draft_clear']
+    cleanup.update(cleared=False,clear_attempted=True,method='select_all_backspace',
+                   reason='confirmed_program_draft_clear_requested')
+    recovery.reserve(state,failure('before_trigger'),target='OTHER' if case=='wrong_target' else 'CJTEST01')
+    recovery._record_send_start_if_present(state['reply_action_id'])
+    recovery.complete_attempt(state['reply_action_id'])
+    if case=='foreign_text':payload['reply_text_hash']='b'*64
+    if case=='unknown':payload.update(send_result='unknown',action_phase='trigger_attempted')
+    if case=='clear_error':cleanup['ok']=False
+    storage.save_reply_send_intent(reply_action_id=state['reply_action_id'],task_id=state['task_id'],
+        send_token='original',reply_text_hash=state['reply_text_hash'])
+    storage.finalize_reply_send_ack(reply_action_id=state['reply_action_id'],ack_payload=payload)
+    if case!='unconfirmed':storage.mark_reply_send_ack_confirmed(state['reply_action_id'])
+    recovery.mark_settled(state['reply_action_id'])
+    assert bool(recovery.input_pending_records()) is (case!='confirmed')
+    persisted=storage.load_c2_state(recovery.PREFIX+state['reply_action_id'])
+    if case=='confirmed':
+        assert persisted['input_safety']['status']=='replacement_ready'
+        assert persisted['send_in_progress'] is False
