@@ -82,6 +82,17 @@ class EvidenceTrustTests(unittest.TestCase):
 
 
 class FingerprintAndSelectionTests(unittest.TestCase):
+    def test_settlement_rule_changes_invalidate_source_and_release_tool_receipts(self):
+        name = "backend/app/services/reply_settlement_state.py"
+        original = f"100644 blob {'a' * 40}\t{name}\0".encode()
+        changed = f"100644 blob {'b' * 40}\t{name}\0".encode()
+        for kind in ("source", "tooling"):
+            with self.subTest(kind=kind):
+                with patch.object(evidence, "git", return_value=original):
+                    before = evidence.fingerprint("HEAD", kind)
+                with patch.object(evidence, "git", return_value=changed):
+                    self.assertNotEqual(before, evidence.fingerprint("HEAD", kind))
+
     def test_business_dependencies_and_tests_remain_protected_but_tools_and_docs_are_separate(self):
         for name in ("worker-client/requirements.txt", "worker-client/chejin_worker_client/update.py", "backend/app/main.py", "contracts/api.json", "worker-client/tests/test_update_long_paths.py", "worker-client/prompts/instruction.md"):
             self.assertTrue(evidence.relevant(name, "source"), name)

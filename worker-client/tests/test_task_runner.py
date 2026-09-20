@@ -26,7 +26,7 @@ from unittest.mock import Mock, patch
 os.environ.setdefault("CHEJIN_WORKER_HOME", tempfile.mkdtemp(prefix="chejin-worker-test-"))
 os.environ.setdefault("CHEJIN_RPA_MODE", "mock")
 
-from chejin_worker_client.api import ApiError
+from chejin_worker_client.api import ApiError, WorkerApiClient
 from chejin_worker_client.action_journal import (
     action_journal_path,
     action_journal_phase,
@@ -1444,7 +1444,12 @@ def attach_native_committed_identity(
 
 
 class FakeApi:
+    # Exercise the production lease cache contract, including pre-send reads.
+    _remember_task_lease = WorkerApiClient._remember_task_lease
+    _task_lease_token = WorkerApiClient._task_lease_token
+
     def __init__(self, task: Task | None, result_mode: str = "success", claim_response: Task | None = None) -> None:
+        self._task_lease_lock = threading.RLock()
         self.task_lease_fencing_tokens: dict[str, int] = {}
         self.task = task
         self.claim_response = claim_response
@@ -1588,6 +1593,7 @@ class FakeApi:
                 self.task.lease_fencing_token = 1
             if self.task.status == "running" and not self.task.lease_expires_at:
                 self.task.lease_expires_at = "2099-01-01T00:00:00+00:00"
+            self._remember_task_lease(self.task)
             return ("running" if self.task.status == "running" else "pending", self.task, None)
         return ("idle", None, "NO_PENDING_TASK")
 
@@ -1600,7 +1606,7 @@ class FakeApi:
             claimed.lease_fencing_token = 1
         if not claimed.lease_expires_at:
             claimed.lease_expires_at = "2099-01-01T00:00:00+00:00"
-        return claimed
+        return self._remember_task_lease(claimed)
 
     def renew_task_lease(self, binding: Binding, task_id: str, *, current_step: str | None):
         self.events.append(f"renew_task_lease:{task_id}:{current_step}")
@@ -1612,7 +1618,7 @@ class FakeApi:
         if task.lease_fencing_token <= 0:
             task.lease_fencing_token = 1
         task.lease_expires_at = "2099-01-01T00:00:00+00:00"
-        return task
+        return self._remember_task_lease(task)
 
     def report_step(self, binding: Binding, task_id: str, current_step: str, remark: str):
         self.events.append(f"step:{current_step}")

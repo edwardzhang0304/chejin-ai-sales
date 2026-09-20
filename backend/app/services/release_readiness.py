@@ -1,5 +1,5 @@
 """Read-only release readiness: keep compatible queued work, reject execution risk."""
-from sqlalchemy import text
+from sqlalchemy import select, text
 
 TERMINAL = {'completed', 'failed', 'cancelled'}
 LEASE_FIELDS = ('lease_owner_worker_id', 'lease_owner_client_instance_id', 'lease_expires_at', 'lease_last_renewed_at')
@@ -37,9 +37,11 @@ def release_readiness(db):
         reason = task_release_blocker(row)
         if reason: reasons[reason] = reasons.get(reason, 0) + 1
         elif row['status'] not in TERMINAL: preserved += 1
-    pending = db.scalar(text("""select exists(select 1 from message_batches where active=true and status in ('collecting','generating','retry_wait'))
-      or exists(select 1 from handoff_events where notify_status in ('pending','sending'))
-      or exists(select 1 from reply_actions where status in ('sending','unknown_send_result'))"""))
+    from app.models.c3 import ReplyAction
+    from app.services.reply_settlement_state import unsettled_send_condition
+    send_pending = bool(db.scalar(select(ReplyAction.id).where(unsettled_send_condition()).limit(1)))
+    pending = send_pending or db.scalar(text("""select exists(select 1 from message_batches where active=true and status in ('collecting','generating','retry_wait'))
+      or exists(select 1 from handoff_events where notify_status in ('pending','sending'))"""))
     return {'ready': not worker_blockers and not reasons and not pending, 'worker_blockers':worker_blockers,
             'task_blockers':reasons,'pending_messages_or_send':bool(pending),'preserved_queued_tasks':preserved}
 

@@ -7150,7 +7150,13 @@ class TaskRunner:
 
     def _tick_once(self) -> None:
         binding = self.binding
-        if not binding or emergency_stop_requested():
+        if not binding:
+            return
+        if emergency_stop_requested():
+            # Stopping WeChat work must not stop persisting/reporting the stop
+            # itself. Keep the existing retry budget and never resume here.
+            if self._pending_run_status_sync in {"paused", "faulted"}:
+                self._sync_pending_run_status()
             return
         self._sync_pending_run_status()
         now = time.monotonic()

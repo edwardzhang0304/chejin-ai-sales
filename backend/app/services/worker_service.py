@@ -1,6 +1,6 @@
 from datetime import timedelta, timezone
 
-from sqlalchemy import and_, or_, select
+from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
 from app.contracts.c2 import contract_revision, contract_sha256
@@ -9,7 +9,7 @@ from app.enums import TaskStatus
 from app.errors import AppError
 from app.models.audit import OperationLog
 from app.models.base import utcnow
-from app.models.c3 import Conversation, ReplyAction, SentAck
+from app.models.c3 import Conversation, ReplyAction
 from app.models.sales import Sales
 from app.models.task import Task
 from app.models.wechat import MessageEvent, WechatSessionBinding
@@ -90,32 +90,13 @@ def _bound_sales(db: Session, worker_id: str) -> Sales | None:
 
 def has_unsettled_worker_send(db: Session, worker: Worker) -> bool:
     """Shared receipt-settlement barrier; an accepted unknown stays no-resend."""
+    from app.services.reply_settlement_state import unsettled_send_condition
+
     return bool(db.scalar(select(ReplyAction.id).outerjoin(
         Conversation, ReplyAction.conversation_id == Conversation.conversation_id
     ).where(
         or_(ReplyAction.claimed_by_worker_id == worker.id, Conversation.worker_id == worker.id),
-        # Unknown is a no-resend physical outcome, not a pending receipt when
-        # the original claim, accepted SentAck and released failed Task agree.
-        # Do not compare text hashes: a mismatch itself may be formally settled
-        # as unknown by sent_ack, without permitting a resend.
-        or_(
-            ReplyAction.status == "sending",
-            and_(
-                ReplyAction.status == "unknown_send_result",
-                ~select(SentAck.id).join(Task, Task.id == SentAck.task_id).where(
-                    SentAck.reply_action_id == ReplyAction.id,
-                    SentAck.task_id == ReplyAction.claimed_task_id,
-                    Task.reply_action_id == ReplyAction.id,
-                    Task.worker_id == SentAck.worker_id,
-                    SentAck.worker_id == ReplyAction.claimed_by_worker_id,
-                    SentAck.send_token == ReplyAction.send_token,
-                    SentAck.send_result == "unknown",
-                    Task.status == TaskStatus.failed.value,
-                    Task.lease_owner_worker_id.is_(None),
-                    Task.lease_expires_at.is_(None),
-                ).correlate(ReplyAction).exists(),
-            ),
-        ),
+        unsettled_send_condition(),
     ).limit(1)))
 
 
