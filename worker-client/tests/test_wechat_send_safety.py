@@ -11,7 +11,7 @@ from types import SimpleNamespace
 import unittest
 import tempfile
 import time
-from unittest.mock import patch
+from unittest.mock import ANY, patch
 
 from PIL import Image, ImageDraw
 
@@ -287,7 +287,9 @@ class WechatSendSafetyTest(unittest.TestCase):
         }
         observed_sizes: list[tuple[int, int]] = []
 
-        def raw_ocr(image):
+        def raw_ocr(image, *, recognition_image=None):
+            if recognition_image is not None:
+                self.assertEqual(recognition_image.size, image.size)
             observed_sizes.append(tuple(image.size))
             return [
                 {
@@ -335,7 +337,9 @@ class WechatSendSafetyTest(unittest.TestCase):
         self._semantic_layout_for_image(frame)
         observed_sizes: list[tuple[int, int]] = []
 
-        def raw_ocr(image):
+        def raw_ocr(image, *, recognition_image=None):
+            if recognition_image is not None:
+                self.assertEqual(recognition_image.size, image.size)
             observed_sizes.append(tuple(image.size))
             return []
 
@@ -458,7 +462,9 @@ class WechatSendSafetyTest(unittest.TestCase):
                 return baseline, f"{label}.png"
             return confirmed_chat, f"{label}.png"
 
-        def raw_ocr(image):
+        def raw_ocr(image, *, recognition_image=None):
+            if recognition_image is not None:
+                self.assertEqual(recognition_image.size, image.size)
             pixel = image.convert("RGB").getpixel((0, 0))
             width, _height = image.size
             if pixel == (255, 255, 255):
@@ -968,7 +974,9 @@ class WechatSendSafetyTest(unittest.TestCase):
             frame,
             "send_baseline_chat_fact_fallback_full",
             source="build_send_fact_snapshot_from_frame",
+            recognition_image=ANY,
         )
+        self.assertEqual(full_ocr.call_args.kwargs["recognition_image"].size, frame.size)
         visual_send.assert_not_called()
         enter.assert_not_called()
 
@@ -1292,7 +1300,9 @@ class WechatSendSafetyTest(unittest.TestCase):
         )
         ocr_sizes: list[tuple[int, int]] = []
 
-        def raw_ocr(image):
+        def raw_ocr(image, *, recognition_image=None):
+            if recognition_image is not None:
+                self.assertEqual(recognition_image.size, image.size)
             ocr_sizes.append(tuple(image.size))
             if tuple(image.size) == header_size:
                 return [
@@ -3354,7 +3364,9 @@ class WechatSendSafetyTest(unittest.TestCase):
             frame,
             "send_pre_trigger_context_reused_chat_fact_fallback_full",
             source="build_send_fact_snapshot_from_frame",
+            recognition_image=ANY,
         )
+        self.assertEqual(full_ocr.call_args.kwargs["recognition_image"].size, frame.size)
 
     def test_send_reply_match_count_requires_self_role_and_exact_normalized_text(self):
         messages = [
@@ -3365,12 +3377,13 @@ class WechatSendSafetyTest(unittest.TestCase):
 
         self.assertEqual(sidecar.send_reply_match_count(messages, "您好，可以继续沟通"), 1)
 
-    def test_unknown_input_draft_is_preserved_without_any_delete_key(self):
+    def test_unverified_input_is_preserved_without_any_delete_key(self):
         geometry = {"width": 960, "height": 820}
         before_seed = {
             "input_region": {
                 "has_visible_text": True,
                 "reason": "ocr_or_dark_pixels",
+                "error": "capture failed",
                 "ocr_hits": 1,
                 "dark_ratio": 0.03,
                 "mean": 240.0,
@@ -3393,8 +3406,8 @@ class WechatSendSafetyTest(unittest.TestCase):
             )
 
         self.assertFalse(result["ok"])
-        self.assertEqual(result["reason"], "unknown_input_draft_present")
-        self.assertEqual(result["error_code"], "WECHAT_INPUT_DRAFT_PRESENT")
+        self.assertEqual(result["reason"], "input_region_before_probe_failed")
+        self.assertEqual(result["error_code"], "SEND_INPUT_NOT_READY")
         key_press.assert_not_called()
         click.assert_not_called()
 
@@ -3432,7 +3445,7 @@ class WechatSendSafetyTest(unittest.TestCase):
             [379, 841, 833, 940],
         )
 
-    def test_short_real_draft_inside_text_region_still_blocks_send(self):
+    def test_short_real_draft_keeps_a_verified_input_target_for_replacement(self):
         image = Image.new("RGB", (920, 991), "white")
         snapshot = self._semantic_layout_for_image(image)
         snapshot.update(
@@ -3465,8 +3478,8 @@ class WechatSendSafetyTest(unittest.TestCase):
 
         self.assertTrue(state["has_visible_text"])
         self.assertEqual(state["ocr_hits"], 0)
-        self.assertFalse(locator["ok"])
-        self.assertEqual(locator["error_code"], "WECHAT_INPUT_DRAFT_PRESENT")
+        self.assertTrue(locator["ok"])
+        self.assertFalse(locator["physical_send_triggered"])
 
     def test_confirmed_program_draft_is_cleared_after_input_confirmation_failure(self):
         class FakeValuePattern:
@@ -3503,8 +3516,9 @@ class WechatSendSafetyTest(unittest.TestCase):
             )
 
         self.assertTrue(result["ok"])
-        self.assertTrue(result["cleared"])
-        self.assertEqual(result["reason"], "confirmed_program_draft_cleared")
+        self.assertFalse(result["cleared"])
+        self.assertTrue(result["clear_attempted"])
+        self.assertEqual(result["reason"], "confirmed_program_draft_clear_requested")
         self.assertEqual(value_pattern.value, "")
 
     def test_clipboard_confirmed_program_draft_reuses_existing_focus_without_second_click(self):
@@ -3546,7 +3560,8 @@ class WechatSendSafetyTest(unittest.TestCase):
             )
 
         self.assertTrue(result["ok"])
-        self.assertTrue(result["cleared"])
+        self.assertFalse(result["cleared"])
+        self.assertTrue(result["clear_attempted"])
         click.assert_not_called()
         hotkey.assert_not_called()
         key_press.assert_called_once_with(sidecar.win32con.VK_BACK)
@@ -3579,7 +3594,7 @@ class WechatSendSafetyTest(unittest.TestCase):
         hotkey.assert_not_called()
         key_press.assert_not_called()
 
-    def test_sent_confirmation_requires_new_matching_bubble_and_empty_input(self):
+    def test_sent_confirmation_requires_new_matching_bubble_despite_input_hint(self):
         baseline_sequence = [
             {
                 "sequence_index": 0,
@@ -3600,7 +3615,7 @@ class WechatSendSafetyTest(unittest.TestCase):
             {
                 "ok": True,
                 "matching_self_message_count": 2,
-                "input_region": {"has_visible_text": False},
+                "input_region": {"has_visible_text": True},
                 "message_sequence": [
                     *baseline_sequence,
                     {
@@ -3637,7 +3652,7 @@ class WechatSendSafetyTest(unittest.TestCase):
             )
 
         self.assertTrue(result["ok"])
-        self.assertEqual(result["reason"], "new_stable_self_bubble_and_empty_input")
+        self.assertEqual(result["reason"], "new_stable_self_bubble")
         self.assertEqual(result["attempt"], 2)
         self.assertEqual(result["confirmed_observation"]["observation_id"], "self-new")
 

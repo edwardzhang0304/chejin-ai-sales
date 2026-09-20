@@ -135,3 +135,29 @@ def test_invalid_new_evidence_never_falls_back_to_handoff(http_api, monkeypatch,
         assert db.get(ReplyAction, ids["reply_action_id"]).status == "queued"
         assert db.query(HandoffEvent).count() == db.query(SentAck).count() == 0
         assert "pre_send_read_pending" not in db.scalar(select(WechatSessionBinding)).last_scan_snapshot
+
+
+@pytest.mark.parametrize('damage', ['none','target','action','text','focus','clear'])
+def test_once_only_cleanup_is_bound_to_original_receipt(http_api,monkeypatch,async_generation,damage):
+    worker,ids,path,headers,body=setup_receipt(http_api,monkeypatch,permit=True,claimed=True)
+    proof=body['evidence']['pre_send_read_failure']
+    with SessionLocal() as db:
+        target=db.scalar(select(WechatSessionBinding)).remark_code
+    for item in (proof['first_failure'],proof['recheck']['failure']):
+        item.update(stage='before_trigger',input_progress='may_have_started',
+            program_draft_cleanup={**{k:ids[k] for k in ('reply_action_id','conversation_id','reply_text_hash')},
+                'target':target,'cleanup':{'ok':True,'cleared':False,'clear_attempted':True,
+                    'method':'select_all_backspace','reason':'confirmed_program_draft_clear_requested',
+                    'focus_check':{'ok':True,'expected_length':8,'observed_length':8}}})
+    fact=proof['first_failure']['program_draft_cleanup']
+    if damage=='target':fact['target']='OTHER'
+    if damage=='action':fact['reply_action_id']='OTHER'
+    if damage=='text':fact['reply_text_hash']='0'*64
+    if damage=='focus':fact['cleanup']['focus_check']['ok']=False
+    if damage=='clear':fact['cleanup']['clear_attempted']=False
+    response=http_api.post(path,headers=headers,json=body)
+    assert response.status_code==(200 if damage=='none' else 409),response.text
+    with SessionLocal() as db:
+        assert db.query(HandoffEvent).count()==0
+        assert db.query(SentAck).count()==(1 if damage=='none' else 0)
+        assert db.get(Task,ids['task_id']).status==('failed' if damage=='none' else 'running')

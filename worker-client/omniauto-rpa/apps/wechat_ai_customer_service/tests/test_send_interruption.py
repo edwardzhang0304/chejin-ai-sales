@@ -35,6 +35,32 @@ def test_confirmed_customer_append():
     assert confirmed_customer_interruption(**receipt())
 
 
+@pytest.mark.parametrize("remaining", [None, False, True])
+def test_once_only_clear_does_not_require_empty_input(remaining):
+    data = receipt()
+    cleanup = data["evidence"]["guard"]["visual"]["draft_clear"]
+    cleanup.update(cleared=False, clear_attempted=True, method="select_all_backspace",
+                   reason="confirmed_program_draft_clear_requested")
+    cleanup["input_region"] = {} if remaining is None else {"has_visible_text": remaining}
+    assert confirmed_customer_interruption(**data)
+
+
+@pytest.mark.parametrize("damage", ["clear_failed", "not_attempted", "wrong_method", "wrong_reason", "unowned", "sent"])
+def test_once_only_clear_keeps_ownership_and_no_send_guards(damage):
+    data = receipt()
+    visual = data["evidence"]["guard"]["visual"]
+    cleanup = visual["draft_clear"]
+    cleanup.update(cleared=False, clear_attempted=True, method="select_all_backspace",
+                   reason="confirmed_program_draft_clear_requested")
+    if damage == "clear_failed": cleanup['ok'] = False
+    elif damage == "not_attempted": cleanup['clear_attempted'] = False
+    elif damage == "wrong_method": cleanup['method'] = "unverified_delete"
+    elif damage == "wrong_reason": cleanup['reason'] = "input_clear_requested_before_replacement"
+    elif damage == "unowned": cleanup['focus_check']['observed_length'] = 1
+    elif damage == "sent": visual['physical_send_triggered'] = True
+    assert not confirmed_customer_interruption(**data)
+
+
 @pytest.mark.parametrize("field,value", [
     ("send_result", "unknown"), ("action_phase", "attempted_unknown"),
     ("error_code", "RPA_SEND_REPLY_FAILED"), ("target", "OTHER"),

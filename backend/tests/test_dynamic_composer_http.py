@@ -39,11 +39,21 @@ def test_worker_composer_http_settlement(tmp_path,request,monkeypatch,scenario):
     _drive_composer_http(tmp_path, request, monkeypatch, scenario)
 
 
-def _drive_composer_http(tmp_path, request, monkeypatch, scenario, *, expect_pending_ack=False):
+def controlled_send_process_started(args):
+    """Mirror the real Popen boundary; RpaBridge itself records its completion."""
+    from apps.wechat_ai_customer_service.adapters import send_launch_journal
+    path = args[args.index('--action-journal') + 1]
+    journal, _ = send_launch_journal.read(path)
+    attempt = journal['send_launch_attempts'][-1]
+    send_launch_journal.update(path, attempt['launch_attempt_id'],
+                              allowed={'prepared'}, process_state='creating')
+
+
+def _drive_composer_http(tmp_path, request, monkeypatch, scenario, *, expect_pending_ack=False, extra_sidecar_io=None, expected_send_calls=1):
     """Shared real-I/O harness; each caller asserts its business outcome."""
     import test_c3_api as backend
     import test_wechat_c2_api as c2
-    from dynamic_composer_desktop import Desktop,derived_frames,REPLY,sidecar
+    from dynamic_composer_desktop import Desktop,derived_frames,REPLY,sidecar,send_context_from_args
     from chejin_worker_client import storage,omniauto_vision
     from chejin_worker_client.api import WorkerApiClient
     from chejin_worker_client.models import Binding,Task
@@ -97,11 +107,14 @@ def _drive_composer_http(tmp_path, request, monkeypatch, scenario, *, expect_pen
             return args[args.index(name)+1] if name in args else default
         if action=="send":
             assert lock_summary()["locked"]
+            controlled_send_process_started(args)
             payload=sidecar.send_payload(calibration["hwnd"],{},target=option("--target"),text=option("--text"),exact=True,
                 skip_send_rate_guard=True,artifact_dir=str(tmp_path/"desktop"),
-                expected_context_guard=json.loads(option("--expected-context-guard","{}")),
+                expected_context_guard=send_context_from_args(args),
                 action_journal_path=option("--action-journal"))
             sends.append(payload)
+        elif extra_sidecar_io is not None and action not in {"messages", "open-chat"}:
+            payload = extra_sidecar_io(args)
         else:
             assert action in {"messages","open-chat"},args
             payload=sidecar.messages_payload(calibration["hwnd"],{"ok":True},target="CJMKZUTH",history_load_times=0,
@@ -115,6 +128,13 @@ def _drive_composer_http(tmp_path, request, monkeypatch, scenario, *, expect_pen
     # every business frame is still registered and measured by production code.
     monkeypatch.setattr(bridge,"prepare_startup_layout_for_new_transaction",lambda **kw:{"ok":True,"layout_snapshot":calibration})
     monkeypatch.setattr(omniauto_vision,"vision_configuration_status",lambda:{"ready":True})
+    monkeypatch.setattr(bridge,"probe",lambda:("ready","logged_in"))
+    # Normal startup heartbeat declares the real client's recovery capabilities.
+    # Hold task admission until the approved-reply fixture below is ready.
+    runner.can_pull_tasks=lambda:False
+    runner.tick_once()
+    assert not errors,errors
+    runner.can_pull_tasks=lambda:True
     seed=process_io(["messages"])
     committed=[c2._committed_test_observation(item,worker_sequence=i+1,commit_basis=MessageCommitBasis.NEW_SUFFIX,
                   proof={"alignment_status":"not_required","old_tail_fully_consumed":True,"new_suffix_observation_id":item["observation_id"]})
@@ -149,7 +169,7 @@ def _drive_composer_http(tmp_path, request, monkeypatch, scenario, *, expect_pen
     record={"scenario":scenario,"boundary":"Controlled Windows I/O + Brain; real production send chain, RapidOCR, HTTP socket, PG, Worker SQLite",
             "initial":initial,"http":events,"sidecar_send":sends,"captures":desktop.captures}
     (tmp_path/"evidence.json").write_text(json.dumps(record,ensure_ascii=False,indent=2,default=str))
-    assert actions.count("send")==1,record
+    assert actions.count("send")==expected_send_calls,record
     assert desktop.enter_count==(0 if scenario=="failed" else 1),record
     if scenario=="response_loss":
         assert initial["pending_ack"] and len(loss)==1,record

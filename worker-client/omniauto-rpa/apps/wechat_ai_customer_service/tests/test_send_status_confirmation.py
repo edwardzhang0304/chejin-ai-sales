@@ -59,14 +59,31 @@ def test_status_layers_with_and_without_immediate_customer_reply(monkeypatch,kin
     assert len(captures)==attempt-1
     if accepted:
         assert result['attempt']==attempt
+        assert result['reason']=='new_stable_self_bubble_and_empty_input'
         assert result['confirmed_message']['following_customer_observation_ids']==(['c2'] if reply else [])
         assert result['confirmed_message']['send_status_evidence']==STATUS[kinds[-1]]
     else:
         assert result['error_code']=='SEND_RESULT_UNKNOWN' and len(result['attempts'])==6
 
-@pytest.mark.parametrize('damage',['wrong_customer','frame_failed','draft','missing_input','old_bubble','wrong_text','two_self'])
+@pytest.mark.parametrize('damage',['wrong_customer','frame_failed','old_bubble','wrong_text','two_self'])
 @pytest.mark.parametrize('kind',['missing','clear'])
 def test_status_never_substitutes_other_success_evidence(monkeypatch,damage,kind):
+    result,captures=confirm(monkeypatch,[snapshot(kind,damage=damage)])
+    assert not result['ok'] and result['error_code']=='SEND_RESULT_UNKNOWN'
+    assert len(captures)==5
+
+@pytest.mark.parametrize('damage',['draft','missing_input'])
+@pytest.mark.parametrize('kind',['missing','clear'])
+def test_new_matching_bubble_does_not_depend_on_empty_input(monkeypatch,damage,kind):
+    # Explicit product change: input hints/drafts are no longer send receipts.
+    result,captures=confirm(monkeypatch,[snapshot(kind,damage=damage)])
+    assert result['ok'] and result['attempt']==1
+    assert result['reason']=='new_stable_self_bubble'
+    assert not captures
+
+@pytest.mark.parametrize('kind',['failed','sending'])
+@pytest.mark.parametrize('damage',['draft','missing_input'])
+def test_input_hints_cannot_bypass_failed_or_pending_send_status(monkeypatch,kind,damage):
     result,captures=confirm(monkeypatch,[snapshot(kind,damage=damage)])
     assert not result['ok'] and result['error_code']=='SEND_RESULT_UNKNOWN'
     assert len(captures)==5

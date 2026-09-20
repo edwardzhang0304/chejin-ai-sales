@@ -86,7 +86,10 @@ def _retain_input_requirement(record):
     failure = record.get("failure") or record["first_failure"]
     progress = proof.get("input_progress") or _input_progress(record)
     state = proof.get("input_state") or failure["input_state"]
-    if progress == "may_have_started" and state not in {"empty", "cleared"}:
+    from apps.wechat_ai_customer_service.adapters.pre_send_read_failure import replacement_input_ready
+    replaceable = (not record.get("send_in_progress")
+                   and replacement_input_ready(failure, context=record["context"], target=record.get("target")))
+    if progress == "may_have_started" and state not in {"empty", "cleared"} and not replaceable:
         return {**record, "input_safety": {"status": "pending", "generation": uuid4().hex,
                                           "target": record.get("target") or ""}}
     return record
@@ -117,15 +120,28 @@ def save_settlement(record, *, proof, request):
 
 
 def mark_settled(action_id):
+    from .shared_rules import send_interruption
     ack = storage.load_reply_send_ack_outbox(action_id)
+    payload = (ack or {}).get("ack_payload") or {}
     sent_confirmed = bool(ack and ack.get("status") == "confirmed"
-                          and (ack.get("ack_payload") or {}).get("send_result") == "sent")
+                          and payload.get("send_result") == "sent")
     def update(prior):
         if prior is None:
             raise ValueError("PRE_SEND_READ_RECOVERY_BUDGET_MISSING")
         value = {**prior, "status": "settled", "settled_at": storage.utc_now_iso()}
         if sent_confirmed:
             value["input_safety"] = {"status": "cleared", "reason": "original_send_confirmed"}
+        elif (ack and ack.get("status") == "confirmed"
+              and payload.get("reply_text_hash") == prior["context"]["reply_text_hash"]
+              and send_interruption.confirmed_customer_interruption(
+                  send_result=payload.get("send_result"), action_phase=payload.get("action_phase"),
+                  error_code=payload.get("error_code"), evidence=payload.get("evidence"),
+                  target=prior.get("target") or "")):
+            # A completed recheck can end in a newly observed customer message.
+            # Keep the same ownership/cleanup rule as its confirmed receipt;
+            # never inherit the earlier in-progress marker as a new draft gate.
+            value["send_in_progress"] = False
+            value["input_safety"] = {"status": "replacement_ready", "reason": "confirmed_customer_interruption"}
         else:
             value = _retain_input_requirement(value)
         return value, value
@@ -316,7 +332,7 @@ def _record_send_start_if_present(action_id):
 
 def send_with_recheck(runner, binding, *, target, claim, send):
     """Run the original send, granting one repeat only for proven read failure."""
-    from apps.wechat_ai_customer_service.adapters.pre_send_read_failure import read_failure_valid
+    from apps.wechat_ai_customer_service.adapters.pre_send_read_failure import read_failure_valid, replacement_input_ready
     if claim.raw.get("settlement_only") is True or claim.raw.get("send_allowed") is False:
         raise ValueError("REPLY_SETTLEMENT_PERMIT_CANNOT_SEND")
     try:
@@ -342,7 +358,8 @@ def send_with_recheck(runner, binding, *, target, claim, send):
         record = {"version": 1, "context": context, "first_failure": failure,
                   "budget_state": "persist_failed", "started": False, "boot_id": BOOT_ID,
                   "target": target.remark_code}
-    safe_input = failure["stage"] == "before_input" or failure["input_state"] in {"empty", "cleared"}
+    safe_input = (failure["stage"] == "before_input" or failure["input_state"] in {"empty", "cleared"}
+                  or replacement_input_ready(failure, context=context, target=target.remark_code))
     if allowed and safe_input:
         # Rerun the same original action through its fresh S0 target/input
         # checks. No second claim-send, stale frame or cached click coordinates.

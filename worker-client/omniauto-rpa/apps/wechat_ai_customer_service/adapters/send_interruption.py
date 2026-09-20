@@ -57,6 +57,31 @@ def confirmed_customer_interruption(
     ) is not None
 
 
+def _cleanup_completed(cleanup: dict) -> bool:
+    if cleanup.get("ok") is not True:
+        return False
+    if "clear_attempted" in cleanup:
+        # New clients record the one clear operation without claiming that
+        # the field was observed empty. The next input replaces remaining text.
+        return (cleanup.get("clear_attempted") is True
+                and cleanup.get("method") == "select_all_backspace"
+                and cleanup.get("reason") == "confirmed_program_draft_clear_requested")
+    # Existing persisted receipts retain their original proof requirements.
+    return (cleanup.get("cleared") is True
+            and _object(cleanup.get("input_region")).get("has_visible_text") is False)
+
+
+def confirmed_program_draft_cleanup(cleanup: object) -> bool:
+    """Owned full draft plus completed cleanup operation, not an empty-field claim."""
+    cleanup = _object(cleanup)
+    focus = _object(cleanup.get("focus_check"))
+    return bool(_cleanup_completed(cleanup)
+                and focus.get("ok") is True
+                and type(focus.get("expected_length")) is int
+                and type(focus.get("observed_length")) is int
+                and focus["expected_length"] == focus["observed_length"] > 0)
+
+
 def customer_interruption_proof(
     *, send_result: str, action_phase: str, error_code: str,
     evidence: object, target: str,
@@ -70,7 +95,6 @@ def customer_interruption_proof(
     guard = _object(_object(evidence).get("guard"))
     visual = _object(guard.get("visual"))
     cleanup = _object(visual.get("draft_clear"))
-    focus = _object(cleanup.get("focus_check"))
     check = _object(visual.get("context_check"))
     snapshot = _object(check.get("snapshot"))
     before_input = evidence.get("state") == "send_context_changed_before_input"
@@ -81,7 +105,6 @@ def customer_interruption_proof(
         safe_input = (
             journal.get("ok") is True
             and journal.get("action_phase") == "not_attempted"
-            and _object(snapshot.get("input_region")).get("has_visible_text") is False
             and bool(snapshot.get("screenshot_path"))
             and guard.get("screenshot_path") == snapshot.get("screenshot_path")
         )
@@ -90,13 +113,7 @@ def customer_interruption_proof(
         safe_input = (
             visual.get("physical_send_triggered") is False
             and visual.get("error_code") == error_code
-            and cleanup.get("ok") is True and cleanup.get("cleared") is True
-            and focus.get("ok") is True
-            and focus.get("expected_length") == focus.get("observed_length")
-            and type(focus.get("expected_length")) is int
-            and type(focus.get("observed_length")) is int
-            and focus["expected_length"] > 0
-            and _object(cleanup.get("input_region")).get("has_visible_text") is False
+            and confirmed_program_draft_cleanup(cleanup)
         )
         old_guard = _object(_object(guard.get("send_baseline")).get("send_context_guard"))
     validation = _object(snapshot.get("validation"))

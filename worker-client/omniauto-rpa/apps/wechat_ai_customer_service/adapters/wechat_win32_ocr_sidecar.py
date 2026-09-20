@@ -2885,7 +2885,6 @@ def capabilities_payload(hwnd: int, probe: dict[str, Any], *, artifact_dir: str 
             online
             and not blocking_reason
             and geometry_check.get("ok")
-            and not input_region.get("has_visible_text")
             and input_evidence.get("ok")
         ),
         "method": "win32.observed_input+rpa_text_entry+keyboard_enter",
@@ -2935,6 +2934,15 @@ def capabilities_payload(hwnd: int, probe: dict[str, Any], *, artifact_dir: str 
         },
         "compat_reason": "rpa_primary",
     }
+def _later_physical_capture(before: dict[str, Any], after: dict[str, Any]) -> bool:
+    """Equal pixels can still come from independent, ordered captures."""
+    start, end = before.get("captured_monotonic"), after.get("captured_monotonic")
+    return bool(before.get("frame_id") and after.get("frame_id")
+                and before["frame_id"] != after["frame_id"]
+                and type(start) in (int, float) and type(end) in (int, float)
+                and 0 < start < end <= time.monotonic())
+
+
 def immutable_frame_pixel_evidence(
     screenshot: Image.Image,
     *,
@@ -10872,6 +10880,20 @@ def send_payload(
                 "physical_send_triggered": False, "action_phase": "not_attempted",
                 "phase_proof": {"ok": True, "source": "action_journal", "action_phase": "not_attempted"},
             }
+            # A completed clear operation is not an observation of empty input.
+            # Carry its exact ownership/action facts to the existing one-recheck
+            # consumer; fresh S0 and final full-text copyback remain mandatory.
+            from apps.wechat_ai_customer_service.adapters.pre_send_read_failure import replacement_input_ready
+            journal = journal_result.get("payload") or {}
+            fact = payload["pre_send_read_failure_fact"]
+            candidate = {**fact, "program_draft_cleanup": {
+                "target": target, "reply_action_id": journal.get("transaction_id"),
+                "conversation_id": journal.get("conversation_id"),
+                "reply_text_hash": hashlib.sha256(text.encode("utf-8")).hexdigest(),
+                "cleanup": cleared,
+            }}
+            if replacement_input_ready(candidate):
+                payload["pre_send_read_failure_fact"] = candidate
         if isinstance(send_result, dict):
             send_result["action_phase"] = action_phase
             existing = send_result.get("timing")
@@ -11133,6 +11155,10 @@ def send_payload(
             snapshot_digest = str(
                 snapshot_frame.get("screenshot_sha256") or ""
             )
+            # Replacement input may reproduce exactly the previous draft.
+            # Equal pixels are not a reused capture: require a later physical
+            # capture as well as a different frame identity in this case.
+            later_capture = _later_physical_capture(baseline_frame, snapshot_frame)
             if (
                 baseline_frame_id
                 and snapshot_frame_id
@@ -11142,6 +11168,7 @@ def send_payload(
                         baseline_digest
                         and snapshot_digest
                         and baseline_digest == snapshot_digest
+                        and not later_capture
                     )
                 )
             ):
@@ -11351,6 +11378,8 @@ def send_payload(
             or (
                 len(nonempty_frame_digests) == 3
                 and len(set(nonempty_frame_digests)) != 3
+                and not (_later_physical_capture(baseline_frame, pre_trigger_frame)
+                         and _later_physical_capture(pre_trigger_frame, post_send_frame))
             )
         ):
             return finish({
@@ -12527,17 +12556,18 @@ def paste_text_with_confirmation(
                 "reason": "input_region_before_probe_failed",
                 "error": repr(exc),
             }
-        if input_region_soft_blank_noise(before_input_region):
+        if (before_input_region.get("has_visible_text") is False
+                and input_region_soft_blank_noise(before_input_region)):
             before_input_region = normalize_soft_blank_input_state(
                 before_input_region,
                 reason="input_region_soft_blank_noise",
             )
-        if before_input_region.get("has_visible_text"):
+        if (before_input_region.get("error") or before_input_region.get("error_code")
+                or type(before_input_region.get("has_visible_text")) is not bool):
             return finish({
                 "ok": False,
-                "reason": "unknown_input_draft_present",
-                "error_code": "WECHAT_INPUT_DRAFT_PRESENT",
-                "error": "WeChat input contains an unknown draft; preserve it and stop automatic reply.",
+                "reason": "input_region_before_probe_failed",
+                "error_code": "SEND_INPUT_NOT_READY",
                 "probe_token": probe_token,
                 "probe_tokens": probe_tokens,
                 "attempts": attempt,
@@ -12640,6 +12670,31 @@ def paste_text_with_confirmation(
                 "input_result": last_input_result,
                 "window_guard": focus_guard,
             })
+        if before_input_region.get("has_visible_text"):
+            # The operator explicitly authorizes replacing any pre-existing
+            # input, including manual drafts. A placeholder may survive Delete;
+            # the final exact copyback checks the new draft before Enter.
+            hotkey(win32con.VK_CONTROL, ord("A"))
+            humanized_action_sleep(45, 90)
+            focus_guard = basic_send_window_guard(hwnd)
+            if not focus_guard.get("ok"):
+                return finish({
+                    "ok": False,
+                    "reason": "send_focus_guard_failed_before_input_clear",
+                    "error_code": "SEND_INPUT_NOT_READY",
+                    "input_region": before_input_region,
+                    "window_guard": focus_guard,
+                })
+            key_press(win32con.VK_DELETE)
+            humanized_action_sleep(45, 90)
+            clear_result = {
+                "ok": True,
+                "cleared": False,
+                "clear_attempted": True,
+                "method": "select_all_delete",
+                "reason": "input_clear_requested_before_replacement",
+                "before": before_input_region,
+            }
         input_result: dict[str, Any]
         input_operation_started = _sidecar_timing_start(timing, "input_operation")
         if settings.get("enabled") and input_method == "sendinput_unicode":
@@ -13149,11 +13204,17 @@ def confirm_exact_program_draft_focus(
     except Exception:
         previous_clipboard = None
     try:
+        input_bounds = list((current_layout_snapshot(hwnd) or {}).get("input_bounds") or [])
+        if len(input_bounds) == 4 and not win32_ocr_layout.point_in_bounds(input_point, input_bounds):
+            # Replacing a long draft can shrink the composer. Use the already
+            # captured post-input layout; do not add a post-clear empty probe.
+            input_point = ((input_bounds[0] + input_bounds[2]) // 2,
+                           (input_bounds[1] + input_bounds[3]) // 2)
         human_client_click(
             hwnd,
             int(input_point[0]),
             int(input_point[1]),
-            bounds=list((current_layout_snapshot(hwnd) or {}).get("input_bounds") or []),
+            bounds=input_bounds,
             expected_snapshot_id=str(
                 (layout_snapshot_metadata(hwnd).get("snapshot") or {}).get("layout_snapshot_id") or ""
             ),
@@ -13287,53 +13348,16 @@ def clear_confirmed_program_draft(
             "cleared": False,
             "error": repr(exc),
         }
-    after_readable, after_clear = _read_uia_value_pattern_text(value_pattern)
-    visual_clear: dict[str, Any] = {}
-    if after_readable:
-        cleared = not after_clear
-    elif geometry:
-        try:
-            screenshot, _path = capture_wechat(
-                hwnd,
-                artifact_dir=artifact_dir,
-                label="send_program_draft_cleanup",
-            )
-            ocr_items = run_ocr_for_input_confirmation(
-                screenshot,
-                geometry=geometry,
-                timing={},
-                prefix="draft_cleanup",
-            )[0]
-            after_state = input_text_region_state(
-                screenshot,
-                ocr_items,
-                geometry=geometry,
-            )
-            if input_region_soft_blank_noise(after_state):
-                after_state = normalize_soft_blank_input_state(
-                    after_state,
-                    reason="draft_cleanup_soft_blank_noise",
-                )
-            cleared = not bool(after_state.get("has_visible_text"))
-            visual_clear = {"input_region": after_state}
-        except Exception as exc:
-            cleared = False
-            visual_clear = {
-                "reason": "draft_cleanup_visual_confirmation_failed",
-                "error": repr(exc),
-            }
-    else:
-        cleared = False
+    # Cancellation needs one clear operation, not a second empty-field proof.
+    # The next reply replaces any remaining text before its exact copyback.
+    # Keep "cleared" false: we did not observe or assert an empty input.
     return {
-        "ok": cleared,
-        "reason": (
-            "confirmed_program_draft_cleared"
-            if cleared
-            else "program_draft_clear_not_confirmed"
-        ),
-        "cleared": cleared,
+        "ok": True,
+        "reason": "confirmed_program_draft_clear_requested",
+        "cleared": False,
+        "clear_attempted": True,
+        "method": "select_all_backspace",
         "focus_check": exact_focus,
-        **visual_clear,
     }
 
 
@@ -13350,13 +13374,6 @@ def locate_visual_send_input(
         return {
             "ok": False,
             "reason": "visual_input_region_evidence_missing",
-            "physical_send_triggered": False,
-        }
-    if seed_region.get("has_visible_text"):
-        return {
-            "ok": False,
-            "reason": "unknown_input_draft_present",
-            "error_code": "WECHAT_INPUT_DRAFT_PRESENT",
             "physical_send_triggered": False,
         }
     evidence = input_surface_click_evidence(seed_region)
@@ -18409,15 +18426,12 @@ def build_send_fact_snapshot_from_frame(
             not same_frame_fallback_reason
             and receipt_baseline_message_sequence is not None
         ):
-            input_blank = not bool(
-                (snapshot.get("input_region") or {}).get("has_visible_text")
-            )
             receipt_message = find_new_matching_self_message(
                 list(receipt_baseline_message_sequence),
                 list(snapshot.get("message_sequence") or []),
                 receipt_text,
             )
-            if not input_blank or receipt_message is None:
+            if receipt_message is None:
                 same_frame_fallback_reason = (
                     "send_receipt_evidence_insufficient"
                 )
@@ -18531,7 +18545,6 @@ def confirm_reply_sent(
             continue
         snapshot["attempt"] = attempt
         attempts.append(snapshot)
-        input_blank = (snapshot.get("input_region") or {}).get("has_visible_text") is False
         confirmed_message = find_new_matching_self_message(
             list(baseline_message_sequence or []),
             list(snapshot.get("message_sequence") or []),
@@ -18552,7 +18565,7 @@ def confirm_reply_sent(
             snapshot["send_status_confirmation"] = {
                 "failure_seen": failure_seen, "sending_unresolved": sending_unresolved,
             }
-        if (snapshot.get("ok") and input_blank and confirmed_message
+        if (snapshot.get("ok") and confirmed_message
                 and not failure_seen and not sending_unresolved):
             confirmed_observation = next(
                 (
@@ -18566,7 +18579,13 @@ def confirm_reply_sent(
             )
             return {
                 "ok": True,
-                "reason": "new_stable_self_bubble_and_empty_input",
+                # Preserve the old success label for its original case. The
+                # input observation is diagnostic only, never a success gate.
+                "reason": (
+                    "new_stable_self_bubble_and_empty_input"
+                    if (snapshot.get("input_region") or {}).get("has_visible_text") is False
+                    else "new_stable_self_bubble"
+                ),
                 "attempt": attempt,
                 "baseline_match_count": int(baseline_match_count),
                 "matching_self_message_count": int(snapshot.get("matching_self_message_count") or 0),

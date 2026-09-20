@@ -43,8 +43,24 @@ def ack(worker, action_id, payload):
     return response.json()["data"]
 
 
-def test_customer_interruption_cancels_and_duplicate_does_not_override_newer_state():
+@pytest.mark.parametrize("mode", ["legacy", "clear_once", "before_input"])
+def test_customer_interruption_cancels_and_duplicate_does_not_override_newer_state(mode):
     worker, binding, action_id, task_id, payload = claimed_reply()
+    evidence = payload['evidence']
+    visual = evidence['guard']['visual']
+    if mode == 'clear_once':
+        visual['draft_clear'].update(cleared=False, clear_attempted=True,
+            method='select_all_backspace', reason='confirmed_program_draft_clear_requested',
+            input_region={'has_visible_text': True})
+    elif mode == 'before_input':
+        check = visual['context_check']
+        snapshot = check.pop('snapshot')
+        snapshot.update(input_region={'has_visible_text': True}, screenshot_path='/controlled/current-frame.png')
+        check['expected_context_guard'] = evidence['guard']['send_baseline']['send_context_guard']
+        payload['evidence'] = {'state': 'send_context_changed_before_input',
+            'guard': {**snapshot['validation'], 'screenshot_path': snapshot['screenshot_path']},
+            'send_baseline': snapshot, 'context_validation': check,
+            'action_journal': {'ok': True, 'action_phase': 'not_attempted'}}
     result = ack(worker, action_id, payload)
     assert result["task"]["status"] == "cancelled"
     with base.SessionLocal() as db:
