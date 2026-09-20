@@ -653,6 +653,12 @@ def _identity_checkpoint(
         from app.services.text_correspondence_context import build_context
         from app.contracts.shared_rules import shared_adapter
         checkpoint["text_correspondence_context"] = build_context(db, current_binding)
+        from app.contracts.c2 import c2_contract_v3
+        contract = c2_contract_v3().get('text_correspondence_contract') or {}
+        owner = db.get(Worker, current_binding.worker_id)
+        capability = ((owner.local_lock_summary or {}).get('capabilities') or {}).get('text_correspondence_version') if owner else None
+        if type(capability) is int and capability == 2 and contract.get('version') == 2:
+            checkpoint['historical_match_policy'] = contract['historical_match_policy']
         checkpoint["checkpoint_digest"] = shared_adapter("text_correspondence").checkpoint_digest(checkpoint)
     return checkpoint
 

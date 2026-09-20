@@ -26,7 +26,7 @@ from test_lead_followup_eligibility import fixture_rows, headers, isolated_db, h
 from test_wechat_c2_api import _v3_ingest_payload, _v3_message, _fact_settlement_payload, _v3_failed_voice_message
 
 ROOT = Path(__file__).resolve().parents[2]
-VERSIONS = ('0.9.75', '0.9.78', '0.9.80', '0.9.85', '0.9.86')
+VERSIONS = ('0.9.92', '0.9.75', '0.9.78', '0.9.80', '0.9.85', '0.9.86')
 
 
 def frozen(revision):
@@ -148,7 +148,7 @@ def test_disabling_migration_blocks_real_recovery_then_same_sqlite_retries(http_
 
 @pytest.mark.parametrize('damage', ['worker', 'customer', 'flow', 'sha', 'changed_read_rule', 'unknown_rule',
                                   'missing_finish', 'sending', 'unknown_send_result'])
-@pytest.mark.parametrize('revision', ['0.9.85', '0.9.86'])
+@pytest.mark.parametrize('revision', ['0.9.92', '0.9.85', '0.9.86'])
 def test_frozen_read_rejects_invalid_proof_and_unsettled_sends(http_api, monkeypatch, damage, revision):
     worker, row, original = prepared_frozen_read(http_api, monkeypatch, revision, True)
     payload = copy.deepcopy(original)

@@ -1,3 +1,15 @@
+' v0.9.92/r7：r6完整HC及一次复核补修独立源码复审通过，144项通过、旧逻辑反例有效。
+' 用户授权原双仓灰度联合提交推送，后端/Worker/共享组件一起交付；未发布，Windows实发待验，生产仍r2。
+' 独立复审 /private/tmp/cj-hc-recheck-review-20260920-P3W8SR/review_v0.1_20260920.md。以下保留历史时点。
+' r6复审P1补修：唯一HC候选可用一条精确支点进入原一次复核，新帧局部OCR选区沿用刚比较结果。
+' 90分/差值5分/同次一次及重启额度不变；144项通过，旧入口和旧新帧选区反例有效。待独立复审、未提交推送发布、Windows未验。
+' 本轮证据 /private/tmp/cj-hc-recheck-fix-20260920/review.md；以下保留历史。
+' 0.9.92/r6本地实施补记：S=T已接通三层，原事故9868，旧加权7740反例有效；原文/ID不改。
+' C2新文字+媒体、单条/分段插话、同库恢复及媒体原凭据已验证；241测试+58子检查、三来源14原图，原始证据 /private/tmp/cj-hc-simple-20260920/review.md。
+' 有限样本不代表统计准确率；尚未独立复审/Windows实发/真实外部模型验收。本轮未提交推送发布；下方仅文档状态保留历史时点。
+' 当前文档v0.9.92/r6（2026-09-20）：HC改为逐条文字S=T，语音/图片原合同保留，待11号接续验证；生产仍r2。
+' 唯一规则见技术方案HC-1—HC-9及historical_text_identity_r6图；旧综合加权已撤销，缺气泡特征不扣分、不补录。
+' 新策略historical_text_identity_v2；本轮只改文档，不宣称产品/媒体实机已通过。已推送r4及其他历史保留。
 ' 当前v0.9.92/r4：用户授权将r3提示修复与定向测试提交推送原灰度；业务流程不再变化，未打包/部署，Windows待验。
 ' 下方r3保留提交前历史状态，正式仍为r2。
 ' 当前v0.9.92/r3本地修复：后端确认AI重试耗尽转人工后，Worker核对原批次终态并显示原因及手动回复提示。
@@ -97,7 +109,7 @@
 ' r10不改变产品流程；只固化画面一致性与正式BackgroundTasks测试，产品指纹保持已审eff500e/0cdf482。
 ' r11仅来源和交付登记；沿用已审流程，未改图示语义，未重新渲染；不发包/部署。
 @startuml
-title 车金 AI 全流程图 v0.9.92（r4提示源码交付；正式仍为r2）
+title 车金 AI 全流程图 v0.9.92（文档r6：HC文字为主/媒体边界待验；生产r2）
 
 skinparam monochrome true
 skinparam shadowing false
@@ -130,6 +142,15 @@ participant "OmniAuto BuiltinVisionPlugin\nWorker进程内调用" as VG
 participant "C2统一角色解析器\nsender_role" as Role
 participant "销售微信桌面客户端" as WX
 end box
+
+note over W, OA
+HC r6：原角色/类型/顺序确认旧对应 -> 普通文字逐条S=T -> 达线且唯一获选 -> 只关联原ID。
+旧气泡尺寸/图像只诊断，缺失不扣分/不补录；不新增常态ink64采集。
+语音/图片保留原父身份/转写/理解/回执/动作账本；混排不跳项，新媒体仍阻断旧未发回复。
+开发初线90/候选差5须校准复审；低分仅原一次复核，失败沿原停止结算，明确开始不变。
+三层共享同一新policy及合同证明，后端重算；旧v1仅冻结兼容，不二次否决新普通文字结果。
+详见HC-1—HC-9与historical_text_identity_r6图；不改正文，不借评分证明发送成功。
+end note
 
 note over W, OA
 0.9.91/r6读取复核衔接：清空仅记录clear_attempted，input_state仍unverified，不观察/声称空白。
@@ -1647,7 +1668,7 @@ endlegend
 ' r4 已确认规则：销售换绑 -> 已开始/旧 Flow 未结算则拒绝 -> 原机器结算后再换绑；未开始随销售新 Worker 或等待；完成记录不动。
 
 @startuml evidence_tolerance_r9
-title v0.9.90（r2正式发布）已复审实现视图：D1—D7、D1-H与恢复L1/L2
+title 历史v1视图：D1—D7、D1-H与恢复L1/L2（普通文字新策略以HC r6为准）
 skinparam monochrome true
 skinparam shadowing false
 start
@@ -1895,3 +1916,48 @@ stop
 ' 仅工具修正可核验同一候选后复测；应用/依赖/构建输入变化必须重建。仅工具复测模式本次未实际触发，不冒充Windows运行证据。
 ' Fast UAT独立共用必要测试，继续GitHub ZIP→Mac→原命令行，不作为正式构建前置。
 ' 原0.9.67→0.9.69现场失败的停止推荐与保留数据安装约束仍见运维规则，不扩大本次0.9.70升级准入范围。
+
+
+@startuml historical_text_identity_r6
+title v0.9.92/r6 HC文字为主与媒体边界（待实现验证；生产仍r2）
+skinparam monochrome true
+skinparam shadowing false
+start
+:取得原客户/授权/Flow与权威checkpoint、真实观察;
+:保留文字/语音/图片混排顺序、角色与类型;
+if (原唯一精确对应通过?) then (是)
+  :沿原对应和全部新增后缀处理;
+  stop
+endif
+if (双方支持v2及同一新policy_digest?) then (否)
+  :原冻结兼容/失败结算，不重解释旧实验凭据;
+  stop
+endif
+:枚举有原归属依据的合法旧后缀到当前前缀;
+:语音/图片复用原父ID、状态、回执与对应规则\n不拿时长/占位/描述相似代替媒体身份;
+:逐条普通旧文字计算T，S=T，候选取最低分\n不把语音/图片计零分、不拼整屏平均;
+:气泡尺寸/图像只诊断\n缺失unavailable，不扣分、不补录;
+if (最佳达90分且多候选领先至少5分?) then (否)
+  :只在原剩余一次预算内复核并按同策略重算;
+  if (仍不足或仍有歧义?) then (是)
+    :原技术失败/Outbox/Flow收尾\n不直接业务转人工、不自动开始;
+    stop
+  endif
+endif
+:只关联原旧ID，不改历史正文;
+:Worker冻结v2证明；后端同函数重算\n包含媒体原校验及全部候选/新旧边界;
+if (后端确认?) then (否)
+  :沿原有界刷新/重读/取消/结算，不重复微信动作;
+  stop
+endif
+:全部新增文字/语音/图片进入原事实与媒体处理;
+:发送前/段间客户插话取消旧未发回复\n原正式异步续答，已发段/原回执保留;
+:断网同库恢复不重复发送/点击/转写/图片理解;
+note right
+  90/5为待校准初值，气泡不参与自动裁决。
+  完成转写原空格换行兼容保留。
+  真实新媒体不吞，媒体失败沿原分类。
+  故障结清后仍明确开始；未知发送/人工接管不解除。
+end note
+stop
+@enduml

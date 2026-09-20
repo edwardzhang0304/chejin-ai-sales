@@ -96,7 +96,9 @@ _CORRECTION_RESOLUTION_V1_RULES_SHA256 = '8623691392df801c7d6fdf8c12268d9fa75f8b
 _PRE_SEND_READ_V1_RULES_SHA256 = 'fbf33b38f2d9493f02534d71720be355c7cdfe69ad903b7ceb39dc10c2396a7a'
 _PUBLISHED_085_RULES_SHA256 = '6ee655ac27557a0c24070b1218b34eab094f2e8d89011a8ea115e155b2aa6b75'
 _PRE_SEND_SETUP_V1_RULES_SHA256 = '943d7a887278e3acbdacb6dac2991688eac54c011cc11b667f0108159ceef9fd'
+_HISTORICAL_CONFIDENCE_V2_RULES_SHA256 = 'fd92e6a5d9770c99ef3d240f121d6b34935f7770c9ff13632b5b406d16ef3a25'
 RELEASED_READ_CONTRACTS = (
+    ('0.9.92', 'c7a0c3220b9f30dd943c57f2ffe50cf2f717799eb012bc20d8c61c7ca9eb7d67'),
     ('0.9.90', 'da151196e1f6ceeb83a19057d516eb9654974ffe5dc644c76f19b960864302b0'),
     ('0.9.89', 'aed5f736db2af32854d2bb5449ccc79479897eaf6bb5224d1c2bbb2d8dd0d311'),
     ('0.9.75', 'bcb1af09321339b159cc02581f5938e402f16094465933645c71bd7dc0eadcf1'),
@@ -140,6 +142,17 @@ def read_recovery_contract(current: dict, revision: Any, sha256: Any) -> dict | 
     same = equivalent_contract(current, revision, sha256)
     if same is not None:
         return same
+    correspondence = current.get('text_correspondence_contract') or {}
+    if correspondence.get('version') == 2:
+        if contract_rules_sha256(current) != _HISTORICAL_CONFIDENCE_V2_RULES_SHA256:
+            return None
+        previous = {**current, 'text_correspondence_contract': correspondence.get('legacy_v1')}
+        if contract_rules_sha256(previous) != _PRE_SEND_SETUP_V1_RULES_SHA256:
+            return None
+        current = previous
+        same = equivalent_contract(current, revision, sha256)
+        if same is not None:
+            return same
     if 'pre_send_setup_recovery_contract' in current:
         if contract_rules_sha256(current) != _PRE_SEND_SETUP_V1_RULES_SHA256:
             return None
@@ -332,7 +345,7 @@ def recovery_action_for_error(
         return 'retry'
     correspondence = payload.get("text_correspondence_contract") or {}
     if (code == "TEXT_CORRESPONDENCE_CHECKPOINT_EXPIRED"
-            and correspondence.get("version") == 1
+            and correspondence.get("version") in {1, 2}
             and correspondence.get("expired_recovery_action") == "refresh_and_rebuild"):
         return "refresh_and_rebuild"
     code_groups = (

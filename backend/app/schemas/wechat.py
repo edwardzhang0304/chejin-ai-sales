@@ -197,13 +197,15 @@ class WechatSequenceAlignmentEvidence(BaseModel):
 
     @model_validator(mode="after")
     def validate_safe_suffix(self):
+        correspondence = self.text_correspondence or {}
+        expected_count = correspondence['candidate_count'] if correspondence.get('version') == 2 else 1
         if self.alignment_status == "not_required" and (
             self.candidate_alignment_count != 0 or self.matched_pairs
         ):
             raise ValueError("无需对齐时不得声明候选或匹配对")
         if (
             self.alignment_status == "unique"
-            and self.candidate_alignment_count != 1
+            and self.candidate_alignment_count != expected_count
         ):
             raise ValueError("唯一对齐必须且只能有一个候选")
         if self.alignment_status in {"ambiguous", "unresolved"}:

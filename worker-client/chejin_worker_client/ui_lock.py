@@ -281,6 +281,12 @@ class UiLockLease:
         if elapsed > max(1.0, CONFIG.ui_step_timeout_seconds):
             raise UiLockError(UI_STEP_TIMEOUT, f"微信 UI 步骤超时：{self.current_step}", data={"elapsed_seconds": round(elapsed, 3)})
 
+    @property
+    def step_deadline(self) -> float | None:
+        """Share the existing step budget with CPU work; never start a new one."""
+        return (self._last_step_started_at + max(1.0, CONFIG.ui_step_timeout_seconds)
+                if self._last_step_started_at > 0 else None)
+
     def release(self) -> None:
         if self._renew_stop:
             self._renew_stop.set()
