@@ -1,3 +1,6 @@
+' 当前v0.9.93/r1：已审e504c9a/fc274d2完整HC方案与P1、e10b6df提示修复；0.9.92原数据强升准备，未发布。
+' 容量→构建一次→同包原装暂停/故障安装→GitHub直传→Docker合同→后台真实验收；旧恢复快照保留，Windows实发待验。
+' 下方旧记录保留历史时点。
 ' v0.9.92/r7：r6完整HC及一次复核补修独立源码复审通过，144项通过、旧逻辑反例有效。
 ' 用户授权原双仓灰度联合提交推送，后端/Worker/共享组件一起交付；未发布，Windows实发待验，生产仍r2。
 ' 独立复审 /private/tmp/cj-hc-recheck-review-20260920-P3W8SR/review_v0.1_20260920.md。以下保留历史时点。
@@ -109,7 +112,7 @@
 ' r10不改变产品流程；只固化画面一致性与正式BackgroundTasks测试，产品指纹保持已审eff500e/0cdf482。
 ' r11仅来源和交付登记；沿用已审流程，未改图示语义，未重新渲染；不发包/部署。
 @startuml
-title 车金 AI 全流程图 v0.9.92（文档r6：HC文字为主/媒体边界待验；生产r2）
+title 车金 AI 全流程图 v0.9.93（r1正式发布准备，未发布）
 
 skinparam monochrome true
 skinparam shadowing false
