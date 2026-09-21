@@ -709,6 +709,7 @@ def _raise_message_identity_collision(
     incoming_raw_payload: dict,
     source_message_key: str,
     dedupe_key: str,
+    historical_text_confirmed: bool = False,
 ) -> None:
     existing_identity = _message_identity_summary(
         sender_role=existing.sender_role,
@@ -727,6 +728,16 @@ def _raise_message_identity_collision(
         == str(source_message_key or "").strip()
         and existing_identity == incoming_identity
     ):
+        return
+    if (historical_text_confirmed
+            and existing.source_message_key == source_message_key
+            and existing_identity['sender_role'] == incoming_identity['sender_role']
+            and existing_identity['message_type'] == incoming_identity['message_type']
+            and existing_identity['message_type'] in {'text', 'voice'}
+            and existing_identity['media_identity_hash'] == incoming_identity['media_identity_hash']):
+        # The full authoritative sequence has already proved this same source
+        # and observation. Do not veto that decision using an old body hash.
+        # Deduplication still keeps the immutable stored body unchanged.
         return
     checkpoint = _identity_checkpoint(
         db,
@@ -3239,6 +3250,7 @@ def _verified_ai_reply_action_for_self_message(
     content: object,
     source_message_key: str,
     raw_payload: dict,
+    historical_pairs: set[tuple[str, str]] = frozenset(),
 ) -> ReplyAction | None:
     """Validate a Worker-confirmed stable bubble receipt against one sent action."""
     observed_text = normalized_projection_text(content)
@@ -3303,7 +3315,9 @@ def _verified_ai_reply_action_for_self_message(
         # OCR rendering is not that transport payload and cannot be hashed as
         # though it were. Only its presentation comparison uses the shared rule.
         or _reply_text_hash(action.reply_text) != receipt_hash
-        or normalized_projection_text(action.reply_text) != observed_text
+        or (normalized_projection_text(action.reply_text) != observed_text
+            and not (action.status == 'sent' and (source_message_key, observation.get('observation_id'))
+                     in historical_pairs))
     ):
         return None
     if reconciliation_state == "ai_unreconciled":
@@ -3697,7 +3711,7 @@ def _validate_non_delivered_frame_observations(
     payload: WechatMessageIngestRequest,
     *,
     worker: Worker | None = None,
-) -> None:
+) -> set[tuple[str, str]]:
     """Prove every non-delivered settled frame row is already persisted.
 
     ``messages`` is an incremental delivery set.  The authoritative frame may
@@ -3745,7 +3759,7 @@ def _validate_non_delivered_frame_observations(
         ):
             settled_slots.append(slot)
     if not settled_slots:
-        return
+        return text_pairs
 
     source_keys = {
         str(slot.source_message_key or "").strip()
@@ -3830,6 +3844,7 @@ def _validate_non_delivered_frame_observations(
             ),
             409,
         )
+    return text_pairs
 
 
 def _ordered_v3_messages(payload: WechatMessageIngestRequest) -> list:
@@ -4375,7 +4390,7 @@ def ingest_messages(db: Session, worker: Worker, payload: WechatMessageIngestReq
     from app.services.read_recovery_service import select_settlement_contract
     settlement_contract = select_settlement_contract(db, worker, payload)
     _validate_v3_request_contract(payload, contract=settlement_contract)
-    _validate_non_delivered_frame_observations(db, payload, worker=worker)
+    historical_pairs = _validate_non_delivered_frame_observations(db, payload, worker=worker)
     ordered_messages = _ordered_v3_messages(payload)
     evidence_payload = payload.evidence.model_dump(mode="json")
     slot_origin_read_run_ids = _slot_origin_read_run_ids(
@@ -4738,6 +4753,8 @@ def ingest_messages(db: Session, worker: Worker, payload: WechatMessageIngestReq
                 incoming_raw_payload=raw_payload,
                 source_message_key=item.source_message_key,
                 dedupe_key=dedupe_key,
+                historical_text_confirmed=(item.source_message_key,
+                    (raw_payload.get('observation') or {}).get('observation_id')) in historical_pairs,
             )
             duplicated_count += 1
             results.append(
@@ -4771,6 +4788,7 @@ def ingest_messages(db: Session, worker: Worker, payload: WechatMessageIngestReq
                 content=content,
                 source_message_key=item.source_message_key,
                 raw_payload=raw_payload,
+                historical_pairs=historical_pairs,
             )
             # A disputed local AI receipt proves neither AI attribution nor
             # human intervention. Reuse the existing uncertainty guard, without

@@ -15,6 +15,7 @@ from .message_viewport_projection import normalized_business_message_sequence, o
 from .text_correspondence import (checkpoint_digest, historical_text_candidate,
     validate_entity_context, normalized_projection_text, historical_confidence_scores,
     validate_historical_match_policy)
+from .confirmed_sent_history import extend_checkpoint, validate_receipts
 
 VERSION = 1
 POLICY = "historical_context_v1"
@@ -38,11 +39,21 @@ def checkpoint_for_proof_version(checkpoint, version):
     under v2. New v2 work still requires the negotiated bound policy.
     """
     if version == 1 and 'historical_match_policy' in checkpoint:
-        result = {k: v for k, v in checkpoint.items() if k != 'historical_match_policy'}
+        sent_ids = {r['worker_stable_id'] for r in checkpoint.get('confirmed_sent_receipts', [])}
+        result = {k: v for k, v in checkpoint.items() if k not in {'historical_match_policy', 'confirmed_sent_receipts'}}
         result['recent_messages'] = [{k: v for k, v in entry.items() if k != 'historical_identity_features'}
-                                     for entry in checkpoint.get('recent_messages', [])]
+                                     for entry in checkpoint.get('recent_messages', []) if entry.get('stable_id') not in sent_ids]
         result['checkpoint_digest'] = checkpoint_digest(result)
         return result
+    return checkpoint
+
+
+def checkpoint_for_proof(checkpoint, proof):
+    """Bind the same complete old sequence, including confirmed send receipts."""
+    checkpoint = checkpoint_for_proof_version(checkpoint, proof['version'])
+    receipts = proof.get('confirmed_sent_receipts')
+    if receipts and not checkpoint.get('confirmed_sent_receipts'):
+        checkpoint = extend_checkpoint(checkpoint, receipts)
     return checkpoint
 
 
@@ -135,7 +146,7 @@ def build_correspondence(checkpoint, observations, *, pre_frame_id, post_frame_i
         # a failed ordinary-text candidate or reinterpret an HC proof as v1.
         legacy = build_correspondence(checkpoint_for_proof_version(checkpoint, 1), observations,
             pre_frame_id=pre_frame_id, post_frame_id=post_frame_id, new_boundary_tokens=new_boundary_tokens)
-        entries = comparison_entries(checkpoint)
+        entries = comparison_entries(checkpoint_for_proof_version(checkpoint, 1))
         if legacy and all(entries[p['old_index']].get('message_type') == 'voice'
                           for p in legacy['proof']['pairs'] if p['matched_by'] == 'context_ocr'):
             return legacy
@@ -225,7 +236,7 @@ def comparison_projection(checkpoint, observations, *, pre_frame_id, post_frame_
         new_boundary_tokens=boundary_tokens_for_observations(rows, committed_only=False))
     if result is None:
         return projected, None
-    entries = comparison_entries(checkpoint)
+    entries = comparison_entries(checkpoint_for_proof_version(checkpoint, result["proof"]["version"]))
     for pair in result["proof"]["pairs"]:
         if pair["matched_by"] in {"context_ocr", "confidence"}:
             projected[pair["new_index"]] = {**projected[pair["new_index"]],
@@ -270,18 +281,18 @@ def compare_historical_viewports(checkpoint, baseline, current, *, old_boundary_
 
 def validated_projection_continuity(checkpoint, observations, *, old_projection,
         old_boundary_tokens, pre_frame_id, post_frame_id, diagnostics=None, deadline=None):
-    """Consume the selected mapping, with unchanged deterministic receipt tails.
+    """Consume one historical decision over the complete confirmed baseline.
 
-    A Worker baseline may additionally contain locally confirmed AI receipts.
-    Those appended rows must still pass the original exact comparator; HC may
-    not create receipt ownership or erase that tail.
+    Unconfirmed send candidates are deliberately outside this checkpoint. Any
+    such extra baseline rows still need their original deterministic gate.
     """
     tokens = boundary_tokens_for_observations(observations, committed_only=False)
     built = build_correspondence(checkpoint, observations, pre_frame_id=pre_frame_id,
         post_frame_id=post_frame_id, new_boundary_tokens=tokens, diagnostics=diagnostics, deadline=deadline)
     if not built:
         return None
-    authority = [e.get('business_projection') or {} for e in comparison_entries(checkpoint)]
+    authority = [e.get('business_projection') or {} for e in comparison_entries(
+        checkpoint_for_proof_version(checkpoint, built['proof']['version']))]
     def keys(sequence):
         return [tuple(row.get(k) for k in ('sender_role','message_type','media_state','normalized_content_signature'))
                 for row in sequence]
@@ -328,8 +339,11 @@ def _validate_confidence_proof_shape(proof):
         return type(value) is int and minimum <= value <= maximum
     def sha(value):
         return isinstance(value, str) and bool(re.fullmatch(r'[0-9a-f]{64}', value))
-    require(set(proof) == {'version', 'policy_id', 'policy_digest', 'checkpoint_digest',
-        'pre_frame_id', 'post_frame_id', 'pairs', 'candidate_count', 'best_score', 'runner_up_score', 'margin'})
+    fields = {'version', 'policy_id', 'policy_digest', 'checkpoint_digest',
+        'pre_frame_id', 'post_frame_id', 'pairs', 'candidate_count', 'best_score', 'runner_up_score', 'margin'}
+    require(set(proof) in (fields, fields | {'confirmed_sent_receipts'}))
+    if 'confirmed_sent_receipts' in proof:
+        validate_receipts(proof['confirmed_sent_receipts'])
     require(proof['policy_id'] == 'historical_text_identity_v2'
         and sha(proof['policy_digest']) and sha(proof['checkpoint_digest'])
         and identity(proof['pre_frame_id']) and identity(proof['post_frame_id'])
@@ -391,7 +405,10 @@ def _build_confidence_correspondence(checkpoint, observations, *, pre_frame_id,
     new = normalized_business_message_sequence(rows, message_viewport_bounds=None)
     report = diagnostics if diagnostics is not None else {}
     report.update(policy_digest=policy['policy_digest'], candidates=[], accepted=False)
-    if (not old or not new or len(old) > 200 or len(new) > 500
+    # The 200 server facts stay intact. Locally confirmed sends have not yet
+    # entered that window, and must not invalidate it merely by being added.
+    receipt_count = len(checkpoint.get('confirmed_sent_receipts') or [])
+    if (not old or not new or len(old) > 200 + receipt_count or len(new) > 500
             or any(not e.get('source_message_key') or not e.get('stable_id') for e in entries)
             or len({e['source_message_key'] for e in entries}) != len(entries)
             or any(not r.get('observation_id') or r.get('contract_errors') for r in rows)
@@ -511,6 +528,8 @@ def _build_confidence_correspondence(checkpoint, observations, *, pre_frame_id,
         'checkpoint_digest': checkpoint['checkpoint_digest'], 'pre_frame_id': pre_frame_id,
         'post_frame_id': post_frame_id, 'pairs': best['pairs'], 'candidate_count': len(candidates),
         'best_score': best['score'], 'runner_up_score': runner_up, 'margin': margin}
+    if checkpoint.get('confirmed_sent_receipts'):
+        proof['confirmed_sent_receipts'] = checkpoint['confirmed_sent_receipts']
     validate_proof_shape(proof)
     start, size = best['old_start'], best['overlap_size']
     continuity = {'relation': ('business_sequence_equal' if start == 0 and size == len(new)

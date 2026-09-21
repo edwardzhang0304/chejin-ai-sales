@@ -164,6 +164,9 @@ if os.environ.get('HC_DISABLE')=='1':
         value=value.replace(" def execute_voice_action(self,**kwargs):", " def execute_voice_action(self,**kwargs):\n  self.voice_execute_calls=getattr(self,'voice_execute_calls',0)+1")
         value=value.replace("'image_io_calls':image_io_calls", "'image_io_calls':image_io_calls,'voice_execute_calls':getattr(bridge,'voice_execute_calls',0)")
         value=value.replace("omniauto_vision.vision_configuration_status=lambda:{'ready':True,'config':{}}", "omniauto_vision.vision_configuration_status=lambda:{'ready':True,'config':{'customer_image_understanding':{'enabled':True}}}")
+    # A disabled automatic callback must be observed as zero tasks, without
+    # waiting out the production model timeout or generating a test reply.
+    value = value.replace('wait_for_brain=True', "wait_for_brain=not (mode=='suppress_async' and os.environ['HC_RUN']=='continued')")
     return value.replace("  frame=self._contractual_message_payload({'messages':copy.deepcopy(self.messages)})",
                          "  frame=self.get_messages(**{'display_name':'CJTEST01','rpa_session_key':''})").replace('C3TEST01', 'CJTEST01')
 
