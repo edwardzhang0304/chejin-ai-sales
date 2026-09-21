@@ -552,6 +552,18 @@
         "c2_contract_0_9_94_generated_schema"
       ],
       "status": "formal_candidate_schema_only"
+    },
+    {
+      "source_repository": "edwardzhang0304/omniauto",
+      "source_branch": "codex/gray-release-0.9.x-source",
+      "source_commit": "664652b39abe81cf2c7a8d9929d79a5cf9483609",
+      "scope": [
+        "historical_hc_send_confirmation_and_interruption",
+        "completed_voice_system_history_hc_alignment",
+        "frozen_voice_receipt_compatibility"
+      ],
+      "status": "source_integration_not_released",
+      "review_evidence": "/private/tmp/cj-message-rules-independent-20260921-8fs590/review.md"
     }
   ],
   "chejin_overlays": [
