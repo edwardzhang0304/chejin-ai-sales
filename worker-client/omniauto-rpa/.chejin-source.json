@@ -531,6 +531,18 @@
       "scope": [
         "c2_contract_0_9_93_generated_schema"
       ]
+    },
+    {
+      "source_repository": "edwardzhang0304/omniauto",
+      "source_branch": "codex/gray-release-0.9.x-source",
+      "source_commit": "40a899bd6672fd945398bacf98affc355c476bc5",
+      "scope": [
+        "same_frame_voice_icon_evidence",
+        "voice_numeric_transcript_shared_icon_proof",
+        "voice_proof_envelope_transport_and_binding"
+      ],
+      "status": "reviewed_source_integration_not_released",
+      "review_evidence": "/private/tmp/cj-voice-handoff-review-20260921-R7afYE/review.md"
     }
   ],
   "chejin_overlays": [

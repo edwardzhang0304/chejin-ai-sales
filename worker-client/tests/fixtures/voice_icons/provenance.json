@@ -1,0 +1,50 @@
+[
+  {
+    "file": "customer_9s.png",
+    "source": "codex-clipboard-71d778fc-411c-49e1-bbcb-7f3522f1e8d1.png",
+    "source_sha256": "0c28c4d818598a17668b438d678f3e50fe88b27502daaf3ecc60f184292f7673",
+    "crop": [
+      92,
+      0,
+      423,
+      100
+    ],
+    "method": "Original pixels cropped; no drawing, avatar or customer identifiers retained."
+  },
+  {
+    "file": "self_2s.png",
+    "source": "codex-clipboard-b18e9652-8bec-4da1-bb9e-7d281f3b4b51.png",
+    "source_sha256": "5f468cb01f7c2bf38fe4d71472e972d105cebecf3fbfdedca1a261a554ce343d",
+    "crop": [
+      36,
+      0,
+      239,
+      96
+    ],
+    "method": "Original pixels cropped; no drawing, avatar or customer identifiers retained."
+  },
+  {
+    "file": "text_15w.png",
+    "source": "send_guard_1789962102675.png",
+    "source_sha256": "7567ec537c9046ff6a8465ed9e9f494f06411687206523e9a24f729d76617614",
+    "crop": [
+      363,
+      446,
+      427,
+      491
+    ],
+    "method": "Original pixels cropped; no drawing, avatar or customer identifiers retained."
+  },
+  {
+    "file": "text_fuel.png",
+    "source": "send_guard_1789962102675.png",
+    "source_sha256": "7567ec537c9046ff6a8465ed9e9f494f06411687206523e9a24f729d76617614",
+    "crop": [
+      363,
+      502,
+      429,
+      548
+    ],
+    "method": "Original pixels cropped; no drawing, avatar or customer identifiers retained."
+  }
+]

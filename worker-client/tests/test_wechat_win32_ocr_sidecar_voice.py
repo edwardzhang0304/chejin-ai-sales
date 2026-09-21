@@ -11,6 +11,7 @@ from pathlib import Path
 from unittest.mock import Mock, patch
 
 from PIL import Image, ImageDraw
+from voice_icon_fixtures import draw_voice
 
 
 os.environ.setdefault("CHEJIN_WORKER_HOME", tempfile.mkdtemp(prefix="chejin-worker-voice-test-"))
@@ -161,6 +162,8 @@ class WechatWin32OcrVoiceSelectionTest(unittest.TestCase):
         transcript_delay_reads: int = 1,
         current_candidates: list[dict] | None = None,
         prepared_payload: dict | None = None,
+        preserve_parsed_message: bool = False,
+        execution_image: Image.Image | None = None,
     ) -> tuple[dict, Mock, Mock, str]:
         action_id = f"action-{candidate['observation_id']}"
         reserved_id = f"worker-{candidate['observation_id']}"
@@ -189,7 +192,7 @@ class WechatWin32OcrVoiceSelectionTest(unittest.TestCase):
         )
         anchor = dict(candidate["action_target"])
         final_message = dict(bound_message or {})
-        if final_message:
+        if final_message and not preserve_parsed_message:
             duration_text = str(
                 (anchor.get("item") or {}).get("voice_duration_text")
                 or (anchor.get("item") or {}).get("text")
@@ -218,7 +221,7 @@ class WechatWin32OcrVoiceSelectionTest(unittest.TestCase):
                     "quality_flags": quality_flags,
                 }
             )
-        image = Image.new("RGB", (965, 852), (247, 247, 247))
+        image = execution_image if execution_image is not None else Image.new("RGB", (965, 852), (247, 247, 247))
         evidence_read_limit = max(
             1,
             int(transcript_delay_reads) if final_message else 2,
@@ -349,7 +352,7 @@ class WechatWin32OcrVoiceSelectionTest(unittest.TestCase):
             ), patch.object(
                 sidecar,
                 "get_window_geometry",
-                return_value={"width": 965, "height": 852},
+                return_value={"width": image.width, "height": image.height},
             ), patch.object(
                 sidecar, "open_voice_transcribe_context_menu", menu
             ), patch.object(
@@ -1204,6 +1207,8 @@ class WechatWin32OcrVoiceSelectionTest(unittest.TestCase):
                 return {"role": "customer", "side": "left", "confidence": 0.99}
             return {"role": "", "side": "", "confidence": 0.0}
 
+        draw_voice(image, (454,160,650,210))
+        draw_voice(image, (454,446,650,494))
         with patch.object(sidecar, "message_row_avatar_role_details", side_effect=avatar_role):
             messages = sidecar.parse_messages_from_ocr(
                 items,
@@ -1540,6 +1545,7 @@ class WechatWin32OcrVoiceSelectionTest(unittest.TestCase):
         self.draw_avatar(draw, (900, 298, 946, 344))
         duration = ocr_item('2"', 790, 310, 842, 338)
 
+        draw_voice(image, (760,298,887,346), "self")
         messages = sidecar.parse_messages_from_ocr([duration], image.size, target="CJR8S5K3", screenshot=image)
 
         self.assertEqual(len(messages), 1)
@@ -1564,8 +1570,8 @@ class WechatWin32OcrVoiceSelectionTest(unittest.TestCase):
             target="CJR8S5K3",
             screenshot=image,
         )
-        self.assertEqual(raw_messages[0]["type"], "voice")
-        self.assertIn("untranscribed_voice_placeholder", raw_messages[0]["quality_flags"])
+        self.assertEqual(raw_messages[0]["type"], "text")
+        self.assertNotIn("untranscribed_voice_placeholder", raw_messages[0]["quality_flags"])
 
         messages = sidecar.parse_current_chat_frame_messages(
             [embedded_duration],
@@ -1612,6 +1618,7 @@ class WechatWin32OcrVoiceSelectionTest(unittest.TestCase):
             ocr_item(":22", 500, 355, 516, 363),
             ocr_item('4"', 812, 620, 862, 645),
         ]
+        draw_voice(image, (772,610,885,654), "self")
         messages = sidecar.parse_current_chat_frame_messages(
             items,
             image.size,
@@ -1637,6 +1644,7 @@ class WechatWin32OcrVoiceSelectionTest(unittest.TestCase):
         self.draw_avatar(draw, (900, 608, 946, 656))
         duration = ocr_item('4" (c', 812, 620, 862, 645)
 
+        draw_voice(image, (780,608,880,656), "self")
         messages = sidecar.parse_messages_from_ocr([duration], image.size, target="CJR8S5K3", screenshot=image)
         hint = sidecar.visible_untranscribed_voice_hint(
             image,
@@ -1689,6 +1697,7 @@ class WechatWin32OcrVoiceSelectionTest(unittest.TestCase):
         }
         items = [top_duration, top_button, self_duration, self_text, self_tail]
 
+        draw_voice(image, (458,140,650,186))
         observations = sidecar.build_unified_voice_observations_v3(
             image,
             items,
@@ -1727,6 +1736,7 @@ class WechatWin32OcrVoiceSelectionTest(unittest.TestCase):
             "click_bounds": [462, 287, 590, 340],
         }
 
+        draw_voice(image, (458,280,605,347))
         with (
             patch.object(sidecar, "find_visual_customer_voice_context_anchor_targets", return_value=[visual_target]),
             patch.object(sidecar, "find_visual_self_voice_context_anchor_targets", return_value=[]),
@@ -1765,6 +1775,8 @@ class WechatWin32OcrVoiceSelectionTest(unittest.TestCase):
 
         top_target = visual_target(180, 230)
         bottom_target = visual_target(420, 470)
+        draw_voice(image, (462,180,590,230))
+        draw_voice(image, (462,420,590,470))
         with (
             patch.object(sidecar, "find_visual_customer_voice_context_anchor_targets", return_value=[top_target, bottom_target]),
             patch.object(sidecar, "find_visual_self_voice_context_anchor_targets", return_value=[]),
@@ -1788,6 +1800,7 @@ class WechatWin32OcrVoiceSelectionTest(unittest.TestCase):
             ocr_item("来。", 457, 365, 487, 390),
         ]
 
+        draw_voice(image, (785,280,902,328), "self")
         messages = sidecar.parse_messages_from_ocr(items, image.size, target="CJR8S5K3", screenshot=image)
 
         self.assertEqual(len(messages), 1)
@@ -1804,6 +1817,7 @@ class WechatWin32OcrVoiceSelectionTest(unittest.TestCase):
         duration = ocr_item('6"', 470, 310, 530, 338)
         wide_transcript = ocr_item("好的，不着急，我身上还带了水果。", 470, 350, 900, 378)
 
+        draw_voice(image, (458,298,665,344))
         messages = sidecar.parse_messages_from_ocr(
             [duration, wide_transcript],
             image.size,
@@ -2815,6 +2829,7 @@ class WechatWin32OcrVoiceSelectionTest(unittest.TestCase):
             ocr_item("你中午回家吃饭不？", 681, 545, 868, 589),
         ]
 
+        draw_voice(image, (458,374,660,418))
         anchor = sidecar.find_voice_context_menu_anchor_target(image, items, image.size)
 
         self.assertIsNotNone(anchor)
@@ -2837,6 +2852,7 @@ class WechatWin32OcrVoiceSelectionTest(unittest.TestCase):
             ocr_item("你中午回家吃饭不？", 681, 545, 868, 589),
         ]
 
+        draw_voice(image, (458,374,660,418))
         self.assertTrue(
             sidecar.voice_duration_has_transcribed_text_below(
                 items[0],
@@ -2876,6 +2892,10 @@ class WechatWin32OcrVoiceSelectionTest(unittest.TestCase):
             ocr_item("现在已经雨停了，外面又出太阳了。", 485, 556, 758, 579),
         ]
 
+        draw_voice(image, (464,138,622,184))
+        draw_voice(image, (464,496,598,540))
+        self.draw_avatar(draw, (398,138,444,184))
+        self.draw_avatar(draw, (398,496,444,542))
         anchor = sidecar.find_visual_customer_voice_context_anchor_target(image, image.size, items)
 
         self.assertIsNotNone(anchor)
@@ -2931,6 +2951,10 @@ class WechatWin32OcrVoiceSelectionTest(unittest.TestCase):
             ocr_item("你中午回家吃饭不？", 700, 580, 870, 604),
         ]
 
+        draw_voice(image, (772,180,878,224), "self")
+        draw_voice(image, (772,520,878,564), "self")
+        self.draw_avatar(draw, (900,180,946,226))
+        self.draw_avatar(draw, (900,520,946,566))
         anchor = sidecar.find_visual_self_voice_context_anchor_target(image, image.size, items)
 
         self.assertIsNotNone(anchor)
@@ -2949,6 +2973,7 @@ class WechatWin32OcrVoiceSelectionTest(unittest.TestCase):
             "quality_flags": ["untranscribed_voice_placeholder"],
         }
 
+        draw_voice(image, (458,374,660,418))
         anchor = sidecar.find_voice_context_menu_anchor_target(image, [], image.size, parsed_messages=[message])
 
         self.assertIsNotNone(anchor)
@@ -3017,6 +3042,8 @@ class WechatWin32OcrVoiceSelectionTest(unittest.TestCase):
             "ocr_items": [ocr_item('4"', 494, 553, 528, 575)],
             "quality_flags": ["untranscribed_voice_placeholder"],
         }
+        draw_voice(image, (458,547,610,593))
+        draw_voice(image, (458,136,638,184))
         lower_anchor = sidecar.find_voice_context_menu_anchor_target(image, [], image.size, parsed_messages=[lower_before])
         self.assertIsNotNone(lower_anchor)
         excluded = sidecar.voice_context_anchor_exclusion_keys(lower_anchor, image.size)
@@ -3039,6 +3066,8 @@ class WechatWin32OcrVoiceSelectionTest(unittest.TestCase):
             "quality_flags": ["untranscribed_voice_placeholder"],
         }
 
+        draw.rectangle((458,547,611,594), fill=(247,247,247))
+        draw_voice(image, (458,489,610,535))
         anchor = sidecar.find_voice_context_menu_anchor_target(
             image,
             [],
@@ -3107,6 +3136,7 @@ class WechatWin32OcrVoiceSelectionTest(unittest.TestCase):
         draw.rounded_rectangle((772, 610, 885, 654), radius=8, fill=(140, 226, 146))
         self.draw_avatar(draw, (900, 608, 946, 656))
 
+        draw_voice(image, (772,610,885,654), "self")
         hint = sidecar.visible_untranscribed_voice_hint(
             image,
             [],
@@ -3150,6 +3180,7 @@ class WechatWin32OcrVoiceSelectionTest(unittest.TestCase):
         draw.rounded_rectangle((458, 374, 660, 418), radius=8, fill=(232, 232, 234))
         self.draw_avatar(draw, (398, 372, 444, 420))
 
+        draw_voice(image, (458,374,660,418))
         anchor = sidecar.find_voice_context_menu_anchor_target(image, [], image.size)
 
         self.assertIsNotNone(anchor)
@@ -3170,6 +3201,8 @@ class WechatWin32OcrVoiceSelectionTest(unittest.TestCase):
             ocr_item('2"', 804, 508, 848, 532),
         ]
 
+        draw_voice(image, (766,500,874,542), "self")
+        draw_voice(image, (772,630,878,672), "self")
         anchor = sidecar.find_voice_context_menu_anchor_target(image, items, image.size)
 
         self.assertIsNotNone(anchor)
@@ -3183,11 +3216,13 @@ class WechatWin32OcrVoiceSelectionTest(unittest.TestCase):
         draw.rounded_rectangle((772, 565, 878, 609), radius=8, fill=(140, 226, 146))
         draw.rectangle((900, 570, 919, 604), fill=(140, 226, 146))
 
+        draw_voice(image, (772,565,878,609), "self")
+        self.draw_avatar(draw, (900,563,946,611))
         anchor = sidecar.find_visual_self_voice_context_anchor_target(image, image.size, [])
 
         self.assertIsNotNone(anchor)
         self.assertEqual(anchor["source"], "visual_self_voice_bubble_context_menu_anchor")
-        self.assertEqual(anchor["item"]["right"], 919.0)
+        self.assertEqual(anchor["item"]["right"], 879.0)
         self.assertLessEqual(anchor["click_bounds"][2], 878)
         self.assertLess(anchor["click_bounds"][2], 900)
         self.assertGreaterEqual(anchor["click_bounds"][1], 570)

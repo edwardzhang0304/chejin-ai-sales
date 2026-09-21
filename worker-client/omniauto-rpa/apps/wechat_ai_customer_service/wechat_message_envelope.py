@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import re
+from copy import deepcopy
 from datetime import datetime
 from typing import Any
 
@@ -729,6 +730,12 @@ def summarize_ocr_items(value: Any) -> list[dict[str, Any]]:
                     summary[key] = round(float(item.get(key)), 4)
                 except (TypeError, ValueError):
                     summary[key] = item.get(key)
+        # Keep the parser's same-frame voice proof and transcript ownership.
+        # Consumers still validate row bounds; a new frame must rebuild proof
+        # from its pixels in annotate_duration_rows, never inherit this copy.
+        for key in ("_voice_visual_evidence", "_voice_transcript_region"):
+            if isinstance(item.get(key), dict):
+                summary[key] = deepcopy(item[key])
         items.append(summary)
     return items
 

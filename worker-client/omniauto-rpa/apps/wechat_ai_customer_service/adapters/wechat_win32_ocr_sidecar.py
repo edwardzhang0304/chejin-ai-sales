@@ -72,6 +72,7 @@ except Exception as exc:  # pragma: no cover - allows pure parser tests without 
 
     win32con = _Win32ConFallback()  # type: ignore[assignment]
 from PIL import Image, ImageDraw, ImageEnhance, ImageFont, ImageGrab, ImageStat
+from apps.wechat_ai_customer_service.adapters.wechat_win32_ocr import voice_icons
 
 from apps.wechat_ai_customer_service.adapters.add_friend_actions import (
     ACTION_COMPOSITE_INPUT,
@@ -4844,38 +4845,16 @@ def avatar_context_menu_text_like(text: str) -> bool:
 
 
 def voice_duration_text_like(text: str) -> bool:
-    compact = voice_transcribe_compact_text(text).replace("“", '"').replace("”", '"').replace("″", '"')
-    if not compact:
-        return False
-    if re.fullmatch(r"\d{1,3}\"", compact):
-        return True
-    if re.fullmatch(r"\d{1,3}[\"']?[\(\[（]?[A-Za-z]{1,2}", compact):
-        return True
-    if re.fullmatch(r"[^0-9A-Za-z\u4e00-\u9fff]{1,3}\d{1,3}[\"']?", compact):
-        return True
-    if re.fullmatch(r"\d{1,3}[\"']?[\(\[（]{1,2}", compact):
-        return True
-    if re.fullmatch(r"0\d{1,2}", compact):
-        return True
-    if re.fullmatch(r"[\)\]）>》!|lI]{1,2}\d{1,3}[\"']?", compact):
-        return True
-    return False
+    # Candidate syntax only. A match never proves that this is a voice.
+    return voice_icons.duration_token(text) is not None
 
 
 def voice_duration_item_like(item: dict[str, Any]) -> bool:
     if item.get("_voice_transcript_region"):
         return False
-    if item.get("_voice_duration_region"):
-        return True
-    text = str(item.get("text") or "")
-    if voice_duration_text_like(text):
-        return True
-    compact = voice_transcribe_compact_text(text)
-    if not re.fullmatch(r"\d{1,3}", compact):
-        return False
-    width = float(item.get("right") or 0) - float(item.get("left") or 0)
-    height = float(item.get("bottom") or 0) - float(item.get("top") or 0)
-    return 8.0 <= width <= 86.0 and 8.0 <= height <= 36.0
+    evidence = item.get("_voice_visual_evidence") or {}
+    return bool(evidence.get("state") == "confirmed"
+                and list(voice_icons.row_bounds(item)) in evidence.get("duration_bounds", []))
 
 
 def voice_transcribe_item_is_in_chat_surface(
@@ -5208,6 +5187,9 @@ def voice_anchor_duration_number(anchor: dict[str, Any] | None) -> str:
     if not isinstance(anchor, dict):
         return ""
     item = anchor.get("item") if isinstance(anchor.get("item"), dict) else {}
+    proof = item.get("_voice_visual_evidence")
+    if isinstance(proof, dict):
+        return str(proof["seconds"]) if proof.get("seconds") is not None else ""
     text = str(item.get("voice_duration_text") or item.get("text") or "")
     match = re.search(r"\d{1,3}", voice_transcribe_compact_text(text))
     return match.group(0) if match else ""
@@ -5217,6 +5199,10 @@ def message_voice_duration_number(message: dict[str, Any]) -> str:
     value = message.get("voice_duration")
     if isinstance(value, (int, float)) and value > 0:
         return str(int(value))
+    for item in message.get("ocr_items") or []:
+        proof = item.get("_voice_visual_evidence")
+        if isinstance(proof, dict) and proof.get("state") == "confirmed":
+            return str(proof["seconds"]) if proof.get("seconds") is not None else ""
     for key in ("voice_duration_text", "content", "content_raw_ocr"):
         text = str(message.get(key) or "")
         match = re.search(r"\d{1,3}", voice_transcribe_compact_text(text))
@@ -5880,6 +5866,60 @@ def customer_voice_bubble_pixel(red: int, green: int, blue: int) -> bool:
     return bool(210.0 <= avg <= 245.0 and spread <= 18)
 
 
+def _voice_rows_for_frame(image, rows, image_size, snapshot):
+    viewport = win32_ocr_layout.required_region(snapshot, "message_viewport_bounds")
+    owned = [{**row, "avatar_alignment": message_row_avatar_role_details(
+        image, list(voice_icons.row_bounds(row)), image_size)} for row in rows
+        if ocr_item_center_in_bounds(row, viewport)]
+    return voice_icons.annotate_duration_rows(owned, image, viewport)
+
+
+def _find_visual_voice_context_anchor_targets(
+    image, image_size, ocr_items, excluded, parsed_messages, *, role,
+):
+    if image is None:
+        return []
+    snapshot = layout_snapshot_for_image(image)
+    try:
+        viewport = win32_ocr_layout.required_region(snapshot, "message_viewport_bounds")
+    except win32_ocr_layout.LayoutSnapshotError:
+        return []
+    candidates = []
+    for bounds in voice_icons.bubble_surfaces(image, viewport):
+        left, top, right, bottom = bounds
+        proof = voice_icons.inspect_bubble(image, bounds, role, ocr_items)
+        if proof.get("state") != "confirmed":
+            continue
+        # A surface must belong to exactly one same-row avatar. The sound-wave
+        # direction then follows that role, never a guessed window coordinate.
+        alignment = message_row_avatar_role_details(image, list(bounds), image_size)
+        if alignment.get("ambiguous") or alignment.get("role") != role:
+            continue
+        component = dict(zip(("left", "top", "right", "bottom"), bounds))
+        if visual_component_rejected_by_non_voice_slot(component, parsed_messages):
+            continue
+        if visual_component_overlaps_transcribed_parser_voice(component, parsed_messages, image_size):
+            continue
+        if visual_voice_component_has_transcribed_layout_below(
+            component, ocr_items, image_size, role=role, layout_snapshot=snapshot,
+        ):
+            continue
+        pad = max(2, round((bottom-top)*.18))
+        target = voice_transcribe_click_target_from_bounds(
+            source=f"visual_{role}_voice_bubble_context_menu_anchor",
+            label="Same-frame sound-wave icon confirmed voice bubble",
+            bounds=[left+pad, top+pad, right-1-pad, bottom-1-pad],
+            item={"text": "", "left": left, "top": top, "right": right, "bottom": bottom,
+                  "center_x": (left+right)/2, "center_y": (top+bottom)/2,
+                  "confidence": proof["score"], "_voice_visual_evidence": proof,
+                  "avatar_alignment": alignment},
+        )
+        mark_voice_context_anchor_keys(target, image_size)
+        if not voice_context_anchor_is_excluded(target, image_size, excluded):
+            candidates.append(target)
+    return sorted(candidates, key=lambda target: target["item"]["center_y"])
+
+
 def find_visual_customer_voice_context_anchor_targets(
     image: Image.Image,
     image_size: tuple[int, int],
@@ -5887,114 +5927,10 @@ def find_visual_customer_voice_context_anchor_targets(
     excluded_anchor_keys: set[str] | None = None,
     parsed_messages: list[dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
-    if image is None:
-        return []
-    try:
-        rgb = image.convert("RGB")
-    except Exception:
-        return []
-    width, height = image_size
-    snapshot = layout_snapshot_for_image(image)
-    try:
-        viewport = win32_ocr_layout.required_region(snapshot, "message_viewport_bounds")
-    except win32_ocr_layout.LayoutSnapshotError:
-        return []
-    top_limit, bottom_limit = viewport[1], viewport[3]
-    left_limit = viewport[0]
-    right_limit = viewport[2]
-    row_runs: list[tuple[int, int, int, int]] = []
-    for y in range(max(0, top_limit), min(height, bottom_limit)):
-        xs: list[int] = []
-        for x in range(left_limit, max(left_limit, right_limit)):
-            red, green, blue = rgb.getpixel((x, y))
-            if customer_voice_bubble_pixel(red, green, blue):
-                xs.append(x)
-        if xs:
-            row_runs.append((y, min(xs), max(xs), len(xs)))
-    if not row_runs:
-        return []
-
-    components: list[dict[str, Any]] = []
-    current: dict[str, Any] | None = None
-    for y, row_left, row_right, count in row_runs:
-        if current is None or y > int(current["bottom"]) + 2:
-            if current is not None:
-                components.append(current)
-            current = {"top": y, "bottom": y, "left": row_left, "right": row_right, "gray_count": count}
-            continue
-        current["bottom"] = y
-        current["left"] = min(int(current["left"]), row_left)
-        current["right"] = max(int(current["right"]), row_right)
-        current["gray_count"] = int(current["gray_count"]) + count
-    if current is not None:
-        components.append(current)
-
-    candidates: list[dict[str, Any]] = []
-    excluded = excluded_anchor_keys or set()
-    for component in components:
-        left = int(component["left"])
-        right = int(component["right"])
-        top = int(component["top"])
-        bottom = int(component["bottom"])
-        bubble_width = right - left + 1
-        bubble_height = bottom - top + 1
-        center_x = (left + right) / 2.0
-        center_y = (top + bottom) / 2.0
-        gray_count = int(component.get("gray_count") or 0)
-        if bubble_width < 92 or bubble_width > 260:
-            continue
-        if bubble_height < 28 or bubble_height > 72:
-            continue
-        chat_width = max(1, viewport[2] - viewport[0])
-        if left < viewport[0] or left > viewport[0] + int(chat_width * 0.42):
-            continue
-        if center_x > viewport[0] + int(chat_width * 0.62):
-            continue
-        if gray_count < 850:
-            continue
-        if visual_component_rejected_by_non_voice_slot(component, parsed_messages):
-            continue
-        if visual_component_overlaps_transcribed_parser_voice(component, parsed_messages, image_size):
-            continue
-        if visual_customer_voice_component_overlaps_text(
-            component, ocr_items or [], image_size, layout_snapshot=snapshot
-        ):
-            continue
-        if visual_voice_component_has_transcribed_layout_below(
-            component, ocr_items or [], image_size, role="customer", layout_snapshot=snapshot
-        ):
-            continue
-        safe_left = max(viewport[0], left + 8)
-        safe_right = min(viewport[2], right - 8)
-        safe_top = max(top_limit, top + 5)
-        safe_bottom = min(bottom_limit, bottom - 5)
-        if safe_right <= safe_left:
-            safe_right = min(viewport[2], safe_left + 44)
-        if safe_bottom <= safe_top:
-            safe_bottom = min(bottom_limit, safe_top + 20)
-        bounds = [safe_left, safe_top, safe_right, safe_bottom]
-        target = voice_transcribe_click_target_from_bounds(
-            source="visual_customer_voice_bubble_context_menu_anchor",
-            label="Visually detected left-side WeChat customer voice bubble context-menu anchor",
-            bounds=bounds,
-            item={
-                "text": "",
-                "left": float(left),
-                "top": float(top),
-                "right": float(right),
-                "bottom": float(bottom),
-                "center_x": center_x,
-                "center_y": center_y,
-                "confidence": 0.0,
-                "visual_gray_count": gray_count,
-                "visual_bubble_size": [bubble_width, bubble_height],
-            },
-        )
-        mark_voice_context_anchor_keys(target, image_size)
-        if voice_context_anchor_is_excluded(target, image_size, excluded):
-            continue
-        candidates.append(target)
-    return sorted(candidates, key=lambda target: float(((target.get("item") or {}).get("center_y") or 0)))
+    return _find_visual_voice_context_anchor_targets(
+        image, image_size, ocr_items or [], excluded_anchor_keys or set(),
+        parsed_messages or [], role="customer",
+    )
 
 
 def find_visual_customer_voice_context_anchor_target(
@@ -6111,113 +6047,10 @@ def find_visual_self_voice_context_anchor_targets(
     excluded_anchor_keys: set[str] | None = None,
     parsed_messages: list[dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
-    if image is None:
-        return []
-    try:
-        rgb = image.convert("RGB")
-    except Exception:
-        return []
-    width, height = image_size
-    snapshot = layout_snapshot_for_image(image)
-    try:
-        viewport = win32_ocr_layout.required_region(snapshot, "message_viewport_bounds")
-    except win32_ocr_layout.LayoutSnapshotError:
-        return []
-    top_limit, bottom_limit = viewport[1], viewport[3]
-    chat_width = max(1, viewport[2] - viewport[0])
-    left_limit = viewport[0] + int(chat_width * 0.48)
-    right_limit = viewport[2]
-    row_runs: list[tuple[int, int, int, int]] = []
-    for y in range(max(0, top_limit), min(height, bottom_limit)):
-        xs: list[int] = []
-        for x in range(left_limit, min(width, right_limit)):
-            red, green, blue = rgb.getpixel((x, y))
-            if green_voice_bubble_pixel(red, green, blue):
-                xs.append(x)
-        if not xs:
-            continue
-        row_runs.append((y, min(xs), max(xs), len(xs)))
-    if not row_runs:
-        return []
-
-    components: list[dict[str, Any]] = []
-    current: dict[str, Any] | None = None
-    for y, row_left, row_right, count in row_runs:
-        if current is None or y > int(current["bottom"]) + 2:
-            if current is not None:
-                components.append(current)
-            current = {"top": y, "bottom": y, "left": row_left, "right": row_right, "green_count": count}
-            continue
-        current["bottom"] = y
-        current["left"] = min(int(current["left"]), row_left)
-        current["right"] = max(int(current["right"]), row_right)
-        current["green_count"] = int(current["green_count"]) + count
-    if current is not None:
-        components.append(current)
-
-    candidates: list[dict[str, Any]] = []
-    excluded = excluded_anchor_keys or set()
-    for component in components:
-        left = int(component["left"])
-        right = int(component["right"])
-        top = int(component["top"])
-        bottom = int(component["bottom"])
-        bubble_width = right - left + 1
-        bubble_height = bottom - top + 1
-        center_x = (left + right) / 2.0
-        center_y = (top + bottom) / 2.0
-        green_count = int(component.get("green_count") or 0)
-        if bubble_width < 42 or bubble_width > 220:
-            continue
-        if bubble_height < 22 or bubble_height > 76:
-            continue
-        if center_x < viewport[0] + int(chat_width * 0.52) or right < viewport[0] + int(chat_width * 0.60):
-            continue
-        if green_count < 220:
-            continue
-        if visual_component_rejected_by_non_voice_slot(component, parsed_messages):
-            continue
-        if visual_component_overlaps_transcribed_parser_voice(component, parsed_messages, image_size):
-            continue
-        if visual_self_voice_component_overlaps_text(
-            component, ocr_items or [], image_size, layout_snapshot=snapshot
-        ):
-            continue
-        if visual_voice_component_has_transcribed_layout_below(
-            component, ocr_items or [], image_size, role="self", layout_snapshot=snapshot
-        ):
-            continue
-        safe_left = max(viewport[0], left + 8)
-        safe_right = min(viewport[2], left + min(110, max(44, int(bubble_width * 0.72))))
-        safe_top = max(top_limit, top + 5)
-        safe_bottom = min(bottom_limit, bottom - 5)
-        if safe_right <= safe_left:
-            safe_right = min(viewport[2], safe_left + 44)
-        if safe_bottom <= safe_top:
-            safe_bottom = min(bottom_limit, safe_top + 20)
-        bounds = [safe_left, safe_top, safe_right, safe_bottom]
-        target = voice_transcribe_click_target_from_bounds(
-            source="visual_self_voice_bubble_context_menu_anchor",
-            label="Visually detected right-side WeChat voice bubble context-menu anchor",
-            bounds=bounds,
-            item={
-                "text": "",
-                "left": float(left),
-                "top": float(top),
-                "right": float(right),
-                "bottom": float(bottom),
-                "center_x": center_x,
-                "center_y": center_y,
-                "confidence": 0.0,
-                "visual_green_count": green_count,
-                "visual_bubble_size": [bubble_width, bubble_height],
-            },
-        )
-        mark_voice_context_anchor_keys(target, image_size)
-        if voice_context_anchor_is_excluded(target, image_size, excluded):
-            continue
-        candidates.append(target)
-    return sorted(candidates, key=lambda target: float(((target.get("item") or {}).get("center_y") or 0)))
+    return _find_visual_voice_context_anchor_targets(
+        image, image_size, ocr_items or [], excluded_anchor_keys or set(),
+        parsed_messages or [], role="self",
+    )
 
 
 def find_visual_self_voice_context_anchor_target(
@@ -6399,6 +6232,22 @@ def build_unified_voice_observations_v3(
         for item in ocr_items
         if isinstance(item, dict) and not evidence_overlaps_image_slot(item, messages)
     ]
+    voice_ocr_items = _voice_rows_for_frame(image, voice_ocr_items, image_size, layout_snapshot)
+    voice_surfaces = voice_icons.bubble_surfaces(image, layout_snapshot["message_viewport_bounds"])
+    proof_cache: dict[tuple, dict[str, Any]] = {}
+
+    def current_icon_proof(target):
+        item = target.get("item") or {}
+        role = (target.get("avatar_alignment") or {}).get("role")
+        boxes = [box for box in voice_surfaces if voice_icons.contains(box, voice_icons.row_bounds(item))]
+        if len(boxes) != 1 or role not in {"self", "customer"}:
+            return None
+        key = (boxes[0], role)
+        if key not in proof_cache:
+            proof_cache[key] = voice_icons.inspect_bubble(image, boxes[0], role, voice_ocr_items)
+        proof = proof_cache[key]
+        return proof if proof.get("state") == "confirmed" else None
+
     excluded = excluded_anchor_keys or set()
     parser_targets = {
         str((target.get("item") or {}).get("message_id") or ""): normalize_voice_evidence_target(image, target, image_size)
@@ -6424,6 +6273,12 @@ def build_unified_voice_observations_v3(
         message_role = normalized_voice_sender_role(message.get("sender_role") or message.get("sender"))
         if isinstance(target, dict) and target_avatar_role != message_role:
             target = None
+        if isinstance(target, dict):
+            icon_proof = current_icon_proof(target)
+            if icon_proof is None:
+                target = None
+            else:
+                target["item"]["_voice_visual_evidence"] = icon_proof
         public_source_message = {
             key: value
             for key, value in message.items()
@@ -6467,8 +6322,13 @@ def build_unified_voice_observations_v3(
         actual_role = avatar_role
         if expected_role and actual_role and expected_role != actual_role:
             return
+        icon_proof = current_icon_proof(normalized)
+        if icon_proof is None:
+            return
+        normalized["item"]["_voice_visual_evidence"] = icon_proof
         rect = voice_context_anchor_rect_bounds(normalized)
         item = normalized.get("item") if isinstance(normalized.get("item"), dict) else {}
+        duration = voice_anchor_duration_number(normalized)
         handled, matched = _merge_same_frame_voice_hint(
             observations,
             {
@@ -6488,7 +6348,7 @@ def build_unified_voice_observations_v3(
                 ),
                 "bubble_rect": rect,
                 "voice_duration": voice_anchor_duration_number(normalized),
-                "voice_duration_text": item.get("text"),
+                "voice_duration_text": f'{duration}"' if duration else "",
                 "voice_state": inferred_state,
                 "evidence_quality_flag": source,
             },
@@ -6513,8 +6373,8 @@ def build_unified_voice_observations_v3(
                 "sender_role": normalized_voice_sender_role(actual_role),
                 "sender_role_source": "same_row_avatar" if actual_role in {"self", "customer"} else "unknown",
                 "bubble_rect": {"left": rect[0], "top": rect[1], "right": rect[2], "bottom": rect[3]},
-                "voice_duration": None,
-                "voice_duration_text": str(item.get("text") or ""),
+                "voice_duration": int(duration) if duration else None,
+                "voice_duration_text": f'{duration}"' if duration else "",
                 "source_message_id": "",
                 "action_target": normalized if inferred_state == "untranscribed" else None,
                 "visible_button_target": None,
@@ -7185,6 +7045,10 @@ def build_message_observations_v3(
             "quality_flags": quality_flags,
             "source_message": source_message,
         }
+        if "voice_icon_unconfirmed" in quality_flags:
+            observation["content_raw"] = str(message.get("content_raw_ocr") or "")
+            observation["content_clean"] = ""
+            source_message.update(content="", content_clean="")
         if row_kind in {"voice_bubble", "voice_transcript"}:
             observation["anchor_aliases"] = sorted(
                 _voice_observation_frame_aliases(observation)
@@ -7239,6 +7103,8 @@ def build_message_observations_v3(
                     "fallback_observations": fallback_observations,
                 }
         contract_errors = validate_message_observation_v3(observation)
+        if "voice_icon_unconfirmed" in quality_flags:
+            contract_errors.append("OBSERVATION_VOICE_ICON_UNCONFIRMED")
         if contract_errors:
             observation["contract_errors"] = contract_errors
         observations.append(observation)
@@ -8662,6 +8528,12 @@ def message_group_starts_with_voice_duration(group: list[dict[str, Any]]) -> boo
     gap = second_top - first_bottom
     if gap < 4 or gap > 92:
         return False
+    proof = first.get("_voice_visual_evidence") or {}
+    bounds = proof.get("bubble_bounds")
+    if bounds and proof.get("role") in {"self", "customer"}:
+        if proof["role"] == "self":
+            return abs(float(second.get("right") or 0) - bounds[2]) <= 48.0
+        return abs(float(second.get("left") or 0) - bounds[0]) <= 48.0
     first_left = float(first.get("left") or 0)
     second_left = float(second.get("left") or 0)
     return abs(first_left - second_left) <= 48.0
@@ -8669,9 +8541,6 @@ def message_group_starts_with_voice_duration(group: list[dict[str, Any]]) -> boo
 
 def strip_voice_duration_prefix_from_message_content(content: str, group: list[dict[str, Any]]) -> tuple[str, bool]:
     if not message_group_starts_with_voice_duration(group):
-        compact_lines = [line.strip() for line in str(content or "").splitlines() if line.strip()]
-        if len(compact_lines) >= 2 and voice_duration_text_like(compact_lines[0]):
-            return "\n".join(compact_lines[1:]).strip(), True
         return content, False
     lines = [line.strip() for line in str(content or "").splitlines() if line.strip()]
     if len(lines) < 2:
@@ -8683,7 +8552,8 @@ def message_group_voice_duration_text(group: list[dict[str, Any]]) -> str:
     for item in group or []:
         text = normalize_ocr_text(item.get("text"))
         if voice_duration_item_like(item):
-            return text
+            seconds = (item.get("_voice_visual_evidence") or {}).get("seconds")
+            return f'{seconds}"' if seconds is not None else ""
     return ""
 
 
@@ -15562,7 +15432,14 @@ def write_messages_frame_review(
                         "reason_detail": item.get("reason_detail"),
                     }
                     for item in observations
-                ]
+                ],
+                "voice_icon_evidence": [
+                    {"message_id": message.get("id"), "evidence": proof}
+                    for message in payload.get("messages") or []
+                    for proof in ([message["_voice_visual_evidence"]] if message.get("_voice_visual_evidence")
+                                  else [row.get("_voice_visual_evidence") for row in message.get("ocr_items") or []])
+                    if proof
+                ],
             },
         ),
     ]
@@ -20545,6 +20422,8 @@ def parse_messages_from_ocr(
             )
         ]
 
+    rows = voice_icons.annotate_duration_rows(rows, screenshot, message_bounds)
+    rows = [row for row in rows if not row.get("_voice_icon_region")]
     if screenshot is not None and any(
         re.fullmatch(r"\d{1,3}[\"“”″']?", voice_transcribe_compact_text(str(row.get("text") or "")))
         for row in rows
@@ -20554,7 +20433,7 @@ def parse_messages_from_ocr(
             rows[index] = {**rows[index], "_voice_transcript_region": region}
             for parent_index, parent in enumerate(rows):
                 if [float(parent.get(key) or 0) for key in ("left", "top", "right", "bottom")] == region["parent"]:
-                    rows[parent_index] = {**parent, "_voice_duration_region": True}
+                    rows[parent_index] = {**parent, "_voice_visual_evidence": region["voice_evidence"]}
 
     grouped: list[list[dict[str, Any]]] = []
     normalized_conversation_type = infer_conversation_type(target)
@@ -20718,6 +20597,8 @@ def parse_messages_from_ocr(
             "bottom": int(max(float(item.get("bottom") or 0) for item in group)),
         }
         quality_flags: list[str] = []
+        if any((item.get("_voice_visual_evidence") or {}).get("state") == "uncertain" for item in group):
+            quality_flags.append("voice_icon_unconfirmed")
         content, voice_duration_prefix_removed = strip_voice_duration_prefix_from_message_content(content, group)
         if is_untranscribed_voice:
             content = f"[语音] {voice_duration_text or ''}".strip()
@@ -20779,6 +20660,14 @@ def parse_messages_from_ocr(
             "quality_flags": quality_flags,
             "avatar_alignment": avatar_alignment,
         }
+        if "voice_icon_unconfirmed" in quality_flags:
+            # Keep the slot and raw OCR for diagnostics. Do not silently pass
+            # an uncertain duration to AI as ordinary customer text.
+            record["type"] = "unknown"
+            record["_voice_visual_evidence"] = next(
+                item["_voice_visual_evidence"] for item in group
+                if (item.get("_voice_visual_evidence") or {}).get("state") == "uncertain"
+            )
         if is_untranscribed_voice or is_voice_transcript:
             record["voice_duration_text"] = voice_duration_text
             voice_seconds = voice_duration_seconds_from_text(voice_duration_text)
@@ -20811,12 +20700,49 @@ def parse_current_chat_frame_messages(
         target=target,
         screenshot=screenshot,
     )
-    return merge_structural_image_messages(
+    # A low-score icon with no OCR must not disappear from the message list.
+    # Preserve an unknown slot and let the existing observation gate block it;
+    # there is no click, extra capture or unbounded OCR retry here.
+    if screenshot is not None:
+        snapshot = layout_snapshot_for_image(screenshot)
+        viewport = win32_ocr_layout.required_region(snapshot, "message_viewport_bounds")
+        for bounds in voice_icons.bubble_surfaces(screenshot, viewport):
+            alignment = frame_avatars.role_details(screenshot, snapshot, list(bounds))
+            role = alignment.get("role")
+            if alignment.get("ambiguous") or role not in {"customer", "self"}:
+                continue
+            proof = voice_icons.inspect_bubble(screenshot, bounds, role, ocr_items)
+            if proof.get("state") != "uncertain":
+                continue
+            if any(voice_icons.contains(bounds, message_rect_bounds(message) or [0, 0, 0, 0])
+                   for message in parsed_messages):
+                continue
+            parsed_messages.append({
+                "id": "voice-unconfirmed:" + hashlib.sha1(f"{target}|{bounds}|{role}".encode()).hexdigest()[:16],
+                "type": "unknown", "sender_role": role, "content": "[消息类型待确认]",
+                "content_raw_ocr": "", "bubble_rect": list(bounds), "avatar_alignment": alignment,
+                "quality_flags": ["voice_icon_unconfirmed"], "_voice_visual_evidence": proof,
+            })
+        parsed_messages.sort(key=lambda message: (message_rect_bounds(message) or [0, 0, 0, 0])[1])
+    merged = merge_structural_image_messages(
         screenshot,
         ocr_items,
         parsed_messages,
         target=target,
     )
+    for uncertain in parsed_messages:
+        if "voice_icon_unconfirmed" not in (uncertain.get("quality_flags") or []):
+            continue
+        bounds = (uncertain.get("_voice_visual_evidence") or {}).get("bubble_bounds")
+        if not bounds:
+            continue
+        # The image fallback cannot turn an explicitly undecidable voice slot
+        # into an actionable image or erase it from the unified sequence.
+        merged = [message for message in merged if not (
+            voice_icons.contains(bounds, message_rect_bounds(message) or [0, 0, 0, 0])
+            or voice_icons.contains(message_rect_bounds(message) or [0, 0, 0, 0], bounds))]
+        merged.append(uncertain)
+    return sorted(merged, key=lambda message: (message_rect_bounds(message) or [0, 0, 0, 0])[1])
 
 
 def classify_message_side(item: dict[str, Any], *, width: int) -> str:

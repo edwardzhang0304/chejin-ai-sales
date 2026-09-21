@@ -4,6 +4,7 @@ Coordinates reproduce the engineer 11 pixel probe; text is synthetic. These
 focused checks complement, rather than replace, the native OCR/HTTP chain.
 """
 from copy import deepcopy
+from voice_icon_fixtures import classified_duration
 
 import pytest
 from apps.wechat_ai_customer_service.adapters import wechat_win32_ocr_sidecar as sidecar
@@ -22,6 +23,7 @@ def case(scale=1.0, role='customer'):
         'quality_flags': ['voice_duration_prefix_removed'], 'bubble_rect': rect(379,600,534,663),
         'ocr_items': [{'text': '5"', **rect(493,600,506,614)}, {'text': '新的预算要求', **rect(379,646,534,663)}],
         'avatar_alignment': {'role': role, role: {'present': True}}}
+    message['ocr_items'][0] = classified_duration(message['ocr_items'][0])
     return anchor, message
 
 
