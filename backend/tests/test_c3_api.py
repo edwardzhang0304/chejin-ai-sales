@@ -572,7 +572,10 @@ def _ingest_with_role(
         headers=_worker_headers(worker),
     )
     assert response.status_code == 200, response.text
-    result = response.json()["data"]["results"][0]
+    matching = [item for item in response.json()["data"]["results"]
+                if item.get("source_message_key") == dedupe_key]
+    assert len(matching) == 1, response.text
+    result = matching[0]
     assert result["ingest_result"] == "ingested"
     assert "ingest_status" not in result
     return result["message_event_id"]

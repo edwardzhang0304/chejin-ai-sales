@@ -89,7 +89,7 @@ from .pre_send_checkpoint import (
 from .models import Binding, ReplySendClaim, RpaResult, RpaStep, Task, WechatReadTarget, WorkerProfile
 from .rpa_bridge import RpaBridge
 from .text_recheck import differing_text_observation_ids
-from .historical_alignment import checkpoint_for_target, projected_frame, bind_final_frame_correspondence, save_match_review
+from .historical_alignment import checkpoint_for_target, reconcile_viewports, bind_final_frame_correspondence, save_match_review
 from .storage import (
     archive_legacy_media_flow_records,
     append_log,
@@ -997,6 +997,7 @@ def _payload_with_confirmed_text_candidate_receipts(
     baseline_payload: dict[str, Any],
     refreshed_payload: dict[str, Any],
     receipts: list[dict[str, Any]],
+    historical_checkpoint: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Apply read-run-local text receipts through the sole continuity rule.
 
@@ -1152,6 +1153,8 @@ def _payload_with_confirmed_text_candidate_receipts(
             old_boundary_tokens=old_tokens,
             new_boundary_tokens=new_tokens,
         )
+        continuity = reconcile_viewports(historical_checkpoint, baseline_payload.get('observations') or [],
+            built, continuity, old_boundary_tokens=old_tokens)
         if str(continuity.get("relation") or "") in {
             "business_sequence_equal",
             "unique_tail_append",
@@ -1958,6 +1961,7 @@ def _image_flow_action_slot_continuity(
     expanded_observations: list[Any] | None = None,
     context_expansion_used: bool = False,
     checkpoint_boundary_tokens: dict[int, set[str]] | None = None,
+    historical_checkpoint: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Apply the sole Worker-owned post-image continuity decision.
 
@@ -2046,6 +2050,9 @@ def _image_flow_action_slot_continuity(
                 else None
             ),
         )
+    if invariant_ok:
+        decision = reconcile_viewports(historical_checkpoint, pre_payload.get('observations') or [],
+            post_observations, decision, old_boundary_tokens=pre_boundary_tokens)
     relation = str(decision.get("relation") or "")
     ok = relation in {
         "business_sequence_equal",
@@ -2090,6 +2097,7 @@ def _image_action_frame_to_reread_continuity(
     expanded_observations: list[Any] | None = None,
     context_expansion_used: bool = False,
     checkpoint_boundary_tokens: dict[int, set[str]] | None = None,
+    historical_checkpoint: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Map the actual clicked image row into the mandatory full reread.
 
@@ -2135,6 +2143,8 @@ def _image_action_frame_to_reread_continuity(
             else None
         ),
     )
+    decision = reconcile_viewports(historical_checkpoint, action_frame_observations,
+        post_observations, decision, old_boundary_tokens=action_boundary_tokens)
     relation = str(decision.get("relation") or "")
     return {
         **decision,
@@ -16767,6 +16777,7 @@ class TaskRunner:
         action_frame_receipt_application = (
             _payload_with_confirmed_text_candidate_receipts(
                 baseline_payload=pre_payload,
+                historical_checkpoint=checkpoint_for_target(target),
                 refreshed_payload={
                     "frame_id": str(
                         result_transaction.get(
@@ -16862,6 +16873,7 @@ class TaskRunner:
             if action_frame_receipt_error is not None
             else _image_flow_action_slot_continuity(
                 pre_payload=pre_payload,
+                historical_checkpoint=checkpoint_for_target(target),
                 post_observations=action_frame_observations,
                 image_flow_action_slot=slot,
                 checkpoint_boundary_tokens=checkpoint_boundary_tokens,
@@ -16939,6 +16951,7 @@ class TaskRunner:
                     action_result_raw_indexes[0]
                 ] = action_result_observation
                 continuity = _image_action_frame_to_reread_continuity(
+                    historical_checkpoint=checkpoint_for_target(target),
                     action_frame_observations=(
                         action_frame_identity_observations
                     ),
@@ -16988,6 +17001,7 @@ class TaskRunner:
                     expansion_payload.get("observations") or []
                 )
                 continuity = _image_action_frame_to_reread_continuity(
+                    historical_checkpoint=checkpoint_for_target(target),
                     action_frame_observations=(
                         action_frame_identity_observations
                     ),
@@ -19861,6 +19875,18 @@ class TaskRunner:
                     )
                 ),
             )
+            # Preparation can capture a fresh frame too. Recheck old text
+            # against the same authoritative checkpoint before choosing the
+            # continuity branch; new media still needs its action proof.
+            continuity = reconcile_viewports(
+                checkpoint_for_target(target),
+                before_observations,
+                after_observations,
+                continuity,
+                old_boundary_tokens=_business_boundary_tokens_for_payload(
+                    before_payload, committed_only=True,
+                ),
+            )
             if (
                 continuity.get("relation")
                 == "continuity_context_expansion_required"
@@ -20990,6 +21016,12 @@ class TaskRunner:
                     )
                 ),
             )
+            # A completed voice action can re-OCR old ordinary text. Reuse
+            # its historical decision; the actual voice result mapping and
+            # action receipt are still checked independently below.
+            continuity = reconcile_viewports(checkpoint_for_target(target), expected_observations,
+                post_observations, continuity,
+                old_boundary_tokens=_business_boundary_tokens_for_payload(continuity_payload, committed_only=True))
             authoritative_post_observations = list(post_observations)
             authoritative_payload = dict(executed)
             if (
@@ -21051,6 +21083,13 @@ class TaskRunner:
                                 expanded_observations,
                                 committed_only=False,
                             )
+                        ),
+                    )
+                    continuity = reconcile_viewports(
+                        checkpoint_for_target(target), expected_observations,
+                        authoritative_post_observations, continuity,
+                        old_boundary_tokens=_business_boundary_tokens_for_payload(
+                            continuity_payload, committed_only=True,
                         ),
                     )
                 else:
@@ -21370,6 +21409,7 @@ class TaskRunner:
             receipt_application = (
                 _payload_with_confirmed_text_candidate_receipts(
                     baseline_payload=current_payload,
+                    historical_checkpoint=checkpoint_for_target(target),
                     refreshed_payload=refreshed,
                     receipts=(
                         flow_outcomes.confirmed_text_candidate_receipts()
@@ -21500,6 +21540,15 @@ class TaskRunner:
                         )
                     ),
                 )
+                continuity = reconcile_viewports(
+                    checkpoint_for_target(target),
+                    list(current_payload.get("observations") or []),
+                    raw_refreshed_observations,
+                    continuity,
+                    old_boundary_tokens=_business_boundary_tokens_for_payload(
+                        current_payload, committed_only=True,
+                    ),
+                )
                 if continuity.get("relation") not in {
                     "business_sequence_equal", "unique_tail_append", "unique_viewport_slide_with_tail_append",
                 }:
@@ -21511,6 +21560,15 @@ class TaskRunner:
                             _business_projection_for_payload(current_payload), _business_projection_for_payload(candidate),
                             old_boundary_tokens=_business_boundary_tokens_for_payload(current_payload, committed_only=True),
                             new_boundary_tokens=_business_boundary_tokens_for_payload(candidate, committed_only=False),
+                        )
+                        result = reconcile_viewports(
+                            checkpoint_for_target(target),
+                            list(current_payload.get("observations") or []),
+                            list(candidate.get("observations") or []),
+                            result,
+                            old_boundary_tokens=_business_boundary_tokens_for_payload(
+                                current_payload, committed_only=True,
+                            ),
                         )
                         return {**candidate, "business_continuity_evidence": result}, result
 
@@ -21575,9 +21633,9 @@ class TaskRunner:
                                     ),
                                 )
                             ),
-                            expanded_context_boundary_tokens=(
-                                _business_boundary_tokens_for_payload(
-                                    refreshed,
+                        expanded_context_boundary_tokens=(
+                            _business_boundary_tokens_for_payload(
+                                refreshed,
                                     list(
                                         refreshed.get(
                                             "continuity_expanded_observations"
@@ -21586,6 +21644,14 @@ class TaskRunner:
                                     ),
                                     committed_only=False,
                                 )
+                            ),
+                        )
+                        continuity = reconcile_viewports(
+                            checkpoint_for_target(target),
+                            list(current_payload.get("observations") or []),
+                            raw_refreshed_observations, continuity,
+                            old_boundary_tokens=_business_boundary_tokens_for_payload(
+                                current_payload, committed_only=True,
                             ),
                         )
                     else:

@@ -27,12 +27,15 @@ class HCTransport:
     def __init__(self, http):
         self.http,self.enabled,self.tamper,self.last = http,False,None,None
         self.request = None
+        self.seed_messages = {}
     def get(self,*a,**k):return self.http.get(*a,**k)
     def post(self,path,**kwargs):
         if path.endswith('/wechat/messages/ingest'):
             value = deepcopy(kwargs['json'])
             alignment = value['evidence']['sequence_alignment_evidence']
             rows = value['evidence']['observations']
+            if not self.enabled:
+                self.seed_messages.update({m['source_message_key']:deepcopy(m) for m in value['messages']})
             if self.enabled:
                 with SessionLocal() as db:cp = _identity_checkpoint(db,conversation_id=value['conversation_id'])
                 rows[1]['content_clean'] = '这款600Pr0适合日常通勤，具体信息可以再看看。'
@@ -56,6 +59,12 @@ class HCTransport:
                 if self.tamper=='version':proof['pairs'][1]['effective_text_version']+=1
                 if self.tamper=='suffix':alignment['new_suffix_observation_ids']=[]
                 if self.tamper=='mapping':alignment['matched_pairs'][0]['pre_index']=1
+                if self.tamper=='redelivery':
+                    repeated=deepcopy(self.seed_messages[cp['recent_messages'][1]['source_message_key']])
+                    repeated['content']=rows[1]['content_clean']
+                    repeated['raw_payload']['observation']=deepcopy(rows[1])
+                    repeated['message_position']['screen_order']=2
+                    value['messages'].insert(0,repeated)
             kwargs['json']=value
             self.request=deepcopy(value)
         response=self.http.post(path,**kwargs)
@@ -69,7 +78,7 @@ class HCTransport:
 
 
 @pytest.mark.parametrize('tamper',[None,'score','runner','frame','policy','version','suffix','mapping','suppress_async',
-    'presend','presend_source','presend_pending','presend_identity','presend_role'])
+    'presend','presend_source','presend_pending','presend_identity','presend_role','redelivery'])
 def test_hc_http_recomputes_then_continues_original_async_once(http_api,monkeypatch,async_generation,tamper):
     class Model:
         def generate_reply_decision(self,**request):
@@ -92,9 +101,13 @@ def test_hc_http_recomputes_then_continues_original_async_once(http_api,monkeypa
     transport.enabled=True
     transport.tamper=None if tamper=='suppress_async' else tamper
     async_generation['suppress']=tamper=='suppress_async'
-    if tamper in {None,'presend','suppress_async'}:
+    if tamper in {None,'presend','suppress_async','redelivery'}:
         api._ingest(worker,target['conversation_id'],keys[-1],'我想看600Plus，预算3万')
         assert transport.last.status_code==200,transport.last.text
+        if tamper=='redelivery':
+            assert transport.last.json()['data']['ingested_count']==1
+            results=transport.last.json()['data']['results']
+            assert sorted(r['ingest_result'] for r in results)==['duplicated','ingested']
         until=time.monotonic()+3
         while tamper!='suppress_async' and async_generation['counts']['generated']<before+1 and time.monotonic()<until:time.sleep(.02)
         assert async_generation['counts']['generated']==before+(tamper!='suppress_async')
@@ -103,7 +116,7 @@ def test_hc_http_recomputes_then_continues_original_async_once(http_api,monkeypa
         with pytest.raises(AssertionError):api._ingest(worker,target['conversation_id'],keys[-1],'我想看600Plus，预算3万')
         assert transport.last.status_code in {400,409,422},transport.last.text
         assert async_generation['counts']['generated']==before
-    if tamper in {None,'presend'}:
+    if tamper in {None,'presend','redelivery'}:
         # Scheduling/execution is not proof that the async transaction has
         # committed a usable reply task. Wait for that observable result.
         until=time.monotonic()+5
@@ -114,11 +127,11 @@ def test_hc_http_recomputes_then_continues_original_async_once(http_api,monkeypa
     with SessionLocal() as db:
         rows=list(db.scalars(select(MessageEvent).order_by(MessageEvent.ingested_at)))
         assert [m.content for m in rows[:3]]==originals
-        assert len(rows)==(4 if tamper in {None,'presend','suppress_async'} else 3)
+        assert len(rows)==(4 if tamper in {None,'presend','suppress_async','redelivery'} else 3)
         assert not list(db.scalars(select(HandoffEvent)))
         actions=list(db.scalars(select(ReplyAction)))
         tasks=list(db.scalars(select(Task).where(Task.task_type=='chat_reply')))
-        assert len(actions)==len(tasks)==(1 if tamper in {None,'presend'} else 0)
-        if tamper in {None,'presend'}:
+        assert len(actions)==len(tasks)==(1 if tamper in {None,'presend','redelivery'} else 0)
+        if tamper in {None,'presend','redelivery'}:
             assert tasks[0].reply_action_id==actions[0].id
             assert actions[0].reply_text=='好的，我帮您查一下。'

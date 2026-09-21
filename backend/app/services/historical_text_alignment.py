@@ -36,6 +36,21 @@ def verified_pairs(db, payload, *, worker):
     checkpoint = rules.checkpoint_for_proof_version(checkpoint, proof['version'])
     continuity_rules = shared_adapter("business_viewport_continuity")
     try:
+        from app.services.wechat_service import _verified_ai_reply_action_for_self_message
+        sent_rules = shared_adapter('confirmed_sent_history')
+        receipt_entries = {}
+        for receipt in proof.get('confirmed_sent_receipts', []):
+            entry = sent_rules.comparison_entry(payload.conversation_id, receipt)
+            canonical_receipt = {**entry['message_identity_runtime_evidence']['_worker_ai_reply_receipt'],
+                                 'source_message_key': entry['source_message_key']}
+            action = _verified_ai_reply_action_for_self_message(db, conversation_id=payload.conversation_id,
+                content=receipt['reply_text'], source_message_key=entry['source_message_key'],
+                raw_payload={'observation': {'row_kind': 'text_bubble', 'message_type': 'text'},
+                             'ai_reply_receipt': canonical_receipt})
+            if action is None or action.status != 'sent' or action.claimed_by_worker_id != worker.id:
+                raise ValueError('TEXT_CORRESPONDENCE_PROOF_INVALID')
+            receipt_entries[entry['source_message_key']] = canonical_receipt
+        checkpoint = rules.checkpoint_for_proof(checkpoint, proof)
         continuity = rules.verify_correspondence(
             proof, checkpoint, payload.evidence.observations,
             pre_frame_id=alignment.pre_frame_id, post_frame_id=alignment.post_frame_id,
@@ -62,7 +77,6 @@ def verified_pairs(db, payload, *, worker):
                 and slot.source_message_key == entry['source_message_key'])
 
         if proof['version'] == 2:
-            from app.services.wechat_service import _verified_ai_reply_action_for_self_message
             rows = shared_adapter('message_viewport_projection').ordered_message_viewport_observations(payload.evidence.observations)
             expected_mapping = [(p['old_index'], p['new_index']) for p in continuity['matched_pairs']]
             mapped_prefix = alignment.matched_pairs[:len(expected_mapping)]
@@ -70,9 +84,9 @@ def verified_pairs(db, payload, *, worker):
                     or alignment.pre_sequence_source == 'checkpoint'
                     and [(p.pre_index, p.post_index) for p in mapped_prefix] != expected_mapping):
                 raise ValueError('TEXT_CORRESPONDENCE_PROOF_INVALID')
-            # Locally confirmed AI sends may follow the server checkpoint.
-            # They retain the original exact text + sent-receipt gate. HC
-            # neither scores them nor authorizes suppressing a customer row.
+            # Frozen older proofs may omit local receipts from their comparison
+            # baseline. Keep that wire interpretation for replay only. New
+            # proofs include confirmed sends in the same recomputed HC mapping.
             suffix_start = len(expected_mapping)
             messages = {(m.raw_payload or {}).get('observation', {}).get('observation_id'): m for m in payload.messages}
             historical_sources = {entry['source_message_key'] for entry in entries}
@@ -126,10 +140,21 @@ def verified_pairs(db, payload, *, worker):
         for pair in verified:
             slot, mapped = slots.get(pair["observation_id"]), pairs.get(pair["observation_id"])
             expected = entries[pair["old_index"]]
+            receipt = receipt_entries.get(pair['source_message_key'])
+            delivered_receipt = False
+            if receipt:
+                item = next((m for m in payload.messages if m.source_message_key == pair['source_message_key']), None)
+                actual = (item.raw_payload or {}).get('ai_reply_receipt', {}) if item else {}
+                delivered_receipt = bool(item and item.sender_role_hint in {'self', 'sales'}
+                    and item.message_type == 'text'
+                    and (item.raw_payload.get('observation') or {}).get('observation_id') == pair['observation_id']
+                    and all(actual.get(k) == v for k, v in receipt.items())
+                    and slot and slot.delivery_state == 'outbox_waiting')
             if (not slot or not mapped or slot.source_message_key != pair["source_message_key"]
                     or mapped.post_index != pair["new_index"]
                     or not matches_original_slot(mapped, slot, expected)
-                    or not (slot.fact_scope == "historical" or slot.delivery_state == "backend_confirmed")
+                    or not (delivered_receipt if receipt else
+                            slot.fact_scope == "historical" or slot.delivery_state == "backend_confirmed")
                     or pair["observation_id"] in alignment.new_suffix_observation_ids):
                 raise ValueError("TEXT_CORRESPONDENCE_PROOF_INVALID")
     except (ValueError, KeyError, IndexError, TypeError) as exc:
