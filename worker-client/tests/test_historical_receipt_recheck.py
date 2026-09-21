@@ -107,6 +107,7 @@ def test_receipt_tail_uses_same_hc_without_redundant_ocr(
         harness,phase,noisy_history,segments,scrolled):
     runner,binding,target,api,bridge=setup_case(harness,phase=phase,noisy_history=noisy_history,
         segments=segments,scrolled=scrolled,corrected_at='never')
+    prior_log_ids = {row['id'] for row in storage.read_logs(limit=300)}
     result=runner._read_one_wechat_target(binding,target,enforce_read_targets=True,wait_for_brain=False,
         current_step='pre_send_refresh' if phase=='pre_send_refresh' else 'message_read',
         operation_phase=phase,current_only=phase!='authorized_read')
@@ -121,7 +122,7 @@ def test_receipt_tail_uses_same_hc_without_redundant_ocr(
     assert [m['content'] for p in api.message_payloads for m in p['messages']
         if m.get('sender_role_hint')=='customer']==['预算五万左右']
     records=[r['metadata']['text_recheck_evidence'] for r in storage.read_logs(limit=300)
-        if r['event']=='c2_text_recheck_completed']
+        if r['id'] not in prior_log_ids and r['event']=='c2_text_recheck_completed']
     assert records==[]
 
 

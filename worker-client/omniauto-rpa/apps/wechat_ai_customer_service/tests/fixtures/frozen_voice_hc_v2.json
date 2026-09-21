@@ -1,0 +1,413 @@
+{
+  "source_revision": "ac288680eb2fa932be72c51642a58f605105e0d9",
+  "fixture_kind": "synthetic_old_voice_receipt",
+  "checkpoint": {
+    "version": 3,
+    "conversation_id": "conv-test",
+    "recent_messages": [
+      {
+        "stable_id": "worker-message-1",
+        "source_message_key": "source-0",
+        "sender_role": "customer",
+        "message_type": "text",
+        "business_projection": {
+          "screen_order": 0,
+          "sender_role": "customer",
+          "message_type": "text",
+          "normalized_content_signature": "de57e465733b1edcadc7bd2ca2447675a1ad647affc7130cae5bcb525da987ce",
+          "media_state": ""
+        },
+        "effective_text": {
+          "version": 0,
+          "text": "唯一开场支点",
+          "sha256": "de57e465733b1edcadc7bd2ca2447675a1ad647affc7130cae5bcb525da987ce"
+        },
+        "strong_boundary_tokens": [
+          "fact:customer:text:de57e465733b1edcadc7bd2ca2447675a1ad647affc7130cae5bcb525da987ce:"
+        ],
+        "native_source_message_id": null
+      },
+      {
+        "stable_id": "worker-message-2",
+        "source_message_key": "source-1",
+        "sender_role": "customer",
+        "message_type": "voice",
+        "business_projection": {
+          "screen_order": 1,
+          "sender_role": "customer",
+          "message_type": "voice",
+          "normalized_content_signature": "e2dca853729162af7b9d668ca67ed874af711769a7d1c45bb05ee4cfd5b32342",
+          "media_state": "transcribed"
+        },
+        "effective_text": {
+          "version": 0,
+          "text": "一般两厢，平时接送孩子",
+          "sha256": "9ebf93e38cb819709a3db732d94d5400dc3d1a033ef6537465c97947846240b8"
+        },
+        "strong_boundary_tokens": [
+          "fact:customer:text:e2dca853729162af7b9d668ca67ed874af711769a7d1c45bb05ee4cfd5b32342:"
+        ],
+        "native_source_message_id": "old-voice"
+      },
+      {
+        "stable_id": "worker-message-3",
+        "source_message_key": "source-2",
+        "sender_role": "customer",
+        "message_type": "text",
+        "business_projection": {
+          "screen_order": 2,
+          "sender_role": "customer",
+          "message_type": "text",
+          "normalized_content_signature": "5d300814ee6bbcfe04a422edb3536a3218806c9e856da8848e30a97e7c44040e",
+          "media_state": ""
+        },
+        "effective_text": {
+          "version": 0,
+          "text": "唯一中间支点",
+          "sha256": "5d300814ee6bbcfe04a422edb3536a3218806c9e856da8848e30a97e7c44040e"
+        },
+        "strong_boundary_tokens": [
+          "fact:customer:text:5d300814ee6bbcfe04a422edb3536a3218806c9e856da8848e30a97e7c44040e:"
+        ],
+        "native_source_message_id": null
+      },
+      {
+        "stable_id": "worker-message-4",
+        "source_message_key": "source-3",
+        "sender_role": "customer",
+        "message_type": "text",
+        "business_projection": {
+          "screen_order": 3,
+          "sender_role": "customer",
+          "message_type": "text",
+          "normalized_content_signature": "1f0dff8b6f5ea3b81cb0c201c74b258219a26dbde20d5ea76594d343d136d588",
+          "media_state": ""
+        },
+        "effective_text": {
+          "version": 0,
+          "text": "这款600Pro适合日常通勤，具体信息可以再看看。",
+          "sha256": "ed016a38884f49bc29e5b314ca46f76d93cb25a5dfe53ae004749a7c18b94c6d"
+        },
+        "strong_boundary_tokens": [
+          "fact:customer:text:1f0dff8b6f5ea3b81cb0c201c74b258219a26dbde20d5ea76594d343d136d588:"
+        ],
+        "native_source_message_id": null
+      },
+      {
+        "stable_id": "worker-message-5",
+        "source_message_key": "source-4",
+        "sender_role": "customer",
+        "message_type": "text",
+        "business_projection": {
+          "screen_order": 4,
+          "sender_role": "customer",
+          "message_type": "text",
+          "normalized_content_signature": "05a19e30a17072ab5fa22b1308a109deb8506ff9df33882e52ff42babe6cc891",
+          "media_state": ""
+        },
+        "effective_text": {
+          "version": 0,
+          "text": "唯一结束支点",
+          "sha256": "05a19e30a17072ab5fa22b1308a109deb8506ff9df33882e52ff42babe6cc891"
+        },
+        "strong_boundary_tokens": [
+          "fact:customer:text:05a19e30a17072ab5fa22b1308a109deb8506ff9df33882e52ff42babe6cc891:"
+        ],
+        "native_source_message_id": null
+      }
+    ],
+    "text_correspondence_context": {
+      "version": 1,
+      "known_entities": []
+    },
+    "checkpoint_digest": "bf8ec0e22f4f05681f7e24e4812f90819cf524b86f71c3c781ab322f53a831de",
+    "historical_match_policy": {
+      "policy_id": "historical_text_identity_v2",
+      "score_scale": 10000,
+      "text_metric": "normalized_levenshtein_v1",
+      "accept_threshold": 9000,
+      "minimum_margin": 500,
+      "auxiliary_mode": "diagnostic_only",
+      "policy_digest": "7dac02f45c51e0bcef3164c2afa46b95479f55a2be9c7b06bc429385f453e500"
+    }
+  },
+  "baseline": [
+    {
+      "observation_id": "now-0",
+      "sender_role": "customer",
+      "message_type": "text",
+      "row_kind": "text_bubble",
+      "content_clean": "唯一开场支点",
+      "bubble_rect": [
+        10,
+        100,
+        300,
+        120
+      ],
+      "item_state": "completed",
+      "contract_errors": []
+    },
+    {
+      "observation_id": "now-1",
+      "sender_role": "customer",
+      "message_type": "voice",
+      "row_kind": "voice_transcript",
+      "content_clean": "一般两厢，平时接送孩子",
+      "bubble_rect": [
+        10,
+        140,
+        300,
+        160
+      ],
+      "item_state": "completed",
+      "contract_errors": [],
+      "voice_state": "transcribed",
+      "native_source_message_id": "old-voice"
+    },
+    {
+      "observation_id": "now-2",
+      "sender_role": "customer",
+      "message_type": "text",
+      "row_kind": "text_bubble",
+      "content_clean": "唯一中间支点",
+      "bubble_rect": [
+        10,
+        180,
+        300,
+        200
+      ],
+      "item_state": "completed",
+      "contract_errors": []
+    },
+    {
+      "observation_id": "now-3",
+      "sender_role": "customer",
+      "message_type": "text",
+      "row_kind": "text_bubble",
+      "content_clean": "这款600Pro适合日常通勤，具体信息可以再看看。",
+      "bubble_rect": [
+        10,
+        220,
+        300,
+        240
+      ],
+      "item_state": "completed",
+      "contract_errors": []
+    },
+    {
+      "observation_id": "now-4",
+      "sender_role": "customer",
+      "message_type": "text",
+      "row_kind": "text_bubble",
+      "content_clean": "唯一结束支点",
+      "bubble_rect": [
+        10,
+        260,
+        300,
+        280
+      ],
+      "item_state": "completed",
+      "contract_errors": []
+    }
+  ],
+  "observations": [
+    {
+      "observation_id": "now-0",
+      "sender_role": "customer",
+      "message_type": "text",
+      "row_kind": "text_bubble",
+      "content_clean": "唯一开场支点",
+      "bubble_rect": [
+        10,
+        100,
+        300,
+        120
+      ],
+      "item_state": "completed",
+      "contract_errors": []
+    },
+    {
+      "observation_id": "now-1",
+      "sender_role": "customer",
+      "message_type": "voice",
+      "row_kind": "voice_transcript",
+      "content_clean": "般两厢，平时接送孩子",
+      "bubble_rect": [
+        10,
+        140,
+        300,
+        160
+      ],
+      "item_state": "completed",
+      "contract_errors": [],
+      "voice_state": "transcribed",
+      "native_source_message_id": "old-voice"
+    },
+    {
+      "observation_id": "now-2",
+      "sender_role": "customer",
+      "message_type": "text",
+      "row_kind": "text_bubble",
+      "content_clean": "唯一中间支点",
+      "bubble_rect": [
+        10,
+        180,
+        300,
+        200
+      ],
+      "item_state": "completed",
+      "contract_errors": []
+    },
+    {
+      "observation_id": "now-3",
+      "sender_role": "customer",
+      "message_type": "text",
+      "row_kind": "text_bubble",
+      "content_clean": "这款600Pr0适合日常通勤，具体信息可以再看看。",
+      "bubble_rect": [
+        10,
+        220,
+        300,
+        240
+      ],
+      "item_state": "completed",
+      "contract_errors": []
+    },
+    {
+      "observation_id": "now-4",
+      "sender_role": "customer",
+      "message_type": "text",
+      "row_kind": "text_bubble",
+      "content_clean": "唯一结束支点",
+      "bubble_rect": [
+        10,
+        260,
+        300,
+        280
+      ],
+      "item_state": "completed",
+      "contract_errors": []
+    }
+  ],
+  "saved": {
+    "proof": {
+      "version": 2,
+      "policy_id": "historical_text_identity_v2",
+      "policy_digest": "7dac02f45c51e0bcef3164c2afa46b95479f55a2be9c7b06bc429385f453e500",
+      "checkpoint_digest": "bf8ec0e22f4f05681f7e24e4812f90819cf524b86f71c3c781ab322f53a831de",
+      "pre_frame_id": "checkpoint:send-guard",
+      "post_frame_id": "send-guard:current",
+      "pairs": [
+        {
+          "old_index": 0,
+          "new_index": 0,
+          "source_message_key": "source-0",
+          "observation_id": "now-0",
+          "canonical_text_sha256": "de57e465733b1edcadc7bd2ca2447675a1ad647affc7130cae5bcb525da987ce",
+          "observed_text_sha256": "de57e465733b1edcadc7bd2ca2447675a1ad647affc7130cae5bcb525da987ce",
+          "effective_text_version": 0,
+          "matched_by": "exact",
+          "scores": null,
+          "anchor_pairs": []
+        },
+        {
+          "old_index": 2,
+          "new_index": 2,
+          "source_message_key": "source-2",
+          "observation_id": "now-2",
+          "canonical_text_sha256": "5d300814ee6bbcfe04a422edb3536a3218806c9e856da8848e30a97e7c44040e",
+          "observed_text_sha256": "5d300814ee6bbcfe04a422edb3536a3218806c9e856da8848e30a97e7c44040e",
+          "effective_text_version": 0,
+          "matched_by": "exact",
+          "scores": null,
+          "anchor_pairs": []
+        },
+        {
+          "old_index": 3,
+          "new_index": 3,
+          "source_message_key": "source-3",
+          "observation_id": "now-3",
+          "canonical_text_sha256": "ed016a38884f49bc29e5b314ca46f76d93cb25a5dfe53ae004749a7c18b94c6d",
+          "observed_text_sha256": "9fd41d9bc711c5b48891d261178bd3c9f7f792f43f23fa42928f17470392d8a8",
+          "effective_text_version": 0,
+          "matched_by": "confidence",
+          "scores": {
+            "text": 9600,
+            "score": 9600
+          },
+          "anchor_pairs": [
+            {
+              "old_index": 0,
+              "new_index": 0,
+              "source_message_key": "source-0",
+              "observation_id": "now-0"
+            }
+          ]
+        },
+        {
+          "old_index": 4,
+          "new_index": 4,
+          "source_message_key": "source-4",
+          "observation_id": "now-4",
+          "canonical_text_sha256": "05a19e30a17072ab5fa22b1308a109deb8506ff9df33882e52ff42babe6cc891",
+          "observed_text_sha256": "05a19e30a17072ab5fa22b1308a109deb8506ff9df33882e52ff42babe6cc891",
+          "effective_text_version": 0,
+          "matched_by": "exact",
+          "scores": null,
+          "anchor_pairs": []
+        }
+      ],
+      "candidate_count": 1,
+      "best_score": 9600,
+      "runner_up_score": null,
+      "margin": null
+    },
+    "continuity": {
+      "relation": "business_sequence_equal",
+      "reason": "historical_confidence_unique_winner",
+      "old_count": 5,
+      "new_count": 5,
+      "matched_pairs": [
+        {
+          "old_index": 0,
+          "new_index": 0
+        },
+        {
+          "old_index": 1,
+          "new_index": 1
+        },
+        {
+          "old_index": 2,
+          "new_index": 2
+        },
+        {
+          "old_index": 3,
+          "new_index": 3
+        },
+        {
+          "old_index": 4,
+          "new_index": 4
+        }
+      ],
+      "new_suffix_indexes": [],
+      "candidate_alignment_count": 1,
+      "overlap_candidates": [
+        {
+          "old_start": 0,
+          "overlap_size": 5,
+          "new_start": 0,
+          "new_suffix_start": 5
+        }
+      ],
+      "context_expansion_used": false,
+      "voice_correspondence": [
+        {
+          "old_index": 1,
+          "new_index": 1,
+          "source_message_key": "source-1",
+          "observation_id": "now-1"
+        }
+      ]
+    }
+  }
+}

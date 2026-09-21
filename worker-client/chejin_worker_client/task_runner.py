@@ -32,6 +32,7 @@ from .action_journal import (
     read_action_journal,
     record_action_business_continuity,
     record_action_sequence_alignment,
+    refresh_unattempted_send_journal,
     update_action_journal_item,
 )
 from .artifact_retention import cleanup_artifacts, record_artifact_outcome
@@ -89,7 +90,7 @@ from .pre_send_checkpoint import (
 from .models import Binding, ReplySendClaim, RpaResult, RpaStep, Task, WechatReadTarget, WorkerProfile
 from .rpa_bridge import RpaBridge
 from .text_recheck import differing_text_observation_ids
-from .historical_alignment import checkpoint_for_target, reconcile_viewports, bind_final_frame_correspondence, save_match_review
+from .historical_alignment import checkpoint_for_target, reconcile_viewports, bind_final_frame_correspondence, save_match_review, admit_current_context_frame
 from .storage import (
     archive_legacy_media_flow_records,
     append_log,
@@ -9488,10 +9489,12 @@ class TaskRunner:
         cancel_check: Callable[[], bool] | None,
         read_run_id: str = "",
     ) -> dict[str, Any]:
-        """Perform the single read-only continuity expansion transaction."""
+        """Perform the single read-only context transaction (HC: current frame)."""
         if not claim_read_recheck(read_run_id, kind="pre_send_context"):
             return {"ok": False, "reason": "read_recheck_already_consumed"}
 
+        history_checkpoint = checkpoint_for_target(target)
+        current_context = bool(history_checkpoint and 'historical_match_policy' in history_checkpoint)
         context = (
             target.raw.get("pre_send_fact_checkpoint_context")
             if isinstance(target.raw, dict)
@@ -9530,7 +9533,7 @@ class TaskRunner:
                 anchor_contents.append(content)
             if native_id or content:
                 break
-        if not (anchor_ids or anchor_contents):
+        if not current_context and not (anchor_ids or anchor_contents):
             return {
                 "ok": False,
                 "error_code": (
@@ -9546,15 +9549,17 @@ class TaskRunner:
             target_mode="current",
             expected_confirmed_self_text=expected_confirmed_self_text,
             chat_fact_roi_ocr=False,
-            history_mode="anchor_until_found",
-            anchor_ids=anchor_ids,
-            reply_content_keys=anchor_contents,
-            max_scroll_steps=min(max_history, 16),
-            max_snapshots=min(max_history + 1, 17),
+            history_mode="" if current_context else "anchor_until_found",
+            anchor_ids=[] if current_context else anchor_ids,
+            reply_content_keys=[] if current_context else anchor_contents,
+            max_scroll_steps=0 if current_context else min(max_history, 16),
+            max_snapshots=1 if current_context else min(max_history + 1, 17),
             restore_to_latest=True,
             max_duration_seconds=20,
             cancel_check=cancel_check,
         )
+        if current_context:
+            expanded = admit_current_context_frame(history_checkpoint, expanded)
         history_load = (
             expanded.get("history_load")
             if isinstance(expanded.get("history_load"), dict)
@@ -9564,7 +9569,8 @@ class TaskRunner:
             expanded.get("ok") is not True
             or history_load.get("ok") is not True
             or history_load.get("anchor_found") is not True
-            or history_load.get("restored_to_latest") is not True
+            or not (history_load.get("restored_to_latest") is True
+                    or current_context and history_load.get("viewport_unchanged") is True)
         ):
             return {
                 "ok": False,
@@ -9642,18 +9648,20 @@ class TaskRunner:
     ) -> dict[str, Any]:
         """Run the one bounded, read-only media continuity expansion.
 
-        The Sidecar only scrolls, screenshots and OCRs.  This method always
-        obtains a second fresh bottom frame after the Sidecar reports that it
-        restored the viewport; neither returned payload is trusted until the
-        Worker continuity comparator verifies it.
+        HC requests keep the C2 route's one-frame/no-scroll restriction and
+        judge that frame using historical authority. Legacy contracts retain
+        their navigation request. The second fresh frame and original media
+        checks remain required; this navigation decision does not admit facts.
         """
 
         if not claim_read_recheck(read_run_id, kind="media_context"):
             return {"ok": False, "reason": "read_recheck_already_consumed"}
+        history_checkpoint = checkpoint_for_target(target)
+        current_context = bool(history_checkpoint and 'historical_match_policy' in history_checkpoint)
         anchor_ids, anchor_contents, max_history = (
             _continuity_expansion_search_terms(pre_payload)
         )
-        if not (anchor_ids or anchor_contents):
+        if not current_context and not (anchor_ids or anchor_contents):
             return {
                 "ok": False,
                 "error_code": "MESSAGE_CROSS_ROUND_IDENTITY_AMBIGUOUS",
@@ -9668,15 +9676,17 @@ class TaskRunner:
                 self._confirmed_ai_reply_text_for_read(target)
             ),
             chat_fact_roi_ocr=False,
-            history_mode="anchor_until_found",
-            anchor_ids=anchor_ids,
-            reply_content_keys=anchor_contents,
-            max_scroll_steps=min(max_history, 16),
-            max_snapshots=min(max_history + 1, 17),
+            history_mode="" if current_context else "anchor_until_found",
+            anchor_ids=[] if current_context else anchor_ids,
+            reply_content_keys=[] if current_context else anchor_contents,
+            max_scroll_steps=0 if current_context else min(max_history, 16),
+            max_snapshots=1 if current_context else min(max_history + 1, 17),
             restore_to_latest=True,
             max_duration_seconds=20,
             cancel_check=cancel_check,
         )
+        if current_context:
+            expanded = admit_current_context_frame(history_checkpoint, expanded)
         history_load = (
             expanded.get("history_load")
             if isinstance(expanded.get("history_load"), dict)
@@ -9686,7 +9696,8 @@ class TaskRunner:
             expanded.get("ok") is not True
             or history_load.get("ok") is not True
             or history_load.get("anchor_found") is not True
-            or history_load.get("restored_to_latest") is not True
+            or not (history_load.get("restored_to_latest") is True
+                    or current_context and history_load.get("viewport_unchanged") is True)
             or not isinstance(expanded.get("observations"), list)
         ):
             return {
@@ -19414,27 +19425,20 @@ class TaskRunner:
                     prepare_evidence={"pre_send_setup_context": setup_context},
                 )
             else:
-                existing_send_journal = read_action_journal(
-                    send_journal_path
-                )
-                if (
-                    str(
-                        existing_send_journal.get("canonical_action_id")
-                        or ""
-                    ).strip()
-                    != claim.reply_action_id
-                    or str(
-                        existing_send_journal.get(
-                            "reserved_worker_stable_id"
-                        )
-                        or ""
-                    ).strip()
-                    != reserved_send_stable_id
-                    or existing_send_journal.get(
-                        "pre_action_identity_sequence"
+                try:
+                    # The fresh read and claim checkpoint above already
+                    # validate this business context. Frame-local IDs must
+                    # not veto that result when no send has been attempted.
+                    refresh_unattempted_send_journal(
+                        send_journal_path,
+                        conversation_id=target.conversation_id,
+                        canonical_action_id=claim.reply_action_id,
+                        reserved_worker_stable_id=reserved_send_stable_id,
+                        pre_frame_id=pre_send_frame_id,
+                        pre_action_identity_sequence=pre_send_identity_sequence,
+                        setup_context=setup_context,
                     )
-                    != pre_send_identity_sequence
-                ):
+                except ValueError:
                     self._queue_and_submit_reply_send_ack(
                         binding,
                         claim,
@@ -19442,7 +19446,7 @@ class TaskRunner:
                         action_phase="not_attempted",
                         reply_text_hash=claim.reply_text_hash,
                         error_code="C3_SEND_IDENTITY_JOURNAL_CONFLICT",
-                        remark="发送身份日志与当前序列不一致，未操作微信输入框。",
+                        remark="原发送记录无法安全更新准备画面，未操作微信输入框。",
                     )
                     return {
                         "ok": False,
@@ -20021,10 +20025,19 @@ class TaskRunner:
                         str(prepared.get("screenshot_path") or "")
                     ],
                 }
-            if (
-                is_pre_send_refresh
-                and previous_viewport_digest != prepared_viewport_digest
-            ):
+            history_unchanged = False
+            if is_pre_send_refresh and previous_viewport_digest != prepared_viewport_digest:
+                # A different OCR signature is not another changed message
+                # window when HC already identifies the complete old sequence.
+                # This pure check performs no capture, media action or ID commit.
+                history_decision = reconcile_viewports(
+                    checkpoint_for_target(target), current_payload.get("observations") or [],
+                    prepared.get("observations") or [],
+                    {"relation": "business_sequence_not_continuous"},
+                    old_boundary_tokens=_business_boundary_tokens_for_payload(current_payload, committed_only=True),
+                )
+                history_unchanged = history_decision.get("relation") == "business_sequence_equal"
+            if is_pre_send_refresh and previous_viewport_digest != prepared_viewport_digest and not history_unchanged:
                 if reidentification_used:
                     return {
                         "ok": False,
