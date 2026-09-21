@@ -37,6 +37,14 @@ def worker_script():
   for index,row in enumerate(value['observations']):
    left=500 if row.get('sender_role')=='self' else 100
    row.setdefault('bubble_rect',[left,100+150*index,left+300,140+150*index])
+   if (row.get('source_message') or {}).get('type')=='image':
+    # The synthetic desktop must keep an image an image in send frames too;
+    # FakeBridge otherwise defaults this display placeholder to text_bubble.
+    row.update(row_kind='image_bubble',message_type='image',item_state='discovered',
+     frame_visual_id='synthetic-new-image',image_physical_anchor={'sender_role':'customer',
+      'bubble_visual_fingerprint':'b'*64,'preceding_stable_message':'','following_stable_message':'',
+      'occurrence_index':0,'occurrence_count':1})
+    row.pop('content_clean',None)
   return value
 """ + anchor)
     start = script.index("  self.messages.append({'id':'sent-'")
@@ -76,9 +84,18 @@ SEND_BOUNDARY = r'''
    return {'ok':True,'validation':{'confirmed_target':'C3TEST01'},'input_region':{'has_visible_text':False},
            'frame_observation':{'frame_id':identity},'message_sequence':seq,'observations':source['observations']}
   baseline=snapshot(before,'pre:'+kwargs['reply_action_id'])
+  historical=(kwargs['expected_context_guard'].get('worker_continuity_contract') or {}).get('historical_alignment')
+  if historical:
+   baseline['receipt_historical_alignment']={'checkpoint':historical['checkpoint'],'baseline_observations':before['observations']}
+  if os.environ.get('POST_SEND_HISTORY_NOISE'):
+   old=frame['observations'][1]
+   old['content_clean']=old['content_clean'].replace('安排','安徘')
   current=snapshot(frame,'post:'+kwargs['reply_action_id'])
   confirmed=sidecar.confirm_reply_sent(1,target='C3TEST01',text=kwargs['text'],exact=True,baseline_match_count=0,
-    baseline_message_sequence=baseline['message_sequence'],initial_snapshot=current,max_attempts=1)
+    baseline_message_sequence=baseline['message_sequence'],initial_snapshot=current,max_attempts=1,
+    receipt_historical_alignment=baseline.get('receipt_historical_alignment'))
+  if os.environ.get('POST_SEND_HISTORY_NOISE'):
+   assert confirmed['ok'],confirmed
   self.send_payload.update({'sidecar_run_id':'controlled-send:'+kwargs['reply_action_id'],
    'send_result':{'ok':bool(confirmed['ok']),'confirmed':bool(confirmed['ok']),
     'result':'sent' if confirmed['ok'] else 'unknown','send_baseline':baseline,'sent_confirmation':confirmed}})
@@ -110,7 +127,17 @@ def test_confirmed_receipt_and_read_intent_survive_new_process(http_api, monkeyp
     _run(http_api, monkeypatch, async_generation, tmp_path, True, "text", transport)
 
 
-def _run(http, monkeypatch, async_generation, tmp_path, segmented, kind, transport="normal"):
+@pytest.mark.parametrize('kind', ['text', 'voice', 'image'])
+def test_hc_post_send_history_continues_automatically(http_api, monkeypatch, async_generation, tmp_path, kind):
+    _run(http_api, monkeypatch, async_generation, tmp_path, True, kind, history_noise=True)
+
+
+@pytest.mark.parametrize('transport', ['lost_request', 'lost_response'])
+def test_hc_receipt_replay_keeps_same_historical_decision(http_api, monkeypatch, async_generation, tmp_path, transport):
+    _run(http_api, monkeypatch, async_generation, tmp_path, True, 'text', transport, history_noise=True)
+
+
+def _run(http, monkeypatch, async_generation, tmp_path, segmented, kind, transport="normal", history_noise=False):
     monkeypatch.setattr(fixtures, "client", http)
     class Model:
         requests = []
@@ -138,12 +165,17 @@ def _run(http, monkeypatch, async_generation, tmp_path, segmented, kind, transpo
     with SessionLocal() as db:
         conversation = db.get(Conversation, target["conversation_id"])
         conversation.status, conversation.friend_state = "waiting_user_reply", "friend_active"
-        db.get(Worker, worker["id"]).local_lock_summary = {"capabilities": {"reply_sequence_version": 1}}
+        db.get(Worker, worker["id"]).local_lock_summary = {"capabilities": {"reply_sequence_version": 1, 'text_correspondence_version': 2}}
         db.commit()
     script = tmp_path / "worker.py"
-    script.write_text(worker_script())
+    source = worker_script()
+    if history_noise:
+        source = source.replace("'content':'请详细介绍看车安排'}]", "'content':'唯一的开场问候'},"
+            "{'id':'customer-2','sender_role':'customer','type':'text','content':'请详细介绍一下适合周末看车的安排和相关注意事项'}]")
+    script.write_text(source)
     env = {**os.environ, "CHEJIN_WORKER_HOME": str(tmp_path / "worker"), "CHEJIN_RPA_MODE": "mock", "POST_SEND_KIND": kind,
            "CHEJIN_C2_ENABLED": "true"}
+    if history_noise: env['POST_SEND_HISTORY_NOISE'] = '1'
     base = http.get("/healthz").url.removesuffix("/healthz")
     mode = transport if transport != "normal" else {"image": "image_full", "voice": "voice_full"}.get(kind, "normal")
     def execute(mode):
@@ -177,5 +209,5 @@ def _run(http, monkeypatch, async_generation, tmp_path, segmented, kind, transpo
         assert len([a for a in actions if a.status == "sent"]) == 2
         if segmented: assert all(a.status in {"cancelled", "superseded"} for a in actions if a.segment_index > 1)
         facts = list(db.scalars(select(MessageEvent).where(MessageEvent.sender_role == "customer")))
-        assert len(facts) == 2 and len({a.source_message_key for a in facts}) == 2
+        assert len(facts) == (3 if history_noise else 2) and len({a.source_message_key for a in facts}) == len(facts)
         assert not db.get(Worker, worker["id"]).inflight_flow_state

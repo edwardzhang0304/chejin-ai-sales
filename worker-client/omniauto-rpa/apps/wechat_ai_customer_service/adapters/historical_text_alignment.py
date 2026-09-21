@@ -136,21 +136,10 @@ def build_correspondence(checkpoint, observations, *, pre_frame_id, post_frame_i
     if not pre_frame_id or not post_frame_id:
         raise ValueError('TEXT_CORRESPONDENCE_FRAME_MISSING')
     if 'historical_match_policy' in checkpoint:
-        result = _build_confidence_correspondence(checkpoint, observations,
+        return _build_confidence_correspondence(checkpoint, observations,
             pre_frame_id=pre_frame_id, post_frame_id=post_frame_id,
             new_boundary_tokens=new_boundary_tokens, entities=entities,
             diagnostics=diagnostics, deadline=deadline)
-        if result:
-            return result
-        # Completed voice keeps the published bounded path. It may not rescue
-        # a failed ordinary-text candidate or reinterpret an HC proof as v1.
-        legacy = build_correspondence(checkpoint_for_proof_version(checkpoint, 1), observations,
-            pre_frame_id=pre_frame_id, post_frame_id=post_frame_id, new_boundary_tokens=new_boundary_tokens)
-        entries = comparison_entries(checkpoint_for_proof_version(checkpoint, 1))
-        if legacy and all(entries[p['old_index']].get('message_type') == 'voice'
-                          for p in legacy['proof']['pairs'] if p['matched_by'] == 'context_ocr'):
-            return legacy
-        return None
     entries = comparison_entries(checkpoint)
     if not entries or any(not item.get('source_message_key') or not item.get('stable_id') for item in entries):
         return None
@@ -223,7 +212,7 @@ def build_correspondence(checkpoint, observations, *, pre_frame_id, post_frame_i
     return candidates[0] if len(candidates) == 1 else None
 
 
-def comparison_projection(checkpoint, observations, *, pre_frame_id, post_frame_id):
+def comparison_projection(checkpoint, observations, *, pre_frame_id, post_frame_id, frozen_proof=None):
     """A temporary comparison view, never replacement OCR or a new identity.
 
     Every tolerant frame is independently compared with authoritative history;
@@ -234,6 +223,15 @@ def comparison_projection(checkpoint, observations, *, pre_frame_id, post_frame_
     result = build_correspondence(checkpoint, rows, pre_frame_id=pre_frame_id,
         post_frame_id=post_frame_id,
         new_boundary_tokens=boundary_tokens_for_observations(rows, committed_only=False))
+    if frozen_proof:
+        # Replay checks the COMPLETE recomputed proof, including both body
+        # hashes, authority digest, frame IDs, scores and identity mappings.
+        # It does not accept a proof merely because observation IDs match.
+        frozen_checkpoint = checkpoint_for_proof_version(checkpoint, frozen_proof['version'])
+        continuity = verify_correspondence(frozen_proof, frozen_checkpoint, rows,
+            pre_frame_id=pre_frame_id, post_frame_id=post_frame_id,
+            new_boundary_tokens=boundary_tokens_for_observations(rows, committed_only=False))
+        result = {'proof': frozen_proof, 'continuity': continuity}
     if result is None:
         return projected, None
     entries = comparison_entries(checkpoint_for_proof_version(checkpoint, result["proof"]["version"]))
@@ -246,12 +244,13 @@ def comparison_projection(checkpoint, observations, *, pre_frame_id, post_frame_
     return projected, result["proof"]
 
 
-def compare_historical_viewports(checkpoint, baseline, current, *, old_boundary_tokens, allow_history_suffix=True):
+def compare_historical_viewports(checkpoint, baseline, current, *, old_boundary_tokens, allow_history_suffix=True,
+                                frozen_correspondence=None):
     """One proof consumer for Sidecar and backend interruption verification."""
     old, old_proof = comparison_projection(checkpoint, baseline, pre_frame_id='checkpoint:send-guard',
-        post_frame_id='send-guard:baseline')
+        post_frame_id='send-guard:baseline', frozen_proof=(frozen_correspondence or {}).get('baseline'))
     new, new_proof = comparison_projection(checkpoint, current, pre_frame_id='checkpoint:send-guard',
-        post_frame_id='send-guard:current')
+        post_frame_id='send-guard:current', frozen_proof=(frozen_correspondence or {}).get('current'))
     if not (old_proof or new_proof):
         return None
     old_tokens = {i: set(v) for i, v in old_boundary_tokens.items()}
@@ -324,6 +323,14 @@ def verify_correspondence(proof, checkpoint, observations, *, pre_frame_id, post
         raise ValueError('TEXT_CORRESPONDENCE_PROOF_INVALID')
     rebuilt = build_correspondence(checkpoint, observations, pre_frame_id=pre_frame_id,
         post_frame_id=post_frame_id, new_boundary_tokens=new_boundary_tokens)
+    if (rebuilt is None or rebuilt['proof'] != proof) and proof['version'] == 2:
+        # Frozen receipts from before transcript unification retain their exact
+        # wire interpretation. New reads never call this compatibility branch.
+        rebuilt = _build_confidence_correspondence(checkpoint, observations,
+            pre_frame_id=pre_frame_id, post_frame_id=post_frame_id,
+            new_boundary_tokens=new_boundary_tokens,
+            entities=validate_entity_context(checkpoint['text_correspondence_context']),
+            diagnostics=None, deadline=None, legacy_voice=True)
     if rebuilt is None or rebuilt['proof'] != proof:
         raise ValueError('TEXT_CORRESPONDENCE_PROOF_INVALID')
     return rebuilt['continuity']
@@ -390,7 +397,7 @@ def _validate_confidence_proof_shape(proof):
 
 
 def _build_confidence_correspondence(checkpoint, observations, *, pre_frame_id,
-        post_frame_id, new_boundary_tokens, entities, diagnostics, deadline):
+        post_frame_id, new_boundary_tokens, entities, diagnostics, deadline, legacy_voice=False):
     """HC v2: all legal suffixes compete using their weakest nonexact row.
 
     This is an identity projection only. Facts, feature sources and durable IDs
@@ -446,18 +453,21 @@ def _build_confidence_correspondence(checkpoint, observations, *, pre_frame_id,
         if any(native_id(entries[i]) and native_id(rows[j]) and native_id(entries[i]) != native_id(rows[j])
                for i, j in indexes):
             continue
-        text_indexes = [(i, j) for i, j in indexes if old[i].get('message_type') == 'text']
+        text_indexes = [(i, j) for i, j in indexes if old[i].get('message_type') == 'text'
+            or not legacy_voice and (old[i].get('message_type') == 'system'
+                or old[i].get('message_type') == 'voice' and old[i].get('media_state') == 'transcribed')]
         if any(not old_normal[i] or not new_normal[j] for i, j in text_indexes):
             continue
         anchors = [{'old_index': i, 'new_index': j, 'source_message_key': entries[i]['source_message_key'],
             'observation_id': rows[j]['observation_id']} for i, j in text_indexes
-            if old_normal[i] == new_normal[j] and old_counts[old_normal[i]] == new_counts[new_normal[j]] == 1]
-        media_changes = [(i, j) for i, j in indexes if old[i].get('message_type') != 'text'
+            if old[i].get('message_type') == 'text'
+            and old_normal[i] == new_normal[j] and old_counts[old_normal[i]] == new_counts[new_normal[j]] == 1]
+        media_changes = [(i, j) for i, j in indexes if (i, j) not in text_indexes
             and old[i].get('normalized_content_signature') != new[j].get('normalized_content_signature')]
-        # Only the published single bounded completed-voice discrepancy is
-        # allowed. Media has no HC score; parent identity/receipts still belong
-        # to the original Worker transfer and backend media gates.
-        if media_changes and (len(media_changes) != 1 or any(
+        # New reads score completed transcripts exactly like old text. Physical
+        # media identity/state is still checked by _same_kind and the caller.
+        # The single-edit branch only decodes an already saved older proof.
+        if media_changes and (not legacy_voice or len(media_changes) != 1 or any(
                 old[i].get('message_type') != 'voice' or old[i].get('media_state') != 'transcribed'
                 or not historical_text_candidate(old_text[i], new_text[j], protected_entities=entities)['eligible']
                 or not _legacy_anchor_support(j, size, anchors, old, old_tokens, new_boundary_tokens)

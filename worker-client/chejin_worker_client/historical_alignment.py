@@ -28,6 +28,47 @@ def projected_frame(checkpoint, observations, *, pre_frame_id, post_frame_id):
         pre_frame_id=pre_frame_id, post_frame_id=post_frame_id)
 
 
+def admit_current_context_frame(checkpoint, payload):
+    """Judge a current-screen context reread with the same historical rule.
+
+    Chejin's targeted messages route permits one frame and zero scrolls. Do
+    not send it through the independent product's exact-text anchor search.
+    This is navigation evidence only; final frame/media admission still runs.
+    """
+    from apps.wechat_ai_customer_service.adapters.business_viewport_continuity import (
+        boundary_tokens_for_observations, compare_business_viewport_continuity)
+    from apps.wechat_ai_customer_service.adapters.message_viewport_projection import normalized_business_message_sequence
+    rows = payload.get('observations') or []
+    frame_id = str((payload.get('frame_observation') or {}).get('frame_id') or payload.get('frame_id') or '')
+    entries = historical_text_alignment.comparison_entries(checkpoint)
+    projection = [e.get('business_projection') or {} for e in entries]
+    tokens = {i: set(e.get('strong_boundary_tokens') or []) for i, e in enumerate(entries)}
+    decision = {'relation': 'business_sequence_not_continuous', 'reason': 'context_frame_invalid'}
+    unchanged = (payload.get('ui_action_performed') is not True
+                 and (payload.get('history_load') or {}).get('scroll_steps', 0) == 0)
+    if (payload.get('ok') is True and frame_id and isinstance(rows, list) and rows
+            and unchanged and not payload.get('observation_validation_errors')):
+        decision = compare_business_viewport_continuity(projection,
+            normalized_business_message_sequence(rows, message_viewport_bounds=None),
+            old_boundary_tokens=tokens,
+            new_boundary_tokens=boundary_tokens_for_observations(rows, committed_only=False),
+            allow_history_suffix=True)
+        if decision['relation'] not in historical_text_alignment.ACCEPTED_RELATIONS:
+            tolerant = historical_text_alignment.validated_projection_continuity(checkpoint, rows,
+                old_projection=projection, old_boundary_tokens=tokens,
+                pre_frame_id='checkpoint:current-context', post_frame_id=frame_id)
+            if tolerant:
+                decision = tolerant
+    accepted = decision['relation'] in historical_text_alignment.ACCEPTED_RELATIONS
+    return {**payload, 'history_load': {
+        'ok': payload.get('ok') is True, 'mode': 'current_frame_historical_context',
+        'mechanism': 'shared_historical_continuity', 'anchor_found': accepted,
+        'anchor_type': 'historical_context' if accepted else '',
+        'scroll_steps': 0, 'snapshot_count': 1, 'restored_to_latest': False,
+        'viewport_unchanged': unchanged, 'stopped_reason': decision.get('reason', ''),
+        'historical_decision': decision}}
+
+
 def reconcile_viewports(checkpoint, before, after, decision, *, old_boundary_tokens):
     """Use HC for old ordinary text around an otherwise unchanged media action.
 
@@ -61,19 +102,16 @@ def refreshed_correspondence(payload, checkpoint):
     if previous.get('version') == 2 and previous.get('policy_digest') != (
             checkpoint.get('historical_match_policy') or {}).get('policy_digest'):
         return None
-    built = historical_text_alignment.build_correspondence(checkpoint, evidence.get('observations') or [],
-        pre_frame_id=alignment['pre_frame_id'], post_frame_id=alignment['post_frame_id'],
-        new_boundary_tokens=boundary_tokens_for_observations(evidence.get('observations') or [], committed_only=False))
-    if not built:
-        return None
-    proof = built['proof']
-    original = {p['observation_id']: p for p in previous['pairs']}
-    if set(original) != {p['observation_id'] for p in proof['pairs']}:
-        return None
-    identity_fields = ('observation_id', 'source_message_key', 'canonical_text_sha256', 'observed_text_sha256')
-    if previous.get('version') == 2:
-        identity_fields += ('effective_text_version', 'old_index', 'new_index')
-    if any(any(p[key] != original[p['observation_id']][key] for key in identity_fields) for p in proof['pairs']):
+    # Only the authority envelope may refresh. Recompute and compare every
+    # other saved proof field (body hashes, IDs, frame IDs, versions, scores),
+    # retaining the decoder for the original receipt rather than creating a
+    # new-read proof with a different transcript mapping.
+    proof = {**previous, 'checkpoint_digest': checkpoint['checkpoint_digest']}
+    try:
+        historical_text_alignment.verify_correspondence(proof, checkpoint, evidence.get('observations') or [],
+            pre_frame_id=alignment['pre_frame_id'], post_frame_id=alignment['post_frame_id'],
+            new_boundary_tokens=boundary_tokens_for_observations(evidence.get('observations') or [], committed_only=False))
+    except ValueError:
         return None
     return proof
 

@@ -33,7 +33,8 @@ def _corresponding_sequences(old_guard, snapshot, decision):
     if (not isinstance(tokens, dict) or any(not isinstance(v, list) or str(int(k)) != k for k, v in tokens.items())):
         raise ValueError('interruption_boundary_changed')
     compared = compare_historical_viewports(checkpoint, baseline, current,
-        old_boundary_tokens={int(k): set(v) for k, v in tokens.items()})
+        old_boundary_tokens={int(k): set(v) for k, v in tokens.items()},
+        frozen_correspondence=decision['text_correspondence'])
     if compared is None:
         raise ValueError('interruption_correspondence_changed')
     old, new, rebuilt = compared

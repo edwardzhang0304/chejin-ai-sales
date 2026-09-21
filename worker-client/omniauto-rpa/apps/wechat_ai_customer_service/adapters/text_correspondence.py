@@ -375,7 +375,46 @@ def _send_ocr_text_correspondence(
 _SEND_CHAT_KINDS = {'text_bubble', 'voice_bubble', 'voice_transcript', 'image_bubble'}
 
 
-def find_new_matching_self_message(baseline_sequence, current_sequence, text, *, include_status_counterevidence=False):
+def _historical_send_overlap(before, after, historical_alignment, current_observations):
+    """Locate old chat with HC; compact rows must still belong to their frame.
+
+    The checkpoint is the one admitted before typing. Neither the new outgoing
+    bubble nor this function may manufacture historical authority.
+    """
+    from .historical_text_alignment import compare_historical_viewports, ACCEPTED_RELATIONS
+    from .business_viewport_continuity import boundary_tokens_for_observations
+    from .message_viewport_projection import ordered_message_viewport_observations
+
+    checkpoint = historical_alignment['checkpoint']
+    baseline = historical_alignment['baseline_observations']
+    if not isinstance(checkpoint, dict) or not isinstance(baseline, list) or not isinstance(current_observations, list):
+        raise ValueError('SEND_HISTORY_OBSERVATIONS_MISSING')
+    old_rows = ordered_message_viewport_observations(baseline)
+    new_rows = ordered_message_viewport_observations(current_observations)
+    for sequence, rows in ((before, old_rows), (after, new_rows)):
+        observed = [r for r in rows if r.get('row_kind') in _SEND_CHAT_KINDS]
+        if len(sequence) != len(observed) or any(
+                any(a.get(k) != b.get(k) for k in ('observation_id', 'row_kind', 'sender_role'))
+                or _normalized_send_ocr_correspondence_text(a.get('content_normalized'))
+                != _normalized_send_ocr_correspondence_text(b.get('content_clean'))
+                for a, b in zip(sequence, observed)):
+            raise ValueError('SEND_HISTORY_FRAME_CHANGED')
+    compared = compare_historical_viewports(checkpoint, old_rows, new_rows,
+        old_boundary_tokens=boundary_tokens_for_observations(old_rows, committed_only=False))
+    if compared is None:
+        return None  # Exact history uses the unchanged deterministic overlap.
+    decision = compared[2]
+    if decision['relation'] not in ACCEPTED_RELATIONS:
+        return []
+    pairs = decision['matched_pairs']
+    count = len(pairs)
+    if not count or pairs != [{'old_index': len(old_rows)-count+i, 'new_index': i} for i in range(count)]:
+        return []
+    return [sum(r.get('row_kind') in _SEND_CHAT_KINDS for r in new_rows[:count])]
+
+
+def find_new_matching_self_message(baseline_sequence, current_sequence, text, *, include_status_counterevidence=False,
+                                   historical_alignment=None, current_observations=None):
     """Unique suffix/prefix baseline plus exactly one newly added self bubble.
 
     A customer's response after that bubble does not undo the physical send.
@@ -389,6 +428,13 @@ def find_new_matching_self_message(baseline_sequence, current_sequence, text, *,
     before,after=chats(baseline_sequence),chats(current_sequence)
     old,new=list(map(signature,before)),list(map(signature,after))
     overlaps=[count for count in range(1,min(len(old),len(new))+1) if old[-count:]==new[:count]] if before else [0]
+    if historical_alignment is not None:
+        try:
+            aligned = _historical_send_overlap(before, after, historical_alignment, current_observations)
+        except (ValueError, KeyError, TypeError, IndexError):
+            return None
+        if aligned is not None:
+            overlaps = aligned
     if len(overlaps)!=1:
         return None
     offset=overlaps[0]
@@ -436,7 +482,9 @@ def confirmed_post_send_customer_suffix(evidence, *, target, text):
     before,current=baseline.get('message_sequence'),snapshot.get('message_sequence')
     if not isinstance(before,list) or not isinstance(current,list):
         return None
-    found=find_new_matching_self_message(before,current,text)
+    found=find_new_matching_self_message(before,current,text,
+        historical_alignment=baseline.get('receipt_historical_alignment'),
+        current_observations=snapshot.get('observations'))
     if not found or found.get('observation_id')!=obj(confirmation.get('confirmed_observation')).get('observation_id'):
         return None
     ids=found['following_customer_observation_ids']

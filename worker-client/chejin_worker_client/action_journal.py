@@ -217,6 +217,75 @@ def initialize_action_journal(
     return target
 
 
+def refresh_unattempted_send_journal(
+    path: str | Path,
+    *,
+    conversation_id: str,
+    canonical_action_id: str,
+    reserved_worker_stable_id: str,
+    pre_frame_id: str,
+    pre_action_identity_sequence: list[dict[str, Any]],
+    setup_context: dict[str, Any],
+) -> dict[str, Any]:
+    """Re-prepare an untouched send after the caller validates a fresh read.
+
+    Historical continuity belongs to the normal read/checkpoint gates. The
+    old prepare frame is evidence, not a second cross-frame identity rule.
+    The caller holds the UI lease; no child may be running during this write.
+    """
+    from apps.wechat_ai_customer_service.adapters.send_launch_journal import (
+        earlier_attempts_clear,
+    )
+
+    payload = read_action_journal(path)
+    binding = {
+        "action_kind": "send",
+        "transaction_id": canonical_action_id,
+        "canonical_action_id": canonical_action_id,
+        "conversation_id": conversation_id,
+        "reserved_worker_stable_id": reserved_worker_stable_id,
+    }
+    attempts = payload.get("send_launch_attempts", [])
+    if (
+        any(not value or payload.get(key) != value for key, value in binding.items())
+        or payload.get("action_phase") != "not_attempted"
+        or not action_journal_is_strictly_not_attempted(payload)
+        or any(item.get("action_phase") != "not_attempted"
+               for item in payload.get("items", {}).values())
+        or not isinstance(attempts, list)
+        or not earlier_attempts_clear(attempts)
+    ):
+        raise ValueError("C3_SEND_IDENTITY_JOURNAL_CONFLICT")
+    evidence = payload.get("prepare_evidence") or {}
+    original_context = evidence.get("pre_send_setup_context") or {}
+    # Older journals may predate setup_context. Keep every binding they did
+    # record; a renewed authorization revision is checked by the caller.
+    for key in ("reply_action_id", "task_id", "conversation_id", "flow_id", "reply_text_hash"):
+        if key in original_context and original_context[key] != setup_context.get(key):
+            raise ValueError("C3_SEND_IDENTITY_JOURNAL_CONFLICT")
+    if (not pre_frame_id or not isinstance(pre_action_identity_sequence, list)
+            or any(not isinstance(item, dict) for item in pre_action_identity_sequence)
+            or setup_context.get("reply_action_id") != canonical_action_id
+            or setup_context.get("conversation_id") != conversation_id):
+        raise ValueError("C3_SEND_IDENTITY_JOURNAL_CONFLICT")
+    preparation = {
+        "pre_frame_id": pre_frame_id,
+        "pre_action_identity_sequence": pre_action_identity_sequence,
+        "prepare_evidence": {**evidence, "pre_send_setup_context": setup_context},
+    }
+    if all(payload.get(key) == value for key, value in preparation.items()):
+        return payload
+    # Keep the original preparation once, plus the current one. Preserve all
+    # phase, item and launch records (including request-file references).
+    payload.setdefault("original_send_preparation", {
+        key: payload.get(key) for key in preparation
+    })
+    payload.update(preparation)
+    payload["updated_at"] = _now_iso()
+    _atomic_write(Path(path), payload)
+    return payload
+
+
 def record_action_sequence_alignment(
     path: str | Path,
     evidence: dict[str, Any],

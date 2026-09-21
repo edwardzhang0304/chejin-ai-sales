@@ -10920,6 +10920,17 @@ def send_payload(
             "send_baseline": baseline_snapshot,
             "error": "The visible message sequence changed after the final C2 refresh.",
         })
+    historical = ((expected_context_guard or {}).get("worker_continuity_contract") or {}).get("historical_alignment")
+    receipt_historical_alignment = None
+    if isinstance(historical, dict):
+        # Keep the admitted authority, but compare the actual S0 observations.
+        # Persist it with the receipt so Worker/backend recompute the same HC
+        # decision when reading customer messages after the sent bubble.
+        receipt_historical_alignment = {
+            "checkpoint": historical["checkpoint"],
+            "baseline_observations": baseline_snapshot.get("observations"),
+        }
+        baseline_snapshot["receipt_historical_alignment"] = receipt_historical_alignment
     input_region_seed = {
         "input_region": dict(baseline_snapshot.get("input_region") or {}),
         "age_seconds": 0.0,
@@ -11197,6 +11208,7 @@ def send_payload(
                 baseline_snapshot.get("message_sequence") or []
             ),
             receipt_text=final_send_text,
+            receipt_historical_alignment=receipt_historical_alignment,
         )
     except Exception as exc:
         post_send_snapshot = {
@@ -11316,6 +11328,7 @@ def send_payload(
         baseline_message_sequence=list(baseline_snapshot.get("message_sequence") or []),
         artifact_dir=artifact_dir,
         initial_snapshot=post_send_snapshot,
+        receipt_historical_alignment=receipt_historical_alignment,
     )
     _sidecar_timing_finish(timing, "sent_confirmation", sent_confirmation_started)
     if not sent_confirmation.get("ok"):
@@ -18000,6 +18013,7 @@ def capture_send_fact_snapshot(
     expected_context_guard: dict[str, Any] | None = None,
     receipt_baseline_message_sequence: list[dict[str, Any]] | None = None,
     receipt_text: str = "",
+    receipt_historical_alignment: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     from apps.wechat_ai_customer_service.adapters.pre_send_read_failure import read_call
     screenshot, path = read_call("capture", capture_wechat, hwnd, artifact_dir=artifact_dir, label=label)
@@ -18016,6 +18030,7 @@ def capture_send_fact_snapshot(
         expected_context_guard=expected_context_guard,
         receipt_baseline_message_sequence=receipt_baseline_message_sequence,
         receipt_text=receipt_text,
+        receipt_historical_alignment=receipt_historical_alignment,
     )
 
 
@@ -18034,6 +18049,7 @@ def build_send_fact_snapshot_from_frame(
     expected_context_guard: dict[str, Any] | None = None,
     receipt_baseline_message_sequence: list[dict[str, Any]] | None = None,
     receipt_text: str = "",
+    receipt_historical_alignment: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     supplied_ocr_items = ocr_items is not None
     ocr_plan: dict[str, Any] = {
@@ -18301,6 +18317,8 @@ def build_send_fact_snapshot_from_frame(
                 list(receipt_baseline_message_sequence),
                 list(snapshot.get("message_sequence") or []),
                 receipt_text,
+                historical_alignment=receipt_historical_alignment,
+                current_observations=snapshot.get("observations"),
             )
             if receipt_message is None:
                 same_frame_fallback_reason = (
@@ -18330,6 +18348,7 @@ def build_send_fact_snapshot_from_frame(
             expected_context_guard=expected_context_guard,
             receipt_baseline_message_sequence=receipt_baseline_message_sequence,
             receipt_text=receipt_text,
+            receipt_historical_alignment=receipt_historical_alignment,
         )
         full_ocr_plan = {
             "source": "full_fallback",
@@ -18387,6 +18406,7 @@ def confirm_reply_sent(
     artifact_dir: str | None = None,
     max_attempts: int = 6,
     initial_snapshot: dict[str, Any] | None = None,
+    receipt_historical_alignment: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     attempts: list[dict[str, Any]] = []
     failure_seen = False
@@ -18410,6 +18430,7 @@ def confirm_reply_sent(
                         baseline_message_sequence or []
                     ),
                     receipt_text=text,
+                    receipt_historical_alignment=receipt_historical_alignment,
                 )
         except Exception as exc:
             attempts.append({"attempt": attempt, "ok": False, "error": repr(exc)})
@@ -18421,6 +18442,8 @@ def confirm_reply_sent(
             list(snapshot.get("message_sequence") or []),
             text,
             include_status_counterevidence=True,
+            historical_alignment=receipt_historical_alignment,
+            current_observations=snapshot.get("observations"),
         )
         if snapshot.get("ok") and confirmed_message:
             status = confirmed_message.get("send_status_evidence") or {}

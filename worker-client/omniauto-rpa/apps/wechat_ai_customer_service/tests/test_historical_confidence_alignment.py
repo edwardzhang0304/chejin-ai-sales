@@ -47,6 +47,30 @@ def test_multiple_nonexact_rows_and_short_model_text_are_not_v1_filtered():
     assert result['continuity']['new_suffix_indexes'] == [4]
 
 
+@pytest.mark.parametrize('kind', ['voice', 'system'])
+@pytest.mark.parametrize('changes', [2, 3, 4])
+def test_completed_history_text_domains_share_the_same_threshold(kind, changes):
+    from apps.wechat_ai_customer_service.adapters.message_viewport_projection import normalized_business_message_sequence
+    text = '我想了解一下适合每天上下班代步的新能源车，需要空间宽敞而且省钱'
+    cp, rows = scenario(['唯一的开场支点', text], ['唯一的开场支点', '错'*changes+text[changes:], text])
+    old = frame(['唯一的开场支点', text])
+    for r in (old[1], rows[1]):
+        r.update(message_type=kind, row_kind='voice_transcript' if kind == 'voice' else 'system_message')
+        if kind == 'voice': r.update(voice_state='transcribed', native_source_message_id='voice-history')
+    projections = normalized_business_message_sequence(old, message_viewport_bounds=None)
+    cp['recent_messages'][1].update(message_type=kind, business_projection=projections[1],
+        native_source_message_id=old[1].get('native_source_message_id'))
+    cp['checkpoint_digest'] = checkpoint_digest(cp)
+    report = {}; found = build(cp, rows, diagnostics=report)
+    assert bool(found) == (changes <= 3), report
+    if found:
+        assert found['proof']['version'] == 2
+        assert found['proof']['pairs'][1]['matched_by'] == 'confidence'
+        assert found['continuity']['new_suffix_indexes'] == [2]
+        assert verify_correspondence(found['proof'], cp, rows, pre_frame_id='checkpoint:test',
+            post_frame_id='current', new_boundary_tokens=boundary_tokens_for_observations(rows, committed_only=False)) == found['continuity']
+
+
 @pytest.mark.parametrize('suffix', ['这款600Pro适合日常通勤，具体信息可以再看看。', '600Plus', '预算3万', '不要了', '唯一末句'])
 def test_new_suffix_is_never_removed_by_similarity(suffix):
     cp, rows = scenario(new=['唯一开场','这款600Pr0适合日常通勤，具体信息可以再看看。','唯一末句',suffix])
@@ -177,7 +201,7 @@ def test_mixed_media_uses_original_identity_sequence_not_text_score(case):
     else:
         assert result,result
         assert result['continuity']['new_suffix_indexes']==[6]
-        assert [p['old_index'] for p in result['proof']['pairs']]==[0,2,4,5]
+        assert [p['old_index'] for p in result['proof']['pairs']]==[0,1,2,4,5]
         assert verify_correspondence(result['proof'],cp,rows,pre_frame_id='checkpoint:test',post_frame_id='current',
             new_boundary_tokens=boundary_tokens_for_observations(rows,committed_only=False))==result['continuity']
     assert (cp,rows)==frozen

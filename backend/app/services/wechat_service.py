@@ -733,7 +733,7 @@ def _raise_message_identity_collision(
             and existing.source_message_key == source_message_key
             and existing_identity['sender_role'] == incoming_identity['sender_role']
             and existing_identity['message_type'] == incoming_identity['message_type']
-            and existing_identity['message_type'] in {'text', 'voice'}
+            and existing_identity['message_type'] in {'text', 'voice', 'system'}
             and existing_identity['media_identity_hash'] == incoming_identity['media_identity_hash']):
         # The full authoritative sequence has already proved this same source
         # and observation. Do not veto that decision using an old body hash.
@@ -4907,6 +4907,8 @@ def ingest_messages(db: Session, worker: Worker, payload: WechatMessageIngestReq
                 incoming_raw_payload=raw_payload,
                 source_message_key=item.source_message_key,
                 dedupe_key=dedupe_key,
+                historical_text_confirmed=(item.source_message_key,
+                    (raw_payload.get('observation') or {}).get('observation_id')) in historical_pairs,
             )
             duplicated_count += 1
             results.append(
