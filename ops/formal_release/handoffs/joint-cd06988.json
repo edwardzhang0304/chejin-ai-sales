@@ -1,0 +1,157 @@
+{
+  "schema_version": 1,
+  "repository": "edwardzhang0304/chejin-ai-sales",
+  "reviewed_commit": "cd06988e2d4c9ddbbfb000ab318fa80667cdc0ad",
+  "target_version": "0.9.95",
+  "approval": "Owner requested formal Windows EXE and confirmed manual preserve-data upgrade and clients offline. Include reviewed cd06988/664652b and prior history.",
+  "original_verification_sha256": "ea70c14e103022dddc2b797635a4c877f7e3cf4fc41187619cddac0b3c29dbb1",
+  "source_sha256": {
+    "backend/app/services/wechat_service.py": "cd092a0255fb34ab6cf00847c89ad2b4e5b4e4ef9626eab350121f3c0a70652d",
+    "backend/tests/test_history_collision_paths_http.py": "47d14fdd2ee28b46907583621730827d53e540e5da6dcbe8b2e9a310c33044d6",
+    "backend/tests/test_post_send_customer_read_http.py": "e33b3ec1e01493861536557951ab95780ad4fbcab7e7757a37c53c745c06a727",
+    "worker-client/chejin_worker_client/action_journal.py": "e9cfb2fc0158a7d619fa6390a35f5a4a62cbfb227512d29f6e1b4efcaacd1f6c",
+    "worker-client/chejin_worker_client/historical_alignment.py": "08cc2f2da48f5340360d154a8874fab00bf8aa7dbe7a50905f585a4012668205",
+    "worker-client/chejin_worker_client/task_runner.py": "dd2f1b872f1a8ff93d384b86b84bf6391c3ac58751d0eeef961bd334959bba49",
+    "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/adapters/historical_text_alignment.py": "ce794cd00389526d944a70bd4937f8074afed13aedbbf91e763f69b560670366",
+    "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/adapters/send_interruption.py": "b765b144d95e9f7f389a5fd0b1a26c6f0bd66787434ea754db78f448d4ac9e77",
+    "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/adapters/text_correspondence.py": "b436a88106868b9a584a3641d4e1686868c502bd2907e1fcde434f9433e7bd7e",
+    "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/adapters/wechat_win32_ocr_sidecar.py": "75ab218a5481a2754da5596fd2dcca288979916f1fa77662d71b613d6c71bcec",
+    "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/tests/fixtures/frozen_voice_hc_v2.json": "9df05d5a236d5d7f09b0cb8d8c7ce71b338f40a8c390c81ff66dedfceafd2fb0",
+    "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/tests/test_historical_confidence_alignment.py": "f78c248f83b9596dcf19934cb826b1ef68d3bd1d7b0ece5104b98eee6b034bcf",
+    "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/tests/test_send_history_confidence.py": "486d3d55dd3fe5f44a291a957f1ff990b07ba4a026e650336c3f88079128d4d5",
+    "worker-client/tests/test_current_context_history_confidence.py": "04fbf680ac36ae26def5790097d4ef557f138bbd876213bae79701e3bcad1655",
+    "worker-client/tests/test_historical_frozen_voice_compat.py": "25406ac1f0b86e0ec5d7312f56b50d7bcd599585cdd49e66b740b3677476e205",
+    "worker-client/tests/test_historical_receipt_recheck.py": "c0c9840dafc0bfdc32ec20c42a3e5a66acb1d9999a75a35f21608828fef69362",
+    "worker-client/tests/test_prepared_send_restart.py": "bc88a4cd31f83010e4f13382b3deb07da4b741b702a1cdab6b8b1a603800890e",
+    "worker-client/tests/test_send_preparation_refresh.py": "dd5957cb7af359015c538cf5eb2fd50cc1e0a93c560d9ed2fb48b5bba4389526",
+    "worker-client/tests/test_voice_prepare_history_confidence.py": "55cf4318191484bc2ec0e4cf093594a465ad0888f9e40c7e11f3df61d2ac8b48"
+  },
+  "checks": [
+    {
+      "name": "independent-prepared-send-recovery",
+      "original_xml_sha256": "16ee1a1ae94d73b326f42d1a1b9f956b2486af63a07aad61970b9714381455b6",
+      "count": 25,
+      "cases": [
+        {
+          "name": "chejin-history-callsite-unification-20260921.worker-client.tests.test_prepared_send_restart::test_prepared_same_message_after_process_exit[False]",
+          "result": "passed"
+        },
+        {
+          "name": "chejin-history-callsite-unification-20260921.worker-client.tests.test_prepared_send_restart::test_prepared_same_message_after_process_exit[True]",
+          "result": "passed"
+        },
+        {
+          "name": "chejin-history-callsite-unification-20260921.worker-client.tests.test_send_preparation_refresh::test_refresh_keeps_original_and_launch_references",
+          "result": "passed"
+        },
+        {
+          "name": "chejin-history-callsite-unification-20260921.worker-client.tests.test_send_preparation_refresh::test_refresh_rejects_changed_send_identity[canonical_action_id]",
+          "result": "passed"
+        },
+        {
+          "name": "chejin-history-callsite-unification-20260921.worker-client.tests.test_send_preparation_refresh::test_refresh_rejects_changed_send_identity[reserved_worker_stable_id]",
+          "result": "passed"
+        },
+        {
+          "name": "chejin-history-callsite-unification-20260921.worker-client.tests.test_send_preparation_refresh::test_refresh_rejects_changed_send_identity[reply_text_hash]",
+          "result": "passed"
+        },
+        {
+          "name": "chejin-history-callsite-unification-20260921.worker-client.tests.test_send_preparation_refresh::test_refresh_cannot_reset_an_attempted_or_uncertain_send[trigger_attempted]",
+          "result": "passed"
+        },
+        {
+          "name": "chejin-history-callsite-unification-20260921.worker-client.tests.test_send_preparation_refresh::test_refresh_cannot_reset_an_attempted_or_uncertain_send[confirmed]",
+          "result": "passed"
+        },
+        {
+          "name": "chejin-history-callsite-unification-20260921.worker-client.tests.test_send_preparation_refresh::test_refresh_cannot_reset_an_attempted_or_uncertain_send[unresolved_launch]",
+          "result": "passed"
+        },
+        {
+          "name": "chejin-history-callsite-unification-20260921.worker-client.tests.test_send_preparation_refresh::test_failed_atomic_refresh_leaves_original_preparation_recoverable",
+          "result": "passed"
+        },
+        {
+          "name": "chejin-history-callsite-unification-20260921.worker-client.tests.test_action_journal.ActionJournalTest::test_action_phase_is_monotonic",
+          "result": "passed"
+        },
+        {
+          "name": "chejin-history-callsite-unification-20260921.worker-client.tests.test_action_journal.ActionJournalTest::test_atomic_write_fails_closed_after_bounded_replace_denials",
+          "result": "passed"
+        },
+        {
+          "name": "chejin-history-callsite-unification-20260921.worker-client.tests.test_action_journal.ActionJournalTest::test_atomic_write_retries_transient_replace_denial",
+          "result": "passed"
+        },
+        {
+          "name": "chejin-history-callsite-unification-20260921.worker-client.tests.test_action_journal.ActionJournalTest::test_identity_commit_never_rekeys_the_action_local_item",
+          "result": "passed"
+        },
+        {
+          "name": "chejin-history-callsite-unification-20260921.worker-client.tests.test_action_journal.ActionJournalTest::test_kill_after_confirmation_preserves_business_result",
+          "result": "passed"
+        },
+        {
+          "name": "chejin-history-callsite-unification-20260921.worker-client.tests.test_action_journal.ActionJournalTest::test_kill_after_worker_result_checkpoint_preserves_ledger_input",
+          "result": "passed"
+        },
+        {
+          "name": "chejin-history-callsite-unification-20260921.worker-client.tests.test_action_journal.ActionJournalTest::test_kill_before_trigger_remains_safe_to_retry",
+          "result": "passed"
+        },
+        {
+          "name": "chejin-history-callsite-unification-20260921.worker-client.tests.test_action_journal.ActionJournalTest::test_kill_immediately_after_trigger_preserves_no_repeat_barrier",
+          "result": "passed"
+        },
+        {
+          "name": "chejin-history-callsite-unification-20260921.worker-client.tests.test_action_journal.ActionJournalTest::test_pre_action_sequence_and_reserved_id_survive_alignment_write",
+          "result": "passed"
+        },
+        {
+          "name": "chejin-history-callsite-unification-20260921.worker-client.tests.test_action_journal.ActionJournalTest::test_precommit_journal_rejects_source_only_identity_and_strips_nested_key",
+          "result": "passed"
+        },
+        {
+          "name": "chejin-history-callsite-unification-20260921.worker-client.tests.test_action_journal.ActionJournalTest::test_production_journal_initializers_have_no_formal_source_key_literal",
+          "result": "passed"
+        },
+        {
+          "name": "chejin-history-callsite-unification-20260921.worker-client.tests.test_task_runner.TaskRunnerTest::test_duplicated_send_claim_without_physical_attempt_resumes_send_once",
+          "result": "passed"
+        },
+        {
+          "name": "chejin-history-callsite-unification-20260921.worker-client.tests.test_task_runner.TaskRunnerTest::test_unattempted_send_intent_is_released_for_task_recovery",
+          "result": "passed"
+        },
+        {
+          "name": "chejin-history-callsite-unification-20260921.worker-client.tests.test_task_runner.TaskRunnerTest::test_triggered_send_intent_replays_unknown_without_resending",
+          "result": "passed"
+        },
+        {
+          "name": "chejin-history-callsite-unification-20260921.worker-client.tests.test_task_runner.TaskRunnerTest::test_action_journal_vertical_c3_send_reaches_sent_ack",
+          "result": "passed"
+        }
+      ]
+    }
+  ],
+  "environment": {
+    "source": "Existing local engineering and independent review; CI verifies identity only. Final journal XML contains 25 cases. Earlier 319 unit and 56 HTTP/PostgreSQL logs retained for their unchanged coverage, not falsely regenerated as XML.",
+    "business_tests_reexecuted": 0,
+    "prior_evidence": [
+      {
+        "name": "unit-verified.log",
+        "sha256": "3956a40969154bcdf348653b5003cc533bb8e4337094622f5de8a3727d845eaf"
+      },
+      {
+        "name": "http-verified.log",
+        "sha256": "dc1ecb5237ec005675fa42a2924da31e1821e60cb5b8463d33bf7b822cd07c7b"
+      }
+    ],
+    "not_verified": [
+      "Windows physical sends, real model, onsite recovery and complete post-send Flow remain pending.",
+      "Conditional media-count branch is deferred, not claimed fixed.",
+      "Ten supplemental baseline fixture failures, fourteen missing private fixtures, previous synthetic scaling boundaries not counted passed."
+    ]
+  }
+}
