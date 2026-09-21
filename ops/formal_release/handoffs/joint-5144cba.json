@@ -1,0 +1,708 @@
+{
+  "schema_version": 1,
+  "repository": "edwardzhang0304/chejin-ai-sales",
+  "reviewed_commit": "5144cba5a5c0a03409367d25135fd6c2880f47b3",
+  "target_version": "0.9.94",
+  "approval": "Owner authorized formal preserve-data manual upgrade from original0.9.93, confirmed normal exit and no pending items. Include reviewed5144cba and previous5619373, shared40a899b.",
+  "original_verification_sha256": "d45dda737b20e1d8aa165da9cb4e4ecb5358a5134c42b60296c83cf62e07b89f",
+  "source_sha256": {
+    "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/wechat_message_envelope.py": "d656a2c113b05c07eb7afdc35078a2a3f59df08e25111e070a2d3a13f180e504",
+    "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/adapters/wechat_win32_ocr_sidecar.py": "2378334a75e078006581abeb2232f55b9815d11d209ab684b4b7dbdcbbbfc9d0",
+    "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/adapters/wechat_win32_ocr/voice_icons.py": "0b090dc4bbc7cf82c8c9c468984b84c358fbfaff2f6032f522d664eaf7a71356",
+    "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/adapters/wechat_win32_ocr/voice_regions.py": "9d62d139cadad972b430a21136eccb0f8b947fe1d806f0aa9aeecde6843d70a9",
+    "worker-client/tests/test_voice_proof_envelope.py": "14956ccab9f865effcac55c9f3a0179244b234472ada3d9361b7503c1962dfea",
+    "worker-client/tests/test_voice_transcript_handoff.py": "2255a4b0f4ddace2a6175d406e019e1d0002c7ccc5f95197920e82b13ca90c8b",
+    "worker-client/tests/test_wechat_win32_ocr_sidecar_voice.py": "96096c6b159db4a02b65b9a4b6b1cd454c2ae68d6f4e78227f66a285d287e6cc",
+    "backend/app/services/historical_text_alignment.py": "50fd4c0b382b347cec5769d80b31f324f578b8c28be79463533dda763f7af11b",
+    "backend/app/services/wechat_service.py": "051cbd4a338966476cfa873ae3131973b3c3007b04a93a947171d4794d10f07f",
+    "backend/tests/test_c3_api.py": "481d5abf703e70981ef0025c0486e8689ed6aa9b7909bdf0eaff7b93369626b6",
+    "backend/tests/test_confirmed_sent_history_http.py": "1e6b718db6abb746792ae437052c1ef662d94a20b721e9dbeb9a6c825d8a52bc",
+    "backend/tests/test_historical_confidence_http.py": "03e956a25e7019c69059011011f5c6de6e95598cf6a4a99d7ddd64d24018bd8b",
+    "backend/tests/test_historical_confidence_worker_http.py": "c008f1a9fcf108640ac023a4b853136226408508eea90656628be2c26b99f46b",
+    "worker-client/chejin_worker_client/historical_alignment.py": "da7c0c80f67781f4a1d3ddc2ba1a303bd77eea5bc37272326a187ab9ed40751b",
+    "worker-client/chejin_worker_client/task_runner.py": "08852aebca59c6b0229d403b997c8b3c0c96a63bcfbaecbf88055706cf6759e3",
+    "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/adapters/confirmed_sent_history.py": "d2371d89dbbd41f215440ed01a54ebbbf960cd3f344d7627e9d70313ffcb0d89",
+    "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/adapters/historical_text_alignment.py": "1cf326e1b0f610990eea85425123544fdf53a31d00e5e6d4c182f17a8d444318",
+    "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/tests/test_confirmed_sent_history.py": "7a8647da10a646f44d578fe5b213c0a723d9d4c9130691a4d408540d3ffe6ab1",
+    "worker-client/tests/test_historical_receipt_recheck.py": "4bf3375cb15d17d0ad1435b3848da91f79ffc7b22c53acb760c0f8c905a45982",
+    "worker-client/tests/fixtures/voice_icons/customer_9s.png": "2b60f8d0f7a35dff99a0cdaf3e0575883652915653e4ab03df889c90867b1216",
+    "worker-client/tests/fixtures/voice_icons/provenance.json": "bcbe9841956d29bf333f7afd13b1ab51c6e781dbf59247e6adb4dacb2aae24f8",
+    "worker-client/tests/fixtures/voice_icons/self_2s.png": "4a4fe02e9089d5e4897661f9d6c88c9a572af3d94e0a07a0c1026cc3611c408b",
+    "worker-client/tests/fixtures/voice_icons/text_15w.png": "7b3b8ff29b23310c278cfdadb3d6405b4296b754fe4b6cdf78c31107ac08fc17",
+    "worker-client/tests/fixtures/voice_icons/text_fuel.png": "fc2193f55dea8e51df5be73e201c476c60a87c026fdb904cc4d38a46fa574ab3",
+    "worker-client/tests/test_numeric_voice_regions.py": "f98db200282cbd2abc7e1b6e384c9a9e6e413b8883d2ce65fd56c6ae9686f3af",
+    "worker-client/tests/test_shared_voice_geometry.py": "4fd6cb34782d8c1005677f41fcbdebabb1cb8764a68953c47054cf88ec098909",
+    "worker-client/tests/test_voice_icon_native.py": "036258d3400ab44c502b24bf79919599ddc52aabfdf0a04a93cb55b09e2459b3",
+    "worker-client/tests/test_voice_icon_proof.py": "b863c75c6f34eb8af1b79fa5df805dbd1a5b61ae930053d8eea9149338ebdf16",
+    "worker-client/tests/test_voice_transcript_marker_geometry.py": "fa8dd58e6a92516de4b437aa1256b4e618429027c1a0a99ffd791fcf3987f565",
+    "worker-client/tests/voice_icon_fixtures.py": "5bfc31b3b65d875005f0311926d0e30429f94e39180fcc3e004734208686ee2f"
+  },
+  "checks": [
+    {
+      "name": "history-http",
+      "original_xml_sha256": "8400efdab528d761320144705241d90b630224c0761db0a88eb248d5da7c3454",
+      "cases": [
+        {
+          "name": "tests.test_confirmed_sent_history_http::test_confirmed_sent_history_continues_through_original_pipeline[normal-False-None-False]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_confirmed_sent_history_http::test_confirmed_sent_history_continues_through_original_pipeline[normal-True-None-False]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_confirmed_sent_history_http::test_confirmed_sent_history_continues_through_original_pipeline[hc_typing-False-None-False]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_confirmed_sent_history_http::test_confirmed_sent_history_continues_through_original_pipeline[hc_typing-True-None-False]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_confirmed_sent_history_http::test_confirmed_sent_history_continues_through_original_pipeline[normal-False-voice-False]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_confirmed_sent_history_http::test_confirmed_sent_history_continues_through_original_pipeline[normal-False-image-False]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_confirmed_sent_history_http::test_confirmed_sent_history_continues_through_original_pipeline[hc_loss-False-None-False]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_confirmed_sent_history_http::test_confirmed_sent_history_continues_through_original_pipeline[suppress_async-False-None-False]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_confirmed_sent_history_http::test_confirmed_sent_history_continues_through_original_pipeline[normal-False-None-True]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_confirmed_sent_history_http::test_confirmed_sent_history_continues_through_original_pipeline[normal-False-voice-True]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_confirmed_sent_history_http::test_confirmed_sent_history_continues_through_original_pipeline[normal-False-image-True]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_confirmed_sent_history_http::test_confirmed_sent_history_continues_through_original_pipeline[normal-False-voice-prepare]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_confirmed_sent_history_http::test_confirmed_sent_history_continues_through_original_pipeline[normal-False-image-alternating]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_confirmed_sent_history_http::test_confirmed_sent_history_continues_through_original_pipeline[normal-False-voice-expanded]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_historical_confidence_http::test_hc_http_recomputes_then_continues_original_async_once[None]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_historical_confidence_http::test_hc_http_recomputes_then_continues_original_async_once[score]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_historical_confidence_http::test_hc_http_recomputes_then_continues_original_async_once[runner]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_historical_confidence_http::test_hc_http_recomputes_then_continues_original_async_once[frame]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_historical_confidence_http::test_hc_http_recomputes_then_continues_original_async_once[policy]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_historical_confidence_http::test_hc_http_recomputes_then_continues_original_async_once[version]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_historical_confidence_http::test_hc_http_recomputes_then_continues_original_async_once[suffix]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_historical_confidence_http::test_hc_http_recomputes_then_continues_original_async_once[mapping]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_historical_confidence_http::test_hc_http_recomputes_then_continues_original_async_once[suppress_async]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_historical_confidence_http::test_hc_http_recomputes_then_continues_original_async_once[presend]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_historical_confidence_http::test_hc_http_recomputes_then_continues_original_async_once[presend_source]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_historical_confidence_http::test_hc_http_recomputes_then_continues_original_async_once[presend_pending]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_historical_confidence_http::test_hc_http_recomputes_then_continues_original_async_once[presend_identity]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_historical_confidence_http::test_hc_http_recomputes_then_continues_original_async_once[presend_role]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_historical_confidence_http::test_hc_http_recomputes_then_continues_original_async_once[redelivery]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_historical_confidence_worker_http::test_confidence_read_reaches_async_send_ack_and_flow[normal-False-None]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_historical_confidence_worker_http::test_confidence_read_reaches_async_send_ack_and_flow[normal-True-None]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_historical_confidence_worker_http::test_confidence_read_reaches_async_send_ack_and_flow[normal-False-voice]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_historical_confidence_worker_http::test_confidence_read_reaches_async_send_ack_and_flow[normal-False-image]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_historical_confidence_worker_http::test_confidence_read_reaches_async_send_ack_and_flow[hc_typing-False-None]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_historical_confidence_worker_http::test_confidence_read_reaches_async_send_ack_and_flow[hc_typing-True-None]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_historical_confidence_worker_http::test_confidence_read_reaches_async_send_ack_and_flow[hc_loss-False-None]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_historical_confidence_worker_http::test_confidence_read_reaches_async_send_ack_and_flow[disabled-False-None]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_historical_confidence_worker_http::test_confidence_read_reaches_async_send_ack_and_flow[suppress_async-False-None]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_historical_confidence_worker_http::test_confidence_read_reaches_async_send_ack_and_flow[hc_typing-False-voice]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_historical_confidence_worker_http::test_confidence_read_reaches_async_send_ack_and_flow[hc_typing-False-image]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_historical_confidence_worker_http::test_confidence_read_reaches_async_send_ack_and_flow[voice_full-True-voice]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_historical_confidence_worker_http::test_confidence_read_reaches_async_send_ack_and_flow[image_full-True-image]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_historical_confidence_worker_http::test_confidence_read_reaches_async_send_ack_and_flow[voice_full-True-voice-loss]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_historical_confidence_worker_http::test_confidence_read_reaches_async_send_ack_and_flow[image_full-True-image-loss]",
+          "result": "passed"
+        }
+      ],
+      "count": 44
+    },
+    {
+      "name": "voice-independent",
+      "original_xml_sha256": "1ca00d436dec9f47db43a8e41eb54d4a6392b92a922b9fd4861cba15ba615309",
+      "cases": [
+        {
+          "name": "cj-voice-handoff-review-20260921-R7afYE.test_independent_handoff::test_json_and_repeated_envelopes_preserve_real_binding[0]",
+          "result": "passed"
+        },
+        {
+          "name": "cj-voice-handoff-review-20260921-R7afYE.test_independent_handoff::test_json_and_repeated_envelopes_preserve_real_binding[1]",
+          "result": "passed"
+        },
+        {
+          "name": "cj-voice-handoff-review-20260921-R7afYE.test_independent_handoff::test_json_and_repeated_envelopes_preserve_real_binding[2]",
+          "result": "passed"
+        },
+        {
+          "name": "cj-voice-handoff-review-20260921-R7afYE.test_independent_handoff::test_json_and_repeated_envelopes_preserve_real_binding[3]",
+          "result": "passed"
+        },
+        {
+          "name": "cj-voice-handoff-review-20260921-R7afYE.test_independent_handoff::test_formal_parser_revalidates_previous_rows_on_empty_new_frame[0]",
+          "result": "passed"
+        },
+        {
+          "name": "cj-voice-handoff-review-20260921-R7afYE.test_independent_handoff::test_formal_parser_revalidates_previous_rows_on_empty_new_frame[1]",
+          "result": "passed"
+        },
+        {
+          "name": "cj-voice-handoff-review-20260921-R7afYE.test_independent_handoff::test_formal_parser_revalidates_previous_rows_on_empty_new_frame[2]",
+          "result": "passed"
+        },
+        {
+          "name": "cj-voice-handoff-review-20260921-R7afYE.test_independent_handoff::test_formal_parser_revalidates_previous_rows_on_empty_new_frame[3]",
+          "result": "passed"
+        }
+      ],
+      "count": 8
+    },
+    {
+      "name": "voice-original",
+      "original_xml_sha256": "fd0407aedc002c39d12c85751057f9fbac5e9e2eb6fe917a5bcd25d6b1da80b7",
+      "cases": [
+        {
+          "name": "cj-voice-handoff-review-20260921-R7afYE.test_original_incident::test_original_budget_and_fuel_are_text_and_reach_ingest",
+          "result": "passed"
+        }
+      ],
+      "count": 1
+    },
+    {
+      "name": "joint",
+      "original_xml_sha256": "84c5df1b2fdb37a61c8cf705716d06de1af431e8a8f5eefe4bb64a105e173f58",
+      "cases": [
+        {
+          "name": "worker-client.tests.test_voice_transcript_handoff::test_real_parser_transcript_completes_formal_execution[parsed_transcript0]",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_voice_transcript_handoff::test_real_parser_transcript_completes_formal_execution[parsed_transcript1]",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_voice_transcript_handoff::test_real_parser_transcript_completes_formal_execution[parsed_transcript2]",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_voice_transcript_handoff::test_real_parser_transcript_completes_formal_execution[parsed_transcript3]",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_voice_transcript_handoff::test_old_frame_proof_cannot_authorize_new_frame[parsed_transcript0]",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_voice_transcript_handoff::test_old_frame_proof_cannot_authorize_new_frame[parsed_transcript1]",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_voice_transcript_handoff::test_old_frame_proof_cannot_authorize_new_frame[parsed_transcript2]",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_voice_transcript_handoff::test_old_frame_proof_cannot_authorize_new_frame[parsed_transcript3]",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_voice_proof_envelope::test_envelope_roundtrip_preserves_proof_without_mutating_source",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_voice_proof_envelope::test_transport_does_not_create_or_upgrade_voice_proof[missing]",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_voice_proof_envelope::test_transport_does_not_create_or_upgrade_voice_proof[uncertain]",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_voice_proof_envelope::test_transport_does_not_create_or_upgrade_voice_proof[wrong_bounds]",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_voice_proof_envelope::test_transport_does_not_create_or_upgrade_voice_proof[new_frame]",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_voice_proof_envelope::test_transcript_exclusion_survives_summarization",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_voice_action_v3131.VoiceActionV3132Test::test_ambiguous_result_is_quarantined_after_two_reads_and_one_click",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_voice_action_v3131.VoiceActionV3132Test::test_click_failure_tracks_exact_voice_and_returns_finite_failed_fact",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_voice_action_v3131.VoiceActionV3132Test::test_disconnected_tracking_edges_cannot_confirm_binding",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_voice_action_v3131.VoiceActionV3132Test::test_execute_reaches_one_click_when_only_input_caret_blinks",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_voice_action_v3131.VoiceActionV3132Test::test_execute_uses_current_unique_voice_when_neighbor_diagnostic_changes",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_voice_action_v3131.VoiceActionV3132Test::test_image_explicit_ui_action_invalidates_frame_without_adapter_flags",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_voice_action_v3131.VoiceActionV3132Test::test_image_not_visible_cannot_hide_an_explicit_ui_action",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_voice_action_v3131.VoiceActionV3132Test::test_image_ui_action_invalidates_frame_even_when_phase_not_attempted",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_voice_action_v3131.VoiceActionV3132Test::test_invalid_visible_button_bounds_cancel_before_trigger",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_voice_action_v3131.VoiceActionV3132Test::test_normalized_viewport_digest_changes_for_a_new_message",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_voice_action_v3131.VoiceActionV3132Test::test_prepare_frame_fingerprint_does_not_block_current_unique_voice",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_voice_action_v3131.VoiceActionV3132Test::test_production_has_one_voice_orchestrator_and_no_retired_paths",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_voice_action_v3131.VoiceActionV3132Test::test_public_voice_observation_strips_worker_owned_identity_namespace",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_voice_action_v3131.VoiceActionV3132Test::test_sidecar_stale_phase_write_cannot_overwrite_success_fact",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_voice_action_v3131.VoiceActionV3132Test::test_two_frame_tracking_cannot_claim_continuous_binding",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_voice_action_v3131.VoiceActionV3132Test::test_voice_fingerprint_ignores_only_blinking_input_caret",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_voice_action_v3131.VoiceActionV3132Test::test_voice_fingerprint_ignores_unrelated_viewport_pixels",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_c2_identity_gate_receipts::test_identity_gate_preserves_actual_backend_terminal[retry_required-C2_UNREAD_RESULT_INCONCLUSIVE-retry_required]",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_c2_identity_gate_receipts::test_identity_gate_preserves_actual_backend_terminal[technical_failed-C2_UNREAD_RESULT_REPEATEDLY_INCONCLUSIVE-technical_failed]",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_c2_identity_gate_receipts::test_identity_gate_preserves_actual_backend_terminal[new_facts-None-read_confirmed]",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_c2_identity_gate_receipts::test_confirmed_gate_replay_reuses_durable_retry_receipt",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_c2_identity_gate_receipts::test_failed_gate_delivery_keeps_outbox_and_is_not_reported_success",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_c2_identity_gate_receipts::test_legacy_receipt_is_not_rewritten_without_exact_backend_proof[other_flow]",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_c2_identity_gate_receipts::test_legacy_receipt_is_not_rewritten_without_exact_backend_proof[other_customer]",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_c2_identity_gate_receipts::test_legacy_receipt_is_not_rewritten_without_exact_backend_proof[no_completion_time]",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_c2_identity_gate_receipts::test_legacy_receipt_is_not_rewritten_without_exact_backend_proof[no_retry_time]",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_c2_identity_gate_receipts::test_legacy_receipt_is_not_rewritten_without_exact_backend_proof[wrong_error]",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_c2_identity_gate_receipts::test_legacy_receipt_is_not_rewritten_without_exact_backend_proof[unknown_result]",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_c2_identity_gate_receipts::test_legacy_receipt_is_not_rewritten_without_exact_backend_proof[technical_result]",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_c2_identity_gate_receipts::test_legacy_receipt_is_not_rewritten_without_exact_backend_proof[network]",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_historical_alignment_flow::test_initial_worker_alignment_keeps_original_and_reuses_all_old_ids",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_historical_alignment_flow::test_same_rule_reaches_pre_send_and_physical_guard",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_historical_alignment_flow::test_disabling_correspondence_reproduces_old_failure",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_historical_alignment_flow::test_expired_context_rechecks_same_frozen_frame_without_changing_ids_or_text",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_historical_alignment_flow::test_worker_refresh_persists_same_frame_and_caps_failed_refreshes[TEXT_CORRESPONDENCE_CHECKPOINT_EXPIRED-True]",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_historical_alignment_flow::test_worker_refresh_persists_same_frame_and_caps_failed_refreshes[TEXT_CORRESPONDENCE_CHECKPOINT_EXPIRED-False]",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_historical_alignment_flow::test_worker_refresh_persists_same_frame_and_caps_failed_refreshes[ConnectionError-True]",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_historical_alignment_flow::test_worker_refresh_persists_same_frame_and_caps_failed_refreshes[ConnectionError-False]",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_historical_alignment_flow::test_completed_voice_uses_same_text_rule_but_keeps_media_identity_gate[original]",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_historical_alignment_flow::test_completed_voice_uses_same_text_rule_but_keeps_media_identity_gate[unproven]",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_historical_alignment_flow::test_completed_voice_uses_same_text_rule_but_keeps_media_identity_gate[untranscribed]",
+          "result": "passed"
+        }
+      ],
+      "count": 55
+    },
+    {
+      "name": "shared-joint",
+      "original_xml_sha256": "a949460b6dcc6901814a4ab0c6505517f949b75027d9426010eef395076ae99d",
+      "cases": [
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_voice_proof_envelope::test_envelope_roundtrip_preserves_proof_without_mutating_source",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_voice_proof_envelope::test_transport_does_not_create_or_upgrade_voice_proof[missing]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_voice_proof_envelope::test_transport_does_not_create_or_upgrade_voice_proof[uncertain]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_voice_proof_envelope::test_transport_does_not_create_or_upgrade_voice_proof[wrong_bounds]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_voice_proof_envelope::test_transport_does_not_create_or_upgrade_voice_proof[new_frame]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_voice_proof_envelope::test_transcript_exclusion_survives_summarization",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_voice_icon_proof::test_real_voice_icon_at_both_sides_and_scales[0.75-customer]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_voice_icon_proof::test_real_voice_icon_at_both_sides_and_scales[0.75-self]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_voice_icon_proof::test_real_voice_icon_at_both_sides_and_scales[1-customer]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_voice_icon_proof::test_real_voice_icon_at_both_sides_and_scales[1-self]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_voice_icon_proof::test_real_voice_icon_at_both_sides_and_scales[1.25-customer]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_voice_icon_proof::test_real_voice_icon_at_both_sides_and_scales[1.25-self]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_voice_icon_proof::test_real_voice_icon_at_both_sides_and_scales[1.5-customer]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_voice_icon_proof::test_real_voice_icon_at_both_sides_and_scales[1.5-self]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_voice_icon_proof::test_real_voice_icon_at_both_sides_and_scales[2-customer]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_voice_icon_proof::test_real_voice_icon_at_both_sides_and_scales[2-self]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_voice_icon_proof::test_digits_or_seconds_quote_without_wave_are_text[15w]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_voice_icon_proof::test_digits_or_seconds_quote_without_wave_are_text[15W]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_voice_icon_proof::test_digits_or_seconds_quote_without_wave_are_text[15\\u4e07]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_voice_icon_proof::test_digits_or_seconds_quote_without_wave_are_text[15]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_voice_icon_proof::test_digits_or_seconds_quote_without_wave_are_text[007]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_voice_icon_proof::test_digits_or_seconds_quote_without_wave_are_text[9\"]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_voice_icon_proof::test_digits_or_seconds_quote_without_wave_are_text[2]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_voice_icon_proof::test_digits_or_seconds_quote_without_wave_are_text[300]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_voice_icon_proof::test_digits_or_seconds_quote_without_wave_are_text[\\u8f66\\u578b15W]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_voice_icon_proof::test_incident_15w_original_pixels_are_not_voice",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_voice_icon_proof::test_duration_cannot_borrow_unproven_icon[no_icon]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_voice_icon_proof::test_duration_cannot_borrow_unproven_icon[wrong_role]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_voice_icon_proof::test_duration_cannot_borrow_unproven_icon[wrong_side]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_voice_icon_proof::test_duration_cannot_borrow_unproven_icon[other_bubble]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_voice_icon_proof::test_duration_cannot_borrow_unproven_icon[no_avatar]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_voice_icon_proof::test_duration_cannot_borrow_unproven_icon[ambiguous_avatar]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_voice_icon_proof::test_duration_cannot_borrow_unproven_icon[stale_proof]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_voice_icon_proof::test_ocr_confidence_and_legacy_marker_cannot_override_pixels",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_voice_icon_proof::test_missing_quote_still_requires_actual_icon",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_confirmed_sent_history::test_full_confirmed_sequence_keeps_offscreen_receipts_and_new_repeated_text",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_confirmed_sent_history::test_receipt_wire_shape_cannot_manufacture_or_renumber_a_sent_fact[body]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_confirmed_sent_history::test_receipt_wire_shape_cannot_manufacture_or_renumber_a_sent_fact[hash]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_confirmed_sent_history::test_receipt_wire_shape_cannot_manufacture_or_renumber_a_sent_fact[missing]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_confirmed_sent_history::test_receipt_wire_shape_cannot_manufacture_or_renumber_a_sent_fact[extra]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_confirmed_sent_history::test_receipt_wire_shape_cannot_manufacture_or_renumber_a_sent_fact[stable]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_confirmed_sent_history::test_receipt_wire_shape_cannot_manufacture_or_renumber_a_sent_fact[repeat_action]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_confirmed_sent_history::test_receipt_wire_shape_cannot_manufacture_or_renumber_a_sent_fact[repeat_id]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_confirmed_sent_history::test_already_ingested_receipt_is_not_a_second_history_entry",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_confirmed_sent_history::test_frozen_v1_does_not_acquire_new_receipt_scope",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_confirmed_sent_history::test_completed_voice_keeps_frozen_rule_with_confirmed_self_tail",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_confirmed_sent_history::test_full_server_window_does_not_exclude_its_newly_confirmed_send",
+          "result": "passed"
+        }
+      ],
+      "count": 47
+    }
+  ],
+  "environment": {
+    "source": "Existing engineer and independent Mac OCR/HTTP/PostgreSQL evidence; exact source fingerprints verified. CI only attests reuse, not rerun.",
+    "business_tests_reexecuted": 0,
+    "not_verified": [
+      "Windows real WeChat transcription/sending and real external model pending.",
+      "Three synthetic scaling probes failed before transcript binding; retained as known limitations, not passed.",
+      "Fourteen private-fixture tests skipped, not passed.",
+      "Existing historical missing messages are not automatically repaired."
+    ],
+    "thresholds": "0.86 is icon similarity threshold, not recognition accuracy"
+  }
+}
