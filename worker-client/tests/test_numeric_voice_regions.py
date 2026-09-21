@@ -3,6 +3,7 @@
 The separate numeric-voice HTTP test runs actual OCR and avatar detection.
 """
 from copy import deepcopy
+from pathlib import Path
 
 from PIL import Image, ImageDraw, ImageFont, ImageOps
 import pytest
@@ -16,9 +17,10 @@ def scene(text='15', role='customer', scale=1):
     draw = ImageDraw.Draw(image)
     draw.rounded_rectangle((100, 60, 270, 100), radius=6, fill=(237, 237, 237))
     draw.rounded_rectangle((100, 106, 310, 151), radius=6, fill=(237, 237, 237))
-    for radius in (6, 12, 18):
-        draw.arc((113-radius, 80-radius, 113+radius, 80+radius), -55, 55, fill=(35, 35, 35), width=2)
-    font = ImageFont.truetype('/System/Library/Fonts/STHeiti Light.ttc', 16)
+    # Real glyph crop; the old three arbitrary arcs did not match WeChat.
+    glyph = Image.open(Path(__file__).parent/'fixtures/voice_icons/customer_9s.png').convert('RGB').crop((47,33,77,71))
+    image.paste(glyph.resize((22,28)), (110,66))
+    font = ImageFont.load_default(size=16)
     draw.text((245, 70), '5"', font=font, fill=(25, 25, 25))
     draw.text((110, 118), text, font=font, fill=(25, 25, 25))
     def box(values):
@@ -47,7 +49,7 @@ def test_numeric_body_has_unique_structural_voice_owner(text, role, scale):
     assert list(regions) == [1]
     assert regions[1]['parent'] == [rows[0][k] for k in ('left','top','right','bottom')]
     assert rows == original
-    group = [{**rows[0], '_voice_duration_region': True}, {**rows[1], '_voice_transcript_region': regions[1]}]
+    group = [{**rows[0], '_voice_visual_evidence': regions[1]['voice_evidence']}, {**rows[1], '_voice_transcript_region': regions[1]}]
     assert not sidecar.message_group_is_untranscribed_voice_placeholder(group)
     assert sidecar.strip_voice_duration_prefix_from_message_content('5\n'+text, group) == (text, True)
 

@@ -7,7 +7,7 @@ item={'left':120,'top':105,'right':150,'bottom':125,'center_x':135,'center_y':11
 cases=[
     ('text_overlaps',component,[item],layout,True),
     ('no_text',component,[],layout,False),
-    ('wechat_voice_duration',component,[{**item,'text':'12"'}],layout,False),
+    ('unproven_seconds_text',component,[{**item,'text':'12"'}],layout,True),
     ('seconds_in_plain_text',component,[{**item,'text':'12秒'}],layout,True),
     ('transcribe_button',component,[{**item,'text':'转文字'}],layout,False),
     ('outside_component',component,[{**item,'center_x':400}],layout,False),
