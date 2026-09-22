@@ -572,6 +572,17 @@
       "scope": [
         "c2_contract_0_9_95_generated_schema"
       ]
+    },
+    {
+      "source_repository": "edwardzhang0304/omniauto",
+      "source_branch": "codex/gray-release-0.9.x-source",
+      "source_commit": "8412703c7a0961eca5523d542143e189dda0a538",
+      "scope": [
+        "startup_header_separator_with_wide_clipped_bubble",
+        "thin_line_full_span_and_stable_end_witnesses"
+      ],
+      "status": "source_integration_not_released",
+      "review_evidence": "deliverables/releases/0.9.95/review/startup-separator-20260922/verification.json"
     }
   ],
   "chejin_overlays": [

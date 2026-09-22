@@ -514,33 +514,57 @@ def _separator_content_start(
     """
     columns = [int(left + (right - left) * ratio)
                for ratio in (0.05, 0.18, 0.34, 0.50, 0.66, 0.82, 0.95)]
+    # Prove the line across the panel, then observe its two ends. A clipped
+    # message may fill most of the area immediately below it; that area is
+    # not evidence that the separator continues down through the message.
+    span = range(left + 1, right - 1)
+    if len(span) < 4:
+        return None
+    margin = max(2, len(span) // 25)
+    ends = (list(span[:margin]), list(span[-margin:]))
+    max_line_height = max(1, measured_row_height // 3)
     start = max(0, edge_y - 2)
     end = min(image.height, edge_y + max(6, measured_row_height))
     previous = [_pixel_luma(image.getpixel((x, start))) for x in columns]
     entry = None
     before_line = None
+    entry_y = None
     exit_row = None
     exit_values = None
     stable_rows = 0
     for y in range(start + 1, end):
         value = [_pixel_luma(image.getpixel((x, y))) for x in columns]
         if entry is None:
-            # Entry still requires a nearly full-width structural line.
+            # Seven sample points alone can also hit unrelated text strokes.
+            # Require a uniform, nearly full-width line and entrance contrast.
             if sum(abs(a-b) >= 4.0 for a,b in zip(value, previous)) >= len(columns)-1:
-                entry, before_line = value, previous
+                line = [_pixel_luma(image.getpixel((x, y))) for x in span]
+                above = [_pixel_luma(image.getpixel((x, y-1))) for x in span]
+                shade = float(median(line))
+                if sum(abs(v-shade) < 4.0 and abs(v-p) >= 4.0
+                       for v, p in zip(line, above)) >= len(span) * 0.95:
+                    entry = [[_pixel_luma(image.getpixel((x, y))) for x in xs] for xs in ends]
+                    before_line = [[_pixel_luma(image.getpixel((x, y-1))) for x in xs] for xs in ends]
+                    entry_y = y
         else:
-            # Measure its content-facing exit independently in each column.
-            # A clipped bubble can cover a minority of columns below the line;
-            # it must not cause the line itself to become the content boundary.
-            returned = [i for i, (v, line, before) in enumerate(zip(value, entry, before_line))
-                        if abs(v-line) >= 4.0 and (v-line)*(line-before) < 0]
-            if len(returned) > len(columns)//2:
-                if exit_row is not None and sum(
-                    abs(value[i]-exit_values[i]) < 4.0 for i in returned
-                ) > len(columns)//2:
+            # Both ends must leave the thin line and stay stable. Neither a
+            # wide flat block nor the bottom of a nearby bubble is its exit.
+            if exit_row is None and y - entry_y > max_line_height:
+                return None
+            end_values = [[_pixel_luma(image.getpixel((x, y))) for x in xs] for xs in ends]
+            returned = [[i for i, (v, line, before) in enumerate(zip(values, lines, above))
+                         if abs(v-line) >= 4.0 and (v-line)*(line-before) < 0]
+                        for values, lines, above in zip(end_values, entry, before_line)]
+            if all(len(indices) >= len(xs) * 0.80 for indices, xs in zip(returned, ends)):
+                if exit_row is not None and all(sum(
+                    abs(values[i]-old[i]) < 4.0 for i in indices
+                ) >= len(xs) * 0.80 for values, old, indices, xs
+                    in zip(end_values, exit_values, returned, ends)):
                     stable_rows += 1
                 else:
-                    exit_row, exit_values, stable_rows = y, value, 0
+                    if y - entry_y > max_line_height:
+                        return None
+                    exit_row, exit_values, stable_rows = y, end_values, 0
                 if stable_rows >= 2:
                     return exit_row
             else:

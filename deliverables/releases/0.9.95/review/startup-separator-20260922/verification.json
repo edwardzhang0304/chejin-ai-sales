@@ -1,0 +1,347 @@
+{
+  "schema_version": 1,
+  "date": "2026-09-22",
+  "scope": "Startup header separator recognition with a wide clipped message adjacent to the line",
+  "source_baseline": {
+    "chejin": "a95943460956dd3ce5b04fb33d8541758ec22952",
+    "omniauto": "0bddf1cb0e6da31e56b6186cd00e7f1686db45b0"
+  },
+  "shared_fix_commit": "8412703c7a0961eca5523d542143e189dda0a538",
+  "source_sha256": {
+    "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/adapters/wechat_win32_ocr/window_layout.py": "108eeae83a315323ab8f4fc851766faca7b208aad78dadd17dd9155bf51d31c9",
+    "worker-client/tests/test_startup_header_original_replay.py": "4918a90032b3b87d11fe970d3abf0071d6d91c7aa559921870b135a8136be29c",
+    "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/tests/test_startup_header_separator.py": "1c376d8eab0309536c3f7116cdfd97a00feac2fc0317453b540053634d62630c"
+  },
+  "batches": [
+    {
+      "file": "product-integrated.xml",
+      "tests": 13,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0,
+      "sha256": "6ed21ca9d927a8f33d6fc46a63467c8dceb5b5a355aa1701eaa85ca1bcff4d58"
+    },
+    {
+      "file": "shared-integrated.xml",
+      "tests": 47,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0,
+      "sha256": "6f58051e4fecec4fc197380579faf03a565f330f69361d062b6ac28f2cf1fdba"
+    },
+    {
+      "file": "geometry-regression.xml",
+      "tests": 68,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0,
+      "sha256": "bc02a1157e76123675bda479a79644acf5f4be71e47b85ee82bf123d8d7102b4"
+    },
+    {
+      "file": "old-method-control.xml.gz",
+      "tests": 15,
+      "failures": 4,
+      "errors": 0,
+      "skipped": 0,
+      "sha256": "b51197e3fd92ce0a2aa74cbe7267d0fcc0713982028d0472ca5f3f556ebd8f91",
+      "uncompressed_sha256": "995ce75c556f7fbdbdfd9505ffc57ae51e5476b10fbd4c50c20505488ce016aa"
+    }
+  ],
+  "counting_note": "Batches overlap; do not add them as distinct scenarios. Integrated product: 9 original PNG replays + 4 probe checks. Shared: 47 geometry cases. Initial geometry: 68; final exit-height guard additionally covered by shared 47 and integrated original replays. Legacy batch: expected 4 original-frame failures + 5 original controls and 6 auxiliary evidence checks. Same assertions, only old separator function substituted in process.",
+  "frames": [
+    {
+      "frame_id": "frame-073cc65f40e264b21759-5cafd686",
+      "original_sha256": "d35271b1e57573a3850d06d69aac064b8cb081e27ddcf8bf8da1c6d80e13cb3b",
+      "field_calibrated": false,
+      "fixed_executable": true,
+      "fixed_header_bounds": [
+        300,
+        0,
+        784,
+        81
+      ],
+      "fixed_viewport_bounds": [
+        300,
+        81,
+        784,
+        700
+      ],
+      "fixed_worker_status": [
+        "ready",
+        "logged_in"
+      ],
+      "fixed_startup_state": "completed",
+      "old_worker_status": [
+        "unavailable",
+        "unknown"
+      ],
+      "old_error": "WECHAT_UI_STARTUP_CALIBRATION_FAILED",
+      "screenshot_count": 1,
+      "ocr_count": 1,
+      "no_clicks_performed": true
+    },
+    {
+      "frame_id": "frame-4605c820a37606f219e1-f013ed44",
+      "original_sha256": "bbd165ef1bfff254c1cdbe88b8a00d93978b237c2af3b8dc09d030506b681543",
+      "field_calibrated": true,
+      "fixed_executable": true,
+      "fixed_header_bounds": [
+        300,
+        0,
+        784,
+        81
+      ],
+      "fixed_viewport_bounds": [
+        300,
+        81,
+        784,
+        700
+      ],
+      "fixed_worker_status": [
+        "ready",
+        "logged_in"
+      ],
+      "fixed_startup_state": "completed",
+      "old_worker_status": [
+        "ready",
+        "logged_in"
+      ],
+      "old_error": "",
+      "screenshot_count": 1,
+      "ocr_count": 1,
+      "no_clicks_performed": true
+    },
+    {
+      "frame_id": "frame-6fd62df4e4cbd7b70dc1-5cb8a420",
+      "original_sha256": "f8768300dbdd175de64b65ec34d6cc30249f4b3e15b39b351564bd5e6627aa82",
+      "field_calibrated": false,
+      "fixed_executable": true,
+      "fixed_header_bounds": [
+        300,
+        0,
+        784,
+        81
+      ],
+      "fixed_viewport_bounds": [
+        300,
+        81,
+        784,
+        700
+      ],
+      "fixed_worker_status": [
+        "ready",
+        "logged_in"
+      ],
+      "fixed_startup_state": "completed",
+      "old_worker_status": [
+        "unavailable",
+        "unknown"
+      ],
+      "old_error": "WECHAT_UI_STARTUP_CALIBRATION_FAILED",
+      "screenshot_count": 1,
+      "ocr_count": 1,
+      "no_clicks_performed": true
+    },
+    {
+      "frame_id": "frame-72649420bd139fce38ac-98bf477d",
+      "original_sha256": "6ee3d743fe601f7c4d247ee401672c0b220240f414744c4ceb8ed60a255ff704",
+      "field_calibrated": false,
+      "fixed_executable": true,
+      "fixed_header_bounds": [
+        300,
+        0,
+        784,
+        81
+      ],
+      "fixed_viewport_bounds": [
+        300,
+        81,
+        784,
+        700
+      ],
+      "fixed_worker_status": [
+        "ready",
+        "logged_in"
+      ],
+      "fixed_startup_state": "completed",
+      "old_worker_status": [
+        "unavailable",
+        "unknown"
+      ],
+      "old_error": "WECHAT_UI_STARTUP_CALIBRATION_FAILED",
+      "screenshot_count": 1,
+      "ocr_count": 1,
+      "no_clicks_performed": true
+    },
+    {
+      "frame_id": "frame-8274343a5951d0e8554e-379adda2",
+      "original_sha256": "da40d357b1d86c50060ead4c8243c916b659e929737c99f0a7106fcfc8684afd",
+      "field_calibrated": false,
+      "fixed_executable": true,
+      "fixed_header_bounds": [
+        300,
+        0,
+        784,
+        81
+      ],
+      "fixed_viewport_bounds": [
+        300,
+        81,
+        784,
+        700
+      ],
+      "fixed_worker_status": [
+        "ready",
+        "logged_in"
+      ],
+      "fixed_startup_state": "completed",
+      "old_worker_status": [
+        "unavailable",
+        "unknown"
+      ],
+      "old_error": "WECHAT_UI_STARTUP_CALIBRATION_FAILED",
+      "screenshot_count": 1,
+      "ocr_count": 1,
+      "no_clicks_performed": true
+    },
+    {
+      "frame_id": "frame-a293b4724946509ad5a3-21313c74",
+      "original_sha256": "5406bc4b6661e3da7420671e26ab4130a7f07a6b403fd570b614e5a0ac5b8295",
+      "field_calibrated": true,
+      "fixed_executable": true,
+      "fixed_header_bounds": [
+        300,
+        0,
+        784,
+        81
+      ],
+      "fixed_viewport_bounds": [
+        300,
+        81,
+        784,
+        700
+      ],
+      "fixed_worker_status": [
+        "ready",
+        "logged_in"
+      ],
+      "fixed_startup_state": "completed",
+      "old_worker_status": [
+        "ready",
+        "logged_in"
+      ],
+      "old_error": "",
+      "screenshot_count": 1,
+      "ocr_count": 1,
+      "no_clicks_performed": true
+    },
+    {
+      "frame_id": "frame-a4361a39592394b71720-5b1b6924",
+      "original_sha256": "f4bdacd363bb7162d041b29018931bc70f108afe1729a0d8955de1410fa3a682",
+      "field_calibrated": true,
+      "fixed_executable": true,
+      "fixed_header_bounds": [
+        300,
+        0,
+        784,
+        81
+      ],
+      "fixed_viewport_bounds": [
+        300,
+        81,
+        784,
+        700
+      ],
+      "fixed_worker_status": [
+        "ready",
+        "logged_in"
+      ],
+      "fixed_startup_state": "completed",
+      "old_worker_status": [
+        "ready",
+        "logged_in"
+      ],
+      "old_error": "",
+      "screenshot_count": 1,
+      "ocr_count": 1,
+      "no_clicks_performed": true
+    },
+    {
+      "frame_id": "frame-a47afe42cdbffd3aa367-d29f7ae2",
+      "original_sha256": "8c98b14e1e4edb3f61ac47f9c8e32f12892d891f8b149253d6dfef2cb4b55d26",
+      "field_calibrated": true,
+      "fixed_executable": true,
+      "fixed_header_bounds": [
+        300,
+        0,
+        784,
+        81
+      ],
+      "fixed_viewport_bounds": [
+        300,
+        81,
+        784,
+        700
+      ],
+      "fixed_worker_status": [
+        "ready",
+        "logged_in"
+      ],
+      "fixed_startup_state": "completed",
+      "old_worker_status": [
+        "ready",
+        "logged_in"
+      ],
+      "old_error": "",
+      "screenshot_count": 1,
+      "ocr_count": 1,
+      "no_clicks_performed": true
+    },
+    {
+      "frame_id": "frame-da9bc09dab6fe8de8281-58407a9c",
+      "original_sha256": "3ea8497c13e2fa3ef6297c226322e60d42cd38474684430ae6f54835f761cc35",
+      "field_calibrated": true,
+      "fixed_executable": true,
+      "fixed_header_bounds": [
+        300,
+        0,
+        784,
+        81
+      ],
+      "fixed_viewport_bounds": [
+        300,
+        81,
+        784,
+        700
+      ],
+      "fixed_worker_status": [
+        "ready",
+        "logged_in"
+      ],
+      "fixed_startup_state": "completed",
+      "old_worker_status": [
+        "ready",
+        "logged_in"
+      ],
+      "old_error": "",
+      "screenshot_count": 1,
+      "ocr_count": 1,
+      "no_clicks_performed": true
+    }
+  ],
+  "physical_boundary": "Actual PNG + real local OCR + production startup CLI/calibrator and Worker probe. Win32/window capture and subprocess transport are controlled. No Windows onsite run, no backend lease or physical message send acceptance. The 4 failure images are repeated observations of one scene.",
+  "negative_cases": [
+    "separator_missing",
+    "disconnected_text_strokes",
+    "separator_gap",
+    "wide_bubble_edge",
+    "thick_flat_block",
+    "unstable_exit_cannot_shift_boundary_into_content"
+  ],
+  "prior_environment_errors": "Initial missing cv2 path and pytest temporary-directory setup errors were resolved by supplying the existing dependency path and explicit basetemp. Neither was counted as a pass.",
+  "source_only": true,
+  "independent_architect_review": false,
+  "application_version_changed": false,
+  "production_deployed": false,
+  "raw_private_evidence": "/private/tmp/cj-startup-separator-fix-20260922/verification.json"
+}
