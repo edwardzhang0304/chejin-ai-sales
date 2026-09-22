@@ -1,0 +1,2109 @@
+{
+  "schema_version": 1,
+  "repository": "edwardzhang0304/chejin-ai-sales",
+  "reviewed_commit": "972ee5044d994ecb9c4d568855add8e6a87f9f64",
+  "target_version": "0.9.96",
+  "approval": "Owner requested formal Windows EXE preserve-data manual upgrade, matching production backend/admin; Worker exited offline. Include972ee50/3c37f1e and preceding d13f52f/8412703.",
+  "original_verification_sha256": "0c0c7b5bd9f0251a2ad89afe702f840504d08c792e5a3764bf3ab8d8baf3795a",
+  "source_sha256": {
+    "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/adapters/wechat_win32_ocr/window_layout.py": "108eeae83a315323ab8f4fc851766faca7b208aad78dadd17dd9155bf51d31c9",
+    "worker-client/tests/test_startup_header_original_replay.py": "4918a90032b3b87d11fe970d3abf0071d6d91c7aa559921870b135a8136be29c",
+    "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/tests/test_startup_header_separator.py": "1c376d8eab0309536c3f7116cdfd97a00feac2fc0317453b540053634d62630c",
+    "backend/app/services/historical_text_alignment.py": "f706755b632fb46153387c8f768e57e1e7e29cdb9b90ed1b782ca5eaeff2ec33",
+    "backend/app/services/read_recovery_service.py": "7bee9291edc3d2381b6be283c8010d378835b8cf3a51d941b15dd016fabb17b6",
+    "backend/app/services/wechat_service.py": "346da2596996eb0777a930831094e5f22631f8349aa8aad9a8f3e639080ed3fe",
+    "backend/tests/test_historical_confidence_worker_http.py": "da1b2a70a8552e91c968f3a07b23f9132b3a9e40aa6d9eb3530795ea1c2b51c2",
+    "backend/tests/test_punctuation_closed_read_recovery.py": "f18192398fbbb2e563f0af82a6d5efd56d773eeaf40bf9193c654fe34692207f",
+    "worker-client/chejin_worker_client/historical_alignment.py": "3ad9cf686d9f046b836c5b8f83ebb8463cedc7906e6eefa27580b7844a32f971",
+    "worker-client/chejin_worker_client/pre_send_checkpoint.py": "5239d7b49edb6dc9592ed8521ebe186dcbd90d6848982c02b686655430a263f3",
+    "worker-client/chejin_worker_client/task_runner.py": "b58c2831672113a1fa6a5111198073e2ea2b90dd0d71bd055368b8cdb99e81a2",
+    "worker-client/tests/test_history_punctuation_handoff.py": "bf4b5fe18bac48edb3b4ef95463a53396c446007a096de7d046b9138fcc7081a",
+    "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/adapters/historical_text_alignment.py": "562b4ea1d561589b71483bfd034a424341a96beeb62c2549295fed38915fa97e",
+    "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/adapters/wechat_win32_ocr_sidecar.py": "77ddab7c091ecb24143f0d7c161f0c83dc65216b4ab44104aa2b6cdd757dbdb8",
+    "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/tests/test_confirmed_sent_history.py": "f627eb95285c72d504606208b17508be63c8c2f7b2170c41a6051fa5f5aa1978",
+    "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/tests/test_historical_punctuation.py": "f20a3916eedcdf7ad4cea13a9003d20870ef31e48df163c128f4313b2c2b1e54",
+    "backend/tests/test_contract_equivalent_recovery.py": "d3b90e996685a5fdee4691deaae3678becf0e81cf024ad4266e2094c57b69a06"
+  },
+  "checks": [
+    {
+      "name": "startup-separator-20260922/product-integrated.xml",
+      "original_xml_sha256": "6ed21ca9d927a8f33d6fc46a63467c8dceb5b5a355aa1701eaa85ca1bcff4d58",
+      "count": 13,
+      "cases": [
+        {
+          "name": "worker-client.tests.test_startup_header_original_replay::test_original_frame_calibrates_through_cli_and_worker[frame-073cc65f40e264b21759-5cafd686]",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_startup_header_original_replay::test_original_frame_calibrates_through_cli_and_worker[frame-4605c820a37606f219e1-f013ed44]",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_startup_header_original_replay::test_original_frame_calibrates_through_cli_and_worker[frame-6fd62df4e4cbd7b70dc1-5cb8a420]",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_startup_header_original_replay::test_original_frame_calibrates_through_cli_and_worker[frame-72649420bd139fce38ac-98bf477d]",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_startup_header_original_replay::test_original_frame_calibrates_through_cli_and_worker[frame-8274343a5951d0e8554e-379adda2]",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_startup_header_original_replay::test_original_frame_calibrates_through_cli_and_worker[frame-a293b4724946509ad5a3-21313c74]",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_startup_header_original_replay::test_original_frame_calibrates_through_cli_and_worker[frame-a4361a39592394b71720-5b1b6924]",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_startup_header_original_replay::test_original_frame_calibrates_through_cli_and_worker[frame-a47afe42cdbffd3aa367-d29f7ae2]",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_startup_header_original_replay::test_original_frame_calibrates_through_cli_and_worker[frame-da9bc09dab6fe8de8281-58407a9c]",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_rpa_bridge.RpaBridgeTest::test_probe_latches_non_not_found_normalization_failure_without_moving_again",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_rpa_bridge.RpaBridgeTest::test_probe_normalizes_only_once_then_uses_passive_status",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_rpa_bridge.RpaBridgeTest::test_probe_retries_startup_normalization_until_wechat_appears",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_rpa_bridge.RpaBridgeTest::test_startup_probe_geometry_rejects_incomplete_or_non_positive_rectangles",
+          "result": "passed"
+        }
+      ]
+    },
+    {
+      "name": "startup-separator-20260922/shared-integrated.xml",
+      "original_xml_sha256": "6f58051e4fecec4fc197380579faf03a565f330f69361d062b6ac28f2cf1fdba",
+      "count": 47,
+      "cases": [
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_startup_header_separator::test_thin_separator_survives_message_covering_most_columns[bubble0-1-1]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_startup_header_separator::test_thin_separator_survives_message_covering_most_columns[bubble0-1-1.5]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_startup_header_separator::test_thin_separator_survives_message_covering_most_columns[bubble0-1-2]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_startup_header_separator::test_thin_separator_survives_message_covering_most_columns[bubble0-3-1]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_startup_header_separator::test_thin_separator_survives_message_covering_most_columns[bubble0-3-1.5]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_startup_header_separator::test_thin_separator_survives_message_covering_most_columns[bubble0-3-2]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_startup_header_separator::test_thin_separator_survives_message_covering_most_columns[bubble0-6-1]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_startup_header_separator::test_thin_separator_survives_message_covering_most_columns[bubble0-6-1.5]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_startup_header_separator::test_thin_separator_survives_message_covering_most_columns[bubble0-6-2]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_startup_header_separator::test_thin_separator_survives_message_covering_most_columns[bubble1-1-1]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_startup_header_separator::test_thin_separator_survives_message_covering_most_columns[bubble1-1-1.5]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_startup_header_separator::test_thin_separator_survives_message_covering_most_columns[bubble1-1-2]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_startup_header_separator::test_thin_separator_survives_message_covering_most_columns[bubble1-3-1]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_startup_header_separator::test_thin_separator_survives_message_covering_most_columns[bubble1-3-1.5]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_startup_header_separator::test_thin_separator_survives_message_covering_most_columns[bubble1-3-2]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_startup_header_separator::test_thin_separator_survives_message_covering_most_columns[bubble1-6-1]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_startup_header_separator::test_thin_separator_survives_message_covering_most_columns[bubble1-6-1.5]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_startup_header_separator::test_thin_separator_survives_message_covering_most_columns[bubble1-6-2]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_startup_header_separator::test_non_separator_pixels_do_not_authorize_a_boundary[missing]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_startup_header_separator::test_non_separator_pixels_do_not_authorize_a_boundary[sampled_text]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_startup_header_separator::test_non_separator_pixels_do_not_authorize_a_boundary[partial_line]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_startup_header_separator::test_non_separator_pixels_do_not_authorize_a_boundary[wide_bubble]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_startup_header_separator::test_non_separator_pixels_do_not_authorize_a_boundary[thick_block]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_startup_header_separator::test_missing_header_with_real_input_border_still_fails_calibration",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_startup_header_separator::test_unstable_exit_does_not_slide_boundary_down_into_content",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_startup_border_geometry::test_separator_exit_ignores_partial_bubble[1-600-1]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_startup_border_geometry::test_separator_exit_ignores_partial_bubble[1-600-1.25]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_startup_border_geometry::test_separator_exit_ignores_partial_bubble[1-600-1.5]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_startup_border_geometry::test_separator_exit_ignores_partial_bubble[1-600-2]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_startup_border_geometry::test_separator_exit_ignores_partial_bubble[1-1000-1]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_startup_border_geometry::test_separator_exit_ignores_partial_bubble[1-1000-1.25]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_startup_border_geometry::test_separator_exit_ignores_partial_bubble[1-1000-1.5]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_startup_border_geometry::test_separator_exit_ignores_partial_bubble[1-1000-2]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_startup_border_geometry::test_separator_exit_ignores_partial_bubble[3-600-1]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_startup_border_geometry::test_separator_exit_ignores_partial_bubble[3-600-1.25]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_startup_border_geometry::test_separator_exit_ignores_partial_bubble[3-600-1.5]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_startup_border_geometry::test_separator_exit_ignores_partial_bubble[3-600-2]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_startup_border_geometry::test_separator_exit_ignores_partial_bubble[3-1000-1]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_startup_border_geometry::test_separator_exit_ignores_partial_bubble[3-1000-1.25]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_startup_border_geometry::test_separator_exit_ignores_partial_bubble[3-1000-1.5]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_startup_border_geometry::test_separator_exit_ignores_partial_bubble[3-1000-2]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_startup_border_geometry::test_border_exclusion_requires_no_inward_attachment[False-1]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_startup_border_geometry::test_border_exclusion_requires_no_inward_attachment[False-1.5]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_startup_border_geometry::test_border_exclusion_requires_no_inward_attachment[False-2]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_startup_border_geometry::test_border_exclusion_requires_no_inward_attachment[True-1]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_startup_border_geometry::test_border_exclusion_requires_no_inward_attachment[True-1.5]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_startup_border_geometry::test_border_exclusion_requires_no_inward_attachment[True-2]",
+          "result": "passed"
+        }
+      ]
+    },
+    {
+      "name": "startup-separator-20260922/geometry-regression.xml",
+      "original_xml_sha256": "bc02a1157e76123675bda479a79644acf5f4be71e47b85ee82bf123d8d7102b4",
+      "count": 44,
+      "cases": [
+        {
+          "name": "::test_separator_exit_ignores_partial_bubble[1-600-1]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_separator_exit_ignores_partial_bubble[1-600-1.25]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_separator_exit_ignores_partial_bubble[1-600-1.5]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_separator_exit_ignores_partial_bubble[1-600-2]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_separator_exit_ignores_partial_bubble[1-1000-1]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_separator_exit_ignores_partial_bubble[1-1000-1.25]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_separator_exit_ignores_partial_bubble[1-1000-1.5]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_separator_exit_ignores_partial_bubble[1-1000-2]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_separator_exit_ignores_partial_bubble[3-600-1]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_separator_exit_ignores_partial_bubble[3-600-1.25]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_separator_exit_ignores_partial_bubble[3-600-1.5]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_separator_exit_ignores_partial_bubble[3-600-2]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_separator_exit_ignores_partial_bubble[3-1000-1]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_separator_exit_ignores_partial_bubble[3-1000-1.25]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_separator_exit_ignores_partial_bubble[3-1000-1.5]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_separator_exit_ignores_partial_bubble[3-1000-2]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_border_exclusion_requires_no_inward_attachment[False-1]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_border_exclusion_requires_no_inward_attachment[False-1.5]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_border_exclusion_requires_no_inward_attachment[False-2]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_border_exclusion_requires_no_inward_attachment[True-1]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_border_exclusion_requires_no_inward_attachment[True-1.5]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_border_exclusion_requires_no_inward_attachment[True-2]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_synthetic_chat_separator_is_independent_of_search_text[1-size0]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_synthetic_chat_separator_is_independent_of_search_text[1-size1]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_synthetic_chat_separator_is_independent_of_search_text[1-size2]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_synthetic_chat_separator_is_independent_of_search_text[1.25-size0]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_synthetic_chat_separator_is_independent_of_search_text[1.25-size1]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_synthetic_chat_separator_is_independent_of_search_text[1.25-size2]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_synthetic_chat_separator_is_independent_of_search_text[1.5-size0]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_synthetic_chat_separator_is_independent_of_search_text[1.5-size1]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_synthetic_chat_separator_is_independent_of_search_text[1.5-size2]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_synthetic_partial_top_keeps_next_complete_message[customer-1]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_synthetic_partial_top_keeps_next_complete_message[customer-10]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_synthetic_partial_top_keeps_next_complete_message[customer-25]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_synthetic_partial_top_keeps_next_complete_message[customer-39]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_synthetic_partial_top_keeps_next_complete_message[customer-55]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_synthetic_partial_top_keeps_next_complete_message[self-1]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_synthetic_partial_top_keeps_next_complete_message[self-10]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_synthetic_partial_top_keeps_next_complete_message[self-25]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_synthetic_partial_top_keeps_next_complete_message[self-39]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_synthetic_partial_top_keeps_next_complete_message[self-55]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_synthetic_missing_chat_separator_fails_closed",
+          "result": "passed"
+        },
+        {
+          "name": "::test_synthetic_separator_thickness_and_nearby_bubble",
+          "result": "passed"
+        },
+        {
+          "name": "::test_partial_prefix_does_not_hide_invalid_row_geometry",
+          "result": "passed"
+        }
+      ]
+    },
+    {
+      "name": "historical-punctuation-r5-20260922/suffix-regression-final.xml",
+      "original_xml_sha256": "e4a99c1342457a8793a75e2311ce408f446776ac9c64919fda070e87d82d90fc",
+      "count": 303,
+      "cases": [
+        {
+          "name": "::test_punctuation_match_requires_proof_in_every_historical_entry[initial]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_punctuation_match_requires_proof_in_every_historical_entry[presend]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_punctuation_match_requires_proof_in_every_historical_entry[sidecar]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_punctuation_match_requires_proof_in_every_historical_entry[media]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_punctuation_match_requires_proof_in_every_historical_entry[context]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_short_numeric_change_cannot_fall_back_to_punctuation_blind_match[price_history0]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_visible_tail_keeps_local_indexes_and_full_history_proof[False-False]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_visible_tail_keeps_local_indexes_and_full_history_proof[False-True]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_visible_tail_keeps_local_indexes_and_full_history_proof[True-False]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_visible_tail_keeps_local_indexes_and_full_history_proof[True-True]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_visible_tail_low_score_still_rejects[price_history0]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_visible_tail_mapping_cannot_substitute_message_identity[conflicting_source]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_visible_tail_mapping_cannot_substitute_message_identity[unknown]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_visible_tail_mapping_cannot_substitute_message_identity[duplicate]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_visible_tail_mapping_cannot_substitute_message_identity[reordered]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_visible_tail_mapping_cannot_substitute_message_identity[projection]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_initial_worker_alignment_keeps_original_and_reuses_all_old_ids",
+          "result": "passed"
+        },
+        {
+          "name": "::test_same_rule_reaches_pre_send_and_physical_guard",
+          "result": "passed"
+        },
+        {
+          "name": "::test_disabling_correspondence_reproduces_old_failure",
+          "result": "passed"
+        },
+        {
+          "name": "::test_expired_context_rechecks_same_frozen_frame_without_changing_ids_or_text",
+          "result": "passed"
+        },
+        {
+          "name": "::test_worker_refresh_persists_same_frame_and_caps_failed_refreshes[TEXT_CORRESPONDENCE_CHECKPOINT_EXPIRED-True]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_worker_refresh_persists_same_frame_and_caps_failed_refreshes[TEXT_CORRESPONDENCE_CHECKPOINT_EXPIRED-False]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_worker_refresh_persists_same_frame_and_caps_failed_refreshes[ConnectionError-True]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_worker_refresh_persists_same_frame_and_caps_failed_refreshes[ConnectionError-False]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_completed_voice_uses_same_text_rule_but_keeps_media_identity_gate[original]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_completed_voice_uses_same_text_rule_but_keeps_media_identity_gate[unproven]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_completed_voice_uses_same_text_rule_but_keeps_media_identity_gate[untranscribed]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_initial_presend_sidecar_and_backend_use_the_same_hc_mapping",
+          "result": "passed"
+        },
+        {
+          "name": "::test_policy_refresh_cannot_change_effective_version_or_policy",
+          "result": "passed"
+        },
+        {
+          "name": "::test_capability_v2_preserves_completed_voice_legacy_rules[original]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_capability_v2_preserves_completed_voice_legacy_rules[unproven]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_capability_v2_preserves_completed_voice_legacy_rules[untranscribed]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_media_final_proof_uses_complete_frame_not_ingest_suffix",
+          "result": "passed"
+        },
+        {
+          "name": "::test_match_review_keeps_original_bodies_and_budget_out_of_logs",
+          "result": "passed"
+        },
+        {
+          "name": "::test_one_anchor_recheck_in_real_read_entrances[first-False-authorized_read]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_one_anchor_recheck_in_real_read_entrances[first-False-pre_send_refresh]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_one_anchor_recheck_in_real_read_entrances[first-False-reply_sequence_read]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_one_anchor_recheck_in_real_read_entrances[first-True-authorized_read]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_one_anchor_recheck_in_real_read_entrances[first-True-pre_send_refresh]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_one_anchor_recheck_in_real_read_entrances[first-True-reply_sequence_read]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_one_anchor_recheck_in_real_read_entrances[capture-False-authorized_read]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_one_anchor_recheck_in_real_read_entrances[capture-False-pre_send_refresh]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_one_anchor_recheck_in_real_read_entrances[capture-False-reply_sequence_read]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_one_anchor_recheck_in_real_read_entrances[capture-True-authorized_read]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_one_anchor_recheck_in_real_read_entrances[capture-True-pre_send_refresh]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_one_anchor_recheck_in_real_read_entrances[capture-True-reply_sequence_read]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_one_anchor_recheck_in_real_read_entrances[ocr-False-authorized_read]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_one_anchor_recheck_in_real_read_entrances[ocr-False-pre_send_refresh]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_one_anchor_recheck_in_real_read_entrances[ocr-False-reply_sequence_read]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_one_anchor_recheck_in_real_read_entrances[ocr-True-authorized_read]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_one_anchor_recheck_in_real_read_entrances[ocr-True-pre_send_refresh]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_one_anchor_recheck_in_real_read_entrances[ocr-True-reply_sequence_read]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_one_anchor_recheck_in_real_read_entrances[never-False-authorized_read]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_one_anchor_recheck_in_real_read_entrances[never-False-pre_send_refresh]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_one_anchor_recheck_in_real_read_entrances[never-False-reply_sequence_read]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_one_anchor_recheck_in_real_read_entrances[never-True-authorized_read]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_one_anchor_recheck_in_real_read_entrances[never-True-pre_send_refresh]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_one_anchor_recheck_in_real_read_entrances[never-True-reply_sequence_read]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_hc_admission_does_not_fall_back_to_legacy_matching[no_anchor]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_hc_admission_does_not_fall_back_to_legacy_matching[duplicate_anchor]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_hc_admission_does_not_fall_back_to_legacy_matching[role]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_hc_admission_does_not_fall_back_to_legacy_matching[media]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_hc_admission_does_not_fall_back_to_legacy_matching[native_id]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_same_sqlite_restart_cannot_renew_recheck[complete_text_bubble]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_same_sqlite_restart_cannot_renew_recheck[pre_send_context]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_same_sqlite_restart_cannot_renew_recheck[media_context]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_failed_frame_cannot_reuse_hc_admission[observation_validation_errors]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_failed_frame_cannot_reuse_hc_admission[flow_gate_errors]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_failed_frame_cannot_reuse_hc_admission[ui_frame_invalidated]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_failed_frame_cannot_reuse_hc_admission[history_gap]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_failed_frame_cannot_reuse_hc_admission[different_frame_ids]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_two_competing_hc_boundaries_do_not_choose_an_ocr_region_arbitrarily",
+          "result": "passed"
+        },
+        {
+          "name": "::test_context_uses_shared_history_and_keeps_new_occurrences[ocr]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_context_uses_shared_history_and_keeps_new_occurrences[exact]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_context_uses_shared_history_and_keeps_new_occurrences[new_repeat]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_context_uses_shared_history_and_keeps_new_occurrences[wrong_role]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_context_uses_shared_history_and_keeps_new_occurrences[unrelated]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_context_uses_shared_history_and_keeps_new_occurrences[no_frame]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_context_uses_shared_history_and_keeps_new_occurrences[ui_action]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_context_uses_shared_history_and_keeps_new_occurrences[scrolled]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_context_uses_shared_history_and_keeps_new_occurrences[invalid_frame]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_both_worker_context_entries_use_hc_without_legacy_anchor_search[False-pre_send]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_both_worker_context_entries_use_hc_without_legacy_anchor_search[False-media]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_both_worker_context_entries_use_hc_without_legacy_anchor_search[True-pre_send]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_both_worker_context_entries_use_hc_without_legacy_anchor_search[True-media]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_old_ocr_change_does_not_spend_another_viewport_change[False]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_old_ocr_change_does_not_spend_another_viewport_change[True]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_receipt_tail_uses_same_hc_without_redundant_ocr[single-exact-history-authorized_read]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_receipt_tail_uses_same_hc_without_redundant_ocr[single-exact-history-pre_send_refresh]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_receipt_tail_uses_same_hc_without_redundant_ocr[single-exact-history-reply_sequence_read]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_receipt_tail_uses_same_hc_without_redundant_ocr[single-accepted-hc-history-authorized_read]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_receipt_tail_uses_same_hc_without_redundant_ocr[single-accepted-hc-history-pre_send_refresh]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_receipt_tail_uses_same_hc_without_redundant_ocr[single-accepted-hc-history-reply_sequence_read]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_receipt_tail_uses_same_hc_without_redundant_ocr[segmented-slide-exact-history-authorized_read]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_receipt_tail_uses_same_hc_without_redundant_ocr[segmented-slide-exact-history-pre_send_refresh]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_receipt_tail_uses_same_hc_without_redundant_ocr[segmented-slide-exact-history-reply_sequence_read]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_receipt_tail_uses_same_hc_without_redundant_ocr[segmented-slide-accepted-hc-history-authorized_read]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_receipt_tail_uses_same_hc_without_redundant_ocr[segmented-slide-accepted-hc-history-pre_send_refresh]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_receipt_tail_uses_same_hc_without_redundant_ocr[segmented-slide-accepted-hc-history-reply_sequence_read]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_review_retains_complete_compared_history_after_receipt_consumption",
+          "result": "passed"
+        },
+        {
+          "name": "::test_unconfirmed_send_never_enters_historical_confidence_scope[unknown]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_unconfirmed_send_never_enters_historical_confidence_scope[identity_commit_conflict_possible_sent]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_unconfirmed_send_never_enters_historical_confidence_scope[pending]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_media_continuity_only_projects_proven_old_text[old_receipt]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_media_continuity_only_projects_proven_old_text[old_checkpoint]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_media_continuity_only_projects_proven_old_text[new_customer]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_media_continuity_only_projects_proven_old_text[voice_body]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_media_continuity_only_projects_proven_old_text[image_retyped]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_media_continuity_only_projects_proven_old_text[role]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_media_continuity_only_projects_proven_old_text[new_repeat]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_low_score_confirmed_receipt_keeps_the_one_recheck_budget[capture]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_low_score_confirmed_receipt_keeps_the_one_recheck_budget[ocr]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_low_score_confirmed_receipt_keeps_the_one_recheck_budget[never]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_final_media_reread_keeps_hc_old_text_without_spending_recheck[False]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_final_media_reread_keeps_hc_old_text_without_spending_recheck[True]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_original_frozen_voice_proof_verifies_only_when_unchanged[none]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_original_frozen_voice_proof_verifies_only_when_unchanged[score]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_original_frozen_voice_proof_verifies_only_when_unchanged[source]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_original_frozen_voice_proof_verifies_only_when_unchanged[observation]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_original_frozen_voice_proof_verifies_only_when_unchanged[body]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_original_frozen_voice_proof_verifies_only_when_unchanged[checkpoint]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_original_frozen_voice_proof_verifies_only_when_unchanged[frame]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_frozen_refresh_changes_only_authority_digest[none]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_frozen_refresh_changes_only_authority_digest[body]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_frozen_refresh_changes_only_authority_digest[version]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_frozen_refresh_changes_only_authority_digest[observation]",
+          "result": "passed"
+        },
+        {
+          "name": "::test_frozen_two_frame_comparison_preserves_saved_voice_mapping",
+          "result": "passed"
+        },
+        {
+          "name": "::test_terminal_transcribed_voice_matches_without_rechecking_long_term_identity",
+          "result": "passed"
+        },
+        {
+          "name": "::test_image_matches_only_by_confirmed_native_identity_not_bubble_pixels",
+          "result": "passed"
+        },
+        {
+          "name": "::test_unique_suffix_is_returned_without_assigning_history_identity",
+          "result": "passed"
+        },
+        {
+          "name": "::test_non_ingestible_banner_does_not_create_a_fake_new_fact",
+          "result": "passed"
+        },
+        {
+          "name": "::test_replacement_and_truncation_are_not_treated_as_new_suffix",
+          "result": "passed"
+        },
+        {
+          "name": "::test_same_transcript_new_voice_without_strong_continuity_is_not_equal",
+          "result": "passed"
+        },
+        {
+          "name": "::test_terminal_committed_voice_exact_facts_allow_send_without_identity_inheritance",
+          "result": "passed"
+        },
+        {
+          "name": "::test_terminal_committed_voice_changed_or_incomplete_tail_stays_closed",
+          "result": "passed"
+        },
+        {
+          "name": "::test_terminal_fact_equivalent_old_voice_plus_identical_new_voice_is_a_suffix",
+          "result": "passed"
+        },
+        {
+          "name": "::test_similar_new_image_without_strong_continuity_is_not_equal",
+          "result": "passed"
+        },
+        {
+          "name": "::test_terminal_committed_image_pixels_never_prove_cross_frame_identity",
+          "result": "passed"
+        },
+        {
+          "name": "::test_checkpoint_binding_accepts_formal_image_action_without_using_pixels_as_identity",
+          "result": "passed"
+        },
+        {
+          "name": "::test_checkpoint_binding_requires_formal_receipt_for_strong_image_identity",
+          "result": "passed"
+        },
+        {
+          "name": "::test_friend_welcome_empty_baseline_allows_only_an_empty_current_frame",
+          "result": "passed"
+        },
+        {
+          "name": "::test_incomplete_current_tail_blocks_text_and_empty_welcome_baselines",
+          "result": "passed"
+        },
+        {
+          "name": "::test_checkpoint_binding_requires_exact_conversation_batch_reply_and_digest",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_historical_text_alignment::test_five_old_rows_plus_new_question_have_one_proven_correspondence[0]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_historical_text_alignment::test_five_old_rows_plus_new_question_have_one_proven_correspondence[1]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_historical_text_alignment::test_five_old_rows_plus_new_question_have_one_proven_correspondence[4]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_historical_text_alignment::test_insufficient_or_protected_context_cannot_supply_a_proof[too_short]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_historical_text_alignment::test_insufficient_or_protected_context_cannot_supply_a_proof[two_rows]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_historical_text_alignment::test_insufficient_or_protected_context_cannot_supply_a_proof[two_errors]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_historical_text_alignment::test_insufficient_or_protected_context_cannot_supply_a_proof[repeat_anchors]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_historical_text_alignment::test_insufficient_or_protected_context_cannot_supply_a_proof[no_boundary]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_historical_text_alignment::test_insufficient_or_protected_context_cannot_supply_a_proof[known_name]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_historical_text_alignment::test_insufficient_or_protected_context_cannot_supply_a_proof[negation]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_historical_text_alignment::test_verifier_recomputes_instead_of_trusting_client_booleans[score]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_historical_text_alignment::test_verifier_recomputes_instead_of_trusting_client_booleans[old_index]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_historical_text_alignment::test_verifier_recomputes_instead_of_trusting_client_booleans[source]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_historical_text_alignment::test_verifier_recomputes_instead_of_trusting_client_booleans[hash]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_historical_text_alignment::test_verifier_recomputes_instead_of_trusting_client_booleans[anchor]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_historical_text_alignment::test_verifier_recomputes_instead_of_trusting_client_booleans[observation]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_historical_text_alignment::test_verifier_recomputes_instead_of_trusting_client_booleans[frame]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_historical_text_alignment::test_verifier_recomputes_instead_of_trusting_client_booleans[unknown_field]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_historical_text_alignment::test_changed_entity_context_expires_old_proof_and_missing_is_legacy_exact",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_historical_confidence_alignment::test_all_candidates_compete_without_filtering_low_scores_or_changing_facts",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_historical_confidence_alignment::test_multiple_nonexact_rows_and_short_model_text_are_not_v1_filtered",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_historical_confidence_alignment::test_completed_history_text_domains_share_the_same_threshold[2-voice]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_historical_confidence_alignment::test_completed_history_text_domains_share_the_same_threshold[2-system]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_historical_confidence_alignment::test_completed_history_text_domains_share_the_same_threshold[3-voice]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_historical_confidence_alignment::test_completed_history_text_domains_share_the_same_threshold[3-system]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_historical_confidence_alignment::test_completed_history_text_domains_share_the_same_threshold[4-voice]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_historical_confidence_alignment::test_completed_history_text_domains_share_the_same_threshold[4-system]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_historical_confidence_alignment::test_new_suffix_is_never_removed_by_similarity[\\u8fd9\\u6b3e600Pro\\u9002\\u5408\\u65e5\\u5e38\\u901a\\u52e4\\uff0c\\u5177\\u4f53\\u4fe1\\u606f\\u53ef\\u4ee5\\u518d\\u770b\\u770b\\u3002]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_historical_confidence_alignment::test_new_suffix_is_never_removed_by_similarity[600Plus]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_historical_confidence_alignment::test_new_suffix_is_never_removed_by_similarity[\\u9884\\u7b973\\u4e07]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_historical_confidence_alignment::test_new_suffix_is_never_removed_by_similarity[\\u4e0d\\u8981\\u4e86]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_historical_confidence_alignment::test_new_suffix_is_never_removed_by_similarity[\\u552f\\u4e00\\u672b\\u53e5]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_historical_confidence_alignment::test_verifier_recomputes_every_claim[score]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_historical_confidence_alignment::test_verifier_recomputes_every_claim[anchor]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_historical_confidence_alignment::test_verifier_recomputes_every_claim[drop_runner]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_historical_confidence_alignment::test_verifier_recomputes_every_claim[shape]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_historical_confidence_alignment::test_verifier_recomputes_every_claim[policy]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_historical_confidence_alignment::test_verifier_recomputes_every_claim[id]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_historical_confidence_alignment::test_verifier_recomputes_every_claim[frame]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_historical_confidence_alignment::test_verifier_recomputes_every_claim[version]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_historical_confidence_alignment::test_optional_old_features_never_vote_or_block[None]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_historical_confidence_alignment::test_optional_old_features_never_vote_or_block[feature1]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_historical_confidence_alignment::test_optional_old_features_never_vote_or_block[invalid]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_historical_confidence_alignment::test_optional_old_features_never_vote_or_block[feature3]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_historical_confidence_alignment::test_optional_old_features_never_vote_or_block[feature4]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_historical_confidence_alignment::test_deadline_cannot_accept_a_partially_enumerated_winner",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_historical_confidence_alignment::test_same_exact_ambiguous_boundary_is_not_rescued_by_hc",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_historical_confidence_alignment::test_role_conflict_cannot_be_outweighed_by_matching_text_and_pixels",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_historical_confidence_alignment::test_v1_frozen_proof_keeps_original_interpretation_after_capability_upgrade",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_historical_confidence_alignment::test_real_competing_boundaries_keep_low_runner_and_margin[999]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_historical_confidence_alignment::test_real_competing_boundaries_keep_low_runner_and_margin[1000]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_historical_confidence_alignment::test_real_competing_boundaries_keep_low_runner_and_margin[1001]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_historical_confidence_alignment::test_mixed_media_uses_original_identity_sequence_not_text_score[same]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_historical_confidence_alignment::test_mixed_media_uses_original_identity_sequence_not_text_score[voice_space]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_historical_confidence_alignment::test_mixed_media_uses_original_identity_sequence_not_text_score[voice_bounded]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_historical_confidence_alignment::test_mixed_media_uses_original_identity_sequence_not_text_score[wrong_voice]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_historical_confidence_alignment::test_mixed_media_uses_original_identity_sequence_not_text_score[voice_unfinished]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_historical_confidence_alignment::test_mixed_media_uses_original_identity_sequence_not_text_score[wrong_image]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_historical_confidence_alignment::test_mixed_media_uses_original_identity_sequence_not_text_score[new_same_voice]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_historical_confidence_alignment::test_mixed_media_uses_original_identity_sequence_not_text_score[new_same_image]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_historical_confidence_alignment::test_mixed_media_uses_original_identity_sequence_not_text_score[role]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_historical_confidence_alignment::test_mixed_media_uses_original_identity_sequence_not_text_score[media_order]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_historical_confidence_alignment::test_threshold_is_applied_per_message_with_only_one_anchor[999]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_historical_confidence_alignment::test_threshold_is_applied_per_message_with_only_one_anchor[1000]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_historical_confidence_alignment::test_threshold_is_applied_per_message_with_only_one_anchor[1001]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_historical_confidence_alignment::test_score_without_any_old_identity_basis_is_insufficient",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_historical_confidence_scores::test_complete_message_score[600Pro-600Pr0-8333]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_historical_confidence_scores::test_complete_message_score[\\u7532\\u7532\\u7532\\u7532\\u7532\\u7532\\u7532\\u7532\\u7532\\u7532\\u7532\\u7532\\u7532\\u7532\\u7532\\u7532\\u7532\\u7532\\u7532\\u7532\\u7532\\u7532\\u7532\\u7532\\u7532\\u7532\\u7532\\u7532\\u7532\\u7532\\u7532\\u7532\\u7532\\u7532\\u7532\\u7532\\u7532\\u7532\\u7532\\u7532\\u7532\\u7532\\u7532\\u7532\\u7532\\u7532\\u7532\\u7532\\u7532\\u7532\\u7532\\u7532\\u7532\\u7532\\u7532\\u7532\\u7532\\u7532\\u7532\\u7532\\u7532\\u7532\\u7532\\u7532\\u7532\\u7532\\u7532\\u7532\\u7532\\u7532600Pro-\\u7532\\u7532\\u7532\\u7532\\u7532\\u7532\\u7532\\u7532\\u7532\\u7532\\u7532\\u7532\\u7532\\u7532\\u7532\\u7532\\u7532\\u7532\\u7532\\u7532\\u7532\\u7532\\u7532\\u7532\\u7532\\u7532\\u7532\\u7532\\u7532\\u7532\\u7532\\u7532\\u7532\\u7532\\u7532\\u7532\\u7532\\u7532\\u7532\\u7532\\u7532\\u7532\\u7532\\u7532\\u7532\\u7532\\u7532\\u7532\\u7532\\u7532\\u7532\\u7532\\u7532\\u7532\\u7532\\u7532\\u7532\\u7532\\u7532\\u7532\\u7532\\u7532\\u7532\\u7532\\u7532\\u7532\\u7532\\u7532\\u7532\\u7532600Pr0-9868]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_historical_confidence_scores::test_complete_message_score[\\u4e00\\u822c\\u5bb6\\u7528\\u4ee3\\u6b65\\u8f66\\u578b-\\u822c\\u5bb6\\u7528\\u4ee3\\u6b65\\u8f66\\u578b-8750]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_historical_confidence_scores::test_complete_message_score[\\u8fd9\\u6b3e\\u8f66\\u62a5\\u4ef712.8\\u4e07-\\u8fd9\\u6b3e\\u8f66\\u62a5\\u4ef7128\\u4e07-9000]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_historical_confidence_scores::test_complete_message_score[\\u4e0d\\u4e70\\u8fd9\\u6b3e\\u8f66\\u53ef\\u4ee5\\u518d\\u770b\\u770b-\\u8981\\u4e70\\u8fd9\\u6b3e\\u8f66\\u53ef\\u4ee5\\u518d\\u770b\\u770b-9000]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_historical_confidence_scores::test_complete_message_score[\\uff21\\uff22\\uff23 \\uff11\\uff12\\uff13-abc123-10000]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_historical_confidence_scores::test_complete_message_score[\\u8fd9\\u662f\\u7b2c\\u4e00\\u884c\\n\\u8fd9\\u662f\\u7b2c\\u4e8c\\u884c-\\u8fd9\\u662f\\u7b2c\\u4e00\\u884c\\u8fd9\\u662f\\u7b2c\\u4e8c\\u884c-10000]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_historical_confidence_scores::test_complete_message_score[aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-8999]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_historical_confidence_scores::test_complete_message_score[aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-9000]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_historical_confidence_scores::test_complete_message_score[aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-9001]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_historical_confidence_scores::test_empty_cannot_be_a_fuzzy_old_message[-a]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_historical_confidence_scores::test_empty_cannot_be_a_fuzzy_old_message[a-]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_historical_confidence_scores::test_empty_cannot_be_a_fuzzy_old_message[ -\\n]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_historical_confidence_scores::test_forged_policy_rejected_even_with_rehashed_digest[policy_id-historical_confidence_v1]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_historical_confidence_scores::test_forged_policy_rejected_even_with_rehashed_digest[accept_threshold-True]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_historical_confidence_scores::test_forged_policy_rejected_even_with_rehashed_digest[accept_threshold-9000.0]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_historical_confidence_scores::test_forged_policy_rejected_even_with_rehashed_digest[minimum_margin-500]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_historical_confidence_scores::test_forged_policy_rejected_even_with_rehashed_digest[auxiliary_mode-voting]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_historical_confidence_scores::test_forged_policy_rejected_even_with_rehashed_digest[weights-value5]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_historical_confidence_scores::test_long_edit_obeys_original_deadline",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_confirmed_sent_history::test_full_confirmed_sequence_keeps_offscreen_receipts_and_new_repeated_text",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_confirmed_sent_history::test_receipt_wire_shape_cannot_manufacture_or_renumber_a_sent_fact[body]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_confirmed_sent_history::test_receipt_wire_shape_cannot_manufacture_or_renumber_a_sent_fact[hash]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_confirmed_sent_history::test_receipt_wire_shape_cannot_manufacture_or_renumber_a_sent_fact[missing]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_confirmed_sent_history::test_receipt_wire_shape_cannot_manufacture_or_renumber_a_sent_fact[extra]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_confirmed_sent_history::test_receipt_wire_shape_cannot_manufacture_or_renumber_a_sent_fact[stable]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_confirmed_sent_history::test_receipt_wire_shape_cannot_manufacture_or_renumber_a_sent_fact[repeat_action]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_confirmed_sent_history::test_receipt_wire_shape_cannot_manufacture_or_renumber_a_sent_fact[repeat_id]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_confirmed_sent_history::test_already_ingested_receipt_is_not_a_second_history_entry",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_confirmed_sent_history::test_frozen_v1_does_not_acquire_new_receipt_scope",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_confirmed_sent_history::test_completed_voice_uses_current_proof_and_keeps_frozen_proof_with_confirmed_self_tail",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_confirmed_sent_history::test_full_server_window_does_not_exclude_its_newly_confirmed_send",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_historical_punctuation::test_original_body_is_scored_and_original_fact_remains_unchanged[198.000\\u662f\\u6362\\u7535\\u7684\\u4ef7\\u683c\\uff0c\\u8fd8\\u662f\\u4e70\\u65ad\\u7535\\u6c60\\u5305\\u7684\\u4ef7\\u683c\\uff1f-True]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_historical_punctuation::test_original_body_is_scored_and_original_fact_remains_unchanged[\\u5b8c\\u5168\\u4e0d\\u540c\\u7684\\u5ba2\\u6237\\u95ee\\u9898-False]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_historical_punctuation::test_short_price_punctuation_cannot_fall_back_to_coarse_equality",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_historical_punctuation::test_frozen_suffix_uses_identity_and_keeps_proof_indexes_global[False-identity_keys0]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_historical_punctuation::test_frozen_suffix_uses_identity_and_keeps_proof_indexes_global[False-identity_keys1]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_historical_punctuation::test_frozen_suffix_uses_identity_and_keeps_proof_indexes_global[False-identity_keys2]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_historical_punctuation::test_frozen_suffix_uses_identity_and_keeps_proof_indexes_global[True-identity_keys0]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_historical_punctuation::test_frozen_suffix_uses_identity_and_keeps_proof_indexes_global[True-identity_keys1]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_historical_punctuation::test_frozen_suffix_uses_identity_and_keeps_proof_indexes_global[True-identity_keys2]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_send_history_confidence::test_old_ocr_drift_does_not_veto_the_actual_new_reply",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_send_history_confidence::test_history_similarity_does_not_replace_send_or_evidence_checks[no_send]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_send_history_confidence::test_history_similarity_does_not_replace_send_or_evidence_checks[wrong_reply]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_send_history_confidence::test_history_similarity_does_not_replace_send_or_evidence_checks[two_self]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_send_history_confidence::test_history_similarity_does_not_replace_send_or_evidence_checks[role]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_send_history_confidence::test_history_similarity_does_not_replace_send_or_evidence_checks[wrong_history]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_send_history_confidence::test_history_similarity_does_not_replace_send_or_evidence_checks[checkpoint_hash]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_send_history_confidence::test_history_similarity_does_not_replace_send_or_evidence_checks[compact_body]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_send_history_confidence::test_history_similarity_does_not_replace_send_or_evidence_checks[compact_id]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_send_history_confidence::test_history_similarity_does_not_replace_send_or_evidence_checks[old_self_only]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_send_history_confidence::test_following_customer_occurrence_is_preserved_even_with_identical_text[text_bubble]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_send_history_confidence::test_following_customer_occurrence_is_preserved_even_with_identical_text[voice_bubble]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_send_history_confidence::test_following_customer_occurrence_is_preserved_even_with_identical_text[voice_transcript]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_send_history_confidence::test_following_customer_occurrence_is_preserved_even_with_identical_text[image_bubble]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_send_interruption::test_confirmed_customer_append",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_send_interruption::test_once_only_clear_does_not_require_empty_input[None]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_send_interruption::test_once_only_clear_does_not_require_empty_input[False]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_send_interruption::test_once_only_clear_does_not_require_empty_input[True]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_send_interruption::test_once_only_clear_keeps_ownership_and_no_send_guards[clear_failed]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_send_interruption::test_once_only_clear_keeps_ownership_and_no_send_guards[not_attempted]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_send_interruption::test_once_only_clear_keeps_ownership_and_no_send_guards[wrong_method]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_send_interruption::test_once_only_clear_keeps_ownership_and_no_send_guards[wrong_reason]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_send_interruption::test_once_only_clear_keeps_ownership_and_no_send_guards[unowned]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_send_interruption::test_once_only_clear_keeps_ownership_and_no_send_guards[sent]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_send_interruption::test_other_receipts_stay_protected[send_result-unknown]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_send_interruption::test_other_receipts_stay_protected[action_phase-attempted_unknown]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_send_interruption::test_other_receipts_stay_protected[error_code-RPA_SEND_REPLY_FAILED]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_send_interruption::test_other_receipts_stay_protected[target-OTHER]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_send_interruption::test_other_receipts_stay_protected[evidence-value4]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_send_interruption::test_other_receipts_stay_protected[evidence-None]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_send_interruption::test_incomplete_or_ambiguous_evidence_stays_protected[path0-False]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_send_interruption::test_incomplete_or_ambiguous_evidence_stays_protected[path1-value1]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_send_interruption::test_incomplete_or_ambiguous_evidence_stays_protected[path2-True]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_send_interruption::test_incomplete_or_ambiguous_evidence_stays_protected[path3-group]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_send_interruption::test_incomplete_or_ambiguous_evidence_stays_protected[path4-True]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_send_interruption::test_incomplete_or_ambiguous_evidence_stays_protected[path5-False]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_send_interruption::test_incomplete_or_ambiguous_evidence_stays_protected[path6-False]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_send_interruption::test_incomplete_or_ambiguous_evidence_stays_protected[path7-9]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_send_interruption::test_incomplete_or_ambiguous_evidence_stays_protected[path8-True]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_send_interruption::test_incomplete_or_ambiguous_evidence_stays_protected[path9-OTHER]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_send_interruption::test_incomplete_or_ambiguous_evidence_stays_protected[path10-False]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_send_interruption::test_incomplete_or_ambiguous_evidence_stays_protected[path11-unmatched]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_send_interruption::test_incomplete_or_ambiguous_evidence_stays_protected[path12-stale]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_send_interruption::test_incomplete_or_ambiguous_evidence_stays_protected[path13-value13]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_send_interruption::test_incomplete_or_ambiguous_evidence_stays_protected[path14-value14]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_send_interruption::test_incomplete_or_ambiguous_evidence_stays_protected[path15-value15]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_send_interruption::test_incomplete_or_ambiguous_evidence_stays_protected[path16-value16]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_send_interruption::test_sales_or_uncertain_new_message_is_not_customer_interruption[self-text]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_send_interruption::test_sales_or_uncertain_new_message_is_not_customer_interruption[unknown-text]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_send_interruption::test_sales_or_uncertain_new_message_is_not_customer_interruption[customer-unknown]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_send_interruption::test_changed_history_is_not_a_safe_append",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_send_interruption::test_mixed_customer_and_sales_suffix_stays_protected",
+          "result": "passed"
+        },
+        {
+          "name": "::test_unchanged_visible_tail_must_not_use_full_history_indexes",
+          "result": "passed"
+        }
+      ]
+    },
+    {
+      "name": "historical-punctuation-r5-20260922/suffix_http_final.xml",
+      "original_xml_sha256": "13c34c5a9b1eb7652f97e9b2b14e70ac6f1070f3163bdf96ab07a313868fd76e",
+      "count": 5,
+      "cases": [
+        {
+          "name": "tests.test_historical_confidence_worker_http::test_confidence_read_reaches_async_send_ack_and_flow[suffix_exact-False-None]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_historical_confidence_worker_http::test_confidence_read_reaches_async_send_ack_and_flow[suffix_punctuation-False-None]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_historical_confidence_worker_http::test_confidence_read_reaches_async_send_ack_and_flow[suffix_punctuation-True-None]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_historical_confidence_worker_http::test_confidence_read_reaches_async_send_ack_and_flow[legacy_receipt-False-None]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_historical_confidence_worker_http::test_confidence_read_reaches_async_send_ack_and_flow[legacy_receipt_loss-False-None]",
+          "result": "passed"
+        }
+      ]
+    },
+    {
+      "name": "historical-punctuation-r5-20260922/suffix_http_regression.xml",
+      "original_xml_sha256": "7e7d931688ea0d265f12e9d05dac3a4e4ff9e7d99b14e211b860b7a2cdbe50b1",
+      "count": 59,
+      "cases": [
+        {
+          "name": "tests.test_historical_confidence_worker_http::test_confidence_read_reaches_async_send_ack_and_flow[punctuation-False-None]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_historical_confidence_worker_http::test_confidence_read_reaches_async_send_ack_and_flow[punctuation-True-None]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_historical_confidence_worker_http::test_confidence_read_reaches_async_send_ack_and_flow[normal-False-None]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_historical_confidence_worker_http::test_confidence_read_reaches_async_send_ack_and_flow[normal-True-None]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_historical_confidence_worker_http::test_confidence_read_reaches_async_send_ack_and_flow[normal-False-voice]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_historical_confidence_worker_http::test_confidence_read_reaches_async_send_ack_and_flow[normal-False-image]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_historical_confidence_worker_http::test_confidence_read_reaches_async_send_ack_and_flow[hc_typing-False-None]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_historical_confidence_worker_http::test_confidence_read_reaches_async_send_ack_and_flow[hc_typing-True-None]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_historical_confidence_worker_http::test_confidence_read_reaches_async_send_ack_and_flow[hc_loss-False-None]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_historical_confidence_worker_http::test_confidence_read_reaches_async_send_ack_and_flow[disabled-False-None]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_historical_confidence_worker_http::test_confidence_read_reaches_async_send_ack_and_flow[suppress_async-False-None]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_historical_confidence_worker_http::test_confidence_read_reaches_async_send_ack_and_flow[hc_typing-False-voice]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_historical_confidence_worker_http::test_confidence_read_reaches_async_send_ack_and_flow[hc_typing-False-image]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_historical_confidence_worker_http::test_confidence_read_reaches_async_send_ack_and_flow[voice_full-True-voice]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_historical_confidence_worker_http::test_confidence_read_reaches_async_send_ack_and_flow[image_full-True-image]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_historical_confidence_worker_http::test_confidence_read_reaches_async_send_ack_and_flow[voice_full-True-voice-loss]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_historical_confidence_worker_http::test_confidence_read_reaches_async_send_ack_and_flow[image_full-True-image-loss]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_punctuation_closed_read_recovery::test_frozen_mapping_failure_is_verified_and_replayed_idempotently",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_punctuation_closed_read_recovery::test_accepted_recovery_receipt_cannot_be_reused_for_a_changed_frame[body]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_punctuation_closed_read_recovery::test_accepted_recovery_receipt_cannot_be_reused_for_a_changed_frame[mapping]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_punctuation_closed_read_recovery::test_accepted_recovery_receipt_cannot_be_reused_for_a_changed_frame[suffix]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_punctuation_closed_read_recovery::test_closed_mapping_recovery_retains_original_guards[wrong_mapping]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_punctuation_closed_read_recovery::test_closed_mapping_recovery_retains_original_guards[low_score]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_punctuation_closed_read_recovery::test_closed_mapping_recovery_retains_original_guards[wrong_role]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_punctuation_closed_read_recovery::test_closed_mapping_recovery_retains_original_guards[unknown_send]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_punctuation_closed_read_recovery::test_closed_mapping_recovery_retains_original_guards[new_generation]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_punctuation_closed_read_recovery::test_closed_mapping_recovery_retains_original_guards[other_failure]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_punctuation_closed_read_recovery::test_real_worker_replays_then_explicit_start_recovers[normal]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_punctuation_closed_read_recovery::test_real_worker_replays_then_explicit_start_recovers[response_lost]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_contract_equivalent_recovery::test_same_rules_are_accepted_without_a_per_release_whitelist[0.9.75]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_contract_equivalent_recovery::test_same_rules_are_accepted_without_a_per_release_whitelist[0.9.78]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_contract_equivalent_recovery::test_same_rules_are_accepted_without_a_per_release_whitelist[0.9.80]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_contract_equivalent_recovery::test_same_rules_are_accepted_without_a_per_release_whitelist[0.10.12]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_contract_equivalent_recovery::test_finished_version_rejection_can_deliver_once_and_remain_faulted[True]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_contract_equivalent_recovery::test_finished_version_rejection_can_deliver_once_and_remain_faulted[False]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_contract_equivalent_recovery::test_recovery_rejects_changes_or_missing_original_ownership[changed_rule]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_contract_equivalent_recovery::test_recovery_rejects_changes_or_missing_original_ownership[wrong_hash]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_contract_equivalent_recovery::test_recovery_rejects_changes_or_missing_original_ownership[wrong_revision]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_contract_equivalent_recovery::test_recovery_rejects_changes_or_missing_original_ownership[wrong_raw_revision]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_contract_equivalent_recovery::test_recovery_rejects_changes_or_missing_original_ownership[wrong_header]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_contract_equivalent_recovery::test_recovery_rejects_changes_or_missing_original_ownership[wrong_flow]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_contract_equivalent_recovery::test_recovery_rejects_changes_or_missing_original_ownership[wrong_customer]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_contract_equivalent_recovery::test_recovery_rejects_changes_or_missing_original_ownership[wrong_instance]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_contract_equivalent_recovery::test_recovery_rejects_changes_or_missing_original_ownership[rebound]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_contract_equivalent_recovery::test_recovery_rejects_changes_or_missing_original_ownership[no_finish]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_contract_equivalent_recovery::test_recovery_rejects_changes_or_missing_original_ownership[other_failure]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_contract_equivalent_recovery::test_recovery_rejects_changes_or_missing_original_ownership[active_other_flow]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_contract_equivalent_recovery::test_recovery_rejects_changes_or_missing_original_ownership[new_authorization]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_contract_equivalent_recovery::test_recovery_rejects_changes_or_missing_original_ownership[new_generation]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_contract_equivalent_recovery::test_recovery_rejects_changes_or_missing_original_ownership[later_read]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_contract_equivalent_recovery::test_recovery_rejects_changes_or_missing_original_ownership[future_evidence]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_contract_equivalent_recovery::test_recovery_rejects_changes_or_missing_original_ownership[unknown_send]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_contract_equivalent_recovery::test_accepted_recovery_cannot_add_or_change_original_messages",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_contract_equivalent_recovery::test_finished_read_recovers_all_original_partitions_with_duplicate_delivery",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_contract_equivalent_recovery::test_real_worker_start_replays_old_outbox_then_explicit_start_clears_fault[normal]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_contract_equivalent_recovery::test_real_worker_start_replays_old_outbox_then_explicit_start_clears_fault[response_lost]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_contract_equivalent_recovery::test_real_worker_start_replays_old_outbox_then_explicit_start_clears_fault[old_without_header]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_contract_equivalent_recovery::test_concurrent_closed_read_retries_freeze_one_original_batch[False]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_contract_equivalent_recovery::test_concurrent_closed_read_retries_freeze_one_original_batch[True]",
+          "result": "passed"
+        }
+      ]
+    },
+    {
+      "name": "historical-punctuation-r6-20260922/known-suffix-current.xml",
+      "original_xml_sha256": "75d8fb117304ea1984c2c4e5723d5f798e78e23bc6bfc0f002e79beee0fc418b",
+      "count": 1,
+      "cases": [
+        {
+          "name": "cj-punctuation-independent-audit-20260922-TXf0Lf.test_visible_suffix_regression::test_unchanged_visible_tail_must_not_use_full_history_indexes",
+          "result": "passed"
+        }
+      ]
+    },
+    {
+      "name": "historical-punctuation-r6-20260922/hc-suffix-current.xml",
+      "original_xml_sha256": "ce0e9cc4aead7833909018c8e5be8ef15c71e790eb25f96bac050fb1fa109bcb",
+      "count": 1,
+      "cases": [
+        {
+          "name": "test_hc_suffix_consumption::test_valid_hc_visible_suffix_is_consumed_not_rejected_as_non_full_prefix",
+          "result": "passed"
+        }
+      ]
+    },
+    {
+      "name": "historical-punctuation-r6-20260922/r5-entry-boundaries.xml",
+      "original_xml_sha256": "b333f8296c081c104a0617ce5d39b7cb8fcaf34ba5016f456d4462e8140816a3",
+      "count": 16,
+      "cases": [
+        {
+          "name": "test_history_punctuation_handoff::test_punctuation_match_requires_proof_in_every_historical_entry[initial]",
+          "result": "passed"
+        },
+        {
+          "name": "test_history_punctuation_handoff::test_punctuation_match_requires_proof_in_every_historical_entry[presend]",
+          "result": "passed"
+        },
+        {
+          "name": "test_history_punctuation_handoff::test_punctuation_match_requires_proof_in_every_historical_entry[sidecar]",
+          "result": "passed"
+        },
+        {
+          "name": "test_history_punctuation_handoff::test_punctuation_match_requires_proof_in_every_historical_entry[media]",
+          "result": "passed"
+        },
+        {
+          "name": "test_history_punctuation_handoff::test_punctuation_match_requires_proof_in_every_historical_entry[context]",
+          "result": "passed"
+        },
+        {
+          "name": "test_history_punctuation_handoff::test_short_numeric_change_cannot_fall_back_to_punctuation_blind_match[price_history0]",
+          "result": "passed"
+        },
+        {
+          "name": "test_history_punctuation_handoff::test_visible_tail_keeps_local_indexes_and_full_history_proof[False-False]",
+          "result": "passed"
+        },
+        {
+          "name": "test_history_punctuation_handoff::test_visible_tail_keeps_local_indexes_and_full_history_proof[False-True]",
+          "result": "passed"
+        },
+        {
+          "name": "test_history_punctuation_handoff::test_visible_tail_keeps_local_indexes_and_full_history_proof[True-False]",
+          "result": "passed"
+        },
+        {
+          "name": "test_history_punctuation_handoff::test_visible_tail_keeps_local_indexes_and_full_history_proof[True-True]",
+          "result": "passed"
+        },
+        {
+          "name": "test_history_punctuation_handoff::test_visible_tail_low_score_still_rejects[price_history0]",
+          "result": "passed"
+        },
+        {
+          "name": "test_history_punctuation_handoff::test_visible_tail_mapping_cannot_substitute_message_identity[conflicting_source]",
+          "result": "passed"
+        },
+        {
+          "name": "test_history_punctuation_handoff::test_visible_tail_mapping_cannot_substitute_message_identity[unknown]",
+          "result": "passed"
+        },
+        {
+          "name": "test_history_punctuation_handoff::test_visible_tail_mapping_cannot_substitute_message_identity[duplicate]",
+          "result": "passed"
+        },
+        {
+          "name": "test_history_punctuation_handoff::test_visible_tail_mapping_cannot_substitute_message_identity[reordered]",
+          "result": "passed"
+        },
+        {
+          "name": "test_history_punctuation_handoff::test_visible_tail_mapping_cannot_substitute_message_identity[projection]",
+          "result": "passed"
+        }
+      ]
+    }
+  ],
+  "environment": {
+    "source": "Existing checked-in engineering XML and independent review. CI checks identity only; no fresh business rerun.",
+    "business_tests_reexecuted": 0,
+    "original_batches": [
+      {
+        "file": "deliverables/releases/0.9.95/review/startup-separator-20260922/product-integrated.xml",
+        "sha256": "6ed21ca9d927a8f33d6fc46a63467c8dceb5b5a355aa1701eaa85ca1bcff4d58",
+        "tests": 13
+      },
+      {
+        "file": "deliverables/releases/0.9.95/review/startup-separator-20260922/shared-integrated.xml",
+        "sha256": "6f58051e4fecec4fc197380579faf03a565f330f69361d062b6ac28f2cf1fdba",
+        "tests": 47
+      },
+      {
+        "file": "deliverables/releases/0.9.95/review/startup-separator-20260922/geometry-regression.xml",
+        "sha256": "bc02a1157e76123675bda479a79644acf5f4be71e47b85ee82bf123d8d7102b4",
+        "tests": 68
+      },
+      {
+        "file": "deliverables/releases/0.9.95/review/historical-punctuation-r5-20260922/suffix-regression-final.xml",
+        "sha256": "e4a99c1342457a8793a75e2311ce408f446776ac9c64919fda070e87d82d90fc",
+        "tests": 303
+      },
+      {
+        "file": "deliverables/releases/0.9.95/review/historical-punctuation-r5-20260922/suffix-shared.xml",
+        "sha256": "6f73048ff66bdcb77aa8e16630bd7ee820ce39b3a0d27ea4c3cf092a36df9573",
+        "tests": 159
+      },
+      {
+        "file": "deliverables/releases/0.9.95/review/historical-punctuation-r5-20260922/suffix_http_final.xml",
+        "sha256": "13c34c5a9b1eb7652f97e9b2b14e70ac6f1070f3163bdf96ab07a313868fd76e",
+        "tests": 5
+      },
+      {
+        "file": "deliverables/releases/0.9.95/review/historical-punctuation-r5-20260922/suffix_http_regression.xml",
+        "sha256": "7e7d931688ea0d265f12e9d05dac3a4e4ff9e7d99b14e211b860b7a2cdbe50b1",
+        "tests": 64
+      },
+      {
+        "file": "deliverables/releases/0.9.95/review/historical-punctuation-r6-20260922/known-suffix-current.xml",
+        "sha256": "75d8fb117304ea1984c2c4e5723d5f798e78e23bc6bfc0f002e79beee0fc418b",
+        "tests": 1
+      },
+      {
+        "file": "deliverables/releases/0.9.95/review/historical-punctuation-r6-20260922/hc-suffix-current.xml",
+        "sha256": "ce0e9cc4aead7833909018c8e5be8ef15c71e790eb25f96bac050fb1fa109bcb",
+        "tests": 1
+      },
+      {
+        "file": "deliverables/releases/0.9.95/review/historical-punctuation-r6-20260922/r5-entry-boundaries.xml",
+        "sha256": "b333f8296c081c104a0617ce5d39b7cb8fcaf34ba5016f456d4462e8140816a3",
+        "tests": 16
+      }
+    ],
+    "not_verified": [
+      "Windows physical sending, real model, customer original database recovery and next task execution remain onsite acceptance.",
+      "Padded partition risk is unconfirmed; no production-reachable failure established.",
+      "Older disclosed private-fixture and scaling boundaries are not counted passed."
+    ]
+  }
+}
