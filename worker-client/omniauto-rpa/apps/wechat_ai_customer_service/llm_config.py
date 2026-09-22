@@ -957,7 +957,7 @@ def _llm_response_structure(data: Any, request_style: str) -> dict[str, Any]:
     reasoning = content_owner.get("reasoning_content", _MISSING_RESPONSE_FIELD)
     refusal = content_owner.get("refusal", _MISSING_RESPONSE_FIELD)
     tool_calls = content_owner.get("tool_calls", _MISSING_RESPONSE_FIELD)
-    finish_reasons = {"stop", "length", "content_filter", "tool_calls", "function_call", "end_turn", "max_tokens", "stop_sequence", "tool_use", "pause_turn", "refusal"}
+    finish_reasons = {"stop", "length", "content_filter", "tool_calls", "function_call", "end_turn", "max_tokens", "model_context_window_exceeded", "stop_sequence", "tool_use", "pause_turn", "refusal"}
     content_texts = []
     if isinstance(content, str):
         content_texts = [content]
