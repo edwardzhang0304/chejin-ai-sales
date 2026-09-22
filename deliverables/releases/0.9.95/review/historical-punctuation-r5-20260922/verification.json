@@ -1,0 +1,176 @@
+{
+  "date": "2026-09-22",
+  "status": "r5_engineer_self_review_passed_waiting_independent_review_not_committed_or_released",
+  "prior_review": "/private/tmp/cj-punctuation-review-20260922-ZMVbye/review_v0.1_20260922.md",
+  "product_base": "d13f52f10a13a6a444e71a799ce1c4a9c6a4c3b2",
+  "shared_base": "8412703c7a0961eca5523d542143e189dda0a538",
+  "branches": [
+    "codex/gray-release-0.9.x",
+    "codex/gray-release-0.9.x-source"
+  ],
+  "source_sha256": {
+    "backend/app/services/historical_text_alignment.py": "f706755b632fb46153387c8f768e57e1e7e29cdb9b90ed1b782ca5eaeff2ec33",
+    "backend/app/services/read_recovery_service.py": "7bee9291edc3d2381b6be283c8010d378835b8cf3a51d941b15dd016fabb17b6",
+    "backend/app/services/wechat_service.py": "346da2596996eb0777a930831094e5f22631f8349aa8aad9a8f3e639080ed3fe",
+    "backend/tests/test_historical_confidence_worker_http.py": "da1b2a70a8552e91c968f3a07b23f9132b3a9e40aa6d9eb3530795ea1c2b51c2",
+    "backend/tests/test_punctuation_closed_read_recovery.py": "f18192398fbbb2e563f0af82a6d5efd56d773eeaf40bf9193c654fe34692207f",
+    "worker-client/chejin_worker_client/historical_alignment.py": "3ad9cf686d9f046b836c5b8f83ebb8463cedc7906e6eefa27580b7844a32f971",
+    "worker-client/chejin_worker_client/pre_send_checkpoint.py": "5239d7b49edb6dc9592ed8521ebe186dcbd90d6848982c02b686655430a263f3",
+    "worker-client/chejin_worker_client/task_runner.py": "b58c2831672113a1fa6a5111198073e2ea2b90dd0d71bd055368b8cdb99e81a2",
+    "worker-client/tests/test_history_punctuation_handoff.py": "bf4b5fe18bac48edb3b4ef95463a53396c446007a096de7d046b9138fcc7081a",
+    "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/adapters/historical_text_alignment.py": "562b4ea1d561589b71483bfd034a424341a96beeb62c2549295fed38915fa97e",
+    "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/adapters/wechat_win32_ocr_sidecar.py": "77ddab7c091ecb24143f0d7c161f0c83dc65216b4ab44104aa2b6cdd757dbdb8",
+    "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/tests/test_confirmed_sent_history.py": "f627eb95285c72d504606208b17508be63c8c2f7b2170c41a6051fa5f5aa1978",
+    "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/tests/test_historical_punctuation.py": "f20a3916eedcdf7ad4cea13a9003d20870ef31e48df163c128f4313b2c2b1e54",
+    "deliverables/AI智能客服售前跟进系统_技术方案手册_v0.9.95.md": "d64df4b6e3884d2a3d6c58025ba377a3a8ff9c96646d5b00a875e9b991cf9b50",
+    "deliverables/AI智能客服售前跟进系统_PRD_运营后台统一版_v0.9.95.md": "54d418f5fcac90cafabd41bc84704a165246655d88916858ba13ab97f0621aeb",
+    "deliverables/AI智能客服售前跟进系统_全流程图_v0.9.95.puml": "d7c22d16f128821cd240bb254e0e45fa9869549ca4339bf9d12ab7119e410579",
+    "deliverables/AI智能客服售前跟进系统_版本更新记录.md": "e204159cbacb47949a7e05e107c0b1fcb86b1361f233467b7a82c45d87a8cae6",
+    "backend/tests/test_contract_equivalent_recovery.py": "d3b90e996685a5fdee4691deaae3678becf0e81cf024ad4266e2094c57b69a06"
+  },
+  "changed_since_r4": [
+    "backend/tests/test_historical_confidence_worker_http.py",
+    "worker-client/chejin_worker_client/pre_send_checkpoint.py",
+    "worker-client/tests/test_history_punctuation_handoff.py",
+    "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/adapters/historical_text_alignment.py",
+    "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/tests/test_historical_punctuation.py",
+    "deliverables/AI智能客服售前跟进系统_技术方案手册_v0.9.95.md",
+    "deliverables/AI智能客服售前跟进系统_PRD_运营后台统一版_v0.9.95.md",
+    "deliverables/AI智能客服售前跟进系统_全流程图_v0.9.95.puml",
+    "deliverables/AI智能客服售前跟进系统_版本更新记录.md",
+    "backend/tests/test_contract_equivalent_recovery.py"
+  ],
+  "backend_product_unchanged_since_r4": true,
+  "shared_byte_identical": {
+    "apps/wechat_ai_customer_service/adapters/historical_text_alignment.py": "562b4ea1d561589b71483bfd034a424341a96beeb62c2549295fed38915fa97e",
+    "apps/wechat_ai_customer_service/adapters/wechat_win32_ocr_sidecar.py": "77ddab7c091ecb24143f0d7c161f0c83dc65216b4ab44104aa2b6cdd757dbdb8",
+    "apps/wechat_ai_customer_service/tests/test_confirmed_sent_history.py": "f627eb95285c72d504606208b17508be63c8c2f7b2170c41a6051fa5f5aa1978",
+    "apps/wechat_ai_customer_service/tests/test_historical_punctuation.py": "f20a3916eedcdf7ad4cea13a9003d20870ef31e48df163c128f4313b2c2b1e54"
+  },
+  "batches": [
+    {
+      "label": "suffix-regression-final",
+      "tests": 303,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0,
+      "expected_failures": 0,
+      "xml": "suffix-regression-final.xml",
+      "sha256": "e4a99c1342457a8793a75e2311ce408f446776ac9c64919fda070e87d82d90fc"
+    },
+    {
+      "label": "suffix-shared",
+      "tests": 159,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0,
+      "expected_failures": 0,
+      "xml": "suffix-shared.xml",
+      "sha256": "6f73048ff66bdcb77aa8e16630bd7ee820ce39b3a0d27ea4c3cf092a36df9573"
+    },
+    {
+      "label": "suffix_http_final",
+      "tests": 5,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0,
+      "expected_failures": 0,
+      "xml": "suffix_http_final.xml",
+      "sha256": "13c34c5a9b1eb7652f97e9b2b14e70ac6f1070f3163bdf96ab07a313868fd76e"
+    },
+    {
+      "label": "suffix_http_regression",
+      "tests": 64,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0,
+      "expected_failures": 0,
+      "xml": "suffix_http_regression.xml",
+      "sha256": "7e7d931688ea0d265f12e9d05dac3a4e4ff9e7d99b14e211b860b7a2cdbe50b1"
+    },
+    {
+      "label": "suffix-negative",
+      "tests": 10,
+      "failures": 5,
+      "errors": 0,
+      "skipped": 0,
+      "expected_failures": 5,
+      "xml": "suffix-negative.xml.gz",
+      "sha256": "f8c4b5c9df97cd80fe2c7747d370011c7803aa8dd7f024af2080aea8b0560172",
+      "uncompressed_sha256": "f5bf7e84b7be888ceb1190220b0cbd08c56147a2fdbe462a29a1c0ba7c99e2f3",
+      "encoding": "gzip; original XML bytes unchanged"
+    },
+    {
+      "label": "suffix_http_negative",
+      "tests": 1,
+      "failures": 1,
+      "errors": 0,
+      "skipped": 0,
+      "expected_failures": 1,
+      "xml": "suffix_http_negative.xml.gz",
+      "sha256": "6b6043094a6f42d82de6846ef02ed542b6cf3aeb924eceb2efe09494a5cb7f00",
+      "uncompressed_sha256": "a3a58e352b8b9808344fdcd371b64d04d984ab0d8fb9c3eb0286813df43f47c1",
+      "encoding": "gzip; original XML bytes unchanged"
+    }
+  ],
+  "overlap_notice": "Do not sum overlapping unit/shared and HTTP batches as unique coverage.",
+  "recovery_from_worker_produced_database": {
+    "setup_writes": false,
+    "modes": [
+      "normal",
+      "response_lost"
+    ],
+    "original_payload_unchanged": true,
+    "explicit_recovery": "running",
+    "physical_actions": [],
+    "new_task_pulling_disabled": true,
+    "evidence": "/private/tmp/cj-punctuation-fix-20260922/suffix_http_regression-tmp"
+  },
+  "incident_replay": {
+    "scope": "Unmodified incident observations, actual saved send checkpoint and SQLite identity state; production Worker/shared rule, no live server or Windows operation",
+    "score": {
+      "text": 9600,
+      "score": 9600
+    },
+    "same_ids": true,
+    "old_gate_missing_proof": true,
+    "original_inputs_unchanged": true,
+    "original_server_checkpoint_digest_matches": true
+  },
+  "incident_result_local": "/private/tmp/cj-punctuation-fix-20260922/incident-replay.json",
+  "incident_result_sha256": "2c86091241c261a662388e5d724b0607c0d6373445f6b3a08a85e23294b028ca",
+  "isolated_test_database_cleanup": [
+    {
+      "database": "chejin_test_punctuation_717521efbeb4",
+      "created_only_for_this_audit": true,
+      "absence_verified": true
+    },
+    {
+      "database": "chejin_test_punctuation_34c30047e341",
+      "created_only_for_this_audit": true,
+      "absence_verified": true
+    },
+    {
+      "database": "chejin_test_punctuation_b394d8d5f2ed",
+      "created_only_for_this_audit": true,
+      "absence_verified": true
+    },
+    {
+      "database": "chejin_test_punctuation_2693172d5208",
+      "created_only_for_this_audit": true,
+      "absence_verified": true
+    }
+  ],
+  "initial_test_failures_retained": {
+    "suffix_http.log": "3 snapshot assertion failures; message batch canonical snapshot assertion fixed; no product change",
+    "suffix-regression.xml": "301 pass, 2 tempdir environment errors; explicit basetemp final run 303 pass"
+  },
+  "limitations": [
+    "No new OCR run in this round; replay uses original captured observations",
+    "Desktop physical operations and external model controlled",
+    "No Windows real send or current sales field recovery acceptance",
+    "Recovering running does not prove next task execution",
+    "Awaiting independent architect review",
+    "No commit, push, release or production data mutation"
+  ]
+}

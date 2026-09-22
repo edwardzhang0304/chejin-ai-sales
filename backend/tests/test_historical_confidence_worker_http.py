@@ -8,6 +8,7 @@ import os
 from pathlib import Path
 import subprocess
 import sys
+import sqlite3
 
 import pytest
 from sqlalchemy import select
@@ -15,9 +16,10 @@ import test_c3_api as api
 from test_pre_send_checkpoint_order import async_generation
 from test_lead_followup_eligibility import http_api, isolated_db
 from test_reply_sequence_worker import WORKER
+from test_contract_equivalent_recovery import WORKER_RECOVERY
 from test_reply_sequence_http import SequenceModel, PARTS
 from app.core.database import SessionLocal
-from app.models.c3 import Conversation, HandoffEvent, ReplyAction, SentAck
+from app.models.c3 import Conversation, HandoffEvent, MessageBatch, ReplyAction, SentAck
 from app.models.wechat import MessageEvent, WechatSessionBinding
 from app.models.worker import Worker
 from app.models.task import Task
@@ -74,6 +76,12 @@ def worker_source():
         value = WORKER[:start]+' def sidecar_active(self):return False\n'+media_io+WORKER[end:]
 
     value = value.replace('bridge=Wechat()', "bridge=Wechat()\nbridge.messages=json.loads(Path(os.environ['HC_VISIBLE']).read_text())")
+    value = value.replace('bridge=Wechat()', """if os.environ.get('HC_LEGACY_GATE')=='1':
+ from apps.wechat_ai_customer_service.adapters import historical_text_alignment
+ # Reproduce the released punctuation-blind admission. All subsequent
+ # Outbox, HTTP rejection, failure and Flow closure code remains production.
+ historical_text_alignment.requires_text_correspondence=lambda *args:False
+bridge=Wechat()""")
     value = value.replace("  assert not kwargs['cancel_check']()", "  assert not kwargs['cancel_check']()\n"+TYPING_IO)
     value = value.replace('runner.binding=binding', '''runner.binding=binding
 # Controlled optional-service readiness, not a real credential or model call.
@@ -172,6 +180,9 @@ if os.environ.get('HC_DISABLE')=='1':
 
 
 @pytest.mark.parametrize('mode,segmented,media',[
+    ('punctuation',False,None),('punctuation',True,None),
+    ('suffix_exact',False,None),('suffix_punctuation',False,None),('suffix_punctuation',True,None),
+    ('legacy_receipt',False,None),('legacy_receipt_loss',False,None),
     ('normal',False,None),('normal',True,None),('normal',False,'voice'),('normal',False,'image'),('hc_typing',False,None),('hc_typing',True,None),
     ('hc_loss',False,None),('disabled',False,None),('suppress_async',False,None),
     ('hc_typing',False,'voice'),('hc_typing',False,'image'),('voice_full',True,'voice'),('image_full',True,'image'),('voice_full',True,'voice-loss'),('image_full',True,'image-loss')])
@@ -198,6 +209,8 @@ def test_confidence_read_reaches_async_send_ack_and_flow(http_api,monkeypatch,as
             task.status='cancelled'
         db.commit()
     originals=['唯一开场','这款600Pro适合日常通勤，具体信息可以再看看。','唯一末句']
+    if 'punctuation' in mode or mode.startswith('legacy_receipt'):
+        originals[1] = '198,000是换电的价格，还是买断电池包的价格？'
     class Model(SequenceModel):
         calls=0
         def generate_reply_decision(self,**kwargs):
@@ -215,7 +228,8 @@ def test_confidence_read_reaches_async_send_ack_and_flow(http_api,monkeypatch,as
     def run_worker(label):
         process_mode='resume' if label=='recovered' else mode if label=='continued' else 'normal'
         run=subprocess.run([sys.executable,str(script),base,json.dumps(worker),target['conversation_id'],process_mode],
-            env={**env,'HC_RUN':label,'HC_DISABLE':'1' if label=='continued' and mode=='disabled' else '0'},capture_output=True,text=True,timeout=60)
+            env={**env,'HC_RUN':label,'HC_DISABLE':'1' if label=='continued' and mode=='disabled' else '0',
+                 'HC_LEGACY_GATE':'1' if label=='continued' and mode.startswith('legacy_receipt') else '0'},capture_output=True,text=True,timeout=60)
         (tmp_path/(label+'.stdout')).write_text(run.stdout)
         (tmp_path/(label+'.stderr')).write_text(run.stderr)
         assert run.returncode==0,run.stderr
@@ -226,8 +240,15 @@ def test_confidence_read_reaches_async_send_ack_and_flow(http_api,monkeypatch,as
     # All original IDs, facts, features and AI receipts above were created by
     # the production Worker. The only new input is a subsequent physical frame.
     visible=json.loads((tmp_path/'visible.json').read_text())
-    visible[1]['content']='这款600Pr0适合日常通勤，具体信息可以再看看。'
-    visible.append({'id':'new-customer-question','sender_role':'customer','type':'text','content':'请详细介绍看车安排'})
+    if mode != 'suffix_exact':
+        visible[1]['content'] = (originals[1].replace(',', '.') if 'punctuation' in mode or mode.startswith('legacy_receipt')
+            else '这款600Pr0适合日常通勤，具体信息可以再看看。')
+    if mode.startswith('suffix_'):
+        # Desktop scrolling hides only the first old row. Server history and
+        # Worker identities remain untouched; the server freezes its own tail.
+        visible = visible[1:]
+    if not mode.startswith('legacy_receipt'):
+        visible.append({'id':'new-customer-question','sender_role':'customer','type':'text','content':'请详细介绍看车安排'})
     if media and mode=='normal':
         visible.append({'id':'customer-interruption','sender_role':'customer','type':media,'voice_duration':5,'content':'[语音]' if media=='voice' else '[图片]'})
     path.write_text(json.dumps(visible,ensure_ascii=False))
@@ -239,6 +260,34 @@ def test_confidence_read_reaches_async_send_ack_and_flow(http_api,monkeypatch,as
         db.commit()
     async_generation['suppress']=mode=='suppress_async'
     result=run_worker('continued')
+    if mode.startswith('legacy_receipt'):
+        assert result['sent']==[] and result['pending_c2_outbox'],result
+        database=next((tmp_path/'worker').rglob('worker_client.sqlite3'))
+        with sqlite3.connect(database) as local:
+            pending=local.execute("SELECT payload_json FROM c2_ingest_outbox WHERE status!='confirmed'").fetchall()
+        assert len(pending)==1
+        frozen=json.loads(pending[0][0])
+        assert len(frozen['messages'])==1 and frozen['messages'][0]['sender_role_hint']=='self'
+        assert not frozen['evidence']['sequence_alignment_evidence'].get('text_correspondence')
+        recovery_request={'worker':worker,'payload':frozen,'url':base,'existing_database':True,
+            'mode':'response_lost' if mode.endswith('_loss') else 'normal'}
+        request_path=tmp_path/'recovery-request.json';request_path.write_text(json.dumps(recovery_request))
+        recovered=subprocess.run([sys.executable,'-c',WORKER_RECOVERY.replace('followup-test','client-c3'),str(request_path)],
+            env=env,cwd=Path(__file__).resolve().parents[2],capture_output=True,text=True,timeout=35)
+        (tmp_path/'closed-recovery.log').write_text(recovered.stdout+recovered.stderr)
+        assert recovered.returncode==0,recovered.stderr
+        recovery=json.loads(recovered.stdout.strip().splitlines()[-1])
+        assert recovery['explicit_recovery']=='running' and recovery['physical_actions']==[]
+        assert json.loads((tmp_path/'unseeded-recovery-input.json').read_text())['setup_writes'] is False
+        assert recovery['response_loss_injected']==mode.endswith('_loss')
+        with SessionLocal() as db:
+            events=list(db.scalars(select(MessageEvent).order_by(MessageEvent.ingested_at)))
+            assert [e.content for e in events[:3]]==originals and len(events)==4
+            assert events[-1].sender_role=='self' and events[-1].content==seed['sent'][0]
+            assert db.get(Worker,worker['id']).run_status=='running'
+            assert len(list(db.scalars(select(SentAck))))==1 and not list(db.scalars(select(HandoffEvent)))
+        assert Model.calls==1
+        return
     if mode=='hc_loss':
         assert result['sent']==[] and result['pending_c2_outbox']
         result=run_worker('recovered')
@@ -275,6 +324,13 @@ def test_confidence_read_reaches_async_send_ack_and_flow(http_api,monkeypatch,as
         assert not list(db.scalars(select(HandoffEvent)))
         assert len(list(db.scalars(select(SentAck))))==1+len(expected)+int(mode=='hc_typing')
         if mode not in {'hc_typing','voice_full','image_full'}:assert all(a.status=='sent' for a in db.scalars(select(ReplyAction)))
+        if mode.startswith('suffix_'):
+            actions=list(db.scalars(select(ReplyAction).order_by(ReplyAction.created_at,ReplyAction.segment_index)))
+            tail=db.get(MessageBatch,actions[1].batch_id).ai_request_snapshot['pre_send_fact_checkpoint']['committed_tail']
+            # Verify the real backend produced the shorter baseline; a fixture
+            # manually slicing that checkpoint would not exercise this path.
+            assert tail[0]['worker_stable_id']=='worker-message-2',tail
+            assert len(tail)==4,tail
         if media:
             facts=[e for e in events if e.message_type==media]
             assert len(facts)==1 and facts[0].sender_role=='customer'

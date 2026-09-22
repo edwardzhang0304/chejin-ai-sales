@@ -1,0 +1,172 @@
+{
+  "date": "2026-09-22",
+  "status": "engineer_self_review_passed_not_committed_or_released",
+  "product_base": "d13f52f10a13a6a444e71a799ce1c4a9c6a4c3b2",
+  "shared_base": "8412703c7a0961eca5523d542143e189dda0a538",
+  "branches": [
+    "codex/gray-release-0.9.x",
+    "codex/gray-release-0.9.x-source"
+  ],
+  "source_sha256": {
+    "backend/app/services/historical_text_alignment.py": "f706755b632fb46153387c8f768e57e1e7e29cdb9b90ed1b782ca5eaeff2ec33",
+    "backend/app/services/read_recovery_service.py": "7bee9291edc3d2381b6be283c8010d378835b8cf3a51d941b15dd016fabb17b6",
+    "backend/app/services/wechat_service.py": "346da2596996eb0777a930831094e5f22631f8349aa8aad9a8f3e639080ed3fe",
+    "backend/tests/test_historical_confidence_worker_http.py": "c6967582dee25960a4a441d1fe427652e2f9dbaa9ea4b160ccfbb49726577af0",
+    "backend/tests/test_punctuation_closed_read_recovery.py": "f18192398fbbb2e563f0af82a6d5efd56d773eeaf40bf9193c654fe34692207f",
+    "worker-client/chejin_worker_client/historical_alignment.py": "3ad9cf686d9f046b836c5b8f83ebb8463cedc7906e6eefa27580b7844a32f971",
+    "worker-client/chejin_worker_client/pre_send_checkpoint.py": "546c4bef2ee81d883359353f235f6fd63775ee16d7c5ad7b0d79d5cac3633ea5",
+    "worker-client/chejin_worker_client/task_runner.py": "b58c2831672113a1fa6a5111198073e2ea2b90dd0d71bd055368b8cdb99e81a2",
+    "worker-client/tests/test_history_punctuation_handoff.py": "0fa4952fca30b31c762113c7bb3ba6674addf164c11038352f66b22420876f40",
+    "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/adapters/historical_text_alignment.py": "a0f0ed62a952fa0e0b4ea2eb25a398cc154b4566a3af40361c74f7f43bfb14fe",
+    "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/adapters/wechat_win32_ocr_sidecar.py": "77ddab7c091ecb24143f0d7c161f0c83dc65216b4ab44104aa2b6cdd757dbdb8",
+    "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/tests/test_confirmed_sent_history.py": "f627eb95285c72d504606208b17508be63c8c2f7b2170c41a6051fa5f5aa1978",
+    "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/tests/test_historical_punctuation.py": "f52322ff4719e98e4fff571a11cec864d2f955a658fc87f7c6c92c839030a625",
+    "deliverables/AI智能客服售前跟进系统_技术方案手册_v0.9.95.md": "6067eb5a904f85a665d2cf61fbbccddbc5cd93c6414a0c8a57f008dfca75f31e",
+    "deliverables/AI智能客服售前跟进系统_PRD_运营后台统一版_v0.9.95.md": "0425da4b96c16aa94d5e842d02ad29068f559ee2715091926a69ef22bac764b8",
+    "deliverables/AI智能客服售前跟进系统_全流程图_v0.9.95.puml": "25d4a1471d464eed655aea6bbb9302cf4443f4f751b294ebbe7421179dfb1ac0",
+    "deliverables/AI智能客服售前跟进系统_版本更新记录.md": "a38c94c379e889a089d7eca25d5e8ecf2c57fdfed60d50f9b82606c47d37fb95"
+  },
+  "shared_byte_identical": true,
+  "batches": [
+    {
+      "label": "regression-final",
+      "test_count": 286,
+      "failures": 0,
+      "expected_failures": 0,
+      "errors": 0,
+      "sha256": "bf4e916f98a4630fd0f18ee534e23f418fe4e31c4898502cbe908667521cfdcd",
+      "xml": "regression-final.xml"
+    },
+    {
+      "label": "shared",
+      "test_count": 153,
+      "failures": 0,
+      "expected_failures": 0,
+      "errors": 0,
+      "sha256": "8f97709def09d7bf6230b6174adf52d95515a4e9a1a29c6bbfd8e3ff17a70fd4",
+      "xml": "shared.xml"
+    },
+    {
+      "label": "http_regression",
+      "test_count": 39,
+      "failures": 0,
+      "expected_failures": 0,
+      "errors": 0,
+      "sha256": "e1dcb801bdca20579d35a672b952d3d30fb23acb9bf5ac2baa1e198f4e908459",
+      "xml": "http_regression.xml"
+    },
+    {
+      "label": "closed_mapping_fixed",
+      "test_count": 39,
+      "failures": 0,
+      "expected_failures": 0,
+      "errors": 0,
+      "sha256": "86e7041377b45770ce419d82ed8d0c9f2965cdd9febb71eb9afa411c9964c7dd",
+      "xml": "closed_mapping_fixed.xml"
+    },
+    {
+      "label": "recovery_final",
+      "test_count": 14,
+      "failures": 0,
+      "expected_failures": 0,
+      "errors": 0,
+      "sha256": "735f1b499bbae50047b2df0de5c27bdc9569d0ff3267a0b56ef5fd81f7a719cf",
+      "xml": "recovery_final.xml"
+    },
+    {
+      "label": "final-gate",
+      "test_count": 6,
+      "failures": 0,
+      "expected_failures": 0,
+      "errors": 0,
+      "sha256": "ebfaa4129cd461fb2384e55b35b33ceb8955626bb638a9e6ef5fbe0c6f8256e8",
+      "xml": "final-gate.xml"
+    },
+    {
+      "label": "negative-gate-final",
+      "test_count": 9,
+      "failures": 8,
+      "expected_failures": 8,
+      "errors": 0,
+      "sha256": "54300878f5942d344c18debd7af966f406f293b405038f23676864e97a5902e4",
+      "xml": "negative-gate-final.xml"
+    },
+    {
+      "label": "negative_admission_final",
+      "test_count": 1,
+      "failures": 1,
+      "expected_failures": 1,
+      "errors": 0,
+      "sha256": "0c17a4fdea04a9bb0034383277fa9a373ccd64950f75f8b9a8f8111fc187a2a7",
+      "xml": "negative_admission_final.xml"
+    }
+  ],
+  "overlap_notice": "Worker and shared tests overlap; backend batches also overlap. Do not add counts as unique coverage.",
+  "incident_replay": {
+    "scope": "Unmodified incident observations, actual saved send checkpoint and SQLite identity state; production Worker/shared rule, no live server or Windows operation",
+    "score": {
+      "text": 9600,
+      "score": 9600
+    },
+    "same_ids": true,
+    "old_gate_missing_proof": true,
+    "original_inputs_unchanged": true,
+    "original_server_checkpoint_digest_matches": true
+  },
+  "incident_full_result_local": "/private/tmp/cj-punctuation-fix-20260922/incident-replay.json",
+  "incident_full_result_sha256": "c0199ae693858f05426ea8eea15fc3d9aa1cc82f86320b11dfbb1816605445fc",
+  "isolated_test_database_cleanup": [
+    {
+      "database": "chejin_test_punctuation_04c1aa740dcd",
+      "created_only_for_this_audit": true,
+      "absence_verified": true
+    },
+    {
+      "database": "chejin_test_punctuation_496af6062383",
+      "created_only_for_this_audit": true,
+      "absence_verified": true
+    },
+    {
+      "database": "chejin_test_punctuation_1b8340bd8d5b",
+      "created_only_for_this_audit": true,
+      "absence_verified": true
+    },
+    {
+      "database": "chejin_test_punctuation_14df0c43552f",
+      "created_only_for_this_audit": true,
+      "absence_verified": true
+    },
+    {
+      "database": "chejin_test_punctuation_104c57d09ff8",
+      "created_only_for_this_audit": true,
+      "absence_verified": true
+    },
+    {
+      "database": "chejin_test_punctuation_2446bfe55c01",
+      "created_only_for_this_audit": true,
+      "absence_verified": true
+    },
+    {
+      "database": "chejin_test_punctuation_1f210bb2de9f",
+      "created_only_for_this_audit": true,
+      "absence_verified": true
+    },
+    {
+      "database": "chejin_test_punctuation_de437ddf9c93",
+      "created_only_for_this_audit": true,
+      "absence_verified": true
+    },
+    {
+      "database": "chejin_test_punctuation_cb58af463764",
+      "created_only_for_this_audit": true,
+      "absence_verified": true
+    }
+  ],
+  "limitations": [
+    "Desktop frames and physical actions controlled; model boundary controlled",
+    "No production data changed",
+    "No Windows real send or field recovery acceptance",
+    "Not independently reviewed by architect",
+    "Existing unrelated deletions/untracked files untouched"
+  ]
+}

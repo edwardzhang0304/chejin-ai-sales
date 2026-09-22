@@ -1,0 +1,222 @@
+{
+  "sources": [
+    {
+      "path": "backend/app/services/historical_text_alignment.py",
+      "sha256": "f706755b632fb46153387c8f768e57e1e7e29cdb9b90ed1b782ca5eaeff2ec33",
+      "matches": true
+    },
+    {
+      "path": "backend/app/services/read_recovery_service.py",
+      "sha256": "7bee9291edc3d2381b6be283c8010d378835b8cf3a51d941b15dd016fabb17b6",
+      "matches": true
+    },
+    {
+      "path": "backend/app/services/wechat_service.py",
+      "sha256": "346da2596996eb0777a930831094e5f22631f8349aa8aad9a8f3e639080ed3fe",
+      "matches": true
+    },
+    {
+      "path": "backend/tests/test_historical_confidence_worker_http.py",
+      "sha256": "da1b2a70a8552e91c968f3a07b23f9132b3a9e40aa6d9eb3530795ea1c2b51c2",
+      "matches": true
+    },
+    {
+      "path": "backend/tests/test_punctuation_closed_read_recovery.py",
+      "sha256": "f18192398fbbb2e563f0af82a6d5efd56d773eeaf40bf9193c654fe34692207f",
+      "matches": true
+    },
+    {
+      "path": "worker-client/chejin_worker_client/historical_alignment.py",
+      "sha256": "3ad9cf686d9f046b836c5b8f83ebb8463cedc7906e6eefa27580b7844a32f971",
+      "matches": true
+    },
+    {
+      "path": "worker-client/chejin_worker_client/pre_send_checkpoint.py",
+      "sha256": "5239d7b49edb6dc9592ed8521ebe186dcbd90d6848982c02b686655430a263f3",
+      "matches": true
+    },
+    {
+      "path": "worker-client/chejin_worker_client/task_runner.py",
+      "sha256": "b58c2831672113a1fa6a5111198073e2ea2b90dd0d71bd055368b8cdb99e81a2",
+      "matches": true
+    },
+    {
+      "path": "worker-client/tests/test_history_punctuation_handoff.py",
+      "sha256": "bf4b5fe18bac48edb3b4ef95463a53396c446007a096de7d046b9138fcc7081a",
+      "matches": true
+    },
+    {
+      "path": "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/adapters/historical_text_alignment.py",
+      "sha256": "562b4ea1d561589b71483bfd034a424341a96beeb62c2549295fed38915fa97e",
+      "matches": true
+    },
+    {
+      "path": "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/adapters/wechat_win32_ocr_sidecar.py",
+      "sha256": "77ddab7c091ecb24143f0d7c161f0c83dc65216b4ab44104aa2b6cdd757dbdb8",
+      "matches": true
+    },
+    {
+      "path": "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/tests/test_confirmed_sent_history.py",
+      "sha256": "f627eb95285c72d504606208b17508be63c8c2f7b2170c41a6051fa5f5aa1978",
+      "matches": true
+    },
+    {
+      "path": "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/tests/test_historical_punctuation.py",
+      "sha256": "f20a3916eedcdf7ad4cea13a9003d20870ef31e48df163c128f4313b2c2b1e54",
+      "matches": true
+    },
+    {
+      "path": "deliverables/AI智能客服售前跟进系统_技术方案手册_v0.9.95.md",
+      "sha256": "d64df4b6e3884d2a3d6c58025ba377a3a8ff9c96646d5b00a875e9b991cf9b50",
+      "matches": true
+    },
+    {
+      "path": "deliverables/AI智能客服售前跟进系统_PRD_运营后台统一版_v0.9.95.md",
+      "sha256": "54d418f5fcac90cafabd41bc84704a165246655d88916858ba13ab97f0621aeb",
+      "matches": true
+    },
+    {
+      "path": "deliverables/AI智能客服售前跟进系统_全流程图_v0.9.95.puml",
+      "sha256": "d7c22d16f128821cd240bb254e0e45fa9869549ca4339bf9d12ab7119e410579",
+      "matches": true
+    },
+    {
+      "path": "deliverables/AI智能客服售前跟进系统_版本更新记录.md",
+      "sha256": "e204159cbacb47949a7e05e107c0b1fcb86b1361f233467b7a82c45d87a8cae6",
+      "matches": true
+    },
+    {
+      "path": "backend/tests/test_contract_equivalent_recovery.py",
+      "sha256": "d3b90e996685a5fdee4691deaae3678becf0e81cf024ad4266e2094c57b69a06",
+      "matches": true
+    }
+  ],
+  "batches": [
+    {
+      "label": "suffix-regression-final",
+      "sha_matches": true,
+      "actual_counts": {
+        "tests": 303,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      "counts_match": true,
+      "boundary": "Engineer artifact inspected; not independently rerun here"
+    },
+    {
+      "label": "suffix-shared",
+      "sha_matches": true,
+      "actual_counts": {
+        "tests": 159,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      "counts_match": true,
+      "boundary": "Engineer artifact inspected; not independently rerun here"
+    },
+    {
+      "label": "suffix_http_final",
+      "sha_matches": true,
+      "actual_counts": {
+        "tests": 5,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      "counts_match": true,
+      "boundary": "Engineer artifact inspected; not independently rerun here"
+    },
+    {
+      "label": "suffix_http_regression",
+      "sha_matches": true,
+      "actual_counts": {
+        "tests": 64,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      "counts_match": true,
+      "boundary": "Engineer artifact inspected; not independently rerun here"
+    },
+    {
+      "label": "suffix-negative",
+      "sha_matches": true,
+      "actual_counts": {
+        "tests": 10,
+        "failures": 5,
+        "errors": 0,
+        "skipped": 0
+      },
+      "counts_match": true,
+      "boundary": "Engineer artifact inspected; not independently rerun here"
+    },
+    {
+      "label": "suffix_http_negative",
+      "sha_matches": true,
+      "actual_counts": {
+        "tests": 1,
+        "failures": 1,
+        "errors": 0,
+        "skipped": 0
+      },
+      "counts_match": true,
+      "boundary": "Engineer artifact inspected; not independently rerun here"
+    }
+  ],
+  "selected_rule_mirrors": [
+    {
+      "path": "apps/wechat_ai_customer_service/adapters/historical_text_alignment.py",
+      "bundled_sha256": "562b4ea1d561589b71483bfd034a424341a96beeb62c2549295fed38915fa97e",
+      "shared_sha256": "562b4ea1d561589b71483bfd034a424341a96beeb62c2549295fed38915fa97e",
+      "same": true
+    },
+    {
+      "path": "apps/wechat_ai_customer_service/adapters/historical_text_correction.py",
+      "bundled_sha256": "ac3af2d08638d259cdbb8dcb87de638912cd1a50bc30ca1daf8a44ae089ed3d0",
+      "shared_sha256": "ac3af2d08638d259cdbb8dcb87de638912cd1a50bc30ca1daf8a44ae089ed3d0",
+      "same": true
+    },
+    {
+      "path": "apps/wechat_ai_customer_service/adapters/business_viewport_continuity.py",
+      "bundled_sha256": "82ffb5747acb753d20f4e70cb5ae5254f7e4ba51f2858307613e36e61c9a23e7",
+      "shared_sha256": "82ffb5747acb753d20f4e70cb5ae5254f7e4ba51f2858307613e36e61c9a23e7",
+      "same": true
+    },
+    {
+      "path": "apps/wechat_ai_customer_service/adapters/message_viewport_projection.py",
+      "bundled_sha256": "5941a7bb3fd19e96707ec6c78656510108474786788d413e069ce129b3a0d124",
+      "shared_sha256": "5941a7bb3fd19e96707ec6c78656510108474786788d413e069ce129b3a0d124",
+      "same": true
+    },
+    {
+      "path": "apps/wechat_ai_customer_service/adapters/text_correspondence.py",
+      "bundled_sha256": "b436a88106868b9a584a3641d4e1686868c502bd2907e1fcde434f9433e7bd7e",
+      "shared_sha256": "b436a88106868b9a584a3641d4e1686868c502bd2907e1fcde434f9433e7bd7e",
+      "same": true
+    },
+    {
+      "path": "apps/wechat_ai_customer_service/adapters/confirmed_sent_history.py",
+      "bundled_sha256": "d2371d89dbbd41f215440ed01a54ebbbf960cd3f344d7627e9d70313ffcb0d89",
+      "shared_sha256": "d2371d89dbbd41f215440ed01a54ebbbf960cd3f344d7627e9d70313ffcb0d89",
+      "same": true
+    },
+    {
+      "path": "apps/wechat_ai_customer_service/adapters/send_interruption.py",
+      "bundled_sha256": "b765b144d95e9f7f389a5fd0b1a26c6f0bd66787434ea754db78f448d4ac9e77",
+      "shared_sha256": "b765b144d95e9f7f389a5fd0b1a26c6f0bd66787434ea754db78f448d4ac9e77",
+      "same": true
+    },
+    {
+      "path": "apps/wechat_ai_customer_service/adapters/wechat_win32_ocr_sidecar.py",
+      "bundled_sha256": "77ddab7c091ecb24143f0d7c161f0c83dc65216b4ab44104aa2b6cdd757dbdb8",
+      "shared_sha256": "77ddab7c091ecb24143f0d7c161f0c83dc65216b4ab44104aa2b6cdd757dbdb8",
+      "same": true
+    }
+  ],
+  "all_declared_sources_match": true,
+  "all_declared_xml_match": true,
+  "all_selected_mirrors_match": true,
+  "limitation": "Hash identity and reported XML counts do not by themselves prove realistic test inputs or full audit coverage."
+}

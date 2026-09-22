@@ -3711,6 +3711,7 @@ def _validate_non_delivered_frame_observations(
     payload: WechatMessageIngestRequest,
     *,
     worker: Worker | None = None,
+    rebuild_missing: bool = False,
 ) -> set[tuple[str, str]]:
     """Prove every non-delivered settled frame row is already persisted.
 
@@ -3720,7 +3721,7 @@ def _validate_non_delivered_frame_observations(
     """
 
     from app.services.historical_text_alignment import verified_pairs
-    text_pairs = verified_pairs(db, payload, worker=worker)
+    text_pairs = verified_pairs(db, payload, worker=worker, rebuild_missing=rebuild_missing)
     mapped_observation_ids = {
         str(
             (item.raw_payload or {}).get("observation", {}).get(
@@ -4338,6 +4339,7 @@ def ingest_messages(db: Session, worker: Worker, payload: WechatMessageIngestReq
         )
     from app.services.read_recovery_service import (
         CancelledRead, validate_message_continuation, record_closed_read_recovery, settle_cancelled_read,
+        HISTORICAL_MAPPING_REJECTIONS,
     )
     closed_read = validate_message_continuation(db, worker, payload, payload.read_run_id)
     if isinstance(closed_read, CancelledRead):
@@ -4350,8 +4352,6 @@ def ingest_messages(db: Session, worker: Worker, payload: WechatMessageIngestReq
         require_followup(db, binding.lead_id)
     if str(payload.authorization_revision or "") != _authorization_revision(binding) and not revoked_settlement:
         raise AppError("MESSAGE_AUTHORIZATION_REVISION_EXPIRED", "读取授权已过期，已拒绝旧任务入库", 409)
-    if closed_read is not None:
-        record_closed_read_recovery(db, worker, payload, closed_read)
     inflight_state = dict(worker.inflight_flow_state or {})
     if str(inflight_state.get("flow_id") or "").strip():
         if (
@@ -4390,7 +4390,11 @@ def ingest_messages(db: Session, worker: Worker, payload: WechatMessageIngestReq
     from app.services.read_recovery_service import select_settlement_contract
     settlement_contract = select_settlement_contract(db, worker, payload)
     _validate_v3_request_contract(payload, contract=settlement_contract)
-    historical_pairs = _validate_non_delivered_frame_observations(db, payload, worker=worker)
+    historical_pairs = _validate_non_delivered_frame_observations(db, payload, worker=worker,
+        rebuild_missing=closed_read is not None
+        and (closed_read.after_data or {}).get('error_code') in HISTORICAL_MAPPING_REJECTIONS)
+    if closed_read is not None:
+        record_closed_read_recovery(db, worker, payload, closed_read, historical_pairs=historical_pairs)
     ordered_messages = _ordered_v3_messages(payload)
     evidence_payload = payload.evidence.model_dump(mode="json")
     slot_origin_read_run_ids = _slot_origin_read_run_ids(

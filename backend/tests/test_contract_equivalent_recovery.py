@@ -196,14 +196,29 @@ from chejin_worker_client.storage import (save_binding, load_binding, enqueue_c2
     update_install_business_blockers)
 req=json.loads(Path(sys.argv[1]).read_text())
 payload=req['payload']
-binding=Binding(req['worker']['id'],req['worker']['worker_token'],'followup-test',run_status='faulted')
-save_binding(binding)
-for item in payload['messages']:
-    save_c2_ledger_terminal(conversation_id=payload['conversation_id'],source_message_key=item['source_message_key'],
-        origin_read_run_id=payload['read_run_id'],dedupe_key=item['dedupe_key'],message_type=item['message_type'],
-        terminal_state=item['item_state'],ingest_state='waiting')
-outbox=enqueue_c2_outbox(payload)
-mark_c2_outbox_capability_paused(outbox,'WORKER_INFLIGHT_FLOW_MISMATCH')
+if req.get('existing_database'):
+    # The previous Worker process created this fault. Do not reseed its
+    # binding, ledger, Outbox or failure status before testing recovery.
+    from chejin_worker_client.storage import c2_outbox_id
+    binding=load_binding()
+    assert binding and binding.worker_id==req['worker']['id'] and binding.run_status=='faulted',binding
+    outbox=c2_outbox_id(payload)
+    untouched=load_c2_outbox_entry(outbox)
+    assert untouched and untouched['status']!='confirmed' and untouched['payload']==payload,untouched
+    assert untouched['last_error']=='MESSAGE_OBSERVATION_MAPPING_INCOMPLETE:FACT_SETTLEMENT_REQUIRED',untouched
+    assert untouched['attempt_count']==1,untouched
+    Path(sys.argv[1]).with_name('unseeded-recovery-input.json').write_text(json.dumps({
+        'outbox_id':outbox,'status':untouched['status'],'last_error':untouched['last_error'],
+        'attempt_count':untouched['attempt_count'],'binding_run_status':binding.run_status,'setup_writes':False}))
+else:
+    binding=Binding(req['worker']['id'],req['worker']['worker_token'],'followup-test',run_status='faulted')
+    save_binding(binding)
+    for item in payload['messages']:
+        save_c2_ledger_terminal(conversation_id=payload['conversation_id'],source_message_key=item['source_message_key'],
+            origin_read_run_id=payload['read_run_id'],dedupe_key=item['dedupe_key'],message_type=item['message_type'],
+            terminal_state=item['item_state'],ingest_state='waiting')
+    outbox=enqueue_c2_outbox(payload)
+    mark_c2_outbox_capability_paused(outbox,'WORKER_INFLIGHT_FLOW_MISMATCH')
 before=load_c2_outbox_entry(outbox)['payload']
 api=WorkerApiClient(req['url']+'/api')
 send=api.session.send

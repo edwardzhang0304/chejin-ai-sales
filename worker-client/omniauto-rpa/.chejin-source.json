@@ -583,6 +583,18 @@
       ],
       "status": "source_integration_not_released",
       "review_evidence": "deliverables/releases/0.9.95/review/startup-separator-20260922/verification.json"
+    },
+    {
+      "source_repository": "edwardzhang0304/omniauto",
+      "source_branch": "codex/gray-release-0.9.x-source",
+      "source_commit": "3c37f1e25b5a740ef26c1a40d5fc61045f6c0806",
+      "scope": [
+        "historical_body_difference_requires_shared_correspondence",
+        "frozen_visible_tail_identity_maps_to_full_history",
+        "full_history_proof_and_local_continuity_index_separation"
+      ],
+      "status": "reviewed_source_integration_not_released",
+      "review_evidence": "deliverables/releases/0.9.95/review/historical-punctuation-r6-20260922/verification.json"
     }
   ],
   "chejin_overlays": [

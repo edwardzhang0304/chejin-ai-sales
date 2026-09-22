@@ -10508,15 +10508,12 @@ class TaskRunner:
                 _confirmed_empty_business_viewport(prepared, target)
             ),
         )
-        if historical_checkpoint and continuity.get("relation") not in {
-            "business_sequence_equal", "unique_tail_append",
-            "unique_viewport_slide_with_tail_append", "unique_history_suffix_without_new_messages",
-        }:
+        if historical_checkpoint:
             try:
                 from .shared_rules import historical_text_alignment
                 diagnostics = {}
-                candidate = historical_text_alignment.validated_projection_continuity(
-                    historical_checkpoint, observations, old_projection=old_projection,
+                candidate = historical_text_alignment.reconcile_checkpoint_continuity(
+                    historical_checkpoint, observations, continuity, old_projection=old_projection,
                     old_boundary_tokens=old_boundary_tokens,
                     pre_frame_id=f"checkpoint:{target.authorization_revision}", post_frame_id=f"frame:{frame_id}",
                     diagnostics=diagnostics, deadline=getattr(getattr(self, 'current_ui_lock', None), 'step_deadline', None))

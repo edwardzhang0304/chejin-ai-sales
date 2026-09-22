@@ -5,10 +5,32 @@ from sqlalchemy import select
 from app.models.wechat import MessageEvent
 
 
-def verified_pairs(db, payload, *, worker):
+def verified_pairs(db, payload, *, worker, rebuild_missing=False):
     alignment = payload.evidence.sequence_alignment_evidence
     proof = alignment.text_correspondence if alignment else None
     if proof is None:
+        if rebuild_missing and alignment and worker:
+            from app.services.read_recovery_service import closed_read_verified_pairs
+            accepted = closed_read_verified_pairs(db, worker, payload)
+            if accepted is not None:
+                return accepted
+            # Only the original stopped/closed read owner can reach this path.
+            # Rebuild from authority plus the frozen frame, then run the same
+            # full proof/mapping verifier. Never rewrite the saved request.
+            from app.services.wechat_service import _identity_checkpoint
+            checkpoint = _identity_checkpoint(db, conversation_id=payload.conversation_id)
+            rules = shared_adapter('historical_text_alignment')
+            try:
+                built = rules.build_correspondence(checkpoint, payload.evidence.observations,
+                    pre_frame_id=alignment.pre_frame_id, post_frame_id=alignment.post_frame_id,
+                    new_boundary_tokens=shared_adapter('business_viewport_continuity').boundary_tokens_for_observations(
+                        payload.evidence.observations, committed_only=False))
+            except (ValueError, KeyError, IndexError, TypeError) as exc:
+                raise AppError('TEXT_CORRESPONDENCE_PROOF_INVALID', '历史文字对应凭证未通过权威校验', 409) from exc
+            if built and built['proof']['version'] == 2:
+                comparison = payload.model_copy(deep=True)
+                comparison.evidence.sequence_alignment_evidence.text_correspondence = built['proof']
+                return verified_pairs(db, comparison, worker=worker)
         return set()
     capability = ((worker.local_lock_summary or {}).get("capabilities") or {}).get("text_correspondence_version") if worker else None
     if type(capability) is not int or capability not in {1, 2} or capability < proof.get('version', 0):

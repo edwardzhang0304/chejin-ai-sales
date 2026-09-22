@@ -22,6 +22,10 @@ from app.services.worker_service import has_unsettled_worker_send
 
 TERMINAL_EVENT = 'worker_read_business_settled'
 FAILURE_RECEIPT_EVENT = 'worker_closed_read_failure_received'
+HISTORICAL_MAPPING_REJECTIONS = frozenset({
+    'MESSAGE_OBSERVATION_MAPPING_INCOMPLETE',
+    'MESSAGE_OBSERVATION_MAPPING_INCOMPLETE:FACT_SETTLEMENT_REQUIRED',
+})
 
 
 def completed_read_receipt(db: Session, worker: Worker, payload: WechatMessageIngestRequest,
@@ -483,8 +487,8 @@ def closed_read_recovery(
 ) -> OperationLog | None:
     """Prove a failed original read, without reopening a Flow or authorizing UI.
 
-    A version-only rejection used to close the Flow before its Outbox reached
-    the server. Only that recorded failure on the same binding can be repaired.
+    Released version/mapping rejections can close a Flow before its Outbox is
+    accepted. Only those recorded failures on the same binding can be repaired.
     Changed authorization, a later read, another active task or send must wait
     for their own recovery path. This is not general admission for ended flows.
     """
@@ -503,7 +507,7 @@ def closed_read_recovery(
     proof = (finish.after_data or {}) if finish else {}
     bound_at = _utc(worker.bound_at).isoformat() if worker.bound_at else None
     if (not finish or proof.get('terminal_kind') != 'technical_failed'
-            or proof.get('error_code') != 'MESSAGE_CONTRACT_REVISION_MISMATCH'
+            or proof.get('error_code') not in HISTORICAL_MAPPING_REJECTIONS | {'MESSAGE_CONTRACT_REVISION_MISMATCH'}
             or proof.get('flow_id') != payload.read_run_id or proof.get('conversation_id') != payload.conversation_id
             or proof.get('client_instance_id') != worker.client_instance_id or proof.get('bound_at') != bound_at
             or _utc(payload.evidence.finished_at) > _utc(finish.created_at)):
@@ -571,8 +575,28 @@ def validate_message_continuation(
     return None
 
 
+def closed_read_verified_pairs(
+    db: Session, worker: Worker, payload: WechatMessageIngestRequest,
+) -> set[tuple[str, str]] | None:
+    """Reuse only the exact frame already committed by closed-read recovery.
+
+    Its checkpoint may have advanced after ingest. The original owner/Flow
+    admission still runs first, and the complete frozen request must match.
+    """
+    identity = _recovery_identity(payload)
+    record = db.scalar(select(OperationLog).where(
+        OperationLog.event_type == 'worker_closed_read_messages_recovered',
+        OperationLog.target_type == 'worker_flow', OperationLog.target_id == payload.read_run_id,
+        OperationLog.operator_id == worker.id,
+        OperationLog.after_data['payload_sha256'].as_string() == identity['payload_sha256'],
+    ).limit(1))
+    pairs = (record.extra_metadata or {}).get('historical_pairs') if record else None
+    return {tuple(pair) for pair in pairs} if pairs is not None else None
+
+
 def record_closed_read_recovery(
     db: Session, worker: Worker, payload: WechatMessageIngestRequest, proof: OperationLog,
+    *, historical_pairs: set[tuple[str, str]] | None = None,
 ) -> None:
     """Called under the ingest Worker lock; failed validation rolls it back."""
     identity = _recovery_identity(payload)
@@ -586,4 +610,5 @@ def record_closed_read_recovery(
         db.add(OperationLog(event_type='worker_closed_read_messages_recovered', module='wechat',
                             target_type='worker_flow', target_id=payload.read_run_id, operator_id=worker.id,
                             after_data=identity, extra_metadata={'original_finish_id': proof.id,
-                                                               'conversation_id': payload.conversation_id}))
+                                                               'conversation_id': payload.conversation_id,
+                                                               'historical_pairs': sorted(historical_pairs or set())}))
