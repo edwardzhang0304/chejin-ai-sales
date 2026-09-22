@@ -1,0 +1,600 @@
+{
+  "schema_version": 1,
+  "repository": "edwardzhang0304/chejin-ai-sales",
+  "reviewed_commit": "0b302ae30d397c8a48ad3a2b6ca238b6cdf44f71",
+  "target_version": "0.9.97",
+  "approval": "Owner requested formal Windows EXE manual preserve-data strong upgrade with matching backend/admin. Current client0.9.96 confirmed; server exit readiness checked before cutover.",
+  "original_verification_sha256": "07238fee0a87f6ae543e0350a1f71971253ee60d39ce9bafa206bca92d1cf816",
+  "source_sha256": {
+    "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/workflows/customer_service_brain.py": "6721f299fb2119f7d4b1744f4d4eb43579e17983030dc90ab12c60aceb2831f6",
+    "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/workflows/llm_output_adapter.py": "690ab69aeb65cfaad5b23ce5b12e09de5a38b37951f62231cfbf5f13fc5ea17a",
+    "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/configs/default.example.json": "4bb12e27db6f1e69a821642eb455ae411dfa152a9368dfbc8fec626edda57ce3",
+    "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/configs/jiangsu_chejin_xucong_live.example.json": "316ee7a808e07b034822c4c28435e4687e917aab128b8557ced31da5e0519473",
+    "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/tests/test_brain_completion_integrity.py": "bf0058542594b16d8879b2c56f1232dd0e21c6e4d13acce4d70406fc4aad947e",
+    "backend/configs/chejin_c3_brain.json": "0a3733b31bf022e65a5d56b95f7cc27c17fc5ce95ddc2c368f12fd50221f01db",
+    "backend/tests/test_brain_completion_integrity.py": "9a33da8133f8bf714a11ffce5bd5e59dc0b11b6ff9366f41c1e80f6a21b0619c",
+    "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/llm_config.py": "93e457147406c2094562523b196ea957ad3964f9bc5d9c9809d2f259c296e560",
+    "backend/app/services/ai_adapter.py": "67bd91b26d484c7f497b7bc389e1fccae6288224f9cb37cfcb8d11b12e54b097",
+    "backend/tests/test_llm_response_diagnostics.py": "73113d9d84456ff015a0890968a8be0c6e0cfd5052354724c0884d8aa7e114e8"
+  },
+  "checks": [
+    {
+      "name": "product.xml",
+      "original_xml_sha256": "f2c88ebd2f4a61049b4a3b502f7d015544a1795d198445ad8fb5e4fae7e544cf",
+      "count": 39,
+      "cases": [
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_brain_completion_integrity::test_token_limit_blocks_even_parseable_json[False-length]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_brain_completion_integrity::test_token_limit_blocks_even_parseable_json[False-max_tokens]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_brain_completion_integrity::test_token_limit_blocks_even_parseable_json[False-model_context_window_exceeded]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_brain_completion_integrity::test_token_limit_blocks_even_parseable_json[True-length]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_brain_completion_integrity::test_token_limit_blocks_even_parseable_json[True-max_tokens]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_brain_completion_integrity::test_token_limit_blocks_even_parseable_json[True-model_context_window_exceeded]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_brain_completion_integrity::test_missing_finish_metadata_does_not_repair_cutoff_reply",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_brain_completion_integrity::test_complete_wrapped_reply_preserves_text[<lambda>0]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_brain_completion_integrity::test_complete_wrapped_reply_preserves_text[<lambda>1]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_brain_completion_integrity::test_complete_wrapped_reply_preserves_text[<lambda>2]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_brain_completion_integrity::test_real_brain_entry_retries_cutoff_once[length-False-generation]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_brain_completion_integrity::test_real_brain_entry_retries_cutoff_once[length-False-repair]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_brain_completion_integrity::test_real_brain_entry_retries_cutoff_once[length-True-generation]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_brain_completion_integrity::test_real_brain_entry_retries_cutoff_once[length-True-repair]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_brain_completion_integrity::test_real_brain_entry_retries_cutoff_once[stop-False-generation]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_brain_completion_integrity::test_real_brain_entry_retries_cutoff_once[stop-False-repair]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_brain_completion_integrity::test_repeated_cutoff_has_no_sendable_plan[generation]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_brain_completion_integrity::test_repeated_cutoff_has_no_sendable_plan[repair]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_brain_completion_integrity::test_success_does_not_add_a_model_call[generation]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_brain_completion_integrity::test_success_does_not_add_a_model_call[repair]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_brain_completion_integrity::test_existing_retry_disable_is_respected",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_brain_completion_integrity::test_structure_repair_cannot_restore_a_truncated_answer",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_brain_completion_integrity::test_transport_retry_still_rejects_cutoff",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_brain_completion_integrity::test_explicit_repair_budget_is_respected",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_brain_completion_integrity::test_fast_profile_keeps_repair_budget",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_brain_completion_integrity::test_shipped_examples_keep_repair_budget[default.example.json]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_brain_completion_integrity::test_shipped_examples_keep_repair_budget[jiangsu_chejin_xucong_live.example.json]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_brain_completion_integrity::test_wire_stop_reason_reaches_real_brain[anthropic-model_context_window_exceeded-True-generation]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_brain_completion_integrity::test_wire_stop_reason_reaches_real_brain[anthropic-model_context_window_exceeded-True-repair]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_brain_completion_integrity::test_wire_stop_reason_reaches_real_brain[anthropic-max_tokens-True-generation]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_brain_completion_integrity::test_wire_stop_reason_reaches_real_brain[anthropic-max_tokens-True-repair]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_brain_completion_integrity::test_wire_stop_reason_reaches_real_brain[anthropic-end_turn-False-generation]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_brain_completion_integrity::test_wire_stop_reason_reaches_real_brain[anthropic-end_turn-False-repair]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_brain_completion_integrity::test_wire_stop_reason_reaches_real_brain[openai-length-True-generation]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_brain_completion_integrity::test_wire_stop_reason_reaches_real_brain[openai-length-True-repair]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_brain_completion_integrity::test_wire_stop_reason_reaches_real_brain[openai-stop-False-generation]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_brain_completion_integrity::test_wire_stop_reason_reaches_real_brain[openai-stop-False-repair]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_brain_completion_integrity::test_wire_context_limit_retries_to_complete_reply[generation]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_brain_completion_integrity::test_wire_context_limit_retries_to_complete_reply[repair]",
+          "result": "passed"
+        }
+      ]
+    },
+    {
+      "name": "shared.xml",
+      "original_xml_sha256": "d213bbe4f94cbb99ed8eee276df51c0f4b5cbf7cfc0c277ce0782da96e466107",
+      "count": 40,
+      "cases": [
+        {
+          "name": "test_brain_completion_integrity::test_token_limit_blocks_even_parseable_json[False-length]",
+          "result": "passed"
+        },
+        {
+          "name": "test_brain_completion_integrity::test_token_limit_blocks_even_parseable_json[False-max_tokens]",
+          "result": "passed"
+        },
+        {
+          "name": "test_brain_completion_integrity::test_token_limit_blocks_even_parseable_json[False-model_context_window_exceeded]",
+          "result": "passed"
+        },
+        {
+          "name": "test_brain_completion_integrity::test_token_limit_blocks_even_parseable_json[True-length]",
+          "result": "passed"
+        },
+        {
+          "name": "test_brain_completion_integrity::test_token_limit_blocks_even_parseable_json[True-max_tokens]",
+          "result": "passed"
+        },
+        {
+          "name": "test_brain_completion_integrity::test_token_limit_blocks_even_parseable_json[True-model_context_window_exceeded]",
+          "result": "passed"
+        },
+        {
+          "name": "test_brain_completion_integrity::test_missing_finish_metadata_does_not_repair_cutoff_reply",
+          "result": "passed"
+        },
+        {
+          "name": "test_brain_completion_integrity::test_complete_wrapped_reply_preserves_text[<lambda>0]",
+          "result": "passed"
+        },
+        {
+          "name": "test_brain_completion_integrity::test_complete_wrapped_reply_preserves_text[<lambda>1]",
+          "result": "passed"
+        },
+        {
+          "name": "test_brain_completion_integrity::test_complete_wrapped_reply_preserves_text[<lambda>2]",
+          "result": "passed"
+        },
+        {
+          "name": "test_brain_completion_integrity::test_real_brain_entry_retries_cutoff_once[length-False-generation]",
+          "result": "passed"
+        },
+        {
+          "name": "test_brain_completion_integrity::test_real_brain_entry_retries_cutoff_once[length-False-repair]",
+          "result": "passed"
+        },
+        {
+          "name": "test_brain_completion_integrity::test_real_brain_entry_retries_cutoff_once[length-True-generation]",
+          "result": "passed"
+        },
+        {
+          "name": "test_brain_completion_integrity::test_real_brain_entry_retries_cutoff_once[length-True-repair]",
+          "result": "passed"
+        },
+        {
+          "name": "test_brain_completion_integrity::test_real_brain_entry_retries_cutoff_once[stop-False-generation]",
+          "result": "passed"
+        },
+        {
+          "name": "test_brain_completion_integrity::test_real_brain_entry_retries_cutoff_once[stop-False-repair]",
+          "result": "passed"
+        },
+        {
+          "name": "test_brain_completion_integrity::test_repeated_cutoff_has_no_sendable_plan[generation]",
+          "result": "passed"
+        },
+        {
+          "name": "test_brain_completion_integrity::test_repeated_cutoff_has_no_sendable_plan[repair]",
+          "result": "passed"
+        },
+        {
+          "name": "test_brain_completion_integrity::test_success_does_not_add_a_model_call[generation]",
+          "result": "passed"
+        },
+        {
+          "name": "test_brain_completion_integrity::test_success_does_not_add_a_model_call[repair]",
+          "result": "passed"
+        },
+        {
+          "name": "test_brain_completion_integrity::test_existing_retry_disable_is_respected",
+          "result": "passed"
+        },
+        {
+          "name": "test_brain_completion_integrity::test_structure_repair_cannot_restore_a_truncated_answer",
+          "result": "passed"
+        },
+        {
+          "name": "test_brain_completion_integrity::test_transport_retry_still_rejects_cutoff",
+          "result": "passed"
+        },
+        {
+          "name": "test_brain_completion_integrity::test_explicit_repair_budget_is_respected",
+          "result": "passed"
+        },
+        {
+          "name": "test_brain_completion_integrity::test_fast_profile_keeps_repair_budget",
+          "result": "passed"
+        },
+        {
+          "name": "test_brain_completion_integrity::test_universal_profile_keeps_repair_budget",
+          "result": "passed"
+        },
+        {
+          "name": "test_brain_completion_integrity::test_shipped_examples_keep_repair_budget[default.example.json]",
+          "result": "passed"
+        },
+        {
+          "name": "test_brain_completion_integrity::test_shipped_examples_keep_repair_budget[jiangsu_chejin_xucong_live.example.json]",
+          "result": "passed"
+        },
+        {
+          "name": "test_brain_completion_integrity::test_wire_stop_reason_reaches_real_brain[anthropic-model_context_window_exceeded-True-generation]",
+          "result": "passed"
+        },
+        {
+          "name": "test_brain_completion_integrity::test_wire_stop_reason_reaches_real_brain[anthropic-model_context_window_exceeded-True-repair]",
+          "result": "passed"
+        },
+        {
+          "name": "test_brain_completion_integrity::test_wire_stop_reason_reaches_real_brain[anthropic-max_tokens-True-generation]",
+          "result": "passed"
+        },
+        {
+          "name": "test_brain_completion_integrity::test_wire_stop_reason_reaches_real_brain[anthropic-max_tokens-True-repair]",
+          "result": "passed"
+        },
+        {
+          "name": "test_brain_completion_integrity::test_wire_stop_reason_reaches_real_brain[anthropic-end_turn-False-generation]",
+          "result": "passed"
+        },
+        {
+          "name": "test_brain_completion_integrity::test_wire_stop_reason_reaches_real_brain[anthropic-end_turn-False-repair]",
+          "result": "passed"
+        },
+        {
+          "name": "test_brain_completion_integrity::test_wire_stop_reason_reaches_real_brain[openai-length-True-generation]",
+          "result": "passed"
+        },
+        {
+          "name": "test_brain_completion_integrity::test_wire_stop_reason_reaches_real_brain[openai-length-True-repair]",
+          "result": "passed"
+        },
+        {
+          "name": "test_brain_completion_integrity::test_wire_stop_reason_reaches_real_brain[openai-stop-False-generation]",
+          "result": "passed"
+        },
+        {
+          "name": "test_brain_completion_integrity::test_wire_stop_reason_reaches_real_brain[openai-stop-False-repair]",
+          "result": "passed"
+        },
+        {
+          "name": "test_brain_completion_integrity::test_wire_context_limit_retries_to_complete_reply[generation]",
+          "result": "passed"
+        },
+        {
+          "name": "test_brain_completion_integrity::test_wire_context_limit_retries_to_complete_reply[repair]",
+          "result": "passed"
+        }
+      ]
+    },
+    {
+      "name": "backend.xml",
+      "original_xml_sha256": "63f95094ae58dc50140d8c7ddcbdb5b85e1dad59c564fa2311e50dd6ecdd58ee",
+      "count": 54,
+      "cases": [
+        {
+          "name": "tests.test_llm_response_diagnostics::test_anthropic_stop_reason_survives_http_and_backend_progress[model_context_window_exceeded-model_context_window_exceeded]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_llm_response_diagnostics::test_anthropic_stop_reason_survives_http_and_backend_progress[max_tokens-max_tokens]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_llm_response_diagnostics::test_anthropic_stop_reason_survives_http_and_backend_progress[end_turn-end_turn]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_llm_response_diagnostics::test_anthropic_stop_reason_survives_http_and_backend_progress[PRIVATE-UNKNOWN-STOP-SENTINEL-other]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_llm_response_diagnostics::test_wire_content_and_extraction_are_recorded_separately[PRIVATE-REPLY-SENTINEL-stop-string-22]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_llm_response_diagnostics::test_wire_content_and_extraction_are_recorded_separately[-stop-string-0]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_llm_response_diagnostics::test_wire_content_and_extraction_are_recorded_separately[None-stop-null-0]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_llm_response_diagnostics::test_wire_content_and_extraction_are_recorded_separately[None-length-null-0]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_llm_response_diagnostics::test_wire_content_and_extraction_are_recorded_separately[   -stop-string-0]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_llm_response_diagnostics::test_wire_content_and_extraction_are_recorded_separately[content5-stop-list-22]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_llm_response_diagnostics::test_nonempty_wire_content_with_empty_extractor_is_detectable",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_llm_response_diagnostics::test_failure_and_alternative_response_shapes_have_bounded_evidence[not-json-expected0]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_llm_response_diagnostics::test_failure_and_alternative_response_shapes_have_bounded_evidence[body1-expected1]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_llm_response_diagnostics::test_failure_and_alternative_response_shapes_have_bounded_evidence[body2-expected2]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_llm_response_diagnostics::test_failure_and_alternative_response_shapes_have_bounded_evidence[body3-expected3]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_llm_response_diagnostics::test_failure_and_alternative_response_shapes_have_bounded_evidence[body4-expected4]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_llm_response_diagnostics::test_failure_and_alternative_response_shapes_have_bounded_evidence[body5-expected5]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_llm_response_diagnostics::test_anthropic_text_blocks_are_counted_without_saving_thinking",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_llm_response_diagnostics::test_http_error_is_not_misreported_as_successful_empty_content",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_llm_response_diagnostics::test_diagnostics_failure_cannot_change_model_result[collector]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_llm_response_diagnostics::test_diagnostics_failure_cannot_change_model_result[writer]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_llm_response_diagnostics::test_backend_drops_injected_text_and_invalid_diagnostic_types",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_llm_response_diagnostics::test_optional_counts_preserve_unknown_through_http_and_progress[missing-reasoning_content-reasoning_chars--PRIVATE-THINKING-SENTINEL-25]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_llm_response_diagnostics::test_optional_counts_preserve_unknown_through_http_and_progress[missing-refusal-refusal_chars--PRIVATE-REPLY-SENTINEL-22]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_llm_response_diagnostics::test_optional_counts_preserve_unknown_through_http_and_progress[missing-tool_calls-tool_calls_count-empty2-present2-1]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_llm_response_diagnostics::test_optional_counts_preserve_unknown_through_http_and_progress[null-reasoning_content-reasoning_chars--PRIVATE-THINKING-SENTINEL-25]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_llm_response_diagnostics::test_optional_counts_preserve_unknown_through_http_and_progress[null-refusal-refusal_chars--PRIVATE-REPLY-SENTINEL-22]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_llm_response_diagnostics::test_optional_counts_preserve_unknown_through_http_and_progress[null-tool_calls-tool_calls_count-empty2-present2-1]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_llm_response_diagnostics::test_optional_counts_preserve_unknown_through_http_and_progress[wrong_type-reasoning_content-reasoning_chars--PRIVATE-THINKING-SENTINEL-25]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_llm_response_diagnostics::test_optional_counts_preserve_unknown_through_http_and_progress[wrong_type-refusal-refusal_chars--PRIVATE-REPLY-SENTINEL-22]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_llm_response_diagnostics::test_optional_counts_preserve_unknown_through_http_and_progress[wrong_type-tool_calls-tool_calls_count-empty2-present2-1]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_llm_response_diagnostics::test_optional_counts_preserve_unknown_through_http_and_progress[empty-reasoning_content-reasoning_chars--PRIVATE-THINKING-SENTINEL-25]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_llm_response_diagnostics::test_optional_counts_preserve_unknown_through_http_and_progress[empty-refusal-refusal_chars--PRIVATE-REPLY-SENTINEL-22]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_llm_response_diagnostics::test_optional_counts_preserve_unknown_through_http_and_progress[empty-tool_calls-tool_calls_count-empty2-present2-1]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_llm_response_diagnostics::test_optional_counts_preserve_unknown_through_http_and_progress[present-reasoning_content-reasoning_chars--PRIVATE-THINKING-SENTINEL-25]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_llm_response_diagnostics::test_optional_counts_preserve_unknown_through_http_and_progress[present-refusal-refusal_chars--PRIVATE-REPLY-SENTINEL-22]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_llm_response_diagnostics::test_optional_counts_preserve_unknown_through_http_and_progress[present-tool_calls-tool_calls_count-empty2-present2-1]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_llm_response_diagnostics::test_anthropic_optional_counts_only_measure_readable_reported_blocks[None-None-None]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_llm_response_diagnostics::test_anthropic_optional_counts_only_measure_readable_reported_blocks[content1-None-None]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_llm_response_diagnostics::test_anthropic_optional_counts_only_measure_readable_reported_blocks[content2-None-None]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_llm_response_diagnostics::test_anthropic_optional_counts_only_measure_readable_reported_blocks[content3-None-None]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_llm_response_diagnostics::test_anthropic_optional_counts_only_measure_readable_reported_blocks[content4-None-None]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_llm_response_diagnostics::test_anthropic_optional_counts_only_measure_readable_reported_blocks[content5-0-None]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_llm_response_diagnostics::test_anthropic_optional_counts_only_measure_readable_reported_blocks[content6-25-1]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_llm_response_diagnostics::test_anthropic_optional_counts_only_measure_readable_reported_blocks[content7-None-None]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_llm_response_diagnostics::test_anthropic_optional_counts_only_measure_readable_reported_blocks[content8-None-None]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_llm_response_diagnostics::test_anthropic_optional_counts_only_measure_readable_reported_blocks[content9-None-None]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_llm_response_diagnostics::test_empty_response_and_retry_evidence_survive_real_brain_and_database",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_llm_response_diagnostics::test_quality_repair_keeps_its_own_call_evidence_in_database",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_brain_completion_integrity::test_formal_config_keeps_repair_budget",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_brain_completion_integrity::test_c3_only_complete_generation_creates_reply_task[False-False]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_brain_completion_integrity::test_c3_only_complete_generation_creates_reply_task[False-True]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_brain_completion_integrity::test_c3_only_complete_generation_creates_reply_task[True-False]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_brain_completion_integrity::test_c3_only_complete_generation_creates_reply_task[True-True]",
+          "result": "passed"
+        }
+      ]
+    }
+  ],
+  "environment": {
+    "source": "Existing engineering and independent review XML; CI checks identity only.",
+    "business_tests_reexecuted": 0,
+    "original_batches": [
+      {
+        "file": "/private/tmp/cj-context-marker-audit-20260922-zd6F1V/product.xml",
+        "sha256": "f2c88ebd2f4a61049b4a3b502f7d015544a1795d198445ad8fb5e4fae7e544cf",
+        "tests": 39
+      },
+      {
+        "file": "/private/tmp/cj-context-marker-audit-20260922-zd6F1V/shared.xml",
+        "sha256": "d213bbe4f94cbb99ed8eee276df51c0f4b5cbf7cfc0c277ce0782da96e466107",
+        "tests": 40
+      },
+      {
+        "file": "/private/tmp/cj-context-marker-audit-20260922-zd6F1V/backend.xml",
+        "sha256": "63f95094ae58dc50140d8c7ddcbdb5b85e1dad59c564fa2311e50dd6ecdd58ee",
+        "tests": 54
+      }
+    ],
+    "not_verified": [
+      "Actual model and Windows physical sending remain onsite acceptance.",
+      "Two known pre-existing shared test failures remain disclosed, not counted as passed."
+    ]
+  }
+}

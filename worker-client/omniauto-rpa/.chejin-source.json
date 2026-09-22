@@ -603,6 +603,14 @@
       "scope": [
         "c2_contract_0_9_96_generated_schema"
       ]
+    },
+    {
+      "source_repository": "edwardzhang0304/omniauto",
+      "source_branch": "codex/gray-release-0.9.x-source",
+      "source_commit": "a2026d1570a84abcda02de9a67844c540bf1aead",
+      "scope": [
+        "c2_contract_0_9_97_generated_schema"
+      ]
     }
   ],
   "chejin_overlays": [
@@ -635,12 +643,12 @@
     "persisted_c1_failure_receipt_settlement_and_stop_recovery_contract"
   ],
   "current_release": {
-    "version": "0.9.96",
-    "source_commit": "4077ae87d5d1a921239844f4004f9c55bafe0eb3",
-    "contract_revision": "0.9.96",
-    "contract_sha256": "ddbfb78868e693d7adf8ec701dbf823dc1fdf07e9d17943802ab8e27f9106885",
+    "version": "0.9.97",
+    "source_commit": "a2026d1570a84abcda02de9a67844c540bf1aead",
+    "contract_revision": "0.9.97",
+    "contract_sha256": "175e1f0d1fe9b208d97ba8a40e4a51d07a4affbf7e6092a48fb8bbc6e064c0ff",
     "scope": [
-      "c2_contract_0_9_96_generated_schema"
+      "c2_contract_0_9_97_generated_schema"
     ]
   },
   "historical_integrations": [
