@@ -208,7 +208,7 @@
     "quality_repair_enabled": true,
     "max_quality_repair_attempts": 1,
     "quality_repair_timeout_seconds": 12,
-    "quality_repair_max_tokens": 520,
+    "quality_repair_max_tokens": 16384,
     "quality_reply_max_chars": 120,
     "quality_mixed_topic_reply_max_chars": 180,
     "quality_segment_soft_max_chars": 96,

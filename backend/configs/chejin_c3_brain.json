@@ -13,6 +13,8 @@
     "very_large_prompt_timeout_seconds": 170,
     "fallback_timeout_seconds": 60,
     "max_tokens": 8192,
+    "quality_repair_max_tokens": 16384,
+    "low_authority_fast_repair_max_tokens": 16384,
     "routine_product_fast_max_tokens": 8192,
     "low_authority_fast_max_tokens": 8192,
     "routine_product_fast_timeout_seconds": 120,

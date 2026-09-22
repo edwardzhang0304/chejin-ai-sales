@@ -63,7 +63,7 @@ def _safe_response_diagnostics(raw: object) -> dict:
         value = raw.get(key)
         if isinstance(value, str) and value in types:
             result[key] = value
-    reasons = {"stop", "length", "content_filter", "tool_calls", "function_call", "end_turn", "max_tokens", "stop_sequence", "tool_use", "pause_turn", "refusal", "missing", "other"}
+    reasons = {"stop", "length", "content_filter", "tool_calls", "function_call", "end_turn", "max_tokens", "model_context_window_exceeded", "stop_sequence", "tool_use", "pause_turn", "refusal", "missing", "other"}
     reason = raw.get("finish_reason")
     if isinstance(reason, str) and reason in reasons:
         result["finish_reason"] = reason

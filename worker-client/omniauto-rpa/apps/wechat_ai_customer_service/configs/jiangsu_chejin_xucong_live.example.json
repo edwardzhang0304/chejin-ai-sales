@@ -262,7 +262,7 @@
     "quality_repair_enabled": true,
     "max_quality_repair_attempts": 1,
     "quality_repair_timeout_seconds": 12,
-    "quality_repair_max_tokens": 520,
+    "quality_repair_max_tokens": 16384,
     "quality_reply_max_chars": 120,
     "quality_mixed_topic_reply_max_chars": 180,
     "quality_segment_soft_max_chars": 96,
@@ -294,7 +294,7 @@
     "low_authority_fast_fallback_timeout_seconds": 10,
     "low_authority_fast_max_tokens": 8192,
     "low_authority_fast_repair_timeout_seconds": 6,
-    "low_authority_fast_repair_max_tokens": 260,
+    "low_authority_fast_repair_max_tokens": 16384,
     "blocking_shadow_enabled": false,
     "include_brain_input_in_audit": false,
     "include_evidence_pack_in_audit": false

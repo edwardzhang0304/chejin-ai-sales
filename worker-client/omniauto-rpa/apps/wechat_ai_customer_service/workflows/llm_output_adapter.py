@@ -91,6 +91,29 @@ def extract_first_json_object_text(text: str) -> str:
     return ""
 
 
+def llm_json_response_is_incomplete(response: dict[str, Any]) -> bool:
+    """Distinguish a transport success from a completely generated JSON plan."""
+    diagnostics = response.get("response_diagnostics") or {}
+    if isinstance(diagnostics, dict):
+        for key in ("finish_reason", "stop_reason"):
+            if diagnostics.get(key) in {"length", "max_tokens", "model_context_window_exceeded"}:
+                return True
+    raw = strip_markdown_code_fence(str(response.get("response_text") or ""))
+    start = raw.find("{")
+    return (
+        start >= 0
+        and looks_like_repairable_json_object_prefix(raw[start:])
+        and not extract_first_json_object_text(raw)
+    )
+
+
+def parse_complete_llm_json_response(response: dict[str, Any]) -> dict[str, Any] | None:
+    """Brain may normalize wrappers, but must not adopt a cutoff reply."""
+    if llm_json_response_is_incomplete(response):
+        return None
+    return parse_llm_json_object(str(response.get("response_text") or ""))
+
+
 def parse_llm_json_object(text: str) -> dict[str, Any] | None:
     candidates = []
     raw = str(text or "").strip()
@@ -124,9 +147,9 @@ def repair_truncated_json_object_text(text: str) -> str:
     """Best-effort parser-side repair for model output cut off mid-JSON.
 
     The repaired text is only accepted if ``json.loads`` succeeds afterwards.
-    This adapter never invents reply content; it only closes an already emitted
-    string/array/object structure so the BrainPlan written by the model can
-    continue through normal validation and guard checks.
+    This legacy helper closes syntax but cannot prove the reply is complete.
+    Brain consumers must use parse_complete_llm_json_response before accepting
+    a plan; a syntactically repaired fragment is not a complete model response.
     """
 
     value = str(text or "")

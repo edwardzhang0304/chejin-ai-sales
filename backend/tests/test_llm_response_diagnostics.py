@@ -55,6 +55,22 @@ def _response(content, *, finish="stop", **message_fields):
             "usage": {"prompt_tokens": 100, "completion_tokens": 23, "completion_tokens_details": {"reasoning_tokens": 23}}}
 
 
+@pytest.mark.parametrize("stop_reason,expected", [
+    ("model_context_window_exceeded", "model_context_window_exceeded"),
+    ("max_tokens", "max_tokens"), ("end_turn", "end_turn"),
+    ("PRIVATE-UNKNOWN-STOP-SENTINEL", "other"),
+])
+def test_anthropic_stop_reason_survives_http_and_backend_progress(http_provider, stop_reason, expected):
+    call, progress, state = http_provider
+    result = call({"content": [{"type": "text", "text": TEXT}], "stop_reason": stop_reason},
+                  provider="anthropic")
+    assert result["response_diagnostics"]["finish_reason"] == expected
+    events = _read_provider_progress(progress, progress_id="diag-test")
+    assert events[-1]["response_diagnostics"]["finish_reason"] == expected
+    assert state["calls"] == 1
+    assert all(private not in progress.read_text() for private in (SECRET, TEXT, "PRIVATE-UNKNOWN-STOP-SENTINEL"))
+
+
 @pytest.mark.parametrize("content,finish,kind,chars", [
     (TEXT, "stop", "string", len(TEXT)), ("", "stop", "string", 0),
     (None, "stop", "null", 0), (None, "length", "null", 0),
