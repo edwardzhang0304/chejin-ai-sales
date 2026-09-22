@@ -53,8 +53,8 @@ def admit_current_context_frame(checkpoint, payload):
             old_boundary_tokens=tokens,
             new_boundary_tokens=boundary_tokens_for_observations(rows, committed_only=False),
             allow_history_suffix=True)
-        if decision['relation'] not in historical_text_alignment.ACCEPTED_RELATIONS:
-            tolerant = historical_text_alignment.validated_projection_continuity(checkpoint, rows,
+        if checkpoint:
+            tolerant = historical_text_alignment.reconcile_checkpoint_continuity(checkpoint, rows, decision,
                 old_projection=projection, old_boundary_tokens=tokens,
                 pre_frame_id='checkpoint:current-context', post_frame_id=frame_id)
             if tolerant:
@@ -77,12 +77,18 @@ def reconcile_viewports(checkpoint, before, after, decision, *, old_boundary_tok
     Final ingest recomputes its separate single-frame proof from authority.
     """
     accepted = {'business_sequence_equal', 'unique_tail_append', 'unique_viewport_slide_with_tail_append'}
-    if not checkpoint or decision.get('relation') in accepted:
+    if not checkpoint:
         return decision
-    compared = historical_text_alignment.compare_historical_viewports(checkpoint, before, after,
-        old_boundary_tokens=old_boundary_tokens, allow_history_suffix=False)
-    if not compared or compared[2]['relation'] not in accepted:
+    try:
+        compared = historical_text_alignment.compare_historical_viewports(checkpoint, before, after,
+            old_boundary_tokens=old_boundary_tokens, allow_history_suffix=False)
+    except ValueError:
+        return {**decision, 'relation': 'business_sequence_not_continuous',
+                'reason': 'historical_text_correspondence_unverified', 'matched_pairs': [], 'new_suffix_indexes': []}
+    if not compared:
         return decision
+    if compared[2]['relation'] not in accepted:
+        return compared[2]
     result = dict(compared[2])
     # A two-frame comparison is diagnostic here, not the single-frame wire
     # proof that the final ingest validator independently recomputes.

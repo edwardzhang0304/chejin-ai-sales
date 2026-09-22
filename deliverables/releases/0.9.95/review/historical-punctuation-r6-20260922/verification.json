@@ -1,0 +1,103 @@
+{
+  "date": "2026-09-22",
+  "status": "independently_reviewed_source_delivery_authorized_not_released",
+  "product_base": "d13f52f10a13a6a444e71a799ce1c4a9c6a4c3b2",
+  "product_target_branch": "codex/gray-release-0.9.x",
+  "shared_source_commit": "3c37f1e25b5a740ef26c1a40d5fc61045f6c0806",
+  "shared_target_branch": "codex/gray-release-0.9.x-source",
+  "source_sha256": {
+    "backend/app/services/historical_text_alignment.py": "f706755b632fb46153387c8f768e57e1e7e29cdb9b90ed1b782ca5eaeff2ec33",
+    "backend/app/services/read_recovery_service.py": "7bee9291edc3d2381b6be283c8010d378835b8cf3a51d941b15dd016fabb17b6",
+    "backend/app/services/wechat_service.py": "346da2596996eb0777a930831094e5f22631f8349aa8aad9a8f3e639080ed3fe",
+    "backend/tests/test_historical_confidence_worker_http.py": "da1b2a70a8552e91c968f3a07b23f9132b3a9e40aa6d9eb3530795ea1c2b51c2",
+    "backend/tests/test_punctuation_closed_read_recovery.py": "f18192398fbbb2e563f0af82a6d5efd56d773eeaf40bf9193c654fe34692207f",
+    "worker-client/chejin_worker_client/historical_alignment.py": "3ad9cf686d9f046b836c5b8f83ebb8463cedc7906e6eefa27580b7844a32f971",
+    "worker-client/chejin_worker_client/pre_send_checkpoint.py": "5239d7b49edb6dc9592ed8521ebe186dcbd90d6848982c02b686655430a263f3",
+    "worker-client/chejin_worker_client/task_runner.py": "b58c2831672113a1fa6a5111198073e2ea2b90dd0d71bd055368b8cdb99e81a2",
+    "worker-client/tests/test_history_punctuation_handoff.py": "bf4b5fe18bac48edb3b4ef95463a53396c446007a096de7d046b9138fcc7081a",
+    "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/adapters/historical_text_alignment.py": "562b4ea1d561589b71483bfd034a424341a96beeb62c2549295fed38915fa97e",
+    "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/adapters/wechat_win32_ocr_sidecar.py": "77ddab7c091ecb24143f0d7c161f0c83dc65216b4ab44104aa2b6cdd757dbdb8",
+    "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/tests/test_confirmed_sent_history.py": "f627eb95285c72d504606208b17508be63c8c2f7b2170c41a6051fa5f5aa1978",
+    "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/tests/test_historical_punctuation.py": "f20a3916eedcdf7ad4cea13a9003d20870ef31e48df163c128f4313b2c2b1e54",
+    "deliverables/AI智能客服售前跟进系统_技术方案手册_v0.9.95.md": "19e4ad25461d7c8cb55a9ffe3157be67231ffb58c7ef98cc9b2a28013e5c5820",
+    "deliverables/AI智能客服售前跟进系统_PRD_运营后台统一版_v0.9.95.md": "b4a4bdd5759b91eddaa214744864b5f913c10c015ff4790d6bcb0b9f36dac04f",
+    "deliverables/AI智能客服售前跟进系统_全流程图_v0.9.95.puml": "e7490d8fee121121eb995c4bcf7f7a956d508cb5801eb5f7be7a0462a9834013",
+    "deliverables/AI智能客服售前跟进系统_版本更新记录.md": "83bc6a0ff9c172c67d79bf003e8a21f759a7711f68aec2cc32a14deb350c6125",
+    "backend/tests/test_contract_equivalent_recovery.py": "d3b90e996685a5fdee4691deaae3678becf0e81cf024ad4266e2094c57b69a06",
+    "worker-client/omniauto-rpa/.chejin-source.json": "10318684ae4a833160e28b8aaa6efb1927d7c0aa0550552495c38c3624d18a2a"
+  },
+  "business_and_tests_unchanged_since_r5": true,
+  "all_4_shared_reviewed_files_match_source_commit": true,
+  "provenance_parser_passed": true,
+  "authority_docs_revision": "0.9.95/r6",
+  "independent_review_sha256": {
+    "r5-entry-boundaries.xml": "b333f8296c081c104a0617ce5d39b7cb8fcaf34ba5016f456d4462e8140816a3",
+    "hc-suffix-current.xml": "ce0e9cc4aead7833909018c8e5be8ef15c71e790eb25f96bac050fb1fa109bcb",
+    "review_v0.1_20260922.md": "c7134a1339bfdd9d5caceba25c4c7cba079d5fe01d650707b9676d474b4d749c",
+    "known-suffix-current.xml": "75d8fb117304ea1984c2c4e5723d5f798e78e23bc6bfc0f002e79beee0fc418b",
+    "r5-artifact-check.json": "f982c02f830d6b200a0d07e1050102bd6e0482d1f85ffc1fd319b5f356a7005c",
+    "r5-baseline-negative.xml.gz": "e2b3ea847e4f848f1d91e7bd60b49ba6904dc7f1ad0c64ba0c183ce63a1f5301"
+  },
+  "independent_batches": [
+    {
+      "xml": "known-suffix-current.xml",
+      "tests": 1,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "xml": "hc-suffix-current.xml",
+      "tests": 1,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "xml": "r5-entry-boundaries.xml",
+      "tests": 16,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "xml": "r5-baseline-negative.xml.gz",
+      "tests": 9,
+      "failures": 4,
+      "errors": 0,
+      "skipped": 0
+    }
+  ],
+  "reused_engineer_evidence": "../historical-punctuation-r5-20260922/verification.json",
+  "reused_prior_evidence": "../historical-punctuation-20260922/verification.json",
+  "user_authorization": "提交推送吧",
+  "scope": [
+    "historical punctuation verification",
+    "frozen viewport identity mapping",
+    "closed failed read replay and manual recovery"
+  ],
+  "limitations": [
+    "source review only; no Windows field acceptance",
+    "same faulted test SQLite, not direct recovery of sales database",
+    "manual running recovery verified; next task execution not verified",
+    "large padded partition risk unconfirmed; outside this fix",
+    "no package, deployment, or version change"
+  ],
+  "lossless_xml_delivery_compression": {
+    "suffix-negative.xml": {
+      "file": "suffix-negative.xml.gz",
+      "sha256": "f8c4b5c9df97cd80fe2c7747d370011c7803aa8dd7f024af2080aea8b0560172",
+      "uncompressed_sha256": "f5bf7e84b7be888ceb1190220b0cbd08c56147a2fdbe462a29a1c0ba7c99e2f3"
+    },
+    "suffix_http_negative.xml": {
+      "file": "suffix_http_negative.xml.gz",
+      "sha256": "6b6043094a6f42d82de6846ef02ed542b6cf3aeb924eceb2efe09494a5cb7f00",
+      "uncompressed_sha256": "a3a58e352b8b9808344fdcd371b64d04d984ab0d8fb9c3eb0286813df43f47c1"
+    },
+    "r5-baseline-negative.xml": {
+      "file": "r5-baseline-negative.xml.gz",
+      "sha256": "e2b3ea847e4f848f1d91e7bd60b49ba6904dc7f1ad0c64ba0c183ce63a1f5301",
+      "uncompressed_sha256": "b59e9b5e33a35cdccbc4fd2fa8c6c8e6ecb1774ce9223de93b61a911cb23a1c4"
+    }
+  }
+}

@@ -78,7 +78,7 @@ def test_frozen_v1_does_not_acquire_new_receipt_scope():
     assert old_build(checkpoint_for_proof(current,proof),rows)['proof']==proof
 
 
-def test_completed_voice_keeps_frozen_rule_with_confirmed_self_tail():
+def test_completed_voice_uses_current_proof_and_keeps_frozen_proof_with_confirmed_self_tail():
     cp=checkpoint(['唯一开始','一般两厢，平时接送孩子','唯一结束'])
     before=frame(['唯一开始','一般两厢，平时接送孩子','唯一结束'])
     before[1].update(row_kind='voice_transcript',message_type='voice',voice_state='transcribed',
@@ -94,7 +94,13 @@ def test_completed_voice_keeps_frozen_rule_with_confirmed_self_tail():
     tail=frame([receipt()['reply_text']])[0];tail.update(sender_role='self',observation_id='sent-tail',bubble_rect=[10,240,300,260])
     before.append(deepcopy(tail));rows.append(tail)
     built=build(cp,rows)
-    assert built and built['proof']['version']==1
+    assert built and built['proof']['version']==2
+    frozen=old_build(checkpoint_for_proof_version(cp,1),rows)['proof']
+    assert frozen['version']==1
+    legacy_projection,legacy_proof=comparison_projection(cp,rows,
+        pre_frame_id=frozen['pre_frame_id'],post_frame_id=frozen['post_frame_id'],frozen_proof=frozen)
+    assert legacy_proof==frozen
+    assert legacy_projection[1]['normalized_content_signature']==projections[1]['normalized_content_signature']
     projected,proof=comparison_projection(cp,rows,pre_frame_id='checkpoint:test',post_frame_id='current')
     assert projected[1]['normalized_content_signature']==projections[1]['normalized_content_signature']
     result=validated_projection_continuity(cp,rows,

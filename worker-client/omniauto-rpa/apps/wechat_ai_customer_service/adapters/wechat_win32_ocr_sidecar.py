@@ -17691,7 +17691,7 @@ def validate_send_context_guard(
         allow_history_suffix=allow_history_suffix,
     )
     historical = continuity_contract.get("historical_alignment")
-    if decision.get("relation") != "business_sequence_equal" and isinstance(historical, dict):
+    if isinstance(historical, dict):
         from apps.wechat_ai_customer_service.adapters.historical_text_alignment import compare_historical_viewports
         try:
             baseline_rows = historical["baseline_observations"]

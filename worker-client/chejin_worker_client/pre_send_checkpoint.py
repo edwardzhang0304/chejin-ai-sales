@@ -546,23 +546,23 @@ def _compare_checkpoint_business_continuity_v5(
         ),
     )
     correspondence = None
-    if historical_checkpoint and decision.get("relation") not in {
-        "business_sequence_equal", "unique_tail_append", "unique_viewport_slide_with_tail_append",
-    }:
+    if historical_checkpoint:
         from .shared_rules import historical_text_alignment
         diagnostics = {}
         try:
-            candidate = historical_text_alignment.validated_projection_continuity(
-                historical_checkpoint, ordered_current, old_projection=old_projection,
+            candidate = historical_text_alignment.reconcile_checkpoint_continuity(
+                historical_checkpoint, ordered_current, decision, old_projection=old_projection,
                 old_boundary_tokens=old_tokens, pre_frame_id=before_frame_id, post_frame_id=after_frame_id,
-                deadline=deadline, diagnostics=diagnostics)
+                deadline=deadline, diagnostics=diagnostics, old_identities=frozen)
         except ValueError as exc:
             return {**base, "reason": str(exc)}
         if diagnostics:
             base['historical_match_diagnostics'] = diagnostics
         if candidate and candidate.get('relation') in {'business_sequence_equal', 'unique_tail_append',
                                                        'unique_viewport_slide_with_tail_append'}:
-            decision, correspondence = candidate, candidate['text_correspondence']
+            decision, correspondence = candidate, candidate.get('text_correspondence')
+        elif candidate:
+            decision = candidate
     relation = str(decision.get("relation") or "")
     result_map = {
         "business_sequence_equal": "checkpoint_equal",

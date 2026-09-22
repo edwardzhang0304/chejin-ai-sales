@@ -23,6 +23,89 @@ ACCEPTED_RELATIONS = {"business_sequence_equal", "unique_tail_append",
     "unique_viewport_slide_with_tail_append", "unique_history_suffix_without_new_messages"}
 
 
+def requires_text_correspondence(checkpoint, observations, decision, old_entries=None):
+    """Candidate signatures omit punctuation; they cannot certify old text.
+
+    Compare the original bodies under the same presentation rule as ingest.
+    Hashes and saved projections keep their released meaning.
+    """
+    entries = comparison_entries(checkpoint) if old_entries is None else old_entries
+    rows = ordered_message_viewport_observations(observations)
+    pairs = list(decision.get('matched_pairs') or [])
+    if not pairs:
+        for candidate in decision.get('overlap_candidates') or []:
+            pairs.extend({'old_index': candidate['old_start'] + i,
+                          'new_index': candidate.get('new_start', 0) + i}
+                         for i in range(candidate['overlap_size']))
+    for pair in pairs:
+        i, j = pair['old_index'], pair['new_index']
+        if i >= len(entries) or j >= len(rows):
+            continue  # Unconfirmed local sends retain their separate gate.
+        old = entries[i]
+        if old.get('message_type') not in {'text', 'voice', 'system'}:
+            continue
+        canonical = (old.get('effective_text') or {}).get('text')
+        if isinstance(canonical, str) and normalized_projection_text(canonical) != normalized_projection_text(rows[j].get('content_clean')):
+            return True
+    return False
+
+
+def reconcile_checkpoint_continuity(checkpoint, observations, decision, *, old_projection,
+        old_boundary_tokens, pre_frame_id, post_frame_id, diagnostics=None, deadline=None,
+        old_identities=None):
+    """One admission gate for both exact candidates and historical OCR drift."""
+    entries = comparison_entries(checkpoint)
+    indexes = _baseline_indexes(entries, old_projection, old_identities)
+    baseline = [entries[i] for i in indexes] if indexes is not None else None
+    needs_proof = requires_text_correspondence(checkpoint, observations, decision, baseline)
+    if decision.get('relation') in ACCEPTED_RELATIONS and not needs_proof:
+        return decision
+    verified = validated_projection_continuity(checkpoint, observations, old_projection=old_projection,
+        old_boundary_tokens=old_boundary_tokens, pre_frame_id=pre_frame_id, post_frame_id=post_frame_id,
+        diagnostics=diagnostics, deadline=deadline, old_identities=old_identities)
+    if verified:
+        return verified
+    if needs_proof:
+        return {**decision, 'relation': 'business_sequence_not_continuous',
+                'reason': 'historical_text_correspondence_unverified',
+                'matched_pairs': [], 'new_suffix_indexes': []}
+    return decision
+
+
+def _projection_keys(sequence):
+    return [tuple(row.get(k) for k in ('sender_role', 'message_type', 'media_state',
+            'normalized_content_signature')) for row in sequence]
+
+
+def _baseline_indexes(entries, projection, identities):
+    """Map a frozen viewport to history by identity, never by screen position."""
+    if identities is None:
+        return None  # Existing full-history callers retain their index space.
+    def invalid():
+        raise ValueError('TEXT_CORRESPONDENCE_BASELINE_INVALID')
+    if len(identities) != len(projection):
+        invalid()
+    by_stable, by_source = {}, {}
+    for i, entry in enumerate(entries):
+        for lookup, key in ((by_stable, 'stable_id'), (by_source, 'source_message_key')):
+            value = entry.get(key)
+            if not value or value in lookup:
+                invalid()
+            lookup[value] = i
+    indexes = []
+    for identity in identities:
+        stable = identity.get('worker_stable_id') or identity.get('stable_id')
+        source = identity.get('source_message_key')
+        matched = [lookup.get(value) for lookup, value in ((by_stable, stable), (by_source, source)) if value]
+        if not matched or any(i is None or i != matched[0] for i in matched):
+            invalid()
+        indexes.append(matched[0])
+    if indexes != sorted(set(indexes)) or _projection_keys(projection) != _projection_keys(
+            [entries[i].get('business_projection') or {} for i in indexes]):
+        invalid()
+    return indexes
+
+
 def comparison_entries(checkpoint):
     """Use the same committed sequence order as Worker, without mutating facts."""
     entries = [checkpoint_comparison(item) for item in checkpoint.get("recent_messages", [])]
@@ -233,6 +316,13 @@ def comparison_projection(checkpoint, observations, *, pre_frame_id, post_frame_
             new_boundary_tokens=boundary_tokens_for_observations(rows, committed_only=False))
         result = {'proof': frozen_proof, 'continuity': continuity}
     if result is None:
+        entries = comparison_entries(checkpoint)
+        decision = compare_business_viewport_continuity(
+            [e.get('business_projection') or {} for e in entries], projected,
+            old_boundary_tokens={i: set(e.get('strong_boundary_tokens') or []) for i, e in enumerate(entries)},
+            new_boundary_tokens=boundary_tokens_for_observations(rows, committed_only=False), allow_history_suffix=True)
+        if requires_text_correspondence(checkpoint, rows, decision):
+            raise ValueError('TEXT_CORRESPONDENCE_PROOF_INVALID')
         return projected, None
     entries = comparison_entries(checkpoint_for_proof_version(checkpoint, result["proof"]["version"]))
     for pair in result["proof"]["pairs"]:
@@ -279,7 +369,8 @@ def compare_historical_viewports(checkpoint, baseline, current, *, old_boundary_
 
 
 def validated_projection_continuity(checkpoint, observations, *, old_projection,
-        old_boundary_tokens, pre_frame_id, post_frame_id, diagnostics=None, deadline=None):
+        old_boundary_tokens, pre_frame_id, post_frame_id, diagnostics=None, deadline=None,
+        old_identities=None):
     """Consume one historical decision over the complete confirmed baseline.
 
     Unconfirmed send candidates are deliberately outside this checkpoint. Any
@@ -290,14 +381,12 @@ def validated_projection_continuity(checkpoint, observations, *, old_projection,
         post_frame_id=post_frame_id, new_boundary_tokens=tokens, diagnostics=diagnostics, deadline=deadline)
     if not built:
         return None
-    authority = [e.get('business_projection') or {} for e in comparison_entries(
-        checkpoint_for_proof_version(checkpoint, built['proof']['version']))]
-    def keys(sequence):
-        return [tuple(row.get(k) for k in ('sender_role','message_type','media_state','normalized_content_signature'))
-                for row in sequence]
-    if keys(old_projection) == keys(authority):
+    entries = comparison_entries(checkpoint_for_proof_version(checkpoint, built['proof']['version']))
+    authority = [e.get('business_projection') or {} for e in entries]
+    indexes = _baseline_indexes(entries, old_projection, old_identities)
+    if indexes is None and _projection_keys(old_projection) == _projection_keys(authority):
         return {**built['continuity'], 'text_correspondence': built['proof']}
-    if keys(old_projection[:len(authority)]) != keys(authority):
+    if indexes is None and _projection_keys(old_projection[:len(authority)]) != _projection_keys(authority):
         return None
     rows = ordered_message_viewport_observations(observations)
     projected = normalized_business_message_sequence(rows, message_viewport_bounds=None)
@@ -307,9 +396,16 @@ def validated_projection_continuity(checkpoint, observations, *, old_projection,
     result = compare_business_viewport_continuity(old_projection, projected,
         old_boundary_tokens=old_boundary_tokens, new_boundary_tokens=tokens, allow_history_suffix=True)
     expected = {(p['old_index'],p['new_index']) for p in built['continuity']['matched_pairs']}
+    if indexes is not None:
+        local_index = {historical: local for local, historical in enumerate(indexes)}
+        if any(i not in local_index for i, _ in expected):
+            return None
+        expected = {(local_index[i], j) for i, j in expected}
     actual = {(p['old_index'],p['new_index']) for p in result.get('matched_pairs', [])}
     if result['relation'] not in ACCEPTED_RELATIONS or not expected.issubset(actual):
         return None
+    # The local decision indexes the frozen viewport; the immutable wire proof
+    # still indexes complete server history for independent backend validation.
     return {**result, 'text_correspondence': built['proof'],
         'candidate_alignment_count': built['proof'].get('candidate_count', 1)}
 
@@ -425,7 +521,7 @@ def _build_confidence_correspondence(checkpoint, observations, *, pre_frame_id,
     old_tokens = {i: set(e.get('strong_boundary_tokens') or []) for i, e in enumerate(entries)}
     exact = compare_business_viewport_continuity(old, new, old_boundary_tokens=old_tokens,
         new_boundary_tokens=new_boundary_tokens, allow_history_suffix=True)
-    if exact['relation'] in ACCEPTED_RELATIONS or exact['overlap_candidates']:
+    if (exact['relation'] in ACCEPTED_RELATIONS or exact['overlap_candidates']) and not requires_text_correspondence(checkpoint, rows, exact):
         report['reason'] = 'existing_exact_boundary'
         return None
     old_text = [(e.get('effective_text') or {}).get('text') for e in entries]
