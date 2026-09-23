@@ -252,6 +252,12 @@ ENV_STOP_ERRORS = {
 PRE_SEND_REIDENTIFICATION_ERRORS = set(pre_send_reidentification_errors())
 PRE_SEND_LAYOUT_ERROR = "C2_PRE_SEND_LAYOUT_INVALID"
 PRE_SEND_FACT_CHECKPOINT_ERROR = "C2_PRE_SEND_FACT_CHECKPOINT_INVALID"
+TEXT_BUBBLE_GROUPING_ERROR = "C2_TEXT_BUBBLE_GROUPING_UNCONFIRMED"
+PRE_SEND_TERMINAL_TECHNICAL_ERRORS = frozenset({
+    PRE_SEND_LAYOUT_ERROR,
+    PRE_SEND_FACT_CHECKPOINT_ERROR,
+    TEXT_BUBBLE_GROUPING_ERROR,
+})
 SEND_CONTEXT_TECHNICAL_ERRORS = {
     "C3_SEND_CONTEXT_GUARD_REQUIRED",
     "C3_SEND_CONTEXT_GUARD_INVALID",
@@ -5612,16 +5618,20 @@ class TaskRunner:
             if self.current_task or self.current_ui_lock or lock_summary().get("locked"):
                 return True
             receipt = load_c2_state(self._inflight_finish_receipt_key(request["flow_id"])) or {}
-            if receipt.get("task_failure") or receipt.get("task_success"):
+            if receipt.get("task_failure") or receipt.get("task_success") or receipt.get("reply_read_failure"):
                 if time.monotonic() < self._flow_finish_retry_at:
                     return True
                 try:
-                    self._deliver_add_friend_result(binding, request["flow_id"])
+                    if receipt.get("reply_read_failure"):
+                        from .reply_read_failure import deliver
+                        deliver(self, binding, request["flow_id"])
+                    else:
+                        self._deliver_add_friend_result(binding, request["flow_id"])
                 except Exception as exc:
                     self._flow_finish_stage = "dependencies"
                     self._flow_finish_retry_at = time.monotonic() + self._flow_finish_retry_delay
                     self._flow_finish_retry_delay = min(30.0, self._flow_finish_retry_delay * 2)
-                    append_log("WARN", "task_failure_receipt_retry_pending" if receipt.get("task_failure") else "task_success_receipt_retry_pending",
+                    append_log("WARN", "task_failure_receipt_retry_pending" if receipt.get("task_failure") or receipt.get("reply_read_failure") else "task_success_receipt_retry_pending",
                                "原任务结果回执尚未确认，保留原流程并等待补传。",
                                task_id=request["flow_id"],
                                error_code=str(getattr(exc, "code", None) or type(exc).__name__))
@@ -5685,6 +5695,8 @@ class TaskRunner:
 
     def _assert_inflight_finish_ready(self, flow_id: str, terminal_kind: str) -> None:
         receipt = load_c2_state(self._inflight_finish_receipt_key(flow_id)) or {}
+        from .reply_read_failure import assert_confirmed
+        assert_confirmed(receipt)
         for kind in ("failure", "success"):
             if receipt.get(f"task_{kind}") and receipt.get(f"task_{kind}_confirmed") is not True:
                 raise RuntimeError(f"RUNTIME_INFLIGHT_TASK_{kind.upper()}_PENDING")
@@ -6499,6 +6511,8 @@ class TaskRunner:
         flow_kind = str(
             load_runtime_control().get("inflight_flow_kind") or ""
         ).strip()
+        from .reply_read_failure import deliver
+        deliver(self, binding, flow_id)
         from .reply_sequence_runtime import flow_sequence_status, sequence_needs_continuation
         sequence_status = flow_sequence_status(self, binding, flow_id)
         if binding.run_status != "faulted" and sequence_needs_continuation(sequence_status, flow_id):
@@ -7855,6 +7869,7 @@ class TaskRunner:
         task_id: str,
         source_error_code: str,
         evidence: dict[str, Any] | None = None,
+        conversation_id: str,
     ) -> bool:
         """Make a pre-send read failure durable before C2 may scan again."""
 
@@ -7890,7 +7905,7 @@ class TaskRunner:
             self.set_run_status(
                 "faulted"
                 if normalized_source_error
-                in {PRE_SEND_LAYOUT_ERROR, PRE_SEND_FACT_CHECKPOINT_ERROR}
+                in PRE_SEND_TERMINAL_TECHNICAL_ERRORS
                 else "paused"
             )
             return False
@@ -7899,19 +7914,26 @@ class TaskRunner:
             if normalized_source_error
             in {
                 *PRE_SEND_REIDENTIFICATION_ERRORS,
-                PRE_SEND_LAYOUT_ERROR,
-                PRE_SEND_FACT_CHECKPOINT_ERROR,
+                *PRE_SEND_TERMINAL_TECHNICAL_ERRORS,
             }
             else "C2_REPLY_CONTEXT_RECOVERY_FAILED"
         )
+        failure_step = (
+            "reply_sequence_read"
+            if isinstance((evidence or {}).get("reply_sequence_read"), dict)
+            else "pre_send_refresh"
+        )
         try:
-            self.api.fail_task(
-                binding,
-                normalized_task_id,
-                final_error_code,
-                "pre_send_refresh",
-                normalized_source_error,
-            )
+            if final_error_code == TEXT_BUBBLE_GROUPING_ERROR:
+                from .reply_read_failure import save, deliver
+                flow_id = save(self, binding, task_id=normalized_task_id,
+                               conversation_id=conversation_id, failure_step=failure_step)
+                deliver(self, binding, flow_id)
+            else:
+                self.api.fail_task(
+                    binding, normalized_task_id, final_error_code,
+                    failure_step, normalized_source_error,
+                )
         except Exception as exc:
             append_log(
                 "ERROR",
@@ -7928,7 +7950,7 @@ class TaskRunner:
             self.set_run_status(
                 "faulted"
                 if final_error_code
-                in {PRE_SEND_LAYOUT_ERROR, PRE_SEND_FACT_CHECKPOINT_ERROR}
+                in PRE_SEND_TERMINAL_TECHNICAL_ERRORS
                 else "paused"
             )
             return False
@@ -7951,23 +7973,17 @@ class TaskRunner:
                 "pre_send_failure_evidence": durable_evidence,
             },
         )
-        if final_error_code in {
-            PRE_SEND_LAYOUT_ERROR,
-            PRE_SEND_FACT_CHECKPOINT_ERROR,
-        }:
+        if final_error_code in PRE_SEND_TERMINAL_TECHNICAL_ERRORS:
             self.set_run_status("faulted")
-            self.on_error(
-                (
-                    "发送前事实 checkpoint 绑定无效，"
-                    "客户端已进入故障状态并停止接单。"
-                    if final_error_code == PRE_SEND_FACT_CHECKPOINT_ERROR
-                    else "微信基本布局无法建立，客户端已进入故障状态并停止接单。"
-                )
-            )
+            self.on_error({
+                PRE_SEND_FACT_CHECKPOINT_ERROR: "发送前事实 checkpoint 绑定无效，客户端已进入故障状态并停止接单。",
+                TEXT_BUBBLE_GROUPING_ERROR: "微信消息气泡归属无法确认，客户端已进入故障状态并停止接单。",
+                PRE_SEND_LAYOUT_ERROR: "微信基本布局无法建立，客户端已进入故障状态并停止接单。",
+            }[final_error_code])
         append_log(
             "ERROR"
             if final_error_code
-            in {PRE_SEND_LAYOUT_ERROR, PRE_SEND_FACT_CHECKPOINT_ERROR}
+            in PRE_SEND_TERMINAL_TECHNICAL_ERRORS
             else "INFO",
             "c3_pre_send_failure_settled",
             "发送前复读失败已在原 C2 单会话流程内结算，释放 UI 锁后不会留下待领取回复任务。",
@@ -7976,7 +7992,7 @@ class TaskRunner:
             metadata={
                 "source_error_code": normalized_source_error,
                 "worker_faulted": final_error_code
-                in {PRE_SEND_LAYOUT_ERROR, PRE_SEND_FACT_CHECKPOINT_ERROR},
+                in PRE_SEND_TERMINAL_TECHNICAL_ERRORS,
             },
         )
         return True
@@ -8064,6 +8080,7 @@ class TaskRunner:
             self._settle_chat_reply_context_failure_before_unlock(
                 binding,
                 task_id=task.id,
+                conversation_id=target.conversation_id,
                 source_error_code=PRE_SEND_FACT_CHECKPOINT_ERROR,
                 evidence={
                     "checkpoint_binding": checkpoint_binding,
@@ -8131,6 +8148,7 @@ class TaskRunner:
             self._settle_chat_reply_context_failure_before_unlock(
                 binding,
                 task_id=task.id,
+                conversation_id=target.conversation_id,
                 source_error_code=str(
                     calibration.get("error_code")
                     or "WECHAT_UI_STARTUP_CALIBRATION_FAILED"
@@ -8187,6 +8205,7 @@ class TaskRunner:
                 self._settle_chat_reply_context_failure_before_unlock(
                     binding,
                     task_id=task.id,
+                    conversation_id=target.conversation_id,
                     source_error_code=str(
                         refresh.get("error_code")
                         or "恢复回复任务时未能安全重建当前会话"
@@ -18922,6 +18941,7 @@ class TaskRunner:
                     error = observation.get("error_code") or "REPLY_SEQUENCE_FRESH_READ_REQUIRED"
                     settled = self._settle_chat_reply_context_failure_before_unlock(
                         binding, task_id=str(task_payload.get("id") or ""), source_error_code=error,
+                        conversation_id=target.conversation_id,
                         evidence={"reply_sequence_read": observation})
                     return {"ok": False, "batch": status, "error_code": error, "reply_task_settled": settled}
                 replacement = (observation.get("result") or {}).get("message_batch") or {}
@@ -18935,6 +18955,7 @@ class TaskRunner:
                 if status.get("pre_send_fact_checkpoint_pending"):
                     settled = self._settle_chat_reply_context_failure_before_unlock(
                         binding, task_id=str(task_payload.get("id") or ""),
+                        conversation_id=target.conversation_id,
                         source_error_code="REPLY_SEQUENCE_FRESH_READ_REQUIRED", evidence={"batch_id": current_batch_id})
                     return {"ok": False, "batch": status, "error_code": "REPLY_SEQUENCE_FRESH_READ_REQUIRED",
                             "reply_task_settled": settled}
@@ -18948,6 +18969,7 @@ class TaskRunner:
                     self._settle_chat_reply_context_failure_before_unlock(
                         binding,
                         task_id=reply_task_id,
+                        conversation_id=target.conversation_id,
                         source_error_code=PRE_SEND_FACT_CHECKPOINT_ERROR,
                         evidence={
                             "checkpoint_binding": checkpoint_binding,
@@ -19007,6 +19029,7 @@ class TaskRunner:
                     self._settle_chat_reply_context_failure_before_unlock(
                         binding,
                         task_id=reply_task_id,
+                        conversation_id=target.conversation_id,
                         source_error_code=str(
                             refresh_read.get("error_code")
                             or "PRE_SEND_REFRESH_FAILED"
@@ -19074,6 +19097,7 @@ class TaskRunner:
                     self._settle_chat_reply_context_failure_before_unlock(
                         binding,
                         task_id=reply_task_id,
+                        conversation_id=target.conversation_id,
                         source_error_code=PRE_SEND_LAYOUT_ERROR,
                         evidence={
                             "pre_send_refresh": refresh_read,
@@ -23377,6 +23401,7 @@ class TaskRunner:
                 else:
                     terminal_kind = "failed_before_message_action"
                 receipt = {
+                    **persisted_receipt,
                     "terminal_kind": terminal_kind,
                     "conversation_id": target.conversation_id,
                     "error_code": (

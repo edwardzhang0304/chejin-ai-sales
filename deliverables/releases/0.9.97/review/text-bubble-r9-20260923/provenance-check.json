@@ -1,0 +1,9 @@
+{
+  "formal_loader": "passed",
+  "all_previous_integrations_preserved": true,
+  "current_release_unchanged": true,
+  "new_source_commit": "9e6d775bb88677cb91113a245f820631034ebd82",
+  "existing_snapshot_test_baseline_failure": true,
+  "baseline_integrations": 59,
+  "current_integrations": 60
+}

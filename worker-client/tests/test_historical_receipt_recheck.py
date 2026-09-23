@@ -126,6 +126,73 @@ def test_receipt_tail_uses_same_hc_without_redundant_ocr(
     assert records==[]
 
 
+@pytest.mark.parametrize('phase',['authorized_read','pre_send_refresh','reply_sequence_read'])
+def test_text_bubble_grouping_failure_stops_each_read_phase(harness,phase):
+    from apps.wechat_ai_customer_service.adapters import wechat_win32_ocr_sidecar as sidecar
+
+    runner,binding,target,api,bridge=setup_case(harness,phase=phase)
+    failure=sidecar.sanitize_sidecar_contract_output(
+        sidecar.exception_payload_for_sidecar(
+            RuntimeError('C2_TEXT_BUBBLE_GROUPING_UNCONFIRMED')))
+    reads=[]
+    def read(**kwargs):
+        reads.append(kwargs)
+        return failure
+    bridge.get_messages=read
+    result=runner._read_one_wechat_target(
+        binding,target,enforce_read_targets=True,wait_for_brain=False,
+        current_step=phase if phase!='authorized_read' else 'message_read',
+        operation_phase=phase,current_only=phase!='authorized_read')
+    assert result['ok'] is False,result
+    assert result['error_code']=='C2_TEXT_BUBBLE_GROUPING_UNCONFIRMED',result
+    assert reads
+    assert binding.run_status=='faulted'
+    assert not bridge.sent_replies
+    assert not api.message_payloads
+
+
+@pytest.mark.parametrize('phase',['pre_send_refresh','reply_sequence_read'])
+def test_parent_preserves_bubble_grouping_technical_failure(harness,phase):
+    from apps.wechat_ai_customer_service.adapters import wechat_win32_ocr_sidecar as sidecar
+    from chejin_worker_client.models import Task
+
+    runner,binding,target,api,bridge=setup_case(harness,phase=phase)
+    failure=sidecar.sanitize_sidecar_contract_output(
+        sidecar.exception_payload_for_sidecar(
+            RuntimeError('C2_TEXT_BUBBLE_GROUPING_UNCONFIRMED')))
+    reads=[]
+    def read(**kwargs):
+        reads.append(kwargs)
+        return deepcopy(failure)
+    bridge.get_messages=read
+    assert runner._start_inflight_flow(binding, flow_id='tbg-parent-read',
+        flow_kind='c2_read', conversation_id=target.conversation_id, unread_generation=1)
+    api._task_lease_token=lambda task_id:0
+    def settle(binding, record):
+        api.events.append(f"fail:{record['error_code']}:{record['failure_step']}")
+        return Task.from_api({'id':record['task_id'],'task_type':'chat_reply',
+            'status':'failed','error_code':record['error_code'],'reply_read_failure':deepcopy(record)})
+    api.settle_reply_read_failure=settle
+    api.message_batch_statuses=[{
+        'batch_id':'tbg-parent-batch','batch_status':'reply_action_created',
+        'processing':False,'decision':'send_reply','updated_at':'ready',
+        'task':{'id':'tbg-current-task'},
+        'reply_action':{'id':'tbg-current-action',
+                        'segment_index':2 if phase=='reply_sequence_read' else 1,
+                        'segment_count':2 if phase=='reply_sequence_read' else 1},
+        'pre_send_fact_checkpoint_pending':phase=='reply_sequence_read',
+    }]
+    result=runner._wait_and_send_current_c3_batch(
+        binding=binding,target=target,batch_id='tbg-parent-batch',
+        cancel_check=lambda:False)
+    assert reads,result
+    assert result['error_code']=='C2_TEXT_BUBBLE_GROUPING_UNCONFIRMED',result
+    assert result['reply_task_settled'] is True,result
+    assert binding.run_status=='faulted'
+    assert f'fail:C2_TEXT_BUBBLE_GROUPING_UNCONFIRMED:{phase}' in api.events
+    assert not bridge.sent_replies and not api.message_payloads
+
+
 def test_review_retains_complete_compared_history_after_receipt_consumption(harness, tmp_path):
     import json
     from chejin_worker_client.historical_alignment import save_match_review

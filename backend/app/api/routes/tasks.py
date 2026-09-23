@@ -358,7 +358,17 @@ def fail_task(
             return ok(data)
         worker_service.validate_inflight_continuation(worker, x_inflight_flow_id)
         actor = worker_actor_context(request, worker_id=worker.id, worker_name=worker.worker_name)
-        is_pending_reply_recovery = task.status == "pending" and task.task_type == "chat_reply"
+        if payload.error_code == task_service.TECHNICAL_BUBBLE_GROUPING_ERROR:
+            from app.services.reply_read_failure import settle
+            data = settle(db, worker=worker, task_id=task_id,
+                          client_instance_id=x_client_instance_id, flow_id=x_inflight_flow_id,
+                          fencing=x_task_lease_fencing_token, payload=payload, actor=actor)
+            db.commit()
+            return ok(data)
+        is_pending_reply_recovery = (
+            task.task_type == "chat_reply"
+            and task.status == "pending"
+        )
         if payload.settlement_only:
             data = task_service.settle_add_friend_failure(
                 db, task_id, worker.id, x_client_instance_id,

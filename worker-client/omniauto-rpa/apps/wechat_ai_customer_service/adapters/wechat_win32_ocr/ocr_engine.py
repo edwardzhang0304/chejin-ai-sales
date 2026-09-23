@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from typing import Any, Callable
 
 from apps.wechat_ai_customer_service.adapters.wechat_win32_ocr.render_diagnostics import (
@@ -90,6 +91,36 @@ def run_ocr_with_cache(
     else:
         result = _recognize_with_separate_input(cached_engine, image, recognition_image)
     return normalize_ocr_rows(result, min_confidence=min_confidence), cached_engine
+
+
+def recognize_text_line_with_cache(
+    image: Any, *, engine_factory: Callable[[], Any] | None, engine: Any | None,
+    import_error: str = "", min_confidence: float = OCR_MIN_CONFIDENCE,
+) -> tuple[dict[str, Any], Any]:
+    """Recognize one frozen line crop without running detection again."""
+    if engine_factory is None:
+        raise RuntimeError(f"rapidocr_onnxruntime_unavailable: {import_error}")
+    cached_engine = engine if engine is not None else engine_factory()
+    import numpy as np
+    result, _ = cached_engine(
+        np.asarray(image.convert("RGB")), use_det=False, use_cls=False, use_rec=True,
+    )
+    if not isinstance(result, (list, tuple)) or len(result) != 1:
+        raise ValueError("ocr_line_recognition_result_invalid")
+    pair = result[0]
+    if not isinstance(pair, (list, tuple)) or len(pair) != 2:
+        raise ValueError("ocr_line_recognition_result_invalid")
+    text = normalize_ocr_text(pair[0])
+    try:
+        confidence = float(pair[1])
+        threshold = max(float(cached_engine.text_score), float(min_confidence))
+    except (TypeError, ValueError, AttributeError) as exc:
+        raise ValueError("ocr_line_recognition_score_invalid") from exc
+    if (not text or not math.isfinite(confidence) or not math.isfinite(threshold)
+            or not 0.0 <= confidence <= 1.0 or not 0.0 <= threshold <= 1.0
+            or confidence < threshold):
+        raise ValueError("ocr_line_recognition_unconfirmed")
+    return {"text": text, "confidence": confidence, "method": "rapidocr_recognition_only_v1"}, cached_engine
 
 
 def _recognize_with_separate_input(engine: Any, image: Any, recognition_image: Any) -> Any:

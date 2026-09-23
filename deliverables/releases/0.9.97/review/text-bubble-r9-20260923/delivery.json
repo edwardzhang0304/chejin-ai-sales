@@ -1,0 +1,36 @@
+{
+  "date": "2026-09-23",
+  "product_base": "89dbcf097c39076441d5d79caadacfa2ff9848cb",
+  "product_branch": "codex/gray-release-0.9.x",
+  "shared_commit": "9e6d775bb88677cb91113a245f820631034ebd82",
+  "shared_branch": "codex/gray-release-0.9.x-source",
+  "status": "reviewed_source_only",
+  "released": false,
+  "reviewed_runtime_files": {
+    "backend/app/api/routes/tasks.py": "c349d9f4bc66682fced62bdd368fd6dd39b8564f75afa05ec54d62aedd54d9ad",
+    "backend/app/services/task_service.py": "30c87ceb5e28b4117efa5ff42eb695148943e5bb53dea0f187bc1f943adf0ace",
+    "backend/tests/test_reply_sequence_http.py": "bbbfe905380e0010d21feba3d571afa6fb10719a120cf8fd7d3e1ca46c17f85d",
+    "worker-client/chejin_worker_client/api.py": "9529a2dc5cb01f3e80dd81c27a439b124f7f2e06bb05e3c833bd6dfef9cf970d",
+    "worker-client/chejin_worker_client/task_runner.py": "0a73257d96c670511229742de2165d9ec1204953b29f52f834354fc3924f092b",
+    "worker-client/chejin_worker_client/transaction_outcomes.py": "929c4bcc9d9dd8fdfc62474ae2c8cfeac0af4873fe626afa0a4b71d0cf3e3a7c",
+    "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/adapters/wechat_win32_ocr/ocr_engine.py": "6bf6cae49610812f998364e33e3bb1629e8e5481cc4787361e8a3866ec415db2",
+    "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/adapters/wechat_win32_ocr_sidecar.py": "9b6cc1cfbe679423b02abb4ee8c20502b7c6925bc565d82c9a2f732bdc3b99c3",
+    "worker-client/tests/test_c2_vision_integration.py": "0659116a4586ef1b444ef113d8e1cfb358633c21f6c8e4dbe832fb77021480e9",
+    "worker-client/tests/test_frame_avatars.py": "a884baa116c9b62311a4c01245457a68906f83e6a8556c089a83ee90ddd3b99e",
+    "worker-client/tests/test_historical_receipt_recheck.py": "fca06c70f36b0233bef88817a3489a8e82ce19f8e3060115b47459a161433ba9",
+    "worker-client/tests/test_image_prefix_boundary.py": "cebcfcd6f0fd90ef24e003418dfd8d604a7ae4211667a34ff402feb3fd317134",
+    "backend/app/services/reply_read_failure.py": "35d66d9337d1229a2276487b6dcad8639c71b14358a1ac6175fc43f3bfd8647b",
+    "backend/tests/test_reply_read_failure_restart.py": "63257d3195baf493361dceb285af01f0a8aab5c2c6f2c8cca8a1c2d5339b52bd",
+    "worker-client/chejin_worker_client/reply_read_failure.py": "06ac7be80fa077f02e44542bee60e48ad0b4a2ac94beee9989a0db54835eef54",
+    "worker-client/tests/fixtures/avatars_20260904/tbg_budget_overlap.png": "96c78af2ef2fda5f6da02aad0f430bec13fc4baab715f4602e9daea00c9a4fea",
+    "worker-client/tests/fixtures/avatars_20260904/tbg_repeat_overlap.png": "d8a23e5d00a49bafc28340270672497c5ecd17bf84541dd4791f09ed8c4e11d5",
+    "worker-client/chejin_worker_client/reply_sequence_runtime.py": "61ef3e0a3a74cc37396b04b8f0fe1f43a3b6e13366adf630ebcea4bdd18eaed9",
+    "worker-client/tests/test_task_runner.py": "af7d720a94bfc2d4bb31f5678824d827f54104aedaa3693ef06b4beda39bb5f4",
+    "worker-client/tests/test_reply_recovery_grouping_failure.py": "2f4f61267eeddaf7130410894dd591302ccc7e177bd6e5b81d50565d1b21a6a9"
+  },
+  "not_verified": [
+    "Windows joint package and physical sending",
+    "existing invalid historical facts and field recovery",
+    "cause of prior Python3.13 exit134"
+  ]
+}

@@ -157,13 +157,252 @@ def test_same_avatar_artwork_different_messages_is_not_one_component():
     assert len(set(ids)) == 2
 
 
+def test_one_physical_bubble_with_split_same_line_is_one_message():
+    image, layout = synthetic_frame()
+    draw_avatar(image, 930, 200)
+    ImageDraw.Draw(image).rectangle((620, 195, 890, 282), fill=(157, 242, 159))
+    rows = [row("第一行", 208, 650, 850), row("左侧", 232, 650, 690),
+            row("右侧文字", 232, 694, 850), row("最后一行", 256, 650, 770)]
+    messages = s.parse_messages_from_ocr(rows, image.size, target="CJTEST01",
+                                         screenshot=image, layout_snapshot=layout)
+    assert [(m["sender_role"], m["content"]) for m in messages] == [
+        ("self", "第一行\n左侧右侧文字\n最后一行")]
+
+
+@pytest.mark.parametrize("role", ["customer", "self"])
+@pytest.mark.parametrize("split_middle", [False, True])
+def test_partial_overlap_tail_cannot_silently_disappear(role, split_middle):
+    image, layout = synthetic_frame()
+    customer = role == "customer"
+    draw_avatar(image, 400 if customer else 930, 200)
+    left = 470 if customer else 650
+    bubble = (460, 195, 850, 305) if customer else (620, 195, 890, 305)
+    ImageDraw.Draw(image).rectangle(
+        bubble, fill=(235, 235, 235) if customer else (157, 242, 159),
+    )
+    rows = [row("第一行正常文字", 208, left, left + 150),
+            row("第二行正常文字", 232, left, left + 150),
+            row("最后一行不能丢", 256, left, bubble[2] + 5)]
+    if split_middle:
+        rows[1:2] = [row("第二行", 232, left, left + 60),
+                     row("正常文字", 232, left + 64, left + 150)]
+    if split_middle:
+        with pytest.raises(RuntimeError, match="C2_TEXT_BUBBLE_GROUPING_UNCONFIRMED"):
+            s.parse_messages_from_ocr(rows, image.size, target="CJTEST01",
+                                      screenshot=image, layout_snapshot=layout)
+    else:
+        messages = s.parse_messages_from_ocr(rows, image.size, target="CJTEST01",
+                                             screenshot=image, layout_snapshot=layout)
+        assert [(message["sender_role"], message["content"]) for message in messages] == [
+            (role, "第一行正常文字\n第二行正常文字\n最后一行不能丢")]
+
+
+@pytest.mark.parametrize("role", ["customer", "self"])
+@pytest.mark.parametrize("contained_count", [0, 1, 2])
+def test_split_candidate_is_checked_before_any_owner_is_selected(role, contained_count):
+    image, layout = synthetic_frame()
+    customer = role == "customer"
+    draw_avatar(image, 400 if customer else 930, 200)
+    bubble = (460, 195, 850, 305) if customer else (620, 195, 890, 305)
+    ImageDraw.Draw(image).rectangle(
+        bubble, fill=(235, 235, 235) if customer else (157, 242, 159),
+    )
+    left = bubble[0] + 10
+    first_left = bubble[0] - 4 if contained_count < 2 else left
+    second_right = bubble[2] + 5 if contained_count == 0 else left + 180
+    rows = [row("第一行", 208, left, left + 150),
+            row("第二行", 232, left, left + 150),
+            row("第三行前半", 256, first_left, left + 70),
+            row("后半不能丢", 256, left + 74, second_right)]
+    if contained_count < 2:
+        with pytest.raises(RuntimeError, match="C2_TEXT_BUBBLE_GROUPING_UNCONFIRMED"):
+            s.parse_messages_from_ocr(rows, image.size, target="CJTEST01",
+                                      screenshot=image, layout_snapshot=layout)
+    else:
+        messages = s.parse_messages_from_ocr(rows, image.size, target="CJTEST01",
+                                             screenshot=image, layout_snapshot=layout)
+        assert [(message["sender_role"], message["content"]) for message in messages] == [
+            (role, "第一行\n第二行\n第三行前半后半不能丢")]
+
+
+def test_split_fragment_can_inherit_one_confirmed_avatar_with_bubble_proof():
+    image, layout = synthetic_frame()
+    draw_avatar(image, 930, 200)
+    ImageDraw.Draw(image).rectangle((460, 195, 850, 282), fill=(157, 242, 159))
+    rows = [row("第一行", 208, 470, 700), row("左侧", 232, 470, 510),
+            row("右侧文字", 232, 514, 700), row("最后一行", 256, 470, 590)]
+    messages = s.parse_messages_from_ocr(rows, image.size, target="CJTEST01",
+                                         screenshot=image, layout_snapshot=layout)
+    assert [(m["sender_role"], m["content"]) for m in messages] == [
+        ("self", "第一行\n左侧右侧文字\n最后一行")]
+
+
+@pytest.mark.parametrize("role", ["customer", "self"])
+def test_lower_line_three_fragments_keep_one_physical_owner(role):
+    image, layout = synthetic_frame()
+    is_customer = role == "customer"
+    draw_avatar(image, 400 if is_customer else 930, 200)
+    left = 470 if is_customer else 650
+    bubble = (460, 195, 850, 282) if is_customer else (620, 195, 890, 282)
+    ImageDraw.Draw(image).rectangle(bubble, fill=(235, 235, 235) if is_customer else (157, 242, 159))
+    rows = [row("第一行", 208, left, left + 190),
+            row("第", 232, left, left + 30),
+            row("二", 232, left + 34, left + 64),
+            row("行", 232, left + 68, left + 98),
+            row("末行", 256, left, left + 90)]
+    messages = s.parse_messages_from_ocr(rows, image.size, target="CJTEST01",
+                                         screenshot=image, layout_snapshot=layout)
+    assert [(m["sender_role"], m["content"]) for m in messages] == [(role, "第一行\n第二行\n末行")]
+    assert len(messages[0]["text_bubble_grouping_evidence"]["member_indices"]) == len(rows)
+
+
+def test_two_physical_bubbles_on_one_line_remain_separate():
+    image, layout = synthetic_frame()
+    draw_avatar(image, 930, 200)
+    draw = ImageDraw.Draw(image)
+    draw.rectangle((620, 195, 692, 282), fill=(157, 242, 159))
+    draw.rectangle((696, 195, 890, 282), fill=(157, 242, 159))
+    rows = [row("左侧", 232, 650, 690), row("右侧", 232, 698, 850)]
+    messages = s.parse_messages_from_ocr(rows, image.size, target="CJTEST01",
+                                         screenshot=image, layout_snapshot=layout)
+    assert [m["content"] for m in messages] == ["左侧", "右侧"]
+
+
+def test_long_text_overlap_inside_one_bubble_is_not_guessed():
+    image, layout = synthetic_frame()
+    draw_avatar(image, 930, 200)
+    ImageDraw.Draw(image).rectangle((620, 195, 890, 282), fill=(157, 242, 159))
+    rows = [row("左哈哈", 232, 650, 720), row("哈哈右", 232, 711, 850)]
+    with pytest.raises(RuntimeError, match="C2_TEXT_BUBBLE_GROUPING_UNCONFIRMED"):
+        s.parse_messages_from_ocr(rows, image.size, target="CJTEST01",
+                                  screenshot=image, layout_snapshot=layout)
+
+
+@pytest.mark.parametrize("fixture,left_text,right_text,split_x,right_x,expected", [
+    ("tbg_budget_overlap.png", "预算100", "0元", 737, 774, "预算1000元"),
+    ("tbg_repeat_overlap.png", "帮我看", "看这辆车", 722, 818, "帮我看看这辆车"),
+])
+def test_overlapping_real_glyphs_use_one_recognition_pass(
+    fixture, left_text, right_text, split_x, right_x, expected,
+):
+    image = Image.open(FIXTURES / fixture).convert("RGB")
+    _, layout = synthetic_frame()
+    rows = [
+        {**row(left_text, 209, 650, split_x + 1), "bottom": 233, "center_y": 221},
+        {**row(right_text, 209, split_x - 1, right_x), "bottom": 233, "center_y": 221},
+    ]
+    s._TEXT_LINE_RECOGNITION_CACHE.clear()
+    original = s.win32_ocr_engine.recognize_text_line_with_cache
+    trace_token = s._ocr_trace_start()
+    try:
+        with patch.object(s.win32_ocr_engine, "recognize_text_line_with_cache", wraps=original) as read_line:
+            first = s.parse_messages_from_ocr(rows, image.size, target="CJTEST01",
+                                              screenshot=image, layout_snapshot=layout)
+            second = s.parse_messages_from_ocr(rows, image.size, target="CJTEST01",
+                                               screenshot=image, layout_snapshot=layout)
+    finally:
+        trace = s._ocr_trace_finish(trace_token)
+    assert read_line.call_count == 1
+    assert len(trace) == 1 and trace[0]["method"] == "rapidocr_recognition_only_v1"
+    assert trace[0]["source_image_sha256"] and trace[0]["confidence"] >= 0.5
+    assert len(first) == len(second) == 1
+    assert first[0]["content"] == second[0]["content"] == expected
+    assert first[0]["content_raw_ocr"] == left_text + "\n" + right_text
+    assert first[0]["text_bubble_grouping_evidence"]["lines"][0]["method"] == "rapidocr_recognition_only_v1"
+
+
+def test_failed_line_recognition_never_falls_back_to_character_deletion():
+    image = Image.open(FIXTURES / "tbg_repeat_overlap.png").convert("RGB")
+    _, layout = synthetic_frame()
+    rows = [
+        {**row("帮我看", 209, 650, 723), "bottom": 233, "center_y": 221},
+        {**row("看这辆车", 209, 721, 818), "bottom": 233, "center_y": 221},
+    ]
+    s._TEXT_LINE_RECOGNITION_CACHE.clear()
+    trace_token = s._ocr_trace_start()
+    try:
+        with patch.object(s.win32_ocr_engine, "recognize_text_line_with_cache",
+                          side_effect=ValueError("ocr_line_recognition_unconfirmed")) as read_line:
+            for _ in range(2):
+                with pytest.raises(RuntimeError, match="C2_TEXT_BUBBLE_GROUPING_UNCONFIRMED") as raised:
+                    s.parse_messages_from_ocr(rows, image.size, target="CJTEST01",
+                                              screenshot=image, layout_snapshot=layout)
+                assert s.exception_payload_for_sidecar(raised.value)["error_code"] == "C2_TEXT_BUBBLE_GROUPING_UNCONFIRMED"
+    finally:
+        trace = s._ocr_trace_finish(trace_token)
+    assert read_line.call_count == 1
+    assert len(trace) == 1 and trace[0]["failure_reason"] == "ocr_line_recognition_unconfirmed"
+
+
+@pytest.mark.parametrize("result", [
+    None, [], [["", 0.99]], [["完整行", 0.49]], [["完整行", float("nan")]],
+    [["完整行", 1.1]], [["完整行", 0.99], ["第二行", 0.99]],
+])
+def test_recognition_only_adapter_rejects_invalid_or_low_score_result(result):
+    class Engine:
+        text_score = 0.5
+
+        def __call__(self, image, **kwargs):
+            assert kwargs == {"use_det": False, "use_cls": False, "use_rec": True}
+            return result, 0.0
+
+    with pytest.raises(ValueError):
+        s.win32_ocr_engine.recognize_text_line_with_cache(
+            Image.new("RGB", (80, 24), "white"), engine_factory=Engine,
+            engine=Engine(),
+        )
+
+
+def test_nonoverlap_line_never_invokes_extra_recognition():
+    image, layout = synthetic_frame()
+    draw_avatar(image, 930, 200)
+    ImageDraw.Draw(image).rectangle((620, 195, 890, 282), fill=(157, 242, 159))
+    rows = [row("第一行", 208, 650, 850), row("左侧", 232, 650, 690),
+            row("右侧文字", 232, 694, 850)]
+    with patch.object(s.win32_ocr_engine, "recognize_text_line_with_cache",
+                      side_effect=AssertionError("no extra OCR")):
+        messages = s.parse_messages_from_ocr(rows, image.size, target="CJTEST01",
+                                             screenshot=image, layout_snapshot=layout)
+    assert [m["content"] for m in messages] == ["第一行\n左侧右侧文字"]
+
+
+def test_one_physical_bubble_with_distant_lines_is_one_message():
+    image, layout = synthetic_frame()
+    draw_avatar(image, 930, 200)
+    ImageDraw.Draw(image).rectangle((620, 195, 890, 282), fill=(157, 242, 159))
+    # The split first line selects this bubble; the lower line must stay in it
+    # even when the old vertical gate would create another message.
+    rows = [row("第一", 208, 650, 700), row("行", 208, 704, 850),
+            row("第二行", 250, 650, 850)]
+    messages = s.parse_messages_from_ocr(rows, image.size, target="CJTEST01",
+                                         screenshot=image, layout_snapshot=layout)
+    assert [m["content"] for m in messages] == ["第一行\n第二行"]
+
+
+def real_voice_row(image, role="customer"):
+    """Controlled OCR geometry with actual duration AND wave pixels, no fake proof."""
+    customer = role == "customer"
+    path = FIXTURES.parent / "voice_icons" / ("customer_9s.png" if customer else "self_2s.png")
+    with Image.open(path) as source:
+        glyphs = source.convert("RGB").crop((45, 32, 125, 72) if customer else (80, 32, 160, 72))
+    left = 468 if customer else 798
+    ImageDraw.Draw(image).rounded_rectangle((left-8, 187, left+110, 244), radius=8,
+        fill=(238, 238, 240) if customer else (157, 242, 159))
+    image.paste(glyphs, (left, 197))
+    return row('9"' if customer else '2"', 209,
+               left=left + (44 if customer else 2), right=left + (75 if customer else 33))
+
+
 @pytest.mark.parametrize("role", ["customer", "self"])
 @pytest.mark.parametrize("transcript", ["好的，我明天下午过来看车", "语音转写的内容请看这里"])
 def test_voice_and_transcript_share_one_real_component(role, transcript):
     image, layout = synthetic_frame()
     draw_avatar(image, 400 if role == "customer" else 930, 200)
-    duration = row('6"', 209, left=470 if role == "customer" else 760, right=530 if role == "customer" else 810)
-    rows = [duration, row(transcript, 242), row("谢谢", 266, right=570)]
+    duration = real_voice_row(image, role)
+    rows = [duration, row(transcript, 247, left=470 if role == "customer" else 650,
+                         right=810 if role == "customer" else 890),
+            row("谢谢", 271, left=470 if role == "customer" else 810,
+                right=570 if role == "customer" else 890)]
     # Real detection must see the SAME component at the duration and text row.
     evidence = [a.role_details(image, layout, [r[k] for k in ("left", "top", "right", "bottom")]) for r in rows[:2]]
     assert evidence[0]["role"] == evidence[1]["role"] == role
@@ -179,7 +418,7 @@ def test_voice_followed_by_a_different_avatar_is_not_its_transcript():
     image, layout = synthetic_frame()
     draw_avatar(image, 400, 200)
     draw_avatar(image, 400, 260)
-    rows = [row('6"', 209, right=530), row("另一条独立文字", 269)]
+    rows = [real_voice_row(image), row("另一条独立文字", 269)]
     messages = s.parse_messages_from_ocr(rows, image.size, target="CJTEST01", screenshot=image, layout_snapshot=layout)
     assert [m["type"] for m in messages] == ["voice", "text"]
     assert len({m["avatar_alignment"]["avatar_component_id"] for m in messages}) == 2
@@ -188,10 +427,12 @@ def test_voice_followed_by_a_different_avatar_is_not_its_transcript():
 @pytest.mark.parametrize("role", ["customer", "self"])
 def test_later_voice_transcript_line_can_reobserve_the_parent_component(role):
     image, layout = synthetic_frame()
-    draw_avatar(image, 400 if role == "customer" else 930, 200)
-    rows = [row('6"', 209, left=470 if role == "customer" else 760,
-                right=530 if role == "customer" else 810),
-            row("好的", 231), row("明天下午过来看车", 249, right=650)]
+    draw_avatar(image, 400 if role == "customer" else 930, 216)
+    rows = [real_voice_row(image, role),
+            row("好的", 247, left=470 if role == "customer" else 810,
+                right=550 if role == "customer" else 890),
+            row("明天下午过来看车", 265, left=470 if role == "customer" else 650,
+                right=650 if role == "customer" else 890)]
     # Tight but legal OCR line overlap exercises the already-started voice
     # transcript branch, not just duration -> first transcript line.
     evidence = [a.role_details(image, layout, [r[k] for k in ("left", "top", "right", "bottom")]) for r in rows]
@@ -364,14 +605,26 @@ def test_single_table_is_shared_by_real_text_voice_and_image_entrypoints():
     assert detect.call_count == 1
 
 
-def test_original_ocr_mutation_fails_and_restoration_passes(incident_frames):
+def test_proven_owner_does_not_depend_on_old_vertical_gate(incident_frames):
     image, layout, _ = incident_frames[1]
     rows = s.run_ocr(image)
+    # Controlled OCR partition of one actual line; the screenshot pixels are
+    # unchanged and both boxes stay inside the original physical bubble.
+    original = next(item for item in rows if item["text"] == "您更偏轿车还是SUV？平时主要市区代步还")
+    cut = len(original["text"]) // 2
+    split_at = (original["left"] + original["right"]) / 2
+    fragments = [
+        {**original, "text": original["text"][:cut], "right": split_at - 2},
+        {**original, "text": original["text"][cut:], "left": split_at + 2},
+    ]
+    rows = [replacement for item in rows
+            for replacement in (fragments if item is original else [item])]
     def parse():
         return s.parse_messages_from_ocr(rows, image.size, target="CJ8R8A35", screenshot=image, layout_snapshot=layout)
     assert any(m["content"].replace("\n", "") == TEXT for m in parse())
     with patch.object(s, "message_line_continues_anchored_text_bubble", return_value=False):
-        assert not any(m["content"].replace("\n", "") == TEXT for m in parse())
+        # The complete physical owner keeps all lines despite the old gate.
+        assert any(m["content"].replace("\n", "") == TEXT for m in parse())
     assert any(m["content"].replace("\n", "") == TEXT for m in parse())
 
 

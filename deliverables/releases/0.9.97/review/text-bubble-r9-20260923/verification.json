@@ -1,0 +1,122 @@
+{
+  "scope": "r9 recovery call-site independent review; no Windows send claim",
+  "batches": {
+    "unit": {
+      "passed": 7,
+      "exit_code": 0,
+      "time": 1.863,
+      "cases": [
+        "test_recovered_reply_keeps_grouping_failure_receipt[pending]",
+        "test_recovered_reply_keeps_grouping_failure_receipt[running]",
+        "test_unconfirmed_pre_send_failure_settlement_pauses_worker",
+        "test_layout_invalid_settlement_faults_worker_and_preserves_error",
+        "test_layout_invalid_without_reply_task_still_faults_worker",
+        "test_specific_reidentification_error_is_not_rewritten",
+        "test_pre_send_layout_failure_uploads_nested_durable_evidence"
+      ]
+    },
+    "recovery": {
+      "passed": 6,
+      "exit_code": 0,
+      "time": 76.424,
+      "cases": [
+        "test_recovered_task_read_failure_survives_restart[offline-pending]",
+        "test_recovered_task_read_failure_survives_restart[offline-running]",
+        "test_recovered_task_read_failure_survives_restart[offline-sequence]",
+        "test_recovered_task_read_failure_survives_restart[lost_response-pending]",
+        "test_recovered_task_read_failure_survives_restart[lost_response-running]",
+        "test_recovered_task_read_failure_survives_restart[lost_response-sequence]"
+      ]
+    },
+    "reverse": {
+      "passed": 3,
+      "exit_code": 0,
+      "time": 18.507,
+      "cases": [
+        "test_reversing_recovery_identity_breaks_same_http_positive[pending]",
+        "test_reversing_recovery_identity_breaks_same_http_positive[running]",
+        "test_reversing_recovery_identity_breaks_same_http_positive[sequence]"
+      ]
+    },
+    "existing": {
+      "passed": 6,
+      "exit_code": 0,
+      "time": 53.099,
+      "cases": [
+        "test_unsent_read_failure_survives_restart[offline-before-send]",
+        "test_unsent_read_failure_survives_restart[offline-between-segments]",
+        "test_unsent_read_failure_survives_restart[lost_response-before-send]",
+        "test_unsent_read_failure_survives_restart[lost_response-between-segments]",
+        "test_reversing_fix_breaks_the_formal_worker_positive[missing_save]",
+        "test_reversing_fix_breaks_the_formal_worker_positive[legacy_handoff]"
+      ]
+    }
+  },
+  "total_checks": 22,
+  "positive_checks": 17,
+  "negative_wrappers": 5,
+  "new_recovery_cases": [
+    {
+      "case_dir": "test_recovered_task_read_failu0",
+      "flow_kind": "chat_reply",
+      "failure_step": "pre_send_refresh",
+      "fencing": 0,
+      "first_reads": 1,
+      "restart_reads": 0,
+      "failure_receipt_confirmed_via_http": true
+    },
+    {
+      "case_dir": "test_recovered_task_read_failu1",
+      "flow_kind": "chat_reply",
+      "failure_step": "pre_send_refresh",
+      "fencing": 1,
+      "first_reads": 1,
+      "restart_reads": 0,
+      "failure_receipt_confirmed_via_http": true
+    },
+    {
+      "case_dir": "test_recovered_task_read_failu2",
+      "flow_kind": "c2_read",
+      "failure_step": "pre_send_refresh",
+      "fencing": 0,
+      "first_reads": 1,
+      "restart_reads": 0,
+      "failure_receipt_confirmed_via_http": true
+    },
+    {
+      "case_dir": "test_recovered_task_read_failu3",
+      "flow_kind": "chat_reply",
+      "failure_step": "pre_send_refresh",
+      "fencing": 0,
+      "first_reads": 1,
+      "restart_reads": 0,
+      "failure_receipt_confirmed_via_http": true
+    },
+    {
+      "case_dir": "test_recovered_task_read_failu4",
+      "flow_kind": "chat_reply",
+      "failure_step": "pre_send_refresh",
+      "fencing": 1,
+      "first_reads": 1,
+      "restart_reads": 0,
+      "failure_receipt_confirmed_via_http": true
+    },
+    {
+      "case_dir": "test_recovered_task_read_failu5",
+      "flow_kind": "c2_read",
+      "failure_step": "pre_send_refresh",
+      "fencing": 0,
+      "first_reads": 1,
+      "restart_reads": 0,
+      "failure_receipt_confirmed_via_http": true
+    }
+  ],
+  "original_png_ocr": "Reused unchanged r6 independently verified source fingerprints; not rerun in r9",
+  "voice_handoff": "Reused unchanged r8 independently verified source fingerprints; not rerun in r9",
+  "remaining": [
+    "Windows native packaged acceptance and physical sends",
+    "Previously corrupted customer history not automatically changed",
+    "Known unrelated shared baseline failure and invalid old voice fixtures excluded",
+    "Engineer Python3.13 exit134 cause remains undetermined; independent Python3.12 exits0"
+  ]
+}
