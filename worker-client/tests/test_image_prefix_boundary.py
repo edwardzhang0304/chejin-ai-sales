@@ -9,7 +9,7 @@ import os
 from pathlib import Path
 
 import pytest
-from PIL import ImageDraw
+from PIL import Image, ImageDraw
 from test_frame_avatars import synthetic_frame, draw_avatar, row, s
 from test_c2_identity_gate_receipts import harness
 from test_task_runner import FakeApi, FakeBridge, identity_checkpoint_for_facts
@@ -54,8 +54,17 @@ def prefix_scene(old_role='customer', next_role='customer', old_type='text',
     draw_avatar(image,next_x,next_top)
     if next_type=='image': textured_image(draw,next_left,next_top,next_left+200,next_top+136)
     elif next_type=='voice':
-        draw.rectangle((next_left,next_top,next_left+200,next_top+40),fill=(130,220,150))
-        rows.append(row('6"',next_top+9,left=next_left+12,right=next_left+62))
+        # Voice requires the actual wave icon. Duration text alone is ordinary
+        # text under the current visual-proof contract (for example, "15w").
+        icon_fixture = Path(__file__).parent/'fixtures'/'voice_icons'/(
+            'customer_9s.png' if next_role=='customer' else 'self_2s.png'
+        )
+        voice_image = Image.open(icon_fixture).convert('RGB')
+        image.paste(voice_image,(next_left,next_top))
+        if next_role=='customer':
+            rows.append(row('9"',next_top+42,left=next_left+89,right=next_left+120))
+        else:
+            rows.append(row('2"',next_top+41,left=next_left+82,right=next_left+111))
     else:
         draw.rectangle((next_left,next_top,next_left+200,next_top+40),fill=(130,220,150))
         rows.append(row('这条完整消息必须保留',next_top+9,left=next_left+12,right=next_left+188))
@@ -103,6 +112,16 @@ def test_top_fragment_preserves_complete_next_message_and_tail(old_role,next_rol
     assert payload['messages'][-1]['content']=='后续完整客户问题'
     assert all('顶部旧消息' not in m.get('content','') for m in payload['messages'])
     assert any(d['event']=='image_candidate_top_prefix_excluded' for d in diag)
+
+
+def test_top_fragment_seconds_without_wave_icon_stays_text():
+    image,layout,rows=prefix_scene('customer','customer','text','text')
+    for item in rows:
+        if item['text']=='这条完整消息必须保留':
+            item['text']='6"'
+    payload,_=observe_scene(image,layout,rows,label='duration-without-wave')
+    assert [(m['type'],m['content']) for m in payload['messages']]==[
+        ('text','6"'),('text','后续完整客户问题')]
 
 
 @pytest.mark.parametrize('role',['customer','self'])

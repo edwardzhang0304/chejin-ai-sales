@@ -16,6 +16,7 @@ import hashlib
 import hmac
 import io
 import json
+import math
 import os
 import random
 import re
@@ -410,6 +411,7 @@ FOREIGN_CAPTURE_TOKENS = (
 )
 
 _OCR_ENGINE: RapidOCR | None = None
+_TEXT_LINE_RECOGNITION_CACHE: dict[str, dict[str, Any]] = {}
 _TARGET_READY_PREVALIDATION_OCR_SEED: dict[str, Any] = {}
 _INPUT_REGION_PRECHECK_OCR_SEED: dict[str, Any] = {}
 _OCR_TRACE_STACK: list[list[dict[str, Any]]] = []
@@ -474,6 +476,7 @@ def _ocr_trace_record(
     count: int,
     region: str = "full",
     source: str = "",
+    evidence: dict[str, Any] | None = None,
 ) -> None:
     if not _OCR_TRACE_STACK:
         return
@@ -487,6 +490,8 @@ def _ocr_trace_record(
         "duration_seconds": round(max(0.0, float(duration_seconds or 0.0)), 4),
         "count": int(count or 0),
     }
+    if evidence:
+        record.update(evidence)
     _OCR_TRACE_STACK[-1].append(record)
 
 
@@ -2559,6 +2564,9 @@ def exception_payload_for_sidecar(exc: Exception, *, state: str = "win32_ocr_fai
                 payload["avatar_evidence"] = cause.evidence
                 break
             cause = cause.__cause__
+    elif str(exc).startswith("C2_TEXT_BUBBLE_GROUPING_UNCONFIRMED"):
+        payload.update({"error_code": "C2_TEXT_BUBBLE_GROUPING_UNCONFIRMED",
+                        "reason": "same_frame_text_bubble_grouping_unconfirmed"})
     if invalid_handle:
         payload.update(
             {
@@ -20354,7 +20362,7 @@ def parse_messages_from_ocr(
     )
     merge_vertical_gap = max(28, int(height * 0.03))
     rows: list[dict[str, Any]] = []
-    for item in ocr_items:
+    for raw_ocr_index, item in enumerate(ocr_items):
         text = str(item.get("text") or "").strip()
         if not text:
             continue
@@ -20420,6 +20428,7 @@ def parse_messages_from_ocr(
         rows.append(
             {
                 **item,
+                "_raw_ocr_index": raw_ocr_index,
                 "side": side,
                 "sender_role_algorithm": side_details.get("algorithm"),
                 "sender_role_confidence": side_details.get("confidence"),
@@ -20458,12 +20467,22 @@ def parse_messages_from_ocr(
                 if [float(parent.get(key) or 0) for key in ("left", "top", "right", "bottom")] == region["parent"]:
                     rows[parent_index] = {**parent, "_voice_visual_evidence": region["voice_evidence"]}
 
-    grouped: list[list[dict[str, Any]]] = []
     normalized_conversation_type = infer_conversation_type(target)
+    if screenshot is not None and normalized_conversation_type == "private":
+        rows = merge_same_line_private_text_fragments(
+            rows, screenshot, message_bounds, layout_snapshot=snapshot,
+        )
+
+    grouped: list[list[dict[str, Any]]] = []
+    physical_groups: dict[str, list[dict[str, Any]]] = {}
     strict_private_text_grouping = bool(
         normalized_conversation_type == "private" and screenshot is not None
     )
     for item in sorted(rows, key=lambda row: (float(row["center_y"]), float(row["left"]))):
+        owner_key = str(item.get("_bubble_owner_key") or "")
+        if owner_key:
+            physical_groups.setdefault(owner_key, []).append(item)
+            continue
         side = str(item.get("side") or classify_message_side(item, width=width))
         if not grouped:
             grouped.append([{**item, "side": side}])
@@ -20596,6 +20615,25 @@ def parse_messages_from_ocr(
         else:
             grouped.append([{**item, "side": side}])
 
+    for physical_group in physical_groups.values():
+        physical_group.sort(key=lambda row: (int(row["_bubble_line_index"]), float(row["left"])))
+        anchor = next((row for row in physical_group if frame_local_explicit_avatar_role(row)), None)
+        if anchor is None:
+            raise RuntimeError("C2_TEXT_BUBBLE_GROUPING_UNCONFIRMED")
+        physical_group[0] = {
+            **physical_group[0],
+            "side": str(anchor["side"]),
+            "sender_role_algorithm": anchor.get("sender_role_algorithm"),
+            "sender_role_confidence": anchor.get("sender_role_confidence"),
+            "sender_role_evidence": [*(anchor.get("sender_role_evidence") or []),
+                                     "physical_text_bubble_owner_confirmed"],
+        }
+        grouped.append(physical_group)
+    grouped.sort(key=lambda group: (min(float(row["top"]) for row in group),
+                                    min(float(row["left"]) for row in group)))
+    if strict_private_text_grouping:
+        reject_multiple_groups_in_one_text_bubble(grouped, screenshot, message_bounds)
+
     messages: list[dict[str, Any]] = []
     for group in grouped:
         is_untranscribed_voice = message_group_is_untranscribed_voice_placeholder(group)
@@ -20603,7 +20641,11 @@ def parse_messages_from_ocr(
         if message_group_is_voice_duration_only(group) and not is_untranscribed_voice:
             continue
         raw_content = "\n".join(str(item.get("text") or "").strip() for item in group if str(item.get("text") or "").strip())
-        content = normalize_message_content(raw_content)
+        owner_evidence = group[0].get("_bubble_owner_evidence") or {}
+        content = normalize_message_content(
+            "\n".join(line["text"] for line in owner_evidence["lines"])
+            if owner_evidence else raw_content
+        )
         voice_duration_text = message_group_voice_duration_text(group)
         if is_untranscribed_voice:
             content = f"[语音] {voice_duration_text or ''}".strip()
@@ -20644,6 +20686,10 @@ def parse_messages_from_ocr(
             if any(gap > max(18.0, avg_height * 1.8) for gap in gaps):
                 quality_flags.append("multi_bubble_possible_merge")
         ocr_confidence = min(float(item.get("confidence") or 0) for item in group)
+        if owner_evidence:
+            ocr_confidence = min(ocr_confidence, *(
+                float(line["confidence"]) for line in owner_evidence["lines"]
+            ))
         digest = hashlib.sha1(f"{target}|{side}|{round(y)}|{content}".encode("utf-8")).hexdigest()[:16]
         sender, sender_role = sender_fields_for_message_side(side, target=target)
         avatar_alignment = next(
@@ -20680,6 +20726,7 @@ def parse_messages_from_ocr(
             "ocr_confidence": ocr_confidence,
             "bubble_rect": rect,
             "ocr_items": group,
+            **({"text_bubble_grouping_evidence": owner_evidence} if owner_evidence else {}),
             "quality_flags": quality_flags,
             "avatar_alignment": avatar_alignment,
         }
@@ -20843,6 +20890,290 @@ def frame_local_private_text_group_anchor(group: list[dict[str, Any]]) -> dict[s
         "sender_role_confidence": float(first.get("sender_role_confidence") or 0.0),
         "sender_role_evidence": list(first.get("sender_role_evidence") or []),
     }
+
+
+def same_line_private_text_vertical(first: dict[str, Any], second: dict[str, Any]) -> bool:
+    """The existing same-row tolerance, independent of avatar evidence."""
+    first_height = float(first["bottom"]) - float(first["top"])
+    second_height = float(second["bottom"]) - float(second["top"])
+    short_height = min(first_height, second_height)
+    overlap = min(float(first["bottom"]), float(second["bottom"])) - max(float(first["top"]), float(second["top"]))
+    return bool(short_height > 0 and overlap >= short_height * 0.75
+                and abs(float(first["center_y"]) - float(second["center_y"])) <= short_height * 0.3)
+
+
+def same_line_private_text_candidate(first: dict[str, Any], second: dict[str, Any]) -> bool:
+    if not same_line_private_text_vertical(first, second):
+        return False
+    left, right = sorted((first, second), key=lambda row: float(row["left"]))
+    short_height = min(float(left["bottom"]) - float(left["top"]),
+                       float(right["bottom"]) - float(right["top"]))
+    gap = float(right["left"]) - float(left["right"])
+    return -min(12.0, short_height * 0.6) <= gap <= max(12.0, short_height * 0.8)
+
+
+def text_row_inside_bubble(row: dict[str, Any], rect: tuple[int, int, int, int]) -> bool:
+    return bool(rect[0] - 2 <= float(row["left"]) < float(row["right"]) <= rect[2] + 2
+                and rect[1] - 2 <= float(row["top"]) < float(row["bottom"]) <= rect[3] + 2)
+
+
+def recognize_private_text_line(
+    members: list[dict[str, Any]], screenshot: Any, owner: tuple[int, int, int, int],
+    *, layout_snapshot: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Use all original boxes; overlapping boxes require one real line read."""
+    confidence = min(float(row.get("confidence") or 0.0) for row in members)
+    if len(members) == 1:
+        return {"text": str(members[0]["text"]).strip(), "confidence": confidence,
+                "method": "original_ocr"}
+    if all(float(right["left"]) >= float(left["right"])
+           for left, right in zip(members, members[1:])):
+        return {"text": "".join(str(row["text"]).strip() for row in members),
+                "confidence": confidence, "method": "nonoverlap_concat"}
+    rect = [math.floor(min(float(row["left"]) for row in members)),
+            math.floor(min(float(row["top"]) for row in members)),
+            math.ceil(max(float(row["right"]) for row in members)),
+            math.ceil(max(float(row["bottom"]) for row in members))]
+    if not (owner[0] <= rect[0] < rect[2] <= owner[2]
+            and owner[1] <= rect[1] < rect[3] <= owner[3]):
+        raise RuntimeError("C2_TEXT_BUBBLE_GROUPING_UNCONFIRMED")
+    source = [
+        (row["_raw_ocr_index"], row["text"], row.get("confidence"),
+         [row[key] for key in ("left", "top", "right", "bottom")])
+        for row in members
+    ]
+    image_hash = hashlib.sha256(screenshot.tobytes()).hexdigest()
+    layout = layout_snapshot or {}
+    layout_key = [layout.get(key) for key in (
+        "layout_snapshot_id", "message_viewport_bounds", "input_bounds",
+        "dpi_scale", "capture_mode", "frame_id",
+    )]
+    key = hashlib.sha256(json.dumps(
+        [image_hash, screenshot.size, screenshot.mode, layout_key, source,
+         rect, "rapidocr_recognition_only_v1"],
+        ensure_ascii=False, sort_keys=True,
+    ).encode("utf-8")).hexdigest()
+    result = _TEXT_LINE_RECOGNITION_CACHE.get(key)
+    if result is None:
+        global _OCR_ENGINE
+        crop = screenshot.crop(tuple(rect))
+        started = time.perf_counter()
+        try:
+            recognized, _OCR_ENGINE = win32_ocr_engine.recognize_text_line_with_cache(
+                crop, engine_factory=RapidOCR,
+                engine=_OCR_ENGINE, import_error=_OCR_IMPORT_ERROR,
+                min_confidence=OCR_MIN_CONFIDENCE,
+            )
+            result = {**recognized, "crop_rect": rect, "source_image_sha256": image_hash}
+        except Exception as exc:
+            result = {"error": type(exc).__name__, "reason": str(exc)}
+        _ocr_trace_record(
+            purpose="text_bubble_line_recognition", image=crop,
+            duration_seconds=time.perf_counter() - started,
+            count=0 if result.get("error") else 1,
+            region="text_line", source="frozen_frame",
+            evidence={
+                "source_image_sha256": image_hash,
+                "crop_rect": rect,
+                "raw_ocr_indices": [row["_raw_ocr_index"] for row in members],
+                "method": "rapidocr_recognition_only_v1",
+                "confidence": result.get("confidence"),
+                "error_type": result.get("error") or "",
+                "failure_reason": (
+                    result.get("reason")
+                    if str(result.get("reason") or "").startswith("ocr_line_")
+                    else ""
+                ),
+            },
+        )
+        if len(_TEXT_LINE_RECOGNITION_CACHE) >= 64:
+            _TEXT_LINE_RECOGNITION_CACHE.clear()
+        _TEXT_LINE_RECOGNITION_CACHE[key] = result
+    if result.get("error"):
+        raise RuntimeError("C2_TEXT_BUBBLE_GROUPING_UNCONFIRMED")
+    return dict(result)
+
+
+def merge_same_line_private_text_fragments(
+    rows: list[dict[str, Any]], screenshot: Any, message_bounds: list[int],
+    *, layout_snapshot: dict[str, Any] | None = None,
+) -> list[dict[str, Any]]:
+    """Bind split lines to one proven physical bubble without editing raw OCR."""
+    from apps.wechat_ai_customer_service.adapters.wechat_win32_ocr.text_bubble_recheck import locate_complete_bubbles
+
+    ordinary = [row for row in rows if private_multiline_ordinary_text_item(row)
+                and not row.get("_voice_transcript_region")
+                and not row.get("_voice_visual_evidence")]
+    candidates = [
+        (left, right) for offset, left in enumerate(ordinary)
+        for right in ordinary[offset + 1:]
+        if same_line_private_text_candidate(left, right)
+    ]
+    # Locate once per anchored bubble. A clipped or unrelated anchor may be
+    # unprovable; only a candidate whose owner cannot be established fails.
+    proven: dict[tuple[int, int, int, int], dict[str, Any]] = {}
+    for anchor in ordinary:
+        role = frame_local_explicit_avatar_role(anchor)
+        if not role:
+            continue
+        known = next((item for key, item in proven.items()
+                      if text_row_inside_bubble(anchor, key)), None)
+        if known is not None:
+            if (known["role"] != role or not same_frame_avatar_component(
+                known["anchor"].get("avatar_alignment"),
+                anchor.get("avatar_alignment"), role=role,
+            )):
+                raise RuntimeError("C2_TEXT_BUBBLE_GROUPING_UNCONFIRMED")
+            continue
+        rect = [int(anchor[key]) for key in ("left", "top", "right", "bottom")]
+        observation = {"observation_id": "anchor", "message_type": "text",
+                       "row_kind": "text_bubble", "sender_role": role,
+                       "bubble_rect": rect, "contract_errors": []}
+        try:
+            region = locate_complete_bubbles(
+                screenshot, [observation], ["anchor"], message_bounds,
+            )[0]
+        except ValueError:
+            continue
+        region_key = tuple(region["bubble_rect"])
+        existing = proven.get(region_key)
+        if existing is None:
+            proven[region_key] = {"region": region, "anchor": anchor, "role": role}
+        elif (existing["role"] != role or not same_frame_avatar_component(
+            existing["anchor"].get("avatar_alignment"),
+            anchor.get("avatar_alignment"), role=role,
+        )):
+            raise RuntimeError("C2_TEXT_BUBBLE_GROUPING_UNCONFIRMED")
+
+    def owner_for(row: dict[str, Any]) -> tuple[int, int, int, int] | None:
+        matching = [key for key in proven if text_row_inside_bubble(row, key)]
+        if len(matching) > 1:
+            raise RuntimeError("C2_TEXT_BUBBLE_GROUPING_UNCONFIRMED")
+        return matching[0] if matching else None
+
+    def intersects_owner(row: dict[str, Any], rect: tuple[int, int, int, int]) -> bool:
+        return bool(min(float(row["right"]), rect[2]) > max(float(row["left"]), rect[0])
+                    and min(float(row["bottom"]), rect[3]) > max(float(row["top"]), rect[1]))
+
+    selected: set[tuple[int, int, int, int]] = set()
+    for left, right in candidates:
+        left_owner, right_owner = owner_for(left), owner_for(right)
+        if left_owner and left_owner == right_owner:
+            selected.add(left_owner)
+        elif left_owner and right_owner and left_owner != right_owner:
+            continue  # Two proven physical bubbles remain separate messages.
+        elif left_owner or right_owner:
+            known = left_owner or right_owner
+            other = right if left_owner else left
+            if intersects_owner(other, known):
+                raise RuntimeError("C2_TEXT_BUBBLE_GROUPING_UNCONFIRMED")
+            # The other block is outside this physical bubble; do not turn
+            # an unrelated, unanchored bubble into a global failure.
+        elif any(intersects_owner(left, key) and intersects_owner(right, key)
+                 for key in proven):
+            # Neither OCR box is fully contained, but both touch the same
+            # proven bubble. Returning to the old no-anchor path loses text.
+            raise RuntimeError("C2_TEXT_BUBBLE_GROUPING_UNCONFIRMED")
+        elif any(frame_local_explicit_avatar_role(row) for row in (left, right)):
+            raise RuntimeError("C2_TEXT_BUBBLE_GROUPING_UNCONFIRMED")
+    if not selected:
+        return rows
+
+    tagged: dict[int, dict[str, Any]] = {}
+    for owner_key in selected:
+        proof = proven[owner_key]
+        members = [row for row in ordinary if text_row_inside_bubble(row, owner_key)]
+        # Check the unfiltered source rows, including boxes extending just
+        # beyond the detected bubble. Otherwise their anchor is taken by this
+        # owner and the legacy path silently drops the remaining line.
+        considered = [row for row in ordinary if intersects_owner(row, owner_key)
+                      and owner_for(row) in (None, owner_key)]
+        if any(not text_row_inside_bubble(row, owner_key) for row in considered):
+            raise RuntimeError("C2_TEXT_BUBBLE_GROUPING_UNCONFIRMED")
+        anchor = proof["anchor"]
+        role = proof["role"]
+        for member in members:
+            explicit = frame_local_explicit_avatar_role(member)
+            if explicit and (explicit != role or not same_frame_avatar_component(
+                member.get("avatar_alignment"), anchor.get("avatar_alignment"), role=role,
+            )):
+                raise RuntimeError("C2_TEXT_BUBBLE_GROUPING_UNCONFIRMED")
+        if any(text_row_inside_bubble(row, owner_key) for row in rows if row not in ordinary):
+            raise RuntimeError("C2_TEXT_BUBBLE_GROUPING_UNCONFIRMED")
+        bands: list[list[dict[str, Any]]] = []
+        for member in sorted(members, key=lambda row: (float(row["center_y"]), float(row["left"]))):
+            if bands:
+                matches = [same_line_private_text_vertical(member, peer) for peer in bands[-1]]
+                if all(matches):
+                    bands[-1].append(member)
+                    continue
+                if any(matches):
+                    raise RuntimeError("C2_TEXT_BUBBLE_GROUPING_UNCONFIRMED")
+            bands.append([member])
+        lines = []
+        for band_index, band in enumerate(bands):
+            ordered = sorted(band, key=lambda row: float(row["left"]))
+            if len(ordered) > 1 and any(
+                not same_line_private_text_candidate(left, right)
+                for left, right in zip(ordered, ordered[1:])
+            ):
+                raise RuntimeError("C2_TEXT_BUBBLE_GROUPING_UNCONFIRMED")
+            line = recognize_private_text_line(
+                ordered, screenshot, owner_key, layout_snapshot=layout_snapshot,
+            )
+            line["raw_ocr_indices"] = [row["_raw_ocr_index"] for row in ordered]
+            lines.append(line)
+            for member in ordered:
+                if member["_raw_ocr_index"] in tagged:
+                    raise RuntimeError("C2_TEXT_BUBBLE_GROUPING_UNCONFIRMED")
+                tagged[member["_raw_ocr_index"]] = {
+                    **member, "side": role, "_bubble_owner_key": str(owner_key),
+                    "_bubble_line_index": band_index,
+                }
+        evidence = {
+            "bubble_owner": str(owner_key), "bubble_rect": list(owner_key),
+            "role": role, "anchor_raw_ocr_index": anchor["_raw_ocr_index"],
+            "avatar_component_id": str((anchor.get("avatar_alignment") or {}).get("avatar_component_id") or ""),
+            "avatar_component_bounds": frame_local_avatar_component_bounds(
+                anchor.get("avatar_alignment"), role=role,
+            ),
+            "member_indices": [row["_raw_ocr_index"] for row in members],
+            "considered_raw_ocr_indices": [row["_raw_ocr_index"] for row in considered],
+            "lines": lines,
+        }
+        for member in members:
+            tagged[member["_raw_ocr_index"]]["_bubble_owner_evidence"] = evidence
+            if not frame_local_explicit_avatar_role(member):
+                tagged[member["_raw_ocr_index"]].update({
+                    "_role_source": "physical_bubble_owner",
+                    "sender_role_algorithm": "physical_text_bubble_owner",
+                    "sender_role_evidence": [*(member.get("sender_role_evidence") or []),
+                                             "role_inherited_from_physical_bubble_owner"],
+                })
+    return [tagged.get(row["_raw_ocr_index"], row) for row in rows]
+
+
+def reject_multiple_groups_in_one_text_bubble(
+    groups: list[list[dict[str, Any]]], screenshot: Any, message_bounds: list[int],
+) -> None:
+    """Selected physical owners must reach exactly one final message each."""
+    seen: set[str] = set()
+    for group in groups:
+        owners = {str(row.get("_bubble_owner_key")) for row in group if row.get("_bubble_owner_key")}
+        if len(owners) > 1 or any(owner in seen for owner in owners):
+            raise RuntimeError("C2_TEXT_BUBBLE_GROUPING_UNCONFIRMED")
+        seen.update(owners)
+        if not owners:
+            continue
+        evidence = group[0].get("_bubble_owner_evidence") or {}
+        actual = [row.get("_raw_ocr_index") for row in group]
+        expected = evidence.get("member_indices") or []
+        considered = evidence.get("considered_raw_ocr_indices") or []
+        if (len(actual) != len(set(actual)) or set(actual) != set(expected)
+                or len(actual) != len(expected)
+                or set(expected) != set(considered)
+                or not frame_local_private_text_group_anchor(group).get("ok")):
+            raise RuntimeError("C2_TEXT_BUBBLE_GROUPING_UNCONFIRMED")
 
 
 def private_multiline_ordinary_text_item(item: dict[str, Any]) -> bool:

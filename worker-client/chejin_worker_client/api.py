@@ -445,6 +445,21 @@ class WorkerApiClient:
         self._forget_confirmed_task_lease(task_id, token)
         return task
 
+    def settle_reply_read_failure(self, binding: Binding, record: dict[str, Any]) -> Task:
+        """Replay the original failure without acquiring a new send permission."""
+        token = int(record["lease_fencing_token"])
+        payload = self._request(
+            "POST", f"/tasks/{record['task_id']}/fail", binding=binding,
+            json={"error_code": record["error_code"], "failure_step": record["failure_step"],
+                  "failure_remark": record["error_code"], "evidence": {"reply_read_failure": record}},
+            extra_headers={"X-Inflight-Flow-Id": record["flow_id"],
+                           "X-Task-Lease-Fencing-Token": str(token)},
+        )
+        task = Task.from_api(payload)
+        if task.raw.get("reply_read_failure") == record:
+            self._forget_confirmed_task_lease(task.id, token)
+        return task
+
     def settle_pre_send_read_failure(self, binding: Binding, record: dict[str, Any]) -> Task:
         """Submit only a saved, proven pre-claim read failure using its old Flow."""
         context, request = record["context"], record.get("request") or {}

@@ -208,6 +208,7 @@ def resume_reply_sequence(runner, binding):
             if not observed.get("ok"):
                 runner._settle_chat_reply_context_failure_before_unlock(
                     binding, task_id=str((status.get("task") or {}).get("id") or ""),
+                    conversation_id=target.conversation_id,
                     source_error_code=observed.get("error_code") or "REPLY_SEQUENCE_FRESH_READ_REQUIRED",
                     evidence={"reply_sequence_resume": observed},
                 )

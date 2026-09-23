@@ -56,24 +56,27 @@ def status(http, worker, batch_id):
     return response.json()["data"]
 
 
-def first_claim(http, worker, binding, action_id):
+def first_claim(http, worker, binding, action_id, *, flow_id=None):
     with SessionLocal() as db:
         task_id = db.scalar(select(Task.id).where(Task.reply_action_id == action_id))
+    headers = {**fixtures._worker_headers(worker), **({'X-Inflight-Flow-Id':flow_id} if flow_id else {})}
     claimed = http.post(f"/api/tasks/{task_id}/claim", json={"worker_id": worker["id"], "claim_source": "c2_conversation_flow",
-                         "conversation_id": binding["conversation_id"]}, headers=fixtures._worker_headers(worker))
+                         "conversation_id": binding["conversation_id"]}, headers=headers)
     assert claimed.status_code == 200, claimed.text
     response = http.post(f"/api/reply-actions/{action_id}/claim-send", json={"task_id": task_id, "worker_id": worker["id"]},
-                         headers=fixtures._task_lease_headers(worker, claimed))
+                         headers={**fixtures._task_lease_headers(worker, claimed),
+                                  **({'X-Inflight-Flow-Id':flow_id} if flow_id else {})})
     assert response.status_code == 200, response.text
     return response.json()["data"]
 
 
-def ack(http, worker, claim, *, result="sent", code=None):
+def ack(http, worker, claim, *, result="sent", code=None, flow_id=None):
     response = http.post(f"/api/reply-actions/{claim['reply_action_id']}/sent-ack", json={
         "worker_id": worker["id"], "client_instance_id": "client-c3", "task_id": claim["task_id"],
         "send_token": claim["send_token"], "reply_text_hash": claim["reply_text_hash"], "send_result": result,
         "action_phase": "confirmed" if result == "sent" else "trigger_attempted" if result == "unknown" else "not_attempted",
-        "error_code": code}, headers=fixtures._worker_headers(worker))
+        "error_code": code}, headers={**fixtures._worker_headers(worker),
+                                      **({'X-Inflight-Flow-Id':flow_id} if flow_id else {})})
     assert response.status_code == 200, response.text
     return response.json()["data"]
 
@@ -106,6 +109,68 @@ def test_unsent_tail_cancelled_after_terminal_non_success(http_api, monkeypatch,
     assert status(http_api, worker, batch_id)["reply_sequence"]["terminal"] is True
     with SessionLocal() as db:
         assert all(db.get(ReplyAction, identity).status in {"cancelled", "superseded"} for identity in ids[1:])
+
+
+@pytest.mark.parametrize('after_first_ack', [False, True], ids=['before-first-send', 'after-confirmed-first-segment'])
+def test_bubble_grouping_failure_settles_original_reply_without_handoff(
+        http_api, monkeypatch, async_generation, after_first_ack):
+    worker, binding, batch_id, ids = generated_group(http_api, monkeypatch)
+    flow_id = 'bubble-grouping-failure-flow'
+    started = http_api.post(
+        f"/api/workers/{worker['id']}/inflight-flow/start",
+        headers=fixtures._worker_headers(worker),
+        json={'flow_id':flow_id,'flow_kind':'c2_read',
+              'conversation_id':binding['conversation_id'],'unread_generation':0})
+    assert started.status_code == 200, started.text
+    if after_first_ack:
+        ack(http_api, worker,
+            first_claim(http_api, worker, binding, ids[0], flow_id=flow_id),
+            flow_id=flow_id)
+    current_action_id = ids[int(after_first_ack)]
+    current = status(http_api, worker, batch_id)
+    assert current['reply_action']['id'] == current_action_id
+    with SessionLocal() as db:
+        task_id = db.scalar(select(Task.id).where(Task.reply_action_id == current_action_id))
+        assert db.get(Task, task_id).status == 'pending'
+    failure_step = 'reply_sequence_read' if after_first_ack else 'pre_send_refresh'
+    headers = {**fixtures._worker_headers(worker), 'X-Inflight-Flow-Id':flow_id}
+    stopped = http_api.post(f"/api/workers/{worker['id']}/run-status", headers=headers,
+                            json={'run_status':'faulted','client_instance_id':'client-c3'})
+    assert stopped.status_code == 200, stopped.text
+    failed = http_api.post(f'/api/tasks/{task_id}/fail', headers=headers, json={
+        'error_code':'C2_TEXT_BUBBLE_GROUPING_UNCONFIRMED',
+        'failure_step':failure_step,
+        'failure_remark':'C2_TEXT_BUBBLE_GROUPING_UNCONFIRMED'})
+    assert failed.status_code == 200, failed.text
+    assert failed.json()['data']['error_code'] == 'C2_TEXT_BUBBLE_GROUPING_UNCONFIRMED'
+    replay = http_api.post(f'/api/tasks/{task_id}/fail', headers=headers, json={
+        'error_code':'C2_TEXT_BUBBLE_GROUPING_UNCONFIRMED',
+        'failure_step':failure_step,
+        'failure_remark':'C2_TEXT_BUBBLE_GROUPING_UNCONFIRMED'})
+    assert replay.status_code == 200, replay.text
+    assert replay.json()['data']['id'] == task_id
+    conflicting_replay = http_api.post(f'/api/tasks/{task_id}/fail', headers=headers, json={
+        'error_code':'C2_TEXT_BUBBLE_GROUPING_UNCONFIRMED',
+        'failure_step':'different_step',
+        'failure_remark':'C2_TEXT_BUBBLE_GROUPING_UNCONFIRMED'})
+    assert conflicting_replay.status_code == 409, conflicting_replay.text
+    finished = http_api.post(
+        f"/api/workers/{worker['id']}/inflight-flow/finish", headers=headers,
+        json={'flow_id':flow_id,'terminal_kind':'technical_failed',
+              'conversation_id':binding['conversation_id'],
+              'error_code':'C2_TEXT_BUBBLE_GROUPING_UNCONFIRMED'})
+    assert finished.status_code == 200, finished.text
+    with SessionLocal() as db:
+        assert db.get(Task, task_id).status == 'failed'
+        assert db.get(ReplyAction, current_action_id).status == 'cancelled'
+        assert db.get(MessageBatch, batch_id).status == 'cancelled'
+        assert all(db.get(ReplyAction, identity).status in {'cancelled','superseded'} for identity in ids[int(after_first_ack):])
+        assert db.query(HandoffEvent).filter(HandoffEvent.batch_id == batch_id).count() == 0
+        assert db.query(SentAck).count() == int(after_first_ack)
+        assert db.get(Worker, worker['id']).run_status == 'faulted'
+        if after_first_ack:
+            assert db.get(ReplyAction, ids[0]).status == 'sent'
+    assert status(http_api, worker, batch_id)['reply_sequence']['terminal'] is True
 
 
 def test_old_worker_never_receives_partial_multi_reply(http_api, monkeypatch, async_generation):

@@ -12448,6 +12448,7 @@ class TaskRunnerTest(unittest.TestCase):
         settled = runner._settle_chat_reply_context_failure_before_unlock(
             binding,
             task_id=task.id,
+            conversation_id=task.raw["c3"]["reply_action"]["conversation_id"],
             source_error_code="C2_TARGET_CHAT_NOT_FOUND",
         )
 
@@ -12475,6 +12476,7 @@ class TaskRunnerTest(unittest.TestCase):
         settled = runner._settle_chat_reply_context_failure_before_unlock(
             binding,
             task_id=task.id,
+            conversation_id=task.raw["c3"]["reply_action"]["conversation_id"],
             source_error_code="C2_PRE_SEND_LAYOUT_INVALID",
         )
 
@@ -12507,6 +12509,7 @@ class TaskRunnerTest(unittest.TestCase):
         settled = runner._settle_chat_reply_context_failure_before_unlock(
             binding,
             task_id="",
+            conversation_id="conv-1",
             source_error_code="C2_PRE_SEND_LAYOUT_INVALID",
         )
 
@@ -12533,6 +12536,7 @@ class TaskRunnerTest(unittest.TestCase):
         settled = runner._settle_chat_reply_context_failure_before_unlock(
             binding,
             task_id=task.id,
+            conversation_id=task.raw["c3"]["reply_action"]["conversation_id"],
             source_error_code=(
                 "C2_PRE_SEND_MESSAGE_ROLE_UNCONFIRMED"
             ),
@@ -12576,6 +12580,7 @@ class TaskRunnerTest(unittest.TestCase):
         settled = runner._settle_chat_reply_context_failure_before_unlock(
             binding,
             task_id=task.id,
+            conversation_id=task.raw["c3"]["reply_action"]["conversation_id"],
             source_error_code="C2_PRE_SEND_LAYOUT_INVALID",
             evidence=evidence,
         )

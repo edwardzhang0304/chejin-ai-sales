@@ -5130,6 +5130,7 @@ class C2VisionIntegrationTests(unittest.TestCase):
             window_context_validated = True
 
             class Host:
+                parse_error = "structural_image_detector_failed"
                 capture_c2_window_context = staticmethod(
                     lambda *_args, **_kwargs: {
                         "ok": True,
@@ -5144,7 +5145,7 @@ class C2VisionIntegrationTests(unittest.TestCase):
 
                 @staticmethod
                 def parse_messages_from_ocr(*_args, **_kwargs):
-                    raise RuntimeError("structural_image_detector_failed")
+                    raise RuntimeError(State.Host.parse_error)
 
             host = Host()
 
@@ -5166,6 +5167,16 @@ class C2VisionIntegrationTests(unittest.TestCase):
         )
         self.assertEqual(
             formal_image_failure_code(result["reason"]),
+            "C2_IMAGE_OBSERVATION_FAILED",
+        )
+        State.Host.parse_error = "C2_TEXT_BUBBLE_GROUPING_UNCONFIRMED"
+        grouping_failure = _WindowFrame(State()).capture_frame(
+            {"phase": "image_candidate"}
+        )
+        self.assertEqual(grouping_failure["reason"], "vision_window_message_parse_failed")
+        self.assertEqual(grouping_failure["reason_detail"], State.Host.parse_error.lower())
+        self.assertEqual(
+            formal_image_failure_code(grouping_failure["reason"]),
             "C2_IMAGE_OBSERVATION_FAILED",
         )
         image.close()
