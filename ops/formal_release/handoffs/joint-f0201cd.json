@@ -1,0 +1,617 @@
+{
+  "schema_version": 1,
+  "repository": "edwardzhang0304/chejin-ai-sales",
+  "reviewed_commit": "f0201cd98a95034e84f54b14940fcb34bf56f8e4",
+  "target_version": "0.9.98",
+  "approval": "Owner requested formal Windows EXE preserve-data manual strong installation plus matching backend/admin; confirmed installed0.9.97 offline. Reuse reviewed source evidence, perform actual package checks only.",
+  "original_verification_sha256": "be6357c109997b0cba155a02cbd64d3fa3936d17f19d00206f7268a738585827",
+  "source_sha256": {
+    "backend/app/api/routes/tasks.py": "c349d9f4bc66682fced62bdd368fd6dd39b8564f75afa05ec54d62aedd54d9ad",
+    "backend/app/services/task_service.py": "30c87ceb5e28b4117efa5ff42eb695148943e5bb53dea0f187bc1f943adf0ace",
+    "backend/tests/test_reply_sequence_http.py": "bbbfe905380e0010d21feba3d571afa6fb10719a120cf8fd7d3e1ca46c17f85d",
+    "worker-client/chejin_worker_client/api.py": "9529a2dc5cb01f3e80dd81c27a439b124f7f2e06bb05e3c833bd6dfef9cf970d",
+    "worker-client/chejin_worker_client/task_runner.py": "0a73257d96c670511229742de2165d9ec1204953b29f52f834354fc3924f092b",
+    "worker-client/chejin_worker_client/transaction_outcomes.py": "929c4bcc9d9dd8fdfc62474ae2c8cfeac0af4873fe626afa0a4b71d0cf3e3a7c",
+    "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/adapters/wechat_win32_ocr/ocr_engine.py": "6bf6cae49610812f998364e33e3bb1629e8e5481cc4787361e8a3866ec415db2",
+    "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/adapters/wechat_win32_ocr_sidecar.py": "9b6cc1cfbe679423b02abb4ee8c20502b7c6925bc565d82c9a2f732bdc3b99c3",
+    "worker-client/tests/test_c2_vision_integration.py": "0659116a4586ef1b444ef113d8e1cfb358633c21f6c8e4dbe832fb77021480e9",
+    "worker-client/tests/test_frame_avatars.py": "a884baa116c9b62311a4c01245457a68906f83e6a8556c089a83ee90ddd3b99e",
+    "worker-client/tests/test_historical_receipt_recheck.py": "fca06c70f36b0233bef88817a3489a8e82ce19f8e3060115b47459a161433ba9",
+    "worker-client/tests/test_image_prefix_boundary.py": "cebcfcd6f0fd90ef24e003418dfd8d604a7ae4211667a34ff402feb3fd317134",
+    "backend/app/services/reply_read_failure.py": "35d66d9337d1229a2276487b6dcad8639c71b14358a1ac6175fc43f3bfd8647b",
+    "backend/tests/test_reply_read_failure_restart.py": "63257d3195baf493361dceb285af01f0a8aab5c2c6f2c8cca8a1c2d5339b52bd",
+    "worker-client/chejin_worker_client/reply_read_failure.py": "06ac7be80fa077f02e44542bee60e48ad0b4a2ac94beee9989a0db54835eef54",
+    "worker-client/tests/fixtures/avatars_20260904/tbg_budget_overlap.png": "96c78af2ef2fda5f6da02aad0f430bec13fc4baab715f4602e9daea00c9a4fea",
+    "worker-client/tests/fixtures/avatars_20260904/tbg_repeat_overlap.png": "d8a23e5d00a49bafc28340270672497c5ecd17bf84541dd4791f09ed8c4e11d5",
+    "worker-client/chejin_worker_client/reply_sequence_runtime.py": "61ef3e0a3a74cc37396b04b8f0fe1f43a3b6e13366adf630ebcea4bdd18eaed9",
+    "worker-client/tests/test_task_runner.py": "af7d720a94bfc2d4bb31f5678824d827f54104aedaa3693ef06b4beda39bb5f4",
+    "worker-client/tests/test_reply_recovery_grouping_failure.py": "2f4f61267eeddaf7130410894dd591302ccc7e177bd6e5b81d50565d1b21a6a9"
+  },
+  "checks": [
+    {
+      "name": "text-bubble-r9-20260923/unit.xml",
+      "original_xml_sha256": "43ff7497e481dcbe7d387c20a7093d15c90edc2094c844d63e356bbb20f2000f",
+      "count": 7,
+      "cases": [
+        {
+          "name": "cj-r8-review-20260923-NTZpwC.test_recovery_entry::test_recovered_reply_keeps_grouping_failure_receipt[pending]",
+          "result": "passed"
+        },
+        {
+          "name": "cj-r8-review-20260923-NTZpwC.test_recovery_entry::test_recovered_reply_keeps_grouping_failure_receipt[running]",
+          "result": "passed"
+        },
+        {
+          "name": "cj-ocr-bubble-fix-20260923.worker-client.tests.test_task_runner.TaskRunnerTest::test_unconfirmed_pre_send_failure_settlement_pauses_worker",
+          "result": "passed"
+        },
+        {
+          "name": "cj-ocr-bubble-fix-20260923.worker-client.tests.test_task_runner.TaskRunnerTest::test_layout_invalid_settlement_faults_worker_and_preserves_error",
+          "result": "passed"
+        },
+        {
+          "name": "cj-ocr-bubble-fix-20260923.worker-client.tests.test_task_runner.TaskRunnerTest::test_layout_invalid_without_reply_task_still_faults_worker",
+          "result": "passed"
+        },
+        {
+          "name": "cj-ocr-bubble-fix-20260923.worker-client.tests.test_task_runner.TaskRunnerTest::test_specific_reidentification_error_is_not_rewritten",
+          "result": "passed"
+        },
+        {
+          "name": "cj-ocr-bubble-fix-20260923.worker-client.tests.test_task_runner.TaskRunnerTest::test_pre_send_layout_failure_uploads_nested_durable_evidence",
+          "result": "passed"
+        }
+      ]
+    },
+    {
+      "name": "text-bubble-r9-20260923/recovery.xml",
+      "original_xml_sha256": "f65e7498008b9bfd1df926736c99196708fa6df35db4f484375d14c97397625d",
+      "count": 6,
+      "cases": [
+        {
+          "name": "tests.test_reply_read_failure_restart::test_recovered_task_read_failure_survives_restart[offline-pending]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_reply_read_failure_restart::test_recovered_task_read_failure_survives_restart[offline-running]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_reply_read_failure_restart::test_recovered_task_read_failure_survives_restart[offline-sequence]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_reply_read_failure_restart::test_recovered_task_read_failure_survives_restart[lost_response-pending]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_reply_read_failure_restart::test_recovered_task_read_failure_survives_restart[lost_response-running]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_reply_read_failure_restart::test_recovered_task_read_failure_survives_restart[lost_response-sequence]",
+          "result": "passed"
+        }
+      ]
+    },
+    {
+      "name": "text-bubble-r9-20260923/reverse.xml",
+      "original_xml_sha256": "3a71bc39c42357a784a749202eed3384bd0818280e51ca5029b8fd52e6151700",
+      "count": 3,
+      "cases": [
+        {
+          "name": "tests.test_reply_read_failure_restart::test_reversing_recovery_identity_breaks_same_http_positive[pending]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_reply_read_failure_restart::test_reversing_recovery_identity_breaks_same_http_positive[running]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_reply_read_failure_restart::test_reversing_recovery_identity_breaks_same_http_positive[sequence]",
+          "result": "passed"
+        }
+      ]
+    },
+    {
+      "name": "text-bubble-r9-20260923/existing.xml",
+      "original_xml_sha256": "393bd208368e1e9f7cb840ac8327ee3536bcaa056f6432b4e263478f9d1c3e52",
+      "count": 6,
+      "cases": [
+        {
+          "name": "tests.test_reply_read_failure_restart::test_unsent_read_failure_survives_restart[offline-before-send]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_reply_read_failure_restart::test_unsent_read_failure_survives_restart[offline-between-segments]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_reply_read_failure_restart::test_unsent_read_failure_survives_restart[lost_response-before-send]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_reply_read_failure_restart::test_unsent_read_failure_survives_restart[lost_response-between-segments]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_reply_read_failure_restart::test_reversing_fix_breaks_the_formal_worker_positive[missing_save]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_reply_read_failure_restart::test_reversing_fix_breaks_the_formal_worker_positive[legacy_handoff]",
+          "result": "passed"
+        }
+      ]
+    },
+    {
+      "name": "cj-tbg-r6-review-20260923-Kje2vF/prior18.xml",
+      "original_xml_sha256": "b51954d7727609698544457e266fee335356ef4549b3178fcdd92e11a9a77391",
+      "count": 18,
+      "cases": [
+        {
+          "name": "cj-tbg-r5-review-20260923-zWAanN.test_candidate_entry::test_lower_split_candidates_cannot_bypass_all_owner_checks[0-customer]",
+          "result": "passed"
+        },
+        {
+          "name": "cj-tbg-r5-review-20260923-zWAanN.test_candidate_entry::test_lower_split_candidates_cannot_bypass_all_owner_checks[0-self]",
+          "result": "passed"
+        },
+        {
+          "name": "cj-tbg-r5-review-20260923-zWAanN.test_candidate_entry::test_lower_split_candidates_cannot_bypass_all_owner_checks[1-customer]",
+          "result": "passed"
+        },
+        {
+          "name": "cj-tbg-r5-review-20260923-zWAanN.test_candidate_entry::test_lower_split_candidates_cannot_bypass_all_owner_checks[1-self]",
+          "result": "passed"
+        },
+        {
+          "name": "cj-tbg-r5-review-20260923-zWAanN.test_candidate_entry::test_lower_split_candidates_cannot_bypass_all_owner_checks[2-customer]",
+          "result": "passed"
+        },
+        {
+          "name": "cj-tbg-r5-review-20260923-zWAanN.test_candidate_entry::test_lower_split_candidates_cannot_bypass_all_owner_checks[2-self]",
+          "result": "passed"
+        },
+        {
+          "name": "cj-tbg-r4-review-20260923-TFH2DP.test_residual_owner::test_normal_last_line_must_not_silently_fall_outside_selected_owner[False-customer]",
+          "result": "passed"
+        },
+        {
+          "name": "cj-tbg-r4-review-20260923-TFH2DP.test_residual_owner::test_normal_last_line_must_not_silently_fall_outside_selected_owner[False-self]",
+          "result": "passed"
+        },
+        {
+          "name": "cj-tbg-r4-review-20260923-TFH2DP.test_residual_owner::test_normal_last_line_must_not_silently_fall_outside_selected_owner[True-customer]",
+          "result": "passed"
+        },
+        {
+          "name": "cj-tbg-r4-review-20260923-TFH2DP.test_residual_owner::test_normal_last_line_must_not_silently_fall_outside_selected_owner[True-self]",
+          "result": "passed"
+        },
+        {
+          "name": "cj-bubble-audit-20260923-7q1mTn.test_review_counterexamples::test_lower_line_fragments_must_not_silently_lose_text[customer]",
+          "result": "passed"
+        },
+        {
+          "name": "cj-bubble-audit-20260923-7q1mTn.test_review_counterexamples::test_lower_line_fragments_must_not_silently_lose_text[self]",
+          "result": "passed"
+        },
+        {
+          "name": "cj-bubble-audit-20260923-7q1mTn.test_review_counterexamples::test_overlapping_boxes_cannot_prove_repeated_character_is_duplicate[\\u9884\\u7b97100-0\\u5143-\\u9884\\u7b971000\\u5143-customer]",
+          "result": "passed"
+        },
+        {
+          "name": "cj-bubble-audit-20260923-7q1mTn.test_review_counterexamples::test_overlapping_boxes_cannot_prove_repeated_character_is_duplicate[\\u9884\\u7b97100-0\\u5143-\\u9884\\u7b971000\\u5143-self]",
+          "result": "passed"
+        },
+        {
+          "name": "cj-bubble-audit-20260923-7q1mTn.test_review_counterexamples::test_overlapping_boxes_cannot_prove_repeated_character_is_duplicate[\\u5e2e\\u6211\\u770b-\\u770b\\u8fd9\\u8f86\\u8f66-\\u5e2e\\u6211\\u770b\\u770b\\u8fd9\\u8f86\\u8f66-customer]",
+          "result": "passed"
+        },
+        {
+          "name": "cj-bubble-audit-20260923-7q1mTn.test_review_counterexamples::test_overlapping_boxes_cannot_prove_repeated_character_is_duplicate[\\u5e2e\\u6211\\u770b-\\u770b\\u8fd9\\u8f86\\u8f66-\\u5e2e\\u6211\\u770b\\u770b\\u8fd9\\u8f86\\u8f66-self]",
+          "result": "passed"
+        },
+        {
+          "name": "cj-bubble-audit-20260923-7q1mTn.test_review_counterexamples::test_nonoverlapping_same_line_fragments_remain_complete[customer]",
+          "result": "passed"
+        },
+        {
+          "name": "cj-bubble-audit-20260923-7q1mTn.test_review_counterexamples::test_nonoverlapping_same_line_fragments_remain_complete[self]",
+          "result": "passed"
+        }
+      ]
+    },
+    {
+      "name": "cj-tbg-r6-review-20260923-Kje2vF/controls.xml",
+      "original_xml_sha256": "921c9a69966f6bdd311283312257bd0d6d2b6320d6a25238e4fdc520d9def162",
+      "count": 8,
+      "cases": [
+        {
+          "name": "test_controls::test_distinct_vertical_bubbles_stay_distinct[True-customer]",
+          "result": "passed"
+        },
+        {
+          "name": "test_controls::test_distinct_vertical_bubbles_stay_distinct[True-self]",
+          "result": "passed"
+        },
+        {
+          "name": "test_controls::test_distinct_vertical_bubbles_stay_distinct[False-customer]",
+          "result": "passed"
+        },
+        {
+          "name": "test_controls::test_distinct_vertical_bubbles_stay_distinct[False-self]",
+          "result": "passed"
+        },
+        {
+          "name": "test_controls::test_unanchored_top_fragments_do_not_globally_block_known_bubble[customer]",
+          "result": "passed"
+        },
+        {
+          "name": "test_controls::test_unanchored_top_fragments_do_not_globally_block_known_bubble[self]",
+          "result": "passed"
+        },
+        {
+          "name": "test_controls::test_actual_entry_exception_keeps_typed_worker_failure[customer]",
+          "result": "passed"
+        },
+        {
+          "name": "test_controls::test_actual_entry_exception_keeps_typed_worker_failure[self]",
+          "result": "passed"
+        }
+      ]
+    },
+    {
+      "name": "cj-tbg-r6-review-20260923-Kje2vF/product-nonvoice.xml",
+      "original_xml_sha256": "ec58e9cb7707ab6e0346e40aa81c9b190a2c2b7e949a96f20cb6d7f0b6316bba",
+      "count": 76,
+      "cases": [
+        {
+          "name": "cj-ocr-bubble-fix-20260923.worker-client.tests.test_frame_avatars::test_original_frame_first_confirmation_succeeds[1]",
+          "result": "passed"
+        },
+        {
+          "name": "cj-ocr-bubble-fix-20260923.worker-client.tests.test_frame_avatars::test_original_frame_first_confirmation_succeeds[2]",
+          "result": "passed"
+        },
+        {
+          "name": "cj-ocr-bubble-fix-20260923.worker-client.tests.test_frame_avatars::test_original_frame_first_confirmation_succeeds[3]",
+          "result": "passed"
+        },
+        {
+          "name": "cj-ocr-bubble-fix-20260923.worker-client.tests.test_frame_avatars::test_original_frame_first_confirmation_succeeds[4]",
+          "result": "passed"
+        },
+        {
+          "name": "cj-ocr-bubble-fix-20260923.worker-client.tests.test_frame_avatars::test_same_image_full_ocr_uses_same_avatar_table",
+          "result": "passed"
+        },
+        {
+          "name": "cj-ocr-bubble-fix-20260923.worker-client.tests.test_frame_avatars::test_real_detector_synthetic_multiline_and_short_tail[customer-3]",
+          "result": "passed"
+        },
+        {
+          "name": "cj-ocr-bubble-fix-20260923.worker-client.tests.test_frame_avatars::test_real_detector_synthetic_multiline_and_short_tail[customer-4]",
+          "result": "passed"
+        },
+        {
+          "name": "cj-ocr-bubble-fix-20260923.worker-client.tests.test_frame_avatars::test_real_detector_synthetic_multiline_and_short_tail[customer-5]",
+          "result": "passed"
+        },
+        {
+          "name": "cj-ocr-bubble-fix-20260923.worker-client.tests.test_frame_avatars::test_real_detector_synthetic_multiline_and_short_tail[self-3]",
+          "result": "passed"
+        },
+        {
+          "name": "cj-ocr-bubble-fix-20260923.worker-client.tests.test_frame_avatars::test_real_detector_synthetic_multiline_and_short_tail[self-4]",
+          "result": "passed"
+        },
+        {
+          "name": "cj-ocr-bubble-fix-20260923.worker-client.tests.test_frame_avatars::test_real_detector_synthetic_multiline_and_short_tail[self-5]",
+          "result": "passed"
+        },
+        {
+          "name": "cj-ocr-bubble-fix-20260923.worker-client.tests.test_frame_avatars::test_same_avatar_artwork_different_messages_is_not_one_component",
+          "result": "passed"
+        },
+        {
+          "name": "cj-ocr-bubble-fix-20260923.worker-client.tests.test_frame_avatars::test_one_physical_bubble_with_split_same_line_is_one_message",
+          "result": "passed"
+        },
+        {
+          "name": "cj-ocr-bubble-fix-20260923.worker-client.tests.test_frame_avatars::test_partial_overlap_tail_cannot_silently_disappear[False-customer]",
+          "result": "passed"
+        },
+        {
+          "name": "cj-ocr-bubble-fix-20260923.worker-client.tests.test_frame_avatars::test_partial_overlap_tail_cannot_silently_disappear[False-self]",
+          "result": "passed"
+        },
+        {
+          "name": "cj-ocr-bubble-fix-20260923.worker-client.tests.test_frame_avatars::test_partial_overlap_tail_cannot_silently_disappear[True-customer]",
+          "result": "passed"
+        },
+        {
+          "name": "cj-ocr-bubble-fix-20260923.worker-client.tests.test_frame_avatars::test_partial_overlap_tail_cannot_silently_disappear[True-self]",
+          "result": "passed"
+        },
+        {
+          "name": "cj-ocr-bubble-fix-20260923.worker-client.tests.test_frame_avatars::test_split_candidate_is_checked_before_any_owner_is_selected[0-customer]",
+          "result": "passed"
+        },
+        {
+          "name": "cj-ocr-bubble-fix-20260923.worker-client.tests.test_frame_avatars::test_split_candidate_is_checked_before_any_owner_is_selected[0-self]",
+          "result": "passed"
+        },
+        {
+          "name": "cj-ocr-bubble-fix-20260923.worker-client.tests.test_frame_avatars::test_split_candidate_is_checked_before_any_owner_is_selected[1-customer]",
+          "result": "passed"
+        },
+        {
+          "name": "cj-ocr-bubble-fix-20260923.worker-client.tests.test_frame_avatars::test_split_candidate_is_checked_before_any_owner_is_selected[1-self]",
+          "result": "passed"
+        },
+        {
+          "name": "cj-ocr-bubble-fix-20260923.worker-client.tests.test_frame_avatars::test_split_candidate_is_checked_before_any_owner_is_selected[2-customer]",
+          "result": "passed"
+        },
+        {
+          "name": "cj-ocr-bubble-fix-20260923.worker-client.tests.test_frame_avatars::test_split_candidate_is_checked_before_any_owner_is_selected[2-self]",
+          "result": "passed"
+        },
+        {
+          "name": "cj-ocr-bubble-fix-20260923.worker-client.tests.test_frame_avatars::test_split_fragment_can_inherit_one_confirmed_avatar_with_bubble_proof",
+          "result": "passed"
+        },
+        {
+          "name": "cj-ocr-bubble-fix-20260923.worker-client.tests.test_frame_avatars::test_lower_line_three_fragments_keep_one_physical_owner[customer]",
+          "result": "passed"
+        },
+        {
+          "name": "cj-ocr-bubble-fix-20260923.worker-client.tests.test_frame_avatars::test_lower_line_three_fragments_keep_one_physical_owner[self]",
+          "result": "passed"
+        },
+        {
+          "name": "cj-ocr-bubble-fix-20260923.worker-client.tests.test_frame_avatars::test_two_physical_bubbles_on_one_line_remain_separate",
+          "result": "passed"
+        },
+        {
+          "name": "cj-ocr-bubble-fix-20260923.worker-client.tests.test_frame_avatars::test_long_text_overlap_inside_one_bubble_is_not_guessed",
+          "result": "passed"
+        },
+        {
+          "name": "cj-ocr-bubble-fix-20260923.worker-client.tests.test_frame_avatars::test_overlapping_real_glyphs_use_one_recognition_pass[tbg_budget_overlap.png-\\u9884\\u7b97100-0\\u5143-737-774-\\u9884\\u7b971000\\u5143]",
+          "result": "passed"
+        },
+        {
+          "name": "cj-ocr-bubble-fix-20260923.worker-client.tests.test_frame_avatars::test_overlapping_real_glyphs_use_one_recognition_pass[tbg_repeat_overlap.png-\\u5e2e\\u6211\\u770b-\\u770b\\u8fd9\\u8f86\\u8f66-722-818-\\u5e2e\\u6211\\u770b\\u770b\\u8fd9\\u8f86\\u8f66]",
+          "result": "passed"
+        },
+        {
+          "name": "cj-ocr-bubble-fix-20260923.worker-client.tests.test_frame_avatars::test_failed_line_recognition_never_falls_back_to_character_deletion",
+          "result": "passed"
+        },
+        {
+          "name": "cj-ocr-bubble-fix-20260923.worker-client.tests.test_frame_avatars::test_recognition_only_adapter_rejects_invalid_or_low_score_result[None]",
+          "result": "passed"
+        },
+        {
+          "name": "cj-ocr-bubble-fix-20260923.worker-client.tests.test_frame_avatars::test_recognition_only_adapter_rejects_invalid_or_low_score_result[result1]",
+          "result": "passed"
+        },
+        {
+          "name": "cj-ocr-bubble-fix-20260923.worker-client.tests.test_frame_avatars::test_recognition_only_adapter_rejects_invalid_or_low_score_result[result2]",
+          "result": "passed"
+        },
+        {
+          "name": "cj-ocr-bubble-fix-20260923.worker-client.tests.test_frame_avatars::test_recognition_only_adapter_rejects_invalid_or_low_score_result[result3]",
+          "result": "passed"
+        },
+        {
+          "name": "cj-ocr-bubble-fix-20260923.worker-client.tests.test_frame_avatars::test_recognition_only_adapter_rejects_invalid_or_low_score_result[result4]",
+          "result": "passed"
+        },
+        {
+          "name": "cj-ocr-bubble-fix-20260923.worker-client.tests.test_frame_avatars::test_recognition_only_adapter_rejects_invalid_or_low_score_result[result5]",
+          "result": "passed"
+        },
+        {
+          "name": "cj-ocr-bubble-fix-20260923.worker-client.tests.test_frame_avatars::test_recognition_only_adapter_rejects_invalid_or_low_score_result[result6]",
+          "result": "passed"
+        },
+        {
+          "name": "cj-ocr-bubble-fix-20260923.worker-client.tests.test_frame_avatars::test_nonoverlap_line_never_invokes_extra_recognition",
+          "result": "passed"
+        },
+        {
+          "name": "cj-ocr-bubble-fix-20260923.worker-client.tests.test_frame_avatars::test_one_physical_bubble_with_distant_lines_is_one_message",
+          "result": "passed"
+        },
+        {
+          "name": "cj-ocr-bubble-fix-20260923.worker-client.tests.test_frame_avatars::test_oversized_attached_avatar_is_not_absence_and_cannot_merge_text[340-oversized_avatar_candidate]",
+          "result": "passed"
+        },
+        {
+          "name": "cj-ocr-bubble-fix-20260923.worker-client.tests.test_frame_avatars::test_oversized_attached_avatar_is_not_absence_and_cannot_merge_text[312-avatar_shape_unresolved]",
+          "result": "passed"
+        },
+        {
+          "name": "cj-ocr-bubble-fix-20260923.worker-client.tests.test_frame_avatars::test_proven_viewport_boundary_does_not_block_text_continuation",
+          "result": "passed"
+        },
+        {
+          "name": "cj-ocr-bubble-fix-20260923.worker-client.tests.test_frame_avatars::test_pending_avatar_overlapping_row_is_never_absence[independent-customer]",
+          "result": "passed"
+        },
+        {
+          "name": "cj-ocr-bubble-fix-20260923.worker-client.tests.test_frame_avatars::test_pending_avatar_overlapping_row_is_never_absence[independent-self]",
+          "result": "passed"
+        },
+        {
+          "name": "cj-ocr-bubble-fix-20260923.worker-client.tests.test_frame_avatars::test_pending_avatar_overlapping_row_is_never_absence[horizontal_attachment-customer]",
+          "result": "passed"
+        },
+        {
+          "name": "cj-ocr-bubble-fix-20260923.worker-client.tests.test_frame_avatars::test_pending_avatar_overlapping_row_is_never_absence[horizontal_attachment-self]",
+          "result": "passed"
+        },
+        {
+          "name": "cj-ocr-bubble-fix-20260923.worker-client.tests.test_frame_avatars::test_pending_avatar_overlapping_row_is_never_absence[before_bottom-customer]",
+          "result": "passed"
+        },
+        {
+          "name": "cj-ocr-bubble-fix-20260923.worker-client.tests.test_frame_avatars::test_pending_avatar_overlapping_row_is_never_absence[before_bottom-self]",
+          "result": "passed"
+        },
+        {
+          "name": "cj-ocr-bubble-fix-20260923.worker-client.tests.test_frame_avatars::test_pending_avatar_overlapping_row_is_never_absence[at_bottom-customer]",
+          "result": "passed"
+        },
+        {
+          "name": "cj-ocr-bubble-fix-20260923.worker-client.tests.test_frame_avatars::test_pending_avatar_overlapping_row_is_never_absence[at_bottom-self]",
+          "result": "passed"
+        },
+        {
+          "name": "cj-ocr-bubble-fix-20260923.worker-client.tests.test_frame_avatars::test_pending_avatar_outside_text_rows_does_not_block_continuation",
+          "result": "passed"
+        },
+        {
+          "name": "cj-ocr-bubble-fix-20260923.worker-client.tests.test_frame_avatars::test_image_observer_preserves_clipped_avatar_failure[customer]",
+          "result": "passed"
+        },
+        {
+          "name": "cj-ocr-bubble-fix-20260923.worker-client.tests.test_frame_avatars::test_image_observer_preserves_clipped_avatar_failure[self]",
+          "result": "passed"
+        },
+        {
+          "name": "cj-ocr-bubble-fix-20260923.worker-client.tests.test_frame_avatars::test_synthetic_valid_layout_sizes_dpi_and_white_avatar_interiors[920-1]",
+          "result": "passed"
+        },
+        {
+          "name": "cj-ocr-bubble-fix-20260923.worker-client.tests.test_frame_avatars::test_synthetic_valid_layout_sizes_dpi_and_white_avatar_interiors[920-1.25]",
+          "result": "passed"
+        },
+        {
+          "name": "cj-ocr-bubble-fix-20260923.worker-client.tests.test_frame_avatars::test_synthetic_valid_layout_sizes_dpi_and_white_avatar_interiors[920-1.5]",
+          "result": "passed"
+        },
+        {
+          "name": "cj-ocr-bubble-fix-20260923.worker-client.tests.test_frame_avatars::test_synthetic_valid_layout_sizes_dpi_and_white_avatar_interiors[1000-1]",
+          "result": "passed"
+        },
+        {
+          "name": "cj-ocr-bubble-fix-20260923.worker-client.tests.test_frame_avatars::test_synthetic_valid_layout_sizes_dpi_and_white_avatar_interiors[1000-1.25]",
+          "result": "passed"
+        },
+        {
+          "name": "cj-ocr-bubble-fix-20260923.worker-client.tests.test_frame_avatars::test_synthetic_valid_layout_sizes_dpi_and_white_avatar_interiors[1000-1.5]",
+          "result": "passed"
+        },
+        {
+          "name": "cj-ocr-bubble-fix-20260923.worker-client.tests.test_frame_avatars::test_synthetic_valid_layout_sizes_dpi_and_white_avatar_interiors[1180-1]",
+          "result": "passed"
+        },
+        {
+          "name": "cj-ocr-bubble-fix-20260923.worker-client.tests.test_frame_avatars::test_synthetic_valid_layout_sizes_dpi_and_white_avatar_interiors[1180-1.25]",
+          "result": "passed"
+        },
+        {
+          "name": "cj-ocr-bubble-fix-20260923.worker-client.tests.test_frame_avatars::test_synthetic_valid_layout_sizes_dpi_and_white_avatar_interiors[1180-1.5]",
+          "result": "passed"
+        },
+        {
+          "name": "cj-ocr-bubble-fix-20260923.worker-client.tests.test_frame_avatars::test_no_avatar_does_not_create_customer_messages",
+          "result": "passed"
+        },
+        {
+          "name": "cj-ocr-bubble-fix-20260923.worker-client.tests.test_frame_avatars::test_white_avatar_surface_with_disconnected_colour_islands",
+          "result": "passed"
+        },
+        {
+          "name": "cj-ocr-bubble-fix-20260923.worker-client.tests.test_frame_avatars::test_real_avatar_does_not_absorb_media_or_system_rows[image-extra1]",
+          "result": "passed"
+        },
+        {
+          "name": "cj-ocr-bubble-fix-20260923.worker-client.tests.test_frame_avatars::test_real_avatar_does_not_absorb_media_or_system_rows[system-extra2]",
+          "result": "passed"
+        },
+        {
+          "name": "cj-ocr-bubble-fix-20260923.worker-client.tests.test_frame_avatars::test_real_avatar_does_not_absorb_media_or_system_rows[file-extra3]",
+          "result": "passed"
+        },
+        {
+          "name": "cj-ocr-bubble-fix-20260923.worker-client.tests.test_frame_avatars::test_real_avatar_does_not_absorb_media_or_system_rows[quote-extra4]",
+          "result": "passed"
+        },
+        {
+          "name": "cj-ocr-bubble-fix-20260923.worker-client.tests.test_frame_avatars::test_real_avatars_keep_opposite_roles_and_group_chat_rules",
+          "result": "passed"
+        },
+        {
+          "name": "cj-ocr-bubble-fix-20260923.worker-client.tests.test_frame_avatars::test_proven_owner_does_not_depend_on_old_vertical_gate",
+          "result": "passed"
+        },
+        {
+          "name": "cj-ocr-bubble-fix-20260923.worker-client.tests.test_frame_avatars::test_invalid_frame_even_with_empty_ocr_is_not_empty_success",
+          "result": "passed"
+        },
+        {
+          "name": "cj-ocr-bubble-fix-20260923.worker-client.tests.test_frame_avatars::test_invalid_baseline_error_does_not_reference_unassigned_validation",
+          "result": "passed"
+        },
+        {
+          "name": "cj-ocr-bubble-fix-20260923.worker-client.tests.test_frame_avatars::test_invalid_avatar_crosses_cli_boundary_as_error_not_empty_read",
+          "result": "passed"
+        },
+        {
+          "name": "cj-ocr-bubble-fix-20260923.worker-client.tests.test_frame_avatars::test_invalid_and_ambiguous_evidence_is_not_normal_absence",
+          "result": "passed"
+        },
+        {
+          "name": "cj-ocr-bubble-fix-20260923.worker-client.tests.test_frame_avatars::test_read_only_retry_limit_and_delayed_success",
+          "result": "passed"
+        }
+      ]
+    },
+    {
+      "name": "cj-r8-review-20260923-NTZpwC/voice.xml",
+      "original_xml_sha256": "c25c4ef25b65fecd8ceea658b024376e457d063e24c7f9cbca74b3ce0726f55e",
+      "count": 8,
+      "cases": [
+        {
+          "name": "worker-client.tests.test_voice_transcript_handoff::test_real_parser_transcript_completes_formal_execution[parsed_transcript0]",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_voice_transcript_handoff::test_real_parser_transcript_completes_formal_execution[parsed_transcript1]",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_voice_transcript_handoff::test_real_parser_transcript_completes_formal_execution[parsed_transcript2]",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_voice_transcript_handoff::test_real_parser_transcript_completes_formal_execution[parsed_transcript3]",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_voice_transcript_handoff::test_old_frame_proof_cannot_authorize_new_frame[parsed_transcript0]",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_voice_transcript_handoff::test_old_frame_proof_cannot_authorize_new_frame[parsed_transcript1]",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_voice_transcript_handoff::test_old_frame_proof_cannot_authorize_new_frame[parsed_transcript2]",
+          "result": "passed"
+        },
+        {
+          "name": "worker-client.tests.test_voice_transcript_handoff::test_old_frame_proof_cannot_authorize_new_frame[parsed_transcript3]",
+          "result": "passed"
+        }
+      ]
+    }
+  ],
+  "environment": "Original independent macOS/Python3.12 OCR and HTTP/PostgreSQL/SQLite source review; r9 final17 positive and5 inverse wrapper cases. r6 unchanged OCR production modules and r8 voice pipeline evidence reused, not reexecuted. Prior failures excluded. Desktop/model controlled; Windows physical sending and customer environment not verified. Counts overlap and are not unique business coverage."
+}
