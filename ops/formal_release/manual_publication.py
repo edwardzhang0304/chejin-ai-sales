@@ -55,6 +55,9 @@ def publish(folder, meta, verified, config, check_only):
         if (destination/name).exists():require(digest(destination/name)==digest(source),'IMMUTABLE_VERSION_CONFLICT')
     if not check_only:
         destination.mkdir(parents=True,exist_ok=True,mode=0o755)
+        # mkdir's mode is still narrowed by the operator's umask (typically 077).
+        # Nginx needs search permission on this version directory to serve the ZIP.
+        destination.chmod(0o755)
         for suffix in ('.zip','.sha256.txt'):
             source=folder/(stem+suffix); target=destination/source.name
             if not target.exists():
