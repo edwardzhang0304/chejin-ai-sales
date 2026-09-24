@@ -1,0 +1,314 @@
+{
+  "schema_version": 1,
+  "repository": "edwardzhang0304/chejin-ai-sales",
+  "reviewed_commit": "41c64e1c6fe1474d5682ee8c3c32192f7f097523",
+  "target_version": "0.9.99",
+  "approval": "Owner requested formal Windows EXE preserve-data manual strong installation from original0.9.98 and confirmed exited/no local pending items. Reuse reviewed source checks; only package-specific installation and production gates run.",
+  "original_verification_sha256": "9711f98e6d8afb81a739409882d086b25ec60ff165628a9ff3011e463c2406c4",
+  "environment": "Engineer local macOS/Python, isolated PostgreSQL and controlled model HTTP; source-only checks. 67 pass records overlap business coverage. Reviewed source code/test hashes match final commit; four document/report hashes changed after review for handoff text and are excluded, no production code changed. Regression219 and Brain209/authority7 in original evidence; shared baseline city fallback failure1 remains, not counted. No real model or Windows send.",
+  "source_sha256": {
+    "backend/tests/test_vehicle_fields_provider.py": "7458c13a2e321f82d6c25d19d86f62511f026146d92049c1d8f3bc93ca496adb",
+    "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/adapters/knowledge_loader.py": "c731d4641f44a28c5bb682d64acaa2c91da392569aad8a0d8c97c986892f3b8f",
+    "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/workflows/reply_evidence_builder.py": "2f88e7e229680e6fafe778875a080a8dc2ab785525850cf41d16b4bce830a6fe",
+    "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/tests/test_vehicle_public_facts.py": "5f2030233e4a04865b94e3d38c03ac264e203edd9a0f4837a1a9072d71d00831",
+    "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/workflows/vehicle_public_facts.py": "1c3b6a2fb85478a119eeb00a5df56e91de4f8c693cc2547da9626f6c1b16dca6"
+  },
+  "checks": [
+    {
+      "name": "unit-after",
+      "original_xml_sha256": "317f0315d236a440fb41846ec8fb9189ac03b6e8b4d297cb5ad1c301fcbb46bd",
+      "count": 11,
+      "cases": [
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_vehicle_public_facts::test_all_public_details_survive_final_prompt_without_clipping[False-catalog]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_vehicle_public_facts::test_all_public_details_survive_final_prompt_without_clipping[False-retrieval]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_vehicle_public_facts::test_all_public_details_survive_final_prompt_without_clipping[False-merged]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_vehicle_public_facts::test_all_public_details_survive_final_prompt_without_clipping[True-catalog]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_vehicle_public_facts::test_all_public_details_survive_final_prompt_without_clipping[True-retrieval]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_vehicle_public_facts::test_all_public_details_survive_final_prompt_without_clipping[True-merged]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_vehicle_public_facts::test_missing_details_do_not_invent_registration_from_model_year[None]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_vehicle_public_facts::test_missing_details_do_not_invent_registration_from_model_year[details1]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_vehicle_public_facts::test_missing_details_do_not_invent_registration_from_model_year[details2]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_vehicle_public_facts::test_other_sources_keep_existing_projection",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_vehicle_public_facts::test_same_name_vehicle_facts_remain_bound_to_product_id",
+          "result": "passed"
+        }
+      ]
+    },
+    {
+      "name": "shared",
+      "original_xml_sha256": "8ab067f6bde9355e10ef24de97d92a5eb7d35870e4a84453f57a2d9781ccd522",
+      "count": 11,
+      "cases": [
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_vehicle_public_facts::test_all_public_details_survive_final_prompt_without_clipping[False-catalog]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_vehicle_public_facts::test_all_public_details_survive_final_prompt_without_clipping[False-retrieval]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_vehicle_public_facts::test_all_public_details_survive_final_prompt_without_clipping[False-merged]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_vehicle_public_facts::test_all_public_details_survive_final_prompt_without_clipping[True-catalog]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_vehicle_public_facts::test_all_public_details_survive_final_prompt_without_clipping[True-retrieval]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_vehicle_public_facts::test_all_public_details_survive_final_prompt_without_clipping[True-merged]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_vehicle_public_facts::test_missing_details_do_not_invent_registration_from_model_year[None]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_vehicle_public_facts::test_missing_details_do_not_invent_registration_from_model_year[details1]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_vehicle_public_facts::test_missing_details_do_not_invent_registration_from_model_year[details2]",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_vehicle_public_facts::test_other_sources_keep_existing_projection",
+          "result": "passed"
+        },
+        {
+          "name": "apps.wechat_ai_customer_service.tests.test_vehicle_public_facts::test_same_name_vehicle_facts_remain_bound_to_product_id",
+          "result": "passed"
+        }
+      ]
+    },
+    {
+      "name": "http-final",
+      "original_xml_sha256": "dee65a3359df326c5d62455131e77d6afd8d2e59b4575bf2b49a4e87336affbb",
+      "count": 22,
+      "cases": [
+        {
+          "name": "tests.test_vehicle_fields_provider::test_saved_vehicle_facts_reach_final_provider_request[fuel-False]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_vehicle_fields_provider::test_saved_vehicle_facts_reach_final_provider_request[fuel-True]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_vehicle_fields_provider::test_saved_vehicle_facts_reach_final_provider_request[hybrid-False]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_vehicle_fields_provider::test_saved_vehicle_facts_reach_final_provider_request[hybrid-True]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_vehicle_fields_provider::test_saved_vehicle_facts_reach_final_provider_request[range_extended-False]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_vehicle_fields_provider::test_saved_vehicle_facts_reach_final_provider_request[range_extended-True]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_vehicle_fields_provider::test_saved_vehicle_facts_reach_final_provider_request[electric-False]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_vehicle_fields_provider::test_saved_vehicle_facts_reach_final_provider_request[electric-True]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_vehicle_fields_provider::test_saved_vehicle_facts_reach_final_provider_request[long-False]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_vehicle_fields_provider::test_saved_vehicle_facts_reach_final_provider_request[long-True]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_vehicle_fields_provider::test_saved_vehicle_facts_reach_final_provider_request[legacy-False]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_vehicle_fields_provider::test_saved_vehicle_facts_reach_final_provider_request[legacy-True]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_vehicle_fields_provider::test_saved_vehicle_facts_reach_final_provider_request[unknown-False]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_vehicle_fields_provider::test_saved_vehicle_facts_reach_final_provider_request[unknown-True]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_vehicle_fields_provider::test_saved_vehicle_facts_reach_final_provider_request[unlisted-False]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_vehicle_fields_provider::test_saved_vehicle_facts_reach_final_provider_request[unlisted-True]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_vehicle_fields_provider::test_saved_vehicle_facts_reach_final_provider_request[existing-False]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_vehicle_fields_provider::test_saved_vehicle_facts_reach_final_provider_request[existing-True]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_vehicle_fields_provider::test_saved_vehicle_facts_reach_final_provider_request[cleared-False]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_vehicle_fields_provider::test_saved_vehicle_facts_reach_final_provider_request[cleared-True]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_vehicle_fields_provider::test_saved_vehicle_facts_reach_final_provider_request[zero-False]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_vehicle_fields_provider::test_saved_vehicle_facts_reach_final_provider_request[zero-True]",
+          "result": "passed"
+        }
+      ]
+    },
+    {
+      "name": "intersections-final",
+      "original_xml_sha256": "18df2a3fd43e6fe818517f5808a12563d43803c1a03525846fec43112eb29641",
+      "count": 23,
+      "cases": [
+        {
+          "name": "tests.test_vehicle_image_order_policy::test_order_policy_at_generation_and_actual_claim[during_generation]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_vehicle_image_order_policy::test_order_policy_at_generation_and_actual_claim[queued]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_vehicle_image_order_policy::test_order_policy_at_generation_and_actual_claim[segments]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_vehicle_image_order_policy::test_order_policy_at_generation_and_actual_claim[image_reference]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_vehicle_image_order_policy::test_order_policy_at_generation_and_actual_claim[image_evidence]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_vehicle_image_order_policy::test_order_policy_at_generation_and_actual_claim[image_plan]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_vehicle_image_order_policy::test_order_policy_at_generation_and_actual_claim[missing_evidence]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_vehicle_image_order_policy::test_order_policy_at_generation_and_actual_claim[model_self_declaration]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_vehicle_image_order_policy::test_order_policy_at_generation_and_actual_claim[price]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_vehicle_image_order_policy::test_order_policy_at_generation_and_actual_claim[unlist]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_vehicle_image_order_policy::test_order_policy_at_generation_and_actual_claim[new_image]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_vehicle_image_order_policy::test_order_policy_at_generation_and_actual_claim[changed_bytes]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_vehicle_image_order_policy::test_order_rejects_duplicate_or_foreign_image_ids[duplicate]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_vehicle_image_order_policy::test_order_rejects_duplicate_or_foreign_image_ids[foreign]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_vehicle_generation_intersection::test_vehicle_change_must_not_certify_an_old_price_as_current[unchanged]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_vehicle_generation_intersection::test_vehicle_change_must_not_certify_an_old_price_as_current[before_brain_reads]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_vehicle_generation_intersection::test_vehicle_change_must_not_certify_an_old_price_as_current[during_brain]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_vehicle_generation_intersection::test_vehicle_change_must_not_certify_an_old_price_as_current[after_generation]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_vehicle_generation_intersection::test_vehicle_change_must_not_certify_an_old_price_as_current[unlist_during_brain]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_vehicle_generation_intersection::test_vehicle_change_must_not_certify_an_old_price_as_current[unrelated_during_brain]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_vehicle_generation_intersection::test_vehicle_change_must_not_certify_an_old_price_as_current[price_changed_back]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_vehicle_generation_intersection::test_vehicle_change_must_not_certify_an_old_price_as_current[retry_current]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_vehicle_generation_intersection::test_vehicle_change_must_not_certify_an_old_price_as_current[intermediate_price_then_restore]",
+          "result": "passed"
+        }
+      ]
+    }
+  ]
+}
