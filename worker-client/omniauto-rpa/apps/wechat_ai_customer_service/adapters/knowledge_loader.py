@@ -27,6 +27,7 @@ from rag_layer import RagService  # noqa: E402
 from apps.wechat_ai_customer_service.workflows.product_name_matcher import (  # noqa: E402
     collect_matched_aliases,
 )
+from apps.wechat_ai_customer_service.workflows.vehicle_public_facts import vehicle_specs_for_evidence  # noqa: E402
 from apps.wechat_ai_customer_service.workflows.llm_product_name_matcher import (  # noqa: E402
     llm_match_product_name,
 )
@@ -395,7 +396,10 @@ def legacy_selected_items(category_pack: dict[str, Any]) -> list[dict[str, Any]]
 
 def legacy_product_snippet(item: dict[str, Any], evidence_item: dict[str, Any]) -> dict[str, Any]:
     data = item.get("data", {}) or {}
+    backend_vehicle = (item.get("source") or {}).get("type") == "chejin_backend"
+    specs = vehicle_specs_for_evidence(item) if backend_vehicle else data.get("specs")
     snippet: dict[str, Any] = {
+        **({"source_type": "chejin_backend", "specs": specs} if backend_vehicle else {}),
         "id": item.get("id"),
         "name": data.get("name"),
         "category": data.get("category"),
@@ -404,7 +408,7 @@ def legacy_product_snippet(item: dict[str, Any], evidence_item: dict[str, Any]) 
         "stock": data.get("inventory"),
         "shipping": data.get("shipping_policy"),
         "warranty": data.get("warranty_policy"),
-        "spec": data.get("specs"),
+        "spec": specs,
         "discount_policy": (data.get("reply_templates") or {}).get("discount_policy"),
         "discount_tiers": data.get("price_tiers", []) or [],
         "matched_aliases": list(evidence_item.get("matched_fields", []) or []),
