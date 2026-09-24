@@ -2,6 +2,7 @@
 import hashlib
 import io
 import json
+import os
 from pathlib import Path
 import sys
 from unittest.mock import patch
@@ -70,8 +71,13 @@ def test_manual_check_publish_and_idempotent_repeat_preserve_bytes(tmp_path):
     with patch.object(mp,'identity',return_value=(stem,None)), patch.object(mp,'manual_acceptance',return_value=True), patch('maintenance.SNIPPET',snippet), patch('maintenance.BLOCK','active'), patch('maintenance.INCLUDE','include'), patch('maintenance.SITE',ingress), patch('maintenance.validate_ingress'), patch('receiver.run_fixed',side_effect=command) as run:
         before=site.read_bytes();mp.publish(folder,meta,verified,config,True)
         assert site.read_bytes()==before and not (tmp_path/'www').exists()
-        result=mp.publish(folder,meta,verified,config,False)
+        old_umask=os.umask(0o077)
+        try:
+            result=mp.publish(folder,meta,verified,config,False)
+        finally:
+            os.umask(old_umask)
         assert result['automatic_update_registered'] is False
+        assert ((tmp_path/'www/releases/2.4.9').stat().st_mode & 0o777)==0o755
         published=site.read_bytes();mp.publish(folder,meta,verified,config,False)
         assert site.read_bytes()==published
         assert sum(c.args[0]==['systemctl','reload','nginx'] for c in run.call_args_list)==1
