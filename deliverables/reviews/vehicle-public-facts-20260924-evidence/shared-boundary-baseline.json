@@ -1,0 +1,42 @@
+{
+  "mode": "baseline",
+  "results": [
+    {
+      "name": "check_portable_sync_and_raw_payload_retention",
+      "ok": true
+    },
+    {
+      "name": "check_official_contract_surface_and_write_intent_isolation",
+      "ok": true
+    },
+    {
+      "name": "check_customer_evidence_policy_and_cross_shop_isolation",
+      "ok": true
+    },
+    {
+      "name": "check_customer_visible_projection_completeness_and_code_safety",
+      "ok": true
+    },
+    {
+      "name": "check_manual_vehicle_and_host_storage_adapter",
+      "ok": true
+    },
+    {
+      "name": "check_legacy_facade_and_brain_input_contract",
+      "ok": true
+    },
+    {
+      "name": "check_chejin_customer_evidence_reaches_brain_with_readable_projection",
+      "ok": false,
+      "error": "city/province fallback must produce readable customer location: expected '江苏南京', got None"
+    },
+    {
+      "name": "check_source_markers_and_v1_to_v2_manual_migration",
+      "ok": true
+    },
+    {
+      "name": "check_portable_core_and_rpa_forbidden_import_boundaries",
+      "ok": true
+    }
+  ]
+}

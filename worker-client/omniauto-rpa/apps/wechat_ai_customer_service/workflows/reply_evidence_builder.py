@@ -15,6 +15,7 @@ from typing import Any
 import unicodedata
 
 from apps.wechat_ai_customer_service.platform_understanding_rules import intent_group
+from apps.wechat_ai_customer_service.workflows.vehicle_public_facts import vehicle_specs_for_evidence
 from admin_backend.services.raw_message_store import RawMessageStore
 from apps.wechat_ai_customer_service.admin_backend.services.conversation_history import assemble_conversation_history
 from knowledge_loader import (
@@ -1041,10 +1042,14 @@ def compact_knowledge_pack(
         context = pack.get("conversation_context") if isinstance(pack.get("conversation_context"), dict) else {}
     catalog_candidates = catalog_product_candidates(text, limit=max_catalog_candidates, context=context)
     item_limit = max(1, max_catalog_candidates)
-    products = [
-        annotate_authority(compact_mapping(item, max_text_chars=420), category_id=PRODUCT_MASTER_CATEGORY_ID)
-        for item in (evidence.get("products", []) or [])[:item_limit]
-    ]
+    products = []
+    for item in (evidence.get("products", []) or [])[:item_limit]:
+        product = compact_mapping(item, max_text_chars=420)
+        if item.get("source_type") == "chejin_backend":
+            # Retrieval may be the sole hit. Keep the same complete public facts
+            # as the catalog path, including the end of a long description.
+            product["specs"] = item.get("specs", "")
+        products.append(annotate_authority(product, category_id=PRODUCT_MASTER_CATEGORY_ID))
     catalog_candidates = [
         annotate_authority(item, category_id=PRODUCT_MASTER_CATEGORY_ID)
         for item in catalog_candidates
@@ -2583,7 +2588,7 @@ def catalog_product_payload(item: dict[str, Any]) -> dict[str, Any]:
         "sku": data.get("sku"),
         "category": data.get("category"),
         "aliases": list(data.get("aliases", []) or [])[:10],
-        "specs": str(data.get("specs") or "") if backend_vehicle else truncate_text(str(data.get("specs") or ""), 260),
+        "specs": vehicle_specs_for_evidence(item) if backend_vehicle else truncate_text(str(data.get("specs") or ""), 260),
         "price": data.get("price"),
         "unit": data.get("unit"),
         "stock": data.get("inventory"),

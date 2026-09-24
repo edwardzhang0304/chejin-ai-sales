@@ -1,0 +1,142 @@
+{
+  "date": "2026-09-24",
+  "status": "source_fix_verified_not_released",
+  "source": {
+    "chejin": {
+      "root": "/private/tmp/cj-ocr-bubble-fix-20260923",
+      "base": "c496156b7a848ab318b348686098060631f7629f",
+      "branch": "codex/gray-release-0.9.x",
+      "files": {
+        "backend/tests/test_vehicle_fields_provider.py": "7458c13a2e321f82d6c25d19d86f62511f026146d92049c1d8f3bc93ca496adb",
+        "deliverables/AI智能客服售前跟进系统_PRD_运营后台统一版_v0.9.98.md": "e0f3c75630890bfee01f119598178da1afcc8e81dfc62d5de6b0adc00d19aba9",
+        "deliverables/AI智能客服售前跟进系统_全流程图_v0.9.98.puml": "c1c16879f0c1e495f90d4081af3cf8662eff6bc5b12151406c0d1bd3b8d93650",
+        "deliverables/AI智能客服售前跟进系统_技术方案手册_v0.9.98.md": "2568b6f04d41292c730fa3fd42732303a88a18bcde87a922aa812c6c130442f0",
+        "deliverables/AI智能客服售前跟进系统_版本更新记录.md": "17ca622f580d752f049f38a4e9b08b6e0563bbb8aecaff513b53e19e0b7e6be9",
+        "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/adapters/knowledge_loader.py": "c731d4641f44a28c5bb682d64acaa2c91da392569aad8a0d8c97c986892f3b8f",
+        "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/workflows/reply_evidence_builder.py": "2f88e7e229680e6fafe778875a080a8dc2ab785525850cf41d16b4bce830a6fe",
+        "deliverables/reviews/vehicle-public-facts-20260924.md": "d695362324be4528d8342bc4358f9040fcf2165a0867eba3c91df73a83e5054d",
+        "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/tests/test_vehicle_public_facts.py": "5f2030233e4a04865b94e3d38c03ac264e203edd9a0f4837a1a9072d71d00831",
+        "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/workflows/vehicle_public_facts.py": "1c3b6a2fb85478a119eeb00a5df56e91de4f8c693cc2547da9626f6c1b16dca6"
+      }
+    },
+    "shared": {
+      "root": "/private/tmp/cj-bubble-shared-fix-20260923",
+      "base": "a834892f73b15811d9d787a930c8bac3a7a4065f",
+      "branch": "codex/gray-release-0.9.x-source",
+      "files": {
+        "apps/wechat_ai_customer_service/adapters/knowledge_loader.py": "c731d4641f44a28c5bb682d64acaa2c91da392569aad8a0d8c97c986892f3b8f",
+        "apps/wechat_ai_customer_service/workflows/reply_evidence_builder.py": "2e5432fa94973a5fcbc0483bcd5f7eafe39dbff6a6da0e206d38a81e53e58f12",
+        "apps/wechat_ai_customer_service/tests/test_vehicle_public_facts.py": "5f2030233e4a04865b94e3d38c03ac264e203edd9a0f4837a1a9072d71d00831",
+        "apps/wechat_ai_customer_service/workflows/vehicle_public_facts.py": "1c3b6a2fb85478a119eeb00a5df56e91de4f8c693cc2547da9626f6c1b16dca6"
+      }
+    }
+  },
+  "checks": {
+    "unit-before": [
+      {
+        "tests": 11,
+        "errors": 0,
+        "failures": 7,
+        "skipped": 0
+      }
+    ],
+    "before": [
+      {
+        "tests": 1,
+        "errors": 0,
+        "failures": 1,
+        "skipped": 0
+      }
+    ],
+    "unit-after": [
+      {
+        "tests": 11,
+        "errors": 0,
+        "failures": 0,
+        "skipped": 0
+      }
+    ],
+    "shared": [
+      {
+        "tests": 11,
+        "errors": 0,
+        "failures": 0,
+        "skipped": 0
+      }
+    ],
+    "http-final": [
+      {
+        "tests": 22,
+        "errors": 0,
+        "failures": 0,
+        "skipped": 0
+      }
+    ],
+    "http-question": [
+      {
+        "tests": 2,
+        "errors": 0,
+        "failures": 0,
+        "skipped": 0
+      }
+    ],
+    "regression-pg": [
+      {
+        "tests": 219,
+        "errors": 23,
+        "failures": 0,
+        "skipped": 0
+      }
+    ],
+    "intersections-final": [
+      {
+        "tests": 23,
+        "errors": 0,
+        "failures": 0,
+        "skipped": 0
+      }
+    ],
+    "brain-contract": {
+      "passed": 209,
+      "failed": 0,
+      "failed_items": []
+    },
+    "authority": {
+      "passed": 7,
+      "failed": 0,
+      "failed_items": []
+    },
+    "shared-boundary-current": {
+      "passed": 8,
+      "failed": 1,
+      "failed_items": [
+        {
+          "name": "check_chejin_customer_evidence_reaches_brain_with_readable_projection",
+          "ok": false,
+          "error": "city/province fallback must produce readable customer location: expected '江苏南京', got None"
+        }
+      ]
+    },
+    "shared-boundary-baseline": {
+      "passed": 8,
+      "failed": 1,
+      "failed_items": [
+        {
+          "name": "check_chejin_customer_evidence_reaches_brain_with_readable_projection",
+          "ok": false,
+          "error": "city/province fallback must produce readable customer location: expected '江苏南京', got None"
+        }
+      ]
+    }
+  },
+  "limits": [
+    "Controlled model endpoint, no real LLM or Windows sending",
+    "Shared Dafengche pre-existing city fallback failure unchanged",
+    "No commit, push, release or production mutation"
+  ],
+  "mirror_identity": [
+    "vehicle_public_facts.py",
+    "test_vehicle_public_facts.py",
+    "knowledge_loader.py"
+  ]
+}

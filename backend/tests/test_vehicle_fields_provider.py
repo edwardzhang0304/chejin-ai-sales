@@ -7,6 +7,7 @@ from copy import deepcopy
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 import os
+import re
 from pathlib import Path
 import socket
 import sys
@@ -23,6 +24,7 @@ from app.core.database import Base, SessionLocal, engine
 from app.main import app
 from app.models.vehicle import KnowledgeItem
 from app.services.auth_service import create_account
+from app.schemas.vehicle import VehicleFields
 from test_vehicles_api import PNG_1X1
 
 RUNTIME = Path(__file__).resolve().parents[2] / "worker-client/omniauto-rpa"
@@ -91,7 +93,7 @@ def http_backend():
 
 
 @pytest.mark.parametrize("fast", [False, True])
-@pytest.mark.parametrize("case", ["fuel", "hybrid", "range_extended", "electric", "long", "legacy", "unknown", "unlisted"])
+@pytest.mark.parametrize("case", ["fuel", "hybrid", "range_extended", "electric", "long", "legacy", "unknown", "unlisted", "existing", "cleared", "zero"])
 def test_saved_vehicle_facts_reach_final_provider_request(http_backend, monkeypatch, tmp_path, fast, case):
     monkeypatch.setenv("WECHAT_STORAGE_BACKEND", "postgres")
     monkeypatch.setenv("WECHAT_POSTGRES_DSN", os.environ["DATABASE_URL"].replace("postgresql+psycopg://", "postgresql://"))
@@ -101,11 +103,24 @@ def test_saved_vehicle_facts_reach_final_provider_request(http_backend, monkeypa
     fields = {"display_name": "验收星河通勤车", "brand": "星河", "model": "通勤款", "public_price": "10.88",
               "series": "德系车", "energy_type": case if case in ("fuel", "hybrid", "range_extended", "electric") else "electric",
               "displacement": "1.5L", "battery_capacity_kwh": "82.500000000000000000000001", "drive_type": "four_wheel_drive",
-              "vin": "PRIVATE-VIN-SENTINEL", "internal_notes": "PRIVATE-NOTES-SENTINEL", "purchase_price": "7.66"}
+              "first_registration": "2017-08", "mileage_km": 136789, "exterior_color": "珍珠白",
+              "interior_color": "栗棕", "location": "测试展厅", "customer_description": "对客配置说明哨兵",
+              "vin": "PRIVATE-VIN-SENTINEL", "plate_number": "PRIVATE-PLATE-SENTINEL",
+              "internal_notes": "PRIVATE-NOTES-SENTINEL", "purchase_price": "7.66"}
+    # Every editable field must be covered: a new UI field cannot silently miss this test.
+    assert set(fields) == set(VehicleFields.model_fields)
+    public_details = {
+        "first_registration": "首次上牌（上牌日期，非年款）",
+        "mileage_km": "表显里程（公里）", "exterior_color": "车身颜色",
+        "interior_color": "内饰颜色", "location": "车辆所在地", "customer_description": "车辆描述",
+    }
     if case == "long":
-        fields.update(brand="品牌" * 50, model="车型" * 100, displacement="排量" * 50, battery_capacity_kwh="9" * 100)
+        fields.update(brand="品牌" * 50, model="车型" * 100, displacement="排量" * 50, battery_capacity_kwh="9" * 100,
+                      customer_description="描述" * 2497 + "结尾哨兵完整")
     if case == "unknown":
-        for key in ("energy_type", "series", "displacement", "battery_capacity_kwh", "drive_type"): fields.pop(key)
+        for key in ("energy_type", "series", "displacement", "battery_capacity_kwh", "drive_type", *public_details): fields.pop(key)
+    if case == "zero":
+        fields["mileage_km"] = 0
     created = http_backend.post("/api/vehicles", json=fields)
     assert created.status_code == 200, created.text
     code = created.json()["data"]["vehicle_code"]
@@ -119,10 +134,18 @@ def test_saved_vehicle_facts_reach_final_provider_request(http_backend, monkeypa
             row.payload = payload
             db.commit()
         fields["series"] = "卡罗拉"
-    # An unrelated real update rebuilds the existing projection and preserves all five fields.
-    assert http_backend.put(f"/api/vehicles/{code}", json={"location": "测试展厅"}).status_code == 200
+    # Old saved rows must work without being edited/rebuilt after this fix.
+    if case not in ("existing", "unknown"):
+        assert http_backend.put(f"/api/vehicles/{code}", json={"public_price": "10.88"}).status_code == 200
+    if case == "cleared":
+        assert http_backend.put(f"/api/vehicles/{code}", json=dict.fromkeys(public_details)).status_code == 200
+        for key in public_details: fields.pop(key)
     if case == "unlisted": assert http_backend.post(f"/api/vehicles/{code}/unlist").status_code == 200
     after = http_backend.get(f"/api/vehicles/{code}").json()["data"]
+    with SessionLocal() as db:
+        before_read = deepcopy(db.scalar(select(KnowledgeItem).where(KnowledgeItem.item_id == code)).payload)
+    if case == "existing":
+        assert "2017-08" not in before_read["data"]["specs"]
     for key in ("energy_type", "series", "displacement", "battery_capacity_kwh", "drive_type"):
         assert after[key] == fields.get(key)
     received = []
@@ -137,6 +160,20 @@ def test_saved_vehicle_facts_reach_final_provider_request(http_backend, monkeypa
                     "evidence_used": {"product_ids": [] if case == "unlisted" else [code]},
                     "risk": {"risk_level": "low", "risk_tags": [], "needs_handoff": False},
                     "recommended_action": "send_reply", "confidence": .95}
+            if case == "existing":
+                # Controlled model derives its answer only from the actual HTTP
+                # request, never from fixture fields or a prefilled answer.
+                user = next(item["content"] for item in payload["messages"] if item["role"] == "user")
+                prompt, _ = json.JSONDecoder().raw_decode(user.lstrip())
+                products = prompt["brain_input"]["content_basis"]["product_master"]["items"]
+                product = next(item for item in products if item["id"] == code)
+                registration = re.search(r"首次上牌（上牌日期，非年款）：(\d{4})-(\d{2})", product.get("specs", ""))
+                if registration:
+                    year, month = registration.groups()
+                    plan.update(answer_mode="quote_product_fact",
+                        reply_segments=[f"这台车首次上牌是{year}年{int(month)}月。"],
+                        facts_claimed=[{"fact_type": "spec", "value": f"{year}-{month}",
+                            "source_level": "product_master", "source_id": product["id"]}])
             body = json.dumps({"choices": [{"message": {"content": json.dumps(plan, ensure_ascii=False)}, "finish_reason": "stop"}]}, ensure_ascii=False).encode()
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
@@ -155,10 +192,12 @@ def test_saved_vehicle_facts_reach_final_provider_request(http_backend, monkeypa
         "fallback_to_legacy_on_error": False, "require_final_visible_polish": False,
     }, "llm_reply_synthesis": {"enabled": True, "provider": "openai_compatible", "require_evidence": True},
        "raw_message_store": {"enabled": False}, "final_visible_llm_polish": {"enabled": False}}
+    question = ("验收星河通勤车的上牌日期是哪年？" if case == "existing" else
+                "验收星河通勤车的能源类型、车系分类、排量、电池容量和驱动方式是什么？")
     try:
         result = maybe_run_customer_service_brain(config=config, target_name="测试客户", target_state={"conversation_context": {}},
-            batch=[{"id": "vehicle-test-message", "sender": "客户", "message_type": "text", "content": "验收星河通勤车的能源类型、车系分类、排量、电池容量和驱动方式是什么？"}],
-            combined="验收星河通勤车的能源类型、车系分类、排量、电池容量和驱动方式是什么？", decision={}, reply_text="", intent_assist={}, rag_reply={}, llm_reply={}, product_knowledge={}, data_capture={}, raw_capture={}, customer_profile=None)
+            batch=[{"id": "vehicle-test-message", "sender": "客户", "message_type": "text", "content": question}],
+            combined=question, decision={}, reply_text="", intent_assist={}, rag_reply={}, llm_reply={}, product_knowledge={}, data_capture={}, raw_capture={}, customer_profile=None)
     finally:
         server.shutdown()
         thread.join(5)
@@ -176,11 +215,17 @@ def test_saved_vehicle_facts_reach_final_provider_request(http_backend, monkeypa
         return
     assert received[0]["model"] == ("vehicle-fast" if fast else "vehicle-normal")
     assert result["adoptable"] is True, result.get("reason")
+    if case == "existing":
+        assert "2017年8月" in result["reply_text"]
     product = next(item for item in products if item["id"] == code)
     evidence_item = next(item for item in result["evidence_pack"]["knowledge"]["product_master"]["items"] if item["id"] == code)
     assert evidence_item["specs"] == product["specs"]
     assert "specs" in product
     specs = product["specs"]
+    assert product["name"] == fields["display_name"]
+    assert product["price"] == float(fields["public_price"])
+    assert f"品牌：{fields['brand']}" in specs
+    assert f"车型：{fields['model']}" in specs
     if case == "unknown":
         assert all(label not in specs for label in ("能源类型", "车系分类", "排量", "电池包容量", "驱动方式"))
     else:
@@ -192,5 +237,12 @@ def test_saved_vehicle_facts_reach_final_provider_request(http_backend, monkeypa
         assert ("原车系：卡罗拉" if case == "legacy" else "车系分类：德系车") in specs
         assert "车型：德系车" not in specs
         assert "全时四驱" not in specs and "续航" not in specs
-    for sentinel in ("PRIVATE-VIN-SENTINEL", "PRIVATE-NOTES-SENTINEL", "purchase_price", "internal_notes"):
+    for key, label in public_details.items():
+        if key in fields:
+            assert f"{label}：{fields[key]}" in specs
+        else:
+            assert label not in specs
+    with SessionLocal() as db:
+        assert db.scalar(select(KnowledgeItem).where(KnowledgeItem.item_id == code)).payload == before_read
+    for sentinel in ("PRIVATE-VIN-SENTINEL", "PRIVATE-PLATE-SENTINEL", "PRIVATE-NOTES-SENTINEL", "purchase_price", "internal_notes"):
         assert sentinel not in json.dumps(received, ensure_ascii=False)
