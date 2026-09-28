@@ -1,0 +1,861 @@
+{
+  "date": "2026-09-28",
+  "scope": "Integrate vetted local omission; clean reviewed obsolete local copies; no deployment",
+  "integration": {
+    "original_gray_base": "209f7fb66a01a05736fdd32e54808e54a9b66ce3",
+    "pushed_change": "357ea00cd75ffbb2f4c62f8973d2dc20b4179a48",
+    "branch": "codex/gray-release-0.9.x",
+    "method": "fast-forward",
+    "production_code_changes": [
+      "frontend/src/features/workers/WorkersPage.tsx"
+    ],
+    "other_change_types": [
+      "credential error tests",
+      "established rules",
+      "confirmed planning documentation",
+      "deprecated QA documents removed"
+    ],
+    "shared_repo_changes": false
+  },
+  "main_checkout": {
+    "previous_head": "ffd492a96d3fa244958ba85ec02a085e15d0db91",
+    "product_head_after_cleanup": "357ea00cd75ffbb2f4c62f8973d2dc20b4179a48",
+    "branch": "codex/gray-release-0.9.x",
+    "tracked_changes_before": 41,
+    "tracked_changes_after_cleanup": 0,
+    "remaining_untracked": 3685,
+    "git_status_fully_empty": false
+  },
+  "delivery_checkout": {
+    "path": "/Users/zhangwentao/.codex/worktrees/local-changes-review/车金",
+    "preserved_for_review": true,
+    "state": "clean detached checkout, kept at delivered gray commit",
+    "merged_temporary_branch_removed": "codex/local-changes-review-20260928"
+  },
+  "removed_local_copies": {
+    "static_windows_acceptance_resources": 9000,
+    "old_or_duplicate_source_docs_temp_files": 58,
+    "permanent_delete": false,
+    "empty_trash": false,
+    "recovery_records": [
+      {
+        "path": "deliverables/releases/0.9.79/ops/acceptance-first/diagnostics/_temp/release-acceptance/button_faulted/faulted/install/CheJinWorkerClient.previous/_internal/PySide6",
+        "trash_path": "/Users/zhangwentao/Library/Mobile Documents/.Trash/PySide6",
+        "destination_exists": true,
+        "files": 359,
+        "disposition": "obsolete acceptance installation static resources"
+      },
+      {
+        "path": "deliverables/releases/0.9.84/ops/acceptance-reports/windows-gate-reports-acceptance-35065964814-1/_temp/release-acceptance/manual_faulted/faulted/install/CheJinWorkerClient/_internal/PySide6",
+        "trash_path": "/Users/zhangwentao/Library/Mobile Documents/.Trash/PySide6 2",
+        "destination_exists": true,
+        "files": 359,
+        "disposition": "obsolete acceptance installation static resources"
+      },
+      {
+        "path": "deliverables/releases/0.9.84/ops/acceptance-reports/windows-gate-reports-acceptance-35065964814-1/_temp/release-acceptance/manual_faulted/faulted/new-install/CheJinWorkerClient/_internal/PySide6",
+        "trash_path": "/Users/zhangwentao/Library/Mobile Documents/.Trash/PySide6 3",
+        "destination_exists": true,
+        "files": 359,
+        "disposition": "obsolete acceptance installation static resources"
+      },
+      {
+        "path": "deliverables/releases/0.9.84/ops/acceptance-reports/windows-gate-reports-acceptance-35065964814-1/_temp/release-acceptance/manual_paused/paused/install/CheJinWorkerClient/_internal/PySide6",
+        "trash_path": "/Users/zhangwentao/Library/Mobile Documents/.Trash/PySide6 4",
+        "destination_exists": true,
+        "files": 359,
+        "disposition": "obsolete acceptance installation static resources"
+      },
+      {
+        "path": "deliverables/releases/0.9.84/ops/acceptance-reports/windows-gate-reports-acceptance-35065964814-1/_temp/release-acceptance/manual_paused/paused/new-install/CheJinWorkerClient/_internal/PySide6",
+        "trash_path": "/Users/zhangwentao/Library/Mobile Documents/.Trash/PySide6 5",
+        "destination_exists": true,
+        "files": 359,
+        "disposition": "obsolete acceptance installation static resources"
+      },
+      {
+        "path": "deliverables/releases/0.9.84/ops/acceptance-reports/windows-gate-reports-acceptance-35065964814-1/_temp/release-acceptance/old/CheJinWorkerClient/_internal/PySide6",
+        "trash_path": "/Users/zhangwentao/Library/Mobile Documents/.Trash/PySide6 6",
+        "destination_exists": true,
+        "files": 359,
+        "disposition": "obsolete acceptance installation static resources"
+      },
+      {
+        "path": "deliverables/releases/0.9.84/ops/acceptance-reports/windows-gate-reports-acceptance-35065964814-1/_temp/release-acceptance/target/CheJinWorkerClient/_internal/PySide6",
+        "trash_path": "/Users/zhangwentao/Library/Mobile Documents/.Trash/PySide6 7",
+        "destination_exists": true,
+        "files": 359,
+        "disposition": "obsolete acceptance installation static resources"
+      },
+      {
+        "path": "deliverables/releases/0.9.96/ops/acceptance-reports/_temp/release-acceptance/manual_faulted/faulted/install/CheJinWorkerClient/_internal/PySide6",
+        "trash_path": "/Users/zhangwentao/Library/Mobile Documents/.Trash/PySide6 8",
+        "destination_exists": true,
+        "files": 359,
+        "disposition": "obsolete acceptance installation static resources"
+      },
+      {
+        "path": "deliverables/releases/0.9.96/ops/acceptance-reports/_temp/release-acceptance/manual_faulted/faulted/new-install/CheJinWorkerClient/_internal/PySide6",
+        "trash_path": "/Users/zhangwentao/Library/Mobile Documents/.Trash/PySide6 9",
+        "destination_exists": true,
+        "files": 359,
+        "disposition": "obsolete acceptance installation static resources"
+      },
+      {
+        "path": "deliverables/releases/0.9.96/ops/acceptance-reports/_temp/release-acceptance/manual_paused/paused/install/CheJinWorkerClient/_internal/PySide6",
+        "trash_path": "/Users/zhangwentao/Library/Mobile Documents/.Trash/PySide6 10",
+        "destination_exists": true,
+        "files": 359,
+        "disposition": "obsolete acceptance installation static resources"
+      },
+      {
+        "path": "deliverables/releases/0.9.96/ops/acceptance-reports/_temp/release-acceptance/manual_paused/paused/new-install/CheJinWorkerClient/_internal/PySide6",
+        "trash_path": "/Users/zhangwentao/Library/Mobile Documents/.Trash/PySide6 11",
+        "destination_exists": true,
+        "files": 359,
+        "disposition": "obsolete acceptance installation static resources"
+      },
+      {
+        "path": "deliverables/releases/0.9.96/ops/acceptance-reports/_temp/release-acceptance/old/CheJinWorkerClient/_internal/PySide6",
+        "trash_path": "/Users/zhangwentao/Library/Mobile Documents/.Trash/PySide6 12",
+        "destination_exists": true,
+        "files": 359,
+        "disposition": "obsolete acceptance installation static resources"
+      },
+      {
+        "path": "deliverables/releases/0.9.96/ops/acceptance-reports/_temp/release-acceptance/target/CheJinWorkerClient/_internal/PySide6",
+        "trash_path": "/Users/zhangwentao/Library/Mobile Documents/.Trash/PySide6 13",
+        "destination_exists": true,
+        "files": 359,
+        "disposition": "obsolete acceptance installation static resources"
+      },
+      {
+        "path": "deliverables/releases/0.9.97/ops/acceptance-reports/windows-gate-reports-acceptance-35721515036-1/_temp/release-acceptance/manual_faulted/faulted/install/CheJinWorkerClient/_internal/PySide6",
+        "trash_path": "/Users/zhangwentao/Library/Mobile Documents/.Trash/PySide6 14",
+        "destination_exists": true,
+        "files": 359,
+        "disposition": "obsolete acceptance installation static resources"
+      },
+      {
+        "path": "deliverables/releases/0.9.97/ops/acceptance-reports/windows-gate-reports-acceptance-35721515036-1/_temp/release-acceptance/manual_faulted/faulted/new-install/CheJinWorkerClient/_internal/PySide6",
+        "trash_path": "/Users/zhangwentao/Library/Mobile Documents/.Trash/PySide6 15",
+        "destination_exists": true,
+        "files": 359,
+        "disposition": "obsolete acceptance installation static resources"
+      },
+      {
+        "path": "deliverables/releases/0.9.97/ops/acceptance-reports/windows-gate-reports-acceptance-35721515036-1/_temp/release-acceptance/manual_paused/paused/install/CheJinWorkerClient/_internal/PySide6",
+        "trash_path": "/Users/zhangwentao/Library/Mobile Documents/.Trash/PySide6 16",
+        "destination_exists": true,
+        "files": 359,
+        "disposition": "obsolete acceptance installation static resources"
+      },
+      {
+        "path": "deliverables/releases/0.9.97/ops/acceptance-reports/windows-gate-reports-acceptance-35721515036-1/_temp/release-acceptance/manual_paused/paused/new-install/CheJinWorkerClient/_internal/PySide6",
+        "trash_path": "/Users/zhangwentao/Library/Mobile Documents/.Trash/PySide6 17",
+        "destination_exists": true,
+        "files": 359,
+        "disposition": "obsolete acceptance installation static resources"
+      },
+      {
+        "path": "deliverables/releases/0.9.97/ops/acceptance-reports/windows-gate-reports-acceptance-35721515036-1/_temp/release-acceptance/old/CheJinWorkerClient/_internal/PySide6",
+        "trash_path": "/Users/zhangwentao/Library/Mobile Documents/.Trash/PySide6 18",
+        "destination_exists": true,
+        "files": 359,
+        "disposition": "obsolete acceptance installation static resources"
+      },
+      {
+        "path": "deliverables/releases/0.9.97/ops/acceptance-reports/windows-gate-reports-acceptance-35721515036-1/_temp/release-acceptance/target/CheJinWorkerClient/_internal/PySide6",
+        "trash_path": "/Users/zhangwentao/Library/Mobile Documents/.Trash/PySide6 19",
+        "destination_exists": true,
+        "files": 359,
+        "disposition": "obsolete acceptance installation static resources"
+      },
+      {
+        "path": "deliverables/releases/0.9.98/ops/acceptance-reports/_temp/release-acceptance/manual_faulted/faulted/install/CheJinWorkerClient/_internal/PySide6",
+        "trash_path": "/Users/zhangwentao/Library/Mobile Documents/.Trash/PySide6 20",
+        "destination_exists": true,
+        "files": 359,
+        "disposition": "obsolete acceptance installation static resources"
+      },
+      {
+        "path": "deliverables/releases/0.9.98/ops/acceptance-reports/_temp/release-acceptance/manual_faulted/faulted/new-install/CheJinWorkerClient/_internal/PySide6",
+        "trash_path": "/Users/zhangwentao/Library/Mobile Documents/.Trash/PySide6 21",
+        "destination_exists": true,
+        "files": 359,
+        "disposition": "obsolete acceptance installation static resources"
+      },
+      {
+        "path": "deliverables/releases/0.9.98/ops/acceptance-reports/_temp/release-acceptance/manual_paused/paused/install/CheJinWorkerClient/_internal/PySide6",
+        "trash_path": "/Users/zhangwentao/Library/Mobile Documents/.Trash/PySide6 22",
+        "destination_exists": true,
+        "files": 359,
+        "disposition": "obsolete acceptance installation static resources"
+      },
+      {
+        "path": "deliverables/releases/0.9.98/ops/acceptance-reports/_temp/release-acceptance/manual_paused/paused/new-install/CheJinWorkerClient/_internal/PySide6",
+        "trash_path": "/Users/zhangwentao/Library/Mobile Documents/.Trash/PySide6 23",
+        "destination_exists": true,
+        "files": 359,
+        "disposition": "obsolete acceptance installation static resources"
+      },
+      {
+        "path": "deliverables/releases/0.9.98/ops/acceptance-reports/_temp/release-acceptance/old/CheJinWorkerClient/_internal/PySide6",
+        "trash_path": "/Users/zhangwentao/Library/Mobile Documents/.Trash/PySide6 24",
+        "destination_exists": true,
+        "files": 359,
+        "disposition": "obsolete acceptance installation static resources"
+      },
+      {
+        "path": "deliverables/releases/0.9.98/ops/acceptance-reports/_temp/release-acceptance/target/CheJinWorkerClient/_internal/PySide6",
+        "trash_path": "/Users/zhangwentao/Library/Mobile Documents/.Trash/PySide6 25",
+        "destination_exists": true,
+        "files": 359,
+        "disposition": "obsolete acceptance installation static resources"
+      },
+      {
+        "path": ".github/workflows/worker-windows-package.yml",
+        "trash_path": "/Users/zhangwentao/Library/Mobile Documents/.Trash/worker-windows-package.yml",
+        "destination_exists": true,
+        "original_blob": "c6fc5035e7eb172bd8af9de68ca48922a348e074",
+        "disposition": "过期0.9.69—0.9.75发布输入/断言；不提交、不覆盖现行参数化工具"
+      },
+      {
+        "path": "backend/app/services/wechat_service.py",
+        "trash_path": "/Users/zhangwentao/Library/Mobile Documents/.Trash/wechat_service.py",
+        "destination_exists": true,
+        "original_blob": "cdc044c13538a4cad605b61190c3fbd92100d930",
+        "disposition": "已有后续实现或历史内容；不将旧文件覆盖到新版，原件保留"
+      },
+      {
+        "path": "contracts/c2_contract_v3.json",
+        "trash_path": "/Users/zhangwentao/Library/Mobile Documents/.Trash/c2_contract_v3.json",
+        "destination_exists": true,
+        "original_blob": "2bccd0cfb92db94b2b35a9f243282283443fb840",
+        "disposition": "已有后续实现或历史内容；不将旧文件覆盖到新版，原件保留"
+      },
+      {
+        "path": "deliverables/AI智能客服售前跟进系统_版本更新记录.md",
+        "trash_path": "/Users/zhangwentao/Library/Mobile Documents/.Trash/AI智能客服售前跟进系统_版本更新记录.md",
+        "destination_exists": true,
+        "original_blob": "352093052784fb3e3bf21250ce51b2efdc7a17fc",
+        "disposition": "仅合并第8节有效规划及本轮记录，保留新版完整发布历史"
+      },
+      {
+        "path": "frontend/src/features/workers/WorkersPage.tsx",
+        "trash_path": "/Users/zhangwentao/Library/Mobile Documents/.Trash/WorkersPage.tsx",
+        "destination_exists": true,
+        "original_blob": "9cd7cbb112897be31ae8001104da624d7e617506",
+        "disposition": "补交有效遗漏；运维约束补充既有手工安装适用边界"
+      },
+      {
+        "path": "frontend/src/features/workers/WorkersVisionCredential.test.tsx",
+        "trash_path": "/Users/zhangwentao/Library/Mobile Documents/.Trash/WorkersVisionCredential.test.tsx",
+        "destination_exists": true,
+        "original_blob": "a8f8e565dc55ae206434c1f2ba459ad1d87290a7",
+        "disposition": "补交有效遗漏；运维约束补充既有手工安装适用边界"
+      },
+      {
+        "path": "ops/formal_release/candidate.py",
+        "trash_path": "/Users/zhangwentao/Library/Mobile Documents/.Trash/candidate.py",
+        "destination_exists": true,
+        "original_blob": "a7535b27c958aa16d0e57f081e37b932862f5a74",
+        "disposition": "过期0.9.69—0.9.75发布输入/断言；不提交、不覆盖现行参数化工具"
+      },
+      {
+        "path": "ops/formal_release/tests/test_candidate.py",
+        "trash_path": "/Users/zhangwentao/Library/Mobile Documents/.Trash/test_candidate.py",
+        "destination_exists": true,
+        "original_blob": "7eba0ee0b19a599b6408ae2ecb25d77c3c4bcb0a",
+        "disposition": "过期0.9.69—0.9.75发布输入/断言；不提交、不覆盖现行参数化工具"
+      },
+      {
+        "path": "ops/formal_release/validate_dispatch.py",
+        "trash_path": "/Users/zhangwentao/Library/Mobile Documents/.Trash/validate_dispatch.py",
+        "destination_exists": true,
+        "original_blob": "6a3e8f08dd6797600fe43e94e08e23f8eed5d0e3",
+        "disposition": "过期0.9.69—0.9.75发布输入/断言；不提交、不覆盖现行参数化工具"
+      },
+      {
+        "path": "packages/worker-ui-baseline/src/WorkerClientBaseline.tsx",
+        "trash_path": "/Users/zhangwentao/Library/Mobile Documents/.Trash/WorkerClientBaseline.tsx",
+        "destination_exists": true,
+        "original_blob": "7fa1cdc44ea9829e2492b4632efcb6ef840e6a01",
+        "disposition": "已有后续实现或历史内容；不将旧文件覆盖到新版，原件保留"
+      },
+      {
+        "path": "rules.md",
+        "trash_path": "/Users/zhangwentao/Library/Mobile Documents/.Trash/rules.md",
+        "destination_exists": true,
+        "original_blob": "7110700b2aeeac624aab110f3edd3de891a66d77",
+        "disposition": "补交有效遗漏；运维约束补充既有手工安装适用边界"
+      },
+      {
+        "path": "rules/delivery-docs.rules.md",
+        "trash_path": "/Users/zhangwentao/Library/Mobile Documents/.Trash/delivery-docs.rules.md",
+        "destination_exists": true,
+        "original_blob": "38e7545554f7928dfbf2d2025b93b0073cc8395c",
+        "disposition": "补交有效遗漏；运维约束补充既有手工安装适用边界"
+      },
+      {
+        "path": "rules/operations.rules.md",
+        "trash_path": "/Users/zhangwentao/Library/Mobile Documents/.Trash/operations.rules.md",
+        "destination_exists": true,
+        "original_blob": "659b2a6b89d34739c52316a6162a16cae64bf0d3",
+        "disposition": "补交有效遗漏；运维约束补充既有手工安装适用边界"
+      },
+      {
+        "path": "rules/product-ui.rules.md",
+        "trash_path": "/Users/zhangwentao/Library/Mobile Documents/.Trash/product-ui.rules.md",
+        "destination_exists": true,
+        "original_blob": "f96da4509c5e73a6c3ea26b0a2f32547ab0834a4",
+        "disposition": "与0.9.99逐字节相同，无需重复提交"
+      },
+      {
+        "path": "rules/testing.rules.md",
+        "trash_path": "/Users/zhangwentao/Library/Mobile Documents/.Trash/testing.rules.md",
+        "destination_exists": true,
+        "original_blob": "230b6404ed55f028a113a24dd891a190f1ade6f2",
+        "disposition": "补交有效遗漏；运维约束补充既有手工安装适用边界"
+      },
+      {
+        "path": "worker-client/chejin_worker_client/chejin_updater.py",
+        "trash_path": "/Users/zhangwentao/Library/Mobile Documents/.Trash/chejin_updater.py",
+        "destination_exists": true,
+        "original_blob": "5960df34fd0a2a05c8405f5c58d7bddcd1dd726f",
+        "disposition": "已有后续实现或历史内容；不将旧文件覆盖到新版，原件保留"
+      },
+      {
+        "path": "worker-client/chejin_worker_client/client_update.py",
+        "trash_path": "/Users/zhangwentao/Library/Mobile Documents/.Trash/client_update.py",
+        "destination_exists": true,
+        "original_blob": "a449b3e66c1de7c8ed3ce15d8a32654824b3172e",
+        "disposition": "长路径部分已纳入新版；旧回退提示隐藏草稿未完成独立验证，保留不提交"
+      },
+      {
+        "path": "worker-client/chejin_worker_client/release_package_contract.py",
+        "trash_path": "/Users/zhangwentao/Library/Mobile Documents/.Trash/release_package_contract.py",
+        "destination_exists": true,
+        "original_blob": "ce0ee9d6033b2cac46e090474c57fd24f87e26e0",
+        "disposition": "与0.9.99逐字节相同，无需重复提交"
+      },
+      {
+        "path": "worker-client/chejin_worker_client/rpa_bridge.py",
+        "trash_path": "/Users/zhangwentao/Library/Mobile Documents/.Trash/rpa_bridge.py",
+        "destination_exists": true,
+        "original_blob": "3250a4ca945149fb8f8386db696c0ab073991b2a",
+        "disposition": "已有后续实现或历史内容；不将旧文件覆盖到新版，原件保留"
+      },
+      {
+        "path": "worker-client/chejin_worker_client/storage.py",
+        "trash_path": "/Users/zhangwentao/Library/Mobile Documents/.Trash/storage.py",
+        "destination_exists": true,
+        "original_blob": "86aebcae38964e3dbb63185a7ef37024a9c308a6",
+        "disposition": "已有后续实现或历史内容；不将旧文件覆盖到新版，原件保留"
+      },
+      {
+        "path": "worker-client/chejin_worker_client/task_runner.py",
+        "trash_path": "/Users/zhangwentao/Library/Mobile Documents/.Trash/task_runner.py",
+        "destination_exists": true,
+        "original_blob": "578def86dc350a0281d02bab6e17b67ca401b32c",
+        "disposition": "已有后续实现或历史内容；不将旧文件覆盖到新版，原件保留"
+      },
+      {
+        "path": "worker-client/chejin_worker_client/update_coordinator.py",
+        "trash_path": "/Users/zhangwentao/Library/Mobile Documents/.Trash/update_coordinator.py",
+        "destination_exists": true,
+        "original_blob": "ca7fe9152befe600c86d1ef9aed9a32bc08b9d91",
+        "disposition": "已有后续实现或历史内容；不将旧文件覆盖到新版，原件保留"
+      },
+      {
+        "path": "worker-client/chejin_worker_client/web_assets/worker-web-app.js",
+        "trash_path": "/Users/zhangwentao/Library/Mobile Documents/.Trash/worker-web-app.js",
+        "destination_exists": true,
+        "original_blob": "4a84d7ce3e5718a17bed76ad187bd9bda10f9f3c",
+        "disposition": "已有后续实现或历史内容；不将旧文件覆盖到新版，原件保留"
+      },
+      {
+        "path": "worker-client/omniauto-rpa/.chejin-source.json",
+        "trash_path": "/Users/zhangwentao/Library/Mobile Documents/.Trash/.chejin-source.json",
+        "destination_exists": true,
+        "original_blob": "88e7449ff8467ac3b6df23894420fe9c70ae9859",
+        "disposition": "已有后续实现或历史内容；不将旧文件覆盖到新版，原件保留"
+      },
+      {
+        "path": "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/adapters/add_friend_layout.py",
+        "trash_path": "/Users/zhangwentao/Library/Mobile Documents/.Trash/add_friend_layout.py",
+        "destination_exists": true,
+        "original_blob": "4c35e9ff9513799ef90ee67c2dd7c095ae0d9b9a",
+        "disposition": "已有后续实现或历史内容；不将旧文件覆盖到新版，原件保留"
+      },
+      {
+        "path": "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/adapters/business_viewport_continuity.py",
+        "trash_path": "/Users/zhangwentao/Library/Mobile Documents/.Trash/business_viewport_continuity.py",
+        "destination_exists": true,
+        "original_blob": "1b2184cc9e434ab63f62a95dab6daad7f361db26",
+        "disposition": "已有后续实现或历史内容；不将旧文件覆盖到新版，原件保留"
+      },
+      {
+        "path": "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/adapters/chejin_c2_observation_schema.generated.json",
+        "trash_path": "/Users/zhangwentao/Library/Mobile Documents/.Trash/chejin_c2_observation_schema.generated.json",
+        "destination_exists": true,
+        "original_blob": "c3b4bad1bbff1ef1dacced8453b20c7881b3014e",
+        "disposition": "已有后续实现或历史内容；不将旧文件覆盖到新版，原件保留"
+      },
+      {
+        "path": "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/adapters/wechat_win32_ocr/add_friend_windows.py",
+        "trash_path": "/Users/zhangwentao/Library/Mobile Documents/.Trash/add_friend_windows.py",
+        "destination_exists": true,
+        "original_blob": "e60e6d2b72c24214e3ab3ef95dcab6d3671eac9e",
+        "disposition": "已有后续实现或历史内容；不将旧文件覆盖到新版，原件保留"
+      },
+      {
+        "path": "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/adapters/wechat_win32_ocr/window_layout.py",
+        "trash_path": "/Users/zhangwentao/Library/Mobile Documents/.Trash/window_layout.py",
+        "destination_exists": true,
+        "original_blob": "fc037877f319e94e9942efc39fbf34764a18fe6c",
+        "disposition": "已有后续实现或历史内容；不将旧文件覆盖到新版，原件保留"
+      },
+      {
+        "path": "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/adapters/wechat_win32_ocr_sidecar.py",
+        "trash_path": "/Users/zhangwentao/Library/Mobile Documents/.Trash/wechat_win32_ocr_sidecar.py",
+        "destination_exists": true,
+        "original_blob": "d2c9713f8b287d1495c25f34ad5a1bd329817bf6",
+        "disposition": "已有后续实现或历史内容；不将旧文件覆盖到新版，原件保留"
+      },
+      {
+        "path": "worker-client/tests/test_business_viewport_continuity.py",
+        "trash_path": "/Users/zhangwentao/Library/Mobile Documents/.Trash/test_business_viewport_continuity.py",
+        "destination_exists": true,
+        "original_blob": "7fa13d28379cd152965cbd687e70d287be6acb08",
+        "disposition": "与0.9.99逐字节相同，无需重复提交"
+      },
+      {
+        "path": "worker-client/tests/test_c2_identity_gate_receipts.py",
+        "trash_path": "/Users/zhangwentao/Library/Mobile Documents/.Trash/test_c2_identity_gate_receipts.py",
+        "destination_exists": true,
+        "original_blob": "d29b3e72e03794b913a09d019981c3f8ec7c21e5",
+        "disposition": "与0.9.99逐字节相同，无需重复提交"
+      },
+      {
+        "path": "worker-client/tests/test_packaging_scripts.py",
+        "trash_path": "/Users/zhangwentao/Library/Mobile Documents/.Trash/test_packaging_scripts.py",
+        "destination_exists": true,
+        "original_blob": "544803d563ab76510e8f8f31e9fd77e48f3f8fe2",
+        "disposition": "过期0.9.69—0.9.75发布输入/断言；不提交、不覆盖现行参数化工具"
+      },
+      {
+        "path": "worker-client/tests/test_storage.py",
+        "trash_path": "/Users/zhangwentao/Library/Mobile Documents/.Trash/test_storage.py",
+        "destination_exists": true,
+        "original_blob": "42f73b96d3bc8e772dfe44480c9a02f37b5e3f75",
+        "disposition": "已有后续实现或历史内容；不将旧文件覆盖到新版，原件保留"
+      },
+      {
+        "path": "worker-client/tests/test_task_runner.py",
+        "trash_path": "/Users/zhangwentao/Library/Mobile Documents/.Trash/test_task_runner.py",
+        "destination_exists": true,
+        "original_blob": "1c9b083e201cd33464f149fdfbfd12e4084e438d",
+        "disposition": "已有后续实现或历史内容；不将旧文件覆盖到新版，原件保留"
+      },
+      {
+        "path": "worker-client/tests/test_update_safety_boundary.py",
+        "trash_path": "/Users/zhangwentao/Library/Mobile Documents/.Trash/test_update_safety_boundary.py",
+        "destination_exists": true,
+        "original_blob": "566eabf68efcab2e16f9a62591f59deea87d8307",
+        "disposition": "与0.9.99逐字节相同，无需重复提交"
+      },
+      {
+        "path": "backend/app/services/message_viewport_projection.py",
+        "trash_path": "/Users/zhangwentao/Library/Mobile Documents/.Trash/message_viewport_projection.py",
+        "destination_exists": true,
+        "original_blob": "7e3ec06a7eb24510958ba90f6ddc211583468431",
+        "disposition": "已有后续实现或历史内容；不将旧文件覆盖到新版，原件保留"
+      },
+      {
+        "path": "backend/tests/fixtures/cjf9_20260911/backend_validate_before.py",
+        "trash_path": "/Users/zhangwentao/Library/Mobile Documents/.Trash/backend_validate_before.py",
+        "destination_exists": true,
+        "original_blob": "77d8e70729a80171ce4962a3cf082d61e2c7901e",
+        "disposition": "与0.9.99逐字节相同，无需重复提交"
+      },
+      {
+        "path": "backend/tests/fixtures/cjf9_20260911/worker_finish_before.py",
+        "trash_path": "/Users/zhangwentao/Library/Mobile Documents/.Trash/worker_finish_before.py",
+        "destination_exists": true,
+        "original_blob": "042ff8d7067fb0e1ad5f05cda8624a29e2f9c97e",
+        "disposition": "与0.9.99逐字节相同，无需重复提交"
+      },
+      {
+        "path": "backend/tests/test_c2_historical_ocr_settlement.py",
+        "trash_path": "/Users/zhangwentao/Library/Mobile Documents/.Trash/test_c2_historical_ocr_settlement.py",
+        "destination_exists": true,
+        "original_blob": "ae7a150c22bb6a56596ae6c1212271f7a8aaf7e0",
+        "disposition": "与0.9.99逐字节相同，无需重复提交"
+      },
+      {
+        "path": "backend/tests/test_c2_history_suffix.py",
+        "trash_path": "/Users/zhangwentao/Library/Mobile Documents/.Trash/test_c2_history_suffix.py",
+        "destination_exists": true,
+        "original_blob": "ce5b95142b230386266f2a77f868d38272f9da6e",
+        "disposition": "与0.9.99逐字节相同，无需重复提交"
+      },
+      {
+        "path": "backend/tests/test_c2_ocr_attribution.py",
+        "trash_path": "/Users/zhangwentao/Library/Mobile Documents/.Trash/test_c2_ocr_attribution.py",
+        "destination_exists": true,
+        "original_blob": "b7cfa6057811f6101c5fb4b6b95203a99ce78c5f",
+        "disposition": "与0.9.99逐字节相同，无需重复提交"
+      },
+      {
+        "path": "backend/tests/test_worker_vision_proxy.py",
+        "trash_path": "/Users/zhangwentao/Library/Mobile Documents/.Trash/test_worker_vision_proxy.py",
+        "destination_exists": true,
+        "original_blob": "ac876d9a82f3ac37a19abe6f27a37c9722ccbaf3",
+        "disposition": "补交有效遗漏；运维约束补充既有手工安装适用边界"
+      },
+      {
+        "path": "deliverables/AI智能客服售前跟进系统_PRD_运营后台统一版_v0.9.99.md",
+        "trash_path": "/Users/zhangwentao/Library/Mobile Documents/.Trash/AI智能客服售前跟进系统_PRD_运营后台统一版_v0.9.99.md",
+        "destination_exists": true,
+        "original_blob": "d8a8c36078060ae4a443e5d55d7f1df7af3fbb7c",
+        "disposition": "与0.9.99逐字节相同，无需重复提交"
+      },
+      {
+        "path": "deliverables/AI智能客服售前跟进系统_全流程图_v0.9.99.puml",
+        "trash_path": "/Users/zhangwentao/Library/Mobile Documents/.Trash/AI智能客服售前跟进系统_全流程图_v0.9.99.puml",
+        "destination_exists": true,
+        "original_blob": "b405805e81a1083fabca3dc96cfcdbf54e5775d1",
+        "disposition": "与0.9.99逐字节相同，无需重复提交"
+      },
+      {
+        "path": "deliverables/AI智能客服售前跟进系统_技术方案手册_v0.9.99.md",
+        "trash_path": "/Users/zhangwentao/Library/Mobile Documents/.Trash/AI智能客服售前跟进系统_技术方案手册_v0.9.99.md",
+        "destination_exists": true,
+        "original_blob": "2e99fe60bb1499b8114231157fa53014561573e8",
+        "disposition": "与0.9.99逐字节相同，无需重复提交"
+      },
+      {
+        "path": "worker-client/chejin_worker_client/update_filesystem.py",
+        "trash_path": "/Users/zhangwentao/Library/Mobile Documents/.Trash/update_filesystem.py",
+        "destination_exists": true,
+        "original_blob": "8e8d271d4630e3d96329c1b6d578893f9af60924",
+        "disposition": "与0.9.99逐字节相同，无需重复提交"
+      },
+      {
+        "path": "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/adapters/circle_plus_icon.py",
+        "trash_path": "/Users/zhangwentao/Library/Mobile Documents/.Trash/circle_plus_icon.py",
+        "destination_exists": true,
+        "original_blob": "f75a09c77a34b24fb3c70427a19aad5b426dd895",
+        "disposition": "与0.9.99逐字节相同，无需重复提交"
+      },
+      {
+        "path": "worker-client/tests/fixtures/circle_plus/sidebar_header.png",
+        "trash_path": "/Users/zhangwentao/Library/Mobile Documents/.Trash/sidebar_header.png",
+        "destination_exists": true,
+        "original_blob": "d00b84a252e72e05361fa05d568b2c2e8440e4e2",
+        "disposition": "与0.9.99逐字节相同，无需重复提交"
+      },
+      {
+        "path": "worker-client/tests/fixtures/circle_plus/source.json",
+        "trash_path": "/Users/zhangwentao/Library/Mobile Documents/.Trash/source.json",
+        "destination_exists": true,
+        "original_blob": "40a2d213f1cdda0403b39834d9c809f43b4d335e",
+        "disposition": "与0.9.99逐字节相同，无需重复提交"
+      },
+      {
+        "path": "worker-client/tests/test_circle_plus_icon.py",
+        "trash_path": "/Users/zhangwentao/Library/Mobile Documents/.Trash/test_circle_plus_icon.py",
+        "destination_exists": true,
+        "original_blob": "71deb43e6f4a55e68510753d524a45f72b470034",
+        "disposition": "与0.9.99逐字节相同，无需重复提交"
+      },
+      {
+        "path": "worker-client/tests/test_history_suffix_continuity.py",
+        "trash_path": "/Users/zhangwentao/Library/Mobile Documents/.Trash/test_history_suffix_continuity.py",
+        "destination_exists": true,
+        "original_blob": "9e3607a017bdd135aaec3eed505d039978444f56",
+        "disposition": "与0.9.99逐字节相同，无需重复提交"
+      },
+      {
+        "path": "worker-client/tests/test_startup_calibration_evidence.py",
+        "trash_path": "/Users/zhangwentao/Library/Mobile Documents/.Trash/test_startup_calibration_evidence.py",
+        "destination_exists": true,
+        "original_blob": "34fef1a2603b6a5126124cf9ef3d074a00080602",
+        "disposition": "与0.9.99逐字节相同，无需重复提交"
+      },
+      {
+        "path": "worker-client/tests/test_update_long_paths.py",
+        "trash_path": "/Users/zhangwentao/Library/Mobile Documents/.Trash/test_update_long_paths.py",
+        "destination_exists": true,
+        "original_blob": "f8e0bfa593fec16028f0bdd489682cd328da0097",
+        "disposition": "与0.9.99逐字节相同，无需重复提交"
+      },
+      {
+        "path": "deliverables/AI智能客服售前跟进系统_PRD_运营后台统一版_v0.9.98.md",
+        "trash_path": "/Users/zhangwentao/Library/Mobile Documents/.Trash/AI智能客服售前跟进系统_PRD_运营后台统一版_v0.9.98.md",
+        "destination_exists": true,
+        "original_blob": "4b679eb463691044649a4f7977f50bc06a0ae949",
+        "disposition": "已有后续实现或历史内容；不将旧文件覆盖到新版，原件保留"
+      },
+      {
+        "path": "deliverables/AI智能客服售前跟进系统_全流程图_v0.9.98.puml",
+        "trash_path": "/Users/zhangwentao/Library/Mobile Documents/.Trash/AI智能客服售前跟进系统_全流程图_v0.9.98.puml",
+        "destination_exists": true,
+        "original_blob": "f06b38b3ba371f59b3324ec9898d4feb9682c540",
+        "disposition": "已有后续实现或历史内容；不将旧文件覆盖到新版，原件保留"
+      },
+      {
+        "path": "deliverables/AI智能客服售前跟进系统_技术方案手册_v0.9.98.md",
+        "trash_path": "/Users/zhangwentao/Library/Mobile Documents/.Trash/AI智能客服售前跟进系统_技术方案手册_v0.9.98.md",
+        "destination_exists": true,
+        "original_blob": "b3710866cf0192fb7e7d18a8fc823d0f01f5567b",
+        "disposition": "已有后续实现或历史内容；不将旧文件覆盖到新版，原件保留"
+      },
+      {
+        "path": ":memory:.ses",
+        "trash_path": "/Users/zhangwentao/Library/Mobile Documents/.Trash/:memory:.ses",
+        "destination_exists": true,
+        "original_blob": "4a98c4febb50a3f4d305ff6fbc1ac8179279a520",
+        "disposition": "临时运行产物，不作为源码提交；本轮未删除"
+      },
+      {
+        "path": "deliverables/releases/0.9.79/ops/acceptance-first/diagnostics/_temp/release-acceptance/button_faulted/faulted/install/CheJinWorkerClient.previous/_internal/omniauto-rpa/apps/wechat_ai_customer_service/admin_backend/static/logo.png",
+        "trash_path": "/Users/zhangwentao/Library/Mobile Documents/.Trash/logo.png",
+        "destination_exists": true,
+        "files": 1,
+        "disposition": "obsolete acceptance installation static resources"
+      },
+      {
+        "path": "deliverables/releases/0.9.84/ops/acceptance-reports/windows-gate-reports-acceptance-35065964814-1/_temp/release-acceptance/manual_faulted/faulted/install/CheJinWorkerClient/_internal/omniauto-rpa/apps/wechat_ai_customer_service/admin_backend/static/logo.png",
+        "trash_path": "/Users/zhangwentao/Library/Mobile Documents/.Trash/logo 2.png",
+        "destination_exists": true,
+        "files": 1,
+        "disposition": "obsolete acceptance installation static resources"
+      },
+      {
+        "path": "deliverables/releases/0.9.84/ops/acceptance-reports/windows-gate-reports-acceptance-35065964814-1/_temp/release-acceptance/manual_faulted/faulted/new-install/CheJinWorkerClient/_internal/omniauto-rpa/apps/wechat_ai_customer_service/admin_backend/static/logo.png",
+        "trash_path": "/Users/zhangwentao/Library/Mobile Documents/.Trash/logo 3.png",
+        "destination_exists": true,
+        "files": 1,
+        "disposition": "obsolete acceptance installation static resources"
+      },
+      {
+        "path": "deliverables/releases/0.9.84/ops/acceptance-reports/windows-gate-reports-acceptance-35065964814-1/_temp/release-acceptance/manual_paused/paused/install/CheJinWorkerClient/_internal/omniauto-rpa/apps/wechat_ai_customer_service/admin_backend/static/logo.png",
+        "trash_path": "/Users/zhangwentao/Library/Mobile Documents/.Trash/logo 4.png",
+        "destination_exists": true,
+        "files": 1,
+        "disposition": "obsolete acceptance installation static resources"
+      },
+      {
+        "path": "deliverables/releases/0.9.84/ops/acceptance-reports/windows-gate-reports-acceptance-35065964814-1/_temp/release-acceptance/manual_paused/paused/new-install/CheJinWorkerClient/_internal/omniauto-rpa/apps/wechat_ai_customer_service/admin_backend/static/logo.png",
+        "trash_path": "/Users/zhangwentao/Library/Mobile Documents/.Trash/logo 5.png",
+        "destination_exists": true,
+        "files": 1,
+        "disposition": "obsolete acceptance installation static resources"
+      },
+      {
+        "path": "deliverables/releases/0.9.84/ops/acceptance-reports/windows-gate-reports-acceptance-35065964814-1/_temp/release-acceptance/old/CheJinWorkerClient/_internal/omniauto-rpa/apps/wechat_ai_customer_service/admin_backend/static/logo.png",
+        "trash_path": "/Users/zhangwentao/Library/Mobile Documents/.Trash/logo 6.png",
+        "destination_exists": true,
+        "files": 1,
+        "disposition": "obsolete acceptance installation static resources"
+      },
+      {
+        "path": "deliverables/releases/0.9.84/ops/acceptance-reports/windows-gate-reports-acceptance-35065964814-1/_temp/release-acceptance/target/CheJinWorkerClient/_internal/omniauto-rpa/apps/wechat_ai_customer_service/admin_backend/static/logo.png",
+        "trash_path": "/Users/zhangwentao/Library/Mobile Documents/.Trash/logo 7.png",
+        "destination_exists": true,
+        "files": 1,
+        "disposition": "obsolete acceptance installation static resources"
+      },
+      {
+        "path": "deliverables/releases/0.9.96/ops/acceptance-reports/_temp/release-acceptance/manual_faulted/faulted/install/CheJinWorkerClient/_internal/omniauto-rpa/apps/wechat_ai_customer_service/admin_backend/static/logo.png",
+        "trash_path": "/Users/zhangwentao/Library/Mobile Documents/.Trash/logo 8.png",
+        "destination_exists": true,
+        "files": 1,
+        "disposition": "obsolete acceptance installation static resources"
+      },
+      {
+        "path": "deliverables/releases/0.9.96/ops/acceptance-reports/_temp/release-acceptance/manual_faulted/faulted/new-install/CheJinWorkerClient/_internal/omniauto-rpa/apps/wechat_ai_customer_service/admin_backend/static/logo.png",
+        "trash_path": "/Users/zhangwentao/Library/Mobile Documents/.Trash/logo 9.png",
+        "destination_exists": true,
+        "files": 1,
+        "disposition": "obsolete acceptance installation static resources"
+      },
+      {
+        "path": "deliverables/releases/0.9.96/ops/acceptance-reports/_temp/release-acceptance/manual_paused/paused/install/CheJinWorkerClient/_internal/omniauto-rpa/apps/wechat_ai_customer_service/admin_backend/static/logo.png",
+        "trash_path": "/Users/zhangwentao/Library/Mobile Documents/.Trash/logo 10.png",
+        "destination_exists": true,
+        "files": 1,
+        "disposition": "obsolete acceptance installation static resources"
+      },
+      {
+        "path": "deliverables/releases/0.9.96/ops/acceptance-reports/_temp/release-acceptance/manual_paused/paused/new-install/CheJinWorkerClient/_internal/omniauto-rpa/apps/wechat_ai_customer_service/admin_backend/static/logo.png",
+        "trash_path": "/Users/zhangwentao/Library/Mobile Documents/.Trash/logo 11.png",
+        "destination_exists": true,
+        "files": 1,
+        "disposition": "obsolete acceptance installation static resources"
+      },
+      {
+        "path": "deliverables/releases/0.9.96/ops/acceptance-reports/_temp/release-acceptance/old/CheJinWorkerClient/_internal/omniauto-rpa/apps/wechat_ai_customer_service/admin_backend/static/logo.png",
+        "trash_path": "/Users/zhangwentao/Library/Mobile Documents/.Trash/logo 12.png",
+        "destination_exists": true,
+        "files": 1,
+        "disposition": "obsolete acceptance installation static resources"
+      },
+      {
+        "path": "deliverables/releases/0.9.96/ops/acceptance-reports/_temp/release-acceptance/target/CheJinWorkerClient/_internal/omniauto-rpa/apps/wechat_ai_customer_service/admin_backend/static/logo.png",
+        "trash_path": "/Users/zhangwentao/Library/Mobile Documents/.Trash/logo 13.png",
+        "destination_exists": true,
+        "files": 1,
+        "disposition": "obsolete acceptance installation static resources"
+      },
+      {
+        "path": "deliverables/releases/0.9.97/ops/acceptance-reports/windows-gate-reports-acceptance-35721515036-1/_temp/release-acceptance/manual_faulted/faulted/install/CheJinWorkerClient/_internal/omniauto-rpa/apps/wechat_ai_customer_service/admin_backend/static/logo.png",
+        "trash_path": "/Users/zhangwentao/Library/Mobile Documents/.Trash/logo 14.png",
+        "destination_exists": true,
+        "files": 1,
+        "disposition": "obsolete acceptance installation static resources"
+      },
+      {
+        "path": "deliverables/releases/0.9.97/ops/acceptance-reports/windows-gate-reports-acceptance-35721515036-1/_temp/release-acceptance/manual_faulted/faulted/new-install/CheJinWorkerClient/_internal/omniauto-rpa/apps/wechat_ai_customer_service/admin_backend/static/logo.png",
+        "trash_path": "/Users/zhangwentao/Library/Mobile Documents/.Trash/logo 15.png",
+        "destination_exists": true,
+        "files": 1,
+        "disposition": "obsolete acceptance installation static resources"
+      },
+      {
+        "path": "deliverables/releases/0.9.97/ops/acceptance-reports/windows-gate-reports-acceptance-35721515036-1/_temp/release-acceptance/manual_paused/paused/install/CheJinWorkerClient/_internal/omniauto-rpa/apps/wechat_ai_customer_service/admin_backend/static/logo.png",
+        "trash_path": "/Users/zhangwentao/Library/Mobile Documents/.Trash/logo 16.png",
+        "destination_exists": true,
+        "files": 1,
+        "disposition": "obsolete acceptance installation static resources"
+      },
+      {
+        "path": "deliverables/releases/0.9.97/ops/acceptance-reports/windows-gate-reports-acceptance-35721515036-1/_temp/release-acceptance/manual_paused/paused/new-install/CheJinWorkerClient/_internal/omniauto-rpa/apps/wechat_ai_customer_service/admin_backend/static/logo.png",
+        "trash_path": "/Users/zhangwentao/Library/Mobile Documents/.Trash/logo 17.png",
+        "destination_exists": true,
+        "files": 1,
+        "disposition": "obsolete acceptance installation static resources"
+      },
+      {
+        "path": "deliverables/releases/0.9.97/ops/acceptance-reports/windows-gate-reports-acceptance-35721515036-1/_temp/release-acceptance/old/CheJinWorkerClient/_internal/omniauto-rpa/apps/wechat_ai_customer_service/admin_backend/static/logo.png",
+        "trash_path": "/Users/zhangwentao/Library/Mobile Documents/.Trash/logo 18.png",
+        "destination_exists": true,
+        "files": 1,
+        "disposition": "obsolete acceptance installation static resources"
+      },
+      {
+        "path": "deliverables/releases/0.9.97/ops/acceptance-reports/windows-gate-reports-acceptance-35721515036-1/_temp/release-acceptance/target/CheJinWorkerClient/_internal/omniauto-rpa/apps/wechat_ai_customer_service/admin_backend/static/logo.png",
+        "trash_path": "/Users/zhangwentao/Library/Mobile Documents/.Trash/logo 19.png",
+        "destination_exists": true,
+        "files": 1,
+        "disposition": "obsolete acceptance installation static resources"
+      },
+      {
+        "path": "deliverables/releases/0.9.98/ops/acceptance-reports/_temp/release-acceptance/manual_faulted/faulted/install/CheJinWorkerClient/_internal/omniauto-rpa/apps/wechat_ai_customer_service/admin_backend/static/logo.png",
+        "trash_path": "/Users/zhangwentao/Library/Mobile Documents/.Trash/logo 20.png",
+        "destination_exists": true,
+        "files": 1,
+        "disposition": "obsolete acceptance installation static resources"
+      },
+      {
+        "path": "deliverables/releases/0.9.98/ops/acceptance-reports/_temp/release-acceptance/manual_faulted/faulted/new-install/CheJinWorkerClient/_internal/omniauto-rpa/apps/wechat_ai_customer_service/admin_backend/static/logo.png",
+        "trash_path": "/Users/zhangwentao/Library/Mobile Documents/.Trash/logo 21.png",
+        "destination_exists": true,
+        "files": 1,
+        "disposition": "obsolete acceptance installation static resources"
+      },
+      {
+        "path": "deliverables/releases/0.9.98/ops/acceptance-reports/_temp/release-acceptance/manual_paused/paused/install/CheJinWorkerClient/_internal/omniauto-rpa/apps/wechat_ai_customer_service/admin_backend/static/logo.png",
+        "trash_path": "/Users/zhangwentao/Library/Mobile Documents/.Trash/logo 22.png",
+        "destination_exists": true,
+        "files": 1,
+        "disposition": "obsolete acceptance installation static resources"
+      },
+      {
+        "path": "deliverables/releases/0.9.98/ops/acceptance-reports/_temp/release-acceptance/manual_paused/paused/new-install/CheJinWorkerClient/_internal/omniauto-rpa/apps/wechat_ai_customer_service/admin_backend/static/logo.png",
+        "trash_path": "/Users/zhangwentao/Library/Mobile Documents/.Trash/logo 23.png",
+        "destination_exists": true,
+        "files": 1,
+        "disposition": "obsolete acceptance installation static resources"
+      },
+      {
+        "path": "deliverables/releases/0.9.98/ops/acceptance-reports/_temp/release-acceptance/old/CheJinWorkerClient/_internal/omniauto-rpa/apps/wechat_ai_customer_service/admin_backend/static/logo.png",
+        "trash_path": "/Users/zhangwentao/Library/Mobile Documents/.Trash/logo 24.png",
+        "destination_exists": true,
+        "files": 1,
+        "disposition": "obsolete acceptance installation static resources"
+      },
+      {
+        "path": "deliverables/releases/0.9.98/ops/acceptance-reports/_temp/release-acceptance/target/CheJinWorkerClient/_internal/omniauto-rpa/apps/wechat_ai_customer_service/admin_backend/static/logo.png",
+        "trash_path": "/Users/zhangwentao/Library/Mobile Documents/.Trash/logo 25.png",
+        "destination_exists": true,
+        "files": 1,
+        "disposition": "obsolete acceptance installation static resources"
+      }
+    ]
+  },
+  "retained_local": {
+    "total": 3685,
+    "dataless_icloud": 3401,
+    "historical_materials_under_deliverables_and_output": 3680,
+    "independent_unvalidated_collection_scripts": [
+      "worker-client/scripts/collect-startup-layout-evidence.cmd",
+      "worker-client/scripts/collect-startup-layout-evidence.ps1"
+    ],
+    "test_referenced_private_images": [
+      "worker-client/tests/fixtures/search_cleanup_20260907/focused.png",
+      "worker-client/tests/fixtures/search_cleanup_20260907/idle.png",
+      "worker-client/tests/fixtures/search_cleanup_20260907/results.png"
+    ],
+    "reason": "Keep source incident evidence, release/test records and unverified material. Full byte-level review of remaining iCloud placeholders could not complete; do not claim the entire directory is empty/fully cleaned. No broad ignore rule added and no bulk evidence archive created.",
+    "local_inventory": "/private/tmp/cj-cleanup-20260928/retained-local-files.json",
+    "local_inventory_sha256": "faf3c93502ca535fa205cf66ab3e287e5404d519c70383a4fca152fa5af2f466"
+  },
+  "verification": {
+    "tests": "Reuse unchanged architect evidence after verifying input file blobs and XML SHA-256; no new full-suite run",
+    "existing_tests": {
+      "frontend": {
+        "tests": 10,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0,
+        "raw_evidence": "/private/tmp/chejin-uncommitted-audit-20260928-m9uUML/frontend-credential-restored.xml",
+        "sha256": "47269ae7f853690906eec9d85ea5f0aa89fc804e167bf40eba358b12e6a9c807"
+      },
+      "old_implementation_control": {
+        "tests": 10,
+        "failures": 3,
+        "errors": 0,
+        "skipped": 0,
+        "raw_evidence": "/private/tmp/chejin-uncommitted-audit-20260928-m9uUML/frontend-credential-old-control.xml",
+        "sha256": "d93961ebe49ea76fe490d179c69e781b4011fa42cc77a71087f99ab06ed66865"
+      },
+      "backend_real_http": {
+        "errors": 0,
+        "failures": 0,
+        "skipped": 0,
+        "tests": 5,
+        "raw_evidence": "/private/tmp/chejin-uncommitted-audit-20260928-m9uUML/backend-proxy.xml",
+        "sha256": "8b3b192809130d38be646ff78b73ca0c4d09733d796b1d83482b390b261c0e61"
+      }
+    },
+    "source_blob_review_rows": 68,
+    "protected_env_content_and_mtime_unchanged": true,
+    "product_rollback_ref_unchanged": "209f7fb66a01a05736fdd32e54808e54a9b66ce3",
+    "hook_ref_and_checkout_unchanged": "209f7fb66a01a05736fdd32e54808e54a9b66ce3",
+    "shared_repo_touched": false,
+    "stale_gray_registration": "Preserved old checkout files/index and detached only its invalid branch registration before fast-forwarding gray",
+    "raw_local_evidence_dir": "/private/tmp/cj-cleanup-20260928",
+    "trash_verification": "File identity/stat checked before move; native Trash success and destination existence checked; macOS denies reading Trash contents, so no post-move byte-hash claim"
+  },
+  "not_performed": [
+    "Windows packaging",
+    "deployment",
+    "production writes",
+    "automatic update registration",
+    "new branches",
+    "customer evidence publication"
+  ]
+}
