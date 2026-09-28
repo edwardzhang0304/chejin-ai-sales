@@ -7,14 +7,18 @@ const KEY = "FAKE-VISION-BROWSER-0967-SENTINEL";
 let configured = true;
 let calls: { url: string; method: string; body: Record<string, unknown> }[];
 let failCredential = false;
+let createFailure: { code: string; trace_id?: string } | null = null;
 const worker = () => ({ id: "worker-1", worker_name: "Windows A", device_name: null, platform: "windows", enabled: true, online_status: "offline", run_status: "paused", running_status: "idle", current_task: null, last_heartbeat_at: null, client_binding_state: "bound", remark: null, bound_sales_id: null, bound_sales_name: null, vision_configured: configured });
 beforeEach(() => {
   vi.stubGlobal("scrollTo", vi.fn());
-  calls = []; configured = true; failCredential = false;
+  calls = []; configured = true; failCredential = false; createFailure = null;
   vi.stubGlobal("fetch", vi.fn(async (input, options = {}) => {
     const url = String(input); const method = options.method || "GET";
     const body = options.body ? JSON.parse(options.body) : {};
     calls.push({ url, method, body });
+    if (url.endsWith("/workers") && method === "POST" && createFailure) {
+      return new Response(JSON.stringify({ ...createFailure, message: KEY, data: { input: KEY } }), { status: 400 });
+    }
     if (url.endsWith("/vision-credential")) {
       if (failCredential) return new Response(JSON.stringify({ code: "ERROR", message: KEY }), { status: 503 });
       configured = method !== "DELETE";
@@ -96,4 +100,29 @@ it("closing the drawer clears transient input", async () => {
   fireEvent.click(screen.getByRole("button", { name: "关闭 Worker 详情" }));
   fireEvent.click(screen.getByRole("row", { name: /Windows A/ }));
   expect(screen.getByLabelText(/Vision Key/)).toHaveValue("");
+});
+
+it.each([
+  { code: "HTTPS_REQUIRED", trace_id: "4d9ccc35-00ce-40aa-83b7-5a68278d3dd3", expected: "服务连接配置异常，请联系管理员处理后重试。" },
+  { code: "VISION_CREDENTIAL_SAVE_FAILED", trace_id: KEY, expected: "服务端保存 Vision 配置失败，请联系管理员处理后重试。" },
+  { code: KEY, trace_id: KEY, expected: "新增 Worker 失败，请稍后重试。" },
+])("create failure $code is safe, actionable and retryable", async ({ expected, ...failure }) => {
+  createFailure = failure;
+  render(<WorkersPage />);
+  fireEvent.click(screen.getByRole("button", { name: "新增 Worker" }));
+  const modal = screen.getByRole("form", { name: "新增 Worker" });
+  const field = within(modal).getByLabelText(/Vision Key/);
+  fireEvent.change(within(modal).getByLabelText(/Worker 名称/), { target: { value: "windows测试机" } });
+  fireEvent.change(field, { target: { value: KEY } });
+  fireEvent.click(within(modal).getByRole("button", { name: "保存" }));
+  await screen.findByText((text) => text.includes(expected));
+  await waitFor(() => expect(field).toHaveValue(""));
+  expect(document.body.textContent).not.toContain(KEY);
+  expect(within(modal).getByLabelText(/Worker 名称/)).toHaveValue("windows测试机");
+  expect(within(modal).getByRole("button", { name: "保存" })).toBeDisabled();
+  if (failure.code === "HTTPS_REQUIRED") expect(modal).toHaveTextContent(`错误编号：${failure.trace_id}`);
+  createFailure = null;
+  fireEvent.change(field, { target: { value: KEY } });
+  fireEvent.click(within(modal).getByRole("button", { name: "保存" }));
+  await waitFor(() => expect(screen.queryByRole("form", { name: "新增 Worker" })).not.toBeInTheDocument());
 });

@@ -1,6 +1,6 @@
 import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
 
-import { formatBusinessError } from "../../shared/api/client";
+import { ApiError, formatBusinessError } from "../../shared/api/client";
 import { useLockBodyScroll } from "../../shared/hooks/useLockBodyScroll";
 import { CopyButton } from "../../shared/ui/CopyButton";
 import { CloseIcon } from "../../shared/ui/Icons";
@@ -80,6 +80,21 @@ function VisionKeyInput({ value, onChange, disabled, required = false }: {
         required={required} placeholder={required ? "请输入 Vision Key" : "留空保留原值"} />
     </label>
   );
+}
+
+function credentialSaveError(error: unknown, fallback: string) {
+  // Credential responses may echo sensitive input. Only render local messages.
+  if (!(error instanceof ApiError)) return fallback;
+  const messages: Record<string, string> = {
+    HTTPS_REQUIRED: "服务连接配置异常，请联系管理员处理后重试。",
+    ADMIN_UNAUTHORIZED: "登录已失效，请重新登录。",
+    ADMIN_FORBIDDEN: "当前账号无权限执行此操作。",
+    VISION_CREDENTIAL_SAVE_FAILED: "服务端保存 Vision 配置失败，请联系管理员处理后重试。",
+  };
+  const message = messages[error.code] ?? fallback;
+  const traceId = error.traceId;
+  return traceId && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(traceId)
+    ? `${message}（错误编号：${traceId}）` : message;
 }
 
 function CreateWorkerModal({
@@ -269,7 +284,7 @@ export function WorkersPage({ openIntent }: { openIntent?: WorkerOpenIntent | nu
     try {
       created = await createWorker(payload);
     } catch (err) {
-      setCreateError(payload.vision_api_key ? "新增 Worker 失败，请重新填写 Vision Key 后重试。" : formatBusinessError(err, "新增 Worker 失败，请稍后重试。"));
+      setCreateError(credentialSaveError(err, "新增 Worker 失败，请稍后重试。重试前需重新填写 Vision Key。"));
       setSubmitting(false);
       return false;
     }
@@ -304,10 +319,10 @@ export function WorkersPage({ openIntent }: { openIntent?: WorkerOpenIntent | nu
         try {
           const credential = await setWorkerVisionCredential(detail.id, visionKey.trim());
           updated = { ...updated, ...credential };
-        } catch {
+        } catch (err) {
           setDetail(updated);
           setEditForm(toEditForm(updated));
-          setSaveError("基础信息已保存，Vision Key 保存失败，请重新填写后重试。");
+          setSaveError(`基础信息已保存，${credentialSaveError(err, "Vision Key 保存失败，请重新填写后重试。")}`);
           void refresh();
           setSubmitting(false);
           return;
