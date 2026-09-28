@@ -8,6 +8,13 @@ SITE = Path('/etc/nginx/sites-enabled/jiangsuchejin.com.conf')
 BLOCK_PATTERN = r'^/api/(tasks/[^/]+/claim|workers/[^/]+/(run-status|inflight-flow/start)|reply-actions/[^/]+/claim-send)(/|$)'
 BLOCK = 'if ($uri ~ "' + BLOCK_PATTERN + '") { return 503 \'{"code":"RELEASE_MAINTENANCE","message":"发布维护中，暂不领取新任务，请稍后重试。","data":{"retryable":true}}\'; }\n'
 INCLUDE = '    include /etc/nginx/snippets/chejin-release-maintenance.conf;\n'
+FEIYU_SITE_SHA256 = 'a6d42f27ebbeca790b9677a6df023e05c3419d9c362fa730e55a9df98b066a7b'
+
+
+def approved_feiyu_ingress(path):
+    """Permit only the reviewed exact webhook-only vhost; reject later edits."""
+    return (path.name == 'feiyu.jiangsuchejin.com.conf' and path.is_file()
+            and hashlib.sha256(path.read_bytes()).hexdigest() == FEIYU_SITE_SHA256)
 
 def blocked_path(path):
     import re
@@ -27,6 +34,7 @@ def validate_ingress():
     assert state['HostConfig']['PortBindings']=={'8000/tcp':[{'HostIp':'127.0.0.1','HostPort':'8000'}]},'BACKEND_INGRESS_NOT_LOCAL_ONLY'
     for p in Path('/etc/nginx/sites-enabled').iterdir():
         if p.resolve()==SITE.resolve():continue
+        if approved_feiyu_ingress(p):continue
         s=p.read_text()
         # The existing download vhost permits artifacts only and explicitly denies other API paths.
         assert p.name=='update.jiangsuchejin.com.conf' and 'location ^~ /api/client-releases/artifacts/' in s and re.search(r'location\s+\^~\s+/api/\s*\{\s*return\s+(403|404);\s*\}', s),'UNREVIEWED_API_INGRESS'
