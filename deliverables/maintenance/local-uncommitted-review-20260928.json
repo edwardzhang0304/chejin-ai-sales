@@ -1,0 +1,491 @@
+{
+  "date": "2026-09-28",
+  "source_root": "/Users/zhangwentao/Documents/车金",
+  "source_head": "ffd492a96d3fa244958ba85ec02a085e15d0db91",
+  "baseline": "209f7fb66a01a05736fdd32e54808e54a9b66ce3",
+  "commit_branch": "codex/local-changes-review-20260928",
+  "scope": "旧工作区差异筛选与有限补交，不是全项目功能复审",
+  "counts": {
+    "tracked:unique_content": 31,
+    "tracked:already_deleted_in_latest": 3,
+    "tracked:deleted_only_locally": 2,
+    "tracked:identical_latest": 5,
+    "untracked:unique_content": 11,
+    "untracked:identical_latest": 16,
+    "untracked:evidence_or_large_unhashed": 12680
+  },
+  "original_worktree_preserved": true,
+  "rollback_and_hook_branches_untouched": true,
+  "original_pending_files_still_present": true,
+  "duplicate_latest_files": 21,
+  "raw_evidence_retained": {
+    "files": 12680,
+    "logical_bytes": 125484539,
+    "policy": "原事故证据、运行记录与历史草稿未逐件做保留期审计，保留本地，不整包纳入源码"
+  },
+  "tests": {
+    "frontend": {
+      "tests": 10,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0,
+      "raw_evidence": "/private/tmp/chejin-uncommitted-audit-20260928-m9uUML/frontend-credential-restored.xml",
+      "sha256": "47269ae7f853690906eec9d85ea5f0aa89fc804e167bf40eba358b12e6a9c807"
+    },
+    "old_implementation_control": {
+      "tests": 10,
+      "failures": 3,
+      "errors": 0,
+      "skipped": 0,
+      "raw_evidence": "/private/tmp/chejin-uncommitted-audit-20260928-m9uUML/frontend-credential-old-control.xml",
+      "sha256": "d93961ebe49ea76fe490d179c69e781b4011fa42cc77a71087f99ab06ed66865"
+    },
+    "backend_real_http": {
+      "errors": 0,
+      "failures": 0,
+      "skipped": 0,
+      "tests": 5,
+      "raw_evidence": "/private/tmp/chejin-uncommitted-audit-20260928-m9uUML/backend-proxy.xml",
+      "sha256": "8b3b192809130d38be646ff78b73ca0c4d09733d796b1d83482b390b261c0e61"
+    }
+  },
+  "frontend_build": "TypeScript noEmit + Vite build passed with unchanged lockfile",
+  "environment_failures": {
+    "initial_vitest_attempts": 2,
+    "result": "worker startup timeout; zero tests, not counted as passed",
+    "cause": "dependency tree included macOS dataless placeholders; fresh exact-lock dependencies passed",
+    "dependency_versions_changed": false
+  },
+  "warnings": [
+    "现有前端用例有React act警告；后端有依赖弃用警告，未改断言隐藏",
+    "未执行浏览器/Windows实机、真实模型或生产环境验收",
+    "总图只检查结构/引用，未渲染"
+  ],
+  "rules_unification": {
+    "result": "仅恢复既有统一性必查规则和规划，不修改运行合同或另建OmniAuto/Worker/后端判断",
+    "runtime_paths_unchanged": [
+      "contracts",
+      "worker-client",
+      "backend/app",
+      "packages",
+      "ops",
+      ".github"
+    ]
+  },
+  "document_checks": {
+    "revision": "0.9.99/r3",
+    "historical_release_headings_preserved": true,
+    "diagram_blocks": 6,
+    "planning_cross_references_passed": true
+  },
+  "file_review": [
+    {
+      "path": ".github/workflows/worker-windows-package.yml",
+      "original_kind": "tracked",
+      "original_blob": "c6fc5035e7eb172bd8af9de68ca48922a348e074",
+      "disposition": "过期0.9.69—0.9.75发布输入/断言；不提交、不覆盖现行参数化工具"
+    },
+    {
+      "path": "backend/app/services/wechat_service.py",
+      "original_kind": "tracked",
+      "original_blob": "cdc044c13538a4cad605b61190c3fbd92100d930",
+      "disposition": "已有后续实现或历史内容；不将旧文件覆盖到新版，原件保留"
+    },
+    {
+      "path": "contracts/c2_contract_v3.json",
+      "original_kind": "tracked",
+      "original_blob": "2bccd0cfb92db94b2b35a9f243282283443fb840",
+      "disposition": "已有后续实现或历史内容；不将旧文件覆盖到新版，原件保留"
+    },
+    {
+      "path": "deliverables/AI智能客服售前跟进系统_PRD_运营后台统一版_v0.9.68.md",
+      "original_kind": "tracked",
+      "original_blob": null,
+      "disposition": "新版已删除，无需重复提交"
+    },
+    {
+      "path": "deliverables/AI智能客服售前跟进系统_全流程图_v0.9.68.puml",
+      "original_kind": "tracked",
+      "original_blob": null,
+      "disposition": "新版已删除，无需重复提交"
+    },
+    {
+      "path": "deliverables/AI智能客服售前跟进系统_技术方案手册_v0.9.68.md",
+      "original_kind": "tracked",
+      "original_blob": null,
+      "disposition": "新版已删除，无需重复提交"
+    },
+    {
+      "path": "deliverables/AI智能客服售前跟进系统_版本更新记录.md",
+      "original_kind": "tracked",
+      "original_blob": "352093052784fb3e3bf21250ce51b2efdc7a17fc",
+      "disposition": "仅合并第8节有效规划及本轮记录，保留新版完整发布历史"
+    },
+    {
+      "path": "design-qa.md",
+      "original_kind": "tracked",
+      "original_blob": null,
+      "disposition": "提交原已执行的过期QA文档删除；Git历史可恢复"
+    },
+    {
+      "path": "frontend/design-qa.md",
+      "original_kind": "tracked",
+      "original_blob": null,
+      "disposition": "提交原已执行的过期QA文档删除；Git历史可恢复"
+    },
+    {
+      "path": "frontend/src/features/workers/WorkersPage.tsx",
+      "original_kind": "tracked",
+      "original_blob": "9cd7cbb112897be31ae8001104da624d7e617506",
+      "disposition": "补交有效遗漏；运维约束补充既有手工安装适用边界"
+    },
+    {
+      "path": "frontend/src/features/workers/WorkersVisionCredential.test.tsx",
+      "original_kind": "tracked",
+      "original_blob": "a8f8e565dc55ae206434c1f2ba459ad1d87290a7",
+      "disposition": "补交有效遗漏；运维约束补充既有手工安装适用边界"
+    },
+    {
+      "path": "ops/formal_release/candidate.py",
+      "original_kind": "tracked",
+      "original_blob": "a7535b27c958aa16d0e57f081e37b932862f5a74",
+      "disposition": "过期0.9.69—0.9.75发布输入/断言；不提交、不覆盖现行参数化工具"
+    },
+    {
+      "path": "ops/formal_release/tests/test_candidate.py",
+      "original_kind": "tracked",
+      "original_blob": "7eba0ee0b19a599b6408ae2ecb25d77c3c4bcb0a",
+      "disposition": "过期0.9.69—0.9.75发布输入/断言；不提交、不覆盖现行参数化工具"
+    },
+    {
+      "path": "ops/formal_release/validate_dispatch.py",
+      "original_kind": "tracked",
+      "original_blob": "6a3e8f08dd6797600fe43e94e08e23f8eed5d0e3",
+      "disposition": "过期0.9.69—0.9.75发布输入/断言；不提交、不覆盖现行参数化工具"
+    },
+    {
+      "path": "packages/worker-ui-baseline/src/WorkerClientBaseline.tsx",
+      "original_kind": "tracked",
+      "original_blob": "7fa1cdc44ea9829e2492b4632efcb6ef840e6a01",
+      "disposition": "已有后续实现或历史内容；不将旧文件覆盖到新版，原件保留"
+    },
+    {
+      "path": "rules.md",
+      "original_kind": "tracked",
+      "original_blob": "7110700b2aeeac624aab110f3edd3de891a66d77",
+      "disposition": "补交有效遗漏；运维约束补充既有手工安装适用边界"
+    },
+    {
+      "path": "rules/delivery-docs.rules.md",
+      "original_kind": "tracked",
+      "original_blob": "38e7545554f7928dfbf2d2025b93b0073cc8395c",
+      "disposition": "补交有效遗漏；运维约束补充既有手工安装适用边界"
+    },
+    {
+      "path": "rules/operations.rules.md",
+      "original_kind": "tracked",
+      "original_blob": "659b2a6b89d34739c52316a6162a16cae64bf0d3",
+      "disposition": "补交有效遗漏；运维约束补充既有手工安装适用边界"
+    },
+    {
+      "path": "rules/product-ui.rules.md",
+      "original_kind": "tracked",
+      "original_blob": "f96da4509c5e73a6c3ea26b0a2f32547ab0834a4",
+      "disposition": "与0.9.99逐字节相同，无需重复提交"
+    },
+    {
+      "path": "rules/testing.rules.md",
+      "original_kind": "tracked",
+      "original_blob": "230b6404ed55f028a113a24dd891a190f1ade6f2",
+      "disposition": "补交有效遗漏；运维约束补充既有手工安装适用边界"
+    },
+    {
+      "path": "worker-client/chejin_worker_client/chejin_updater.py",
+      "original_kind": "tracked",
+      "original_blob": "5960df34fd0a2a05c8405f5c58d7bddcd1dd726f",
+      "disposition": "已有后续实现或历史内容；不将旧文件覆盖到新版，原件保留"
+    },
+    {
+      "path": "worker-client/chejin_worker_client/client_update.py",
+      "original_kind": "tracked",
+      "original_blob": "a449b3e66c1de7c8ed3ce15d8a32654824b3172e",
+      "disposition": "长路径部分已纳入新版；旧回退提示隐藏草稿未完成独立验证，保留不提交"
+    },
+    {
+      "path": "worker-client/chejin_worker_client/release_package_contract.py",
+      "original_kind": "tracked",
+      "original_blob": "ce0ee9d6033b2cac46e090474c57fd24f87e26e0",
+      "disposition": "与0.9.99逐字节相同，无需重复提交"
+    },
+    {
+      "path": "worker-client/chejin_worker_client/rpa_bridge.py",
+      "original_kind": "tracked",
+      "original_blob": "3250a4ca945149fb8f8386db696c0ab073991b2a",
+      "disposition": "已有后续实现或历史内容；不将旧文件覆盖到新版，原件保留"
+    },
+    {
+      "path": "worker-client/chejin_worker_client/storage.py",
+      "original_kind": "tracked",
+      "original_blob": "86aebcae38964e3dbb63185a7ef37024a9c308a6",
+      "disposition": "已有后续实现或历史内容；不将旧文件覆盖到新版，原件保留"
+    },
+    {
+      "path": "worker-client/chejin_worker_client/task_runner.py",
+      "original_kind": "tracked",
+      "original_blob": "578def86dc350a0281d02bab6e17b67ca401b32c",
+      "disposition": "已有后续实现或历史内容；不将旧文件覆盖到新版，原件保留"
+    },
+    {
+      "path": "worker-client/chejin_worker_client/update_coordinator.py",
+      "original_kind": "tracked",
+      "original_blob": "ca7fe9152befe600c86d1ef9aed9a32bc08b9d91",
+      "disposition": "已有后续实现或历史内容；不将旧文件覆盖到新版，原件保留"
+    },
+    {
+      "path": "worker-client/chejin_worker_client/web_assets/worker-web-app.js",
+      "original_kind": "tracked",
+      "original_blob": "4a84d7ce3e5718a17bed76ad187bd9bda10f9f3c",
+      "disposition": "已有后续实现或历史内容；不将旧文件覆盖到新版，原件保留"
+    },
+    {
+      "path": "worker-client/omniauto-rpa/.chejin-source.json",
+      "original_kind": "tracked",
+      "original_blob": "88e7449ff8467ac3b6df23894420fe9c70ae9859",
+      "disposition": "已有后续实现或历史内容；不将旧文件覆盖到新版，原件保留"
+    },
+    {
+      "path": "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/adapters/add_friend_layout.py",
+      "original_kind": "tracked",
+      "original_blob": "4c35e9ff9513799ef90ee67c2dd7c095ae0d9b9a",
+      "disposition": "已有后续实现或历史内容；不将旧文件覆盖到新版，原件保留"
+    },
+    {
+      "path": "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/adapters/business_viewport_continuity.py",
+      "original_kind": "tracked",
+      "original_blob": "1b2184cc9e434ab63f62a95dab6daad7f361db26",
+      "disposition": "已有后续实现或历史内容；不将旧文件覆盖到新版，原件保留"
+    },
+    {
+      "path": "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/adapters/chejin_c2_observation_schema.generated.json",
+      "original_kind": "tracked",
+      "original_blob": "c3b4bad1bbff1ef1dacced8453b20c7881b3014e",
+      "disposition": "已有后续实现或历史内容；不将旧文件覆盖到新版，原件保留"
+    },
+    {
+      "path": "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/adapters/wechat_win32_ocr/add_friend_windows.py",
+      "original_kind": "tracked",
+      "original_blob": "e60e6d2b72c24214e3ab3ef95dcab6d3671eac9e",
+      "disposition": "已有后续实现或历史内容；不将旧文件覆盖到新版，原件保留"
+    },
+    {
+      "path": "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/adapters/wechat_win32_ocr/window_layout.py",
+      "original_kind": "tracked",
+      "original_blob": "fc037877f319e94e9942efc39fbf34764a18fe6c",
+      "disposition": "已有后续实现或历史内容；不将旧文件覆盖到新版，原件保留"
+    },
+    {
+      "path": "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/adapters/wechat_win32_ocr_sidecar.py",
+      "original_kind": "tracked",
+      "original_blob": "d2c9713f8b287d1495c25f34ad5a1bd329817bf6",
+      "disposition": "已有后续实现或历史内容；不将旧文件覆盖到新版，原件保留"
+    },
+    {
+      "path": "worker-client/tests/test_business_viewport_continuity.py",
+      "original_kind": "tracked",
+      "original_blob": "7fa13d28379cd152965cbd687e70d287be6acb08",
+      "disposition": "与0.9.99逐字节相同，无需重复提交"
+    },
+    {
+      "path": "worker-client/tests/test_c2_identity_gate_receipts.py",
+      "original_kind": "tracked",
+      "original_blob": "d29b3e72e03794b913a09d019981c3f8ec7c21e5",
+      "disposition": "与0.9.99逐字节相同，无需重复提交"
+    },
+    {
+      "path": "worker-client/tests/test_packaging_scripts.py",
+      "original_kind": "tracked",
+      "original_blob": "544803d563ab76510e8f8f31e9fd77e48f3f8fe2",
+      "disposition": "过期0.9.69—0.9.75发布输入/断言；不提交、不覆盖现行参数化工具"
+    },
+    {
+      "path": "worker-client/tests/test_storage.py",
+      "original_kind": "tracked",
+      "original_blob": "42f73b96d3bc8e772dfe44480c9a02f37b5e3f75",
+      "disposition": "已有后续实现或历史内容；不将旧文件覆盖到新版，原件保留"
+    },
+    {
+      "path": "worker-client/tests/test_task_runner.py",
+      "original_kind": "tracked",
+      "original_blob": "1c9b083e201cd33464f149fdfbfd12e4084e438d",
+      "disposition": "已有后续实现或历史内容；不将旧文件覆盖到新版，原件保留"
+    },
+    {
+      "path": "worker-client/tests/test_update_safety_boundary.py",
+      "original_kind": "tracked",
+      "original_blob": "566eabf68efcab2e16f9a62591f59deea87d8307",
+      "disposition": "与0.9.99逐字节相同，无需重复提交"
+    },
+    {
+      "path": ":memory:.ses",
+      "original_kind": "untracked",
+      "original_blob": "4a98c4febb50a3f4d305ff6fbc1ac8179279a520",
+      "disposition": "临时运行产物，不作为源码提交；本轮未删除"
+    },
+    {
+      "path": "backend/app/services/message_viewport_projection.py",
+      "original_kind": "untracked",
+      "original_blob": "7e3ec06a7eb24510958ba90f6ddc211583468431",
+      "disposition": "已有后续实现或历史内容；不将旧文件覆盖到新版，原件保留"
+    },
+    {
+      "path": "backend/tests/fixtures/cjf9_20260911/backend_validate_before.py",
+      "original_kind": "untracked",
+      "original_blob": "77d8e70729a80171ce4962a3cf082d61e2c7901e",
+      "disposition": "与0.9.99逐字节相同，无需重复提交"
+    },
+    {
+      "path": "backend/tests/fixtures/cjf9_20260911/worker_finish_before.py",
+      "original_kind": "untracked",
+      "original_blob": "042ff8d7067fb0e1ad5f05cda8624a29e2f9c97e",
+      "disposition": "与0.9.99逐字节相同，无需重复提交"
+    },
+    {
+      "path": "backend/tests/test_c2_historical_ocr_settlement.py",
+      "original_kind": "untracked",
+      "original_blob": "ae7a150c22bb6a56596ae6c1212271f7a8aaf7e0",
+      "disposition": "与0.9.99逐字节相同，无需重复提交"
+    },
+    {
+      "path": "backend/tests/test_c2_history_suffix.py",
+      "original_kind": "untracked",
+      "original_blob": "ce5b95142b230386266f2a77f868d38272f9da6e",
+      "disposition": "与0.9.99逐字节相同，无需重复提交"
+    },
+    {
+      "path": "backend/tests/test_c2_ocr_attribution.py",
+      "original_kind": "untracked",
+      "original_blob": "b7cfa6057811f6101c5fb4b6b95203a99ce78c5f",
+      "disposition": "与0.9.99逐字节相同，无需重复提交"
+    },
+    {
+      "path": "backend/tests/test_worker_vision_proxy.py",
+      "original_kind": "untracked",
+      "original_blob": "ac876d9a82f3ac37a19abe6f27a37c9722ccbaf3",
+      "disposition": "补交有效遗漏；运维约束补充既有手工安装适用边界"
+    },
+    {
+      "path": "deliverables/AI智能客服售前跟进系统_PRD_运营后台统一版_v0.9.98.md",
+      "original_kind": "untracked",
+      "original_blob": "4b679eb463691044649a4f7977f50bc06a0ae949",
+      "disposition": "已有后续实现或历史内容；不将旧文件覆盖到新版，原件保留"
+    },
+    {
+      "path": "deliverables/AI智能客服售前跟进系统_PRD_运营后台统一版_v0.9.99.md",
+      "original_kind": "untracked",
+      "original_blob": "d8a8c36078060ae4a443e5d55d7f1df7af3fbb7c",
+      "disposition": "与0.9.99逐字节相同，无需重复提交"
+    },
+    {
+      "path": "deliverables/AI智能客服售前跟进系统_全流程图_v0.9.98.puml",
+      "original_kind": "untracked",
+      "original_blob": "f06b38b3ba371f59b3324ec9898d4feb9682c540",
+      "disposition": "已有后续实现或历史内容；不将旧文件覆盖到新版，原件保留"
+    },
+    {
+      "path": "deliverables/AI智能客服售前跟进系统_全流程图_v0.9.99.puml",
+      "original_kind": "untracked",
+      "original_blob": "b405805e81a1083fabca3dc96cfcdbf54e5775d1",
+      "disposition": "与0.9.99逐字节相同，无需重复提交"
+    },
+    {
+      "path": "deliverables/AI智能客服售前跟进系统_技术方案手册_v0.9.98.md",
+      "original_kind": "untracked",
+      "original_blob": "b3710866cf0192fb7e7d18a8fc823d0f01f5567b",
+      "disposition": "已有后续实现或历史内容；不将旧文件覆盖到新版，原件保留"
+    },
+    {
+      "path": "deliverables/AI智能客服售前跟进系统_技术方案手册_v0.9.99.md",
+      "original_kind": "untracked",
+      "original_blob": "2e99fe60bb1499b8114231157fa53014561573e8",
+      "disposition": "与0.9.99逐字节相同，无需重复提交"
+    },
+    {
+      "path": "worker-client/chejin_worker_client/update_filesystem.py",
+      "original_kind": "untracked",
+      "original_blob": "8e8d271d4630e3d96329c1b6d578893f9af60924",
+      "disposition": "与0.9.99逐字节相同，无需重复提交"
+    },
+    {
+      "path": "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/adapters/circle_plus_icon.py",
+      "original_kind": "untracked",
+      "original_blob": "f75a09c77a34b24fb3c70427a19aad5b426dd895",
+      "disposition": "与0.9.99逐字节相同，无需重复提交"
+    },
+    {
+      "path": "worker-client/scripts/collect-startup-layout-evidence.cmd",
+      "original_kind": "untracked",
+      "original_blob": "47ebef95fe080aa0a6357b990d1af69149c9e72e",
+      "disposition": "现场一次性独立采证脚本，未完成当前Windows验证；保留不纳入产品"
+    },
+    {
+      "path": "worker-client/scripts/collect-startup-layout-evidence.ps1",
+      "original_kind": "untracked",
+      "original_blob": "7545bd51acecf4ce4931a69267bd6b0168a10e59",
+      "disposition": "现场一次性独立采证脚本，未完成当前Windows验证；保留不纳入产品"
+    },
+    {
+      "path": "worker-client/tests/fixtures/circle_plus/sidebar_header.png",
+      "original_kind": "untracked",
+      "original_blob": "d00b84a252e72e05361fa05d568b2c2e8440e4e2",
+      "disposition": "与0.9.99逐字节相同，无需重复提交"
+    },
+    {
+      "path": "worker-client/tests/fixtures/circle_plus/source.json",
+      "original_kind": "untracked",
+      "original_blob": "40a2d213f1cdda0403b39834d9c809f43b4d335e",
+      "disposition": "与0.9.99逐字节相同，无需重复提交"
+    },
+    {
+      "path": "worker-client/tests/fixtures/search_cleanup_20260907/focused.png",
+      "original_kind": "untracked",
+      "original_blob": "eeec9da95eacf7f0443c34f7ae9fc8872b0b9f06",
+      "disposition": "仍被回放测试引用的私有Windows原图；保留本地，不提交客户截图"
+    },
+    {
+      "path": "worker-client/tests/fixtures/search_cleanup_20260907/idle.png",
+      "original_kind": "untracked",
+      "original_blob": "784ced4ab2f93c978eaed3f8a8d234511e7a1d0d",
+      "disposition": "仍被回放测试引用的私有Windows原图；保留本地，不提交客户截图"
+    },
+    {
+      "path": "worker-client/tests/fixtures/search_cleanup_20260907/results.png",
+      "original_kind": "untracked",
+      "original_blob": "3fbcdf9c8e3a3497b6ab1ef185cf41646d15a9e9",
+      "disposition": "仍被回放测试引用的私有Windows原图；保留本地，不提交客户截图"
+    },
+    {
+      "path": "worker-client/tests/test_circle_plus_icon.py",
+      "original_kind": "untracked",
+      "original_blob": "71deb43e6f4a55e68510753d524a45f72b470034",
+      "disposition": "与0.9.99逐字节相同，无需重复提交"
+    },
+    {
+      "path": "worker-client/tests/test_history_suffix_continuity.py",
+      "original_kind": "untracked",
+      "original_blob": "9e3607a017bdd135aaec3eed505d039978444f56",
+      "disposition": "与0.9.99逐字节相同，无需重复提交"
+    },
+    {
+      "path": "worker-client/tests/test_startup_calibration_evidence.py",
+      "original_kind": "untracked",
+      "original_blob": "34fef1a2603b6a5126124cf9ef3d074a00080602",
+      "disposition": "与0.9.99逐字节相同，无需重复提交"
+    },
+    {
+      "path": "worker-client/tests/test_update_long_paths.py",
+      "original_kind": "untracked",
+      "original_blob": "f8e0bfa593fec16028f0bdd489682cd328da0097",
+      "disposition": "与0.9.99逐字节相同，无需重复提交"
+    }
+  ]
+}
