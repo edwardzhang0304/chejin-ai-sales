@@ -4,6 +4,19 @@ sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
 from maintenance import blocked_path
 from build_admin import validate_api,validate_browser_receipt
 class EnvironmentTests(unittest.TestCase):
+ def test_feiyu_ingress_requires_exact_reviewed_name_and_content(self):
+  import hashlib,tempfile
+  from unittest.mock import patch
+  import maintenance
+  with tempfile.TemporaryDirectory() as temp:
+   site=Path(temp)/'feiyu.jiangsuchejin.com.conf';site.write_text('reviewed webhook-only site')
+   reviewed_hash=hashlib.sha256(site.read_bytes()).hexdigest()
+   with patch.object(maintenance,'FEIYU_SITE_SHA256',reviewed_hash):
+    self.assertTrue(maintenance.approved_feiyu_ingress(site))
+    site.write_text('changed site')
+    self.assertFalse(maintenance.approved_feiyu_ingress(site))
+    other=Path(temp)/'unreviewed.conf';other.write_text('reviewed webhook-only site')
+    self.assertFalse(maintenance.approved_feiyu_ingress(other))
  def test_grant_routes_and_encoded_paths_blocked(self):
   for path in ['/api/tasks/x/claim','/api/tasks/x/claim/','/api/workers/x/run-status','/api/workers/x/inflight-flow/start','/api/reply-actions/x/claim-send','/api/tasks/x/%63laim?x=1','/api/tasks/x/a/../claim']:
    with self.subTest(path=path):self.assertTrue(blocked_path(path))
