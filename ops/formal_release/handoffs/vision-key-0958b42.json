@@ -1,0 +1,90 @@
+{
+  "schema_version": 1,
+  "repository": "edwardzhang0304/chejin-ai-sales",
+  "reviewed_commit": "0958b4226622660509e1b55cc8143bab9a4ad998",
+  "target_version": "0.9.100",
+  "approval": "User requested formal Windows EXE preserve-data manual strong installation, all clients offline. Reuse reviewed Vision Key source checks and run only package-specific acceptance.",
+  "original_verification_sha256": "d9c552d731e1e1befa7459e6ff2f4c429df8f73e3b27bef5ed12d4696a42c436",
+  "environment": "Engineer local macOS, Vite/Vitest frontend and isolated backend HTTP tests; no Windows EXE or production behavior claimed. Original XML kept locally; identity checked by sha256. Old-implementation control fails 3/10 as expected and is not counted as passed.",
+  "source_sha256": {
+    "frontend/src/features/workers/WorkersPage.tsx": "523568d6807898ac3bce36fdd00da7b15643fdd3e3f521f76ca74e447252acd8",
+    "frontend/src/features/workers/WorkersVisionCredential.test.tsx": "fd06f23061f217800b221058f36f0f582cc108e7f6d4922453b251889d62c94f",
+    "backend/tests/test_worker_vision_proxy.py": "1bdb70f31f77e5f1d51bdadfe59193335264e395f76025ed3673faa2205ae640"
+  },
+  "checks": [
+    {
+      "name": "frontend",
+      "original_xml_sha256": "47269ae7f853690906eec9d85ea5f0aa89fc804e167bf40eba358b12e6a9c807",
+      "count": 10,
+      "cases": [
+        {
+          "name": "src/features/workers/WorkersVisionCredential.test.tsx::creates with a password field without browser persistence",
+          "result": "passed"
+        },
+        {
+          "name": "src/features/workers/WorkersVisionCredential.test.tsx::blank edit retains the existing credential",
+          "result": "passed"
+        },
+        {
+          "name": "src/features/workers/WorkersVisionCredential.test.tsx::replaces via the dedicated endpoint and clears input",
+          "result": "passed"
+        },
+        {
+          "name": "src/features/workers/WorkersVisionCredential.test.tsx::partial failure hides the server secret and allows retry",
+          "result": "passed"
+        },
+        {
+          "name": "src/features/workers/WorkersVisionCredential.test.tsx::requires a key for creation and has no clear action or explanatory text",
+          "result": "passed"
+        },
+        {
+          "name": "src/features/workers/WorkersVisionCredential.test.tsx::requires filling an unconfigured Worker when editing",
+          "result": "passed"
+        },
+        {
+          "name": "src/features/workers/WorkersVisionCredential.test.tsx::closing the drawer clears transient input",
+          "result": "passed"
+        },
+        {
+          "name": "src/features/workers/WorkersVisionCredential.test.tsx::create failure 'HTTPS_REQUIRED' is safe, actionable and retryable",
+          "result": "passed"
+        },
+        {
+          "name": "src/features/workers/WorkersVisionCredential.test.tsx::create failure 'VISION_CREDENTIAL_SAVE_FAILED' is safe, actionable and retryable",
+          "result": "passed"
+        },
+        {
+          "name": "src/features/workers/WorkersVisionCredential.test.tsx::create failure 'FAKE-VISION-BROWSER-0967-SENTINEL' is safe, actionable and retryable",
+          "result": "passed"
+        }
+      ]
+    },
+    {
+      "name": "backend_real_http",
+      "original_xml_sha256": "8b3b192809130d38be646ff78b73ca0c4d09733d796b1d83482b390b261c0e61",
+      "count": 5,
+      "cases": [
+        {
+          "name": "tests.test_worker_vision_proxy::test_credential_gate_uses_only_trusted_proxy[127.0.0.2-https-400]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_worker_vision_proxy::test_credential_gate_uses_only_trusted_proxy[127.0.0.1-https-401]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_worker_vision_proxy::test_credential_gate_uses_only_trusted_proxy[127.0.0.1-http-400]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_worker_vision_proxy::test_credential_gate_uses_only_trusted_proxy[127.0.0.1-None-400]",
+          "result": "passed"
+        },
+        {
+          "name": "tests.test_worker_vision_proxy::test_trusted_proxy_login_create_and_encrypted_save",
+          "result": "passed"
+        }
+      ]
+    }
+  ]
+}
