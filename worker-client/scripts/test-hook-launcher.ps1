@@ -61,13 +61,13 @@ try {
             }
             $global:HookLauncherChecks = 0; $global:HookLauncherWeChatStarts = 0; $global:HookLauncherWorkerStarts = 0; $global:HookLauncherReportPath = $null
             $failed = $false
-            $LASTEXITCODE = 999
+            $global:LASTEXITCODE = 999
             $returnedExitCode = $null
             try {
                 if ($global:HookLauncherCase -eq 'setup') {
                     & (Join-Path $root 'start-hook.ps1') -Configuration (Join-Path $root 'profile.json') -ConfirmAutoTextDisabled
                 } else { & (Join-Path $root 'start-hook.ps1') }
-                $returnedExitCode = $LASTEXITCODE
+                $returnedExitCode = $global:LASTEXITCODE
             } catch {
                 $failed = $true
                 if ($global:HookLauncherCase -notin @('check-failure','worker-failure')) { throw }
@@ -75,7 +75,7 @@ try {
             Assert-True ($failed -eq ($global:HookLauncherCase -in @('check-failure','worker-failure'))) 'Unexpected failure outcome'
             if (-not $failed) {
                 $expectedExitCode = if ($global:HookLauncherCase -eq 'worker-exit') { 4 } else { 0 }
-                Assert-True ($returnedExitCode -eq $expectedExitCode) 'Worker exit code was not preserved'
+                Assert-True ($returnedExitCode -eq $expectedExitCode) ('Worker exit code was not preserved in ' + $global:HookLauncherCase + ': expected ' + $expectedExitCode + ', got ' + $returnedExitCode)
             }
             foreach ($name in $names[0..2]) {
                 Assert-True ([Environment]::GetEnvironmentVariable($name, 'Process') -ceq $before[$name]) ('Leaked environment: ' + $name)
