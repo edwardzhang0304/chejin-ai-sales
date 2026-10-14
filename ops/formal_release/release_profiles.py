@@ -2,6 +2,7 @@
 import os
 
 SOURCE_BRANCHES = {'ocr':'codex/gray-release-0.9.x', 'hook':'gray-release-0.10.x'}
+PRIVATE_PACKAGE_CASES = {'backend/tests/test_hook_send_settlement_entry.py'}
 
 
 def selected_transport():
@@ -23,6 +24,9 @@ def validate_native_source_plan(plan, root):
     # native suite plus the original physical-action and updater regressions.
     mandatory={path.relative_to(root).as_posix() for base in ('backend/tests','worker-client/tests')
                for path in (root/base).glob('test_hook*.py')}
+    # This case consumes a private, locally generated recovery ZIP. It is not
+    # reproducible in public source CI; keep it for separate package acceptance.
+    mandatory.difference_update(PRIVATE_PACKAGE_CASES)
     mandatory.update({
         'worker-client/tests/test_task_runner.py',
         'worker-client/tests/test_client_update.py',

@@ -166,7 +166,7 @@ jobs:
       - uses: actions/setup-python@v5
         with: {python-version: '3.12.10'}
       - name: Install isolated source test dependencies
-        run: python -m pip install --disable-pip-version-check -r worker-client/requirements.txt -r worker-client/requirements-test.txt -r backend/requirements.txt 'websockets==15.0.1' 'PyYAML==6.0.2' httpx2
+        run: python -m pip install --disable-pip-version-check -r worker-client/requirements.txt -r worker-client/requirements-test.txt -r backend/requirements.txt 'websockets==15.0.1' 'PyYAML==6.0.2' 'opencv-python-headless==4.10.0.84' httpx2
       - name: Prepare test-only shared schema
         run: |
           sudo install -d -m 0700 -o "$(id -u)" /private/tmp/chejin-hook-formal-20261011

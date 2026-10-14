@@ -20,7 +20,8 @@ def test_native_requires_all_its_tests_and_never_reuses_ocr_handoff():
         profile.validate_native_source_plan({'pytest':[{'cwd':'.','nodes':['worker-client/tests/test_client_update.py']}]},ROOT)
     with pytest.raises(ValueError,match='HOOK_REQUIRES_FRESH_SOURCE_TESTS'):
         profile.validate_native_source_plan({'reviewed_handoff':{'status':'passed'}},ROOT)
-    tests=[p.relative_to(ROOT).as_posix() for base in ('backend/tests','worker-client/tests') for p in (ROOT/base).glob('test_hook*.py')]
+    tests=[p.relative_to(ROOT).as_posix() for base in ('backend/tests','worker-client/tests') for p in (ROOT/base).glob('test_hook*.py')
+           if p.relative_to(ROOT).as_posix() not in profile.PRIVATE_PACKAGE_CASES]
     tests+=['worker-client/tests/test_task_runner.py','worker-client/tests/test_client_update.py','worker-client/tests/test_update_coordinator.py','worker-client/tests/test_chejin_updater.py','backend/tests/test_ai_capacity.py']
     profile.validate_native_source_plan({'pytest':[{'cwd':'.','nodes':tests}]},ROOT)
 
