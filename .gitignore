@@ -65,3 +65,12 @@ worker-client/omniauto-rpa/apps/wechat_ai_customer_service/tests/fixtures/hook_c
 
 # Private original chat frames remain local for explicit OCR incident replay.
 worker-client/tests/fixtures/avatars_20260904/send_*.png
+
+# Private environment exports and commercial documents stay outside public Git.
+*.local.env
+*.local.json
+contracts/*.docx
+contracts/*.pdf
+contracts/*.xlsx
+contracts/build_contract_pdf.py
+contracts/docx_to_pdf.py
