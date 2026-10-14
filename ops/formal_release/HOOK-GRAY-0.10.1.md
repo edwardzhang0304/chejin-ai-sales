@@ -1,6 +1,6 @@
 # Hook 0.10.1 小范围多人灰度交付
 
-状态：2026-10-14 恢复源码及构建工具准备已通过架构师4号、5号复审；正式 CI、Windows 原生及包级验收待完成，未发布。第一批 2～3 名销售，每人独立 Windows、微信账号、Worker 身份。不能把本机模拟检查等同于 Windows 原生安装验收。
+状态：2026-10-14 正式 CI 与 Windows 原生构建已完成；0.10.1 后端和运营后台已切换并通过生产 HTTPS、知识库及后台浏览器检查。Worker ZIP 尚未完成真实 Windows 两个快捷方式点击验收，未开放客户端更新或标记完整交付。第一批 2～3 名销售，每人独立 Windows、微信账号、Worker 身份。不能把本机模拟检查等同于 Windows 原生安装验收。
 
 ## 部署与身份
 
@@ -11,7 +11,19 @@
 
 ## 通用安装入口
 
-由原 build-windows.ps1 -Transport hook 生成完整包，原签名、来源凭证、文件清单和更新门禁不变，新增 start-hook.ps1。禁止将历史 UAT 增量 ZIP 作为新电脑完整安装包。
+由原 build-windows.ps1 -Transport hook 生成**已签名 Worker 包**，原签名、来源凭证、文件清单和更新门禁不变，包含 start-hook.ps1。此 ZIP 不含微信安装文件或 Hook DLL，仅适用于已具备并核验对应微信/组件的现有测试机；不得称为新电脑完整安装包。禁止将历史 UAT 增量 ZIP 作为新电脑完整安装包。
+
+新电脑交付时，先由客户端工程师通过受控渠道交付微信 3.9.10.16 x86 安装原件、配套 `version.dll` 原件及两份 SHA-256。运维用 `ops/formal_release/assemble_hook_new_pc_bundle.py` 把已验收 Worker ZIP 和这两份哈希匹配的原件装成外层完整包；脚本从 Worker 内部清单读取产品版本，不重新打包或改动 Worker ZIP。用法：
+
+```text
+python ops/formal_release/assemble_hook_new_pc_bundle.py \
+  --worker-zip <已验收Worker.zip> \
+  --wechat-installer <工程师提供的安装文件> --wechat-installer-sha256 <核验值> \
+  --hook-dll <工程师提供的version.dll> --hook-dll-sha256 <核验值> \
+  --wechat-file-version 3.9.10.16 --output-dir <受控交付目录>
+```
+
+外层包及第三方原件只在受控渠道分发，不进入公开 GitHub 仓库或公共 CI Artifact。组包通过仅证明文件来源哈希与清单一致；每台新 Windows 安装后仍须实际点击两个快捷方式验收版本、架构、参数、DLL 加载、端口归属及 Worker 环境检查。工程师原件和哈希未到手前，完整包状态保持【待交付】，不得以旧包或从测试机随意复制的文件补齐。
 
 运维为每台电脑准备不含 Token/Key 的 profile JSON：schema_version=1、api_base_url、deployment。deployment 复用 HookDeployment 字段：revision、wechat_exe、dll_sha256、hook_api_port、receiver_port。Hash 必须来自验收过的 Hook DLL，不允许占位值或自动信任本机未知文件。
 
