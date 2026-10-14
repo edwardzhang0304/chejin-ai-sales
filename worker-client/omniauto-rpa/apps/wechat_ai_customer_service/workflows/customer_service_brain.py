@@ -29,6 +29,7 @@ from apps.wechat_ai_customer_service.llm_config import (
 )
 from llm_output_adapter import llm_json_response_is_incomplete, parse_complete_llm_json_response
 from customer_service_brain_contract import (
+    reply_trigger_context,
     POLICY_FACT_TYPES,
     PRODUCT_FACT_TYPES,
     PRODUCT_MASTER_ONLY_FACT_TYPES,
@@ -47,6 +48,7 @@ from customer_service_brain_contract import (
     verify_brain_reply_quality,
 )
 from customer_service_quality_reviewer import (
+    DEFAULT_REVIEWER_MAX_TOKENS,
     review_brain_reply_semantics,
     semantic_review_to_quality,
 )
@@ -1884,7 +1886,7 @@ def effective_brain_settings(config: dict[str, Any]) -> dict[str, Any]:
     settings.setdefault("semantic_reviewer_mode", "suspicious_only")
     settings.setdefault("semantic_reviewer_timeout_seconds", 8)
     settings.setdefault("semantic_reviewer_fallback_timeout_seconds", 45)
-    settings.setdefault("semantic_reviewer_max_tokens", 350)
+    settings.setdefault("semantic_reviewer_max_tokens", DEFAULT_REVIEWER_MAX_TOKENS)
     settings.setdefault("semantic_reviewer_temperature", 0.1)
     settings.setdefault("semantic_reviewer_cache_enabled", True)
     settings.setdefault("semantic_reviewer_soft_pass_low_risk", True)
@@ -2050,6 +2052,7 @@ def build_brain_input(
     )
     retry_instruction = str(target_state.get("brain_retry_instruction") or "").strip()
     current_message = {
+        "trigger_type": reply_trigger_context(target_state.get("trigger_type"))["trigger_type"],
         "clean_text": clean_text,
         "raw_text": raw_text,
         "message_ids": [str(item.get("id") or item.get("message_id") or "") for item in batch],
@@ -3449,6 +3452,7 @@ def compact_current_message_for_prompt(current: dict[str, Any]) -> dict[str, Any
     clean_text = str(current.get("clean_text") or "").strip()
     raw_text = str(current.get("raw_text") or "").strip()
     payload: dict[str, Any] = {
+        **reply_trigger_context(current.get("trigger_type")),
         "clean_text": clean_text,
         "message_ids": current.get("message_ids", []),
     }

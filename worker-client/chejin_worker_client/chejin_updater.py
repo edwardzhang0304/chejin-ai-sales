@@ -247,10 +247,12 @@ def validate_update_plan(plan_path: Path, token: str) -> dict[str, Any]:
     # The archive is already local.  A presigned download URL is deliberately
     # excluded from update-plan.json so the independent updater validates only
     # immutable package identity and never receives reusable download access.
+    from .release_transport import selected_release_channel
     validate_release_contract(
         release,
         current_version=str(plan.get("current_version") or ""),
         require_download_url=False,
+        expected_channel=selected_release_channel(data_dir, build_root=current),
     )
     verify_release_signature(release, trusted_keys=load_trusted_release_keys())
     if hash_file(archive) != str(release.artifact_sha256 or "").lower():

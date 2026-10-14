@@ -14,7 +14,8 @@ import zipfile
 
 ROOT = Path(__file__).resolve().parents[2]
 REPO = "edwardzhang0304/chejin-ai-sales"
-BRANCH = "codex/gray-release-0.9.x"
+from release_profiles import selected_transport, source_branch
+BRANCH = source_branch()
 WORKFLOW = ".github/workflows/release-evidence.yml"
 FORMAL = ".github/workflows/worker-windows-package.yml"
 JOBS = {"source": "Selected source checks", "tooling": "Release tools checks"}
@@ -72,7 +73,7 @@ def validate_run(run, jobs, kind):
     require(run.get("head_branch") == BRANCH and run.get("event") in {"push", "workflow_dispatch"}
             and run.get("status") == "completed"
             and run.get("repository", {}).get("full_name") == REPO, "UNTRUSTED_EVIDENCE_RUN")
-    legacy = kind == "source" and run.get("path") == FORMAL
+    legacy = selected_transport()=="ocr" and kind == "source" and run.get("path") == FORMAL
     require(legacy or run.get("path") == WORKFLOW, "UNTRUSTED_EVIDENCE_WORKFLOW")
     expected = "Build signed formal Windows package" if legacy else JOBS[kind]
     matches = [j for j in jobs if j.get("name") == expected and j.get("conclusion") == "success"

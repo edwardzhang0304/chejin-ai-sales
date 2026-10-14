@@ -33,10 +33,10 @@ def junit(path):
     return {"passed": len(cases) - failed - skipped, "failed": failed, "skipped": skipped}
 
 
-def execute(command, cwd, path):
+def execute(command, cwd, path, environment=None):
     with path.open("w", encoding="utf-8") as log:
-        result = subprocess.run(command, cwd=ROOT / cwd, env={**os.environ, "PYTHONUTF8": "1",
-                                "PYTHONIOENCODING": "utf-8", "PYTHONPATH": str(ROOT / cwd)},
+        result = subprocess.run(command, cwd=ROOT / cwd, env={**os.environ, **(environment or {}), "PYTHONUTF8": "1",
+                                "PYTHONIOENCODING": "utf-8", "PYTHONPATH": os.pathsep.join([str(ROOT / cwd),str(ROOT / "backend"),str(ROOT / "backend/tests"),str(ROOT / "worker-client"),str(ROOT / "worker-client/tests"),str(ROOT / "worker-client/omniauto-rpa")])},
                                 stdout=log, stderr=subprocess.STDOUT)
     if result.returncode:
         print(path.read_text(encoding="utf-8")[-12000:])
@@ -63,6 +63,9 @@ def main():
         require(plan.get("reason") and plan.get("not_tested") and (plan.get("pytest") or plan.get("reviewed_handoff")), "REVIEWED_SOURCE_TEST_PLAN_REQUIRED")
         require(set(plan) <= {"reason", "not_tested", "pytest", "reviewed_handoff"}, "UNSUPPORTED_TEST_PLAN_FIELD")
     reused = None
+    from release_profiles import selected_transport,validate_native_source_plan
+    if selected_transport()=='hook' and kind=='source':
+        validate_native_source_plan(plan,ROOT)
     if plan.get("reviewed_handoff"):
         from reviewed_handoff import validate
         reused = validate(plan["reviewed_handoff"])
@@ -75,13 +78,19 @@ def main():
     for group in plan.get("pytest", []):
         require(set(group) == {"cwd", "nodes"}, "INVALID_TEST_GROUP")
         grouped.setdefault(group["cwd"], []).extend(group["nodes"])
-    for index, (cwd, nodes) in enumerate(grouped.items()):
-        nodes = selected_nodes(cwd, nodes)
+    selections=[(cwd,selected_nodes(cwd,nodes)) for cwd,nodes in grouped.items()]
+    if selected_transport()=='hook' and kind=='source':
+        from native_test_environment import execution_groups
+        executions=execution_groups(selections)
+    else:
+        executions=[{'cwd':cwd,'nodes':nodes,'env':{}} for cwd,nodes in selections]
+    for index, group in enumerate(executions):
+        cwd,nodes=group['cwd'],group['nodes']
         report = output / f"pytest-{index}.xml"
-        code = execute([sys.executable, "-m", "pytest", *nodes, "-q", "--junitxml", str(report)], cwd, output / f"pytest-{index}.log")
+        code = execute([sys.executable, "-m", "pytest", *nodes, "-q", "--junitxml", str(report)], cwd, output / f"pytest-{index}.log", group["env"])
         require(report.is_file(), "TEST_REPORT_MISSING")
         counts = junit(report)
-        scope.append({"cwd": cwd, "nodes": nodes})
+        scope.append({"cwd": cwd, "nodes": nodes, **({"environment_profile":group["profile"]} if "profile" in group else {})})
         results.append({"exit_code": code, **counts})
         require(code == 0 and counts["passed"] > 0 and counts["failed"] == 0 and counts["skipped"] == 0,
                 "TESTS_FAILED_EMPTY_OR_SKIPPED: select the applicable tests; no completion evidence written")

@@ -9,8 +9,6 @@ from test_worker_client_api import _create_worker, _bind_worker, _heartbeat, _cr
 
 
 def setup_function():
-    if engine.dialect.name != 'postgresql':
-        pytest.skip('Release SQL gate requires PostgreSQL')
     Base.metadata.drop_all(bind=engine)
     Base.metadata.create_all(bind=engine)
 

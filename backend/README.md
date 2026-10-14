@@ -1,8 +1,14 @@
+# 当前 Hook 产品版本：0.10.1
+
+本目录为 0.10.1 联调候选。运营后台、后端包与 C2 合同基线同版；协议结构号及历史恢复合同保持原有语义，尚未正式生产发布。
+
 # 车金运营后台后端
 
 当前范围：人工新增客户线索、手机号去重、销售轮询分配、线索列表详情、无效/恢复、操作日志、手机号明文审计、选中线索导出、销售管理、Worker 管理。
 
 ## Docker 启动，推荐
+
+0.10.1 后端使用 `requirements.lock` 固定运行依赖；修改 requirements.txt 后需在干净容器解析、更新 lock 并完成回归。运营后台容器通过 `-f docker-compose.yml -f compose.web.yml` 一同部署；联调额外叠加 `compose.uat.yml`，业务入口保持 `app.main:app`。
 
 ```bash
 cd backend
@@ -52,7 +58,7 @@ python3 -m pip install -e '.[test]'
 uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 ```
 
-本地默认使用 SQLite：`sqlite:///./chejin_leads.db`。联调/部署建议使用 Docker Compose 内的 PostgreSQL。
+本地单元测试可以使用 SQLite；0.10.1 集成联调与部署统一使用 Docker Compose + PostgreSQL 15，不能用 SQLite 测试结果替代 PostgreSQL 验证。完整容器与联调迁移说明见 [Docker 部署](../ops/hook_uat/DOCKER-0.10.1.md)。
 
 ## 数据库迁移
 

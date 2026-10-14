@@ -2,10 +2,12 @@
   [switch]$SkipTests,
   [switch]$SkipPreflight,
   [switch]$DevelopmentBuild,
-  [string]$ApiBaseUrl = ""
+  [string]$ApiBaseUrl = "",
+  [ValidateSet("ocr", "hook")][string]$Transport = "ocr"
 )
 
 $ErrorActionPreference = "Stop"
+$env:CHEJIN_RELEASE_TRANSPORT = $Transport
 $env:PYTHONUTF8 = "1"
 $env:PYTHONIOENCODING = "utf-8"
 
@@ -225,6 +227,7 @@ if (-not $DevelopmentBuild -and $DefaultApiBaseUrl.Trim() -ne "https://jiangsuch
 }
 $RuntimeBuildIdentityPath = Join-Path $ReportsDir "runtime-build-identity.json"
 @{
+  transport = $Transport
   version = $Version.Trim()
   git_commit = $GitCommit.Trim()
   git_branch = $GitBranch.Trim()
@@ -277,10 +280,17 @@ Copy-Item -LiteralPath $UatEvidenceHelperSourcePath -Destination $UatEvidenceHel
 if ($LASTEXITCODE -ne 0) {
   throw "打包失败：UAT 证据收集脚本未通过 Windows PowerShell 5.1 BOM/语法门禁"
 }
+if ($Transport -eq "hook") {
+  $HookLauncherPath = Join-Path $PackageDir "start-hook.ps1"
+  Copy-Item -LiteralPath (Join-Path $Root "packaging\start-hook.ps1") -Destination $HookLauncherPath -Force
+  & powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $UatLauncherValidatorPath -ScriptPath $HookLauncherPath
+  if ($LASTEXITCODE -ne 0) { throw "Hook launcher failed Windows PowerShell syntax verification" }
+}
 $UpdatePackageManifestJson = & .\.venv\Scripts\python.exe scripts\generate-update-package-manifest.py `
   --package-root $PackageDir `
   --version $Version.Trim() `
   --git-commit $GitCommit.Trim() `
+  --transport $Transport `
   --output $UpdatePackageManifestPath
 if ($LASTEXITCODE -ne 0) {
   throw "打包失败：无法生成自动更新包内文件清单。$UpdatePackageManifestJson"

@@ -1097,7 +1097,13 @@ def _conversation_for_binding(db: Session, binding: WechatSessionBinding) -> Con
     return conversation
 
 
+def _ensure_native_ai_coverage(binding: WechatSessionBinding) -> None:
+    from app.services.hook_history_service import ensure_coverage
+    ensure_coverage(binding)
+
+
 def _ensure_conversation_eligible(binding: WechatSessionBinding, conversation: Conversation) -> None:
+    _ensure_native_ai_coverage(binding)
     if binding.bind_status != "bound" or not binding.allow_listening:
         raise AppError("CONVERSATION_NOT_ELIGIBLE", "会话未绑定或不允许监听", 409, {"suggested_action": "handoff"})
     if not conversation.ai_enabled or conversation.status in {
@@ -1115,7 +1121,11 @@ def _ensure_reply_action_send_eligible(
     binding: WechatSessionBinding,
     conversation: Conversation,
     action: ReplyAction,
+    native_authorized: bool = False,
 ) -> None:
+    _ensure_native_ai_coverage(binding)
+    if binding.native_self_wxid and not native_authorized:
+        raise AppError('HOOK_NATIVE_SEND_PERMIT_REQUIRED', '原生发送需独立同步许可和发送回执', 409)
     if action.decision != "reply_then_handoff":
         _ensure_conversation_eligible(binding, conversation)
         return
@@ -1975,7 +1985,8 @@ def _build_brain_context_snapshot(
     )
     digest = effective_context_digest(db, binding.conversation_id)
     if (isinstance(existing, dict) and existing
-            and (batch.ai_request_snapshot or {}).get("effective_context_digest", "") == digest):
+            and (batch.ai_request_snapshot or {}).get("effective_context_digest", "") == digest
+            and (not binding.native_self_wxid or (batch.ai_request_snapshot or {}).get('native_sync_checkpoint',{}).get('history_state_digest')==(binding.native_context or {}).get('history_state_digest'))):
         return dict(existing)
 
     current_ids = [str(value) for value in (batch.message_event_ids or [])]
@@ -1997,6 +2008,9 @@ def _build_brain_context_snapshot(
             )
         )
     )
+    if binding.native_self_wxid:
+        from app.services.hook_history_service import ordered_messages
+        all_history_rows=[m for m in ordered_messages(db,binding) if m.id not in current_ids]
     history_count = len(all_history_rows)
     window_rows = all_history_rows[-50:]
     prior_messages = [_brain_snapshot_message(item) for item in comparison_views(db, window_rows)]
@@ -2063,6 +2077,12 @@ def _build_ai_context(db: Session, binding: WechatSessionBinding, conversation: 
         )
     )
     history_rows.reverse()
+    if binding.native_self_wxid:
+        from app.services.hook_history_service import ordered_messages
+        ordered=ordered_messages(db,binding)
+        history_rows=ordered[-50:]
+        current={m.id:m for m in messages}
+        messages=[current[m.id] for m in ordered if m.id in current]
     effective_rows = {item.id: item for item in comparison_views(db, [*messages, *history_rows])}
 
     def compact_message(item: MessageEvent) -> dict[str, Any]:
@@ -2172,6 +2192,13 @@ def _build_ai_context(db: Session, binding: WechatSessionBinding, conversation: 
         if isinstance(batch.ai_request_snapshot, dict)
         else {}
     )
+    if binding.native_self_wxid:
+        ctx=binding.native_context or {}
+        context['native_sync_checkpoint']={
+            'schema_version':'hook-native-sync-v1','history_receipt_id':ctx['active_history_receipt_id'],
+            'history_state_digest':ctx['history_state_digest'],'account_epoch':ctx['account_epoch'],
+            'process_generation':ctx['coverage_process_generation']}
+        return context
     frozen_checkpoint = existing_snapshot.get("pre_send_fact_checkpoint")
     if not isinstance(frozen_checkpoint, dict) or not frozen_checkpoint:
         checkpoint_tail = _checkpoint_tail_from_latest_complete_frame(
@@ -2511,6 +2538,7 @@ def close_open_handoffs_for_human_sales(
     sales_message: MessageEvent,
     visible_message_orders: dict[str, int] | None = None,
     sales_screen_order: int | None = None,
+    native_history_orders: dict[str, int] | None = None,
 ) -> dict[str, Any]:
     """Close only handoffs that predate the confirmed human sales reply."""
 
@@ -2547,7 +2575,12 @@ def close_open_handoffs_for_human_sales(
             )
         ).strip()
         trigger_screen_order = visible_orders.get(trigger_event_id)
-        if (
+        native_orders = native_history_orders or {}
+        if trigger_event_id in native_orders and sales_message.id in native_orders:
+            if native_orders[sales_message.id] <= native_orders[trigger_event_id]:
+                continue
+            proof_source = "native_history_sequence"
+        elif (
             trigger_event_id
             and trigger_screen_order is not None
             and sales_screen_order is not None
@@ -3086,7 +3119,7 @@ def _schedule_retry_or_handoff(
             "error_code": "AI_CONTEXT_BUILD_FAILED",
             "suggested_action": batch.suggested_action,
         }
-    attempts = int(batch.generation_attempt_count or 0)
+    attempts = max(0, int(batch.generation_attempt_count or 0) - int(batch.generation_capacity_wait_count or 0))
     max_attempts = max(1, int(get_settings().c3_batch_recovery_max_attempts))
     if attempts >= max_attempts:
         handoff = _handoff_exhausted_generation(
@@ -3131,6 +3164,7 @@ def claim_message_batch_generation(
     batch_id: str,
     stale_only: bool = False,
     force: bool = False,
+    native_client_admitted: bool = False,
 ) -> dict[str, Any]:
     """Persist generation ownership before dispatching non-durable background work."""
     from app.services.followup_eligibility import require_conversation_followup
@@ -3155,6 +3189,10 @@ def claim_message_batch_generation(
     if batch.status not in ACTIVE_BATCH_STATUSES and not force:
         return {"run": False, "terminal": True, "batch": _batch_to_dict(batch)}
 
+    native_binding=db.scalar(select(WechatSessionBinding).where(
+        WechatSessionBinding.conversation_id==batch.conversation_id,WechatSessionBinding.deleted_at.is_(None)))
+    if native_binding and native_binding.native_self_wxid and (native_binding.worker.run_status!='running' or not native_client_admitted):
+        return {"run":False,"terminal":False,"batch":_batch_to_dict(batch),"suggested_action":"wait_worker_resume"}
     stale = message_batch_generation_is_stale(batch)
     retry_due = message_batch_retry_is_due(batch)
     if stale_only and not stale and not retry_due:
@@ -3166,7 +3204,7 @@ def claim_message_batch_generation(
 
     max_attempts = max(1, int(get_settings().c3_batch_recovery_max_attempts))
     attempts = int(batch.generation_attempt_count or 0)
-    if stale and attempts >= max_attempts and not force:
+    if stale and attempts - int(batch.generation_capacity_wait_count or 0) >= max_attempts and not force:
         _handoff_exhausted_generation(
             db,
             batch=batch,
@@ -3225,6 +3263,7 @@ def generate_for_batch(
     batch_id: str,
     force: bool = False,
     expected_generation_attempt: int | None = None,
+    native_client_admitted: bool = False,
 ) -> dict[str, Any]:
     from app.services.followup_eligibility import require_conversation_followup
     followup_conversation_id = db.scalar(select(MessageBatch.conversation_id).where(MessageBatch.id == batch_id))
@@ -3273,6 +3312,8 @@ def generate_for_batch(
 
     binding = _binding_or_404(db, batch.conversation_id)
     conversation = _conversation_for_binding(db, binding)
+    if binding.native_self_wxid and expected_generation_attempt is None and (not native_client_admitted or binding.worker.run_status!='running'):
+        return {'decision':'retry_later','suggested_action':'wait_worker_resume','task_id':None,'error_code':'HOOK_MODEL_CLIENT_ADMISSION_REQUIRED'}
     try:
         _ensure_conversation_eligible(binding, conversation)
     except AppError as exc:
@@ -3383,6 +3424,25 @@ def generate_for_batch(
     db.flush()
     db.commit()
 
+    from app.services.ai_capacity_service import acquire_call_slot, release_call_slot
+    slot = acquire_call_slot(db.get_bind(), conversation_id=followup_conversation_id,
+        batch_id=prepared_batch_id, generation_attempt=generation_attempt,
+        limit=get_settings().c3_ai_global_capacity)
+    if slot is None:
+        # No Provider request occurred. Keep the dispatch fence monotonic while
+        # removing this wait from the failure-attempt budget.
+        lock_sequence_conversation(db, followup_conversation_id)
+        pending = db.scalar(select(MessageBatch).where(MessageBatch.id == prepared_batch_id).with_for_update())
+        if (pending and pending.status == "generating"
+                and int(pending.generation_attempt_count or 0) == generation_attempt):
+            pending.status = "collecting"
+            pending.generation_started_at = None
+            pending.generation_capacity_wait_count = int(pending.generation_capacity_wait_count or 0) + 1
+            pending.error_code = None
+            pending.suggested_action = "wait_generation_capacity"
+            db.flush()
+        return {"decision": "queued", "batch": _batch_to_dict(pending) if pending else None,
+                "error_code": None, "suggested_action": "wait_generation_capacity"}
     generation_started_monotonic = time.perf_counter()
     try:
         decision = get_ai_engine_adapter().generate_reply_decision(
@@ -3418,6 +3478,10 @@ def generate_for_batch(
             suggested_action="retry_later",
             raw_payload={"exception_type": type(exc).__name__},
         )
+    finally:
+        # Includes Provider exceptions and cancellation. The slot never covers
+        # voice acquisition, send delay, or the later Task/Flow receipt work.
+        release_call_slot(db.get_bind(), slot)
     generation_duration_ms = int(
         round((time.perf_counter() - generation_started_monotonic) * 1000)
     )
@@ -3468,6 +3532,8 @@ def generate_for_batch(
         batch.status != "generating"
         or int(batch.generation_attempt_count or 0) != generation_attempt
         or context.get("effective_context_digest", "") != effective_context_digest(db, batch.conversation_id)
+        or (binding.native_self_wxid and (not (binding.native_context or {}).get('history_ready')
+            or context.get('native_sync_checkpoint',{}).get('history_state_digest')!=(binding.native_context or {}).get('history_state_digest')))
     ):
         batch.ai_response_snapshot = _record_stale_generation_attempt_diagnostics(
             batch,
@@ -3784,7 +3850,17 @@ def validate_chat_reply_task_claim(
     action = db.get(ReplyAction, task.reply_action_id)
     if not action or action.deleted_at:
         raise AppError("REPLY_ACTION_NOT_FOUND", "reply_action 不存在", 404, {"suggested_action": "cancel_task"})
-    if str(claim_source or "") != "c2_conversation_flow" or str(conversation_id or "") != action.conversation_id:
+    native_claim=False
+    if claim_source=='hook_conversation_flow':
+        binding=_binding_or_404(db,action.conversation_id)
+        if not binding.native_self_wxid:raise AppError('HOOK_SEND_IDENTITY_MISMATCH','非原生会话不能使用 Hook 发送流程',409)
+        _ensure_native_ai_coverage(binding)
+        flow=worker.inflight_flow_state or {}
+        origin=db.get(Task,flow.get('flow_id'))
+        origin_action=db.get(ReplyAction,origin.reply_action_id) if origin else None
+        native_claim=(flow.get('flow_kind')=='chat_reply' and flow.get('conversation_id')==action.conversation_id
+            and origin_action is not None and origin_action.batch_id==action.batch_id)
+    if (not native_claim and str(claim_source or "") != "c2_conversation_flow") or str(conversation_id or "") != action.conversation_id:
         raise AppError(
             "C2_REPLY_TASK_FLOW_OWNERSHIP_REQUIRED",
             "chat_reply 只能由持有当前会话 UI 锁的 C2 流程领取",
@@ -3814,6 +3890,7 @@ def claim_send(
     worker_id: str,
     client_instance_id: str | None,
     lease_fencing_token: int | None,
+    native_authorized: bool = False,
 ) -> dict[str, Any]:
     # Local import avoids the c3 <-> wechat service module cycle while keeping
     # the authorization algorithm owned by exactly one backend implementation.
@@ -3878,7 +3955,7 @@ def claim_send(
         }
     require_current_segment(db, action, db.get(Worker, worker_id))
     require_current_context(db, batch)
-    if action.segment_index > 1 and not action.pre_send_fact_checkpoint:
+    if action.segment_index > 1 and not action.pre_send_fact_checkpoint and not (native_authorized and (action.ai_payload or {}).get('native_pre_send_checkpoint')):
         raise AppError("REPLY_SEQUENCE_FRESH_READ_REQUIRED", "需要重新读取会话确认前一段", 409)
     if action.status != "queued":
         raise AppError("REPLY_ACTION_CLAIM_CONFLICT", "reply_action 已被领取或不可发送", 409, {"status": action.status, "suggested_action": "do_not_send"})
@@ -3900,6 +3977,7 @@ def claim_send(
         binding=binding,
         conversation=conversation,
         action=action,
+        native_authorized=native_authorized,
     )
     send_token = secrets.token_urlsafe(32)
     action.status = "sending"
@@ -3966,7 +4044,7 @@ def _settle_customer_interruption(
         binding.no_change_read_count = 0
 
 
-def sent_ack(db: Session, *, reply_action_id: str, payload: Any) -> dict[str, Any]:
+def sent_ack(db: Session, *, reply_action_id: str, payload: Any, native_verified: bool = False) -> dict[str, Any]:
     from app.services.followup_eligibility import conversation_lead_id, followup_block_reason
     followup_conversation_id = db.scalar(select(ReplyAction.conversation_id).where(ReplyAction.id == reply_action_id))
     from app.services.followup_eligibility import revoked_reply_action
@@ -3984,6 +4062,8 @@ def sent_ack(db: Session, *, reply_action_id: str, payload: Any) -> dict[str, An
     task = db.scalar(select(Task).where(Task.id == payload.task_id, Task.deleted_at.is_(None)).with_for_update())
     if not task or task.reply_action_id != action.id:
         raise AppError("TASK_NOT_FOUND", "chat_reply 任务不存在或不匹配", 404)
+    if _binding_or_404(db,action.conversation_id).native_self_wxid and not native_verified:
+        raise AppError('HOOK_NATIVE_SEND_SETTLEMENT_REQUIRED','原生发送必须通过历史对账结算',409)
     if action.status == "unknown_send_result":
         if payload.send_token != action.send_token:
             raise AppError(
@@ -4117,6 +4197,9 @@ def sent_ack(db: Session, *, reply_action_id: str, payload: Any) -> dict[str, An
             )
         finish_task_and_release_worker(task)
         _write_event(db, task, TaskEventType.completed, from_status=before, to_status=task.status, worker_id=payload.worker_id, remark=payload.remark)
+    elif native_verified and payload.action_phase=='not_attempted' and payload.send_result=='failed' and (payload.evidence or {}).get('native_no_trigger_verified') is True:
+        _settle_customer_interruption(db,action=action,binding=binding,conversation=conversation,followup_cancelled=followup_cancelled)
+        cancel_remaining(db,action,'C3_CONTEXT_CHANGED_BEFORE_SEND')
     elif action.segment_count <= 1 and shared_adapter("send_interruption").confirmed_customer_interruption(
         send_result=payload.send_result, action_phase=payload.action_phase,
         error_code=payload.error_code, evidence=payload.evidence or {},
@@ -4292,6 +4375,7 @@ def get_message_batch_for_worker(db: Session, *, worker: Worker, batch_id: str) 
     handoff = db.scalar(
         select(HandoffEvent).where(HandoffEvent.batch_id == batch.id, HandoffEvent.deleted_at.is_(None))
     )
+    from app.services.observability_service import process_run_id_for_batch
     processing = batch.status in ACTIVE_BATCH_STATUSES
     continuation = message_batch_continuation_authorization(
         db,
@@ -4303,6 +4387,11 @@ def get_message_batch_for_worker(db: Session, *, worker: Worker, batch_id: str) 
     return {
         "batch_id": batch.id,
         "batch_status": batch.status,
+        "process_run_id": process_run_id_for_batch(db, batch),
+        "progress_native_ids": [str((m.raw_payload or {}).get('native_msg_id')) for m in
+            db.scalars(select(MessageEvent).where(MessageEvent.binding_id==binding.id,
+                MessageEvent.id.in_(batch.message_event_ids or []),MessageEvent.sender_role=='customer'))
+            if (m.raw_payload or {}).get('native_msg_id')],
         "processing": processing,
         "terminal": not processing,
         "reply_sequence": sequence_summary(db, batch),

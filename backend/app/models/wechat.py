@@ -17,8 +17,11 @@ class WechatSessionBinding(Base, TimestampMixin):
     worker_id: Mapped[str] = mapped_column(String(36), ForeignKey("workers.id"), nullable=False)
     remark_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
     display_name: Mapped[str] = mapped_column(String(255), nullable=False)
-    rpa_session_key: Mapped[str] = mapped_column(String(255), nullable=False)
-    row_fingerprint: Mapped[str] = mapped_column(String(255), nullable=False)
+    rpa_session_key: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    row_fingerprint: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    native_self_wxid: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    native_peer_wxid: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    native_context: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict, server_default=text("'{}'"))
     bind_status: Mapped[str] = mapped_column(String(32), nullable=False, default="unbound")
     listen_status: Mapped[str] = mapped_column(String(32), nullable=False, default="not_started")
     allow_listening: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
@@ -127,6 +130,11 @@ Index(
         "AND bind_status = 'bound'"
     ),
 )
+
+
+Index("uq_wechat_binding_native_peer", WechatSessionBinding.native_self_wxid, WechatSessionBinding.native_peer_wxid,
+    unique=True, sqlite_where=text("deleted_at IS NULL AND bind_status='bound' AND native_self_wxid IS NOT NULL"),
+    postgresql_where=text("deleted_at IS NULL AND bind_status='bound' AND native_self_wxid IS NOT NULL"))
 
 
 class MessageEvent(Base):

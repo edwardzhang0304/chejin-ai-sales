@@ -1,11 +1,12 @@
 services:
   api:
+    image: ${BACKEND_IMAGE:-chejin-api:0.10.1}
     build:
       context: ..
       dockerfile: backend/Dockerfile
-    container_name: chejin-leads-api
+    container_name: ${API_CONTAINER_NAME:-chejin-leads-api}
     env_file:
-      - path: .env
+      - path: ${BACKEND_ENV_FILE:-.env}
         required: false
     environment:
       ENVIRONMENT: ${ENVIRONMENT:-development}
@@ -37,7 +38,7 @@ services:
       WAIT_FOR_DB: "1"
       RUN_MIGRATIONS: "1"
     ports:
-      - "${API_PORT:-8000}:8000"
+      - "${API_BIND_ADDRESS:-127.0.0.1}:${API_PORT:-8000}:8000"
     volumes:
       - chejin_vehicle_images:/app/data/vehicle-images
       - chejin_client_releases:/app/data/client-releases
@@ -60,13 +61,13 @@ services:
 
   db:
     image: postgres:15-alpine
-    container_name: chejin-leads-db
+    container_name: ${DB_CONTAINER_NAME:-chejin-leads-db}
     environment:
       POSTGRES_DB: ${POSTGRES_DB:-chejin_leads}
       POSTGRES_USER: ${POSTGRES_USER:-chejin}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-chejin_password}
     ports:
-      - "${POSTGRES_PORT:-5432}:5432"
+      - "${POSTGRES_BIND_ADDRESS:-127.0.0.1}:${POSTGRES_PORT:-5432}:5432"
     volumes:
       - chejin_leads_pgdata:/var/lib/postgresql/data
     healthcheck:

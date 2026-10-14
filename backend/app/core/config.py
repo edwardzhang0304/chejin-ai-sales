@@ -2,7 +2,7 @@ import json
 from functools import lru_cache
 from typing import Annotated
 
-from pydantic import field_validator, model_validator
+from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 
@@ -61,6 +61,7 @@ class Settings(BaseSettings):
     c3_omniauto_provider: str | None = None
     c3_omniauto_model: str | None = None
     c3_omniauto_base_url: str | None = None
+    c3_ai_global_capacity: int = Field(default=20, ge=1)
     c3_brain_provider_timeout_seconds: float = 180.0
     c3_batch_stale_after_seconds: float = 240.0
     c3_batch_recovery_max_attempts: int = 2

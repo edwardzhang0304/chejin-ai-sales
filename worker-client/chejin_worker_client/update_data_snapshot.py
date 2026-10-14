@@ -158,6 +158,107 @@ def _reject_evidence_alias(path: Path) -> None:
         raise RuntimeError("UPDATE_PROTECTED_FILE_SNAPSHOT_INVALID")
 
 
+def _hook_inbox_snapshot(conn: sqlite3.Connection, digest_key: str) -> dict[str, Any] | None:
+    """Optional extension leaves OCR snapshots unchanged when no Hook table exists.
+
+    Hash BLOBs locally; exported update evidence never contains callback bodies.
+    The AUTOINCREMENT high-water mark must survive even after future cleanup.
+    """
+    from .hook_inbox import INBOX_FIELDS
+
+    if conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='hook_raw_inbox'").fetchone() is None:
+        return None
+    columns = tuple(row["name"] for row in conn.execute("PRAGMA table_info(hook_raw_inbox)"))
+    if columns != INBOX_FIELDS:
+        raise RuntimeError("UPDATE_PROTECTED_DATABASE_SCHEMA_INVALID")
+    rows = {}
+    for row in conn.execute("SELECT * FROM hook_raw_inbox ORDER BY receive_seq"):
+        raw = row["raw_body"]
+        if not isinstance(raw, bytes):
+            raise RuntimeError("UPDATE_PROTECTED_DATABASE_SCHEMA_INVALID")
+        rows[authenticate(row["receive_seq"], digest_key)] = {
+            field: authenticate(hashlib.sha256(raw).hexdigest() if field == "raw_body" else row[field], digest_key)
+            for field in INBOX_FIELDS
+        }
+    sequence = conn.execute("SELECT seq FROM sqlite_sequence WHERE name='hook_raw_inbox'").fetchone()
+    return {"fields": list(INBOX_FIELDS), "row_count": len(rows), "rows": rows,
+            "receive_seq_high_water": authenticate(sequence["seq"] if sequence else 0, digest_key)}
+
+
+def _hook_projection_snapshot(conn: sqlite3.Connection, digest_key: str) -> dict[str, Any] | None:
+    from .hook_projection import PROJECTION_FIELDS
+
+    if conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='hook_observation_projection'").fetchone() is None:
+        return None
+    columns = tuple(row["name"] for row in conn.execute("PRAGMA table_info(hook_observation_projection)"))
+    if columns != PROJECTION_FIELDS:
+        raise RuntimeError("UPDATE_PROTECTED_DATABASE_SCHEMA_INVALID")
+    rows = {authenticate(row["receive_seq"], digest_key): {
+        field: authenticate(row[field], digest_key) for field in PROJECTION_FIELDS
+    } for row in conn.execute("SELECT * FROM hook_observation_projection ORDER BY receive_seq")}
+    return {"fields": list(PROJECTION_FIELDS), "row_count": len(rows), "rows": rows}
+
+
+def _hook_outbox_snapshot(conn: sqlite3.Connection, digest_key: str) -> dict[str, Any] | None:
+    from .hook_outbox import OUTBOX_FIELDS
+    if conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='hook_delivery_outbox'").fetchone() is None:
+        return None
+    fields = tuple(row['name'] for row in conn.execute('PRAGMA table_info(hook_delivery_outbox)'))
+    if fields != OUTBOX_FIELDS:
+        raise RuntimeError('UPDATE_PROTECTED_DATABASE_SCHEMA_INVALID')
+    rows = {authenticate(row['event_uuid'], digest_key): {
+        field: authenticate(row[field], digest_key) for field in OUTBOX_FIELDS
+    } for row in conn.execute('SELECT * FROM hook_delivery_outbox ORDER BY event_uuid')}
+    return {'fields': list(OUTBOX_FIELDS), 'row_count': len(rows), 'rows': rows}
+
+
+def _hook_retired_snapshot(conn,digest_key):
+    from .hook_retention import FIELDS
+    if conn.execute("SELECT 1 FROM sqlite_master WHERE name='hook_retired_observations'").fetchone() is None:return None
+    if tuple(row['name'] for row in conn.execute('PRAGMA table_info(hook_retired_observations)'))!=FIELDS:
+        raise RuntimeError('UPDATE_PROTECTED_DATABASE_SCHEMA_INVALID')
+    rows=[dict(row) for row in conn.execute('SELECT * FROM hook_retired_observations ORDER BY receive_seq')]
+    deliveries=[dict(row) for row in conn.execute('SELECT * FROM hook_retired_deliveries ORDER BY event_uuid')] if conn.execute("SELECT 1 FROM sqlite_master WHERE name='hook_retired_deliveries'").fetchone() else []
+    return authenticate({'observations':rows,'deliveries':deliveries},digest_key)
+
+
+def _hook_active_calls_snapshot(conn,digest_key):
+    from .hook_active_calls import FIELDS
+    if conn.execute("SELECT 1 FROM sqlite_master WHERE name='hook_active_calls'").fetchone() is None:return None
+    if tuple(row['name'] for row in conn.execute('PRAGMA table_info(hook_active_calls)'))!=FIELDS:
+        raise RuntimeError('UPDATE_PROTECTED_DATABASE_SCHEMA_INVALID')
+    return authenticate([dict(row) for row in conn.execute('SELECT * FROM hook_active_calls ORDER BY process_generation,action_id')],digest_key)
+
+
+def _hook_voice_snapshot(conn: sqlite3.Connection, digest_key: str) -> dict[str, Any] | None:
+    from .hook_voice import VOICE_FIELDS
+    if conn.execute("SELECT 1 FROM sqlite_master WHERE name='hook_voice_attempts'").fetchone() is None:
+        return None
+    if tuple(row["name"] for row in conn.execute("PRAGMA table_info(hook_voice_attempts)")) != VOICE_FIELDS:
+        raise RuntimeError("HOOK_VOICE_SCHEMA_UNSUPPORTED")
+    rows = [dict(row) for row in conn.execute("SELECT * FROM hook_voice_attempts ORDER BY self_wxid,account_epoch,native_msg_id")]
+    return {"rows": len(rows), "digest": authenticate(rows, digest_key)}
+
+
+def _hook_history_snapshot(conn: sqlite3.Connection, digest_key: str) -> dict[str, Any] | None:
+    from .hook_history_store import HISTORY_PAGE_FIELDS
+    if conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='hook_history_pages'").fetchone() is None:
+        return None
+    if tuple(row['name'] for row in conn.execute('PRAGMA table_info(hook_history_pages)')) != HISTORY_PAGE_FIELDS:
+        raise RuntimeError('UPDATE_PROTECTED_DATABASE_SCHEMA_INVALID')
+    rows = {}
+    for row in conn.execute('SELECT * FROM hook_history_pages ORDER BY history_seq'):
+        raw = row['raw_body']
+        if not isinstance(raw, bytes):
+            raise RuntimeError('UPDATE_PROTECTED_DATABASE_SCHEMA_INVALID')
+        rows[authenticate(row['history_seq'], digest_key)] = {
+            field: authenticate(hashlib.sha256(raw).hexdigest() if field == 'raw_body' else row[field], digest_key)
+            for field in HISTORY_PAGE_FIELDS}
+    sequence = conn.execute("SELECT seq FROM sqlite_sequence WHERE name='hook_history_pages'").fetchone()
+    return {'fields': list(HISTORY_PAGE_FIELDS), 'row_count': len(rows), 'rows': rows,
+        'history_seq_high_water': authenticate(sequence['seq'] if sequence else 0, digest_key)}
+
+
 def protected_update_snapshot(*, data_dir: Path | None = None, digest_key: str = "") -> dict[str, Any]:
     directory = (data_dir or CONFIG.app_dir).resolve()
     tables = {}
@@ -176,6 +277,13 @@ def protected_update_snapshot(*, data_dir: Path | None = None, digest_key: str =
                 },
             }
         corrections = _correction_columns_snapshot(conn, digest_key)
+        hook_inbox = _hook_inbox_snapshot(conn, digest_key)
+        hook_projection = _hook_projection_snapshot(conn, digest_key)
+        hook_outbox = _hook_outbox_snapshot(conn, digest_key)
+        hook_history = _hook_history_snapshot(conn, digest_key)
+        hook_voice = _hook_voice_snapshot(conn, digest_key)
+        hook_active_calls = _hook_active_calls_snapshot(conn,digest_key)
+        hook_retired = _hook_retired_snapshot(conn,digest_key)
     files = {}
     for relative_root in PROTECTED_FILE_ROOTS:
         root = directory / relative_root
@@ -198,6 +306,20 @@ def protected_update_snapshot(*, data_dir: Path | None = None, digest_key: str =
     payload = {"snapshot_schema_version": PROTECTED_SNAPSHOT_SCHEMA_VERSION, "tables": tables, "files": files}
     if corrections:
         payload["correction_columns_v1"] = corrections
+    if hook_inbox is not None:
+        payload["hook_inbox_v1"] = hook_inbox
+    if hook_projection is not None:
+        payload["hook_projection_v1"] = hook_projection
+    if hook_outbox is not None:
+        payload['hook_outbox_v1'] = hook_outbox
+    if hook_history is not None:
+        payload['hook_history_v1'] = hook_history
+    if hook_voice is not None:
+        payload['hook_voice_v1'] = hook_voice
+    if hook_retired is not None:
+        payload['hook_retired_v1']=hook_retired
+    if hook_active_calls is not None:
+        payload['hook_active_calls_v1']=hook_active_calls
     return {**payload, "snapshot_sha256": authenticate(payload, digest_key)}
 
 
@@ -212,6 +334,20 @@ def assert_protected_update_snapshot(expected: dict[str, Any], *, data_dir: Path
             raise RuntimeError("UPDATE_PROTECTED_FILE_SNAPSHOT_INVALID")
     actual = protected_update_snapshot(data_dir=data_dir, digest_key=digest_key)
     differences = []
+    if expected.get('hook_retired_v1')!=actual.get('hook_retired_v1'):
+        differences.append({'table':'hook_retired_observations','retired_observations_changed':True})
+    if expected.get('hook_active_calls_v1')!=actual.get('hook_active_calls_v1'):
+        differences.append({'table':'hook_active_calls','active_calls_changed':True})
+    if expected.get("hook_voice_v1") != actual.get("hook_voice_v1"):
+        differences.append({"table": "hook_voice_attempts", "hook_voice_changed": True})
+    if expected.get("hook_inbox_v1") != actual.get("hook_inbox_v1"):
+        differences.append({"table": "hook_raw_inbox", "hook_inbox_changed": True})
+    if expected.get("hook_projection_v1") != actual.get("hook_projection_v1"):
+        differences.append({"table": "hook_observation_projection", "hook_projection_changed": True})
+    if expected.get('hook_history_v1') != actual.get('hook_history_v1'):
+        differences.append({'table': 'hook_history_pages', 'hook_history_changed': True})
+    if expected.get('hook_outbox_v1') != actual.get('hook_outbox_v1'):
+        differences.append({'table': 'hook_delivery_outbox', 'hook_outbox_changed': True})
     if expected.get("correction_columns_v1", {}) != actual.get("correction_columns_v1", {}):
         differences.append({"table": "c2_ingest_outbox", "correction_columns_changed": True})
     for table, metadata in tables.items():

@@ -5,6 +5,7 @@ import { CloseIcon } from "../../shared/ui/Icons";
 import { displayValue as display, formatRelativeHeartbeat as formatHeartbeat, optionalText } from "../../shared/utils/display";
 import { postMutationMessage, runPostMutationRefresh } from "../../shared/utils/postMutation";
 import { normalizePhoneInput, PHONE_PATTERN } from "../../shared/utils/phone";
+import { workerStatus } from "../workers/status";
 import { listWorkers } from "../workers/api";
 import type { WorkerItem } from "../workers/types";
 import { createSales, getSales, listSales, updateSales } from "./api";
@@ -46,10 +47,7 @@ function statusClass(enabled: boolean) {
 
 function formatWorkerRunning(worker?: SalesItem["current_worker"] | null) {
   if (!worker) return "-";
-  if (worker.online_status !== "online") return "离线";
-  if (worker.run_status === "faulted") return "客户端故障";
-  const running = worker.running_status === "idle" ? "空闲" : "忙碌";
-  return `在线 / ${running}`;
+  return workerStatus(worker).label;
 }
 
 function toEditForm(item: SalesItem): SalesEditForm {

@@ -24,6 +24,7 @@
     "low_authority_fast_repair_timeout_seconds": 45,
     "quality_repair_timeout_seconds": 45,
     "json_structure_repair_timeout_seconds": 45,
+    "semantic_reviewer_max_tokens": 16384,
     "semantic_reviewer_timeout_seconds": 25,
     "semantic_reviewer_fallback_timeout_seconds": 25,
     "same_capture_brain_unavailable_retry_timeout_seconds": 60,

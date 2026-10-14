@@ -1,0 +1,102 @@
+name: Hook Windows candidate build
+on:
+  workflow_dispatch:
+    inputs:
+      approved:
+        description: Reviewed candidate build explicitly authorized
+        type: boolean
+        default: false
+      review_reference:
+        description: Architect review and authorization reference
+        required: true
+      source_run_id:
+        description: Fresh native source evidence run
+        required: true
+      tool_run_id:
+        description: Matching release-tool evidence run
+        required: true
+permissions:
+  contents: read
+  actions: read
+jobs:
+  evidence:
+    runs-on: ubuntu-latest
+    env:
+      CHEJIN_RELEASE_TRANSPORT: hook
+      SOURCE_RUN_ID: ${{ inputs.source_run_id }}
+      TOOL_RUN_ID: ${{ inputs.tool_run_id }}
+    steps:
+      - uses: actions/checkout@v4
+        with: {fetch-depth: 0, persist-credentials: false}
+      - name: Require explicit review, approval and native branch
+        env:
+          APPROVED: ${{ inputs.approved }}
+          REVIEW_REFERENCE: ${{ inputs.review_reference }}
+        run: |
+          python - <<'PYTHON'
+          import os
+          if os.environ['APPROVED']!='true' or not os.environ['REVIEW_REFERENCE'].strip() or os.environ['GITHUB_REF']!='refs/heads/gray-release-0.10.x':
+              raise SystemExit('HOOK_REVIEWED_BUILD_APPROVAL_REQUIRED')
+          PYTHON
+      - uses: actions/setup-python@v5
+        with: {python-version: '3.12.10'}
+      - name: Verify exact source and tool evidence
+        env: {GH_TOKEN: '${{ github.token }}'}
+        run: python ops/formal_release/source_evidence.py resolve --source-run "$SOURCE_RUN_ID" --output native-source-evidence.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: native-build-evidence
+          path: native-source-evidence.json
+          if-no-files-found: error
+  build:
+    needs: evidence
+    runs-on: windows-latest
+    timeout-minutes: 60
+    env:
+      CHEJIN_RELEASE_SIGNING_KEY_ID: ${{ secrets.CHEJIN_RELEASE_SIGNING_KEY_ID }}
+      CHEJIN_RELEASE_SIGNING_PUBLIC_KEY_BASE64: ${{ secrets.CHEJIN_RELEASE_SIGNING_PUBLIC_KEY_BASE64 }}
+      CHEJIN_RELEASE_TRANSPORT: hook
+      SOURCE_RUN_ID: ${{ inputs.source_run_id }}
+      TOOL_RUN_ID: ${{ inputs.tool_run_id }}
+    steps:
+      - uses: actions/checkout@v4
+        with: {fetch-depth: 0, persist-credentials: false}
+      - uses: actions/setup-python@v5
+        with: {python-version: '3.12.10'}
+      - name: Verify launcher isolation in Windows PowerShell 5.1
+        shell: powershell
+        run: .\worker-client\scripts\test-hook-launcher.ps1
+      - name: Prepare Windows build environment
+        working-directory: worker-client
+        run: |
+          python -m venv .venv
+          .\.venv\Scripts\python.exe -m pip install --disable-pip-version-check -r requirements.txt -r requirements-test.txt PyInstaller
+          if ($LASTEXITCODE -ne 0) { throw 'HOOK_BUILD_DEPENDENCY_FAILED' }
+      - name: Verify installation and unified product version
+        working-directory: worker-client
+        run: |
+          $env:PYTHONPATH = "$PWD;$PWD\omniauto-rpa"
+          .\.venv\Scripts\python.exe -m pytest tests/test_hook_installation.py tests/test_hook_release_channels.py tests/test_packaging_entry.py -q
+          if ($LASTEXITCODE -ne 0) { throw 'HOOK_INSTALLATION_CHECK_FAILED' }
+      - uses: actions/download-artifact@v4
+        with: {name: native-build-evidence, path: native-evidence}
+      - name: Build native candidate with original full package gates
+        working-directory: worker-client
+        env:
+          CHEJIN_FORMAL_SOURCE_RECEIPT: ${{ github.workspace }}/native-evidence/native-source-evidence.json
+          GH_TOKEN: ${{ github.token }}
+        run: .\scripts\build-windows.ps1 -Transport hook
+      - name: Archive native candidate without publishing
+        working-directory: worker-client
+        run: |
+          $Version = .\.venv\Scripts\python.exe -c "from chejin_worker_client import __version__; print(__version__)"
+          if ($LASTEXITCODE -ne 0) { throw 'HOOK_VERSION_READ_FAILED' }
+          Compress-Archive -Path .\dist\CheJinWorkerClient -DestinationPath ".\dist\CheJinWorkerClient-v$($Version.Trim())-gray-hook-windows-x64.zip"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: hook-windows-candidate-${{ github.sha }}
+          path: |
+            worker-client/dist/CheJinWorkerClient-v*-gray-hook-windows-x64.zip
+            worker-client/dist/reports/**
+          if-no-files-found: error
+          retention-days: 30

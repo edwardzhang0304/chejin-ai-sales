@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, Index, JSON, String, Text
+from sqlalchemy import Boolean, DateTime, ForeignKey, Index, JSON, String, Text, text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.database import Base
@@ -33,6 +33,10 @@ class Worker(Base, TimestampMixin):
     client_binding_state: Mapped[str | None] = mapped_column(String(64), nullable=True)
     client_instance_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
     bound_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    hook_self_wxid: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    hook_account_epoch: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    hook_sales_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    hook_runtime_context: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict, server_default=text("'{}'"))
     remark: Mapped[str | None] = mapped_column(Text, nullable=True)
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
@@ -41,6 +45,9 @@ Index("idx_workers_enabled_status", Worker.enabled, Worker.online_status, Worker
 Index("idx_workers_last_heartbeat_at", Worker.last_heartbeat_at)
 Index("idx_workers_client_instance_id", Worker.client_instance_id)
 Index("idx_workers_run_status", Worker.run_status, Worker.rpa_component_status)
+Index("uq_workers_hook_account", Worker.hook_self_wxid, unique=True,
+      sqlite_where=text("deleted_at IS NULL AND hook_self_wxid IS NOT NULL"),
+      postgresql_where=text("deleted_at IS NULL AND hook_self_wxid IS NOT NULL"))
 
 
 class WorkerHeartbeatLog(Base):

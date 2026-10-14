@@ -69,14 +69,20 @@ class C2IngestBodyLimitMiddleware:
         send: Callable[[dict[str, Any]], Awaitable[None]],
     ) -> None:
         path = str(scope.get("path") or "")
+        native = (path.endswith(('/wechat/messages/native-observations','/wechat/native-bindings','/wechat/native-history/coverage',
+            '/hook-invite/prepare','/hook-invite/submitted')) or '/wechat/native-replies/' in path)
         correction = path.endswith(("/wechat/message-text-corrections", "/wechat/message-text-corrections/resolution"))
-        if scope.get("type") != "http" or not (path.endswith("/wechat/messages/ingest") or correction):
+        if scope.get("type") != "http" or not (path.endswith("/wechat/messages/ingest") or correction or native):
             await self.app(scope, receive, send)
             return
 
-        max_bytes = 6 * 1024 * 1024 if correction else self.max_bytes
-        error_code = "HISTORICAL_TEXT_CORRECTION_TOO_LARGE" if correction else "MESSAGE_INGEST_REQUEST_TOO_LARGE"
-        error_message = "原图纠错请求超过大小限制" if correction else "消息入库请求超过大小限制"
+        if native:
+            from app.contracts.shared_rules import shared_adapter
+            max_bytes = shared_adapter('hook_contract_rules').MAX_BYTES
+        else:
+            max_bytes = 6 * 1024 * 1024 if correction else self.max_bytes
+        error_code = 'HOOK_NATIVE_BODY_TOO_LARGE' if native else ("HISTORICAL_TEXT_CORRECTION_TOO_LARGE" if correction else "MESSAGE_INGEST_REQUEST_TOO_LARGE")
+        error_message = '消息上报超过大小限制' if native else ("原图纠错请求超过大小限制" if correction else "消息入库请求超过大小限制")
 
         headers = {
             key.lower(): value
@@ -154,8 +160,11 @@ def create_app() -> FastAPI:
         finally:
             recovery.stop()
 
+    from app.contracts.c2 import contract_revision
+
     app = FastAPI(
         title=settings.app_name,
+        version=contract_revision(),
         docs_url=docs_url,
         redoc_url=None,
         openapi_url=openapi_url,

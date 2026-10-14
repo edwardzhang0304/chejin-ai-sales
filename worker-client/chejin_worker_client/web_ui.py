@@ -6,7 +6,7 @@ import shutil
 import subprocess
 import sys
 from dataclasses import asdict
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -16,7 +16,7 @@ from PySide6.QtWebChannel import QWebChannel
 from PySide6.QtWebEngineWidgets import QWebEngineView
 from PySide6.QtWidgets import QFileDialog, QMainWindow
 
-from . import __version__, runtime_startup
+from . import __version__, runtime_startup, startup_check_state
 from .api import WorkerApiClient
 from .config import CONFIG
 from .failure_evidence import exception_details, record_capture_failure, record_ui_failure
@@ -53,11 +53,14 @@ WINDOW_RADIUS = 10
 TIMELINE_IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".webp"}
 
 
-def _format_time(value: str | None) -> str:
+def _format_time(value: str | None, *, backend_utc: bool = False) -> str:
     if not value:
         return "暂无"
     try:
         parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        if backend_utc:
+            if parsed.tzinfo is None:parsed=parsed.replace(tzinfo=timezone.utc)
+            parsed=parsed.astimezone()
         return parsed.astimezone().strftime("%H:%M:%S")
     except ValueError:
         return value[-8:] if len(value) >= 8 else value
@@ -268,6 +271,8 @@ class WorkerWebWindow(QMainWindow):
         self.binding = load_binding()
         self.profile: WorkerProfile | None = None
         self.accept_schedule = load_accept_schedule()
+        from .hook_progress import HookProgressTimeline
+        self.hook_progress_timeline = HookProgressTimeline()
         self.current_task: Task | None = None
         self.last_task: Task | None = None
         self.last_result: RpaResult | None = None
@@ -283,9 +288,11 @@ class WorkerWebWindow(QMainWindow):
         self.update_state: dict[str, Any] = {}
         self._runtime_services_started = False
 
+        from .hook_factory import create_hook_services
         self.runner = TaskRunner(
             self.api,
             self.rpa_bridge,
+            hook_services=create_hook_services(self.api),
             on_profile=lambda value: self.profile_signal.emit(value),
             on_status=lambda value: self.status_signal.emit(value),
             on_task=lambda value: self.task_signal.emit(value),
@@ -392,7 +399,11 @@ class WorkerWebWindow(QMainWindow):
     def _position_next_to_wechat_once(self) -> None:
         if self._startup_position_attempted:
             return
-        probe_payload = self.rpa_bridge.last_probe_payload
+        services = getattr(self.runner, 'hook_services', None)
+        if services is not None:
+            probe_payload = services.startup_window_position_payload()
+        else:
+            probe_payload = self.rpa_bridge.last_probe_payload
         if not probe_payload:
             return
         geometry = probe_payload.get("geometry")
@@ -435,8 +446,13 @@ class WorkerWebWindow(QMainWindow):
         )
         if position is None:
             return
+        if services is not None:
+            from .hook_progress import emit_progress
+            emit_progress(self.runner,'startup','worker_window')
         self.move(*position)
         self._startup_position_attempted = True
+        if services is not None:
+            emit_progress(self.runner,'startup','worker_window','done')
 
     def _wire_signals(self) -> None:
         self.profile_signal.connect(self.on_profile)
@@ -535,6 +551,22 @@ class WorkerWebWindow(QMainWindow):
             "notice": self.notice,
         }
 
+    def _startup_check_state(self) -> dict[str, Any]:
+        # Projection only: GUI must not call a DLL, take a screenshot or wait on HTTP.
+        if self.connection_status in {'offline', 'connecting'}:
+            if self.connection_status == 'offline':
+                return startup_check_state.failed('HOOK_BACKEND_NETWORK_FAILED')
+        services = getattr(self.runner, 'hook_services', None)
+        if services is not None:
+            return services.startup_check_state()
+        if self.profile is None:
+            return startup_check_state.checking()
+        if self.profile.rpa_component_status != 'ready':
+            return startup_check_state.failed('WORKER_AUTOMATION_UNAVAILABLE')
+        if self.profile.wechat_status != 'logged_in':
+            return startup_check_state.failed('WORKER_WECHAT_DISCONNECTED')
+        return startup_check_state.passed()
+
     def _screen(self) -> str:
         if self.active_page in {"settings", "schedule-settings", "logs"}:
             return self.active_page
@@ -590,6 +622,8 @@ class WorkerWebWindow(QMainWindow):
             return "paused-empty-2" if self.binding.run_status == "paused" else "completed"
         if self.last_result and not self.last_result.ok:
             return "ai-reply-failed" if self.last_task and self.last_task.task_type == "chat_reply" else "failed"
+        if self._startup_check_state()["state"] == "failed":
+            return "automation-unavailable"
         if self.profile and self.profile.rpa_component_status != "ready":
             return "automation-unavailable"
         if self.profile and self.profile.wechat_status != "logged_in":
@@ -614,6 +648,16 @@ class WorkerWebWindow(QMainWindow):
             if run_status == "running" and schedule_active
             else "暂停接单"
         )
+        hook=getattr(self.runner,'hook_services',None)
+        startup=self._startup_check_state()
+        if hook is not None and run_status=='running' and schedule_active:
+            if offline:receive_state='等待后台恢复'
+            dispatcher=getattr(hook,'dispatcher',None)
+            pending=dispatcher.pending_wait_snapshot() if hasattr(dispatcher,'pending_wait_snapshot') else getattr(dispatcher,'_pending_wait_phases',{})
+            if any(pending.values()) or (startup.get('state')=='failed' and startup.get('title','').startswith(('等待后台','后台连接'))):
+                receive_state='等待后台恢复'
+            elif startup.get('state')=='checking':receive_state='检查中'
+            elif startup.get('state')=='failed':receive_state='检查未通过'
         return {
             "workerId": self.binding.worker_id if self.binding else "",
             "workerToken": self.binding.worker_token if self.binding else "",
@@ -622,14 +666,17 @@ class WorkerWebWindow(QMainWindow):
             "status": {
                 "sellerName": self._seller_name(profile),
                 "receiveState": (
-                    recovery['statusText']
+                    receive_state
                     if run_status == "faulted"
+                    else receive_state
+                    if hook is not None and (run_status=='paused' or offline)
                     else "离线"
                     if offline
                     else receive_state
                 ),
+                "acceptingIntent":run_status=="running" and schedule_active,
                 "connectionState": "连接异常" if offline else "连接正常",
-                "lastHeartbeat": _format_time(profile.last_heartbeat_at if profile else None),
+                "lastHeartbeat": _format_time(profile.last_heartbeat_at if profile else None, backend_utc=getattr(self.runner,"hook_services",None) is not None),
                 "automationState": "可用" if profile and profile.rpa_component_status == "ready" else "不可用",
                 "wechatState": "已连接" if profile and profile.wechat_status == "logged_in" else "未连接",
                 "currentStep": self.runner.current_step or (profile.current_step if profile else None) or "",
@@ -654,6 +701,8 @@ class WorkerWebWindow(QMainWindow):
             "latestIncident": latest_incident() or {},
             "update": dict(self.update_state),
             "faultRecovery": recovery,
+            "startupCheck": self._startup_check_state(),
+            "hookProcessSteps": self.hook_progress_timeline.model(historical=False) if hasattr(self, "hook_progress_timeline") else [],
             "layoutRecovery": self.runner.layout_recovery_state(),
         }
 
@@ -903,6 +952,9 @@ class WorkerWebWindow(QMainWindow):
     def set_accepting(self, accepting: bool) -> None:
         if not self.binding:
             return
+        if accepting and self.binding.run_status != "faulted" and not self._startup_check_state()["canStart"]:
+            self._publish()
+            return
         next_status = "running" if accepting else "paused"
         if not accepting:
             self.update_coordinator.note_operator_pause()
@@ -1067,9 +1119,15 @@ class WorkerWebWindow(QMainWindow):
 
     @Slot(object)
     def on_runtime_process(self, event: dict[str, Any]) -> None:
-        self.runtime_process_timeline.apply(
-            event if isinstance(event, dict) else {}
-        )
+        if isinstance(event, dict) and event.get('event') in {'hook_progress','hook_progress_group','hook_progress_control'}:
+            from .hook_progress import HookProgressTimeline
+            if not hasattr(self, 'hook_progress_timeline'): self.hook_progress_timeline = HookProgressTimeline()
+            self.hook_progress_timeline.apply(event)
+            from .hook_progress import forget_completed_progress_group
+            for group in self.hook_progress_timeline.take_retired_groups():
+                forget_completed_progress_group(getattr(self, 'runner', None), group)
+        else:
+            self.runtime_process_timeline.apply(event if isinstance(event, dict) else {})
         self._publish()
 
     @Slot(object)
@@ -1089,7 +1147,13 @@ class WorkerWebWindow(QMainWindow):
 
     def closeEvent(self, event: Any) -> None:
         self.update_coordinator.stop()
-        self.runner.stop()
+        if self.runner.hook_services is not None:
+            try:self.runner.stop_for_update(80)
+            except Exception:
+                event.ignore()
+                self.error_signal.emit('工作微信记录还在保存，请稍后退出。')
+                return
+        else:self.runner.stop()
         super().closeEvent(event)
 
 

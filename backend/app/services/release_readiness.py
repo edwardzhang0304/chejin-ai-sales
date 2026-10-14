@@ -1,5 +1,6 @@
 """Read-only release readiness: keep compatible queued work, reject execution risk."""
 from sqlalchemy import select, text
+from app.models.worker import Worker
 
 TERMINAL = {'completed', 'failed', 'cancelled'}
 LEASE_FIELDS = ('lease_owner_worker_id', 'lease_owner_client_instance_id', 'lease_expires_at', 'lease_last_renewed_at')
@@ -27,7 +28,7 @@ def task_release_blocker(task):
 
 
 def release_readiness(db):
-    workers = db.execute(text('select run_status,running_status,current_task,local_lock_summary,inflight_flow_state from workers')).mappings().all()
+    workers = db.execute(select(Worker.run_status, Worker.running_status, Worker.current_task, Worker.local_lock_summary, Worker.inflight_flow_state)).mappings().all()
     worker_blockers = sum(not (w['run_status'] in {'paused','faulted'} and w['running_status']=='idle' and w['current_task'] is None and not (w['local_lock_summary'] or {}).get('locked') and not w['inflight_flow_state']) for w in workers)
     tasks = db.execute(text("""select t.*, exists(select 1 from task_events e where e.task_id=t.id and e.event_type not in ('created','blocked')) as has_execution_event,
       exists(select 1 from task_evidences e where e.task_id=t.id) as has_evidence from tasks t""")).mappings().all()

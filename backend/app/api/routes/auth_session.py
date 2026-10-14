@@ -78,6 +78,12 @@ def login(
     return ok({"operator_id": account.id, "operator_name": account.display_name})
 
 
+@router.get("/system/version", dependencies=[Depends(require_admin_auth)])
+def system_version():
+    from app.contracts.c2 import contract_revision
+    return ok({"product_version": contract_revision(), "c2_protocol_version": 3, "hook_protocol_version": "hook-v1"})
+
+
 @router.get("/auth/session", dependencies=[Depends(require_admin_auth)])
 def read_auth_session(actor: ActorContext = Depends(get_actor_context)):
     return ok({"operator_id": str(actor.operator_id), "operator_name": actor.operator_name})

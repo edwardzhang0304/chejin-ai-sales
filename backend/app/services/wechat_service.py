@@ -4305,6 +4305,8 @@ def ingest_messages(db: Session, worker: Worker, payload: WechatMessageIngestReq
             WechatSessionBinding.deleted_at.is_(None),
         ).with_for_update().execution_options(populate_existing=True)
     )
+    if binding is not None and binding.native_self_wxid:
+        raise AppError('HOOK_NATIVE_INGEST_REQUIRED','原生会话不接受 OCR 读取凭证',409)
     locked_worker = db.scalar(
         select(Worker)
         .where(Worker.id == worker.id, Worker.deleted_at.is_(None))

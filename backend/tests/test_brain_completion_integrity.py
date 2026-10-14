@@ -27,6 +27,7 @@ def test_formal_config_keeps_repair_budget():
     brain = json.loads(path.read_text())["customer_service_brain"]
     assert brain["quality_repair_max_tokens"] == 16384
     assert brain["low_authority_fast_repair_max_tokens"] == 16384
+    assert brain["semantic_reviewer_max_tokens"] == 16384
 
 
 def plan(reply=FULL_REPLY):
@@ -53,7 +54,7 @@ def test_c3_only_complete_generation_creates_reply_task(monkeypatch, repair_firs
             payload = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
             reviewer = payload["model"] == "isolated-reviewer"
             if reviewer:
-                content = json.dumps({"verdict": "pass", "errors": [], "risk_level": "low"})
+                content = json.dumps({"verdict": "pass", "confidence": 1.0, "semantic_errors": [], "hard_boundary_concerns": [], "customer_visible_risk": "low", "repair_instruction": "", "reason": "Complete synthetic review"})
                 finish = "stop"
             else:
                 calls.append(payload)
@@ -132,4 +133,55 @@ def test_c3_only_complete_generation_creates_reply_task(monkeypatch, repair_firs
         server.shutdown()
         server.server_close()
         thread.join(timeout=2)
+        get_settings.cache_clear()
+
+@pytest.mark.parametrize("error", [
+    "semantic_reviewer_response_incomplete",
+    "semantic_reviewer_response_was_not_json_object",
+    "semantic_reviewer_response_invalid_contract",
+])
+def test_invalid_review_is_not_outage_soft_pass(error):
+    from customer_service_quality_reviewer import normalize_quality_review_result, apply_review_mode
+    review = normalize_quality_review_result({"status": "error", "error": error, "error_kind": "protocol"})
+    # Even a caller that enabled outage fallback cannot authorize invalid review.
+    result = apply_review_mode({**review, "soft_pass_low_risk": True}, mode="suspicious_only")
+    assert not result["ok"] and result["verdict"] == "block"
+    assert not result["unavailable"] and not result.get("soft_pass")
+
+
+def test_transport_outage_keeps_existing_low_risk_fallback():
+    from customer_service_quality_reviewer import normalize_quality_review_result, apply_review_mode
+    review = normalize_quality_review_result({"status": "error", "error": "provider_timeout"})
+    result = apply_review_mode({**review, "customer_visible_risk": "low", "soft_pass_low_risk": True}, mode="suspicious_only")
+    assert result["ok"] and result["unavailable"] and result["soft_pass"]
+
+
+@pytest.mark.parametrize("envelope_error", ["empty_choices", "broken_json"])
+@pytest.mark.parametrize("after_repair", [False, True])
+def test_bad_reviewer_envelope_never_creates_send_task(monkeypatch, envelope_error, after_repair):
+    from test_partial_reply_recovery_provider import controlled_recovery_provider
+    api.setup_function()
+    monkeypatch.setenv("C3_OMNIAUTO_ROOT", str(RUNTIME))
+    monkeypatch.setenv("C3_AI_ADAPTER_MODE", "real")
+    get_settings.cache_clear()
+    requests = []
+    try:
+        with controlled_recovery_provider(monkeypatch, FULL_REPLY, requests,
+                review_envelope_error=envelope_error, review_envelope_after=int(after_repair)):
+            for title, text in GUIDANCE:
+                api._publish_managed_knowledge(title, text)
+            worker, binding = api._setup_bound_conversation()
+            event = api._ingest(worker, binding["conversation_id"], "protocol-fixture", "不要丰田车")
+            batch = api._collect(binding["conversation_id"], event)
+            with api.SessionLocal() as db:
+                saved = db.get(MessageBatch, batch["batch_id"])
+                assert saved.decision != "send_reply"
+                assert list(db.scalars(select(ReplyAction))) == []
+                assert list(db.scalars(select(Task).where(Task.task_type == "chat_reply"))) == []
+                brain = saved.ai_response_snapshot["raw_payload"]["omniauto_brain_result"]
+                review = brain["repaired_quality_gate_v2" if after_repair else "quality_gate_v2"]
+                assert review["verdict"] == "block" and not review["ok"]
+                assert not review.get("unavailable") and not review.get("soft_pass")
+            assert sum(p["model"] == "recovery-reviewer" for p in requests) > int(after_repair)
+    finally:
         get_settings.cache_clear()

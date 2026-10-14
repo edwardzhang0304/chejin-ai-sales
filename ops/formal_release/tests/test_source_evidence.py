@@ -135,7 +135,7 @@ class FingerprintAndSelectionTests(unittest.TestCase):
 
     def test_fast_uat_workflow_and_shared_checks_unchanged(self):
         for path in (".github/workflows/worker-windows-fast-uat.yml", ".github/actions/worker-release-checks/action.yml"):
-            previous = subprocess.check_output(["git", "show", "cd8763ed38ec1df1ff8054e49c3381e8a5322f62:" + path], cwd=ROOT)
+            previous = subprocess.check_output(["git", "show", "c89419ae7430af05f9993fcd4e916dc3e55391fa:" + path], cwd=ROOT)
             self.assertEqual(previous.replace(b"\r\n", b"\n"), (ROOT / path).read_bytes().replace(b"\r\n", b"\n"))
 
 

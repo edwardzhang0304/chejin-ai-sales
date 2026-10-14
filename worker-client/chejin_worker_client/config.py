@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import os
+import json
+import sqlite3
+from contextlib import closing
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -11,9 +14,31 @@ DEFAULT_API_BASE_URL = "https://jiangsuchejin.com/api"
 def default_app_dir() -> Path:
     if os.environ.get("CHEJIN_WORKER_HOME"):
         return Path(os.environ["CHEJIN_WORKER_HOME"])
+    from .release_transport import packaged_transport
+    name = "CheJinWorkerHook" if packaged_transport() == "hook" else "CheJinWorker"
     if os.environ.get("LOCALAPPDATA"):
-        return Path(os.environ["LOCALAPPDATA"]) / "CheJinWorker"
-    return Path.home() / ".chejin-worker"
+        return Path(os.environ["LOCALAPPDATA"]) / name
+    return Path.home() / (".chejin-worker-hook" if name == "CheJinWorkerHook" else ".chejin-worker")
+
+
+def configured_api_base_url(app_dir: Path) -> str:
+    from .release_transport import packaged_transport
+    from .hook_config import INSTALLATION_KEY
+    if packaged_transport() != 'hook':
+        return os.environ.get('CHEJIN_API_BASE_URL', DEFAULT_API_BASE_URL).rstrip('/')
+    # A Hook package never inherits OCR's production URL or an unverified override.
+    database = app_dir / 'worker_client.sqlite3'
+    if not database.is_file():
+        return ''  # Only installation commands are admitted until configured.
+    with closing(sqlite3.connect(database.resolve().as_uri() + '?mode=ro', uri=True)) as db:
+        table = db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='client_settings'").fetchone()
+        row = db.execute("SELECT value FROM client_settings WHERE key=?", (INSTALLATION_KEY,)).fetchone() if table else None
+    if row is None:
+        return ''
+    value = json.loads(row[0])
+    if not isinstance(value, dict) or set(value) != {'schema_version', 'api_base_url'} or value['schema_version'] != 1 or not isinstance(value['api_base_url'], str):
+        raise ValueError('HOOK_INSTALL_PROFILE_INVALID')
+    return value['api_base_url']
 
 
 @dataclass(frozen=True)
@@ -63,9 +88,10 @@ class ClientConfig:
                 return default
             return raw.strip().lower() in {"1", "true", "yes", "on"}
 
+        app_dir = default_app_dir()
         return cls(
-            api_base_url=os.environ.get("CHEJIN_API_BASE_URL", DEFAULT_API_BASE_URL).rstrip("/"),
-            app_dir=default_app_dir(),
+            api_base_url=configured_api_base_url(app_dir),
+            app_dir=app_dir,
             heartbeat_interval_seconds=float(os.environ.get("CHEJIN_HEARTBEAT_INTERVAL", "20")),
             poll_interval_seconds=float(os.environ.get("CHEJIN_TASK_POLL_INTERVAL", "4")),
             api_timeout_seconds=float(os.environ.get("CHEJIN_API_TIMEOUT", "12")),

@@ -284,6 +284,8 @@ p {
   top: 0;
   display: grid;
   grid-template-rows: auto 1fr auto;
+  grid-template-columns: minmax(0, 1fr);
+  min-width: 0;
   gap: 28px;
   height: 100vh;
   padding: 23px 16px 22px;
@@ -337,8 +339,9 @@ p {
 
 .account-area {
   position: relative;
-  width: 216px;
-  max-width: 100%;
+  width: 100%;
+  max-width: 216px;
+  min-width: 0;
 }
 
 .account-button {
@@ -346,8 +349,8 @@ p {
   grid-template-columns: 34px minmax(0, 1fr) 18px;
   gap: 10px;
   align-items: center;
-  width: 216px;
-  max-width: 100%;
+  width: 100%;
+  min-width: 0;
   min-height: 58px;
   padding: 9px 10px;
   color: #fff;
@@ -757,7 +760,8 @@ p {
 }
 
 .search-field {
-  width: 260px;
+  width: 100%;
+  min-width: 0;
 }
 
 .select-field {
@@ -795,7 +799,7 @@ textarea {
 
 .content-grid {
   display: grid;
-  grid-template-columns: minmax(0, 768px) 360px;
+  grid-template-columns: minmax(0, 1fr) 360px;
   gap: 16px;
   align-items: start;
 }
@@ -810,7 +814,8 @@ textarea {
 
 .list-region {
   display: block;
-  width: 768px;
+  width: 100%;
+  min-width: 0;
   padding: 20px;
   overflow: hidden;
 }
@@ -864,10 +869,10 @@ textarea {
 
 .filter-card {
   display: grid;
-  grid-template-columns: 260px 180px 180px;
+  grid-template-columns: minmax(0, 1fr) 180px 180px;
   gap: 28px;
   align-items: end;
-  width: 728px;
+  width: 100%;
   height: 86px;
   padding: 14px 12px;
   background: var(--surface-soft);
@@ -924,7 +929,7 @@ textarea {
 
 .pagination-row {
   height: 62px;
-  width: 726px;
+  width: 100%;
   align-items: end;
   padding-bottom: 15px;
   color: var(--muted);
@@ -981,7 +986,7 @@ textarea {
 }
 
 .table-card {
-  width: 728px;
+  width: 100%;
   height: 430px;
   min-height: 0;
   overflow: auto;
@@ -2098,7 +2103,7 @@ tbody tr:hover td {
 
 .management-grid {
   display: grid;
-  grid-template-columns: 768px 360px;
+  grid-template-columns: minmax(0, 1fr) 360px;
   gap: 16px;
   align-items: start;
 }
@@ -2110,16 +2115,17 @@ tbody tr:hover td {
 }
 
 .management-list-panel {
-  width: 768px;
+  width: 100%;
+  min-width: 0;
   padding: 20px;
 }
 
 .management-filter-card {
   display: grid;
-  grid-template-columns: 320px 180px 180px;
+  grid-template-columns: minmax(0, 1fr) 180px 180px;
   gap: 14px;
   align-items: end;
-  width: 728px;
+  width: 100%;
   height: 86px;
   padding: 14px 12px;
   background: var(--surface-soft);
@@ -2137,7 +2143,7 @@ tbody tr:hover td {
 }
 
 .management-table-card {
-  width: 728px;
+  width: 100%;
   height: 560px;
   margin-top: 16px;
   overflow: auto;
@@ -2248,7 +2254,7 @@ tbody tr:hover td {
   grid-template-columns: 218px repeat(3, 1fr);
   gap: 12px;
   align-items: end;
-  width: 728px;
+  width: 100%;
   height: 164px;
   padding: 14px 12px;
   background: var(--surface-soft);
@@ -2363,7 +2369,9 @@ tbody tr:hover td {
   display: none;
 }
 
-.management-grid:has(.management-drawer.closed) {
+/* Reserve a detail column only while a direct-child drawer is open. */
+.content-grid:not(:has(> .detail-drawer)),
+.management-grid:not(:has(> .management-drawer:not(.closed))) {
   grid-template-columns: minmax(0, 1fr);
 }
 
@@ -2394,10 +2402,6 @@ tbody tr:hover td {
 .logs-page {
   gap: 0;
   width: 100%;
-}
-
-.log-management-grid:has(.log-detail-drawer.closed) {
-  grid-template-columns: minmax(0, 1fr);
 }
 
 .log-panel {
@@ -3040,7 +3044,8 @@ tbody tr:hover td {
 
 .vehicle-list-panel {
   display: block;
-  width: 768px;
+  width: 100%;
+  min-width: 0;
   height: 740px;
   padding: 20px;
 }
@@ -3051,7 +3056,7 @@ tbody tr:hover td {
   grid-template-columns: minmax(0, 1fr) 190px;
   gap: 16px;
   align-items: end;
-  width: 728px;
+  width: 100%;
   height: 86px;
   padding: 14px 12px;
   background: var(--surface-soft);
@@ -3100,7 +3105,7 @@ tbody tr:hover td {
 
 .vehicle-table-card,
 .paginated-management-table-card {
-  width: 728px;
+  width: 100%;
   height: 448px;
   min-height: 448px;
   margin-top: 16px;
@@ -3184,7 +3189,7 @@ tbody tr:hover td {
 
 .vehicle-pagination-row,
 .paginated-management-pagination-row {
-  width: 726px;
+  width: 100%;
   margin-top: 14px;
   border-top: 1px solid var(--soft-line);
 }
@@ -4164,22 +4169,6 @@ tbody tr:hover td {
     grid-template-columns: repeat(5, minmax(0, 1fr));
   }
 
-  .content-grid,
-  .management-grid {
-    grid-template-columns: minmax(0, 1fr) 360px;
-  }
-
-  .content-grid:has(> .list-region:only-child),
-  .vehicle-management-grid:has(> .vehicle-list-panel:only-child),
-  .knowledge-management-grid:has(> .knowledge-list-panel:only-child) {
-    grid-template-columns: minmax(0, 1fr);
-  }
-
-  .list-region,
-  .management-list-panel {
-    width: auto;
-  }
-
   .detail-drawer,
   .management-drawer {
     width: 360px;
@@ -4481,10 +4470,6 @@ tbody tr:hover td {
 
   .task-metrics article {
     width: auto;
-  }
-
-  .vehicle-management-grid {
-    grid-template-columns: minmax(0, 1fr) 360px;
   }
 
   .vehicle-list-panel,

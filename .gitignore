@@ -55,3 +55,13 @@ worker-client/omniauto-rpa/apps/wechat_ai_customer_service/deploy/recorder_seed/
 
 # Private incident screenshots and original chat-history fixtures stay local.
 worker-client/tests/fixtures/avatar_text_20260909/
+
+# Private deployment settings, credentials and backups
+.local/
+
+# Real Hook OCR screenshots, local evidence and UAT outputs never enter Git.
+output/
+worker-client/omniauto-rpa/apps/wechat_ai_customer_service/tests/fixtures/hook_c1_39/
+
+# Private original chat frames remain local for explicit OCR incident replay.
+worker-client/tests/fixtures/avatars_20260904/send_*.png

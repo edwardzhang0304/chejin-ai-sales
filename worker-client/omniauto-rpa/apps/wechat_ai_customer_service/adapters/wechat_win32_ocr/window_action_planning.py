@@ -28,6 +28,7 @@ def plan_normalize_wechat_window(
     work_area: dict[str, Any],
     minimum_client_width: int = 700,
     minimum_client_height: int = 720,
+    startup_profile: str = "ocr",
 ) -> dict[str, Any]:
     """Plan the single v0.9.35 startup placement on the HWND monitor.
 
@@ -37,6 +38,8 @@ def plan_normalize_wechat_window(
     """
 
     before_geometry = dict(before or {})
+    if startup_profile not in {"ocr", "hook-3.9-c1"}:
+        return {"ok": False, "move": False, "reason": "startup_profile_unknown"}
     try:
         scale = max(0.5, float(dpi_scale or 1.0))
     except (TypeError, ValueError):
@@ -55,7 +58,14 @@ def plan_normalize_wechat_window(
             "reason": "current_monitor_work_area_unavailable",
         }
 
-    if abs(scale - 1.0) <= 0.01:
+    if startup_profile == "hook-3.9-c1":
+        # The user's screenshot specifies physical outer-window pixels.
+        # The caller is per-monitor DPI aware; multiplying these dimensions
+        # by DPI again would enlarge the window (1325x925 at 125%).
+        requested_width, requested_height = 1060, 740
+        bucket = "hook-3.9-c1"
+        minimum_client_width, minimum_client_height = 700, 600
+    elif abs(scale - 1.0) <= 0.01:
         requested_width, requested_height, bucket = 800, 852, "100%"
     elif abs(scale - 1.25) <= 0.01:
         requested_width, requested_height, bucket = 1000, 1065, "125%"

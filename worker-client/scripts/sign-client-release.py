@@ -8,6 +8,10 @@ import json
 import os
 from pathlib import Path
 import re
+import sys
+import zipfile
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from chejin_worker_client.shared_rules import client_release_rules as release_rules
 
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
@@ -73,8 +77,20 @@ def main() -> int:
     parser.add_argument("--key-id", required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--private-key-env", default="CHEJIN_RELEASE_SIGNING_PRIVATE_KEY_BASE64")
+    parser.add_argument("--transport", choices=tuple(release_rules.CHANNEL_FOR_TRANSPORT), default="ocr")
     args = parser.parse_args()
 
+    package_manifest=json.loads(args.package_manifest.read_text(encoding='utf-8-sig'))
+    channel=release_rules.channel_for_transport(args.transport)
+    if not release_rules.compatible_package(package_manifest, channel):
+        raise SystemExit('package transport differs from signing channel')
+    try:
+        with zipfile.ZipFile(args.archive) as archive:
+            entry=archive.getinfo('CheJinWorkerClient/update-package-manifest.json')
+            if entry.file_size>2*1024*1024 or archive.read(entry)!=args.package_manifest.read_bytes():
+                raise ValueError()
+    except (OSError,zipfile.BadZipFile,KeyError,ValueError):
+        raise SystemExit('archive structure or signed package manifest is invalid') from None
     version = args.version.strip()
     commit = args.git_commit.strip().lower()
     if not VERSION_RE.fullmatch(version) or not GIT_COMMIT_RE.fullmatch(commit):
@@ -99,7 +115,7 @@ def main() -> int:
 
     payload: dict[str, object] = {
         "schema_version": 1,
-        "channel": "gray",
+        "channel": channel,
         "platform": "windows-x64",
         "version": version,
         "status": "published",
@@ -110,7 +126,7 @@ def main() -> int:
         "package_manifest_sha256": hash_file(args.package_manifest),
         "published_at": canonical_utc_timestamp(args.published_at),
         "release_notes": "",
-        "minimum_updater_version": "0.9.67" if version == "0.9.69" else "0.9.69",
+        "minimum_updater_version": release_rules.HOOK_MINIMUM_UPDATER_VERSION if args.transport == "hook" else "0.9.67" if version == "0.9.69" else "0.9.69",
         "rollback_safe": True,
         "signature_key_id": args.key_id.strip(),
     }

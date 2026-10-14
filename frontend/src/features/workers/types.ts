@@ -16,6 +16,8 @@ export type WorkerItem = {
   created_at?: string;
   updated_at?: string;
   worker_token?: string;
+  hook_context?: { self_wxid?: string | null; blocked: boolean; reason_code?: string | null; rebind_required?: boolean; wechat_file_version?: string };
+  fault_recovery?: { ready: boolean; reason: string | null };
   vision_configured?: boolean;
   vision_credential_updated_at?: string | null;
 };

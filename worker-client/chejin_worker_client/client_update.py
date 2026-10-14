@@ -333,7 +333,8 @@ def prepare_release_package(
     session: requests.Session | None = None,
     trusted_keys: dict[str, Ed25519PublicKey] | None = None,
 ) -> dict[str, Any]:
-    validate_release_contract(release)
+    from .release_transport import selected_release_channel
+    validate_release_contract(release, expected_channel=selected_release_channel(CONFIG.app_dir))
     verify_release_signature(release, trusted_keys=trusted_keys)
     archive_path = request_root / "download" / "client-update.zip"
     download_release_archive(release, archive_path, session=session)

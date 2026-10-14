@@ -19,7 +19,7 @@ from .update_filesystem import update_filesystem_path
 
 
 UPDATE_SCHEMA_VERSION = 1
-UPDATER_VERSION = "0.9.69"
+UPDATER_VERSION = __version__
 UPDATE_CHANNEL = "gray"
 UPDATE_PLATFORM = "windows-x64"
 VERSION_RE = re.compile(r"^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$")
@@ -151,15 +151,21 @@ def validate_release_contract(
     *,
     current_version: str = __version__,
     require_download_url: bool = True,
+    expected_channel: str = UPDATE_CHANNEL,
 ) -> None:
     if not release.update_available:
         return
+    from .shared_rules import client_release_rules
+    if expected_channel not in client_release_rules.SUPPORTED_CHANNELS:
+        raise ClientUpdateError('UPDATE_PACKAGE_INCOMPATIBLE', '更新渠道不受支持')
+    if release.channel == 'gray-hook' and parse_exact_version(release.minimum_updater_version) < parse_exact_version(client_release_rules.HOOK_MINIMUM_UPDATER_VERSION):
+        raise ClientUpdateError('UPDATE_PACKAGE_INCOMPATIBLE', 'Hook 更新包未声明正确的更新器兼容版本')
     current = parse_exact_version(current_version)
     target = parse_exact_version(release.latest_version)
     minimum = parse_exact_version(release.minimum_updater_version)
     if (
         target <= current
-        or release.channel != UPDATE_CHANNEL
+        or release.channel != expected_channel
         or release.platform != UPDATE_PLATFORM
     ):
         raise ClientUpdateError(
@@ -270,6 +276,9 @@ def verify_staged_package(
                 "更新包内部清单与发布记录不一致",
                 data={"field": key, "expected": value, "actual": actual},
             )
+    from .shared_rules import client_release_rules
+    if not client_release_rules.compatible_package(manifest, release.channel):
+        raise ClientUpdateError('UPDATE_PACKAGE_INCOMPATIBLE', '更新包运行模式与签名渠道不匹配')
     files = manifest.get("files") if isinstance(manifest, dict) else None
     if not isinstance(files, dict) or not files:
         raise ClientUpdateError(

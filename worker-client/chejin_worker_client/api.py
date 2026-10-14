@@ -74,8 +74,12 @@ class WorkerApiClient:
         current_version: str,
         client_instance_id: str,
         platform: str = "windows-x64",
-        channel: str = "gray",
+        channel: str | None = None,
     ) -> ClientRelease:
+        if channel is None:
+            from .release_transport import selected_release_channel
+            from .config import CONFIG
+            channel=selected_release_channel(CONFIG.app_dir)
         query = urlencode(
             {
                 "current_version": current_version,

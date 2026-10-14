@@ -111,6 +111,7 @@ def _llm_total_budget_exhausted_result() -> dict[str, Any]:
         "ok": False,
         "status": 0,
         "error": "llm_total_time_budget_exhausted",
+        "error_kind": "transport",
         "wall_timeout": True,
         "total_time_budget_exhausted": True,
         "wall_timeout_seconds": 0.0,
@@ -909,6 +910,8 @@ def is_transient_llm_failure(result: dict[str, Any] | None) -> bool:
 def is_failoverable_llm_failure(result: dict[str, Any] | None) -> bool:
     """Return True when a failed primary route is worth retrying on fallback."""
 
+    if (result or {}).get("error_kind") == "protocol":
+        return False
     if is_transient_llm_failure(result):
         return True
     payload = result if isinstance(result, dict) else {}
@@ -1000,10 +1003,16 @@ def _llm_response_structure(data: Any, request_style: str) -> dict[str, Any]:
     return summary
 
 
+class LLMResponseProtocolError(ValueError):
+    """A completed provider response does not satisfy its response envelope."""
+
+
 def extract_llm_response_text(*, provider: Any, data: Any) -> str:
+    if not isinstance(data, dict):
+        raise LLMResponseProtocolError("llm_response_not_object")
     provider_id = normalize_llm_provider(provider)
     if llm_provider_request_style(provider_id) == "anthropic_messages":
-        items = data.get("content") if isinstance(data, dict) else []
+        items = data.get("content")
         texts: list[str] = []
         if isinstance(items, list):
             for item in items:
@@ -1013,7 +1022,15 @@ def extract_llm_response_text(*, provider: Any, data: Any) -> str:
                 if text:
                     texts.append(text)
         return "\n".join(texts).strip()
-    return str(((data.get("choices", [{}])[0] if isinstance(data, dict) else {}).get("message", {}) or {}).get("content", "") or "").strip()
+    choices = data.get("choices")
+    if not isinstance(choices, list) or not choices or not isinstance(choices[0], dict):
+        raise LLMResponseProtocolError("llm_response_invalid_choices")
+    message = choices[0].get("message") or {}
+    if not isinstance(message, dict):
+        raise LLMResponseProtocolError("llm_response_invalid_message")
+    # Empty/reasoning-only content is a valid envelope; the stage-specific
+    # completion validator decides whether to retry generation or block review.
+    return str(message.get("content", "") or "").strip()
 
 
 def call_llm_request_once(
@@ -1123,6 +1140,7 @@ def call_llm_request_once(
             except Exception:  # noqa: BLE001 - evidence collection cannot affect extraction
                 diagnostics["collection_failed"] = True
             diagnostics["extraction_attempted"] = True
+            diagnostics["extracted_chars"] = 0
             response_text = extract_llm_response_text(provider=provider_id, data=data)
             diagnostics["extracted_chars"] = len(response_text)
             diagnostics["extraction_succeeded"] = True
@@ -1153,6 +1171,7 @@ def call_llm_request_once(
             "base_url": normalize_llm_base_url(base_url),
             "status": int(getattr(exc, "code", 0) or 0),
             "error": body[:1000],
+            "error_kind": "http",
             "response_diagnostics": diagnostics,
             "request_style": request_style,
         }
@@ -1169,6 +1188,8 @@ def call_llm_request_once(
             "base_url": normalize_llm_base_url(base_url),
             "status": 0,
             "error": repr(exc),
+            "error_kind": ("protocol" if isinstance(exc, (json.JSONDecodeError, LLMResponseProtocolError))
+                           else "transport" if isinstance(exc, (urllib.error.URLError, OSError)) else "internal"),
             "response_diagnostics": diagnostics,
             "provider_request_id": provider_request_id,
             "request_style": request_style,
@@ -1204,6 +1225,7 @@ def call_llm_request_once_with_wall_timeout(
         "status": 0,
         "error": f"llm_wall_timeout_after_{wait_seconds:.1f}s",
         "wall_timeout": True,
+        "error_kind": "transport",
         "wall_timeout_seconds": wait_seconds,
     }
 
@@ -1417,6 +1439,9 @@ def call_llm_request_with_failover(
         "fallback_status": fallback_result.get("status", 0),
         "fallback_error": str(fallback_result.get("error") or ""),
     }
+    if fallback_result.get("error_kind") in {"protocol", "internal"}:
+        fallback_result["failover"] = primary["failover"]
+        return fallback_result
     return primary
 
 

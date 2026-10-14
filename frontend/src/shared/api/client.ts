@@ -5,6 +5,7 @@ const env = import.meta.env ?? {};
 
 export const runtimeConfig = {
   baseUrl: env.VITE_API_BASE_URL || DEFAULT_BASE_URL,
+  readOnly: env.VITE_OPS_READ_ONLY === "1",
 };
 
 type UnauthorizedListener = () => void;

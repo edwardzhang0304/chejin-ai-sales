@@ -51,10 +51,11 @@ def create_worker(
 @router.get("/workers/{worker_id}")
 def get_worker(
     worker_id: str,
+    include_token: bool = True,
     db: Session = Depends(get_db),
     _admin_auth: None = Depends(require_admin_auth),
 ):
-    return ok(worker_service.get_worker_detail(db, worker_id))
+    return ok(worker_service.get_worker_detail(db, worker_id, include_token=include_token))
 
 
 @router.put("/workers/{worker_id}")
@@ -110,11 +111,13 @@ def disable_worker(
 def heartbeat_worker(
     worker_id: str,
     payload: WorkerHeartbeat,
+    request: Request,
     db: Session = Depends(get_db),
     x_worker_token: str | None = Header(default=None, alias="X-Worker-Token"),
 ):
     try:
-        data = worker_service.heartbeat_worker(db, worker_id, x_worker_token, payload)
+        data = worker_service.heartbeat_worker(db, worker_id, x_worker_token, payload,
+            actor=worker_actor_context(request, worker_id=worker_id, worker_name="客户端操作"))
         db.commit()
         return ok(data)
     except Exception:

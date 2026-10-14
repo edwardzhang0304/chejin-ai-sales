@@ -1,4 +1,4 @@
-import { request } from "../../shared/api/client";
+import { request, runtimeConfig } from "../../shared/api/client";
 import type { WorkerCreatePayload, WorkerItem, WorkerResetResult, WorkerUpdatePayload, WorkerVisionStatus } from "./types";
 
 export function listWorkers(signal?: AbortSignal) {
@@ -6,7 +6,7 @@ export function listWorkers(signal?: AbortSignal) {
 }
 
 export function getWorker(workerId: string, signal?: AbortSignal) {
-  return request<WorkerItem>(`/workers/${workerId}`, { signal });
+  return request<WorkerItem>(`/workers/${workerId}`, { signal, query: runtimeConfig.readOnly ? { include_token: false } : undefined });
 }
 
 export function createWorker(payload: WorkerCreatePayload) {

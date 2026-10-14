@@ -1,6 +1,6 @@
 from typing import Literal
 
-from pydantic import BaseModel, Field, SecretStr, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, SecretStr, field_validator, model_validator
 
 
 class WorkerVisionCredential(BaseModel):
@@ -42,6 +42,17 @@ class WorkerUpdate(BaseModel):
     remark: str | None = Field(default=None, max_length=1000)
 
 
+class HookHeartbeatContext(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    self_wxid: str = Field(min_length=6, max_length=64, pattern=r"^wxid_[A-Za-z0-9_]+$")
+    account_epoch: str | None = Field(default=None, min_length=1, max_length=36)
+    process_generation: str = Field(min_length=1, max_length=128)
+    deployment_revision: str = Field(min_length=1, max_length=128)
+    wechat_file_version: Literal["3.9.10.16"]
+    dll_sha256: str = Field(pattern=r"^[0-9a-fA-F]{64}$")
+
+
 class WorkerHeartbeat(BaseModel):
     running_status: str = Field(default="idle", max_length=32)
     current_task: str | None = Field(default=None, max_length=255)
@@ -52,6 +63,7 @@ class WorkerHeartbeat(BaseModel):
     wechat_status: str | None = Field(default=None, max_length=32)
     current_step: str | None = Field(default=None, max_length=64)
     local_lock_summary: dict | None = None
+    hook_context: HookHeartbeatContext | None = None
 
 
 class WorkerClientBindRequest(BaseModel):

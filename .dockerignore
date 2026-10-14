@@ -3,6 +3,7 @@
 **
 !backend/
 !backend/requirements.txt
+!backend/requirements.lock
 !backend/app/
 !backend/app/**
 !backend/alembic.ini
@@ -16,6 +17,13 @@
 !backend/docker/entrypoint.sh
 !contracts/
 !contracts/c2_contract_v3.json
+!contracts/hook_contract_v1.json
+!contracts/recovery/
+!contracts/recovery/**
+!ops/
+!ops/hook_uat/
+!ops/hook_uat/compat.py
+!ops/hook_uat/import_sqlite.py
 !worker-client/
 !worker-client/omniauto-rpa/
 !worker-client/omniauto-rpa/**

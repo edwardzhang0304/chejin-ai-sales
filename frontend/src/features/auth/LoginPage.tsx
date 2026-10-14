@@ -45,7 +45,7 @@ export function LoginPage({ message, onAuthenticated }: Props) {
           <span className="brand-mark" aria-hidden="true">车</span>
           <span>
             <strong>车金 AI</strong>
-            <small>运营后台</small>
+            <small>运营后台 · v{import.meta.env.VITE_PRODUCT_VERSION}</small>
           </span>
         </header>
 

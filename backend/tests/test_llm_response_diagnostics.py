@@ -231,3 +231,11 @@ def test_quality_repair_keeps_its_own_call_evidence_in_database(monkeypatch):
     assert events[1]["stage"] == "brain_quality_repair"
     assert events[0]["call_id"] != events[1]["call_id"]
     assert all(event["response_diagnostics"]["extracted_chars"] > 0 for event in events)
+
+
+@pytest.mark.parametrize("body", [b'{"choices":', {"choices": []}])
+def test_protocol_error_has_structured_kind_and_is_not_transport_failover(http_provider, body):
+    call, _, _ = http_provider
+    result = call(body)
+    assert not result["ok"] and result["error_kind"] == "protocol"
+    assert not llm_config.is_failoverable_llm_failure(result)

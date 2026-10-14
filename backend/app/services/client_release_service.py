@@ -9,6 +9,7 @@ from pathlib import Path
 from pathlib import PurePosixPath
 import re
 import secrets
+import zipfile
 import shutil
 from urllib.parse import urlencode
 from urllib.parse import urlparse
@@ -21,6 +22,7 @@ from sqlalchemy.orm import Session
 
 from app.errors import AppError
 from app.core.config import get_settings
+from app.contracts.shared_rules import shared_adapter
 from app.models.client_release import (
     WorkerClientRelease,
     WorkerClientReleaseDownloadLease,
@@ -33,6 +35,8 @@ SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 GIT_COMMIT_RE = re.compile(r"^[0-9a-f]{40}$")
 SUPPORTED_PLATFORM = "windows-x64"
 SUPPORTED_CHANNEL = "gray"
+RELEASE_RULES=shared_adapter('client_release_rules')
+SUPPORTED_CHANNELS=RELEASE_RULES.SUPPORTED_CHANNELS
 RELEASE_DESCRIPTOR_FIELDS = (
     "channel",
     "platform",
@@ -312,8 +316,10 @@ def validate_signed_release_descriptor(
     minimum = str(raw.get("minimum_updater_version") or "").strip()
     parse_exact_version(version)
     parse_exact_version(minimum)
-    if channel != SUPPORTED_CHANNEL or platform != SUPPORTED_PLATFORM:
+    if channel not in SUPPORTED_CHANNELS or platform != SUPPORTED_PLATFORM:
         raise AppError("CLIENT_RELEASE_DESCRIPTOR_INVALID", "发布渠道或平台不合法", 400)
+    if channel == RELEASE_RULES.channel_for_transport('hook') and (parse_exact_version(minimum) < parse_exact_version(RELEASE_RULES.HOOK_MINIMUM_UPDATER_VERSION) or parse_exact_version(version) < parse_exact_version(RELEASE_RULES.HOOK_MINIMUM_UPDATER_VERSION)):
+        raise AppError('CLIENT_RELEASE_DESCRIPTOR_INVALID', 'Hook 更新器兼容版本不合法', 400)
     if status != "published":
         raise AppError("CLIENT_RELEASE_DESCRIPTOR_INVALID", "签名描述只允许登记 published 版本", 400)
     published_at = _parse_release_datetime(raw.get("published_at"), field="published_at")
@@ -363,6 +369,23 @@ def validate_signed_release_descriptor(
     return normalized
 
 
+def _verify_artifact_transport(release, source):
+    """Require an intact signed package; transport cannot cross channels."""
+    try:
+        with zipfile.ZipFile(source) as archive:
+            info = archive.getinfo('CheJinWorkerClient/update-package-manifest.json')
+            if info.file_size > 2 * 1024 * 1024:
+                raise ValueError()
+            raw = archive.read(info)
+            manifest = json.loads(raw.decode('utf-8-sig'))
+            if (not RELEASE_RULES.compatible_package(manifest, release.channel)
+                    or hashlib.sha256(raw).hexdigest() != release.package_manifest_sha256
+                    or manifest.get('version') != release.version):
+                raise ValueError()
+    except (OSError, zipfile.BadZipFile, KeyError, ValueError, TypeError, AttributeError):
+        raise AppError('CLIENT_RELEASE_ARTIFACT_INVALID', '更新包模式、渠道或内部清单与签名描述不一致', 400) from None
+
+
 def store_client_release_artifact(
     release: WorkerClientRelease,
     source_path: Path,
@@ -391,6 +414,7 @@ def store_client_release_artifact(
             "发布包与签名描述的大小或 SHA-256 不一致",
             400,
         )
+    _verify_artifact_transport(release, source)
     storage_key = _clean_artifact_storage_key(release.artifact_storage_key)
     target = _artifact_path(storage_key)
     target.parent.mkdir(parents=True, exist_ok=True)
@@ -611,7 +635,7 @@ def latest_client_release(
     channel_value = str(channel or "").strip().lower()
     if platform_value != SUPPORTED_PLATFORM:
         raise AppError("CLIENT_RELEASE_PLATFORM_UNSUPPORTED", "客户端平台不受支持", 400)
-    if channel_value != SUPPORTED_CHANNEL:
+    if channel_value not in SUPPORTED_CHANNELS:
         raise AppError("CLIENT_RELEASE_CHANNEL_UNSUPPORTED", "客户端更新渠道不受支持", 400)
 
     releases = list(

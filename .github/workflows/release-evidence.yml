@@ -2,7 +2,7 @@ name: Release evidence
 
 on:
   push:
-    branches: [codex/gray-release-0.9.x]
+    branches: [codex/gray-release-0.9.x, gray-release-0.10.x]
     paths:
       - 'ops/formal_release/**'
       - '.github/**'
@@ -31,6 +31,9 @@ on:
 permissions:
   contents: read
 
+env:
+  CHEJIN_RELEASE_TRANSPORT: ${{ github.ref_name == 'gray-release-0.10.x' && 'hook' || 'ocr' }}
+
 jobs:
   tooling:
     name: Release tools checks
@@ -39,6 +42,7 @@ jobs:
     timeout-minutes: 10
     env:
       CHECK_KIND: tooling
+      CHEJIN_RELEASE_TRANSPORT: ocr
     steps:
       - uses: actions/checkout@v4
         with:
@@ -65,7 +69,7 @@ jobs:
 
   source:
     name: Selected source checks
-    if: github.event_name == 'workflow_dispatch' && inputs.check_kind == 'source'
+    if: github.event_name == 'workflow_dispatch' && inputs.check_kind == 'source' && github.ref_name != 'gray-release-0.10.x'
     runs-on: windows-latest
     timeout-minutes: 30
     env:
@@ -130,3 +134,67 @@ jobs:
           }
       - name: Check the GUI driver using a synthetic window before any package build
         run: python worker-client/scripts/run-windows-client-upgrade-test.py --driver-smoke "${{ runner.temp }}/driver-smoke"
+
+  native-source:
+    name: Selected source checks
+    if: github.event_name == 'workflow_dispatch' && inputs.check_kind == 'source' && github.ref_name == 'gray-release-0.10.x'
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    env:
+      CHECK_KIND: source
+      CHEJIN_RELEASE_TRANSPORT: hook
+      SOURCE_TEST_PLAN: ${{ inputs.source_test_plan }}
+      CHEJIN_RPA_MODE: mock
+      C3_AI_ADAPTER_MODE: mock
+      C3_BATCH_RECOVERY_POLL_SECONDS: '0'
+      HOOK_TEST_POSTGRES_URL: postgresql+psycopg://postgres@127.0.0.1:18831/hook_test
+    services:
+      postgres:
+        image: postgres:15-alpine
+        env:
+          POSTGRES_HOST_AUTH_METHOD: trust
+          POSTGRES_DB: hook_test
+        ports: ['18831:5432']
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s --health-timeout 5s --health-retries 12
+    steps:
+      - uses: actions/checkout@v4
+        with: {fetch-depth: 0, persist-credentials: false}
+      - uses: actions/setup-python@v5
+        with: {python-version: '3.12.10'}
+      - name: Install isolated source test dependencies
+        run: python -m pip install --disable-pip-version-check -r worker-client/requirements.txt -r worker-client/requirements-test.txt -r backend/requirements.txt 'websockets==15.0.1' 'PyYAML==6.0.2' httpx2
+      - name: Prepare test-only shared schema
+        run: |
+          sudo install -d -m 0700 -o "$(id -u)" /private/tmp/chejin-hook-formal-20261011
+          python - <<'PYTHON'
+          from sqlalchemy import create_engine,text
+          from sqlalchemy.engine import make_url
+          import os
+          url=make_url(os.environ['HOOK_TEST_POSTGRES_URL'])
+          assert url.host=='127.0.0.1' and url.port==18831 and url.database=='hook_test'
+          admin=create_engine(url.set(database='postgres'),isolation_level='AUTOCOMMIT')
+          with admin.connect() as db:
+              for name in ('hook_test','hook_gray_test','chejin_hook_gray_recovery_test'):
+                  if not db.execute(text('SELECT 1 FROM pg_database WHERE datname=:name'),{'name':name}).scalar():
+                      db.execute(text('CREATE DATABASE "'+name+'"'))
+          admin.dispose()
+          for name in ('hook_test','hook_gray_test','chejin_hook_gray_recovery_test'):
+              engine=create_engine(url.set(database=name))
+              with engine.begin() as db:
+                  db.execute(text('CREATE SCHEMA IF NOT EXISTS wechat_ai_customer_service'))
+              engine.dispose()
+          PYTHON
+      - name: Run mandatory native and preserved OCR safety tests
+        env:
+          EVIDENCE_DIR: ${{ runner.temp }}/native-source-evidence
+          CHEJIN_WORKER_HOME: ${{ runner.temp }}/native-source-worker-home
+        run: python ops/formal_release/run_evidence_checks.py
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: source-evidence-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/native-source-evidence
+          retention-days: 90
+          if-no-files-found: error

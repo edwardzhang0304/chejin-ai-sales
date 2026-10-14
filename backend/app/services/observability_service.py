@@ -32,7 +32,9 @@ def _contract_standard_stage_names() -> frozenset[str]:
     return names
 
 
-STANDARD_STAGE_NAMES = _contract_standard_stage_names()
+from app.contracts.shared_rules import shared_adapter
+
+STANDARD_STAGE_NAMES = _contract_standard_stage_names() | shared_adapter('hook_observability_rules').STAGE_NAMES
 TERMINAL_STAGE_STATUSES = frozenset(
     {"succeeded", "failed", "cancelled", "abandoned"}
 )

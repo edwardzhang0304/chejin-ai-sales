@@ -34,6 +34,8 @@ EVENT_NAMES: dict[str, str] = {
     "worker_updated": "编辑 Worker",
     "worker_enabled_changed": "启用/停用 Worker",
     "worker_binding_reset": "重置 Worker 绑定",
+    "worker_hook_account_bound": "绑定工作微信账号",
+    "worker_hook_account_blocked": "工作微信账号检查未通过",
     "worker_fault_recovered": "客户端故障检查通过后开始接单",
     "worker_inflight_finished": "客户端流程结束登记",
     "worker_inflight_failed_before_message_action": "读取动作前失败结算",
@@ -79,6 +81,7 @@ EVENT_NAMES: dict[str, str] = {
 }
 
 FAILED_EVENTS = {
+    "worker_hook_account_blocked",
     "lead_assign_failed",
     "admin_login_failed",
     "vehicle_operation_failed",

@@ -125,6 +125,9 @@ def fault_recovery_readiness(db: Session, worker: Worker) -> dict:
         reason = "等待原任务或租约结算"
     elif has_unsettled_worker_send(db, worker):
         reason = "存在尚未确认的发送结果，需先完成原回执结算"
+    elif (worker.hook_runtime_context or {}).get("blocked"):
+        reason = ("工作微信账号绑定已变更，请在后台重新绑定"
+                  if worker.hook_runtime_context.get("rebind_required") else "等待客户端完成连接检查")
     elif worker.rpa_component_status != "ready" or worker.wechat_status != "logged_in":
         reason = "等待自动化组件和微信连接正常"
     return {"protocol_version": 1, "ready": not reason, "reason": reason}
@@ -161,6 +164,13 @@ def worker_summary(db: Session, worker: Worker | None, *, include_token: bool = 
         "updated_at": worker.updated_at,
         **credential_status(worker),
     }
+    if worker.hook_self_wxid or worker.hook_runtime_context:
+        data["hook_context"] = {
+            "self_wxid": worker.hook_self_wxid,
+            "account_epoch": worker.hook_account_epoch,
+            "sales_id": worker.hook_sales_id,
+            **dict(worker.hook_runtime_context or {}),
+        }
     if worker.run_status == "faulted":
         data["fault_recovery"] = fault_recovery_readiness(db, worker)
     from app.services.read_recovery_service import recovery_capability_for_worker
@@ -181,11 +191,11 @@ def list_workers(db: Session) -> list[dict]:
     return [worker_summary(db, worker, include_token=False) for worker in workers]
 
 
-def get_worker_detail(db: Session, worker_id: str) -> dict:
+def get_worker_detail(db: Session, worker_id: str, *, include_token: bool = True) -> dict:
     worker = db.get(Worker, worker_id)
     if not worker or worker.deleted_at:
         raise AppError("WORKER_NOT_FOUND", "Worker 不存在", 404)
-    return worker_summary(db, worker, include_token=True)
+    return worker_summary(db, worker, include_token=include_token)
 
 
 def create_worker(db: Session, payload: WorkerCreate, actor: ActorContext) -> dict:
@@ -290,7 +300,8 @@ def bind_worker_client(db: Session, worker_id: str, payload: WorkerClientBindReq
     return worker_summary(db, worker, include_token=False)
 
 
-def heartbeat_worker(db: Session, worker_id: str, worker_token: str | None, payload: WorkerHeartbeat) -> dict:
+def heartbeat_worker(db: Session, worker_id: str, worker_token: str | None, payload: WorkerHeartbeat,
+                     actor: ActorContext | None = None) -> dict:
     authenticated = authenticate_worker_client(
         db, worker_id, worker_token, payload.client_instance_id
     )
@@ -316,6 +327,8 @@ def heartbeat_worker(db: Session, worker_id: str, worker_token: str | None, payl
     if payload.client_binding_state:
         worker.client_binding_state = payload.client_binding_state
     worker.last_heartbeat_at = utcnow()
+    from app.services.hook_account_service import apply_hook_heartbeat
+    apply_hook_heartbeat(db, worker, payload.hook_context, actor=actor)
     db.add(
         WorkerHeartbeatLog(
             worker_id=worker.id,
@@ -1085,6 +1098,10 @@ def reset_worker_binding(db: Session, worker_id: str, actor: ActorContext) -> di
     worker.client_instance_id = None
     worker.client_binding_state = "reset_required"
     worker.bound_at = None
+    worker.hook_self_wxid = None
+    worker.hook_account_epoch = None
+    worker.hook_sales_id = None
+    worker.hook_runtime_context = {}
     worker.run_status = "paused"
     db.flush()
     after = worker_summary(db, worker, include_token=False)

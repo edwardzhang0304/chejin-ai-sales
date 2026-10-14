@@ -1,0 +1,52 @@
+{
+  "rows": [
+    {
+      "text": "申请添加朋友",
+      "confidence": 0.9979697167873383,
+      "left": 181,
+      "right": 270,
+      "top": 15,
+      "bottom": 30
+    },
+    {
+      "text": "发送添加朋友申请",
+      "confidence": 0.996732197701931,
+      "left": 31,
+      "right": 150,
+      "top": 68,
+      "bottom": 82
+    },
+    {
+      "text": "二手车的Hook连接联调，您刚咨询过二手车",
+      "confidence": 0.9962457446824937,
+      "left": 44,
+      "right": 403,
+      "top": 109,
+      "bottom": 126
+    },
+    {
+      "text": "备注名",
+      "confidence": 0.9999055862426758,
+      "left": 28,
+      "right": 77,
+      "top": 162,
+      "bottom": 181
+    },
+    {
+      "text": "CJ8NZRD9",
+      "confidence": 0.9985801354050636,
+      "left": 45,
+      "right": 138,
+      "top": 205,
+      "bottom": 223
+    },
+    {
+      "text": "标签",
+      "confidence": 0.9996460676193237,
+      "left": 28,
+      "right": 63,
+      "top": 259,
+      "bottom": 277
+    }
+  ]
+}

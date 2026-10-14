@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import base64
+import hashlib
 import json
 import os
 from pathlib import Path
 import subprocess
+import zipfile
 import sys
 from urllib.parse import urlsplit
 
@@ -38,7 +40,7 @@ def setup_function() -> None:
     Base.metadata.create_all(bind=engine)
 
 
-def _signed_descriptor(tmp_path: Path) -> tuple[dict[str, object], Path]:
+def _signed_descriptor(tmp_path: Path, *, transport="ocr", version="0.10.1") -> tuple[dict[str, object], Path]:
     private_key = Ed25519PrivateKey.generate()
     private_raw = private_key.private_bytes(
         encoding=serialization.Encoding.Raw,
@@ -49,12 +51,18 @@ def _signed_descriptor(tmp_path: Path) -> tuple[dict[str, object], Path]:
         encoding=serialization.Encoding.Raw,
         format=serialization.PublicFormat.Raw,
     )
-    archive = tmp_path / "CheJinWorkerClient-v0.9.60-gray-windows-x64.zip"
+    channel="gray-hook" if transport=="hook" else "gray"
+    archive = tmp_path / f"CheJinWorkerClient-v{version}-{channel}-windows-x64.zip"
     manifest = tmp_path / "update-package-manifest.json"
     descriptor = tmp_path / "release.json"
     keys = tmp_path / "release-signing-public-keys.json"
-    archive.write_bytes(b"formal-archive")
-    manifest.write_text('{"version":"0.9.60"}', encoding="utf-8")
+    executables={'CheJinWorkerClient.exe':b'synthetic-client-executable','CheJinUpdater.exe':b'synthetic-updater-executable'}
+    manifest.write_text(json.dumps({'schema_version':1,'version':version,'transport':transport,'channel':channel,
+        'platform':'windows-x64','git_commit':'b'*40,'rollback_safe':True,
+        'files':{name:hashlib.sha256(body).hexdigest() for name,body in executables.items()}}), encoding='utf-8')
+    with zipfile.ZipFile(archive, 'w') as package:
+        package.write(manifest, 'CheJinWorkerClient/update-package-manifest.json')
+        for name,body in executables.items():package.writestr('CheJinWorkerClient/'+name,body)
     keys.write_text(
         json.dumps(
             {
@@ -88,11 +96,13 @@ def _signed_descriptor(tmp_path: Path) -> tuple[dict[str, object], Path]:
             "--package-manifest",
             str(manifest),
             "--version",
-            "0.9.60",
+            version,
             "--git-commit",
             "b" * 40,
             "--artifact-storage-key",
-            "gray/windows-x64/0.9.60.zip",
+            f"{channel}/windows-x64/{version}.zip",
+            "--transport",
+            transport,
             "--published-at",
             published_at,
             "--key-id",
@@ -128,14 +138,14 @@ def test_real_signer_database_response_and_client_verifier_share_timestamp_canon
             )
             store_client_release_artifact(
                 release,
-                tmp_path / "CheJinWorkerClient-v0.9.60-gray-windows-x64.zip",
+                tmp_path / "CheJinWorkerClient-v0.10.1-gray-windows-x64.zip",
             )
 
         http = TestClient(app)
         response = http.get(
             "/api/client-releases/latest",
             params={
-                "current_version": "0.9.59",
+                "current_version": "0.9.69",
                 "platform": "windows-x64",
                 "channel": "gray",
             },
@@ -151,7 +161,7 @@ def test_real_signer_database_response_and_client_verifier_share_timestamp_canon
         lease = urlsplit(str(client_release.artifact_url))
         downloaded = http.get(f"{lease.path}?{lease.query}")
         assert downloaded.status_code == 200
-        assert downloaded.content == b"formal-archive"
+        assert downloaded.content == (tmp_path / "CheJinWorkerClient-v0.10.1-gray-windows-x64.zip").read_bytes()
     finally:
         settings.client_release_artifact_root = previous_root
         settings.client_release_public_base_url = previous_base
@@ -209,7 +219,7 @@ def test_withdraw_preserves_signed_artifact_identity(tmp_path: Path) -> None:
         )
 
     with SessionLocal.begin() as db:
-        withdrawn = withdraw_client_release(db, version="0.9.60")
+        withdrawn = withdraw_client_release(db, version="0.10.1")
         assert withdrawn.status == "withdrawn"
         assert (
             withdrawn.id,

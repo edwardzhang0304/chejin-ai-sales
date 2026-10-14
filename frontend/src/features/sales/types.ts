@@ -38,6 +38,7 @@ export type SalesWorkerSummary = {
   platform: string;
   enabled: boolean;
   online_status: string;
+  hook_context?: import("../workers/types").WorkerItem["hook_context"];
   run_status: string;
   running_status: string;
   current_task: string | null;

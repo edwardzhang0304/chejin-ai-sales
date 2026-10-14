@@ -350,3 +350,26 @@ def transition_outbox_state(
         if next_state in states
         else "capability_paused"
     )
+
+
+ENV_STOP_ERRORS = {
+    "RPA_COMPONENT_NOT_READY",
+    "WECHAT_WINDOW_NOT_FOUND",
+    "ACCOUNT_RESTRICTED",
+    "OPERATION_TOO_FREQUENT",
+    "NETWORK_ERROR",
+    "RPA_SIDECAR_TIMEOUT",
+    "RPA_SIDECAR_PROTOCOL_INVALID",
+    "RPA_SIDECAR_CRASHED",
+    "WORKER_INTERRUPTED",
+    "TASK_LEASE_RENEW_FAILED",
+    "TASK_LEASE_EXPIRED",
+    "TASK_LEASE_FENCING_STALE",
+    "TASK_LEASE_OWNER_MISMATCH",
+    "UI_LOCK_RENEW_FAILED",
+    "OTHER",
+}
+
+
+def c1_stop_status(error_code):
+    return "faulted" if error_code in C1_TECHNICAL_ERROR_CODES else "paused" if error_code in ENV_STOP_ERRORS else None

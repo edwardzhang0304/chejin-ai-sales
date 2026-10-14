@@ -150,6 +150,10 @@ def _main(resources: ExitStack) -> int:
     parser.add_argument("--post-update-plan", type=Path, default=None, help=argparse.SUPPRESS)
     parser.add_argument("--post-rollback-plan", type=Path, default=None, help=argparse.SUPPRESS)
     parser.add_argument("--post-update-token", default=None, help=argparse.SUPPRESS)
+    hook_commands = parser.add_mutually_exclusive_group()
+    hook_commands.add_argument("--hook-configure", type=Path, help="导入本机 Hook 部署配置，不绑定客户或开始接单。")
+    hook_commands.add_argument("--hook-launch-info", action="store_true", help="读取统一工作微信启动配置。")
+    parser.add_argument("--confirm-auto-text-disabled", action="store_true", help="确认微信自动语音转文字已关闭。")
     args = parser.parse_args()
 
     if not args.preflight and not args.wechat_diagnostics and args.post_update_plan is None:
@@ -228,6 +232,33 @@ def _main(resources: ExitStack) -> int:
             else format_text(checks)
         )
         return 1 if has_blocking_failures(checks) else 0
+
+    if args.hook_configure or args.hook_launch_info:
+        from .hook_installation import run_cli
+        try:
+            return run_cli(args)
+        except (ValueError, OSError) as exc:
+            code = str(exc) if str(exc).startswith("HOOK_") and " " not in str(exc) else "HOOK_INSTALL_FAILED"
+            if args.write_report is not None:
+                args.write_report.write_text(json.dumps({"error_code": code}), encoding="utf-8")
+            emit_cli_output(code)
+            return 4
+
+    from .release_transport import packaged_transport
+    if packaged_transport() == 'hook':
+        from .hook_installation import launch_information
+        from .config import CONFIG
+        try:
+            launch = launch_information()
+            if CONFIG.api_base_url != launch['api_base_url']:
+                raise ValueError('HOOK_INSTALL_BACKEND_INVALID')
+        except (ValueError, OSError):
+            # A fresh Hook EXE must never open OCR enrolment against a default backend.
+            emit_cli_output('HOOK_INSTALL_REQUIRED: run start-hook.ps1 with the deployment profile first')
+            if sys.platform == 'win32':
+                import ctypes
+                ctypes.windll.user32.MessageBoxW(None, '请先使用配套 start-hook.ps1 导入本机部署配置。', '车金 Hook 安装未完成', 0x10)
+            return 4
 
     bootstrap_qt_plugins()
     from .runtime_supervision import (

@@ -83,8 +83,10 @@ def legacy_path_boundary(tmp_path, monkeypatch):
             raise FileNotFoundError(2, "Legacy recursive deletion boundary model", str(path))
         return real_rmtree(path, *args, **kwargs)
 
-    monkeypatch.setattr(shutil, "rmtree", guarded_rmtree)
-    yield {"environment": "posix_real_files_with_modeled_legacy_path_boundary"}
+    # Restore the injected boundary before tmp_path's own cleanup runs.
+    with monkeypatch.context() as scoped:
+        scoped.setattr(shutil, "rmtree", guarded_rmtree)
+        yield {"environment": "posix_real_files_with_modeled_legacy_path_boundary"}
 
 
 def _package(*, extra_member=None, corrupt=False):

@@ -112,25 +112,11 @@ function ConnectionLine({ model, danger = false }: { model: WorkerClientModel; d
 }
 
 function StatusSummary({ model, stateText }: { model: WorkerClientModel; stateText?: WorkerReceiveState }) {
-  const automationDanger = model.status.automationState !== "可用";
-  const wechatDanger = model.status.wechatState !== "已连接";
   return (
     <section className="cw-status-card status-grid" aria-label="Worker 状态摘要">
       <div className="cw-status-top">
         <strong className="cw-status-seller">{model.status.sellerName}</strong>
         <span className={`cw-chip chip ${chipClass(stateText || model.status.receiveState)}`}>{stateText || model.status.receiveState}</span>
-      </div>
-      <div className="cw-status-bottom">
-        <div className="cw-status-item">
-          <span>自动化组件</span>
-          <i className={`cw-dot dot ${automationDanger ? "cw-dot-danger" : "online"}`} />
-          <em className={`cw-status-pill${automationDanger ? " is-danger" : ""}`}>{model.status.automationState}</em>
-        </div>
-        <div className="cw-status-item">
-          <span>微信状态</span>
-          <i className={`cw-dot dot ${wechatDanger ? "cw-dot-danger" : "online"}`} />
-          <em className={`cw-status-pill${wechatDanger ? " is-danger" : ""}`}>{model.status.wechatState}</em>
-        </div>
       </div>
     </section>
   );
@@ -241,15 +227,19 @@ function TimelineStep({ step }: { step: TimelineStepModel }) {
   const final = Boolean(step.finalText);
   const className = [
     "cw-step",
+    step.focus ? "cw-step-focus" : "",
     step.state === "done" ? "done" : "",
     step.state === "current" ? "current cw-step-current" : "",
     step.state === "error" ? "error cw-step-error" : "",
+    step.state === "waiting" ? "waiting cw-step-waiting" : "",
     final ? "final-step cw-step-final" : "",
   ].filter(Boolean).join(" ");
   return (
+    <>
+    {step.groupTitle ? <li className="cw-progress-group">{step.groupTitle}</li> : null}
     <li className={className}>
       <span className="cw-step-marker">
-        <Icon name={step.state === "error" ? "x" : step.state === "current" ? "search" : "check"} />
+        <Icon name={step.state === "error" ? "x" : (step.state === "current" || step.state === "waiting") ? "search" : "check"} />
       </span>
       <div>
         <strong>{step.title}</strong>
@@ -259,10 +249,14 @@ function TimelineStep({ step }: { step: TimelineStepModel }) {
         {step.finalText ? <em className="cw-step-final-text">{step.finalText}</em> : null}
       </div>
     </li>
+    </>
   );
 }
 
-function TaskTimeline({ steps }: { steps: TimelineStepModel[] }) {
+function TaskTimeline({ steps, followLatest = false }: { steps: TimelineStepModel[]; followLatest?: boolean }) {
+  const followRef = useRef(true);
+  const lastProgressRef = useRef("");
+  const followTargetRef = useRef(0);
   const viewportRef = useRef<HTMLDivElement | null>(null);
   const dragCleanupRef = useRef<(() => void) | null>(null);
   const [scrollThumb, setScrollThumb] = useState({ visible: false, top: 0, height: 44 });
@@ -296,6 +290,35 @@ function TaskTimeline({ steps }: { steps: TimelineStepModel[] }) {
   useEffect(() => {
     const viewport = viewportRef.current;
     if (!viewport) return;
+    if (followLatest) {
+      const progressKey = steps.map(step => `${step.title}:${step.state}:${step.time}:${step.description}`).join("|");
+      if (progressKey === lastProgressRef.current) return;
+      lastProgressRef.current = progressKey;
+      if (followRef.current) {
+        // Match OCR: keep the latest running marker centered. A finished
+        // timeline has no current marker and follows its last result instead.
+        const currentSteps = viewport.querySelectorAll<HTMLElement>(".cw-step-focus, .current, .waiting");
+        const currentStep = viewport.querySelector<HTMLElement>(".cw-step-focus") || currentSteps[currentSteps.length - 1];
+        const marker = currentStep?.querySelector<HTMLElement>(":scope > span");
+        if (marker) {
+          viewport.style.setProperty(
+            "--cw-timeline-center-padding",
+            `${Math.max(0, (viewport.clientHeight - marker.offsetHeight) / 2)}px`,
+          );
+          const viewportRect = viewport.getBoundingClientRect();
+          const markerRect = marker.getBoundingClientRect();
+          const desired = viewport.scrollTop + markerRect.top + markerRect.height / 2
+            - (viewportRect.top + viewportRect.height / 2);
+          followTargetRef.current = Math.max(0, Math.min(viewport.scrollHeight - viewport.clientHeight, desired));
+        } else {
+          viewport.style.removeProperty("--cw-timeline-center-padding");
+          followTargetRef.current = Math.max(0, viewport.scrollHeight - viewport.clientHeight);
+        }
+        viewport.scrollTop = followTargetRef.current;
+      }
+      updateScrollThumb();
+      return;
+    }
     const focusStep = viewport.querySelector(".final-step, .current, .error") as HTMLElement | null;
     const focusMarker = focusStep?.querySelector(":scope > span") as HTMLElement | null;
     if (!focusStep || !focusMarker) return;
@@ -309,21 +332,29 @@ function TaskTimeline({ steps }: { steps: TimelineStepModel[] }) {
     const maxScrollTop = viewport.scrollHeight - viewport.clientHeight;
     viewport.scrollTop = Math.max(0, Math.min(maxScrollTop, nextScrollTop));
     updateScrollThumb();
-  }, [steps]);
+  }, [steps, followLatest]);
 
   useEffect(() => {
     const viewport = viewportRef.current;
     if (!viewport) return;
     const observer = new ResizeObserver(updateScrollThumb);
     observer.observe(viewport);
-    viewport.addEventListener("scroll", updateScrollThumb, { passive: true });
+    const onScroll = () => {
+      if (followLatest) {
+        const atLatest = Math.abs(viewport.scrollTop - followTargetRef.current) < 40;
+        const atBottom = viewport.scrollHeight - viewport.clientHeight - viewport.scrollTop < 40;
+        followRef.current = atLatest || atBottom;
+      }
+      updateScrollThumb();
+    };
+    viewport.addEventListener("scroll", onScroll, { passive: true });
     updateScrollThumb();
     return () => {
       observer.disconnect();
-      viewport.removeEventListener("scroll", updateScrollThumb);
+      viewport.removeEventListener("scroll", onScroll);
       dragCleanupRef.current?.();
     };
-  }, []);
+  }, [followLatest]);
 
   function startThumbDrag(event: React.PointerEvent<HTMLSpanElement>) {
     const viewport = viewportRef.current;
@@ -351,7 +382,7 @@ function TaskTimeline({ steps }: { steps: TimelineStepModel[] }) {
   }
 
   return (
-    <article className="cw-timeline-card timeline-card focus-chain">
+    <article className={`cw-timeline-card timeline-card focus-chain${followLatest ? " cw-waterfall" : ""}`} >
       <div className="cw-chain-scroll-shell">
         <div
           className="cw-chain-viewport chain-viewport"
@@ -384,6 +415,7 @@ function CurrentProcess({
   steps,
   state,
   message,
+  description,
   duration,
   task,
   statusText,
@@ -391,6 +423,7 @@ function CurrentProcess({
   steps?: TimelineStepModel[];
   state?: "neutral" | "success" | "error";
   message?: string;
+  description?: string;
   duration?: string;
   task?: WorkerClientModel["task"];
   statusText?: string;
@@ -405,8 +438,8 @@ function CurrentProcess({
       {steps?.length ? (
         <TaskTimeline steps={steps} />
       ) : (
-        <div className="cw-process-empty">
-          <strong>{message || "等待下一轮检查"}</strong>
+        <div className="cw-process-empty" role="status" aria-live="polite">
+          <div><strong>{message || "等待下一轮检查"}</strong>{description ? <p className="cw-check-description">{description}</p> : null}</div>
         </div>
       )}
     </section>
@@ -465,8 +498,12 @@ function EmptyWorkbench({
           <ConnectionLine model={model} />
         </header>
         <StatusSummary model={model} stateText={stateText} />
-        <CurrentProcess message={processText} />
-        <Dock state={dockState} disabled={disabled} onStartAccepting={onStartAccepting} onPauseAccepting={onPauseAccepting} />
+        <CurrentProcess
+          message={model.startupCheck && model.startupCheck.state !== "passed" ? model.startupCheck.title : processText}
+          description={model.startupCheck && model.startupCheck.state !== "passed" ? model.startupCheck.message : undefined}
+          state={model.startupCheck?.state === "failed" ? "error" : "neutral"}
+        />
+        <Dock state={dockState} disabled={disabled || model.startupCheck?.canStart === false} onStartAccepting={onStartAccepting} onPauseAccepting={onPauseAccepting} />
       </div>
     </section>
   );
@@ -507,7 +544,7 @@ function TaskScreen({
             statusText={statusText}
           />
         </section>
-        <Dock state={dockState} onStartAccepting={onStartAccepting} onPauseAccepting={onPauseAccepting} />
+        <Dock state={dockState} disabled={dockState !== "接单中" && model.startupCheck?.canStart === false} onStartAccepting={onStartAccepting} onPauseAccepting={onPauseAccepting} />
       </div>
     </section>
   );
@@ -540,7 +577,7 @@ function BackgroundProcessScreen({
           <StatusSummary model={model} stateText={dockState} />
           <CurrentProcess steps={steps} state="neutral" duration={active ? elapsed : undefined} />
         </section>
-        <Dock state={dockState} onStartAccepting={onStartAccepting} onPauseAccepting={onPauseAccepting} />
+        <Dock state={dockState} disabled={dockState !== "接单中" && model.startupCheck?.canStart === false} onStartAccepting={onStartAccepting} onPauseAccepting={onPauseAccepting} />
       </div>
     </section>
   );
@@ -673,7 +710,8 @@ function EnvironmentIssueScreen({
         <header className="cw-workspace-head workspace-head"><ConnectionLine model={issueModel} /></header>
         <StatusSummary model={issueModel} stateText="暂停接单" />
         <CurrentProcess
-          message={type === "automation" ? "自动化组件不可用，暂不领取任务" : "微信未连接，请打开或登录微信"}
+          message={model.startupCheck?.title || (type === "automation" ? "自动化组件不可用，暂不领取任务" : "微信未连接，请打开或登录微信")}
+          description={model.startupCheck?.message}
           state="error"
         />
         <Dock state="暂停接单" disabled />
@@ -689,10 +727,11 @@ function ClientFaultedScreen({ model, onStartAccepting }: Pick<WorkerClientBasel
         <header className="cw-workspace-head workspace-head"><ConnectionLine model={model} /></header>
         <StatusSummary model={model} />
         <CurrentProcess
-          message={model.faultRecovery?.reason || "已停止接单，暂不能恢复。正在检查恢复条件。"}
+          message={model.startupCheck?.state === "failed" ? model.startupCheck.title : model.faultRecovery?.ready ? "检查已通过，可以恢复接单" : model.startupCheck?.faultTitle || model.faultRecovery?.reason || "已停止接单，暂不能恢复。正在检查恢复条件。"}
+          description={model.startupCheck?.state === "failed" ? model.startupCheck.message : model.faultRecovery?.ready ? "点击开始接单恢复。" : model.startupCheck?.faultMessage}
           state="error"
         />
-        <Dock state="暂停接单" disabled={!model.faultRecovery?.ready || model.faultRecovery.checking} onStartAccepting={onStartAccepting} />
+        <Dock state="暂停接单" disabled={model.startupCheck?.canStart === false || !model.faultRecovery?.ready || model.faultRecovery.checking} onStartAccepting={onStartAccepting} />
       </div>
     </section>
   );
@@ -854,8 +893,54 @@ function customerProcessStepsForScreen(
   return model.targetReadRunningSteps;
 }
 
+function HookWaterfallWorkbench({ screen, model, onStartAccepting, onPauseAccepting }: Pick<WorkerClientBaselineProps, "screen" | "model" | "onStartAccepting" | "onPauseAccepting">) {
+  const faulted = screen === "client-faulted";
+  const accepting = model.status.acceptingIntent ?? model.status.receiveState === "接单中";
+  const disabled = !accepting && (screen === "schedule-paused" || screen === "offline" || screen === "offline-empty" || model.startupCheck?.canStart === false || (faulted && (!model.faultRecovery?.ready || model.faultRecovery?.checking)));
+  const recoveryChecking = faulted && Boolean(model.faultRecovery?.checking);
+  const recoveryReady = faulted && !recoveryChecking && Boolean(model.faultRecovery?.ready) && model.startupCheck?.canStart === true;
+  // Recovered startup status replaces the old stop card; stored incidents stay intact.
+  const processSteps = (model.hookProcessSteps || []).filter(step =>
+    !(recoveryReady || recoveryChecking) || step.title !== "已停止接单"
+  );
+  const liveWaitAlreadyShown = !faulted && processSteps.some((step) => (
+    step.state === "waiting" && (step.title === "等待连接恢复" || step.title === "等待后台响应稳定")
+  ));
+  const stoppedShown = processSteps.some(step=>step.title==='已停止接单');
+  const faultSteps: TimelineStepModel[] = recoveryChecking
+    ? [...processSteps, { state: "current", title: "正在恢复接单" }]
+    : recoveryReady
+    ? [...processSteps, { state: "done", title: "检查已通过，可以恢复接单", description: "点击开始接单恢复。" }]
+    : faulted && !stoppedShown
+    ? [...processSteps,{state:'error',title:'已停止接单',description:model.startupCheck?.faultTitle
+        ? `${model.startupCheck.faultTitle}。${model.startupCheck.faultMessage || ''}`
+        : model.faultRecovery?.reason || '请处理上次故障后再开始接单。'}]
+    : processSteps;
+  const steps: TimelineStepModel[] = !faulted && model.startupCheck?.state === "failed" && !liveWaitAlreadyShown
+    ? [...processSteps, { state: "error", title: model.startupCheck.title, description: model.startupCheck.message }]
+    : faultSteps;
+  return (
+    <section className="cw-screen cw-screen-task screen active" data-screen-view="hook-waterfall">
+      <div className="cw-workspace workspace">
+        <header className="cw-workspace-head workspace-head"><ConnectionLine model={model} /></header>
+        <section className="cw-task-layout task-layout">
+        <StatusSummary model={model} />
+        <section className="cw-process cw-hook-process" aria-label="当前运行过程" role="log" aria-live="polite" aria-relevant="additions text">
+          <header className="cw-process-head"><span>当前运行过程</span></header>
+          <TaskTimeline steps={steps} followLatest />
+        </section>
+        </section>
+        <Dock state={accepting ? "接单中" : model.status.receiveState} disabled={disabled} onStartAccepting={onStartAccepting} onPauseAccepting={onPauseAccepting} />
+      </div>
+    </section>
+  );
+}
+
 function renderScreen(props: WorkerClientBaselineProps) {
   const { screen, model, onScreenChange, onStartAccepting, onPauseAccepting, onUpdateAcceptSchedule } = props;
+  if (model.hookProcessSteps?.length && !["bind", "settings", "schedule-settings", "logs"].includes(screen)) {
+    return <HookWaterfallWorkbench screen={screen} model={model} onStartAccepting={onStartAccepting} onPauseAccepting={onPauseAccepting} />;
+  }
   const customerProcessSteps = customerProcessStepsForScreen(screen, model);
   if (runtimePageKind(screen) === "bind") return <BindScreen model={model} onBind={props.onBind} bindError={props.bindError} />;
   if (screen === "paused-empty") {

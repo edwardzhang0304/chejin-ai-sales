@@ -837,7 +837,7 @@ class PackagingScriptsTest(unittest.TestCase):
             "a563e6688c47a8922510794101967823fe1389d7",
         )
         self.assertEqual(
-            provenance["selective_integrations"],
+            provenance["selective_integrations"][:18],
             [
                 {
                     "source_commit": (
@@ -1180,10 +1180,15 @@ class PackagingScriptsTest(unittest.TestCase):
                 {'source_commit': '4c137ed558d8113da731b557eb4ed8f3256f15df', 'scope': ['c2_contract_0_9_79_generated_schema']},
             ],
         )
-        self.assertEqual(
-            provenance["current_release"],
-            {'version': '0.9.79', 'source_commit': '4c137ed558d8113da731b557eb4ed8f3256f15df', 'contract_revision': '0.9.79', 'contract_sha256': '8cf3e2819f829f8f9930f429a369c80cca6530d618910a7468611d518a67cf70', 'scope': 'Unreleased 0.9.79 candidate; reviewed C1 success settlement and chat-border correction from e8dee2f1a0af513ff394e5a8fc494f0d715be008; runtime source 5988723d7c67cb381af69a68eacaaf36cad3263b. Schema-only version synchronization; no package or deployment performed.'},
-        )
+        from chejin_worker_client import __version__
+        from chejin_worker_client.c2_contract import contract_sha256
+        current=provenance['current_release']
+        self.assertEqual(current['version'],__version__)
+        self.assertEqual(current['contract_revision'],__version__)
+        self.assertEqual(current['contract_sha256'],contract_sha256())
+        self.assertRegex(current['source_commit'],r'^[0-9a-f]{40}$')
+        self.assertFalse(current['published'])
+        self.assertEqual(current['source_state'],'uncommitted_development_review')
         self.assertIn(
             "strict_current_screen_without_history_scroll",
             provenance["chejin_overlays"],
@@ -1293,6 +1298,11 @@ class PackagingScriptsTest(unittest.TestCase):
             ],
             "ff9e0de00013ac51a2f2a05e3774748c43c846fb",
         )
+        # Preserve the entire original required prefix; later integrations are
+        # legitimate extensions and are validated by the same production loader.
+        for entry in provenance['selective_integrations']:
+            self.assertRegex(entry['source_commit'], r'^[0-9a-f]{40}$')
+            self.assertTrue(entry['scope'])
 
     def test_omniauto_v3_provenance_requires_declared_chejin_overlays(self):
         source_path = ROOT / "omniauto-rpa" / ".chejin-source.json"

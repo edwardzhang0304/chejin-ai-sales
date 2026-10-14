@@ -30,6 +30,7 @@ NOTIFY_FAILED = "failed"
 
 
 HANDOFF_REASON_LABELS = {
+    "HOOK_CUSTOMER_IMAGE_HANDOFF": "客户发来图片，需要销售人工处理",
     "CUSTOMER_HIGH_INTENT": "客户表达了明确购车意向",
     "HANDOFF_REQUIRED": "当前咨询需要销售人工处理",
     "AI_ENGINE_RETRY_EXHAUSTED": "自动回复连续失败，需要人工处理",

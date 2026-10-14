@@ -1,0 +1,10 @@
+**
+!frontend/
+!frontend/**
+!contracts/
+!contracts/c2_contract_v3.json
+**/node_modules
+**/dist
+**/.env*
+**/output
+**/.git

@@ -18,7 +18,7 @@ from app.services.reply_sequence_policy import sequence_policy
 
 
 @contextmanager
-def controlled_recovery_provider(monkeypatch, answer, requests, *, review_verdict="pass"):
+def controlled_recovery_provider(monkeypatch, answer, requests, *, review_verdict="pass", malformed_review=False, review_envelope_error=None, review_envelope_after=0, require_welcome_context=False):
     plan = {"can_answer": True, "answer_mode": "collect_customer_info",
         "evidence_used": {"common_sense_topics": ["购车注意事项"]}, "facts_claimed": [], "reply_segments": [answer],
         "risk": {"risk_level": "low", "risk_tags": [], "needs_handoff": False},
@@ -32,10 +32,37 @@ def controlled_recovery_provider(monkeypatch, answer, requests, *, review_verdic
             result = ({"verdict": review_verdict, "confidence": .99,
                 "customer_visible_risk": "low" if review_verdict == "pass" else "high",
                 "semantic_errors": [] if review_verdict == "pass" else ["unapproved_commitment"],
-                "hard_boundary_concerns": [], "reason": "Synthetic review"}
+                "hard_boundary_concerns": [], "repair_instruction": "" if review_verdict == "pass" else "Remove unapproved commitments", "reason": "Synthetic review"}
                 if payload["model"] == "recovery-reviewer" else deepcopy(plan))
+            if require_welcome_context:
+                user = next(m["content"] for m in payload["messages"] if m["role"] == "user")
+                request, _ = json.JSONDecoder().raw_decode(user.lstrip())
+                reviewer = payload["model"] == "recovery-reviewer"
+                context = (request.get("review_request", {}).get("reply_trigger", {}) if reviewer
+                           else request.get("brain_input", {}).get("current_message", {}))
+                if context.get("trigger_type") != "friend_welcome" or not context.get("instruction"):
+                    # A model receiving an empty consultation has no reason to
+                    # author/approve a proactive welcome. Do not hide lost context.
+                    result = ({"verdict": "block", "confidence": .99, "customer_visible_risk": "high",
+                               "semantic_errors": ["missing_welcome_context"], "hard_boundary_concerns": [],
+                               "repair_instruction": "Missing trigger", "reason": "Empty consultation"}
+                              if reviewer else {**plan, "can_answer": False, "confidence": .1,
+                                                "reply_segments": [], "recommended_action": "fallback_existing"})
+            if malformed_review and payload["model"] == "recovery-reviewer":
+                result.pop("repair_instruction")
             body = json.dumps({"choices": [{"message": {"content": json.dumps(result, ensure_ascii=False)},
                                             "finish_reason": "stop"}]}).encode()
+            if payload["model"] == "recovery-reviewer" and review_envelope_error:
+                review_count = sum(p["model"] == "recovery-reviewer" for p in requests)
+                if review_count <= review_envelope_after:
+                    result.update(verdict="repair", semantic_errors=["needs_clarification"],
+                                  repair_instruction="Clarify the answer", customer_visible_risk="medium")
+                    body = json.dumps({"choices": [{"message": {"content": json.dumps(result)},
+                                                    "finish_reason": "stop"}]}).encode()
+                elif review_envelope_error == "empty_choices":
+                    body = b'{"choices": []}'
+                elif review_envelope_error == "broken_json":
+                    body = b'{"choices":'
             self.send_response(200); self.send_header("Content-Type", "application/json")
             self.send_header("Content-Length", str(len(body))); self.end_headers(); self.wfile.write(body)
 

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from pathlib import Path
 
 from client_delivery_policy import (
@@ -108,7 +109,7 @@ def load_source_provenance(root: Path) -> dict[str, object]:
     payload = json.loads(path.read_text(encoding="utf-8"))
     schema_version = int(payload.get("schema_version") or 0)
     base_commit = str(payload.get("upstream_base_commit") or "").strip()
-    if len(base_commit) != 40:
+    if not re.fullmatch(r'[0-9a-f]{40}',base_commit):
         raise ValueError("OMNIAUTO_UPSTREAM_BASE_COMMIT_INVALID")
     integrations = payload.get("selective_integrations")
     if not isinstance(integrations, list):
@@ -118,11 +119,11 @@ def load_source_provenance(root: Path) -> dict[str, object]:
             raise ValueError("OMNIAUTO_SELECTIVE_INTEGRATION_INVALID")
         source_commit = str(item.get("source_commit") or "").strip()
         scope = item.get("scope")
-        if len(source_commit) != 40:
+        if not re.fullmatch(r'[0-9a-f]{40}',source_commit):
             raise ValueError(
                 "OMNIAUTO_SELECTIVE_SOURCE_COMMIT_INVALID"
             )
-        if not isinstance(scope, list) or not all(
+        if not isinstance(scope, list) or not scope or not all(
             isinstance(value, str) and value.strip()
             for value in scope
         ):
@@ -131,7 +132,7 @@ def load_source_provenance(root: Path) -> dict[str, object]:
         integration_commit = str(
             payload.get("chejin_integration_commit") or ""
         ).strip()
-        if len(integration_commit) != 40:
+        if not re.fullmatch(r'[0-9a-f]{40}',integration_commit):
             raise ValueError("OMNIAUTO_CHEJIN_INTEGRATION_COMMIT_INVALID")
         if not integrations:
             raise ValueError("OMNIAUTO_SELECTIVE_INTEGRATIONS_REQUIRED")
@@ -154,10 +155,10 @@ def load_source_provenance(root: Path) -> dict[str, object]:
             item.get("source_commit"),
             item.get("chejin_integration_commit"),
         )
-        if any(len(str(value or "").strip()) != 40 for value in commits):
+        if any(not re.fullmatch(r'[0-9a-f]{40}',str(value or '').strip()) for value in commits):
             raise ValueError("OMNIAUTO_HISTORICAL_COMMIT_INVALID")
         scope = item.get("scope")
-        if not isinstance(scope, list) or not all(
+        if not isinstance(scope, list) or not scope or not all(
             isinstance(value, str) and value.strip()
             for value in scope
         ):

@@ -62,6 +62,7 @@ class MessageBatch(Base, TimestampMixin):
     message_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     generation_no: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     generation_attempt_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    generation_capacity_wait_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
     generation_started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     continuation_authorization_revision: Mapped[str | None] = mapped_column(
         String(128),

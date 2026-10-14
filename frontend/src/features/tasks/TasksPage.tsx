@@ -88,6 +88,7 @@ const reasonCodeMeta: Record<string, string> = {
 };
 
 const stepMeta: Record<string, string> = {
+  hook_formal: "执行好友申请并确认结果",
   add_friend_starting: "正在执行微信加好友",
   checking_rpa: "检查自动化组件",
   rpa_sidecar_starting: "启动自动化组件",

@@ -272,7 +272,7 @@
     "semantic_reviewer_mode": "suspicious_only",
     "semantic_reviewer_timeout_seconds": 8,
     "semantic_reviewer_fallback_timeout_seconds": 8,
-    "semantic_reviewer_max_tokens": 350,
+    "semantic_reviewer_max_tokens": 16384,
     "semantic_reviewer_temperature": 0.1,
     "semantic_reviewer_cache_enabled": true,
     "semantic_reviewer_soft_pass_low_risk": true,

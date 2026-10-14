@@ -28,6 +28,37 @@ router = APIRouter(tags=["wechat-c2"])
 logger = logging.getLogger(__name__)
 
 
+async def _original_native_observations(request: Request):
+    from app.contracts.shared_rules import shared_adapter
+    rules = shared_adapter('hook_contract_rules')
+    if request.headers.get('content-type', '').split(';')[0].strip().lower() != 'application/json':
+        raise AppError('HOOK_CONTENT_TYPE_INVALID', '消息上报格式不正确', 415)
+    raw = await request.body()
+    if len(raw) > rules.MAX_BYTES:
+        raise AppError('HOOK_NATIVE_BODY_TOO_LARGE', '消息上报超过大小限制', 413)
+    try:
+        return rules.validate_envelope(rules.loads(raw))
+    except ValueError as exc:
+        code = str(exc)
+        raise AppError(code if code.startswith('HOOK_CONTRACT_') else 'HOOK_CONTRACT_INVALID', '消息上报格式不正确', 400) from None
+
+
+@router.post('/workers/{worker_id}/wechat/messages/native-observations')
+def native_observations(worker_id: str, payload: dict = Depends(_original_native_observations),
+        db: Session = Depends(get_db),
+        x_worker_token: str | None = Header(default=None, alias='X-Worker-Token'),
+        x_client_instance_id: str | None = Header(default=None, alias='X-Client-Instance-Id')):
+    from app.services.hook_native_service import store_observations
+    worker = worker_service.authenticate_worker_client(db, worker_id, x_worker_token, x_client_instance_id)
+    try:
+        response = store_observations(db, worker, payload, x_client_instance_id)
+        db.commit()
+        return ok(response)
+    except Exception:
+        db.rollback()
+        raise
+
+
 def _ingest_telemetry_terminal(
     data: object,
 ) -> tuple[str, str | None]:
@@ -462,6 +493,7 @@ def get_message_batch(
     worker_id: str,
     batch_id: str,
     background_tasks: BackgroundTasks,
+    observe_only: bool = False,
     db: Session = Depends(get_db),
     x_worker_token: str | None = Header(default=None, alias="X-Worker-Token"),
     x_client_instance_id: str | None = Header(default=None, alias="X-Client-Instance-Id"),
@@ -469,11 +501,12 @@ def get_message_batch(
     worker = worker_service.authenticate_worker_client(db, worker_id, x_worker_token, x_client_instance_id)
     try:
         data = c3_service.get_message_batch_for_worker(db, worker=worker, batch_id=batch_id)
-        if data.get("processing"):
+        if data.get("processing") and not observe_only:
             claim = c3_service.claim_message_batch_generation(
                 db,
                 batch_id=batch_id,
                 stale_only=str(data.get("batch_status") or "") != "collecting",
+                native_client_admitted=True,
             )
             db.commit()
             if claim.get("run"):
@@ -484,6 +517,10 @@ def get_message_batch(
                     background_tasks.add_task(_generate_message_batch, batch_id, attempt)
             if claim.get("terminal"):
                 data = c3_service.get_message_batch_for_worker(db, worker=worker, batch_id=batch_id)
+        if observe_only:
+            data={**data,'observation_only':True,
+                'authorization':{'allowed':False,'error_code':'WORKER_OBSERVATION_ONLY'},
+                'continuation':{'allowed':False,'error_code':'WORKER_OBSERVATION_ONLY'}}
         db.commit()
         return ok(data)
     except Exception:
@@ -560,3 +597,139 @@ def interrupt_reply_sequence(worker_id: str, batch_id: str, payload: ReplySequen
     except Exception:
         db.rollback()
         raise
+
+
+from app.schemas.hook_business import HookFriendBinding
+
+@router.post('/workers/{worker_id}/wechat/native-bindings')
+def native_binding(worker_id: str, payload: HookFriendBinding, db: Session = Depends(get_db),
+        x_worker_token: str | None = Header(default=None, alias='X-Worker-Token'),
+        x_client_instance_id: str | None = Header(default=None, alias='X-Client-Instance-Id')):
+    from app.services.hook_business_service import bind_friend
+    try:
+        worker = worker_service.authenticate_worker_client(db, worker_id, x_worker_token, x_client_instance_id)
+        data = bind_friend(db, worker, x_client_instance_id, payload)
+        db.commit(); return ok(data)
+    except Exception:
+        db.rollback(); raise
+
+
+@router.post('/workers/{worker_id}/wechat/native-events/{event_uuid}/dispatch')
+def dispatch_native_event(worker_id: str, event_uuid: str, db: Session = Depends(get_db),
+        x_worker_token: str | None = Header(default=None, alias='X-Worker-Token'),
+        x_client_instance_id: str | None = Header(default=None, alias='X-Client-Instance-Id')):
+    from app.services.hook_message_service import dispatch_facts
+    try:
+        worker=worker_service.authenticate_worker_client(db,worker_id,x_worker_token,x_client_instance_id)
+        data=dispatch_facts(db,worker,x_client_instance_id,event_uuid)
+        db.commit();return ok(data)
+    except Exception:
+        db.rollback();raise
+
+
+from app.schemas.hook_business import HookHistoryCoverage
+
+@router.post('/workers/{worker_id}/wechat/native-history/coverage')
+def native_history_coverage(worker_id: str, payload: HookHistoryCoverage, db: Session = Depends(get_db),
+        x_worker_token: str | None = Header(default=None, alias='X-Worker-Token'),
+        x_client_instance_id: str | None = Header(default=None, alias='X-Client-Instance-Id')):
+    from app.services.hook_history_service import accept_coverage
+    try:
+        worker=worker_service.authenticate_worker_client(db,worker_id,x_worker_token,x_client_instance_id)
+        data=accept_coverage(db,worker,x_client_instance_id,payload)
+        db.commit();return ok(data)
+    except Exception:
+        db.rollback();raise
+
+
+from app.schemas.hook_business import HookNativeSendClaim, HookNativeSendBegin, HookNativeSendSettlement
+
+def _native_send_call(kind,worker_id,action_id,payload,db,worker_token,instance,flow,token):
+    from app.services import hook_send_service
+    try:
+        worker=worker_service.authenticate_worker_client(db,worker_id,worker_token,instance)
+        operation={'claim':hook_send_service.claim_native,'begin':hook_send_service.begin_native,
+                   'settle':hook_send_service.reconcile_native}[kind]
+        data=operation(db,worker,instance,action_id,payload,flow,token)
+        db.commit();return ok(data)
+    except Exception:
+        db.rollback();raise
+
+@router.post('/workers/{worker_id}/wechat/native-replies/{action_id}/claim')
+def native_reply_claim(worker_id: str,action_id: str,payload: HookNativeSendClaim,db: Session=Depends(get_db),
+        worker_token: str|None=Header(None,alias='X-Worker-Token'),instance: str|None=Header(None,alias='X-Client-Instance-Id'),
+        flow: str|None=Header(None,alias='X-Inflight-Flow-Id'),token: int|None=Header(None,alias='X-Task-Lease-Fencing-Token')):
+    return _native_send_call('claim',worker_id,action_id,payload,db,worker_token,instance,flow,token)
+
+@router.post('/workers/{worker_id}/wechat/native-replies/{action_id}/begin')
+def native_reply_begin(worker_id: str,action_id: str,payload: HookNativeSendBegin,db: Session=Depends(get_db),
+        worker_token: str|None=Header(None,alias='X-Worker-Token'),instance: str|None=Header(None,alias='X-Client-Instance-Id'),
+        flow: str|None=Header(None,alias='X-Inflight-Flow-Id'),token: int|None=Header(None,alias='X-Task-Lease-Fencing-Token')):
+    return _native_send_call('begin',worker_id,action_id,payload,db,worker_token,instance,flow,token)
+
+@router.post('/workers/{worker_id}/wechat/native-replies/{action_id}/settle')
+def native_reply_settle(worker_id: str,action_id: str,payload: HookNativeSendSettlement,db: Session=Depends(get_db),
+        worker_token: str|None=Header(None,alias='X-Worker-Token'),instance: str|None=Header(None,alias='X-Client-Instance-Id'),
+        flow: str|None=Header(None,alias='X-Inflight-Flow-Id'),token: int|None=Header(None,alias='X-Task-Lease-Fencing-Token')):
+    return _native_send_call('settle',worker_id,action_id,payload,db,worker_token,instance,flow,token)
+
+
+from app.schemas.hook_business import HookVoiceResult
+
+@router.post('/workers/{worker_id}/wechat/native-voice/result')
+def native_voice_result(worker_id: str,payload: HookVoiceResult,db: Session=Depends(get_db),
+        x_worker_token: str | None=Header(default=None,alias='X-Worker-Token'),
+        x_client_instance_id: str | None=Header(default=None,alias='X-Client-Instance-Id')):
+    from app.services.hook_media_service import finish_voice
+    try:
+        worker=worker_service.authenticate_worker_client(db,worker_id,x_worker_token,x_client_instance_id)
+        data=finish_voice(db,worker,x_client_instance_id,payload)
+        db.commit();return ok(data)
+    except Exception:
+        db.rollback();raise
+
+
+from app.schemas.hook_business import HookAccountAction, HookWorkRequest
+
+@router.post('/workers/{worker_id}/wechat/native-work')
+def native_work_inventory(worker_id: str,payload: HookWorkRequest,db: Session=Depends(get_db),
+        x_worker_token: str | None=Header(default=None,alias='X-Worker-Token'),
+        x_client_instance_id: str | None=Header(default=None,alias='X-Client-Instance-Id')):
+    from app.services.hook_work_service import inventory
+    try:
+        worker=worker_service.authenticate_worker_client(db,worker_id,x_worker_token,x_client_instance_id)
+        data=inventory(db,worker,x_client_instance_id,payload)
+        db.commit();return ok(data)
+    except Exception:
+        db.rollback();raise
+
+
+@router.post('/workers/{worker_id}/wechat/native-replies/{action_id}/observe')
+def observe_original_native_send(worker_id: str,action_id: str,payload: HookNativeSendSettlement,db: Session=Depends(get_db),
+        x_worker_token: str | None=Header(default=None,alias='X-Worker-Token'),
+        x_client_instance_id: str | None=Header(default=None,alias='X-Client-Instance-Id'),
+        x_inflight_flow_id: str | None=Header(default=None,alias='X-Inflight-Flow-Id'),
+        x_task_lease_fencing_token: int | None=Header(default=None,alias='X-Task-Lease-Fencing-Token')):
+    from app.services.hook_send_service import observe_original_send
+    try:
+        worker=worker_service.authenticate_worker_client(db,worker_id,x_worker_token,x_client_instance_id)
+        data=observe_original_send(db,worker,x_client_instance_id,action_id,payload,x_inflight_flow_id,x_task_lease_fencing_token)
+        db.commit();return ok(data)
+    except Exception:
+        db.rollback();raise
+
+
+from app.schemas.hook_business import HookNativeNoTrigger
+
+@router.post('/workers/{worker_id}/wechat/native-replies/{action_id}/not-triggered')
+def settle_native_not_triggered(worker_id: str,action_id: str,payload: HookNativeNoTrigger,db: Session=Depends(get_db),
+        x_worker_token: str | None=Header(default=None,alias='X-Worker-Token'),
+        x_client_instance_id: str | None=Header(default=None,alias='X-Client-Instance-Id'),
+        x_inflight_flow_id: str | None=Header(default=None,alias='X-Inflight-Flow-Id'),
+        x_task_lease_fencing_token: int | None=Header(default=None,alias='X-Task-Lease-Fencing-Token')):
+    from app.services.hook_send_service import settle_no_trigger
+    try:
+        worker=worker_service.authenticate_worker_client(db,worker_id,x_worker_token,x_client_instance_id)
+        result=settle_no_trigger(db,worker,x_client_instance_id,action_id,payload,x_inflight_flow_id,x_task_lease_fencing_token)
+        db.commit();return ok(result)
+    except Exception:db.rollback();raise

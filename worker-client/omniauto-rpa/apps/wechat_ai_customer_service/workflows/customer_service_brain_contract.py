@@ -15,6 +15,27 @@ from typing import Any
 
 SCHEMA_VERSION = 1
 
+
+def reply_trigger_context(trigger_type: Any) -> dict[str, str]:
+    """Project trusted runtime intent identically for author and reviewer.
+
+    This metadata is not customer speech and grants no product/fact authority.
+    Missing/unknown values retain the OCR/customer-message behavior.
+    """
+    if trigger_type != "friend_welcome":
+        return {"trigger_type": "customer_message"}
+    return {
+        "trigger_type": "friend_welcome",
+        "instruction": (
+            "这是好友通过后的首次欢迎，由服务端触发，不是客户发来的咨询。"
+            "当前客户消息可以为空；请主动生成一句自然、简短的首次招呼。"
+            "不要因没有客户正文而拒绝回复、要求补消息或转人工。"
+            "不要用‘好的’假装回应客户，也不要把通过好友当作客户说的话。"
+            "不能编造客户需求、预算、车型或任何商品和业务承诺；原有安全审核仍然适用。"
+            "若本批次已有客户问题，应优先回答实际问题。"
+        ),
+    }
+
 NONSEMANTIC_TEST_MARKER_RE = re.compile(
     r"\s*[\(（](?:"
     r"BRAIN_BOUNDARY|LIVEFLOW|FRESHLONG|REALWX|WXTEST|TESTWX|LIVE_REGRESSION|DEBUGFLOW|SELFQA"

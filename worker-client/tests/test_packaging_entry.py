@@ -49,6 +49,10 @@ class PackagingEntryDiagnosticsTest(unittest.TestCase):
         context = mock.patch.dict(os.environ, environment, clear=False)
         return context
 
+    def test_fallback_version_matches_current_product(self):
+        from chejin_worker_client import __version__
+        self.assertEqual(self.entry.ENTRY_VERSION, __version__)
+
     def test_main_import_failure_uses_default_local_app_data_log(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)

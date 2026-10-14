@@ -404,6 +404,9 @@ def _incident_scope(
             "reason",
             "exception_type",
             "failure_step",
+            "hook_account_scope_sha256",
+            "hook_process_generation",
+            "hook_operation",
         )
         if metadata.get(key) not in (None, "")
         and not isinstance(metadata.get(key), (dict, list, tuple, set))
@@ -779,6 +782,8 @@ def _create_incident_package(request: dict[str, Any]) -> Path:
             secrets,
         )
         _write_json(archive, "logs/recent_logs.json", logs, secrets)
+        from .hook_diagnostics import snapshot as hook_snapshot
+        _write_json(archive,'state/hook-summary.json',hook_snapshot(),secrets)
         _write_json(
             archive,
             "state/outbox.json",

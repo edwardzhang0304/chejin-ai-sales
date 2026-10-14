@@ -1,0 +1,886 @@
+{
+  "product_version": "0.10.1",
+  "transport": "hook",
+  "schema_version": "hook-v1",
+  "revision": "2026-10-11-formal-business-1",
+  "rules_source": "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/adapters/hook_contract_rules.py",
+  "rules_source_sha256": "6bd59b3bbf82dba06118a3900588ee037970c79850e6ba4d2e1c26194a4affbb",
+  "limits": {
+    "body_max_bytes": 2097152,
+    "message_max_items": 200,
+    "content_max_chars": 20000
+  },
+  "schemas": {
+    "native_delivery_envelope": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "account_epoch",
+        "binding_id",
+        "binding_revision",
+        "client_instance_id",
+        "event_uuid",
+        "messages",
+        "observed_at",
+        "peer_wxid",
+        "process_generation",
+        "raw_evidence_digest",
+        "receive_seq",
+        "schema_version",
+        "self_wxid",
+        "source_event_uuid",
+        "transport",
+        "worker_id"
+      ],
+      "properties": {
+        "transport": {
+          "const": "hook"
+        },
+        "schema_version": {
+          "const": "hook-v1"
+        },
+        "worker_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "client_instance_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "self_wxid": {
+          "type": "string",
+          "pattern": "^wxid_[A-Za-z0-9_]{1,59}$"
+        },
+        "account_epoch": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "process_generation": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "binding_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "binding_revision": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "peer_wxid": {
+          "type": "string",
+          "pattern": "^wxid_[A-Za-z0-9_]{1,59}$"
+        },
+        "event_uuid": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "source_event_uuid": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "receive_seq": {
+          "type": "string",
+          "pattern": "^[1-9][0-9]{0,19}$"
+        },
+        "raw_evidence_digest": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "observed_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "messages": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 200,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "content",
+              "conversation_type",
+              "database",
+              "database_generation",
+              "direction",
+              "entry_position",
+              "from_wxid",
+              "media_stage",
+              "message_type",
+              "native_msg_id",
+              "ordering_fields",
+              "raw_direction",
+              "source",
+              "source_revision",
+              "source_time_raw",
+              "to_wxid"
+            ],
+            "properties": {
+              "native_msg_id": {
+                "type": "string",
+                "pattern": "^[1-9][0-9]{0,19}$"
+              },
+              "entry_position": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 199
+              },
+              "direction": {
+                "enum": [
+                  "incoming",
+                  "outgoing"
+                ]
+              },
+              "message_type": {
+                "enum": [
+                  "text",
+                  "voice",
+                  "image"
+                ]
+              },
+              "content": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 20000
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "source": {
+                "enum": [
+                  "native_callback",
+                  "native_history"
+                ]
+              },
+              "source_revision": {
+                "type": "string",
+                "pattern": "^[0-9a-f]{64}$"
+              },
+              "source_time_raw": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 64
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "media_stage": {
+                "enum": [
+                  null,
+                  "metadata_observed"
+                ]
+              },
+              "ordering_fields": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "localId": {
+                    "anyOf": [
+                      {
+                        "type": "string",
+                        "pattern": "^(0|[1-9][0-9]{0,19})$"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "CreateTime": {
+                    "anyOf": [
+                      {
+                        "type": "string",
+                        "pattern": "^(0|[1-9][0-9]{0,19})$"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "Sequence": {
+                    "anyOf": [
+                      {
+                        "type": "string",
+                        "pattern": "^(0|[1-9][0-9]{0,19})$"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "MsgServerSeq": {
+                    "anyOf": [
+                      {
+                        "type": "string",
+                        "pattern": "^(0|[1-9][0-9]{0,19})$"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "MsgSequence": {
+                    "anyOf": [
+                      {
+                        "type": "string",
+                        "pattern": "^(0|[1-9][0-9]{0,19})$"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  }
+                }
+              },
+              "database": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "pattern": "^MSG[0-9]+\\.db$"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "database_generation": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 128
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "from_wxid": {
+                "type": "string",
+                "pattern": "^wxid_[A-Za-z0-9_]{1,59}$"
+              },
+              "to_wxid": {
+                "type": "string",
+                "pattern": "^wxid_[A-Za-z0-9_]{1,59}$"
+              },
+              "conversation_type": {
+                "const": "private"
+              },
+              "raw_direction": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 32
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            },
+            "allOf": [
+              {
+                "if": {
+                  "properties": {
+                    "message_type": {
+                      "const": "text"
+                    }
+                  }
+                },
+                "then": {
+                  "properties": {
+                    "content": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 20000
+                    },
+                    "media_stage": {
+                      "type": "null"
+                    }
+                  }
+                },
+                "else": {
+                  "properties": {
+                    "content": {
+                      "type": "null"
+                    },
+                    "media_stage": {
+                      "const": "metadata_observed"
+                    }
+                  }
+                }
+              },
+              {
+                "if": {
+                  "properties": {
+                    "source": {
+                      "const": "native_callback"
+                    }
+                  }
+                },
+                "then": {
+                  "properties": {
+                    "ordering_fields": {
+                      "maxProperties": 0
+                    },
+                    "database": {
+                      "type": "null"
+                    },
+                    "database_generation": {
+                      "type": "null"
+                    }
+                  }
+                },
+                "else": {
+                  "properties": {
+                    "ordering_fields": {
+                      "required": [
+                        "localId",
+                        "CreateTime",
+                        "Sequence",
+                        "MsgServerSeq",
+                        "MsgSequence"
+                      ]
+                    },
+                    "database": {
+                      "type": "string",
+                      "pattern": "^MSG[0-9]+\\.db$"
+                    },
+                    "database_generation": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 128
+                    }
+                  }
+                }
+              }
+            ]
+          }
+        }
+      }
+    }
+  },
+  "semantic_checks": [
+    "UUIDs use canonical lowercase form; no float/numeric message IDs",
+    "from/to must match self/peer and declared direction; private only",
+    "event_uuid is deterministic UUIDv5 of source event, Worker, instance, epoch, binding and revision",
+    "entry positions must be unique within the envelope",
+    "No anonymous audio supplement, raw image/audio/XML payload or no-ID self echo is uploaded",
+    "Stored receipt confirms transport persistence only, not global coverage or completed AI processing"
+  ],
+  "receipt_status": "stored",
+  "business_dispatch_in_this_module": false,
+  "formal_business": {
+    "status": "implemented_for_isolated_uat_not_released",
+    "schema_source": "backend/app/schemas/hook_business.py",
+    "authentication_headers": [
+      "X-Worker-Token",
+      "X-Client-Instance-Id"
+    ],
+    "task_action_headers": [
+      "X-Inflight-Flow-Id",
+      "X-Task-Lease-Fencing-Token"
+    ],
+    "request_schemas": {
+      "HookAccountAction": {
+        "additionalProperties": false,
+        "properties": {
+          "self_wxid": {
+            "pattern": "^wxid_[A-Za-z0-9_]{1,59}$",
+            "title": "Self Wxid",
+            "type": "string"
+          },
+          "account_epoch": {
+            "maxLength": 36,
+            "minLength": 36,
+            "title": "Account Epoch",
+            "type": "string"
+          },
+          "process_generation": {
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Process Generation",
+            "type": "string"
+          }
+        },
+        "required": [
+          "self_wxid",
+          "account_epoch",
+          "process_generation"
+        ],
+        "title": "HookAccountAction",
+        "type": "object"
+      },
+      "HookInviteSubmission": {
+        "additionalProperties": false,
+        "properties": {
+          "self_wxid": {
+            "pattern": "^wxid_[A-Za-z0-9_]{1,59}$",
+            "title": "Self Wxid",
+            "type": "string"
+          },
+          "account_epoch": {
+            "maxLength": 36,
+            "minLength": 36,
+            "title": "Account Epoch",
+            "type": "string"
+          },
+          "process_generation": {
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Process Generation",
+            "type": "string"
+          },
+          "attempted_at": {
+            "pattern": "^\\d{4}-\\d{2}-\\d{2}T.*\\+00:00$",
+            "title": "Attempted At",
+            "type": "string"
+          },
+          "preparation_id": {
+            "maxLength": 36,
+            "minLength": 36,
+            "title": "Preparation Id",
+            "type": "string"
+          },
+          "form_verified": {
+            "const": true,
+            "title": "Form Verified",
+            "type": "boolean"
+          },
+          "greeting_sha256": {
+            "pattern": "^[a-f0-9]{64}$",
+            "title": "Greeting Sha256",
+            "type": "string"
+          },
+          "remark_sha256": {
+            "pattern": "^[a-f0-9]{64}$",
+            "title": "Remark Sha256",
+            "type": "string"
+          },
+          "greeting_copy_calls": {
+            "const": 1,
+            "title": "Greeting Copy Calls",
+            "type": "integer"
+          },
+          "greeting_paste_calls": {
+            "const": 1,
+            "title": "Greeting Paste Calls",
+            "type": "integer"
+          },
+          "remark_copy_calls": {
+            "const": 1,
+            "title": "Remark Copy Calls",
+            "type": "integer"
+          },
+          "remark_paste_calls": {
+            "const": 1,
+            "title": "Remark Paste Calls",
+            "type": "integer"
+          },
+          "confirm_click_calls": {
+            "const": 1,
+            "title": "Confirm Click Calls",
+            "type": "integer"
+          },
+          "form_closed": {
+            "const": true,
+            "title": "Form Closed",
+            "type": "boolean"
+          },
+          "submit_journal_sha256": {
+            "pattern": "^[a-f0-9]{64}$",
+            "title": "Submit Journal Sha256",
+            "type": "string"
+          }
+        },
+        "required": [
+          "self_wxid",
+          "account_epoch",
+          "process_generation",
+          "attempted_at",
+          "preparation_id",
+          "form_verified",
+          "greeting_sha256",
+          "remark_sha256",
+          "greeting_copy_calls",
+          "greeting_paste_calls",
+          "remark_copy_calls",
+          "remark_paste_calls",
+          "confirm_click_calls",
+          "form_closed",
+          "submit_journal_sha256"
+        ],
+        "title": "HookInviteSubmission",
+        "type": "object"
+      },
+      "HookFriendBinding": {
+        "additionalProperties": false,
+        "properties": {
+          "self_wxid": {
+            "pattern": "^wxid_[A-Za-z0-9_]{1,59}$",
+            "title": "Self Wxid",
+            "type": "string"
+          },
+          "account_epoch": {
+            "maxLength": 36,
+            "minLength": 36,
+            "title": "Account Epoch",
+            "type": "string"
+          },
+          "process_generation": {
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Process Generation",
+            "type": "string"
+          },
+          "source_task_id": {
+            "maxLength": 36,
+            "minLength": 36,
+            "title": "Source Task Id",
+            "type": "string"
+          },
+          "friend_list": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "items": {},
+                "type": "array"
+              }
+            ],
+            "title": "Friend List"
+          },
+          "raw_evidence_digest": {
+            "pattern": "^[a-f0-9]{64}$",
+            "title": "Raw Evidence Digest",
+            "type": "string"
+          }
+        },
+        "required": [
+          "self_wxid",
+          "account_epoch",
+          "process_generation",
+          "source_task_id",
+          "friend_list",
+          "raw_evidence_digest"
+        ],
+        "title": "HookFriendBinding",
+        "type": "object"
+      },
+      "HookHistoryCoverage": {
+        "additionalProperties": false,
+        "properties": {
+          "self_wxid": {
+            "pattern": "^wxid_[A-Za-z0-9_]{1,59}$",
+            "title": "Self Wxid",
+            "type": "string"
+          },
+          "account_epoch": {
+            "maxLength": 36,
+            "minLength": 36,
+            "title": "Account Epoch",
+            "type": "string"
+          },
+          "process_generation": {
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Process Generation",
+            "type": "string"
+          },
+          "binding_id": {
+            "maxLength": 36,
+            "minLength": 36,
+            "title": "Binding Id",
+            "type": "string"
+          },
+          "binding_revision": {
+            "minimum": 1,
+            "title": "Binding Revision",
+            "type": "integer"
+          },
+          "capture_id": {
+            "maxLength": 36,
+            "minLength": 36,
+            "title": "Capture Id",
+            "type": "string"
+          },
+          "coverage": {
+            "additionalProperties": true,
+            "title": "Coverage",
+            "type": "object"
+          },
+          "coverage_digest": {
+            "pattern": "^[a-f0-9]{64}$",
+            "title": "Coverage Digest",
+            "type": "string"
+          }
+        },
+        "required": [
+          "self_wxid",
+          "account_epoch",
+          "process_generation",
+          "binding_id",
+          "binding_revision",
+          "capture_id",
+          "coverage",
+          "coverage_digest"
+        ],
+        "title": "HookHistoryCoverage",
+        "type": "object"
+      },
+      "HookNativeSendClaim": {
+        "additionalProperties": false,
+        "properties": {
+          "self_wxid": {
+            "pattern": "^wxid_[A-Za-z0-9_]{1,59}$",
+            "title": "Self Wxid",
+            "type": "string"
+          },
+          "account_epoch": {
+            "maxLength": 36,
+            "minLength": 36,
+            "title": "Account Epoch",
+            "type": "string"
+          },
+          "process_generation": {
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Process Generation",
+            "type": "string"
+          },
+          "task_id": {
+            "maxLength": 36,
+            "minLength": 36,
+            "title": "Task Id",
+            "type": "string"
+          },
+          "history_state_digest": {
+            "pattern": "^[a-f0-9]{64}$",
+            "title": "History State Digest",
+            "type": "string"
+          }
+        },
+        "required": [
+          "self_wxid",
+          "account_epoch",
+          "process_generation",
+          "task_id",
+          "history_state_digest"
+        ],
+        "title": "HookNativeSendClaim",
+        "type": "object"
+      },
+      "HookNativeSendBegin": {
+        "additionalProperties": false,
+        "properties": {
+          "self_wxid": {
+            "pattern": "^wxid_[A-Za-z0-9_]{1,59}$",
+            "title": "Self Wxid",
+            "type": "string"
+          },
+          "account_epoch": {
+            "maxLength": 36,
+            "minLength": 36,
+            "title": "Account Epoch",
+            "type": "string"
+          },
+          "process_generation": {
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Process Generation",
+            "type": "string"
+          },
+          "task_id": {
+            "maxLength": 36,
+            "minLength": 36,
+            "title": "Task Id",
+            "type": "string"
+          },
+          "history_state_digest": {
+            "pattern": "^[a-f0-9]{64}$",
+            "title": "History State Digest",
+            "type": "string"
+          },
+          "send_token": {
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Send Token",
+            "type": "string"
+          },
+          "journal_sha256": {
+            "pattern": "^[a-f0-9]{64}$",
+            "title": "Journal Sha256",
+            "type": "string"
+          },
+          "attempted_at": {
+            "pattern": "^\\d{4}-\\d{2}-\\d{2}T.*\\+00:00$",
+            "title": "Attempted At",
+            "type": "string"
+          }
+        },
+        "required": [
+          "self_wxid",
+          "account_epoch",
+          "process_generation",
+          "task_id",
+          "history_state_digest",
+          "send_token",
+          "journal_sha256",
+          "attempted_at"
+        ],
+        "title": "HookNativeSendBegin",
+        "type": "object"
+      },
+      "HookNativeSendSettlement": {
+        "additionalProperties": false,
+        "properties": {
+          "self_wxid": {
+            "pattern": "^wxid_[A-Za-z0-9_]{1,59}$",
+            "title": "Self Wxid",
+            "type": "string"
+          },
+          "account_epoch": {
+            "maxLength": 36,
+            "minLength": 36,
+            "title": "Account Epoch",
+            "type": "string"
+          },
+          "process_generation": {
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Process Generation",
+            "type": "string"
+          },
+          "task_id": {
+            "maxLength": 36,
+            "minLength": 36,
+            "title": "Task Id",
+            "type": "string"
+          },
+          "send_token": {
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Send Token",
+            "type": "string"
+          },
+          "journal_sha256": {
+            "pattern": "^[a-f0-9]{64}$",
+            "title": "Journal Sha256",
+            "type": "string"
+          },
+          "completed_at": {
+            "pattern": "^\\d{4}-\\d{2}-\\d{2}T.*\\+00:00$",
+            "title": "Completed At",
+            "type": "string"
+          },
+          "call_completed": {
+            "title": "Call Completed",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "self_wxid",
+          "account_epoch",
+          "process_generation",
+          "task_id",
+          "send_token",
+          "journal_sha256",
+          "completed_at",
+          "call_completed"
+        ],
+        "title": "HookNativeSendSettlement",
+        "type": "object"
+      }
+    },
+    "operations": [
+      {
+        "method": "POST",
+        "path": "/tasks/{task_id}/hook-invite/prepare",
+        "request_schema": "HookAccountAction",
+        "task_lease_required": true
+      },
+      {
+        "method": "POST",
+        "path": "/tasks/{task_id}/hook-invite/submitted",
+        "request_schema": "HookInviteSubmission",
+        "task_lease_required": true
+      },
+      {
+        "method": "POST",
+        "path": "/workers/{worker_id}/wechat/native-bindings",
+        "request_schema": "HookFriendBinding"
+      },
+      {
+        "method": "POST",
+        "path": "/workers/{worker_id}/wechat/native-events/{event_uuid}/dispatch",
+        "request_schema": null
+      },
+      {
+        "method": "POST",
+        "path": "/workers/{worker_id}/wechat/native-history/coverage",
+        "request_schema": "HookHistoryCoverage"
+      },
+      {
+        "method": "POST",
+        "path": "/workers/{worker_id}/wechat/native-replies/{action_id}/claim",
+        "request_schema": "HookNativeSendClaim",
+        "task_lease_required": true
+      },
+      {
+        "method": "POST",
+        "path": "/workers/{worker_id}/wechat/native-replies/{action_id}/begin",
+        "request_schema": "HookNativeSendBegin",
+        "task_lease_required": true
+      },
+      {
+        "method": "POST",
+        "path": "/workers/{worker_id}/wechat/native-replies/{action_id}/settle",
+        "request_schema": "HookNativeSendSettlement",
+        "task_lease_required": true
+      }
+    ],
+    "semantic_checks": [
+      "Invitation values come from the original server task rules; clipboard copy/paste and confirm counts must be exact integer 1.",
+      "First account binds automatically to authenticated Worker; account changes stop work and require original rebind.",
+      "New customer binding requires a submitted system invitation, complete remark shortcode and one native peer wxid in the same friend object.",
+      "History starts at actual system invitation submission; same-second boundary ambiguity, unknown ordering or incomplete coverage blocks AI sends.",
+      "Raw persistence alone is not semantic dispatch, history completeness or recipient delivery.",
+      "New raw facts invalidate ready history before dispatch; replay of the same event is idempotent.",
+      "Native send permit binds Worker, instance, epoch, process generation, customer binding revision, task lease and original Flow.",
+      "Each native send attempt is journaled before the physical call; unknown or ambiguous outcomes are held without automatic resend.",
+      "A unique historical self message matched by exact text and bounded time provides local send evidence only; it is not recipient delivery.",
+      "Original C3 Brain/Guard, reply sequence and sent acknowledgement remain authoritative; no parallel business state machine."
+    ]
+  },
+  "observability": {
+    "version": 1,
+    "rules_source": "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/adapters/hook_observability_rules.py",
+    "rules_source_sha256": "984501805ee51bbfba4bded9eedbf5ada7eb789163f284bdfebd06cad7e639d6",
+    "stage_names": [
+      "hook.raw_persist",
+      "hook.event_registered",
+      "hook.history_verified",
+      "hook.history_read",
+      "hook.voice_transcription",
+      "hook.send_delay",
+      "hook.send_call",
+      "hook.send_reconcile"
+    ],
+    "clock": "execution durations use one process monotonic clock; no synthetic end-to-end sum",
+    "authority": "backend issued process id; observation never grants execution"
+  }
+}

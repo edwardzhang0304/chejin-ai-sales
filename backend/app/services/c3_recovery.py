@@ -52,13 +52,14 @@ def recover_due_message_batches_once(*, limit: int = 20) -> dict[str, int]:
             if attempt is None:
                 continue
             with SessionLocal() as db:
-                c3_service.generate_for_batch(
+                generated=c3_service.generate_for_batch(
                     db,
                     batch_id=batch_id,
                     expected_generation_attempt=attempt,
                 )
                 db.commit()
-                result["generated"] += 1
+                if generated.get("decision") != "queued":
+                    result["generated"] += 1
         except Exception:
             result["failed"] += 1
             logger.exception(

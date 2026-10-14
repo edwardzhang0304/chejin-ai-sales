@@ -1,3 +1,4 @@
+from app.models.ai_capacity import AIGenerationGate, AIGenerationSlot
 from app.models.audit import ExportTask, OperationLog
 from app.models.message_text_correction import MessageTextCorrection
 from app.models.auth import AdminAccount, AdminLoginThrottle, AdminSession
@@ -39,6 +40,7 @@ from app.models.wechat import (
     WechatSessionBinding,
 )
 from app.models.worker import Worker, WorkerHeartbeatLog
+from app.models.hook_native import HookNativeReceipt, HookHistoryReceipt, HookVoiceReceipt
 from app.models.vehicle import (
     KnowledgeCategory,
     KnowledgeItem,
@@ -49,6 +51,9 @@ from app.models.vehicle import (
 )
 
 __all__ = [
+    "AIGenerationGate",
+    "AIGenerationSlot",
+    "HookNativeReceipt", "HookHistoryReceipt", "HookVoiceReceipt",
     "AdminAccount",
     "AdminLoginThrottle",
     "AdminSession",

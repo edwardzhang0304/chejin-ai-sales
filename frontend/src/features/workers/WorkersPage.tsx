@@ -7,6 +7,7 @@ import { CloseIcon } from "../../shared/ui/Icons";
 import { displayValue as display, formatRelativeHeartbeat as formatHeartbeat, optionalText } from "../../shared/utils/display";
 import { postMutationMessage, runPostMutationRefresh } from "../../shared/utils/postMutation";
 import { createWorker, getWorker, listWorkers, resetWorkerBinding, setWorkerVisionCredential, updateWorker } from "./api";
+import { workerStatus as currentStatus, hookConnectionLabel, workerIsBusy } from "./status";
 import type { WorkerCreatePayload, WorkerItem, WorkerUpdatePayload } from "./types";
 
 type WorkerFilter = {
@@ -37,19 +38,6 @@ function statusClass(active: boolean) {
   return active ? "assigned" : "invalid";
 }
 
-function runningMeta(status: string, currentTask?: string | null) {
-  if (currentTask || status === "running") {
-    return { label: "忙碌", className: "unassigned" };
-  }
-  return { label: "空闲", className: "assigned" };
-}
-
-function currentStatus(worker: WorkerItem) {
-  if (worker.online_status !== "online") return { label: "离线", className: "unassigned" };
-  if (worker.run_status === "faulted") return { label: "客户端故障", className: "invalid" };
-  const running = runningMeta(worker.running_status, worker.current_task);
-  return { label: `在线 / ${running.label}`, className: running.className };
-}
 
 function bindingMeta(worker: WorkerItem) {
   if (worker.client_binding_state === "reset_required") return { label: "待重绑", className: "unassigned" };
@@ -251,7 +239,7 @@ export function WorkersPage({ openIntent }: { openIntent?: WorkerOpenIntent | nu
     const enabledCount = items.filter((item) => item.enabled).length;
     const boundCount = items.filter((item) => bindingMeta(item).label !== "未绑定").length;
     const onlineCount = items.filter((item) => item.online_status === "online").length;
-    const busyCount = items.filter((item) => runningMeta(item.running_status, item.current_task).label === "忙碌").length;
+    const busyCount = items.filter(workerIsBusy).length;
     return { enabledCount, boundCount, onlineCount, busyCount };
   }, [items]);
 
@@ -500,7 +488,7 @@ export function WorkersPage({ openIntent }: { openIntent?: WorkerOpenIntent | nu
                     <dd><span className="read-value">{detail.worker_name}</span><input className="edit-value" value={editForm.worker_name} onChange={(event) => setEditForm({ ...editForm, worker_name: event.target.value })} required /></dd>
                   </div>
                   <div><dt>Worker ID</dt><dd className="copy-value"><span>{detail.id}</span><CopyButton label="Worker ID" value={detail.id} /></dd></div>
-                  <div><dt>Worker Token</dt><dd className="copy-value token-text"><span>{display(detail.worker_token, "详情加载后展示")}</span><CopyButton label="Worker Token" value={detail.worker_token} /></dd></div>
+                  <div><dt>Worker Token</dt><dd className="copy-value token-text"><span>{display(detail.worker_token, "本次查看未提供")}</span><CopyButton label="Worker Token" value={detail.worker_token} /></dd></div>
                   <div>
                     <dt>状态</dt>
                     <dd>
@@ -532,6 +520,16 @@ export function WorkersPage({ openIntent }: { openIntent?: WorkerOpenIntent | nu
                   <div><dt>当前状态</dt><dd>{currentStatus(detail).label}</dd></div>
                 </dl>
               </section>
+
+              {detail.hook_context ? <section className="drawer-section" aria-label="微信连接检查">
+                <h3>微信连接检查</h3>
+                <dl className="drawer-dl">
+                  <div><dt>消息接入方式</dt><dd>Hook</dd></div>
+                  <div><dt>工作微信账号</dt><dd>{display(detail.hook_context.self_wxid, "尚未确认")}</dd></div>
+                  <div><dt>检查结果</dt><dd>{hookConnectionLabel(detail.hook_context)}</dd></div>
+                  {detail.run_status === "faulted" && detail.fault_recovery?.reason ? <div><dt>恢复条件</dt><dd>{detail.fault_recovery.reason}</dd></div> : null}
+                </dl>
+              </section> : null}
 
               <section className="drawer-section">
                 <h3>绑定销售</h3>

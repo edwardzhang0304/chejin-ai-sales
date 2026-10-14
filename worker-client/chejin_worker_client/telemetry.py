@@ -29,7 +29,9 @@ def _contract_standard_stage_names() -> frozenset[str]:
     return names
 
 
-STANDARD_STAGE_NAMES = _contract_standard_stage_names()
+from .shared_rules import hook_observability_rules
+
+STANDARD_STAGE_NAMES = _contract_standard_stage_names() | hook_observability_rules.STAGE_NAMES
 TERMINAL_STATUSES = frozenset({"succeeded", "failed", "cancelled", "abandoned"})
 _UPLOAD_LOCK = threading.Lock()
 _UPLOAD_ACTIVE = False

@@ -31,10 +31,10 @@ def _request(history, current):
                     "retrieval_index_sha256": _digest(index)}}}
 
 
-def _run(monkeypatch, tmp_path, history, current, answer, *, review_verdict="pass"):
+def _run(monkeypatch, tmp_path, history, current, answer, *, review_verdict="pass", malformed_review=False):
     requests = []
     try:
-        with controlled_recovery_provider(monkeypatch, answer, requests, review_verdict=review_verdict):
+        with controlled_recovery_provider(monkeypatch, answer, requests, review_verdict=review_verdict, malformed_review=malformed_review):
             result = RealOmniAutoAIEngineAdapter().generate_reply_decision(**_request(history, current))
             (tmp_path / "decision.json").write_text(json.dumps(asdict(result), ensure_ascii=False, indent=2, default=str))
             return result, requests
@@ -79,3 +79,16 @@ def test_semantic_rejection_still_blocks_unapproved_commitment(monkeypatch, tmp_
     result, _ = _run(monkeypatch, tmp_path, "车辆资料需要核实。", "买二手车需要注意哪些事情？",
                      "我保证给您最低价，合同可以无条件退款。", review_verdict="block")
     assert result.decision != "send_reply", result
+
+
+@pytest.mark.parametrize("verdict", ["pass", "block"])
+def test_incomplete_review_cannot_be_soft_passed(monkeypatch, tmp_path, verdict):
+    result, requests = _run(monkeypatch, tmp_path, "车辆资料需要核实。", "买二手车需要注意哪些事情？",
+                           "我保证给您最低价，合同可以无条件退款。", review_verdict=verdict,
+                           malformed_review=True)
+    assert any(p["model"] == "recovery-reviewer" for p in requests)
+    assert result.decision != "send_reply", result
+    brain = result.raw_payload["omniauto_brain_result"]
+    review = brain["quality_gate_v2"]
+    assert not review["ok"] and review["verdict"] == "block"
+    assert not review.get("soft_pass") and not review.get("unavailable")

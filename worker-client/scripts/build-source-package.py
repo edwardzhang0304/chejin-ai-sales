@@ -5,6 +5,7 @@ import datetime as dt
 import fnmatch
 import hashlib
 import json
+import sys
 from pathlib import Path
 import subprocess
 import zipfile
@@ -21,6 +22,8 @@ from omniauto_tree import load_source_provenance, tree_manifest
 
 ROOT = Path(__file__).resolve().parents[1]
 PROJECT_ROOT = ROOT.parent
+sys.path.insert(0,str(ROOT))
+from chejin_worker_client.shared_rules import client_release_rules as release_rules
 DELIVERABLES = PROJECT_ROOT / "deliverables"
 
 EXCLUDE_DIRS = {
@@ -57,7 +60,7 @@ OMNIAUTO_CLIENT_EXCLUDES = load_client_exclude_paths(OMNIAUTO_ROOT)
 def _version_label() -> str:
     namespace: dict[str, str] = {}
     exec((ROOT / "chejin_worker_client" / "__init__.py").read_text(encoding="utf-8"), namespace)
-    return str(namespace["__version__"]).rsplit(".", 1)[0]
+    return str(namespace["__version__"])
 
 
 def _full_version() -> str:
@@ -181,7 +184,9 @@ def build(
     tests_status: str = "not_run",
     preflight_status: str = "not_run",
     development_build: bool = False,
+    transport: str = "ocr",
 ) -> dict[str, object]:
+    channel=release_rules.channel_for_transport(transport)
     DELIVERABLES.mkdir(parents=True, exist_ok=True)
     build_source = verify_build_source(
         ROOT,
@@ -215,6 +220,7 @@ def build(
             PROJECT_ROOT / "contracts" / "c2_contract_v3.json",
             "worker-client/contracts/c2_contract_v3.json",
         )
+        archive.write(PROJECT_ROOT / 'contracts' / 'hook_contract_v1.json','worker-client/contracts/hook_contract_v1.json')
         for recovery_contract in sorted((PROJECT_ROOT / "contracts" / "recovery").glob("*.json")):
             archive.write(recovery_contract, "worker-client/contracts/recovery/" + recovery_contract.name)
         archive.write(
@@ -229,6 +235,7 @@ def build(
             json.dumps(
                 {
                     "version": _full_version(),
+                    "transport": transport,
                     "git_commit": str(build_source["git_commit"]),
                     "git_branch": str(build_source["git_branch"]),
                 },
@@ -263,6 +270,8 @@ def build(
     )
     manifest = {
         "ok": not forbidden,
+        "transport": transport,
+        "channel": channel,
         "version": _full_version(),
         "zip_path": str(zip_path.resolve()),
         "sha256": sha256,
@@ -330,6 +339,7 @@ def main() -> int:
     parser.add_argument("--date", default=dt.datetime.now().strftime("%Y%m%d"))
     parser.add_argument("--tests-status", choices=("passed", "not_run"), default="not_run")
     parser.add_argument("--preflight-status", choices=("passed", "not_run"), default="not_run")
+    parser.add_argument("--transport", choices=tuple(release_rules.CHANNEL_FOR_TRANSPORT), default="ocr")
     parser.add_argument("--development-build", action="store_true")
     args = parser.parse_args()
     print(
@@ -340,6 +350,7 @@ def main() -> int:
                 tests_status=args.tests_status,
                 preflight_status=args.preflight_status,
                 development_build=args.development_build,
+                transport=args.transport,
             ),
             ensure_ascii=False,
             indent=2,

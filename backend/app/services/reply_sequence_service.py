@@ -195,7 +195,7 @@ def advance_after_sent_ack(db: Session, action: ReplyAction, *, followup_cancell
         reason = "REPLY_ACTION_EXPIRED"
     else:
         try:
-            _ensure_reply_action_send_eligible(db, binding=binding, conversation=conversation, action=next_action)
+            _ensure_reply_action_send_eligible(db, binding=binding, conversation=conversation, action=next_action, native_authorized=bool(binding.native_self_wxid))
         except AppError as exc:
             reason = exc.code
     if reason:

@@ -344,6 +344,53 @@ def save_c2_ledger_terminal(**kwargs):
     return _save_c2_ledger_terminal(**kwargs)
 
 
+
+def seed_confirmed_pre_send_history(api, bridge):
+    """A server checkpoint needs the original locally confirmed prefix too."""
+    # Voice/image actions consume their post-action frame before get_messages.
+    # Prepare those frames through the same contract helper, including the
+    # real layout guard builder; explicitly supplied failure guards stay intact.
+    for payload in bridge.get_messages_payloads:
+        bridge._contractual_message_payload(payload)
+        observations = payload.get('observations') or []
+        if any(item.get('voice_state') == 'transcribed' for item in observations):
+            guard = payload['send_context_guard']
+            bridge.voice_payload.setdefault('message_viewport_change_evidence',
+                production_sidecar_module().build_message_viewport_change_evidence(
+                    observations, layout_evidence={name: guard[name] for name in
+                        ('ok', 'layout_snapshot_id', 'message_viewport_bounds')},
+                ))
+    target = api.read_targets[0]
+    frozen = pre_send_fact_checkpoint_response(
+        conversation_id=target.conversation_id, batch_id='batch-1',
+        reply_action_id='reply-action-1', facts=api.pre_send_checkpoint_facts,
+    )['pre_send_fact_checkpoint']['committed_tail']
+    for raw, fact in zip(api.pre_send_checkpoint_facts or [], frozen):
+        observation = raw['_business_observation']
+        save_c2_ledger_terminal(
+            conversation_id=target.conversation_id,
+            source_message_key=fact['source_message_key'],
+            dedupe_key=None, message_type=fact['message_type'],
+            origin_read_run_id='prior-confirmed-checkpoint-read',
+            terminal_state='completed', ingest_state='confirmed',
+            result={'observation': observation,
+                    'message_identity_commit_record': fact['message_identity_commit_record']},
+        )
+    # The same prior receipt also owns the current v3 identity cursor. A v2
+    # text-only cursor or an empty cursor cannot prove media continuity.
+    recent = [{
+        'stable_id': fact['worker_stable_id'], 'source_message_key': fact['source_message_key'],
+        'origin_read_run_id': 'prior-confirmed-checkpoint-read',
+        'sender_role': fact['sender_role'], 'message_type': fact['message_type'],
+        'native_source_message_id': '', 'frame_visual_id': '',
+        **{name: fact[name] for name in ('business_projection', 'strong_boundary_tokens',
+            'strong_boundary_anchor', 'message_identity_commit_record', 'message_identity_runtime_evidence')},
+    } for fact in frozen]
+    sequence_floor = max((int(f['worker_stable_id'].rsplit('-', 1)[-1]) for f in frozen), default=0) + 1
+    target.raw = {**target.raw, 'identity_checkpoint': {
+        'version': 3, 'next_sequence_floor': sequence_floor, 'recent_messages': recent,
+    }}
+
 def sidecar_identity_contract(
     code: str = "",
     *,
@@ -3447,6 +3494,8 @@ class TaskRunnerTest(unittest.TestCase):
             remark_code="CJFINERR1",
             authorization_revision="revision-finalizer-failure",
         )
+
+        runner.binding = binding
 
         with patch.object(
             runner,
@@ -9102,6 +9151,17 @@ class TaskRunnerTest(unittest.TestCase):
         self.assertIn(None, seen["tasks"])
 
     def test_sidecar_ok_without_new_bubble_confirmation_never_acks_sent(self):
+        # This case verifies its own durable evidence package. Other fault tests
+        # share the asynchronous exporter and its bounded package retention;
+        # use an isolated evidence directory, with the real worker and exporter.
+        from chejin_worker_client import incident_evidence
+        self.assertTrue(incident_evidence.stop_incident_worker(wait=True, timeout_seconds=30))
+        evidence_root = tempfile.TemporaryDirectory(prefix="chejin-unknown-send-evidence-")
+        self.addCleanup(evidence_root.cleanup)
+        directory_patch = patch.object(incident_evidence, "incident_directory", lambda: Path(evidence_root.name))
+        directory_patch.start()
+        self.addCleanup(directory_patch.stop)
+        self.addCleanup(incident_evidence.stop_incident_worker, wait=True, timeout_seconds=30)
         task = self.make_chat_reply_task(task_id="task-chat-unconfirmed")
         api = FakeApi(task)
         self.authorize_chat_reply_target(api)
@@ -9739,6 +9799,7 @@ class TaskRunnerTest(unittest.TestCase):
         ]
         runner, seen = self.make_runner(api, bridge)
         runner.binding = Binding(worker_id="worker-1", worker_token="token", client_instance_id="client-1", run_status="running")
+        seed_confirmed_pre_send_history(api, bridge)
 
         runner.tick_once()
 
@@ -11832,6 +11893,7 @@ class TaskRunnerTest(unittest.TestCase):
             run_status="running",
         )
         runner.binding = binding
+        seed_confirmed_pre_send_history(api, bridge)
         self.assertTrue(
             runner._start_inflight_flow(
                 binding,
@@ -12025,6 +12087,7 @@ class TaskRunnerTest(unittest.TestCase):
             run_status="running",
         )
         runner.binding = binding
+        seed_confirmed_pre_send_history(api, bridge)
         self.assertTrue(
             runner._start_inflight_flow(
                 binding,
@@ -12279,6 +12342,7 @@ class TaskRunnerTest(unittest.TestCase):
             run_status="running",
         )
         runner.binding = binding
+        seed_confirmed_pre_send_history(api, bridge)
         self.assertTrue(
             runner._start_inflight_flow(
                 binding,

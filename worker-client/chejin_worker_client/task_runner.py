@@ -176,6 +176,7 @@ from .sequence_alignment import (
     require_selected_only_media_reservation,
 )
 from .transaction_outcomes import (
+    ENV_STOP_ERRORS,
     C1_TECHNICAL_ERROR_CODES,
     FRAME_TECHNICAL_ERROR_CODES,
     FlowOutcomeAccumulator,
@@ -231,23 +232,6 @@ def should_submit_c2_ingest_payload(
     )
 
 
-ENV_STOP_ERRORS = {
-    "RPA_COMPONENT_NOT_READY",
-    "WECHAT_WINDOW_NOT_FOUND",
-    "ACCOUNT_RESTRICTED",
-    "OPERATION_TOO_FREQUENT",
-    "NETWORK_ERROR",
-    "RPA_SIDECAR_TIMEOUT",
-    "RPA_SIDECAR_PROTOCOL_INVALID",
-    "RPA_SIDECAR_CRASHED",
-    "WORKER_INTERRUPTED",
-    "TASK_LEASE_RENEW_FAILED",
-    "TASK_LEASE_EXPIRED",
-    "TASK_LEASE_FENCING_STALE",
-    "TASK_LEASE_OWNER_MISMATCH",
-    "UI_LOCK_RENEW_FAILED",
-    "OTHER",
-}
 
 PRE_SEND_REIDENTIFICATION_ERRORS = set(pre_send_reidentification_errors())
 PRE_SEND_LAYOUT_ERROR = "C2_PRE_SEND_LAYOUT_INVALID"
@@ -2609,11 +2593,13 @@ class TaskLeaseGuard:
         binding: Binding,
         task: Task,
         current_step: Callable[[], str | None],
+        now_utc: Callable[[], datetime] | None = None,
     ) -> None:
         self.api = api
         self.binding = binding
         self.task = task
         self.current_step = current_step
+        self.now_utc = now_utc or (lambda: datetime.now(timezone.utc))
         self.stop_event = threading.Event()
         self.lost_event = threading.Event()
         self.error_code: str | None = None
@@ -2674,7 +2660,7 @@ class TaskLeaseGuard:
             return True
         if expires_at.tzinfo is None:
             expires_at = expires_at.replace(tzinfo=timezone.utc)
-        return expires_at.astimezone(timezone.utc) <= datetime.now(timezone.utc)
+        return expires_at.astimezone(timezone.utc) <= self.now_utc()
 
     def _handle_transient_renew_failure(
         self,
@@ -3989,7 +3975,11 @@ class TaskRunner:
         can_pull_tasks: Callable[[], bool] | None = None,
         on_runtime_process: Callable[[dict[str, Any]], None] | None = None,
         on_fault_recovery: Callable[[dict[str, Any]], None] | None = None,
+        hook_services=None,
     ) -> None:
+        self.hook_services = hook_services
+        self.hook_intake_thread: threading.Thread | None = None
+        self.hook_business_thread: threading.Thread | None = None
         self.api = api
         self.bridge = bridge
         self.on_profile = on_profile
@@ -4125,6 +4115,8 @@ class TaskRunner:
             )
 
     def layout_recovery_state(self) -> dict[str, Any]:
+        if self.hook_services is not None:
+            return {'blocked':False,'reason':'','error_code':None,'recovery_required':False}
         state = load_c2_state("layout_recovery")
         if state.get("binding_identity") and state["binding_identity"] != self._layout_binding_identity():
             state = {}
@@ -4220,12 +4212,14 @@ class TaskRunner:
 
     def start(self, binding: Binding) -> None:
         self.binding = binding
-        if not self._refresh_vision_credential(binding):
+        if self.hook_services is None and not self._refresh_vision_credential(binding):
             return
+        if self.hook_services is not None:
+            self.hook_services.attach(binding, self._hook_persistence_failed)
         # Counters are diagnostic state belonging to one binding. A record
         # without that ownership cannot stop a different/current binding on
         # restart; normal in-process observations always attach the identity.
-        layout_state = load_c2_state("layout_recovery")
+        layout_state = load_c2_state("layout_recovery") if self.hook_services is None else {}
         if layout_state and layout_state.get("binding_identity") != self._layout_binding_identity():
             try:
                 save_c2_state("layout_recovery", {})
@@ -4234,7 +4228,7 @@ class TaskRunner:
                 trigger_emergency_stop(reason="RUN_STATUS_PERSISTENCE_FAILED", origin="layout_recovery_start")
         if (binding.run_status in {"paused", "faulted"}
                 or load_runtime_control().get("pause_requested")
-                or self.layout_recovery_state()["blocked"]):
+                or (self.hook_services is None and self.layout_recovery_state()["blocked"])):
             # A technical fault is a durable local safety decision.  If the
             # original backend status update was interrupted, a new Runner
             # must resume that update instead of accepting a stale remote
@@ -4260,7 +4254,7 @@ class TaskRunner:
                 daemon=True,
             )
             self.thread.start()
-        if CONFIG.c2_enabled and not (self.c2_thread and self.c2_thread.is_alive()):
+        if self.hook_services is None and CONFIG.c2_enabled and not (self.c2_thread and self.c2_thread.is_alive()):
             with self._thread_health_lock:
                 self._background_loop_started.discard("c2_listener")
             self.c2_thread = threading.Thread(
@@ -4270,6 +4264,23 @@ class TaskRunner:
                 daemon=True,
             )
             self.c2_thread.start()
+        if self.hook_services is not None and not (self.hook_intake_thread and self.hook_intake_thread.is_alive()):
+            with self._thread_health_lock:
+                self._background_loop_started.discard("hook_intake")
+            self.hook_intake_thread = threading.Thread(
+                target=self._run_supervised_loop,
+                args=("hook_intake", lambda: self.hook_services.intake_loop(
+                    self.stop_event, self._mark_background_loop_entered)),
+                name="CheJinHookIntake", daemon=True)
+            self.hook_intake_thread.start()
+        if (self.hook_services is not None and self.hook_services.dispatcher is not None
+                and not (self.hook_business_thread and self.hook_business_thread.is_alive())):
+            with self._thread_health_lock:
+                self._background_loop_started.discard('hook_business')
+            self.hook_business_thread=threading.Thread(target=self._run_supervised_loop,
+                args=('hook_business',lambda:self.hook_services.business_loop(self,self._mark_background_loop_entered)),
+                name='CheJinHookBusiness',daemon=True)
+            self.hook_business_thread.start()
         if not (self.thread_monitor and self.thread_monitor.is_alive()):
             with self._thread_health_lock:
                 self._background_loop_started.discard("thread_monitor")
@@ -4291,11 +4302,15 @@ class TaskRunner:
         """Finish normal writer loops before the updater may take ownership."""
         self.stop()
         deadline = time.monotonic() + timeout_seconds
-        for thread in (self.thread, self.c2_thread, self.thread_monitor):
+        for thread in (self.thread, self.c2_thread, getattr(self, "hook_intake_thread", None), getattr(self, "hook_business_thread", None), self.thread_monitor):
             if thread is not None and thread is not threading.current_thread():
                 thread.join(max(0.0, deadline - time.monotonic()))
                 if thread.is_alive():
                     raise RuntimeError("UPDATE_WRITERS_NOT_STOPPED")
+        if getattr(self, "hook_services", None) is not None:
+            self.hook_services.close()
+            if time.monotonic() > deadline:
+                raise RuntimeError("UPDATE_WRITERS_NOT_STOPPED")
         from .incident_evidence import stop_incident_worker
         if not stop_incident_worker(wait=True, timeout_seconds=max(0.0, deadline - time.monotonic())):
             raise RuntimeError("UPDATE_WRITERS_NOT_STOPPED")
@@ -4412,7 +4427,13 @@ class TaskRunner:
             ):
                 self._sync_pending_run_status()
             expected = {"task_runner": self.thread}
-            if CONFIG.c2_enabled:
+            if self.hook_services is not None:
+                expected["hook_intake"] = self.hook_intake_thread
+                if self.hook_services.dispatcher is not None:
+                    expected['hook_business'] = self.hook_business_thread
+                if not self.hook_services.health_snapshot()["ready"]:
+                    self._hook_persistence_failed()
+            elif CONFIG.c2_enabled:
                 expected["c2_listener"] = self.c2_thread
             for thread_kind, thread in expected.items():
                 if thread is not None and thread.is_alive():
@@ -4437,7 +4458,11 @@ class TaskRunner:
             "task_runner": self.thread,
             "thread_monitor": self.thread_monitor,
         }
-        if CONFIG.c2_enabled:
+        if self.hook_services is not None:
+            expected["hook_intake"] = self.hook_intake_thread
+            if self.hook_services.dispatcher is not None:
+                expected['hook_business'] = self.hook_business_thread
+        elif CONFIG.c2_enabled:
             expected["c2_listener"] = self.c2_thread
         with self._thread_health_lock:
             started = set(self._background_loop_started)
@@ -4453,6 +4478,7 @@ class TaskRunner:
             self.binding is not None
             and not self.stop_event.is_set()
             and not failures
+            and (self.hook_services is None or self.hook_services.health_snapshot()["ready"])
             and all(
                 item["entered_loop"] and item["alive"]
                 for item in threads.values()
@@ -4466,6 +4492,11 @@ class TaskRunner:
             "threads": threads,
             "startup_failures": failures,
         }
+
+    def _hook_persistence_failed(self) -> None:
+        self._handle_background_thread_failure("hook_intake",
+            error_code="HOOK_RECEIVER_OR_PERSISTENCE_FAILED",
+            message="微信消息保存或接收线程异常，已停止接单。", traceback_text="")
 
     def _handle_background_thread_failure(
         self,
@@ -6862,6 +6893,9 @@ class TaskRunner:
             reason = str(self._backend_fault_recovery.get("reason") or "等待后端原任务结算")
         elif self.last_rpa_component_status != "ready" or self.last_wechat_status != "logged_in":
             reason = "等待自动化组件和微信连接正常"
+        if not reason and getattr(self,'hook_services',None) is not None:
+            check=self.hook_services.startup_check_state()
+            if not check.get('canStart'):reason=check.get('message') or check.get('title') or '等待运行检查通过'
         return {"ready": not reason, "checking": False, "reason": reason or "旧记录已处理完成，可以点击“开始接单”恢复。"}
 
     def _publish_fault_recovery(self) -> None:
@@ -6910,7 +6944,7 @@ class TaskRunner:
                     self.on_error(state["reason"])
                     return
                 binding = self.binding
-                if not self._refresh_vision_credential(binding):
+                if self.hook_services is None and not self._refresh_vision_credential(binding):
                     return
                 with self._run_status_intent_lock:
                     if revision != self._run_status_revision or not self._check_fault_recovery()["ready"]:
@@ -7025,6 +7059,11 @@ class TaskRunner:
         if run_status == "running" and emergency_stop_requested():
             self.on_error("客户端已触发紧急停止，请重启后再开始接单。")
             return False
+        if run_status=='running' and getattr(self,'hook_services',None) is not None:
+            check=self.hook_services.startup_check_state()
+            if not check.get('canStart'):
+                self.on_error(check.get('message') or check.get('title') or '等待运行检查通过')
+                return False
         if run_status in {"paused", "faulted"}:
             # Pause drains the registered flow. Emergency stop remains the
             # separate fail-safe for not-yet-started physical actions.
@@ -7040,7 +7079,7 @@ class TaskRunner:
                 revision = self._run_status_revision
         previous_layout_state = None
         try:
-            if run_status == "running" and not self._refresh_vision_credential(self.binding):
+            if run_status == "running" and self.hook_services is None and not self._refresh_vision_credential(self.binding):
                 return False
             profile = self.api.set_run_status(self.binding, run_status)
             if profile.run_status != run_status:
@@ -7131,7 +7170,28 @@ class TaskRunner:
                     )
                 return False
 
+    def _hook_loop(self) -> None:
+        self._mark_background_loop_entered("task_runner")
+        try:
+            while not self.stop_event.is_set():
+                self._task_wake_event.clear()
+                self.tick_once()
+                if not self.stop_event.is_set():
+                    self._task_wake_event.wait(self.poll_interval_seconds)
+        finally:
+            # A DLL call may still be returning. Keep passive reception alive
+            # until the business writer has saved its result; updates with a
+            # shorter deadline stay blocked rather than taking its storage.
+            thread=self.hook_business_thread
+            if thread and thread is not threading.current_thread():
+                thread.join(90)
+                if thread.is_alive():raise RuntimeError('HOOK_BUSINESS_WRITER_NOT_STOPPED')
+            self.hook_services.close()
+
     def _loop(self) -> None:
+        if self.hook_services is not None:
+            self._hook_loop()
+            return
         append_log("INFO", "client_started", "Worker 客户端任务循环启动。")
         self._mark_background_loop_entered("task_runner")
         while not self.stop_event.is_set():
@@ -7167,13 +7227,17 @@ class TaskRunner:
     def tick_once(self) -> None:
         try:
             self._tick_once()
-            from .pre_send_read_recovery import observe_pending_input
-            observe_pending_input(self)
+            if self.hook_services is None:
+                from .pre_send_read_recovery import observe_pending_input
+                observe_pending_input(self)
             self._process_fault_recovery()
         finally:
             self._publish_fault_recovery()
 
     def _tick_once(self) -> None:
+        if self.hook_services is not None:
+            self.hook_services.tick(self)
+            return
         binding = self.binding
         if not binding:
             return
@@ -7711,104 +7775,24 @@ class TaskRunner:
         """Compatibility entry for existing failure callers and persisted receipts."""
         self._save_add_friend_result(binding, task, result, kind="failure")
 
-    def _save_add_friend_result(
-        self, binding: Binding, task: Task, result: RpaResult, *, kind: str,
-    ) -> None:
-        """Persist the original result and finish dependency before any HTTP."""
-        if kind not in {"failure", "success"}:
-            raise ValueError("Unknown task result kind")
-        mismatch = f"TASK_{kind.upper()}_RECEIPT_MISMATCH"
-        if kind == "success" and (not result.ok or result.result_code not in {"invite_sent", "already_friend"}):
-            raise RuntimeError(mismatch)
-        with self._restart_recovery_lock:
-            if load_runtime_control().get("inflight_flow_id") != task.id:
-                raise RuntimeError(mismatch)
-            key = self._inflight_finish_receipt_key(task.id)
-            saved = load_c2_state(key) or {}
-            field = f"task_{kind}"
-            details = (
-                {"result_code": result.result_code,
-                 "remark": "客户已是好友" if result.result_code == "already_friend" else "已发送添加通讯录邀请"}
-                if kind == "success" else
-                {"error_code": result.error_code or "OTHER",
-                 "failure_step": result.failure_step, "failure_remark": result.message}
-            )
-            receipt = {
-                "task_id": task.id, "task_type": "add_friend", "flow_id": task.id,
-                "worker_id": binding.worker_id, "client_instance_id": binding.client_instance_id,
-                "lease_fencing_token": task.lease_fencing_token, **details,
-            }
-            other = "task_failure" if kind == "success" else "task_success"
-            if saved.get(other) or (saved.get(field) and saved[field] != receipt):
-                raise RuntimeError(mismatch)
-            save_c2_state(key, {
-                **saved, field: receipt,
-                f"{field}_confirmed": saved.get(f"{field}_confirmed") is True,
-                "terminal_kind": "task_terminal", "finish_stage": "dependencies",
-                "finish_request": {
-                    "flow_id": task.id, "worker_id": binding.worker_id,
-                    "client_instance_id": binding.client_instance_id,
-                    "terminal_kind": "task_terminal", "conversation_id": None, "error_code": None,
-                },
-            })
+    def _save_add_friend_result(self, binding, task, result, *, kind):
+        from .c1_receipts import AddFriendResultReceipts
+        return AddFriendResultReceipts._save_add_friend_result(self, binding, task, result, kind=kind)
 
-    def _deliver_add_friend_failure(self, binding: Binding, flow_id: str) -> Task | None:
-        """Compatibility entry; old task_failure receipts retain their meaning."""
+    def _deliver_add_friend_failure(self, binding, flow_id):
         return self._deliver_add_friend_result(binding, flow_id)
 
-    def _deliver_add_friend_result(self, binding: Binding, flow_id: str) -> Task | None:
-        """Replay only a saved result; confirm before consuming its journal."""
-        with self._restart_recovery_lock:
-            key = self._inflight_finish_receipt_key(flow_id)
-            saved = load_c2_state(key) or {}
-            kinds = [kind for kind in ("failure", "success") if saved.get(f"task_{kind}")]
-            if not kinds:
-                return None
-            if len(kinds) != 1:
-                raise RuntimeError("TASK_SUCCESS_RECEIPT_MISMATCH")
-            kind = kinds[0]
-            field = f"task_{kind}"
-            receipt = saved[field]
-            local_flow_id = load_runtime_control().get("inflight_flow_id")
-            if (receipt.get("task_id") != flow_id or receipt.get("flow_id") != flow_id
-                    or receipt.get("task_type") != "add_friend"
-                    or receipt.get("worker_id") != binding.worker_id
-                    or receipt.get("client_instance_id") != binding.client_instance_id
-                    or (local_flow_id != flow_id and (
-                        local_flow_id or saved.get(f"{field}_confirmed") is not True))):
-                raise RuntimeError(f"TASK_{kind.upper()}_RECEIPT_MISMATCH")
-            # A crash can occur after saving the failure but before saving its
-            # stop state. Restore the stop decision before any settlement.
-            error_code = receipt.get("error_code") if kind == "failure" else None
-            stop_status = (
-                "faulted" if error_code in C1_TECHNICAL_ERROR_CODES
-                else "paused" if error_code in ENV_STOP_ERRORS else None
-            )
-            if stop_status:
-                if binding.run_status == "faulted":
-                    stop_status = "faulted"
-                if (binding.run_status != stop_status
-                        or not load_runtime_control().get("pause_requested")
-                        or self._run_status_persistence_pending):
-                    self.set_run_status(stop_status)
-            if saved.get(f"{field}_confirmed") is True:
-                return None
-            task = (self.api.settle_task_success(binding, receipt) if kind == "success"
-                    else self.api.settle_task_failure(binding, receipt))
-            terminal_matches = (
-                task.status == "completed" and task.result_code == receipt["result_code"]
-                if kind == "success" else
-                (task.status == "failed" and task.error_code == receipt["error_code"]
-                 or task.status == "cancelled" and task.raw.get("cancel_reason") == "LEAD_INVALID")
-            )
-            if (task.id != flow_id or task.raw.get(f"{kind}_receipt") != receipt or not terminal_matches):
-                raise RuntimeError(f"TASK_{kind.upper()}_RECEIPT_UNCONFIRMED")
-            path = action_journal_path("add_friend", flow_id)
-            if read_action_journal(path) and action_journal_phase(path) != "trigger_attempted":
-                remove_action_journal(path)
-            save_c2_state(key, {**saved, f"{field}_confirmed": True})
-            append_log("INFO", f"task_{kind}_receipt_confirmed", "原任务结果已获后端确认，继续结束原流程。", task_id=flow_id)
-            return task
+    def _deliver_add_friend_result(self, binding, flow_id):
+        from .c1_receipts import AddFriendResultReceipts
+        return AddFriendResultReceipts._deliver_add_friend_result(self, binding, flow_id)
+
+    @staticmethod
+    def _receipt_load(key):
+        return load_c2_state(key)
+
+    @staticmethod
+    def _receipt_save(key, value):
+        return save_c2_state(key, value)
 
     def _handle_failed_result(self, binding: Binding, task: Task, result: RpaResult) -> None:
         frame_failed = result.error_code in (C1_TECHNICAL_ERROR_CODES if task.task_type == "add_friend" else FRAME_TECHNICAL_ERROR_CODES)

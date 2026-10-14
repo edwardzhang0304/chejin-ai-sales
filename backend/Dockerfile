@@ -7,8 +7,8 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PIP_NO_CACHE_DIR=1 \
     PYTHONPATH=/app
 
-COPY backend/requirements.txt ./
-RUN pip install -r requirements.txt
+COPY backend/requirements.txt backend/requirements.lock ./
+RUN pip install -r requirements.lock
 
 COPY backend/app ./app
 COPY backend/alembic.ini ./
@@ -17,6 +17,8 @@ COPY backend/configs ./configs
 COPY backend/scripts ./scripts
 COPY backend/docker/entrypoint.sh /entrypoint.sh
 COPY contracts/c2_contract_v3.json ./contracts/c2_contract_v3.json
+COPY contracts/hook_contract_v1.json ./contracts/hook_contract_v1.json
+COPY ops/hook_uat/compat.py ops/hook_uat/import_sqlite.py ./ops/hook_uat/
 COPY contracts/recovery ./contracts/recovery
 COPY worker-client/omniauto-rpa ./omniauto-rpa
 

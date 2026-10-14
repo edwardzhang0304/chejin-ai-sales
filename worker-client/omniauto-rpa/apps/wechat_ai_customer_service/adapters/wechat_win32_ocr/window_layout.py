@@ -241,7 +241,8 @@ def _pixel_luma(pixel: Any) -> float:
     return (red * 0.299) + (green * 0.587) + (blue * 0.114)
 
 
-def _vertical_edge_candidates(image: Any) -> list[tuple[int, float]]:
+def _vertical_edge_candidates(image: Any, *, minimum_height: int = 240,
+                              allow_thin_borders: bool = False) -> list[tuple[int, float]]:
     """Find stable vertical separators from the captured pixels.
 
     This is intentionally independent from WeChat's old 980px geometry. A
@@ -253,7 +254,7 @@ def _vertical_edge_candidates(image: Any) -> list[tuple[int, float]]:
     if image is None or not hasattr(image, "size") or not hasattr(image, "getpixel"):
         return []
     width, height = [int(value or 0) for value in image.size[:2]]
-    if width < 320 or height < 240:
+    if width < 320 or height < max(48, minimum_height):
         return []
     # A real WeChat column separator spans the header, message list and input
     # areas.  Repeated chat bubbles can share one x-coordinate across several
@@ -284,7 +285,14 @@ def _vertical_edge_candidates(image: Any) -> list[tuple[int, float]]:
                 # pixels so anti-aliasing cannot erase the structural edge.
                 left = strip_luma(x - 4, x - 1, y)
                 right = strip_luma(x + 2, x + 5, y)
-                row_scores.append(abs(left - right))
+                contrast = abs(left - right)
+                if allow_thin_borders:
+                    # Header-only captures may expose a one-pixel separator
+                    # between equal-colored surfaces. It must remain visible
+                    # on both sides at the same broadly sampled heights.
+                    center = _pixel_luma(image.getpixel((x, y)))
+                    contrast = max(contrast, min(abs(center-left), abs(center-right)))
+                row_scores.append(contrast)
             except Exception:
                 row_scores.append(0.0)
         stable_rows = sum(1 for score in row_scores if score >= 5.0)
@@ -656,6 +664,7 @@ def build_add_friend_entry_layout_regions(
     image: Any,
     *,
     search_anchor_items: list[Mapping[str, Any]] | None = None,
+    full_client_width: int | None = None,
 ) -> dict[str, Any]:
     """Resolve only the current-frame regions needed to open Add Friend.
 
@@ -674,7 +683,19 @@ def build_add_friend_entry_layout_regions(
             "vertical_candidates": [],
         }
     width, height = [int(value or 0) for value in image.size[:2]]
-    verticals = _vertical_edge_candidates(image)
+    # A top-left ROI has the same x origin as the client frame. Use its
+    # measured full client width only for the existing boundary plausibility
+    # ranges; detect edges and validate all regions on actual captured pixels.
+    if full_client_width is not None and (
+            type(full_client_width) is not int or full_client_width < width):
+        return {'ok': False, 'regions': {}, 'anchors': [], 'confidence': 0.0,
+                'conflicts': ['partial_capture_client_width_invalid'],
+                'vertical_candidates': []}
+    boundary_reference_width = full_client_width if full_client_width is not None else width
+    verticals = _vertical_edge_candidates(
+        image, minimum_height=48 if full_client_width is not None else 240,
+        allow_thin_borders=full_client_width is not None,
+    )
     # Search semantics belong to the proven 0.9.20 recognizer. This module
     # only selects the topmost operation row inside pixel-derived boundaries.
     raw_search_items = search_anchor_items or []
@@ -698,13 +719,13 @@ def build_add_friend_entry_layout_regions(
         )
     pairs: list[tuple[float, tuple[int, float], tuple[int, float]]] = []
     for nav in verticals:
-        if not (int(width * 0.025) <= nav[0] <= int(width * 0.20)):
+        if not (int(boundary_reference_width * 0.025) <= nav[0] <= int(boundary_reference_width * 0.20)):
             continue
         for main in verticals:
             sidebar_width = main[0] - nav[0]
-            if not (int(width * 0.16) <= sidebar_width <= int(width * 0.48)):
+            if not (int(boundary_reference_width * 0.16) <= sidebar_width <= int(boundary_reference_width * 0.48)):
                 continue
-            if not (int(width * 0.24) <= main[0] <= int(width * 0.62)):
+            if not (int(boundary_reference_width * 0.24) <= main[0] <= int(boundary_reference_width * 0.62)):
                 continue
             pairs.append((float(nav[1]) + float(main[1]), nav, main))
     if not pairs:
@@ -727,7 +748,7 @@ def build_add_friend_entry_layout_regions(
     )
     ranked_pairs = sorted(pairs, key=lambda item: item[0], reverse=True)
     _score, nav_boundary, main_boundary = ranked_pairs[0]
-    position_tolerance = max(18, int(width * 0.018))
+    position_tolerance = max(18, int(boundary_reference_width * 0.018))
     same_nav_pairs = [
         item
         for item in pairs

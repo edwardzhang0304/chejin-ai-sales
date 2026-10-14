@@ -24,15 +24,16 @@ export type WorkerClientScreen =
   | "schedule-settings"
   | "logs";
 
-export type WorkerReceiveState = "接单中" | "暂停接单" | "离线" | "客户端故障" | "已停止接单" | "可以恢复接单" | "正在恢复接单";
+export type WorkerReceiveState = "检查中" | "检查未通过" | "等待后台恢复" | "接单中" | "暂停接单" | "离线" | "客户端故障" | "已停止接单" | "可以恢复接单" | "正在恢复接单";
 export type WorkerConnectionState = "连接正常" | "连接异常";
 export type AutomationState = "可用" | "不可用";
 export type WechatState = "已连接" | "未连接";
 
-export type TimelineStepState = "done" | "current" | "error";
+export type TimelineStepState = "done" | "current" | "waiting" | "error";
 
 export interface WorkerStatusModel {
   sellerName: string;
+  acceptingIntent?: boolean;
   receiveState: WorkerReceiveState;
   connectionState: WorkerConnectionState;
   lastHeartbeat: string;
@@ -62,6 +63,9 @@ export interface TimelineScreenshot {
 }
 
 export interface TimelineStepModel {
+  groupId?: string;
+  groupTitle?: string;
+  focus?: boolean;
   state: TimelineStepState;
   title: string;
   description?: string;
@@ -83,6 +87,8 @@ export interface WorkerLogRow {
 }
 
 export interface WorkerClientModel {
+  hookProcessSteps?: TimelineStepModel[];
+  startupCheck?: { state: "checking" | "passed" | "failed"; title: string; message: string; canStart: boolean; faultTitle?: string; faultMessage?: string };
   layoutRecovery?: { blocked: boolean; attempts: number; message: string };
   faultRecovery?: { ready: boolean; checking: boolean; reason: string };
   workerId: string;

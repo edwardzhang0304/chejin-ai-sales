@@ -13,7 +13,7 @@ import importlib,json,sys
 from pathlib import Path
 from unittest.mock import patch,Mock
 from contextlib import nullcontext
-from PySide6.QtCore import QTimer
+from PySide6.QtCore import QTimer,Signal
 from PySide6.QtWidgets import QWidget
 from chejin_worker_client.models import Binding
 from chejin_worker_client.task_runner import TaskRunner
@@ -24,6 +24,8 @@ mode=sys.argv[2];bound=sys.argv[3]=='bound';events=[];windows=[]
 clsname='WorkerWindow' if sys.argv[1]=='ui' else 'WorkerWebWindow'
 original=getattr(module,clsname)
 class Renderer(QWidget):
+    renderProcessTerminated=Signal(object,int)
+    loadFinished=Signal(bool)
     def page(self):return Mock()
     def load(self,url):events.append(['local_asset',url.isLocalFile()])
 renderer=patch.object(module,'QWebEngineView',Renderer) if sys.argv[1]=='web_ui' else nullcontext()

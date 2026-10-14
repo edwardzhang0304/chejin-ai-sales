@@ -1,0 +1,220 @@
+[
+  {
+    "label": "header",
+    "screenshot": 1,
+    "rows": [
+      {
+        "text": "Q搜索",
+        "confidence": 0.9424453377723694,
+        "left": 20.0,
+        "right": 78.0,
+        "top": 37.0,
+        "bottom": 58.0
+      },
+      {
+        "text": "模拟字段",
+        "confidence": 0.6667578816413879,
+        "left": 273.0,
+        "right": 289.0,
+        "top": 37.0,
+        "bottom": 56.0
+      }
+    ]
+  },
+  {
+    "label": "lookup",
+    "screenshot": 2,
+    "rows": [
+      {
+        "text": "13800000003",
+        "confidence": 0.9996641874313354,
+        "left": 45.0,
+        "right": 145.0,
+        "top": 41.0,
+        "bottom": 56.0
+      },
+      {
+        "text": "模拟字段",
+        "confidence": 0.6650779396295547,
+        "left": 28.0,
+        "right": 51.0,
+        "top": 113.0,
+        "bottom": 133.0
+      },
+      {
+        "text": "网络查找手机/QQ号",
+        "confidence": 0.9786598086357117,
+        "left": 75.0,
+        "right": 234.0,
+        "top": 115.0,
+        "bottom": 134.0
+      },
+      {
+        "text": "搜索13800000003",
+        "confidence": 0.9996874699225793,
+        "left": 70.0,
+        "right": 225.0,
+        "top": 182.0,
+        "bottom": 204.0
+      },
+      {
+        "text": "模拟字段",
+        "confidence": 0.9948409687389027,
+        "left": 70.0,
+        "right": 238.0,
+        "top": 216.0,
+        "bottom": 233.0
+      },
+      {
+        "text": "13800000003",
+        "confidence": 0.9996748674999584,
+        "left": 43.0,
+        "right": 138.0,
+        "top": 260.0,
+        "bottom": 275.0
+      }
+    ]
+  },
+  {
+    "label": "card",
+    "screenshot": 2,
+    "rows": [
+      {
+        "text": "模拟字段",
+        "confidence": 0.9974149465560913,
+        "left": 123.0,
+        "right": 155.0,
+        "top": 31.0,
+        "bottom": 52.0
+      },
+      {
+        "text": "添加到通讯录",
+        "confidence": 0.9961975316206614,
+        "left": 121.0,
+        "right": 227.0,
+        "top": 175.0,
+        "bottom": 194.0
+      }
+    ]
+  },
+  {
+    "label": "fields",
+    "screenshot": 4,
+    "rows": [
+      {
+        "text": "申请添加朋友",
+        "confidence": 0.9967301984628042,
+        "left": 181.0,
+        "right": 270.0,
+        "top": 15.0,
+        "bottom": 30.0
+      },
+      {
+        "text": "发送添加朋友申请",
+        "confidence": 0.9929839372634888,
+        "left": 31.0,
+        "right": 150.0,
+        "top": 68.0,
+        "bottom": 81.0
+      },
+      {
+        "text": "模拟字段",
+        "confidence": 0.9970431668417794,
+        "left": 46.0,
+        "right": 297.0,
+        "top": 109.0,
+        "bottom": 126.0
+      },
+      {
+        "text": "备注名",
+        "confidence": 0.9999322096506754,
+        "left": 28.0,
+        "right": 76.0,
+        "top": 162.0,
+        "bottom": 181.0
+      },
+      {
+        "text": "模拟字段",
+        "confidence": 0.9999775886535645,
+        "left": 43.0,
+        "right": 65.0,
+        "top": 204.0,
+        "bottom": 225.0
+      }
+    ]
+  },
+  {
+    "label": "footer",
+    "screenshot": 4,
+    "rows": [
+      {
+        "text": "确定",
+        "confidence": 0.9998929798603058,
+        "left": 136.0,
+        "right": 175.0,
+        "top": 48.0,
+        "bottom": 70.0
+      },
+      {
+        "text": "取消",
+        "confidence": 0.9992634057998657,
+        "left": 276.0,
+        "right": 314.0,
+        "top": 49.0,
+        "bottom": 70.0
+      }
+    ]
+  },
+  {
+    "label": "header",
+    "screenshot": 5,
+    "rows": [
+      {
+        "text": "Q搜索",
+        "confidence": 0.921289324760437,
+        "left": 20.0,
+        "right": 77.0,
+        "top": 38.0,
+        "bottom": 57.0
+      },
+      {
+        "text": "模拟字段",
+        "confidence": 0.9019277095794678,
+        "left": 273.0,
+        "right": 288.0,
+        "top": 38.0,
+        "bottom": 55.0
+      }
+    ]
+  },
+  {
+    "label": "existing",
+    "screenshot": 5,
+    "rows": [
+      {
+        "text": "模拟字段",
+        "confidence": 0.9998792111873627,
+        "left": 76.0,
+        "right": 114.0,
+        "top": 17.0,
+        "bottom": 38.0
+      },
+      {
+        "text": "模拟字段",
+        "confidence": 0.9566620141267776,
+        "left": 263.0,
+        "right": 292.0,
+        "top": 20.0,
+        "bottom": 33.0
+      },
+      {
+        "text": "模拟字段",
+        "confidence": 0.9442594796419144,
+        "left": 78.0,
+        "right": 238.0,
+        "top": 48.0,
+        "bottom": 65.0
+      }
+    ]
+  }
+]

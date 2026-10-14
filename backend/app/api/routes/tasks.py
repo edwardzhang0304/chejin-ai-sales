@@ -433,3 +433,37 @@ def add_task_evidence(
     except Exception:
         db.rollback()
         raise
+
+
+from app.schemas.hook_business import HookAccountAction, HookInviteSubmission
+
+@router.post('/tasks/{task_id}/hook-invite/prepare')
+def prepare_hook_invite(task_id: str, payload: HookAccountAction, db: Session = Depends(get_db),
+        x_worker_token: str | None = Header(default=None, alias='X-Worker-Token'),
+        x_client_instance_id: str | None = Header(default=None, alias='X-Client-Instance-Id'),
+        x_inflight_flow_id: str | None = Header(default=None, alias='X-Inflight-Flow-Id'),
+        x_task_lease_fencing_token: int | None = Header(default=None, alias='X-Task-Lease-Fencing-Token')):
+    from app.services.hook_business_service import prepare_invite
+    try:
+        task = task_service.get_task_or_404(db, task_id)
+        worker = worker_service.authenticate_worker_client(db, task.worker_id or '', x_worker_token, x_client_instance_id)
+        data = prepare_invite(db, worker, x_client_instance_id, task_id, payload, x_inflight_flow_id, x_task_lease_fencing_token)
+        db.commit(); return ok(data)
+    except Exception:
+        db.rollback(); raise
+
+@router.post('/tasks/{task_id}/hook-invite/submitted')
+def submitted_hook_invite(task_id: str, payload: HookInviteSubmission, request: Request, db: Session = Depends(get_db),
+        x_worker_token: str | None = Header(default=None, alias='X-Worker-Token'),
+        x_client_instance_id: str | None = Header(default=None, alias='X-Client-Instance-Id'),
+        x_inflight_flow_id: str | None = Header(default=None, alias='X-Inflight-Flow-Id'),
+        x_task_lease_fencing_token: int | None = Header(default=None, alias='X-Task-Lease-Fencing-Token')):
+    from app.services.hook_business_service import submit_invite
+    try:
+        task = task_service.get_task_or_404(db, task_id)
+        worker = worker_service.authenticate_worker_client(db, task.worker_id or '', x_worker_token, x_client_instance_id)
+        actor = worker_actor_context(request, worker_id=worker.id, worker_name=worker.worker_name)
+        data = submit_invite(db, worker, x_client_instance_id, task_id, payload, x_inflight_flow_id, x_task_lease_fencing_token, actor)
+        db.commit(); return ok(data)
+    except Exception:
+        db.rollback(); raise

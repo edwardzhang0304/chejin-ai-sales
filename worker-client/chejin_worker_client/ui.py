@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Literal
 
@@ -79,12 +79,15 @@ def _short_task_id(value: str | None) -> str:
     return value[:8]
 
 
-def _format_time(value: str | None) -> str:
+def _format_time(value: str | None, *, backend_utc: bool = False) -> str:
     if not value:
         return "刚刚"
     try:
         normalized = value.replace("Z", "+00:00")
         dt = datetime.fromisoformat(normalized)
+        if backend_utc:
+            if dt.tzinfo is None:dt=dt.replace(tzinfo=timezone.utc)
+            dt=dt.astimezone()
         return dt.strftime("%H:%M:%S")
     except ValueError:
         return value[-8:] if len(value) >= 8 else value
@@ -438,9 +441,11 @@ class WorkerWindow(QMainWindow):
         self.update_state: dict = {}
         self._runtime_services_started = False
 
+        from .hook_factory import create_hook_services
         self.runner = TaskRunner(
             self.api,
             self.bridge,
+            hook_services=create_hook_services(self.api),
             on_profile=lambda value: self.profile_signal.emit(value),
             on_status=lambda value: self.status_signal.emit(value),
             on_task=lambda value: self.task_signal.emit(value),
@@ -1187,7 +1192,7 @@ class WorkerWindow(QMainWindow):
         display_task = active_task or self.last_task
         result = self.last_result
         if is_faulted:
-            headline = recovery['statusText']
+            headline = ('正在恢复接单' if recovery.get('checking') else '已停止接单') if getattr(self.runner,'hook_services',None) is not None else recovery['statusText']
         elif self.runner.run_status_sync_error and not is_running:
             headline = "已在本机暂停，后端同步失败"
         elif offline:
@@ -1207,7 +1212,7 @@ class WorkerWindow(QMainWindow):
         self.headline_label.setText(headline)
 
         if profile and profile.last_heartbeat_at:
-            heartbeat = _format_time(profile.last_heartbeat_at)
+            heartbeat = _format_time(profile.last_heartbeat_at, backend_utc=getattr(self.runner,"hook_services",None) is not None)
         else:
             heartbeat = "暂无"
         self.connection_label.setText("连接异常 · 最近心跳 " + heartbeat if offline else "连接正常 · 最近心跳 " + heartbeat if online else "正在连接 · 心跳 " + heartbeat)
@@ -1387,7 +1392,13 @@ class WorkerWindow(QMainWindow):
 
     def closeEvent(self, event) -> None:  # noqa: N802
         self.update_coordinator.stop()
-        self.runner.stop()
+        if self.runner.hook_services is not None:
+            try:self.runner.stop_for_update(80)
+            except Exception:
+                event.ignore()
+                self.error_signal.emit('工作微信记录还在保存，请稍后退出。')
+                return
+        else:self.runner.stop()
         super().closeEvent(event)
 
     def _apply_style(self) -> None:

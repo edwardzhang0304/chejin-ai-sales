@@ -331,14 +331,19 @@ def test_staged_directory_switch_failure_restarts_unchanged_old_program(
     staged = Path(plan["staged_program_dir"])
     real_replace = updater_module.os.replace
 
+    refused = []
+
     def fail_only_staged_switch(source, destination):
-        if Path(source) == staged and Path(destination) == current:
+        # Production normalizes paths; /tmp aliases /private/tmp on macOS.
+        if Path(source).resolve() == staged.resolve() and Path(destination).resolve() == current.resolve():
+            refused.append(True)
             raise PermissionError("simulated directory switch refusal")
         return real_replace(source, destination)
 
     monkeypatch.setattr(updater_module.os, "replace", fail_only_staged_switch)
 
     assert run_update(plan_path, token) == 1
+    assert refused == [True]
     result = json.loads((plan_path.parent / "update-result.json").read_text())
     assert result["result_code"] == "UPDATE_ROLLED_BACK"
     assert current.is_dir()

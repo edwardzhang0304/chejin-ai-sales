@@ -15,6 +15,7 @@ VERSION_RE = re.compile(r"^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$")
 MANIFEST_NAME = "update-package-manifest.json"
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from chejin_worker_client.pending_read_recovery import package_recovery_capability
+from chejin_worker_client.shared_rules import client_release_rules as release_rules
 
 
 def hash_file(path: Path) -> str:
@@ -31,6 +32,7 @@ def main() -> int:
     parser.add_argument("--version", required=True)
     parser.add_argument("--git-commit", required=True)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--transport", choices=tuple(release_rules.CHANNEL_FOR_TRANSPORT), default="ocr")
     args = parser.parse_args()
     root = args.package_root.resolve(strict=True)
     if not VERSION_RE.fullmatch(args.version.strip()):
@@ -65,6 +67,8 @@ def main() -> int:
             raise SystemExit('packaged recovery contract mismatch: ' + relative)
     payload = {
         "schema_version": 1,
+        "transport": args.transport,
+        "channel": release_rules.channel_for_transport(args.transport),
         "version": args.version.strip(),
         "platform": "windows-x64",
         "git_commit": args.git_commit.strip().lower(),

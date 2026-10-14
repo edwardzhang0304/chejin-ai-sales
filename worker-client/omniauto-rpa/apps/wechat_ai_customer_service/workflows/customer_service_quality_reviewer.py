@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import re
 import time
 from typing import Any
@@ -21,12 +22,18 @@ from apps.wechat_ai_customer_service.llm_config import (
     resolve_llm_base_url,
     resolve_llm_tier_model,
 )
-from customer_service_brain_contract import join_reply_segments, normalize_space
-from llm_output_adapter import parse_llm_json_object
+from customer_service_brain_contract import join_reply_segments, normalize_space, reply_trigger_context
+from llm_output_adapter import (
+    llm_json_response_is_incomplete,
+    parse_complete_llm_json_response,
+    parse_llm_json_object,
+)
 
 
 DEFAULT_REVIEWER_TIMEOUT_SECONDS = 8
-DEFAULT_REVIEWER_MAX_TOKENS = 350
+# Review JSON and model reasoning share the same completion budget.
+# Keep the original reasoning mode; reserve enough room for both outputs.
+DEFAULT_REVIEWER_MAX_TOKENS = 16384
 DEFAULT_REVIEWER_TEMPERATURE = 0.1
 REVIEWER_VERDICTS = {"pass", "repair", "block", "handoff_suggest"}
 REVIEWER_MODES = {"shadow", "suspicious_only", "always"}
@@ -883,7 +890,7 @@ def reviewer_from_settings(settings: dict[str, Any]) -> dict[str, Any] | None:
         parsed = parse_llm_json_object(text)
         if isinstance(parsed, dict):
             return parsed
-        return {"status": "error", "error": "semantic_reviewer_response_not_json", "raw_response_text": text[:1000]}
+        return {"status": "error", "error": "semantic_reviewer_response_not_json", "error_kind": "protocol", "raw_response_text": text[:1000]}
     provider = resolve_effective_llm_provider(settings.get("provider") or "manual_json", read_secret_fn=read_secret)
     if provider == "manual_json":
         return {"status": "skipped", "reason": "manual_json_semantic_reviewer_unavailable"}
@@ -941,11 +948,21 @@ def run_quality_reviewer_llm(*, settings: dict[str, Any], request: dict[str, Any
             "model": response.get("model"),
             "base_url": response.get("base_url"),
             "error": str(response.get("error") or "semantic_reviewer_llm_unavailable"),
+            "error_kind": response.get("error_kind"),
             "failover": response.get("failover"),
             "elapsed_ms": response.get("elapsed_ms"),
         }
     raw_text = str(response.get("response_text") or "")
-    parsed = parse_llm_json_object(raw_text)
+    if llm_json_response_is_incomplete(response):
+        return {
+            "status": "error",
+            "provider": response.get("provider"),
+            "model": response.get("model"),
+            "error": "semantic_reviewer_response_incomplete",
+            "error_kind": "protocol",
+            "elapsed_ms": response.get("elapsed_ms"),
+        }
+    parsed = parse_complete_llm_json_response(response)
     if not isinstance(parsed, dict):
         return {
             "status": "error",
@@ -953,7 +970,17 @@ def run_quality_reviewer_llm(*, settings: dict[str, Any], request: dict[str, Any
             "model": response.get("model"),
             "base_url": response.get("base_url"),
             "error": "semantic_reviewer_response_was_not_json_object",
+            "error_kind": "protocol",
             "raw_response_text": raw_text[:1000],
+            "elapsed_ms": response.get("elapsed_ms"),
+        }
+    if not quality_reviewer_contract_is_complete(parsed):
+        return {
+            "status": "error",
+            "provider": response.get("provider"),
+            "model": response.get("model"),
+            "error": "semantic_reviewer_response_invalid_contract",
+            "error_kind": "protocol",
             "elapsed_ms": response.get("elapsed_ms"),
         }
     parsed["status"] = "ok"
@@ -964,6 +991,24 @@ def run_quality_reviewer_llm(*, settings: dict[str, Any], request: dict[str, Any
     parsed["failover"] = response.get("failover")
     parsed["elapsed_ms"] = response.get("elapsed_ms")
     return parsed
+
+
+def quality_reviewer_contract_is_complete(payload: dict[str, Any]) -> bool:
+    """An omitted safety field cannot be silently filled into a passing review."""
+    if not isinstance(payload.get("verdict"), str) or payload["verdict"] not in REVIEWER_VERDICTS:
+        return False
+    confidence = payload.get("confidence")
+    if (isinstance(confidence, bool) or not isinstance(confidence, (int, float))
+            or not math.isfinite(confidence) or not 0 <= confidence <= 1):
+        return False
+    for key in ("semantic_errors", "hard_boundary_concerns"):
+        value = payload.get(key)
+        if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
+            return False
+    if (not isinstance(payload.get("customer_visible_risk"), str)
+            or payload["customer_visible_risk"] not in {"low", "medium", "high"}):
+        return False
+    return all(isinstance(payload.get(key), str) for key in ("repair_instruction", "reason"))
 
 
 def build_quality_reviewer_prompt(request: dict[str, Any]) -> tuple[str, str]:
@@ -1004,6 +1049,7 @@ def build_quality_review_request(
             "conversation_id": str(target.get("conversation_id") or ""),
             "chat_type": str(target.get("chat_type") or ""),
         },
+        "reply_trigger": reply_trigger_context(current_message.get("trigger_type")),
         "current_user_messages": [current_message_text(brain_input, fallback=str(evidence_pack.get("current_message") or ""))],
         "conversation_summary": clip(str(conversation.get("summary") or ""), int(settings.get("semantic_reviewer_summary_chars") or 260)),
         "recent_context": clip(str(conversation.get("history_text") or ""), int(settings.get("semantic_reviewer_history_chars") or 420)),
@@ -1229,16 +1275,23 @@ def normalize_quality_review_result(result: dict[str, Any] | None) -> dict[str, 
 
 
 def unavailable_review(payload: dict[str, Any]) -> dict[str, Any]:
+    # A completed but malformed/truncated review is not a transport outage.
+    # In particular, dropping an invalid "block" result must never turn it into
+    # low-risk outage soft-pass, including the post-repair relaxation path.
+    invalid_response = payload.get("error_kind") in {"protocol", "internal"}
     return {
         "ok": False,
         "status": "error",
         "invoked": True,
-        "verdict": "repair",
-        "unavailable": True,
-        "errors": ["semantic_reviewer_unavailable"],
+        "verdict": "block" if invalid_response else "repair",
+        "unavailable": not invalid_response,
+        "errors": ["semantic_reviewer_invalid_response" if invalid_response else "semantic_reviewer_unavailable"],
         "warnings": [],
-        "repair_instruction": "语义审稿不可用；如果硬边界已通过且风险低，可按配置软放行，否则不要发送。",
-        "customer_visible_risk": "medium",
+        "repair_instruction": (
+            "审核结果不完整或格式错误，必须取得完整有效的审核结果后才能发送。" if invalid_response else
+            "语义审稿不可用；如果硬边界已通过且风险低，可按配置软放行，否则不要发送。"
+        ),
+        "customer_visible_risk": "high" if invalid_response else "medium",
         "reason": str(payload.get("error") or payload.get("reason") or "semantic_reviewer_unavailable")[:300],
         "provider": payload.get("provider"),
         "model": payload.get("model"),

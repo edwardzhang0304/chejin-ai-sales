@@ -11,7 +11,7 @@ import { VehiclesPage } from "./features/vehicles/VehiclesPage";
 import { WorkersPage } from "./features/workers/WorkersPage";
 import { getAuthSession, logout } from "./shared/api/auth";
 import type { AuthSession } from "./shared/api/auth";
-import { ApiError, onUnauthorized } from "./shared/api/client";
+import { ApiError, onUnauthorized, runtimeConfig } from "./shared/api/client";
 import { ChevronRightIcon } from "./shared/ui/Icons";
 
 type ModuleKey = "leads" | "vehicles" | "knowledge" | "sales" | "workers" | "tasks" | "logs";
@@ -148,7 +148,7 @@ export function App() {
           </div>
           <div>
             <strong>车金 AI</strong>
-            <span>运营后台</span>
+            <span>运营后台 · v{import.meta.env.VITE_PRODUCT_VERSION}{runtimeConfig.readOnly ? " · 联调只读" : ""}</span>
           </div>
         </div>
 
@@ -184,7 +184,7 @@ export function App() {
             <span className="account-avatar" aria-hidden="true">{accountAvatar}</span>
             <span className="account-copy">
               <strong title={accountLabel}>{accountLabel}</strong>
-              <small>全部功能权限</small>
+              <small>{runtimeConfig.readOnly ? "只读查看" : "全部功能权限"}</small>
             </span>
             <ChevronRightIcon />
           </button>

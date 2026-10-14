@@ -22503,7 +22503,19 @@ def screen_work_area(hwnd: int = 0) -> dict[str, int]:
     }
 
 
-def normalize_wechat_window(hwnd: int, *, allow_move: bool = True) -> dict[str, Any]:
+def normalize_wechat_window(
+    hwnd: int, *, allow_move: bool = True, startup_profile: str = "ocr",
+) -> dict[str, Any]:
+    # The compact profile is explicitly requested by Hook C1 startup only.
+    # Default OCR startup and all business actions retain their original gate.
+    if startup_profile not in {"ocr", "hook-3.9-c1"}:
+        return {"ok": False, "enabled": True, "applied": False,
+                "error_code": win32_ocr_layout.ERROR_WINDOW_NORMALIZATION_FAILED,
+                "reason": "startup_profile_unknown"}
+    minimum_width, minimum_height = (
+        (700, 600) if startup_profile == "hook-3.9-c1"
+        else (MIN_SAFE_WINDOW_WIDTH, MIN_SAFE_WINDOW_HEIGHT)
+    )
     before = get_window_geometry(hwnd)
     before_client = get_window_client_geometry(hwnd)
     dpi_scale = window_dpi_scale(hwnd)
@@ -22567,8 +22579,9 @@ def normalize_wechat_window(hwnd: int, *, allow_move: bool = True) -> dict[str, 
         before,
         dpi_scale=dpi_scale,
         work_area=work_area,
-        minimum_client_width=MIN_SAFE_WINDOW_WIDTH,
-        minimum_client_height=MIN_SAFE_WINDOW_HEIGHT,
+        minimum_client_width=minimum_width,
+        minimum_client_height=minimum_height,
+        startup_profile=startup_profile,
     )
     left = int(plan.get("left") or 0)
     top = int(plan.get("top") or 0)
@@ -22596,8 +22609,12 @@ def normalize_wechat_window(hwnd: int, *, allow_move: bool = True) -> dict[str, 
             return False, "window_dpi_changed_during_normalization"
         client_width = int(after_client_geometry.get("width") or 0)
         client_height = int(after_client_geometry.get("height") or 0)
-        if client_width < MIN_SAFE_WINDOW_WIDTH or client_height < MIN_SAFE_WINDOW_HEIGHT:
-            return False, "window_client_geometry_below_700x720_after_normalization"
+        if client_width < minimum_width or client_height < minimum_height:
+            return False, (
+                "window_client_geometry_below_hook_c1_minimum_after_normalization"
+                if startup_profile == "hook-3.9-c1"
+                else "window_client_geometry_below_700x720_after_normalization"
+            )
         return True, "normalized_geometry_verified"
 
     if not bool(plan.get("ok")):
