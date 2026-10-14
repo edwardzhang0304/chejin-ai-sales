@@ -11,7 +11,6 @@ on:
       - 'worker-client/tests/test_packaging_scripts.py'
       - 'worker-client/tests/test_release_gate_runner.py'
       - 'worker-client/scripts/run-windows-client-upgrade-test.py'
-      - 'worker-client/scripts/test-hook-launcher.ps1'
       - 'worker-client/tests/test_windows_upgrade_gate_data.py'
       - 'worker-client/requirements-test.txt'
       - 'backend/requirements.txt'
