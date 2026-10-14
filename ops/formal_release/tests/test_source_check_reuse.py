@@ -72,8 +72,8 @@ class SharedPrefixReuseTests(unittest.TestCase):
     def test_reused_commands_cannot_change_and_need_no_optional_yaml(self):
         workflow='.github/workflows/worker-windows-package.yml';action='.github/actions/worker-release-checks/action.yml'
         # This validator is archival; the new formal workflow uses generic evidence.
-        old_w=reuse.git('show','959b5180799d20841f28339a8fd561aeaba4140c'+':'+workflow).decode();new_w=reuse.git('show','50d031bd694c2c990badafeaf35d56bf008734e5:'+workflow).decode()
-        old_a=reuse.git('show','959b5180799d20841f28339a8fd561aeaba4140c'+':'+action).decode();new_a=(ROOT/action).read_text()
+        old_w=reuse.git('show','2eca2da497314b2f73772248c01ca989218b8b8b'+':'+workflow).decode();new_w=reuse.git('show','462093c251ca66500ecfdd3d9703404290ab4860:'+workflow).decode()
+        old_a=reuse.git('show','2eca2da497314b2f73772248c01ca989218b8b8b'+':'+action).decode();new_a=(ROOT/action).read_text()
         reuse.validate_prefix_commands(old_w,new_w,old_a,new_a)
         with self.assertRaises(ValueError):reuse.validate_prefix_commands(old_w,new_w.replace('3.12.10','3.13.0'),old_a,new_a)
         with self.assertRaises(ValueError):reuse.validate_prefix_commands(old_w,new_w,old_a,new_a.replace('python -m pytest','echo bypass'))

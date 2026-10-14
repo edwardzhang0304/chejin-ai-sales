@@ -258,7 +258,7 @@ class SelectionAndWorkflowTests(unittest.TestCase):
 
     def test_shared_tests_are_identical_to_prior_fast_uat_tests(self):
         # Baseline proves the extraction preserves existing tests, order and commands.
-        baseline = subprocess.check_output(["git", "show", "8c2accad5903d247c324d44fb8938ce41841dc91:.github/workflows/worker-windows-fast-uat.yml"], cwd=ROOT)
+        baseline = subprocess.check_output(["git", "show", "97527e9b60a120238d773162496b5b0d171da070:.github/workflows/worker-windows-fast-uat.yml"], cwd=ROOT)
         old = yaml.load(baseline, Loader=yaml.BaseLoader)["jobs"]["fast-uat"]["steps"]
         first = next(i for i, step in enumerate(old) if step.get("name") == "Run credential security gate")
         end = next(i for i, step in enumerate(old) if step.get("name") == "Build reusable portable runtime base on cache miss")
