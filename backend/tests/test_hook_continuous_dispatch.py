@@ -14,6 +14,7 @@ from chejin_worker_client import storage
 from chejin_worker_client.hook_backend import HookWorkerCredentials
 from chejin_worker_client.hook_formal_client import HookFormalClient
 from chejin_worker_client.hook_dispatcher import HookBusinessDispatcher
+from chejin_worker_client.models import Binding
 from apps.wechat_ai_customer_service.tests.test_hook_c1_flow import ReplayUI
 
 
@@ -50,7 +51,7 @@ def test_repeated_ticks_invite_bind_reply_recover_without_duplicate(identity_cli
                 if frame.name.startswith('fields'):self.clipboard_field_events.append({'copy_calls':1,'paste_calls':1,'clipboard_match':True,'completion_guard_passed':True})
         ui=UI();uis.append(ui);return ui
     import threading
-    runner=SimpleNamespace(binding=SimpleNamespace(run_status='running'),stop_event=threading.Event(),api=SimpleNamespace(inflight_flow_id=None),current_task=None,
+    runner=SimpleNamespace(binding=Binding(w['id'],w['worker_token'],w['instance'],'running'),stop_event=threading.Event(),api=SimpleNamespace(inflight_flow_id=None),current_task=None,
         on_task=lambda task:None,can_pull_tasks=lambda:True,_can_start_new_flow=lambda:not storage.load_runtime_control().get('inflight_flow_id'),
         _worker_transaction_barrier_ready=lambda *a,**kw:True)
     dispatcher=HookBusinessDispatcher(client,tmp_path/'continuous',factory,lambda *args:startup.append(1),automatic_transcription_disabled=lambda:True)
