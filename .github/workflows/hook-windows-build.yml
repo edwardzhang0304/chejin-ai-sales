@@ -79,11 +79,11 @@ jobs:
           .\.venv\Scripts\python.exe -m pytest tests/test_hook_installation.py tests/test_hook_release_channels.py tests/test_packaging_entry.py -q
           if ($LASTEXITCODE -ne 0) { throw 'HOOK_INSTALLATION_CHECK_FAILED' }
       - uses: actions/download-artifact@v4
-        with: {name: native-build-evidence, path: native-evidence}
+        with: {name: native-build-evidence, path: '${{ runner.temp }}/native-evidence'}
       - name: Build native candidate with original full package gates
         working-directory: worker-client
         env:
-          CHEJIN_FORMAL_SOURCE_RECEIPT: ${{ github.workspace }}/native-evidence/native-source-evidence.json
+          CHEJIN_FORMAL_SOURCE_RECEIPT: ${{ runner.temp }}/native-evidence/native-source-evidence.json
           GH_TOKEN: ${{ github.token }}
         run: .\scripts\build-windows.ps1 -Transport hook
       - name: Archive native candidate without publishing
