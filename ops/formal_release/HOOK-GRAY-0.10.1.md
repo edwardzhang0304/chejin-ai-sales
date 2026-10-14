@@ -15,6 +15,8 @@
 
 运维为每台电脑准备不含 Token/Key 的 profile JSON：schema_version=1、api_base_url、deployment。deployment 复用 HookDeployment 字段：revision、wechat_exe、dll_sha256、hook_api_port、receiver_port。Hash 必须来自验收过的 Hook DLL，不允许占位值或自动信任本机未知文件。
 
+每台电脑须安装 **Windows 微信 3.9.10.16（x86/32 位）**，并把与该版匹配、已核验 SHA-256 的 `version.dll` 放在所配置 `WeChat.exe` 的同一目录。验收时核对实际启动的 EXE 文件版本、EXE 与 DLL 的 x86 架构、DLL 加载及哈希；其他微信版本或不匹配的组件停止交付。`30001` 仅为历史测试端口示例，正式端口取每台机器的部署配置。
+
 微信关闭“语音自动转文字”后，由运维执行：
 
 ```powershell
