@@ -85,6 +85,29 @@ def prepare(args):
             'tool_evidence_run_id': str(receipt['tooling']['run_id']), 'case_evidence_runs': []}
     (area / 'plan.json').write_text(json.dumps(plan, indent=2))
     subprocess.run(['git', 'worktree', 'add', '--detach', str(area / 'old-source'), old['source_commit']], cwd=ROOT, check=True)
+    if args.repair_binary_run:
+        run = api(f'actions/runs/{args.repair_binary_run}')
+        require(run['head_branch'] == 'gray-release-0.10.x' and run['path'] == '.github/workflows/release-evidence.yml', 'UNTRUSTED_UPDATER_RUN')
+        jobs = api(f'actions/runs/{args.repair_binary_run}/jobs?per_page=100')['jobs']
+        require(any(j['name'] == 'Build only updater repair and exercise original Windows button'
+                    and any(s['name'] == 'Build standalone updater only' and s['conclusion'] == 'success'
+                            for s in j['steps']) for j in jobs), 'UPDATER_BUILD_NOT_PASSED')
+        subprocess.run(['git', 'diff', '--exit-code', run['head_sha'], 'HEAD', '--',
+            'worker-client/chejin_worker_client', 'worker-client/omniauto-rpa', 'contracts',
+            'worker-client/packaging/chejin-updater.spec', 'worker-client/packaging/chejin_updater_entry.py',
+            'worker-client/packaging/updater_runtime_hook.py'], cwd=ROOT, check=True, stdout=subprocess.DEVNULL)
+        artifacts = api(f'actions/runs/{args.repair_binary_run}/artifacts?per_page=100')['artifacts']
+        candidates = [a for a in artifacts if a['name'] == 'frozen-updater-' + args.repair_binary_run and not a['expired']]
+        require(len(candidates) == 1, 'SAVED_UPDATER_REQUIRED')
+        raw = api(f"actions/artifacts/{candidates[0]['id']}/zip", binary=True)
+        require(candidates[0]['digest'] == 'sha256:' + hashlib.sha256(raw).hexdigest(), 'SAVED_UPDATER_CHANGED')
+        dest = ROOT / 'worker-client/dist/CheJinUpdater.exe'
+        dest.parent.mkdir(exist_ok=True)
+        with zipfile.ZipFile(io.BytesIO(raw)) as z:
+            require(z.namelist() == ['CheJinUpdater.exe'], 'UNEXPECTED_UPDATER_ARTIFACT')
+            dest.write_bytes(z.read('CheJinUpdater.exe'))
+        (area / 'reused-updater.json').write_text(json.dumps({'run': args.repair_binary_run,
+            'source_commit': run['head_sha'], 'sha256': digest(dest)}))
     with open(os.environ['GITHUB_ENV'], 'a') as env:
         env.write(f'CHEJIN_RELEASE_SIGNING_KEYS_PATH={area / "public-keys.json"}\n')
 
@@ -123,6 +146,7 @@ def assemble(args):
     # Execute the frozen EXE itself before testing any GUI handoff.
     env = {k: v for k, v in os.environ.items() if not any(s in k.upper() for s in ('TOKEN', 'SECRET', 'SIGNING_PRIVATE'))}
     env.pop('CHEJIN_RELEASE_SIGNING_KEYS_PATH', None)
+    env.pop('PSModulePath', None)
     env['CHEJIN_WORKER_HOME'] = str(area / 'smoke-data')
     result = subprocess.run([str(exe), '--help'], env=env, timeout=45, capture_output=True)
     require(result.returncode == 0, 'FROZEN_UPDATER_IMPORT_FAILED')
@@ -139,9 +163,9 @@ def assemble(args):
         for name in ('CheJinWorkerClient.exe', 'CheJinUpdater.exe', 'update-package-manifest.json'):
             shutil.copyfile(original / name, probe / name)
         command = ['powershell.exe', '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', str(package / 'repair-updater.ps1'), '-InstallDirectory', str(probe)]
-        subprocess.run(command, check=True); subprocess.run(command, check=True)
+        subprocess.run(command, check=True, env=env); subprocess.run(command, check=True, env=env)
         require(digest(probe / exe.name) == digest(exe), 'REPAIR_COPY_FAILED')
-        subprocess.run(command + ['-Restore'], check=True)
+        subprocess.run(command + ['-Restore'], check=True, env=env)
         require(all(digest(probe / n) == digest(original / n) for n in ('CheJinWorkerClient.exe', 'CheJinUpdater.exe', 'update-package-manifest.json')), 'REPAIR_RESTORE_FAILED')
     shutil.make_archive(str(area / ('CheJinUpdaterRepair_V' + args.version)), 'zip', package)
     (area / 'repair-checks.json').write_text(json.dumps({'frozen_updater_help': 'passed', 'shared_rules_bundled': True,
@@ -153,5 +177,6 @@ if __name__ == '__main__':
     p.add_argument('operation', choices=['prepare', 'assemble'])
     for name in ('root', 'old-run', 'target-run', 'publication-run', 'version', 'sha256'):
         p.add_argument('--' + name, required=name in ('root', 'version'), type=Path if name == 'root' else str)
+    p.add_argument('--repair-binary-run', default='')
     args = p.parse_args()
     (prepare if args.operation == 'prepare' else assemble)(args)

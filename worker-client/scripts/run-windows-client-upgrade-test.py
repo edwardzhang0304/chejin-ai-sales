@@ -311,8 +311,10 @@ def run_case(args, status):
     assert digest(current / "CheJinWorkerClient.exe") == baseline["exe_sha256"]
     assert digest(current / "CheJinUpdater.exe") == baseline["updater_sha256"]
     if args.updater_repair:
+        powershell_env = dict(os.environ)
+        powershell_env.pop('PSModulePath', None)
         subprocess.run(['powershell.exe', '-NoProfile', '-ExecutionPolicy', 'Bypass',
-                        '-File', str(args.updater_repair), '-InstallDirectory', str(current)], check=True)
+                        '-File', str(args.updater_repair), '-InstallDirectory', str(current)], check=True, env=powershell_env)
     expected_updater_sha = digest(current / "CheJinUpdater.exe")
     cert, key = tls_files(case)
     port, debug_port = free_port(), free_port()
