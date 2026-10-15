@@ -146,3 +146,22 @@ def test_bad_or_swapped_ciphertext_is_rejected(admin, swap):
     assert response.status_code == 503
     assert response.json()["code"] == "VISION_CREDENTIAL_DECRYPT_FAILED"
     assert KEY not in response.text
+
+
+@pytest.mark.parametrize("optional_key", [{}, {"vision_api_key": None}, {"vision_api_key": "  "}])
+def test_hook_worker_create_edit_and_bind_without_vision(admin, monkeypatch, optional_key):
+    def no_vision_cipher():
+        pytest.fail("No Vision credential may be accessed for an unconfigured Hook Worker")
+    monkeypatch.setattr(credentials, "_cipher", no_vision_cipher)
+    response = admin.post("/api/workers", json={"worker_name": "Hook without Vision", **optional_key})
+    assert response.status_code == 200, response.text
+    worker = response.json()["data"]
+    assert worker["vision_configured"] is False
+    edited = admin.put(f"/api/workers/{worker['id']}", json={"worker_name": "Hook renamed", "enabled": True})
+    assert edited.status_code == 200, edited.text
+    assert edited.json()["data"]["worker_name"] == "Hook renamed"
+    bind(admin, worker)
+    with SessionLocal() as db:
+        stored = db.get(Worker, worker["id"])
+        assert stored.client_binding_state == "bound"
+        assert stored.vision_api_key_encrypted is None

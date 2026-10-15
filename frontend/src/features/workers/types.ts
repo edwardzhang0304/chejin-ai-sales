@@ -22,13 +22,7 @@ export type WorkerItem = {
   vision_credential_updated_at?: string | null;
 };
 
-export type WorkerVisionStatus = {
-  vision_configured: boolean;
-  vision_credential_updated_at: string | null;
-};
-
 export type WorkerCreatePayload = {
-  vision_api_key?: string;
   worker_name: string;
   device_name?: string | null;
   platform?: string;
@@ -36,7 +30,7 @@ export type WorkerCreatePayload = {
   remark?: string | null;
 };
 
-export type WorkerUpdatePayload = Partial<Omit<WorkerCreatePayload, "vision_api_key">>;
+export type WorkerUpdatePayload = Partial<WorkerCreatePayload>;
 
 export type WorkerResetResult = WorkerItem & {
   worker_token: string;

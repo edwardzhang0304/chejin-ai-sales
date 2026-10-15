@@ -6,7 +6,7 @@ import { CopyButton } from "../../shared/ui/CopyButton";
 import { CloseIcon } from "../../shared/ui/Icons";
 import { displayValue as display, formatRelativeHeartbeat as formatHeartbeat, optionalText } from "../../shared/utils/display";
 import { postMutationMessage, runPostMutationRefresh } from "../../shared/utils/postMutation";
-import { createWorker, getWorker, listWorkers, resetWorkerBinding, setWorkerVisionCredential, updateWorker } from "./api";
+import { createWorker, getWorker, listWorkers, resetWorkerBinding, updateWorker } from "./api";
 import { workerStatus as currentStatus, hookConnectionLabel, workerIsBusy } from "./status";
 import type { WorkerCreatePayload, WorkerItem, WorkerUpdatePayload } from "./types";
 
@@ -54,22 +54,6 @@ function toEditForm(worker: WorkerItem): WorkerEditForm {
   };
 }
 
-function VisionKeyInput({ value, onChange, disabled, required = false }: {
-  value: string;
-  onChange: (value: string) => void;
-  disabled: boolean;
-  required?: boolean;
-}) {
-  return (
-    <label>
-      <span>Vision Key {required ? <b>*</b> : null}</span>
-      <input type="password" value={value} onChange={(event) => onChange(event.target.value)}
-        autoComplete="new-password" spellCheck={false} maxLength={8192} disabled={disabled}
-        required={required} placeholder={required ? "请输入 Vision Key" : "留空保留原值"} />
-    </label>
-  );
-}
-
 function CreateWorkerModal({
   submitting,
   error,
@@ -84,21 +68,17 @@ function CreateWorkerModal({
   useLockBodyScroll();
 
   const [workerName, setWorkerName] = useState("");
-  const [visionKey, setVisionKey] = useState("");
   const [enabled, setEnabled] = useState(true);
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (!visionKey.trim()) return;
     const saved = await onSubmit({
       worker_name: workerName.trim(),
-      ...(visionKey.trim() ? { vision_api_key: visionKey.trim() } : {}),
       platform: "windows",
       enabled,
       device_name: null,
       remark: null,
     });
-    setVisionKey("");
     if (saved) onClose();
   }
 
@@ -124,7 +104,6 @@ function CreateWorkerModal({
                 </select>
               </label>
             </div>
-            <VisionKeyInput value={visionKey} onChange={setVisionKey} disabled={submitting} required />
             <div className="generated-note">
               <strong>保存后系统生成</strong>
               <span>Worker ID</span>
@@ -134,7 +113,7 @@ function CreateWorkerModal({
         </div>
         <footer>
           <button type="button" onClick={onClose} disabled={submitting}>取消</button>
-          <button className="primary-button" type="submit" disabled={submitting || !workerName.trim() || !visionKey.trim()}>{submitting ? "保存中..." : "保存"}</button>
+          <button className="primary-button" type="submit" disabled={submitting || !workerName.trim()}>{submitting ? "保存中..." : "保存"}</button>
         </footer>
       </form>
     </div>
@@ -159,12 +138,7 @@ export function WorkersPage({ openIntent }: { openIntent?: WorkerOpenIntent | nu
   const [editForm, setEditForm] = useState<WorkerEditForm | null>(null);
   const [saveError, setSaveError] = useState<string | null>(null);
 
-  const [visionKey, setVisionKey] = useState("");
   useLockBodyScroll(resetOpen);
-
-  useEffect(() => {
-    setVisionKey("");
-  }, [selectedId, drawerOpen, editing]);
 
   const refresh = useCallback(async (signal?: AbortSignal) => {
     setLoading(true);
@@ -257,7 +231,7 @@ export function WorkersPage({ openIntent }: { openIntent?: WorkerOpenIntent | nu
     try {
       created = await createWorker(payload);
     } catch (err) {
-      setCreateError(payload.vision_api_key ? "新增 Worker 失败，请重新填写 Vision Key 后重试。" : formatBusinessError(err, "新增 Worker 失败，请稍后重试。"));
+      setCreateError(formatBusinessError(err, "新增 Worker 失败，请稍后重试。"));
       setSubmitting(false);
       return false;
     }
@@ -274,7 +248,7 @@ export function WorkersPage({ openIntent }: { openIntent?: WorkerOpenIntent | nu
 
   async function handleSave(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (!detail || !editForm || (!detail.vision_configured && !visionKey.trim())) return;
+    if (!detail || !editForm) return;
     const payload: WorkerUpdatePayload = {
       worker_name: editForm.worker_name.trim(),
       device_name: optionalText(editForm.device_name),
@@ -288,32 +262,17 @@ export function WorkersPage({ openIntent }: { openIntent?: WorkerOpenIntent | nu
     let updated: WorkerItem;
     try {
       updated = await updateWorker(detail.id, payload);
-      if (visionKey.trim()) {
-        try {
-          const credential = await setWorkerVisionCredential(detail.id, visionKey.trim());
-          updated = { ...updated, ...credential };
-        } catch {
-          setDetail(updated);
-          setEditForm(toEditForm(updated));
-          setSaveError("基础信息已保存，Vision Key 保存失败，请重新填写后重试。");
-          void refresh();
-          setSubmitting(false);
-          return;
-        }
-      }
     } catch (err) {
       setSaveError(formatBusinessError(err, "Worker 保存失败，请稍后重试。"));
       setSubmitting(false);
       return;
-    } finally {
-      setVisionKey("");
     }
 
     setDetail(updated);
     setEditForm(toEditForm(updated));
     setEditing(false);
     const refreshed = await runPostMutationRefresh(() => refresh());
-    setMessage(postMutationMessage(`${updated.worker_name} 已保存。Vision 配置在客户端重启或暂停后重新开始接单时生效。`, refreshed));
+    setMessage(postMutationMessage(`${updated.worker_name} 已保存。`, refreshed));
     setSubmitting(false);
   }
 
@@ -502,12 +461,6 @@ export function WorkersPage({ openIntent }: { openIntent?: WorkerOpenIntent | nu
                 </dl>
               </section>
 
-              <section className="drawer-section" aria-label="Vision 配置">
-                <h3>Vision Key</h3>
-                <p role="status">{detail.vision_configured ? "已配置" : "未配置"}</p>
-                {editing ? <VisionKeyInput value={visionKey} onChange={setVisionKey} disabled={submitting} required={!detail.vision_configured} /> : null}
-              </section>
-
               <section className="drawer-section">
                 <h3>客户端绑定</h3>
                 <dl className="drawer-dl">
@@ -545,7 +498,7 @@ export function WorkersPage({ openIntent }: { openIntent?: WorkerOpenIntent | nu
                   <button className="read-value" type="button" onClick={() => setEditing(true)}>编辑 Worker</button>
                   <button className="read-value" type="button" onClick={() => setResetOpen(true)}>重置绑定</button>
                   <button className="edit-value" type="button" disabled={submitting} onClick={() => { setEditForm(toEditForm(detail)); setEditing(false); setSaveError(null); }}>取消</button>
-                  <button className="primary-button edit-value" type="submit" disabled={submitting || !editForm.worker_name.trim() || (!detail.vision_configured && !visionKey.trim())}>{submitting ? "保存中..." : "保存"}</button>
+                  <button className="primary-button edit-value" type="submit" disabled={submitting || !editForm.worker_name.trim()}>{submitting ? "保存中..." : "保存"}</button>
                 </div>
               </section>
             </form>

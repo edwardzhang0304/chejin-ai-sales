@@ -15,6 +15,8 @@ import requests
 from .config import CONFIG
 from .rpa_bridge import RpaBridge, default_sidecar_script
 from .storage import APP_DIR, load_binding
+from .release_transport import selected_release_channel
+from .shared_rules import client_release_rules
 
 
 @dataclass
@@ -61,7 +63,10 @@ def run_preflight(*, check_backend: bool = True, check_wechat: bool = True) -> l
     checks.append(sidecar_check(default_sidecar_script()))
     if CONFIG.rpa_mode == "real" and sys.platform == "win32":
         checks.append(omniauto_vision_ocr_check())
-    checks.append(vision_credential_check())
+    # Use the existing build/persisted-mode authority; Hook still needs local OCR
+    # for C1 window calibration, but never a remote image-recognition credential.
+    if selected_release_channel(APP_DIR) != client_release_rules.channel_for_transport("hook"):
+        checks.append(vision_credential_check())
     checks.append(app_dir_check(APP_DIR))
     checks.append(binding_check())
 

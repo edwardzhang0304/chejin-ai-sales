@@ -103,8 +103,14 @@ def test_failed_customer_voice_uses_original_handoff_but_unknown_voice_waits(mon
 
 
 def test_new_customer_image_handoffs_once_and_notification_is_not_duplicated(monkeypatch):
-    from app.services import feishu_service
+    from app.services import feishu_service, worker_vision_credential_service
+    from app.models.worker import Worker
+    def no_vision_cipher():
+        pytest.fail('Hook image handling accessed Vision credentials')
+    monkeypatch.setattr(worker_vision_credential_service, '_cipher', no_vision_cipher)
     w,t,p,b=bound();sent=[]
+    with SessionLocal() as db:
+        assert db.get(Worker,w['id']).vision_api_key_encrypted is None
     with SessionLocal() as db:
         binding=db.get(WechatSessionBinding,b['binding_id']);db.get(Sales,binding.sales_id).feishu_user_id='synthetic-open-id';db.commit()
     class Adapter:
@@ -116,6 +122,8 @@ def test_new_customer_image_handoffs_once_and_notification_is_not_duplicated(mon
         events=list(db.scalars(select(HandoffEvent)));assert len(events)==1
         assert events[0].handoff_reason_code=='HOOK_CUSTOMER_IMAGE_HANDOFF'
         assert events[0].notify_status=='succeeded'
+        assert events[0].ai_payload['image_understanding_called'] is False
+        assert db.get(Conversation,b['conversation_id']).status=='waiting_sales_reply'
         assert db.scalar(select(func.count()).select_from(MessageBatch))==0
     assert len(sent)==1 and '客户发来图片' in sent[0][1]
 

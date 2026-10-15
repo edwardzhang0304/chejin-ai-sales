@@ -4,6 +4,8 @@ import json
 import os
 import tempfile
 import unittest
+
+import pytest
 from pathlib import Path
 from unittest.mock import patch
 
@@ -193,3 +195,37 @@ class PreflightTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+@pytest.mark.parametrize("packaged_mode", ["hook", None])
+def test_hook_preflight_keeps_local_ocr_but_never_checks_remote_vision(tmp_path, monkeypatch, packaged_mode):
+    import sqlite3
+    from types import SimpleNamespace
+    from chejin_worker_client import preflight
+    from chejin_worker_client import release_transport
+    with sqlite3.connect(tmp_path / "worker_client.sqlite3") as db:
+        db.execute("CREATE TABLE client_settings (key TEXT PRIMARY KEY, value TEXT)")
+        db.execute("INSERT INTO client_settings VALUES (?, ?)", ("wechat_transport_v1", '{"mode":"hook"}'))
+    monkeypatch.setattr(preflight, "APP_DIR", tmp_path)
+    monkeypatch.setattr(release_transport, "packaged_transport", lambda **kwargs: packaged_mode)
+    monkeypatch.setattr(preflight, "CONFIG", SimpleNamespace(rpa_mode="real"))
+    monkeypatch.setattr(preflight.sys, "platform", "win32")
+    monkeypatch.setattr(preflight, "dependency_check", lambda name, **kw: PreflightCheck(name, True, "error", "ok"))
+    monkeypatch.setattr(preflight, "binding_check", lambda: PreflightCheck("binding", True, "error", "ok"))
+    with patch.object(preflight, "vision_credential_check", side_effect=AssertionError("Hook called remote Vision")) as vision, patch.object(
+        preflight, "omniauto_vision_ocr_check", return_value=PreflightCheck("vision_ocr_subprocess", False, "error", "local OCR unavailable")
+    ) as local_ocr:
+        checks = preflight.run_preflight(check_backend=False, check_wechat=False)
+    local_ocr.assert_called_once()
+    vision.assert_not_called()
+    assert "vision_credential" not in {item.name for item in checks}
+    assert has_blocking_failures(checks)  # Missing local C1 OCR must still block.
+
+
+def test_unconfigured_hook_package_preflight_does_not_probe_vision(tmp_path, monkeypatch):
+    from chejin_worker_client import preflight, release_transport
+    monkeypatch.setattr(preflight, "APP_DIR", tmp_path)
+    monkeypatch.setattr(release_transport, "packaged_transport", lambda **kwargs: "hook")
+    with patch.object(preflight, "vision_credential_check", side_effect=AssertionError("Hook called remote Vision")):
+        checks = preflight.run_preflight(check_backend=False, check_wechat=False)
+    assert "vision_credential" not in {item.name for item in checks}
