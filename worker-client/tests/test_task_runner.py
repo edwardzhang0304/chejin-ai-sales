@@ -69,6 +69,7 @@ from chejin_worker_client.sequence_alignment import (
     normalized_content_hash,
 )
 from chejin_worker_client.storage import (
+    LEGACY_MEDIA_CUTOVER_KEY,
     begin_runtime_flow,
     checkpoint_c2_action_outcomes,
     c2_outbox_id,
@@ -3320,7 +3321,8 @@ class TaskRunnerTest(unittest.TestCase):
             conn.execute("DELETE FROM c2_message_ledger")
             conn.execute("DELETE FROM c2_ingest_outbox")
             conn.execute("DELETE FROM reply_send_ack_outbox")
-            conn.execute("DELETE FROM c2_runtime_state")
+            # Keep the one-time migration marker; ordinary opens no longer rerun initialization.
+            conn.execute("DELETE FROM c2_runtime_state WHERE key <> ?", (LEGACY_MEDIA_CUTOVER_KEY,))
             conn.execute(
                 "DELETE FROM client_settings WHERE key = 'runtime_control_v1'"
             )
@@ -4112,7 +4114,7 @@ class TaskRunnerTest(unittest.TestCase):
                 conn.execute("DELETE FROM c2_message_ledger")
                 conn.execute("DELETE FROM c2_ingest_outbox")
                 conn.execute("DELETE FROM reply_send_ack_outbox")
-                conn.execute("DELETE FROM c2_runtime_state")
+                conn.execute("DELETE FROM c2_runtime_state WHERE key <> ?", (LEGACY_MEDIA_CUTOVER_KEY,))
                 conn.execute(
                     "DELETE FROM client_settings "
                     "WHERE key = 'runtime_control_v1'"
@@ -4304,7 +4306,7 @@ class TaskRunnerTest(unittest.TestCase):
                 conn.execute("DELETE FROM c2_message_ledger")
                 conn.execute("DELETE FROM c2_ingest_outbox")
                 conn.execute("DELETE FROM reply_send_ack_outbox")
-                conn.execute("DELETE FROM c2_runtime_state")
+                conn.execute("DELETE FROM c2_runtime_state WHERE key <> ?", (LEGACY_MEDIA_CUTOVER_KEY,))
                 conn.execute(
                     "DELETE FROM client_settings "
                     "WHERE key = 'runtime_control_v1'"
