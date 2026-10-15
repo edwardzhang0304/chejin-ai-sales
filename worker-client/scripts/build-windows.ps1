@@ -324,11 +324,15 @@ $BundledVisionPreflight = Start-Process -FilePath $ExePath -ArgumentList @(
   "--write-report", $BundledVisionPreflightReport
 ) -Wait -PassThru
 if ($BundledVisionPreflight.ExitCode -ne 0) {
-  throw "打包失败：最终 exe 内置 Vision 能力预检未通过"
+  throw "打包失败：最终 exe 运行环境预检未通过"
 }
 $BundledVisionPreflightPayload = Get-Content -Raw -Encoding UTF8 $BundledVisionPreflightReport | ConvertFrom-Json
 $BundledVisionCheck = @($BundledVisionPreflightPayload.checks | Where-Object { $_.name -eq "vision_credential" })
-if ($BundledVisionCheck.Count -ne 1 -or
+if ($Transport -eq "hook") {
+  if ($BundledVisionCheck.Count -ne 0) {
+    throw "Hook package must not probe remote Vision credentials"
+  }
+} elseif ($BundledVisionCheck.Count -ne 1 -or
     $BundledVisionCheck[0].detail.credential_source -ne "worker_backend" -or
     $BundledVisionCheck[0].detail.configured -ne $false) {
   throw "打包失败：最终 exe 必须从后台取得 Vision 凭据，出厂应为未配置"
@@ -452,13 +456,13 @@ $Manifest = [ordered]@{
   build_kind = if ($DevelopmentBuild) { "development" } else { "official" }
   formal_release = -not $DevelopmentBuild
   vision_credential_embedded = $false
-  vision_credential_source = "worker_backend"
+  vision_credential_source = if ($Transport -eq "hook") { "not_required" } else { "worker_backend" }
   vision_configuration_locked = -not $DevelopmentBuild
-  vision_provider = "anthropic_compatible"
-  vision_base_url = "https://aiself.vip/v1"
-  vision_model = "doubao-seed-2-0-lite-260428"
-  vision_request_style = "anthropic_messages_vision"
-  vision_live_probe_check = "runtime_after_binding"
+  vision_provider = if ($Transport -eq "hook") { $null } else { "anthropic_compatible" }
+  vision_base_url = if ($Transport -eq "hook") { $null } else { "https://aiself.vip/v1" }
+  vision_model = if ($Transport -eq "hook") { $null } else { "doubao-seed-2-0-lite-260428" }
+  vision_request_style = if ($Transport -eq "hook") { $null } else { "anthropic_messages_vision" }
+  vision_live_probe_check = if ($Transport -eq "hook") { "not_applicable" } else { "runtime_after_binding" }
   tests_status = $TestsStatus
   source_test_evidence = $SourceTestEvidence
   preflight_status = $PreflightStatus

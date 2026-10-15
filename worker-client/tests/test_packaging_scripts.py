@@ -1573,7 +1573,7 @@ class PackagingScriptsTest(unittest.TestCase):
         self.assertIn("GITHUB_ACTIONS", text)
         self.assertNotIn("CHEJIN_VISION_CREDENTIAL_PATH", text)
         self.assertIn("vision-runtime.json", text)
-        self.assertIn("最终 exe 内置 Vision 能力预检未通过", text)
+        self.assertIn("最终 exe 运行环境预检未通过", text)
         self.assertIn("最终 exe 必须从后台取得 Vision 凭据", text)
         self.assertIn("vision_live_probe_check", text)
 
