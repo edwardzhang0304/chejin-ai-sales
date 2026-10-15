@@ -87,16 +87,19 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: .\scripts\build-windows.ps1 -Transport hook
       - name: Archive native candidate without publishing
+        id: archive
         working-directory: worker-client
         run: |
           $Version = .\.venv\Scripts\python.exe -c "from chejin_worker_client import __version__; print(__version__)"
           if ($LASTEXITCODE -ne 0) { throw 'HOOK_VERSION_READ_FAILED' }
-          Compress-Archive -Path .\dist\CheJinWorkerClient -DestinationPath ".\dist\CheJinWorkerClient-v$($Version.Trim())-gray-hook-windows-x64.zip"
+          $PackageName = "CheJinWorkerClient_V$($Version.Trim())"
+          Compress-Archive -Path .\dist\CheJinWorkerClient -DestinationPath ".\dist\$PackageName.zip"
+          "package_name=$PackageName" >> $env:GITHUB_OUTPUT
       - uses: actions/upload-artifact@v4
         with:
-          name: hook-windows-candidate-${{ github.sha }}
+          name: ${{ steps.archive.outputs.package_name }}
           path: |
-            worker-client/dist/CheJinWorkerClient-v*-gray-hook-windows-x64.zip
+            worker-client/dist/CheJinWorkerClient_V*.zip
             worker-client/dist/reports/**
           if-no-files-found: error
           retention-days: 30
