@@ -34,6 +34,8 @@ try {
     if ($CreateShortcuts) {
         $shell = New-Object -ComObject WScript.Shell
         $desktop = [Environment]::GetFolderPath('Desktop')
+        if (-not $desktop) { throw 'DESKTOP_FOLDER_UNAVAILABLE' }
+        New-Item -ItemType Directory -Path $desktop -Force | Out-Null
         $wechatShortcut = $shell.CreateShortcut((Join-Path $desktop '工作微信.lnk'))
         $wechatShortcut.TargetPath = $launch.exe
         $wechatShortcut.WorkingDirectory = $launch.working_directory

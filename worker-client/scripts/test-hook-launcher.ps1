@@ -7,6 +7,10 @@ $root = Join-Path ([IO.Path]::GetTempPath()) ('hook-launcher-test-' + [guid]::Ne
 New-Item -ItemType Directory -Path $root | Out-Null
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot '../packaging/start-hook.ps1') -Destination $root
 New-Item -ItemType File -Path (Join-Path $root 'CheJinWorkerClient.exe') | Out-Null
+$global:HookTestWeChatDir = Join-Path $root 'Test WeChat'
+New-Item -ItemType Directory -Path $global:HookTestWeChatDir | Out-Null
+$global:HookTestWeChatPath = Join-Path $global:HookTestWeChatDir 'WeChat.exe'
+New-Item -ItemType File -Path $global:HookTestWeChatPath | Out-Null
 Set-Content -LiteralPath (Join-Path $root 'profile.json') -Value '{}' -Encoding UTF8
 function Assert-True($condition, $message) { if (-not $condition) { throw $message } }
 function Get-Process {
@@ -31,15 +35,15 @@ function Start-Process {
         } else {
             Assert-True ($ArgumentList -contains '--hook-launch-info') 'Launch CLI missing'
         }
-        @{api_base_url='https://gray.example.test/api'; exe='C:\Test WeChat\WeChat.exe';
-          working_directory='C:\Test WeChat'; arguments=@('StartPort=31234','ConnectType=http','RecvType=0')} |
+        @{api_base_url='https://gray.example.test/api'; exe=$global:HookTestWeChatPath;
+          working_directory=$global:HookTestWeChatDir; arguments=@('StartPort=31234','ConnectType=http','RecvType=0')} |
             ConvertTo-Json | Set-Content -LiteralPath $global:HookLauncherReportPath -Encoding UTF8
         return [pscustomobject]@{ ExitCode = 0 }
     }
     Assert-True ($env:CHEJIN_API_BASE_URL -eq 'https://gray.example.test/api') 'Child backend override missing'
-    if ($FilePath -eq 'C:\Test WeChat\WeChat.exe') {
+    if ($FilePath -eq $global:HookTestWeChatPath) {
         $global:HookLauncherWeChatStarts++
-        Assert-True ($WorkingDirectory -eq 'C:\Test WeChat') 'Incorrect WeChat working directory'
+        Assert-True ($WorkingDirectory -eq $global:HookTestWeChatDir) 'Incorrect WeChat working directory'
         Assert-True (($ArgumentList -join ' ') -eq 'StartPort=31234 ConnectType=http RecvType=0') 'Incomplete WeChat arguments'
         return
     }
@@ -102,8 +106,8 @@ try {
         Assert-True ((Test-Path -LiteralPath $wechatLink) -and (Test-Path -LiteralPath $workerLink)) 'First-run shortcuts missing'
         $wechat = $shell.CreateShortcut($wechatLink)
         $worker = $shell.CreateShortcut($workerLink)
-        Assert-True ($wechat.TargetPath -eq 'C:\Test WeChat\WeChat.exe') 'WeChat shortcut target mismatch'
-        Assert-True ($wechat.WorkingDirectory -eq 'C:\Test WeChat') 'WeChat shortcut working directory mismatch'
+        Assert-True ($wechat.TargetPath -eq $global:HookTestWeChatPath) 'WeChat shortcut target mismatch'
+        Assert-True ($wechat.WorkingDirectory -eq $global:HookTestWeChatDir) 'WeChat shortcut working directory mismatch'
         Assert-True ($wechat.Arguments -eq 'StartPort=31234 ConnectType=http RecvType=0') 'WeChat shortcut parameters missing'
         Assert-True ($worker.TargetPath -eq (Join-Path $PSHOME 'powershell.exe')) 'Worker shortcut target mismatch'
         Assert-True ($worker.Arguments -like '*start-hook.ps1*') 'Worker shortcut must use the checked launcher'
@@ -115,5 +119,5 @@ try {
 } finally {
     foreach ($name in $names) { [Environment]::SetEnvironmentVariable($name, $original[$name], 'Process') }
     Remove-Item -LiteralPath $root -Recurse -Force
-    Remove-Variable -Scope Global -Name HookLauncherCase,HookLauncherChecks,HookLauncherReportPath,HookLauncherWeChatStarts,HookLauncherWorkerStarts -ErrorAction SilentlyContinue
+    Remove-Variable -Scope Global -Name HookLauncherCase,HookLauncherChecks,HookLauncherReportPath,HookLauncherWeChatStarts,HookLauncherWorkerStarts,HookTestWeChatDir,HookTestWeChatPath -ErrorAction SilentlyContinue
 }
