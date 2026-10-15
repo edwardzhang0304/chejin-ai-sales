@@ -179,13 +179,17 @@ class HookWorkerServices:
         self._last_error = None
         runner._recovery_heartbeat_at = prepared.account.response_received_monotonic or 0
         runner.on_status("bound")
+        # Clear this owner's recovered condition before consulting the aggregate
+        # start gate: that gate includes the very wait we need to resolve.
+        # Business waits/clock calibration and stopped intent remain independent.
+        if self._startup_check['canStart']:
+            resolve=getattr(self.dispatcher,'resolve_wait',None)
+            if resolve is not None:resolve('connection')
+            emit_progress(runner,'connection','connection_wait','done')
+            emit_progress(runner,'connection','clock_wait','done')
         if self.startup_check_state()['canStart']:
             emit_progress(runner,'startup','environment','done')
             emit_progress(runner,'startup','ready','done')
-            emit_progress(runner,'connection','connection_wait','done')
-            emit_progress(runner,'connection','clock_wait','done')
-            resolve=getattr(self.dispatcher,'resolve_wait',None)
-            if resolve is not None:resolve('connection')
 
     def _wait_for_clock(self, code: str, *, context='connection') -> None:
         # Keep authenticated raw intake alive, but show that new work is blocked.

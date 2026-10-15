@@ -194,3 +194,42 @@ def test_clock_wait_resolution_does_not_clear_other_owner_or_network_wait(tmp_pa
     assert d._pending_wait_phases['business']=={'connection_wait'}
     d.resolve_wait('connection',phase='clock_wait')
     assert [r['title'] for r in timeline.model()]==['等待连接恢复']
+
+
+@pytest.mark.parametrize('business_wait',[None,'HOOK_BACKEND_CLOCK_RTT_UNCONFIRMED','HOOK_BACKEND_TEMPORARILY_UNAVAILABLE','uncalibrated'])
+@pytest.mark.parametrize('intent',['paused','running','faulted'])
+def test_connection_clock_wait_recovers_with_real_wait_registry(runtime,backend_peer,tmp_path,monkeypatch,business_wait,intent):
+    """A transient slow heartbeat must not latch its own start-button gate."""
+    from chejin_worker_client.hook_progress import HookProgressTimeline
+    runner,services,binding,_,errors,_,posted,_=runtime
+    runner.binding=binding;services.attach(binding,runner._hook_persistence_failed)
+    stamped_peer(backend_peer)
+    binding.run_status=intent
+    body=json.loads(backend_peer.body);body['data']['run_status']=intent
+    backend_peer.body=json.dumps(body).encode()
+    timeline=HookProgressTimeline();runner.on_runtime_process=timeline.apply
+    d=HookBusinessDispatcher(None,tmp_path,None,lambda *args:None,automatic_transcription_disabled=lambda:True)
+    services.dispatcher=d;d._progress_runner=runner
+    # The independent business owner has already verified its clock.
+    d._business_clock_ready=True
+    monkeypatch.setattr('chejin_worker_client.hook_worker_services.inspect_windows_window_geometry',lambda _:{'ok':True,'geometry':{'left':15,'top':15,'right':1075,'bottom':755,'width':1060,'height':740}})
+    original=services.connection.prepare
+    def slow(*args):
+        prepared=original(*args)
+        return replace(prepared,account=replace(prepared.account,request_started_monotonic=prepared.account.response_received_monotonic-2))
+    monkeypatch.setattr(services.connection,'prepare',slow)
+    runner.tick_once()
+    assert d.pending_wait_snapshot()['connection']=={'clock_wait'}
+    assert not services.startup_check_state()['canStart']
+    runner.tick_once()  # A second slow sample must keep the gate closed.
+    assert not services.startup_check_state()['canStart']
+    if business_wait=='uncalibrated':d._business_clock_ready=False
+    elif business_wait:d._report_wait(business_wait,context='business')
+    monkeypatch.setattr(services.connection,'prepare',original)
+    for _ in range(3):runner.tick_once()
+    assert 'connection' not in d.pending_wait_snapshot()
+    assert services.startup_check_state()['canStart'] is (business_wait is None)
+    assert ('business' in d.pending_wait_snapshot()) is (business_wait not in (None,'uncalibrated'))
+    if business_wait is None:
+        assert not any(row['title']=='等待后台响应稳定' for row in timeline.model())
+    assert binding.run_status==intent and not errors and not posted

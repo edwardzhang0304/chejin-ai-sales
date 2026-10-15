@@ -1697,3 +1697,10 @@ Hook 文字消息来自原生接口，语音沿用 Voice2Text 及未知结果恢
 
 
 构建验收与预检同步：Hook 最终 EXE 的报告必须不含远程 `vision_credential` 检查，并通过原有独立 `--omniauto-ocr-probe` 本地探针；包内禁止夹带 `vision-runtime.json` 的门禁保留。Hook 构建清单声明 `vision_credential_source=not_required`、`vision_live_probe_check=not_applicable`，图片模型、地址和请求类型字段为空，不再声称绑定后必须获取或探测 Vision。构建脚本逻辑测试只执行验收片段及语法解析，不构建 Windows 包，也不替代最终 EXE 验收。
+
+
+### 28.55 连接时间校验等待恢复（0.10.1，2026-10-15）
+
+连接检查发生慢心跳后，原实现先用包含全部等待标记的 `startup_check_state()` 判断能否开始，再清除 connection 等待；该标记自身禁止开始，造成健康心跳到来后仍无法清除。修复为连接自身检查通过后，先通过既有 `resolve_wait('connection')` 结清本归属等待，再汇总业务时钟、业务网络、协议版本和存储等启动条件。不清除 business 等待、不改变暂停/故障意图，不放宽 RTT、凭据有效期或时钟跳变检查。
+
+恢复测试使用真实等待登记与本地 HTTP/SQLite，覆盖持续慢响应、恢复后的暂停/运行/故障三种意图、业务时钟/网络等待和业务时钟尚未校准。此前使用空 `_report_wait` 替身的恢复测试未覆盖等待登记与按钮门禁的相互依赖。Windows 实际界面与现场初始慢响应原因仍需分别核验；源码自测不代表已更新用户电脑。
