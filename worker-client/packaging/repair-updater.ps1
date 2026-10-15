@@ -10,7 +10,25 @@ if ((Hash $Replacement) -ne $Repair.updater_sha256) { throw 'REPAIR_UPDATER_CHAN
 if (-not $InstallDirectory) {
     $Shell = New-Object -ComObject WScript.Shell
     $Shortcut = Join-Path ([Environment]::GetFolderPath('Desktop')) 'CheJin Worker.lnk'
-    if (Test-Path -LiteralPath $Shortcut) { $InstallDirectory = $Shell.CreateShortcut($Shortcut).WorkingDirectory }
+    if (Test-Path -LiteralPath $Shortcut) {
+        $Link = $Shell.CreateShortcut($Shortcut)
+        $Candidates = @()
+        # The launcher lives in the installation; its safe starting directory does not.
+        # Read the generated -File argument as data, never execute shortcut contents.
+        $ScriptArgument = [regex]::Match($Link.Arguments, '(?i)(?:^|\s)-File\s+"([^"]+[\\/]start-hook\.ps1)"(?=\s|$)')
+        if ([IO.Path]::GetFileName($Link.TargetPath) -ieq 'powershell.exe' -and $ScriptArgument.Success) {
+            $Candidates += [IO.Path]::GetDirectoryName($ScriptArgument.Groups[1].Value)
+        }
+        $Candidates += $Link.WorkingDirectory
+        foreach ($Candidate in $Candidates) {
+            if ($Candidate -and [IO.Path]::IsPathRooted($Candidate) -and
+                (Test-Path -LiteralPath (Join-Path $Candidate 'CheJinWorkerClient.exe') -PathType Leaf) -and
+                (Test-Path -LiteralPath (Join-Path $Candidate 'update-package-manifest.json') -PathType Leaf)) {
+                $InstallDirectory = $Candidate
+                break
+            }
+        }
+    }
     if (-not $InstallDirectory) {
         Add-Type -AssemblyName System.Windows.Forms
         $Dialog = New-Object System.Windows.Forms.FolderBrowserDialog

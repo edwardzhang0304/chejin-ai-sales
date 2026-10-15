@@ -60,23 +60,16 @@ jobs:
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@v4
-        with: {fetch-depth: 2, persist-credentials: false}
-      - name: Reproduce old launcher directory lock
-        shell: powershell
-        run: |
-          git show HEAD^:worker-client/packaging/start-hook.ps1 | Set-Content -LiteralPath "$env:RUNNER_TEMP/old-launcher.ps1" -Encoding UTF8
-          $ErrorActionPreference = 'Continue'
-          $output = & powershell.exe -NoProfile -ExecutionPolicy Bypass -File worker-client/scripts/test-hook-launcher.ps1 -LauncherPath "$env:RUNNER_TEMP/old-launcher.ps1" 2>&1
-          $status = $LASTEXITCODE
-          $ErrorActionPreference = 'Stop'
-          $output | Write-Host
-          if ($status -eq 0 -or ($output -join "`n") -notmatch 'HOOK_LAUNCHER_PROGRAM_DIRECTORY_LOCKED') { throw 'OLD_LAUNCHER_LOCK_NOT_REPRODUCED' }
-          $global:LASTEXITCODE = 0
+        with: {persist-credentials: false}
       - name: Verify fixed launcher actual directory rename and existing behavior
         shell: powershell
         run: |
           & powershell.exe -NoProfile -ExecutionPolicy Bypass -File worker-client/scripts/test-hook-launcher.ps1
           if ($LASTEXITCODE -ne 0) { throw 'HOOK_LAUNCHER_RENAME_FAILED' }
+          & powershell.exe -NoProfile -ExecutionPolicy Bypass -File worker-client/scripts/test-hook-setup.ps1
+          if ($LASTEXITCODE -ne 0) { throw 'HOOK_SHORTCUT_ENTRY_FAILED' }
+          & powershell.exe -NoProfile -ExecutionPolicy Bypass -File worker-client/scripts/test-hook-shortcut-repair.ps1
+          if ($LASTEXITCODE -ne 0) { throw 'HOOK_SHORTCUT_REPAIR_LOOKUP_FAILED' }
   repair-updater:
     name: Build only updater repair and exercise original Windows button
     if: github.event_name == 'workflow_dispatch' && inputs.check_kind == 'repair-updater' && github.ref_name == 'gray-release-0.10.x'

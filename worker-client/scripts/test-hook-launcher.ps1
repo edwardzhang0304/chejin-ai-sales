@@ -1,15 +1,13 @@
-﻿param([string]$LauncherPath = '')
-# Process starts are simulated; directory rename uses the real Windows filesystem.
+﻿# Process starts are simulated; directory rename uses the real Windows filesystem.
 $ErrorActionPreference = 'Stop'
 $originalLocation = Get-Location
 $originalNativeDirectory = [Environment]::CurrentDirectory
-if (-not $LauncherPath) { $LauncherPath = Join-Path $PSScriptRoot '../packaging/start-hook.ps1' }
 $names = @('CHEJIN_WORKER_HOME', 'CHEJIN_C2_ENABLED', 'CHEJIN_API_BASE_URL', 'LOCALAPPDATA')
 $original = @{}
 foreach ($name in $names) { $original[$name] = [Environment]::GetEnvironmentVariable($name, 'Process') }
 $root = Join-Path ([IO.Path]::GetTempPath()) ('hook-launcher-test-' + [guid]::NewGuid())
 New-Item -ItemType Directory -Path $root | Out-Null
-Copy-Item -LiteralPath $LauncherPath -Destination (Join-Path $root 'start-hook.ps1')
+Copy-Item -LiteralPath (Join-Path $PSScriptRoot '../packaging/start-hook.ps1') -Destination (Join-Path $root 'start-hook.ps1')
 New-Item -ItemType File -Path (Join-Path $root 'CheJinWorkerClient.exe') | Out-Null
 $global:HookTestWeChatDir = Join-Path $root 'Test WeChat'
 New-Item -ItemType Directory -Path $global:HookTestWeChatDir | Out-Null
@@ -71,6 +69,17 @@ function Start-Process {
 }
 try {
     $env:LOCALAPPDATA = $root
+    # Stable negative control; do not depend on HEAD^ still containing the bug.
+    [Environment]::CurrentDirectory = $root
+    $locked = $false
+    try { [IO.Directory]::Move($root, $root + '.locked-probe') } catch {
+        $cause = $_.Exception
+        while ($cause.InnerException) { $cause = $cause.InnerException }
+        if (($cause.HResult -band 0xFFFF) -ne 32) { throw }
+        $locked = $true
+    } finally { [Environment]::CurrentDirectory = $originalNativeDirectory }
+    Assert-True $locked 'Windows native current directory lock was not reproduced'
+    Write-Host 'PASS native program directory lock reproduced'
     $completed = 0
     foreach ($preset in @($true, $false)) {
         foreach ($global:HookLauncherCase in @('setup','launch-existing','launch-new','check-failure','worker-failure','worker-exit')) {
@@ -127,6 +136,7 @@ try {
         $control.Save()
         Assert-True (Test-Path -LiteralPath $controlLink) 'Windows shortcut control could not be saved'
         $global:HookLauncherCase = 'setup'
+        $global:HookLauncherWorkerStarts = 0; $global:HookLauncherWeChatStarts = 0
         & (Join-Path $root 'start-hook.ps1') -Configuration (Join-Path $root 'profile.json') -ConfirmAutoTextDisabled -CreateShortcuts
         $shell = New-Object -ComObject WScript.Shell
         Assert-True ((Test-Path -LiteralPath $wechatLink) -and (Test-Path -LiteralPath $workerLink)) 'First-run shortcuts missing'
@@ -139,6 +149,18 @@ try {
         Assert-True ($worker.Arguments -like '*start-hook.ps1*') 'Worker shortcut must use the checked launcher'
         Assert-True ($worker.Arguments -like '*-WindowStyle Hidden*') 'Worker shortcut must hide the persistent console'
         Assert-True ($worker.Arguments -like '*-ShowErrorDialog*') 'Hidden launcher must retain visible failures'
+        Assert-True ($worker.WorkingDirectory.TrimEnd('\') -ieq ([IO.Path]::GetTempPath()).TrimEnd('\')) 'Worker shortcut must start outside the program directory'
+        Assert-True ($global:HookLauncherWorkerStarts -eq 0 -and $global:HookLauncherWeChatStarts -eq 0) 'Setup must not start work'
+        # Refresh an existing shortcut without a profile or repeated configuration.
+        $worker.WorkingDirectory = $root
+        $worker.Save()
+        Remove-Item -LiteralPath (Join-Path $root 'profile.json') -Force
+        $global:HookLauncherCase = 'launch-existing'
+        & (Join-Path $root 'start-hook.ps1') -CreateShortcuts
+        $refreshed = $shell.CreateShortcut($workerLink)
+        Assert-True ($refreshed.WorkingDirectory.TrimEnd('\') -ieq ([IO.Path]::GetTempPath()).TrimEnd('\')) 'Existing shortcut was not refreshed'
+        Assert-True ($global:HookLauncherWorkerStarts -eq 0 -and $global:HookLauncherWeChatStarts -eq 0) 'Refresh must not launch Worker or WeChat'
+        Write-Host 'PASS existing shortcut refresh uses saved config without starting processes'
         Write-Host 'PASS Hook desktop shortcuts use the saved launch configuration'
     } finally {
         Remove-Item -LiteralPath $controlLink, $wechatLink, $workerLink -Force -ErrorAction SilentlyContinue

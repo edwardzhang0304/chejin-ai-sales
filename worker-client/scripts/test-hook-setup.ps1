@@ -41,6 +41,22 @@ exit 0
         throw ('One-click setup did not invoke the checked launcher: ' + $accepted.Output)
     }
     Write-Host 'PASS Hook one-click setup: missing profile, declined confirmation, successful shortcut setup'
+    Copy-Item -LiteralPath (Join-Path $PSScriptRoot '../packaging/Refresh-CheJin-Shortcuts.cmd') -Destination $root
+    $refreshStub = @'
+param([string]$Configuration, [switch]$CreateShortcuts, [switch]$ShowErrorDialog)
+if ($Configuration -or -not $CreateShortcuts -or -not $ShowErrorDialog) { exit 8 }
+[IO.File]::WriteAllText((Join-Path $PSScriptRoot 'called.txt'), 'refresh-only')
+exit 0
+'@
+    Set-Content -LiteralPath (Join-Path $root 'start-hook.ps1') -Value $refreshStub -Encoding UTF8
+    Remove-Item -LiteralPath (Join-Path $root 'profile.json'), $marker -Force
+    $entry = Join-Path $root 'Refresh-CheJin-Shortcuts.cmd'
+    $refreshed = Invoke-Setup ''
+    if ($refreshed.Code -ne 0 -or (Get-Content -LiteralPath $marker -Raw) -ne 'refresh-only') { throw 'Double-click refresh entry did not preserve refresh-only mode' }
+    Set-Content -LiteralPath (Join-Path $root 'start-hook.ps1') -Value 'exit 9' -Encoding UTF8
+    $failedRefresh = Invoke-Setup ''
+    if ($failedRefresh.Code -ne 9) { throw 'Double-click shortcut refresh hid the failure exit code' }
+    Write-Host 'PASS double-click shortcut refresh needs no profile or command'
 } finally {
     Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue
 }

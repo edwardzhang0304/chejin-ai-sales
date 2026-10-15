@@ -56,11 +56,11 @@ try {
         $workerShortcut = $shell.CreateShortcut((Join-Path $desktop 'CheJin Worker.lnk'))
         $workerShortcut.TargetPath = Join-Path $PSHOME 'powershell.exe'
         $workerShortcut.Arguments = '-NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File "' + $PSCommandPath + '" -ShowErrorDialog'
-        $workerShortcut.WorkingDirectory = $PSScriptRoot
+        $workerShortcut.WorkingDirectory = $safeDirectory
         $workerShortcut.Save()
     }
-    if ($Configuration) {
-        Write-Host 'Setup complete. Pair this PC with its own Worker using the normal UI. No work has started.'
+    if ($Configuration -or $CreateShortcuts) {
+        Write-Host 'Setup complete. Use the desktop shortcuts. No work has started.'
         exit 0
     }
     $env:CHEJIN_API_BASE_URL = $launch.api_base_url
