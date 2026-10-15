@@ -1,0 +1,22 @@
+name: Release evidence
+
+# Register the manual entry point on the default branch. The selected release
+# branch supplies the executable workflow and its reviewed test plan.
+on:
+  workflow_dispatch:
+    inputs:
+      check_kind:
+        type: choice
+        options: [tooling, source]
+        default: tooling
+      source_test_plan:
+        description: Reviewed explicit pytest selection
+        default: '{}'
+
+jobs:
+  wrong-branch:
+    runs-on: ubuntu-latest
+    steps:
+      - run: |
+          echo 'Select gray-release-0.10.x to run release evidence.' >&2
+          exit 1
