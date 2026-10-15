@@ -184,7 +184,7 @@ jobs:
             worker-client/requirements-test.txt
             backend/requirements.txt
       - name: Install toolkit test dependencies
-        run: python -m pip install --disable-pip-version-check -r worker-client/requirements-test.txt -r backend/requirements.txt 'cryptography>=42.0,<46' 'PyYAML==6.0.2' 'SQLAlchemy>=2.0,<3' httpx2
+        run: python -m pip install --disable-pip-version-check -r worker-client/requirements-test.txt -r backend/requirements.txt 'cryptography>=42.0,<46' 'PyYAML==6.0.2' 'SQLAlchemy>=2.0,<3' httpx2 'requests==2.32.3'
       - name: Test changed release tooling and record evidence
         env:
           EVIDENCE_DIR: ${{ runner.temp }}/tooling-evidence
