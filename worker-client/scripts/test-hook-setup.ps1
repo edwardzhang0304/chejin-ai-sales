@@ -79,7 +79,11 @@ exit 0
     $entry = Join-Path $root 'Refresh-CheJin-Shortcuts.cmd'
     $refreshed = Invoke-Setup ''
     if ($refreshed.Code -ne 0 -or (Get-Content -LiteralPath $marker -Raw) -ne 'refresh-only') { throw 'Double-click refresh entry did not preserve refresh-only mode' }
-    Assert-PausedDirectoryFree -OutputMarker 'Desktop shortcuts refreshed.'
+    # Refresh exits after success rather than leaving another launcher window.
+    # Invoke-Setup above already waited for this real CMD to exit normally.
+    [IO.Directory]::Move($root, $root + '.refresh-completed-probe')
+    [IO.Directory]::Move($root + '.refresh-completed-probe', $root)
+    Write-Host 'PASS shortcut refresh exits and releases the program directory'
     Set-Content -LiteralPath (Join-Path $root 'start-hook.ps1') -Value 'exit 9' -Encoding UTF8
     $failedRefresh = Invoke-Setup ''
     if ($failedRefresh.Code -ne 9) { throw 'Double-click shortcut refresh hid the failure exit code' }
