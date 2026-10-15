@@ -91,6 +91,26 @@ try {
         }
     }
     Assert-True ($completed -eq 12) 'Some launcher cases did not finish'
+    $desktop = [Environment]::GetFolderPath('Desktop')
+    $wechatLink = Join-Path $desktop '工作微信.lnk'
+    $workerLink = Join-Path $desktop '车金 Worker.lnk'
+    Assert-True (-not (Test-Path -LiteralPath $wechatLink) -and -not (Test-Path -LiteralPath $workerLink)) 'Test desktop shortcuts already exist'
+    try {
+        $global:HookLauncherCase = 'setup'
+        & (Join-Path $root 'start-hook.ps1') -Configuration (Join-Path $root 'profile.json') -ConfirmAutoTextDisabled -CreateShortcuts
+        $shell = New-Object -ComObject WScript.Shell
+        Assert-True ((Test-Path -LiteralPath $wechatLink) -and (Test-Path -LiteralPath $workerLink)) 'First-run shortcuts missing'
+        $wechat = $shell.CreateShortcut($wechatLink)
+        $worker = $shell.CreateShortcut($workerLink)
+        Assert-True ($wechat.TargetPath -eq 'C:\Test WeChat\WeChat.exe') 'WeChat shortcut target mismatch'
+        Assert-True ($wechat.WorkingDirectory -eq 'C:\Test WeChat') 'WeChat shortcut working directory mismatch'
+        Assert-True ($wechat.Arguments -eq 'StartPort=31234 ConnectType=http RecvType=0') 'WeChat shortcut parameters missing'
+        Assert-True ($worker.TargetPath -eq (Join-Path $PSHOME 'powershell.exe')) 'Worker shortcut target mismatch'
+        Assert-True ($worker.Arguments -like '*start-hook.ps1*') 'Worker shortcut must use the checked launcher'
+        Write-Host 'PASS Hook desktop shortcuts use the saved launch configuration'
+    } finally {
+        Remove-Item -LiteralPath $wechatLink, $workerLink -Force -ErrorAction SilentlyContinue
+    }
     $global:LASTEXITCODE = 0
 } finally {
     foreach ($name in $names) { [Environment]::SetEnvironmentVariable($name, $original[$name], 'Process') }

@@ -50,6 +50,7 @@ def worker_identity(path: Path) -> tuple[str, str]:
             "CheJinWorkerClient/CheJinWorkerClient.exe",
             "CheJinWorkerClient/CheJinUpdater.exe",
             "CheJinWorkerClient/start-hook.ps1",
+            "CheJinWorkerClient/Setup-CheJin-Hook.cmd",
         }
         if not required.issubset(names):
             raise ValueError("Worker ZIP: missing Hook launcher or signed executables")
@@ -111,8 +112,8 @@ def assemble(args: argparse.Namespace) -> Path:
         "然后放在该 WeChat.exe 同目录。\n"
         "3. 解压 worker 子目录内的原始 Worker ZIP。为本机单独准备不含 Token/API Key 的 profile.json；"
         "api_base_url 使用正式 HTTPS，端口取本机部署配置，不照抄其他电脑。\n"
-        "4. 确认微信语音自动转文字已关闭，再运行 Worker 的 start-hook.ps1 -Configuration "
-        ".\\profile.json -ConfirmAutoTextDisabled -CreateShortcuts。\n"
+        "4. 运维将本机专用 profile.json 放在 Worker 解压目录。确认微信语音自动转文字已关闭，"
+        "再双击 Setup-CheJin-Hook.cmd；销售无需填写命令或端口。\n"
         "5. 在 Windows 实际点击生成的工作微信和 Worker 两个快捷方式；核对 StartPort=<配置端口>、"
         "ConnectType=http、RecvType=0，DLL 已加载、端口归属正确、Worker 环境检查通过。"
         "未完成这些实机验收不得标记交付通过。\n"

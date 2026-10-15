@@ -283,6 +283,7 @@ if ($LASTEXITCODE -ne 0) {
 if ($Transport -eq "hook") {
   $HookLauncherPath = Join-Path $PackageDir "start-hook.ps1"
   Copy-Item -LiteralPath (Join-Path $Root "packaging\start-hook.ps1") -Destination $HookLauncherPath -Force
+  Copy-Item -LiteralPath (Join-Path $Root "packaging\Setup-CheJin-Hook.cmd") -Destination (Join-Path $PackageDir "Setup-CheJin-Hook.cmd") -Force
   & powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $UatLauncherValidatorPath -ScriptPath $HookLauncherPath
   if ($LASTEXITCODE -ne 0) { throw "Hook launcher failed Windows PowerShell syntax verification" }
 }

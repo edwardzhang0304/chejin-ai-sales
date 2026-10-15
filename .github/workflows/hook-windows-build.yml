@@ -65,7 +65,11 @@ jobs:
         with: {python-version: '3.12.10'}
       - name: Verify launcher isolation in Windows PowerShell 5.1
         shell: powershell
-        run: .\worker-client\scripts\test-hook-launcher.ps1
+        run: |
+          .\worker-client\scripts\test-hook-launcher.ps1
+          if ($LASTEXITCODE -ne 0) { throw 'HOOK_LAUNCHER_CHECK_FAILED' }
+          .\worker-client\scripts\test-hook-setup.ps1
+          if ($LASTEXITCODE -ne 0) { throw 'HOOK_ONE_CLICK_SETUP_CHECK_FAILED' }
       - name: Prepare Windows build environment
         working-directory: worker-client
         run: |

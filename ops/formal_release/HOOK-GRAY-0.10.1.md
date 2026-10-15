@@ -11,7 +11,7 @@
 
 ## 通用安装入口
 
-由原 build-windows.ps1 -Transport hook 生成**已签名 Worker 包**，原签名、来源凭证、文件清单和更新门禁不变，包含 start-hook.ps1。此 ZIP 不含微信安装文件或 Hook DLL，仅适用于已具备并核验对应微信/组件的现有测试机；不得称为新电脑完整安装包。禁止将历史 UAT 增量 ZIP 作为新电脑完整安装包。
+由原 build-windows.ps1 -Transport hook 生成**已签名 Worker 包**，原签名、来源凭证、文件清单和更新门禁不变，包含 `Setup-CheJin-Hook.cmd` 和 `start-hook.ps1`。此 ZIP 不含微信安装文件或 Hook DLL，仅适用于已具备并核验对应微信/组件的现有测试机；不得称为新电脑完整安装包。禁止将历史 UAT 增量 ZIP 作为新电脑完整安装包。
 
 新电脑交付时，先由客户端工程师通过受控渠道交付微信 3.9.10.16 x86 安装原件、配套 `version.dll` 原件及两份 SHA-256。运维用 `ops/formal_release/assemble_hook_new_pc_bundle.py` 把已验收 Worker ZIP 和这两份哈希匹配的原件装成外层完整包；脚本从 Worker 内部清单读取产品版本，不重新打包或改动 Worker ZIP。用法：
 
@@ -29,15 +29,17 @@ python ops/formal_release/assemble_hook_new_pc_bundle.py \
 
 每台电脑须安装 **Windows 微信 3.9.10.16（x86/32 位）**，并把与该版匹配、已核验 SHA-256 的 `version.dll` 放在所配置 `WeChat.exe` 的同一目录。验收时核对实际启动的 EXE 文件版本、EXE 与 DLL 的 x86 架构、DLL 加载及哈希；其他微信版本或不匹配的组件停止交付。`30001` 仅为历史测试端口示例，正式端口取每台机器的部署配置。
 
-微信关闭“语音自动转文字”后，由运维执行：
+现有已激活测试机只更新 Worker，不重装微信或覆盖 Hook DLL；原激活状态先核验再沿用。若出现重新激活提示，停止后按原受控授权流程处理，不能把激活码塞进公开包、profile 或日志。
+
+运维先为这台电脑核对现有微信路径、组件校验值和两个端口，把经检查的 `profile.json` 放在解压后的 `CheJinWorkerClient` 文件夹。销售不需要输入命令或填写端口；首次设置只需双击同目录的 `Setup-CheJin-Hook.cmd`，按提示确认已关闭微信“语音自动转文字”。入口缺少配置时明确停止，不猜路径、端口或凭据。需要诊断时，运维仍可直接运行同一启动器：
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File .\start-hook.ps1 -Configuration .\profile.json -ConfirmAutoTextDisabled -CreateShortcuts
 ```
 
-首次配置只写部署设置、生成快捷方式，不绑定客户、不领取任务、不发送好友申请。已有配置必须完全相同，否则停止；原 OCR 或 UAT 绑定不得通过这个入口自动迁移或重置。
+首次配置只写部署设置、生成桌面“工作微信”和“车金 Worker”快捷方式，不绑定客户、不领取任务、不发送好友申请。已有配置必须完全相同，否则停止；原 OCR 或 UAT 绑定不得通过这个入口自动迁移或重置。给销售的步骤是：解压运维准备的包 → 双击 `Setup-CheJin-Hook.cmd` → 确认设置成功 → 双击桌面“工作微信” → 双击“车金 Worker”并在界面绑定自己的身份；验收通过前保持暂停。激活码和密钥不放在公开 Worker 包或 profile 中。
 
-随后使用 CheJin Hook Worker 快捷方式，或执行：
+随后使用桌面“车金 Worker”快捷方式，或由运维诊断时执行：
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File .\start-hook.ps1

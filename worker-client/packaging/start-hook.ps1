@@ -34,12 +34,12 @@ try {
     if ($CreateShortcuts) {
         $shell = New-Object -ComObject WScript.Shell
         $desktop = [Environment]::GetFolderPath('Desktop')
-        $wechatShortcut = $shell.CreateShortcut((Join-Path $desktop 'CheJin Work WeChat.lnk'))
+        $wechatShortcut = $shell.CreateShortcut((Join-Path $desktop '工作微信.lnk'))
         $wechatShortcut.TargetPath = $launch.exe
         $wechatShortcut.WorkingDirectory = $launch.working_directory
         $wechatShortcut.Arguments = $launch.arguments -join ' '
         $wechatShortcut.Save()
-        $workerShortcut = $shell.CreateShortcut((Join-Path $desktop 'CheJin Hook Worker.lnk'))
+        $workerShortcut = $shell.CreateShortcut((Join-Path $desktop '车金 Worker.lnk'))
         $workerShortcut.TargetPath = Join-Path $PSHOME 'powershell.exe'
         $workerShortcut.Arguments = '-NoProfile -ExecutionPolicy Bypass -File "' + $PSCommandPath + '"'
         $workerShortcut.WorkingDirectory = $PSScriptRoot
