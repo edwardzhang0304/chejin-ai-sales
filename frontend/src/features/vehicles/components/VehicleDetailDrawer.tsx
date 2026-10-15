@@ -20,6 +20,7 @@ type Props = {
   onRetry: () => void;
   onClose: () => void;
   onDirtyChange: (dirty: boolean) => void;
+  onRefreshBlockedChange: (blocked: boolean) => void;
   onVehicleChanged: (vehicle?: VehicleItem) => Promise<boolean> | boolean;
   onNotify: (message: string, tone?: "success" | "error") => void;
 };
@@ -119,7 +120,7 @@ function EditRow({ label, required, children }: { label: string; required?: bool
   return <label><span>{label}{required ? <b> *</b> : null}</span>{children}</label>;
 }
 
-export function VehicleDetailDrawer({ vehicle, loading, error, onRetry, onClose, onDirtyChange, onVehicleChanged, onNotify }: Props) {
+export function VehicleDetailDrawer({ vehicle, loading, error, onRetry, onClose, onDirtyChange, onRefreshBlockedChange, onVehicleChanged, onNotify }: Props) {
   const [editing, setEditing] = useState(false);
   const [form, setForm] = useState<VehicleFormState | null>(vehicle ? toForm(vehicle) : null);
   const [saving, setSaving] = useState(false);
@@ -137,7 +138,10 @@ export function VehicleDetailDrawer({ vehicle, loading, error, onRetry, onClose,
     setListingAttempted(false);
   }, [vehicle?.vehicle_code]);
 
-  const dirty = useMemo(() => Boolean(vehicle && form && Object.keys(buildPatch(vehicle, form)).length), [vehicle, form]);
+  const dirty = useMemo(() => Boolean(editing && vehicle && form && Object.keys(buildPatch(vehicle, form)).length), [editing, vehicle, form]);
+  const refreshBlocked = editing || saving || listingBusy || Boolean(listingConfirm);
+  useEffect(() => onRefreshBlockedChange(refreshBlocked), [refreshBlocked, onRefreshBlockedChange]);
+  useEffect(() => () => onRefreshBlockedChange(false), [onRefreshBlockedChange]);
   useEffect(() => onDirtyChange(dirty), [dirty, onDirtyChange]);
   useEffect(() => () => onDirtyChange(false), [onDirtyChange]);
 

@@ -62,6 +62,7 @@ export function VehiclesPage() {
   const [detailLoading, setDetailLoading] = useState(false);
   const [detailError, setDetailError] = useState<string | null>(null);
   const [drawerDirty, setDrawerDirty] = useState(false);
+  const [drawerRefreshBlocked, setDrawerRefreshBlocked] = useState(false);
   const [pendingDirtyAction, setPendingDirtyAction] = useState<PendingDirtyAction | null>(null);
   const [createOpen, setCreateOpen] = useState(false);
   const [createBusy, setCreateBusy] = useState(false);
@@ -148,7 +149,7 @@ export function VehiclesPage() {
     if (signal.aborted) return;
     if (activeCode) await refreshDetail(activeCode, signal, true);
   }, [refreshList, refreshDetail, activeCode]);
-  useAutoRefresh(refreshVisible, !loading && !detailLoading && !drawerDirty && !createOpen && !importOpen && !createBusy);
+  useAutoRefresh(refreshVisible, !loading && !detailLoading && !drawerRefreshBlocked && !drawerDirty && !createOpen && !importOpen && !createBusy);
 
   async function syncVehicle(updated?: VehicleItem) {
     if (updated) setDetail(updated);
@@ -310,7 +311,7 @@ export function VehiclesPage() {
           ) : null}
         </section>
 
-        {activeCode ? <VehicleDetailDrawer vehicle={detail} loading={detailLoading} error={detailError} onRetry={() => void refreshDetail()} onClose={closeVehicleDetail} onDirtyChange={setDrawerDirty} onVehicleChanged={syncVehicle} onNotify={notify} /> : null}
+        {activeCode ? <VehicleDetailDrawer vehicle={detail} loading={detailLoading} error={detailError} onRetry={() => void refreshDetail()} onClose={closeVehicleDetail} onDirtyChange={setDrawerDirty} onRefreshBlockedChange={setDrawerRefreshBlocked} onVehicleChanged={syncVehicle} onNotify={notify} /> : null}
       </div>
 
       <CreateVehicleModal open={createOpen} busy={createBusy} error={createError} onCancel={() => setCreateOpen(false)} onSubmit={(value) => void handleCreate(value)} />

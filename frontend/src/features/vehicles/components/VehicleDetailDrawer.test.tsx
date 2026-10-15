@@ -223,3 +223,25 @@ describe("车辆扩展资料（人工 API 夹具）", () => {
     expect(storedVehicle.battery_capacity_kwh).toBe("82.5");
   });
 });
+
+
+it("持续刷新只读详情不产生假修改，进入编辑后暂停刷新并保留输入", async () => {
+  await openVehicle();
+  storedVehicle = {...storedVehicle, display_name: "更新车辆一"};
+  fireEvent.focus(window);
+  await screen.findAllByText("更新车辆一");
+  const reads = vi.mocked(getVehicle).mock.calls.length;
+  storedVehicle = {...storedVehicle, display_name: "更新车辆二"};
+  fireEvent.focus(window);
+  await screen.findAllByText("更新车辆二");
+  expect(vi.mocked(getVehicle).mock.calls.length).toBeGreaterThan(reads);
+  fireEvent.click(screen.getByRole("button", {name:"编辑车辆"}));
+  const input = screen.getByDisplayValue("更新车辆二");
+  const editReads = vi.mocked(getVehicle).mock.calls.length;
+  fireEvent.focus(window);
+  expect(vi.mocked(getVehicle).mock.calls.length).toBe(editReads);
+  fireEvent.change(input, {target:{value:"未保存名称"}});
+  fireEvent.focus(window);
+  expect(screen.getByDisplayValue("未保存名称")).toBeTruthy();
+  expect(vi.mocked(getVehicle).mock.calls.length).toBe(editReads);
+});
