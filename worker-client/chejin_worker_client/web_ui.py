@@ -1114,7 +1114,8 @@ class WorkerWebWindow(QMainWindow):
     @Slot(str)
     def on_error(self, message: str) -> None:
         if message:
-            append_log("WARN", "client_notice", message)
+            from .failure_evidence import record_failure
+            record_failure("client_notice", error_code="", message=message)
         self._publish()
 
     @Slot(object)

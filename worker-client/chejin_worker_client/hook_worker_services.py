@@ -9,11 +9,12 @@ from __future__ import annotations
 
 import json
 import math
+import sqlite3
 import threading
 from typing import Callable
 
 from .api import ApiError
-from .emergency_stop import emergency_stop_requested
+from .emergency_stop import emergency_stop_requested, trigger_emergency_stop
 from .hook_backend import BACKEND_WAIT_CODES, HookHeartbeatState, HookWorkerCredentials
 from .hook_connection import HookConnectionManager
 from .hook_clock import CLOCK_WAIT_CODES, validate_heartbeat_time
@@ -198,6 +199,12 @@ class HookWorkerServices:
         self.dispatcher._report_wait(code,context=context,clock_check=clock_check)
 
     def _fault(self, runner, code: str, *, http_status=None, local_error=None) -> None:
+        if isinstance(local_error, sqlite3.Error):
+            code = 'HOOK_LOCAL_STORAGE_FAILED'
+            # Durable recording is a prerequisite for every new physical action.
+            # Signal all loops before teardown waits for an in-flight writer.
+            trigger_emergency_stop(reason=code, origin='hook_storage')
+            runner.stop_event.set()
         operation=getattr(local_error,'operation',None)
         kind=getattr(local_error,'transport_kind',None)
         if not isinstance(operation,str) or operation not in {'IsLoginStatus','ConfigureMsgReciveFullURL','GetDBHandleAndPath','QueryDB','SendTextMsg','GetFriendAndChatRoomList','Voice2Text'}:operation=None
@@ -216,13 +223,22 @@ class HookWorkerServices:
         runner.last_rpa_component_status = "unavailable"
         runner._preserve_stopped_run_status("faulted")
         if self._last_error != code:
-            storage.append_log("ERROR", "hook_connection_fault", "工作微信连接异常，已停止接单。",
-                error_code=code, include_exception_text=False,
-                metadata={**dict(getattr(self.dispatcher,'diagnostic_context',{})),
-                    'backend_http_status':http_status if type(http_status) is int else None,
-                    'local_operation':operation,'transport_kind':kind,
-                    'clock_check':dict(getattr(getattr(getattr(self.dispatcher,'runtime',None),'clock',None),'failure_detail',None) or {})})
-            runner.on_error("工作微信连接异常，已停止接单；请检查微信后恢复。")
+            message = (detail['title'] + '。' + detail['message'] if code == 'HOOK_LOCAL_STORAGE_FAILED'
+                else "工作微信连接异常，已停止接单；请检查微信后恢复。")
+            try:
+                storage.append_log("ERROR", "hook_connection_fault", message,
+                    error_code=code, include_exception_text=False,
+                    metadata={**dict(getattr(self.dispatcher,'diagnostic_context',{})),
+                        'backend_http_status':http_status if type(http_status) is int else None,
+                        'local_operation':operation,'transport_kind':kind,
+                        'clock_check':dict(getattr(getattr(getattr(self.dispatcher,'runtime',None),'clock',None),'failure_detail',None) or {})})
+            except sqlite3.Error as exc:
+                from .failure_evidence import record_capture_failure
+                record_capture_failure('hook_connection_fault', exc, error_code=code)
+                # A failed diagnostic write must not hide the original stop reason.
+                trigger_emergency_stop(reason='HOOK_LOCAL_STORAGE_FAILED', origin='hook_fault_log')
+                runner.stop_event.set()
+            runner.on_error(message)
         self._last_error = code
 
     def intake_loop(self, stop: threading.Event, entered: Callable[[str], None]) -> None:
@@ -252,6 +268,8 @@ class HookWorkerServices:
                     elif code in {'HOOK_RUNTIME_NOT_RUNNING','HOOK_SEND_LATEST_CONTEXT_STALE'}:
                         self.dispatcher._report_wait(code,context='business')
                     else:self._fault(runner,code if code.startswith('HOOK_') else 'HOOK_BUSINESS_CHECK_FAILED')
+                except sqlite3.Error as exc:
+                    self._fault(runner, 'HOOK_LOCAL_STORAGE_FAILED', local_error=exc)
                 except ui_lock.UiLockError as exc:
                     if exc.code not in {ui_lock.UI_LOCK_BUSY,ui_lock.UI_LOCK_ACQUIRE_TIMEOUT}:raise
                 except Exception as exc:

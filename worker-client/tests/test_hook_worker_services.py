@@ -300,3 +300,45 @@ def test_fault_diagnostics_never_echo_arbitrary_exception_attributes(runtime):
     assert meta['local_operation'] is None and meta['transport_kind'] is None
     assert 'private phone and url' not in json.dumps(meta)
     assert 'private text' not in json.dumps(meta)
+
+
+def test_minimized_window_only_blocks_readiness_and_preserves_pause(runtime, monkeypatch):
+    runner, services, binding, _, errors, _, posted, _ = runtime
+    runner.binding = binding
+    services.attach(binding, runner._hook_persistence_failed)
+    prepare = services.connection.prepare
+    minimized = [True]
+    def current(*args):
+        result = prepare(*args)
+        return replace(result, process=replace(result.process, minimized=minimized[0]))
+    monkeypatch.setattr(services.connection, 'prepare', current)
+    runner.tick_once()
+    assert services.startup_check_state()['title'] == '微信窗口不可操作'
+    assert not services.startup_check_state()['canStart']
+    assert binding.run_status == 'paused' and not errors and not posted
+    minimized[0] = False
+    runner.tick_once()
+    assert services.startup_check_state()['canStart']
+    assert binding.run_status == 'paused' and not errors and not posted
+
+
+@pytest.mark.parametrize('entry', ['connection', 'business'])
+def test_sqlite_failure_in_both_loops_uses_same_fault_gate(runtime, monkeypatch, entry):
+    import sqlite3
+    runner, services, binding, _, errors, _, _, _ = runtime
+    runner.binding = binding
+    services.attach(binding, runner._hook_persistence_failed)
+    def fail(*args):
+        raise sqlite3.OperationalError('attempt to write a readonly database')
+    if entry == 'connection':
+        monkeypatch.setattr(services.connection, 'prepare', fail)
+        runner.tick_once()
+    else:
+        services.dispatcher = SimpleNamespace(tick=fail, interval_seconds=.01)
+        services.business_loop(runner, lambda _:None)
+    assert binding.run_status == 'faulted' and runner.stop_event.is_set()
+    assert emergency_stop_requested()
+    assert len(errors) == 1 and '本机记录' in errors[0]
+    assert services.startup_check_state()['canStart'] is False
+    row = next(r for r in storage.read_logs() if r['event'] == 'hook_connection_fault')
+    assert row['error_code'] == 'HOOK_LOCAL_STORAGE_FAILED'

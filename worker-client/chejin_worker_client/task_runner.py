@@ -6,6 +6,7 @@ from itertools import product
 import json
 import os
 import re
+import sqlite3
 import threading
 import time
 import traceback
@@ -4523,19 +4524,24 @@ class TaskRunner:
                 self.binding.run_status = "paused"
                 pause_error = f"{type(exc).__name__}: {exc}"
         self.c2_stats["last_error"] = error_code
-        result = append_log(
-            "ERROR",
-            "worker_background_thread_failed",
-            message,
-            error_code=error_code,
-            metadata={
-                "thread_kind": thread_kind,
-                "traceback": traceback_text,
-                "automatic_pause": True,
-                "pause_persist_error": pause_error,
-                "emergency_stop": emergency_state,
-            },
-        )
+        try:
+            result = append_log(
+                "ERROR",
+                "worker_background_thread_failed",
+                message,
+                error_code=error_code,
+                metadata={
+                    "thread_kind": thread_kind,
+                    "traceback": traceback_text,
+                    "automatic_pause": True,
+                    "pause_persist_error": pause_error,
+                    "emergency_stop": emergency_state,
+                },
+            )
+        except sqlite3.Error as exc:
+            from .failure_evidence import record_capture_failure
+            record_capture_failure('worker_background_thread_failed', exc, error_code=error_code)
+            result = {}
         incident_id = str((result or {}).get("incident_id") or "")
         suffix = f"，故障编号 {incident_id}" if incident_id else ""
         self.on_error(f"后台线程异常，客户端已自动暂停{suffix}。")
@@ -7178,6 +7184,10 @@ class TaskRunner:
                 self.tick_once()
                 if not self.stop_event.is_set():
                     self._task_wake_event.wait(self.poll_interval_seconds)
+        except BaseException:
+            trigger_emergency_stop(reason="WORKER_BACKGROUND_THREAD_CRASHED", origin="thread:task_runner")
+            self.stop_event.set()
+            raise
         finally:
             # A DLL call may still be returning. Keep passive reception alive
             # until the business writer has saved its result; updates with a

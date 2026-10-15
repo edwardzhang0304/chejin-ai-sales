@@ -980,6 +980,8 @@ class StorageTest(unittest.TestCase):
                 ],
             )
             conn.commit()
+            # Simulate startup migration of the legacy rows seeded above.
+            self.storage.init_db(conn)
 
         result = self.storage.prune_terminal_outboxes(
             retention_days=30,
@@ -1054,6 +1056,8 @@ class StorageTest(unittest.TestCase):
                 (now_at, now_at),
             )
             conn.commit()
+            # Simulate startup migration of the legacy rows seeded above.
+            self.storage.init_db(conn)
 
         c2_row = self.storage.load_c2_outbox_entry("legacy-c2")
         ack_row = self.storage.load_reply_send_ack_outbox("legacy-ack")

@@ -14,6 +14,7 @@ ISSUES = {
  'HOOK_CALLBACK_REGISTRATION_UNCONFIRMED': ('消息接收配置检查未通过', '请检查工作微信和消息接收服务；暂时不要接单。'),
  'HOOK_RECEIVER_START_FAILED': ('消息接收服务启动失败', '请关闭旧接收程序，并检查接收端口是否被占用。'),
  'HOOK_RECEIVER_STOP_UNCONFIRMED': ('消息接收服务尚未安全关闭', '请等待记录保存结束，暂时不要重复启动客户端。'),
+ 'HOOK_LOCAL_STORAGE_FAILED': ('本机记录读写失败，已停止接单', '请检查磁盘空间、记录目录权限及文件占用；处理后重启 Worker，原任务按记录恢复。'),
  'HOOK_MESSAGE_SAVE_FAILED': ('消息保存检查未通过', '请检查磁盘空间和本机记录目录的写入权限。'),
  'HOOK_HISTORY_STORAGE_CAPACITY_EXCEEDED': ('本机记录容量不足', '已停止处理新工作，请先释放空间或核对到期记录；未完成的记录仍保留。'),
  'HOOK_BACKEND_CLOCK_STALE': ('等待后台时间校验', '后台时间记录已过期，重连后会重新校验；期间暂不执行新操作。'),

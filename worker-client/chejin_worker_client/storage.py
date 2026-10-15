@@ -26,6 +26,7 @@ APP_DIR = CONFIG.app_dir
 DB_FILE = APP_DIR / "worker_client.sqlite3"
 _INITIALIZATION_LOCK = threading.RLock()
 _post_update_initialized_database: Path | None = None
+_initialized_database_identity: tuple[Path, int, int] | None = None
 MAX_LOGS = 1000
 RETENTION_DAYS = 30
 MAX_C2_LEDGER_ROWS_PER_CONVERSATION = 2000
@@ -173,6 +174,7 @@ class _GuardedConnection(sqlite3.Connection):
 
 
 def connect() -> sqlite3.Connection:
+    global _initialized_database_identity
     access = acquire_data_access(APP_DIR)
     conn = None
     try:
@@ -180,11 +182,17 @@ def connect() -> sqlite3.Connection:
         conn = sqlite3.connect(DB_FILE, factory=_GuardedConnection)
         conn.data_access = access
         conn.row_factory = sqlite3.Row
-        conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("PRAGMA foreign_keys=ON")
         with _INITIALIZATION_LOCK:
-            if _post_update_initialized_database != DB_FILE.resolve():
+            path = DB_FILE.resolve()
+            stat = path.stat()
+            identity = (path, stat.st_dev, stat.st_ino)
+            if _post_update_initialized_database != path and _initialized_database_identity != identity:
+                conn.execute("PRAGMA journal_mode=WAL")
                 init_db(conn)
+                # Cache only a successful initialization of this database file.
+                # Ordinary reads must not rerun migration writes behind another writer.
+                _initialized_database_identity = identity
         return conn
     except Exception:
         if conn is not None:
@@ -209,10 +217,14 @@ def initialize_post_update_database(data_dir: Path) -> None:
     Subsequent UI/runtime connections must not run migrations after that check.
     The authenticated updater child already owns access to this directory.
     """
-    global _post_update_initialized_database
+    global _post_update_initialized_database, _initialized_database_identity
     if APP_DIR.resolve() != data_dir.resolve() or DB_FILE.resolve() != (data_dir / "worker_client.sqlite3").resolve():
         raise RuntimeError("UPDATE_STARTUP_DATA_DIR_MISMATCH")
     with _INITIALIZATION_LOCK:
+        # The update integrity boundary must include its own initialization,
+        # even if this process opened the source database before handoff.
+        if _post_update_initialized_database != DB_FILE.resolve():
+            _initialized_database_identity = None
         try:
             with db_connection():
                 pass

@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 import re
+import sqlite3
 import sys
 import threading
 import time
@@ -24,6 +25,9 @@ def exception_details(exc: BaseException) -> dict[str, Any]:
         "exception_type": type(exc).__name__,
         "errno": getattr(exc, "errno", None),
         "winerror": getattr(exc, "winerror", None),
+        **({"sqlite_errorcode": getattr(exc, "sqlite_errorcode", None),
+            "sqlite_errorname": getattr(exc, "sqlite_errorname", None)}
+           if isinstance(exc, sqlite3.Error) else {}),
         "frames": [
             {"file": Path(frame.filename).name, "function": frame.name, "line": frame.lineno}
             for frame in traceback.extract_tb(exc.__traceback__)[-12:]
