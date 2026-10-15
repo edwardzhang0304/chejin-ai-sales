@@ -268,3 +268,12 @@ def test_thread_start_failure_clears_own_reservation(environment, monkeypatch):
     assert not c.check_for_updates() and not c.api.calls
     assert not control['update_no_new_work']
     assert c.store.load()['state']=='failed'
+
+
+def test_unreadable_existing_update_state_is_not_overwritten(environment):
+    _, _, _, create = environment
+    c=create();c.store.root.mkdir(parents=True)
+    raw=b'{"state":"installing",broken'
+    c.store.state_path.write_bytes(raw)
+    assert not c.check_for_updates()
+    assert not c.api.calls and c.store.state_path.read_bytes()==raw

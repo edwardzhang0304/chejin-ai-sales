@@ -504,7 +504,11 @@ class UpdateCoordinator:
                 failed = {**(state or {}), 'state': 'failed', 'install_started': False,
                           'result_code': 'UPDATE_CHECK_FAILED',
                           'message': '无法启动更新检查，请检查本机存储后重试'}
-                if state is None or self._release_check_gate(state):
+                if state is None:
+                    # No request was admitted. Preserve unreadable/in-flight
+                    # recovery state instead of replacing it with a new failure.
+                    self._publish(failed)
+                elif self._release_check_gate(state):
                     try:
                         self._save(failed)
                     except Exception:
