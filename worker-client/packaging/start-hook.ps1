@@ -1,18 +1,24 @@
 ﻿param(
   [string]$Configuration = "",
   [switch]$ConfirmAutoTextDisabled,
-  [switch]$CreateShortcuts
+  [switch]$CreateShortcuts,
+  [switch]$ShowErrorDialog
 )
 $ErrorActionPreference = 'Stop'
 $exe = Join-Path $PSScriptRoot 'CheJinWorkerClient.exe'
-if (-not (Test-Path -LiteralPath $exe)) { throw 'Hook Worker executable missing' }
-if (-not $env:LOCALAPPDATA) { throw 'LOCALAPPDATA missing' }
 $report = Join-Path ([IO.Path]::GetTempPath()) ([guid]::NewGuid().ToString() + '.json')
 $savedEnvironment = @{}
 foreach ($name in @('CHEJIN_WORKER_HOME', 'CHEJIN_C2_ENABLED', 'CHEJIN_API_BASE_URL')) {
     $savedEnvironment[$name] = [Environment]::GetEnvironmentVariable($name, 'Process')
 }
+function Show-LaunchFailure([string]$Code) {
+    $shell = New-Object -ComObject WScript.Shell
+    [void]$shell.Popup(('Worker 启动未完成，请联系管理员检查启动配置和本机日志。' + [Environment]::NewLine + '错误码：' + $Code), 0, '车金 Worker', 16)
+}
+$errorCode = 'HOOK_LAUNCH_FAILED'
 try {
+    if (-not (Test-Path -LiteralPath $exe)) { $errorCode = 'HOOK_WORKER_EXECUTABLE_MISSING'; throw $errorCode }
+    if (-not $env:LOCALAPPDATA) { $errorCode = 'HOOK_LOCALAPPDATA_MISSING'; throw $errorCode }
     $env:CHEJIN_WORKER_HOME = Join-Path $env:LOCALAPPDATA 'CheJinWorkerHook'
     $env:CHEJIN_C2_ENABLED = 'false'
     $arguments = @('--hook-launch-info', '--write-report', ('"' + $report + '"'))
@@ -43,7 +49,7 @@ try {
         $wechatShortcut.Save()
         $workerShortcut = $shell.CreateShortcut((Join-Path $desktop 'CheJin Worker.lnk'))
         $workerShortcut.TargetPath = Join-Path $PSHOME 'powershell.exe'
-        $workerShortcut.Arguments = '-NoProfile -ExecutionPolicy Bypass -File "' + $PSCommandPath + '"'
+        $workerShortcut.Arguments = '-NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File "' + $PSCommandPath + '" -ShowErrorDialog'
         $workerShortcut.WorkingDirectory = $PSScriptRoot
         $workerShortcut.Save()
     }
@@ -57,7 +63,12 @@ try {
     }
     Write-Host 'Keep work WeChat open. Worker verifies the existing process; Start accepting remains manual.'
     $worker = Start-Process -FilePath $exe -WorkingDirectory $PSScriptRoot -Wait -PassThru
+    if ($ShowErrorDialog -and $worker.ExitCode -ne 0) { Show-LaunchFailure ('HOOK_WORKER_EXIT_' + $worker.ExitCode) }
     exit $worker.ExitCode
+} catch {
+    if (-not $ShowErrorDialog) { throw }
+    Show-LaunchFailure $errorCode
+    exit 1
 } finally {
     foreach ($name in $savedEnvironment.Keys) {
         [Environment]::SetEnvironmentVariable($name, $savedEnvironment[$name], 'Process')

@@ -118,6 +118,8 @@ try {
         Assert-True ($wechat.Arguments -eq 'StartPort=31234 ConnectType=http RecvType=0') 'WeChat shortcut parameters missing'
         Assert-True ($worker.TargetPath -eq (Join-Path $PSHOME 'powershell.exe')) 'Worker shortcut target mismatch'
         Assert-True ($worker.Arguments -like '*start-hook.ps1*') 'Worker shortcut must use the checked launcher'
+        Assert-True ($worker.Arguments -like '*-WindowStyle Hidden*') 'Worker shortcut must hide the persistent console'
+        Assert-True ($worker.Arguments -like '*-ShowErrorDialog*') 'Hidden launcher must retain visible failures'
         Write-Host 'PASS Hook desktop shortcuts use the saved launch configuration'
     } finally {
         Remove-Item -LiteralPath $controlLink, $wechatLink, $workerLink -Force -ErrorAction SilentlyContinue
