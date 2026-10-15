@@ -22,7 +22,7 @@ on:
     inputs:
       check_kind:
         type: choice
-        options: [tooling, source, sign-existing, repair-updater]
+        options: [tooling, source, sign-existing, repair-updater, launcher]
         default: tooling
       source_test_plan:
         description: 'Reviewed explicit pytest selection: {"reason":"...","not_tested":"...","pytest":[{"cwd":"worker-client","nodes":["tests/test_example.py::test_case"]}]}'
@@ -53,6 +53,30 @@ env:
   CHEJIN_RELEASE_TRANSPORT: ${{ github.ref_name == 'gray-release-0.10.x' && 'hook' || 'ocr' }}
 
 jobs:
+  launcher:
+    name: Check only Hook launcher directory handoff
+    if: github.event_name == 'workflow_dispatch' && inputs.check_kind == 'launcher' && github.ref_name == 'gray-release-0.10.x'
+    runs-on: windows-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with: {fetch-depth: 2, persist-credentials: false}
+      - name: Reproduce old launcher directory lock
+        shell: powershell
+        run: |
+          git show HEAD^:worker-client/packaging/start-hook.ps1 | Set-Content -LiteralPath "$env:RUNNER_TEMP/old-launcher.ps1" -Encoding UTF8
+          $ErrorActionPreference = 'Continue'
+          $output = & powershell.exe -NoProfile -ExecutionPolicy Bypass -File worker-client/scripts/test-hook-launcher.ps1 -LauncherPath "$env:RUNNER_TEMP/old-launcher.ps1" 2>&1
+          $status = $LASTEXITCODE
+          $ErrorActionPreference = 'Stop'
+          $output | Write-Host
+          if ($status -eq 0 -or ($output -join "`n") -notmatch 'HOOK_LAUNCHER_PROGRAM_DIRECTORY_LOCKED') { throw 'OLD_LAUNCHER_LOCK_NOT_REPRODUCED' }
+          $global:LASTEXITCODE = 0
+      - name: Verify fixed launcher actual directory rename and existing behavior
+        shell: powershell
+        run: |
+          & powershell.exe -NoProfile -ExecutionPolicy Bypass -File worker-client/scripts/test-hook-launcher.ps1
+          if ($LASTEXITCODE -ne 0) { throw 'HOOK_LAUNCHER_RENAME_FAILED' }
   repair-updater:
     name: Build only updater repair and exercise original Windows button
     if: github.event_name == 'workflow_dispatch' && inputs.check_kind == 'repair-updater' && github.ref_name == 'gray-release-0.10.x'

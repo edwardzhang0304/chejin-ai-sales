@@ -27,7 +27,13 @@ try {
         $resolved = (Resolve-Path -LiteralPath $Configuration).Path
         $arguments = @('--hook-configure', ('"' + $resolved + '"'), '--confirm-auto-text-disabled', '--write-report', ('"' + $report + '"'))
     }
-    $check = Start-Process -FilePath $exe -ArgumentList $arguments -Wait -PassThru
+    # Start-Process -Wait includes the updater descendant. Keep this launcher's
+    # native current directory outside the program tree while that tree is renamed.
+    # Set-Location alone does not change the native process current directory.
+    $safeDirectory = [IO.Path]::GetTempPath()
+    Set-Location -LiteralPath $safeDirectory
+    [Environment]::CurrentDirectory = $safeDirectory
+    $check = Start-Process -FilePath $exe -WorkingDirectory $PSScriptRoot -ArgumentList $arguments -Wait -PassThru
     if ($check.ExitCode -ne 0) {
         $errorCode = 'HOOK_INSTALL_FAILED'
         if (Test-Path -LiteralPath $report) {

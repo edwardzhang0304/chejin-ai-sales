@@ -1,11 +1,15 @@
-﻿# Runs in Windows PowerShell 5.1; all process operations are simulated.
+﻿param([string]$LauncherPath = '')
+# Process starts are simulated; directory rename uses the real Windows filesystem.
 $ErrorActionPreference = 'Stop'
+$originalLocation = Get-Location
+$originalNativeDirectory = [Environment]::CurrentDirectory
+if (-not $LauncherPath) { $LauncherPath = Join-Path $PSScriptRoot '../packaging/start-hook.ps1' }
 $names = @('CHEJIN_WORKER_HOME', 'CHEJIN_C2_ENABLED', 'CHEJIN_API_BASE_URL', 'LOCALAPPDATA')
 $original = @{}
 foreach ($name in $names) { $original[$name] = [Environment]::GetEnvironmentVariable($name, 'Process') }
 $root = Join-Path ([IO.Path]::GetTempPath()) ('hook-launcher-test-' + [guid]::NewGuid())
 New-Item -ItemType Directory -Path $root | Out-Null
-Copy-Item -LiteralPath (Join-Path $PSScriptRoot '../packaging/start-hook.ps1') -Destination $root
+Copy-Item -LiteralPath $LauncherPath -Destination (Join-Path $root 'start-hook.ps1')
 New-Item -ItemType File -Path (Join-Path $root 'CheJinWorkerClient.exe') | Out-Null
 $global:HookTestWeChatDir = Join-Path $root 'Test WeChat'
 New-Item -ItemType Directory -Path $global:HookTestWeChatDir | Out-Null
@@ -48,6 +52,19 @@ function Start-Process {
         return
     }
     $global:HookLauncherWorkerStarts++
+    Assert-True ($WorkingDirectory -eq $root) 'Worker must retain its own working directory'
+    # The waiting launcher remains alive here, just as during button updating.
+    # A native CWD under $root makes this actual rename fail with WinError 32.
+    $renamedRoot = $root + '.rename-probe'
+    try {
+        [IO.Directory]::Move($root, $renamedRoot)
+        [IO.Directory]::Move($renamedRoot, $root)
+    } catch {
+        $cause = $_.Exception
+        while ($cause.InnerException) { $cause = $cause.InnerException }
+        if (($cause.HResult -band 0xFFFF) -eq 32) { throw 'HOOK_LAUNCHER_PROGRAM_DIRECTORY_LOCKED' }
+        throw
+    }
     if ($global:HookLauncherCase -eq 'worker-failure') { throw 'SIMULATED_WORKER_FAILURE' }
     if ($global:HookLauncherCase -eq 'worker-exit') { return [pscustomobject]@{ ExitCode = 4 } }
     return [pscustomobject]@{ ExitCode = 0 }
@@ -67,6 +84,8 @@ try {
             $failed = $false
             $global:LASTEXITCODE = 999
             $returnedExitCode = $null
+            Set-Location -LiteralPath $root
+            [Environment]::CurrentDirectory = $root
             try {
                 if ($global:HookLauncherCase -eq 'setup') {
                     & (Join-Path $root 'start-hook.ps1') -Configuration (Join-Path $root 'profile.json') -ConfirmAutoTextDisabled
@@ -126,6 +145,8 @@ try {
     }
     $global:LASTEXITCODE = 0
 } finally {
+    Set-Location -LiteralPath $originalLocation.Path
+    [Environment]::CurrentDirectory = $originalNativeDirectory
     foreach ($name in $names) { [Environment]::SetEnvironmentVariable($name, $original[$name], 'Process') }
     Remove-Item -LiteralPath $root -Recurse -Force
     Remove-Variable -Scope Global -Name HookLauncherCase,HookLauncherChecks,HookLauncherReportPath,HookLauncherWeChatStarts,HookLauncherWorkerStarts,HookTestWeChatDir,HookTestWeChatPath -ErrorAction SilentlyContinue
