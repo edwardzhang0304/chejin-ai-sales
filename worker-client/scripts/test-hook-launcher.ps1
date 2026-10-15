@@ -97,8 +97,8 @@ try {
     Assert-True ($completed -eq 12) 'Some launcher cases did not finish'
     $desktop = [Environment]::GetFolderPath('Desktop')
     New-Item -ItemType Directory -Path $desktop -Force | Out-Null
-    $wechatLink = Join-Path $desktop '工作微信.lnk'
-    $workerLink = Join-Path $desktop '车金 Worker.lnk'
+    $wechatLink = Join-Path $desktop 'Work WeChat.lnk'
+    $workerLink = Join-Path $desktop 'CheJin Worker.lnk'
     Assert-True (-not (Test-Path -LiteralPath $wechatLink) -and -not (Test-Path -LiteralPath $workerLink)) 'Test desktop shortcuts already exist'
     $controlLink = Join-Path $desktop 'hook-control.lnk'
     try {

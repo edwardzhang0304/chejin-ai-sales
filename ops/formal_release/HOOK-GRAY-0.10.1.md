@@ -37,9 +37,9 @@ python ops/formal_release/assemble_hook_new_pc_bundle.py \
 powershell -NoProfile -ExecutionPolicy Bypass -File .\start-hook.ps1 -Configuration .\profile.json -ConfirmAutoTextDisabled -CreateShortcuts
 ```
 
-首次配置只写部署设置、生成桌面“工作微信”和“车金 Worker”快捷方式，不绑定客户、不领取任务、不发送好友申请。已有配置必须完全相同，否则停止；原 OCR 或 UAT 绑定不得通过这个入口自动迁移或重置。给销售的步骤是：解压运维准备的包 → 双击 `Setup-CheJin-Hook.cmd` → 确认设置成功 → 双击桌面“工作微信” → 双击“车金 Worker”并在界面绑定自己的身份；验收通过前保持暂停。激活码和密钥不放在公开 Worker 包或 profile 中。
+首次配置只写部署设置、生成桌面 `Work WeChat`（工作微信）和 `CheJin Worker` 快捷方式，不绑定客户、不领取任务、不发送好友申请。已有配置必须完全相同，否则停止；原 OCR 或 UAT 绑定不得通过这个入口自动迁移或重置。给销售的步骤是：解压运维准备的包 → 双击 `Setup-CheJin-Hook.cmd` → 确认设置成功 → 双击桌面 `Work WeChat` → 双击 `CheJin Worker` 并在界面绑定自己的身份；验收通过前保持暂停。激活码和密钥不放在公开 Worker 包或 profile 中。
 
-随后使用桌面“车金 Worker”快捷方式，或由运维诊断时执行：
+随后使用桌面 `CheJin Worker` 快捷方式，或由运维诊断时执行：
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File .\start-hook.ps1

@@ -36,12 +36,12 @@ try {
         $desktop = [Environment]::GetFolderPath('Desktop')
         if (-not $desktop) { throw 'DESKTOP_FOLDER_UNAVAILABLE' }
         New-Item -ItemType Directory -Path $desktop -Force | Out-Null
-        $wechatShortcut = $shell.CreateShortcut((Join-Path $desktop '工作微信.lnk'))
+        $wechatShortcut = $shell.CreateShortcut((Join-Path $desktop 'Work WeChat.lnk'))
         $wechatShortcut.TargetPath = $launch.exe
         $wechatShortcut.WorkingDirectory = $launch.working_directory
         $wechatShortcut.Arguments = $launch.arguments -join ' '
         $wechatShortcut.Save()
-        $workerShortcut = $shell.CreateShortcut((Join-Path $desktop '车金 Worker.lnk'))
+        $workerShortcut = $shell.CreateShortcut((Join-Path $desktop 'CheJin Worker.lnk'))
         $workerShortcut.TargetPath = Join-Path $PSHOME 'powershell.exe'
         $workerShortcut.Arguments = '-NoProfile -ExecutionPolicy Bypass -File "' + $PSCommandPath + '"'
         $workerShortcut.WorkingDirectory = $PSScriptRoot
