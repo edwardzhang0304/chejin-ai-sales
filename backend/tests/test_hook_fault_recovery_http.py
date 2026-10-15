@@ -16,6 +16,7 @@ from test_hook_business_http import claimed, post
 from test_hook_account_http import client
 from test_hook_account_client import identity_client
 from test_hook_gateway import lab
+from test_hook_formal_runtime import calibrated_clock
 from test_hook_native_send_http import permitted
 from app.core.database import SessionLocal
 from app.models.task import Task
@@ -57,9 +58,11 @@ def runtime_for(identity_client, lab, tmp_path):
     server, gateway, process, scope, *_ = lab
     w, task, account = claimed(process_generation=process.generation, pending=True)
     scope = replace(scope, account_epoch=account['account_epoch'])
-    prepared = SimpleNamespace(process=process, registration=SimpleNamespace(scope=scope))
+    credentials = HookWorkerCredentials(w['id'], w['worker_token'], w['instance'])
+    prepared = SimpleNamespace(process=process, registration=SimpleNamespace(scope=scope),
+        clock=calibrated_clock(identity_client, credentials, gateway, process, scope))
     runtime = HookFormalRuntime(HookFormalClient(identity_client.base_url, 5),
-        HookWorkerCredentials(w['id'], w['worker_token'], w['instance']),
+        credentials,
         gateway, prepared, tmp_path / 'original-runtime')
     return w, task, runtime
 
