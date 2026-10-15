@@ -139,4 +139,4 @@ def test_current_product_versions_are_unified():
                          and any(isinstance(t, ast.Name) and t.id == 'ENTRY_VERSION' for t in n.targets))
     assert {__version__, frontend['version'], lock['version'], lock['packages']['']['version'],
             backend['project']['version'], contract['contract_revision'], hook['product_version'],
-            entry_version} == {'0.10.1'}
+            entry_version} == {'0.10.2'}
