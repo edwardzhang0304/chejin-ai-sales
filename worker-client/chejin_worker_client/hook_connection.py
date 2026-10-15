@@ -70,6 +70,17 @@ class HookConnectionManager:
                 return None
             return self._prepared
 
+    def update_safety_snapshot(self) -> dict:
+        """Never block a UI projection on prepare's network/receiver operation."""
+        if not self._operation_lock.acquire(blocking=False):
+            return {'checking': True, 'process_generation': None}
+        try:
+            prepared = self.prepared
+            return {'checking': False,
+                    'process_generation': prepared.process.generation if prepared else None}
+        finally:
+            self._operation_lock.release()
+
     def receiver_health_snapshot(self) -> dict:
         """Local liveness only; never wait on a backend request's operation lock.
 

@@ -4603,9 +4603,10 @@ class TaskRunner:
         services = getattr(self, 'hook_services', None)
         if services is not None:
             from .storage import hook_update_business_blockers
-            prepared = services.connection.prepared
-            durable.update(hook_update_business_blockers(
-                prepared.process.generation if prepared is not None else None))
+            hook_state = services.connection.update_safety_snapshot()
+            durable['hook_connection_checking'] = hook_state['checking']
+            if not hook_state['checking']:
+                durable.update(hook_update_business_blockers(hook_state['process_generation']))
         local_lock = lock_summary()
         sidecar_active = bool(
             getattr(self.bridge, "sidecar_active", lambda: True)()
@@ -4675,7 +4676,7 @@ class TaskRunner:
                     'current_task', 'task_lease_active', 'ui_lock_active', 'sidecar_active',
                     'pending_sqlite_action_journal', 'pending_file_action_journal',
                     'pending_sent_ack', 'action_journal_state_unavailable',
-                    'hook_unresolved_calls', 'hook_pending_delivery'))):
+                    'hook_unresolved_calls', 'hook_pending_delivery', 'hook_connection_checking'))):
             return None
         try:
             return inspect_pending_read(CONFIG.app_dir)

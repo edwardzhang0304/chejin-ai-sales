@@ -277,3 +277,25 @@ def test_unreadable_existing_update_state_is_not_overwritten(environment):
     c.store.state_path.write_bytes(raw)
     assert not c.check_for_updates()
     assert not c.api.calls and c.store.state_path.read_bytes()==raw
+
+
+def test_connection_check_in_another_thread_does_not_block_update_button(environment, monkeypatch):
+    from chejin_worker_client.hook_connection import HookConnectionManager
+    runner, _, _, create=environment
+    manager=object.__new__(HookConnectionManager)
+    manager._operation_lock=threading.RLock()
+    manager._receiver_thread=None;manager._receiver=None;manager._prepared=None
+    runner.hook_services=SimpleNamespace(connection=manager)
+    entered, release=threading.Event(),threading.Event()
+    def slow_heartbeat():
+        with manager._operation_lock:
+            entered.set();assert release.wait(3)
+    t=threading.Thread(target=slow_heartbeat);t.start();assert entered.wait(2)
+    monkeypatch.setattr(storage, 'hook_update_business_blockers', lambda generation: {})
+    try:
+        c=create()
+        assert c.check_admission()['reason_code']=='UPDATE_WAITING_HOOK_CONNECTION'
+        assert not c.check_for_updates() and not c.api.calls
+        assert not release.is_set()
+    finally:release.set();t.join()
+    assert c.check_admission()['allowed']

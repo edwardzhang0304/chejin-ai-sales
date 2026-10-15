@@ -3,6 +3,7 @@
 
 def business_wait_reason(snapshot: dict) -> tuple[str, str]:
     checks = (
+        (("hook_connection_checking",), "UPDATE_WAITING_HOOK_CONNECTION", "正在核对微信连接，请稍后检查更新"),
         (("hook_unresolved_calls",), "UPDATE_WAITING_HOOK_CALL", "微信接口仍在执行或结果未确认，请先完成恢复核对"),
         (("current_task", "inflight_flow_id"), "UPDATE_WAITING_ACTIVE_FLOW", "正在等待当前任务安全结束"),
         (("task_lease_active",), "UPDATE_WAITING_TASK_LEASE", "正在等待任务租约释放"),
