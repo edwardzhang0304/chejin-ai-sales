@@ -679,17 +679,17 @@
     "persisted_c1_failure_receipt_settlement_and_stop_recovery_contract"
   ],
   "current_release": {
-    "version": "0.10.2",
+    "version": "0.10.3",
     "source_commit": "209f7fb66a01a05736fdd32e54808e54a9b66ce3",
     "source_state": "gray_release_candidate",
     "published": false,
-    "contract_revision": "0.10.2",
-    "contract_sha256": "f0252b00557baac609e513fe40b716af41e0dbb1202eae33e27a223af29a46cc",
+    "contract_revision": "0.10.3",
+    "contract_sha256": "c03756baf58f664d7bb2981416cdf064c6133b1b9b4a5439ee07616ad6f373bc",
     "scope": [
       "native_hook_state_and_release_preparation",
       "schema_revision_sync"
     ],
-    "note": "source_commit remains the original Hook integration base, not the exact release tree. The Chejin release commit and package manifest pin the exact 0.10.2 bytes; publication and Windows acceptance are tracked separately."
+    "note": "source_commit remains the original Hook integration base, not the exact release tree. The Chejin release commit and package manifest pin the exact 0.10.3 bytes; publication and Windows acceptance are tracked separately."
   },
   "historical_integrations": [
     {
