@@ -1,3 +1,4 @@
+import { useAutoRefresh } from "../../shared/hooks/useAutoRefresh";
 import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { formatBusinessError } from "../../shared/api/client";
@@ -81,11 +82,13 @@ export function SalesPage({ openIntent }: { openIntent?: SalesOpenIntent | null 
   const [saveError, setSaveError] = useState<string | null>(null);
   const workerSelectRef = useRef<HTMLSelectElement | null>(null);
 
-  const refresh = useCallback(async (signal?: AbortSignal) => {
-    setLoading(true);
-    setError(null);
+  const refresh = useCallback(async (signal?: AbortSignal, background = false) => {
+    if (!background) setLoading(true);
+    if (!background) setError(null);
     try {
       const [salesData, workerData] = await Promise.all([listSales(signal), listWorkers(signal)]);
+      if (signal?.aborted) return false;
+      setError(null);
       setItems(salesData.items);
       setWorkers(workerData.items);
       setSelectedId((current) => {
@@ -94,6 +97,7 @@ export function SalesPage({ openIntent }: { openIntent?: SalesOpenIntent | null 
       });
       return true;
     } catch (err) {
+      if (background) return false;
       if (!signal?.aborted) setError(formatBusinessError(err, "销售列表加载失败，请稍后重试。"));
       return false;
     } finally {
@@ -124,6 +128,7 @@ export function SalesPage({ openIntent }: { openIntent?: SalesOpenIntent | null 
     setSaveError(null);
     void getSales(selectedId, controller.signal)
       .then((data) => {
+        if (controller.signal.aborted) return;
         setDetail(data);
         setEditForm(toEditForm(data));
         setEditing(false);
@@ -148,6 +153,16 @@ export function SalesPage({ openIntent }: { openIntent?: SalesOpenIntent | null 
     const focusTimer = window.setTimeout(() => workerSelectRef.current?.focus(), 50);
     return () => window.clearTimeout(focusTimer);
   }, [detail?.id, editing, openIntent]);
+
+  const refreshVisible = useCallback(async (signal: AbortSignal) => {
+    await refresh(signal, true);
+    if (signal.aborted) return;
+    if (selectedId && drawerOpen) {
+      const data = await getSales(selectedId, signal);
+      if (!signal.aborted) { setDetail(data); setEditForm(toEditForm(data)); }
+    }
+  }, [refresh, selectedId, drawerOpen]);
+  useAutoRefresh(refreshVisible, !loading && !detailLoading && !editing && !submitting && !createOpen);
 
   const filteredItems = useMemo(() => {
     const keyword = filter.keyword.trim().toLowerCase();

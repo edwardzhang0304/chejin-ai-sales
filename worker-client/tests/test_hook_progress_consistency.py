@@ -226,3 +226,19 @@ def test_real_dispatcher_paused_reconciliation_polls_old_results_without_fake_ai
   assert len(calls)==6 and [e['phase'] for e in events]==['sync_finished']
   assert runner.binding.run_status=='paused'
  finally:manager.close()
+
+
+def test_completed_new_customer_step_keeps_focus_instead_of_old_invitation():
+ t=HookProgressTimeline()
+ t.apply({'event':'hook_progress_group','group':'invite','kind':'invite','aliases':['invite']})
+ t.apply(evt('bind','waiting','invite','recipient'))
+ t.apply({'event':'hook_progress_group','group':'voice-round','kind':'batch','aliases':['voice-parent']})
+ t.apply(evt('history','current','voice-parent'))
+ before=next(row for row in t.model() if row.get('focus'))
+ t.apply(evt('history','done','voice-parent'))
+ after=next(row for row in t.model() if row.get('focus'))
+ assert after['stepId']==before['stepId'] and after['state']=='done'
+ t.apply(evt('bind','waiting','invite','recipient'))
+ assert next(row for row in t.model() if row.get('focus'))['stepId']==before['stepId']
+ t.apply(evt('voice','current','voice-parent'))
+ assert next(row for row in t.model() if row.get('focus'))['title']=='语音转文字'

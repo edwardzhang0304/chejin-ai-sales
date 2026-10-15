@@ -20,7 +20,8 @@ def test_default_ocr_selection_and_explicit_bad_setting_do_not_fallback(lab):
         create_hook_services(SimpleNamespace(base_url='http://127.0.0.1:12345/api'))
 
 
-def test_one_customer_model_wait_does_not_block_other_customer(lab,backend_peer,tmp_path):
+@pytest.mark.parametrize("pending_friend", [False, True])
+def test_one_customer_model_wait_does_not_block_other_customer(lab,backend_peer,tmp_path,pending_friend):
     manager,credentials,state,response=setup(lab,backend_peer)
     prepared=manager.prepare(credentials,state)
     scope=prepared.registration.scope
@@ -34,11 +35,15 @@ def test_one_customer_model_wait_does_not_block_other_customer(lab,backend_peer,
             calls.append(path)
             if path.endswith('native-work'):
                 return {'schema_version':'hook-native-work-v1','observation_query_version':1,**account,'run_status':'running','inflight_flow':{},
-                    'bindings':bindings,'invitations':[],'retained_sends':[],'inflight_task':None}
+                    'bindings':bindings,'invitations':[{'source_task_id':'pending-friend'}] if pending_friend else [],'retained_sends':[],'inflight_task':None}
             if bindings[0]['batch_ids'][0] in path:return {'processing':True}
             return {'reply_action':{'status':'queued'},'task':{'id':str(uuid.uuid4())}}
     class Runtime:
         def __init__(self,*args,**kwargs):self.credentials=credentials;self.account=account;self.scope=scope;self.active_flow_id=None;self.active_task_id=None;self.clock=SimpleNamespace(observe=lambda x:None)
+        def discover(self,task_id):
+            from chejin_worker_client.api import ApiError
+            calls.append(task_id)
+            raise ApiError('HOOK_FRIEND_NOT_FOUND','synthetic waiting',409)
         def barrier(self,b):return (0,0)
         def sync(self,b):return {'history_ready':True}
         def reply_once(self,b,data,*,history):sends.append(b['binding_id']);return {'status':'sent'}
@@ -49,6 +54,7 @@ def test_one_customer_model_wait_does_not_block_other_customer(lab,backend_peer,
         automatic_transcription_disabled=lambda:True,runtime_factory=Runtime)
     try:
         dispatcher.tick(runner,services)
+        assert ('pending-friend' in calls)==pending_friend
         assert sends==[bindings[1]['binding_id']]
         assert any(bindings[0]['batch_ids'][0] in path for path in calls)
     finally:manager.close()

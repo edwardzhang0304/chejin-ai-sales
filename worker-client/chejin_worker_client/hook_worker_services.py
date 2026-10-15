@@ -121,7 +121,7 @@ class HookWorkerServices:
                 if code not in CLOCK_WAIT_CODES:
                     self._fault(runner, code)
                     return
-                self._wait_for_clock(code)
+                self._wait_for_clock(code, clock_check=getattr(exc, "clock_check", None))
         profile = prepared.account.worker_profile()
         if self.dispatcher is not None and self._startup_check['canStart']:
             key = self._window_key(prepared)
@@ -191,11 +191,11 @@ class HookWorkerServices:
             emit_progress(runner,'startup','environment','done')
             emit_progress(runner,'startup','ready','done')
 
-    def _wait_for_clock(self, code: str, *, context='connection') -> None:
+    def _wait_for_clock(self, code: str, *, context='connection', clock_check=None) -> None:
         # Keep authenticated raw intake alive, but show that new work is blocked.
         # Do not clear an earlier fault or change the operator's run-status intent.
         if context=='connection':self._startup_check = startup_check_state.failed(code)
-        self.dispatcher._report_wait(code,context=context)
+        self.dispatcher._report_wait(code,context=context,clock_check=clock_check)
 
     def _fault(self, runner, code: str, *, http_status=None, local_error=None) -> None:
         operation=getattr(local_error,'operation',None)
@@ -248,7 +248,7 @@ class HookWorkerServices:
                 except ValueError as exc:
                     code=str(exc)
                     if code in CLOCK_WAIT_CODES:
-                        self._wait_for_clock(code,context='business')
+                        self._wait_for_clock(code,context='business',clock_check=getattr(exc, 'clock_check', None))
                     elif code in {'HOOK_RUNTIME_NOT_RUNNING','HOOK_SEND_LATEST_CONTEXT_STALE'}:
                         self.dispatcher._report_wait(code,context='business')
                     else:self._fault(runner,code if code.startswith('HOOK_') else 'HOOK_BUSINESS_CHECK_FAILED')

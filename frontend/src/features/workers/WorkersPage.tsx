@@ -1,3 +1,4 @@
+import { useAutoRefresh } from "../../shared/hooks/useAutoRefresh";
 import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
 
 import { formatBusinessError } from "../../shared/api/client";
@@ -140,11 +141,13 @@ export function WorkersPage({ openIntent }: { openIntent?: WorkerOpenIntent | nu
 
   useLockBodyScroll(resetOpen);
 
-  const refresh = useCallback(async (signal?: AbortSignal) => {
-    setLoading(true);
-    setError(null);
+  const refresh = useCallback(async (signal?: AbortSignal, background = false) => {
+    if (!background) setLoading(true);
+    if (!background) setError(null);
     try {
       const data = await listWorkers(signal);
+      if (signal?.aborted) return false;
+      setError(null);
       setItems(data.items);
       setSelectedId((current) => {
         if (current && data.items.some((item) => item.id === current)) return current;
@@ -152,6 +155,7 @@ export function WorkersPage({ openIntent }: { openIntent?: WorkerOpenIntent | nu
       });
       return true;
     } catch (err) {
+      if (background) return false;
       if (!signal?.aborted) setError(formatBusinessError(err, "Worker 列表加载失败，请稍后重试。"));
       return false;
     } finally {
@@ -181,6 +185,7 @@ export function WorkersPage({ openIntent }: { openIntent?: WorkerOpenIntent | nu
     setSaveError(null);
     void getWorker(selectedId, controller.signal)
       .then((data) => {
+        if (controller.signal.aborted) return;
         setDetail(data);
         setEditForm(toEditForm(data));
         setEditing(false);
@@ -193,6 +198,16 @@ export function WorkersPage({ openIntent }: { openIntent?: WorkerOpenIntent | nu
       });
     return () => controller.abort();
   }, [selectedId]);
+
+  const refreshVisible = useCallback(async (signal: AbortSignal) => {
+    await refresh(signal, true);
+    if (signal.aborted) return;
+    if (selectedId && drawerOpen) {
+      const data = await getWorker(selectedId, signal);
+      if (!signal.aborted) { setDetail(data); setEditForm(toEditForm(data)); }
+    }
+  }, [refresh, selectedId, drawerOpen]);
+  useAutoRefresh(refreshVisible, !loading && !detailLoading && !editing && !submitting && !createOpen && !resetOpen);
 
   const filteredItems = useMemo(() => {
     const keyword = filter.keyword.trim().toLowerCase();

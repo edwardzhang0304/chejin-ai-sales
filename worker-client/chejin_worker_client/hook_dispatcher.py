@@ -44,7 +44,7 @@ class HookBusinessDispatcher:
         self._next_customer=0
         self._friend_read_due=0
         self._reconciled=False
-        self._last_wait_code=None
+        self._last_wait_codes={}
         self._sync_cache={}
         self.diagnostic_context={}
         self._wait_events=0
@@ -79,10 +79,10 @@ class HookBusinessDispatcher:
             self._business_clock_ready=False;self._business_clock_error=str(exc);raise
         self._business_clock_ready=True;self._business_clock_error=None
 
-    def _report_wait(self, code, *, context='business'):
-        with self._wait_lock:self._report_wait_locked(code,context=context)
+    def _report_wait(self, code, *, context='business', clock_check=None):
+        with self._wait_lock:self._report_wait_locked(code,context=context,clock_check=clock_check)
 
-    def _report_wait_locked(self, code, *, context='business'):
+    def _report_wait_locked(self, code, *, context='business', clock_check=None):
         self._wait_events+=1
         phase=None
         if code in {'HOOK_BACKEND_CLOCK_STALE','HOOK_BACKEND_CLOCK_RTT_UNCONFIRMED'}:phase='clock_wait'
@@ -90,10 +90,13 @@ class HookBusinessDispatcher:
         if phase is not None:
             self._pending_wait_phases.setdefault(context,set()).add(phase)
             emit_progress(getattr(self,'_progress_runner',None),context,phase,'waiting',phase)
-        if self._last_wait_code!=code:
+        log_key=(context,phase)
+        signature=(code,(clock_check or {}).get('reason'))
+        if self._last_wait_codes.get(log_key)!=signature:
             storage.append_log('WARN','hook_business_wait','工作微信消息正在核对，保留原记录。',
-                error_code=code,include_exception_text=False)
-        self._last_wait_code=code
+                error_code=code,include_exception_text=False,
+                metadata={'wait_owner':context,'clock_check':dict(clock_check or {})})
+        self._last_wait_codes[log_key]=signature
 
     def resolve_wait(self,context,*,phase=None):
         with self._wait_lock:self._resolve_wait_locked(context,phase=phase)
@@ -106,10 +109,7 @@ class HookBusinessDispatcher:
         else:self._pending_wait_phases.pop(context,None)
         for completed in resolved:
             emit_progress(getattr(self,'_progress_runner',None),context,completed,'done')
-        if not self._pending_wait_phases and self._last_wait_code in {
-                'HOOK_BACKEND_CLOCK_STALE','HOOK_BACKEND_CLOCK_RTT_UNCONFIRMED',
-                'HOOK_BACKEND_NETWORK_FAILED','HOOK_BACKEND_TEMPORARILY_UNAVAILABLE'}:
-            self._last_wait_code=None
+            self._last_wait_codes.pop((context,completed),None)
 
     def _publish_handoff(self,runner,context,record):
         reason=record.get('handoff_reason_code')

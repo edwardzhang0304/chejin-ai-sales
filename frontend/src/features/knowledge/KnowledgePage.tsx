@@ -1,3 +1,4 @@
+import { useAutoRefresh } from "../../shared/hooks/useAutoRefresh";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { formatBusinessError } from "../../shared/api/client";
@@ -374,22 +375,24 @@ export function KnowledgePage() {
     return () => window.clearTimeout(timer);
   }, [keyword]);
 
-  const refresh = useCallback(async (signal?: AbortSignal) => {
+  const refresh = useCallback(async (signal?: AbortSignal, background = false) => {
     const requestId = ++listRequestId.current;
-    setLoading(true);
-    setError(null);
+    if (!background) setLoading(true);
+    if (!background) setError(null);
     try {
       const [list, dashboard] = await Promise.all([
         listKnowledgeItems({ keyword: debouncedKeyword, status, page, page_size: pageSize }, signal),
         getKnowledgeSummary(signal),
       ]);
       if (signal?.aborted || requestId !== listRequestId.current) return;
+      setError(null);
       setItems(list.items);
       setTotal(list.total);
       setSummary(dashboard);
       const maxPage = Math.max(1, Math.ceil(list.total / pageSize));
       if (page > maxPage) setPage(maxPage);
     } catch (err) {
+      if (background) return false;
       if (signal?.aborted || requestId !== listRequestId.current) return;
       setError(formatBusinessError(err, "知识列表加载失败，请稍后重试。"));
     } finally {
@@ -427,6 +430,16 @@ export function KnowledgePage() {
       });
     return () => controller.abort();
   }, [activeItemId]);
+
+  const refreshVisible = useCallback(async (signal: AbortSignal) => {
+    await refresh(signal, true);
+    if (signal.aborted) return;
+    if (activeItemId) {
+      const item = await getKnowledgeItem(activeItemId, signal);
+      if (!signal.aborted) { setDetail(item); setDraft({title: item.title, content: item.content}); }
+    }
+  }, [refresh, activeItemId]);
+  useAutoRefresh(refreshVisible, !loading && !detailLoading && !editing && !busy && !createOpen && !releasesOpen);
 
   const notify = useCallback((message: string, tone: "success" | "error" = "success") => setToast({ message, tone }), []);
   const isEmpty = !loading && !error && items.length === 0;

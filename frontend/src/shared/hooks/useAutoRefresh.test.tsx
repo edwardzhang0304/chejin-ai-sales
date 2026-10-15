@@ -1,0 +1,46 @@
+import { act, cleanup, renderHook } from "@testing-library/react";
+import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import { useAutoRefresh } from "./useAutoRefresh";
+beforeEach(() => { vi.useFakeTimers(); vi.spyOn(document, 'visibilityState', 'get').mockReturnValue('visible'); });
+afterEach(() => { cleanup(); vi.useRealTimers(); vi.restoreAllMocks(); });
+it('refreshes every five seconds without overlapping pending requests', async () => {
+  let finish!: () => void;
+  const refresh = vi.fn(() => new Promise<void>(resolve => { finish = resolve; }));
+  renderHook(() => useAutoRefresh(refresh));
+  await act(async () => { await vi.advanceTimersByTimeAsync(5000); });
+  expect(refresh).toHaveBeenCalledTimes(1);
+  await act(async () => { window.dispatchEvent(new Event('focus')); await vi.advanceTimersByTimeAsync(15000); });
+  expect(refresh).toHaveBeenCalledTimes(1);
+  await act(async () => finish());
+  await act(async () => { await vi.advanceTimersByTimeAsync(5000); });
+  expect(refresh).toHaveBeenCalledTimes(2);
+});
+it('suspends while editing or hidden and refreshes on return', async () => {
+  const refresh = vi.fn(async (_signal: AbortSignal) => {});
+  const hook = renderHook(({enabled}) => useAutoRefresh(refresh, enabled), {initialProps:{enabled:true}});
+  await act(async () => { await vi.advanceTimersByTimeAsync(5000); });
+  hook.rerender({enabled:false});
+  await act(async () => { await vi.advanceTimersByTimeAsync(10000); window.dispatchEvent(new Event('focus')); });
+  expect(refresh).toHaveBeenCalledTimes(1);
+  hook.rerender({enabled:true});
+  vi.spyOn(document, 'visibilityState', 'get').mockReturnValue('hidden');
+  await act(async () => { document.dispatchEvent(new Event('visibilitychange')); await vi.advanceTimersByTimeAsync(5000); });
+  expect(refresh).toHaveBeenCalledTimes(1);
+  vi.spyOn(document, 'visibilityState', 'get').mockReturnValue('visible');
+  await act(async () => { document.dispatchEvent(new Event('visibilitychange')); });
+  expect(refresh).toHaveBeenCalledTimes(2);
+});
+it('aborts in-flight work on callback change and retries after failure', async () => {
+  let signal!: AbortSignal;
+  const pending = vi.fn((s: AbortSignal) => { signal = s; return new Promise<void>(() => {}); });
+  const retry = vi.fn(async (_s: AbortSignal) => { throw new Error('offline'); });
+  const hook = renderHook(({refresh}) => useAutoRefresh(refresh), {initialProps:{refresh:pending as (s:AbortSignal)=>Promise<void>}});
+  await act(async () => { await vi.advanceTimersByTimeAsync(5000); });
+  hook.rerender({refresh:retry});
+  expect(signal.aborted).toBe(true);
+  await act(async () => { await vi.advanceTimersByTimeAsync(10000); });
+  expect(retry).toHaveBeenCalledTimes(2);
+  hook.unmount();
+  await act(async () => { await vi.advanceTimersByTimeAsync(10000); });
+  expect(retry).toHaveBeenCalledTimes(2);
+});

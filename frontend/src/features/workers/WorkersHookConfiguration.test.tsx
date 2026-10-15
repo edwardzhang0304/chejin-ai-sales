@@ -7,15 +7,18 @@ let configured = false;
 let hookContext: Record<string, unknown> | undefined;
 let calls: { url: string; method: string; body: Record<string, unknown> }[];
 let failWrite = false;
-const worker = () => ({ id: "worker-1", worker_name: "Windows A", device_name: null, platform: "windows", enabled: true, online_status: "offline", run_status: "paused", running_status: "idle", current_task: null, last_heartbeat_at: null, client_binding_state: "unbound", remark: null, bound_sales_id: null, bound_sales_name: null, vision_configured: configured, hook_context: hookContext });
+let runStatus = "paused";
+let failRead = false;
+const worker = () => ({ id: "worker-1", worker_name: "Windows A", device_name: null, platform: "windows", enabled: true, online_status: hookContext ? "online" : "offline", run_status: runStatus, running_status: "idle", current_task: null, last_heartbeat_at: null, client_binding_state: "unbound", remark: null, bound_sales_id: null, bound_sales_name: null, vision_configured: configured, hook_context: hookContext });
 beforeEach(() => {
   vi.stubGlobal("scrollTo", vi.fn());
-  calls = []; configured = false; hookContext = undefined; failWrite = false;
+  calls = []; configured = false; hookContext = undefined; failWrite = false; runStatus = "paused"; failRead = false;
   vi.stubGlobal("fetch", vi.fn(async (input, options = {}) => {
     const url = String(input); const method = options.method || "GET";
     const body = options.body ? JSON.parse(options.body) : {};
     calls.push({ url, method, body });
     if (url.endsWith("/vision-credential")) throw new Error("Hook must not request Vision credentials");
+    if (failRead && method === "GET") throw new Error("offline");
     if (failWrite && method !== "GET") return new Response(JSON.stringify({ code: "ERROR", message: "保存暂时不可用" }), { status: 503 });
     return new Response(JSON.stringify({ code: "OK", data: url.endsWith("/workers") && method === "GET" ? { items: [worker()] } : worker() }));
   }));
@@ -75,4 +78,28 @@ it("keeps creation errors retryable without requesting a Vision Key", async () =
   failWrite = false;
   fireEvent.click(within(modal).getByRole("button", { name: "保存" }));
   await waitFor(() => expect(screen.queryByRole("form", { name: "新增 Worker" })).not.toBeInTheDocument());
+});
+
+
+it("refreshes Worker status and detail without clearing rows or overwriting an edit", async () => {
+  hookContext = { blocked: false, rebind_required: false };
+  render(<WorkersPage />);
+  const row = await screen.findByRole("row", { name: /Windows A/ });
+  fireEvent.click(row);
+  await screen.findByRole("button", { name: "编辑 Worker" });
+  runStatus = "running";
+  fireEvent(window, new Event("focus"));
+  await waitFor(() => expect(screen.getByRole("row", { name: /Windows A/ })).toHaveTextContent("接单中"));
+  failRead = true;
+  fireEvent(window, new Event("focus"));
+  await waitFor(() => expect(screen.getByRole("row", { name: /Windows A/ })).toBeInTheDocument());
+  failRead = false;
+  fireEvent.click(screen.getByRole("button", { name: "编辑 Worker" }));
+  const name = screen.getByLabelText(/Worker 名称/);
+  fireEvent.change(name, { target: { value: "尚未保存" } });
+  const before = calls.length;
+  runStatus = "paused";
+  fireEvent(window, new Event("focus"));
+  expect(name).toHaveValue("尚未保存");
+  expect(calls.length).toBe(before);
 });

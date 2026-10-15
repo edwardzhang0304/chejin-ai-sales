@@ -233,3 +233,36 @@ def test_connection_clock_wait_recovers_with_real_wait_registry(runtime,backend_
     if business_wait is None:
         assert not any(row['title']=='等待后台响应稳定' for row in timeline.model())
     assert binding.run_status==intent and not errors and not posted
+
+
+def test_wait_diagnostics_are_deduplicated_per_owner_and_recovery(tmp_path,monkeypatch):
+    from chejin_worker_client import storage
+    records=[]
+    monkeypatch.setattr(storage,'append_log',lambda *args,**kw:records.append(kw))
+    d=HookBusinessDispatcher(None,tmp_path,None,None,automatic_transcription_disabled=lambda:True)
+    code='HOOK_BACKEND_CLOCK_RTT_UNCONFIRMED'
+    for owner in ('connection','business'):
+        for _ in range(3):d._report_wait(code,context=owner,clock_check={'reason':'slow_response','receipt_rtt_seconds':2.1})
+    assert [r['metadata']['wait_owner'] for r in records]==['connection','business']
+    assert all(r['metadata']['clock_check']['receipt_rtt_seconds']==2.1 for r in records)
+    d.resolve_wait('connection',phase='clock_wait')
+    assert d.pending_wait_snapshot()=={'business':{'clock_wait'}}
+    d._report_wait(code,context='connection',clock_check={'reason':'slow_response','receipt_rtt_seconds':1.5})
+    assert len(records)==3
+    d._report_wait(code,context='business',clock_check={'reason':'wide_uncertainty','uncertainty_seconds':1.1})
+    assert len(records)==4
+
+
+def test_business_supervisor_preserves_clock_wait_evidence(runtime):
+    from chejin_worker_client.hook_clock import ClockWaitError
+    runner,services,binding,_,errors,_,posted,_=runtime
+    runner.binding=binding;services.attach(binding,runner._hook_persistence_failed)
+    evidence={'reason':'slow_response','receipt_rtt_seconds':2.5}
+    def tick(*_):
+        runner.stop_event.set()
+        raise ClockWaitError('HOOK_BACKEND_CLOCK_RTT_UNCONFIRMED',**evidence)
+    waits=[]
+    services.dispatcher=SimpleNamespace(tick=tick,interval_seconds=.01,_report_wait=lambda code,**kw:waits.append((code,kw)))
+    services.business_loop(runner,lambda _:None)
+    assert waits==[('HOOK_BACKEND_CLOCK_RTT_UNCONFIRMED',{'context':'business','clock_check':evidence})]
+    assert not errors and not posted and binding.run_status=='paused'

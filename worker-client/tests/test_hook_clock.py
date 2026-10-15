@@ -159,3 +159,15 @@ def test_current_read_floor_keeps_previous_value_on_tolerated_correction():
     # enclosing interval. The issued lower bound must never move backwards.
     clock.observe(receipt(STAMP+timedelta(seconds=9.92),20.04,20.05))
     assert clock.now()>=before and clock.now()<=clock.upper_now()
+
+
+def test_clock_wait_diagnostics_distinguish_slow_and_stale_without_payloads():
+    from chejin_worker_client.hook_clock import ClockWaitError, validate_heartbeat_time
+    with pytest.raises(ClockWaitError) as slow:
+        validate_heartbeat_time(receipt(start=8,end=10.05),monotonic=lambda:10.05)
+    assert str(slow.value)=='HOOK_BACKEND_CLOCK_RTT_UNCONFIRMED'
+    assert slow.value.clock_check=={'reason':'slow_response','receipt_rtt_seconds':pytest.approx(2.05),'receipt_age_seconds':0,'max_rtt_seconds':1}
+    with pytest.raises(ClockWaitError) as stale:
+        validate_heartbeat_time(receipt(),monotonic=lambda:140.05)
+    assert stale.value.clock_check['reason']=='stale_receipt'
+    assert stale.value.clock_check['receipt_age_seconds']==130

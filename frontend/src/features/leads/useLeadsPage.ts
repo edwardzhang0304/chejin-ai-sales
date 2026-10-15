@@ -1,3 +1,4 @@
+import { useAutoRefresh } from "../../shared/hooks/useAutoRefresh";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { ApiError, formatBusinessError } from "../../shared/api/client";
@@ -13,7 +14,7 @@ function isAbortError(error: unknown) {
   return error instanceof DOMException && error.name === "AbortError";
 }
 
-export function useLeadsPage() {
+export function useLeadsPage(autoRefresh = true) {
   const [keyword, setKeyword] = useState("");
   const [status, setStatus] = useState<LeadStatus | "">("");
   const [salesId, setSalesId] = useState("");
@@ -43,24 +44,25 @@ export function useLeadsPage() {
     [keyword, page, pageSize, salesId, status],
   );
 
-  const loadLeads = useCallback(async (signal?: AbortSignal) => {
+  const loadLeads = useCallback(async (signal?: AbortSignal, background = false) => {
     const requestId = ++listRequestIdRef.current;
-    setLoading(true);
-    setError(null);
+    if (!background) { setLoading(true); setError(null); }
 
     try {
       const data = await listLeads(query, signal);
       if (signal?.aborted || requestId !== listRequestIdRef.current) {
         return false;
       }
+      setError(null);
       setItems(data.items);
       setTotal(data.total);
-      setSelectedIds(new Set());
+      setSelectedIds(current => background ? new Set([...current].filter(id => data.items.some(item => item.id === id))) : new Set());
       setActiveLeadId((current) => (
         current && data.items.some((item) => item.id === current) ? current : null
       ));
       return true;
     } catch (err) {
+      if (background) return false;
       if (signal?.aborted || isAbortError(err) || requestId !== listRequestIdRef.current) {
         return false;
       }
@@ -77,7 +79,7 @@ export function useLeadsPage() {
     }
   }, [query]);
 
-  const loadStats = useCallback(async (signal?: AbortSignal) => {
+  const loadStats = useCallback(async (signal?: AbortSignal, background = false) => {
     try {
       const data = await getLeadStats(signal);
       if (!signal?.aborted) {
@@ -85,6 +87,7 @@ export function useLeadsPage() {
       }
       return !signal?.aborted;
     } catch (err) {
+      if (background) return false;
       if (!signal?.aborted && !isAbortError(err)) {
         setStats(null);
       }
@@ -103,7 +106,7 @@ export function useLeadsPage() {
     return () => controller.abort();
   }, [loadLeads, loadStats]);
 
-  const refreshDetail = useCallback(async (leadId = activeLeadId, signal?: AbortSignal) => {
+  const refreshDetail = useCallback(async (leadId = activeLeadId, signal?: AbortSignal, background = false) => {
     if (!leadId) {
       detailRequestIdRef.current += 1;
       setDetail(null);
@@ -113,8 +116,7 @@ export function useLeadsPage() {
     }
 
     const requestId = ++detailRequestIdRef.current;
-    setDetailLoading(true);
-    setDetailError(null);
+    if (!background) { setDetailLoading(true); setDetailError(null); }
 
     try {
       const data = await getLeadDetail(leadId, signal);
@@ -124,6 +126,7 @@ export function useLeadsPage() {
       }
       return !signal?.aborted && requestId === detailRequestIdRef.current;
     } catch (err) {
+      if (background) return false;
       if (!signal?.aborted && !isAbortError(err) && requestId === detailRequestIdRef.current) {
         setDetail(null);
         setDetailError(formatBusinessError(err, "线索详情加载失败，请稍后重试。"));
@@ -147,6 +150,11 @@ export function useLeadsPage() {
 
     return () => controller.abort();
   }, [activeLeadId, refreshDetail]);
+
+  const refreshVisible = useCallback(async (signal: AbortSignal) => {
+    await Promise.all([loadLeads(signal, true), loadStats(signal, true), refreshDetail(activeLeadId, signal, true)]);
+  }, [loadLeads, loadStats, refreshDetail, activeLeadId]);
+  useAutoRefresh(refreshVisible, autoRefresh && !loading && !detailLoading);
 
   const toggleSelected = useCallback((leadId: string) => {
     setSelectedIds((current) => {

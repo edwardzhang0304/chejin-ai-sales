@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from "react";
+import React, { useEffect, useLayoutEffect, useRef, useState } from "react";
 import type {
   TimelineStepModel,
   WorkerClientModel,
@@ -287,18 +287,19 @@ function TaskTimeline({ steps, followLatest = false }: { steps: TimelineStepMode
     ));
   }
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     const viewport = viewportRef.current;
     if (!viewport) return;
     if (followLatest) {
-      const progressKey = steps.map(step => `${step.title}:${step.state}:${step.time}:${step.description}`).join("|");
+      const progressKey = steps.map(step => `${step.stepId}:${step.groupId}:${step.groupTitle}:${step.focus}:${step.title}:${step.state}:${step.time}:${step.description}`).join("|");
       if (progressKey === lastProgressRef.current) return;
       lastProgressRef.current = progressKey;
       if (followRef.current) {
         // Match OCR: keep the latest running marker centered. A finished
         // timeline has no current marker and follows its last result instead.
         const currentSteps = viewport.querySelectorAll<HTMLElement>(".cw-step-focus, .current, .waiting");
-        const currentStep = viewport.querySelector<HTMLElement>(".cw-step-focus") || currentSteps[currentSteps.length - 1];
+        const currentStep = viewport.querySelector<HTMLElement>(".cw-step-focus")
+          || (!steps.some(step => step.stepId) ? currentSteps[currentSteps.length - 1] : undefined);
         const marker = currentStep?.querySelector<HTMLElement>(":scope > span");
         if (marker) {
           viewport.style.setProperty(
@@ -393,7 +394,7 @@ function TaskTimeline({ steps, followLatest = false }: { steps: TimelineStepMode
         >
           <ol className="cw-step-list step-list">
             {steps.map((step, index) => (
-              <TimelineStep key={`${step.title}-${index}`} step={step} />
+              <TimelineStep key={step.stepId || `${step.title}-${index}`} step={step} />
             ))}
           </ol>
         </div>

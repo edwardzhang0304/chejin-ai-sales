@@ -1,3 +1,4 @@
+import { useAutoRefresh } from "../../shared/hooks/useAutoRefresh";
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import { formatBusinessError } from "../../shared/api/client";
@@ -322,17 +323,19 @@ export function LogsPage() {
   const [activeLog, setActiveLog] = useState<OperationLogItem | null>(null);
   const requestIdRef = useRef(0);
 
-  const refresh = useCallback(async (signal?: AbortSignal) => {
+  const refresh = useCallback(async (signal?: AbortSignal, background = false) => {
     const requestId = ++requestIdRef.current;
-    setLoading(true);
-    setError(null);
+    if (!background) setLoading(true);
+    if (!background) setError(null);
     try {
       const data = await listOperationLogs(query, signal);
       if (signal?.aborted || requestId !== requestIdRef.current) {
         return;
       }
+      setError(null);
       setItems(data.items);
     } catch (err) {
+      if (background) return false;
       if (signal?.aborted || requestId !== requestIdRef.current) {
         return;
       }
@@ -349,6 +352,11 @@ export function LogsPage() {
     void refresh(controller.signal);
     return () => controller.abort();
   }, [refresh]);
+
+  const refreshVisible = useCallback(async (signal: AbortSignal) => {
+    await refresh(signal, true);
+  }, [refresh]);
+  useAutoRefresh(refreshVisible, !loading);
 
   function updateQuery(patch: Partial<OperationLogQuery>) {
     setQuery((current) => ({ ...current, ...patch, page: patch.page ?? 1 }));

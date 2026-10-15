@@ -63,6 +63,7 @@ export interface TimelineScreenshot {
 }
 
 export interface TimelineStepModel {
+  stepId?: string;
   groupId?: string;
   groupTitle?: string;
   focus?: boolean;

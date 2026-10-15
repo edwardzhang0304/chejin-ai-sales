@@ -201,6 +201,8 @@ class HookProgressTimeline:
             elif event.get('note')=='no_reply':item['title']='本轮无需回复'
             elif unresolved:item.update(state='waiting',title='本轮结果待确认',description=NOTES['incomplete'])
         if state in {'current','waiting','error'} and not item['_historical']:self._focus=item
+        elif phase in {'handoff','handoff_closed','finished','sync_finished'} and item['state']=='done':
+            if self._focus and self._focus.get('_group')==item['_group']:self._focus=None
         self._trim()
 
     def _insert_step(self,item):
@@ -313,10 +315,12 @@ class HookProgressTimeline:
             elif kind=='system':title='运行状态'
             for index,item in enumerate(items):
                 row={k:v for k,v in item.items() if not k.startswith('_')}
-                row.update(groupId=group,groupTitle=title if index==0 else '')
+                row.update(stepId=f"{item['_context']}:{item['_phase']}",groupId=group,groupTitle=title if index==0 else '')
                 segment=self.groups.get(item['_context'],{}).get('segment')
                 if segment and item['_phase'] in {'send_conditions','send_delay','pre_send','send_submit','send_confirm'}:
                     row['title']+=f'（第 {segment} 段）'
-                row['focus']=bool(item is self._focus and (item['state'] in {'current','waiting'} or (item['state']=='error' and item['_phase']=='stopped')))
+                # Keep the same marker when a stage completes; a later live event
+                # moves focus. Falling back to an older invitation causes jumps.
+                row['focus']=bool(item is self._focus and not item.get('_historical'))
                 result.append(row)
         return result

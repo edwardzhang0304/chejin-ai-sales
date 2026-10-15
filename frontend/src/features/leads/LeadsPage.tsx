@@ -28,7 +28,6 @@ function statValue(value: number | undefined) {
 }
 
 export function LeadsPage() {
-  const leads = useLeadsPage();
   const [createOpen, setCreateOpen] = useState(false);
   const [duplicateData, setDuplicateData] = useState<DuplicateLeadErrorData | null>(null);
   const [createError, setCreateError] = useState<string | null>(null);
@@ -42,6 +41,7 @@ export function LeadsPage() {
   const [restoreError, setRestoreError] = useState<string | null>(null);
   const [salesOptions, setSalesOptions] = useState<SalesItem[]>([]);
   const [revealedPhones, setRevealedPhones] = useState<Record<string, string>>({});
+  const leads = useLeadsPage(!createOpen && !submitting && !actionBusy && !invalidLeadIds && !restoreLeadId);
 
   useEffect(() => {
     const controller = new AbortController();

@@ -1,3 +1,4 @@
+import { useAutoRefresh } from "../../shared/hooks/useAutoRefresh";
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import { formatBusinessError } from "../../shared/api/client";
@@ -81,13 +82,14 @@ export function VehiclesPage() {
     return () => window.clearTimeout(timer);
   }, [keyword]);
 
-  const refreshList = useCallback(async (signal?: AbortSignal) => {
+  const refreshList = useCallback(async (signal?: AbortSignal, background = false) => {
     const requestId = ++listRequestId.current;
-    setLoading(true);
-    setError(null);
+    if (!background) setLoading(true);
+    if (!background) setError(null);
     try {
       const result = await listVehicles({ keyword: debouncedKeyword, listing_status: status, page, page_size: pageSize }, signal);
       if (signal?.aborted || requestId !== listRequestId.current) return false;
+      setError(null);
       setItems(result.items);
       setTotal(result.total);
       setSummary(result.summary);
@@ -95,6 +97,7 @@ export function VehiclesPage() {
       if (page > maxPage) setPage(maxPage);
       return true;
     } catch (err) {
+      if (background) return false;
       if (signal?.aborted || requestId !== listRequestId.current) return false;
       setError(formatBusinessError(err, "车辆列表加载失败，请稍后重试。"));
       return false;
@@ -109,17 +112,18 @@ export function VehiclesPage() {
     return () => controller.abort();
   }, [refreshList]);
 
-  const refreshDetail = useCallback(async (code = activeCode, signal?: AbortSignal) => {
+  const refreshDetail = useCallback(async (code = activeCode, signal?: AbortSignal, background = false) => {
     if (!code) return true;
     const requestId = ++detailRequestId.current;
-    setDetailLoading(true);
-    setDetailError(null);
+    if (!background) setDetailLoading(true);
+    if (!background) setDetailError(null);
     try {
       const data = await getVehicle(code, signal);
       if (signal?.aborted || requestId !== detailRequestId.current) return false;
       setDetail(data);
       return true;
     } catch (err) {
+      if (background) return false;
       if (signal?.aborted || requestId !== detailRequestId.current) return false;
       setDetailError(formatBusinessError(err, "车辆详情加载失败，请稍后重试。"));
       return false;
@@ -138,6 +142,13 @@ export function VehiclesPage() {
     void refreshDetail(activeCode, controller.signal);
     return () => controller.abort();
   }, [activeCode, refreshDetail]);
+
+  const refreshVisible = useCallback(async (signal: AbortSignal) => {
+    await refreshList(signal, true);
+    if (signal.aborted) return;
+    if (activeCode) await refreshDetail(activeCode, signal, true);
+  }, [refreshList, refreshDetail, activeCode]);
+  useAutoRefresh(refreshVisible, !loading && !detailLoading && !drawerDirty && !createOpen && !importOpen && !createBusy);
 
   async function syncVehicle(updated?: VehicleItem) {
     if (updated) setDetail(updated);

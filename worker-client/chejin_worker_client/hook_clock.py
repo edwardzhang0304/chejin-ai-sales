@@ -20,6 +20,13 @@ CLOCK_TIMESTAMP_PRECISION_SECONDS = .000001
 CLOCK_WAIT_CODES = frozenset({'HOOK_BACKEND_CLOCK_STALE', 'HOOK_BACKEND_CLOCK_RTT_UNCONFIRMED'})
 
 
+class ClockWaitError(ValueError):
+    """Same wait contract, with numeric evidence safe for local diagnostics."""
+    def __init__(self, code, **details):
+        super().__init__(code)
+        self.clock_check = details
+
+
 def validate_heartbeat_time(receipt, *, monotonic=time.monotonic, max_age_seconds=120, max_rtt_seconds=1):
     try:
         text = receipt.server_time_utc
@@ -33,8 +40,10 @@ def validate_heartbeat_time(receipt, *, monotonic=time.monotonic, max_age_second
         if rtt < 0 or age < 0: raise ValueError()
     except (ValueError, TypeError, AttributeError, OverflowError):
         raise ValueError('HOOK_BACKEND_CLOCK_UNCONFIRMED') from None
-    if age > max_age_seconds: raise ValueError('HOOK_BACKEND_CLOCK_STALE')
-    if rtt > max_rtt_seconds: raise ValueError('HOOK_BACKEND_CLOCK_RTT_UNCONFIRMED')
+    if age > max_age_seconds: raise ClockWaitError('HOOK_BACKEND_CLOCK_STALE',
+        reason='stale_receipt', receipt_age_seconds=age, receipt_rtt_seconds=rtt, max_age_seconds=max_age_seconds)
+    if rtt > max_rtt_seconds: raise ClockWaitError('HOOK_BACKEND_CLOCK_RTT_UNCONFIRMED',
+        reason='slow_response', receipt_rtt_seconds=rtt, receipt_age_seconds=age, max_rtt_seconds=max_rtt_seconds)
     return stamp, end, rtt
 
 
@@ -82,7 +91,8 @@ class HookBackendClock:
                 # the new anchor to the same current monotonic instant.
                 if (upper-lower).total_seconds() > self.max_rtt+2*CLOCK_TIMESTAMP_PRECISION_SECONDS:
                     self.failure_detail = detail
-                    raise ValueError('HOOK_BACKEND_CLOCK_RTT_UNCONFIRMED')
+                    raise ClockWaitError('HOOK_BACKEND_CLOCK_RTT_UNCONFIRMED', reason='wide_uncertainty',
+                        **detail, uncertainty_seconds=(upper-lower).total_seconds(), max_rtt_seconds=self.max_rtt)
             self.anchor = lower, end, (upper-lower).total_seconds()
             self._last_receipt = (stamp,end,rtt)
 
@@ -92,7 +102,8 @@ class HookBackendClock:
             stamp, received, rtt = self.anchor
             elapsed = self.monotonic() - received
             if not math.isfinite(elapsed) or elapsed < 0: raise ValueError('HOOK_BACKEND_CLOCK_UNCONFIRMED')
-            if elapsed > self.max_age: raise ValueError('HOOK_BACKEND_CLOCK_STALE')
+            if elapsed > self.max_age: raise ClockWaitError('HOOK_BACKEND_CLOCK_STALE',
+                reason='stale_receipt', receipt_age_seconds=elapsed, max_age_seconds=self.max_age)
             lower = stamp + timedelta(seconds=elapsed)
             upper = lower + timedelta(seconds=rtt)
             if self._last_lower is not None:

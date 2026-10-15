@@ -1,3 +1,4 @@
+import { useAutoRefresh } from "../../shared/hooks/useAutoRefresh";
 import { useCallback, useEffect, useMemo, useState } from "react";
 
 import { formatBusinessError } from "../../shared/api/client";
@@ -351,15 +352,17 @@ export function TasksPage({ onOpenWorker, onOpenSalesWorkerBinding }: Props) {
 
   const pageCount = Math.max(1, Math.ceil(total / query.page_size));
 
-  const refresh = useCallback(async (signal?: AbortSignal) => {
-    setLoading(true);
-    setError(null);
+  const refresh = useCallback(async (signal?: AbortSignal, background = false) => {
+    if (!background) setLoading(true);
+    if (!background) setError(null);
     try {
       const [taskData, salesData, workerData] = await Promise.all([
         listTasks(query, signal),
         listSales(signal).catch(() => ({ items: [] })),
         listWorkers(signal).catch(() => ({ items: [] })),
       ]);
+      if (signal?.aborted) return false;
+      setError(null);
       setItems(taskData.items);
       setTotal(taskData.total);
       setSalesOptions(salesData.items);
@@ -371,6 +374,7 @@ export function TasksPage({ onOpenWorker, onOpenSalesWorkerBinding }: Props) {
       });
       return true;
     } catch (err) {
+      if (background) return false;
       if (!signal?.aborted) {
         setItems([]);
         setTotal(0);
@@ -390,6 +394,16 @@ export function TasksPage({ onOpenWorker, onOpenSalesWorkerBinding }: Props) {
     return () => controller.abort();
   }, [refresh]);
 
+  const refreshVisible = useCallback(async (signal: AbortSignal) => {
+    await refresh(signal, true);
+    if (signal.aborted) return;
+    if (selectedId && drawerOpen) {
+      const [task, eventData] = await Promise.all([getTask(selectedId, signal), listTaskEvents(selectedId, signal)]);
+      if (!signal.aborted) { setDetail(task); setEvents(eventData.items.length ? eventData.items : task.events ?? []); }
+    }
+  }, [refresh, selectedId, drawerOpen]);
+  useAutoRefresh(refreshVisible, !loading && !detailLoading && !actionBusy);
+
   useEffect(() => {
     if (!selectedId) {
       setDetail(null);
@@ -405,6 +419,7 @@ export function TasksPage({ onOpenWorker, onOpenSalesWorkerBinding }: Props) {
       listTaskEvents(selectedId, controller.signal),
     ])
       .then(([task, eventData]) => {
+        if (controller.signal.aborted) return;
         setDetail(task);
         setEvents(eventData.items.length ? eventData.items : task.events ?? []);
       })
