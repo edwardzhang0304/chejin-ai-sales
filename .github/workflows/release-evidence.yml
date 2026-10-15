@@ -136,10 +136,14 @@ jobs:
           }
       - name: Check the GUI driver using a synthetic window before any package build
         run: python worker-client/scripts/run-windows-client-upgrade-test.py --driver-smoke "${{ runner.temp }}/driver-smoke"
-      - name: Exercise Hook launcher with simulated processes before any package build
+      - name: Exercise Hook launcher and one-click setup before any package build
         if: github.ref_name == 'gray-release-0.10.x'
         shell: powershell
-        run: .\worker-client\scripts\test-hook-launcher.ps1
+        run: |
+          .\worker-client\scripts\test-hook-launcher.ps1
+          if ($LASTEXITCODE -ne 0) { throw 'HOOK_LAUNCHER_CHECK_FAILED' }
+          .\worker-client\scripts\test-hook-setup.ps1
+          if ($LASTEXITCODE -ne 0) { throw 'HOOK_ONE_CLICK_SETUP_CHECK_FAILED' }
 
   native-source:
     name: Selected source checks
