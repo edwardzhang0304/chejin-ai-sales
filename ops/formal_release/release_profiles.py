@@ -1,5 +1,7 @@
 """Source/evidence profile; publishing and customer rollout require separate authorization."""
 import os
+import json
+from pathlib import Path
 
 SOURCE_BRANCHES = {'ocr':'codex/gray-release-0.9.x', 'hook':'gray-release-0.10.x'}
 PRIVATE_PACKAGE_CASES = {'backend/tests/test_hook_send_settlement_entry.py'}
@@ -18,7 +20,16 @@ def source_branch():
 
 def validate_native_source_plan(plan, root):
     if plan.get('reviewed_handoff'):
-        raise ValueError('HOOK_REQUIRES_FRESH_SOURCE_TESTS')
+        path = plan['reviewed_handoff']
+        if (not isinstance(path, str) or Path(path).parent != Path('ops/formal_release/handoffs')
+                or Path(path).suffix != '.json'):
+            raise ValueError('HOOK_REQUIRES_FRESH_SOURCE_TESTS')
+        data = json.loads((root/path).read_text())
+        if data.get('transport') != 'hook' or data.get('reuse_mode') not in {'release_only', 'reviewed_delta'}:
+            raise ValueError('HOOK_REQUIRES_FRESH_SOURCE_TESTS')
+        # reviewed_handoff.validate performs the full source coverage, origin
+        # runtime comparison, metadata-only delta and passed-result checks.
+        return
     nodes={node for group in plan.get('pytest',[]) for node in group.get('nodes',[])}
     # A Hook build cannot reuse a tiny OCR-only selection. Require its complete
     # native suite plus the original physical-action and updater regressions.

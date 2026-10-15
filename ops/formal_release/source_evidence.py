@@ -86,9 +86,9 @@ def validate_run(run, jobs, kind):
     return legacy
 
 
-def validate_report(report, run, kind, legacy=False):
+def validate_report(report, run, kind, legacy=False, reference="HEAD"):
     sha = run["head_sha"]
-    require(fingerprint(sha, kind) == fingerprint("HEAD", kind), "EVIDENCE_INPUT_MISMATCH")
+    require(fingerprint(sha, kind) == fingerprint(reference, kind), "EVIDENCE_INPUT_MISMATCH")
     if legacy:
         from source_check_reuse import SUITES, fingerprint as legacy_fingerprint
         require(report.get("schema_version") == 1 and report.get("mode") == "same_run_complete"
@@ -97,7 +97,7 @@ def validate_report(report, run, kind, legacy=False):
                 and set(report.get("completed_suites", [])) == set(SUITES), "INCOMPLETE_LEGACY_SOURCE_EVIDENCE")
         attempt = report.get("run_attempt")
     else:
-        require(git("show", sha + ":" + WORKFLOW) == git("show", "HEAD:" + WORKFLOW),
+        require(git("show", sha + ":" + WORKFLOW) == git("show", reference + ":" + WORKFLOW),
                 "EVIDENCE_PRODUCER_CHANGED")
         require(report.get("schema_version") == 2 and report.get("kind") == kind
                 and report.get("commit") == sha and report.get("status") == "passed"
@@ -118,9 +118,11 @@ def api(path, binary=False):
     return data if binary else json.loads(data)
 
 
-def resolve_one(run_id, kind):
+def resolve_one(run_id, kind, reference="HEAD"):
     require(re.fullmatch(r"[1-9][0-9]*", str(run_id)) is not None, "INVALID_RUN_ID")
     run = api("actions/runs/" + str(run_id))
+    if reference != "HEAD":
+        require(run.get("head_sha") == reference, "EVIDENCE_ORIGIN_COMMIT_MISMATCH")
     jobs = api(f"actions/runs/{run_id}/attempts/{run['run_attempt']}/jobs?per_page=100")["jobs"]
     legacy = validate_run(run, jobs, kind)
     artifacts = api(f"actions/runs/{run_id}/artifacts?per_page=100")["artifacts"]
@@ -139,7 +141,7 @@ def resolve_one(run_id, kind):
         files = [i for i in archive.infolist() if i.filename.split("/")[-1] == suffix]
         require(len(files) == 1 and files[0].file_size < 1_000_000, "EVIDENCE_REPORT_MISSING_OR_TOO_LARGE")
         report = json.loads(archive.read(files[0]))
-    validate_report(report, run, kind, legacy)
+    validate_report(report, run, kind, legacy, reference)
     return {"run_id": str(run_id), "attempt": str(run["run_attempt"]), "commit": run["head_sha"],
             "artifact_id": artifact["id"], "artifact_sha256": hashlib.sha256(raw).hexdigest(),
             "scope": report.get("scope", report.get("completed_suites")), "legacy": legacy}

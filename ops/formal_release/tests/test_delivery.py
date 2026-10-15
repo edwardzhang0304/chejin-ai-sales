@@ -361,18 +361,19 @@ class RegistrationTests(unittest.TestCase):
                     return {'ready': True, 'preserved_queued_tasks': 1}
                 modules={
                     'app.services.release_readiness':types.SimpleNamespace(assert_release_ready=ready),
-                    'sqlalchemy':types.SimpleNamespace(text=lambda s:s),
+                    'sqlalchemy':types.SimpleNamespace(text=lambda s:s, select=lambda *args:Mock()),
+                    'app.models.client_release':types.SimpleNamespace(WorkerClientRelease=Mock()),
                     'app.contracts.c2':types.SimpleNamespace(contract_revision=lambda:contract,contract_sha256=lambda:'f'*64),
                     'app.core.database':types.SimpleNamespace(SessionLocal=types.SimpleNamespace(begin=begin)),
-                    'app.services.client_release_service':types.SimpleNamespace(register_signed_client_release=registry,store_client_release_artifact=storage),
+                    'app.services.client_release_service':types.SimpleNamespace(register_signed_client_release=registry,store_client_release_artifact=storage,validate_signed_release_descriptor=Mock()),
                 }
                 with patch.dict(sys.modules,modules), patch.object(sys,'argv',['register.py',tmp,TARGET_VERSION,'f'*64,operation]):
                     if expected_error:
                         with self.assertRaisesRegex(RuntimeError,expected_error):
-                            runpy.run_path(str(ROOT/'ops/formal_release/register.py'))
+                            runpy.run_path(str(ROOT/'ops/formal_release/register.py'), run_name='__main__')
                         registry.assert_not_called();storage.assert_not_called();transaction.commit.assert_not_called()
                     else:
-                        runpy.run_path(str(ROOT/'ops/formal_release/register.py'))
+                        runpy.run_path(str(ROOT/'ops/formal_release/register.py'), run_name='__main__')
                         transaction.commit.assert_called_once()
                         calls=[str(c) for c in db.execute.call_args_list]
                         self.assertTrue(any('LOCK TABLE workers, tasks IN SHARE MODE' in c for c in calls))

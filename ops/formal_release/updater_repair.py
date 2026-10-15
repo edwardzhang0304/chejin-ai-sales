@@ -87,6 +87,19 @@ def prepare(args):
     (area / 'plan.json').write_text(json.dumps(plan, indent=2))
     subprocess.run(['git', 'worktree', 'add', '--detach', str(area / 'old-source'), old['source_commit']], cwd=ROOT, check=True)
     if args.repair_binary_run:
+        if args.repair_binary_run == args.target_run:
+            # Acceptance consumes the updater already inside the sealed target.
+            # It must never recompile either Worker or updater to check that ZIP.
+            installed = area / 'target/CheJinWorkerClient'
+            manifest = json.loads((installed / 'update-package-manifest.json').read_text(encoding='utf-8-sig'))
+            updater = installed / 'CheJinUpdater.exe'
+            require(digest(updater) == manifest['files']['CheJinUpdater.exe'], 'SEALED_UPDATER_HASH_MISMATCH')
+            dest = ROOT / 'worker-client/dist/CheJinUpdater.exe'
+            dest.parent.mkdir(exist_ok=True)
+            shutil.copyfile(updater, dest)
+            with open(os.environ['GITHUB_ENV'], 'a') as env:
+                env.write(f'CHEJIN_RELEASE_SIGNING_KEYS_PATH={area / "public-keys.json"}\n')
+            return
         run = api(f'actions/runs/{args.repair_binary_run}')
         require(run['head_branch'] == 'gray-release-0.10.x' and run['path'] == '.github/workflows/release-evidence.yml', 'UNTRUSTED_UPDATER_RUN')
         jobs = api(f'actions/runs/{args.repair_binary_run}/jobs?per_page=100')['jobs']
@@ -122,6 +135,8 @@ def assemble(args):
     baselines = []
     for mode in ('old', 'target'):
         root = area / mode / 'CheJinWorkerClient'
+        if digest(root / 'CheJinUpdater.exe') == digest(exe):
+            continue  # The new target already ships this fixed updater.
         manifest = json.loads((root / 'update-package-manifest.json').read_text(encoding='utf-8-sig'))
         baselines.append({'version': manifest['version'], 'worker_sha256': digest(root / 'CheJinWorkerClient.exe'),
                           'updater_sha256': digest(root / 'CheJinUpdater.exe'),
@@ -158,8 +173,13 @@ def assemble(args):
     require('apps.wechat_ai_customer_service.adapters.client_release_rules' in pyz.toc, 'FROZEN_RULES_NOT_BUNDLED')
     # Exercise actual PowerShell repair, idempotency and restoration on both
     # untouched Worker packages. No test changes an application database.
+    repair_results = []
     for mode in ('old', 'target'):
         original = area / mode / 'CheJinWorkerClient'
+        version = json.loads((original / 'update-package-manifest.json').read_text(encoding='utf-8-sig'))['version']
+        if digest(original / 'CheJinUpdater.exe') == digest(exe):
+            repair_results.append({'mode': mode, 'version': version, 'status': 'not_needed_already_shipped_same_updater', 'repair_executed': False})
+            continue  # Do not "repair" or demand a repair receipt from a fixed package.
         probe = area / ('repair-probe-' + mode)
         probe.mkdir()
         for name in ('CheJinWorkerClient.exe', 'CheJinUpdater.exe', 'update-package-manifest.json'):
@@ -170,9 +190,10 @@ def assemble(args):
         require(digest(probe / exe.name) == digest(exe), 'REPAIR_COPY_FAILED')
         subprocess.run(command + ['-Restore'], check=True, env=powershell_env)
         require(all(digest(probe / n) == digest(original / n) for n in ('CheJinWorkerClient.exe', 'CheJinUpdater.exe', 'update-package-manifest.json')), 'REPAIR_RESTORE_FAILED')
+        repair_results.append({'mode': mode, 'version': version, 'status': 'passed', 'repair_executed': True})
     shutil.make_archive(str(area / ('CheJinUpdaterRepair_V' + args.version)), 'zip', package)
     (area / 'repair-checks.json').write_text(json.dumps({'frozen_updater_help': 'passed', 'shared_rules_bundled': True,
-        'bundled_public_key_bytes_match_original': True, 'repair_idempotence_restore_both_versions': 'passed', 'updater_sha256': digest(exe), 'worker_rebuilt': False}, indent=2))
+        'bundled_public_key_bytes_match_original': True, 'repair_idempotence_restore': repair_results, 'updater_sha256': digest(exe), 'worker_rebuilt': False}, indent=2))
 
 
 if __name__ == '__main__':

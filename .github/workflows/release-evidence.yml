@@ -278,6 +278,7 @@ jobs:
     if: github.event_name == 'workflow_dispatch' && inputs.check_kind == 'source' && github.ref_name == 'gray-release-0.10.x'
     runs-on: ubuntu-latest
     timeout-minutes: 40
+    permissions: {contents: read, actions: read}
     env:
       CHECK_KIND: source
       CHEJIN_RELEASE_TRANSPORT: hook
@@ -326,6 +327,7 @@ jobs:
           PYTHON
       - name: Run mandatory native and preserved OCR safety tests
         env:
+          GH_TOKEN: ${{ github.token }}
           EVIDENCE_DIR: ${{ runner.temp }}/native-source-evidence
           CHEJIN_WORKER_HOME: ${{ runner.temp }}/native-source-worker-home
         run: python ops/formal_release/run_evidence_checks.py
