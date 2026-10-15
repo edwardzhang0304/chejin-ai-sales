@@ -1,5 +1,6 @@
 """Protocol failures must not create an account scope or leak credentials."""
 from dataclasses import replace
+from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 import threading
@@ -18,12 +19,22 @@ def peer():
     class Handler(BaseHTTPRequestHandler):
         def do_POST(self):
             self.server.requests.append((self.path, dict(self.headers), json.loads(self.rfile.read(int(self.headers['Content-Length'])))))
+            body = self.server.body
+            if (getattr(self.server, 'live_heartbeat_time', False)
+                    and self.server.status == 200 and self.path.endswith('/heartbeat')):
+                try:
+                    data = json.loads(body)
+                except ValueError:
+                    data = None
+                if isinstance(data, dict) and data.get('code') == 'OK' and isinstance(data.get('data'), dict):
+                    data['data']['last_heartbeat_at'] = datetime.now(timezone.utc).isoformat()
+                    body = json.dumps(data).encode()
             self.send_response(self.server.status)
             if self.server.status == 302:
                 self.send_header('Location', '/credential-sink')
-            self.send_header('Content-Length', str(len(self.server.body)))
+            self.send_header('Content-Length', str(len(body)))
             self.end_headers()
-            self.wfile.write(self.server.body)
+            self.wfile.write(body)
 
         def log_message(self, *args):
             pass

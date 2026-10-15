@@ -55,7 +55,8 @@ def test_clock_wait_blocks_dispatch_and_preserves_raw_intake(runtime,lab,backend
         reports.append(code);runner.stop_event.set()
     d._report_wait=report
     services.business_loop(runner,lambda _:None)
-    expected='HOOK_BACKEND_CLOCK_STALE' if wait_mode=='stale' else 'HOOK_BACKEND_CLOCK_RTT_UNCONFIRMED'
+    # The prior accepted anchor expired in both cases; a slow sample cannot renew it.
+    expected='HOOK_BACKEND_CLOCK_STALE'
     assert reports==[expected] and calls==[] and not errors and not posted
     assert binding.run_status=='paused' and services.startup_check_state()['canStart'] is False
     callback(services.connection)
@@ -63,8 +64,9 @@ def test_clock_wait_blocks_dispatch_and_preserves_raw_intake(runtime,lab,backend
     assert projected_count()==1
     assert all(path in {'/IsLoginStatus','/ConfigureMsgReciveFullURL'} for path,*_ in lab[0].requests)
     runner.stop_event.clear()
-    # Fresh verified response releases the existing clock, not a new identity.
-    fresh=replace(original.account,server_time_utc=(datetime.fromisoformat(original.account.server_time_utc)+timedelta(seconds=130)).isoformat(),
+    # Fresh verified response arrives after the failed sample, under the same identity.
+    now[0]+=.05
+    fresh=replace(original.account,server_time_utc=(datetime.fromisoformat(original.account.server_time_utc)+timedelta(seconds=130.05)).isoformat(),
         request_started_monotonic=now[0]-.05,response_received_monotonic=now[0])
     services.connection._prepared=replace(original,account=fresh)
     d.tick(runner,services)
@@ -168,7 +170,8 @@ def test_actual_faulted_tick_clears_only_clock_wait_after_calibration(tmp_path,m
     if other_wait:d._report_wait('HOOK_BACKEND_TEMPORARILY_UNAVAILABLE')
     assert any(r['title']=='等待后台响应稳定' for r in timeline.model())
     # The same receiver, runtime, customer hold and stopped intent remain.
-    prepared.account=receipt(130,140,140.05)
+    now[0]=140.1
+    prepared.account=receipt(130.05,140.05,140.1)
     for _ in range(3):d.tick(runner,services)
     rows=timeline.model()
     assert not any(r['title']=='等待后台响应稳定' for r in rows)

@@ -5,7 +5,7 @@ The caller owns polling, the original fault gate and historical synchronization.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from http.server import HTTPServer
 import math
 import threading
@@ -17,6 +17,7 @@ from .api import ApiError
 from .hook_backend import BACKEND_WAIT_CODES, HookAccountReceipt, HookHeartbeatIdentity, HookHeartbeatState, HookIdentityClient, HookWorkerCredentials
 from .hook_gateway import HookGateway, HookLocalError, HookCallbackRegistration
 from .hook_inbox import NativeInbox
+from .hook_clock import HookBackendClock
 from .hook_process import HookProcessSnapshot
 from .hook_receiver import create_receiver
 
@@ -26,6 +27,7 @@ class HookPreparedConnection:
     account: HookAccountReceipt
     process: HookProcessSnapshot
     registration: HookCallbackRegistration
+    clock: HookBackendClock = field(default_factory=HookBackendClock, compare=False, repr=False)
 
     @property
     def business_ready(self) -> bool:
@@ -45,9 +47,20 @@ class HookConnectionManager:
         self._credentials: HookWorkerCredentials | None = None
         self._account: HookAccountReceipt | None = None
         self._prepared: HookPreparedConnection | None = None
+        self._clock_key = None
+        self._clock: HookBackendClock | None = None
         self._receiver: HTTPServer | None = None
         self._receiver_thread: threading.Thread | None = None
         self._shutdown_thread: threading.Thread | None = None
+
+    def _prepared_connection(self, account, process, registration):
+        # A receiver may be recreated without changing the authenticated actor.
+        # Keep the same clock as its existing business runtime in that case.
+        key = (self._credentials, registration.scope)
+        if key != self._clock_key:
+            self._clock = HookBackendClock()
+            self._clock_key = key
+        return HookPreparedConnection(account, process, registration, self._clock)
 
     @property
     def prepared(self) -> HookPreparedConnection | None:
@@ -136,7 +149,7 @@ class HookConnectionManager:
                         self._close_receiver()
                         raise HookLocalError("HOOK_ACCOUNT_NOT_CONFIRMED")
                     self._account = account
-                    self._prepared = HookPreparedConnection(account,process,old.registration)
+                    self._prepared = self._prepared_connection(account,process,old.registration)
                     return self._prepared
                 login = self.gateway.login_status(process)
             except ApiError as exc:
@@ -196,7 +209,7 @@ class HookConnectionManager:
                         return None
                     if current_login.self_wxid != scope.self_wxid:
                         raise HookLocalError("HOOK_CALLBACK_ACCOUNT_MISMATCH")
-                    result = HookPreparedConnection(account, current, old.registration)
+                    result = self._prepared_connection(account, current, old.registration)
                     self._prepared = result
                     return result
                 self._close_receiver()
@@ -207,7 +220,7 @@ class HookConnectionManager:
                     name="CheJinHookReceiver", daemon=True)
                 self._receiver_thread.start()
                 registration = self.gateway.register_callback(current, scope, self._receiver, self._receiver_thread)
-                self._prepared = HookPreparedConnection(account, current, registration)
+                self._prepared = self._prepared_connection(account, current, registration)
                 return self._prepared
             except Exception:
                 self._close_receiver()

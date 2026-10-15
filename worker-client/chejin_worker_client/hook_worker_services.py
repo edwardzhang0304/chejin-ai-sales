@@ -17,7 +17,7 @@ from .api import ApiError
 from .emergency_stop import emergency_stop_requested, trigger_emergency_stop
 from .hook_backend import BACKEND_WAIT_CODES, HookHeartbeatState, HookWorkerCredentials
 from .hook_connection import HookConnectionManager
-from .hook_clock import CLOCK_WAIT_CODES, validate_heartbeat_time
+from .hook_clock import CLOCK_WAIT_CODES
 from .hook_projection import NativeProjectionStore
 from .hook_process import inspect_windows_window_geometry
 from . import storage, ui_lock
@@ -116,7 +116,7 @@ class HookWorkerServices:
             self._startup_check = startup_check_state.failed('HOOK_NATIVE_AUTO_TEXT_UNCONFIRMED')
         if self.dispatcher is not None:
             try:
-                validate_heartbeat_time(prepared.account)
+                prepared.clock.observe(prepared.account)
             except ValueError as exc:
                 code = str(exc)
                 if code not in CLOCK_WAIT_CODES:
@@ -223,6 +223,7 @@ class HookWorkerServices:
         runner.last_rpa_component_status = "unavailable"
         runner._preserve_stopped_run_status("faulted")
         if self._last_error != code:
+            clock = getattr(getattr(self.connection, 'prepared', None), 'clock', None)
             message = (detail['title'] + '。' + detail['message'] if code == 'HOOK_LOCAL_STORAGE_FAILED'
                 else "工作微信连接异常，已停止接单；请检查微信后恢复。")
             try:
@@ -231,7 +232,7 @@ class HookWorkerServices:
                     metadata={**dict(getattr(self.dispatcher,'diagnostic_context',{})),
                         'backend_http_status':http_status if type(http_status) is int else None,
                         'local_operation':operation,'transport_kind':kind,
-                        'clock_check':dict(getattr(getattr(getattr(self.dispatcher,'runtime',None),'clock',None),'failure_detail',None) or {})})
+                        'clock_check':dict(getattr(clock, 'failure_detail', None) or {})})
             except sqlite3.Error as exc:
                 from .failure_evidence import record_capture_failure
                 record_capture_failure('hook_connection_fault', exc, error_code=code)

@@ -66,6 +66,7 @@ def test_prepare_authorizes_scope_before_listening_then_reuses_connection(lab,ba
             assert raw['process_generation']==first.process.generation
         second=manager.prepare(credentials,state)
         assert second.registration is first.registration
+        assert second.clock is first.clock
         assert [x[0] for x in lab[0].requests].count('/ConfigureMsgReciveFullURL')==1
         assert len(backend_peer.requests)==2
         assert all(x[2]['hook_context']['self_wxid']=='wxid_sales_A' for x in backend_peer.requests)
@@ -82,6 +83,7 @@ def test_same_account_restart_registers_again_with_new_generation_not_new_epoch(
         response()
         second=manager.prepare(credentials,state)
         assert second.process.generation!=first.process.generation
+        assert second.clock is not first.clock and second.clock.anchor is None
         assert second.account.account_epoch==first.account.account_epoch
         assert second.registration.history_required
         assert [x[0] for x in lab[0].requests].count('/ConfigureMsgReciveFullURL')==2
@@ -199,4 +201,26 @@ def test_reused_receiver_rechecks_login_after_backend_round_trip(lab,backend_pee
         assert manager.prepared is None and manager._receiver is None
         assert [x[0] for x in lab[0].requests].count('/ConfigureMsgReciveFullURL')==1
         assert not approved.business_ready and not ui_lock.lock_summary()['locked']
+    finally:manager.close()
+
+
+def test_same_actor_receiver_rebuild_keeps_business_clock_identity(lab,backend_peer):
+    manager,credentials,state,_=setup(lab,backend_peer)
+    try:
+        original=manager.prepare(credentials,state)
+        manager.close()
+        current=manager.prepare(credentials,state)
+        assert current.registration is not original.registration
+        assert current.registration.scope==original.registration.scope
+        assert current.clock is original.clock
+    finally:manager.close()
+
+
+def test_changed_worker_credentials_never_reuse_previous_clock(lab,backend_peer):
+    manager,credentials,state,_=setup(lab,backend_peer)
+    try:
+        original=manager.prepare(credentials,state)
+        changed=replace(credentials,worker_token='synthetic-replaced-token')
+        current=manager.prepare(changed,state)
+        assert current.clock is not original.clock and current.clock.anchor is None
     finally:manager.close()

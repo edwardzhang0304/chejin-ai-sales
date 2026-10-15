@@ -58,8 +58,9 @@ def test_network_wait_keeps_anchor_and_recovers_only_with_fresh_receipt(mode):
     with pytest.raises(ValueError,match='CLOCK_STALE|CLOCK_RTT_UNCONFIRMED'):clock.observe(blocked)
     assert clock.anchor==original
     with pytest.raises(ValueError,match='CLOCK_STALE'):clock.evidence()
-    clock.observe(receipt(STAMP+timedelta(seconds=130),140,140.05))
-    assert clock.now()==STAMP+timedelta(seconds=130,microseconds=-1)
+    tick[0]=140.1  # A genuinely later response, not a replay of the rejected sample.
+    clock.observe(receipt(STAMP+timedelta(seconds=130.05),140.05,140.1))
+    assert clock.now()==STAMP+timedelta(seconds=130.05,microseconds=-1)
     assert clock.evidence()['round_trip_seconds']<=.051
 
 
@@ -162,12 +163,89 @@ def test_current_read_floor_keeps_previous_value_on_tolerated_correction():
 
 
 def test_clock_wait_diagnostics_distinguish_slow_and_stale_without_payloads():
-    from chejin_worker_client.hook_clock import ClockWaitError, validate_heartbeat_time
+    from chejin_worker_client.hook_clock import ClockWaitError
     with pytest.raises(ClockWaitError) as slow:
-        validate_heartbeat_time(receipt(start=8,end=10.05),monotonic=lambda:10.05)
+        HookBackendClock(monotonic=lambda:10.05).observe(receipt(start=8,end=10.05))
     assert str(slow.value)=='HOOK_BACKEND_CLOCK_RTT_UNCONFIRMED'
     assert slow.value.clock_check=={'reason':'slow_response','receipt_rtt_seconds':pytest.approx(2.05),'receipt_age_seconds':0,'max_rtt_seconds':1}
     with pytest.raises(ClockWaitError) as stale:
-        validate_heartbeat_time(receipt(),monotonic=lambda:140.05)
+        HookBackendClock(monotonic=lambda:140.05).observe(receipt())
     assert stale.value.clock_check['reason']=='stale_receipt'
     assert stale.value.clock_check['receipt_age_seconds']==130
+
+
+def test_slow_sample_reuses_valid_anchor_without_renewing_expiry():
+    tick=[10.05];clock=HookBackendClock(monotonic=lambda:tick[0]);clock.observe(receipt())
+    original=clock.anchor
+    for end in (20.05, 50.05, 129.05):
+        tick[0]=end
+        clock.observe(receipt(STAMP+timedelta(seconds=end-10.05),end-2,end))
+        assert clock.anchor==original
+        assert clock.now()<=STAMP+timedelta(seconds=end-10.05)<=clock.upper_now()
+    tick[0]=130.051
+    with pytest.raises(ValueError,match='CLOCK_STALE'):
+        clock.observe(receipt(STAMP+timedelta(seconds=120.001),128.051,130.051))
+    assert clock.anchor==original
+
+
+@pytest.mark.parametrize('offset',[-20,20])
+def test_slow_response_cannot_hide_a_real_time_jump(offset):
+    tick=[10.05];clock=HookBackendClock(monotonic=lambda:tick[0]);clock.observe(receipt())
+    original=clock.anchor;tick[0]=20.05
+    with pytest.raises(ValueError,match='CLOCK_CHANGED'):
+        clock.observe(receipt(STAMP+timedelta(seconds=10+offset),18,20.05))
+    assert clock.anchor==original
+
+
+def test_stale_old_snapshot_can_use_newer_good_shared_anchor():
+    tick=[10.05];clock=HookBackendClock(monotonic=lambda:tick[0]);old=receipt();clock.observe(old)
+    tick[0]=110.05;clock.observe(receipt(STAMP+timedelta(seconds=100),110,110.05))
+    fresh=clock.anchor;tick[0]=140.05
+    clock.observe(old)
+    assert clock.anchor==fresh
+    assert clock.now()<=STAMP+timedelta(seconds=130)<=clock.upper_now()
+
+
+def test_malformed_slow_sample_cannot_fall_back_to_a_good_anchor():
+    tick=[10.05];clock=HookBackendClock(monotonic=lambda:tick[0]);clock.observe(receipt())
+    sample=receipt(start=8);sample.server_time_utc='invalid'
+    with pytest.raises(ValueError,match='CLOCK_UNCONFIRMED'):clock.observe(sample)
+
+
+def test_slow_disjoint_sample_does_not_keep_overconfident_old_bounds():
+    tick=[10.05];clock=HookBackendClock(monotonic=lambda:tick[0]);clock.observe(receipt())
+    original=clock.anchor;tick[0]=20.05
+    with pytest.raises(ValueError,match='CLOCK_RTT_UNCONFIRMED') as raised:
+        clock.observe(receipt(STAMP+timedelta(seconds=10.07),18,20.05))
+    assert raised.value.clock_check['reason']=='inconsistent_slow_response'
+    assert clock.anchor==original
+
+
+def test_concurrent_consumers_calibrate_same_receipt_only_once():
+    from concurrent.futures import ThreadPoolExecutor
+    tick=[10.05];clock=HookBackendClock(monotonic=lambda:tick[0]);clock.observe(receipt())
+    tick[0]=20.05
+    current=receipt(STAMP+timedelta(seconds=10.01),20,20.05)
+    clock.observe(current);anchor=clock.anchor
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        list(pool.map(lambda _:clock.observe(current),range(32)))
+    assert clock.anchor==anchor and clock.evidence()['response_received_monotonic']==20.05
+
+
+def test_rejected_sample_blocks_all_consumers_until_new_good_calibration():
+    tick=[10.05];clock=HookBackendClock(monotonic=lambda:tick[0]);old=receipt();clock.observe(old)
+    tick[0]=20.05
+    with pytest.raises(ValueError,match='CLOCK_CHANGED'):
+        clock.observe(receipt(STAMP+timedelta(seconds=30),18,20.05))
+    for consumer in (clock.now,clock.upper_now,clock.evidence):
+        with pytest.raises(ValueError,match='CLOCK_CHANGED'):consumer()
+    # A late good response from BEFORE the failure cannot clear it.
+    with pytest.raises(ValueError,match='CLOCK_CHANGED'):
+        clock.observe(receipt(STAMP+timedelta(seconds=5),15,15.05))
+    # Nor can a newer slow sample; it cannot renew trusted calibration.
+    tick[0]=21.05
+    with pytest.raises(ValueError,match='CLOCK_CHANGED'):
+        clock.observe(receipt(STAMP+timedelta(seconds=11),19,21.05))
+    tick[0]=22.05
+    clock.observe(receipt(STAMP+timedelta(seconds=12),22,22.05))
+    assert clock.now()<=STAMP+timedelta(seconds=12)<=clock.upper_now()

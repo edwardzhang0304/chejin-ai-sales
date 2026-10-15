@@ -18,7 +18,6 @@ from . import storage,ui_lock
 from .models import Binding,Task,utc_now_iso
 from .hook_backend import HookIdentityClient,HookHeartbeatIdentity,HookHeartbeatState
 from .hook_formal_c1 import HookFormalC1,HookC1ResultReceipts,_save
-from .hook_clock import HookBackendClock
 from .hook_progress import emit_progress,register_progress
 from .hook_timing import timed_call, record_raw_delivery
 from .hook_history_sync import HookHistorySynchronizer
@@ -83,7 +82,7 @@ class HookFormalRuntime:
     def __init__(self,client,credentials,gateway,prepared,private_root:Path,*,fault_check=lambda:False,wait=time.sleep):
         self.client,self.credentials,self.gateway,self.prepared,self.private_root=client,credentials,gateway,prepared,private_root
         self.fault_check,self.wait=fault_check,wait
-        self.clock=HookBackendClock()
+        self.clock=prepared.clock
         self.c1=HookFormalC1(client,credentials,private_root/'invites',clock=self.clock)
         self.c1_results=HookC1ResultReceipts(self)
         self.identity_client=HookIdentityClient(client.base_url,client.timeout_seconds,client.max_response_bytes)

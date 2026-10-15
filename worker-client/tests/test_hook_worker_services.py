@@ -37,6 +37,7 @@ def runtime(lab, backend_peer):
     heartbeat = json.loads(backend_peer.body)
     heartbeat['data']['last_heartbeat_at'] = datetime.now(timezone.utc).isoformat()
     backend_peer.body = json.dumps(heartbeat).encode()
+    backend_peer.live_heartbeat_time = True
     services = HookWorkerServices(manager, NativeProjectionStore(max_projection_bytes=65536, max_entries=20),
         intake_interval_seconds=.02, projection_batch_size=3)
     profiles, errors, statuses, posted = [], [], [], []
