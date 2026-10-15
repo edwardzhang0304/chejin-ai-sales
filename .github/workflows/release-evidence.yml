@@ -22,7 +22,7 @@ on:
     inputs:
       check_kind:
         type: choice
-        options: [tooling, source, sign-existing]
+        options: [tooling, source, sign-existing, repair-updater]
         default: tooling
       source_test_plan:
         description: 'Reviewed explicit pytest selection: {"reason":"...","not_tested":"...","pytest":[{"cwd":"worker-client","nodes":["tests/test_example.py::test_case"]}]}'
@@ -36,6 +36,12 @@ on:
       existing_package_sha256:
         description: 'Expected sealed inner ZIP SHA-256'
         default: ''
+      old_build_run:
+        description: 'Original installed Hook Worker build; updater-only repair'
+        default: ''
+      publication_run:
+        description: 'Successful sign-existing run for the unchanged target ZIP'
+        default: ''
 
 permissions:
   contents: read
@@ -44,6 +50,57 @@ env:
   CHEJIN_RELEASE_TRANSPORT: ${{ github.ref_name == 'gray-release-0.10.x' && 'hook' || 'ocr' }}
 
 jobs:
+  repair-updater:
+    name: Build only updater repair and exercise original Windows button
+    if: github.event_name == 'workflow_dispatch' && inputs.check_kind == 'repair-updater' && github.ref_name == 'gray-release-0.10.x'
+    runs-on: windows-latest
+    timeout-minutes: 25
+    permissions: {contents: read, actions: read}
+    env:
+      GH_TOKEN: ${{ github.token }}
+      REPAIR_ROOT: ${{ runner.temp }}/updater-repair
+      BUILD_RUN: ${{ inputs.existing_build_run }}
+      OLD_BUILD_RUN: ${{ inputs.old_build_run }}
+      PUBLICATION_RUN: ${{ inputs.publication_run }}
+      PACKAGE_VERSION: ${{ inputs.existing_version }}
+      PACKAGE_SHA256: ${{ inputs.existing_package_sha256 }}
+    steps:
+      - uses: actions/checkout@v4
+        with: {fetch-depth: 0, persist-credentials: false}
+      - uses: actions/setup-python@v5
+        with: {python-version: '3.12.10'}
+      - name: Install only updater and isolated GUI check dependencies
+        run: python -m pip install --disable-pip-version-check -r backend/requirements.txt 'numpy<2' 'PySide6==6.6.3.1' 'requests==2.32.3' 'pyinstaller==6.11.1' 'psutil==5.9.8' 'websockets==15.0.1' 'PyYAML==6.0.2'
+      - name: Reuse and verify sealed old and target packages
+        run: python ops/formal_release/updater_repair.py prepare --root "$env:REPAIR_ROOT" --old-run "$env:OLD_BUILD_RUN" --target-run "$env:BUILD_RUN" --publication-run "$env:PUBLICATION_RUN" --version "$env:PACKAGE_VERSION" --sha256 "$env:PACKAGE_SHA256"
+      - name: Build standalone updater only
+        working-directory: worker-client
+        run: python -m PyInstaller --clean --noconfirm packaging/chejin-updater.spec
+      - name: Sign repair and exercise frozen startup, patch and restoration
+        env:
+          CHEJIN_RELEASE_SIGNING_KEY_ID: ${{ secrets.CHEJIN_RELEASE_SIGNING_KEY_ID }}
+          CHEJIN_RELEASE_SIGNING_PRIVATE_KEY_BASE64: ${{ secrets.CHEJIN_RELEASE_SIGNING_PRIVATE_KEY_BASE64 }}
+        run: python ops/formal_release/updater_repair.py assemble --root "$env:REPAIR_ROOT" --version "$env:PACKAGE_VERSION"
+      - name: Original Worker settings button to unchanged target package
+        env:
+          CHEJIN_RELEASE_TRANSPORT: hook
+        run: |
+          python worker-client/scripts/run-windows-client-upgrade-test.py --plan "$env:REPAIR_ROOT/plan.json" --case paused --old-package-root "$env:REPAIR_ROOT/old/CheJinWorkerClient" --old-source-root "$env:REPAIR_ROOT/old-source/worker-client" --archive "$env:REPAIR_ROOT/target/artifact.zip" --release "$env:REPAIR_ROOT/release.json" --work-root "$env:REPAIR_ROOT/gui" --updater-repair "$env:REPAIR_ROOT/repair/repair-updater.ps1" --hook-unbound
+          if ($LASTEXITCODE -ne 0) { throw 'PATCHED_UPDATER_BUTTON_CHECK_FAILED' }
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: updater-repair-${{ inputs.existing_version }}
+          path: |
+            ${{ runner.temp }}/updater-repair/CheJinUpdaterRepair_V*.zip
+            ${{ runner.temp }}/updater-repair/repair-checks.json
+            ${{ runner.temp }}/updater-repair/gui/upgrade-result.json
+            ${{ runner.temp }}/updater-repair/gui/**/result.json
+            ${{ runner.temp }}/updater-repair/gui/**/process.log
+            ${{ runner.temp }}/updater-repair/gui/**/*.png
+            ${{ runner.temp }}/updater-repair/gui/**/diagnostics.json
+          if-no-files-found: error
+          retention-days: 90
   sign-existing:
     name: Sign sealed Hook package without rebuilding
     if: github.event_name == 'workflow_dispatch' && inputs.check_kind == 'sign-existing' && github.ref_name == 'gray-release-0.10.x'

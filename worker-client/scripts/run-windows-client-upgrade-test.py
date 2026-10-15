@@ -1,9 +1,11 @@
 """Exercise the selected original GUI and updater against the exact signed ZIP.
 
-Only the isolated Windows runner is used. Both EXEs are untouched; the backend
+Only the isolated Windows runner is used. Worker EXEs are untouched; the backend
 is the candidate application with synthetic SQLite data and loopback TLS.
 Qt's documented debugging interface drives actual DOM clicks, never the bridge
 or coordinator directly. No production credentials, customer data or messaging.
+Updater-repair mode explicitly patches only the old standalone updater and
+records that distinction; its unbound case is not bound-device acceptance.
 """
 from __future__ import annotations
 
@@ -224,21 +226,29 @@ def serve(spec):
     uvicorn.run(app, host="127.0.0.1", port=spec["port"], ssl_certfile=spec["cert"], ssl_keyfile=spec["key"], access_log=False, log_level="warning")
 
 
-def seed_old_data(source, data, status, env):
+def seed_old_data(source, data, status, env, hook_unbound=False):
     code = """
 from chejin_worker_client.models import Binding
 from chejin_worker_client.storage import save_binding,save_accept_schedule,request_runtime_pause,connect
 from datetime import datetime,timezone
 import sys
-save_binding(Binding(sys.argv[1],sys.argv[2],sys.argv[3],run_status=sys.argv[4]))
+if sys.argv[5] != 'hook-unbound':
+ save_binding(Binding(sys.argv[1],sys.argv[2],sys.argv[3],run_status=sys.argv[4]))
 save_accept_schedule(enabled=True,start='09:10',end='18:20')
 request_runtime_pause()
 now=datetime.now(timezone.utc).isoformat()
 with connect() as db:
+ if sys.argv[5] == 'hook-unbound':
+  import os,json
+  installation={'schema_version':1,'api_base_url':os.environ['CHEJIN_API_BASE_URL']}
+  deployment={'revision':'synthetic-updater-test','wechat_exe':r'C:\\synthetic\\WeChat.exe','dll_sha256':'0'*64,'hook_api_port':30011,'receiver_port':30012}
+  for key,value in [('hook_installation_v1',installation),('hook_deployment_v1',deployment),('wechat_transport_v1',{'mode':'hook'})]:
+   db.execute('INSERT INTO client_settings(key,value,updated_at) VALUES(?,?,?)',(key,json.dumps(value),now))
  db.execute("INSERT INTO c2_runtime_state(key,value,updated_at) VALUES(?,?,?)",('upgrade_gate_history','{\"completed\":true}',now))
  db.execute("INSERT INTO c2_message_ledger(conversation_id,source_message_key,origin_read_run_id,dedupe_key,message_type,terminal_state,ingest_state,result_json,first_seen_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?)",('isolated-history','isolated-message','isolated-read','isolated-dedupe','text','completed','confirmed','{}',now,now))
 """
-    subprocess.run([sys.executable, "-c", code, WORKER_ID, TOKEN, INSTANCE_ID, status],
+    subprocess.run([sys.executable, "-c", code, WORKER_ID, TOKEN, INSTANCE_ID, status,
+                    'hook-unbound' if hook_unbound else 'bound'],
                    env={**env, "PYTHONPATH": str(source)}, cwd=source, check=True)
     (data / "incidents").mkdir(exist_ok=True)
     (data / "incidents" / "existing-evidence.json").write_text('{"synthetic":true}', encoding="utf-8")
@@ -300,6 +310,10 @@ def run_case(args, status):
     shutil.copytree(args.old_package_root, current)
     assert digest(current / "CheJinWorkerClient.exe") == baseline["exe_sha256"]
     assert digest(current / "CheJinUpdater.exe") == baseline["updater_sha256"]
+    if args.updater_repair:
+        subprocess.run(['powershell.exe', '-NoProfile', '-ExecutionPolicy', 'Bypass',
+                        '-File', str(args.updater_repair), '-InstallDirectory', str(current)], check=True)
+    expected_updater_sha = digest(current / "CheJinUpdater.exe")
     cert, key = tls_files(case)
     port, debug_port = free_port(), free_port()
     base = f"https://127.0.0.1:{port}"
@@ -324,7 +338,9 @@ def run_case(args, status):
                 "C3_BATCH_RECOVERY_POLL_SECONDS": "0", "FEISHU_APP_ID": "", "FEISHU_APP_SECRET": ""})
     env.pop("CHEJIN_WORKER_UI_MODE", None)
     env.pop("CHEJIN_RELEASE_SIGNING_PUBLIC_KEY_BASE64", None)
-    seed_old_data(args.old_source_root, data, status, env)
+    if args.hook_unbound:
+        env['CHEJIN_C2_ENABLED'] = 'false'
+    seed_old_data(args.old_source_root, data, status, env, args.hook_unbound)
     before = preserved_values(data)
     checkpoints = {"synthetic_test_data_only": True, "seeded": before}
     processes = []
@@ -444,12 +460,14 @@ def run_case(args, status):
             plan = read_json(plan_path)
             assert plan["schema_version"] == 2 and plan["current_version"] == current_version
             assert plan["old_pid"] == old.pid
-            assert digest(plan_path.parent / "CheJinUpdater.exe") == baseline["updater_sha256"]
+            assert digest(plan_path.parent / "CheJinUpdater.exe") == expected_updater_sha
             assert plan["safe_boundary"]["safe"] is True
             marker = read_json(plan["healthy_marker_path"])
             assert marker["healthy"] is True and marker["version"] == target_version
-            assert marker["runtime_health"]["binding_state"] == "bound"
-            for name in ("task_runner", "c2_listener", "thread_monitor"):
+            assert marker["runtime_health"]["binding_state"] == ("unbound" if args.hook_unbound else "bound")
+            if args.hook_unbound:
+                assert marker['runtime_health']['required_threads'] == []
+            for name in (() if args.hook_unbound else ("task_runner", "c2_listener", "thread_monitor")):
                 health = marker["runtime_health"]["threads"][name]
                 assert health["entered_loop"] and health["alive"]
             assert Path(plan["data_baseline_path"]).is_file()
@@ -471,6 +489,11 @@ def run_case(args, status):
                           protected_data_preserved=True, target_ui_confirmed=True, actual_backend_download=True,
                           target_commit=target_manifest["git_commit"], runtime_threads_alive=True,
                           immutable_handoff_baseline=True, paused_intent_and_idle_gate_preserved=True)
+            if args.updater_repair:
+                report.update(original_updater_used=False, patched_updater_used=True,
+                              patched_updater_sha256=expected_updater_sha,
+                              hook_unbound_only=bool(args.hook_unbound),
+                              bound_device_acceptance='pending_real_windows' if args.hook_unbound else 'passed')
     except Exception as exc:
         report["failure"] = str(exc)[:500]
         # Only this isolated run's synthetic state is inspected. Retain bounded
@@ -513,6 +536,8 @@ def main():
     parser.add_argument("--work-root", type=Path)
     parser.add_argument("--manual-install", action="store_true")
     parser.add_argument("--target-package-root", type=Path)
+    parser.add_argument("--updater-repair", type=Path)
+    parser.add_argument("--hook-unbound", action="store_true")
     args = parser.parse_args()
     if args.serve_driver_fixture:
         serve_driver_fixture()

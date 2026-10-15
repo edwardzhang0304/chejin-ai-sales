@@ -402,6 +402,28 @@ class PackagingScriptsTest(unittest.TestCase):
             updater_spec,
         )
 
+    def test_standalone_updater_resolves_dynamic_shared_rules_and_contracts(self):
+        import ast
+        from types import SimpleNamespace
+        from unittest.mock import patch
+        captured = {}
+
+        def analysis(*args, **kwargs):
+            captured.update(kwargs)
+            return SimpleNamespace(pure=[], scripts=[], binaries=[], datas=[])
+
+        scope = {'Analysis': analysis, 'PYZ': lambda *a: None, 'EXE': lambda *a, **kw: None}
+        with patch('pathlib.Path.cwd', return_value=ROOT):
+            exec(compile((ROOT / 'packaging/chejin-updater.spec').read_text(), 'chejin-updater.spec', 'exec'), scope)
+        tree = ast.parse((ROOT / 'chejin_worker_client/shared_rules.py').read_text())
+        exported = next(ast.literal_eval(n.value) for n in tree.body if isinstance(n, ast.Assign)
+                        and any(isinstance(t, ast.Name) and t.id == '__all__' for t in n.targets))
+        prefix = 'apps.wechat_ai_customer_service.adapters.'
+        self.assertTrue({prefix + name for name in exported}.issubset(captured['hiddenimports']))
+        self.assertIn(str(ROOT / 'omniauto-rpa'), captured['pathex'])
+        for filename in ('c2_contract_v3.json', 'hook_contract_v1.json'):
+            self.assertIn((str(ROOT.parent / 'contracts' / filename), 'contracts'), captured['datas'])
+
     def test_formal_exe_workflow_is_manual_and_reuses_evidence_without_fast_uat_package(self):
         workflow = (
             ROOT.parent / ".github" / "workflows" / "worker-windows-package.yml"

@@ -5,6 +5,7 @@ from pathlib import Path
 
 
 ROOT = Path.cwd()
+SHARED_RULES_ROOT = ROOT / "omniauto-rpa"
 ENTRY_PATH = ROOT / "packaging" / "chejin_updater_entry.py"
 SIGNING_KEYS_PATH = Path(
     os.environ.get("CHEJIN_RELEASE_SIGNING_KEYS_PATH")
@@ -16,10 +17,24 @@ if not SIGNING_KEYS_PATH.is_file():
 
 a = Analysis(
     [str(ENTRY_PATH)],
-    pathex=[str(ROOT)],
+    pathex=[str(ROOT), str(SHARED_RULES_ROOT)],
     binaries=[],
-    datas=[(str(SIGNING_KEYS_PATH), ".")],
-    hiddenimports=["cryptography", "psutil"],
+    datas=[
+        (str(SIGNING_KEYS_PATH), "."),
+        (str(ROOT.parent / "contracts" / "c2_contract_v3.json"), "contracts"),
+        (str(ROOT.parent / "contracts" / "hook_contract_v1.json"), "contracts"),
+    ],
+    # shared_rules.__getattr__ imports these pure adapters dynamically. The
+    # standalone one-file updater cannot borrow the Worker's source tree.
+    hiddenimports=["cryptography", "psutil", *[
+        "apps.wechat_ai_customer_service.adapters." + name
+        for name in (
+            "contract_rules", "message_contract", "read_settlement", "send_interruption",
+            "historical_text_correction", "historical_text_alignment", "text_correspondence",
+            "hook_contract_rules", "hook_contact_rules", "hook_history_rules", "hook_event_rules",
+            "hook_observability_rules", "client_release_rules",
+        )
+    ]],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[str(ROOT / "packaging" / "updater_runtime_hook.py")],
