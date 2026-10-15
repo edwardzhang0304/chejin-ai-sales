@@ -14,6 +14,15 @@ import acceptance_cases as ac
 import candidate
 
 
+@pytest.mark.parametrize('key', ['PSMODULEPATH', 'PSModulePath'])
+def test_windows_powershell_uses_native_modules_for_both_key_casings(key):
+    from workflow_scripts import windows_powershell_environment
+    result = windows_powershell_environment({key: 'PowerShell7-only', 'SYSTEMROOT': r'C:\Windows', 'PATH': 'preserved'})
+    assert result['PSMODULEPATH'] == r'C:\Windows\System32\WindowsPowerShell\v1.0\Modules'
+    assert result['PATH'] == 'preserved'
+    assert len([k for k in result if k.upper() == 'PSMODULEPATH']) == 1
+
+
 def plan():
     return {'schema_version': 1, 'version': '2.4.9', 'source_commit': 'a'*40,
             'old_client': {'version': '2.4.8', 'source_commit': 'b'*40, 'run_id': '12', 'artifact_id': '34',

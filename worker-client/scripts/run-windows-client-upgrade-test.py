@@ -28,6 +28,7 @@ import urllib.request
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "ops/formal_release"))
 from release_plan import load as load_release_plan
+from workflow_scripts import windows_powershell_environment
 WORKER_ID = "formal-upgrade-isolated-worker"
 INSTANCE_ID = "formal-upgrade-isolated-instance"
 TOKEN = "synthetic-loopback-worker-token"
@@ -311,8 +312,7 @@ def run_case(args, status):
     assert digest(current / "CheJinWorkerClient.exe") == baseline["exe_sha256"]
     assert digest(current / "CheJinUpdater.exe") == baseline["updater_sha256"]
     if args.updater_repair:
-        powershell_env = dict(os.environ)
-        powershell_env.pop('PSModulePath', None)
+        powershell_env = windows_powershell_environment()
         subprocess.run(['powershell.exe', '-NoProfile', '-ExecutionPolicy', 'Bypass',
                         '-File', str(args.updater_repair), '-InstallDirectory', str(current)], check=True, env=powershell_env)
     expected_updater_sha = digest(current / "CheJinUpdater.exe")

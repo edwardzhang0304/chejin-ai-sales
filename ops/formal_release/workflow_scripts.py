@@ -1,8 +1,20 @@
 """Extract inline formal PowerShell for the independent Windows parser (never execute it)."""
 import argparse
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
+import os
 import re
 import yaml
+
+
+def windows_powershell_environment(environment=None):
+    """Windows normalizes environment keys to uppercase; select native PS5 modules."""
+    source = dict(os.environ if environment is None else environment)
+    result = {k: v for k, v in source.items() if k.upper() != 'PSMODULEPATH'}
+    system_root = next((v for k, v in source.items() if k.upper() == 'SYSTEMROOT'), '')
+    if not system_root:
+        raise RuntimeError('WINDOWS_SYSTEM_ROOT_REQUIRED')
+    result['PSMODULEPATH'] = str(PureWindowsPath(system_root) / 'System32/WindowsPowerShell/v1.0/Modules')
+    return result
 
 
 def extract(workflow, output):

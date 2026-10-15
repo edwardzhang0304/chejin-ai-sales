@@ -12,6 +12,7 @@ import sys
 import zipfile
 
 from sign_existing_hook import api, require, validate_build
+from workflow_scripts import windows_powershell_environment
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -146,7 +147,6 @@ def assemble(args):
     # Execute the frozen EXE itself before testing any GUI handoff.
     env = {k: v for k, v in os.environ.items() if not any(s in k.upper() for s in ('TOKEN', 'SECRET', 'SIGNING_PRIVATE'))}
     env.pop('CHEJIN_RELEASE_SIGNING_KEYS_PATH', None)
-    env.pop('PSModulePath', None)
     env['CHEJIN_WORKER_HOME'] = str(area / 'smoke-data')
     result = subprocess.run([str(exe), '--help'], env=env, timeout=45, capture_output=True)
     require(result.returncode == 0, 'FROZEN_UPDATER_IMPORT_FAILED')
@@ -163,9 +163,10 @@ def assemble(args):
         for name in ('CheJinWorkerClient.exe', 'CheJinUpdater.exe', 'update-package-manifest.json'):
             shutil.copyfile(original / name, probe / name)
         command = ['powershell.exe', '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', str(package / 'repair-updater.ps1'), '-InstallDirectory', str(probe)]
-        subprocess.run(command, check=True, env=env); subprocess.run(command, check=True, env=env)
+        powershell_env = windows_powershell_environment(env)
+        subprocess.run(command, check=True, env=powershell_env); subprocess.run(command, check=True, env=powershell_env)
         require(digest(probe / exe.name) == digest(exe), 'REPAIR_COPY_FAILED')
-        subprocess.run(command + ['-Restore'], check=True, env=env)
+        subprocess.run(command + ['-Restore'], check=True, env=powershell_env)
         require(all(digest(probe / n) == digest(original / n) for n in ('CheJinWorkerClient.exe', 'CheJinUpdater.exe', 'update-package-manifest.json')), 'REPAIR_RESTORE_FAILED')
     shutil.make_archive(str(area / ('CheJinUpdaterRepair_V' + args.version)), 'zip', package)
     (area / 'repair-checks.json').write_text(json.dumps({'frozen_updater_help': 'passed', 'shared_rules_bundled': True,
