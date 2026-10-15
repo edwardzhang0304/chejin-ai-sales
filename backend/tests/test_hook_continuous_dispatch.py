@@ -11,6 +11,7 @@ from test_hook_business_http import clean,claimed,post
 from test_hook_account_client import identity_client
 from test_hook_gateway import lab
 from chejin_worker_client import storage
+from chejin_worker_client.hook_clock import HookBackendClock
 from chejin_worker_client.hook_backend import HookWorkerCredentials
 from chejin_worker_client.hook_formal_client import HookFormalClient
 from chejin_worker_client.hook_dispatcher import HookBusinessDispatcher
@@ -27,12 +28,14 @@ def test_repeated_ticks_invite_bind_reply_recover_without_duplicate(identity_cli
     server,gateway,process,scope,*_=lab
     w,t,a=claimed(process_generation=process.generation,pending=True)
     scope=replace(scope,account_epoch=a['account_epoch'])
-    prepared=SimpleNamespace(process=process,registration=SimpleNamespace(scope=scope),account=None)
     credentials=HookWorkerCredentials(w['id'],w['worker_token'],w['instance'])
+    prepared=SimpleNamespace(process=process,registration=SimpleNamespace(scope=scope),account=None)
     client=HookFormalClient(identity_client.base_url,5)
     from chejin_worker_client.hook_backend import HookHeartbeatIdentity,HookHeartbeatState
     prepared.account=identity_client.heartbeat(credentials,HookHeartbeatIdentity(scope.self_wxid,process.generation,
         gateway.deployment.revision,process.dll_sha256,account_epoch=scope.account_epoch),HookHeartbeatState('idle','ready','logged_in',None,None,'{}'))
+    prepared.clock=HookBackendClock()
+    prepared.clock.observe(prepared.account)
     # Startup normalization is exercised by the original services/startup tests.
     # This business-chain fixture starts after that authoritative gate passed.
     services=SimpleNamespace(connection=SimpleNamespace(prepared=prepared,gateway=gateway),_credentials=credentials,

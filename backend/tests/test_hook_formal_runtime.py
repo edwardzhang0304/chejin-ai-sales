@@ -15,10 +15,22 @@ from app.models.wechat import MessageEvent
 from test_hook_business_http import clean,claimed,post
 from test_hook_account_client import identity_client
 from test_hook_gateway import lab
-from chejin_worker_client.hook_backend import HookWorkerCredentials
+from chejin_worker_client.hook_backend import HookWorkerCredentials, HookHeartbeatIdentity, HookHeartbeatState
+from chejin_worker_client.hook_clock import HookBackendClock
 from chejin_worker_client.hook_formal_client import HookFormalClient
 from chejin_worker_client.hook_formal_runtime import HookFormalRuntime
 from apps.wechat_ai_customer_service.tests.test_hook_c1_flow import ReplayUI
+
+
+def calibrated_clock(identity_client, credentials, gateway, process, scope):
+    """Give simulated prepared connections the authenticated clock production has."""
+    receipt = identity_client.heartbeat(credentials,
+        HookHeartbeatIdentity(scope.self_wxid, process.generation,
+            gateway.deployment.revision, process.dll_sha256, account_epoch=scope.account_epoch),
+        HookHeartbeatState('idle', 'ready', 'logged_in', None, None, '{}'))
+    clock = HookBackendClock()
+    clock.observe(receipt)
+    return clock
 
 
 def drive_reply(runtime, binding, batch_id, *, max_wait_seconds=30):
@@ -82,9 +94,11 @@ def test_coordinator_pulls_formal_invite_binds_history_generates_and_sends(ident
     server,gateway,process,scope,*_=lab
     w,t,account=claimed(process_generation=process.generation,pending=True)
     scope=replace(scope,account_epoch=account['account_epoch'])
-    prepared=SimpleNamespace(process=process,registration=SimpleNamespace(scope=scope))
+    credentials=HookWorkerCredentials(w['id'],w['worker_token'],w['instance'])
+    prepared=SimpleNamespace(process=process,registration=SimpleNamespace(scope=scope),
+        clock=calibrated_clock(identity_client,credentials,gateway,process,scope))
     runtime=HookFormalRuntime(HookFormalClient(identity_client.base_url,5),
-        HookWorkerCredentials(w['id'],w['worker_token'],w['instance']),gateway,prepared,tmp_path/'coordinator')
+        credentials,gateway,prepared,tmp_path/'coordinator')
     uis=[]
     def factory(prep,guard):
         class ClipboardReplay(ReplayUI):

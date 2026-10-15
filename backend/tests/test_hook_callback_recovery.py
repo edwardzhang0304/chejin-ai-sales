@@ -1,4 +1,3 @@
-from test_hook_formal_runtime import drive_reply
 """Official coordinator against HTTP backend/Hook simulator and durable SQLite.
 
 UI/OCR replay and model mode are explicitly simulated. No live WeChat action.
@@ -16,6 +15,7 @@ from app.models.wechat import MessageEvent
 from test_hook_business_http import clean,claimed,post
 from test_hook_account_client import identity_client
 from test_hook_gateway import lab
+from test_hook_formal_runtime import drive_reply, calibrated_clock
 from chejin_worker_client.hook_backend import HookWorkerCredentials
 from chejin_worker_client.hook_formal_client import HookFormalClient
 from chejin_worker_client.hook_formal_runtime import HookFormalRuntime
@@ -36,9 +36,11 @@ def test_callback_during_post_send_scan_and_retained_settlement(identity_client,
     server,gateway,process,scope,*_=lab
     w,t,account=claimed(process_generation=process.generation,pending=True)
     scope=replace(scope,account_epoch=account['account_epoch'])
-    prepared=SimpleNamespace(process=process,registration=SimpleNamespace(scope=scope))
+    credentials=HookWorkerCredentials(w['id'],w['worker_token'],w['instance'])
+    prepared=SimpleNamespace(process=process,registration=SimpleNamespace(scope=scope),
+        clock=calibrated_clock(identity_client,credentials,gateway,process,scope))
     runtime=HookFormalRuntime(HookFormalClient(identity_client.base_url,5),
-        HookWorkerCredentials(w['id'],w['worker_token'],w['instance']),gateway,prepared,tmp_path/'coordinator')
+        credentials,gateway,prepared,tmp_path/'coordinator')
     uis=[]
     def factory(prep,guard):
         class ClipboardReplay(ReplayUI):
