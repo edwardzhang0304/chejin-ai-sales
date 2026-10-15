@@ -63,6 +63,7 @@ jobs:
       PUBLICATION_RUN: ${{ inputs.publication_run }}
       PACKAGE_VERSION: ${{ inputs.existing_version }}
       PACKAGE_SHA256: ${{ inputs.existing_package_sha256 }}
+      PYTHONUTF8: '1'
     steps:
       - uses: actions/checkout@v4
         with: {fetch-depth: 0, persist-credentials: false}
@@ -77,6 +78,13 @@ jobs:
       - name: Build standalone updater only
         working-directory: worker-client
         run: python -m PyInstaller --clean --noconfirm packaging/chejin-updater.spec
+      - name: Save standalone updater immediately before any repair checker
+        uses: actions/upload-artifact@v4
+        with:
+          name: frozen-updater-${{ github.run_id }}
+          path: worker-client/dist/CheJinUpdater.exe
+          if-no-files-found: error
+          retention-days: 30
       - name: Sign repair and exercise frozen startup, patch and restoration
         env:
           CHEJIN_RELEASE_SIGNING_KEY_ID: ${{ secrets.CHEJIN_RELEASE_SIGNING_KEY_ID }}

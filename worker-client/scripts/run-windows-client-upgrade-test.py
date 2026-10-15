@@ -338,6 +338,7 @@ def run_case(args, status):
                 "C3_BATCH_RECOVERY_POLL_SECONDS": "0", "FEISHU_APP_ID": "", "FEISHU_APP_SECRET": ""})
     env.pop("CHEJIN_WORKER_UI_MODE", None)
     env.pop("CHEJIN_RELEASE_SIGNING_PUBLIC_KEY_BASE64", None)
+    env.pop("CHEJIN_RELEASE_SIGNING_KEYS_PATH", None)
     if args.hook_unbound:
         env['CHEJIN_C2_ENABLED'] = 'false'
     seed_old_data(args.old_source_root, data, status, env, args.hook_unbound)

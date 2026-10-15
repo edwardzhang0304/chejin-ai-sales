@@ -117,11 +117,13 @@ def assemble(args):
         base64.b64decode(repair['signature']), canonical)
     descriptor = package / 'repair.json'
     descriptor.write_text(json.dumps(repair, indent=2), encoding='utf-8')
-    text = (ROOT / 'worker-client/packaging/repair-updater.ps1').read_text()
+    text = (ROOT / 'worker-client/packaging/repair-updater.ps1').read_text(encoding='utf-8-sig')
     (package / 'repair-updater.ps1').write_text(text.replace('REPAIR_DESCRIPTOR_SHA256_PLACEHOLDER', digest(descriptor)), encoding='utf-8-sig')
     (package / 'Repair-CheJinUpdater.cmd').write_bytes(b'@echo off\r\npowershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0repair-updater.ps1"\r\npause\r\n')
     # Execute the frozen EXE itself before testing any GUI handoff.
-    env = {**os.environ, 'CHEJIN_WORKER_HOME': str(area / 'smoke-data')}
+    env = {k: v for k, v in os.environ.items() if not any(s in k.upper() for s in ('TOKEN', 'SECRET', 'SIGNING_PRIVATE'))}
+    env.pop('CHEJIN_RELEASE_SIGNING_KEYS_PATH', None)
+    env['CHEJIN_WORKER_HOME'] = str(area / 'smoke-data')
     result = subprocess.run([str(exe), '--help'], env=env, timeout=45, capture_output=True)
     require(result.returncode == 0, 'FROZEN_UPDATER_IMPORT_FAILED')
     from PyInstaller.archive.readers import CArchiveReader
