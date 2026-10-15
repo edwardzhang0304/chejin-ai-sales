@@ -14,7 +14,7 @@ exit 0
     Set-Content -LiteralPath (Join-Path $root 'start-hook.ps1') -Value $stub -Encoding UTF8
     $entry = Join-Path $root 'Setup-CheJin-Hook.cmd'
     $marker = Join-Path $root 'called.txt'
-    function Invoke-Setup([string]$response) {
+    function Start-Setup {
         $start = New-Object System.Diagnostics.ProcessStartInfo
         $start.FileName = Join-Path $env:SystemRoot 'System32/cmd.exe'
         $start.Arguments = '/d /c ""' + $entry + '""'
@@ -23,13 +23,38 @@ exit 0
         $start.RedirectStandardInput = $true
         $start.RedirectStandardOutput = $true
         $start.RedirectStandardError = $true
-        $process = [Diagnostics.Process]::Start($start)
+        return [Diagnostics.Process]::Start($start)
+    }
+    function Invoke-Setup([string]$response) {
+        $process = Start-Setup
         $process.StandardInput.WriteLine($response)
         $process.StandardInput.WriteLine('')
         $process.StandardInput.Close()
         $output = $process.StandardOutput.ReadToEnd() + $process.StandardError.ReadToEnd()
         $process.WaitForExit()
         return @{ Code = $process.ExitCode; Output = $output }
+    }
+    function Assert-PausedDirectoryFree([string]$OutputMarker, [switch]$Confirm) {
+        $process = Start-Setup
+        try {
+            if ($Confirm) { $process.StandardInput.WriteLine('Y') }
+            $seen = $false
+            for ($i = 0; $i -lt 20; $i++) {
+                $line = $process.StandardOutput.ReadLineAsync()
+                if (-not $line.Wait(15000) -or $null -eq $line.Result) { throw 'Entry did not reach success pause' }
+                if ($line.Result.Contains($OutputMarker)) { $seen = $true; break }
+            }
+            if (-not $seen -or $process.WaitForExit(200)) { throw 'Entry was not held open at pause' }
+            [IO.Directory]::Move($root, $root + '.paused-probe')
+            [IO.Directory]::Move($root + '.paused-probe', $root)
+            $process.StandardInput.WriteLine('')
+            $process.StandardInput.Close()
+            if (-not $process.WaitForExit(10000) -or $process.ExitCode -ne 0) { throw 'Entry failed after directory handoff' }
+            Write-Host ('PASS live CMD pause does not lock program directory: ' + $OutputMarker)
+        } finally {
+            if (-not $process.HasExited) { $process.Kill(); $process.WaitForExit() }
+            $process.Dispose()
+        }
     }
     $missing = Invoke-Setup ''
     if ($missing.Code -ne 2 -or (Test-Path -LiteralPath $marker)) { throw 'Missing profile did not fail closed' }
@@ -40,6 +65,7 @@ exit 0
     if ($accepted.Code -ne 0 -or -not (Test-Path -LiteralPath $marker)) {
         throw ('One-click setup did not invoke the checked launcher: ' + $accepted.Output)
     }
+    Assert-PausedDirectoryFree -OutputMarker 'Setup completed.' -Confirm
     Write-Host 'PASS Hook one-click setup: missing profile, declined confirmation, successful shortcut setup'
     Copy-Item -LiteralPath (Join-Path $PSScriptRoot '../packaging/Refresh-CheJin-Shortcuts.cmd') -Destination $root
     $refreshStub = @'
@@ -53,6 +79,7 @@ exit 0
     $entry = Join-Path $root 'Refresh-CheJin-Shortcuts.cmd'
     $refreshed = Invoke-Setup ''
     if ($refreshed.Code -ne 0 -or (Get-Content -LiteralPath $marker -Raw) -ne 'refresh-only') { throw 'Double-click refresh entry did not preserve refresh-only mode' }
+    Assert-PausedDirectoryFree -OutputMarker 'Desktop shortcuts refreshed.'
     Set-Content -LiteralPath (Join-Path $root 'start-hook.ps1') -Value 'exit 9' -Encoding UTF8
     $failedRefresh = Invoke-Setup ''
     if ($failedRefresh.Code -ne 9) { throw 'Double-click shortcut refresh hid the failure exit code' }

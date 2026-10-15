@@ -1,6 +1,8 @@
 @echo off
 setlocal EnableExtensions
 set "SETUP_DIR=%~dp0"
+if not defined TEMP exit /b 3
+cd /d "%TEMP%" || exit /b 3
 if not exist "%SETUP_DIR%start-hook.ps1" (
   echo Setup files are incomplete. Contact operations.
   pause
