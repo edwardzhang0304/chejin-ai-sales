@@ -10,7 +10,7 @@ New-Item -ItemType File -Path (Join-Path $root 'CheJinWorkerClient.exe') | Out-N
 $global:HookTestWeChatDir = Join-Path $root 'Test WeChat'
 New-Item -ItemType Directory -Path $global:HookTestWeChatDir | Out-Null
 $global:HookTestWeChatPath = Join-Path $global:HookTestWeChatDir 'WeChat.exe'
-New-Item -ItemType File -Path $global:HookTestWeChatPath | Out-Null
+Copy-Item -LiteralPath (Join-Path $env:SystemRoot 'System32/notepad.exe') -Destination $global:HookTestWeChatPath
 Set-Content -LiteralPath (Join-Path $root 'profile.json') -Value '{}' -Encoding UTF8
 function Assert-True($condition, $message) { if (-not $condition) { throw $message } }
 function Get-Process {
@@ -96,10 +96,17 @@ try {
     }
     Assert-True ($completed -eq 12) 'Some launcher cases did not finish'
     $desktop = [Environment]::GetFolderPath('Desktop')
+    New-Item -ItemType Directory -Path $desktop -Force | Out-Null
     $wechatLink = Join-Path $desktop '工作微信.lnk'
     $workerLink = Join-Path $desktop '车金 Worker.lnk'
     Assert-True (-not (Test-Path -LiteralPath $wechatLink) -and -not (Test-Path -LiteralPath $workerLink)) 'Test desktop shortcuts already exist'
+    $controlLink = Join-Path $desktop 'hook-control.lnk'
     try {
+        $control = (New-Object -ComObject WScript.Shell).CreateShortcut($controlLink)
+        $control.TargetPath = $global:HookTestWeChatPath
+        $control.WorkingDirectory = $global:HookTestWeChatDir
+        $control.Save()
+        Assert-True (Test-Path -LiteralPath $controlLink) 'Windows shortcut control could not be saved'
         $global:HookLauncherCase = 'setup'
         & (Join-Path $root 'start-hook.ps1') -Configuration (Join-Path $root 'profile.json') -ConfirmAutoTextDisabled -CreateShortcuts
         $shell = New-Object -ComObject WScript.Shell
@@ -113,7 +120,7 @@ try {
         Assert-True ($worker.Arguments -like '*start-hook.ps1*') 'Worker shortcut must use the checked launcher'
         Write-Host 'PASS Hook desktop shortcuts use the saved launch configuration'
     } finally {
-        Remove-Item -LiteralPath $wechatLink, $workerLink -Force -ErrorAction SilentlyContinue
+        Remove-Item -LiteralPath $controlLink, $wechatLink, $workerLink -Force -ErrorAction SilentlyContinue
     }
     $global:LASTEXITCODE = 0
 } finally {
