@@ -424,6 +424,24 @@ class PackagingScriptsTest(unittest.TestCase):
         for filename in ('c2_contract_v3.json', 'hook_contract_v1.json'):
             self.assertIn((str(ROOT.parent / 'contracts' / filename), 'contracts'), captured['datas'])
 
+    def test_standalone_updater_normalizes_external_public_key_filename(self):
+        from types import SimpleNamespace
+        from unittest.mock import patch
+        import tempfile
+        captured = {}
+        def analysis(*args, **kwargs):
+            captured.update(kwargs)
+            return SimpleNamespace(pure=[], scripts=[], binaries=[], datas=[])
+        with tempfile.TemporaryDirectory() as folder:
+            external = Path(folder) / 'public-keys.json'
+            external.write_bytes(b'{"schema_version":1,"keys":[]}')
+            with patch('pathlib.Path.cwd', return_value=ROOT), patch.dict(os.environ, {'CHEJIN_RELEASE_SIGNING_KEYS_PATH': str(external)}):
+                exec(compile((ROOT / 'packaging/chejin-updater.spec').read_text(), 'chejin-updater.spec', 'exec'),
+                     {'Analysis': analysis, 'PYZ': lambda *a: None, 'EXE': lambda *a, **kw: None})
+            trust = [Path(src) for src, dest in captured['datas'] if dest == '.' and Path(src).name == 'release-signing-public-keys.json']
+            self.assertEqual(len(trust), 1)
+            self.assertEqual(trust[0].read_bytes(), external.read_bytes())
+
     def test_formal_exe_workflow_is_manual_and_reuses_evidence_without_fast_uat_package(self):
         workflow = (
             ROOT.parent / ".github" / "workflows" / "worker-windows-package.yml"

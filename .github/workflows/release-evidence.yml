@@ -111,7 +111,8 @@ jobs:
             ${{ runner.temp }}/updater-repair/gui/upgrade-result.json
             ${{ runner.temp }}/updater-repair/gui/**/result.json
             ${{ runner.temp }}/updater-repair/gui/**/process.log
-            ${{ runner.temp }}/updater-repair/gui/**/*.png
+            ${{ runner.temp }}/updater-repair/gui/*/before.png
+            ${{ runner.temp }}/updater-repair/gui/*/after.png
             ${{ runner.temp }}/updater-repair/gui/**/diagnostics.json
           if-no-files-found: error
           retention-days: 90

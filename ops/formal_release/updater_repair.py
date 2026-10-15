@@ -152,6 +152,8 @@ def assemble(args):
     require(result.returncode == 0, 'FROZEN_UPDATER_IMPORT_FAILED')
     from PyInstaller.archive.readers import CArchiveReader
     archive = CArchiveReader(str(exe))
+    require(archive.extract('release-signing-public-keys.json') == (area / 'public-keys.json').read_bytes(), 'FROZEN_PUBLIC_TRUST_MISSING_OR_CHANGED')
+    require(any(n.replace('\\', '/') == 'contracts/c2_contract_v3.json' for n in archive.toc), 'FROZEN_CONTRACT_MISSING')
     pyz = archive.open_embedded_archive(next(n for n in archive.toc if n.endswith('.pyz')))
     require('apps.wechat_ai_customer_service.adapters.client_release_rules' in pyz.toc, 'FROZEN_RULES_NOT_BUNDLED')
     # Exercise actual PowerShell repair, idempotency and restoration on both
@@ -170,7 +172,7 @@ def assemble(args):
         require(all(digest(probe / n) == digest(original / n) for n in ('CheJinWorkerClient.exe', 'CheJinUpdater.exe', 'update-package-manifest.json')), 'REPAIR_RESTORE_FAILED')
     shutil.make_archive(str(area / ('CheJinUpdaterRepair_V' + args.version)), 'zip', package)
     (area / 'repair-checks.json').write_text(json.dumps({'frozen_updater_help': 'passed', 'shared_rules_bundled': True,
-        'repair_idempotence_restore_both_versions': 'passed', 'updater_sha256': digest(exe), 'worker_rebuilt': False}, indent=2))
+        'bundled_public_key_bytes_match_original': True, 'repair_idempotence_restore_both_versions': 'passed', 'updater_sha256': digest(exe), 'worker_rebuilt': False}, indent=2))
 
 
 if __name__ == '__main__':

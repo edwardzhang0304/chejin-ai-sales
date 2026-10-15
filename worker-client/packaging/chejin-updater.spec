@@ -15,12 +15,18 @@ SIGNING_KEYS_PATH = Path(
 if not SIGNING_KEYS_PATH.is_file():
     raise SystemExit("release signing public key file is missing")
 
+# Analysis preserves the source basename. The runtime always loads this exact
+# name, even when CI provides the public key from a differently named file.
+UPDATER_TRUST_PATH = ROOT / "build" / "updater-trust" / "release-signing-public-keys.json"
+UPDATER_TRUST_PATH.parent.mkdir(parents=True, exist_ok=True)
+UPDATER_TRUST_PATH.write_bytes(SIGNING_KEYS_PATH.read_bytes())
+
 a = Analysis(
     [str(ENTRY_PATH)],
     pathex=[str(ROOT), str(SHARED_RULES_ROOT)],
     binaries=[],
     datas=[
-        (str(SIGNING_KEYS_PATH), "."),
+        (str(UPDATER_TRUST_PATH), "."),
         (str(ROOT.parent / "contracts" / "c2_contract_v3.json"), "contracts"),
         (str(ROOT.parent / "contracts" / "hook_contract_v1.json"), "contracts"),
     ],
