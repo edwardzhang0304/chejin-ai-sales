@@ -435,6 +435,22 @@ class UpdateCoordinator:
         self._publish(saved)
         return saved
 
+    def check_admission(self, state: dict[str, Any] | None = None) -> dict[str, Any]:
+        """UI hint only; begin_update_check repeats it atomically at admission."""
+        if not self.formal_package:
+            return {'allowed': False, 'reason_code': 'UPDATE_FORMAL_PACKAGE_REQUIRED',
+                    'reason_text': '检查更新仅支持正式 EXE 交付包'}
+        try:
+            current = self.store.load() if state is None else state
+            if ((self._worker is not None and self._worker.is_alive())
+                    or current.get('state', 'idle') not in {'idle', 'succeeded', 'failed', 'rolled_back'}):
+                return {'allowed': False, 'reason_code': 'UPDATE_ALREADY_IN_PROGRESS',
+                        'reason_text': '更新或恢复交接正在进行，请等待完成'}
+            return self.runner.update_check_safety_snapshot()
+        except Exception:
+            return {'allowed': False, 'reason_code': 'UPDATE_SAFETY_STATE_UNAVAILABLE',
+                    'reason_text': '暂时无法读取本地安全状态，请检查本机存储后重试'}
+
     def check_for_updates(self) -> bool:
         if not self.formal_package:
             self._save(
@@ -452,30 +468,48 @@ class UpdateCoordinator:
                 return False
             binding = self.binding_provider()
             pre_status = binding.run_status if binding else "unbound"
-            client_instance_id = binding.client_instance_id if binding else self._unbound_instance_id()
+            state = None
             try:
-                state = self.store.begin(
-                    pre_update_run_status=pre_status,
-                    client_instance_id=client_instance_id,
+                admission = self.check_admission()
+                if not admission['allowed']:
+                    self._publish(self.store.load())
+                    return False
+                def begin_request():
+                    nonlocal state
+                    state = self.store.begin(
+                        pre_update_run_status=pre_status,
+                        client_instance_id=binding.client_instance_id if binding else self._unbound_instance_id(),
+                    )
+                    return state
+                admission, state = self.runner.begin_update_check(begin_request)
+                if state is None:
+                    self._publish(self.store.load())
+                    return False
+                self._stop.clear()
+                self._operator_pause_after_request = False
+                self._fault_after_request = False
+                self._install_started = False
+                self._exit_updater = None
+                self._exit_request_token = ""
+                self._publish(state)
+                self._worker = threading.Thread(
+                    target=self._run,
+                    args=(state,),
+                    name="CheJinWorkerClientUpdater",
+                    daemon=True,
                 )
-            except ClientUpdateError:
-                self._publish(self.store.load())
+                self._worker.start()
+                return True
+            except Exception:
+                failed = {**(state or {}), 'state': 'failed', 'install_started': False,
+                          'result_code': 'UPDATE_CHECK_FAILED',
+                          'message': '无法启动更新检查，请检查本机存储后重试'}
+                if state is None or self._release_check_gate(state):
+                    try:
+                        self._save(failed)
+                    except Exception:
+                        self._publish(failed)
                 return False
-            self._stop.clear()
-            self._operator_pause_after_request = False
-            self._fault_after_request = False
-            self._install_started = False
-            self._exit_updater = None
-            self._exit_request_token = ""
-            self._publish(state)
-            self._worker = threading.Thread(
-                target=self._run,
-                args=(state,),
-                name="CheJinWorkerClientUpdater",
-                daemon=True,
-            )
-            self._worker.start()
-            return True
 
     def note_operator_pause(self) -> None:
         with self._lock:
@@ -1012,12 +1046,16 @@ class UpdateCoordinator:
 
     def _run(self, initial: dict[str, Any]) -> None:
         request_id = str(initial.get("update_request_id") or "")
-        gate_set = False
+        paused_for_update = False
         try:
+            if self._stop.is_set():
+                raise ClientUpdateError("UPDATE_CANCELLED", "更新检查已取消")
             release = self.api.latest_client_release(
                 current_version=__version__,
                 client_instance_id=str(initial.get("client_instance_id") or ""),
             )
+            if self._stop.is_set():
+                raise ClientUpdateError("UPDATE_CANCELLED", "更新检查已取消")
             if not release.update_available:
                 self._save(
                     {
@@ -1030,10 +1068,9 @@ class UpdateCoordinator:
                 )
                 return
 
-            self._set_new_work_gate(True, request_id)
-            gate_set = True
             binding = self.binding_provider()
             if binding and binding.run_status == "running":
+                paused_for_update = True
                 self.runner.set_run_status("paused")
 
             downloading = self._save(
@@ -1119,9 +1156,6 @@ class UpdateCoordinator:
                 error_code=code,
                 metadata={"update_request_id": request_id, "prepare_diagnostic": prepare_diagnostic},
             )
-            if gate_set:
-                self._set_new_work_gate(False, request_id)
-                self._restore_pre_update_state(initial)
             self._cleanup_request_payload(request_id)
             self._save(
                 {
@@ -1138,6 +1172,29 @@ class UpdateCoordinator:
                     ),
                 }
             )
+        finally:
+            if not self._install_started and self._release_check_gate(initial):
+                if paused_for_update:
+                    self._restore_pre_update_state(initial)
+
+
+    def _release_check_gate(self, state: dict[str, Any]) -> bool:
+        try:
+            self._set_new_work_gate(False, state['update_request_id'])
+            return True
+        except Exception as exc:
+            # Keep the persisted barrier when storage cannot prove its release.
+            # Do not resume running or throw through the Qt click handler.
+            failed = {**state, 'state': 'failed', 'install_started': False,
+                      'result_code': 'UPDATE_GATE_RELEASE_FAILED',
+                      'message': '无法解除本次更新保护，请检查本机存储并重启客户端'}
+            _safe_update_log('ERROR', 'client_update_gate_release_failed', failed['message'],
+                             error_code=failed['result_code'], metadata={'error_type': type(exc).__name__})
+            try:
+                self._save(failed)
+            except Exception:
+                self._publish(failed)
+            return False
 
     def _restore_pre_update_state(self, initial: dict[str, Any]) -> None:
         binding = self.binding_provider()

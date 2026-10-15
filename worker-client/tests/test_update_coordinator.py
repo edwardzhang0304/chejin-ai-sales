@@ -73,6 +73,14 @@ class FakeRunner:
         self.safe = False
         self.statuses: list[str] = []
 
+    def update_check_safety_snapshot(self):
+        return {'allowed': True, 'reason_code': '', 'reason_text': ''}
+
+    def begin_update_check(self, begin_request):
+        state = begin_request()
+        coordinator_module.set_update_new_work_gate(True, update_request_id=state['update_request_id'])
+        return self.update_check_safety_snapshot(), state
+
     def set_run_status(self, status: str) -> bool:
         self.events.append(f"status:{status}")
         self.statuses.append(status)
@@ -193,7 +201,8 @@ def test_no_update_does_not_pause_or_close_new_work_gate(tmp_path: Path, monkeyp
     )
     assert coordinator.check_for_updates() is True
     _wait(coordinator)
-    assert gates == []
+    assert [blocked for blocked, _ in gates] == [True, False]
+    assert gates[0][1] == gates[1][1]
     assert runner.statuses == []
     assert "exit" not in events
     assert coordinator.state()["status_text"] == "当前已是最新版本"

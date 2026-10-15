@@ -47,21 +47,24 @@ def batch_view_path(runner,worker_id,batch_id):
     # Local pause wins before backend status synchronization. A GET result
     # observation must not implicitly launch a model through a stale server.
     observe=bool(runner is not None and (getattr(getattr(runner,'binding',None),'run_status','running')!='running'
-        or not getattr(runner,'can_pull_tasks',lambda:True)()))
+        or not getattr(runner,'can_pull_tasks',lambda:True)()
+        or storage.load_runtime_control().get('update_no_new_work') is True))
     return f'/workers/{worker_id}/wechat/message-batches/{batch_id}'+('?observe_only=true' if observe else '')
 
 
 def read_batch_view(client, credentials, runner, batch_id, *, observation_query_version, observe_only=False):
     """Query batches through one pause-aware, receipt-validated entry point."""
-    path = (f'/workers/{credentials.worker_id}/wechat/message-batches/{batch_id}?observe_only=true'
-            if observe_only else batch_view_path(runner, credentials.worker_id, batch_id))
-    observe_only = path.endswith('?observe_only=true')
-    if observe_only and observation_query_version != 1:
-        raise ValueError('HOOK_MODEL_OBSERVATION_UNSUPPORTED')
-    data = client.call(credentials, 'GET', path)
-    if observe_only and data.get('observation_only') is not True:
-        raise ValueError('HOOK_MODEL_OBSERVATION_UNCONFIRMED')
-    return data
+    admission_lock = getattr(runner, '_new_work_admission_lock', None)
+    with admission_lock if admission_lock is not None else nullcontext():
+        path = (f'/workers/{credentials.worker_id}/wechat/message-batches/{batch_id}?observe_only=true'
+                if observe_only else batch_view_path(runner, credentials.worker_id, batch_id))
+        observe_only = path.endswith('?observe_only=true')
+        if observe_only and observation_query_version != 1:
+            raise ValueError('HOOK_MODEL_OBSERVATION_UNSUPPORTED')
+        data = client.call(credentials, 'GET', path)
+        if observe_only and data.get('observation_only') is not True:
+            raise ValueError('HOOK_MODEL_OBSERVATION_UNCONFIRMED')
+        return data
 
 
 @contextmanager

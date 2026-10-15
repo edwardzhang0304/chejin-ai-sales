@@ -4600,6 +4600,12 @@ class TaskRunner:
         binding = self.binding
         control = load_runtime_control()
         durable = update_install_business_blockers()
+        services = getattr(self, 'hook_services', None)
+        if services is not None:
+            from .storage import hook_update_business_blockers
+            prepared = services.connection.prepared
+            durable.update(hook_update_business_blockers(
+                prepared.process.generation if prepared is not None else None))
         local_lock = lock_summary()
         sidecar_active = bool(
             getattr(self.bridge, "sidecar_active", lambda: True)()
@@ -4634,24 +4640,11 @@ class TaskRunner:
             "sidecar_active": sidecar_active,
             **durable,
         }
-        snapshot["settlement_complete"] = bool(
-            not snapshot["current_task"]
-            and not snapshot["inflight_flow_id"]
-            and not snapshot["task_lease_active"]
-            and not snapshot["ui_lock_active"]
-            and not snapshot["sidecar_active"]
-            and all(
-                int(snapshot.get(key) or 0) == 0
-                for key in (
-                    "waiting_ledger",
-                    "pending_c2_outbox",
-                    "pending_sqlite_action_journal",
-                    "pending_file_action_journal",
-                    "pending_sent_ack",
-                    "action_journal_state_unavailable",
-                )
-            )
-        )
+        from .update_safety import business_wait_reason
+        business_code, business_text = business_wait_reason(snapshot)
+        snapshot["settlement_complete"] = not business_code
+        snapshot["business_reason_code"] = business_code
+        snapshot["business_reason_text"] = business_text
         snapshot["safe"] = bool(
             snapshot["new_work_blocked"]
             and snapshot["backend_stopped_confirmed_or_unbound"]
@@ -4666,40 +4659,78 @@ class TaskRunner:
             elif not snapshot["backend_stopped_confirmed_or_unbound"]:
                 waiting_reason_code = "UPDATE_WAITING_BACKEND_RUN_STATUS_CONFIRMATION"
                 waiting_reason_text = "正在等待后端确认客户端已停止接单"
-            elif snapshot["current_task"] or snapshot["inflight_flow_id"]:
-                waiting_reason_code = "UPDATE_WAITING_ACTIVE_FLOW"
-                waiting_reason_text = "正在等待当前任务安全结束"
-            elif snapshot["task_lease_active"]:
-                waiting_reason_code = "UPDATE_WAITING_TASK_LEASE"
-                waiting_reason_text = "正在等待任务租约释放"
-            elif snapshot["ui_lock_active"]:
-                waiting_reason_code = "UPDATE_WAITING_UI_LOCK"
-                waiting_reason_text = "正在等待界面操作锁释放"
-            elif snapshot["sidecar_active"]:
-                waiting_reason_code = "UPDATE_WAITING_SIDECAR"
-                waiting_reason_text = "正在等待自动化操作安全结束"
             else:
-                waiting_reason_code = "UPDATE_WAITING_DURABLE_SETTLEMENT"
-                waiting_reason_text = "正在等待本地业务账本安全结算"
+                waiting_reason_code = business_code
+                waiting_reason_text = business_text
         snapshot["waiting_reason_code"] = waiting_reason_code
         snapshot["waiting_reason_text"] = waiting_reason_text
         return snapshot
 
+    def _pending_read_update_candidate(self, snapshot: dict[str, Any]) -> dict | None:
+        """Recognize only the existing stopped-read handoff, without network I/O."""
+        from .pending_read_recovery import inspect_pending_read
+        if (not self.binding or self.binding.run_status != 'faulted'
+                or self._run_status_persistence_pending or self._fault_recovery_processing
+                or any(snapshot.get(k) for k in (
+                    'current_task', 'task_lease_active', 'ui_lock_active', 'sidecar_active',
+                    'pending_sqlite_action_journal', 'pending_file_action_journal',
+                    'pending_sent_ack', 'action_journal_state_unavailable',
+                    'hook_unresolved_calls', 'hook_pending_delivery'))):
+            return None
+        try:
+            return inspect_pending_read(CONFIG.app_dir)
+        except Exception:
+            return None
+
+    def _update_check_safety_snapshot(self) -> dict[str, Any]:
+        snapshot = self.update_install_safety_snapshot()
+        code, text = snapshot['business_reason_code'], snapshot['business_reason_text']
+        if snapshot['new_work_blocked']:
+            code, text = 'UPDATE_ALREADY_IN_PROGRESS', '已有更新或恢复交接正在进行'
+        elif code and self._pending_read_update_candidate(snapshot) is not None:
+            # This permits discovery only. Installation still requires the signed
+            # target capability, backend proof and final stopped-writer recheck.
+            code, text = '', '旧读取记录已保留，更新前仍需核验目标版本能否接续'
+        return {**snapshot, 'allowed': not code, 'reason_code': code, 'reason_text': text}
+
+    def update_check_safety_snapshot(self) -> dict[str, Any]:
+        # Do not freeze Qt while task admission owns the lock during an HTTP call.
+        if not self._new_work_admission_lock.acquire(blocking=False):
+            return {'allowed': False, 'reason_code': 'UPDATE_ADMISSION_BUSY',
+                    'reason_text': '正在登记或执行受保护操作，请稍后检查更新'}
+        try:
+            return self._update_check_safety_snapshot()
+        finally:
+            self._new_work_admission_lock.release()
+
+    def begin_update_check(self, begin_request: Callable[[], dict]) -> tuple[dict, dict | None]:
+        """Check and reserve intake under the SAME lock used by new Flow admission."""
+        if not self._new_work_admission_lock.acquire(blocking=False):
+            return ({'allowed': False, 'reason_code': 'UPDATE_ADMISSION_BUSY',
+                     'reason_text': '正在登记或执行受保护操作，请稍后检查更新'}, None)
+        try:
+            snapshot = self._update_check_safety_snapshot()
+            if not snapshot['allowed']:
+                return snapshot, None
+            state = begin_request()
+            set_update_new_work_gate(True, update_request_id=state['update_request_id'])
+            return snapshot, state
+        finally:
+            self._new_work_admission_lock.release()
+
     def update_pending_read_handoff_snapshot(self, package_manifest: dict[str, Any]) -> dict[str, Any]:
         """Preserve one stopped read for a proven compatible target."""
-        from .pending_read_recovery import inspect_pending_read, accepts_handoff, backend_accepts_handoff
+        from .pending_read_recovery import accepts_handoff, backend_accepts_handoff
         with self._restart_recovery_lock:
             snapshot = self.update_install_safety_snapshot()
             if snapshot['safe']:
                 return snapshot
-            if (not self.binding or self.binding.run_status != 'faulted'
-                    or self._run_status_persistence_pending or self._fault_recovery_processing
-                    or not snapshot['new_work_blocked']
-                    or any(snapshot.get(k) for k in ('current_task', 'task_lease_active', 'ui_lock_active', 'sidecar_active',
-                        'pending_sqlite_action_journal', 'pending_file_action_journal', 'pending_sent_ack', 'action_journal_state_unavailable'))):
+            if not snapshot['new_work_blocked']:
+                return snapshot
+            handoff = self._pending_read_update_candidate(snapshot)
+            if handoff is None:
                 return snapshot
             try:
-                handoff = inspect_pending_read(CONFIG.app_dir)
                 if not accepts_handoff(package_manifest.get('pending_read_recovery'), handoff):
                     return snapshot
                 profile = self.api.set_run_status(self.binding, 'faulted')
@@ -4711,7 +4742,6 @@ class TaskRunner:
                         'pending_read_handoff': handoff, 'waiting_reason_code': '',
                         'waiting_reason_text': '已保留原流程，交由兼容版本继续结算'}
             except Exception as exc:
-                # Report only the exception type, never a payload or credential.
                 snapshot['handoff_check_error'] = type(exc).__name__
                 return snapshot
 

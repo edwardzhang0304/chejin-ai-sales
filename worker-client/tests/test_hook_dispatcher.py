@@ -182,3 +182,53 @@ def test_history_cache_does_not_adopt_callback_arriving_during_read(tmp_path):
     dispatcher._sync_cache[key]=((0,0),0,{'history_ready':True})
     assert dispatcher._read_history(binding)['history_state_digest']=='older'
     assert not dispatcher._sync_cache
+
+
+@pytest.mark.parametrize('update_wins', [False, True])
+def test_voice_admission_and_update_share_lock(lab, backend_peer, tmp_path, monkeypatch, update_wins):
+    """An update arriving between voice discovery and admission wins before DLL I/O."""
+    from contextlib import contextmanager
+    import chejin_worker_client.hook_dispatcher as module
+    manager, credentials, state, _ = setup(lab, backend_peer)
+    prepared = manager.prepare(credentials,state);scope=prepared.registration.scope
+    account={k:getattr(scope,k) for k in ('self_wxid','account_epoch','process_generation')}
+    binding={'binding_id':'synthetic-binding','binding_revision':1,'peer_wxid':'wxid_customer_A',
+        'conversation_id':'synthetic-conversation','history_since_create_time':'1','history_ready':True,
+        'voice_jobs':[{'native_msg_id':'123'}],'batch_ids':[]}
+    gate={'closed':False,'locked':False};calls=[]
+    @contextmanager
+    def admission():
+        gate.update(locked=True,closed=update_wins)
+        try:yield
+        finally:gate['locked']=False
+    class Client:
+        def call(self,credentials,method,path,body=None,**kwargs):
+            if path.endswith('native-work'):
+                return {'schema_version':'hook-native-work-v1','observation_query_version':1,**account,
+                    'run_status':'running','inflight_flow':{},'bindings':[binding],
+                    'invitations':[],'retained_sends':[],'inflight_task':None}
+            return {'task':None}
+        def voice_result(self,*args):return {'accepted':True}
+    class Runtime:
+        def __init__(self,*a,**kw):
+            self.credentials=credentials;self.account=account;self.scope=scope
+            self.active_flow_id=None;self.active_task_id=None;self.clock=SimpleNamespace(observe=lambda x:None)
+        def barrier(self,b):return (0,0)
+        def sync(self,b):return {'history_ready':True}
+        def timing_context(self,b):return {}
+    runner=SimpleNamespace(binding=SimpleNamespace(run_status='running'),stop_event=threading.Event(),
+        api=SimpleNamespace(),_new_work_admission_lock=admission(),
+        _can_start_new_flow=lambda:not gate['closed'],can_pull_tasks=lambda:True,
+        _worker_transaction_barrier_ready=lambda *a,**kw:True)
+    services=SimpleNamespace(connection=manager,_credentials=credentials,startup_window_ready_for=lambda _:True)
+    dispatcher=HookBusinessDispatcher(Client(),tmp_path/'continuous',lambda *a:None,lambda *a:None,
+        automatic_transcription_disabled=lambda:True,runtime_factory=Runtime)
+    def transcribe(*a,**kw):
+        assert gate['locked'] and not gate['closed']
+        calls.append('voice');return {'state':'transcribed','text':'synthetic'}
+    dispatcher.voice=SimpleNamespace(saved_parent=lambda *a:None,max_audio_bytes=4096,transcribe_once=transcribe)
+    monkeypatch.setattr(module, 'capture_voice_audio',lambda *a,**kw:object())
+    try:
+        dispatcher.tick(runner,services)
+        assert calls == ([] if update_wins else ['voice'])
+    finally:manager.close()

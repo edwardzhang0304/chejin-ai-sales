@@ -480,6 +480,10 @@ class WorkerWindow(QMainWindow):
         if auto_start_runtime:
             self.start_runtime_services()
         self.refresh_view()
+        self._update_admission_timer = QTimer(self)
+        self._update_admission_timer.setInterval(1000)
+        self._update_admission_timer.timeout.connect(self.refresh_update_controls)
+        self._update_admission_timer.start()
 
     def start_runtime_services(self) -> None:
         runtime_startup.start_runtime_services(self)
@@ -1169,6 +1173,18 @@ class WorkerWindow(QMainWindow):
         self.update_coordinator.report_normal_exit_result(stopped=True)
         self.close()
 
+    def refresh_update_controls(self) -> None:
+        if not hasattr(self, 'update_button') or not self.update_button.isVisible():
+            return
+        admission = self.update_coordinator.check_admission(self.update_state)
+        reason = str(admission.get('reason_text') or '')
+        self.update_button.setEnabled(admission.get('allowed') is True)
+        self.update_button.setToolTip(reason)
+        self.update_button.setText('更新中' if self.update_state.get('in_progress') else '检查更新')
+        status = str(self.update_state.get('status_text') or '')
+        self.update_status_label.setText(
+            status if self.update_state.get('in_progress') else reason or status)
+
     def refresh_view(self) -> None:
         run_status = self.binding.run_status if self.binding else "paused"
         is_running = run_status == "running"
@@ -1177,17 +1193,7 @@ class WorkerWindow(QMainWindow):
         online = self.connection_status == "online"
         offline = self.connection_status == "offline"
         profile = self.profile
-        if hasattr(self, "update_button"):
-            self.update_button.setEnabled(
-                self.update_state.get("available") is not False
-                and not bool(self.update_state.get("in_progress"))
-            )
-            self.update_button.setText(
-                "更新中" if self.update_state.get("in_progress") else "检查更新"
-            )
-            self.update_status_label.setText(
-                str(self.update_state.get("status_text") or "")
-            )
+        self.refresh_update_controls()
         active_task = self.current_task
         display_task = active_task or self.last_task
         result = self.last_result

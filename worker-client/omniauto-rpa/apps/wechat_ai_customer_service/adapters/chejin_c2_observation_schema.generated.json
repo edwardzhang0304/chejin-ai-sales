@@ -1,8 +1,8 @@
 {
   "generated_file": true,
   "source": "contracts/c2_contract_v3.json",
-  "contract_revision": "0.10.3",
-  "contract_sha256": "c03756baf58f664d7bb2981416cdf064c6133b1b9b4a5439ee07616ad6f373bc",
+  "contract_revision": "0.10.4",
+  "contract_sha256": "dc4a27b7e4001e78defb1d3963432093b1af9d2cf4d1fe6017d585e9ead0296f",
   "observation_schema_version": 3,
   "action_phases": [
     "not_attempted",

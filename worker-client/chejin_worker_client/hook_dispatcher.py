@@ -3,6 +3,7 @@
 Model polling never waits for one customer. Physical actions retain the original
 Flow, Task lease and UI lease; restart recovery can deliver receipts only.
 """
+from contextlib import nullcontext
 from dataclasses import replace
 import hashlib
 from pathlib import Path
@@ -460,22 +461,24 @@ class HookBusinessDispatcher:
                         if audio is None:
                             emit_progress(runner,job['native_msg_id'],'voice','waiting','voice_wait')
                             pending_work=True;continue
-                        if saved is None and (bool(binding.get('open_handoffs')) or inventory['run_status']!='running' or not runner._can_start_new_flow() or not getattr(runner,'can_pull_tasks',lambda:True)()):
-                            emit_progress(runner,job['native_msg_id'],'voice','waiting','paused_work')
-                            pending_work=True;continue
-                        try:
-                            rt._progress_context=job['native_msg_id']
-                            emit_progress(runner,job['native_msg_id'],'voice')
-                            result=timed_call('hook.voice_transcription',
-                                lambda: self.voice.transcribe_once(services.connection.gateway,prepared.process,audio,
-                                    automatic_transcription_disabled=self.automatic_transcription_disabled),
-                                context=rt.timing_context(synced))
-                        except Exception:
-                            saved=self.voice._read(audio)
-                            if saved and saved['state']=='uncertain':
-                                self._sync_cache.pop(key,None)
-                                self.client.voice_result(rt.credentials,rt.account,binding,saved)
-                            raise
+                        admission_lock = getattr(runner, '_new_work_admission_lock', None)
+                        with admission_lock if admission_lock is not None else nullcontext():
+                            if saved is None and (bool(binding.get('open_handoffs')) or inventory['run_status']!='running' or not runner._can_start_new_flow() or not getattr(runner,'can_pull_tasks',lambda:True)()):
+                                emit_progress(runner,job['native_msg_id'],'voice','waiting','paused_work')
+                                pending_work=True;continue
+                            try:
+                                rt._progress_context=job['native_msg_id']
+                                emit_progress(runner,job['native_msg_id'],'voice')
+                                result=timed_call('hook.voice_transcription',
+                                    lambda: self.voice.transcribe_once(services.connection.gateway,prepared.process,audio,
+                                        automatic_transcription_disabled=self.automatic_transcription_disabled),
+                                    context=rt.timing_context(synced))
+                            except Exception:
+                                saved=self.voice._read(audio)
+                                if saved and saved['state']=='uncertain':
+                                    self._sync_cache.pop(key,None)
+                                    self.client.voice_result(rt.credentials,rt.account,binding,saved)
+                                raise
                     emit_progress(runner,job['native_msg_id'],'voice','done' if result['state']=='transcribed' else 'error' if result['state']=='failed' else 'waiting',None if result['state']=='transcribed' else 'voice_wait',occurred_at=result.get('completed_at'))
                     # Publishing a transcript changes the admitted history even
                     # when no additional WeChat callback arrives.

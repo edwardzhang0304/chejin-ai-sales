@@ -3106,6 +3106,32 @@ def update_install_business_blockers() -> dict[str, int]:
     return counts
 
 
+def hook_update_business_blockers(process_generation: str | None) -> dict[str, int]:
+    """Count Hook facts; historical isolated calls remain preserved across updates.
+
+    A verified new process supersedes the old DLL process, not its records.
+    Without a verified process, unknown calls cannot be assumed historical.
+    """
+    counts = {'hook_unresolved_calls': 0, 'hook_pending_delivery': 0}
+    with db_connection() as conn:
+        tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        for table, states in (('hook_active_calls', ('calling', 'uncertain')),
+                              ('hook_voice_attempts', ('transcribing', 'uncertain'))):
+            if table not in tables:
+                continue
+            sql = 'SELECT COUNT(*) FROM ' + table + ' WHERE state IN (?,?)'
+            args = list(states)
+            if process_generation is not None:
+                sql += ' AND process_generation=?'
+                args.append(process_generation)
+            counts['hook_unresolved_calls'] += int(conn.execute(sql, args).fetchone()[0])
+        if 'hook_delivery_outbox' in tables:
+            counts['hook_pending_delivery'] = int(conn.execute(
+                "SELECT COUNT(*) FROM hook_delivery_outbox WHERE status != 'stored'"
+            ).fetchone()[0])
+    return counts
+
+
 def has_pending_reply_send_ack_for_task_id(task_id: str) -> bool:
     clean_id = str(task_id or "").strip()
     if not clean_id:
