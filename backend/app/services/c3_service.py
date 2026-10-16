@@ -1034,7 +1034,11 @@ def _restore_conversation_after_no_action(
     conversation: Conversation,
     batch: MessageBatch,
 ) -> None:
-    origin = str(batch.origin_conversation_status or "")
+    origin = str(
+        batch.origin_conversation_status
+        or (conversation.recall_origin_status if batch.trigger_type == "recall" else None)
+        or ""
+    )
     if origin in {
         "waiting_user_reply",
         "recalled_waiting_user",
@@ -1587,6 +1591,11 @@ def create_control_message_batch(
         trigger_type=trigger_type,
         trigger_key=trigger_key,
         recall_cycle_id=recall_cycle_id,
+        # The precheck already moved the conversation to recall_precheck.
+        # Preserve its saved business state for the shared no-action settlement.
+        origin_conversation_status=(
+            conversation.recall_origin_status if trigger_type == "recall" else None
+        ),
         knowledge_release_id=current_release_for_batch(db).id,
         message_event_ids=[],
         message_count=0,

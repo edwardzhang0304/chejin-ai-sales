@@ -20,7 +20,7 @@ from app.services.reply_sequence_policy import sequence_policy
 @contextmanager
 def controlled_recovery_provider(monkeypatch, answer, requests, *, review_verdict="pass", malformed_review=False, review_envelope_error=None, review_envelope_after=0, require_welcome_context=False):
     plan = {"can_answer": True, "answer_mode": "collect_customer_info",
-        "evidence_used": {"common_sense_topics": ["购车注意事项"]}, "facts_claimed": [], "reply_segments": [answer],
+        "evidence_used": {"common_sense_topics": ["购车注意事项"]}, "facts_claimed": [], "reply_segments": list(answer) if isinstance(answer, (list, tuple)) else [answer],
         "risk": {"risk_level": "low", "risk_tags": [], "needs_handoff": False},
         "recommended_action": "send_reply", "confidence": .95}
 

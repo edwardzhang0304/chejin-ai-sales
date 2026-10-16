@@ -22,6 +22,17 @@ def reply_trigger_context(trigger_type: Any) -> dict[str, str]:
     This metadata is not customer speech and grants no product/fact authority.
     Missing/unknown values retain the OCR/customer-message behavior.
     """
+    if trigger_type == "recall":
+        return {
+            "trigger_type": "recall",
+            "instruction": (
+                "这是服务端在客户一段时间未回复后触发的主动回访，不是新的客户咨询。"
+                "当前客户消息可以为空；请依据真实会话历史与当前有效知识，判断是否适合简短、自然地跟进。"
+                "不要假装客户刚发来消息，不要编造客户需求、预算、车型、进展或任何商品和业务承诺。"
+                "客户已拒绝联系、需要人工处理或不适合继续跟进时，应遵循原有停止联系、人工和不发送规则。"
+                "历史与知识的事实依据要求、原有安全审核仍然适用；若已有新的客户问题，应优先处理实际问题。"
+            ),
+        }
     if trigger_type != "friend_welcome":
         return {"trigger_type": "customer_message"}
     return {

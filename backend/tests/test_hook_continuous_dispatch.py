@@ -7,6 +7,13 @@ from sqlalchemy import select
 from app.core.database import SessionLocal
 from app.models.task import Task
 from app.models.wechat import MessageEvent
+from app.models.c3 import Conversation, MessageBatch, ReplyAction, SentAck
+from app.core.config import get_settings
+from app.services.ai_adapter import RealOmniAutoAIEngineAdapter
+from app.services import c3_service, wechat_service
+from test_partial_reply_recovery_provider import recovery_provider_factory
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from test_hook_business_http import clean,claimed,post
 from test_hook_account_client import identity_client
 from test_hook_gateway import lab
@@ -20,10 +27,9 @@ from apps.wechat_ai_customer_service.tests.test_hook_c1_flow import ReplayUI
 
 
 @pytest.mark.parametrize('segments',[1,3])
-def test_repeated_ticks_invite_bind_reply_recover_without_duplicate(identity_client,lab,tmp_path,monkeypatch,segments):
+def test_repeated_ticks_invite_bind_reply_recover_without_duplicate(identity_client,lab,tmp_path,monkeypatch,segments,recovery_provider_factory):
     if segments==3:
         from test_reply_sequence_http import SequenceModel
-        from app.services import c3_service
         monkeypatch.setattr(c3_service,'get_ai_engine_adapter',SequenceModel)
     server,gateway,process,scope,*_=lab
     w,t,a=claimed(process_generation=process.generation,pending=True)
@@ -81,9 +87,63 @@ def test_repeated_ticks_invite_bind_reply_recover_without_duplicate(identity_cli
         assert db.get(Task,t['id']).result_code=='invite_sent'
         assert len(list(db.scalars(select(MessageEvent).where(MessageEvent.sender_role=='self'))))==segments
     assert not storage.load_runtime_control().get('inflight_flow_id')
+    # The same persisted invitation/history/receipt now becomes a due recall.
+    original_now=wechat_service.utcnow
+    due_clock=(datetime.now(timezone.utc)+timedelta(days=4)).replace(hour=2,minute=0)
+    monkeypatch.setattr(wechat_service,'utcnow',lambda:due_clock)
+    from test_reply_sequence_brain_provider import PARTS
+    requests=recovery_provider_factory(PARTS if segments==3 else '之前聊过购车的事情，您最近还有想了解的吗？可以按您的节奏慢慢聊。')
+    runtime_root=str(Path(__file__).resolve().parents[2]/'worker-client/omniauto-rpa')
+    monkeypatch.setenv('C3_OMNIAUTO_ROOT',runtime_root)
+    monkeypatch.setattr(get_settings(),'c3_omniauto_root',runtime_root)
+    monkeypatch.setattr(c3_service,'get_ai_engine_adapter',RealOmniAutoAIEngineAdapter)
+    deadline=time.monotonic()+45
+    recall_id=None
+    while time.monotonic()<deadline:
+        dispatcher.tick(runner,services)
+        with SessionLocal() as db:
+            recalls=list(db.scalars(select(MessageBatch).where(MessageBatch.trigger_type=='recall')))
+            if recalls:
+                assert len(recalls)==1
+                recall_id=recalls[0].id
+                # Only advance the eligibility check, never all later scheduling.
+                monkeypatch.setattr(wechat_service,'utcnow',original_now)
+                actions=list(db.scalars(select(ReplyAction).where(ReplyAction.batch_id==recall_id)))
+                if len(actions)==segments and all(a.status=='sent' for a in actions):break
+        time.sleep(.05)
+    else:raise AssertionError('Dispatcher did not settle the real recall chain')
+    for _ in range(3):dispatcher.tick(runner,services)
+    assert len([x for x in server.requests if x[0]=='/SendTextMsg'])==2*segments
+    assert [p['model'] for p in requests]==['recovery-author','recovery-reviewer']
+    for request in requests:
+        prompt,_=json.JSONDecoder().raw_decode(request['messages'][-1]['content'].lstrip())
+        context=(prompt['brain_input']['current_message'] if request['model']=='recovery-author'
+                 else prompt['review_request']['reply_trigger'])
+        assert context['trigger_type']=='recall' and context.get('instruction')
+    with SessionLocal() as db:
+        recall=db.get(MessageBatch,recall_id)
+        conv=db.get(Conversation,recall.conversation_id)
+        assert recall.origin_conversation_status=='waiting_user_reply'
+        assert conv.status=='recalled_waiting_user' and conv.recall_count==conv.recall_daily_count==1
+        assert conv.next_recall_at==conv.last_ai_reply_at+timedelta(hours=get_settings().c3_recall_after_hours)
+        actions=list(db.scalars(select(ReplyAction).where(ReplyAction.batch_id==recall_id).order_by(ReplyAction.segment_index)))
+        evidence={'scope':'actual continuous dispatcher and Brain/reviewer; synthetic Windows and external model',
+            'conversation_id':conv.conversation_id,'invite_task_id':t['id'],'batch_id':recall.id,
+            'cycle_id':recall.recall_cycle_id,'recall_count':conv.recall_count,'next_recall_at':str(conv.next_recall_at),
+            'actions':[]}
+        for action in actions:
+            ack=db.scalar(select(SentAck).where(SentAck.reply_action_id==action.id))
+            journal=json.loads(next((tmp_path/'continuous'/'sends').glob(f'*/*/{action.id}/intent.json')).read_text())
+            assert .5<=journal['delay_seconds']<=3
+            assert ack and action.ai_payload['native_send_settlement']['result']['local_send_observed']
+            evidence['actions'].append({'id':action.id,'task_id':action.claimed_task_id,'segment_index':action.segment_index,
+                'ack_id':ack.id,'native_msg_id':action.ai_payload['native_send_settlement']['result']['native_msg_id'],
+                'delay_seconds':journal['delay_seconds'],'attempted_at':journal['attempted_at'],'sent_at':str(action.sent_at)})
+        (tmp_path/'recall-dispatch-evidence.json').write_text(json.dumps(evidence,ensure_ascii=False,indent=2))
+    assert not storage.load_runtime_control().get('inflight_flow_id')
     # Original GUI pause is honored: no pending C1 and no new physical action.
     post(w,f"/workers/{w['id']}/run-status",{'run_status':'paused'})
     runner.binding.run_status='paused'
     for _ in range(3):dispatcher.tick(runner,services)
-    assert len([x for x in server.requests if x[0]=='/SendTextMsg'])==segments
+    assert len([x for x in server.requests if x[0]=='/SendTextMsg'])==2*segments
     table.close()

@@ -676,7 +676,8 @@
     "worker_backend_managed_vision_credentials_contract",
     "provider_progress_response_diagnostics_best_effort_contract",
     "add_friend_technical_failure_stops_intake_contract",
-    "persisted_c1_failure_receipt_settlement_and_stop_recovery_contract"
+    "persisted_c1_failure_receipt_settlement_and_stop_recovery_contract",
+    "recall_author_and_reviewer_shared_trigger_context"
   ],
   "current_release": {
     "version": "0.10.4",
