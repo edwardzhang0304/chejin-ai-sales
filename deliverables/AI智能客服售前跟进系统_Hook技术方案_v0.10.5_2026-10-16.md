@@ -199,7 +199,7 @@ Voice2Text 前验证本人账号/进程、完整音频与摘要、托管资格�
 
 召回默认连续 72 小时无新互动、单客户最多 3 周期、每日最多 1 次、21:00—09:00 静默。到期只产生 recall_precheck：完成最新消息/历史覆盖、托管资格、无未完成媒体/未知发送及状态复核后，才创建 trigger_type=recall 的批次，走同一 Brain/Guard/发送。等待用户类状态按资格可召回，waiting_sales_reply/rejected/closed 等不放行；新客户或销售消息取消旧召回意图。计数只按原成功结算推进。
 
-待发布召回修复：`reply_trigger_context` 统一保留 `recall`，生成提示词与质量审核使用同一主动回访说明；空当前消息不伪造成客户咨询，真实历史、知识事实与安全要求继续生效。统一 `create_control_message_batch` 保存预检前的 `recall_origin_status`；AI 决定 `no_action` 时沿用原结算入口恢复 waiting_user_reply / sales_replied_waiting_user / recalled_waiting_user，不计召回次数，按现有间隔重新安排时间。此修复不改变已发布 0.10.5 的包；源码、真实 AI 与 Windows 实机验收需分别记录。
+本版包含的召回修复：`reply_trigger_context` 统一保留 `recall`，生成提示词与质量审核使用同一主动回访说明；空当前消息不伪造成客户咨询，真实历史、知识事实与安全要求继续生效。统一 `create_control_message_batch` 保存预检前的 `recall_origin_status`；AI 决定 `no_action` 时沿用原结算入口恢复 waiting_user_reply / sales_replied_waiting_user / recalled_waiting_user，不计召回次数，按现有间隔重新安排时间。此修复已在0.10.4后端单独上线，本次一并纳入0.10.5源码候选；不改写旧安装包。源码、真实AI与Windows实机验收需分别记录。
 
 ## 9. 微信动作锁、发送与结果结算
 
