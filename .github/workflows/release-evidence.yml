@@ -98,7 +98,7 @@ jobs:
       - name: Click original settings button with original updater
         run: |
           foreach ($case in @('paused','faulted')) {
-            python worker-client/scripts/run-windows-client-upgrade-test.py --plan "$env:RUNNER_TEMP/hook-upgrade/plan.json" --case $case --old-package-root "$env:RUNNER_TEMP/hook-upgrade/old/CheJinWorkerClient" --old-source-root "$env:RUNNER_TEMP/hook-upgrade/old-source/worker-client" --archive "$env:RUNNER_TEMP/hook-upgrade/target/artifact.zip" --release "$env:RUNNER_TEMP/hook-upgrade/release.json" --work-root "$env:RUNNER_TEMP/hook-upgrade/gui" --hook-unbound
+            python worker-client/scripts/run-windows-client-upgrade-test.py --plan "$env:RUNNER_TEMP/hook-upgrade/plan.json" --case $case --old-package-root "$env:RUNNER_TEMP/hook-upgrade/old/CheJinWorkerClient" --old-source-root "$env:RUNNER_TEMP/hook-upgrade/old-source/worker-client" --archive "$env:RUNNER_TEMP/hook-upgrade/target/artifact.zip" --release "$env:RUNNER_TEMP/hook-upgrade/release.json" --work-root "$env:RUNNER_TEMP/hook-upgrade/gui" --hook-bound
             if ($LASTEXITCODE -ne 0) { throw "HOOK_ORIGINAL_UPDATER_CHECK_FAILED:$case" }
           }
       - uses: actions/upload-artifact@v4
@@ -111,6 +111,8 @@ jobs:
             ${{ runner.temp }}/hook-upgrade/gui/**/before.png
             ${{ runner.temp }}/hook-upgrade/gui/**/after.png
             ${{ runner.temp }}/hook-upgrade/gui/**/result.json
+            ${{ runner.temp }}/hook-upgrade/gui/**/data-checkpoints.json
+            ${{ runner.temp }}/hook-upgrade/gui/**/requests.jsonl
             ${{ runner.temp }}/hook-upgrade/gui/**/process.log
           if-no-files-found: error
           retention-days: 90

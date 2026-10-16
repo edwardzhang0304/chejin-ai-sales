@@ -29,7 +29,8 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "ops/formal_release"))
 from release_plan import load as load_release_plan
 from workflow_scripts import windows_powershell_environment
-WORKER_ID = "formal-upgrade-isolated-worker"
+import hook_upgrade_fixture
+WORKER_ID = "00000000-0000-4000-8000-000000000001"
 INSTANCE_ID = "formal-upgrade-isolated-instance"
 TOKEN = "synthetic-loopback-worker-token"
 RUNTIME_CONTROL_KEY = "runtime_control_v1"
@@ -227,7 +228,7 @@ def serve(spec):
     uvicorn.run(app, host="127.0.0.1", port=spec["port"], ssl_certfile=spec["cert"], ssl_keyfile=spec["key"], access_log=False, log_level="warning")
 
 
-def seed_old_data(source, data, status, env, hook_unbound=False):
+def seed_old_data(source, data, status, env, hook_unbound=False, hook_bound=False):
     code = """
 from chejin_worker_client.models import Binding
 from chejin_worker_client.storage import save_binding,save_accept_schedule,request_runtime_pause,connect
@@ -238,6 +239,11 @@ if sys.argv[5] != 'hook-unbound':
 save_accept_schedule(enabled=True,start='09:10',end='18:20')
 request_runtime_pause()
 now=datetime.now(timezone.utc).isoformat()
+if sys.argv[5] == 'hook-bound':
+ import os
+ sys.path.insert(0,sys.argv[6])
+ from hook_upgrade_fixture import seed
+ seed(os.environ['CHEJIN_WORKER_HOME'],os.environ['CHEJIN_API_BASE_URL'],sys.argv[1],sys.argv[3],now)
 with connect() as db:
  if sys.argv[5] == 'hook-unbound':
   import os,json
@@ -249,7 +255,8 @@ with connect() as db:
  db.execute("INSERT INTO c2_message_ledger(conversation_id,source_message_key,origin_read_run_id,dedupe_key,message_type,terminal_state,ingest_state,result_json,first_seen_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?)",('isolated-history','isolated-message','isolated-read','isolated-dedupe','text','completed','confirmed','{}',now,now))
 """
     subprocess.run([sys.executable, "-c", code, WORKER_ID, TOKEN, INSTANCE_ID, status,
-                    'hook-unbound' if hook_unbound else 'bound'],
+                    'hook-unbound' if hook_unbound else ('hook-bound' if hook_bound else 'bound'),
+                    str(ROOT / 'ops/formal_release')],
                    env={**env, "PYTHONPATH": str(source)}, cwd=source, check=True)
     (data / "incidents").mkdir(exist_ok=True)
     (data / "incidents" / "existing-evidence.json").write_text('{"synthetic":true}', encoding="utf-8")
@@ -264,6 +271,7 @@ def preserved_values(data):
             "history": db.execute("select * from c2_runtime_state where key='upgrade_gate_history'").fetchall(),
             "ledger": db.execute("select * from c2_message_ledger where conversation_id='isolated-history'").fetchall(),
             "evidence": digest(data / "incidents" / "existing-evidence.json"),
+            "hook": hook_upgrade_fixture.snapshot(data),
         }
 
 
@@ -341,9 +349,9 @@ def run_case(args, status):
     env.pop("CHEJIN_WORKER_UI_MODE", None)
     env.pop("CHEJIN_RELEASE_SIGNING_PUBLIC_KEY_BASE64", None)
     env.pop("CHEJIN_RELEASE_SIGNING_KEYS_PATH", None)
-    if args.hook_unbound:
+    if args.hook_unbound or args.hook_bound:
         env['CHEJIN_C2_ENABLED'] = 'false'
-    seed_old_data(args.old_source_root, data, status, env, args.hook_unbound)
+    seed_old_data(args.old_source_root, data, status, env, args.hook_unbound, args.hook_bound)
     before = preserved_values(data)
     checkpoints = {"synthetic_test_data_only": True, "seeded": before}
     processes = []
@@ -382,7 +390,22 @@ def run_case(args, status):
             page.click_button("打开设置")
             page.wait_text("V" + current_version)
             page.screenshot(case / "before.png")
+            if args.hook_bound:
+                # No WeChat is installed/running in this runner. A real local
+                # environment fault is expected, never forged as healthy.
+                old_fault = wait_for(lambda: hook_upgrade_fixture.environment_fault(data,
+                    not_before=psutil.Process(old.pid).create_time()),
+                    'fresh original-process missing-WeChat result', 30)
             checkpoints["before_button"] = preserved_values(data)
+            if args.hook_bound:
+                hook_upgrade_fixture.assert_environment_fault(before, checkpoints['before_button'])
+                report['pre_update_fault'] = old_fault
+                report['pre_update_environment'] = {'wechat': 'not_installed_no_process_or_dll_simulated',
+                    'seeded_run_status': status, 'actual_run_status_at_button': 'faulted',
+                    'business_send_or_receive_verified': False}
+                # Record both sides; only the independently allowed environment
+                # status transition precedes the immutable updater baseline.
+                before = checkpoints['before_button']
             assert_preserved(before, checkpoints["before_button"])
             if args.manual_install:
                 # A normal WM_CLOSE invokes the original Qt close/shutdown path.
@@ -470,7 +493,14 @@ def run_case(args, status):
             assert marker["runtime_health"]["binding_state"] == ("unbound" if args.hook_unbound else "bound")
             if args.hook_unbound:
                 assert marker['runtime_health']['required_threads'] == []
-            for name in (() if args.hook_unbound else ("task_runner", "c2_listener", "thread_monitor")):
+            if args.hook_bound:
+                hook_upgrade_fixture.assert_health(marker)
+                new_worker = psutil.Process(marker['pid'])
+                assert Path(new_worker.exe()).resolve() == (current / 'CheJinWorkerClient.exe').resolve()
+                report['post_update_fault'] = wait_for(lambda: hook_upgrade_fixture.environment_fault(data,
+                    not_before=new_worker.create_time(), excluded_ids=old_fault['log_ids']),
+                    'fresh new-process missing-WeChat result', 30)
+            for name in (() if args.hook_unbound or args.hook_bound else ("task_runner", "c2_listener", "thread_monitor")):
                 health = marker["runtime_health"]["threads"][name]
                 assert health["entered_loop"] and health["alive"]
             assert Path(plan["data_baseline_path"]).is_file()
@@ -492,6 +522,10 @@ def run_case(args, status):
                           protected_data_preserved=True, target_ui_confirmed=True, actual_backend_download=True,
                           target_commit=target_manifest["git_commit"], runtime_threads_alive=True,
                           immutable_handoff_baseline=True, paused_intent_and_idle_gate_preserved=True)
+            if args.hook_bound:
+                report.update(hook_bound_upgrade=True, hook_runtime_threads=list(hook_upgrade_fixture.THREADS),
+                    bound_device_acceptance='passed_stopped_faulted_wechat_unavailable_only',
+                    hook_physical_dll_ports_and_business='not_tested')
             if args.hook_unbound:
                 report.update(hook_unbound_only=True, bound_device_acceptance='pending_real_windows')
             if args.updater_repair:
@@ -542,8 +576,12 @@ def main():
     parser.add_argument("--manual-install", action="store_true")
     parser.add_argument("--target-package-root", type=Path)
     parser.add_argument("--updater-repair", type=Path)
-    parser.add_argument("--hook-unbound", action="store_true")
+    hook_mode = parser.add_mutually_exclusive_group()
+    hook_mode.add_argument("--hook-unbound", action="store_true")
+    hook_mode.add_argument("--hook-bound", action="store_true")
     args = parser.parse_args()
+    if args.hook_bound and (args.updater_repair or args.manual_install):
+        parser.error("bound Hook gate requires original updater and real button; no repair/manual substitution")
     if args.serve_driver_fixture:
         serve_driver_fixture()
         return
