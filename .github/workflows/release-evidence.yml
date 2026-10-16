@@ -22,7 +22,7 @@ on:
     inputs:
       check_kind:
         type: choice
-        options: [tooling, source, sign-existing, repair-updater, launcher, hook-upgrade]
+        options: [tooling, source, sign-existing, repair-updater, launcher, hook-upgrade, update-access]
         default: tooling
       source_test_plan:
         description: 'Reviewed explicit pytest selection: {"reason":"...","not_tested":"...","pytest":[{"cwd":"worker-client","nodes":["tests/test_example.py::test_case"]}]}'
@@ -53,6 +53,19 @@ env:
   CHEJIN_RELEASE_TRANSPORT: ${{ github.ref_name == 'gray-release-0.10.x' && 'hook' || 'ocr' }}
 
 jobs:
+  update-access:
+    name: Check only update access diagnostic
+    if: github.event_name == 'workflow_dispatch' && inputs.check_kind == 'update-access' && github.ref_name == 'gray-release-0.10.x'
+    runs-on: windows-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - name: Check synthetic rename and diagnostic safety on Windows
+        shell: powershell
+        run: |
+          & powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File ops/formal_release/tests/test-update-access.ps1
+          if ($LASTEXITCODE -ne 0) { throw 'UPDATE_ACCESS_DIAGNOSTIC_FAILED' }
   launcher:
     name: Check only Hook launcher directory handoff
     if: github.event_name == 'workflow_dispatch' && inputs.check_kind == 'launcher' && github.ref_name == 'gray-release-0.10.x'
