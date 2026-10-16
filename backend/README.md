@@ -58,7 +58,7 @@ python3 -m pip install -e '.[test]'
 uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 ```
 
-本地单元测试可以使用 SQLite；0.10.4 集成联调与部署统一使用 Docker Compose + PostgreSQL 15，不能用 SQLite 测试结果替代 PostgreSQL 验证。发布步骤见 [Hook 灰度交付](../ops/formal_release/HOOK-GRAY-0.10.4.md)。
+本地单元测试可以使用 SQLite；0.10.4 集成联调与部署统一使用 Docker Compose + PostgreSQL 15，不能用 SQLite 测试结果替代 PostgreSQL 验证。发布步骤见 [Hook 完整技术方案](../deliverables/AI智能客服售前跟进系统_Hook技术方案_v0.10.4_2026-10-16.md)。
 
 ## 数据库迁移
 

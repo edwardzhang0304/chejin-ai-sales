@@ -1,0 +1,330 @@
+@startuml main
+!pragma layout smetana
+skinparam defaultFontName "PingFang SC"
+skinparam defaultFontSize 14
+skinparam backgroundColor #F7F9FC
+skinparam shadowing false
+skinparam activityBackgroundColor #FFFFFF
+skinparam activityBorderColor #58718C
+skinparam activityDiamondBackgroundColor #E8F2FE
+skinparam activityDiamondBorderColor #58718C
+skinparam ArrowColor #58718C
+skinparam noteBackgroundColor #FFF4D9
+skinparam noteBorderColor #CDA556
+title 车金 0.10.4 · 完整业务主流程（r2，2026-10-16）
+start
+:管理员交付前安装指定微信与 DLL
+按盒子配置路径/端口/回调，首次激活
+实际验机并生成两个独立快捷方式;
+:后台录入客户 → 手机号去重 → 分配销售
+生成加好友待办；电脑离线也保留队列;
+:销售先打开“工作微信” → 扫码登录
+保持窗口展开、非最小化;
+:销售再手动打开 Worker
+读原绑定、暂停/故障、消息和动作账本;
+:一次准备微信窗口位置/大小和布局
+后续 OCR 加好友复用，焦点可在 Worker;
+:核验身份/版本/DLL/端口/后台时间
+启动接收器 → 登记回调 → 补历史 → 核对旧动作;
+if (环境与恢复条件满足?) then (是)
+  :保留待开始 / 原暂停状态
+销售明确点击开始接单，重新核验后放行;
+else (否)
+  :显示错误或等待，保存证据
+停止新工作；不重发、不清数据
+处理后从原恢复入口继续（支撑图 1）;
+  stop
+endif
+note right
+下方四条长期循环可并行运行。
+每次启动新工作都重查统一资格。
+暂停不丢消息，不启动新动作/模型。
+end note
+fork
+  partition "A · OCR 加好友与身份绑定" {
+    while (Worker 生命周期内?) is (是)
+      :有合格任务才领取
+取得 C1 与发送共用微信动作锁;
+      :清搜索框残留 → 输入手机号并核对
+点击“网络查找手机/QQ号”;
+      switch (本次查找结果)
+      case (没有找到)
+        :记录查找无结果
+不认定整机故障;
+      case (未加好友)
+        :添加到通讯录 → 填后端文案/备注短码
+持久记意图 → 核验 → 只提交一次;
+        :保存邀请证据
+不等同客户已经同意;
+      case (已是好友)
+        :核验目标后记 already_friend
+不补短码、不欢迎、不新开 AI;
+      case (未知/技术异常)
+        :停止新工作并取证
+不盲点、不猜成功;
+      endswitch
+      :清本次弹窗和搜索框残留并核对
+提交事实不被收尾失败覆盖
+释放物理锁，回执/Flow 按原规则结算;
+      :后续调度核对联系人，不占锁等待通过
+只认系统任务写码＋邀请证据＋唯一好友;
+      if (任务来源与 wxid 唯一核验通过?) then (是)
+        :后端建立该销售账号下的客户绑定
+首次开场走唯一批次 → C / D;
+      else (否)
+        :保持未托管或待核对
+不靠手机号/昵称猜测关联;
+      endif
+    endwhile (退出)
+  }
+fork again
+  partition "B · Hook 收消息与补缺" {
+    while (接收授权与生命周期有效?) is (是)
+      :多客户回调可到达
+原始事件/接收序号先落盘 → 成功确认;
+      :可靠上报与幂等合并
+按账号＋原生 ID 分清消息和补充阶段;
+      :核对托管身份和历史覆盖
+ID 不当序号，缺页/冲突不猜顺序;
+      switch (新消息类型/归属)
+      case (客户文字)
+        :保存正文与顺序证据 → C;
+      case (客户语音)
+        :先占原消息位置，等完整音频
+确认原生自动转文字已关闭
+有业务资格时串行 Voice2Text;
+        if (有确定转写结果?) then (是)
+          :成功补回原 ID；明确失败走媒体失败规则
+推进本会话上下文版本 → C 或人工;
+        else (否)
+          :uncertain：隔离该进程主动调用
+保留账本，核对后恢复，不超时重试;
+        endif
+      case (客户新图片)
+        :同客户转人工、取消未发 AI/召回
+原事件通知销售一次；不调用 Vision;
+      case (己方/人工/系统/其他)
+        :原发送日志＋正文＋时间＋新增历史关联
+唯一 AI 回显只结算；人工使旧稿失效
+群聊/未托管/未知类型不默认喂给 AI;
+      endswitch
+    endwhile (退出)
+  }
+fork again
+  partition "C · 后端 AI、人工与召回" {
+    while (服务处理循环有效?) is (是)
+      :合格客户新事实 → 原批次合并/版本更新
+同客户仅当前轮；其他客户并发
+全局模型容量默认 20;
+      :召回到期只先预检最新历史/状态
+合格才进入同一批次，不另造发送流程;
+      :已发布知识＋上架车辆公开事实
+Brain 生成 → Guard 审核/有界修复;
+      switch (当前有效决策)
+      case (自动回复)
+        :固化批准文字与分段 → D
+默认每段 108 字符、最多 3 段;
+      case (高意向/风险/图片人工)
+        :原 HandoffEvent 去重通知对应销售
+停止该客户自动回复与召回;
+      case (明确不要再联系)
+        :关闭 AI，取消未发与召回
+不发客套话；当前不额外发飞书;
+      case (新话取代/无需回复/等待)
+        :作废旧未发候选或保持等待
+不复活旧文本、不猜缺失事实;
+      endswitch
+    endwhile (退出)
+  }
+fork again
+  partition "D · Hook 串行发文字" {
+    while (Worker 生命周期内?) is (是)
+      :轮到有效发送任务才抽取并持久化
+本段随机等待 0.5—3 秒
+不抵扣旧排队时间，不持微信锁等待;
+      :等待到期 → 核对最新客户事实/覆盖
+托管/Guard/时段/租约/分段前驱
+获取共用动作锁与正式发送许可;
+      if (仍有资格且本机无新事实?) then (是)
+        :持久记原动作、正文、尝试边界
+claim / begin 后只调用一次 SendTextMsg;
+        :保存响应，查回调/历史发出记录
+唯一匹配才关联原动作;
+        if (能够确定结果?) then (是)
+          :可靠上报原回执 → 后端事务结算
+前段 sent_ack 成功才允许下一段;
+        else (否)
+          :保存 unknown，停止相关新动作
+只查原记录，不自动补发;
+        endif
+      else (否)
+        :按原规则作废/跳过/等待
+新消息使未发旧稿失效;
+      endif
+      :释放物理锁不跳过 Flow/回执门禁
+已触发事实保留，重启不从第一段重发;
+    endwhile (退出)
+  }
+end fork
+:停止新工作 → 已登记在途安全收尾
+保存账本/暂停意图 → 线程停止写入 → 正常退出;
+stop
+legend bottom
+这是规则全图，不是所有场景已经实机通过的证明。
+0.10.4 已发布；绑定设备快捷方式、Hook 收发、压力与恢复仍按实际证据分别验收。
+endlegend
+@enduml
+
+@startuml fault
+!pragma layout smetana
+skinparam defaultFontName "PingFang SC"
+skinparam defaultFontSize 14
+skinparam backgroundColor #F7F9FC
+skinparam shadowing false
+skinparam activityBackgroundColor #FFFFFF
+skinparam activityBorderColor #58718C
+skinparam activityDiamondBackgroundColor #E8F2FE
+skinparam activityDiamondBorderColor #58718C
+skinparam ArrowColor #58718C
+skinparam noteBackgroundColor #FFF4D9
+skinparam noteBorderColor #CDA556
+title 车金 0.10.4 · 支撑 1：故障、暂停与恢复（r2）
+start
+:发现人工暂停、连接等待或技术故障;
+:记录原原因/作用域/incident_id
+先停止新业务，再异步采证与收尾;
+if (只是某客户人工接管?) then (是)
+  :仅该客户停止 AI/召回
+其他合格客户继续;
+else (否)
+  :按 Worker/账号/进程范围禁止新工作
+保持原暂停、故障和在途账本;
+endif
+:保存必要截图或 Hook 原响应/摘要
+关联任务、Flow、消息、动作、尝试与账号代次;
+if (原动作可能已触发?) then (是)
+  :只核对原发送/转写记录
+unknown 不补发，不删表解锁;
+else (否)
+  :仅凭可靠未触发证据结算未执行
+缺文件不代表没做过;
+endif
+:网络可用后幂等补交原事实/回执
+无效客户仅允许原动作只读结算;
+if (存储/身份/进程/历史等已恢复?) then (是)
+  :重新核验本人、组件、端口
+回调重建、历史补缺、原动作结清;
+  if (是单纯连接/时间等待，原先接单中?) then (是)
+    :只清该来源等待
+资格仍满足才回原接单状态;
+  else (否)
+    :保留人工暂停或真实故障
+通过恢复检查并由操作者明确开始;
+  endif
+else (否)
+  :保持错误/等待；诊断失败不覆盖原错误;
+endif
+stop
+@enduml
+
+@startuml evidence
+!pragma layout smetana
+skinparam defaultFontName "PingFang SC"
+skinparam defaultFontSize 14
+skinparam backgroundColor #F7F9FC
+skinparam shadowing false
+skinparam activityBackgroundColor #FFFFFF
+skinparam activityBorderColor #58718C
+skinparam activityDiamondBackgroundColor #E8F2FE
+skinparam activityDiamondBorderColor #58718C
+skinparam ArrowColor #58718C
+skinparam noteBackgroundColor #FFF4D9
+skinparam noteBorderColor #CDA556
+title 车金 0.10.4 · 支撑 2：事实、耗时与后台展示（r2）
+participant "微信 / Hook" as H
+participant "Worker 业务线程" as W
+database "本机 SQLite / Outbox" as L
+participant "后端统一入口" as B
+database "PostgreSQL" as D
+participant "运营后台" as U
+H -> W : 回调 / 原响应 / 历史记录
+W -> L : 先保存消息或动作证据（原 ID/尝试）
+L --> W : 持久化成功
+W -> L : C0—C4 process_run / stage / attempt\n连接、历史、语音、生成等待、随机等待、发送、结算
+note over W,L
+UTC 表示时间，单调钟算耗时；同一次尝试不重复计。
+存储安全事实失败先停业务；统计失败不重触发微信。
+end note
+L -> B : 同事件 / 同回执可靠补交
+B -> D : 幂等事实 + 状态事务 + 审计
+D --> B : 原确认或新确认
+B --> L : 确认后标记已上报；未决恢复证据保留
+U -> B : 登录 Cookie 下的只读刷新
+B -> D : 按原权限查状态和必要摘要
+B --> U : 不泄露 Key；不凭空推测本机状态
+note over U
+保留筛选、分页、选择和抽屉。
+编辑/弹窗/提交期间暂停刷新；失败保留上次数据。
+有消息事实 ≠ 全销售私聊已采集或完整聊天页面已实现。
+end note
+@enduml
+
+@startuml update
+!pragma layout smetana
+skinparam defaultFontName "PingFang SC"
+skinparam defaultFontSize 14
+skinparam backgroundColor #F7F9FC
+skinparam shadowing false
+skinparam activityBackgroundColor #FFFFFF
+skinparam activityBorderColor #58718C
+skinparam activityDiamondBackgroundColor #E8F2FE
+skinparam activityDiamondBorderColor #58718C
+skinparam ArrowColor #58718C
+skinparam noteBackgroundColor #FFF4D9
+skinparam noteBorderColor #CDA556
+title 车金 0.10.4 · 支撑 3：检查更新与保留数据安装（r2）
+start
+:设置展示与实际入口共用安全状态
+暂停/故障/业务离线本身不禁止检查;
+if (当前任务/租约/锁/调用未知/待回传结算
+或安全状态不可读?) then (是)
+  :显示具体等待原因
+继续原安全收尾，不删数据放行;
+  stop
+else (否)
+  :原新工作准入锁内重新检查并登记更新
+关闭新任务/转写/模型入口，防重复请求;
+endif
+:查询可信渠道和目标兼容性;
+if (有合法目标且下载/验签成功?) then (是)
+  :检查版本/签名/合同/文件清单/保护范围;
+else (否)
+  :无新版/失败/取消只释放本次更新闸门
+原人工暂停与真实故障保留;
+  stop
+endif
+if (停止读取的特殊兼容恢复?) then (是)
+  :另需签名能力、后台同一流程证明
+旧写入停止后的再次复核；不绕过未知发送;
+endif
+:正常退出旧 Worker，确保旧写入退出
+保留数据、绑定、部署配置、暂停与账本;
+if (DLL/参数变化或需隔离旧微信?) then (是)
+  :正常退出旧微信
+用配置完整参数的工作微信入口重开;
+else (否)
+  :微信允许保持运行;
+endif
+:冻结更新器执行原子安装/失败恢复
+apps、合同、公钥齐全；原生当前目录在安装目录外;
+:必要时刷新双快捷方式
+Worker 与工作微信均来自正式配置;
+:新 Worker 核对版本/原绑定/旧动作/环境
+恢复检查通过后由操作者明确开始;
+stop
+legend bottom
+本图是更新安全规则；0.10.4 当前交付按保留数据手工安装。
+原装 0.10.2/0.10.3 坏更新器不能自行修好；0.10.3 自动发放仍撤回。
+绑定设备点击快捷方式、DLL/端口、业务收发与未来按钮升级分别实机验收。
+endlegend
+@enduml

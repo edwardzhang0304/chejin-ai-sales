@@ -45,8 +45,8 @@ def test_native_workflow_requires_review_and_cannot_publish():
 
 def test_native_branch_agrees_with_confirmed_architecture_and_all_consumers(monkeypatch):
     import yaml
-    document=(ROOT/'deliverables/AI智能客服售前跟进系统_Hook技术方案_v0.10.1_2026-10-03.md').read_text()
-    section=document.split('### 27.2',1)[1].split('### 27.3',1)[0]
+    document=(ROOT/'deliverables/AI智能客服售前跟进系统_Hook技术方案_v0.10.4_2026-10-16.md').read_text()
+    section=document.split('## 14. 发布验收与变更约束',1)[1].split('## 15.',1)[0]
     import re
     branch=re.search(r'目标分支：`([^`]+)`',section).group(1)
     monkeypatch.setenv('CHEJIN_RELEASE_TRANSPORT','hook')
