@@ -22,7 +22,7 @@ on:
     inputs:
       check_kind:
         type: choice
-        options: [tooling, source, sign-existing, repair-updater, launcher, hook-upgrade, update-access]
+        options: [tooling, source, sign-existing, repair-updater, launcher, hook-upgrade, update-access, update-trace]
         default: tooling
       source_test_plan:
         description: 'Reviewed explicit pytest selection: {"reason":"...","not_tested":"...","pytest":[{"cwd":"worker-client","nodes":["tests/test_example.py::test_case"]}]}'
@@ -45,6 +45,9 @@ on:
       repair_binary_run:
         description: 'Reuse a saved frozen updater when only a checker changed'
         default: ''
+      diagnostic_binary_run:
+        description: 'Reuse saved frozen-update-trace when only its checker changed'
+        default: ''
 
 permissions:
   contents: read
@@ -53,6 +56,56 @@ env:
   CHEJIN_RELEASE_TRANSPORT: ${{ github.ref_name == 'gray-release-0.10.x' && 'hook' || 'ocr' }}
 
 jobs:
+  update-trace:
+    name: Build only external diagnostic and verify actual ETW capture
+    if: github.event_name == 'workflow_dispatch' && inputs.check_kind == 'update-trace' && github.ref_name == 'gray-release-0.10.x'
+    runs-on: windows-latest
+    timeout-minutes: 5
+    permissions: {contents: read, actions: read}
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - name: Prepare only external diagnostic
+        if: inputs.diagnostic_binary_run == ''
+        shell: powershell
+        run: |
+          & ops/formal_release/build-update-trace.ps1 -Destination "$env:RUNNER_TEMP/update-trace-tool"
+          if ($LASTEXITCODE -ne 0) { throw 'EXTERNAL_DIAGNOSTIC_BUILD_FAILED' }
+      - uses: actions/download-artifact@v4
+        if: inputs.diagnostic_binary_run != ''
+        with:
+          name: frozen-update-trace
+          run-id: ${{ inputs.diagnostic_binary_run }}
+          github-token: ${{ github.token }}
+          path: ${{ runner.temp }}/update-trace-tool
+      - name: Verify frozen diagnostic source and all saved files
+        shell: powershell
+        run: |
+          $tool = "$env:RUNNER_TEMP/update-trace-tool"
+          $manifest = Get-Content -LiteralPath (Join-Path $tool 'trace-files.json') -Raw | ConvertFrom-Json
+          if ($manifest.collector_source_sha256 -ne (Get-FileHash ops/formal_release/update-access-trace.cs -Algorithm SHA256).Hash.ToLowerInvariant()) { throw 'FROZEN_DIAGNOSTIC_SOURCE_MISMATCH' }
+          foreach ($name in @('update-access-trace.cs','build-update-trace.ps1','start-update-trace.ps1','stop-update-trace.ps1','Start-CheJinUpdateTrace.cmd','Stop-CheJinUpdateTrace.cmd','update-trace-licenses.txt')) {
+            if ($manifest.tool_inputs.$name -ne (Get-FileHash -LiteralPath (Join-Path 'ops/formal_release' $name) -Algorithm SHA256).Hash.ToLowerInvariant()) { throw 'FROZEN_DIAGNOSTIC_INPUT_MISMATCH' }
+          }
+          foreach ($p in $manifest.files.PSObject.Properties) {
+            if ((Get-FileHash -LiteralPath (Join-Path $tool $p.Name) -Algorithm SHA256).Hash.ToLowerInvariant() -ne $p.Value) { throw 'FROZEN_DIAGNOSTIC_CHANGED' }
+          }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: frozen-update-trace
+          path: ${{ runner.temp }}/update-trace-tool
+          if-no-files-found: error
+      - name: Check only new diagnostic with real kernel file events
+        shell: powershell
+        run: |
+          & ops/formal_release/tests/test-update-trace.ps1 -BinaryDirectory "$env:RUNNER_TEMP/update-trace-tool"
+          if ($LASTEXITCODE -ne 0) { throw 'EXTERNAL_DIAGNOSTIC_NATIVE_TEST_FAILED' }
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: update-trace-synthetic-evidence
+          path: ${{ runner.temp }}/update-trace-test-*/**/*.json*
+          if-no-files-found: ignore
   update-access:
     name: Check only update access diagnostic
     if: github.event_name == 'workflow_dispatch' && inputs.check_kind == 'update-access' && github.ref_name == 'gray-release-0.10.x'
