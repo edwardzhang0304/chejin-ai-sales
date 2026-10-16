@@ -86,7 +86,7 @@ class ReviewedDeletionTests(unittest.TestCase):
         def git(*args):
             if args[0]=='ls-tree':return (runtime+'\0'+packaging+'\0').encode()
             if args[:2]==('diff','-z'):
-                return ((packaging if args[3]==packaging_base else removed)+'\0').encode()
+                return ((packaging if args[4]==packaging_base else removed)+'\0').encode()
             if args[0]=='show':return b'old-test' if args[1].endswith(':'+removed) else b'p'
             return b''
         def api(path):
