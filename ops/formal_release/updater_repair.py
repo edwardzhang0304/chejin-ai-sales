@@ -81,7 +81,7 @@ def prepare(args):
         receipt = json.loads(z.read('native-source-evidence.json'))
     plan = {'schema_version': 1, 'version': args.version, 'source_commit': target['source_commit'],
             'old_client': old, 'route': 'button', 'recovery': 'none',
-            'scope_reason': 'Updater-only packaging repair; original Worker and sealed target unchanged; isolated unbound GUI case.',
+            'scope_reason': 'Immutable original Worker to signed sealed target; isolated unbound GUI case. Any updater repair is recorded separately by the caller.',
             'source_evidence_run_id': str(receipt['source']['run_id']),
             'tool_evidence_run_id': str(receipt['tooling']['run_id']), 'case_evidence_runs': []}
     (area / 'plan.json').write_text(json.dumps(plan, indent=2))
