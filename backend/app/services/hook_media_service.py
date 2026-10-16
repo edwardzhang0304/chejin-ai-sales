@@ -50,6 +50,9 @@ def finish_voice(db,authenticated,instance,payload):
         if old.payload_digest!=digest:raise AppError('HOOK_VOICE_RESULT_CONFLICT','原语音结果不可覆盖',409)
         if parent.item_state=='uncertain':_handoff_uncertain_voice(db,binding,parent)
         return old.result_json
+    from app.services.hook_history_service import human_covered_voice_ids
+    covered=parent.id in human_covered_voice_ids(db,binding)
+    prior_history_state={'content':parent.content,'item_state':parent.item_state} if covered else None
     receipt=HookVoiceReceipt(worker_id=w.id,message_event_id=parent.id,payload_digest=digest,payload_json=value,result_json={})
     db.add(receipt);db.flush()
     parent.item_state={'transcribed':'completed','failed':'failed','uncertain':'uncertain'}[payload.state]
@@ -57,16 +60,21 @@ def finish_voice(db,authenticated,instance,payload):
     parent.error_code=payload.error_code
     parent.raw_payload={**(parent.raw_payload or {}),'native_voice_result':{
         'state':payload.state,'audio_sha256':payload.audio_sha256,'audio_bytes':payload.audio_bytes,
-        'attempt_digest':payload.attempt_digest,'response_sha256':payload.response_sha256}}
+        'attempt_digest':payload.attempt_digest,'response_sha256':payload.response_sha256,
+        **({'human_covered_history_state':prior_history_state} if covered else {})}}
     parent.evidence={**(parent.evidence or {}),'native_voice_receipt_id':receipt.id}
     # Original native order/ID/timestamps remain; transcript is not a new input.
-    ctx['history_ready']=False;ctx['history_reason_code']='HOOK_VOICE_RESULT_REQUIRES_HISTORY'
-    binding.native_context=ctx
-    from app.services import c3_service
-    c3_service.cancel_active_batches_for_conversation_change(db,binding.conversation_id,reason='原语音消息的转写结果已更新')
-    c3_service.supersede_open_reply_actions_for_new_inbound(db,binding.conversation_id)
+    # A proven old voice changes archival facts, not the customer's later turn.
+    # Keep its pre-result checkpoint projection so the next history read cannot
+    # invalidate the same generation/send indirectly through the full digest.
+    if not covered:
+        ctx['history_ready']=False;ctx['history_reason_code']='HOOK_VOICE_RESULT_REQUIRES_HISTORY'
+        binding.native_context=ctx
+        from app.services import c3_service
+        c3_service.cancel_active_batches_for_conversation_change(db,binding.conversation_id,reason='原语音消息的转写结果已更新')
+        c3_service.supersede_open_reply_actions_for_new_inbound(db,binding.conversation_id)
     result={'native_msg_id':payload.native_msg_id,'message_event_id':parent.id,'voice_receipt_id':receipt.id,
-        'state':payload.state,'history_coverage_required':True,'ai_dispatch':False}
+        'state':payload.state,'history_coverage_required':not covered,'ai_dispatch':False}
     receipt.result_json=result
     if parent.item_state=='uncertain':_handoff_uncertain_voice(db,binding,parent)
     db.flush();return result

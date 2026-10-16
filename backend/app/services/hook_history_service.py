@@ -117,6 +117,16 @@ def human_covered_voice_ids(db, binding, *, verified_rows=None):
         if message.sender_role == 'customer' and message.message_type == 'voice'}
 
 
+def _reply_history_state(message, covered):
+    # Only a result received AFTER proved human handling has a saved projection.
+    # Preserve that exact checkpoint, not a fabricated success or transcript.
+    # If the human/order proof no longer holds, use the real state as usual.
+    prior=((message.raw_payload or {}).get('native_voice_result') or {}).get('human_covered_history_state')
+    if message.id in covered and prior is not None:
+        return [prior['content'],prior['item_state']]
+    return [message.content,message.item_state]
+
+
 def accept_coverage(db,authenticated,instance,payload):
     hint=db.get(WechatSessionBinding,payload.binding_id)
     lock_leads(db,[hint.lead_id] if hint else [])
@@ -239,9 +249,10 @@ def accept_coverage(db,authenticated,instance,payload):
             not in {'unresolved','human','ai'} for m in rows_by_id.values()):
         reason=reason or 'HOOK_NATIVE_SEND_ACTOR_PENDING'
     facts_ready=checked['ready'] and reason is None
+    covered=human_covered_voice_ids(db,binding,verified_rows=[rows_by_id[mid] for mid in ids]) if facts_ready else set()
     state_digest=rules.digest([payload.account_epoch,payload.process_generation,payload.binding_revision,
         checked['revoked_native_ids'],checked['system_notice_native_ids'],[[r['MsgSvrID'],r['Type'],r['IsSender'],r['StrContent'],r['Sequence'],r['MsgSequence'],
-          rows_by_id[ids[i]].content,rows_by_id[ids[i]].item_state] for i,r in enumerate(checked['semantic_rows'])]])
+          *_reply_history_state(rows_by_id[ids[i]],covered)] for i,r in enumerate(checked['semantic_rows'])]])
     changed=ctx.get('history_state_digest')!=state_digest
     if reconciliation is None:
         ctx.update({'history_ready':False,'history_reason_code':reason,'active_history_receipt_id':receipt.id,
