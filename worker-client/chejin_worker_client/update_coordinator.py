@@ -1081,6 +1081,7 @@ class UpdateCoordinator:
                 {
                     **initial,
                     "state": "downloading",
+                    "download_percent": 0,
                     "target_version": release.latest_version,
                     "artifact_sha256": release.artifact_sha256,
                     "release": _persisted_release_identity(release),
@@ -1088,10 +1089,17 @@ class UpdateCoordinator:
                 }
             )
             request_root = self.store.root / "requests" / request_id
+
+            def on_download_progress(percent: int) -> None:
+                nonlocal downloading
+                if percent != downloading.get("download_percent"):
+                    downloading = self._save({**downloading, "download_percent": percent})
+
             try:
                 prepared = prepare_release_package(
                     release,
                     request_root=request_root,
+                    on_progress=on_download_progress,
                 )
             except ClientUpdateError as exc:
                 if exc.code != "UPDATE_DOWNLOAD_URL_EXPIRED":
@@ -1113,6 +1121,7 @@ class UpdateCoordinator:
                 prepared = prepare_release_package(
                     release,
                     request_root=request_root,
+                    on_progress=on_download_progress,
                 )
             waiting = self._save(
                 {

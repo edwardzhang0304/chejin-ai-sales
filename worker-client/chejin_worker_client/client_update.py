@@ -172,6 +172,7 @@ def download_release_archive(
     *,
     session: requests.Session | None = None,
     timeout_seconds: float = 60.0,
+    on_progress: Callable[[int], None] | None = None,
 ) -> Path:
     logical_destination = destination
     destination = update_filesystem_path(destination)
@@ -182,7 +183,16 @@ def download_release_archive(
     digest = hashlib.sha256()
     received = 0
     client = session or requests.Session()
+    last_percent = -1
+
+    def report_progress(percent: int) -> None:
+        nonlocal last_percent
+        if on_progress is not None and percent != last_percent:
+            on_progress(percent)
+        last_percent = percent
+
     try:
+        report_progress(0)
         with client.get(str(release.artifact_url), stream=True, timeout=timeout_seconds) as response:
             if int(getattr(response, "status_code", 0) or 0) in {401, 403, 410}:
                 raise ClientUpdateError(
@@ -199,11 +209,15 @@ def download_release_archive(
                         raise ClientUpdateError("UPDATE_DOWNLOAD_FAILED", "下载内容超过发布记录大小")
                     digest.update(chunk)
                     handle.write(chunk)
+                    # The signed release size is authoritative, even without a
+                    # Content-Length header. Reserve 100% for verified download.
+                    report_progress(min(99, received * 100 // expected_size))
         if received != expected_size:
             raise ClientUpdateError("UPDATE_DOWNLOAD_FAILED", "下载内容长度与发布记录不一致")
         if digest.hexdigest() != expected_sha:
             raise ClientUpdateError("UPDATE_PACKAGE_HASH_MISMATCH", "更新包 SHA-256 校验失败")
         os.replace(temporary, destination)
+        report_progress(100)
         return logical_destination
     except ClientUpdateError:
         temporary.unlink(missing_ok=True)
@@ -332,12 +346,13 @@ def prepare_release_package(
     request_root: Path,
     session: requests.Session | None = None,
     trusted_keys: dict[str, Ed25519PublicKey] | None = None,
+    on_progress: Callable[[int], None] | None = None,
 ) -> dict[str, Any]:
     from .release_transport import selected_release_channel
     validate_release_contract(release, expected_channel=selected_release_channel(CONFIG.app_dir))
     verify_release_signature(release, trusted_keys=trusted_keys)
     archive_path = request_root / "download" / "client-update.zip"
-    download_release_archive(release, archive_path, session=session)
+    download_release_archive(release, archive_path, session=session, on_progress=on_progress)
     staging_root = request_root / "staging"
     try:
         package_root = extract_verified_archive(archive_path, staging_root)
@@ -373,7 +388,9 @@ def update_status_text(state: dict[str, Any]) -> str:
     if current_state == "checking":
         return "正在检查更新"
     if current_state == "downloading":
-        return f"发现新版本V{target}，正在下载"
+        percent = state.get("download_percent")
+        suffix = f" {percent}%" if type(percent) is int and 0 <= percent <= 100 else ""
+        return f"发现新版本V{target}，正在下载{suffix}"
     if current_state == "waiting_for_safe_boundary":
         reason = str(state.get("waiting_reason_text") or "").strip()
         return (

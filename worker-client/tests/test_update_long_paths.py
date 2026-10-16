@@ -215,8 +215,8 @@ def test_coordinator_records_actual_extraction_failure_without_install_or_data_l
     logs = []
     monkeypatch.setattr(coordinator, "set_update_new_work_gate", lambda blocked, **kw: gates.append(blocked))
     monkeypatch.setattr(coordinator, "_safe_update_log", lambda *a, **kw: logs.append(kw))
-    monkeypatch.setattr(coordinator, "prepare_release_package", lambda value, *, request_root:
-                        client_update.prepare_release_package(value, request_root=request_root, session=_Session(payload), trusted_keys=keys))
+    monkeypatch.setattr(coordinator, "prepare_release_package", lambda value, *, request_root, **kwargs:
+                        client_update.prepare_release_package(value, request_root=request_root, session=_Session(payload), trusted_keys=keys, **kwargs))
     real_open = io.open
 
     def fail_long_file(path, *args, **kwargs):
