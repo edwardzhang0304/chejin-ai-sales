@@ -88,8 +88,12 @@ def validate_hook_origin(data, base):
         approved = data.get('reviewed_delta_sha256', {})
         changed_after = {n for n in git('diff', '-z', '--name-only', packaging_base, base).decode().split('\0')
                          if n and relevant(n, 'source')}
-        require(set(approved) == changed_after and approved
-                and all(data['source_sha256'].get(n) == digest for n, digest in approved.items()),
+        removed = data.get('reviewed_delta_deleted_sha256', {})
+        require(set(approved) | set(removed) == changed_after and (approved or removed)
+                and not (set(approved) & set(removed))
+                and all(data['source_sha256'].get(n) == digest for n, digest in approved.items())
+                and all(n not in names and hashlib.sha256(git('show', packaging_base + ':' + n)).hexdigest() == digest
+                        for n, digest in removed.items()),
                 'HOOK_REVIEWED_DELTA_NOT_BOUND')
         review = data.get('delta_review', {})
         require(review.get('commit') == base and review.get('result') == 'passed for source push'

@@ -22,7 +22,7 @@ on:
     inputs:
       check_kind:
         type: choice
-        options: [tooling, source, sign-existing, repair-updater, launcher]
+        options: [tooling, source, sign-existing, repair-updater, launcher, hook-upgrade]
         default: tooling
       source_test_plan:
         description: 'Reviewed explicit pytest selection: {"reason":"...","not_tested":"...","pytest":[{"cwd":"worker-client","nodes":["tests/test_example.py::test_case"]}]}'
@@ -70,6 +70,50 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'HOOK_SHORTCUT_ENTRY_FAILED' }
           & powershell.exe -NoProfile -ExecutionPolicy Bypass -File worker-client/scripts/test-hook-shortcut-repair.ps1
           if ($LASTEXITCODE -ne 0) { throw 'HOOK_SHORTCUT_REPAIR_LOOKUP_FAILED' }
+  hook-upgrade:
+    name: Original Hook updater to sealed target
+    if: github.event_name == 'workflow_dispatch' && inputs.check_kind == 'hook-upgrade' && github.ref_name == 'gray-release-0.10.x'
+    runs-on: windows-latest
+    timeout-minutes: 20
+    permissions: {contents: read, actions: read}
+    env:
+      GH_TOKEN: ${{ github.token }}
+      CHEJIN_RELEASE_TRANSPORT: hook
+      PYTHONUTF8: '1'
+      TARGET_RUN: ${{ inputs.existing_build_run }}
+      OLD_RUN: ${{ inputs.old_build_run }}
+      SIGN_RUN: ${{ inputs.publication_run }}
+      TARGET_VERSION: ${{ inputs.existing_version }}
+      TARGET_SHA256: ${{ inputs.existing_package_sha256 }}
+    steps:
+      - uses: actions/checkout@v4
+        with: {fetch-depth: 0, persist-credentials: false}
+      - uses: actions/setup-python@v5
+        with: {python-version: '3.12.10'}
+      - run: python -m pip install --disable-pip-version-check -r backend/requirements.txt 'numpy<2' 'PySide6==6.6.3.1' 'requests==2.32.3' 'psutil==5.9.8' 'websockets==15.0.1' 'PyYAML==6.0.2'
+      - name: Verify saved old and target packages without repair or compilation
+        run: |
+          python ops/formal_release/updater_repair.py prepare --root "$env:RUNNER_TEMP/hook-upgrade" --old-run "$env:OLD_RUN" --target-run "$env:TARGET_RUN" --publication-run "$env:SIGN_RUN" --version "$env:TARGET_VERSION" --sha256 "$env:TARGET_SHA256" --repair-binary-run "$env:TARGET_RUN"
+          if ($LASTEXITCODE -ne 0) { throw 'HOOK_SEALED_PACKAGE_PREPARATION_FAILED' }
+      - name: Click original settings button with original updater
+        run: |
+          foreach ($case in @('paused','faulted')) {
+            python worker-client/scripts/run-windows-client-upgrade-test.py --plan "$env:RUNNER_TEMP/hook-upgrade/plan.json" --case $case --old-package-root "$env:RUNNER_TEMP/hook-upgrade/old/CheJinWorkerClient" --old-source-root "$env:RUNNER_TEMP/hook-upgrade/old-source/worker-client" --archive "$env:RUNNER_TEMP/hook-upgrade/target/artifact.zip" --release "$env:RUNNER_TEMP/hook-upgrade/release.json" --work-root "$env:RUNNER_TEMP/hook-upgrade/gui" --hook-unbound
+            if ($LASTEXITCODE -ne 0) { throw "HOOK_ORIGINAL_UPDATER_CHECK_FAILED:$case" }
+          }
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: hook-upgrade-${{ inputs.existing_version }}
+          path: |
+            ${{ runner.temp }}/hook-upgrade/plan.json
+            ${{ runner.temp }}/hook-upgrade/gui/**/upgrade-result.json
+            ${{ runner.temp }}/hook-upgrade/gui/**/before.png
+            ${{ runner.temp }}/hook-upgrade/gui/**/after.png
+            ${{ runner.temp }}/hook-upgrade/gui/**/result.json
+            ${{ runner.temp }}/hook-upgrade/gui/**/process.log
+          if-no-files-found: error
+          retention-days: 90
   repair-updater:
     name: Build only updater repair and exercise original Windows button
     if: github.event_name == 'workflow_dispatch' && inputs.check_kind == 'repair-updater' && github.ref_name == 'gray-release-0.10.x'

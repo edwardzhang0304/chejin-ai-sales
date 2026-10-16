@@ -492,6 +492,8 @@ def run_case(args, status):
                           protected_data_preserved=True, target_ui_confirmed=True, actual_backend_download=True,
                           target_commit=target_manifest["git_commit"], runtime_threads_alive=True,
                           immutable_handoff_baseline=True, paused_intent_and_idle_gate_preserved=True)
+            if args.hook_unbound:
+                report.update(hook_unbound_only=True, bound_device_acceptance='pending_real_windows')
             if args.updater_repair:
                 report.update(original_updater_used=False, patched_updater_used=True,
                               patched_updater_sha256=expected_updater_sha,

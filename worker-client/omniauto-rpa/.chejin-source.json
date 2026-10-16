@@ -680,17 +680,17 @@
     "recall_author_and_reviewer_shared_trigger_context"
   ],
   "current_release": {
-    "version": "0.10.4",
+    "version": "0.10.5",
     "source_commit": "209f7fb66a01a05736fdd32e54808e54a9b66ce3",
     "source_state": "gray_release_candidate",
     "published": false,
-    "contract_revision": "0.10.4",
-    "contract_sha256": "dc4a27b7e4001e78defb1d3963432093b1af9d2cf4d1fe6017d585e9ead0296f",
+    "contract_revision": "0.10.5",
+    "contract_sha256": "6d41986fdac0f6dc4de6a781c2a7eb884f2cd0b3caa02d12728a9fcffc981614",
     "scope": [
       "native_hook_state_and_release_preparation",
       "schema_revision_sync"
     ],
-    "note": "source_commit remains the original Hook integration base, not the exact release tree. The Chejin release commit and package manifest pin the exact 0.10.4 bytes; publication and Windows acceptance are tracked separately."
+    "note": "source_commit remains the original Hook integration base, not the exact release tree. The Chejin release commit and package manifest pin the exact 0.10.5 bytes; publication and Windows acceptance are tracked separately."
   },
   "historical_integrations": [
     {
