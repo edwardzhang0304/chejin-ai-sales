@@ -74,16 +74,42 @@ def _apply_history_actors(db, binding, conv, rows, ctx):
                         reason='销售已人工回复，取消未发送 AI 回复')
         applied.add(message.id)
     ctx['actor_applied_message_ids']=[m.id for m in rows if m.id in applied]
+    ctx['actor_history_receipt_id']=ctx['active_history_receipt_id']
     binding.native_context=dict(ctx)
 
 
-def human_covered_voice_ids(rows, applied_ids):
-    """Old media covered by a proven human reply is no longer an AI prerequisite.
+def human_covered_voice_ids(db, binding, *, verified_rows=None):
+    """One trusted human/order boundary for history, inventory and late receipts.
 
-    Keep the original voice state/body intact. Both readiness and work inventory
-    consume this same native-order boundary; AI echoes cannot advance it.
+    The history producer can reuse its validated rows. Other callers revalidate
+    the saved coverage (not transcript readiness): an arbitrary/ambiguous self
+    row must never exempt a voice. Original media/call states remain untouched.
     """
-    applied = set(applied_ids)
+    ctx = binding.native_context or {}
+    rows = verified_rows
+    if rows is None:
+        receipt_id = ctx.get('actor_history_receipt_id') or ctx.get('active_history_receipt_id')
+        receipt = db.get(HookHistoryReceipt, receipt_id) if receipt_id else None
+        if (receipt is None or receipt.binding_id != binding.id or receipt.worker_id != binding.worker_id
+                or receipt.payload_json.get('self_wxid') != binding.native_self_wxid
+                or receipt.payload_json.get('account_epoch') != ctx.get('account_epoch')):
+            return set()
+        try:
+            checked = shared_adapter('hook_history_rules').validate_coverage(
+                receipt.payload_json['coverage'], binding.native_peer_wxid, int(ctx['history_since_create_time']))
+        except (ValueError, TypeError, KeyError):
+            return set()
+        if not checked['ready']:
+            return set()
+        ids = receipt.result_json.get('message_event_ids', [])
+        saved = {m.id:m for m in db.scalars(select(MessageEvent).where(
+            MessageEvent.binding_id == binding.id, MessageEvent.conversation_id == binding.conversation_id,
+            MessageEvent.id.in_(ids)))}
+        rows = [saved[mid] for mid in ids if mid in saved]
+        if (len(rows) != len(ids) or [m.raw_payload.get('native_msg_id') for m in rows]
+                != [r['MsgSvrID'] for r in checked['semantic_rows']]):
+            return set()
+    applied = set(ctx.get('actor_applied_message_ids', []))
     last_human = max((i for i, message in enumerate(rows)
         if message.id in applied and message.sender_role == 'self'
         and (message.raw_payload or {}).get('sender_source') == 'human'), default=-1)
@@ -238,7 +264,7 @@ def accept_coverage(db,authenticated,instance,payload):
         conv=db.get(Conversation,binding.conversation_id)
         if conv and conv.status not in {'closed','rejected'}:
             _apply_history_actors(db,binding,conv,rows,ctx)
-    covered=human_covered_voice_ids(rows,ctx.get('actor_applied_message_ids',[]))
+    covered=human_covered_voice_ids(db,binding,verified_rows=rows) if facts_ready else set()
     if any(m.sender_role=='customer' and m.message_type=='voice'
             and m.item_state not in {'completed','failed'} and m.id not in covered for m in rows):
         reason=reason or 'HOOK_VOICE_PENDING'

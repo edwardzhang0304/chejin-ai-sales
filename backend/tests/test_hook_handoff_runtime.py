@@ -29,7 +29,7 @@ from chejin_worker_client.hook_formal_client import HookFormalClient
 from chejin_worker_client.hook_formal_runtime import HookFormalRuntime
 
 
-@pytest.mark.parametrize('mode',['uncertain_voice','voice_during_image_handoff'])
+@pytest.mark.parametrize('mode',['uncertain_voice','voice_during_image_handoff','late_uncertain_inventory'])
 def test_human_reply_unblocks_later_customer_through_actual_pipeline(
         identity_client,lab,connection_factory,tmp_path,monkeypatch,recovery_provider_factory,mode):
     w,task,account,binding=bound()
@@ -63,6 +63,39 @@ def test_human_reply_unblocks_later_customer_through_actual_pipeline(
         result=post(w,f"/workers/{w['id']}/wechat/native-voice/result",
             voice_payload(w,runtime.account,binding,parent,'uncertain'))
         assert result.status_code==200,result.text
+    if mode=='late_uncertain_inventory':
+        # Exercise an already-started local transcription as a producer fixture,
+        # not admission of new work during handoff. The real transcriber persists
+        # its unknown result; the real dispatcher later recovers the saved row.
+        parent=append(34,0,voice)
+        assert runtime.sync(binding)['reason_code']=='HOOK_VOICE_PENDING'
+        from dataclasses import replace
+        from test_hook_voice import AUDIO,persist
+        from chejin_worker_client.hook_voice import capture_voice_audio,process_voice_call_unresolved
+        from chejin_worker_client.hook_gateway import HookLocalError
+        from chejin_worker_client.hook_dispatcher import HookBusinessDispatcher
+        dispatcher=HookBusinessDispatcher(runtime.client,tmp_path/'runtime',
+            lambda *args:pytest.fail('unexpected invite'),lambda *args:None,
+            automatic_transcription_disabled=lambda:True)
+        persist(lab,metadata=True,audio=True,mid=parent,data=AUDIO,scope=runtime.scope)
+        audio=capture_voice_audio(runtime.scope,binding['peer_wxid'],parent,max_audio_bytes=4096)
+        assert audio and audio.audio==AUDIO
+        old_generation=prepared.process.generation
+        server.voice_response={'status':1,'text':''}
+        with pytest.raises(HookLocalError,match='VOICE_RESPONSE_INVALID'):
+            dispatcher.voice.transcribe_once(gateway,prepared.process,audio,
+                automatic_transcription_disabled=lambda:True)
+        original_attempt=dispatcher.voice.saved_parent(runtime.scope,binding['peer_wxid'],parent)
+        assert original_attempt['state']=='uncertain' and process_voice_call_unresolved(old_generation)
+        with pytest.raises(HookLocalError,match='QUARANTINED'):gateway.login_status(prepared.process)
+        manager.close()
+        server.current_process=replace(prepared.process,started_at=prepared.process.started_at+1)
+        manager,credentials,prepared=connection_factory(w)
+        runtime=HookFormalRuntime(runtime.client,credentials,gateway,prepared,tmp_path/'runtime')
+        assert runtime.sync(binding)['reason_code']=='HOOK_VOICE_PENDING'
+        inventory=runtime.client.call(credentials,'POST',f"/workers/{w['id']}/wechat/native-work",
+            {**runtime.account,'retained_flow_id':None})
+        assert [j['native_msg_id'] for j in inventory['bindings'][0]['voice_jobs']]==[parent]
     with SessionLocal() as db:
         handoff=db.scalar(select(HandoffEvent));assert handoff and handoff.closed_at is None
         handoff_id=handoff.id
@@ -70,13 +103,31 @@ def test_human_reply_unblocks_later_customer_through_actual_pipeline(
         parent=append(34,0,voice)
         assert runtime.sync(binding)['reason_code']=='HOOK_VOICE_PENDING'
     append(1,1,'我是销售，刚才的问题已经解释过了，您还想了解什么？')
+    if mode=='late_uncertain_inventory':
+        from types import SimpleNamespace
+        import threading
+        from chejin_worker_client.models import Binding
+        # Tick obtains inventory containing the old voice, then history sees the
+        # sales reply, then the SAME tick uploads the genuinely saved old result.
+        runner=SimpleNamespace(binding=Binding(w['id'],w['worker_token'],w['instance'],'running'),
+            stop_event=threading.Event(),api=SimpleNamespace(inflight_flow_id=None),current_task=None,
+            on_task=lambda task:None,can_pull_tasks=lambda:False,_can_start_new_flow=lambda:False)
+        services=SimpleNamespace(connection=manager,_credentials=credentials,
+            startup_window_ready_for=lambda p:p is manager.prepared)
+        dispatcher.tick(runner,services)
+        runtime=dispatcher.runtime
+        assert dispatcher.voice.saved_parent(runtime.scope,binding['peer_wxid'],parent)==original_attempt
+        assert process_voice_call_unresolved(old_generation)
+        assert not process_voice_call_unresolved(prepared.process.generation)
+        assert list((tmp_path/'runtime/voice-receipts').rglob('*.json'))
+        runtime=HookFormalRuntime(runtime.client,credentials,gateway,prepared,tmp_path/'runtime')
     human=runtime.sync(binding);assert human['history_ready'],human
     with SessionLocal() as db:
         handoff=db.get(HandoffEvent,handoff_id)
         assert handoff.status=='sales_replied' and handoff.closed_at
         assert db.get(Conversation,binding['conversation_id']).status=='sales_replied_waiting_user'
         original=db.scalar(select(MessageEvent).where(MessageEvent.message_type=='voice'))
-        assert original.item_state==('uncertain' if mode=='uncertain_voice' else 'metadata_observed') and original.content is None
+        assert original.item_state==('metadata_observed' if mode=='voice_during_image_handoff' else 'uncertain') and original.content is None
     inventory=runtime.client.call(credentials,'POST',f"/workers/{w['id']}/wechat/native-work",{**runtime.account,'retained_flow_id':None})
     assert not inventory['bindings'][0]['voice_jobs'] and not inventory['bindings'][0]['open_handoffs']
     append(1,0,'现在想先了解十五万元左右的车型，暂时不预约看车。')
@@ -108,7 +159,7 @@ def test_human_reply_unblocks_later_customer_through_actual_pipeline(
         assert len(list(db.scalars(select(HandoffEvent))))==1
     assert not drive_reply(runtime,binding,bid,max_wait_seconds=5)['sends']
     assert len([r for r in server.requests if r[0]=='/SendTextMsg'])==1
-    assert not [r for r in server.requests if r[0]=='/Voice2Text']
+    assert len([r for r in server.requests if r[0]=='/Voice2Text'])==(1 if mode=='late_uncertain_inventory' else 0)
     assert all(server.lock_observations[i]['locked'] for i,r in enumerate(server.requests) if r[0]=='/SendTextMsg')
     assert list((tmp_path/'runtime/finished').glob('*.json'))
     table.close()

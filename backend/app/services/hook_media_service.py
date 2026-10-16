@@ -80,6 +80,14 @@ def _handoff_uncertain_voice(db,binding,message):
     ctx=dict(binding.native_context or {})
     applied=set(ctx.get('media_handoff_applied_ids',[]))
     if message.id in applied:return
+    from app.services.hook_history_service import human_covered_voice_ids
+    if message.id in human_covered_voice_ids(db,binding):
+        # A first late receipt and a legacy replay share this disposition.
+        # Remember it like an already handled handoff; a later incomplete scan
+        # must not reopen it. This is not completion of the unknown DLL call.
+        applied.add(message.id)
+        binding.native_context={**ctx,'media_handoff_applied_ids':sorted(applied)}
+        return
     event_id=handoff_native_media(db,binding,message,'HOOK_VOICE_RESULT_UNCONFIRMED')
     if event_id:
         applied.add(message.id)

@@ -29,10 +29,7 @@ def inventory(db,authenticated,instance,payload):
         source_tasks.add(ctx['source_task_id'])
         from app.services.hook_history_service import human_covered_voice_ids
         history_ids=ctx.get('history_message_event_ids',[])
-        history_rows={m.id:m for m in db.scalars(select(MessageEvent).where(
-            MessageEvent.binding_id==binding.id,MessageEvent.id.in_(history_ids)))}
-        covered=human_covered_voice_ids([history_rows[mid] for mid in history_ids if mid in history_rows],
-            ctx.get('actor_applied_message_ids',[]))
+        covered=human_covered_voice_ids(db,binding)
         voices=[]
         for message in db.scalars(select(MessageEvent).where(MessageEvent.binding_id==binding.id,
                 MessageEvent.sender_role=='customer',MessageEvent.message_type=='voice',
