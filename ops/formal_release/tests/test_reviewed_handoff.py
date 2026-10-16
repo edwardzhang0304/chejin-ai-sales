@@ -70,3 +70,34 @@ class ReviewedHandoffTests(unittest.TestCase):
         handoff.validate_provenance(json.dumps(old), json.dumps(new), "0.9.76", "b" * 64)
         for broken in ({**new, "runtime": "changed"}, {**new, "selective_integrations": new["selective_integrations"][1:]}):
             with self.assertRaises(ValueError): handoff.validate_provenance(json.dumps(old), json.dumps(broken), "0.9.76", "b" * 64)
+
+
+class ReviewedDeletionTests(unittest.TestCase):
+    def test_reviewed_deletion_binds_old_bytes_and_cannot_hide_live_or_unapproved_path(self):
+        base, origin, packaging_base = 'b'*40, 'a'*40, 'c'*40
+        runtime, packaging, removed = 'backend/app/main.py', 'worker-client/packaging/chejin-updater.spec', 'backend/tests/test_removed.py'
+        sha=lambda b:hashlib.sha256(b).hexdigest()
+        data={'reuse_mode':'reviewed_delta','native_origin_commit':origin,'packaging_reviewed_commit':packaging_base,
+              'source_sha256':{runtime:sha(b'r'),packaging:sha(b'p')},'reviewed_packaging_sha256':{packaging:sha(b'p')},
+              'reviewed_delta_sha256':{},'reviewed_delta_deleted_sha256':{removed:sha(b'old-test')},
+              'delta_review':{'commit':base,'result':'passed for source push','thread_id':'reviewer','turn_id':'review-turn'},
+              'native_source_run':'1','native_source_artifact_sha256':'digest',
+              'packaging_evidence_runs':[{'run_id':'2','commit':packaging_base,'job':handoff.UPDATER_JOB,'paths':[packaging]}]}
+        def git(*args):
+            if args[0]=='ls-tree':return (runtime+'\0'+packaging+'\0').encode()
+            if args[:2]==('diff','-z'):
+                return ((packaging if args[3]==packaging_base else removed)+'\0').encode()
+            if args[0]=='show':return b'old-test' if args[1].endswith(':'+removed) else b'p'
+            return b''
+        def api(path):
+            if path.endswith('/jobs?per_page=100'):return {'jobs':[{'name':handoff.UPDATER_JOB,'conclusion':'success','run_attempt':1}]}
+            return {'head_sha':packaging_base,'head_branch':'gray-release-0.10.x','status':'completed','conclusion':'success','path':'.github/workflows/release-evidence.yml','run_attempt':1}
+        with patch.object(handoff,'git',side_effect=git),patch('source_evidence.resolve_one',return_value={'artifact_sha256':'digest'}),patch('source_evidence.api',side_effect=api):
+            handoff.validate_hook_origin(data,base)
+            for broken in ({**data,'reviewed_delta_deleted_sha256':{}},
+                           {**data,'reviewed_delta_deleted_sha256':{removed:sha(b'wrong')}},
+                           {**data,'reviewed_delta_deleted_sha256':{runtime:sha(b'r')}},
+                           {**data,'reviewed_delta_sha256':{removed:sha(b'old-test')}}):
+                with self.assertRaisesRegex(ValueError,'DELTA_NOT_BOUND'):handoff.validate_hook_origin(broken,base)
+            with self.assertRaisesRegex(ValueError,'DELTA_REVIEW_REQUIRED'):
+                handoff.validate_hook_origin({**data,'delta_review':{}},base)
