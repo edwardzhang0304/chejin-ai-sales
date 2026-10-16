@@ -2,11 +2,8 @@
 
 UI/OCR replay and model mode are explicitly simulated. No live WeChat action.
 """
-from dataclasses import replace
 from types import SimpleNamespace
-from copy import deepcopy
 import json,sqlite3,time,uuid
-from pathlib import Path
 import pytest
 from sqlalchemy import select
 from app.core.database import SessionLocal
@@ -15,30 +12,43 @@ from app.models.wechat import MessageEvent
 from test_hook_business_http import clean,claimed,post
 from test_hook_account_client import identity_client
 from test_hook_gateway import lab
-from test_hook_formal_runtime import drive_reply, calibrated_clock
+from test_hook_formal_runtime import drive_reply
 from chejin_worker_client.hook_backend import HookWorkerCredentials
 from chejin_worker_client.hook_formal_client import HookFormalClient
 from chejin_worker_client.hook_formal_runtime import HookFormalRuntime
 from apps.wechat_ai_customer_service.tests.test_hook_c1_flow import ReplayUI
 
 
-@pytest.mark.parametrize('mode',['single_callback','retained_send','capacity_reconcile'])
-def test_callback_during_post_send_scan_and_retained_settlement(identity_client,lab,tmp_path,monkeypatch,mode):
+@pytest.fixture
+def connection_factory(identity_client, lab):
+    """Real connection producer; only Windows observations/Hook are simulated."""
+    from chejin_worker_client.hook_backend import HookHeartbeatState
+    from chejin_worker_client.hook_connection import HookConnectionManager
+    from chejin_worker_client.hook_inbox import NativeInbox
+    _, gateway, _, _, receiver, thread = lab
+    receiver.shutdown(); thread.join(timeout=2); receiver.server_close()
+    managers = []
+    def connect(worker):
+        credentials = HookWorkerCredentials(worker['id'],worker['worker_token'],worker['instance'])
+        manager = HookConnectionManager(gateway,identity_client,
+            NativeInbox(max_body_bytes=4096,max_inbox_bytes=65536),
+            receiver_timeout_seconds=1,on_persistence_failure=lambda:pytest.fail('inbox persistence failed'))
+        managers.append(manager)
+        prepared = manager.prepare(credentials,HookHeartbeatState('idle','ready','logged_in',None,None,'{}'))
+        assert prepared is manager.prepared
+        # Same authenticated receipt consumed by HookWorkerServices before dispatch.
+        prepared.clock.observe(prepared.account)
+        return manager, credentials, prepared
+    yield connect
+    for manager in managers: manager.close()
+
+
+@pytest.mark.parametrize('mode',['single_callback','retained_send','capacity_reconcile','paused_dispatcher'])
+def test_callback_during_post_send_scan_and_retained_settlement(identity_client,lab,tmp_path,monkeypatch,mode,connection_factory):
     segments=1
-    if segments==2:
-        from app.services import c3_service
-        from app.services.ai_adapter import AIEngineDecision
-        class Model:
-            def generate_reply_decision(self,**kwargs):
-                parts=['这台车的资料需要按实际检测结果核实，'*3+'我们会说明已知的情况。', '另一台车也需要核实使用情况，'*4+'不能保证没有未发现的问题。']
-                return AIEngineDecision(decision='send_reply',reply_text=' '.join(parts),guard_result='pass',raw_payload={'omniauto_brain_result':{'brain_plan':{'reply_segments':parts}}})
-        monkeypatch.setattr(c3_service,'get_ai_engine_adapter',Model)
     server,gateway,process,scope,*_=lab
     w,t,account=claimed(process_generation=process.generation,pending=True)
-    scope=replace(scope,account_epoch=account['account_epoch'])
-    credentials=HookWorkerCredentials(w['id'],w['worker_token'],w['instance'])
-    prepared=SimpleNamespace(process=process,registration=SimpleNamespace(scope=scope),
-        clock=calibrated_clock(identity_client,credentials,gateway,process,scope))
+    manager,credentials,prepared=connection_factory(w)
     runtime=HookFormalRuntime(HookFormalClient(identity_client.base_url,5),
         credentials,gateway,prepared,tmp_path/'coordinator')
     uis=[]
@@ -84,7 +94,7 @@ def test_callback_during_post_send_scan_and_retained_settlement(identity_client,
         result=original_scan(*args,**kwargs)
         # The Hook call has happened and its row has landed. Emulate a callback
         # crossing the scan barrier once, or on all bounded attempts.
-        if any(r[0]=='/SendTextMsg' for r in server.requests) and (mode in {'retained_send','capacity_reconcile'} or changes[0]==0):
+        if any(r[0]=='/SendTextMsg' for r in server.requests) and (mode in {'retained_send','capacity_reconcile','paused_dispatcher'} or changes[0]==0):
             changes[0]+=1
         return result
     monkeypatch.setattr(HookHistorySynchronizer,'scan',scan)
@@ -110,22 +120,45 @@ def test_callback_during_post_send_scan_and_retained_settlement(identity_client,
         import hashlib
         hashes={p:hashlib.sha256(p.read_bytes()).hexdigest() for p in retained}
         monkeypatch.setattr(HookHistorySynchronizer,'scan',original_scan)
-        recovery=HookFormalRuntime(runtime.client,runtime.credentials,gateway,prepared,tmp_path/'recovery')
+        manager.close()
+        manager,credentials,prepared=connection_factory(w)
+        recovery=HookFormalRuntime(runtime.client,credentials,gateway,prepared,tmp_path/'recovery')
         if mode=='capacity_reconcile':
             recovery.history_budget.maximum_bytes=16
             recovery.history_budget.save(tmp_path/'recovery/history-captures'/('a'*64+'.json'),{'synthetic':'occupied regular pool'},settlement=True)
             recovery.history_budget.begin_capture(allow_retire=False)
             assert not recovery.history_budget.ready
-        post(w,f"/workers/{w['id']}/run-status",{'client_instance_id':w['instance'],'run_status':'running'})
-        receipt=recovery.settle_retained_send(binding,tmp_path/'coordinator',metadata)
-        assert receipt['local_send_observed'] and receipt['native_msg_id']
-        assert recovery.settle_retained_send(binding,tmp_path/'coordinator',metadata)==receipt
-        if mode=='capacity_reconcile':
-            assert list((tmp_path/'recovery/history-reconcile/history-captures').glob('*.json'))
-            assert not recovery.history_budget.ready
-            with pytest.raises(ValueError,match='HOOK_HISTORY_STORAGE_CAPACITY_EXCEEDED'):
-                recovery.start_flow({'id':str(uuid.uuid4())})
-        recovery.finish(metadata['task_id'],metadata['flow_id'],metadata['lease_fencing_token'],binding['conversation_id'])
+        if mode=='paused_dispatcher':
+            import threading
+            from chejin_worker_client import storage
+            from chejin_worker_client.models import Binding
+            from chejin_worker_client.hook_dispatcher import HookBusinessDispatcher
+            runner=SimpleNamespace(binding=Binding(w['id'],w['worker_token'],w['instance'],'paused'),
+                stop_event=threading.Event(),api=SimpleNamespace(inflight_flow_id=None),current_task=None,
+                on_task=lambda task:None,can_pull_tasks=lambda:False,_can_start_new_flow=lambda:False)
+            services=SimpleNamespace(connection=manager,_credentials=credentials,startup_window_ready_for=lambda value:False)
+            dispatcher=HookBusinessDispatcher(runtime.client,tmp_path/'coordinator',
+                lambda *args:pytest.fail('recovery tried to invite'),lambda *args:None,
+                automatic_transcription_disabled=lambda:True)
+            for _ in range(3): dispatcher.tick(runner,services)
+            receipt=json.loads((tmp_path/'coordinator'/'send-receipts'/f"{metadata['reply_action_id']}.json").read_text())
+            assert receipt['local_send_observed'] and receipt['native_msg_id']
+            assert not storage.load_runtime_control().get('inflight_flow_id')
+            assert runner.current_task is None and runner.binding.run_status=='paused'
+            assert dispatcher.runtime.prepared is manager.prepared
+            # Replay the original durable outcome through the same source entry.
+            assert dispatcher.runtime.settle_retained_send(binding,tmp_path/'coordinator',metadata)==receipt
+        else:
+            post(w,f"/workers/{w['id']}/run-status",{'client_instance_id':w['instance'],'run_status':'running'})
+            receipt=recovery.settle_retained_send(binding,tmp_path/'coordinator',metadata)
+            assert receipt['local_send_observed'] and receipt['native_msg_id']
+            assert recovery.settle_retained_send(binding,tmp_path/'coordinator',metadata)==receipt
+            if mode=='capacity_reconcile':
+                assert list((tmp_path/'recovery/history-reconcile/history-captures').glob('*.json'))
+                assert not recovery.history_budget.ready
+                with pytest.raises(ValueError,match='HOOK_HISTORY_STORAGE_CAPACITY_EXCEEDED'):
+                    recovery.start_flow({'id':str(uuid.uuid4())})
+            recovery.finish(metadata['task_id'],metadata['flow_id'],metadata['lease_fencing_token'],binding['conversation_id'])
         assert all(hashlib.sha256(p.read_bytes()).hexdigest()==v for p,v in hashes.items())
         assert len([r for r in server.requests if r[0]=='/SendTextMsg'])==1
         with SessionLocal() as db:

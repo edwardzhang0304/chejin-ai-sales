@@ -47,6 +47,10 @@ runner=TaskRunner(api,bridge,on_profile=lambda x:None,on_status=lambda x:None,on
 runner.binding=binding
 head={'X-Worker-Token':w['worker_token'],'X-Client-Instance-Id':'followup-test'}
 if phase=='read':
+    # Obtain the real heartbeat capability before entering the read pipeline.
+    # Calling the private read method on a never-heartbeated Runner omitted this producer.
+    runner.tick_once()
+    assert runner._backend_pending_read_recovery.get('terminal_settlement_protocol_version') == 1
     targets=requests.get(base+'/api/workers/'+w['id']+'/wechat/sessions/read-targets',headers=head,timeout=10).json()['data']['targets']
     target=WechatReadTarget.from_api(next(x for x in targets if x['conversation_id']==row['conversation_id']))
 original=api.session.send

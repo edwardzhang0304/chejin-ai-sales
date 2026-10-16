@@ -61,8 +61,10 @@ def completed_read_receipt(db: Session, worker: Worker, payload: WechatMessageIn
             if (saved.get('identity') or {}).get('payload_sha256') != identity['payload_sha256']:
                 continue
             try:
+                # ORM storage uses UTC; SQLite returns this timestamp without tzinfo.
+                # Normalize at this DB boundary, retaining strict wire identity checks.
                 rules.validate_settlement(raw_payload, saved.get('response') or {}, worker_id=worker.id,
-                    client_instance_id=worker.client_instance_id, bound_at=worker.bound_at)
+                    client_instance_id=worker.client_instance_id, bound_at=_utc(worker.bound_at))
             except (ValueError, TypeError, KeyError) as exc:
                 raise AppError('C2_RECOVERY_OWNER_MISMATCH', '原结算凭据与当前归属不匹配', 409) from exc
         _validate_v3_request_contract(payload, contract=selected)

@@ -39,6 +39,58 @@ def ordered_messages(db,binding):
     return [rows[mid] for mid in ids]
 
 
+def _apply_history_actors(db, binding, conv, rows, ctx):
+    """Apply verified sender/order facts independently of media transcription.
+
+    The caller must have complete ordered history and no unresolved send actor.
+    This settles human business replies only; it never completes a native call.
+    """
+    from app.services import c3_service
+    applied=set(ctx.get('actor_applied_message_ids',[]))
+    native_orders={m.id:i for i,m in enumerate(rows)}
+    for message in rows:
+        if message.id in applied:continue
+        at=c3_service._aware_datetime(message.occurred_at)
+        if message.sender_role=='customer':
+            conv.last_inbound_at=max(filter(None,[c3_service._aware_datetime(conv.last_inbound_at),at]))
+            conv.recall_cycle_id=conv.recall_origin_status=conv.next_recall_at=None
+        else:
+            raw=dict(message.raw_payload or {})
+            conv.last_outbound_at=max(filter(None,[c3_service._aware_datetime(conv.last_outbound_at),at]))
+            if raw.get('sender_source') in {'unresolved','human'}:
+                raw['sender_source']='human';message.raw_payload=raw
+                resolution=c3_service.close_open_handoffs_for_human_sales(db,
+                    conversation_id=binding.conversation_id,sales_message=message,native_history_orders=native_orders)
+                if resolution['remaining_open_count']:
+                    conv.status='waiting_sales_reply'
+                else:
+                    if resolution['resume_ai']:conv.ai_enabled=True
+                    conv.last_sales_reply_at=max(filter(None,[c3_service._aware_datetime(conv.last_sales_reply_at),at]))
+                    conv.sales_first_reply_at=conv.sales_first_reply_at or at
+                    conv.status='sales_replied_waiting_user';conv.handoff_reason_code=None
+                    from app.core.config import get_settings
+                    conv.next_recall_at=at+timedelta(hours=get_settings().c3_recall_after_hours)
+                    c3_service.cancel_active_batches_for_conversation_change(db,binding.conversation_id,
+                        reason='销售已人工回复，取消未发送 AI 回复')
+        applied.add(message.id)
+    ctx['actor_applied_message_ids']=[m.id for m in rows if m.id in applied]
+    binding.native_context=dict(ctx)
+
+
+def human_covered_voice_ids(rows, applied_ids):
+    """Old media covered by a proven human reply is no longer an AI prerequisite.
+
+    Keep the original voice state/body intact. Both readiness and work inventory
+    consume this same native-order boundary; AI echoes cannot advance it.
+    """
+    applied = set(applied_ids)
+    last_human = max((i for i, message in enumerate(rows)
+        if message.id in applied and message.sender_role == 'self'
+        and (message.raw_payload or {}).get('sender_source') == 'human'), default=-1)
+    return {message.id for message in rows[:last_human + 1]
+        if message.sender_role == 'customer' and message.message_type == 'voice'}
+
+
 def accept_coverage(db,authenticated,instance,payload):
     hint=db.get(WechatSessionBinding,payload.binding_id)
     lock_leads(db,[hint.lead_id] if hint else [])
@@ -156,15 +208,17 @@ def accept_coverage(db,authenticated,instance,payload):
     rows_by_id={m.id:m for m in db.scalars(select(MessageEvent).where(MessageEvent.id.in_(ids)))}
     last_self=max((i for i,mid in enumerate(ids) if rows_by_id[mid].sender_role=='self'),default=-1)
     tail=[rows_by_id[mid] for mid in ids[last_self+1:] if rows_by_id[mid].sender_role=='customer']
-    if any(m.message_type=='voice' and m.item_state not in {'completed','failed'} for m in rows_by_id.values() if m.sender_role=='customer'):
-        reason=reason or 'HOOK_VOICE_PENDING'
-    ready=checked['ready'] and reason is None
+    # An unclassified/partially acknowledged outgoing actor cannot close a handoff.
+    if any(m.sender_role=='self' and (m.raw_payload or {}).get('sender_source')
+            not in {'unresolved','human','ai'} for m in rows_by_id.values()):
+        reason=reason or 'HOOK_NATIVE_SEND_ACTOR_PENDING'
+    facts_ready=checked['ready'] and reason is None
     state_digest=rules.digest([payload.account_epoch,payload.process_generation,payload.binding_revision,
         checked['revoked_native_ids'],checked['system_notice_native_ids'],[[r['MsgSvrID'],r['Type'],r['IsSender'],r['StrContent'],r['Sequence'],r['MsgSequence'],
           rows_by_id[ids[i]].content,rows_by_id[ids[i]].item_state] for i,r in enumerate(checked['semantic_rows'])]])
     changed=ctx.get('history_state_digest')!=state_digest
     if reconciliation is None:
-        ctx.update({'history_ready':ready,'history_reason_code':reason,'active_history_receipt_id':receipt.id,
+        ctx.update({'history_ready':False,'history_reason_code':reason,'active_history_receipt_id':receipt.id,
             'coverage_process_generation':payload.process_generation,'history_message_event_ids':ids,
             'history_state_digest':state_digest,'history_observed_at':checked['observed_at']})
         binding.native_context=ctx
@@ -179,6 +233,19 @@ def accept_coverage(db,authenticated,instance,payload):
         if changed and not only_own_outgoing:
             c3_service.cancel_active_batches_for_conversation_change(db,binding.conversation_id,reason='原生历史事实或顺序已更新')
             c3_service.supersede_open_reply_actions_for_new_inbound(db,binding.conversation_id)
+    rows=[rows_by_id[mid] for mid in ids]
+    if facts_ready and reconciliation is None:
+        conv=db.get(Conversation,binding.conversation_id)
+        if conv and conv.status not in {'closed','rejected'}:
+            _apply_history_actors(db,binding,conv,rows,ctx)
+    covered=human_covered_voice_ids(rows,ctx.get('actor_applied_message_ids',[]))
+    if any(m.sender_role=='customer' and m.message_type=='voice'
+            and m.item_state not in {'completed','failed'} and m.id not in covered for m in rows):
+        reason=reason or 'HOOK_VOICE_PENDING'
+    ready=checked['ready'] and reason is None
+    if reconciliation is None:
+        ctx.update(history_ready=ready,history_reason_code=reason)
+        binding.native_context=dict(ctx)
     from app.services.observability_service import process_run_id_for_key, record_server_stage_best_effort
     process_run_id = process_run_id_for_key('hook_history', payload.capture_id)
     record_server_stage_best_effort(
@@ -191,35 +258,6 @@ def accept_coverage(db,authenticated,instance,payload):
         conv=db.get(Conversation,binding.conversation_id)
         if conv and conv.status not in {'closed','rejected'}:
             rows=ordered_messages(db,binding)
-            applied=set(ctx.get('actor_applied_message_ids',[]))
-            native_orders={m.id:i for i,m in enumerate(rows)}
-            for message in rows:
-                if message.id in applied:continue
-                at=message.occurred_at
-                if message.sender_role=='customer':
-                    conv.last_inbound_at=max(filter(None,[c3_service._aware_datetime(conv.last_inbound_at),at]))
-                    conv.recall_cycle_id=conv.recall_origin_status=conv.next_recall_at=None
-                else:
-                    raw=dict(message.raw_payload or {})
-                    conv.last_outbound_at=max(filter(None,[c3_service._aware_datetime(conv.last_outbound_at),at]))
-                    if raw.get('sender_source')!='ai':
-                        raw['sender_source']='human';message.raw_payload=raw
-                        resolution=c3_service.close_open_handoffs_for_human_sales(db,
-                            conversation_id=binding.conversation_id,sales_message=message,native_history_orders=native_orders)
-                        if resolution['remaining_open_count']:
-                            conv.status='waiting_sales_reply'
-                        else:
-                            if resolution['resume_ai']:conv.ai_enabled=True
-                            conv.last_sales_reply_at=max(filter(None,[c3_service._aware_datetime(conv.last_sales_reply_at),at]))
-                            conv.sales_first_reply_at=conv.sales_first_reply_at or at
-                            conv.status='sales_replied_waiting_user';conv.handoff_reason_code=None
-                            from app.core.config import get_settings
-                            conv.next_recall_at=at+timedelta(hours=get_settings().c3_recall_after_hours)
-                            c3_service.cancel_active_batches_for_conversation_change(db,binding.conversation_id,
-                                reason='销售已人工回复，取消未发送 AI 回复')
-                applied.add(message.id)
-            ctx['actor_applied_message_ids']=[m.id for m in rows if m.id in applied]
-            binding.native_context=dict(ctx)
             # Native successors get a distinct checkpoint; never fabricate a C2 frame.
             for next_action in db.scalars(select(ReplyAction).where(ReplyAction.conversation_id==binding.conversation_id,
                     ReplyAction.current.is_(True),ReplyAction.status=='queued',ReplyAction.segment_index>1)):

@@ -186,7 +186,7 @@ def test_sales_create_normalizes_phone_and_only_returns_binding_status(monkeypat
 
     response = client.post(
         "/api/sales",
-        json={"sales_name": "张伟", "phone": "139-0000-0001", "enabled": True},
+        json={"sales_name": "张伟", "phone": " 139 0000 0001 ", "enabled": True},
         headers=HEADERS,
     )
     assert response.status_code == 200
@@ -204,6 +204,15 @@ def test_sales_create_normalizes_phone_and_only_returns_binding_status(monkeypat
     assert all("feishu_user_id" not in item for item in listed)
     assert all("open_id" not in item for item in listed)
     assert fake.lookup_calls == ["13900000001"]
+
+
+def test_sales_phone_does_not_accept_punctuation(monkeypatch):
+    fake = FakeFeishuAdapter()
+    _use_fake_adapter(monkeypatch, fake)
+    response = client.post('/api/sales',json={
+        'sales_name':'Synthetic sales','phone':'139-0000-0001','enabled':True},headers=HEADERS)
+    assert response.status_code == 422
+    assert not fake.lookup_calls
 
 
 def test_sales_update_without_phone_preserves_phone_and_open_id(monkeypatch):

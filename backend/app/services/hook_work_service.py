@@ -27,11 +27,17 @@ def inventory(db,authenticated,instance,payload):
                 or followup_block_reason(db,binding.lead_id,lock=False)):
             continue
         source_tasks.add(ctx['source_task_id'])
+        from app.services.hook_history_service import human_covered_voice_ids
+        history_ids=ctx.get('history_message_event_ids',[])
+        history_rows={m.id:m for m in db.scalars(select(MessageEvent).where(
+            MessageEvent.binding_id==binding.id,MessageEvent.id.in_(history_ids)))}
+        covered=human_covered_voice_ids([history_rows[mid] for mid in history_ids if mid in history_rows],
+            ctx.get('actor_applied_message_ids',[]))
         voices=[]
         for message in db.scalars(select(MessageEvent).where(MessageEvent.binding_id==binding.id,
                 MessageEvent.sender_role=='customer',MessageEvent.message_type=='voice',
                 MessageEvent.item_state.in_({'metadata_observed','uncertain'}))):
-            if message.id not in ctx.get('history_message_event_ids',[]):continue
+            if message.id not in history_ids or message.id in covered:continue
             # An admitted unknown result already handed to sales is terminal
             # for automation, not a transcription job to re-advertise forever.
             if message.item_state=='uncertain' and message.id in ctx.get('media_handoff_applied_ids',[]):continue
