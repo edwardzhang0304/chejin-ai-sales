@@ -3,8 +3,8 @@
   "repository": "edwardzhang0304/chejin-ai-sales",
   "transport": "hook",
   "reuse_mode": "reviewed_delta",
-  "approval": "Client engineer final source d2c0561 independently approved by architect 5. Reuse exactly hashed staged regression reports; packaging CI and historical source baseline are separate evidence, not rerun claims.",
-  "reviewed_commit": "d2c0561d13f139c329b48e1e33fd97ca02fcd3fc",
+  "approval": "Architect5 approved client d2c0561 and supplemental version-consistency test 686dd36. Reuse exact hashed staged reports; historical full suite and Windows packaging evidence remain separately identified.",
+  "reviewed_commit": "686dd36ac28ab053015d0fb913f723a03959c924",
   "target_version": "0.10.4",
   "source_sha256": {
     ".dockerignore": "953c4ae7fbf88d1f9655d96aac647bb20157d4531062155de4922562c924cc6c",
@@ -1315,7 +1315,7 @@
     "worker-client/tests/test_hook_history_session.py": "9562003f3497faae906ec600639abb4895ba5c1041698c18fe80dbc6ab806010",
     "worker-client/tests/test_hook_history_store.py": "46476a8627077edec34d8c832a4ebcaee1267bbf4097ad12721c3dd361b4d6b5",
     "worker-client/tests/test_hook_history_sync.py": "84310955a15836982f4550766cb4979b8052928d06569de9e1836b550aaa0557",
-    "worker-client/tests/test_hook_installation.py": "6537562d3e664c38e205de614acec3e9ba07ccbdbd8d071962a9f1b7b989b9d3",
+    "worker-client/tests/test_hook_installation.py": "4343f7759ea6296a48cbaf1d2bacacc13a3e001e4c7c86b7cc5e3c53fba7ece2",
     "worker-client/tests/test_hook_intake.py": "20a335965c1f5757abbcab56e495046cf53a53d23688ca3375aa91486b45d36c",
     "worker-client/tests/test_hook_native_sender.py": "da4eaecd1ab42a3315e359de73bd62fca35d3b626582cee63ae5b046819cbb69",
     "worker-client/tests/test_hook_outbox.py": "ddc16f179a02489c05ad65af84143d916c960037522d204edfa673e3ea78c644",
@@ -1457,7 +1457,7 @@
       ]
     }
   ],
-  "environment": "Client macOS staged targeted regression reports, final source independently reviewed by architect 5. Reports overlap; unique cases counted once. Original 1371 Linux/PostgreSQL cases are historical baseline only. Windows final package and real Hook device acceptance remain separate.",
+  "environment": "Client macOS staged targeted regression reports, final source independently reviewed by architect 5. Reports overlap; unique cases counted once. Original 1371 Linux/PostgreSQL cases are historical baseline only. Windows final package and real Hook device acceptance remain separate. One extra current-version consistency check passed after removing hardcoded old expected version; all original client runtime tests reused unchanged.",
   "checks": [
     {
       "original_xml_sha256": "89117f280d71af5bcc7fef82720c0d1b2071522ffd62ea07a2b66b575202524e",
@@ -2801,6 +2801,18 @@
           "result": "passed"
         }
       ]
+    },
+    {
+      "original_xml_sha256": "443887d72138e8df98adbeff9360d9aaa42d37f42537b4652cb68d087d7402f0",
+      "report": "version-check.xml",
+      "count": 1,
+      "cases": [
+        {
+          "classname": "worker-client.tests.test_hook_installation",
+          "name": "test_current_product_versions_are_unified",
+          "result": "passed"
+        }
+      ]
     }
   ],
   "packaging_reviewed_commit": "ffc6a97718d4d75f58b9fa90ae601a3132331101",
@@ -2828,17 +2840,24 @@
     "worker-client/packaging/chejin_worker_client_entry.py": "21f4375bb52150265c9e014ed83d16436c0ac793a55b7726670f6d796a2c65c1",
     "worker-client/tests/test_hook_dispatcher.py": "55c0bd6d5d426a502152d586a3db85c170b85b492a9d541f4a4d72900aa185ed",
     "worker-client/tests/test_update_admission.py": "8aff8e176c564d6a03f91e9494909b72bf3cd1da0fcbb72131d4ac13eafe422f",
-    "worker-client/tests/test_update_coordinator.py": "abbf09a538365dcb0410d60debf3f31d84aca291ea950baa5a3b5e466c38ca37"
+    "worker-client/tests/test_update_coordinator.py": "abbf09a538365dcb0410d60debf3f31d84aca291ea950baa5a3b5e466c38ca37",
+    "worker-client/tests/test_hook_installation.py": "4343f7759ea6296a48cbaf1d2bacacc13a3e001e4c7c86b7cc5e3c53fba7ece2"
   },
   "delta_review": {
-    "reviewer": "架构师5号-hook",
-    "thread_id": "01a0d26f-f47a-7343-9ad8-cda8320d7c86",
-    "turn_id": "01a141eb-a1ca-7802-bcf4-8940dec5d64d",
+    "commit": "686dd36ac28ab053015d0fb913f723a03959c924",
     "result": "passed for source push",
-    "commit": "d2c0561d13f139c329b48e1e33fd97ca02fcd3fc",
-    "prior_rejection": "c800e0a: blocking connection lock; resolved in d2c0561",
-    "independent_validation": "previous scope 114 passed; final lock-contention increment 2 passed, counterexample fixed",
-    "windows_package_acceptance": "pending"
+    "thread_id": "01a0d26f-f47a-7343-9ad8-cda8320d7c86",
+    "turn_id": "01a14201-f0b4-7390-a59d-3316f8048cb9",
+    "client_review": {
+      "reviewer": "架构师5号-hook",
+      "thread_id": "01a0d26f-f47a-7343-9ad8-cda8320d7c86",
+      "turn_id": "01a141eb-a1ca-7802-bcf4-8940dec5d64d",
+      "result": "passed for source push",
+      "commit": "d2c0561d13f139c329b48e1e33fd97ca02fcd3fc",
+      "prior_rejection": "c800e0a: blocking connection lock; resolved in d2c0561",
+      "independent_validation": "previous scope 114 passed; final lock-contention increment 2 passed, counterexample fixed",
+      "windows_package_acceptance": "pending"
+    }
   },
   "historical_baseline_tests": 1371
 }
