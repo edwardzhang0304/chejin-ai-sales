@@ -45,7 +45,8 @@ def create_hook_services(api):
     dispatcher=HookBusinessDispatcher(formal,private,native.ui,native.startup,
         automatic_transcription_disabled=automatic_text_disabled)
     return HookWorkerServices(connection,NativeProjectionStore(max_projection_bytes=128*1024*1024,max_entries=200),
-        intake_interval_seconds=.2,projection_batch_size=100,dispatcher=dispatcher)
+        intake_interval_seconds=.2,projection_batch_size=100,dispatcher=dispatcher,
+        recovery_window_check=native.check_recovery_window)
 
 
 class WindowsC1:
@@ -71,6 +72,15 @@ class WindowsC1:
         ops.win32gui.EnumWindows(collect,None)
         if len(windows)!=1:raise ValueError('HOOK_C1_MAIN_WINDOW_AMBIGUOUS')
         return ops,windows[0]
+    def check_recovery_window(self, process):
+        """Read-only; reuse startup/C1 popup classification without activating UI."""
+        from apps.wechat_ai_customer_service.adapters.wechat_win32_ocr.hook_c1 import classify_visible_other_windows
+        ops, hwnd = self._window(process)
+        if ops.win32gui.IsIconic(hwnd):
+            raise ValueError('HOOK_WINDOW_UNAVAILABLE')
+        if classify_visible_other_windows(ops, hwnd, process.pid)['blocking_window_details']:
+            raise ValueError('HOOK_C1_POPUP_PENDING')
+
     def startup(self,process,gateway,scope):
         from apps.wechat_ai_customer_service.adapters.wechat_win32_ocr.hook_c1 import prepare_window
         with gateway._locked(process,'hook_startup_window') as lease:

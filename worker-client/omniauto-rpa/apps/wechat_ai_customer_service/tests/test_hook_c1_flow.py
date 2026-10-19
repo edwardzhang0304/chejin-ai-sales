@@ -77,6 +77,32 @@ class Tests(unittest.TestCase):
         self.ui.fail='confirm_invite_once';r=self.run_flow();self.assertEqual(r['status'],'submission_unknown');self.assertTrue(self.j.path.exists())
     def test_wrong_field_never_confirms(self):
         self.ui.fail='wrong_remark';r=self.run_flow();self.assertEqual(r['error_code'],'INVITE_FIELD_VERIFICATION_FAILED');self.assertNotIn('confirm_invite_once',self.ui.actions);self.assertFalse(self.j.path.exists())
+    def test_failed_dialog_transition_never_cleans_through_old_card(self):
+        from unittest.mock import Mock
+        self.ui.select_invite_dialog = Mock(side_effect=f.FlowStop('UNEXPECTED_WECHAT_DIALOG'))
+        r = self.run_flow()
+        self.assertEqual(r['error_code'], 'UNEXPECTED_WECHAT_DIALOG')
+        self.assertEqual(r['cleanup'], 'deferred_invite_dialog_unconfirmed')
+        self.assertNotIn('cleanup_error_code', r)
+        self.assertFalse(r['submit_attempted']);self.assertFalse(self.j.path.exists())
+        self.assertNotIn('search_cleanup', self.ui.actions)
+        self.assertNotIn('confirm_invite_once', self.ui.actions)
+
+    def test_non_form_candidate_cannot_authorize_typing_or_submit(self):
+        self.ui.frames['fields'].rows=[]
+        r=self.run_flow()
+        self.assertFalse(r['submit_attempted']);self.assertFalse(self.j.path.exists())
+        self.assertNotIn('focus_greeting',self.ui.actions)
+        self.assertNotIn('confirm_invite_once',self.ui.actions)
+        self.assertNotIn('search_cleanup',self.ui.actions)
+        self.assertEqual(r['cleanup'],'deferred_invite_dialog_still_open')
+
+    def test_open_click_failure_conservatively_defers_cleanup(self):
+        self.ui.fail='open_invite_form'
+        r=self.run_flow()
+        self.assertEqual(r['cleanup'],'deferred_invite_dialog_unconfirmed')
+        self.assertFalse(r['submit_attempted']);self.assertNotIn('search_cleanup',self.ui.actions)
+
     def test_original_contract_missing_code(self):
         r=self.run_flow(remark_name='无短码');self.assertEqual(r['error_code'],'TASK_PAYLOAD_INVALID');self.assertFalse(self.ui.actions)
     def test_account_change_no_actions(self):
@@ -198,7 +224,7 @@ class NativeGuardTests(unittest.TestCase):
             EnumWindows=lambda fn,arg:fn(11,arg))
         self.ops=SimpleNamespace(win32gui=self.gui,win32process=SimpleNamespace(GetWindowThreadProcessId=lambda h:(1,99)),
             get_window_geometry=lambda h:dict(self.geom),get_window_client_geometry=lambda h:dict(self.client),
-            humanized_action_sleep=Mock(),ensure_left_button_released=Mock(),require_active_ui_action_budget=Mock(),
+            humanized_action_sleep=Mock(),add_friend_paced_pause=Mock(),ensure_left_button_released=Mock(),require_active_ui_action_budget=Mock(),
             win32api=SimpleNamespace(GetCursorPos=lambda:(10,10),SetCursorPos=Mock(),mouse_event=Mock()),
             win32con=SimpleNamespace(MOUSEEVENTF_LEFTDOWN=2,MOUSEEVENTF_LEFTUP=4))
         self.ui=object.__new__(f.NativeUI);self.ui.ops=self.ops;self.ui.main=11;self.ui.pid=99;self.ui.current=11;self.ui.initial=dict(self.geom)
@@ -512,5 +538,71 @@ class NativeGuardTests(unittest.TestCase):
         self.input_setup();self.gui.IsWindowVisible=lambda h:False if h==11 else True
         with self.assertRaises(f.FlowStop):self.ui.replace(self.fr,'TEST')
         self.ops.hotkey.assert_not_called();self.ops.key_press.assert_not_called()
+
+    def select_dialog_samples(self, samples, *, baseline=None):
+        from unittest.mock import patch
+        self.ui.current=22;self.ui.invite_visible_windows={11,22} if baseline is None else baseline
+        elapsed=[0.0];index=[0]
+        self.foreground=33
+        def sample():return samples[min(index[0],len(samples)-1)]
+        self.gui.GetForegroundWindow=lambda:sample().get('hwnd',33)
+        self.gui.IsWindowVisible=lambda h:True if h==11 else sample().get('visible',True)
+        self.gui.GetClassName=lambda h:sample().get('class','SyntheticInviteWnd')
+        self.ops.win32process.GetWindowThreadProcessId=lambda h:(1,99 if h in {11,22} else sample().get('pid',99))
+        self.ops.get_window_client_geometry=lambda h:dict(width=sample()['width'],height=sample()['height'],screen_left=320,screen_top=125)
+        def sleep(seconds):elapsed[0]+=seconds;index[0]+=1
+        with patch.object(f.time,'monotonic',side_effect=lambda:elapsed[0]),patch.object(f.time,'sleep',side_effect=sleep):
+            self.ui.select_invite_dialog()
+        return elapsed[0]
+
+    def test_invite_transient_size_then_stable_normal_form(self):
+        elapsed=self.select_dialog_samples([dict(width=450,height=235),dict(width=450,height=780)])
+        self.assertEqual(self.ui.current,33);self.assertAlmostEqual(elapsed,.3)
+        self.assertEqual(len(self.ui.window_events),2)
+        self.assertTrue(self.ui.window_events[-1]['accepted'])
+        self.assertFalse(any('title' in e for e in self.ui.window_events))
+        self.ops.win32api.mouse_event.assert_not_called()
+
+    def test_normal_invite_requires_two_equal_samples(self):
+        elapsed=self.select_dialog_samples([dict(width=450,height=780)])
+        self.assertAlmostEqual(elapsed,.15)
+        self.ops.add_friend_paced_pause.assert_called_once_with('verify',reason='after_add_contact_entry_click_before_capture')
+        self.assertEqual(len(self.ui.window_events),1)
+
+    def test_persistent_zero_size_invite_is_bounded_and_diagnosed(self):
+        with self.assertRaisesRegex(f.FlowStop,'UNEXPECTED_WECHAT_DIALOG'):
+            self.select_dialog_samples([dict(width=450,height=0)])
+        self.assertEqual(self.ui.current,22)
+        self.assertEqual(len(self.ui.window_events),2)
+        self.assertEqual(self.ui.window_events[-1]['stage'],'invite_dialog_timeout')
+        self.ops.win32api.mouse_event.assert_not_called()
+
+    def test_preexisting_or_shadow_or_hidden_candidate_never_accepted(self):
+        for fields,baseline in [({}, {11,22,33}),({'class':'popupshadow'},None),({'visible':False},None)]:
+            with self.subTest(fields=fields,baseline=baseline):
+                with self.assertRaisesRegex(f.FlowStop,'UNEXPECTED_WECHAT_DIALOG'):
+                    self.select_dialog_samples([dict(width=450,height=780,**fields)],baseline=baseline)
+                self.assertEqual(self.ui.current,22)
+
+    def test_invite_dimensions_are_not_a_fixed_template_gate(self):
+        for width,height in [(450,780),(700,1000),(280,500)]:
+            with self.subTest(width=width,height=height):
+                self.select_dialog_samples([dict(width=width,height=height)])
+                self.assertEqual(self.ui.current,33)
+                self.ops.win32api.mouse_event.assert_not_called()
+
+    def test_foreign_dialog_immediately_stops_without_input(self):
+        with self.assertRaisesRegex(f.FlowStop,'WINDOW_FOCUS_OR_GEOMETRY_CHANGED'):
+            self.select_dialog_samples([dict(width=450,height=780,pid=123)])
+        self.ops.win32api.mouse_event.assert_not_called()
+
+    def test_invite_transition_keeps_main_geometry_and_identity_guards(self):
+        self.ui.identity_guard.side_effect=f.FlowStop('ACCOUNT_CHANGED')
+        with self.assertRaisesRegex(f.FlowStop,'ACCOUNT_CHANGED'):
+            self.select_dialog_samples([dict(width=450,height=780)])
+        self.ui.identity_guard.side_effect=None
+        self.geom['left']+=1
+        with self.assertRaisesRegex(f.FlowStop,'WINDOW_FOCUS_OR_GEOMETRY_CHANGED'):
+            self.select_dialog_samples([dict(width=450,height=780)])
 
 if __name__=='__main__':unittest.main()

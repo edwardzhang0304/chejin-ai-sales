@@ -27,13 +27,15 @@ from .hook_progress import emit_progress,register_progress,_deliver
 
 class HookWorkerServices:
     def __init__(self, connection: HookConnectionManager, projection: NativeProjectionStore, *,
-                 intake_interval_seconds: float, projection_batch_size: int, dispatcher=None) -> None:
+                 intake_interval_seconds: float, projection_batch_size: int, dispatcher=None,
+                 recovery_window_check=None) -> None:
         if (type(intake_interval_seconds) not in {int, float}
                 or not math.isfinite(intake_interval_seconds) or not 0 < intake_interval_seconds <= 5
                 or type(projection_batch_size) is not int or not 1 <= projection_batch_size <= 1000):
             raise ValueError("HOOK_INTAKE_LIMIT_INVALID")
         self.connection, self.projection = connection, projection
         self.dispatcher = dispatcher
+        self._recovery_window_check = recovery_window_check
         self.intake_interval_seconds = intake_interval_seconds
         self.projection_batch_size = projection_batch_size
         self._credentials: HookWorkerCredentials | None = None
@@ -278,6 +280,32 @@ class HookWorkerServices:
                     if not isinstance(code,str) or not code.startswith('HOOK_'):raise
                     self._fault(runner,code,local_error=exc)
             runner.stop_event.wait(self.dispatcher.interval_seconds)
+
+    def fault_recovery_check(self) -> dict:
+        """Fresh local check at the existing fault-recovery gate, never an action.
+
+        Initial window placement is cached per process. It cannot prove that a
+        later failed C1 left no dialog. Recovery is already behind settlement,
+        heartbeat and unknown-result gates in TaskRunner.
+        """
+        check = self.startup_check_state()
+        if not check['canStart']:
+            return check
+        if self._recovery_window_check is None:
+            return check if self.dispatcher is None else startup_check_state.failed('HOOK_C1_STARTUP_WINDOW_UNVERIFIED')
+        prepared = self.connection.prepared
+        if prepared is None:
+            return startup_check_state.failed('HOOK_CONNECTION_CHECK_FAILED')
+        try:
+            self.connection.gateway.generation_inspector(prepared.process)
+            self._recovery_window_check(prepared.process)
+            self.connection.gateway.generation_inspector(prepared.process)
+        except Exception as exc:
+            code = getattr(exc, 'code', None) or str(exc)
+            if code not in startup_check_state.ISSUES:
+                code = 'HOOK_C1_STARTUP_WINDOW_UNVERIFIED'
+            return startup_check_state.failed(code)
+        return check
 
     def startup_check_state(self) -> dict:
         value = dict(self._startup_check)

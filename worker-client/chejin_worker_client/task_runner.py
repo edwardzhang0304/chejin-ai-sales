@@ -6931,7 +6931,7 @@ class TaskRunner:
         elif self.last_rpa_component_status != "ready" or self.last_wechat_status != "logged_in":
             reason = "等待自动化组件和微信连接正常"
         if not reason and getattr(self,'hook_services',None) is not None:
-            check=self.hook_services.startup_check_state()
+            check=self.hook_services.fault_recovery_check()
             if not check.get('canStart'):reason=check.get('message') or check.get('title') or '等待运行检查通过'
         return {"ready": not reason, "checking": False, "reason": reason or "旧记录已处理完成，可以点击“开始接单”恢复。"}
 

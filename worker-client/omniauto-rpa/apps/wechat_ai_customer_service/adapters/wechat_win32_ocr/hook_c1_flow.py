@@ -254,6 +254,7 @@ def run_flow(ui, *, phone: str, verify_message: str, remark_name: str,
         report['error_code'] = 'PREVIOUS_SUBMIT_ATTEMPT_REQUIRES_REVIEW';return report
     search_owned = False
     form_open = False
+    form_transition = False
     def progress(name,state,note=None):
         try:
             callback=getattr(ui,'on_progress',None)
@@ -285,6 +286,9 @@ def run_flow(ui, *, phone: str, verify_message: str, remark_name: str,
             ui.click(frame, t, 'open_existing_chat')
             ui.existing_chat_verified(frame, t)
             report['status'] = 'already_friend';progress('contact_result','done','already_friend');return report
+        # From this point a click may have opened a new surface even if the
+        # subsequent observation fails. Never clean up through the old card.
+        form_transition = True
         ui.click(frame, t, 'open_invite_form')
         ui.select_invite_dialog();form_open = True
         step('invite_form_fields')
@@ -312,6 +316,7 @@ def run_flow(ui, *, phone: str, verify_message: str, remark_name: str,
         ui.click(footer, t, 'confirm_invite_once')
         outcome = ui.observe_submit()
         form_open = outcome.get('form_open', True)
+        form_transition = not outcome.get('form_closed', False)
         report['submission_observation'] = outcome
         # Even a dismissed form is just local submission evidence. Recipient
         # confirmation or an explicit sent signal is needed for delivery.
@@ -329,7 +334,7 @@ def run_flow(ui, *, phone: str, verify_message: str, remark_name: str,
     finally:
         if getattr(ui, 'window_events', None):
             report['window_events'] = ui.window_events
-        if search_owned and not form_open:
+        if search_owned and not form_open and not form_transition:
             try:
                 progress('cleanup','current')
                 ui.clear_search()
@@ -344,6 +349,8 @@ def run_flow(ui, *, phone: str, verify_message: str, remark_name: str,
                 report['cleanup_error_code'] = code if re.fullmatch('[A-Z_]+', code) else 'SEARCH_CLEANUP_FAILED'
         elif form_open:
             report['cleanup'] = 'deferred_invite_dialog_still_open'
+        elif form_transition:
+            report['cleanup'] = 'deferred_invite_dialog_unconfirmed'
     return report
 
 
@@ -372,17 +379,23 @@ class NativeUI:
         ops.activate_window(hwnd, foreground_only=True)
         self.guard()
 
-    def guard(self, frame=None):
+    def _guard_main_window(self):
         self.identity_guard()
         o = self.ops;gui = o.win32gui
-        if (not gui.IsWindow(self.current) or gui.IsIconic(self.main)
-                or o.get_window_geometry(self.main) != self.initial
+        if (not gui.IsWindow(self.main) or gui.IsIconic(self.main)
                 or not gui.IsWindowVisible(self.main)
-                or gui.GetForegroundWindow() != self.current
-                or o.win32process.GetWindowThreadProcessId(self.current)[1] != self.pid):
+                or o.get_window_geometry(self.main) != self.initial
+                or o.win32process.GetWindowThreadProcessId(self.main)[1] != self.pid):
             raise FlowStop('WINDOW_FOCUS_OR_GEOMETRY_CHANGED')
         if hasattr(self,'dpi') and abs(o.window_dpi_scale(self.main)-self.dpi)>.01:
             raise FlowStop('WINDOW_DPI_CHANGED')
+
+    def guard(self, frame=None):
+        self._guard_main_window()
+        o = self.ops;gui = o.win32gui
+        if (not gui.IsWindow(self.current) or gui.GetForegroundWindow() != self.current
+                or o.win32process.GetWindowThreadProcessId(self.current)[1] != self.pid):
+            raise FlowStop('WINDOW_FOCUS_OR_GEOMETRY_CHANGED')
         if frame is not None:
             if (frame.hwnd != self.current or o.get_window_client_geometry(self.current) != frame.geometry
                     or time.monotonic()-frame.timestamp > 15 or frame is not self.last_frame):
@@ -413,6 +426,13 @@ class NativeUI:
     def record_window(self, stage, hwnd):
         # Metadata at the failing instant, no title, screenshot or credentials.
         self.identity_guard()
+        event = self._window_metadata(stage, hwnd)
+        if not hasattr(self, 'window_events'): self.window_events = []
+        self.window_events.append(event)
+        return event
+
+    def _window_metadata(self, stage, hwnd):
+        # Caller already verified identity; diagnostics need no second Hook call.
         gui = self.ops.win32gui
         event = {'stage': stage, 'hwnd': int(hwnd or 0)}
         chain = []
@@ -432,8 +452,6 @@ class NativeUI:
                     if owner == self.main or not same_owner: break
                     owner = gui.GetWindow(owner, 4)
                 event['owner_chain'] = chain
-        if not hasattr(self, 'window_events'): self.window_events = []
-        self.window_events.append(event)
         return event
 
     def select_contact_surface(self):
@@ -523,6 +541,8 @@ class NativeUI:
         self.guard(frame)
         hit=o.win32gui.WindowFromPoint((x,y))
         if o.win32gui.GetAncestor(hit,2)!=self.current:raise FlowStop('TARGET_OCCLUDED')
+        if action == 'open_invite_form':
+            self.invite_visible_windows = self.visible_wechat_windows()
         if action == 'network_lookup':
             self.lookup_visible_windows = self.visible_wechat_windows()
             self.record_window('network_lookup_before_click', self.current)
@@ -580,17 +600,51 @@ class NativeUI:
         if not result.get('ok'):raise FlowStop('TEXT_INPUT_FAILED')
 
     def select_invite_dialog(self):
-        self.contact_surface=self.current
+        self.contact_surface = self.current
+        baseline = getattr(self, 'invite_visible_windows', None)
+        if baseline is None:
+            raise FlowStop('INVITE_FORM_WINDOW_NOT_FOUND')
         deadline = time.monotonic()+5
+        # Reuse the original post-add-contact verification pacing once. The
+        # bounded observation below never re-clicks or repeats this pause.
+        self.ops.add_friend_paced_pause('verify', reason='after_add_contact_entry_click_before_capture')
+        previous = None
+        observed = None
+        last_candidate = None
+        gui = self.ops.win32gui
         while time.monotonic() < deadline:
-            self.identity_guard()
-            foreground = self.ops.win32gui.GetForegroundWindow()
-            if foreground not in {self.main,self.contact_surface} and self.ops.win32process.GetWindowThreadProcessId(foreground)[1] == self.pid:
-                c = self.ops.get_window_client_geometry(foreground)
-                if 300 <= c['width'] <= 650 and 550 <= c['height'] <= 950:
-                    self.current = foreground;self.guard();return
-                raise FlowStop('UNEXPECTED_WECHAT_DIALOG')
+            self._guard_main_window()
+            foreground = gui.GetForegroundWindow()
+            candidate = None
+            if foreground not in {self.main, self.contact_surface}:
+                event = self._window_metadata('invite_dialog_candidate', foreground)
+                # Bound diagnostics to changed observations; no title or content.
+                signature = {k:v for k,v in event.items() if k != 'stage'}
+                if signature != observed:
+                    if not hasattr(self, 'window_events'): self.window_events = []
+                    self.window_events.append(event)
+                observed = signature
+                last_candidate = foreground
+                c = event.get('client', {})
+                if (event.get('same_process') and event.get('visible')
+                        and foreground not in baseline
+                        and event.get('window_class') not in {'popupshadow', 'tooltips_class32'}
+                        and c.get('width', 0) > 0 and c.get('height', 0) > 0):
+                    candidate = signature
+                elif not event.get('same_process'):
+                    raise FlowStop('WINDOW_FOCUS_OR_GEOMETRY_CHANGED')
+            if candidate is not None and candidate == previous:
+                # No fixed-size form template: existing form OCR, pixels,
+                # field readback and per-action guards still authorize input.
+                self.current = foreground
+                self.guard()
+                self.window_events[-1].update(accepted=True, basis='new_visible_stable_invite_candidate')
+                return
+            previous = candidate
             time.sleep(.15)
+        if last_candidate is not None:
+            self.record_window('invite_dialog_timeout', gui.GetForegroundWindow())
+            raise FlowStop('UNEXPECTED_WECHAT_DIALOG')
         raise FlowStop('INVITE_FORM_WINDOW_NOT_FOUND')
 
     def observe_submit(self):

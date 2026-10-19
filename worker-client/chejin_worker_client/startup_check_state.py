@@ -1,5 +1,6 @@
 """Sales-facing projections of existing checks; no active probe or auto-resume."""
 ISSUES = {
+ 'HOOK_C1_POPUP_PENDING': ('请先关闭微信弹窗', '微信仍有未关闭的窗口。请核对并取消遗留申请窗口，关闭其他弹窗后再恢复接单；程序不会自动提交。'),
  'HOOK_STARTUP_WINDOW_PENDING': ('等待微信窗口初始化', '先确认上次流程结果，再调整微信窗口；完成前不执行新任务。'),
  'HOOK_C1_STARTUP_WINDOW_UNVERIFIED': ('微信窗口调整未通过', '请保持微信主窗口打开，关闭微信弹窗后重新检查；暂不执行新任务。'),
  'HOOK_PROCESS_MISSING_OR_AMBIGUOUS': ('未找到工作微信', '请打开指定的工作微信并登录；不要同时运行多个测试微信。'),
