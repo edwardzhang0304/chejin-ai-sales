@@ -631,7 +631,7 @@ class NativeUI:
                         and event.get('window_class') not in {'popupshadow', 'tooltips_class32'}
                         and c.get('width', 0) > 0 and c.get('height', 0) > 0):
                     candidate = signature
-                elif not event.get('same_process'):
+                elif event.get('same_process') is False:
                     raise FlowStop('WINDOW_FOCUS_OR_GEOMETRY_CHANGED')
             if candidate is not None and candidate == previous:
                 # No fixed-size form template: existing form OCR, pixels,

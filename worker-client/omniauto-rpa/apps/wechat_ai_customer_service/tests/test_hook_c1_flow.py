@@ -546,6 +546,7 @@ class NativeGuardTests(unittest.TestCase):
         self.foreground=33
         def sample():return samples[min(index[0],len(samples)-1)]
         self.gui.GetForegroundWindow=lambda:sample().get('hwnd',33)
+        self.gui.IsWindow=lambda h:bool(h)
         self.gui.IsWindowVisible=lambda h:True if h==11 else sample().get('visible',True)
         self.gui.GetClassName=lambda h:sample().get('class','SyntheticInviteWnd')
         self.ops.win32process.GetWindowThreadProcessId=lambda h:(1,99 if h in {11,22} else sample().get('pid',99))
@@ -561,6 +562,12 @@ class NativeGuardTests(unittest.TestCase):
         self.assertEqual(len(self.ui.window_events),2)
         self.assertTrue(self.ui.window_events[-1]['accepted'])
         self.assertFalse(any('title' in e for e in self.ui.window_events))
+        self.ops.win32api.mouse_event.assert_not_called()
+
+    def test_transient_absent_foreground_waits_without_input(self):
+        elapsed=self.select_dialog_samples([dict(hwnd=0,width=0,height=0),dict(width=450,height=780)])
+        self.assertAlmostEqual(elapsed,.3)
+        self.assertEqual(self.ui.current,33)
         self.ops.win32api.mouse_event.assert_not_called()
 
     def test_normal_invite_requires_two_equal_samples(self):
