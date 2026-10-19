@@ -3,9 +3,9 @@
   "repository": "edwardzhang0304/chejin-ai-sales",
   "transport": "hook",
   "reuse_mode": "reviewed_delta",
-  "approval": "User authorized 0.10.6 Worker-only release. Architect5 approved d493c26 invitation/recovery runtime and c41a313 download progress; metadata-only release delta. Existing business evidence reused; physical Windows pending.",
+  "approval": "User authorized 0.10.7 new-PC WeChat + Worker release with reviewed 984731a outer launcher fix. Reuse unchanged business evidence from d44bae9; application delta is release metadata only. Windows fresh-machine acceptance pending.",
   "reviewed_commit": "d44bae9a90df512c03ec1622ecba738dd91478a0",
-  "target_version": "0.10.6",
+  "target_version": "0.10.7",
   "source_sha256": {
     ".dockerignore": "953c4ae7fbf88d1f9655d96aac647bb20157d4531062155de4922562c924cc6c",
     ".gitattributes": "c3fb393b0b0757bb56c2aa4c733114aa8d394be2ca0d60bf11fc5cba47dfaf3a",

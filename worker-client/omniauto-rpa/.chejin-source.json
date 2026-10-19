@@ -680,17 +680,17 @@
     "recall_author_and_reviewer_shared_trigger_context"
   ],
   "current_release": {
-    "version": "0.10.6",
+    "version": "0.10.7",
     "source_commit": "209f7fb66a01a05736fdd32e54808e54a9b66ce3",
     "source_state": "gray_release_candidate",
     "published": false,
-    "contract_revision": "0.10.6",
-    "contract_sha256": "2ea83709d76921927ded985abe770270f17c75e222df15a1051caf2a432e0c36",
+    "contract_revision": "0.10.7",
+    "contract_sha256": "eb68aa714f9cc8f37dd3c7d6dedd5e3afe84cd4d8d74a7f44f39ae65ef015e2f",
     "scope": [
       "native_hook_state_and_release_preparation",
       "schema_revision_sync"
     ],
-    "note": "0.10.6 release metadata only; reviewed invitation/recovery and download-progress runtime retained."
+    "note": "0.10.7 release metadata; unchanged 0.10.6 business runtime; outer new-PC launcher includes reviewed default administrator support."
   },
   "historical_integrations": [
     {
