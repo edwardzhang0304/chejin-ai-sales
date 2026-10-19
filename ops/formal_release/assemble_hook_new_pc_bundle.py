@@ -163,7 +163,8 @@ def assemble(args: argparse.Namespace) -> Path:
             ).encode("ascii")
         instructions = (
             f"车金 {version} 新机完整测试包（仅供受控测试，不公开分发）\n\n"
-            "完整解压到新文件夹，不在 ZIP 内直接运行。使用日常 Windows 用户普通双击，不要右键以管理员运行。\n"
+            "完整解压到新文件夹，不在 ZIP 内直接运行。使用日常 Windows 用户普通双击，不要右键以管理员运行。"
+            "若系统默认以管理员权限运行，引导核对当前桌面与安装账号一致后继续，不修改 UAC；不要换账号安装。\n"
             "01：双击 01-Install-WeChat.cmd，安装指定微信。安装器若自动打开微信，请从托盘正常退出。不要使用普通微信图标。\n"
             "02：双击 02-Prepare-WorkWeChat.cmd，在文件选择框选刚装好的 WeChat.exe。工具检查版本/32位、放入匹配 DLL、"
             "解压原 Worker 包，并根据本机路径及空闲端口生成配置和桌面 Work WeChat。受保护目录复制 DLL 时可能单独请求 UAC，"
@@ -189,7 +190,7 @@ def assemble(args: argparse.Namespace) -> Path:
                 "未复制任何旧机器账号、聊天、绑定、激活状态。本引导不执行微信安装器、不主动写注册表；微信自身运行行为仍须实机确认。\n"
                 "首次免安装新机实测仍待完成，不承诺仅凭文件齐全就已通过新机验收。\n\n"
                 "1. 完整解压到短路径，例如 C:\\CheJinPortable；不要从ZIP内运行，配置完成后不要移动该文件夹。\n"
-                "2. 普通双击 01-Prepare-WorkWeChat.cmd，不要以管理员运行。工具核对程序文件、解压原Worker、选本机空闲端口并生成配置及桌面 Work WeChat。无需选择路径、复制DLL或输入命令。\n"
+                "2. 普通双击 01-Prepare-WorkWeChat.cmd，不要主动以管理员运行或换账号安装。系统默认以管理员权限运行时，引导核对当前桌面与安装账号一致后继续，不修改UAC。工具核对程序文件、解压原Worker、选本机空闲端口并生成配置及桌面 Work WeChat。无需选择路径、复制DLL或输入命令。\n"
                 "3. 双击桌面 Work WeChat（不要直接双击WeChat.exe或普通微信图标）。首次按提供方提示输入你自己的Hook激活码，再扫码登录微信。已激活设备可能不再提示；不要删除旧激活记录。\n"
                 "4. 实际关闭微信的语音自动转文字，保持工作微信打开。\n"
                 "5. 双击 02-Open-Worker.cmd，原Setup确认语音设置时，确实关闭才输入Y并回车；出现按任意键继续则按一下。随后打开Worker。\n"

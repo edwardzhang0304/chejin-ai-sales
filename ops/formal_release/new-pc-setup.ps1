@@ -78,10 +78,43 @@ function Load-Profile {
         $p.deployment.hook_api_port -eq $p.deployment.receiver_port) { throw 'Invalid local ports.' }
     return $p
 }
+function Get-SetupUserContext {
+    $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
+    $principal = New-Object Security.Principal.WindowsPrincipal($identity)
+    $session = (Get-Process -Id $PID).SessionId
+    $owners = @()
+    foreach ($desktop in @(Get-CimInstance Win32_Process -Filter "Name='explorer.exe' AND SessionId=$session" -ErrorAction Stop)) {
+        $owner = Invoke-CimMethod -InputObject $desktop -MethodName GetOwnerSid -ErrorAction Stop
+        if ($owner.ReturnValue -ne 0 -or -not $owner.Sid) { throw 'Cannot verify the desktop user. No installation was performed.' }
+        $owners += [string]$owner.Sid
+    }
+    $policy = Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System' -ErrorAction Stop
+    return [pscustomobject]@{
+        UserSid = $identity.User.Value; SessionId = $session; DesktopSids = $owners
+        Elevated = $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+        EnableLUA = $policy.EnableLUA; FilterAdministratorToken = $policy.FilterAdministratorToken
+    }
+}
+function Assert-SetupUserContext {
+    $context = Get-SetupUserContext
+    $owners = @($context.DesktopSids | Select-Object -Unique)
+    if ($context.SessionId -le 0 -or -not $context.UserSid -or $owners.Count -ne 1 -or $owners[0] -ne $context.UserSid) {
+        throw 'Run from the signed-in desktop user. Cannot install for another user or an unverified desktop.'
+    }
+    if ($context.Elevated) {
+        # A disabled UAC or an unfiltered built-in Administrator has no normal
+        # desktop token to switch back to. Keep that user's configuration; never
+        # change UAC, switch accounts, or request elevation for the whole setup.
+        $automaticAdmin = ($null -ne $context.EnableLUA -and $context.EnableLUA -eq 0) -or
+            ($context.EnableLUA -eq 1 -and $context.UserSid.EndsWith('-500') -and
+             ($null -eq $context.FilterAdministratorToken -or $context.FilterAdministratorToken -eq 0))
+        if (-not $automaticAdmin) { throw 'Run normally from File Explorer, not as administrator. Only a protected-folder DLL copy may request UAC.' }
+        Write-Host 'Windows runs this desktop as administrator by default. Continuing for the same signed-in user; system settings are unchanged.'
+    }
+}
 try {
     if ($Stage -ne 'CopyDll') {
-        $principal = New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())
-        if ($principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) { throw 'Run normally, not as administrator. Only a protected-folder DLL copy may request UAC.' }
+        Assert-SetupUserContext
     }
     Assert-Hash $dll $dllHash
     if ($portable) {
