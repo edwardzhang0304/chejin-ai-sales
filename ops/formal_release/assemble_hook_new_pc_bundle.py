@@ -84,9 +84,23 @@ def assemble(args: argparse.Namespace) -> Path:
     setup = Path(args.new_pc_setup) if getattr(args, "new_pc_setup", None) else None
     if setup is not None and (not setup.is_file() or setup.is_symlink()):
         raise ValueError("New-PC setup: regular script required")
+    program = Path(args.wechat_program_dir) if getattr(args, "wechat_program_dir", None) else None
+    program_files = []
+    if program:
+        if not setup or not program.is_dir() or program.is_symlink():
+            raise ValueError("Portable program directory and staged setup script required")
+        if not (program / "WeChat.exe").is_file() or not (program / f"[{args.wechat_file_version}]" / "WeChatWin.dll").is_file():
+            raise ValueError("Portable program directory must preserve the original root/version layout")
+        verified_file(program / "version.dll", dll_hash, "Prepositioned Hook DLL")
+        for path in sorted(program.rglob("*")):
+            if path.is_symlink():
+                raise ValueError("Portable payload must not contain symbolic links")
+            if path.is_file():
+                program_files.append((path, "WeChat/" + path.relative_to(program).as_posix()))
     output_dir = Path(args.output_dir).resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
-    output = output_dir / (f"CheJinWorkerClient_V{version}_Full.zip" if setup else
+    output = output_dir / (f"CheJinWorkerClient_V{version}_Portable.zip" if program else
+                           f"CheJinWorkerClient_V{version}_Full.zip" if setup else
                            f"CheJinHookFullSetup-v{version}-windows-x64.zip")
     if output.exists():
         raise FileExistsError(f"Refusing to overwrite existing bundle: {output}")
@@ -111,6 +125,13 @@ def assemble(args: argparse.Namespace) -> Path:
     with zipfile.ZipFile(worker) as archive:
         manifest["worker_manifest_sha256"] = hashlib.sha256(
             archive.read("CheJinWorkerClient/update-package-manifest.json")).hexdigest()
+    if program:
+        manifest["files"] = {f"worker/{worker.name}": worker_hash,
+                             **{name: sha256(path) for path, name in program_files}}
+        manifest.update({"installation_mode": "portable_new_pc_test",
+                         "wechat_executable": "WeChat/WeChat.exe",
+                         "installer_source_sha256": installer_hash,
+                         "layout": "original root plus bracketed version subdirectory; installer plugins excluded"})
     instructions = (
         f"车金 Hook {version} 新电脑完整包\n\n"
         "1. 安装包内的微信，并在实际安装后的 WeChat.exe 核对文件版本 "
@@ -129,9 +150,9 @@ def assemble(args: argparse.Namespace) -> Path:
     extras = {}
     if setup:
         extras["new-pc-setup.ps1"] = setup.read_bytes()
-        for index, name, stage in ((1, "Install-WeChat", "Install"),
-                                   (2, "Prepare-WorkWeChat", "Prepare"),
-                                   (3, "Open-Worker", "OpenWorker")):
+        stages = ((1, "Prepare-WorkWeChat", "Prepare"), (2, "Open-Worker", "OpenWorker")) if program else (
+            (1, "Install-WeChat", "Install"), (2, "Prepare-WorkWeChat", "Prepare"), (3, "Open-Worker", "OpenWorker"))
+        for index, name, stage in stages:
             extras[f"{index:02d}-{name}.cmd"] = (
                 '@echo off\r\nsetlocal\r\n'
                 'set "SETUP_SCRIPT=%~dp0new-pc-setup.ps1"\r\n'
@@ -161,12 +182,33 @@ def assemble(args: argparse.Namespace) -> Path:
         )
         for name, data in extras.items():
             manifest["files"][name] = hashlib.sha256(data).hexdigest()
+        if program:
+            instructions = (
+                f"车金 {version} 工作微信免安装新机试装包（受控测试，不公开上传）\n\n"
+                "这是从已核验微信安装器提取的完整程序目录，保留根目录和 [3.9.10.16] 子目录结构，根目录已放好匹配 version.dll。"
+                "未复制任何旧机器账号、聊天、绑定、激活状态。本引导不执行微信安装器、不主动写注册表；微信自身运行行为仍须实机确认。\n"
+                "首次免安装新机实测仍待完成，不承诺仅凭文件齐全就已通过新机验收。\n\n"
+                "1. 完整解压到短路径，例如 C:\\CheJinPortable；不要从ZIP内运行，配置完成后不要移动该文件夹。\n"
+                "2. 普通双击 01-Prepare-WorkWeChat.cmd，不要以管理员运行。工具核对程序文件、解压原Worker、选本机空闲端口并生成配置及桌面 Work WeChat。无需选择路径、复制DLL或输入命令。\n"
+                "3. 双击桌面 Work WeChat（不要直接双击WeChat.exe或普通微信图标）。首次按提供方提示输入你自己的Hook激活码，再扫码登录微信。已激活设备可能不再提示；不要删除旧激活记录。\n"
+                "4. 实际关闭微信的语音自动转文字，保持工作微信打开。\n"
+                "5. 双击 02-Open-Worker.cmd，原Setup确认语音设置时，确实关闭才输入Y并回车；出现按任意键继续则按一下。随后打开Worker。\n"
+                "6. 停在绑定页或工作台，不开始接单；账号和Worker由你自己创建。日常使用两个桌面快捷方式。\n\n"
+                "发现已有Hook Worker数据会停止并保留；部分解压或文件不匹配也会停止。不要清空旧数据来过检查。"
+                "遇到缺少运行库、启动失败、激活未出现等问题，保留完整报错交运维，不盲目安装其他版本，不关闭防护。\n"
+                "需要撤回时先正常退出微信和Worker，保留本试装目录及新生成的本机配置供核对；不卸载其他微信、不删除个人聊天或许可证。\n"
+                "微信参数来自同一份本机profile：StartPort=<配置端口>、ConnectType=http、RecvType=0。Windows实际快捷方式、组件加载、端口归属及Worker环境检查仍须逐项确认。\n"
+            )
     temporary = output.with_suffix(output.suffix + ".tmp")
     try:
         with zipfile.ZipFile(temporary, "w", compression=zipfile.ZIP_STORED, allowZip64=True) as archive:
             archive.write(worker, f"worker/{worker.name}")
-            archive.write(installer, f"wechat/{installer.name}")
-            archive.write(dll, "hook/version.dll")
+            if program:
+                for path, name in program_files:
+                    archive.write(path, name, compress_type=zipfile.ZIP_DEFLATED, compresslevel=6)
+            else:
+                archive.write(installer, f"wechat/{installer.name}")
+                archive.write(dll, "hook/version.dll")
             for name, data in extras.items():
                 archive.writestr(name, data)
             archive.writestr("bundle-manifest.json", json.dumps(manifest, ensure_ascii=False, indent=2) + "\n")
@@ -187,6 +229,7 @@ def main() -> None:
     parser.add_argument("--wechat-file-version", required=True)
     parser.add_argument("--output-dir", required=True)
     parser.add_argument("--new-pc-setup", help="Reviewed staged setup script; keeps the original Worker ZIP unchanged")
+    parser.add_argument("--wechat-program-dir", help="Private extracted root/version program tree with pinned version.dll already present; Windows portability remains pending")
     args = parser.parse_args()
     output = assemble(args)
     print(json.dumps({"bundle": str(output), "sha256": sha256(output)}, ensure_ascii=False))

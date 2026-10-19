@@ -7,7 +7,11 @@ $root = $PSScriptRoot
 $manifest = Get-Content -LiteralPath (Join-Path $root 'bundle-manifest.json') -Raw -Encoding UTF8 | ConvertFrom-Json
 $worker = Join-Path $root 'runtime\CheJinWorkerClient'
 $profilePath = Join-Path $worker 'profile.json'
-$dll = Join-Path $root 'hook\version.dll'
+$portable = $manifest.installation_mode -eq 'portable_new_pc_test'
+if ($portable -and $manifest.wechat_executable -ne 'WeChat/WeChat.exe') { throw 'Unexpected portable executable path.' }
+$dllRelative = if ($portable) { 'WeChat/version.dll' } else { 'hook/version.dll' }
+$dll = Join-Path $root $dllRelative
+$dllHash = $manifest.files.PSObject.Properties[$dllRelative].Value
 
 function Assert-Hash([string]$Path, [string]$Expected) {
     if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { throw "Missing file: $Path" }
@@ -65,7 +69,8 @@ function Assert-PortFree([int]$Port) {
 function Load-Profile {
     $p = Get-Content -LiteralPath $profilePath -Raw -Encoding UTF8 | ConvertFrom-Json
     if ($p.schema_version -ne 1 -or $p.api_base_url -ne 'https://jiangsuchejin.com/api') { throw 'Deployment configuration mismatch.' }
-    if ($p.deployment.dll_sha256 -ne $manifest.files.'hook/version.dll') { throw 'DLL configuration mismatch.' }
+    if ($p.deployment.dll_sha256 -ne $dllHash) { throw 'DLL configuration mismatch.' }
+    if ($portable -and $p.deployment.wechat_exe -ne (Join-Path $root $manifest.wechat_executable)) { throw 'Portable directory moved after preparation. Stop and contact operations; no data was reset.' }
     Assert-WeChat $p.deployment.wechat_exe
     Assert-Hash (Join-Path (Split-Path $p.deployment.wechat_exe) 'version.dll') $p.deployment.dll_sha256
     if ($p.deployment.hook_api_port -lt 1 -or $p.deployment.hook_api_port -gt 65535 -or
@@ -78,7 +83,12 @@ try {
         $principal = New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())
         if ($principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) { throw 'Run normally, not as administrator. Only a protected-folder DLL copy may request UAC.' }
     }
-    Assert-Hash $dll $manifest.files.'hook/version.dll'
+    Assert-Hash $dll $dllHash
+    if ($portable) {
+        foreach ($file in @($manifest.files.PSObject.Properties | Where-Object { $_.Name -like 'WeChat/*' })) {
+            Assert-Hash (Join-Path $root $file.Name) $file.Value
+        }
+    }
     if ($Stage -eq 'Install') {
         Assert-Idle
         $entry = @($manifest.files.PSObject.Properties | Where-Object { $_.Name -like 'wechat/*' })
@@ -92,9 +102,9 @@ try {
         # The only elevated action: copy the pinned DLL to a checked, stopped WeChat.
         Assert-Idle; Assert-WeChat $WeChatExe
         $target = Join-Path (Split-Path $WeChatExe) 'version.dll'
-        if (Test-Path -LiteralPath $target) { Assert-Hash $target $manifest.files.'hook/version.dll' }
+        if (Test-Path -LiteralPath $target) { Assert-Hash $target $dllHash }
         else { Copy-Item -LiteralPath $dll -Destination $target -ErrorAction Stop }
-        Assert-Hash $target $manifest.files.'hook/version.dll'
+        Assert-Hash $target $dllHash
     } elseif ($Stage -eq 'Prepare') {
         Assert-Idle; Assert-FreshWorkerHome
         if (-not (Test-Path -LiteralPath $worker)) {
@@ -120,15 +130,18 @@ try {
         }
         if (Test-Path -LiteralPath $profilePath) { $profile = Load-Profile }
         else {
-            Add-Type -AssemblyName System.Windows.Forms
-            $picker = New-Object Windows.Forms.OpenFileDialog
-            $picker.Title = 'Select WeChat.exe installed in step 01'
-            $picker.Filter = 'WeChat.exe|WeChat.exe'
-            if ($picker.ShowDialog() -ne 'OK') { throw 'Selection cancelled.' }
-            $WeChatExe = $picker.FileName
+            if ($portable) { $WeChatExe = Join-Path $root $manifest.wechat_executable }
+            else {
+                Add-Type -AssemblyName System.Windows.Forms
+                $picker = New-Object Windows.Forms.OpenFileDialog
+                $picker.Title = 'Select WeChat.exe installed in step 01'
+                $picker.Filter = 'WeChat.exe|WeChat.exe'
+                if ($picker.ShowDialog() -ne 'OK') { throw 'Selection cancelled.' }
+                $WeChatExe = $picker.FileName
+            }
             Assert-WeChat $WeChatExe
             $target = Join-Path (Split-Path $WeChatExe) 'version.dll'
-            if (Test-Path -LiteralPath $target) { Assert-Hash $target $manifest.files.'hook/version.dll' }
+            if (Test-Path -LiteralPath $target) { Assert-Hash $target $dllHash }
             else {
                 try { Copy-Item -LiteralPath $dll -Destination $target -ErrorAction Stop }
                 catch [UnauthorizedAccessException] {
@@ -137,12 +150,12 @@ try {
                     if ($copy.ExitCode -ne 0) { throw 'DLL installation was cancelled or failed.' }
                 }
             }
-            Assert-Hash $target $manifest.files.'hook/version.dll'
+            Assert-Hash $target $dllHash
             $hookPort = Get-FreePort
             do { $receiverPort = Get-FreePort } while ($receiverPort -eq $hookPort)
             $profile = [ordered]@{schema_version=1;api_base_url='https://jiangsuchejin.com/api';deployment=[ordered]@{
                 revision=('new-pc-' + [guid]::NewGuid().ToString());wechat_exe=$WeChatExe;
-                dll_sha256=$manifest.files.'hook/version.dll';hook_api_port=$hookPort;receiver_port=$receiverPort}}
+                dll_sha256=$dllHash;hook_api_port=$hookPort;receiver_port=$receiverPort}}
             $profile | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $profilePath -Encoding UTF8
             $profile = Load-Profile
         }
@@ -155,12 +168,12 @@ try {
         $link.Arguments = 'StartPort=' + $profile.deployment.hook_api_port + ' ConnectType=http RecvType=0'
         $link.Save()
         Write-Host 'Now double-click desktop Work WeChat. Enter the Hook activation code when prompted, then scan to log in.'
-        Write-Host 'Turn OFF WeChat automatic voice transcription. Only then run step 03. Worker has NOT been configured or started.'
+        Write-Host 'Turn OFF WeChat automatic voice transcription. Only then run Open-Worker. Worker has NOT been configured or started.'
     } else {
         Assert-FreshWorkerHome; Assert-Runtime
         $profile = Load-Profile
         if (Get-Process -Name CheJinWorkerClient,CheJinUpdater -ErrorAction SilentlyContinue) { throw 'Worker is already running. Do not start another instance.' }
-        if (-not (Get-Process -Name WeChat -ErrorAction SilentlyContinue)) { throw 'Open desktop Work WeChat and log in before step 03.' }
+        if (-not (Get-Process -Name WeChat -ErrorAction SilentlyContinue)) { throw 'Open desktop Work WeChat and log in before Open-Worker.' }
         Write-Host 'You must actually turn OFF automatic voice transcription before answering Y in the official setup.'
         & (Join-Path $worker 'Setup-CheJin-Hook.cmd')
         if ($LASTEXITCODE -ne 0) { throw 'Official Worker setup did not finish. Worker was not opened.' }
