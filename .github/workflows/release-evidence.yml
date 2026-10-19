@@ -48,6 +48,11 @@ on:
       diagnostic_binary_run:
         description: 'Reuse saved frozen-update-trace when only its checker changed'
         default: ''
+      upgrade_case:
+        description: 'Hook upgrade only: resume one failed case; retain earlier case evidence separately'
+        type: choice
+        options: [all, paused, faulted]
+        default: all
 
 permissions:
   contents: read
@@ -151,6 +156,7 @@ jobs:
       SIGN_RUN: ${{ inputs.publication_run }}
       TARGET_VERSION: ${{ inputs.existing_version }}
       TARGET_SHA256: ${{ inputs.existing_package_sha256 }}
+      UPGRADE_CASE: ${{ inputs.upgrade_case }}
     steps:
       - uses: actions/checkout@v4
         with: {fetch-depth: 0, persist-credentials: false}
@@ -163,7 +169,10 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'HOOK_SEALED_PACKAGE_PREPARATION_FAILED' }
       - name: Click original settings button with original updater
         run: |
-          foreach ($case in @('paused','faulted')) {
+          $cases = @('paused','faulted')
+          if ($env:UPGRADE_CASE -in @('paused','faulted')) { $cases = @($env:UPGRADE_CASE) }
+          elseif ($env:UPGRADE_CASE -notin @('','all')) { throw 'INVALID_HOOK_UPGRADE_CASE' }
+          foreach ($case in $cases) {
             python worker-client/scripts/run-windows-client-upgrade-test.py --plan "$env:RUNNER_TEMP/hook-upgrade/plan.json" --case $case --old-package-root "$env:RUNNER_TEMP/hook-upgrade/old/CheJinWorkerClient" --old-source-root "$env:RUNNER_TEMP/hook-upgrade/old-source/worker-client" --archive "$env:RUNNER_TEMP/hook-upgrade/target/artifact.zip" --release "$env:RUNNER_TEMP/hook-upgrade/release.json" --work-root "$env:RUNNER_TEMP/hook-upgrade/gui" --hook-bound
             if ($LASTEXITCODE -ne 0) { throw "HOOK_ORIGINAL_UPDATER_CHECK_FAILED:$case" }
           }

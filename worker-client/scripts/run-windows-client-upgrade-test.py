@@ -460,6 +460,7 @@ def run_case(args, status):
                               paused_intent_and_idle_gate_preserved=True, real_settings_button_clicked=False,
                               original_updater_used=False, original_data_directory_reused=True)
                 return report
+            report["free_disk_bytes_before_button"] = shutil.disk_usage(case).free
             page.click_button("检查更新")
             report["real_settings_button_clicked"] = True
             # The original coordinator owns plan creation and normal shutdown.
@@ -478,6 +479,11 @@ def run_case(args, status):
                             "updater_pid", "updater_executable_path", "target_version",
                         ) if key in state
                     }
+                    # Keep the original client's exception type, not arbitrary
+                    # diagnostic payloads (which may contain sensitive values).
+                    diagnostic = state.get("prepare_diagnostic")
+                    if isinstance(diagnostic, dict):
+                        report["failure_update_state"]["prepare_error_type"] = diagnostic.get("error_type")
                     raise AssertionError("Original GUI update failed: " + str(state.get("result_code")) + ": " + str(state.get("result_message") or state.get("message") or state.get("last_error") or ""))
                 return state if state.get("state") == "succeeded" and state.get("result_reconciled") is True and not state.get("status_restore_pending") else False
             state = wait_for(finished, "original GUI full upgrade", timeout=300)
@@ -535,6 +541,7 @@ def run_case(args, status):
                               bound_device_acceptance='pending_real_windows' if args.hook_unbound else 'passed')
     except Exception as exc:
         report["failure"] = str(exc)[:500]
+        report["free_disk_bytes_at_failure"] = shutil.disk_usage(case).free
         # Only this isolated run's synthetic state is inspected. Retain bounded
         # diagnostics before the runner is destroyed; do not weaken acceptance.
         diagnostic_files = []
