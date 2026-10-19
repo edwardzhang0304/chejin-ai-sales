@@ -55,6 +55,20 @@ NOTES = {
 _REGISTRY_LOCK = threading.RLock()
 
 
+def _merge_progress_metadata(metadata, prior):
+    result = dict(metadata)
+    # Batch polling registers general aliases before their segment details.
+    # Missing details must not erase a known segment between those two events.
+    # Keep producer and UI registry semantics identical; never inherit across
+    # a different round or kind of progress.
+    if (result.get('segment') is None and prior
+            and result.get('group') == prior.get('group')
+            and result.get('kind') == prior.get('kind') == 'batch'
+            and type(prior.get('segment')) is int and 1 <= prior['segment'] <= 20):
+        result['segment'] = prior['segment']
+    return result
+
+
 def register_progress(runner, context, *, group=None, label='', kind='customer',
                       historical=False, aliases=(), segment=None):
     """Explicit business identities only. This registry never authorizes work."""
@@ -76,7 +90,7 @@ def register_progress(runner, context, *, group=None, label='', kind='customer',
             # A new batch can include a parent of an older batch. Keep that
             # completed batch intact; merge only preliminary read/voice rounds.
             if old and old['group']!=group and old.get('kind')=='batch':continue
-            registry[alias]=dict(metadata);accepted.append(alias)
+            registry[alias]=_merge_progress_metadata(metadata,old);accepted.append(alias)
         event={'event':'hook_progress_group','context':context,**metadata,'aliases':accepted}
         _deliver(runner,event)
 
@@ -262,7 +276,7 @@ class HookProgressTimeline:
         meta={k:event.get(k) for k in ('group','label','kind','historical','segment')}
         for context in aliases:
             if not isinstance(context,str):continue
-            self.groups[context]=dict(meta)
+            self.groups[context]=_merge_progress_metadata(meta,self.groups.get(context))
             for item in self.steps:
                 if item.get('_context')==context:
                     item.update(_group=group,_label=meta.get('label') or '',
