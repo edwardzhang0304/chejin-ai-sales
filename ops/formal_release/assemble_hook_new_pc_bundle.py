@@ -81,9 +81,13 @@ def assemble(args: argparse.Namespace) -> Path:
         raise ValueError("Expected installed WeChat file version must have four parts")
     version, commit = worker_identity(worker)
     worker_hash = sha256(worker)
+    setup = Path(args.new_pc_setup) if getattr(args, "new_pc_setup", None) else None
+    if setup is not None and (not setup.is_file() or setup.is_symlink()):
+        raise ValueError("New-PC setup: regular script required")
     output_dir = Path(args.output_dir).resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
-    output = output_dir / f"CheJinHookFullSetup-v{version}-windows-x64.zip"
+    output = output_dir / (f"CheJinWorkerClient_V{version}_Full.zip" if setup else
+                           f"CheJinHookFullSetup-v{version}-windows-x64.zip")
     if output.exists():
         raise FileExistsError(f"Refusing to overwrite existing bundle: {output}")
     inputs = [worker.resolve(), installer.resolve(), dll.resolve()]
@@ -104,6 +108,9 @@ def assemble(args: argparse.Namespace) -> Path:
         },
         "windows_live_acceptance": "pending",
     }
+    with zipfile.ZipFile(worker) as archive:
+        manifest["worker_manifest_sha256"] = hashlib.sha256(
+            archive.read("CheJinWorkerClient/update-package-manifest.json")).hexdigest()
     instructions = (
         f"车金 Hook {version} 新电脑完整包\n\n"
         "1. 安装包内的微信，并在实际安装后的 WeChat.exe 核对文件版本 "
@@ -119,12 +126,49 @@ def assemble(args: argparse.Namespace) -> Path:
         "未完成这些实机验收不得标记交付通过。\n"
         "本完整包只供受控测试机分发；不要上传第三方微信与 Hook 原件到公开仓库。\n"
     )
+    extras = {}
+    if setup:
+        extras["new-pc-setup.ps1"] = setup.read_bytes()
+        for index, name, stage in ((1, "Install-WeChat", "Install"),
+                                   (2, "Prepare-WorkWeChat", "Prepare"),
+                                   (3, "Open-Worker", "OpenWorker")):
+            extras[f"{index:02d}-{name}.cmd"] = (
+                '@echo off\r\nsetlocal\r\n'
+                'set "SETUP_SCRIPT=%~dp0new-pc-setup.ps1"\r\n'
+                'if not defined TEMP exit /b 3\r\ncd /d "%TEMP%" || exit /b 3\r\n'
+                'powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%SETUP_SCRIPT%" '
+                f'-Stage {stage}\r\nset "RESULT=%ERRORLEVEL%"\r\n'
+                'pause\r\nexit /b %RESULT%\r\n'
+            ).encode("ascii")
+        instructions = (
+            f"车金 {version} 新机完整测试包（仅供受控测试，不公开分发）\n\n"
+            "完整解压到新文件夹，不在 ZIP 内直接运行。使用日常 Windows 用户普通双击，不要右键以管理员运行。\n"
+            "01：双击 01-Install-WeChat.cmd，安装指定微信。安装器若自动打开微信，请从托盘正常退出。不要使用普通微信图标。\n"
+            "02：双击 02-Prepare-WorkWeChat.cmd，在文件选择框选刚装好的 WeChat.exe。工具检查版本/32位、放入匹配 DLL、"
+            "解压原 Worker 包，并根据本机路径及空闲端口生成配置和桌面 Work WeChat。受保护目录复制 DLL 时可能单独请求 UAC，"
+            "Worker 本身不提权。不覆盖不同的同名 DLL，不清空原数据；检测到已有 Hook Worker 数据则停止，由运维处理。\n"
+            "然后双击桌面 Work WeChat，按提供方提示输入你自己的 Hook 激活码，再扫码登录微信。激活码不写入配置或聊天。"
+            "实际关闭微信的语音自动转文字。已激活过的同设备不保证再次提示激活码，不删除激活记录。\n"
+            "03：保持工作微信打开，双击 03-Open-Worker.cmd。原官方 Setup 询问语音自动转文字是否已关闭，"
+            "确实关闭才输入 Y 并回车。完成后工具打开 Worker；首次显示绑定页是正常结果。\n"
+            "到打开 Worker 为止。不要点击开始接单；本工具不创建销售/Worker、不提供或复制绑定凭据。\n\n"
+            "日常继续使用桌面 Work WeChat 和 CheJin Worker；不用输入命令、端口或路径。"
+            "本机 profile.json 在 runtime/CheJinWorkerClient 内，不包含激活码、Token 或 API Key。\n"
+            "如果失败：停在报错步骤，把完整提示交给运维；不要关防护、强杀进程、重置/删除微信聊天或 Worker 数据。"
+            "本工具不卸载原微信，不覆盖已有不同 DLL；需要撤回新 DLL 时，先正常退出工作微信，保留本次文件并由运维指导移出。\n"
+            "安装器及 DLL 是此前实机使用的固定原件，SHA-256 与私有发布记录一致；这不替代厂商来源或签名证明。\n"
+            "Windows 首次激活、实际快捷方式参数/DLL加载/端口归属与 Worker 环境检查仍需本机逐步验收，不能把 Mac 封装当作实机通过。\n"
+        )
+        for name, data in extras.items():
+            manifest["files"][name] = hashlib.sha256(data).hexdigest()
     temporary = output.with_suffix(output.suffix + ".tmp")
     try:
         with zipfile.ZipFile(temporary, "w", compression=zipfile.ZIP_STORED, allowZip64=True) as archive:
             archive.write(worker, f"worker/{worker.name}")
             archive.write(installer, f"wechat/{installer.name}")
             archive.write(dll, "hook/version.dll")
+            for name, data in extras.items():
+                archive.writestr(name, data)
             archive.writestr("bundle-manifest.json", json.dumps(manifest, ensure_ascii=False, indent=2) + "\n")
             archive.writestr("INSTALL-README.txt", instructions.encode("utf-8-sig"))
         os.replace(temporary, output)
@@ -142,6 +186,7 @@ def main() -> None:
     parser.add_argument("--hook-dll-sha256", required=True)
     parser.add_argument("--wechat-file-version", required=True)
     parser.add_argument("--output-dir", required=True)
+    parser.add_argument("--new-pc-setup", help="Reviewed staged setup script; keeps the original Worker ZIP unchanged")
     args = parser.parse_args()
     output = assemble(args)
     print(json.dumps({"bundle": str(output), "sha256": sha256(output)}, ensure_ascii=False))

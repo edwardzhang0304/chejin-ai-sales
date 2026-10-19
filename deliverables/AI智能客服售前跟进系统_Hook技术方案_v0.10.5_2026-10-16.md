@@ -81,8 +81,13 @@ python ops/formal_release/assemble_hook_new_pc_bundle.py \
   --worker-zip <已验收Worker.zip> \
   --wechat-installer <安装原件> --wechat-installer-sha256 <核验值> \
   --hook-dll <version.dll原件> --hook-dll-sha256 <核验值> \
-  --wechat-file-version 3.9.10.16 --output-dir <受控目录>
+  --wechat-file-version 3.9.10.16 --output-dir <受控目录> \
+  --new-pc-setup ops/formal_release/new-pc-setup.ps1
 ```
+
+完整包使用 `CheJinWorkerClient_V<Worker版本>_Full.zip` 命名，版本从原 Worker 清单读取。三个编号入口顺序固定：`01-Install-WeChat.cmd` 安装指定微信；正常退出后 `02-Prepare-WorkWeChat.cmd` 选择并核验 EXE、放入匹配 DLL、完整校验及解压原 Worker ZIP、生成本机无凭据 profile 和带齐参数的“工作微信”入口；由用户首次激活、扫码登录、真实关闭自动转文字后，才运行 `03-Open-Worker.cmd`，通过原 Setup 的真实确认生成正式双快捷方式并打开 Worker。止于绑定页/工作台，不创建账号、不自动绑定或开始接单。
+
+新机脚本发现已有 Hook Worker 数据一律停止并保留，不以 profile 存在跳过；部分解压不能标记完成。只有受保护安装目录的 DLL 复制允许单独 UAC，Worker 和其配置入口按日常用户运行。首次生成与原 Setup 重生成的工作微信快捷方式需在 Windows 核对 EXE、起始目录和三个参数一致；生成工具不能提前写入语音设置已关闭。
 
 外层包不得公开上传，文件匹配不代表新电脑实测通过；原件/哈希缺失则保持待交付，不以 UAT 增量包充当完整安装包。旧 `/uat/enrol` 桥接只承担已发测试包兼容，正式配置不依赖测试线索存在。
 
