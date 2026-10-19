@@ -11,7 +11,7 @@ skinparam activityDiamondBorderColor #58718C
 skinparam ArrowColor #58718C
 skinparam noteBackgroundColor #FFF4D9
 skinparam noteBorderColor #CDA556
-title 车金 0.10.7 · 完整业务主流程（r3，2026-10-19）
+title 车金 0.10.7 · 完整业务主流程（r1，2026-10-19）
 start
 :管理员交付前安装指定微信与 DLL
 按盒子配置路径/端口/回调，首次激活
@@ -176,7 +176,7 @@ end fork
 stop
 legend bottom
 这是规则全图，不是所有场景已经实机通过的证明。
-0.10.6包与服务已交付；仅限当前测试机按钮升级，原机结果及Hook业务仍待验收。
+0.10.7新机包准备中；首台待验，不开放本版按钮发放。
 endlegend
 @enduml
 
