@@ -603,7 +603,6 @@ p {
 .sales-page,
 .workers-page,
 .tasks-page,
-.logs-page,
 .knowledge-page {
   display: grid;
   gap: 16px;
@@ -637,7 +636,6 @@ p {
 .sales-page > .page-header,
 .workers-page > .page-header,
 .tasks-page > .page-header,
-.logs-page > .page-header,
 .knowledge-page > .page-header {
   align-items: flex-start;
   width: 1120px;
@@ -1117,58 +1115,6 @@ tbody tr:hover td {
   background: #f8fbff;
 }
 
-.logs-panel {
-  display: grid;
-  grid-template-rows: 66px 170px minmax(0, 1fr) 62px;
-  width: 1120px;
-  height: 740px;
-  padding: 20px;
-  overflow: hidden;
-  border: 1px solid var(--line);
-  border-radius: var(--radius);
-  background: #fff;
-}
-
-.logs-panel-head {
-  display: flex;
-  justify-content: space-between;
-  gap: 18px;
-  height: 66px;
-}
-
-.logs-panel-head h2 {
-  margin: 0;
-  color: var(--ink);
-  font-size: 16px;
-  line-height: 23px;
-}
-
-.logs-panel-head p {
-  margin: 3px 0 0;
-  color: var(--muted);
-  font-size: 13px;
-  line-height: 19px;
-}
-
-.logs-filter-card {
-  display: grid;
-  grid-template-columns: 250px 140px 180px 170px 130px;
-  gap: 12px;
-  align-items: end;
-  width: 1080px;
-  max-width: 100%;
-  height: 154px;
-  padding: 14px 12px;
-  background: var(--surface-soft);
-  border: 1px solid var(--soft-line);
-  border-radius: var(--radius);
-}
-
-.logs-filter-card .search-field,
-.logs-filter-card .select-field {
-  width: auto;
-}
-
 .operator-field,
 .datetime-field {
   display: grid;
@@ -1176,77 +1122,6 @@ tbody tr:hover td {
   color: var(--subtle);
   font-size: 12px;
   font-weight: 700;
-}
-
-.logs-filter-card .datetime-field {
-  grid-column: span 2;
-}
-
-.logs-table-card {
-  min-height: 0;
-  max-width: 100%;
-  overflow: auto;
-  border: 1px solid var(--line);
-  border-radius: var(--radius);
-}
-
-.logs-table {
-  width: 1080px;
-  min-width: 1080px;
-}
-
-.logs-table th,
-.logs-table td {
-  padding: 0 10px;
-}
-
-.logs-table th:nth-child(1),
-.logs-table td:nth-child(1) {
-  width: 154px;
-}
-
-.logs-table th:nth-child(2),
-.logs-table td:nth-child(2) {
-  width: 94px;
-}
-
-.logs-table th:nth-child(3),
-.logs-table td:nth-child(3) {
-  width: 126px;
-}
-
-.logs-table th:nth-child(4),
-.logs-table td:nth-child(4) {
-  width: 94px;
-}
-
-.logs-table th:nth-child(5),
-.logs-table td:nth-child(5) {
-  width: 158px;
-}
-
-.logs-table th:nth-child(6),
-.logs-table td:nth-child(6) {
-  width: 94px;
-}
-
-.logs-table th:nth-child(7),
-.logs-table td:nth-child(7) {
-  width: 70px;
-}
-
-.logs-table th:nth-child(8),
-.logs-table td:nth-child(8) {
-  width: 280px;
-}
-
-.logs-table tbody tr {
-  cursor: pointer;
-}
-
-.logs-table tbody tr:focus-visible {
-  outline: 2px solid var(--primary);
-  outline-offset: -2px;
 }
 
 .result-badge {
@@ -1268,19 +1143,6 @@ tbody tr:hover td {
 .result-badge.failed {
   color: var(--danger);
   background: var(--danger-soft);
-}
-
-.logs-empty {
-  gap: 6px;
-  text-align: center;
-}
-
-.logs-empty strong {
-  color: var(--ink);
-}
-
-.logs-pagination-row {
-  width: 1080px;
 }
 
 .status,
@@ -1813,96 +1675,6 @@ tbody tr:hover td {
   border-color: var(--primary);
 }
 
-.logs-detail-modal {
-  display: grid;
-  grid-template-rows: auto minmax(0, 1fr) auto;
-  width: min(720px, calc(100vw - 48px));
-  gap: 0;
-  overflow: hidden;
-  padding: 0;
-}
-
-.logs-detail-modal .modal-head {
-  align-items: flex-start;
-  justify-content: flex-start;
-  padding: 20px 24px 12px;
-  border-bottom: 1px solid var(--soft-line);
-}
-
-.logs-detail-modal .modal-head p {
-  margin: 0 0 4px;
-  color: var(--muted);
-  font-size: 12px;
-  font-weight: 700;
-}
-
-.logs-detail-body {
-  display: grid;
-  gap: 14px;
-  min-height: 0;
-  overflow: auto;
-  overscroll-behavior: contain;
-  padding: 18px 24px;
-}
-
-.logs-detail-body dl {
-  display: grid;
-  grid-template-columns: 112px minmax(0, 1fr);
-  gap: 10px 16px;
-  margin: 0;
-}
-
-.logs-detail-body dt {
-  color: var(--subtle);
-  font-size: 13px;
-  font-weight: 700;
-}
-
-.logs-detail-body dd {
-  min-width: 0;
-  margin: 0;
-  color: var(--ink);
-  word-break: break-word;
-}
-
-.logs-detail-body section {
-  display: grid;
-  gap: 8px;
-}
-
-.logs-detail-body h3 {
-  margin: 0;
-  font-size: 15px;
-  line-height: 22px;
-}
-
-.logs-detail-body pre {
-  max-height: 150px;
-  margin: 0;
-  overflow: auto;
-  padding: 12px;
-  color: var(--ink);
-  background: var(--surface-soft);
-  border: 1px solid var(--soft-line);
-  border-radius: var(--radius);
-  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
-  font-size: 12px;
-  line-height: 18px;
-  white-space: pre-wrap;
-  word-break: break-word;
-}
-
-.logs-detail-modal .modal-actions {
-  height: 64px;
-  padding: 0 24px;
-  border-top: 1px solid var(--soft-line);
-}
-
-.logs-detail-modal .modal-actions span {
-  color: var(--muted);
-  font-size: 12px;
-}
-
 .duplicate-alert {
   display: flex;
   align-items: flex-start;
@@ -2392,102 +2164,6 @@ tbody tr:hover td {
   width: 32px;
   height: 32px;
   min-height: 32px;
-}
-
-.log-management-grid {
-  width: 100%;
-  grid-template-columns: minmax(0, 1fr) 360px;
-}
-
-.logs-page {
-  gap: 0;
-  width: 100%;
-}
-
-.log-panel {
-  display: block;
-  width: 100%;
-  min-width: 0;
-  height: 740px;
-  padding: 20px;
-  overflow: hidden;
-}
-
-.log-panel > .panel-header {
-  height: 66px;
-}
-
-.log-filter-card {
-  display: grid;
-  grid-template-columns: minmax(320px, 1fr) 180px 180px;
-  gap: 14px;
-  align-items: end;
-  height: 98px;
-  padding: 14px 12px;
-  background: var(--surface-soft);
-  border: 1px solid var(--soft-line);
-  border-radius: var(--radius);
-}
-
-.log-filter-card label {
-  display: grid;
-  gap: 7px;
-}
-
-.log-filter-card label > span {
-  color: var(--muted);
-  font-size: 12px;
-  font-weight: 700;
-}
-
-.log-table-card {
-  width: 100%;
-  height: 512px;
-  margin-top: 16px;
-  overflow: auto;
-}
-
-.log-management-table {
-  width: 100%;
-  min-width: 940px;
-  table-layout: fixed;
-}
-
-.log-management-table tbody tr {
-  cursor: pointer;
-}
-
-.log-management-table tbody tr:focus-visible {
-  outline: 2px solid var(--primary);
-  outline-offset: -2px;
-}
-
-.log-management-table th,
-.log-management-table td {
-  height: 58px;
-  padding: 0 10px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.log-management-table th:nth-child(1),
-.log-management-table td:nth-child(1) { width: 108px; }
-.log-management-table th:nth-child(2),
-.log-management-table td:nth-child(2) { width: 110px; }
-.log-management-table th:nth-child(3),
-.log-management-table td:nth-child(3) { width: 132px; }
-.log-management-table th:nth-child(4),
-.log-management-table td:nth-child(4) { width: 96px; }
-.log-management-table th:nth-child(5),
-.log-management-table td:nth-child(5) { width: 142px; }
-.log-management-table th:nth-child(6),
-.log-management-table td:nth-child(6) { width: 80px; }
-.log-management-table th:nth-child(7),
-.log-management-table td:nth-child(7) { width: 260px; }
-
-.log-detail-drawer .logs-detail-body {
-  padding: 4px 0 0;
 }
 
 .task-status-row {
@@ -4151,7 +3827,6 @@ tbody tr:hover td {
   .sales-page > .page-header,
   .workers-page > .page-header,
   .tasks-page > .page-header,
-  .logs-page > .page-header,
   .knowledge-page > .page-header {
     width: 100%;
   }
@@ -4443,19 +4118,6 @@ tbody tr:hover td {
   width: 100%;
 }
 
-.log-business-summary p {
-  display: block;
-  margin: 0 0 7px;
-  color: var(--ink);
-  line-height: 20px;
-}
-
-.log-business-summary span {
-  color: var(--muted);
-  font-size: 12px;
-  line-height: 18px;
-}
-
 @media (max-width: 1439px) {
   .vehicles-page > .page-header,
   .knowledge-page > .page-header,
@@ -4491,7 +4153,6 @@ tbody tr:hover td {
   .sales-page,
   .workers-page,
   .tasks-page,
-  .logs-page,
   .vehicles-page,
   .knowledge-page {
     width: 100%;

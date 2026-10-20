@@ -4,7 +4,6 @@ import { LoginPage } from "./features/auth/LoginPage";
 import { EmptyWorkspace } from "./features/home/EmptyWorkspace";
 import { LeadsPage } from "./features/leads/LeadsPage";
 import { KnowledgePage } from "./features/knowledge/KnowledgePage";
-import { LogsPage } from "./features/logs/LogsPage";
 import { SalesPage } from "./features/sales/SalesPage";
 import { TasksPage } from "./features/tasks/TasksPage";
 import { VehiclesPage } from "./features/vehicles/VehiclesPage";
@@ -14,7 +13,7 @@ import type { AuthSession } from "./shared/api/auth";
 import { ApiError, onUnauthorized, runtimeConfig } from "./shared/api/client";
 import { ChevronRightIcon } from "./shared/ui/Icons";
 
-type ModuleKey = "leads" | "vehicles" | "knowledge" | "sales" | "workers" | "tasks" | "logs";
+type ModuleKey = "leads" | "vehicles" | "knowledge" | "sales" | "workers" | "tasks";
 
 const modules: Array<{ key: ModuleKey; label: string }> = [
   { key: "leads", label: "线索管理" },
@@ -23,7 +22,6 @@ const modules: Array<{ key: ModuleKey; label: string }> = [
   { key: "sales", label: "销售管理" },
   { key: "workers", label: "Worker 管理" },
   { key: "tasks", label: "任务中心" },
-  { key: "logs", label: "操作日志" },
 ];
 
 type AuthState = "checking" | "authenticated" | "unauthenticated";
@@ -210,7 +208,6 @@ export function App() {
             }}
           />
         ) : null}
-        {activeModule === "logs" ? <LogsPage /> : null}
         {activeModule === null ? <EmptyWorkspace activeModule={activeModule} /> : null}
       </section>
     </main>

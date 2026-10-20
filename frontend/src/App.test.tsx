@@ -20,7 +20,6 @@ vi.mock("./features/vehicles/VehiclesPage", () => ({ VehiclesPage: () => <div>�
 vi.mock("./features/sales/SalesPage", () => ({ SalesPage: () => <div>销售模块内容</div> }));
 vi.mock("./features/workers/WorkersPage", () => ({ WorkersPage: () => <div>Worker 模块内容</div> }));
 vi.mock("./features/tasks/TasksPage", () => ({ TasksPage: () => <div>任务模块内容</div> }));
-vi.mock("./features/logs/LogsPage", () => ({ LogsPage: () => <div>日志模块内容</div> }));
 
 import { App } from "./App";
 
