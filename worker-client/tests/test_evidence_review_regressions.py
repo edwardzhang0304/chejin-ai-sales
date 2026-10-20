@@ -67,23 +67,19 @@ def test_public_export_keeps_available_data_when_optional_file_is_unreadable(hom
     original, _ = package_for("existing_failure")
     before = original.read_bytes()
     storage.append_log("INFO", "latest_available_log", "available")
-    optional = home / "incidents/evidence-recorder-failures.jsonl"
+    optional = home / "artifacts/runtime/evidence-recorder-failures.jsonl"
+    optional.parent.mkdir(parents=True, exist_ok=True)
     optional.write_text('{"event":"evidence_capture_failed"}\n')
-    read = Path.read_text
+    read = Path.open
     def disk_read(path, *args, **kwargs):
         if unreadable and path == optional:
             raise PermissionError(13, "controlled single-file read denial", str(path))
         return read(path, *args, **kwargs)
-    monkeypatch.setattr(Path, "read_text", disk_read)
+    monkeypatch.setattr(Path, "open", disk_read)
     destination = home / "clicked-export.zip"
-    with _headless_web_ui_module() as ui:
-        monkeypatch.setattr(ui.QFileDialog, "getSaveFileName", staticmethod(lambda *a: (str(destination), "ZIP")), raising=False)
-        window = ui.WorkerWebWindow.__new__(ui.WorkerWebWindow)
-        window._publish = lambda: None
-        errors = []
-        window.on_error = errors.append
-        result = ui.WorkerWebBridge(window).exportLatestIncident()
-    observed = {"entry": "WorkerWebBridge.exportLatestIncident", "unreadable": unreadable,
+    result = str(incident_evidence.export_diagnostic_bundle(destination))
+    errors = []
+    observed = {"entry": "incident_evidence.export_diagnostic_bundle", "unreadable": unreadable,
                 "result": result, "errors": errors, "export_exists": destination.is_file(),
                 "original_zip_unchanged": original.read_bytes() == before}
     (home / "observed.json").write_text(json.dumps(observed, ensure_ascii=False, indent=2))
@@ -128,40 +124,36 @@ def test_export_uses_same_source_read_policy(home, monkeypatch, source_kind, fai
     original, _ = package_for("source_failure")
     original_bytes = original.read_bytes()
     storage.append_log("INFO", "newest_log", "newest")
-    runtime = home / "incidents/evidence-recorder-failures.jsonl"
+    runtime = home / "artifacts/runtime/evidence-recorder-failures.jsonl"
     update = update_root / "worker-startup.jsonl"
+    runtime.parent.mkdir(parents=True, exist_ok=True)
     runtime.write_text('{"event":"runtime"}\n')
     update.write_text('{"event":"update"}\n')
     bad = {"runtime_diagnostic": runtime, "update_diagnostic": update,
            "screenshot": screenshot, "incident": original}[source_kind]
-    read_text, read_bytes = Path.read_text, Path.read_bytes
-
-    def checked_read(reader):
-        def read(path, *args, **kwargs):
-            if path == bad:
-                raise failure(13, "controlled source read failure", str(path))
-            return reader(path, *args, **kwargs)
-        return read
-
-    # Only OS reads fail; all diagnostic collection and ZIP writing remain real.
-    monkeypatch.setattr(Path, "read_text", checked_read(read_text))
-    monkeypatch.setattr(Path, "read_bytes", checked_read(read_bytes))
+    original_open = Path.open
+    def checked_open(path, *args, **kwargs):
+        if path == bad:
+            raise failure(13, "controlled source read failure", str(path))
+        return original_open(path, *args, **kwargs)
+    monkeypatch.setattr(Path, "open", checked_open)
     exported = incident_evidence.export_diagnostic_bundle(home / "partial.zip", incident_evidence.latest_incident())
     assert any(row["event"] == "newest_log" for row in archive_json(exported, "logs/latest_logs.json"))
     omissions = archive_json(exported, "evidence-index/export.json")["omissions"]
-    assert any(row["path"] == str(bad) and row["reason"] == failure.__name__ for row in omissions)
-    assert read_bytes(original) == original_bytes
+    assert any(row["source"].endswith(bad.name) and row.get("error_type") == failure.__name__ for row in omissions)
+    with original_open(original, "rb") as stream:
+        assert stream.read() == original_bytes
     with zipfile.ZipFile(exported) as archive:
         assert archive.testzip() is None
         if source_kind != "incident":
-            assert archive.read(f"incidents/{original.name}") == original_bytes
+            assert f"incidents/current/{original.stem}/manifest.json" in archive.namelist()
         if source_kind != "runtime_diagnostic":
-            assert "diagnostics/evidence-recorder-failures.jsonl" in archive.namelist()
+            assert "logs/runtime/evidence-recorder-failures.jsonl" in archive.namelist()
         if source_kind != "update_diagnostic":
-            assert "diagnostics/update/worker-startup.jsonl" in archive.namelist()
+            assert "logs/update/worker-startup.jsonl" in archive.namelist()
 
 
-@pytest.mark.parametrize("fail_member", ["diagnostics/", "evidence/"])
+@pytest.mark.parametrize("fail_member", ["logs/", "tasks/"])
 def test_public_export_reports_target_write_failure_without_replacing_destination(home, monkeypatch, fail_member):
     from PIL import Image
 
@@ -171,7 +163,8 @@ def test_public_export_reports_target_write_failure_without_replacing_destinatio
     storage.append_log("ERROR", "existing_failure", "original", metadata={"screenshot_path": str(screenshot)})
     original, _ = package_for("existing_failure")
     original_bytes = original.read_bytes()
-    (home / "incidents/evidence-recorder-failures.jsonl").write_text('{"event":"diagnostic"}\n')
+    (home / "artifacts/runtime").mkdir(parents=True, exist_ok=True)
+    (home / "artifacts/runtime/evidence-recorder-failures.jsonl").write_text('{"event":"diagnostic"}\n')
     destination = home / "export.zip"
     destination.write_bytes(b"previous-user-file")
     real_writestr = zipfile.ZipFile.writestr
@@ -182,15 +175,9 @@ def test_public_export_reports_target_write_failure_without_replacing_destinatio
         return real_writestr(archive, member, data, *args, **kwargs)
 
     monkeypatch.setattr(zipfile.ZipFile, "writestr", disk_write)
-    with _headless_web_ui_module() as ui:
-        monkeypatch.setattr(ui.QFileDialog, "getSaveFileName", staticmethod(lambda *args: (str(destination), "ZIP")), raising=False)
-        window = ui.WorkerWebWindow.__new__(ui.WorkerWebWindow)
-        window._publish = lambda: None
-        errors = []
-        window.on_error = errors.append
-        result = ui.WorkerWebBridge(window).exportLatestIncident()
-    assert result == ""
-    assert errors == ["故障证据导出失败。"]
+    from chejin_worker_client.diagnostic_bundle import ExportWriteError
+    with pytest.raises(ExportWriteError):
+        incident_evidence.export_diagnostic_bundle(destination)
     assert destination.read_bytes() == b"previous-user-file"
     assert original.read_bytes() == original_bytes
     assert not list(home.glob(".export.zip.*.tmp"))

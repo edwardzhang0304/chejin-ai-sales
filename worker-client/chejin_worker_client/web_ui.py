@@ -980,41 +980,22 @@ class WorkerWebWindow(QMainWindow):
         self._publish()
 
     def _export_incident(self, incident: dict[str, str] | None, *, dialog_title: str) -> str:
-        destination, _ = QFileDialog.getSaveFileName(
-            self,
-            dialog_title,
-            str(Path.home() / "Downloads" / f"worker-diagnostics-{datetime.now():%Y%m%d-%H%M%S}.zip"),
-            "ZIP 文件 (*.zip)",
-        )
-        if not destination:
-            return ""
-        try:
-            target = Path(destination)
-            export_diagnostic_bundle(target, incident)
-        except Exception as exc:
-            from .failure_evidence import exception_details, record_failure
-
-            record_failure(
-                "incident_export_failed",
-                message="故障与最新日志导出失败。",
-                error_code="INCIDENT_EXPORT_FAILED",
-                metadata=exception_details(exc),
-            )
-            self.on_error("故障证据导出失败。")
-            return ""
-        append_log(
-            "INFO",
-            "incident_exported",
-            "故障证据与导出时的最新日志已导出。",
-            metadata={"incident_id": (incident or {}).get("incident_id"), "export_path": str(target)},
-        )
-        self._publish()
-        return str(target)
+        # Native, nonmodal dialog and background collector shared with rescue mode.
+        from .diagnostic_ui import DiagnosticDialog
+        dialog = getattr(self, "_diagnostic_dialog", None)
+        if dialog is None:
+            dialog = DiagnosticDialog(CONFIG.app_dir, self)
+            self._diagnostic_dialog = dialog
+        dialog.show()
+        dialog.raise_()
+        if not dialog.job.running:
+            dialog.start()
+        return ""
 
     def export_latest_incident(self) -> str:
         return self._export_incident(
-            latest_incident(),
-            dialog_title="导出故障与最新日志",
+            None,
+            dialog_title="导出故障证据",
         )
 
     def export_incident(self, incident_id: str) -> str:

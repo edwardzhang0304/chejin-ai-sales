@@ -58,6 +58,11 @@ try {
         $workerShortcut.Arguments = '-NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File "' + $PSCommandPath + '" -ShowErrorDialog'
         $workerShortcut.WorkingDirectory = $safeDirectory
         $workerShortcut.Save()
+        $diagnosticShortcut = $shell.CreateShortcut((Join-Path $desktop '车金故障诊断.lnk'))
+        $diagnosticShortcut.TargetPath = $exe
+        $diagnosticShortcut.Arguments = '--export-diagnostics'
+        $diagnosticShortcut.WorkingDirectory = $safeDirectory
+        $diagnosticShortcut.Save()
     }
     if ($Configuration -or $CreateShortcuts) {
         Write-Host 'Setup complete. Use the desktop shortcuts. No work has started.'

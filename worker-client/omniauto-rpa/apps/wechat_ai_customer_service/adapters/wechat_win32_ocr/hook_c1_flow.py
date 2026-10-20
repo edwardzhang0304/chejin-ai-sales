@@ -351,14 +351,21 @@ def run_flow(ui, *, phone: str, verify_message: str, remark_name: str,
             report['cleanup'] = 'deferred_invite_dialog_still_open'
         elif form_transition:
             report['cleanup'] = 'deferred_invite_dialog_unconfirmed'
+        recorder = getattr(ui, 'record_outcome_diagnostic', None)
+        if recorder is not None:
+            try:
+                recorder(report)
+            except OSError:
+                pass  # Optional diagnostic copy never changes the business outcome.
     return report
 
 
 class NativeUI:
     """Bounded ROI capture + original humanized input, with per-frame guards."""
-    def __init__(self, ops, hwnd: int, pid: int, evidence: Path, identity_guard):
+    def __init__(self, ops, hwnd: int, pid: int, evidence: Path, identity_guard, *, organized_evidence=False):
         self.ops, self.main, self.pid = ops, hwnd, pid
         self.current = hwnd;self.evidence = evidence;self.identity_guard = identity_guard
+        self.organized_evidence = organized_evidence
         if not ops.ensure_dpi_awareness_status().get('per_monitor_aware'):
             raise FlowStop('DPI_AWARENESS_UNVERIFIED')
         self.initial = ops.get_window_geometry(hwnd)
@@ -369,6 +376,10 @@ class NativeUI:
         self.window_events = []
         self.lookup_visible_windows = None
         evidence.mkdir(parents=True, exist_ok=True)
+        self.screenshot_evidence = evidence/'screenshots' if organized_evidence else evidence
+        self.ocr_evidence = evidence/'ocr' if organized_evidence else evidence
+        self.screenshot_evidence.mkdir(parents=True, exist_ok=True)
+        self.ocr_evidence.mkdir(parents=True, exist_ok=True)
         if not ops.ensure_dpi_awareness_status().get('per_monitor_aware'):
             raise FlowStop('DPI_AWARENESS_UNVERIFIED')
         if abs(self.initial['width']-1060) > 6 or abs(self.initial['height']-740) > 6:
@@ -378,6 +389,12 @@ class NativeUI:
             raise FlowStop('CLOSE_WECHAT_POPUP_FIRST')
         ops.activate_window(hwnd, foreground_only=True)
         self.guard()
+
+    def record_outcome_diagnostic(self, report):
+        if getattr(self, 'organized_evidence', False):
+            folder = self.evidence/'diagnostics'
+            folder.mkdir(parents=True, exist_ok=True)
+            (folder/'outcome.json').write_text(json.dumps(report,ensure_ascii=False),encoding='utf-8')
 
     def _guard_main_window(self):
         self.identity_guard()
@@ -503,7 +520,7 @@ class NativeUI:
         if image is None or image.size != (bounds[2]-bounds[0], bounds[3]-bounds[1]):
             raise FlowStop('ROI_CAPTURE_FAILED')
         # No second screenshot / full-frame fallback when OCR fails.
-        image.save(self.evidence/f'{self.count:02d}-{label}.png')
+        image.save(getattr(self,'screenshot_evidence',self.evidence)/f'{self.count:02d}-{label}.png')
         if o.get_window_client_geometry(self.current) != c:
             raise FlowStop('CAPTURE_GEOMETRY_CHANGED')
         self.guard()
@@ -512,7 +529,7 @@ class NativeUI:
         frame = Frame(image, rows, label, self.current, (left, top), c, captured_at)
         self.last_frame = frame
         self.guard(frame)
-        (self.evidence/f'{self.count:02d}-{label}.json').write_text(json.dumps(rows,ensure_ascii=False),encoding='utf-8')
+        (getattr(self,'ocr_evidence',self.evidence)/f'{self.count:02d}-{label}.json').write_text(json.dumps(rows,ensure_ascii=False),encoding='utf-8')
         if restricted(frame):raise FlowStop('ACCOUNT_RESTRICTED')
         return frame
 

@@ -38,7 +38,7 @@ def create_hook_services(api):
         NativeInbox(max_body_bytes=2*1024*1024,max_inbox_bytes=128*1024*1024),
         receiver_timeout_seconds=10,on_persistence_failure=lambda:None)
     formal=HookFormalClient(api.base_url,CONFIG.api_timeout_seconds)
-    native=WindowsC1(private)
+    native=WindowsC1(private, artifact_root=CONFIG.app_dir/'artifacts')
     def automatic_text_disabled():
         proof=_setting(VOICE_SETTING_KEY)
         return proof=={'deployment_revision':deployment.revision,'disabled':True,'operator_confirmed':True}
@@ -50,13 +50,17 @@ def create_hook_services(api):
 
 
 class WindowsC1:
-    def __init__(self,root):self.root=root;self._ops=None
+    def __init__(self,root,artifact_root=None):
+        self.root=root
+        self.artifact_root=artifact_root
+        self._ops=None
     def _window(self,process):
         if self._ops is None:
             from apps.wechat_ai_customer_service.adapters import wechat_win32_ocr_sidecar as ops
             if ops._OCR_IMPORT_ERROR:raise ValueError('HOOK_C1_OCR_RUNTIME_UNAVAILABLE')
             ops.UI_ACTION_GUARD_PATH=self.root/'ui-action-guard.json'
-            ops.UI_ACTION_AUDIT_PATH=self.root/'ui-action-audit.jsonl'
+            ops.UI_ACTION_AUDIT_PATH=(self.artifact_root/'runtime'/'ui-action-audit.jsonl'
+                if self.artifact_root is not None else self.root/'ui-action-audit.jsonl')
             ops.RENDER_RECOVERY_GUARD_PATH=self.root/'render-recovery.json'
             ops._OCR_ENGINE=ops.RapidOCR()
             self._ops=ops
@@ -93,4 +97,10 @@ class WindowsC1:
     def ui(self,process,preparation,guard):
         from apps.wechat_ai_customer_service.adapters.wechat_win32_ocr.hook_c1_flow import NativeUI
         ops,hwnd=self._window(process)
-        return NativeUI(ops,hwnd,process.pid,self.root/'roi'/preparation['task_id'],guard)
+        if self.artifact_root is not None:
+            from .evidence_paths import task_artifacts
+            evidence=task_artifacts(self.artifact_root.parent,preparation['task_id'])
+        else:
+            evidence=self.root/'roi'/preparation['task_id']
+        return NativeUI(ops,hwnd,process.pid,evidence,guard,
+            organized_evidence=self.artifact_root is not None)

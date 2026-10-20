@@ -70,11 +70,11 @@ def retire_inbox(private_root,*,retention_days,now=None,limit=100):
     return {'retired_rows':count,'released_bytes':released,'pending_records_deleted':False}
 
 
-def retire_c1_roi(private_root,*,retention_days,now=None):
+def retire_c1_roi(private_root,*,retention_days,now=None,artifact_root=None):
     now=now or datetime.now(timezone.utc);root=Path(private_root);cutoff=(now-timedelta(days=retention_days)).timestamp();removed=0
-    area=root/'roi'
-    if not area.is_dir() or area.is_symlink():return 0
-    for folder in area.iterdir():
+    areas=[root/'roi']
+    if artifact_root is not None:areas.append(Path(artifact_root)/'tasks')
+    for folder in (folder for area in areas if area.is_dir() and not area.is_symlink() for folder in area.iterdir()):
         if not folder.is_dir() or folder.is_symlink() or not rules.identifier(folder.name):continue
         files=list(folder.rglob('*'))
         if any(f.is_symlink() for f in files):continue

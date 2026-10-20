@@ -76,13 +76,8 @@ def _atomic_json_write(path: Path, payload: dict[str, Any]) -> None:
 
 
 def update_root() -> Path:
-    configured = str(os.environ.get("CHEJIN_UPDATE_STAGING_ROOT") or "").strip()
-    if configured:
-        return Path(configured)
-    local_app_data = str(os.environ.get("LOCALAPPDATA") or "").strip()
-    if local_app_data:
-        return Path(local_app_data) / "CheJinWorkerUpdate"
-    return CONFIG.app_dir.parent / "CheJinWorkerUpdate"
+    from .evidence_paths import update_root as resolve_update_root
+    return resolve_update_root(CONFIG.app_dir)
 
 
 def is_formal_update_runtime() -> bool:

@@ -44,10 +44,16 @@ class PackagingEntryDiagnosticsTest(unittest.TestCase):
     def _environment(self, root: Path):
         environment = {
             "LOCALAPPDATA": str(root),
+            "CHEJIN_WORKER_HOME": "",
             "CHEJIN_BUILD_IDENTITY_PATH": str(self._identity_file(root)),
         }
         context = mock.patch.dict(os.environ, environment, clear=False)
         return context
+
+    def test_hook_startup_crash_uses_configured_artifacts_root(self):
+        with tempfile.TemporaryDirectory() as temp:
+            with mock.patch.dict(os.environ, {"CHEJIN_WORKER_HOME": temp, "CHEJIN_PACKAGING_DIAGNOSTIC_PATH": ""}):
+                self.assertEqual(self.entry._diagnostic_path(), Path(temp)/"artifacts/runtime/startup-crash.jsonl")
 
     def test_fallback_version_matches_current_product(self):
         from chejin_worker_client import __version__

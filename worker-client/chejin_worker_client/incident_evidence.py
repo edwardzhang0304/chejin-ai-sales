@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Any, Iterable
 
 from . import __version__
-from .action_journal import read_action_journal
+from .evidence_paths import incident_roots
 
 
 INCIDENT_SCHEMA_VERSION = 1
@@ -57,7 +57,7 @@ def _storage():
 
 
 def incident_directory() -> Path:
-    root = _storage().APP_DIR / "incidents"
+    root = incident_roots(_storage().APP_DIR)[0]
     root.mkdir(parents=True, exist_ok=True)
     return root
 
@@ -103,6 +103,8 @@ def _read_json(path: Path) -> dict[str, Any]:
 
 def _incident_state() -> dict[str, Any]:
     payload = _read_json(_state_path())
+    if not payload:
+        payload = _read_json(incident_roots(_storage().APP_DIR)[1] / "incident-state.json")
     fingerprints = payload.get("fingerprints")
     if not isinstance(fingerprints, dict):
         fingerprints = {}
@@ -350,6 +352,7 @@ def _write_json(archive: zipfile.ZipFile, name: str, value: Any, secrets: set[st
 
 
 def _action_journal_snapshot() -> list[dict[str, Any]]:
+    from .action_journal import read_action_journal
     result: list[dict[str, Any]] = []
     root = _storage().APP_DIR / "transactions" / "actions"
     for action_kind in ("send", "voice", "image", "add_friend"):
@@ -649,15 +652,14 @@ def stop_incident_worker(*, wait: bool = True, timeout_seconds: float = 5.0) -> 
 def wait_for_incident(incident_id: str, timeout: float = 10.0) -> Path | None:
     deadline = time.monotonic() + max(0.0, float(timeout))
     while time.monotonic() <= deadline:
-        pending = _pending_directory() / f"{incident_id}.json"
-        for path in (
-            incident_directory() / f"{incident_id}.zip",
-            incident_directory() / f"{incident_id}.incident.json",
-        ):
+        roots = incident_roots(_storage().APP_DIR)
+        pending = any((root / "pending" / f"{incident_id}.json").exists() for root in roots)
+        for path in (root / f"{incident_id}{suffix}"
+                     for root in roots for suffix in (".zip", ".incident.json")):
             # The package becomes visible before completion bookkeeping updates
             # latest.json and the originating log record.  Only expose it after
             # the durable pending request has been cleared by the worker.
-            if path.is_file() and not pending.exists():
+            if path.is_file() and not pending:
                 return path
         time.sleep(0.02)
     return None
@@ -917,8 +919,13 @@ def _process_pending_occurrence(path: Path) -> bool:
     if not incident_id or not occurrence_id:
         path.unlink(missing_ok=True)
         return True
-    package = incident_directory() / f"{incident_id}.zip"
+    found = incident_by_id(incident_id)
+    package = Path(found["evidence_path"]) if found else incident_directory() / f"{incident_id}.zip"
     minimal = incident_directory() / f"{incident_id}.incident.json"
+    if not minimal.is_file():
+        legacy = incident_roots(_storage().APP_DIR)[1] / minimal.name
+        if legacy.is_file():
+            minimal = legacy
     try:
         if package.is_file():
             secrets = _known_secret_values()
@@ -944,7 +951,8 @@ def _process_pending_occurrence(path: Path) -> bool:
 
 def _incident_worker_loop() -> None:
     while not _WORKER_STOP.is_set():
-        pending = sorted(_pending_directory().glob("INC-*.json"))
+        pending = sorted(path for root in incident_roots(_storage().APP_DIR)
+                         for path in (root / "pending").glob("INC-*.json"))
         if pending:
             for path in pending:
                 if _WORKER_STOP.is_set():
@@ -964,7 +972,8 @@ def _incident_worker_loop() -> None:
                     if _WORKER_STOP.wait(retry_delay):
                         return
             continue
-        occurrences = sorted(_pending_occurrence_directory().glob("OCC-*.json"))
+        occurrences = sorted(path for root in incident_roots(_storage().APP_DIR)
+                             for path in (root / "pending-occurrences").glob("OCC-*.json"))
         if occurrences:
             for path in occurrences:
                 if _WORKER_STOP.is_set():
@@ -1030,85 +1039,35 @@ def prune_incidents() -> dict[str, int]:
             if changed:
                 _write_incident_state(state)
     return {"removed": removed, "remaining": len(candidates), "bytes": total}
-def export_diagnostic_bundle(destination: Path, incident: dict[str, str] | None = None) -> Path:
-    """Export a fresh, redacted snapshot even if no new incident was generated."""
-    source = Path(incident["evidence_path"]) if incident else None
-    if source is not None and (
-        not _inside_app_dir(source) or destination.resolve() == source.resolve()
-    ):
-        raise ValueError("DIAGNOSTIC_EXPORT_SOURCE_INVALID")
-    secrets = _known_secret_values()
-    omissions: list[dict] = []
-    try:
-        logs = _storage().read_logs(limit=_storage().MAX_LOGS)
-    except Exception as exc:
-        from .failure_evidence import exception_details, record_capture_failure
-
-        logs = []
-        omissions.append({"reason": "latest_logs_unavailable", **exception_details(exc)})
-        record_capture_failure("export.latest_logs", exc)
-    pending = [_read_json(path) for path in sorted(_pending_directory().glob("INC-*.json"))]
-    context = {"recent_logs": logs[:50], "pending_incidents": pending}
-    files = _evidence_files(_path_candidates(context), omissions=omissions)
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    temporary = destination.with_name(f".{destination.name}.{uuid.uuid4().hex}.tmp")
-    try:
-        with zipfile.ZipFile(temporary, "w", compression=zipfile.ZIP_DEFLATED) as archive:
-            exported_at = datetime.now(timezone.utc).isoformat()
-            _write_json(archive, "export.json", {
-                "exported_at": exported_at, "build": _build_identity(),
-                "incident": incident, "log_count": len(logs),
-                "log_first_at": logs[-1].get("created_at") if logs else None,
-                "log_last_at": logs[0].get("created_at") if logs else None,
-                "log_limit": _storage().MAX_LOGS,
-            }, secrets)
-            _write_json(archive, "logs/latest_logs.json", logs, secrets)
-            _write_json(archive, "pending_incidents.json", pending, secrets)
-            from .client_update import update_root
-
-            attachments = [(source, f"incidents/{source.name}")] if source is not None else []
-            attachments.extend((path, f"diagnostics/{path.name}")
-                               for path in incident_directory().glob("evidence-recorder-failures*.jsonl"))
-            attachments.extend((path, f"diagnostics/update/{path.name}")
-                               for path in update_root().glob("worker-startup*.jsonl"))
-            for path, member in attachments:
-                data = _read_evidence_file(path, secrets, omissions)
-                if data is not None:
-                    archive.writestr(member, data)
-            index = _write_evidence_files(archive, files, secrets, origin_files=set(), omissions=omissions)
-            _write_json(archive, "evidence-index/export.json", index, secrets)
-        os.replace(temporary, destination)
-    finally:
-        temporary.unlink(missing_ok=True)
-    return destination
+def export_diagnostic_bundle(destination: Path, incident: dict[str, str] | None = None, *, progress=None) -> Path:
+    """Both sales entries use the same bounded, read-only collector."""
+    from .diagnostic_bundle import export_bundle
+    return export_bundle(_storage().APP_DIR, destination, progress)
 
 
 def latest_incident() -> dict[str, str] | None:
-    try:
-        payload = json.loads((incident_directory() / "latest.json").read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return None
-    path = Path(str(payload.get("path") or ""))
-    if not path.is_file() or not _inside_app_dir(path):
-        return None
-    return {
-        "incident_id": str(payload.get("incident_id") or ""),
-        "evidence_path": str(path),
-        "created_at": str(payload.get("created_at") or ""),
-    }
+    candidates = []
+    for root in incident_roots(_storage().APP_DIR):
+        try:
+            payload = json.loads((root / "latest.json").read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        path = Path(str(payload.get("path") or ""))
+        if path.is_file() and _inside_app_dir(path):
+            candidates.append({"incident_id": str(payload.get("incident_id") or ""),
+                "evidence_path": str(path), "created_at": str(payload.get("created_at") or "")})
+    return max(candidates, key=lambda item: item["created_at"], default=None)
 
 
 def incident_by_id(incident_id: str) -> dict[str, str] | None:
     normalized = str(incident_id or "").strip()
     if not re.fullmatch(r"INC-[A-Za-z0-9-]+", normalized):
         return None
-    path = incident_directory() / f"{normalized}.zip"
-    if not path.is_file():
-        return None
-    return {
-        "incident_id": normalized,
-        "evidence_path": str(path),
-    }
+    for root in incident_roots(_storage().APP_DIR):
+        path = root / f"{normalized}.zip"
+        if path.is_file():
+            return {"incident_id": normalized, "evidence_path": str(path)}
+    return None
 
 
 def export_latest_incident(destination: str | Path) -> Path:

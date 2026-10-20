@@ -111,7 +111,7 @@ def test_merged_failure_includes_new_frame_and_explicit_missing_frame(home):
     second = storage.append_log("WARN", "same_failure", "second", metadata={"screenshot_path": str(two)})
     assert first["incident_id"] == second["incident_id"]
     deadline = time.monotonic() + 5
-    while list((home / "incidents" / "pending-occurrences").glob("*.json")) and time.monotonic() < deadline:
+    while list((home / "artifacts" / "incidents" / "pending-occurrences").glob("*.json")) and time.monotonic() < deadline:
         time.sleep(.02)
     with zipfile.ZipFile(package) as z:
         images = [name for name in z.namelist() if name.endswith(".png")]
@@ -199,7 +199,7 @@ def test_transport_failure_and_recorder_failure_preserve_original_exception(home
     with pytest.raises(requests.Timeout) as caught:
         client._request("GET", "/read-authorization")
     assert caught.value is original
-    fallback = home / "incidents" / "evidence-recorder-failures.jsonl"
+    fallback = home / "artifacts" / "runtime" / "evidence-recorder-failures.jsonl"
     assert fallback.is_file()
     assert "OSError" in fallback.read_text()
     assert "private" not in fallback.read_text()
@@ -241,15 +241,9 @@ def test_public_export_bridge_produces_fresh_logs_without_an_old_incident(home, 
 
     storage.append_log("INFO", "current_pause", "暂停接单。")
     destination = home / "clicked-export.zip"
-    with _headless_web_ui_module() as ui:
-        monkeypatch.setattr(ui.QFileDialog, "getSaveFileName", staticmethod(lambda *args: (str(destination), "ZIP")), raising=False)
-        window = ui.WorkerWebWindow.__new__(ui.WorkerWebWindow)
-        window._publish = lambda: None
-        errors = []
-        window.on_error = errors.append
-        bridge = ui.WorkerWebBridge(window)
-        assert bridge.exportLatestIncident() == str(destination)
-        assert not errors
+    # UI responsiveness is exercised with real Qt in test_diagnostic_bundle.
+    assert incident_evidence.export_diagnostic_bundle(destination) == destination
+
     assert archive_json(destination, "logs/latest_logs.json")[0]["event"] == "current_pause"
 
 
@@ -267,7 +261,7 @@ def test_corrupt_local_state_and_telemetry_failure_leave_independent_evidence(ho
     # Disk/SQLite boundary, retaining the production telemetry failure path.
     monkeypatch.setattr(telemetry.sqlite3, "connect", lambda *a, **kw: (_ for _ in ()).throw(OSError("test disk error")))
     assert telemetry.pending_stage_events(db_path=home / "telemetry.sqlite3") == []
-    records = [json.loads(line) for line in (home / "incidents" / "evidence-recorder-failures.jsonl").read_text().splitlines()]
+    records = [json.loads(line) for line in (home / "artifacts" / "runtime" / "evidence-recorder-failures.jsonl").read_text().splitlines()]
     assert {r["origin"] for r in records} >= {
         "storage.load_runtime_control", "read_action_journal", "telemetry.pending_stage_events",
     }
@@ -331,13 +325,14 @@ def test_ui_evidence_capture_failure_does_not_raise_or_capture_binding_secrets(h
 
 
 def test_diagnostic_export_survives_unreadable_database(home, monkeypatch):
-    monkeypatch.setattr(storage, "read_logs", lambda **kw: (_ for _ in ()).throw(OSError("database unavailable")))
+    # Fail the read-only SQLite boundary, not the superseded storage.read_logs wrapper.
+    from chejin_worker_client.diagnostic_bundle import Collector
+    monkeypatch.setattr(Collector, "connection", lambda *a, **kw: (_ for _ in ()).throw(OSError("database unavailable")))
+    (home / "worker_client.sqlite3").touch()
     path = incident_evidence.export_diagnostic_bundle(home / "export.zip")
     assert archive_json(path, "logs/latest_logs.json") == []
-    index = archive_json(path, "evidence-index/export.json")
-    assert any(item["reason"] == "latest_logs_unavailable" for item in index["omissions"])
-    with zipfile.ZipFile(path) as archive:
-        assert "diagnostics/evidence-recorder-failures.jsonl" in archive.namelist()
+    manifest = archive_json(path, "收集清单.json")
+    assert any(item["source"] == "worker_client.sqlite3" and item["status"] == "read_failed" for item in manifest["sources"])
 
 
 def test_invalid_update_state_keeps_rejection_and_bounded_diagnostic(home, monkeypatch):
@@ -366,7 +361,7 @@ def test_uncaught_exception_keeps_evidence_when_sqlite_logger_fails(home, monkey
         except ValueError as exc:
             result = runtime_supervision.report_unhandled_exception("test_thread", type(exc), exc, exc.__traceback__)
         assert result == {}
-        records = [json.loads(line) for line in (home / "incidents/evidence-recorder-failures.jsonl").read_text().splitlines()]
+        records = [json.loads(line) for line in (home / "artifacts/runtime/evidence-recorder-failures.jsonl").read_text().splitlines()]
         primary = next(row for row in records if row["origin"] == "worker_unhandled_exception")
         assert primary["exception_type"] == "ValueError"
         assert primary["original_error_code"] == "WORKER_UNHANDLED_EXCEPTION"

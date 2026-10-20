@@ -127,6 +127,7 @@ try {
     New-Item -ItemType Directory -Path $desktop -Force | Out-Null
     $wechatLink = Join-Path $desktop 'Work WeChat.lnk'
     $workerLink = Join-Path $desktop 'CheJin Worker.lnk'
+    $diagnosticLink = Join-Path $desktop '车金故障诊断.lnk'
     Assert-True (-not (Test-Path -LiteralPath $wechatLink) -and -not (Test-Path -LiteralPath $workerLink)) 'Test desktop shortcuts already exist'
     $controlLink = Join-Path $desktop 'hook-control.lnk'
     try {
@@ -142,6 +143,9 @@ try {
         Assert-True ((Test-Path -LiteralPath $wechatLink) -and (Test-Path -LiteralPath $workerLink)) 'First-run shortcuts missing'
         $wechat = $shell.CreateShortcut($wechatLink)
         $worker = $shell.CreateShortcut($workerLink)
+        $diagnostic = $shell.CreateShortcut($diagnosticLink)
+        Assert-True ($diagnostic.TargetPath -eq (Join-Path $root 'CheJinWorkerClient.exe')) 'Diagnostic shortcut target mismatch'
+        Assert-True ($diagnostic.Arguments -eq '--export-diagnostics') 'Diagnostic must bypass business startup'
         Assert-True ($wechat.TargetPath -eq $global:HookTestWeChatPath) 'WeChat shortcut target mismatch'
         Assert-True ($wechat.WorkingDirectory -eq $global:HookTestWeChatDir) 'WeChat shortcut working directory mismatch'
         Assert-True ($wechat.Arguments -eq 'StartPort=31234 ConnectType=http RecvType=0') 'WeChat shortcut parameters missing'
@@ -163,7 +167,7 @@ try {
         Write-Host 'PASS existing shortcut refresh uses saved config without starting processes'
         Write-Host 'PASS Hook desktop shortcuts use the saved launch configuration'
     } finally {
-        Remove-Item -LiteralPath $controlLink, $wechatLink, $workerLink -Force -ErrorAction SilentlyContinue
+        Remove-Item -LiteralPath $controlLink, $wechatLink, $workerLink, $diagnosticLink -Force -ErrorAction SilentlyContinue
     }
     $global:LASTEXITCODE = 0
 } finally {

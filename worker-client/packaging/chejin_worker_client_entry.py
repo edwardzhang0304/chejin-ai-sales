@@ -76,7 +76,16 @@ def _diagnostic_path() -> Path:
         return Path(configured)
     local_app_data = os.environ.get("LOCALAPPDATA", "").strip()
     base = Path(local_app_data) if local_app_data else Path.home() / "AppData" / "Local"
-    return base / "CheJinWorker" / "diagnostics" / "startup-crash.jsonl"
+    home = os.environ.get("CHEJIN_WORKER_HOME", "").strip()
+    if home:
+        return Path(home) / "artifacts" / "runtime" / "startup-crash.jsonl"
+    build = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parents[1])) / "runtime-build-identity.json"
+    try:
+        hook = json.loads(build.read_text(encoding="utf-8-sig")).get("transport") == "hook"
+    except (OSError, ValueError, AttributeError):
+        hook = False
+    return (base / "CheJinWorkerHook" / "artifacts" / "runtime" / "startup-crash.jsonl"
+            if hook else base / "CheJinWorker" / "diagnostics" / "startup-crash.jsonl")
 
 
 def _known_secret_values() -> set[str]:
@@ -148,6 +157,9 @@ def _write_startup_diagnostic(exc: BaseException) -> None:
 
 
 def _load_main():
+    if len(sys.argv) >= 2 and sys.argv[1] == "--export-diagnostics":
+        from chejin_worker_client.diagnostic_ui import main
+        return main
     if len(sys.argv) >= 2 and sys.argv[1] == "--startup-crash-probe":
         raise RuntimeError("intentional_startup_crash_probe")
     from chejin_worker_client.main import main

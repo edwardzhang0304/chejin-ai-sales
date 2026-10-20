@@ -334,3 +334,30 @@ legend bottom
 本机升级、快捷方式、DLL/端口与业务收发仍待现场核对。
 endlegend
 @enduml
+
+@startuml support_fault_evidence
+!theme plain
+title 待发布源码 · 一键诊断证据（Windows 实机待验）
+start
+if (Worker 能打开?) then (是)
+  :设置 → 本机执行日志 → 导出故障证据;
+else (否)
+  :双击车金故障诊断;
+endif
+:共用后台收集器，进度窗口保持响应
+不调用业务、不重试动作、不清恢复凭证;
+:读取新旧 artifacts/ROI/故障包
+短时一致数据库快照＋transactions 脱敏副本
+更新启动、最终结果与错误;
+:生成收集清单
+已收集/不存在/失败/限额省略；屏蔽越界链接;
+if (目标 ZIP 写入成功?) then (是)
+  :显示完整或部分收集结果
+打开文件夹，销售只发这个 ZIP;
+else (否)
+  :明确失败，保留原现场与原 ZIP;
+endif
+:独立入口若已关闭，完成后退出
+嵌入入口不退出 Worker;
+stop
+@enduml

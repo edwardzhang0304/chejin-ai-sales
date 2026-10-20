@@ -414,7 +414,7 @@ class HookBusinessDispatcher:
             from .hook_retention import retire_inbox,retire_c1_roi,retire_history_artifacts
             from .config import CONFIG
             retire_inbox(self.private_root,retention_days=CONFIG.artifact_critical_retention_days)
-            retire_c1_roi(self.private_root,retention_days=CONFIG.artifact_success_retention_days)
+            retire_c1_roi(self.private_root,retention_days=CONFIG.artifact_success_retention_days,artifact_root=CONFIG.app_dir/"artifacts")
             retire_history_artifacts(self.private_root,retention_days=CONFIG.artifact_critical_retention_days)
             with storage.db_connection() as db:
                 if db.execute("SELECT 1 FROM sqlite_master WHERE name='hook_active_calls'").fetchone():

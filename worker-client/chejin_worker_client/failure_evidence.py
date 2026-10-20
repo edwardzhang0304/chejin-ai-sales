@@ -50,7 +50,7 @@ def record_capture_failure(origin: str, exc: BaseException, *, error_code: str =
     data = json.dumps(record, ensure_ascii=True) + "\n"
     try:
         with _FALLBACK_LOCK:
-            path = CONFIG.app_dir / "incidents" / "evidence-recorder-failures.jsonl"
+            path = CONFIG.app_dir / "artifacts" / "runtime" / "evidence-recorder-failures.jsonl"
             path.parent.mkdir(parents=True, exist_ok=True)
             if path.exists() and path.stat().st_size + len(data) > _FALLBACK_LIMIT:
                 path.replace(path.with_suffix(".previous.jsonl"))
