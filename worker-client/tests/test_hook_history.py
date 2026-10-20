@@ -67,6 +67,45 @@ def test_fixed_schema_bounds_and_pages_preserve_native_ids_and_all_types(history
     assert all(x['locked'] for x in server.lock_observations) and not ui_lock.lock_summary()['locked']
 
 
+@pytest.mark.parametrize('ids', [(9, 10), (98, 99, 100), (998, 999, 1000)])
+@pytest.mark.parametrize('page_size', [1, 2, 100])
+def test_numeric_cursor_order_across_digit_width_and_page_boundaries(history_lab, ids, page_size):
+    _, gateway, process, _, delivery, catalog, db = history_lab
+    db.execute('DELETE FROM MSG')
+    db.executemany('INSERT INTO MSG VALUES(?,?,?,?,?,?,?,?,?,?)', [
+        (i, str(10000 + i), 1, 0, 1791543697, i, i, i, delivery.peer_wxid, 'synthetic')
+        for i in ids
+    ])
+    query = HookHistoryQuery(catalog.database('MSG0.db'), 'page', delivery,
+                             upper_local_id=str(ids[-1]), page_size=page_size)
+    actual = []
+    while query.after_local_id != query.upper_local_id:
+        rows = gateway.history_read(process, catalog, query)['data']
+        actual.extend(int(row['localId']) for row in rows)
+        query = replace(query, after_local_id=rows[-1]['localId'])
+    assert actual == list(ids)
+    assert gateway.history_read(process, catalog, query) == {}
+
+
+@pytest.mark.parametrize('case', ['reverse', 'duplicate', 'before_lower', 'after_upper', 'wrong_peer'])
+def test_numeric_sort_does_not_relax_page_response_checks(history_lab, case):
+    _, gateway, process, _, delivery, catalog, _ = history_lab
+    query = HookHistoryQuery(catalog.database('MSG0.db'), 'page', delivery, upper_local_id='4')
+    rows = gateway.history_read(process, catalog, query)['data']
+    if case == 'reverse':
+        rows.reverse()
+    elif case == 'duplicate':
+        rows.insert(1, dict(rows[0]))
+    elif case == 'before_lower':
+        rows[0]['localId'] = '0'
+    elif case == 'after_upper':
+        rows[-1]['localId'] = '5'
+    else:
+        rows[0]['StrTalker'] = 'wxid_other_customer'
+    with pytest.raises(ValueError, match='HOOK_HISTORY_PAGE_(CURSOR|SCOPE)_INVALID'):
+        query.validate_response({'data': rows})
+
+
 @pytest.mark.parametrize('response', [{},{'data':[]},{'code':-1,'data':[]}])
 def test_unknown_empty_before_upper_is_not_completion(history_lab,response):
     _,_,_,_,delivery,catalog,_=history_lab

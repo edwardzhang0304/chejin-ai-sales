@@ -69,6 +69,7 @@ const reasonCodeMeta: Record<string, string> = {
   OPERATION_TOO_FREQUENT: "微信操作过于频繁",
   WORKER_INTERRUPTED: "Worker 执行中断",
   SEND_RESULT_UNKNOWN: "发送结果未知",
+  SEND_ACK_TIMEOUT: "发送结果确认超时，已转销售接管",
   RPA_SEND_REPLY_FAILED: "回复发送失败",
   REPLY_ACTION_EXPIRED: "回复动作已过期",
   C2_REPLY_CONTEXT_MISSING: "缺少客户会话上下文",
@@ -211,14 +212,19 @@ function formatDateTime(value?: string | null) {
   return `${year}-${month}-${day} ${hours}:${minutes}`;
 }
 
-function aggregateResult(task: Pick<TaskListItem, "status" | "result_code" | "error_code" | "block_code">) {
+export function aggregateResult(task: Pick<TaskListItem, "status" | "result_code" | "error_code" | "block_code" | "cancel_reason">) {
   if (task.status === "completed") return formatCode(task.result_code);
-  if (task.status === "failed" && task.error_code === "SEND_RESULT_UNKNOWN") {
+  if (task.status === "failed" && ["SEND_RESULT_UNKNOWN", "SEND_ACK_TIMEOUT"].includes(task.error_code ?? "")) {
     return "自动发送已终止，禁止补发；会话已转销售正常接管";
   }
   if (task.status === "failed") return formatCode(task.error_code);
   if (task.status === "blocked") return formatCode(task.block_code);
-  if (task.status === "cancelled") return "运营取消任务";
+  if (task.status === "cancelled") {
+    const reason = task.cancel_reason?.trim();
+    if (!reason) return "任务已取消（未记录原因）";
+    const label = formatCode(reason);
+    return label === "-" ? reason : label;
+  }
   return "-";
 }
 

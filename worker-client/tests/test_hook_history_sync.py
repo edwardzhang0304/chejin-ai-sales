@@ -22,6 +22,29 @@ def test_sync_rereads_range_without_skipping_late_rows(history_lab):
     assert result['text_rows'][0]['MsgSvrID']=='9001'
 
 
+def test_two_pass_history_coverage_crosses_numeric_and_full_page_boundaries(history_lab):
+    _, gateway, process, scope, delivery, _, db = history_lab
+    # The tiny fixture defaults to 4 KiB; use the production response ceiling
+    # so a complete 100-row page exercises pagination rather than size rejection.
+    gateway.max_response_bytes = 2 * 1024 * 1024
+    db.execute('DELETE FROM MSG')
+    ids = list(range(98, 205))
+    db.executemany('INSERT INTO MSG VALUES(?,?,?,?,?,?,?,?,?,?)', [
+        (i, str(10000 + i), 1, 0, 1791543697, i, i, i, delivery.peer_wxid, 'synthetic')
+        for i in ids
+    ])
+    saved = []
+    sync = HookHistorySynchronizer(gateway, saved.append, lambda: (0, 0))
+    _, coverage = sync.capture(process, scope, delivery, '1791543600')
+    checked = hook_history_rules.validate_coverage(coverage, delivery.peer_wxid, 1791543600)
+    assert checked['ready'] and len(checked['text_rows']) == len(ids)
+    for scan in coverage['scans']:
+        pages = scan['databases'][0]['pages']
+        assert [len(page) for page in pages] == [100, 7]
+        assert [int(row['localId']) for page in pages for row in page] == ids
+    assert len([capture for capture in saved if capture.query.kind == 'page']) == 4
+
+
 def test_persistence_failure_does_not_advance_to_next_page(history_lab):
     server,gateway,process,scope,delivery,catalog,db=history_lab
     def unavailable(_):raise OSError('test storage unavailable')

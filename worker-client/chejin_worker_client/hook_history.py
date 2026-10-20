@@ -160,7 +160,9 @@ class HookHistoryQuery:
             else:
                 selection = ",".join(f"CAST({field} AS TEXT) AS {field}" for field in INTEGER_FIELDS)
                 sql = (f"SELECT {selection},StrTalker,StrContent FROM MSG WHERE {predicate} "
-                    f"AND localId<={_decimal(self.upper_local_id)} ORDER BY localId ASC LIMIT {self.page_size}")
+                    # Qualify the numeric source column: the output alias localId
+                    # is TEXT for lossless transport and would sort lexically.
+                    f"AND localId<={_decimal(self.upper_local_id)} ORDER BY MSG.localId ASC LIMIT {self.page_size}")
         return {"dbname": self.database.name, "sql": sql}
 
     def validate_response(self, response: dict) -> dict:
