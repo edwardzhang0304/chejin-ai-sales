@@ -14,6 +14,46 @@ THREADS = ('task_runner', 'thread_monitor', 'hook_intake', 'hook_business')
 TABLES = ('hook_raw_inbox', 'hook_observation_projection', 'hook_delivery_outbox', 'hook_voice_attempts')
 
 
+def seed_retained_install(data, worker_id, instance_id):
+    """Additional install-only fixture; do not change the ordinary button case."""
+    from datetime import datetime, timezone
+    from chejin_worker_client import storage
+    from chejin_worker_client.hook_sender import RetainedNativeSendPermit
+    now = datetime.now(timezone.utc).isoformat()
+    flow = '00000000-0000-4000-8000-000000000015'
+    action = '00000000-0000-4000-8000-000000000014'
+    epoch = '00000000-0000-4000-8000-000000000002'
+    scope = SimpleNamespace(self_wxid='wxid_synthetic_sales', account_epoch=epoch,
+                            process_generation='synthetic-old-process')
+    private = Path(data) / 'transactions' / 'hook'
+    root = private / 'sends' / worker_id / epoch / action
+    root.mkdir(parents=True)
+    intent = {'schema_version': 'hook-send-journal-v1', 'task_id': flow,
+              'reply_action_id': action, **vars(scope), 'peer_wxid': 'wxid_synthetic_customer',
+              'send_token': 'synthetic-retained-token', 'attempted_at': now}
+    def save(name, value):
+        (root / name).write_text(json.dumps(value), encoding='utf-8')
+    save('intent.json', intent)
+    digest = hashlib.sha256((root / 'intent.json').read_bytes()).hexdigest()
+    save('trigger.json', {'phase': 'trigger_attempted', 'intent_sha256': digest})
+    save('permit.json', {**intent, 'flow_id': flow, 'lease_fencing_token': 1})
+    save('outcome.json', {'task_id': flow, 'reply_action_id': action,
+                         'journal_sha256': digest, 'call_completed': False,
+                         'error_code': 'HOOK_CALL_TIMEOUT', 'completed_at': now,
+                         'automatic_resend_allowed': False})
+    metadata = {'task_id': flow, 'reply_action_id': action, 'flow_id': flow,
+                'lease_fencing_token': 1, 'journal_sha256': digest}
+    RetainedNativeSendPermit.load(private / 'sends',
+        SimpleNamespace(worker_id=worker_id, client_instance_id=instance_id), scope,
+        {'peer_wxid': 'wxid_synthetic_customer'}, metadata)
+    storage.begin_runtime_flow(flow, 'chat_reply')
+    state = {'flow_id': flow, 'flow_kind': 'chat_reply', 'status': 'draining',
+             'conversation_id': 'synthetic-retained-conversation', 'pause_requested_at': now}
+    (private / 'flows').mkdir(exist_ok=True)
+    (private / 'flows' / (flow + '.json')).write_text(json.dumps(state), encoding='utf-8')
+    return state
+
+
 def seed(data, api_base_url, worker_id, instance_id, now):
     from chejin_worker_client import storage
     from chejin_worker_client.hook_inbox import HookReceiveScope, NativeInbox
