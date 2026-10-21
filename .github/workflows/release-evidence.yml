@@ -22,7 +22,7 @@ on:
     inputs:
       check_kind:
         type: choice
-        options: [tooling, source, sign-existing, repair-updater, launcher, hook-upgrade, hook-preserve-install, update-access, update-trace]
+        options: [tooling, driver-smoke, source, sign-existing, repair-updater, launcher, hook-upgrade, hook-preserve-install, update-access, update-trace]
         default: tooling
       source_test_plan:
         description: 'Reviewed explicit pytest selection: {"reason":"...","not_tested":"...","pytest":[{"cwd":"worker-client","nodes":["tests/test_example.py::test_case"]}]}'
@@ -400,8 +400,8 @@ jobs:
           if-no-files-found: error
 
   windows-parser:
-    name: Windows build script parser
-    if: github.event_name == 'push' || inputs.check_kind == 'tooling'
+    name: ${{ inputs.check_kind == 'driver-smoke' && 'Windows GUI driver diagnostic only' || 'Windows build script parser' }}
+    if: github.event_name == 'push' || inputs.check_kind == 'tooling' || inputs.check_kind == 'driver-smoke'
     runs-on: windows-latest
     timeout-minutes: 10
     steps:
@@ -414,8 +414,10 @@ jobs:
       - name: Install parser and GUI driver dependencies
         run: python -m pip install --disable-pip-version-check 'PyYAML==6.0.2' 'PySide6==6.6.3.1' 'websockets==15.0.1' 'cryptography>=42.0,<46'
       - name: Extract formal inline PowerShell without executing it
+        if: inputs.check_kind != 'driver-smoke'
         run: python ops/formal_release/workflow_scripts.py --workflow .github/workflows/worker-windows-package.yml --output "${{ runner.temp }}/formal-ps"
       - name: Parse formal scripts with Windows PowerShell
+        if: inputs.check_kind != 'driver-smoke'
         shell: powershell
         run: |
           $scripts = @("worker-client/scripts/build-windows.ps1", "worker-client/scripts/run-windows-updater-process-test.ps1")
@@ -428,8 +430,15 @@ jobs:
           }
       - name: Check the GUI driver using a synthetic window before any package build
         run: python worker-client/scripts/run-windows-client-upgrade-test.py --driver-smoke "${{ runner.temp }}/driver-smoke"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: windows-driver-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/driver-smoke
+          if-no-files-found: warn
+          retention-days: 90
       - name: Exercise Hook launcher and one-click setup before any package build
-        if: github.ref_name == 'gray-release-0.10.x'
+        if: github.ref_name == 'gray-release-0.10.x' && inputs.check_kind != 'driver-smoke'
         shell: powershell
         run: |
           .\worker-client\scripts\test-hook-launcher.ps1

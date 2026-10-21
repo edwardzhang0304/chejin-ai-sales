@@ -135,10 +135,21 @@ class QtPage:
 
 
 def serve_driver_fixture():
+    from PySide6.QtCore import qVersion
     from PySide6.QtWidgets import QApplication
     from PySide6.QtWebEngineWidgets import QWebEngineView
     app = QApplication([])
     view = QWebEngineView()
+    print("Qt driver fixture version:", qVersion(), flush=True)
+    view.loadStarted.connect(lambda: print("Fixture load started", flush=True))
+    def loaded(ok):
+        print("Fixture load finished:", ok, flush=True)
+        pending = Path("fixture-load.json.tmp")
+        write_json(pending, {"loaded": bool(ok)})
+        pending.replace("fixture-load.json")
+    view.loadFinished.connect(loaded)
+    view.page().renderProcessTerminated.connect(
+        lambda status, code: print("Fixture renderer terminated:", status, code, flush=True))
     view.setHtml('''<button style="visibility:hidden" aria-label="Driver fixture">hidden</button>
       <button aria-label="Driver fixture" onclick="this.textContent=event.isTrusted?'trusted click':'untrusted click'">ready</button>''')
     view.show()
@@ -156,6 +167,10 @@ def driver_smoke(folder):
         try:
             def ready():
                 assert process.poll() is None, "Qt driver fixture exited"
+                loaded = folder / "fixture-load.json"
+                if not loaded.is_file():
+                    return False
+                assert read_json(loaded).get("loaded") is True, "Qt driver fixture failed to load"
                 try:
                     with urllib.request.urlopen(f"http://127.0.0.1:{port}/json", timeout=2) as response:
                         return any(p.get("type") == "page" for p in json.load(response))
@@ -169,6 +184,12 @@ def driver_smoke(folder):
             write_json(folder / "result.json", {"qt_driver": "passed", "trusted_mouse_input": True,
                                                "windows_upgrade_evidence": False})
             print("Qt page driver: trusted click and screenshot passed")
+        except Exception as exc:
+            write_json(folder / "failure.json", {"type": type(exc).__name__, "message": str(exc),
+                       "fixture_exit_code": process.poll(), "windows_upgrade_evidence": False})
+            log.flush()
+            print((folder / "qt.log").read_text(encoding="utf-8", errors="replace"), flush=True)
+            raise
         finally:
             if process.poll() is None:
                 process.terminate()
