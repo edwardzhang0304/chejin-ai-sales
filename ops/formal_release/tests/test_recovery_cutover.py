@@ -47,7 +47,8 @@ def test_changed_plan_fails_before_any_production_command(tmp_path):
         run.assert_not_called()
 
 
-def test_complete_cutover_control_flow_with_explicit_host_adapters(tmp_path, monkeypatch):
+@pytest.mark.parametrize('already_active', [False, True])
+def test_complete_cutover_control_flow_with_explicit_host_adapters(tmp_path, monkeypatch, already_active):
     """Actual validation, maintenance CLI and file switch; Docker/HTTP/OS are adapters.
 
     This proves orchestration, not a real production container transition or
@@ -60,6 +61,9 @@ def test_complete_cutover_control_flow_with_explicit_host_adapters(tmp_path, mon
     sites=root/'sites';sites.mkdir()
     site=sites/'main.conf';site.write_text('server {\n    location = /api {\n    }\n}\n')
     snippet=root/'maintenance.conf'
+    if already_active:
+        snippet.write_text(cutover.BLOCK)
+        site.write_text(site.read_text().replace('    location = /api {', cutover.INCLUDE+'    location = /api {'))
     for module in (maintenance,cutover):
         monkeypatch.setattr(module,'SITE',site);monkeypatch.setattr(module,'SNIPPET',snippet)
     envfile=root/'production.env';envfile.write_text('SYNTHETIC=value\n')
@@ -135,5 +139,22 @@ def test_complete_cutover_control_flow_with_explicit_host_adapters(tmp_path, mon
     assert (link/'index.html').read_bytes()==(frontend/'index.html').read_bytes()
     assert snippet.read_text()==cutover.BLOCK and cutover.INCLUDE in site.read_text()
     assert state['api_checks']==3
+    entry=json.loads((root/'recovery-cutover/maintenance-entry.json').read_text())
+    assert entry['operation']==('status' if already_active else 'enable')
+    if already_active:
+        assert ['systemctl','reload','nginx'] not in state['calls']
     assert sum('up' in argv for argv in state['calls'])==1
     assert not any('disable' in argv or 'pg_restore' in argv for argv in state['calls'])
+
+
+def test_invalid_existing_maintenance_stops_before_docker_switch(tmp_path):
+    before={'cutover_safe':True,'ordinary_readiness':{'ready':False},'protected':{'original':'unchanged'}}
+    snippet=tmp_path/'snippet';snippet.write_text(cutover.BLOCK)
+    site=tmp_path/'site';site.write_text('missing maintenance include')
+    def status():
+        assert sys.argv[1]=='status'
+        raise AssertionError('MAINTENANCE_NOT_ENABLED')
+    with patch.object(sys,'argv',inputs(tmp_path)+['--execute']),patch.object(cutover,'validate'),patch.object(cutover,'api_check',return_value=before),patch.object(cutover,'maintenance_main',side_effect=status),patch.object(cutover,'SNIPPET',snippet),patch.object(cutover,'SITE',site),patch.object(cutover.subprocess,'run') as run:
+        with pytest.raises(AssertionError,match='MAINTENANCE_NOT_ENABLED'):cutover.main()
+        run.assert_not_called()
+        assert snippet.read_text()==cutover.BLOCK

@@ -22,7 +22,7 @@ on:
     inputs:
       check_kind:
         type: choice
-        options: [tooling, driver-smoke, source, sign-existing, repair-updater, launcher, hook-upgrade, hook-preserve-install, update-access, update-trace]
+        options: [tooling, tooling-resume, driver-smoke, source, sign-existing, repair-updater, launcher, hook-upgrade, hook-preserve-install, update-access, update-trace]
         default: tooling
       source_test_plan:
         description: 'Reviewed explicit pytest selection: {"reason":"...","not_tested":"...","pytest":[{"cwd":"worker-client","nodes":["tests/test_example.py::test_case"]}]}'
@@ -64,7 +64,7 @@ jobs:
   hook-preserve-install:
     name: Sealed Hook preserve-data installation only
     if: github.event_name == 'workflow_dispatch' && inputs.check_kind == 'hook-preserve-install' && github.ref_name == 'gray-release-0.10.x'
-    runs-on: windows-latest
+    runs-on: windows-2022
     timeout-minutes: 15
     permissions: {contents: read, actions: read}
     env:
@@ -187,7 +187,7 @@ jobs:
   hook-upgrade:
     name: Original Hook updater to sealed target
     if: github.event_name == 'workflow_dispatch' && inputs.check_kind == 'hook-upgrade' && github.ref_name == 'gray-release-0.10.x'
-    runs-on: windows-latest
+    runs-on: windows-2022
     timeout-minutes: 20
     permissions: {contents: read, actions: read}
     env:
@@ -329,7 +329,7 @@ jobs:
           retention-days: 90
   tooling:
     name: Release tools checks
-    if: github.event_name == 'push' || inputs.check_kind == 'tooling'
+    if: github.event_name == 'push' || inputs.check_kind == 'tooling' || inputs.check_kind == 'tooling-resume'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     env:
@@ -352,6 +352,8 @@ jobs:
       - name: Test changed release tooling and record evidence
         env:
           EVIDENCE_DIR: ${{ runner.temp }}/tooling-evidence
+          TOOLING_REUSE_REQUIRED: ${{ inputs.check_kind == 'tooling-resume' }}
+          TOOLING_HANDOFF: ${{ fromJSON(inputs.source_test_plan || '{}').reviewed_tooling_handoff || '' }}
         run: python ops/formal_release/run_evidence_checks.py
       - uses: actions/upload-artifact@v4
         if: always()
@@ -401,8 +403,8 @@ jobs:
 
   windows-parser:
     name: ${{ inputs.check_kind == 'driver-smoke' && 'Windows GUI driver diagnostic only' || 'Windows build script parser' }}
-    if: github.event_name == 'push' || inputs.check_kind == 'tooling' || inputs.check_kind == 'driver-smoke'
-    runs-on: ${{ inputs.check_kind == 'driver-smoke' && 'windows-2022' || 'windows-latest' }}
+    if: github.event_name == 'push' || inputs.check_kind == 'tooling' || inputs.check_kind == 'tooling-resume' || inputs.check_kind == 'driver-smoke'
+    runs-on: ${{ (inputs.check_kind == 'driver-smoke' || github.ref_name == 'gray-release-0.10.x') && 'windows-2022' || 'windows-latest' }}
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4

@@ -102,8 +102,12 @@ def main():
     evidence=stage/'recovery-cutover';evidence.mkdir(exist_ok=False,mode=0o700)
     def record(name,value):(evidence/name).write_text(json.dumps(value,indent=2))
     import sys
-    sys.argv=['maintenance.py','enable','--evidence-dir',str(evidence)]
+    # A resumed release must keep the existing fence, never disable/re-enable it.
+    already_active = SNIPPET.exists() and SNIPPET.read_text() == BLOCK
+    operation = 'status' if already_active else 'enable'
+    sys.argv=['maintenance.py',operation,'--evidence-dir',str(evidence)]
     maintenance_main()
+    record('maintenance-entry.json', {'operation': operation, 'reused_existing_fence': already_active})
     assert SNIPPET.read_text()==BLOCK and INCLUDE in SITE.read_text()
     locked=api_check(plan,plan['previous_contract'],plan['previous_contract_sha256'])
     assert before['protected']==locked['protected'], 'STATE_CHANGED_BEFORE_CUTOVER'

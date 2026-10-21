@@ -48,7 +48,16 @@ def main():
     output = Path(os.environ["EVIDENCE_DIR"])
     output.mkdir(parents=True, exist_ok=True)
     current = identity()
-    if kind == "tooling":
+    tooling_reuse = None
+    if kind == "tooling" and os.environ.get("TOOLING_REUSE_REQUIRED") == "true":
+        require(bool(os.environ.get("TOOLING_HANDOFF")), "TOOLING_RESUME_HANDOFF_REQUIRED")
+    if kind == "tooling" and os.environ.get("TOOLING_HANDOFF"):
+        from tooling_handoff import validate as validate_tooling
+        tooling_reuse = validate_tooling(os.environ["TOOLING_HANDOFF"])
+        plan = {"reason": "Reviewed tool delta; preserve original check identities",
+                "not_tested": "Unchanged business behavior; Windows component is a separate job",
+                "pytest": tooling_reuse["pytest"]}
+    elif kind == "tooling":
         plan = {"reason": "Release tools changed; validate only release tooling", "not_tested": "Business behavior and Windows EXE acceptance",
                 "pytest": [{"cwd": ".", "nodes": [str(p.relative_to(ROOT)) for p in sorted((ROOT / "ops/formal_release/tests").glob("test_*.py"))]}]}
         plan['pytest'].append({'cwd':'worker-client','nodes':[
@@ -70,6 +79,11 @@ def main():
         from reviewed_handoff import validate
         reused = validate(plan["reviewed_handoff"])
     scope, results = [], []
+    if tooling_reuse:
+        scope.append({"check": "reviewed_unaffected_tool_checks", "original": tooling_reuse["original"],
+                      "cases": tooling_reuse["cases"], "mode": "reused"})
+        results.append({"exit_code": 0, "passed": tooling_reuse["count"], "failed": 0, "skipped": 0,
+                        "type": "original_ci_evidence_reuse", "tests_executed": 0})
     if reused:
         scope.append({"check": "reviewed_source_identity_and_release_version", "business_tests_executed": 0})
         results.append({"exit_code": 0, "passed": 1, "failed": 0, "skipped": 0,
@@ -97,7 +111,7 @@ def main():
     evidence = {"schema_version": 2, **current, "kind": kind, "status": "passed",
                 "fingerprint": fingerprint("HEAD", kind), "scope": scope, "results": results,
                 "reason": plan["reason"], "not_tested": plan["not_tested"], "python": sys.version,
-                "reviewed_handoff": reused}
+                "reviewed_handoff": reused, "tooling_reuse": tooling_reuse}
     if reused:
         evidence["scope"].append({"reused_engineering_checks": reused})
     (output / "evidence.json").write_text(json.dumps(evidence, indent=2), encoding="utf-8")
