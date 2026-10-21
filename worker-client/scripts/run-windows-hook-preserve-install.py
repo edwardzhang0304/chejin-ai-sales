@@ -220,14 +220,53 @@ Path(sys.argv[4]).write_text(json.dumps(state))
             env=env, cwd=case, stdout=log, stderr=log, check=True, timeout=90)
         shortcut_script = case / 'read-shortcuts.ps1'
         shortcut_script.write_text("""$ErrorActionPreference='Stop'
+Add-Type -TypeDefinition @'
+using System;
+using System.Text;
+using System.Runtime.InteropServices;
+using System.Runtime.InteropServices.ComTypes;
+namespace CheJinAcceptance {
+    [ComImport, Guid("00021401-0000-0000-C000-000000000046")]
+    internal class ShellLink { }
+    [ComImport, Guid("000214F9-0000-0000-C000-000000000046"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    internal interface IShellLinkW {
+        void GetPath([Out, MarshalAs(UnmanagedType.LPWStr)] StringBuilder path, int count, IntPtr data, uint flags);
+        void GetIDList(out IntPtr list);
+        void SetIDList(IntPtr list);
+        void GetDescription([Out, MarshalAs(UnmanagedType.LPWStr)] StringBuilder text, int count);
+        void SetDescription([MarshalAs(UnmanagedType.LPWStr)] string text);
+        void GetWorkingDirectory([Out, MarshalAs(UnmanagedType.LPWStr)] StringBuilder path, int count);
+        void SetWorkingDirectory([MarshalAs(UnmanagedType.LPWStr)] string path);
+        void GetArguments([Out, MarshalAs(UnmanagedType.LPWStr)] StringBuilder text, int count);
+        void SetArguments([MarshalAs(UnmanagedType.LPWStr)] string text);
+    }
+    public static class ShortcutReader {
+        public static string[] Read(string path) {
+            object instance = new ShellLink();
+            try {
+                ((IPersistFile)instance).Load(path, 0);
+                IShellLinkW link = (IShellLinkW)instance;
+                StringBuilder target = new StringBuilder(32768);
+                StringBuilder directory = new StringBuilder(32768);
+                StringBuilder arguments = new StringBuilder(32768);
+                link.GetPath(target, target.Capacity, IntPtr.Zero, 0);
+                link.GetWorkingDirectory(directory, directory.Capacity);
+                link.GetArguments(arguments, arguments.Capacity);
+                return new string[] { target.ToString(), directory.ToString(), arguments.ToString() };
+            } finally { Marshal.FinalReleaseComObject(instance); }
+        }
+    }
+}
+'@
 $desktop=[Environment]::GetFolderPath('Desktop')
-$shell=New-Object -ComObject WScript.Shell
 $rows=@('Work WeChat','CheJin Worker','车金故障诊断') | ForEach-Object {
   $p=Join-Path $desktop ($_+'.lnk'); if(-not(Test-Path -LiteralPath $p)){throw 'Missing shortcut'}
-  $s=$shell.CreateShortcut($p)
-  [pscustomobject]@{name=$_;target=$s.TargetPath;directory=$s.WorkingDirectory;arguments=$s.Arguments}
+  $before=(Get-FileHash -LiteralPath $p -Algorithm SHA256).Hash
+  $s=[CheJinAcceptance.ShortcutReader]::Read($p)
+  if((Get-FileHash -LiteralPath $p -Algorithm SHA256).Hash -ne $before){throw 'Shortcut changed during read'}
+  [pscustomobject]@{name=$_;target=$s[0];directory=$s[1];arguments=$s[2];sha256=$before.ToLowerInvariant()}
 }
-[pscustomobject]@{links=@($rows);powershell_exe=(Join-Path $PSHOME 'powershell.exe');safe_directory=[IO.Path]::GetTempPath()} | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $args[0] -Encoding UTF8
+[pscustomobject]@{reader='IPersistFile.Load/IShellLinkW';links=@($rows);powershell_exe=(Join-Path $PSHOME 'powershell.exe');safe_directory=[IO.Path]::GetTempPath()} | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $args[0] -Encoding UTF8
 """, encoding='utf-8-sig')
         shortcut_path = case / 'shortcuts.json'
         subprocess.run(['powershell.exe', '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', str(shortcut_script), str(shortcut_path)],
