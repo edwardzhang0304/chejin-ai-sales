@@ -1,5 +1,6 @@
 @startuml main
-' 0.10.8候选：成品升级与原机恢复待验；旧记录保留。
+' 本轮0.10.9基于已审提交a1de7f3，修复无服务器消息编号的本地发出记录阻断恢复，并补齐故障取证。0.10.8封存包不重打；原机仍有旧发送与未结流程，采用保留数据安装，不删除凭证、不补发、不自动解除暂停。已有测试按哈希复用；正式成品、Windows安装与销售原机恢复分别验收，当前均待本轮执行。后端、后台、Worker和合同统一0.10.9。
+' 0.10.9候选：成品升级与原机恢复待验；旧记录保留。
 ' r4 2026-10-21：后续需求已核对，状态以产品文档7.1—7.3为准。
 ' CRM与Hook图片AI回复仅登记，当前流程仍是图片转人工；未新增业务分支。
 ' 多机维护/跨版本兼容/漏答补偿只具备部分基础，不在本图宣称全部完成。
@@ -15,7 +16,7 @@ skinparam activityDiamondBorderColor #58718C
 skinparam ArrowColor #58718C
 skinparam noteBackgroundColor #FFF4D9
 skinparam noteBorderColor #CDA556
-title 车金 0.10.8 · 完整业务主流程（r1，2026-10-21）
+title 车金 0.10.9 · 完整业务主流程（r1，2026-10-21）
 start
 :管理员交付前安装指定微信与 DLL
 按盒子配置路径/端口/回调，首次激活
@@ -203,7 +204,7 @@ skinparam activityDiamondBorderColor #58718C
 skinparam ArrowColor #58718C
 skinparam noteBackgroundColor #FFF4D9
 skinparam noteBorderColor #CDA556
-title 车金 0.10.8 · 支撑 1：故障、暂停与恢复（r1）
+title 车金 0.10.9 · 支撑 1：故障、暂停与恢复（r1）
 start
 :发现人工暂停、连接等待或技术故障;
 :记录原原因/作用域/incident_id
@@ -255,7 +256,7 @@ skinparam activityDiamondBorderColor #58718C
 skinparam ArrowColor #58718C
 skinparam noteBackgroundColor #FFF4D9
 skinparam noteBorderColor #CDA556
-title 车金 0.10.8 · 支撑 2：事实、耗时与后台展示（r1）
+title 车金 0.10.9 · 支撑 2：事实、耗时与后台展示（r1）
 participant "微信 / Hook" as H
 participant "Worker 业务线程" as W
 database "本机 SQLite / Outbox" as L
@@ -297,7 +298,7 @@ skinparam activityDiamondBorderColor #58718C
 skinparam ArrowColor #58718C
 skinparam noteBackgroundColor #FFF4D9
 skinparam noteBorderColor #CDA556
-title 车金 0.10.8 · 支撑 3：检查更新与保留数据安装（r1）
+title 车金 0.10.9 · 支撑 3：检查更新与保留数据安装（r1）
 start
 :设置展示与实际入口共用安全状态
 暂停/故障/业务离线本身不禁止检查;
@@ -338,7 +339,7 @@ Worker 与工作微信均来自正式配置;
 恢复检查通过后由操作者明确开始;
 stop
 legend bottom
-0.10.8已有 Worker 升级候选；按钮升级和原机恢复待验。
+0.10.9已有 Worker 升级候选；按钮升级和原机恢复待验。
 已有机仅升级Worker并保留配置；新机另用完整包，首次激活并验证到打开Worker。
 原装 0.10.2/0.10.3 坏更新器不能自行修好；0.10.3 自动发放仍撤回。
 本机升级、快捷方式、DLL/端口与业务收发仍待现场核对。
