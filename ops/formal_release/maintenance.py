@@ -47,13 +47,15 @@ def main():
         print(json.dumps({'maintenance':'active','scope':'public_grant_endpoints','persistent':True}));return
     validate_ingress();site=SITE.resolve();before=site.read_text()
     if a.operation=='enable':
-        assert not active,'Already enabled; inspect status'
+        if active:
+            assert INCLUDE in before, 'ACTIVE_SNIPPET_NOT_INCLUDED'
         previous=SNIPPET.read_text() if SNIPPET.exists() else ''
-        assert previous in ('','# release maintenance inactive\n'),'Unknown existing maintenance snippet'
+        assert previous in ('','# release maintenance inactive\n',BLOCK),'Unknown existing maintenance snippet'
         if INCLUDE not in before:
             marker='    location = /api {';assert before.count(marker)==1,'Unexpected main API location'
             atomic(site,before.replace(marker,INCLUDE+marker,1))
-        atomic(SNIPPET,BLOCK)
+        if not active:
+            atomic(SNIPPET,BLOCK)
     else:
         assert active and (evidence/'release-approved.json').exists(),'Explicit accepted release evidence required to unfreeze'
         approved=json.loads((evidence/'release-approved.json').read_text())

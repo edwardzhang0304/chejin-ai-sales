@@ -30,6 +30,29 @@ def command(argv, **kwargs):
     return subprocess.run(argv,check=True,capture_output=True,**kwargs)
 
 
+def verify_live_fence():
+    """Unauthenticated synthetic probes must hit this host's active TLS ingress."""
+    paths = (
+        '/api/tasks/00000000-0000-4000-8000-000000000000/claim',
+        '/api/workers/00000000-0000-4000-8000-000000000000/run-status',
+        '/api/workers/00000000-0000-4000-8000-000000000000/inflight-flow/start',
+        '/api/workers/00000000-0000-4000-8000-000000000000/wechat/native-replies/probe/claim',
+        '/api/workers/00000000-0000-4000-8000-000000000000/wechat/native-replies/probe/begin',
+        '/api/reply-actions/00000000-0000-4000-8000-000000000000/claim-send',
+    )
+    checked = []
+    for path in paths:
+        value = command(['curl', '-q', '--silent', '--show-error', '--noproxy', '*',
+            '--resolve', 'jiangsuchejin.com:443:127.0.0.1', '--max-time', '10',
+            '--request', 'POST', '--header', 'Content-Type: application/json', '--data', '{}',
+            '--write-out', '\n%{http_code}', 'https://jiangsuchejin.com' + path], text=True)
+        body, status = value.stdout.rsplit('\n', 1)
+        assert status == '503' and json.loads(body).get('code') == 'RELEASE_MAINTENANCE', 'LIVE_MAINTENANCE_NOT_EFFECTIVE'
+        checked.append({'path': path, 'status': 503, 'code': 'RELEASE_MAINTENANCE'})
+    return {'status': 'passed', 'destination': '127.0.0.1:443', 'tls_hostname_verified': True,
+            'authenticated': False, 'probes': checked}
+
+
 def api_check(plan, revision, digest):
     request={'purpose':'maintenance_cutover','contract_revision':revision,'contract_sha256':digest,
              'approved_read_flows':plan['retained_flow_sha256'],
@@ -104,11 +127,18 @@ def main():
     import sys
     # A resumed release must keep the existing fence, never disable/re-enable it.
     already_active = SNIPPET.exists() and SNIPPET.read_text() == BLOCK
-    operation = 'status' if already_active else 'enable'
-    sys.argv=['maintenance.py',operation,'--evidence-dir',str(evidence)]
-    maintenance_main()
-    record('maintenance-entry.json', {'operation': operation, 'reused_existing_fence': already_active})
-    assert SNIPPET.read_text()==BLOCK and INCLUDE in SITE.read_text()
+    sys.argv=['maintenance.py','enable','--evidence-dir',str(evidence)]
+    try:
+        # enable is idempotent: same fence, validated reload, old workers drained.
+        maintenance_main()
+        record('maintenance-entry.json', {'operation': 'enable', 'reused_existing_fence': already_active})
+        assert SNIPPET.read_text()==BLOCK and INCLUDE in SITE.read_text()
+        record('maintenance-live.json', verify_live_fence())
+    except Exception as exc:
+        record('failure.json', {'type': type(exc).__name__, 'phase': 'before_cutover',
+               'docker_switch_started': False,
+               'maintenance': 'retained' if SNIPPET.exists() and SNIPPET.read_text() == BLOCK else 'unverified'})
+        raise
     locked=api_check(plan,plan['previous_contract'],plan['previous_contract_sha256'])
     assert before['protected']==locked['protected'], 'STATE_CHANGED_BEFORE_CUTOVER'
     backup=json.loads(Path(plan['evidence']['backup']['path']).read_text())

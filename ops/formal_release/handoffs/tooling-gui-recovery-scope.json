@@ -51,7 +51,7 @@
       ]
     },
     "ops/formal_release/recovery_cutover.py": {
-      "reason": "When an identical maintenance fence already exists, validate status instead of enabling a second time; no disable, no changes to readiness/protected data/backups or deployment sequence.",
+      "reason": "Idempotent enable of the same fence uses the original reload/drain mechanism; save pre-switch failures; verify six real loopback TLS grant probes before Docker switch. All old readiness/hash/data/backup gates remain.",
       "covered_by": [
         "ops/formal_release/tests/test_recovery_cutover.py"
       ]
@@ -67,6 +67,13 @@
       "covered_by": [
         "ops/formal_release/tests/test_tooling_handoff.py"
       ]
+    },
+    "ops/formal_release/maintenance.py": {
+      "reason": "Allow existing identical active fence through the original validated reload and bounded old-worker drain path, without disabling or changing scope; reject missing include/unknown content.",
+      "covered_by": [
+        "ops/formal_release/tests/test_recovery_cutover.py",
+        "ops/formal_release/tests/test_release_environment.py"
+      ]
     }
   },
   "pytest": [
@@ -75,7 +82,8 @@
       "nodes": [
         "ops/formal_release/tests/test_tooling_handoff.py",
         "ops/formal_release/tests/test_source_evidence.py",
-        "ops/formal_release/tests/test_recovery_cutover.py"
+        "ops/formal_release/tests/test_recovery_cutover.py",
+        "ops/formal_release/tests/test_release_environment.py"
       ]
     }
   ],

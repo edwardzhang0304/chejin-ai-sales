@@ -31,7 +31,7 @@ def test_failure_retains_fence_and_original_facts(tmp_path):
     before={'cutover_safe':True,'ordinary_readiness':{'ready':False},'protected':{'original':'unchanged'}}
     snippet=tmp_path/'snippet';snippet.write_text(cutover.BLOCK)
     site=tmp_path/'site';site.write_text(cutover.INCLUDE)
-    with patch.object(sys,'argv',inputs(tmp_path)+['--execute']),patch.object(cutover,'validate'),patch.object(cutover,'api_check',return_value=before),patch.object(cutover,'maintenance_main'),patch.object(cutover,'SNIPPET',snippet),patch.object(cutover,'SITE',site),patch.object(cutover.subprocess,'run',side_effect=subprocess.CalledProcessError(1,['docker','compose'])) as run:
+    with patch.object(sys,'argv',inputs(tmp_path)+['--execute']),patch.object(cutover,'validate'),patch.object(cutover,'api_check',return_value=before),patch.object(cutover,'maintenance_main'),patch.object(cutover,'verify_live_fence',return_value={'status':'passed'}),patch.object(cutover,'SNIPPET',snippet),patch.object(cutover,'SITE',site),patch.object(cutover.subprocess,'run',side_effect=subprocess.CalledProcessError(1,['docker','compose'])) as run:
         with pytest.raises(subprocess.CalledProcessError):cutover.main()
         assert snippet.read_text()==cutover.BLOCK
         assert run.call_count==1 and run.call_args.args[0][-5:]==['up','-d','--no-deps','--no-build','api']
@@ -121,6 +121,10 @@ def test_complete_cutover_control_flow_with_explicit_host_adapters(tmp_path, mon
             assert request['confirmed_exited_at']==plan['stopped_writer_confirmation']['confirmed_exited_at']
             assert request['approved_read_flows']==plan['retained_flow_sha256']
             out=json.dumps({'cutover_safe':True,'ordinary_readiness':{'ready':False},'protected':protected})
+        elif argv[:2]==['curl','-q']:
+            assert not state['switched'] and snippet.read_text()==cutover.BLOCK
+            assert '--resolve' in argv and '--insecure' not in argv and '-k' not in argv
+            out=json.dumps({'code':'RELEASE_MAINTENANCE'})+'\n503'
         elif argv==['ps','-eo','pid,args']:out=''
         elif argv in (['nginx','-t'],['systemctl','reload','nginx']):out=''
         else:raise AssertionError('Unexpected host operation '+repr(argv))
@@ -140,9 +144,8 @@ def test_complete_cutover_control_flow_with_explicit_host_adapters(tmp_path, mon
     assert snippet.read_text()==cutover.BLOCK and cutover.INCLUDE in site.read_text()
     assert state['api_checks']==3
     entry=json.loads((root/'recovery-cutover/maintenance-entry.json').read_text())
-    assert entry['operation']==('status' if already_active else 'enable')
-    if already_active:
-        assert ['systemctl','reload','nginx'] not in state['calls']
+    assert entry['operation']=='enable' and entry['reused_existing_fence'] is already_active
+    assert state['calls'].count(['systemctl','reload','nginx'])==1
     assert sum('up' in argv for argv in state['calls'])==1
     assert not any('disable' in argv or 'pg_restore' in argv for argv in state['calls'])
 
@@ -152,9 +155,42 @@ def test_invalid_existing_maintenance_stops_before_docker_switch(tmp_path):
     snippet=tmp_path/'snippet';snippet.write_text(cutover.BLOCK)
     site=tmp_path/'site';site.write_text('missing maintenance include')
     def status():
-        assert sys.argv[1]=='status'
+        assert sys.argv[1]=='enable'
         raise AssertionError('MAINTENANCE_NOT_ENABLED')
     with patch.object(sys,'argv',inputs(tmp_path)+['--execute']),patch.object(cutover,'validate'),patch.object(cutover,'api_check',return_value=before),patch.object(cutover,'maintenance_main',side_effect=status),patch.object(cutover,'SNIPPET',snippet),patch.object(cutover,'SITE',site),patch.object(cutover.subprocess,'run') as run:
         with pytest.raises(AssertionError,match='MAINTENANCE_NOT_ENABLED'):cutover.main()
         run.assert_not_called()
         assert snippet.read_text()==cutover.BLOCK
+
+
+@pytest.mark.parametrize('response', ['{"code":"RELEASE_MAINTENANCE"}\n200','{"code":"OTHER"}\n503','Unauthorized\n401'])
+def test_live_fence_probe_rejects_disk_only_or_wrong_response(response):
+    with patch.object(cutover,'command',return_value=subprocess.CompletedProcess([],0,stdout=response)):
+        with pytest.raises((AssertionError,ValueError)):cutover.verify_live_fence()
+
+
+def test_live_probe_checks_each_grant_route_on_loopback_with_tls_and_no_credentials():
+    with patch.object(cutover,'command',return_value=subprocess.CompletedProcess([],0,stdout='{"code":"RELEASE_MAINTENANCE"}\n503')) as command:
+        receipt=cutover.verify_live_fence()
+    assert len(receipt['probes'])==6 and command.call_count==6
+    for call in command.call_args_list:
+        argv=call.args[0]
+        assert argv[:2]==['curl','-q'] and argv[argv.index('--resolve')+1]=='jiangsuchejin.com:443:127.0.0.1'
+        assert argv[argv.index('--noproxy')+1]=='*'
+        assert not any('Authorization' in arg or 'Cookie' in arg for arg in argv)
+        assert '-k' not in argv and '--insecure' not in argv
+
+
+def test_already_active_fence_with_undrained_old_worker_never_switches(tmp_path):
+    import maintenance
+    snippet=tmp_path/'snippet';snippet.write_text(cutover.BLOCK)
+    site=tmp_path/'site';site.write_text(cutover.INCLUDE)
+    before={'cutover_safe':True,'ordinary_readiness':{'ready':False},'protected':{'original':'unchanged'}}
+    with patch.object(sys,'argv',inputs(tmp_path)+['--execute']),patch.object(cutover,'validate'),patch.object(cutover,'api_check',return_value=before),patch.object(cutover,'SNIPPET',snippet),patch.object(cutover,'SITE',site),patch.object(maintenance,'SNIPPET',snippet),patch.object(maintenance,'SITE',site),patch.object(maintenance,'validate_ingress'),patch.object(maintenance,'old_workers',return_value={42}),patch.object(maintenance.time,'monotonic',side_effect=[0,61]),patch.object(maintenance.subprocess,'run') as run,patch.object(cutover,'verify_live_fence',return_value={'status':'passed'}) as live:
+        with pytest.raises(RuntimeError,match='freeze restored'):cutover.main()
+    assert not any(c.args[0][0]=='docker' for c in run.call_args_list)
+    live.assert_not_called()
+    assert snippet.read_text()==cutover.BLOCK
+    failure=json.loads((tmp_path/'recovery-cutover/failure.json').read_text())
+    assert failure['phase']=='before_cutover' and failure['docker_switch_started'] is False
+    assert failure['maintenance']=='retained'

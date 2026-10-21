@@ -127,6 +127,8 @@ def test_diagnostic_job_is_not_full_tooling_and_push_skip_remains_operator_condi
         if step.get('name','').startswith(('Extract formal','Parse formal','Exercise Hook')):
             assert "inputs.check_kind != 'driver-smoke'" in step['if']
     assert 'driver-smoke' not in w['jobs']['tooling']['if']
+    assert w['jobs']['tooling']['permissions']=={'contents':'read','actions':'read'}
+    assert w['jobs']['tooling']['env']['GH_TOKEN']=='${{ github.token }}'
     assert 'TOOLING_HANDOFF' in next(s for s in w['jobs']['tooling']['steps'] if s.get('name')=='Test changed release tooling and record evidence')['env']
 
 @pytest.mark.parametrize('key,value', [('attempt','2'),('kind','source'),('status','failed'),('scope',[])])
