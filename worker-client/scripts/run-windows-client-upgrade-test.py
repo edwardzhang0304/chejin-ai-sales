@@ -545,11 +545,29 @@ def run_case(args, status):
         # Only this isolated run's synthetic state is inspected. Retain bounded
         # diagnostics before the runner is destroyed; do not weaken acceptance.
         diagnostic_files = []
-        for pattern in ("**/update-result.json", "**/updater-ready.json", "**/worker-startup.jsonl", "**/updater-startup.jsonl"):
+        for pattern in ("**/update-state.json", "**/update-result.json", "**/healthy.json",
+                        "**/updater-ready.json", "**/worker-startup.jsonl",
+                        "**/updater-startup.jsonl", "**/startup-crash.jsonl"):
             for path in case.glob(pattern):
                 if path.is_file() and path.stat().st_size < 65536:
                     diagnostic_files.append({"path": str(path.relative_to(case)), "text": path.read_text(encoding="utf-8-sig", errors="replace")[-12000:]})
         report["failure_control_diagnostics"] = diagnostic_files
+        # Capture liveness before finally terminates this run's processes.
+        # No command lines, environment, or unrelated process metadata is saved.
+        process_diagnostics = []
+        for process in psutil.process_iter(["pid", "exe", "status", "create_time"]):
+            try:
+                exe = process.info["exe"]
+                if exe and Path(exe).resolve().is_relative_to(case.resolve()):
+                    process_diagnostics.append({
+                        "pid": process.info["pid"],
+                        "exe": str(Path(exe).resolve().relative_to(case.resolve())),
+                        "status": process.info["status"],
+                        "create_time": process.info["create_time"],
+                    })
+            except (psutil.Error, OSError):
+                pass
+        report["failure_case_processes"] = process_diagnostics
         raise
     finally:
         write_json(case / "data-checkpoints.json", checkpoints)
