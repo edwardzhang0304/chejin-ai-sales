@@ -470,3 +470,71 @@ def test_actual_web_bridge_hands_off_to_shared_dialog_once(home, monkeypatch):
         assert bridge.exportLatestIncident() == ''
         assert len(constructed) == 1 and constructed[0] == (web.CONFIG.app_dir, window)
         assert window._diagnostic_dialog.shown == 2 and window._diagnostic_dialog.starts == 1
+
+
+def test_legacy_incident_flood_cannot_starve_current_recovery_or_raw_history(tmp_path):
+    root=seed(tmp_path/'home')
+    for i in range(3100):
+        write(root, f'incidents/old-{i}.json', {'error_code':'OLD_ERROR'})
+    capture={'query':{'kind':'page'},'raw_utf8':json.dumps({'data':[
+        {'localId':'119','MsgSvrID':'0','Type':'1','IsSender':'1',
+         'StrContent':'synthetic-private-body','token':'synthetic-worker-credential'}]})}
+    path=write(root,'transactions/hook/history-captures/latest.json',capture)
+    before=path.read_bytes()
+    entries=read_zip(export_bundle(root,tmp_path/'bundle.zip'))
+    assert 'receipts/hook/sends/w/a/reply-a/outcome.json' in entries
+    parsed=json.loads(entries['receipts/hook/history-captures/latest.json'])
+    row=parsed['raw_utf8']['data'][0]
+    assert (row['localId'],row['MsgSvrID'],row['Type'],row['IsSender'])==('119','0','1','1')
+    assert row['StrContent']['omitted']=='message_or_audio_body'
+    assert b'synthetic-private-body' not in b''.join(entries.values())
+    assert b'synthetic-worker-credential' not in b''.join(entries.values())
+    manifest=json.loads(entries['收集清单.json'])
+    assert manifest['partial']
+    assert any(e['source']=='incidents/legacy' and e['status']=='omitted' for e in manifest['sources'])
+    assert path.read_bytes()==before
+
+
+def test_original_unsettled_journal_and_linked_capture_precede_newer_completed_records(tmp_path):
+    root=seed(tmp_path/'home');hook=root/'transactions/hook'
+    original='00000000-0000-4000-8000-000000000001'
+    for i in range(451):
+        action=original if i==0 else f'finished-{i}'
+        for name in ('intent','permit','trigger','outcome'):
+            p=write(hook,f'sends/w/epoch/{action}/{name}.json',{'reply_action_id':action,'task_id':action})
+            os.utime(p,(1000+i,1000+i))
+        if i:
+            write(hook,f'send-receipts/{action}.json',{'local_send_observed':True,'automatic_resend_allowed':False})
+    index={'retained_reply_action_id':original,'files':{'history-captures/old-current.json':'x','history-coverage/original.json':'y'}}
+    write(hook,'history-artifact-index/original.json',index)
+    raw=write(hook,'history-captures/old-current.json',{'raw_utf8':json.dumps({'data':[{'MsgSvrID':'0','localId':'119','StrContent':'private-body'}]})})
+    os.utime(raw,(900,900))
+    write(hook,'history-coverage/original.json',{'coverage':'synthetic'})
+    write(hook,'history-receipts/original.json',{'reason_code':'HOOK_HISTORY_OUTGOING_ID_PENDING'})
+    for i in range(450):
+        p=write(hook,f'history-captures/newer-{i}.json',{})
+        os.utime(p,(2000+i,2000+i))
+    before={p:hashlib.sha256(p.read_bytes()).hexdigest() for p in (hook/'sends/w/epoch'/original).iterdir()}
+    entries=read_zip(export_bundle(root,tmp_path/'evidence.zip'))
+    for name in ('intent','permit','trigger','outcome'):
+        assert f'receipts/hook/sends/w/epoch/{original}/{name}.json' in entries
+    for name in ('history-artifact-index/original.json','history-captures/old-current.json',
+                 'history-coverage/original.json','history-receipts/original.json'):
+        assert 'receipts/hook/'+name in entries
+    assert b'private-body' not in b''.join(entries.values())
+    assert before=={p:hashlib.sha256(p.read_bytes()).hexdigest() for p in before}
+
+
+def test_priority_recovery_index_cannot_escape_source_boundary(tmp_path):
+    root=seed(tmp_path/'home');hook=root/'transactions/hook'
+    write(hook,'sends/w/e/original/intent.json',{'reply_action_id':'original','task_id':'task'})
+    write(hook,'history-artifact-index/current.json',{'retained_reply_action_id':'original','files':{
+        '../../private.json':'x','history-captures/link.json':'x'}})
+    outside=write(tmp_path,'private.json',{'secret':'must-not-appear'})
+    (hook/'history-captures').mkdir()
+    (hook/'history-captures/link.json').symlink_to(outside)
+    entries=read_zip(export_bundle(root,tmp_path/'export.zip'))
+    assert b'must-not-appear' not in b''.join(entries.values())
+    omissions=json.loads(entries['evidence-index/export.json'])['omissions']
+    assert any(e['reason']=='invalid_index_reference' for e in omissions)
+    assert any(e['reason']=='source_boundary' for e in omissions)

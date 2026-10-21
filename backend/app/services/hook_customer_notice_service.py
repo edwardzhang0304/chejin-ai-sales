@@ -10,6 +10,33 @@ from app.services.followup_eligibility import followup_block_reason
 REASON = 'HOOK_FRIEND_VERIFICATION_REQUIRED'
 
 
+def apply_unresolved_outgoing_notice(db, binding, checked, receipt, ctx):
+    """Keep this customer's incomplete local send outside automatic service."""
+    conversation = db.get(Conversation, binding.conversation_id)
+    if (conversation is None or conversation.status in {'closed', 'rejected'}
+            or not conversation.ai_enabled or followup_block_reason(db, binding.lead_id)):
+        return
+    applied = set(ctx.get('unresolved_outgoing_notice_keys', []))
+    current = {notice_key(row, ctx) for row in checked['unresolved_outgoing_rows']}
+    if current <= applied:
+        return
+    ctx['unresolved_outgoing_notice_keys'] = sorted(applied | current)
+    binding.native_context = {**binding.native_context, **ctx, 'active_history_receipt_id': receipt.id}
+    reason = shared_adapter('hook_history_rules').OUTGOING_ID_PENDING
+    event, _ = c3_service._create_or_reuse_open_handoff(
+        db, conversation=conversation, batch_id=None, handoff_reason_code=reason,
+        reason_detail='本机存在服务器编号未确认的发出记录，暂停该客户自动回复，请人工核实；不自动补发。',
+        trigger_message_event_ids=[], risk_flags=['unresolved_local_send'],
+        evidence_refs=['native_history_receipt:' + receipt.id],
+        ai_payload={'source': 'hook_customer_notice', 'history_receipt_id': receipt.id,
+                    'automatic_resend_allowed': False})
+    conversation.status = 'waiting_sales_reply'
+    conversation.handoff_reason_code = event.handoff_reason_code
+    conversation.handoff_at = event.created_at or utcnow()
+    conversation.recall_origin_status = conversation.recall_cycle_id = conversation.next_recall_at = None
+    c3_service.cancel_active_batches_for_conversation_change(db, binding.conversation_id, reason=reason)
+
+
 def notice_key(row, ctx):
     identity = (['native', row['MsgSvrID']] if int(row['MsgSvrID']) else
                 ['local', row['database'], row['localId'], row['CreateTime'], row['StrContent']])

@@ -37,7 +37,7 @@ TABLES = (
 TEXT_SUFFIXES = {".json", ".jsonl", ".log", ".txt"}
 IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp", ".bmp"}
 BODY_KEYS = {"text", "content", "msg", "message_text", "reply_text", "transcript",
-             "raw_body", "audio", "audio_hex", "voice_hex", "voice", "base64"}
+             "strcontent", "raw_body", "audio", "audio_hex", "voice_hex", "voice", "base64"}
 
 
 UPDATE_DIAGNOSTICS = {
@@ -73,7 +73,16 @@ def _content_safe(value, *, ocr=False):
     if isinstance(value, dict):
         out = {}
         for k, v in value.items():
-            if k.lower() in BODY_KEYS and not (ocr and k.lower() == "text") and isinstance(v, (str, bytes)):
+            if k.lower() == "raw_utf8" and isinstance(v, str):
+                # Native capture envelopes contain another JSON document. Decode
+                # before scrubbing so IDs survive but message bodies do not.
+                try:
+                    out[k] = _content_safe(json.loads(v), ocr=False)
+                except (ValueError, RecursionError):
+                    out[k] = {"omitted": "unparseable_native_response",
+                              "bytes": len(v.encode("utf-8")),
+                              "sha256": hashlib.sha256(v.encode("utf-8")).hexdigest()}
+            elif k.lower() in BODY_KEYS and not (ocr and k.lower() == "text") and isinstance(v, (str, bytes)):
                 raw = v.encode("utf-8") if isinstance(v, str) else v
                 out[k] = {"omitted": "message_or_audio_body", "bytes": len(raw),
                           "sha256": hashlib.sha256(raw).hexdigest()}
@@ -102,6 +111,8 @@ class Collector:
         self.visited = 0
         self.members = set()
         self.latest_logs = []
+        self.source_deadline = self.deadline
+        self.source_end = MAX_FILES
 
     def record(self, source, status, **details):
         self.entries.append({"source": str(source), "status": status, **details})
@@ -110,7 +121,7 @@ class Collector:
         self.progress({"percent": percent, "stage": stage})
 
     def limited(self):
-        return time.monotonic() >= self.deadline or self.visited >= MAX_FILES
+        return time.monotonic() >= min(self.deadline, self.source_deadline) or self.visited >= min(MAX_FILES, self.source_end)
 
     def clean(self, value, *, ocr=False):
         return _sanitize(_content_safe(value, ocr=ocr), self.secrets)
@@ -317,6 +328,134 @@ class Collector:
         for member, data, source in snapshots:
             self.add(archive, member, data, source)
 
+    def priority_recovery(self, archive):
+        """Find unresolved journals independently of age, then follow their index.
+
+        This reads evidence only. Receipt presence is a collection hint, never
+        a business settlement decision. Discovery and output remain bounded.
+        """
+        hook = self.root / "transactions" / "hook"
+        deadline = min(self.deadline, time.monotonic() + 8)
+        examined = 0
+
+        def records(folder, filename=None):
+            nonlocal examined
+            stack = [folder]
+            while stack:
+                directory = stack.pop()
+                if not directory.exists():
+                    continue
+                if not self.source_allowed(directory):
+                    self.record(str(directory.relative_to(self.root)), "omitted", reason="source_boundary")
+                    continue
+                try:
+                    with os.scandir(directory) as listing:
+                        for entry in listing:
+                            examined += 1
+                            if examined > 12000 or time.monotonic() >= deadline:
+                                self.record("priority_recovery", "omitted", reason="discovery_limit")
+                                return
+                            path = Path(entry.path)
+                            if not self.source_allowed(path):
+                                self.record(str(path.relative_to(self.root)), "omitted", reason="source_boundary")
+                                continue
+                            if entry.is_dir(follow_symlinks=False):
+                                stack.append(path)
+                            elif path.suffix == ".json" and (filename is None or path.name == filename):
+                                try:
+                                    with path.open("rb") as stream:
+                                        raw = stream.read(MAX_FILE_BYTES + 1)
+                                    if len(raw) > MAX_FILE_BYTES:
+                                        self.record(str(path.relative_to(self.root)), "omitted", reason="file_size_limit")
+                                        continue
+                                    value = json.loads(raw)
+                                    if isinstance(value, dict):
+                                        yield path, value
+                                except (OSError, ValueError, RecursionError) as exc:
+                                    self.record(str(path.relative_to(self.root)), "read_failed", error_type=type(exc).__name__)
+                except OSError as exc:
+                    self.record(str(directory.relative_to(self.root)), "read_failed", error_type=type(exc).__name__)
+
+        def collect(path):
+            member = "receipts/" + path.relative_to(self.root / "transactions").as_posix()
+            if member in self.members:
+                return
+            if not path.exists():
+                self.record(member, "absent")
+                return
+            self.visited += 1
+            if self.limited():
+                self.record(member, "omitted", reason="priority_budget_limit")
+                return
+            self.file(path, member, archive)
+
+        # A locally retained flow can outlive its ACK. Keep that journal too.
+        flows = {p.stem for p, _ in records(hook / "flows")
+                 if not self.source_allowed(hook / "finished" / p.name)}
+        try:
+            db = self.connection()
+            try:
+                row = db.execute("SELECT value FROM client_settings WHERE key='runtime_control_v1'").fetchone()
+                control = json.loads(row[0]) if row else {}
+                flow = control.get("inflight_flow_id") if isinstance(control, dict) else None
+                if isinstance(flow, str) and len(flow) <= 128 and Path(flow).name == flow:
+                    flows.add(flow)
+            finally:
+                db.close()
+        except (OSError, sqlite3.Error, ValueError):
+            self.record("priority_recovery/runtime_control", "read_failed", reason="current_flow_unavailable")
+        actions = set()
+        for path, intent in records(hook / "sends", "intent.json"):
+            action = intent.get("reply_action_id")
+            if not isinstance(action, str) or path.parent.name != action:
+                continue
+            receipt = hook / "send-receipts" / (action + ".json")
+            # A malformed/unreadable receipt is not evidence that we may omit
+            # the original. Keep every unacknowledged action before history.
+            receipt_valid = False
+            if self.source_allowed(receipt):
+                try:
+                    with receipt.open("rb") as stream:
+                        data = stream.read(MAX_FILE_BYTES + 1)
+                    value = json.loads(data) if len(data) <= MAX_FILE_BYTES else None
+                    receipt_valid = isinstance(value, dict) and value.get("automatic_resend_allowed") is False
+                except (OSError, ValueError, RecursionError):
+                    pass
+            if receipt_valid and intent.get("task_id") not in flows:
+                continue
+            actions.add(action)
+            for name in ("permit.json", "intent.json", "trigger.json", "outcome.json"):
+                collect(path.parent / name)
+            collect(receipt)
+            task = intent.get("task_id")
+            if isinstance(task, str) and task in flows:
+                collect(hook / "flows" / (task + ".json"))
+        # Pick the latest complete capture per current action in each pool;
+        # its references take priority over unrelated newer raw pages.
+        for pool in (hook, hook / "history-reconcile"):
+            latest = {}
+            for path, index in records(pool / "history-artifact-index"):
+                action = index.get("retained_reply_action_id")
+                if action not in actions or not isinstance(index.get("files"), dict):
+                    continue
+                try:
+                    stamp = path.stat().st_mtime
+                except OSError as exc:
+                    self.record(str(path.relative_to(self.root)), "read_failed", error_type=type(exc).__name__)
+                    continue
+                if action not in latest or stamp > latest[action][0]:
+                    latest[action] = (stamp, path, index)
+            for _, path, index in latest.values():
+                collect(path)
+                collect(pool / "history-receipts" / path.name)
+                for relative in index["files"]:
+                    ref = Path(relative)
+                    if (ref.is_absolute() or len(ref.parts) != 2 or ".." in ref.parts
+                            or ref.parts[0] not in {"history-captures", "history-coverage"}):
+                        self.record("priority_recovery", "omitted", reason="invalid_index_reference")
+                        continue
+                    collect(pool / ref)
+
     def tree(self, folder, prefix, archive, *, update_only=False, allowed_root=None, ocr=False):
         if not folder.exists():
             self.record(prefix, "absent")
@@ -324,9 +463,12 @@ class Collector:
         if not self.source_allowed(folder, allowed_root):
             self.record(prefix, "omitted", reason="source_boundary")
             return
+        # One noisy/legacy source cannot consume the entire export budget.
+        self.source_end = self.visited + 400
+        self.source_deadline = min(self.deadline, time.monotonic() + 4)
         stack = [(folder, "")]
         while stack:
-            directory, relative = stack.pop()
+            directory, relative = stack.pop(0)
             if self.limited():
                 self.record(prefix, "omitted", reason="time_or_file_limit")
                 break
@@ -342,7 +484,15 @@ class Collector:
                         if not (directory / name).exists():
                             self.record(f"{prefix}/{relative}/{name}", "absent")
                 with os.scandir(directory) as listing:
+                    recent = []
                     for entry in listing:
+                        if len(recent) >= MAX_FILES or self.limited():
+                            self.record(f"{prefix}/{relative}", "omitted", reason="directory_listing_limit")
+                            break
+                        recent.append(entry)
+                    # Most recent evidence first, even in a long-lived data home.
+                    recent.sort(key=lambda e: e.stat(follow_symlinks=False).st_mtime, reverse=True)
+                    for entry in recent:
                         self.visited += 1
                         if self.limited():
                             self.record(prefix, "omitted", reason="time_or_file_limit")
@@ -352,6 +502,10 @@ class Collector:
                             self.record(f"{prefix}/{rel}", "omitted", reason="source_boundary")
                             continue
                         if entry.is_dir(follow_symlinks=False):
+                            if prefix == "receipts" and directory == self.root/"transactions"/"hook" and entry.name in {
+                                "sends", "send-receipts", "history-receipts", "history-captures",
+                            }:
+                                continue
                             if folder == artifacts(self.root) and entry.name in {
                                 "tasks", "runtime", "incidents", "ui_failures", "wechat_c2",
                             }:
@@ -433,24 +587,27 @@ class Collector:
                 self.database(archive, name="worker_telemetry.sqlite3", tables=(
                     "telemetry_stage_events", "telemetry_process_links",
                     "telemetry_stage_attempts", "telemetry_authority_snapshots"))
+                self.priority_recovery(archive)
                 updates_root = update_root(self.root).absolute()
-                # Reserve the collection budget for faults/receipts before older pictures.
+                # Current recovery proofs first; legacy incident volume cannot starve them.
                 sources = [
-                    (incident_roots(self.root)[0], "incidents/current", False, self.root, False),
-                    (incident_roots(self.root)[1], "incidents/legacy", False, self.root, False),
+                    *[(self.root/"transactions"/"hook"/name, "receipts/hook/"+name, False, self.root, False)
+                      for name in ("sends", "send-receipts", "history-receipts", "history-captures")],
                     (self.root/"transactions", "receipts", False, self.root, False),
                     (artifacts(self.root)/"runtime", "logs/runtime", False, self.root, False),
                     (updates_root, "logs/update", True, updates_root, False),
                     (self.root/"diagnostics", "logs/legacy-startup", False, self.root, False),
                     (self.root.parent/"CheJinWorker"/"diagnostics", "logs/legacy-packaging-startup", False, self.root.parent, False),
+                    (incident_roots(self.root)[0], "incidents/current", False, self.root, False),
                     (artifacts(self.root)/"tasks", "tasks", False, self.root, False),
                     (self.root/"transactions"/"hook"/"roi", "tasks/legacy-hook", False, self.root, True),
                     (artifacts(self.root)/"ui_failures", "tasks/legacy-ui", False, self.root, True),
                     (artifacts(self.root)/"wechat_c2", "tasks/legacy-ocr", False, self.root, True),
                     (artifacts(self.root), "tasks/legacy-artifacts", False, self.root, False),
+                    (incident_roots(self.root)[1], "incidents/legacy", False, self.root, False),
                 ]
                 for index, (folder, prefix, updates, boundary, ocr) in enumerate(sources):
-                    self.emit(25 + index * 5, "收集现场和关联凭证")
+                    self.emit(25 + int(index * 65 / len(sources)), "收集现场和关联凭证")
                     self.tree(folder, prefix, archive, update_only=updates, allowed_root=boundary, ocr=ocr)
                 issues = [e for e in self.entries if e["status"] in {"read_failed", "omitted"}]
                 manifest = {"schema_version": 1, "exported_at": datetime.now(timezone.utc).isoformat(),

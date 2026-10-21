@@ -281,7 +281,8 @@ class HookBusinessDispatcher:
         original=replace(rt.scope,process_generation=metadata['original_process_generation'])
         permit,outcome=RetainedNativeSendPermit.load(self.private_root/'sends',rt.credentials,original,binding,metadata)
         synced=rt.sync(binding,reconciliation=permit)
-        if not synced['history_ready'] and synced.get('reason_code')!='HOOK_NATIVE_SEND_ACTOR_PENDING':
+        from .shared_rules import hook_history_rules
+        if not hook_history_rules.retained_send_history_ready(synced):
             raise ValueError(synced.get('reason_code') or 'HOOK_HISTORY_COVERAGE_REQUIRED')
         observation=self.client.observe_send(rt.credentials,permit,outcome)
         if observation.get('settlement'):

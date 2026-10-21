@@ -214,3 +214,19 @@ def test_pe_machine_and_non_windows_inspection_fail_closed(tmp_path,lab):
     import sys
     if sys.platform!='win32':
         with pytest.raises(HookProcessError,match='WINDOWS_REQUIRED'):inspect_windows_process(lab[1].deployment)
+
+
+@pytest.mark.parametrize('status,wxid,code', [
+    (3,'wxid_synthetic','HOOK_LOGIN_RESPONSE_INVALID'),
+    ('3','12345678901','HOOK_LOGIN_IDENTITY_MISSING'),
+    ('3',' wxid_synthetic ','HOOK_LOGIN_IDENTITY_MISSING'),
+])
+def test_login_rejection_exposes_safe_shape_without_identity(lab,status,wxid,code):
+    server,gateway,process,*_=lab
+    server.login_status=status;server.wxid=wxid
+    with pytest.raises(HookLocalError) as caught:gateway.login_status(process)
+    error=caught.value
+    assert str(error)==code and error.operation=='IsLoginStatus'
+    assert error.diagnostic_details['status_is_string']==isinstance(status,str)
+    assert error.diagnostic_details['account_length']==len(wxid)
+    assert wxid not in json.dumps(error.diagnostic_details)

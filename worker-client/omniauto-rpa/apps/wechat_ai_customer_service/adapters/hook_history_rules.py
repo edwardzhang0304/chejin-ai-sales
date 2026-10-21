@@ -11,6 +11,32 @@ from . import hook_contract_rules as rules
 FIELDS = {'localId','CreateTime','Sequence','MsgServerSeq','MsgSequence','MsgSvrID','Type','IsSender','StrTalker','StrContent'}
 NUMBERS = FIELDS - {'StrTalker','StrContent'}
 MAX_ROWS = 10000
+OUTGOING_ID_PENDING = 'HOOK_HISTORY_OUTGOING_ID_PENDING'
+
+
+def retained_send_history_ready(result):
+    """Only original receipt reconciliation; this never authorizes a new send."""
+    return (result.get('history_ready') is True
+            or result.get('reason_code') == 'HOOK_NATIVE_SEND_ACTOR_PENDING'
+            or (result.get('reconciliation_only') is True
+                and result.get('recovery_settlement_allowed') is True
+                and result.get('reason_code') == OUTGOING_ID_PENDING))
+
+
+class HistoryIdentityError(ValueError):
+    def __init__(self, row, database, *, duplicate):
+        super().__init__('HOOK_HISTORY_MESSAGE_ID_UNRESOLVED')
+        self.diagnostic_details = {
+            'identity_failure': 'duplicate_positive_id' if duplicate else 'zero_id_not_outgoing_text',
+            'database': database,
+            **{k: row[k] for k in ('localId', 'MsgSvrID', 'Type', 'IsSender')},
+        }
+
+
+def unresolved_outgoing(row):
+    # A local text attempt without a server ID is evidence, never a message
+    # identity or a successful send. Incoming/media IDs remain strict.
+    return row['Type'] == '1' and row['IsSender'] == '1' and row['MsgSvrID'] == '0'
 
 
 # WeChat 3.9 stores this acceptance notification as an incoming Type=1
@@ -94,9 +120,9 @@ def validate_scan(scan, peer, since):
                     raise ValueError('HOOK_HISTORY_CONTENT_TOO_LARGE')
                 local=values['localId'];seen+=1
                 if values['Type'] in {1,3,34,49}:
-                    if not values['MsgSvrID'] or row['MsgSvrID'] in identities:
-                        raise ValueError('HOOK_HISTORY_MESSAGE_ID_UNRESOLVED')
-                    identities[row['MsgSvrID']]=row
+                    if (not values['MsgSvrID'] and not unresolved_outgoing(row)) or (values['MsgSvrID'] and row['MsgSvrID'] in identities):
+                        raise HistoryIdentityError(row, name, duplicate=bool(values['MsgSvrID']))
+                    if values['MsgSvrID']:identities[row['MsgSvrID']]=row
                 rows.append({**row,'database':name,'database_generation':db['generation']})
         if seen!=count or local!=upper:raise ValueError('HOOK_HISTORY_PAGINATION_INCOMPLETE')
         if rows:active.append(name)
@@ -130,6 +156,8 @@ def validate_coverage(payload, peer, since):
     ordered=sorted(second,key=lambda r:integer(r['Sequence'])) if len(active)<=1 else second
     for row in ordered:
         kind=integer(row['Type'])
+        if unresolved_outgoing(row):
+            continue  # Preserve in rows; never admit to semantic/actor/AI facts.
         if is_friend_acceptance_notice(row):
             notice_ids.append(row['MsgSvrID'])
             continue
@@ -185,7 +213,11 @@ def validate_coverage(payload, peer, since):
                 or item['native_msg_id'] in included or item['native_msg_id'] in excluded):
             raise ValueError('HOOK_HISTORY_EXCLUSION_INVALID')
         excluded.append(item['native_msg_id'])
+    pending_outgoing = [row for row in second if unresolved_outgoing(row)]
+    if pending_outgoing:
+        ready=False;reason=reason or OUTGOING_ID_PENDING
     return {'rows':second,'text_rows':semantic,'media_rows':media,'semantic_rows':all_semantic,'ready':ready,'reason_code':reason,
+            'unresolved_outgoing_rows':pending_outgoing,
             'catalog_fingerprint':scans[1]['catalog_fingerprint'],'observed_at':scans[1]['observed_at'],
             'friend_verification_notices':[r for r in second if is_friend_verification_required_notice(r)],
             'excluded_native_ids':excluded,'revoked_native_ids':revoked_ids,'system_notice_native_ids':notice_ids,'quote_links':quote_links}

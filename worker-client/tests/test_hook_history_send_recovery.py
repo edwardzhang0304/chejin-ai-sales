@@ -95,3 +95,34 @@ def test_restart_reconciles_numeric_history_without_replaying_original_send(
     assert {p.name: p.read_bytes() for p in folder.iterdir()} == before
     assert not any(path == '/SendTextMsg' for path, *_ in server.requests)
     assert not list(private.rglob('not-triggered.json'))
+
+
+@pytest.mark.parametrize('deadline', [False, True])
+def test_secondary_retained_entry_uses_same_unknown_gate_and_original_deadline(retained,deadline):
+    from chejin_worker_client.hook_formal_runtime import HookFormalRuntime
+    root,credentials,scope,binding,metadata,folder=retained
+    source=root/'original';(source/'sends').mkdir(parents=True)
+    (root/credentials.worker_id).rename(source/'sends'/credentials.worker_id)
+    folder=source/'sends'/credentials.worker_id/scope.account_epoch/metadata['reply_action_id']
+    before={p.name:p.read_bytes() for p in folder.iterdir()}
+    calls=[]
+    runtime=HookFormalRuntime.__new__(HookFormalRuntime)
+    runtime.scope=scope;runtime.credentials=credentials;runtime.private_root=root/'restored'
+    def sync(b,*,show_progress,reconciliation):
+        assert b==binding and reconciliation.journal_sha256==metadata['journal_sha256']
+        calls.append('history')
+        return {'history_ready':False,'reason_code':hook_history_rules.OUTGOING_ID_PENDING,
+                'reconciliation_only':True,'recovery_settlement_allowed':True}
+    def observe(*args):calls.append('observe');return {'deadline_elapsed':deadline}
+    def settle(*args):calls.append('settle');return {'local_send_observed':False,'automatic_resend_allowed':False}
+    runtime.sync=sync;runtime.client=SimpleNamespace(observe_send=observe,native_send_settle=settle)
+    if deadline:
+        result=runtime.settle_retained_send(binding,source,metadata)
+        assert result=={'local_send_observed':False,'automatic_resend_allowed':False}
+        assert calls==['history','observe','settle']
+    else:
+        with pytest.raises(ValueError,match='HOOK_SEND_CONFIRMATION_PENDING'):
+            runtime.settle_retained_send(binding,source,metadata)
+        assert calls==['history','observe']
+        assert not list(runtime.private_root.rglob('*.json'))
+    assert before=={p.name:p.read_bytes() for p in folder.iterdir()}

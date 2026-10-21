@@ -256,7 +256,8 @@ def accept_coverage(db,authenticated,instance,payload):
     covered=human_covered_voice_ids(db,binding,verified_rows=[rows_by_id[mid] for mid in ids]) if facts_ready else set()
     state_digest=rules.digest([payload.account_epoch,payload.process_generation,payload.binding_revision,
         checked['revoked_native_ids'],checked['system_notice_native_ids'],[[r['MsgSvrID'],r['Type'],r['IsSender'],r['StrContent'],r['Sequence'],r['MsgSequence'],
-          *_reply_history_state(rows_by_id[ids[i]],covered)] for i,r in enumerate(checked['semantic_rows'])]])
+          *_reply_history_state(rows_by_id[ids[i]],covered)] for i,r in enumerate(checked['semantic_rows'])]]
+          + ([checked['unresolved_outgoing_rows']] if checked['unresolved_outgoing_rows'] else []))
     changed=ctx.get('history_state_digest')!=state_digest
     if reconciliation is None:
         ctx.update({'history_ready':False,'history_reason_code':reason,'active_history_receipt_id':receipt.id,
@@ -299,6 +300,9 @@ def accept_coverage(db,authenticated,instance,payload):
     if checked['ready'] and reason in {None, 'HOOK_NATIVE_SEND_ACTOR_PENDING'}:
         from app.services.hook_customer_notice_service import apply_friend_verification_notice
         apply_friend_verification_notice(db, binding, checked, receipt, ctx)
+    if checked['reason_code'] == history.OUTGOING_ID_PENDING and reconciliation is None:
+        from app.services.hook_customer_notice_service import apply_unresolved_outgoing_notice
+        apply_unresolved_outgoing_notice(db, binding, checked, receipt, ctx)
     batch=None
     if ready and reconciliation is None:
         conv=db.get(Conversation,binding.conversation_id)
@@ -346,7 +350,10 @@ def accept_coverage(db,authenticated,instance,payload):
     result={'process_run_id':process_run_id,'conversation_id':binding.conversation_id,'capture_id':payload.capture_id,'history_receipt_id':receipt.id,'binding_id':binding.id,
         'history_ready':ready,'reason_code':reason,'message_event_ids':ids,'new_message_event_ids':new_ids,
         'history_state_digest':state_digest,'coverage_digest':payload.coverage_digest,'message_batch':batch,'native_send_ready':False,
-        'reconciliation_only':reconciliation is not None}
+        'reconciliation_only':reconciliation is not None,
+        # This admits only original unknown-result settlement, never new work
+        # or a positive send proof. The raw two-pass snapshot is retained.
+        'recovery_settlement_allowed':reconciliation is not None and checked['reason_code']==history.OUTGOING_ID_PENDING}
     result=jsonable_encoder(result)
     receipt.result_json=result;db.flush()
     return result

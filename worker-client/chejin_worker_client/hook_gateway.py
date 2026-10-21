@@ -268,11 +268,21 @@ class HookGateway:
     def _login(self, process: HookProcessSnapshot) -> HookLoginStatus:
         response = self._post("IsLoginStatus", {})
         status = response.get("onlinestatus")
-        if not isinstance(status, str) or status not in {"0", "1", "2", "3"}:
-            raise HookLocalError("HOOK_LOGIN_RESPONSE_INVALID")
-        wxid = response.get("selfwxid") if status == "3" else None
-        if status == "3" and (not isinstance(wxid, str) or not re.fullmatch(r"wxid_[A-Za-z0-9_]{1,59}", wxid)):
-            raise HookLocalError("HOOK_LOGIN_IDENTITY_MISSING")
+        wxid = response.get("selfwxid")
+        status_valid = isinstance(status, str) and status in {"0", "1", "2", "3"}
+        identity_valid = isinstance(wxid, str) and re.fullmatch(r"wxid_[A-Za-z0-9_]{1,59}", wxid) is not None
+        if not status_valid or status == "3" and not identity_valid:
+            error = HookLocalError("HOOK_LOGIN_RESPONSE_INVALID" if not status_valid else "HOOK_LOGIN_IDENTITY_MISSING")
+            error.operation = "IsLoginStatus"
+            error.diagnostic_details = {
+                "status_is_string": isinstance(status, str), "status_valid": status_valid,
+                "account_present": "selfwxid" in response, "account_is_string": isinstance(wxid, str),
+                "account_length": len(wxid) if isinstance(wxid, str) else None,
+                "account_has_outer_spaces": wxid != wxid.strip() if isinstance(wxid, str) else None,
+                "account_matches_rule": identity_valid,
+            }
+            raise error
+        wxid = wxid if status == "3" else None
         return HookLoginStatus(status, wxid, process.generation)
 
     def login_status(self, process: HookProcessSnapshot) -> HookLoginStatus:

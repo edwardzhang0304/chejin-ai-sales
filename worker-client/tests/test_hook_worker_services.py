@@ -294,7 +294,8 @@ def test_quarantine_without_call_identity_shows_generic_cause_and_keeps_both_aud
 
 def test_fault_diagnostics_never_echo_arbitrary_exception_attributes(runtime):
     runner,services,binding,*_=runtime;runner.binding=binding
-    error=SimpleNamespace(operation='private phone and url',transport_kind='private text')
+    error=SimpleNamespace(operation='private phone and url',transport_kind='private text',
+        diagnostic_details={'body':'private text','account_length':'private text','MsgSvrID':'private text'})
     services._fault(runner,'HOOK_LOCAL_TRANSPORT_FAILED',local_error=error)
     with storage.db_connection() as db:
         meta=json.loads(db.execute("SELECT metadata FROM local_logs WHERE event='hook_connection_fault' ORDER BY created_at DESC LIMIT 1").fetchone()[0])
@@ -343,3 +344,47 @@ def test_sqlite_failure_in_both_loops_uses_same_fault_gate(runtime, monkeypatch,
     assert services.startup_check_state()['canStart'] is False
     row = next(r for r in storage.read_logs() if r['event'] == 'hook_connection_fault')
     assert row['error_code'] == 'HOOK_LOCAL_STORAGE_FAILED'
+
+
+def test_login_shape_survives_fault_log_and_export_without_account(runtime,tmp_path):
+    from chejin_worker_client.hook_gateway import HookLocalError
+    from chejin_worker_client.diagnostic_bundle import export_bundle
+    import zipfile
+    runner,services,binding,*_=runtime;runner.binding=binding
+    error=HookLocalError('HOOK_LOGIN_IDENTITY_MISSING');error.operation='IsLoginStatus'
+    error.diagnostic_details={'account_length':11,'account_matches_rule':False,
+                              'account_present':True,'selfwxid':'private-unexported-account'}
+    services._fault(runner,error.code,local_error=error)
+    with zipfile.ZipFile(export_bundle(storage.APP_DIR,tmp_path/'result.zip')) as bundle:
+        raw=bundle.read('logs/latest_logs.json')
+        assert b'private-unexported-account' not in raw
+        logs=json.loads(raw)
+        record=next(row for row in logs if row['event']=='hook_connection_fault')
+        metadata=record['metadata']
+        if isinstance(metadata,str):metadata=json.loads(metadata)
+        assert metadata['protocol_check']=={'account_length':11,'account_matches_rule':False,'account_present':True}
+
+
+def test_history_error_survives_actual_business_loop_log_and_export(runtime,tmp_path):
+    from chejin_worker_client.shared_rules import hook_history_rules
+    from chejin_worker_client.diagnostic_bundle import export_bundle
+    import zipfile
+    runner,services,binding,*_=runtime;runner.binding=binding
+    row={'localId':'7801','MsgSvrID':'0','Type':'1','IsSender':'0','CreateTime':'1791543610',
+         'Sequence':'1','MsgSequence':'1','MsgServerSeq':'1','StrTalker':'wxid_synthetic','StrContent':'private body'}
+    scan={'catalog_fingerprint':'a'*64,'observed_at':'2026-10-21T00:00:00+00:00',
+          'databases':[{'name':'MSG0.db','generation':'b'*64,'upper_local_id':'7801',
+                        'row_count':'1','count_after':'1','pages':[[row]]}]}
+    def tick(*args):
+        runner.stop_event.set()
+        hook_history_rules.validate_scan(scan,'wxid_synthetic',1791543600)
+    services.dispatcher=SimpleNamespace(tick=tick,interval_seconds=0)
+    services.business_loop(runner,lambda _:None)
+    with zipfile.ZipFile(export_bundle(storage.APP_DIR,tmp_path/'history.zip')) as bundle:
+        logs=json.loads(bundle.read('logs/latest_logs.json'))
+        record=next(row for row in logs if row['event']=='hook_connection_fault')
+        meta=record['metadata']
+        if isinstance(meta,str):meta=json.loads(meta)
+        assert record['error_code']=='HOOK_HISTORY_MESSAGE_ID_UNRESOLVED'
+        assert meta['protocol_check']=={'identity_failure':'zero_id_not_outgoing_text','database':'MSG0.db',
+            'localId':'7801','MsgSvrID':'0','Type':'1','IsSender':'0'}

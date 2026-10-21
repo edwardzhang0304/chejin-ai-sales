@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import math
+import re
 import sqlite3
 import threading
 from typing import Callable
@@ -23,6 +24,28 @@ from .hook_process import inspect_windows_window_geometry
 from . import storage, ui_lock
 from . import startup_check_state
 from .hook_progress import emit_progress,register_progress,_deliver
+
+
+def _protocol_check(error):
+    """Only fixed shapes and numeric locators may cross the fault-log boundary."""
+    value = getattr(error, 'diagnostic_details', None)
+    if not isinstance(value, dict):
+        return {}
+    safe = {}
+    booleans = {'status_is_string', 'status_valid', 'account_present', 'account_is_string',
+                'account_has_outer_spaces', 'account_matches_rule'}
+    for key, item in value.items():
+        if key in booleans and type(item) is bool:
+            safe[key] = item
+        elif key == 'account_length' and type(item) is int and 0 <= item <= 1048576:
+            safe[key] = item
+        elif key in {'localId', 'MsgSvrID', 'Type', 'IsSender'} and isinstance(item, str) and re.fullmatch(r'0|[1-9][0-9]{0,19}', item):
+            safe[key] = item
+        elif key == 'database' and isinstance(item, str) and re.fullmatch(r'MSG[0-9]{1,9}\.db', item):
+            safe[key] = item
+        elif key == 'identity_failure' and item in ('duplicate_positive_id', 'zero_id_not_outgoing_text'):
+            safe[key] = item
+    return safe
 
 
 class HookWorkerServices:
@@ -234,6 +257,7 @@ class HookWorkerServices:
                     metadata={**dict(getattr(self.dispatcher,'diagnostic_context',{})),
                         'backend_http_status':http_status if type(http_status) is int else None,
                         'local_operation':operation,'transport_kind':kind,
+                        'protocol_check':_protocol_check(local_error),
                         'clock_check':dict(getattr(clock, 'failure_detail', None) or {})})
             except sqlite3.Error as exc:
                 from .failure_evidence import record_capture_failure
@@ -270,7 +294,7 @@ class HookWorkerServices:
                         self._wait_for_clock(code,context='business',clock_check=getattr(exc, 'clock_check', None))
                     elif code in {'HOOK_RUNTIME_NOT_RUNNING','HOOK_SEND_LATEST_CONTEXT_STALE'}:
                         self.dispatcher._report_wait(code,context='business')
-                    else:self._fault(runner,code if code.startswith('HOOK_') else 'HOOK_BUSINESS_CHECK_FAILED')
+                    else:self._fault(runner,code if code.startswith('HOOK_') else 'HOOK_BUSINESS_CHECK_FAILED',local_error=exc)
                 except sqlite3.Error as exc:
                     self._fault(runner, 'HOOK_LOCAL_STORAGE_FAILED', local_error=exc)
                 except ui_lock.UiLockError as exc:

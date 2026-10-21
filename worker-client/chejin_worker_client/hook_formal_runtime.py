@@ -93,6 +93,7 @@ class HookFormalRuntime:
         self.outbox=HookDeliveryOutbox(max_storage_bytes=32*1024*1024)
         self.history_retry_events=[]
         self._history_checkpoint=None
+        self._history_pending_contexts={}
         self._history_cycle_token=None
         self.active_flow_id=None
         from .config import CONFIG
@@ -501,7 +502,10 @@ class HookFormalRuntime:
             if has_incoming and fresh:
                 emit_progress(getattr(self,'lifecycle_runner',None),progress_context,'messages_saved','done',
                     occurred_at=getattr(self,'_incoming_occurred_at',None) or '')
-            self.progress(progress_context,'history')
+            self._progress_context=str(progress_context)  # Correlate faults even when the display stays waiting.
+            if self._history_pending_contexts.get(binding['binding_id']) != progress_context:
+                self.progress(progress_context,'history')
+                self._history_pending_contexts[binding['binding_id']]=progress_context
         # A newly arrived callback invalidates this capture, not the task. Drain
         # it and reread the complete authorized range, with a fixed retry bound.
         # None of these retries can call the physical sender or advance a cursor.
@@ -555,6 +559,7 @@ class HookFormalRuntime:
                 # Complete native coverage with an unresolved voice means the
                 # read has finished; the next actual stage is transcription.
                 read_complete=result.get('history_ready') or result.get('reason_code')=='HOOK_VOICE_PENDING'
+                if read_complete:self._history_pending_contexts.pop(binding['binding_id'],None)
                 self.progress(progress_context,'history','done' if read_complete else 'waiting',None if read_complete else 'history_wait')
             budget.save(evidence_root/'history-receipts'/f'{capture}.json',result,settlement=True)
             # Receipt/index publication follows backend admission. Pending or
@@ -581,8 +586,13 @@ class HookFormalRuntime:
         permit,outcome=RetainedNativeSendPermit.load(previous_runtime_root/'sends',
             self.credentials,original_scope,binding,metadata)
         synced=self.sync(binding,show_progress=False,reconciliation=permit)
-        if not synced['history_ready'] and synced.get('reason_code')!='HOOK_NATIVE_SEND_ACTOR_PENDING':
+        from .shared_rules import hook_history_rules
+        if not hook_history_rules.retained_send_history_ready(synced):
             raise ValueError(synced['reason_code'] or 'HOOK_HISTORY_COVERAGE_REQUIRED')
+        if synced.get('reason_code') == hook_history_rules.OUTGOING_ID_PENDING:
+            observed=self.client.observe_send(self.credentials,permit,outcome)
+            if not observed.get('settlement') and not observed.get('deadline_elapsed'):
+                raise ValueError('HOOK_SEND_CONFIRMATION_PENDING')
         settled=self.client.native_send_settle(self.credentials,permit,outcome)
         saved=self.private_root/'send-receipts'/f'{permit.reply_action_id}.json'
         if saved.exists():

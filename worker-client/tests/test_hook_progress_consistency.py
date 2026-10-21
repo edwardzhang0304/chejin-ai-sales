@@ -20,6 +20,7 @@ def evt(phase,state='current',context='customer',note=None):
 
 def rt(lab):
  result=HookFormalRuntime.__new__(HookFormalRuntime);result.scope=lab[3]
+ result._history_pending_contexts={}
  return result
 
 
@@ -242,3 +243,34 @@ def test_completed_new_customer_step_keeps_focus_instead_of_old_invitation():
  assert next(row for row in t.model() if row.get('focus'))['stepId']==before['stepId']
  t.apply(evt('voice','current','voice-parent'))
  assert next(row for row in t.model() if row.get('focus'))['title']=='语音转文字'
+
+
+def test_repeated_failed_history_checks_keep_waiting_without_transient_current(lab,tmp_path,monkeypatch):
+ from chejin_worker_client.hook_retention import HistoryArtifactBudget
+ runtime=rt(lab);events=[];timeline=HookProgressTimeline();snapshots=[]
+ def receive(event):
+  events.append(event);timeline.apply(event);snapshots.append(timeline.model())
+ runtime.lifecycle_runner=SimpleNamespace(on_runtime_process=receive)
+ runtime.private_root=tmp_path/'private';runtime.process=lab[2];runtime.gateway=lab[1]
+ runtime.active_flow_id=None
+ runtime.history_budget=HistoryArtifactBudget(runtime.private_root,maximum_bytes=1024*1024,retention_days=30)
+ runtime.heartbeat=Mock();runtime.projection=SimpleNamespace(project_next=lambda _:None)
+ runtime.clock=SimpleNamespace(now=lambda:datetime.now(timezone.utc));runtime.history_retry_events=[]
+ runtime.delivery=lambda _:SimpleNamespace()
+ binding={'binding_id':'binding','peer_wxid':PEER,'history_since_create_time':'0'}
+ persist(lab,metadata=True)
+ class FailedScan:
+  def __init__(self,*a,**kw):pass
+  def capture(self,*a,**kw):raise ValueError('HOOK_HISTORY_MESSAGE_ID_UNRESOLVED')
+ monkeypatch.setattr('chejin_worker_client.hook_formal_runtime.HookHistorySynchronizer',FailedScan)
+ with pytest.raises(ValueError):runtime.sync(binding)
+ context=runtime._history_progress_context(binding)[0]
+ runtime.progress(context,'history','waiting','interrupted')
+ expected=timeline.model();events.clear();snapshots.clear()
+ for _ in range(5):
+  runtime._progress_context='another-customer'
+  with pytest.raises(ValueError):runtime.sync(binding)
+  assert runtime._progress_context==context
+  runtime.progress(context,'history','waiting','interrupted')
+ assert snapshots and all(snapshot==expected for snapshot in snapshots)
+ assert not any(e.get('phase')=='history' and e.get('state')=='current' for e in events)
