@@ -2548,6 +2548,7 @@ def close_open_handoffs_for_human_sales(
     visible_message_orders: dict[str, int] | None = None,
     sales_screen_order: int | None = None,
     native_history_orders: dict[str, int] | None = None,
+    native_handoff_orders: dict[str, int | None] | None = None,
 ) -> dict[str, Any]:
     """Close only handoffs that predate the confirmed human sales reply."""
 
@@ -2585,6 +2586,17 @@ def close_open_handoffs_for_human_sales(
         ).strip()
         trigger_screen_order = visible_orders.get(trigger_event_id)
         native_orders = native_history_orders or {}
+        # Some verified native system notices are evidence, not chat messages.
+        # Their caller-supplied order boundary must also precede the human reply.
+        if event.id in (native_handoff_orders or {}):
+            boundary = native_handoff_orders[event.id]
+            sales_order = native_orders.get(sales_message.id)
+            if boundary is None or sales_order is None or sales_order <= boundary:
+                continue
+            if any(trigger not in native_orders or sales_order <= native_orders[trigger]
+                   for trigger in (event.trigger_message_event_ids or [])):
+                continue
+            proof_source = "native_history_sequence"
         if trigger_event_id in native_orders and sales_message.id in native_orders:
             if native_orders[sales_message.id] <= native_orders[trigger_event_id]:
                 continue
@@ -2597,7 +2609,7 @@ def close_open_handoffs_for_human_sales(
             if int(sales_screen_order) <= int(trigger_screen_order):
                 continue
             proof_source = "same_final_frame_order"
-        else:
+        elif not proof_source:
             time_evidence = (
                 sales_message.raw_payload.get("occurred_at_evidence")
                 if isinstance(sales_message.raw_payload, dict)
@@ -2733,6 +2745,12 @@ def _create_or_reuse_open_handoff(
         .with_for_update()
     )
     if existing:
+        # Reuse the notification/event, but never discard a newer restriction's
+        # trigger or evidence simply because another handoff reason came first.
+        existing.trigger_message_event_ids = list(dict.fromkeys(
+            list(existing.trigger_message_event_ids or []) + trigger_message_event_ids))
+        existing.risk_flags = list(dict.fromkeys(list(existing.risk_flags or []) + risk_flags))
+        existing.evidence_refs = list(dict.fromkeys(list(existing.evidence_refs or []) + evidence_refs))
         existing_reason = str(existing.handoff_reason_code or "").strip()
         if (
             existing_reason in RECOVERABLE_C2_HANDOFF_REASON_CODES
@@ -2740,19 +2758,7 @@ def _create_or_reuse_open_handoff(
         ):
             existing.handoff_reason_code = handoff_reason_code
             existing.reason_detail = reason_detail
-            existing.trigger_message_event_ids = list(
-                dict.fromkeys(
-                    list(existing.trigger_message_event_ids or [])
-                    + trigger_message_event_ids
-                )
-            )
-            existing.risk_flags = list(
-                dict.fromkeys(list(existing.risk_flags or []) + risk_flags)
-            )
-            existing.evidence_refs = list(
-                dict.fromkeys(list(existing.evidence_refs or []) + evidence_refs)
-            )
-            existing.ai_payload = ai_payload
+            existing.ai_payload = {**(existing.ai_payload or {}), **ai_payload}
         if conversation.status not in {"closed", "rejected"}:
             conversation.status = "waiting_sales_reply"
         return existing, False

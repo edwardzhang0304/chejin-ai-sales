@@ -25,6 +25,18 @@ def is_friend_acceptance_notice(row):
     return text == FRIEND_ACCEPTANCE_NOTICE
 
 
+def is_friend_verification_required_notice(row):
+    """Only WeChat's incoming system template, never quoted customer text."""
+    if row['Type'] != '10000' or row['IsSender'] != '0' or not isinstance(row['StrContent'], str):
+        return False
+    return re.fullmatch(
+        r'[^<>\r\n]{1,128}开启了朋友验证，你还不是他（她）(?:的)?朋友。'
+        r'请先发送朋友验证请求，对方验证通过后，才能聊天。'
+        r'(?:<a href="[^"<>\r\n]{1,512}">发送朋友验证</a>)?',
+        row['StrContent'].strip(),
+    ) is not None
+
+
 def is_hash(value):
     return isinstance(value,str) and re.fullmatch(r'[a-f0-9]{64}',value) is not None
 
@@ -175,4 +187,5 @@ def validate_coverage(payload, peer, since):
         excluded.append(item['native_msg_id'])
     return {'rows':second,'text_rows':semantic,'media_rows':media,'semantic_rows':all_semantic,'ready':ready,'reason_code':reason,
             'catalog_fingerprint':scans[1]['catalog_fingerprint'],'observed_at':scans[1]['observed_at'],
+            'friend_verification_notices':[r for r in second if is_friend_verification_required_notice(r)],
             'excluded_native_ids':excluded,'revoked_native_ids':revoked_ids,'system_notice_native_ids':notice_ids,'quote_links':quote_links}

@@ -171,6 +171,11 @@ def reconcile_native(db,worker,instance,action_id,payload,flow,token):
     # Flush the validated coverage restoration and actor proof before that refresh.
     db.flush()
     result=c3_service.sent_ack(db,reply_action_id=action.id,payload=report,native_verified=True)
+    # Settling a local send does not remove a customer-level handoff (e.g.
+    # WeChat requires friend verification). The original ACK remains immutable.
+    conversation=c3_service._conversation_for_binding(db,binding)
+    if c3_service.enforce_open_handoff_gate(db,conversation):
+        conversation.next_recall_at=None
     from fastapi.encoders import jsonable_encoder
     result=jsonable_encoder({**result,'native_msg_id':report.evidence['native_msg_id'],'local_send_observed':confirmed,
         'recipient_delivery_confirmed':False,'automatic_resend_allowed':False})

@@ -1,4 +1,7 @@
 @startuml main
+' r4 2026-10-21：后续需求已核对，状态以产品文档7.1—7.3为准。
+' CRM与Hook图片AI回复仅登记，当前流程仍是图片转人工；未新增业务分支。
+' 多机维护/跨版本兼容/漏答补偿只具备部分基础，不在本图宣称全部完成。
 !pragma layout smetana
 skinparam defaultFontName "PingFang SC"
 skinparam defaultFontSize 14
@@ -11,7 +14,7 @@ skinparam activityDiamondBorderColor #58718C
 skinparam ArrowColor #58718C
 skinparam noteBackgroundColor #FFF4D9
 skinparam noteBorderColor #CDA556
-title 车金 0.10.7 · 完整业务主流程（r3，2026-10-19）
+title 车金 0.10.7 · 完整业务主流程（r4，2026-10-21）
 start
 :管理员交付前安装指定微信与 DLL
 按盒子配置路径/端口/回调，首次激活
@@ -104,6 +107,12 @@ ID 不当序号，缺页/冲突不猜顺序;
         :同客户转人工、取消未发 AI/召回
 原事件通知销售一次；不调用 Vision;
       case (己方/人工/系统/其他)
+        :可信好友验证系统提示仅该客户转人工
+保存提示身份/顺序，原飞书通知去重
+既有图片/超时交接合入新条件与证据
+后续可靠人工按统一入口结清，客户新消息恢复组批
+旧人工/AI回显/单独好友通过不解除已建交接
+原未知发送仍单独核对，不补发、不清凭证;
         :原发送日志＋正文＋时间＋新增历史关联
 唯一 AI 回显只结算；可靠人工使旧稿失效
 按原生顺序结清原交接，不等待旧语音成功

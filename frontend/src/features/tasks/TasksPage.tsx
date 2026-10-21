@@ -68,6 +68,7 @@ const reasonCodeMeta: Record<string, string> = {
   WECHAT_WINDOW_NOT_FOUND: "微信窗口未找到",
   OPERATION_TOO_FREQUENT: "微信操作过于频繁",
   WORKER_INTERRUPTED: "Worker 执行中断",
+  HOOK_FRIEND_VERIFICATION_REQUIRED: "微信需要好友验证，已转销售人工处理",
   SEND_RESULT_UNKNOWN: "发送结果未知",
   SEND_ACK_TIMEOUT: "发送结果确认超时，已转销售接管",
   RPA_SEND_REPLY_FAILED: "回复发送失败",

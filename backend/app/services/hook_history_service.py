@@ -39,7 +39,7 @@ def ordered_messages(db,binding):
     return [rows[mid] for mid in ids]
 
 
-def _apply_history_actors(db, binding, conv, rows, ctx):
+def _apply_history_actors(db, binding, conv, rows, ctx, checked):
     """Apply verified sender/order facts independently of media transcription.
 
     The caller must have complete ordered history and no unresolved send actor.
@@ -47,7 +47,10 @@ def _apply_history_actors(db, binding, conv, rows, ctx):
     """
     from app.services import c3_service
     applied=set(ctx.get('actor_applied_message_ids',[]))
-    native_orders={m.id:i for i,m in enumerate(rows)}
+    from app.services.hook_customer_notice_service import handoff_history_orders
+    positions={r['MsgSvrID']:int(r['Sequence']) for r in checked['semantic_rows']}
+    native_orders={m.id:positions[(m.raw_payload or {})['native_msg_id']] for m in rows}
+    handoff_orders=handoff_history_orders(db,binding,checked,ctx)
     for message in rows:
         if message.id in applied:continue
         at=c3_service._aware_datetime(message.occurred_at)
@@ -60,7 +63,8 @@ def _apply_history_actors(db, binding, conv, rows, ctx):
             if raw.get('sender_source') in {'unresolved','human'}:
                 raw['sender_source']='human';message.raw_payload=raw
                 resolution=c3_service.close_open_handoffs_for_human_sales(db,
-                    conversation_id=binding.conversation_id,sales_message=message,native_history_orders=native_orders)
+                    conversation_id=binding.conversation_id,sales_message=message,native_history_orders=native_orders,
+                    native_handoff_orders=handoff_orders)
                 if resolution['remaining_open_count']:
                     conv.status='waiting_sales_reply'
                 else:
@@ -274,7 +278,7 @@ def accept_coverage(db,authenticated,instance,payload):
     if facts_ready and reconciliation is None:
         conv=db.get(Conversation,binding.conversation_id)
         if conv and conv.status not in {'closed','rejected'}:
-            _apply_history_actors(db,binding,conv,rows,ctx)
+            _apply_history_actors(db,binding,conv,rows,ctx,checked)
     covered=human_covered_voice_ids(db,binding,verified_rows=rows) if facts_ready else set()
     if any(m.sender_role=='customer' and m.message_type=='voice'
             and m.item_state not in {'completed','failed'} and m.id not in covered for m in rows):
@@ -290,6 +294,11 @@ def accept_coverage(db,authenticated,instance,payload):
         conversation_id=binding.conversation_id, stage_name='hook.history_verified',
         component='backend', stable_key=payload.capture_id, trace_id=payload.capture_id,
     )
+    # Customer business restrictions do not become Worker connection faults.
+    # Keep any original send pending until its separate history settlement.
+    if checked['ready'] and reason in {None, 'HOOK_NATIVE_SEND_ACTOR_PENDING'}:
+        from app.services.hook_customer_notice_service import apply_friend_verification_notice
+        apply_friend_verification_notice(db, binding, checked, receipt, ctx)
     batch=None
     if ready and reconciliation is None:
         conv=db.get(Conversation,binding.conversation_id)
