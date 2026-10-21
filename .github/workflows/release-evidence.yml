@@ -402,7 +402,7 @@ jobs:
   windows-parser:
     name: ${{ inputs.check_kind == 'driver-smoke' && 'Windows GUI driver diagnostic only' || 'Windows build script parser' }}
     if: github.event_name == 'push' || inputs.check_kind == 'tooling' || inputs.check_kind == 'driver-smoke'
-    runs-on: windows-latest
+    runs-on: ${{ inputs.check_kind == 'driver-smoke' && 'windows-2022' || 'windows-latest' }}
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
