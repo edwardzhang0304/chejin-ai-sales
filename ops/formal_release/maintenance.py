@@ -8,6 +8,10 @@ SITE = Path('/etc/nginx/sites-enabled/jiangsuchejin.com.conf')
 BLOCK_PATTERN = r'^/api/(tasks/[^/]+/claim|workers/[^/]+/(run-status|inflight-flow/start|wechat/native-replies/[^/]+/(claim|begin))|reply-actions/[^/]+/claim-send)(/|$)'
 BLOCK = 'if ($uri ~ "' + BLOCK_PATTERN + '") { return 503 \'{"code":"RELEASE_MAINTENANCE","message":"发布维护中，暂不领取新任务，请稍后重试。","data":{"retryable":true}}\'; }\n'
 INCLUDE = '    include /etc/nginx/snippets/chejin-release-maintenance.conf;\n'
+# Reviewed existing webhook-only vhost. Pin bytes, not a permissive name/route
+# pattern: any ingress configuration change requires a separate review.
+WEBHOOK_INGRESS = ('feiyu.jiangsuchejin.com.conf',
+                   'a6d42f27ebbeca790b9677a6df023e05c3419d9c362fa730e55a9df98b066a7b')
 
 def blocked_path(path):
     import re
@@ -27,6 +31,9 @@ def validate_ingress():
     assert state['HostConfig']['PortBindings']=={'8000/tcp':[{'HostIp':'127.0.0.1','HostPort':'8000'}]},'BACKEND_INGRESS_NOT_LOCAL_ONLY'
     for p in SITE.parent.iterdir():
         if p.resolve()==SITE.resolve():continue
+        if p.name==WEBHOOK_INGRESS[0]:
+            assert hashlib.sha256(p.read_bytes()).hexdigest()==WEBHOOK_INGRESS[1], 'WEBHOOK_INGRESS_CHANGED'
+            continue
         s=p.read_text()
         # The existing download vhost permits artifacts only and explicitly denies other API paths.
         assert p.name=='update.jiangsuchejin.com.conf' and 'location ^~ /api/client-releases/artifacts/' in s and re.search(r'location\s+\^~\s+/api/\s*\{\s*return\s+(403|404);\s*\}', s),'UNREVIEWED_API_INGRESS'

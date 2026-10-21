@@ -72,3 +72,28 @@ class MaintenanceFailureTests(unittest.TestCase):
     self.assertEqual(snippet.read_text(),maintenance.BLOCK)
     self.assertFalse((root/'maintenance-disable.json').exists())
     self.assertEqual(sum(c.args[0]==['systemctl','reload','nginx'] for c in run.call_args_list),2)
+
+class ReviewedWebhookIngressTests(unittest.TestCase):
+ def test_exact_profile_only_no_bypass(self):
+  import json,tempfile
+  from unittest.mock import patch
+  import maintenance
+  original=(Path(__file__).parent/'fixtures/feiyu-ingress.conf').read_text()
+  state=[{'HostConfig':{'PortBindings':{'8000/tcp':[{'HostIp':'127.0.0.1','HostPort':'8000'}]}}}]
+  with tempfile.TemporaryDirectory() as temp:
+   root=Path(temp);main=root/'main.conf';main.write_text('server {}')
+   webhook=root/maintenance.WEBHOOK_INGRESS[0];webhook.write_text(original)
+   with patch.object(maintenance,'SITE',main),patch.object(maintenance.subprocess,'check_output',return_value=json.dumps(state).encode()):
+    maintenance.validate_ingress()
+    variants=[original.replace('location = /webhooks/feiyu/clue','location /api/'),
+      original+'\nlocation /bypass { proxy_pass http://127.0.0.1:8000; }\n',
+      original+'\ninclude /tmp/extra.conf;\n',
+      original.replace('proxy_pass http://127.0.0.1:8000;', 'rewrite ^ /api/tasks/x/claim break; proxy_pass http://127.0.0.1:8000;'),
+      original.replace('http://127.0.0.1:8000','http://127.0.0.1:9000'),
+      original.replace('return 404;', 'proxy_pass http://127.0.0.1:8000;')]
+    for index,changed in enumerate(variants):
+     with self.subTest(change=index):
+      webhook.write_text(changed)
+      with self.assertRaisesRegex(AssertionError,'WEBHOOK_INGRESS_CHANGED'):maintenance.validate_ingress()
+    webhook.write_text(original);webhook.rename(root/'unreviewed.conf')
+    with self.assertRaisesRegex(AssertionError,'UNREVIEWED_API_INGRESS'):maintenance.validate_ingress()
