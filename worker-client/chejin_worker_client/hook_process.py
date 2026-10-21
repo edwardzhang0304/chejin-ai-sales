@@ -253,3 +253,19 @@ def _approved_window_geometry(process, live, gui, processes, user32):
             'right': right, 'bottom': bottom, 'width': right-left, 'height': bottom-top}}
     finally:
         dpi(ctypes.c_void_p(previous))
+
+
+def inspect_windows_generation_exited(generation: str) -> bool:
+    """A changed current PID alone is not proof that the original process died."""
+    if sys.platform!='win32':raise HookProcessError('HOOK_PROCESS_EXIT_CHECK_UNAVAILABLE')
+    import psutil
+    try:
+        for pid in _wechat_process_ids():
+            try:
+                process=psutil.Process(pid)
+                if process_generation(pid,process.create_time(),process.exe())==generation:return False
+            except psutil.NoSuchProcess:
+                continue
+        return True
+    except (psutil.Error, OSError):
+        raise HookProcessError('HOOK_PROCESS_EXIT_UNCONFIRMED') from None

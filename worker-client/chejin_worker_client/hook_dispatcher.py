@@ -212,6 +212,27 @@ class HookBusinessDispatcher:
         self._initial_read_finished=True
         emit_progress(runner,'startup_reconciliation','sync_finished','done')
 
+    def _recover_voice_attempts(self,bindings):
+        from .hook_process import inspect_windows_generation_exited
+        rt=self.runtime
+        for binding in bindings:
+            for job in binding.get('voice_jobs',[]):
+                saved=self.voice.saved_parent(rt.scope,binding['peer_wxid'],job['native_msg_id'])
+                if not saved:continue
+                result=self.voice.recover_interrupted(rt.scope,binding['peer_wxid'],job['native_msg_id'],
+                    generation_exited=inspect_windows_generation_exited)
+                if result['state'] not in {'transcribed','failed','uncertain'}:
+                    raise ValueError('HOOK_VOICE_RESULT_UNCONFIRMED')
+                receipt=self.client.voice_result(rt.credentials,rt.account,binding,result)
+                path=self.private_root/'voice-receipts'/rt.scope.self_wxid/rt.scope.account_epoch/f"{job['native_msg_id']}.json"
+                value={'attempt_digest':rules.digest(result),'receipt':receipt}
+                if path.exists():
+                    if rules.loads(path.read_bytes())!=value:raise ValueError('HOOK_VOICE_RECEIPT_CONFLICT')
+                else:_save(path,value)
+                self._sync_cache.pop((rt.scope.process_generation,binding['binding_id'],binding['binding_revision']),None)
+                return True
+        return False
+
     def _adopt_flow(self,runner,inventory):
         rt=self.runtime;flow=inventory['inflight_flow'];local=storage.load_runtime_control().get('inflight_flow_id')
         if flow.get('flow_id'):
@@ -229,7 +250,17 @@ class HookBusinessDispatcher:
                 publish_current_task(runner,Task.from_api(task))
         elif local:
             if inventory.get('retained_flow_terminal') is not True:
-                raise ValueError('HOOK_RETAINED_FLOW_UNCONFIRMED')
+                from .hook_recovery import reconcile
+                path=self.private_root/'flows'/f'{local}.json'
+                if not path.exists():raise ValueError('HOOK_RETAINED_FLOW_INTENT_MISSING')
+                intent=rules.loads(path.read_bytes())
+                if intent.get('flow_id')!=local:raise ValueError('HOOK_RETAINED_FLOW_CONFLICT')
+                result=reconcile(rt,'flow_start',{'task_id':local,'flow_id':local,
+                    'flow_kind':intent['flow_kind'],'conversation_id':intent.get('conversation_id')},evidence=intent)
+                if result['status']=='registered':
+                    # A registration crossed the inventory read. Refetch the
+                    # authoritative inventory; this result grants no action.
+                    raise ValueError('HOOK_RETAINED_FLOW_UNCONFIRMED')
             clear_confirmed_add_friend_receipt(local,rt.credentials.worker_id,rt.credentials.client_instance_id)
             storage.finish_runtime_flow(local)
             rt.active_flow_id=rt.active_task_id=None
@@ -252,9 +283,22 @@ class HookBusinessDispatcher:
             try:
                 original=rules.loads((root/'permit.json').read_bytes())
             except FileNotFoundError:
-                # A committed claim may have lost its response. No original
-                # permit means no authority to settle or repeat the action.
-                raise ValueError('HOOK_RETAINED_SEND_PERMIT_MISSING') from None
+                # Missing local authority cannot authorize a send. Ask the
+                # server to close only the original, never-begun claim.
+                if metadata.get('physical_begin_registered') is not False:
+                    raise ValueError('HOOK_RETAINED_SEND_PERMIT_MISSING') from None
+                if any((root/name).exists() for name in ('intent.json','outcome.json','not-triggered.json')):
+                    raise ValueError('HOOK_RETAINED_SEND_PERMIT_MISSING') from None
+                from .hook_recovery import reconcile
+                result=reconcile(rt,'send_claim',{'task_id':metadata['task_id'],'flow_id':metadata['flow_id'],
+                    'flow_kind':'chat_reply','conversation_id':binding['conversation_id'],
+                    'reply_action_id':metadata['reply_action_id'],
+                    'original_process_generation':metadata['original_process_generation'],
+                    'lease_fencing_token':metadata['lease_fencing_token']},
+                    evidence={'permit_missing':True,'trigger_missing':True})
+                rt._finish_note='not_sent';rt._send_result_pending=False
+                emit_progress(getattr(self,'_progress_runner',None),metadata['task_id'],'send_confirm','done','not_sent')
+                return True
             if (original.get('reply_action_id')!=metadata['reply_action_id'] or original.get('task_id')!=metadata['task_id']
                     or original.get('self_wxid')!=rt.scope.self_wxid or original.get('account_epoch')!=rt.scope.account_epoch
                     or original.get('process_generation')!=metadata['original_process_generation']
@@ -399,6 +443,7 @@ class HookBusinessDispatcher:
             if not more or inventory['run_status']=='faulted':
                 rt.finish(current['id'],rt.active_flow_id,current['lease_fencing_token'],inventory['inflight_flow'].get('conversation_id'))
                 runner.api.inflight_flow_id=None;publish_current_task(runner,None);return
+        if self._recover_voice_attempts(inventory['bindings']):return
         if inventory['run_status']=='faulted' or runner.binding.run_status=='faulted':return
         if not services.startup_window_ready_for(prepared):
             self._report_wait('HOOK_STARTUP_WINDOW_PENDING');return

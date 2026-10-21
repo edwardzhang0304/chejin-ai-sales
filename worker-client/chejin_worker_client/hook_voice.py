@@ -169,6 +169,27 @@ class HookVoiceTranscriber:
             if row['peer_wxid']!=peer:raise ValueError('HOOK_VOICE_PARENT_IDENTITY_CONFLICT')
             return dict(row)
 
+    def recover_interrupted(self, scope, peer, native_id, *, generation_exited):
+        saved=self.saved_parent(scope,peer,native_id)
+        if saved is None or saved['state']!='transcribing':return saved
+        if (saved['process_generation']==scope.process_generation
+                or generation_exited(saved['process_generation']) is not True):
+            raise HookLocalError('HOOK_VOICE_ORIGINAL_PROCESS_NOT_EXITED')
+        with storage.db_connection() as conn:
+            conn.execute('BEGIN IMMEDIATE')
+            conn.execute('CREATE TABLE IF NOT EXISTS hook_voice_interruptions (attempt_digest TEXT PRIMARY KEY, result_json TEXT NOT NULL)')
+            current=conn.execute('SELECT * FROM hook_voice_attempts WHERE self_wxid=? AND account_epoch=? AND native_msg_id=?',
+                (scope.self_wxid,scope.account_epoch,native_id)).fetchone()
+            if dict(current)!=saved:raise ValueError('HOOK_VOICE_ATTEMPT_EVIDENCE_CONFLICT')
+            digest=rules.digest(saved)
+            prior=conn.execute('SELECT result_json FROM hook_voice_interruptions WHERE attempt_digest=?',(digest,)).fetchone()
+            if prior:return rules.loads(prior['result_json'].encode())
+            result={**saved,'state':'uncertain','completed_at':utc_now_iso(),
+                'response_sha256':None,'text':None,'error_code':'HOOK_VOICE_CALL_INTERRUPTED'}
+            conn.execute('INSERT INTO hook_voice_interruptions VALUES (?,?)',(digest,rules.canonical(result)))
+            conn.commit()
+            return result
+
     def _reserve(self,audio):
         with storage.db_connection() as conn:
             conn.execute('BEGIN IMMEDIATE')

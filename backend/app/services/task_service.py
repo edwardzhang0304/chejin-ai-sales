@@ -1310,6 +1310,8 @@ def add_evidence(
     remark: str | None,
     metadata: dict[str, Any] | None,
 ) -> dict[str, Any]:
+    if evidence_type == 'hook_recovery_terminal':
+        raise AppError('HOOK_RECOVERY_PROOF_ROUTE_REQUIRED', '恢复终态证据只能由原任务核验接口生成', 409)
     if evidence_type in {'hook_invite_preparation', 'hook_invite_submission'}:
         raise AppError('HOOK_INVITE_PROOF_ROUTE_REQUIRED', '正式申请证据必须通过任务专用接口校验', 409)
     task = get_task_or_404(db, task_id)

@@ -121,3 +121,16 @@ class HookNativeNoTrigger(HookAccountAction):
     send_token: str = Field(min_length=1,max_length=128)
     proof: dict
     proof_digest: str = Field(pattern=r'^[a-f0-9]{64}$')
+
+
+class HookRecoveryRequest(HookAccountAction):
+    """Terminal reconciliation only; never a new work/send permission."""
+    kind: Literal['flow_start', 'send_claim']
+    task_id: str = Field(min_length=36, max_length=36)
+    flow_id: str = Field(min_length=36, max_length=36)
+    flow_kind: Literal['task', 'chat_reply']
+    conversation_id: str | None = Field(default=None, min_length=36, max_length=36)
+    reply_action_id: str | None = Field(default=None, min_length=36, max_length=36)
+    original_process_generation: str | None = Field(default=None, min_length=1, max_length=128)
+    lease_fencing_token: int | None = Field(default=None, ge=1)
+    evidence_digest: str = Field(pattern=r'^[a-f0-9]{64}$')

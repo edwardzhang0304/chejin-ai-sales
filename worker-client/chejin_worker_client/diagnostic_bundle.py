@@ -29,7 +29,7 @@ MAX_ROWS = 1000
 MAX_SECONDS = 45
 TABLES = (
     "local_logs", "hook_raw_inbox", "hook_observation_projection",
-    "hook_delivery_outbox", "hook_voice_attempts", "hook_active_calls",
+    "hook_delivery_outbox", "hook_voice_attempts", "hook_voice_interruptions", "hook_active_calls",
     "hook_history_pages", "hook_retired_observations", "hook_retired_deliveries",
     "c2_runtime_state", "c2_message_ledger", "c2_ingest_outbox",
     "c2_action_journal", "reply_send_ack_outbox",
@@ -404,6 +404,15 @@ class Collector:
                 db.close()
         except (OSError, sqlite3.Error, ValueError):
             self.record("priority_recovery/runtime_control", "read_failed", reason="current_flow_unavailable")
+        # Lost acknowledgements may have no sends/intent.json at all. Keep
+        # their independent original request before optional historical files.
+        for path, request in records(hook / 'recovery', 'request.json'):
+            if request.get('flow_id') in flows or not self.source_allowed(path.parent / 'receipt.json'):
+                collect(path)
+                collect(path.parent / 'receipt.json')
+                flow = request.get('flow_id')
+                if isinstance(flow, str) and Path(flow).name == flow and flow not in {'.', '..'}:
+                    collect(hook / 'flows' / (flow + '.json'))
         actions = set()
         for path, intent in records(hook / "sends", "intent.json"):
             action = intent.get("reply_action_id")

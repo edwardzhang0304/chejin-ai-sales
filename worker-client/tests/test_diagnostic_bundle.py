@@ -538,3 +538,14 @@ def test_priority_recovery_index_cannot_escape_source_boundary(tmp_path):
     omissions=json.loads(entries['evidence-index/export.json'])['omissions']
     assert any(e['reason']=='invalid_index_reference' for e in omissions)
     assert any(e['reason']=='source_boundary' for e in omissions)
+
+
+def test_lost_ack_without_send_intent_keeps_recovery_request_before_optional_flood(tmp_path):
+    root=seed(tmp_path/'home')
+    write(root,'transactions/hook/flows/unregistered-flow.json',{'flow_id':'unregistered-flow','flow_kind':'task'})
+    write(root,'transactions/hook/recovery/flow_start/unregistered-flow/request.json',
+        {'kind':'flow_start','flow_id':'unregistered-flow','task_id':'unregistered-flow'})
+    for i in range(450):write(root,f'transactions/hook/flows/old-{i}.json',{'flow_id':f'old-{i}'})
+    entries=read_zip(export_bundle(root,tmp_path/'result.zip'))
+    assert 'receipts/hook/flows/unregistered-flow.json' in entries
+    assert 'receipts/hook/recovery/flow_start/unregistered-flow/request.json' in entries

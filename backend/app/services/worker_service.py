@@ -445,6 +445,10 @@ def start_inflight_flow(
     if task_owner_check is not None:
         require_task_owner(db, task_owner_check, worker.id, allow_started=True)
     worker = _lock_worker(db, worker.id)
+    from app.models.task import TaskEvidence
+    if db.scalar(select(TaskEvidence.id).where(TaskEvidence.task_id==payload.flow_id,
+            TaskEvidence.worker_id==worker.id,TaskEvidence.evidence_type=='hook_recovery_terminal')):
+        raise AppError('WORKER_NEW_FLOW_NOT_ALLOWED','原流程已经恢复结算，不能重新登记',409)
     if worker.run_status != "running":
         raise AppError("WORKER_NOT_ACCEPTING_TASKS", "Worker 已暂停，不能开始新流程", 409)
     if payload.flow_kind not in INFLIGHT_FLOW_KINDS:

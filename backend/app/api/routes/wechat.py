@@ -733,3 +733,17 @@ def settle_native_not_triggered(worker_id: str,action_id: str,payload: HookNativ
         result=settle_no_trigger(db,worker,x_client_instance_id,action_id,payload,x_inflight_flow_id,x_task_lease_fencing_token)
         db.commit();return ok(result)
     except Exception:db.rollback();raise
+
+
+from app.schemas.hook_business import HookRecoveryRequest
+
+@router.post('/workers/{worker_id}/wechat/native-recovery')
+def recover_native_ack(worker_id: str, payload: HookRecoveryRequest, db: Session=Depends(get_db),
+        worker_token: str|None=Header(None,alias='X-Worker-Token'),
+        instance: str|None=Header(None,alias='X-Client-Instance-Id')):
+    from app.services.hook_recovery_service import reconcile
+    try:
+        worker=worker_service.authenticate_worker_client(db,worker_id,worker_token,instance)
+        result=reconcile(db,worker,instance,payload)
+        db.commit();return ok(result)
+    except Exception:db.rollback();raise
