@@ -5,10 +5,10 @@ from maintenance import blocked_path
 from build_admin import validate_api,validate_browser_receipt
 class EnvironmentTests(unittest.TestCase):
  def test_grant_routes_and_encoded_paths_blocked(self):
-  for path in ['/api/tasks/x/claim','/api/tasks/x/claim/','/api/workers/x/run-status','/api/workers/x/inflight-flow/start','/api/reply-actions/x/claim-send','/api/tasks/x/%63laim?x=1','/api/tasks/x/a/../claim']:
+  for path in ['/api/tasks/x/claim','/api/tasks/x/claim/','/api/workers/x/run-status','/api/workers/x/inflight-flow/start','/api/reply-actions/x/claim-send','/api/tasks/x/%63laim?x=1','/api/tasks/x/a/../claim','/api/workers/x/wechat/native-replies/y/claim','/api/workers/x/wechat/native-replies/y/begin','/api/workers/x/wechat/native-replies/y/%62egin/']:
    with self.subTest(path=path):self.assertTrue(blocked_path(path))
  def test_receipts_and_login_unaffected(self):
-  for path in ['/api/tasks/x/step','/api/tasks/x/lease/renew','/api/workers/x/inflight-flow/finish','/api/auth/login','/api/client-releases/latest']:
+  for path in ['/api/tasks/x/step','/api/tasks/x/lease/renew','/api/workers/x/inflight-flow/finish','/api/auth/login','/api/client-releases/latest','/api/workers/x/wechat/native-replies/y/observe','/api/workers/x/wechat/native-replies/y/settle','/api/workers/x/wechat/native-replies/y/not-triggered','/api/workers/x/wechat/native-work']:
    self.assertFalse(blocked_path(path))
  def test_production_config_is_explicit(self):
   validate_api('production','/api')
@@ -45,6 +45,20 @@ class PublicationApprovalTests(unittest.TestCase):
     with self.assertRaises(ValueError):receiver.require_publication_approval(root,meta)
 
 class MaintenanceFailureTests(unittest.TestCase):
+ def test_same_entry_enables_checks_and_disables_global_fence(self):
+  import json,tempfile
+  from unittest.mock import patch
+  import maintenance
+  with tempfile.TemporaryDirectory() as temp:
+   root=Path(temp);snippet=root/'snippet';site=root/'site'
+   site.write_text('server {\n    location = /api {\n    }\n}\n')
+   (root/'release-approved.json').write_text(json.dumps({'backend_ready':True,'admin_browser_gate':'passed','workers_safe':True,'admin_candidate':{},'admin_browser_receipt':{}}))
+   with patch.object(maintenance,'SNIPPET',snippet),patch.object(maintenance,'SITE',site),patch.object(maintenance,'validate_ingress'),patch('build_admin.validate_browser_receipt'),patch.object(maintenance,'old_workers',return_value=set()),patch.object(maintenance.subprocess,'run'):
+    for operation in ('enable','status','disable'):
+     with patch.object(sys,'argv',['maintenance.py',operation,'--evidence-dir',str(root)]):maintenance.main()
+     self.assertEqual(snippet.read_text(), '# release maintenance inactive\n' if operation=='disable' else maintenance.BLOCK)
+   self.assertEqual(site.read_text().count(maintenance.INCLUDE),1)
+   self.assertNotIn('RECOVERY_DEVICE',maintenance.BLOCK)
  def test_failed_unfreeze_restores_persistent_fence(self):
   import json,tempfile
   from unittest.mock import patch

@@ -3,20 +3,31 @@
 UI/OCR replay and model mode are explicitly simulated. No live WeChat action.
 """
 from types import SimpleNamespace
-import json,sqlite3,time,uuid
+import json,sqlite3,time,uuid,os
 import pytest
 from sqlalchemy import select
 from app.core.database import SessionLocal
 from app.models.task import Task
 from app.models.wechat import MessageEvent
-from test_hook_business_http import clean,claimed,post
+from test_hook_business_http import claimed,post
+import test_hook_business_http
 from test_hook_account_client import identity_client
 from test_hook_gateway import lab
 from test_hook_formal_runtime import drive_reply
+from maintenance_recovery_fixture import maintenance_proxy, require_disposable_postgres
 from chejin_worker_client.hook_backend import HookWorkerCredentials
 from chejin_worker_client.hook_formal_client import HookFormalClient
 from chejin_worker_client.hook_formal_runtime import HookFormalRuntime
 from apps.wechat_ai_customer_service.tests.test_hook_c1_flow import ReplayUI
+
+
+@pytest.fixture(autouse=True)
+def clean(request):
+    from app.core.database import engine
+    if request.node.callspec.params.get('mode') == 'maintenance_recovery' and engine.dialect.name == 'postgresql':
+        require_disposable_postgres(engine)
+    else:
+        test_hook_business_http.clean.__wrapped__()
 
 
 @pytest.fixture
@@ -43,11 +54,18 @@ def connection_factory(identity_client, lab):
     for manager in managers: manager.close()
 
 
-@pytest.mark.parametrize('mode',['single_callback','retained_send','capacity_reconcile','paused_dispatcher'])
-def test_callback_during_post_send_scan_and_retained_settlement(identity_client,lab,tmp_path,monkeypatch,mode,connection_factory):
+@pytest.mark.parametrize('mode',['single_callback','retained_send','capacity_reconcile','paused_dispatcher',
+    pytest.param('maintenance_recovery',marks=pytest.mark.skipif(
+        os.environ.get('CHEJIN_RUN_MAINTENANCE_PROXY_TEST')!='1',
+        reason='Explicit isolated Docker/Nginx release acceptance only'))])
+def test_callback_during_post_send_scan_and_retained_settlement(identity_client,lab,tmp_path,monkeypatch,mode,connection_factory,maintenance_proxy):
     segments=1
     server,gateway,process,scope,*_=lab
-    w,t,account=claimed(process_generation=process.generation,pending=True)
+    if mode=='maintenance_recovery':
+        from test_hook_history_business_http import bound
+        w,t,account,binding=bound()
+    else:
+        w,t,account=claimed(process_generation=process.generation,pending=True)
     manager,credentials,prepared=connection_factory(w)
     runtime=HookFormalRuntime(HookFormalClient(identity_client.base_url,5),
         credentials,gateway,prepared,tmp_path/'coordinator')
@@ -65,9 +83,12 @@ def test_callback_during_post_send_scan_and_retained_settlement(identity_client,
                     for row in frame.rows:row['text']=row['text'].replace('13800000003',prep['primary_phone'])
                 return frame
         ui=ClipboardReplay();uis.append(ui);return ui
-    outcome=runtime.invite(t,factory)
-    assert outcome['settlement']['task']['result_code']=='invite_sent'
-    code=outcome['preparation']['remark_code']
+    if mode=='maintenance_recovery':
+        code=t['remark_code']
+    else:
+        outcome=runtime.invite(t,factory)
+        assert outcome['settlement']['task']['result_code']=='invite_sent'
+        code=outcome['preparation']['remark_code']
     table=sqlite3.connect(':memory:',check_same_thread=False);table.row_factory=sqlite3.Row
     table.execute('CREATE TABLE MSG(localId INTEGER PRIMARY KEY,MsgSvrID TEXT,Type INTEGER,IsSender INTEGER,CreateTime INTEGER,Sequence INTEGER,MsgServerSeq INTEGER,MsgSequence INTEGER,StrTalker TEXT,StrContent TEXT)')
     server.catalog_entries=[{'dbpath':r'C:\WeChat Files\wxid_sales_A\Msg\Multi\MSG0.db','dbhandle':'runtime-test-handle'}]
@@ -80,7 +101,12 @@ def test_callback_during_post_send_scan_and_retained_settlement(identity_client,
             table.execute('INSERT INTO MSG VALUES(?,?,?,?,?,?,?,?,?,?)',(seq,str(8000000000000000000+seq),1,1,created,created*1000+seq,0,seq,'wxid_customer_A',text))
             server.raw_override=b'{"SendTextMsg":"1"}'
     server.on_request=on_request
-    binding=runtime.discover(t['id'])
+    if mode=='maintenance_recovery':
+        while int(time.time())<=int(binding['history_since_create_time']):time.sleep(.02)
+        now=int(time.time())
+        table.execute('INSERT INTO MSG VALUES(?,?,?,?,?,?,?,?,?,?)',(1,'8000000000000000001',1,0,now,now*1000+1,0,1,binding['peer_wxid'],'想了解二手车，暂时不预约'))
+    else:
+        binding=runtime.discover(t['id'])
     before=runtime.sync(binding);assert before['history_ready']
     batch=before['message_batch']['batch_id']
     from chejin_worker_client.hook_history_sync import HookHistorySynchronizer
@@ -94,7 +120,7 @@ def test_callback_during_post_send_scan_and_retained_settlement(identity_client,
         result=original_scan(*args,**kwargs)
         # The Hook call has happened and its row has landed. Emulate a callback
         # crossing the scan barrier once, or on all bounded attempts.
-        if any(r[0]=='/SendTextMsg' for r in server.requests) and (mode in {'retained_send','capacity_reconcile','paused_dispatcher'} or changes[0]==0):
+        if any(r[0]=='/SendTextMsg' for r in server.requests) and (mode in {'retained_send','capacity_reconcile','paused_dispatcher','maintenance_recovery'} or changes[0]==0):
             changes[0]+=1
         return result
     monkeypatch.setattr(HookHistorySynchronizer,'scan',scan)
@@ -111,6 +137,7 @@ def test_callback_during_post_send_scan_and_retained_settlement(identity_client,
         with SessionLocal() as db:
             action=db.scalar(select(ReplyAction));claimed_task=db.get(Task,action.claimed_task_id)
             identity=action.ai_payload['native_send_identity'];attempt=action.ai_payload['native_send_attempt']
+            original_identity=json.loads(json.dumps(identity));original_attempt=json.loads(json.dumps(attempt))
             assert action.status=='sending'
             metadata={k:identity[k] for k in ('task_id','reply_action_id','flow_id','lease_fencing_token')}
             metadata['journal_sha256']=attempt['journal_sha256']
@@ -121,6 +148,31 @@ def test_callback_during_post_send_scan_and_retained_settlement(identity_client,
         hashes={p:hashlib.sha256(p.read_bytes()).hexdigest() for p in retained}
         monkeypatch.setattr(HookHistorySynchronizer,'scan',original_scan)
         manager.close()
+        if mode=='maintenance_recovery':
+            from datetime import datetime, timezone
+            from app.services import c3_service
+            from app.models.worker import Worker
+            with SessionLocal() as db:
+                action=db.get(ReplyAction,metadata['reply_action_id'])
+                assert c3_service.recover_stale_sending_reply_action(db,
+                    reply_action_id=action.id,now=datetime(2099,1,1,tzinfo=timezone.utc))
+                worker=db.get(Worker,w['id'])
+                worker.run_status='faulted'
+                db.commit()
+            maintenance_proxy.enable(w,runtime.account,metadata)
+            from dataclasses import replace
+            from chejin_worker_client.hook_sender import RetainedNativeSendPermit
+            from chejin_worker_client.api import ApiError
+            original_permit,original_outcome=RetainedNativeSendPermit.load(
+                tmp_path/'coordinator'/'sends',runtime.credentials,runtime.scope,binding,metadata)
+            identity_rejections={}
+            for field in ('task_id','reply_action_id','flow_id'):
+                with pytest.raises(ApiError) as rejection:
+                    runtime.client.observe_send(runtime.credentials,
+                        replace(original_permit,**{field:str(uuid.uuid4())}),original_outcome)
+                assert rejection.value.status_code in {403,404,409}
+                identity_rejections[field]=rejection.value.code
+            (tmp_path/'maintenance-identity.json').write_text(json.dumps(identity_rejections))
         manager,credentials,prepared=connection_factory(w)
         recovery=HookFormalRuntime(runtime.client,credentials,gateway,prepared,tmp_path/'recovery')
         if mode=='capacity_reconcile':
@@ -128,7 +180,7 @@ def test_callback_during_post_send_scan_and_retained_settlement(identity_client,
             recovery.history_budget.save(tmp_path/'recovery/history-captures'/('a'*64+'.json'),{'synthetic':'occupied regular pool'},settlement=True)
             recovery.history_budget.begin_capture(allow_retire=False)
             assert not recovery.history_budget.ready
-        if mode=='paused_dispatcher':
+        if mode in {'paused_dispatcher','maintenance_recovery'}:
             import threading
             from chejin_worker_client import storage
             from chejin_worker_client.models import Binding
@@ -140,14 +192,66 @@ def test_callback_during_post_send_scan_and_retained_settlement(identity_client,
             dispatcher=HookBusinessDispatcher(runtime.client,tmp_path/'coordinator',
                 lambda *args:pytest.fail('recovery tried to invite'),lambda *args:None,
                 automatic_transcription_disabled=lambda:True)
-            for _ in range(3): dispatcher.tick(runner,services)
-            receipt=json.loads((tmp_path/'coordinator'/'send-receipts'/f"{metadata['reply_action_id']}.json").read_text())
-            assert receipt['local_send_observed'] and receipt['native_msg_id']
-            assert not storage.load_runtime_control().get('inflight_flow_id')
-            assert runner.current_task is None and runner.binding.run_status=='paused'
-            assert dispatcher.runtime.prepared is manager.prepared
-            # Replay the original durable outcome through the same source entry.
-            assert dispatcher.runtime.settle_retained_send(binding,tmp_path/'coordinator',metadata)==receipt
+            shutdown_runner=None
+            try:
+                if mode=='maintenance_recovery':
+                    from chejin_worker_client.api import WorkerApiClient
+                    from chejin_worker_client.hook_projection import NativeProjectionStore
+                    from chejin_worker_client.hook_worker_services import HookWorkerServices
+                    from chejin_worker_client.task_runner import TaskRunner
+                    from chejin_worker_client.emergency_stop import reset_emergency_stop_for_tests
+                    from app.models.worker import Worker
+                    reset_emergency_stop_for_tests()
+                    api=WorkerApiClient(maintenance_proxy.url)
+                    services=HookWorkerServices(manager,
+                        NativeProjectionStore(max_projection_bytes=65536,max_entries=20),
+                        intake_interval_seconds=.05,projection_batch_size=3,dispatcher=dispatcher)
+                    runner=TaskRunner(api,SimpleNamespace(),on_profile=lambda _:None,on_status=lambda _:None,
+                        on_step=lambda _:None,on_task=lambda _:None,on_result=lambda _:None,on_error=lambda _:None,
+                        hook_services=services)
+                    runner.poll_interval_seconds=.1
+                    binding_state=Binding(w['id'],w['worker_token'],w['instance'],'faulted')
+                    storage.save_binding(binding_state)
+                    shutdown_runner=runner
+                    runner.start(binding_state)
+                    end=time.monotonic()+20
+                    while time.monotonic()<end:
+                        with SessionLocal() as db:
+                            complete=not db.get(Worker,w['id']).inflight_flow_state
+                        if complete:break
+                        time.sleep(.1)
+                    assert complete, 'MAINTENANCE_BLOCKED_ORIGINAL_RECOVERY'
+                    assert runner.binding.run_status=='faulted'
+                    assert runner.run_status_sync_error, 'Blocked run-status must not stop original recovery'
+                    assert runner.post_update_runtime_health_snapshot()['ready']
+                else:
+                    for _ in range(3): dispatcher.tick(runner,services)
+                receipt=json.loads((tmp_path/'coordinator'/'send-receipts'/f"{metadata['reply_action_id']}.json").read_text())
+                assert receipt['local_send_observed'] and receipt['native_msg_id']
+                assert not storage.load_runtime_control().get('inflight_flow_id')
+                assert runner.current_task is None and runner.binding.run_status==('faulted' if mode=='maintenance_recovery' else 'paused')
+                if mode=='maintenance_recovery':
+                    # The real heartbeat refreshes immutable receipts; verify
+                    # account/process/scope continuity, not Python object identity.
+                    current_prepared=manager.prepared
+                    assert current_prepared is not None
+                    assert dispatcher.runtime.prepared.process==current_prepared.process
+                    assert dispatcher.runtime.prepared.registration.scope==current_prepared.registration.scope
+                    assert current_prepared.account.worker_id==w['id']
+                    assert current_prepared.account.client_instance_id==w['instance']
+                else:
+                    assert dispatcher.runtime.prepared is manager.prepared
+                # Replay the original durable outcome through the same source entry.
+                assert dispatcher.runtime.settle_retained_send(binding,tmp_path/'coordinator',metadata)==receipt
+            finally:
+                if shutdown_runner is not None:
+                    shutdown_runner.stop_for_update(5)
+                    assert all(not thread or not thread.is_alive() for thread in
+                        (shutdown_runner.thread,shutdown_runner.hook_business_thread,shutdown_runner.hook_intake_thread))
+                    reset_emergency_stop_for_tests()
+            if shutdown_runner is not None:
+                with pytest.raises(ValueError,match='HOOK_LOCAL_PERSISTENCE_FAULT'):
+                    dispatcher.runtime.settle_retained_send(binding,tmp_path/'coordinator',metadata)
         else:
             post(w,f"/workers/{w['id']}/run-status",{'client_instance_id':w['instance'],'run_status':'running'})
             receipt=recovery.settle_retained_send(binding,tmp_path/'coordinator',metadata)
@@ -162,12 +266,24 @@ def test_callback_during_post_send_scan_and_retained_settlement(identity_client,
         assert all(hashlib.sha256(p.read_bytes()).hexdigest()==v for p,v in hashes.items())
         assert len([r for r in server.requests if r[0]=='/SendTextMsg'])==1
         with SessionLocal() as db:
-            assert db.get(Task,metadata['task_id']).status=='completed'
-            assert len(list(db.scalars(select(SentAck).where(SentAck.send_result=='sent'))))==1
+            assert db.get(Task,metadata['task_id']).status==('failed' if mode=='maintenance_recovery' else 'completed')
+            assert len(list(db.scalars(select(SentAck).where(SentAck.send_result==('unknown' if mode=='maintenance_recovery' else 'sent')))))==1
+            if mode=='maintenance_recovery':
+                from app.services.release_readiness import release_readiness
+                action=db.get(ReplyAction,metadata['reply_action_id'])
+                assert action.ai_payload['native_send_identity']==original_identity
+                assert action.ai_payload['native_send_attempt']==original_attempt
+                ready=release_readiness(db)
+                assert ready['ready'],ready
+                (tmp_path/'maintenance-recovery-result.json').write_text(json.dumps({
+                    'runtime':'TaskRunner and HookWorkerServices with actual Nginx',
+                    'original_send_preserved':True,'original_journals_preserved':True,
+                    'new_send_count':0,'faulted_preserved':True,'original_flow_finished':True,'readiness':ready}))
         result={'sends':[{'local_send_observed':True}]}
 
     assert len(result['sends'])==segments and all(item['local_send_observed'] for item in result['sends'])
-    assert uis[0].actions.count('confirm_invite_once')==1
+    if mode!='maintenance_recovery':
+        assert uis[0].actions.count('confirm_invite_once')==1
     assert len([r for r in server.requests if r[0]=='/SendTextMsg'])==len(result['sends'])
     with SessionLocal() as db:
         assert db.get(Task,t['id']).result_code=='invite_sent'

@@ -5,7 +5,7 @@ import subprocess, time
 
 SNIPPET = Path('/etc/nginx/snippets/chejin-release-maintenance.conf')
 SITE = Path('/etc/nginx/sites-enabled/jiangsuchejin.com.conf')
-BLOCK_PATTERN = r'^/api/(tasks/[^/]+/claim|workers/[^/]+/(run-status|inflight-flow/start)|reply-actions/[^/]+/claim-send)(/|$)'
+BLOCK_PATTERN = r'^/api/(tasks/[^/]+/claim|workers/[^/]+/(run-status|inflight-flow/start|wechat/native-replies/[^/]+/(claim|begin))|reply-actions/[^/]+/claim-send)(/|$)'
 BLOCK = 'if ($uri ~ "' + BLOCK_PATTERN + '") { return 503 \'{"code":"RELEASE_MAINTENANCE","message":"发布维护中，暂不领取新任务，请稍后重试。","data":{"retryable":true}}\'; }\n'
 INCLUDE = '    include /etc/nginx/snippets/chejin-release-maintenance.conf;\n'
 
@@ -25,7 +25,7 @@ def old_workers():
 def validate_ingress():
     state=json.loads(subprocess.check_output(['docker','inspect','chejin-leads-api']))[0]
     assert state['HostConfig']['PortBindings']=={'8000/tcp':[{'HostIp':'127.0.0.1','HostPort':'8000'}]},'BACKEND_INGRESS_NOT_LOCAL_ONLY'
-    for p in Path('/etc/nginx/sites-enabled').iterdir():
+    for p in SITE.parent.iterdir():
         if p.resolve()==SITE.resolve():continue
         s=p.read_text()
         # The existing download vhost permits artifacts only and explicitly denies other API paths.
