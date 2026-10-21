@@ -15,6 +15,56 @@ function Show-LaunchFailure([string]$Code) {
     $shell = New-Object -ComObject WScript.Shell
     [void]$shell.Popup(('Worker 启动未完成，请联系管理员检查启动配置和本机日志。' + [Environment]::NewLine + '错误码：' + $Code), 0, '车金 Worker', 16)
 }
+function Save-UnicodeShortcut([string]$Path, [string]$Target, [string]$WorkingDirectory, [string]$Arguments) {
+    # WScript.Shell.Save can convert a Unicode link filename to the system ANSI
+    # code page. IShellLinkW + IPersistFile keeps paths Unicode end to end.
+    if (-not ('CheJin.ShortcutWriter' -as [type])) {
+        Add-Type -TypeDefinition @'
+using System;
+using System.Text;
+using System.Runtime.InteropServices;
+using System.Runtime.InteropServices.ComTypes;
+namespace CheJin {
+    [ComImport, Guid("00021401-0000-0000-C000-000000000046")]
+    internal class ShellLink { }
+    [ComImport, Guid("000214F9-0000-0000-C000-000000000046"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    internal interface IShellLinkW {
+        void GetPath([Out, MarshalAs(UnmanagedType.LPWStr)] StringBuilder path, int count, IntPtr data, uint flags);
+        void GetIDList(out IntPtr id);
+        void SetIDList(IntPtr id);
+        void GetDescription([Out, MarshalAs(UnmanagedType.LPWStr)] StringBuilder text, int count);
+        void SetDescription([MarshalAs(UnmanagedType.LPWStr)] string text);
+        void GetWorkingDirectory([Out, MarshalAs(UnmanagedType.LPWStr)] StringBuilder path, int count);
+        void SetWorkingDirectory([MarshalAs(UnmanagedType.LPWStr)] string path);
+        void GetArguments([Out, MarshalAs(UnmanagedType.LPWStr)] StringBuilder text, int count);
+        void SetArguments([MarshalAs(UnmanagedType.LPWStr)] string text);
+        void GetHotkey(out short value);
+        void SetHotkey(short value);
+        void GetShowCmd(out int value);
+        void SetShowCmd(int value);
+        void GetIconLocation([Out, MarshalAs(UnmanagedType.LPWStr)] StringBuilder path, int count, out int index);
+        void SetIconLocation([MarshalAs(UnmanagedType.LPWStr)] string path, int index);
+        void SetRelativePath([MarshalAs(UnmanagedType.LPWStr)] string path, uint reserved);
+        void Resolve(IntPtr window, uint flags);
+        void SetPath([MarshalAs(UnmanagedType.LPWStr)] string path);
+    }
+    public static class ShortcutWriter {
+        public static void Save(string path, string target, string directory, string arguments) {
+            object instance = new ShellLink();
+            try {
+                IShellLinkW link = (IShellLinkW)instance;
+                link.SetPath(target);
+                link.SetWorkingDirectory(directory);
+                link.SetArguments(arguments);
+                ((IPersistFile)instance).Save(path, true);
+            } finally { Marshal.FinalReleaseComObject(instance); }
+        }
+    }
+}
+'@
+    }
+    [CheJin.ShortcutWriter]::Save($Path, $Target, $WorkingDirectory, $Arguments)
+}
 $errorCode = 'HOOK_LAUNCH_FAILED'
 try {
     if (-not (Test-Path -LiteralPath $exe)) { $errorCode = 'HOOK_WORKER_EXECUTABLE_MISSING'; throw $errorCode }
@@ -44,25 +94,13 @@ try {
     }
     $launch = Get-Content -LiteralPath $report -Raw -Encoding UTF8 | ConvertFrom-Json
     if ($CreateShortcuts) {
-        $shell = New-Object -ComObject WScript.Shell
         $desktop = [Environment]::GetFolderPath('Desktop')
         if (-not $desktop) { throw 'DESKTOP_FOLDER_UNAVAILABLE' }
         New-Item -ItemType Directory -Path $desktop -Force | Out-Null
-        $wechatShortcut = $shell.CreateShortcut((Join-Path $desktop 'Work WeChat.lnk'))
-        $wechatShortcut.TargetPath = $launch.exe
-        $wechatShortcut.WorkingDirectory = $launch.working_directory
-        $wechatShortcut.Arguments = $launch.arguments -join ' '
-        $wechatShortcut.Save()
-        $workerShortcut = $shell.CreateShortcut((Join-Path $desktop 'CheJin Worker.lnk'))
-        $workerShortcut.TargetPath = Join-Path $PSHOME 'powershell.exe'
-        $workerShortcut.Arguments = '-NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File "' + $PSCommandPath + '" -ShowErrorDialog'
-        $workerShortcut.WorkingDirectory = $safeDirectory
-        $workerShortcut.Save()
-        $diagnosticShortcut = $shell.CreateShortcut((Join-Path $desktop '车金故障诊断.lnk'))
-        $diagnosticShortcut.TargetPath = $exe
-        $diagnosticShortcut.Arguments = '--export-diagnostics'
-        $diagnosticShortcut.WorkingDirectory = $safeDirectory
-        $diagnosticShortcut.Save()
+        Save-UnicodeShortcut -Path (Join-Path $desktop 'Work WeChat.lnk') -Target $launch.exe -WorkingDirectory $launch.working_directory -Arguments ($launch.arguments -join ' ')
+        $workerArguments = '-NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File "' + $PSCommandPath + '" -ShowErrorDialog'
+        Save-UnicodeShortcut -Path (Join-Path $desktop 'CheJin Worker.lnk') -Target (Join-Path $PSHOME 'powershell.exe') -WorkingDirectory $safeDirectory -Arguments $workerArguments
+        Save-UnicodeShortcut -Path (Join-Path $desktop '车金故障诊断.lnk') -Target $exe -WorkingDirectory $safeDirectory -Arguments '--export-diagnostics'
     }
     if ($Configuration -or $CreateShortcuts) {
         Write-Host 'Setup complete. Use the desktop shortcuts. No work has started.'

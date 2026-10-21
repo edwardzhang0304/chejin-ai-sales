@@ -5,7 +5,7 @@ $originalNativeDirectory = [Environment]::CurrentDirectory
 $names = @('CHEJIN_WORKER_HOME', 'CHEJIN_C2_ENABLED', 'CHEJIN_API_BASE_URL', 'LOCALAPPDATA')
 $original = @{}
 foreach ($name in $names) { $original[$name] = [Environment]::GetEnvironmentVariable($name, 'Process') }
-$root = Join-Path ([IO.Path]::GetTempPath()) ('hook-launcher-test-' + [guid]::NewGuid())
+$root = Join-Path ([IO.Path]::GetTempPath()) ('hook-launcher-测试-' + [guid]::NewGuid())
 New-Item -ItemType Directory -Path $root | Out-Null
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot '../packaging/start-hook.ps1') -Destination (Join-Path $root 'start-hook.ps1')
 New-Item -ItemType File -Path (Join-Path $root 'CheJinWorkerClient.exe') | Out-Null
@@ -135,6 +135,18 @@ try {
         $control.TargetPath = $global:HookTestWeChatPath
         $control.WorkingDirectory = $global:HookTestWeChatDir
         $control.Save()
+        # Record the original WSH behavior separately from release acceptance.
+        $probePath = Join-Path $desktop '中文对照.lnk'
+        $probeCodePoints = (($probePath.ToCharArray() | ForEach-Object { [int]$_ }) -join ',')
+        Write-Host ('CONTROL Unicode path codepoints: ' + $probeCodePoints)
+        try {
+            $probe = (New-Object -ComObject WScript.Shell).CreateShortcut($probePath)
+            $probe.TargetPath = $global:HookTestWeChatPath
+            $probe.Save()
+            Write-Host 'CONTROL WSH Unicode Save succeeded in this locale'
+        } catch {
+            Write-Host ('CONTROL WSH Unicode Save failed; HRESULT=' + $_.Exception.HResult)
+        } finally { Remove-Item -LiteralPath $probePath -Force -ErrorAction SilentlyContinue }
         Assert-True (Test-Path -LiteralPath $controlLink) 'Windows shortcut control could not be saved'
         $global:HookLauncherCase = 'setup'
         $global:HookLauncherWorkerStarts = 0; $global:HookLauncherWeChatStarts = 0
@@ -144,6 +156,7 @@ try {
         $wechat = $shell.CreateShortcut($wechatLink)
         $worker = $shell.CreateShortcut($workerLink)
         $diagnostic = $shell.CreateShortcut($diagnosticLink)
+        Assert-True (Test-Path -LiteralPath $diagnosticLink) 'Unicode diagnostic shortcut missing'
         Assert-True ($diagnostic.TargetPath -eq (Join-Path $root 'CheJinWorkerClient.exe')) 'Diagnostic shortcut target mismatch'
         Assert-True ($diagnostic.Arguments -eq '--export-diagnostics') 'Diagnostic must bypass business startup'
         Assert-True ($wechat.TargetPath -eq $global:HookTestWeChatPath) 'WeChat shortcut target mismatch'
@@ -162,6 +175,8 @@ try {
         $global:HookLauncherCase = 'launch-existing'
         & (Join-Path $root 'start-hook.ps1') -CreateShortcuts
         $refreshed = $shell.CreateShortcut($workerLink)
+        Assert-True (Test-Path -LiteralPath $diagnosticLink) 'Unicode diagnostic shortcut missing after refresh'
+        Assert-True ($shell.CreateShortcut($diagnosticLink).Arguments -eq '--export-diagnostics') 'Diagnostic arguments lost after refresh'
         Assert-True ($refreshed.WorkingDirectory.TrimEnd('\') -ieq ([IO.Path]::GetTempPath()).TrimEnd('\')) 'Existing shortcut was not refreshed'
         Assert-True ($global:HookLauncherWorkerStarts -eq 0 -and $global:HookLauncherWeChatStarts -eq 0) 'Refresh must not launch Worker or WeChat'
         Write-Host 'PASS existing shortcut refresh uses saved config without starting processes'
