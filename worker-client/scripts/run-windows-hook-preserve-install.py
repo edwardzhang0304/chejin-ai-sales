@@ -153,6 +153,7 @@ def run(args):
         C3_BATCH_RECOVERY_POLL_SECONDS='0', FEISHU_APP_ID='', FEISHU_APP_SECRET='')
     for name in ('CHEJIN_WORKER_UI_MODE', 'CHEJIN_RELEASE_SIGNING_KEYS_PATH', 'CHEJIN_RELEASE_SIGNING_PUBLIC_KEY_BASE64'):
         env.pop(name, None)
+    env = gate.windows_powershell_environment(env)
     gate.seed_old_data(old_source, data, 'faulted', env, hook_bound=True)
     seed_code = """import json,os,sys
 sys.path.insert(0,sys.argv[1])
