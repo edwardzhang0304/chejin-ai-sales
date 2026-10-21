@@ -86,7 +86,9 @@ def test_partial_previous_configuration_fails_without_overwrite(profile):
 
 def test_shortcut_and_start_share_validated_arguments_and_keep_existing_wechat():
     script = (Path(__file__).parents[1] / 'packaging/start-hook.ps1').read_text(encoding='utf-8-sig')
-    assert '$wechatShortcut.Arguments = $launch.arguments' in script
+    assert "Save-UnicodeShortcut -Path (Join-Path $desktop 'Work WeChat.lnk') -Target $launch.exe -WorkingDirectory $launch.working_directory -Arguments ($launch.arguments -join ' ')" in script
+    assert '[CheJin.ShortcutWriter]::Save($Path, $Target, $WorkingDirectory, $Arguments)' in script
+    assert 'link.SetArguments(arguments);' in script
     assert '-ArgumentList $launch.arguments' in script
     assert 'Get-Process -Name WeChat,Weixin' in script
     assert 'Stop-Process' not in script and 'HookLab' not in script and 'uat/enrol' not in script
