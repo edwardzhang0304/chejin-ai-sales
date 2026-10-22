@@ -50,6 +50,8 @@ with renderer,patch.object(module,clsname,Window),patch.object(module,'load_bind
     code=module.run_app()
     windows[0].start_runtime_services()
 assert code==0 and len(windows)==1
+assert windows[0].storage_maintenance.thread is not None
+assert not windows[0].storage_maintenance.thread.is_alive()
 assert sum(e[0]=='start' for e in events)==int(bound),events
 assert sum(e[0]=='reconcile' for e in events)==1,events
 assert events[0]==['construct',mode=='normal'],events
@@ -71,3 +73,30 @@ def test_real_ui_runtime_startup(tmp_path,ui,mode,bound):
     (tmp_path/'stdout.log').write_text(p.stdout);(tmp_path/'stderr.log').write_text(p.stderr)
     assert p.returncode==0,p.stderr+'\n'+p.stdout
     evidence=json.loads(p.stdout.splitlines()[-1]);(tmp_path/'evidence.json').write_text(json.dumps(evidence,ensure_ascii=False,indent=2))
+
+
+def test_storage_warning_title_and_lifetime(tmp_path):
+    program = '''
+from PySide6 import QtWidgets
+from PySide6.QtWidgets import QApplication, QWidget
+# macOS QMessageBox ignores windowTitle; inspect the real constructor argument.
+class ObservedBox(QtWidgets.QMessageBox):
+    def __init__(self, icon, title, *args):
+        self.requested_title=title
+        super().__init__(icon, title, *args)
+QtWidgets.QMessageBox=ObservedBox
+from chejin_worker_client.runtime_startup import show_storage_warning
+app=QApplication([]); window=QWidget(); window.run_status='faulted'
+show_storage_warning(window, '本机自动清理暂时无法启动')
+dialog=window._storage_warning
+assert dialog.requested_title=='本机存储维护'
+show_storage_warning(window, 'second warning')
+assert window._storage_warning is dialog and window.run_status=='faulted'
+dialog.accept(); app.processEvents()
+assert window._storage_warning is None
+window.close()
+'''
+    env = {**os.environ, 'PYTHONPATH':str(ROOT), 'CHEJIN_WORKER_HOME':str(tmp_path/'home'),
+           'QT_QPA_PLATFORM':'offscreen'}
+    result = subprocess.run([sys.executable,'-c',program],env=env,text=True,capture_output=True,timeout=15)
+    assert result.returncode==0,result.stderr

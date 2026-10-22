@@ -597,6 +597,8 @@ class Collector:
                     "telemetry_stage_events", "telemetry_process_links",
                     "telemetry_stage_attempts", "telemetry_authority_snapshots"))
                 self.priority_recovery(archive)
+                self.file(self.root/"storage-maintenance.json", "logs/storage-maintenance.json",
+                          archive, allowed_root=self.root)
                 updates_root = update_root(self.root).absolute()
                 # Current recovery proofs first; legacy incident volume cannot starve them.
                 sources = [

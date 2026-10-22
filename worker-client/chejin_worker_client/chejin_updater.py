@@ -36,13 +36,9 @@ def _startup_diagnostic(phase: str, **details: Any) -> None:
         if isinstance(value, (int, float)):
             payload[key] = value
     try:
-        path = Path(raw_path)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        with path.open("a", encoding="utf-8") as handle:
-            handle.write(
-                json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
-                + "\n"
-            )
+        from .storage_maintenance import append_bounded_log
+        append_bounded_log(Path(raw_path),
+                           json.dumps(payload, ensure_ascii=False, separators=(",", ":")) + "\n")
     except Exception:
         # Observability cannot affect directory replacement or rollback.
         return

@@ -431,7 +431,18 @@ class UpdateCoordinator:
             )
 
     def _save(self, state: dict[str, Any]) -> dict[str, Any]:
-        saved = self.store.save(state)
+        from .storage_maintenance import mark_update_settled, settled_state
+
+        with self.store._lock:
+            saved = self.store.save(state)
+            if settled_state(saved):
+                try:
+                    mark_update_settled(self.store.root,
+                                        str(saved.get("update_request_id") or ""), CONFIG.app_dir)
+                except (OSError, ValueError):
+                    # Missing marker means retain the cache, never fail an update.
+                    _safe_update_log("WARN", "client_update_retention_marker_failed",
+                                     "更新缓存清理登记失败，保留缓存等待后续处理。")
         self._publish(saved)
         return saved
 

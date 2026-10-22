@@ -13,6 +13,11 @@ def start_runtime_services(self) -> None:
     if self.binding:
         self.runner.start(self.binding)
     self.update_coordinator.start_result_reconciliation()
+    from .config import CONFIG
+    from .storage_maintenance import StorageMaintenance
+    self.storage_maintenance = StorageMaintenance(
+        CONFIG.app_dir, self.update_coordinator.store, self.storage_warning_signal.emit)
+    self.storage_maintenance.start()
 
 
 def post_update_runtime_health_snapshot(self) -> dict:
@@ -79,3 +84,23 @@ def schedule_post_update_startup(window, startup_update: dict, single_shot) -> N
         0,
         finish_post_update_startup,
     )
+
+
+def stop_storage_maintenance(window) -> None:
+    service = getattr(window, "storage_maintenance", None)
+    if service is not None:
+        service.stop()
+
+
+def show_storage_warning(window, message: str) -> None:
+    """UI-thread notice only: never change pause/fault/admission state."""
+    from PySide6.QtCore import Qt
+    from PySide6.QtWidgets import QMessageBox
+    if getattr(window, "_storage_warning", None) is not None:
+        return
+    dialog = QMessageBox(QMessageBox.Icon.Warning, "本机存储维护", message,
+                         QMessageBox.StandardButton.Ok, window)
+    dialog.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
+    dialog.finished.connect(lambda _: setattr(window, "_storage_warning", None))
+    window._storage_warning = dialog
+    dialog.open()

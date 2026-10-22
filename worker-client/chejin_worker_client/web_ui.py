@@ -254,6 +254,7 @@ class WorkerWebWindow(QMainWindow):
     step_signal = Signal(object)
     result_signal = Signal(object)
     error_signal = Signal(str)
+    storage_warning_signal = Signal(str)
     runtime_process_signal = Signal(object)
     fault_recovery_signal = Signal(object)
     update_state_signal = Signal(object)
@@ -461,6 +462,7 @@ class WorkerWebWindow(QMainWindow):
         self.step_signal.connect(self.on_step)
         self.result_signal.connect(self.on_result)
         self.error_signal.connect(self.on_error)
+        self.storage_warning_signal.connect(lambda message: runtime_startup.show_storage_warning(self, message))
         self.runtime_process_signal.connect(self.on_runtime_process)
         self.fault_recovery_signal.connect(lambda _state: self._publish())
         self.update_state_signal.connect(self.on_update_state)
@@ -1136,6 +1138,7 @@ class WorkerWebWindow(QMainWindow):
                 self.error_signal.emit('工作微信记录还在保存，请稍后退出。')
                 return
         else:self.runner.stop()
+        runtime_startup.stop_storage_maintenance(self)
         super().closeEvent(event)
 
 
