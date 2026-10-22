@@ -241,6 +241,7 @@ def _main(resources: ExitStack) -> int:
     if args.hook_configure or args.hook_launch_info or args.hook_component_update or args.hook_component_rollback:
         if args.hook_component_update or args.hook_component_rollback:
             from .hook_component_update import run_cli
+            return run_cli(args)
         else:
             from .hook_installation import run_cli
         try:
