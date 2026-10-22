@@ -153,8 +153,13 @@ def _main(resources: ExitStack) -> int:
     hook_commands = parser.add_mutually_exclusive_group()
     hook_commands.add_argument("--hook-configure", type=Path, help="导入本机 Hook 部署配置，不绑定客户或开始接单。")
     hook_commands.add_argument("--hook-launch-info", action="store_true", help="读取统一工作微信启动配置。")
+    hook_commands.add_argument("--hook-component-update", type=Path, help="保留原数据更新已核准的 Hook 组件。")
+    hook_commands.add_argument("--hook-component-rollback", action="store_true", help="恢复本次组件更新的原 DLL 和配置。")
     parser.add_argument("--confirm-auto-text-disabled", action="store_true", help="确认微信自动语音转文字已关闭。")
     args = parser.parse_args()
+    if (args.hook_component_update or args.hook_component_rollback) and (
+            args.preflight or args.wechat_diagnostics or args.post_update_plan or args.post_rollback_plan or args.post_update_token):
+        parser.error('Hook component maintenance requires the standalone guarded entry')
 
     if not args.preflight and not args.wechat_diagnostics and args.post_update_plan is None:
         try:
@@ -233,11 +238,14 @@ def _main(resources: ExitStack) -> int:
         )
         return 1 if has_blocking_failures(checks) else 0
 
-    if args.hook_configure or args.hook_launch_info:
-        from .hook_installation import run_cli
+    if args.hook_configure or args.hook_launch_info or args.hook_component_update or args.hook_component_rollback:
+        if args.hook_component_update or args.hook_component_rollback:
+            from .hook_component_update import run_cli
+        else:
+            from .hook_installation import run_cli
         try:
             return run_cli(args)
-        except (ValueError, OSError) as exc:
+        except (ValueError, OSError, RuntimeError) as exc:
             code = str(exc) if str(exc).startswith("HOOK_") and " " not in str(exc) else "HOOK_INSTALL_FAILED"
             if args.write_report is not None:
                 args.write_report.write_text(json.dumps({"error_code": code}), encoding="utf-8")

@@ -171,3 +171,29 @@ Windows 实机验收前置项：
 - Windows 机器已登录微信桌面客户端，且同一时间只允许一个 Worker 控制微信窗口。
 - `CHEJIN_RPA_MODE=real` 下完成 add_friend 全链路：领取任务、调用 OmniAuto `add-friend-entry-click-plan-windows`、搜索客户、发送添加通讯录邀请、上报 `invite_sent` 或 `already_friend`，失败时上报 PRD 约定 `error_code` 和取证。
 - 使用 `.\scripts\build-windows.ps1` 产出 `worker-client\dist\CheJinWorkerClient\CheJinWorkerClient.exe`，并在干净 Windows 机器启动验证。
+
+## Hook 组件维护入口（源码能力，实机验收后交付）
+
+`Update-CheJin-Hook.cmd` 调用同目录 `update-hook-component.ps1`，由已更新的
+Worker 执行独立组件维护命令；它不属于普通“检查更新”的自动替换步骤。
+操作者先暂停接单，关闭 Worker 和所有工作微信进程，确认微信自动语音转文字
+保持关闭，然后在文件选择窗口选择提供方 DLL。入口仅接受源码中已核准的
+新旧 SHA-256，不接受任意 DLL，也不修改账号绑定、端口、激活文件或业务凭证。
+文件名可以是下载时的名称，实际目标始终从原部署配置取得 `version.dll`。
+
+原 DLL 和部署配置恢复凭证位于
+`transactions/hook/components/<新组件 SHA-256>/`；界面入口的诊断结果位于
+`artifacts/hook/component-updates/`。文件替换与 SQLite 配置更新分步留有恢复
+凭证，中断后重走同一入口核对已知状态；无法识别的现场停止，不猜测或清数据。
+`Rollback-CheJin-Hook.cmd` 沿同一入口恢复原 DLL 和部署配置。
+
+目前核准的候选为提供方 2026-10-22 文件，SHA-256
+`eaab817334789b23cc788ea1dd14a84485d3776bb98d3114662384d3665110a7`；原组件为
+`9d6447c7c614d3218878f8790f901f326133c08aac02b7c58903dacc9ff2c24a`。
+DLL 本体留在私有交付材料，不进入公开源码。激活码沿用原码，维护入口不读取或保存激活码。
+
+完成替换只表示文件和配置一致，不表示接口已通过验收。必须实际点击原工作微信
+快捷方式，核对配置生成的 `StartPort`、`ConnectType=http`、`RecvType=0`、
+进程和组件加载、端口归属、原账号以及 Worker 环境与原凭证恢复检查。之后用受控
+的新语音验证转写及 DownloadVoice 比对，并验证正常文字收发。旧的结果未知语音
+不得自动重试。正常接单由销售在验收后明确恢复；此入口不自动启动微信或接单。

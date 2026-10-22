@@ -281,6 +281,11 @@ if ($LASTEXITCODE -ne 0) {
   throw "打包失败：UAT 证据收集脚本未通过 Windows PowerShell 5.1 BOM/语法门禁"
 }
 if ($Transport -eq "hook") {
+  foreach ($ComponentEntry in @('update-hook-component.ps1','Update-CheJin-Hook.cmd','Rollback-CheJin-Hook.cmd')) {
+    Copy-Item -LiteralPath (Join-Path $Root ('packaging\' + $ComponentEntry)) -Destination (Join-Path $PackageDir $ComponentEntry) -Force
+  }
+  & powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $UatLauncherValidatorPath -ScriptPath (Join-Path $PackageDir 'update-hook-component.ps1')
+  if ($LASTEXITCODE -ne 0) { throw 'Hook component maintenance script failed syntax verification' }
   $HookLauncherPath = Join-Path $PackageDir "start-hook.ps1"
   Copy-Item -LiteralPath (Join-Path $Root "packaging\start-hook.ps1") -Destination $HookLauncherPath -Force
   Copy-Item -LiteralPath (Join-Path $Root "packaging\Setup-CheJin-Hook.cmd") -Destination (Join-Path $PackageDir "Setup-CheJin-Hook.cmd") -Force
