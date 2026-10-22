@@ -54,8 +54,30 @@ def identifier(value):
         return False
 
 
+_NON_PRIVATE_IDENTITIES = frozenset({
+    'filehelper', 'weixin', 'fmessage', 'medianote', 'floatbottle', 'qqmail',
+    'qqsafe', 'qmessage', 'tmessage', 'weibo', 'newsapp', 'qqsync', 'mphelper',
+    'notification_messages', 'brandsessionholder', 'weixinreminder',
+    'appbrandcustomerservicemsg',
+})
+_RESERVED_PATTERN = '|'.join(''.join(f'[{c.lower()}{c.upper()}]' if c.isalpha() else c
+    for c in name) for name in sorted(_NON_PRIVATE_IDENTITIES))
+# Use a JS/Python compatible absolute-end assertion for the JSON contract too.
+NATIVE_PRIVATE_ID_PATTERN = (
+    r'^(?!(?:' + _RESERVED_PATTERN + r')(?![\s\S]))'
+    r'(?:wxid_[A-Za-z0-9_]{1,59}|(?!(?:[wW][xX][iI][dD]_|[gG][hH]_))'
+    r'[A-Za-z][A-Za-z0-9_-]{5,63})(?![\s\S])')
+
+
 def wxid(value):
-    return isinstance(value, str) and re.fullmatch(r"wxid_[A-Za-z0-9_]{1,59}", value) is not None
+    """Validate the provider's native private-account identifier, unchanged.
+
+    The field named wxid can contain a legacy username without that prefix.
+    Syntax is not binding authority: callers must still verify the exact
+    account, invitation, unique contact and message direction. Never trim,
+    lowercase, prefix or substitute an alias/phone number for this value.
+    """
+    return isinstance(value, str) and re.fullmatch(NATIVE_PRIVATE_ID_PATTERN, value) is not None
 
 
 def decimal(value, positive=False):

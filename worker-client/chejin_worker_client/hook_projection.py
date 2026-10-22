@@ -11,7 +11,8 @@ from .hook_facts import callback_observations
 from .hook_inbox import HookReceiveScope
 from .models import utc_now_iso
 
-PROJECTION_VERSION = "hook-observation-projection-v2"
+PROJECTION_VERSION = "hook-observation-projection-v3"
+READABLE_PROJECTION_VERSIONS = frozenset({"hook-observation-projection-v2", PROJECTION_VERSION})
 PROJECTION_FIELDS = ("receive_seq", "contract_version", "projection_digest", "projection_json", "projected_at")
 
 

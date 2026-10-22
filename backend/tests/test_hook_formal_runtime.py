@@ -81,8 +81,9 @@ def drive_reply(runtime, binding, batch_id, *, max_wait_seconds=30):
     raise AssertionError('Production reply entry did not settle within the test budget')
 
 
+@pytest.mark.parametrize('peer',['wxid_customer_A','nativecustomer2468','Legacy-Customer_42'])
 @pytest.mark.parametrize('segments',[1,2])
-def test_coordinator_pulls_formal_invite_binds_history_generates_and_sends(identity_client,lab,tmp_path,monkeypatch,segments):
+def test_coordinator_pulls_formal_invite_binds_history_generates_and_sends(identity_client,lab,tmp_path,monkeypatch,segments,peer):
     if segments==2:
         from app.services import c3_service
         from app.services.ai_adapter import AIEngineDecision
@@ -122,13 +123,14 @@ def test_coordinator_pulls_formal_invite_binds_history_generates_and_sends(ident
     server.query_response=lambda body:{'data':[dict(row) for row in table.execute(body['sql']).fetchall()]}
     def on_request(path):
         server.raw_override=None
-        if path=='/GetFriendAndChatRoomList':server.raw_override=json.dumps({'code':0,'data':[{'wxid':'wxid_customer_A','markname':code}]}).encode()
+        if path=='/GetFriendAndChatRoomList':server.raw_override=json.dumps({'code':0,'data':[{'wxid':peer,'markname':code}]}).encode()
         if path=='/SendTextMsg':
             text=server.requests[-1][1]['msg'];created=int(time.time());seq=table.execute('SELECT COUNT(*) FROM MSG').fetchone()[0]+1
-            table.execute('INSERT INTO MSG VALUES(?,?,?,?,?,?,?,?,?,?)',(seq,str(8000000000000000000+seq),1,1,created,created*1000+seq,0,seq,'wxid_customer_A',text))
+            table.execute('INSERT INTO MSG VALUES(?,?,?,?,?,?,?,?,?,?)',(seq,str(8000000000000000000+seq),1,1,created,created*1000+seq,0,seq,peer,text))
             server.raw_override=b'{"SendTextMsg":"1"}'
     server.on_request=on_request
     binding=runtime.discover(t['id'])
+    assert binding['peer_wxid']==peer
     before=runtime.sync(binding);assert before['history_ready']
     batch=before['message_batch']['batch_id']
     result=drive_reply(runtime,binding,batch,max_wait_seconds=30)

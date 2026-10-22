@@ -12,7 +12,7 @@ PHASES = {
  'contact_result': '确认搜索结果', 'invite_form_fields': '填写申请文案和备注',
  'verify_remark_shortcode': '核对备注短码', 'confirm_once': '提交好友申请',
  'cleanup': '清理本次搜索内容', 'invite_receipt': '确认邀请任务结果',
- 'bind': '等待好友通过并绑定客户', 'history': '读取并补齐客户消息',
+ 'bind': '核对好友并绑定客户', 'history': '读取并补齐客户消息',
  'voice': '语音转文字', 'decision': 'AI 处理客户消息', 'reply_ready': 'AI 回复已准备',
  'send_conditions': '核验发送条件', 'send_delay': '等待发送间隔',
  'pre_send': '发送前复核最新消息', 'send_submit': '向微信提交回复',
@@ -26,7 +26,7 @@ PHASES = {
  'invite_finished': '好友申请处理已结束',
 }
 NOTES = {
- 'recipient': '申请已提交，等待对方通过。', 'not_found': '未找到可添加的客户。',
+ 'recipient': '申请已提交，等待好友列表确认并完成绑定。', 'not_found': '未找到可添加的客户。',
  'already_friend': '对方已是好友，沿原任务规则处理。',
  'history_wait': '消息尚未核对完整，核对完成后继续。',
  'voice_wait': '语音结果尚未确认，保留原记录。',

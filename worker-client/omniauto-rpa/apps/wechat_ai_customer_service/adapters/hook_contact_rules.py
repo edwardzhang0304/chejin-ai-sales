@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import re
 from typing import Any
+from .hook_contract_rules import wxid
 
 
 @dataclass(frozen=True)
@@ -15,7 +16,7 @@ class ShortcodeCandidate:
 def resolve_friend_shortcode(data: Any, shortcode: str, self_wxid: str) -> ShortcodeCandidate:
     if not re.fullmatch(r'[A-Z0-9]{7,8}', shortcode):
         raise ValueError('SHORTCODE_INVALID')
-    if not re.fullmatch(r'wxid_[A-Za-z0-9_]+', self_wxid):
+    if not wxid(self_wxid):
         raise ValueError('SELF_WXID_INVALID')
     token = re.compile(r'(?<![A-Za-z0-9])' + re.escape(shortcode) + r'(?![A-Za-z0-9])')
     matches: list[set[str]] = []
@@ -48,7 +49,7 @@ def _identities(value):
 
 
 def _valid_identity(identities):
-    return len(identities) == 1 and all(re.fullmatch(r'wxid_[A-Za-z0-9_]+', part) for part in identities)
+    return len(identities) == 1 and all(wxid(part) for part in identities)
 
 
 def _contact_objects(data):
@@ -77,7 +78,7 @@ def inspect_bound_contact(data: Any, shortcode: str, self_wxid: str, peer_wxid: 
     repeated identical responses do not certify list completeness/freshness.
     """
     candidate = resolve_friend_shortcode(data, shortcode, self_wxid)
-    if not re.fullmatch(r'wxid_[A-Za-z0-9_]+', peer_wxid) or peer_wxid == self_wxid:
+    if not wxid(peer_wxid) or peer_wxid == self_wxid:
         raise ValueError('PEER_WXID_INVALID')
     peers = [value for value in _contact_objects(data) if peer_wxid in _identities(value)]
     if len(peers) != 1 or not _valid_identity(_identities(peers[0])):

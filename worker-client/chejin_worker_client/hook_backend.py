@@ -64,7 +64,8 @@ class HookHeartbeatIdentity:
     wechat_file_version: str = "3.9.10.16"
 
     def __post_init__(self) -> None:
-        if not (isinstance(self.self_wxid, str) and re.fullmatch(r"wxid_[A-Za-z0-9_]{1,59}", self.self_wxid)
+        from .shared_rules import hook_contract_rules as rules
+        if not (rules.wxid(self.self_wxid)
                 and _bounded(self.process_generation, 128) and _bounded(self.deployment_revision, 128)
                 and isinstance(self.dll_sha256, str) and re.fullmatch(r"[0-9a-fA-F]{64}", self.dll_sha256)
                 and self.wechat_file_version == "3.9.10.16"

@@ -270,7 +270,7 @@ class HookGateway:
         status = response.get("onlinestatus")
         wxid = response.get("selfwxid")
         status_valid = isinstance(status, str) and status in {"0", "1", "2", "3"}
-        identity_valid = isinstance(wxid, str) and re.fullmatch(r"wxid_[A-Za-z0-9_]{1,59}", wxid) is not None
+        identity_valid = rules.wxid(wxid)
         if not status_valid or status == "3" and not identity_valid:
             error = HookLocalError("HOOK_LOGIN_RESPONSE_INVALID" if not status_valid else "HOOK_LOGIN_IDENTITY_MISSING")
             error.operation = "IsLoginStatus"

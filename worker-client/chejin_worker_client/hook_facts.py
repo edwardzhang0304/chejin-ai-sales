@@ -13,6 +13,7 @@ from datetime import datetime
 from typing import Any
 
 from .hook_inbox import HookReceiveScope, decode_callback
+from .shared_rules import hook_contract_rules as rules
 
 ORDER_FIELDS = ("localId", "CreateTime", "Sequence", "MsgServerSeq", "MsgSequence")
 
@@ -35,7 +36,7 @@ def _identity(value: Any) -> str | None:
 
 
 def _peer(value: Any) -> str | None:
-    return value if isinstance(value, str) and re.fullmatch(r"wxid_[A-Za-z0-9_]+", value) else None
+    return value if rules.wxid(value) else None
 
 
 def _digest(value: Any) -> str:

@@ -1,6 +1,7 @@
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, SecretStr, field_validator, model_validator
+from app.schemas.hook_identity import NativeWechatIdentity
 
 
 class WorkerVisionCredential(BaseModel):
@@ -45,7 +46,7 @@ class WorkerUpdate(BaseModel):
 class HookHeartbeatContext(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    self_wxid: str = Field(min_length=6, max_length=64, pattern=r"^wxid_[A-Za-z0-9_]+$")
+    self_wxid: NativeWechatIdentity
     account_epoch: str | None = Field(default=None, min_length=1, max_length=36)
     process_generation: str = Field(min_length=1, max_length=128)
     deployment_revision: str = Field(min_length=1, max_length=128)

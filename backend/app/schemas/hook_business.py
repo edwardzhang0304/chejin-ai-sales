@@ -1,10 +1,11 @@
 """Formal Hook actions retain original task leases and form values."""
 from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, model_validator, field_validator
+from app.schemas.hook_identity import NativeWechatIdentity
 
 class HookAccountAction(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
-    self_wxid: str = Field(pattern=r"^wxid_[A-Za-z0-9_]{1,59}$")
+    self_wxid: NativeWechatIdentity
     account_epoch: str = Field(min_length=36, max_length=36)
     process_generation: str = Field(min_length=1, max_length=128)
 
@@ -78,7 +79,7 @@ class HookNativeSendSettlement(HookAccountAction):
 class HookVoiceResult(HookAccountAction):
     binding_id: str = Field(min_length=36,max_length=36)
     binding_revision: int = Field(ge=1)
-    peer_wxid: str = Field(pattern=r"^wxid_[A-Za-z0-9_]{1,59}$")
+    peer_wxid: NativeWechatIdentity
     native_msg_id: str = Field(pattern=r"^[1-9][0-9]{0,19}$")
     attempt_process_generation: str | None = Field(default=None,min_length=1,max_length=128)
     state: Literal['transcribed','failed','uncertain']

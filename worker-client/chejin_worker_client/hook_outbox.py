@@ -5,7 +5,7 @@ import hashlib
 import uuid
 
 from . import storage
-from .hook_projection import PROJECTION_VERSION
+from .hook_projection import READABLE_PROJECTION_VERSIONS
 from .shared_rules import hook_contract_rules as rules
 
 OUTBOX_FIELDS = ("event_uuid", "receive_seq", "worker_id", "client_instance_id", "self_wxid", "account_epoch",
@@ -107,10 +107,12 @@ class HookDeliveryOutbox:
         if row['self_wxid'] != scope.self_wxid or row['account_epoch'] != scope.account_epoch:
             raise ValueError("HOOK_OUTBOX_ACCOUNT_MISMATCH")
         encoded = row['projection_json']
-        if hashlib.sha256(encoded.encode('utf-8')).hexdigest() != row['projection_digest'] or row['contract_version'] != PROJECTION_VERSION:
+        if (hashlib.sha256(encoded.encode('utf-8')).hexdigest() != row['projection_digest']
+                or row['contract_version'] not in READABLE_PROJECTION_VERSIONS):
             raise RuntimeError("HOOK_OUTBOX_PROJECTION_CHANGED")
         projection = rules.loads(encoded)
-        if (projection['event_uuid'] != row['raw_uuid'] or projection['receive_seq'] != receive_seq
+        if (projection['contract_version'] != row['contract_version']
+                or projection['event_uuid'] != row['raw_uuid'] or projection['receive_seq'] != receive_seq
                 or projection['raw_evidence_digest'] != row['raw_digest'] or projection['observed_at'] != row['received_at']):
             raise RuntimeError("HOOK_OUTBOX_PROJECTION_CHANGED")
         messages = []
