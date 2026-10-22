@@ -1,0 +1,119 @@
+{
+  "original": {
+    "run_id": 39596278756,
+    "attempt": 1,
+    "job_id": 119209263431,
+    "artifact_id": 12344152893,
+    "artifact_sha256": "4a8c5e36ed866b7edc766b952658e7ec9693efa173665e05605cc3ad6f1684a2",
+    "commit": "93442961cb0ac024d652d1b67e9cdda5843086b3",
+    "branch": "gray-release-0.10.x"
+  },
+  "changed_inputs": {
+    ".github/workflows/hook-windows-build.yml": {
+      "reason": "Hook build host changed to the same Windows 2022 family validated by native GUI smoke. No commands, source gates, package inputs or artifact naming changed.",
+      "covered_by": [
+        "windows-parser",
+        "gui-driver"
+      ]
+    },
+    ".github/workflows/release-evidence.yml": {
+      "reason": "Separate diagnostic/resume modes, historical component handoff env, Qt-compatible Hook Windows host; existing source, signing, package contents and Fast UAT steps unchanged.",
+      "covered_by": [
+        "ops/formal_release/tests/test_tooling_handoff.py",
+        "windows-parser",
+        "gui-driver",
+        "hook-launcher-setup"
+      ]
+    },
+    "ops/formal_release/handoffs/hook-reviewed-22eb0b1.json": {
+      "reason": "Release input metadata only. Runtime code/tools unchanged from 47bb1d6; new version and cumulative reviewed source hashes are validated by the existing source handoff and evidence identity checks. Prior Windows/tool component evidence remains separately traceable; no business tests are re-run.",
+      "covered_by": [
+        "ops/formal_release/tests/test_source_evidence.py",
+        "ops/formal_release/tests/test_tooling_handoff.py"
+      ]
+    },
+    "ops/formal_release/handoffs/tooling-01010-scope.json": {
+      "reason": "Release input metadata only. Runtime code/tools unchanged from 47bb1d6; new version and cumulative reviewed source hashes are validated by the existing source handoff and evidence identity checks. Prior Windows/tool component evidence remains separately traceable; no business tests are re-run.",
+      "covered_by": [
+        "ops/formal_release/tests/test_source_evidence.py",
+        "ops/formal_release/tests/test_tooling_handoff.py"
+      ]
+    },
+    "ops/formal_release/handoffs/tooling-gui-recovery-reviewed.json": {
+      "reason": "Release input metadata only. Runtime code/tools unchanged from 47bb1d6; new version and cumulative reviewed source hashes are validated by the existing source handoff and evidence identity checks. Prior Windows/tool component evidence remains separately traceable; no business tests are re-run.",
+      "covered_by": [
+        "ops/formal_release/tests/test_source_evidence.py",
+        "ops/formal_release/tests/test_tooling_handoff.py"
+      ]
+    },
+    "ops/formal_release/handoffs/tooling-gui-recovery-scope.json": {
+      "reason": "Review scope and original provenance only; bound as an input in the final descriptor.",
+      "covered_by": [
+        "ops/formal_release/tests/test_tooling_handoff.py"
+      ]
+    },
+    "ops/formal_release/maintenance.py": {
+      "reason": "Allow existing identical active fence through the original validated reload and bounded old-worker drain path, without disabling or changing scope; reject missing include/unknown content.",
+      "covered_by": [
+        "ops/formal_release/tests/test_recovery_cutover.py",
+        "ops/formal_release/tests/test_release_environment.py"
+      ]
+    },
+    "ops/formal_release/recovery_cutover.py": {
+      "reason": "Idempotent enable of the same fence uses the original reload/drain mechanism; save pre-switch failures; verify six real loopback TLS grant probes before Docker switch. All old readiness/hash/data/backup gates remain.",
+      "covered_by": [
+        "ops/formal_release/tests/test_recovery_cutover.py"
+      ]
+    },
+    "ops/formal_release/run_evidence_checks.py": {
+      "reason": "New explicit reviewed-tooling resume branch and reused evidence reporting; original selection/execution and source branches retained.",
+      "covered_by": [
+        "ops/formal_release/tests/test_tooling_handoff.py",
+        "ops/formal_release/tests/test_source_evidence.py"
+      ]
+    },
+    "ops/formal_release/tests/test_recovery_cutover.py": {
+      "reason": "Exercise both inactive and already active maintenance and reject invalid existing fence before any Docker switch.",
+      "covered_by": [
+        "ops/formal_release/tests/test_recovery_cutover.py"
+      ]
+    },
+    "ops/formal_release/tests/test_tooling_handoff.py": {
+      "reason": "New negative trust/coverage/selection tests.",
+      "covered_by": [
+        "ops/formal_release/tests/test_tooling_handoff.py"
+      ]
+    },
+    "ops/formal_release/tooling_handoff.py": {
+      "reason": "Historical attempt-specific component evidence and fully bound reviewed impact scope verifier.",
+      "covered_by": [
+        "ops/formal_release/tests/test_tooling_handoff.py"
+      ]
+    },
+    "worker-client/chejin_worker_client/__init__.py": {
+      "reason": "Release input metadata only. Runtime code/tools unchanged from 47bb1d6; new version and cumulative reviewed source hashes are validated by the existing source handoff and evidence identity checks. Prior Windows/tool component evidence remains separately traceable; no business tests are re-run.",
+      "covered_by": [
+        "ops/formal_release/tests/test_source_evidence.py",
+        "ops/formal_release/tests/test_tooling_handoff.py"
+      ]
+    },
+    "worker-client/scripts/run-windows-client-upgrade-test.py": {
+      "reason": "Only synthetic fixture readiness/diagnostics changed. QtPage, actual updater/Worker UI driver and business assertions byte-equivalent AST to baseline.",
+      "covered_by": [
+        "gui-driver"
+      ]
+    }
+  },
+  "pytest": [
+    {
+      "cwd": ".",
+      "nodes": [
+        "ops/formal_release/tests/test_tooling_handoff.py",
+        "ops/formal_release/tests/test_source_evidence.py",
+        "ops/formal_release/tests/test_recovery_cutover.py",
+        "ops/formal_release/tests/test_release_environment.py"
+      ]
+    }
+  ],
+  "unaffected_scope_review": "Reuse the original successful Linux component from 39596278756 attempt 1, not a chained reused receipt. Current fixed validator requires files changed since that original component to be rerun; the four existing selected tool files validate input/provenance and maintenance boundaries only, not business regression. Prior 39602779720 passed results remain evidence but cannot serve as a chained original in this frozen validator. All other unaffected original component checks remain reused. Current source handoff validates the complete reviewed cumulative runtime input; fresh Windows parser/GUI checks execute per existing workflow. This adds no tool logic, package, deployment or Fast UAT changes."
+}
