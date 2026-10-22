@@ -21,14 +21,16 @@ def finish_voice(db,authenticated,instance,payload):
         .with_for_update().execution_options(populate_existing=True))
     ctx=dict(binding.native_context or {}) if binding else {}
     proof=db.get(TaskEvidence,ctx.get('invite_evidence_id')) if ctx.get('invite_evidence_id') else None
-    if (binding is None or binding.deleted_at or binding.worker_id!=w.id or binding.bind_status!='bound'
-            or not binding.allow_listening or binding.listen_status not in {'listening','degraded'}
+    from app.services.hook_relationship_service import retired_evidence_scope
+    retired=retired_evidence_scope(binding,w.id,payload.model_dump())
+    if (binding is None or binding.deleted_at or binding.worker_id!=w.id or (not retired and (binding.bind_status!='bound'
+            or not binding.allow_listening or binding.listen_status not in {'listening','degraded'}))
             or binding.native_self_wxid!=payload.self_wxid or binding.native_peer_wxid!=payload.peer_wxid
-            or binding.authorization_revision!=payload.binding_revision or ctx.get('account_epoch')!=payload.account_epoch
-            or ctx.get('business_enabled') is not True or proof is None
+            or (not retired and binding.authorization_revision!=payload.binding_revision) or ctx.get('account_epoch')!=payload.account_epoch
+            or (not retired and ctx.get('business_enabled') is not True) or proof is None
             or (proof.extra_metadata or {}).get('backend_validated') is not True):
         raise AppError('HOOK_BINDING_NOT_AUTHORIZED','语音客户的原绑定已失效',409)
-    require_followup(db,binding.lead_id)
+    if not retired:require_followup(db,binding.lead_id)
     key=message_key(payload.self_wxid,payload.peer_wxid,payload.native_msg_id)
     parent=db.scalar(select(MessageEvent).where(MessageEvent.conversation_id==binding.conversation_id,
         MessageEvent.binding_id==binding.id,MessageEvent.dedupe_key==key).with_for_update())
@@ -48,7 +50,7 @@ def finish_voice(db,authenticated,instance,payload):
         HookVoiceReceipt.message_event_id==parent.id))
     if old:
         if old.payload_digest!=digest:raise AppError('HOOK_VOICE_RESULT_CONFLICT','原语音结果不可覆盖',409)
-        if parent.item_state=='uncertain':_handoff_uncertain_voice(db,binding,parent)
+        if not retired and parent.item_state=='uncertain':_handoff_uncertain_voice(db,binding,parent)
         return old.result_json
     from app.services.hook_history_service import human_covered_voice_ids
     covered=parent.id in human_covered_voice_ids(db,binding)
@@ -67,16 +69,17 @@ def finish_voice(db,authenticated,instance,payload):
     # A proven old voice changes archival facts, not the customer's later turn.
     # Keep its pre-result checkpoint projection so the next history read cannot
     # invalidate the same generation/send indirectly through the full digest.
-    if not covered:
+    if not covered and not retired:
         ctx['history_ready']=False;ctx['history_reason_code']='HOOK_VOICE_RESULT_REQUIRES_HISTORY'
         binding.native_context=ctx
         from app.services import c3_service
         c3_service.cancel_active_batches_for_conversation_change(db,binding.conversation_id,reason='原语音消息的转写结果已更新')
         c3_service.supersede_open_reply_actions_for_new_inbound(db,binding.conversation_id)
     result={'native_msg_id':payload.native_msg_id,'message_event_id':parent.id,'voice_receipt_id':receipt.id,
-        'state':payload.state,'history_coverage_required':not covered,'ai_dispatch':False}
+        'state':payload.state,'history_coverage_required':not covered and not retired,'ai_dispatch':False,
+        **({'disposition':'authorization_retired'} if retired else {})}
     receipt.result_json=result
-    if parent.item_state=='uncertain':_handoff_uncertain_voice(db,binding,parent)
+    if not retired and parent.item_state=='uncertain':_handoff_uncertain_voice(db,binding,parent)
     db.flush();return result
 
 

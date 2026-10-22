@@ -49,6 +49,7 @@ NOTES = {
  'not_sent': '本轮回复未发送，旧回复已取消。',
  'sent': '本轮回复已发送并核对完成。',
  'send_unknown': '无法确认送达，核对已结束，不会自动重发。',
+ 'invite_replaced': '后台已结束本轮绑定授权，后续以新的邀请任务为准。',
  'invite_done': '好友申请阶段已结束；通过后的客户处理另行展示。',
 }
 
@@ -219,6 +220,7 @@ class HookProgressTimeline:
             item={'title':PHASES[phase],'state':'current','_context':context,'_phase':phase};self._insert_step(item);self.latest[key]=item
         item.update(state=state,time=event.get('time',''),_note=event.get('note'))
         item['description']=event.get('description') or NOTES.get(event.get('note'),'')
+        if phase=='bind' and event.get('note')=='invite_replaced':item['title']='本轮好友绑定已结束'
         item.update(_group=event.get('group',context),_kind=event.get('kind',''),
                     _label=event.get('label',''),_historical=bool(event.get('historical')))
         if phase in {'send_submit','send_confirm'} and state=='done' and event.get('note')=='send_unknown':

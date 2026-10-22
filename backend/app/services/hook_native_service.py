@@ -36,11 +36,13 @@ def store_observations(db: Session, authenticated: Worker, payload: dict, instan
         return old.receipt_json  # No new work, even if contact authorization was subsequently revoked.
     sales = db.scalar(select(Sales).where(Sales.worker_id == worker.id, Sales.deleted_at.is_(None)))
     context = dict(binding.native_context or {})
-    if (binding.deleted_at or binding.bind_status != 'bound' or not binding.allow_listening
-            or binding.listen_status not in {'listening', 'degraded'} or not binding.remark_code or not binding.lead_id
+    from app.services.hook_relationship_service import retired_evidence_scope
+    retired=retired_evidence_scope(binding,worker.id,payload)
+    if (binding.deleted_at or (not retired and (binding.bind_status != 'bound' or not binding.allow_listening
+            or binding.listen_status not in {'listening', 'degraded'})) or not binding.remark_code or not binding.lead_id
             or binding.worker_id != worker.id or binding.native_self_wxid != payload['self_wxid']
             or binding.native_peer_wxid != payload['peer_wxid'] or context.get('account_epoch') != payload['account_epoch']
-            or int(binding.authorization_revision or 1) != payload['binding_revision']
+            or (not retired and int(binding.authorization_revision or 1) != payload['binding_revision'])
             or sales is None or not sales.enabled or sales.id != worker.hook_sales_id or binding.sales_id != sales.id):
         raise AppError('HOOK_BINDING_NOT_AUTHORIZED', '客户绑定或授权已失效', 409)
     origin = db.get(Task, context.get('source_task_id')) if context.get('source_task_id') else None
@@ -52,15 +54,17 @@ def store_observations(db: Session, authenticated: Worker, payload: dict, instan
             or evidence.worker_id != worker.id or evidence.evidence_type != 'hook_invite_submission'
             or proof.get('schema_version') != 'hook-invite-proof-v1' or proof.get('shortcode') != binding.remark_code
             or proof.get('self_wxid') != payload['self_wxid'] or proof.get('account_epoch') != payload['account_epoch']
+            or (retired and proof.get('backend_validated') is not True)
             or proof.get('shortcode_written') is not True or proof.get('invitation_submitted') is not True):
         raise AppError('HOOK_INVITE_ORIGIN_REQUIRED', '缺少系统加好友申请的绑定依据', 409)
     # Intake immediately invalidates AI/send admission, before asynchronous dispatch.
-    context.update(history_ready=False,history_reason_code='HOOK_HISTORY_NEW_FACTS_PENDING')
-    binding.native_context=context
+    if not retired:
+        context.update(history_ready=False,history_reason_code='HOOK_HISTORY_NEW_FACTS_PENDING')
+        binding.native_context=context
     response = rules.receipt(payload)
     db.add(HookNativeReceipt(worker_id=worker.id, client_instance_id=instance_id, self_wxid=payload['self_wxid'],
         account_epoch=payload['account_epoch'], binding_id=binding.id, binding_revision=str(payload['binding_revision']),
         event_uuid=payload['event_uuid'], payload_digest=rules.digest(payload), payload_json=payload,
-        receipt_json=response, dispatch_status='pending'))
+        receipt_json=response, dispatch_status='authorization_retired' if retired else 'pending'))
     db.flush()
     return response

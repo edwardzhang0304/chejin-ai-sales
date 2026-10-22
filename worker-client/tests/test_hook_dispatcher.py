@@ -234,7 +234,7 @@ def test_voice_admission_and_update_share_lock(lab, backend_peer, tmp_path, monk
     finally:manager.close()
 
 
-@pytest.mark.parametrize('mode',['paused','faulted','startup_pending','retired_during_read'])
+@pytest.mark.parametrize('mode',['paused','faulted','startup_pending','retired_during_read','retired_invite'])
 def test_relationship_review_respects_gates_and_retirement_is_customer_scoped(lab,backend_peer,tmp_path,mode):
     from chejin_worker_client.api import ApiError
     manager,credentials,state,response=setup(lab,backend_peer)
@@ -249,13 +249,14 @@ def test_relationship_review_respects_gates_and_retirement_is_customer_scoped(la
         def call(self,credentials,method,path,body=None,**kwargs):
             assert path.endswith('native-work')
             return {'schema_version':'hook-native-work-v1','observation_query_version':1,**account,
-                'run_status':status,'inflight_flow':{},'bindings':bindings,'invitations':[],
+                'run_status':status,'inflight_flow':{},'bindings':bindings,'invitations':[{'source_task_id':'old-round'}] if mode=='retired_invite' else [],
                 'retained_sends':[],'inflight_task':None,'relationship_query_version':1,'relationship_bindings':bindings}
     class Runtime:
         def __init__(self,*args,**kwargs):
             self.credentials=credentials;self.account=account;self.scope=scope
             self.active_flow_id=None;self.active_task_id=None;self.clock=SimpleNamespace(observe=lambda x:None)
         def review_relationships(self,items):reviews.append([b['binding_id'] for b in items])
+        def discover(self,task_id):raise ApiError('HOOK_INVITE_AUTHORIZATION_RETIRED','old invite retired',409)
         def barrier(self,b):return (0,0)
         def sync(self,b):
             reads.append(b['binding_id'])

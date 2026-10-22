@@ -147,6 +147,9 @@ def bind_friend(db, authenticated, instance, payload):
     current=[b for b in existing if (b.native_context or {}).get('source_task_id')==task.id]
     predecessor=None
     if current:
+        from app.services.hook_relationship_service import require_binding_chain
+        if len(current)==1:
+            require_binding_chain(existing,current[0])
         existing=current
         if (len(existing) != 1 or existing[0].bind_status != 'bound' or existing[0].worker_id != w.id
                 or existing[0].lead_id != task.lead_id or existing[0].native_peer_wxid != peer

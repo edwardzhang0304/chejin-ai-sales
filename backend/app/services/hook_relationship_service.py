@@ -117,6 +117,7 @@ def reinvite(db, lead_id, payload, actor):
     if repeat:
         binding.authorization_revision = original_revision + 1
     binding.disable_reason=REINVITE_REASON;binding.disabled_at=utcnow();binding.disabled_by=str(actor.operator_id)
+    ctx.setdefault('retired_authorization_revision',original_revision)
     ctx['business_enabled']=False
     ctx['reinvite_request']={'task_id':task_id,'original_revision':original_revision,
         'reason':payload.reason.strip(),'requested_at':utcnow().isoformat()}
@@ -144,6 +145,16 @@ def replacement_predecessor(db,w,task,peer,existing):
     proof=authorization.extra_metadata or {} if authorization else {}
     predecessor=next((b for b in existing if b.id==proof.get('previous_binding_id')),None)
     ctx=predecessor.native_context or {} if predecessor else {}
+    scope={'self_wxid':w.hook_self_wxid,'account_epoch':w.hook_account_epoch,
+           'peer_wxid':peer,'lead_id':task.lead_id,'sales_id':task.sales_id}
+    if (predecessor and authorization.worker_id==w.id and predecessor.worker_id==w.id
+            and predecessor.lead_id==task.lead_id and predecessor.sales_id==task.sales_id
+            and predecessor.native_self_wxid==w.hook_self_wxid and predecessor.native_peer_wxid==peer
+            and ctx.get('account_epoch')==w.hook_account_epoch
+            and all(proof.get(k)==v for k,v in scope.items())
+            and predecessor.disable_reason==REINVITE_REASON
+            and (predecessor.replacement_binding_id or (ctx.get('reinvite_request') or {}).get('task_id')!=task.id)):
+        raise AppError('HOOK_INVITE_AUTHORIZATION_RETIRED','本轮邀请授权已结束，以新邀请任务为准',409)
     if (predecessor is None or authorization.worker_id!=w.id or predecessor.bind_status!='disabled'
             or predecessor.disable_reason!=REINVITE_REASON or predecessor.replacement_binding_id
             or ctx.get('business_enabled') is not False
@@ -155,15 +166,22 @@ def replacement_predecessor(db,w,task,peer,existing):
             or any(proof.get(k)!=v for k,v in {'self_wxid':w.hook_self_wxid,'account_epoch':w.hook_account_epoch,
                 'peer_wxid':peer,'lead_id':task.lead_id,'sales_id':task.sales_id}.items())):
         raise AppError('HOOK_BINDING_CONFLICT','新邀请没有已确认退出的原托管授权，不能覆盖',409)
-    # Only the exact predecessor chain may coexist; another live identity wins.
-    allowed={predecessor.id}
+    require_binding_chain(existing, predecessor)
+    return predecessor
+
+
+def require_binding_chain(existing, current):
+    """Allow only this binding and its retained disabled predecessors."""
+    allowed={current.id}
     while True:
-        added={b.id for b in existing if b.bind_status=='disabled' and b.replacement_binding_id in allowed}
+        added={b.id for b in existing if b.bind_status=='disabled' and b.replacement_binding_id in allowed
+               and b.worker_id==current.worker_id and b.lead_id==current.lead_id
+               and b.sales_id==current.sales_id and b.native_self_wxid==current.native_self_wxid
+               and b.native_peer_wxid==current.native_peer_wxid}
         if added<=allowed:break
         allowed.update(added)
     if any(b.id not in allowed for b in existing):
         raise AppError('HOOK_BINDING_CONFLICT','仍有其他客户或账号绑定，不能覆盖',409)
-    return predecessor
 
 
 def ensure_send_authorization(binding):
@@ -172,3 +190,17 @@ def ensure_send_authorization(binding):
         raise AppError(REMARK_CHANGED,'客户识别信息待核对，不能自动发送',409,{'suggested_action':'do_not_send'})
     if binding.native_self_wxid and binding.disable_reason==REINVITE_REASON:
         raise AppError('HOOK_AUTHORIZATION_RETIRED','旧托管已结束，只能核对原发送结果',409,{'suggested_action':'do_not_send'})
+
+
+def retired_evidence_scope(binding, worker_id, payload):
+    """Exact former authorization may archive evidence, never admit business work."""
+    if binding is None:return False
+    ctx=binding.native_context or {}
+    return (not binding.deleted_at and binding.worker_id==worker_id
+        and binding.bind_status=='disabled' and binding.disable_reason==REINVITE_REASON
+        and not binding.allow_listening and ctx.get('business_enabled') is False
+        and type(payload.get('binding_revision')) is int
+        and payload['binding_revision']==ctx.get('retired_authorization_revision')
+        and binding.native_self_wxid==payload.get('self_wxid')
+        and binding.native_peer_wxid==payload.get('peer_wxid')
+        and ctx.get('account_epoch')==payload.get('account_epoch'))

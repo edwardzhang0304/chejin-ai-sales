@@ -93,6 +93,7 @@ def inventory(db,authenticated,instance,payload):
             'reconciliation_binding':reconciliation_binding,
             'journal_sha256':attempt['journal_sha256'] if attempt else None,'original_process_generation':native['process_generation'],
             'physical_begin_registered':bool(attempt)})
+    retired_evidence=retired_evidence_inventory(db,w,payload)
     retained_task=db.get(Task,payload.retained_flow_id) if payload.retained_flow_id else None
     retained_flow_terminal=bool(retained_task and retained_task.worker_id==w.id
         and retained_task.status in {'completed','failed','cancelled','canceled'} and not flow.get('flow_id'))
@@ -100,7 +101,7 @@ def inventory(db,authenticated,instance,payload):
         'inflight_flow':flow,'inflight_task':current_task,
         'inflight_batch_id':(db.get(ReplyAction,current.reply_action_id).batch_id if current and current.reply_action_id and db.get(ReplyAction,current.reply_action_id) else None),'bindings':bindings,'invitations':invitations,
         'relationship_query_version':1,'relationship_bindings':[{k:b[k] for k in ('binding_id','binding_revision','peer_wxid','remark_code')} for b in bindings],
-        'retained_sends':retained,'can_send':False,'observation_query_version':1}
+        'retired_evidence':retired_evidence,'retained_sends':retained,'can_send':False,'observation_query_version':1}
 
 
 def with_open_handoffs(db,worker_id,self_wxid,account_epoch,bindings):
@@ -133,4 +134,27 @@ def with_open_handoffs(db,worker_id,self_wxid,account_epoch,bindings):
                           MessageEvent.id.in_(e.trigger_message_event_ids or []),MessageEvent.sender_role=='customer'))
                       if (m.raw_payload or {}).get('native_msg_id')]} for e in events]
         result.append({**item,'open_handoffs':records})
+    return result
+
+
+def retired_evidence_inventory(db,w,payload):
+    """Advertise only archival retry identity, never a listening/transcription job."""
+    from app.services.hook_relationship_service import retired_evidence_scope
+    result=[]
+    for binding in db.scalars(select(WechatSessionBinding).where(
+            WechatSessionBinding.worker_id==w.id,WechatSessionBinding.bind_status=='disabled',
+            WechatSessionBinding.disable_reason=='operator_reinvite')):
+        ctx=binding.native_context or {}
+        scope={'self_wxid':payload.self_wxid,'account_epoch':payload.account_epoch,
+            'peer_wxid':binding.native_peer_wxid,'binding_revision':ctx.get('retired_authorization_revision')}
+        proof=db.get(TaskEvidence,ctx.get('invite_evidence_id')) if ctx.get('invite_evidence_id') else None
+        if (not retired_evidence_scope(binding,w.id,scope) or proof is None
+                or (proof.extra_metadata or {}).get('backend_validated') is not True):continue
+        voices=[]
+        for parent in db.scalars(select(MessageEvent).where(MessageEvent.binding_id==binding.id,
+                MessageEvent.message_type=='voice',MessageEvent.sender_role=='customer')):
+            if parent.id not in ctx.get('history_message_event_ids',[]):continue
+            voices.append({'native_msg_id':parent.raw_payload['native_msg_id']})
+        result.append({'binding_id':binding.id,'binding_revision':scope['binding_revision'],
+            'peer_wxid':binding.native_peer_wxid,'voice_jobs':voices})
     return result

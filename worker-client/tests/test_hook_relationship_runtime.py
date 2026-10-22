@@ -21,3 +21,14 @@ def test_relationship_query_failure_never_becomes_deletion_or_swallows_identity(
     else:
         with pytest.raises(HookLocalError,match=code):runtime.review_relationships([{'binding_id':'unused'}])
         assert not logs
+
+
+def test_retired_invitation_has_terminal_description_not_waiting_or_bound_success():
+    from chejin_worker_client.hook_progress import HookProgressTimeline
+    timeline=HookProgressTimeline()
+    for state,note in [('waiting','recipient'),('done','invite_replaced')]:
+        timeline.apply({'event':'hook_progress','context':'old-invite','phase':'bind','state':state,'note':note})
+    assert len(timeline.steps)==1
+    assert timeline.steps[0]['state']=='done'
+    assert timeline.steps[0]['title']=='本轮好友绑定已结束'
+    assert '新的邀请任务' in timeline.steps[0]['description']

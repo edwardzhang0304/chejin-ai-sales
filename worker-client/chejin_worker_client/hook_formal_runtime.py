@@ -192,6 +192,10 @@ class HookFormalRuntime:
         return claimed
 
     def finish(self,task_id,flow_id,token,conversation_id=None):
+        # Zero means this terminal task was never claimed, not a valid lease.
+        # Omit that header only for finish; the server must prove terminal and
+        # original Flow ownership. Claim/begin/renew still require positive tokens.
+        token = None if type(token) is int and token == 0 else token
         body={'flow_id':flow_id,'terminal_kind':'task_terminal'}
         if conversation_id:body['conversation_id']=conversation_id
         result=self.client.call(self.credentials,'POST',f'/workers/{self.credentials.worker_id}/inflight-flow/finish',body,
@@ -371,6 +375,11 @@ class HookFormalRuntime:
             if projection['status']!='projected':raise ValueError('HOOK_CALLBACK_PROJECTION_QUARANTINED')
         self.outbox.enqueue_projections([seq for seq, _ in rows],delivery,
                                         now=utc_now_iso(),allowed_native_ids=allowed_native_ids)
+        self.drain_pending(binding)
+
+    def drain_pending(self,binding):
+        # Retirement can finish existing deliveries; it cannot enqueue new input.
+        delivery=self.delivery(binding)
         while True:
             claim=self.outbox.claim_next(delivery,now=utc_now_iso(),lease_seconds=30)
             if claim is None:break

@@ -38,14 +38,24 @@ def dispatch_facts(db, authenticated, instance, event_uuid):
         .with_for_update().execution_options(populate_existing=True))
     ctx=dict(binding.native_context or {}) if binding else {}
     proof=db.get(TaskEvidence,ctx.get('invite_evidence_id')) if ctx.get('invite_evidence_id') else None
-    if (binding is None or binding.deleted_at or binding.worker_id!=w.id or binding.bind_status!='bound'
-            or not binding.allow_listening or binding.listen_status not in {'listening','degraded'}
+    from app.services.hook_relationship_service import retired_evidence_scope
+    retired=retired_evidence_scope(binding,w.id,payload)
+    if (binding is None or binding.deleted_at or binding.worker_id!=w.id or (not retired and (binding.bind_status!='bound'
+            or not binding.allow_listening or binding.listen_status not in {'listening','degraded'}))
             or binding.native_self_wxid!=payload['self_wxid'] or binding.native_peer_wxid!=payload['peer_wxid']
             or ctx.get('account_epoch')!=payload['account_epoch']
-            or int(binding.authorization_revision or 1)!=payload['binding_revision']
-            or ctx.get('business_enabled') is not True or proof is None
+            or (not retired and (int(binding.authorization_revision or 1)!=payload['binding_revision']
+            or ctx.get('business_enabled') is not True)) or proof is None
             or (proof.extra_metadata or {}).get('backend_validated') is not True):
         raise AppError('HOOK_BINDING_NOT_AUTHORIZED','客户正式绑定或消息授权已失效',409)
+    if retired:
+        # A durable transport receipt is not permission to create customer input.
+        # Preserve any previously stored facts and immutable original envelope.
+        if receipt.dispatch_status!='facts_stored':receipt.dispatch_status='authorization_retired'
+        db.flush()
+        return {'event_uuid':event_uuid,'dispatch_status':'authorization_retired',
+            'message_event_ids':[],'new_message_event_ids':[],
+            'ai_dispatch':'authorization_retired','can_send':False}
     require_followup(db,binding.lead_id)
     # Validate every existing ID before inserting any member of this envelope.
     pairs=[]; seen={}

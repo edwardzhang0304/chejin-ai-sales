@@ -224,8 +224,12 @@ class HookBusinessDispatcher:
                     generation_exited=inspect_windows_generation_exited)
                 if result['state'] not in {'transcribed','failed','uncertain'}:
                     raise ValueError('HOOK_VOICE_RESULT_UNCONFIRMED')
-                receipt=self.client.voice_result(rt.credentials,rt.account,binding,result)
                 path=self.private_root/'voice-receipts'/rt.scope.self_wxid/rt.scope.account_epoch/f"{job['native_msg_id']}.json"
+                if path.exists():
+                    if rules.loads(path.read_bytes()).get('attempt_digest')!=rules.digest(result):
+                        raise ValueError('HOOK_VOICE_RECEIPT_CONFLICT')
+                    continue
+                receipt=self.client.voice_result(rt.credentials,rt.account,binding,result)
                 value={'attempt_digest':rules.digest(result),'receipt':receipt}
                 if path.exists():
                     if rules.loads(path.read_bytes())!=value:raise ValueError('HOOK_VOICE_RECEIPT_CONFLICT')
@@ -447,7 +451,9 @@ class HookBusinessDispatcher:
             if not more or inventory['run_status']=='faulted':
                 rt.finish(current['id'],rt.active_flow_id,current['lease_fencing_token'],inventory['inflight_flow'].get('conversation_id'))
                 runner.api.inflight_flow_id=None;publish_current_task(runner,None);return
-        if self._recover_voice_attempts(inventory['bindings']):return
+        for binding in inventory.get('retired_evidence',[]):
+            rt.drain_pending(binding)
+        if self._recover_voice_attempts([*inventory['bindings'],*inventory.get('retired_evidence',[])]):return
         if inventory['run_status']=='faulted' or runner.binding.run_status=='faulted':return
         if not services.startup_window_ready_for(prepared):
             self._report_wait('HOOK_STARTUP_WINDOW_PENDING');return
@@ -458,6 +464,9 @@ class HookBusinessDispatcher:
             for invite in inventory['invitations']:
                 try:rt.discover(invite['source_task_id'])
                 except ApiError as exc:
+                    if exc.status_code==409 and exc.code=='HOOK_INVITE_AUTHORIZATION_RETIRED':
+                        emit_progress(runner,invite['source_task_id'],'bind','done','invite_replaced')
+                        continue
                     emit_progress(runner,invite['source_task_id'],'bind','waiting','recipient')
                     if exc.code not in {'HOOK_SHORTCODE_NOT_UNIQUE','HOOK_FRIEND_NOT_FOUND','HOOK_SHORTCODE_MATCH_REQUIRED','HOOK_FRIEND_CANDIDATE_UNRESOLVED'}:raise
         if not rt.active_flow_id and time.monotonic()>=self._housekeeping_due:

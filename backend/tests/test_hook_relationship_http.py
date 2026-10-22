@@ -96,7 +96,8 @@ def test_explicit_reinvite_full_c1_new_binding_chain_and_old_proof_retained(monk
         bad=post(w,f"/workers/{w['id']}/wechat/native-bindings",body(task,p,prep,('wxid_other',)))
         assert bad.status_code==409
         r=post(w,f"/workers/{w['id']}/wechat/native-bindings",body(task,p,prep));assert r.status_code==200,r.text
-        new=r.json()['data'];assert new['binding_id']!=b['binding_id'] and new['conversation_id']!=b['conversation_id']
+        new=r.json()['data'];assert post(w,f"/workers/{w['id']}/wechat/native-bindings",body(task,p,prep)).json()['data']==new
+        assert new['binding_id']!=b['binding_id'] and new['conversation_id']!=b['conversation_id']
         with SessionLocal() as db:
             old=db.get(WechatSessionBinding,b['binding_id']);assert old.replacement_binding_id==new['binding_id']
             assert db.get(Conversation,old.conversation_id).status=='closed'
@@ -155,7 +156,8 @@ def test_failed_reinvite_round_can_be_explicitly_replaced_not_late_bound():
         old=db.get(WechatSessionBinding,b['binding_id']);revision=old.authorization_revision
     new_round=reinvite({**b,'binding_revision':revision});assert new_round.status_code==200,new_round.text
     assert new_round.json()['data']['task']['id']!=task['id']
-    assert post(w,f"/workers/{w['id']}/wechat/native-bindings",body(task,p,prep)).status_code==409
+    stale=post(w,f"/workers/{w['id']}/wechat/native-bindings",body(task,p,prep))
+    assert stale.status_code==409 and stale.json()['code']=='HOOK_INVITE_AUTHORIZATION_RETIRED',stale.text
     inventory=post(w,f"/workers/{w['id']}/wechat/native-work",p).json()['data']
     assert task['id'] not in [i['source_task_id'] for i in inventory['invitations']]
 
@@ -283,7 +285,7 @@ from test_hook_account_client import identity_client
 
 
 @pytest.mark.parametrize('claimed',['before','after'])
-def test_operator_retirement_during_claim_finishes_original_flow_without_worker_fault(claimed,monkeypatch):
+def test_operator_retirement_during_claim_finishes_original_flow_without_worker_fault(claimed,monkeypatch,identity_client,tmp_path):
     from app.services import c3_service
     w,t,p,b=bound();r,_=upload(w,p,b,coverage(b),monkeypatch)
     with SessionLocal() as db:
@@ -300,8 +302,20 @@ def test_operator_retirement_during_claim_finishes_original_flow_without_worker_
         result=post(w,f"/workers/{w['id']}/wechat/native-replies/{made['reply_action_id']}/claim",{**p,'task_id':tid,
             'history_state_digest':r.json()['data']['history_state_digest']},h)
     assert result.status_code==409 and result.json()['code']=='HOOK_AUTHORIZATION_RETIRED',result.text
-    finish=post(w,f"/workers/{w['id']}/inflight-flow/finish",{'flow_id':tid,'terminal_kind':'task_terminal','conversation_id':b['conversation_id']},h)
-    assert finish.status_code==200,finish.text
+    from chejin_worker_client.hook_formal_runtime import HookFormalRuntime
+    from chejin_worker_client.hook_formal_client import HookFormalClient
+    from chejin_worker_client.hook_backend import HookWorkerCredentials
+    from chejin_worker_client import storage
+    runtime=object.__new__(HookFormalRuntime)
+    runtime.client=HookFormalClient(identity_client.base_url,5)
+    runtime.credentials=HookWorkerCredentials(w['id'],w['worker_token'],w['instance'])
+    runtime.private_root=tmp_path/'runtime';runtime.active_flow_id=tid;runtime.active_task_id=tid
+    storage.begin_runtime_flow(tid,'chat_reply')
+    token=int(h.get('X-Task-Lease-Fencing-Token','0'))
+    runtime.finish(tid,tid,token,b['conversation_id'])
+    assert not storage.load_runtime_control().get('inflight_flow_id')
+    assert runtime.active_flow_id is None
+    assert (runtime.private_root/'finished'/f'{tid}.json').exists()
     with SessionLocal() as db:
         assert db.get(Worker,w['id']).run_status=='running'
         assert not db.get(Worker,w['id']).inflight_flow_state.get('flow_id')
@@ -321,3 +335,64 @@ def test_human_chat_and_matching_contact_do_not_clear_identity_review(monkeypatc
         assert db.get(WechatSessionBinding,b['binding_id']).native_context['relationship_review_required']
         assert not db.get(Conversation,b['conversation_id']).ai_enabled
         assert db.scalar(select(HandoffEvent)).closed_at is None
+
+
+@pytest.mark.parametrize('status',['bound','disabled'])
+def test_idempotent_binding_does_not_ignore_unrelated_conflicting_records(status):
+    w,t,p,b=bound()
+    with SessionLocal() as db:
+        old=db.get(WechatSessionBinding,b['binding_id'])
+        db.add(WechatSessionBinding(worker_id=old.worker_id,lead_id=old.lead_id,sales_id=old.sales_id,
+            native_self_wxid=old.native_self_wxid,native_peer_wxid='wxid_other_identity',remark_code='CJOTHER1',
+            display_name='Synthetic other binding',bind_status=status,listen_status='disabled',allow_listening=False))
+        db.commit()
+    r=post(w,f"/workers/{w['id']}/wechat/native-bindings",body(t,p,{'remark_name':b['remark_code']}))
+    assert r.status_code==409 and r.json()['code']=='HOOK_BINDING_CONFLICT',r.text
+
+
+@pytest.mark.parametrize('case',['other_peer','other_epoch','other_revision','outgoing','no_parent','digest'])
+def test_retirement_archival_voice_preserves_original_identity_checks(monkeypatch,case):
+    from test_hook_native_media import media_coverage,voice_payload
+    from app.models.wechat import MessageEvent
+    from app.models.hook_native import HookVoiceReceipt
+    w,t,p,b=bound();value=media_coverage(b)
+    response,_=upload(w,p,b,value,monkeypatch);assert response.status_code==200
+    mid=value['scans'][0]['databases'][0]['pages'][0][0]['MsgSvrID']
+    payload=voice_payload(w,p,b,mid)
+    assert reinvite(b).status_code==200
+    if case=='other_peer':payload['peer_wxid']='wxid_wrong_peer'
+    if case=='other_epoch':payload['account_epoch']=str(uuid.uuid4())
+    if case=='other_revision':payload['binding_revision']+=1
+    if case=='no_parent':payload['native_msg_id']='9999999999999999999'
+    if case=='digest':payload['attempt_digest']='c'*64
+    if case=='outgoing':
+        with SessionLocal() as db:
+            parent=db.scalar(select(MessageEvent).where(MessageEvent.message_type=='voice'))
+            parent.sender_role='self';db.commit()
+    rejected=post(w,f"/workers/{w['id']}/wechat/native-voice/result",payload)
+    assert rejected.status_code==409,rejected.text
+    with SessionLocal() as db:
+        assert not list(db.scalars(select(HookVoiceReceipt)))
+        assert db.get(WechatSessionBinding,b['binding_id']).bind_status=='disabled'
+
+
+@pytest.mark.parametrize('case',['peer','revision','proof','reason'])
+def test_retirement_archival_callback_does_not_accept_unrelated_evidence(case):
+    from test_hook_native_http import prepared,post as store
+    from app.models.hook_native import HookNativeReceipt
+    w,payload=prepared()
+    with SessionLocal() as db:
+        binding=db.get(WechatSessionBinding,payload['binding_id'])
+        ctx=dict(binding.native_context)
+        ctx.update(business_enabled=False,retired_authorization_revision=1)
+        binding.native_context=ctx;binding.bind_status='disabled';binding.allow_listening=False
+        binding.disable_reason='operator_reinvite';binding.authorization_revision=2
+        evidence=db.get(TaskEvidence,ctx['invite_evidence_id'])
+        evidence.extra_metadata={**evidence.extra_metadata,'backend_validated':True}
+        if case=='peer':binding.native_peer_wxid='wxid_other_peer'
+        if case=='revision':binding.native_context={**ctx,'retired_authorization_revision':2}
+        if case=='proof':evidence.extra_metadata={**evidence.extra_metadata,'backend_validated':False}
+        if case=='reason':binding.disable_reason='operator_disabled'
+        db.commit()
+    rejected=store(w,payload);assert rejected.status_code==409,rejected.text
+    with SessionLocal() as db:assert not list(db.scalars(select(HookNativeReceipt)))
