@@ -48,6 +48,7 @@ NOTES = {
  'interrupted': '处理已中断，故障恢复后按原记录核对结果。',
  'not_sent': '本轮回复未发送，旧回复已取消。',
  'sent': '本轮回复已发送并核对完成。',
+ 'send_unknown': '无法确认送达，核对已结束，不会自动重发。',
  'invite_done': '好友申请阶段已结束；通过后的客户处理另行展示。',
 }
 
@@ -136,6 +137,22 @@ def emit_progress(runner, context, phase, state='current', note=None, *, occurre
     _deliver(runner,event)
 
 
+def complete_send_progress(runtime, runner, task_id, settlement):
+    """Only after the original terminal receipt is durably saved; UI only.
+
+    Local observation is not allowed to overwrite an older unknown ACK.
+    Pending observation never enters this helper.
+    """
+    confirmed = (settlement.get('local_send_observed') is True
+                 and (settlement.get('ack') or {}).get('send_result') == 'sent')
+    runtime._send_result_pending = False
+    runtime._finish_note = 'sent' if confirmed else 'send_unknown'
+    emit_progress(runner, task_id, 'send_submit', 'done',
+                  None if settlement.get('local_send_observed') is True else 'send_unknown')
+    emit_progress(runner, task_id, 'send_confirm', 'done',
+                  None if confirmed else 'send_unknown')
+
+
 STARTUP_PHASES = ('environment','wechat_window','worker_window','ready')
 
 
@@ -204,6 +221,8 @@ class HookProgressTimeline:
         item['description']=event.get('description') or NOTES.get(event.get('note'),'')
         item.update(_group=event.get('group',context),_kind=event.get('kind',''),
                     _label=event.get('label',''),_historical=bool(event.get('historical')))
+        if phase in {'send_submit','send_confirm'} and state=='done' and event.get('note')=='send_unknown':
+            item['title']='发送尝试已结束' if phase=='send_submit' else '发送结果核对已结束'
         if phase=='finished':
             if state=='waiting':item['title']='等待本轮处理结果'
             unresolved=any(s is not item and s.get('_group')==item['_group']
@@ -211,6 +230,7 @@ class HookProgressTimeline:
             if event.get('note')=='sent' and unresolved:
                 item.update(state='waiting',title='等待本轮处理结果',description=NOTES['send_wait'])
             elif event.get('note')=='sent':item['title']='本轮回复已完成'
+            elif event.get('note')=='send_unknown' and not unresolved:item['title']='本轮处理已结束'
             elif event.get('note')=='not_sent':item['title']='本轮回复已取消'
             elif event.get('note')=='no_reply':item['title']='本轮无需回复'
             elif unresolved:item.update(state='waiting',title='本轮结果待确认',description=NOTES['incomplete'])

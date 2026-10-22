@@ -274,3 +274,25 @@ def test_repeated_failed_history_checks_keep_waiting_without_transient_current(l
   runtime.progress(context,'history','waiting','interrupted')
  assert snapshots and all(snapshot==expected for snapshot in snapshots)
  assert not any(e.get('phase')=='history' and e.get('state')=='current' for e in events)
+
+
+@pytest.mark.parametrize('observed,ack,expected',[(False,'unknown','send_unknown'),
+ (True,'unknown','send_unknown'),(True,'sent','sent'),(False,'sent','send_unknown')])
+def test_terminal_receipt_is_complete_but_never_guesses_delivery(observed,ack,expected):
+ from chejin_worker_client.hook_progress import complete_send_progress,emit_progress
+ timeline=HookProgressTimeline();runner=SimpleNamespace(on_runtime_process=timeline.apply)
+ runtime=SimpleNamespace()
+ emit_progress(runner,'task','send_submit','waiting','send_wait')
+ emit_progress(runner,'task','send_confirm','waiting','send_wait')
+ complete_send_progress(runtime,runner,'task',{'local_send_observed':observed,'ack':{'send_result':ack}})
+ emit_progress(runner,'task','finished','done',runtime._finish_note)
+ for _ in range(3):emit_progress(runner,'task','send_confirm','current')
+ assert runtime._send_result_pending is False and runtime._finish_note==expected
+ confirm=timeline.latest[('task','send_confirm')]
+ assert confirm['state']=='done'
+ assert timeline.latest[('task','finished')]['state']=='done'
+ if expected=='send_unknown':
+  assert confirm['title']=='发送结果核对已结束'
+  assert '无法确认送达' in confirm['description']
+  assert not any('已发送' in row.get('description','') for row in timeline.model())
+ else:assert timeline.latest[('task','finished')]['title']=='本轮回复已完成'

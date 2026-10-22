@@ -320,3 +320,49 @@ def test_reused_handoff_keeps_both_restriction_boundaries(first_reason,monkeypat
     r,_=upload(w,p,b,value,monkeypatch);assert r.status_code==200,r.text
     assert r.json()['data']['message_batch'] is not None
     assert len(sent)==1
+
+
+@pytest.mark.parametrize('damage',[None,'other_peer','incomplete','changed_scan','ordinary_text','quoted_notice','unresolved_order'])
+def test_zero_outgoing_notice_does_not_relax_verified_restriction_boundary(monkeypatch,damage):
+    w,_,p,b=bound();sent=notifications(w,monkeypatch);value=coverage(b)
+    append(value,kind='1',sender='1',text='synthetic outgoing')
+    append(value)
+    for scan in value['scans']:
+        d=scan['databases'][0];rows=d['pages'][0];rows[-2]['MsgSvrID']='0'
+        if damage=='other_peer':rows[-1]['StrTalker']='wxid_other'
+        if damage=='incomplete':d['row_count']=d['count_after']='99'
+        if damage=='ordinary_text':rows[-1]['Type']='1'
+        if damage=='quoted_notice':rows[-1]['StrContent']='引用：'+NOTICE+'这不是真的'
+        if damage=='unresolved_order':rows[1]['Sequence']=rows[0]['Sequence']
+    if damage=='changed_scan':value['scans'][1]['databases'][0]['pages'][0][-1]['StrContent']='changed'
+    result,_=upload(w,p,b,value,monkeypatch)
+    if damage in {'other_peer','incomplete','changed_scan'}:
+        assert result.status_code==409
+    else:
+        assert result.status_code==200,result.text
+        assert not result.json()['data']['history_ready']
+        assert result.json()['data']['message_batch'] is None
+    with SessionLocal() as db:
+        events=list(db.scalars(select(HandoffEvent)))
+        assert any(e.handoff_reason_code==REASON for e in events) is (damage is None)
+        assert db.get(Worker,w['id']).run_status=='running'
+    assert len(sent)<=1
+
+
+@pytest.mark.parametrize('blocker',['callback','voice'])
+def test_pending_outgoing_does_not_mask_other_notice_admission_blockers(monkeypatch,blocker):
+    w,_,p,b=bound();notifications(w,monkeypatch);value=coverage(b)
+    append(value,kind='1',sender='1',text='synthetic outgoing');append(value)
+    for scan in value['scans']:scan['databases'][0]['pages'][0][-2]['MsgSvrID']='0'
+    if blocker=='callback':
+        from test_hook_business_http import native_payload
+        payload=native_payload(w,b,mid='8000000000000000999',text='not yet covered')
+        r=post(w,f"/workers/{w['id']}/wechat/messages/native-observations",payload)
+        assert r.status_code==200,r.text
+    else:
+        append(value,kind='34',text='<msg><voicemsg voicelength="1000"/></msg>')
+    r,_=upload(w,p,b,value,monkeypatch)
+    assert r.status_code==200,r.text
+    assert not r.json()['data']['history_ready']
+    with SessionLocal() as db:
+        assert not any(e.handoff_reason_code==REASON for e in db.scalars(select(HandoffEvent)))

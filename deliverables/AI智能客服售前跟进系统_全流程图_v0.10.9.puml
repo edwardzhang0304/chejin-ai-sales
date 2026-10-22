@@ -1,5 +1,5 @@
 @startuml main
-' 文档修订：r3；更新日期：2026-10-22；磁盘维护源码待交付。
+' 文档修订：r4；更新日期：2026-10-22；好友验证交接与发送终态展示、磁盘维护源码待交付。
 ' 0.10.9候选更新（2026-10-21）：纳入已审2620508，补齐启动登记丢失、发送许可回包丢失和未知语音进程退出后的统一恢复。原凭证保留，不补发、不猜成功、不自动恢复接单；当前成品及销售原机仍待验。此前7e3e83c同版本候选已构建但未发布，保留并标为被替代候选；本次按用户要求保持0.10.9，以源码和包哈希区分。
 ' 本轮0.10.9基于已审提交a1de7f3，修复无服务器消息编号的本地发出记录阻断恢复，并补齐故障取证。0.10.8封存包不重打；原机仍有旧发送与未结流程，采用保留数据安装，不删除凭证、不补发、不自动解除暂停。已有测试按哈希复用；正式成品、Windows安装与销售原机恢复分别验收，当前均待本轮执行。后端、后台、Worker和合同统一0.10.9。
 ' 0.10.9候选：成品升级与原机恢复待验；旧记录保留。
@@ -18,7 +18,7 @@ skinparam activityDiamondBorderColor #58718C
 skinparam ArrowColor #58718C
 skinparam noteBackgroundColor #FFF4D9
 skinparam noteBorderColor #CDA556
-title 车金 0.10.9 · 完整业务主流程（r1，2026-10-21）
+title 车金 0.10.9 · 完整业务主流程（r4，2026-10-22）
 start
 :管理员交付前安装指定微信与 DLL
 按盒子配置路径/端口/回调，首次激活
@@ -112,11 +112,15 @@ ID 不当序号，缺页/冲突不猜顺序;
 原事件通知销售一次；不调用 Vision;
       case (己方/人工/系统/其他)
         :可信好友验证系统提示仅该客户转人工
+仅发出记录编号待定不阻挡可信提示，其他安全门禁保留
+后台交接状态先于原发送等待展示
 保存提示身份/顺序，原飞书通知去重
 既有图片/超时交接合入新条件与证据
 后续可靠人工按统一入口结清，客户新消息恢复组批
 旧人工/AI回显/单独好友通过不解除已建交接
-原未知发送仍单独核对，不补发、不清凭证;
+原未知发送仍单独核对，不补发、不清凭证
+终态回执保存后显示“发送结果核对已结束”蓝勾
+明确无法确认送达，不将旧未知 ACK 改成已发送;
         :原发送日志＋正文＋时间＋新增历史关联
 唯一 AI 回显只结算；可靠人工使旧稿失效
 按原生顺序结清原交接，不等待旧语音成功
@@ -206,7 +210,7 @@ skinparam activityDiamondBorderColor #58718C
 skinparam ArrowColor #58718C
 skinparam noteBackgroundColor #FFF4D9
 skinparam noteBorderColor #CDA556
-title 车金 0.10.9 · 支撑 1：故障、暂停与恢复（r1）
+title 车金 0.10.9 · 支撑 1：故障、暂停与恢复（r4）
 start
 :发现人工暂停、连接等待或技术故障;
 :记录原原因/作用域/incident_id
@@ -258,7 +262,7 @@ skinparam activityDiamondBorderColor #58718C
 skinparam ArrowColor #58718C
 skinparam noteBackgroundColor #FFF4D9
 skinparam noteBorderColor #CDA556
-title 车金 0.10.9 · 支撑 2：事实、耗时与后台展示（r1）
+title 车金 0.10.9 · 支撑 2：事实、耗时与后台展示（r4）
 participant "微信 / Hook" as H
 participant "Worker 业务线程" as W
 database "本机 SQLite / Outbox" as L
@@ -300,7 +304,7 @@ skinparam activityDiamondBorderColor #58718C
 skinparam ArrowColor #58718C
 skinparam noteBackgroundColor #FFF4D9
 skinparam noteBorderColor #CDA556
-title 车金 0.10.9 · 支撑 3：检查更新与保留数据安装（r1）
+title 车金 0.10.9 · 支撑 3：检查更新与保留数据安装（r4）
 start
 :设置展示与实际入口共用安全状态
 暂停/故障/业务离线本身不禁止检查;

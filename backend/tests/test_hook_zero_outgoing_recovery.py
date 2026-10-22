@@ -10,7 +10,7 @@ from app.models.wechat import MessageEvent
 from test_hook_fault_recovery_http import clean, local_storage, retained_scenario
 from test_hook_account_client import identity_client
 from test_hook_history_business_http import bound, coverage, upload
-from test_hook_friend_verification import append, notifications
+from test_hook_friend_verification import append, notifications, NOTICE, REASON
 from chejin_worker_client.shared_rules import hook_history_rules as rules
 
 
@@ -98,8 +98,9 @@ from test_hook_callback_recovery import connection_factory
 
 
 @pytest.mark.parametrize('invalidated',[False,True])
+@pytest.mark.parametrize('friend_notice',[False,True])
 def test_zero_querydb_actual_runtime_through_deadline_unknown_ack_and_flow_finish(
-        history_lab,identity_client,connection_factory,tmp_path,monkeypatch,invalidated):
+        history_lab,identity_client,connection_factory,tmp_path,monkeypatch,invalidated,friend_notice):
     from datetime import datetime,timezone
     from types import SimpleNamespace
     from chejin_worker_client.hook_formal_runtime import HookFormalRuntime
@@ -109,7 +110,11 @@ def test_zero_querydb_actual_runtime_through_deadline_unknown_ack_and_flow_finis
     w,p,b,h,permit,value,d,runner,services=retained_scenario(identity_client,tmp_path,monkeypatch,invalidate=invalidated)
     since=int(b['history_since_create_time'])
     native_rows=value['scans'][0]['databases'][0]['pages'][0]
-    native_rows[-1]['MsgSvrID']='0'
+    if friend_notice:
+        append(value, second=since+41)
+    native_rows=value['scans'][0]['databases'][0]['pages'][0]
+    native_rows[-2 if friend_notice else -1]['MsgSvrID']='0'
+    notices=notifications(w,monkeypatch)
     db_native.execute('DELETE FROM MSG')
     fields=['localId','MsgSvrID','Type','IsSender','CreateTime','Sequence','MsgServerSeq','MsgSequence','StrTalker','StrContent']
     db_native.executemany('INSERT INTO MSG VALUES(?,?,?,?,?,?,?,?,?,?)',[
@@ -121,6 +126,8 @@ def test_zero_querydb_actual_runtime_through_deadline_unknown_ack_and_flow_finis
     services.connection=manager;services._credentials=credentials
     assert post(w,f"/workers/{w['id']}/run-status",{'run_status':'faulted','client_instance_id':w['instance']}).status_code==200
     runner.binding.run_status='faulted'
+    from chejin_worker_client.hook_progress import HookProgressTimeline
+    timeline=HookProgressTimeline();runner.on_runtime_process=timeline.apply
     monkeypatch.setattr(c3_service,'generate_for_batch',lambda *a,**kw:pytest.fail('Recovery started AI'))
     clock=[since+50]
     monkeypatch.setattr(hook_send_service,'utcnow',lambda:datetime.fromtimestamp(clock[0],timezone.utc))
@@ -132,6 +139,16 @@ def test_zero_querydb_actual_runtime_through_deadline_unknown_ack_and_flow_finis
         assert db.get(Worker,w['id']).inflight_flow_state
     assert not (d.private_root/'send-receipts'/f"{permit['reply_action_id']}.json").exists()
     assert any(path=='/QueryDB' for path,*_ in server.requests)
+    with SessionLocal() as db:
+        events=list(db.scalars(select(HandoffEvent)))
+        assert len(events)==int(friend_notice and not invalidated)
+        if events:assert events[0].handoff_reason_code==REASON
+    # Handoff is visible on the next ordinary poll, before the original ACK
+    # deadline. Repeated pending reads neither notify again nor clear the send.
+    d.tick(runner,services)
+    if friend_notice and not invalidated:
+        assert len(notices)==1
+        assert any(row['title']=='已转人工，等待销售处理' for row in timeline.model())
     clock[0]=since+600
     for _ in range(3):d.tick(runner,services)
     with SessionLocal() as db:
@@ -143,6 +160,15 @@ def test_zero_querydb_actual_runtime_through_deadline_unknown_ack_and_flow_finis
         assert not db.scalar(select(func.count()).select_from(MessageEvent).where(MessageEvent.sender_role=='self'))
     assert all(f.read_bytes()==raw for f,raw in originals.items())
     assert not any(path=='/SendTextMsg' for path,*_ in server.requests)
+    confirm=timeline.latest[(permit['task_id'],'send_confirm')]
+    assert confirm['state']=='done' and confirm['title']=='发送结果核对已结束'
+    assert '不会自动重发' in confirm['description']
+    assert d.runtime._send_result_pending is False
+    assert timeline.latest[(permit['task_id'],'finished')]['state']=='done'
+    with SessionLocal() as db:
+        if friend_notice and not invalidated:
+            assert db.scalar(select(func.count()).select_from(HandoffEvent))==1
+            assert db.scalar(select(HandoffEvent)).handoff_reason_code==REASON
     receipts=[json.loads(f.read_bytes()) for f in (d.private_root/'history-receipts').glob('*.json')]
     assert receipts and all(r['recovery_settlement_allowed'] and not r['history_ready'] for r in receipts)
     assert list((d.private_root/'history-captures').glob('*.json'))
@@ -156,7 +182,7 @@ def test_restoring_old_zero_rejection_blocks_real_chain_before_any_ack(
     monkeypatch.setattr(rules,'unresolved_outgoing',lambda row:False)
     with pytest.raises(ValueError,match='HOOK_HISTORY_MESSAGE_ID_UNRESOLVED'):
         test_zero_querydb_actual_runtime_through_deadline_unknown_ack_and_flow_finish(
-            history_lab,identity_client,connection_factory,tmp_path,monkeypatch,False)
+            history_lab,identity_client,connection_factory,tmp_path,monkeypatch,False,False)
     with SessionLocal() as db:
         assert db.scalar(select(SentAck)) is None
         assert db.scalar(select(Worker)).inflight_flow_state

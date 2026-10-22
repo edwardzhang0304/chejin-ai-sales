@@ -18,7 +18,7 @@ from . import storage,ui_lock
 from .models import Binding,Task,utc_now_iso
 from .hook_backend import HookIdentityClient,HookHeartbeatIdentity,HookHeartbeatState
 from .hook_formal_c1 import HookFormalC1,HookC1ResultReceipts,_save
-from .hook_progress import emit_progress,register_progress
+from .hook_progress import emit_progress,register_progress,complete_send_progress
 from .hook_timing import timed_call, record_raw_delivery
 from .hook_history_sync import HookHistorySynchronizer
 from .hook_outbox import HookDeliveryScope,HookDeliveryOutbox
@@ -209,7 +209,7 @@ class HookFormalRuntime:
         if conversation_id:
             pending=bool(getattr(self,'_send_result_pending',False))
             if pending:self.progress(task_id,'send_confirm','waiting','send_wait')
-            else:self.progress(task_id,'finished','done',getattr(self,'_finish_note','sent'))
+            else:self.progress(task_id,'finished','done',getattr(self,'_finish_note',None))
         else:self.progress(task_id,'invite_finished','done','invite_done')
         return result
 
@@ -697,9 +697,7 @@ class HookFormalRuntime:
                 lambda: self.client.native_send_settle(self.credentials,permit,outcome),
                 context=self.timing_context(latest))
             _save(self.private_root/'send-receipts'/f"{action['id']}.json",settled)
-            self._send_result_pending=not settled['local_send_observed']
-            if settled['local_send_observed']:self.progress(task['id'],'send_submit','done')
-            self.progress(task['id'],'send_confirm','done' if settled['local_send_observed'] else 'waiting',None if settled['local_send_observed'] else 'send_wait')
+            complete_send_progress(self,getattr(self,'lifecycle_runner',None),task['id'],settled)
             runner=getattr(self,'lifecycle_runner',None)
             if runner and settled.get('task'):publish_current_task(runner,Task.from_api(settled['task']))
             latest=self.batch_view(data['batch_id'])

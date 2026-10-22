@@ -62,7 +62,8 @@ def test_restart_reconciles_numeric_history_without_replaying_original_send(
         def native_send_settle(self, cred, permit, outcome):
             assert calls[-1] == 'observe' and result != 'pending'
             calls.append('settle')
-            return {'local_send_observed': result == 'observed'}
+            return {'local_send_observed': result == 'observed',
+                    'ack': {'send_result': 'sent' if result == 'observed' else 'unknown'}}
 
     def restarted_dispatcher():
         dispatcher = HookBusinessDispatcher(Client(), private, lambda *a: None, lambda *a: None,
@@ -90,8 +91,10 @@ def test_restart_reconciles_numeric_history_without_replaying_original_send(
     receipt = private / 'send-receipts' / f"{metadata['reply_action_id']}.json"
     assert receipt.exists() is (result != 'pending')
     if receipt.exists():
-        assert json.loads(receipt.read_bytes()) == {'local_send_observed': result == 'observed'}
-        assert dispatcher.runtime._send_result_pending is (result != 'observed')
+        assert json.loads(receipt.read_bytes()) == {'local_send_observed': result == 'observed',
+            'ack': {'send_result': 'sent' if result == 'observed' else 'unknown'}}
+        assert dispatcher.runtime._send_result_pending is False
+        assert dispatcher.runtime._finish_note == ('sent' if result == 'observed' else 'send_unknown')
     assert {p.name: p.read_bytes() for p in folder.iterdir()} == before
     assert not any(path == '/SendTextMsg' for path, *_ in server.requests)
     assert not list(private.rglob('not-triggered.json'))

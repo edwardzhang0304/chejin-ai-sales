@@ -14,7 +14,7 @@ from . import storage
 from .api import ApiError
 from .c1_receipts import clear_confirmed_add_friend_receipt
 from .models import Task
-from .hook_progress import emit_progress,register_progress
+from .hook_progress import emit_progress,register_progress,complete_send_progress
 from .hook_formal_c1 import _save
 from .hook_formal_runtime import HookFormalRuntime, publish_current_task,read_batch_view
 from .hook_sender import RetainedNativeSendPermit
@@ -338,8 +338,7 @@ class HookBusinessDispatcher:
         path=self.private_root/'send-receipts'/f"{permit.reply_action_id}.json"
         if not path.exists():_save(path,settled)
         elif rules.loads(path.read_bytes())!=settled:raise ValueError('HOOK_SEND_SETTLEMENT_CONFLICT')
-        rt._send_result_pending=not settled.get('local_send_observed');rt._finish_note='sent'
-        emit_progress(getattr(self,'_progress_runner',None),metadata['task_id'],'send_confirm','done' if settled.get('local_send_observed') else 'waiting',None if settled.get('local_send_observed') else 'send_wait')
+        complete_send_progress(rt,getattr(self,'_progress_runner',None),metadata['task_id'],settled)
         return True
 
     def _recover_invitation(self,task):
@@ -416,9 +415,8 @@ class HookBusinessDispatcher:
         rt._observation_query_version=self._observation_query_version
         # Presentation is authorized by the validated inventory, even when the
         # original fault gate forbids all customer/business reconciliation.
-        if inventory['run_status']=='faulted':
-            for binding in inventory['bindings']:
-                self._publish_open_handoffs(runner,binding)
+        for binding in inventory['bindings']:
+            self._publish_open_handoffs(runner,binding)
         if runner.binding.run_status=='faulted':
             self._observe_clock(rt,prepared.account)
             self.resolve_wait('business',phase='clock_wait')
@@ -586,7 +584,6 @@ class HookBusinessDispatcher:
                     emit_progress(runner,context,'history','waiting','callback_wait' if str(exc)=='HOOK_HISTORY_CALLBACK_NOT_LANDED' else 'history_wait')
                     continue
                 raise
-            finally:self._publish_open_handoffs(runner,binding)
         self._publish_initial_read_finished(runner,inventory,history_ready=all_history_ready,pending=pending_work)
         if inventory['run_status']!='running' or rt.active_flow_id or not runner._can_start_new_flow():return
         if not runner.can_pull_tasks() or not runner._worker_transaction_barrier_ready(runner.binding,reason="hook_native_dispatch"):return

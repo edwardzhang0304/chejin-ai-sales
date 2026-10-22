@@ -19,8 +19,9 @@ from chejin_worker_client.hook_formal_client import HookFormalClient
 from chejin_worker_client.hook_formal_runtime import HookFormalRuntime
 
 
+@pytest.mark.parametrize('zero_id',[False,True])
 def test_friend_verification_after_first_segment_keeps_original_journal_and_stops_only_customer(
-        identity_client,lab,connection_factory,monkeypatch,tmp_path):
+        identity_client,lab,connection_factory,monkeypatch,tmp_path,zero_id):
     class Model:
         def generate_reply_decision(self,**kwargs):
             parts=['车辆需要结合实际检测结果核实，'*4+'我们会说明已知情况。',
@@ -32,6 +33,10 @@ def test_friend_verification_after_first_segment_keeps_original_journal_and_stop
     server,gateway,*_=lab
     manager,credentials,prepared=connection_factory(w)
     runtime=HookFormalRuntime(HookFormalClient(identity_client.base_url,5),credentials,gateway,prepared,tmp_path/'runtime')
+    from chejin_worker_client.hook_progress import HookProgressTimeline
+    from types import SimpleNamespace
+    timeline=HookProgressTimeline();runtime.lifecycle_runner=SimpleNamespace(on_runtime_process=timeline.apply,api=SimpleNamespace(),
+        _can_start_new_flow=lambda:True,binding=SimpleNamespace(run_status='running'))
     table=sqlite3.connect(':memory:',check_same_thread=False);table.row_factory=sqlite3.Row
     table.execute('CREATE TABLE MSG(localId INTEGER PRIMARY KEY,MsgSvrID TEXT,Type INTEGER,IsSender INTEGER,CreateTime INTEGER,Sequence INTEGER,MsgServerSeq INTEGER,MsgSequence INTEGER,StrTalker TEXT,StrContent TEXT)')
     server.catalog_entries=[{'dbpath':r'C:\WeChat Files\wxid_sales_A\Msg\Multi\MSG0.db','dbhandle':'friend-notice-test'}]
@@ -45,9 +50,22 @@ def test_friend_verification_after_first_segment_keeps_original_journal_and_stop
     def hook(path):
         server.raw_override=None
         if path=='/SendTextMsg':
-            add(1,1,server.requests[-1][1]['msg']);add(10000,0,NOTICE)
+            add(1,1,server.requests[-1][1]['msg'])
+            if zero_id:table.execute('UPDATE MSG SET MsgSvrID=0 WHERE IsSender=1')
+            add(10000,0,NOTICE)
             server.raw_override=b'{"SendTextMsg":"1"}'
     server.on_request=hook
+    if zero_id:
+        # Move only the server confirmation clock after the real post-send
+        # history read. This exercises reply_once's terminal-unknown entry.
+        from app.services import hook_send_service
+        from datetime import timedelta
+        observe=HookFormalClient.observe_send
+        def after_deadline(*args,**kwargs):
+            now=hook_send_service.utcnow()
+            monkeypatch.setattr(hook_send_service,'utcnow',lambda:now+timedelta(seconds=301))
+            return observe(*args,**kwargs)
+        monkeypatch.setattr(HookFormalClient,'observe_send',after_deadline)
     first=runtime.sync(binding)
     result=drive_reply(runtime,binding,first['message_batch']['batch_id'])
     assert len(result['sends'])==1
@@ -55,13 +73,17 @@ def test_friend_verification_after_first_segment_keeps_original_journal_and_stop
     assert not runtime.active_flow_id
     with SessionLocal() as db:
         actions=list(db.scalars(select(ReplyAction).order_by(ReplyAction.segment_index)))
-        assert len(actions)==2 and actions[0].status=='sent' and actions[1].status=='cancelled'
+        assert len(actions)==2 and actions[0].status==('unknown_send_result' if zero_id else 'sent') and actions[1].status=='cancelled'
         cancelled=db.scalar(select(Task).where(Task.reply_action_id==actions[1].id))
         assert cancelled.cancel_reason==REASON
         original_action=actions[0].id
         assert db.get(Worker,w['id']).run_status=='running'
         assert not db.get(Worker,w['id']).inflight_flow_state
         assert db.scalar(select(HandoffEvent)).handoff_reason_code==REASON
+    confirm=timeline.latest[(result['sends'][0]['task_id'],'send_confirm')]
+    assert confirm['state']=='done'
+    assert confirm['title']==('发送结果核对已结束' if zero_id else '确认发送结果')
+    assert runtime._send_result_pending is False
     files=list((runtime.private_root/'sends').rglob('trigger.json'));assert len(files)==1
     folder=files[0].parent;before={p.name:p.read_bytes() for p in folder.iterdir()}
     for _ in range(2):assert runtime.sync(binding)['message_batch'] is None

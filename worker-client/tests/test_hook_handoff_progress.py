@@ -208,3 +208,29 @@ def test_unknown_voice_handoff_does_not_invent_an_ai_attempt(runtime):
  assert rows[0]['state']=='error' and '结果未确认' in rows[0]['description']
  assert '不会自动重试' in rows[0]['description']
  assert all(e.get('phase')!='decision' for e in events)
+
+
+@pytest.mark.parametrize('run_status',['running','paused'])
+def test_handoff_inventory_published_before_retained_send_pending_return(tmp_path,monkeypatch,run_status):
+ import threading
+ from chejin_worker_client import storage
+ scope=SimpleNamespace(self_wxid='synthetic-self',account_epoch='epoch',process_generation='generation')
+ account={k:getattr(scope,k) for k in ('self_wxid','account_epoch','process_generation')}
+ prepared=SimpleNamespace(registration=SimpleNamespace(scope=scope),account=None)
+ timeline=HookProgressTimeline()
+ inventory={'schema_version':'hook-native-work-v1','observation_query_version':1,**account,
+  'run_status':run_status,'bindings':[{'binding_id':'binding','open_handoffs':[fact()]}],
+  'inflight_flow':{},'invitations':[],'retained_sends':[{'binding_id':'binding'}]}
+ client=SimpleNamespace(call=lambda *a,**kw:inventory)
+ d=HookBusinessDispatcher(client,tmp_path,None,None,automatic_transcription_disabled=lambda:True)
+ d.runtime=SimpleNamespace(account=account,scope=scope,credentials=SimpleNamespace(worker_id='worker'))
+ runner=SimpleNamespace(binding=SimpleNamespace(run_status=run_status),stop_event=threading.Event(),
+  on_runtime_process=timeline.apply)
+ services=SimpleNamespace(connection=SimpleNamespace(prepared=prepared))
+ monkeypatch.setattr(storage,'load_runtime_control',lambda:{})
+ monkeypatch.setattr(d,'_observe_clock',lambda *a:None)
+ monkeypatch.setattr(d,'_adopt_flow',lambda *a:None)
+ monkeypatch.setattr(d,'_recover_send',lambda *a:False)
+ for _ in range(2):d.tick(runner,services)
+ assert any(row['title']=='已转人工，等待销售处理' for row in timeline.model())
+ assert runner.binding.run_status==run_status
