@@ -680,17 +680,17 @@
     "recall_author_and_reviewer_shared_trigger_context"
   ],
   "current_release": {
-    "version": "0.10.9",
+    "version": "0.10.10",
     "source_commit": "209f7fb66a01a05736fdd32e54808e54a9b66ce3",
     "source_state": "gray_release_candidate",
     "published": false,
-    "contract_revision": "0.10.9",
-    "contract_sha256": "0a3332b5f3203da5e4154583559595f0259b23c2d5b1f6218176abb0ac65c9eb",
+    "contract_revision": "0.10.10",
+    "contract_sha256": "dd92cb9d4952fad3bc6d1f33fe4b475c55849d79952d1c54be04f8e9561a2258",
     "scope": [
       "native_hook_state_and_release_preparation",
       "schema_revision_sync"
     ],
-    "note": "0.10.8 release from reviewed bc59a8e, including cumulative reviewed diagnostics, history order and customer handoff recovery. Native Windows acceptance pending."
+    "note": "0.10.10 release preparation includes reviewed disk maintenance, friend restriction handoff and terminal display, confirmed reinvitation and original-evidence closure, native private identity compatibility. Original data retained; voice timeout excluded. Windows package and original-machine binding/reply acceptance pending."
   },
   "historical_integrations": [
     {

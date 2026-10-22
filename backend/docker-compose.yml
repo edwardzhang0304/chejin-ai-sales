@@ -1,6 +1,6 @@
 services:
   api:
-    image: ${BACKEND_IMAGE:-chejin-api:0.10.9}
+    image: ${BACKEND_IMAGE:-chejin-api:0.10.10}
     build:
       context: ..
       dockerfile: backend/Dockerfile

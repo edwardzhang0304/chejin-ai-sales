@@ -1,6 +1,7 @@
 @startuml main
+' 0.10.10 r1发布候选：累计已审修复；原数据和凭证保留，不补发。正式升级与原机新好友正常回复待验。
 ' r8 2026-10-22：原生私人账号编号统一兼容；v2原证据保留，历史补齐，不补发；本地模拟已验，Windows待验，不打包。
-' 文档修订：r8；更新日期：2026-10-22；好友验证交接与发送终态展示、磁盘维护源码待交付。
+' 文档修订：r1；更新日期：2026-10-22；好友验证交接与发送终态展示、磁盘维护源码待交付。
 ' r7归档恢复：跨进程时同时核验当前身份与原证据身份；活动业务不跨原进程门禁。
 ' r7收尾：旧授权退出后只补交原消息和已有语音结果；无令牌已取消任务走原finish；旧邀请终态不冒充绑定成功；原发送继续原凭证核对。
 ' 0.10.9候选更新（2026-10-21）：纳入已审2620508，补齐启动登记丢失、发送许可回包丢失和未知语音进程退出后的统一恢复。原凭证保留，不补发、不猜成功、不自动恢复接单；当前成品及销售原机仍待验。此前7e3e83c同版本候选已构建但未发布，保留并标为被替代候选；本次按用户要求保持0.10.9，以源码和包哈希区分。
@@ -21,7 +22,7 @@ skinparam activityDiamondBorderColor #58718C
 skinparam ArrowColor #58718C
 skinparam noteBackgroundColor #FFF4D9
 skinparam noteBorderColor #CDA556
-title 车金 0.10.9 · 完整业务主流程（r7，2026-10-22）
+title 车金 0.10.10 · 完整业务主流程（r1，2026-10-22）
 start
 :管理员交付前安装指定微信与 DLL
 按盒子配置路径/端口/回调，首次激活
@@ -227,7 +228,7 @@ skinparam activityDiamondBorderColor #58718C
 skinparam ArrowColor #58718C
 skinparam noteBackgroundColor #FFF4D9
 skinparam noteBorderColor #CDA556
-title 车金 0.10.9 · 支撑 1：故障、暂停与恢复（r7）
+title 车金 0.10.10 · 支撑 1：故障、暂停与恢复（r1）
 start
 :发现人工暂停、连接等待或技术故障;
 :记录原原因/作用域/incident_id
@@ -279,7 +280,7 @@ skinparam activityDiamondBorderColor #58718C
 skinparam ArrowColor #58718C
 skinparam noteBackgroundColor #FFF4D9
 skinparam noteBorderColor #CDA556
-title 车金 0.10.9 · 支撑 2：事实、耗时与后台展示（r7）
+title 车金 0.10.10 · 支撑 2：事实、耗时与后台展示（r1）
 participant "微信 / Hook" as H
 participant "Worker 业务线程" as W
 database "本机 SQLite / Outbox" as L
@@ -321,7 +322,7 @@ skinparam activityDiamondBorderColor #58718C
 skinparam ArrowColor #58718C
 skinparam noteBackgroundColor #FFF4D9
 skinparam noteBorderColor #CDA556
-title 车金 0.10.9 · 支撑 3：检查更新与保留数据安装（r7）
+title 车金 0.10.10 · 支撑 3：检查更新与保留数据安装（r1）
 start
 :设置展示与实际入口共用安全状态
 暂停/故障/业务离线本身不禁止检查;
@@ -399,7 +400,7 @@ stop
 @startuml storage_maintenance
 !pragma layout smetana
 skinparam defaultFontName "PingFang SC"
-title 0.10.9 后续源码 · 本机磁盘维护（未重打包/未部署）
+title 0.10.10 发布候选 · 本机磁盘维护（未重打包/未部署）
 start
 :Worker启动或每小时触发;
 :获取同一更新状态锁;
