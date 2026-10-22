@@ -77,10 +77,12 @@ def begin_native(db,worker,instance,action_id,payload,flow,token):
     saved=(action.ai_payload or {}).get('native_send_identity',{})
     expected={k:saved.get(k) for k in ('self_wxid','account_epoch','process_generation','task_id','history_state_digest')}
     if (not saved or saved.get('flow_id')!=flow or saved.get('lease_fencing_token')!=token or any(getattr(payload,k)!=v for k,v in expected.items()) or action.send_token!=payload.send_token
-            or action.status!='sending' or (binding.native_context or {}).get('history_state_digest')!=payload.history_state_digest):
+            or action.status!='sending'):
         raise AppError('HOOK_SEND_PERMIT_CONFLICT','发送许可或同步上下文已经变化',409)
     conv=c3_service._conversation_for_binding(db,binding)
     c3_service._ensure_reply_action_send_eligible(db,binding=binding,conversation=conv,action=action,native_authorized=True)
+    if (binding.native_context or {}).get('history_state_digest')!=payload.history_state_digest:
+        raise AppError('HOOK_SEND_PERMIT_CONFLICT','发送许可或同步上下文已经变化',409)
     if c3_service._is_past(action.expire_at):raise AppError('REPLY_ACTION_EXPIRED','回复动作已过期',409)
     stale=c3_service._stale_action_vehicle_ids(db,action,locked_vehicles=c3_service._lock_vehicle_facts_for_action(db,action.id))
     if stale:raise AppError(c3_service.VEHICLE_FACT_STALE_CODE,'车辆事实已经变化',409)

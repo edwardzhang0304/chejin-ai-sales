@@ -350,7 +350,7 @@ def test_zero_outgoing_notice_does_not_relax_verified_restriction_boundary(monke
 
 
 @pytest.mark.parametrize('blocker',['callback','voice'])
-def test_pending_outgoing_does_not_mask_other_notice_admission_blockers(monkeypatch,blocker):
+def test_verified_restriction_requires_callback_coverage_but_not_voice_content(monkeypatch,blocker):
     w,_,p,b=bound();notifications(w,monkeypatch);value=coverage(b)
     append(value,kind='1',sender='1',text='synthetic outgoing');append(value)
     for scan in value['scans']:scan['databases'][0]['pages'][0][-2]['MsgSvrID']='0'
@@ -360,9 +360,10 @@ def test_pending_outgoing_does_not_mask_other_notice_admission_blockers(monkeypa
         r=post(w,f"/workers/{w['id']}/wechat/messages/native-observations",payload)
         assert r.status_code==200,r.text
     else:
+        value['schema_version']='hook-history-coverage-v2'
         append(value,kind='34',text='<msg><voicemsg voicelength="1000"/></msg>')
     r,_=upload(w,p,b,value,monkeypatch)
     assert r.status_code==200,r.text
     assert not r.json()['data']['history_ready']
     with SessionLocal() as db:
-        assert not any(e.handoff_reason_code==REASON for e in db.scalars(select(HandoffEvent)))
+        assert any(e.handoff_reason_code==REASON for e in db.scalars(select(HandoffEvent))) is (blocker=='voice')

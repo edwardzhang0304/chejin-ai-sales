@@ -661,8 +661,14 @@ class HookFormalRuntime:
                 timing_context=self.timing_context(latest))
             try:
                 outcome=sender.execute(permit,self.process,self.scope,Refresh())
-            except ValueError as exc:
-                code=str(exc)
+            except (ValueError,ApiError) as exc:
+                if isinstance(exc,ApiError):
+                    # A definite customer restriction before trigger reuses the
+                    # original no-trigger receipt. Network/identity/other 409s
+                    # remain errors, and an existing trigger always forbids this.
+                    if exc.status_code!=409 or exc.code!='HOOK_FRIEND_VERIFICATION_REQUIRED':raise
+                    code='HOOK_SEND_LATEST_CONTEXT_STALE'
+                else:code=str(exc)
                 allowed={'HOOK_SEND_LATEST_CONTEXT_STALE','HOOK_RUNTIME_NOT_RUNNING','HOOK_SEND_SYNC_PENDING',
                     'HOOK_SEND_PERMIT_EXPIRED_OR_CHANGED','HOOK_ORIGINAL_FLOW_CONTINUATION_BLOCKED'}
                 root=self.private_root/'sends'/permit.worker_id/permit.account_epoch/permit.reply_action_id
@@ -678,6 +684,10 @@ class HookFormalRuntime:
                 result=self.client.call(self.credentials,'POST',f'/workers/{self.credentials.worker_id}/wechat/native-replies/{permit.reply_action_id}/not-triggered',
                     {**permit.account(),'task_id':permit.task_id,'send_token':permit.send_token,'proof':proof,'proof_digest':rules.digest(proof)},
                     task_id=permit.task_id,token=permit.lease_fencing_token,flow_id=permit.flow_id)
+                receipt_path=self.private_root/'send-receipts'/f'{permit.reply_action_id}.json'
+                if receipt_path.exists():
+                    if rules.loads(receipt_path.read_bytes())!=result:raise ValueError('HOOK_SEND_SETTLEMENT_CONFLICT')
+                else:_save(receipt_path,result)
                 self._finish_note='not_sent'
                 self.finish(permit.task_id,flow,permit.lease_fencing_token,binding['conversation_id'])
                 return {'status':'not_triggered','automatic_resend_allowed':False}

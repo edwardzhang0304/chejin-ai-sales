@@ -258,10 +258,13 @@ def accept_coverage(db,authenticated,instance,payload):
         reason=reason or 'HOOK_NATIVE_SEND_ACTOR_PENDING'
     facts_ready=checked['ready'] and reason is None
     covered=human_covered_voice_ids(db,binding,verified_rows=[rows_by_id[mid] for mid in ids]) if facts_ready else set()
+    from app.services.hook_customer_notice_service import notice_key
+    notice_keys=sorted(notice_key(row,ctx) for row in checked['friend_verification_notices'])
     state_digest=rules.digest([payload.account_epoch,payload.process_generation,payload.binding_revision,
         checked['revoked_native_ids'],checked['system_notice_native_ids'],[[r['MsgSvrID'],r['Type'],r['IsSender'],r['StrContent'],r['Sequence'],r['MsgSequence'],
           *_reply_history_state(rows_by_id[ids[i]],covered)] for i,r in enumerate(checked['semantic_rows'])]]
-          + ([checked['unresolved_outgoing_rows']] if checked['unresolved_outgoing_rows'] else []))
+          + ([checked['unresolved_outgoing_rows']] if checked['unresolved_outgoing_rows'] else [])
+          + ([['friend_verification_notices',notice_keys]] if notice_keys else []))
     changed=ctx.get('history_state_digest')!=state_digest
     if reconciliation is None:
         ctx.update({'history_ready':False,'history_reason_code':reason,'active_history_receipt_id':receipt.id,
@@ -288,7 +291,7 @@ def accept_coverage(db,authenticated,instance,payload):
     if any(m.sender_role=='customer' and m.message_type=='voice'
             and m.item_state not in {'completed','failed'} and m.id not in covered for m in rows):
         reason=reason or 'HOOK_VOICE_PENDING'
-        notice_ready = False
+        # Media content readiness cannot postpone a verified stop restriction.
     ready=checked['ready'] and reason is None
     if reconciliation is None:
         ctx.update(history_ready=ready,history_reason_code=reason)
@@ -302,7 +305,7 @@ def accept_coverage(db,authenticated,instance,payload):
     )
     # Customer business restrictions do not become Worker connection faults.
     # Keep any original send pending until its separate history settlement.
-    if notice_ready and reason in {None, 'HOOK_NATIVE_SEND_ACTOR_PENDING', history.OUTGOING_ID_PENDING}:
+    if notice_ready and reason in {None, 'HOOK_NATIVE_SEND_ACTOR_PENDING', 'HOOK_VOICE_PENDING', history.OUTGOING_ID_PENDING}:
         from app.services.hook_customer_notice_service import apply_friend_verification_notice
         apply_friend_verification_notice(db, binding, checked, receipt, ctx)
     if checked['reason_code'] == history.OUTGOING_ID_PENDING and reconciliation is None:
