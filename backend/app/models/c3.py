@@ -16,6 +16,8 @@ class Conversation(Base, TimestampMixin):
     worker_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
     status: Mapped[str] = mapped_column(String(32), nullable=False, default="ai_active")
     ai_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    reply_ownership: Mapped[dict | None] = mapped_column(JSON, nullable=True,
+        default=lambda: {"owner":"ai", "revision":0, "recall_streak":0})
     friend_state: Mapped[str] = mapped_column(String(32), nullable=False, default="friend_active")
     reply_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     recall_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
@@ -72,6 +74,7 @@ class MessageBatch(Base, TimestampMixin):
         String(64),
         nullable=True,
     )
+    ownership_revision: Mapped[int | None] = mapped_column(Integer, nullable=True)
     origin_conversation_status: Mapped[str | None] = mapped_column(
         String(32),
         nullable=True,
@@ -237,3 +240,23 @@ Index(
     sqlite_where=text("closed_at IS NULL AND deleted_at IS NULL"),
     postgresql_where=text("closed_at IS NULL AND deleted_at IS NULL"),
 )
+
+
+class HumanReplyReminder(Base, TimestampMixin):
+    """One durable unanswered round, separate from the original handoff notice."""
+    __tablename__ = "human_reply_reminders"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    conversation_id: Mapped[str] = mapped_column(String(36), nullable=False, index=True)
+    first_message_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    next_attempt_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    status: Mapped[str] = mapped_column(String(24), nullable=False, default="pending")
+    attempt_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    attempted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    closed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    error_code: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    attempts: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
+
+
+Index("uq_human_reply_reminder_open", HumanReplyReminder.conversation_id, unique=True,
+      sqlite_where=HumanReplyReminder.closed_at.is_(None), postgresql_where=HumanReplyReminder.closed_at.is_(None))

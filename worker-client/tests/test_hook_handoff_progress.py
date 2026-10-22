@@ -65,7 +65,7 @@ def test_unsupported_old_server_cannot_close_saved_handoff(runtime):
  d._publish_open_handoffs(r,{'binding_id':'binding'})
  assert len(t.model())==2
  d._publish_open_handoffs(r,{'binding_id':'binding','open_handoffs':[]})
- assert t.model()[-1]['title']=='人工交接已结束'
+ assert t.model()[-1]['title']=='本次交接事项已处理'
  assert r.binding.run_status=='running'
  assert 'AI' not in t.model()[-1]['description']
 
@@ -234,3 +234,19 @@ def test_handoff_inventory_published_before_retained_send_pending_return(tmp_pat
  for _ in range(2):d.tick(runner,services)
  assert any(row['title']=='已转人工，等待销售处理' for row in timeline.model())
  assert runner.binding.run_status==run_status
+
+
+def test_persistent_owner_projection_does_not_flash_or_claim_ai_on_event_closure(runtime):
+ d,r,t,events=runtime
+ binding={'binding_id':'binding','remark_code':'CJTEST','open_handoffs':[],
+          'reply_ownership':{'owner':'human','revision':2,'round_id':None}}
+ for _ in range(5):d._publish_open_handoffs(r,binding)
+ assert len([e for e in events if e.get('phase')=='reply_owner'])==1
+ assert '销售' in t.model()[-1]['description']
+ binding['reply_ownership']={'owner':'human','revision':3,'round_id':'round'}
+ d._publish_open_handoffs(r,binding)
+ assert '等待销售回复' in t.model()[-1]['description']
+ binding['reply_ownership']={'owner':'ai','revision':3,'round_id':None}
+ d._publish_open_handoffs(r,binding)
+ assert 'AI' in t.model()[-1]['description']
+ assert r.binding.run_status=='running'

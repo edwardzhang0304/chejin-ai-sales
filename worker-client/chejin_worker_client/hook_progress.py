@@ -20,7 +20,8 @@ PHASES = {
  'messages_saved': '接收并保存客户消息', 'waiting': '等待下一条客户消息', 'connection_wait': '等待连接恢复',
  'sync_finished': '本次消息核对已结束',
  'handoff': '已转人工，等待销售处理',
- 'handoff_closed': '人工交接已结束',
+ 'handoff_closed': '本次交接事项已处理',
+ 'reply_owner': '当前回复负责人',
  'clock_wait': '等待后台响应稳定', 'stopped': '已停止接单',
  'model_queue': '等待 AI 处理', 'model_retry': '等待 AI 重试',
  'invite_finished': '好友申请处理已结束',
@@ -34,7 +35,10 @@ NOTES = {
  'handoff': '此客户的 AI 自动回复已暂停，等待销售处理。',
  'handoff_ai_failure': 'AI 回复处理失败，已按规则转人工。',
  'handoff_voice_unknown': '语音转写结果未确认，已转人工处理；原语音不会自动重试。',
- 'handoff_closed': '这次人工交接已结束。', 'send_wait': '发送结果待核对，不重复发送。',
+ 'handoff_closed': '本次交接事项已处理，后续由当前回复负责人继续处理。',
+ 'human_wait': '销售持续负责，此轮客户消息等待销售回复。',
+ 'human_replied': '销售持续负责，等待客户回复或符合条件的召回。',
+ 'ai_owner': '当前由 AI 负责回复；仍须通过原有发送检查。', 'send_wait': '发送结果待核对，不重复发送。',
  'connection_wait': '后台暂时无法响应，已收到的消息仍保留。',
  'clock_wait': '后台响应较慢，完成时间校验后继续。',
  'paused': '已暂停新任务，已登记的流程按原规则收尾。',
@@ -213,7 +217,7 @@ class HookProgressTimeline:
                 if affected and prior.get('_group')==affected and prior['state']=='current':
                     prior['state']='waiting';prior['description']=NOTES['interrupted']
         # Heartbeat/history polling cannot reopen an already completed stage.
-        if old and ((old['state']=='done' and state in {'current','done','waiting'}) or (old['state']==state and old.get('_note')==event.get('note'))):return
+        if old and ((phase!='reply_owner' and old['state']=='done' and state in {'current','done','waiting'}) or (old['state']==state and old.get('_note')==event.get('note'))):return
         if old and (old['state'] not in {'error','done'} or event.get('group')):
             item=old
         else:
@@ -331,7 +335,7 @@ class HookProgressTimeline:
             'contact_result','invite_form_fields','verify_remark_shortcode','confirm_once','cleanup','invite_receipt',
             'invite_finished','bind','messages_saved','history','voice','model_queue','model_retry','decision',
             'reply_ready','send_conditions','send_delay','pre_send','send_submit','send_confirm','handoff',
-            'handoff_closed','finished','sync_finished','stopped'))}
+            'handoff_closed','reply_owner','finished','sync_finished','stopped'))}
         result=[]
         for group in order:
             def phase_order(item):

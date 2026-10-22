@@ -8669,7 +8669,7 @@ def test_failed_sales_voice_is_human_intervention_and_cannot_trigger_brain():
         assert db.query(MessageBatch).count() == 0
 
 
-def test_customer_after_failed_sales_voice_continues_to_brain():
+def test_customer_after_failed_sales_voice_stays_with_human():
     worker = _create_worker()
     _create_sales(worker["id"])
     _create_lead("销售失败语音后客户追问", "13896676690")
@@ -8730,19 +8730,18 @@ def test_customer_after_failed_sales_voice_continues_to_brain():
             MessageEvent.source_message_key
             == "customer-after-failed-sales-voice"
         ).one()
-        batch = db.query(MessageBatch).one()
         assert failed_sales_voice.sender_role == "self"
-        assert conversation.status == "ai_active"
+        assert conversation.status == "waiting_sales_reply"
+        assert conversation.reply_ownership["owner"] == "human"
         assert db.query(HandoffEvent).count() == 0
-        assert batch.status == "reply_action_created"
-        assert batch.message_event_ids == [customer_message.id]
-        assert db.query(ReplyAction).filter(
-            ReplyAction.batch_id == batch.id,
-            ReplyAction.status == "queued",
-        ).count() == 1
+        # The verified sales message keeps responsibility with the human,
+        # even when its media content could not be understood.
+        assert db.query(MessageBatch).count() == 0
+        assert db.query(ReplyAction).count() == 0
 
 
-def test_customer_after_failed_sales_image_continues_to_brain():
+
+def test_customer_after_failed_sales_image_stays_with_human():
     worker = _create_worker()
     _create_sales(worker["id"])
     _create_lead("销售失败图片后客户追问", "13896676691")
@@ -8805,16 +8804,15 @@ def test_customer_after_failed_sales_image_continues_to_brain():
             MessageEvent.source_message_key
             == "customer-after-failed-sales-image"
         ).one()
-        batch = db.query(MessageBatch).one()
         assert failed_sales_image.sender_role == "self"
-        assert conversation.status == "ai_active"
+        assert conversation.status == "waiting_sales_reply"
+        assert conversation.reply_ownership["owner"] == "human"
         assert db.query(HandoffEvent).count() == 0
-        assert batch.status == "reply_action_created"
-        assert batch.message_event_ids == [customer_message.id]
-        assert db.query(ReplyAction).filter(
-            ReplyAction.batch_id == batch.id,
-            ReplyAction.status == "queued",
-        ).count() == 1
+        # The verified sales message keeps responsibility with the human,
+        # even when its media content could not be understood.
+        assert db.query(MessageBatch).count() == 0
+        assert db.query(ReplyAction).count() == 0
+
 
 
 @pytest.mark.parametrize(
@@ -10322,7 +10320,7 @@ def test_pause_keeps_customer_fact_without_409_or_brain_batch():
         assert db.get(MessageBatch, batch_id).status == "paused"
 
 
-def test_human_sales_reply_closes_pause_handoff_and_restores_ai():
+def test_human_sales_reply_closes_event_but_preserves_independent_ai_pause():
     worker = _create_worker()
     _create_sales(worker["id"])
     _create_lead("销售接管恢复客户", "13896676690")
@@ -10379,7 +10377,7 @@ def test_human_sales_reply_closes_pause_handoff_and_restores_ai():
         conversation = db.get(Conversation, binding["conversation_id"])
         handoff = db.get(HandoffEvent, handoff_id)
         assert conversation.status == "sales_replied_waiting_user"
-        assert conversation.ai_enabled is True
+        assert conversation.ai_enabled is False
         assert conversation.handoff_reason_code is None
         assert handoff.status == "sales_replied"
         assert handoff.closed_at is not None
@@ -10410,12 +10408,13 @@ def test_human_sales_reply_closes_pause_handoff_and_restores_ai():
     )
 
     assert customer_response.status_code == 200, customer_response.text
-    assert customer_response.json()["data"].get("message_batch") is not None
+    assert customer_response.json()["data"].get("message_batch") is None
     with SessionLocal() as db:
         conversation = db.get(Conversation, binding["conversation_id"])
-        assert conversation.status == "ai_active"
-        assert conversation.ai_enabled is True
-        assert db.query(MessageBatch).count() == 2
+        assert conversation.status == "waiting_sales_reply"
+        assert conversation.reply_ownership["owner"] == "human"
+        assert conversation.ai_enabled is False
+        assert db.query(MessageBatch).count() == 1
 
 
 @pytest.mark.parametrize(
@@ -10716,22 +10715,19 @@ def test_open_handoff_same_frame_respects_customer_sales_customer_order():
     )
 
     assert response.status_code == 200, response.text
-    assert response.json()["data"].get("message_batch") is not None
+    assert response.json()["data"].get("message_batch") is None
     with SessionLocal() as db:
         handoff = db.get(HandoffEvent, handoff_id)
         conversation = db.get(Conversation, binding["conversation_id"])
-        batch = (
-            db.query(MessageBatch)
-            .filter(MessageBatch.id != handoff.batch_id)
-            .one()
-        )
         assert handoff.status == "sales_replied"
         assert handoff.closed_at is not None
-        assert conversation.status == "ai_active"
-        assert batch.message_count == 1
-        assert len(batch.message_event_ids) == 1
-        customer_after = db.get(MessageEvent, batch.message_event_ids[0])
+        assert conversation.status == "waiting_sales_reply"
+        assert conversation.reply_ownership["owner"] == "human"
+        from app.models.c3 import HumanReplyReminder
+        reminder=db.get(HumanReplyReminder,conversation.reply_ownership["round_id"])
+        customer_after=db.get(MessageEvent,reminder.first_message_id)
         assert customer_after.content == "这条发生在销售回复后"
+        assert db.query(MessageBatch).filter(MessageBatch.id != handoff.batch_id).count()==0
 
 
 def test_delayed_history_does_not_move_recent_message_times_backwards():

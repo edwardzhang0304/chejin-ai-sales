@@ -32,7 +32,7 @@ def recall_input(monkeypatch, case='due', origin='sales_replied_waiting_user'):
         future=(due+timedelta(days=1)).replace(hour=2,minute=0,second=0,microsecond=0)
         if case=='not_due':future=due-timedelta(seconds=1)
         if case=='quiet':future=future.replace(hour=14) # Shanghai 22:00
-        if case=='total_limit':conv.recall_count=get_settings().c3_recall_max_cycles
+        if case=='total_limit':conv.reply_ownership={**conv.reply_ownership,'recall_streak':get_settings().c3_recall_max_cycles}
         if case=='daily_limit':
             conv.recall_daily_date=(future+timedelta(hours=8)).date()
             conv.recall_daily_count=get_settings().c3_recall_daily_limit

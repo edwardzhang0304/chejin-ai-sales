@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from app.services import reply_ownership
+
 from datetime import datetime, timedelta, timezone
 import hashlib
 import hmac
@@ -1041,6 +1043,8 @@ def message_batch_continuation_authorization(
                 and conversation.status in {"waiting_user_reply", "recalled_waiting_user"})
             or reply_then_handoff_sendable
         )
+        and (reply_ownership.allows_batch(conversation,batch) or (reply_then_handoff_sendable
+             and batch.ownership_revision == reply_ownership.revision(conversation)))
         and not batch.superseded_by_batch_id
         and (processing or sendable or interrupted_read)
     )
@@ -1066,6 +1070,11 @@ def _restore_conversation_after_no_action(
     conversation: Conversation,
     batch: MessageBatch,
 ) -> None:
+    from app.services.reply_ownership import revision, human_owned, state
+    if (batch.ownership_revision is not None and batch.ownership_revision!=revision(conversation)) or state(conversation).get("round_id"):
+        if human_owned(conversation):
+            conversation.status="waiting_sales_reply" if state(conversation).get("round_id") else "sales_replied_waiting_user"
+        return
     origin = str(
         batch.origin_conversation_status
         or (conversation.recall_origin_status if batch.trigger_type == "recall" else None)
@@ -1138,8 +1147,10 @@ def _ensure_native_ai_coverage(binding: WechatSessionBinding) -> None:
     ensure_coverage(binding)
 
 
-def _ensure_conversation_eligible(binding: WechatSessionBinding, conversation: Conversation) -> None:
+def _ensure_conversation_eligible(binding: WechatSessionBinding, conversation: Conversation, batch=None) -> None:
     _ensure_native_ai_coverage(binding)
+    from app.services.reply_ownership import require_batch
+    require_batch(conversation,batch)
     if binding.bind_status != "bound" or not binding.allow_listening:
         raise AppError("CONVERSATION_NOT_ELIGIBLE", "会话未绑定或不允许监听", 409, {"suggested_action": "handoff"})
     if not conversation.ai_enabled or conversation.status in {
@@ -1174,8 +1185,12 @@ def _ensure_reply_action_send_eligible(
     # Restriction is a definite refusal, even while media is unfinished.
     # Admitting any send still requires the full original coverage check.
     _ensure_native_ai_coverage(binding)
+    from app.services.reply_ownership import revision
+    owner_batch=db.get(MessageBatch,action.batch_id)
+    if owner_batch and owner_batch.ownership_revision is not None and owner_batch.ownership_revision!=revision(conversation):
+        raise AppError("HUMAN_REPLY_OWNERSHIP_REQUIRED","原回复责任周期已失效",409)
     if action.decision != "reply_then_handoff":
-        _ensure_conversation_eligible(binding, conversation)
+        _ensure_conversation_eligible(binding, conversation, db.get(MessageBatch,action.batch_id))
         return
     if binding.bind_status != "bound" or not binding.allow_listening:
         raise AppError(
@@ -1628,6 +1643,8 @@ def create_control_message_batch(
     )
     if existing:
         return {"batch_id": existing.id, "batch_status": existing.status, "batch": _batch_to_dict(existing)}
+    from types import SimpleNamespace
+    reply_ownership.require_batch(conversation,SimpleNamespace(trigger_type=trigger_type,ownership_revision=reply_ownership.revision(conversation)))
     active = _active_batch(db, conversation_id)
     if active:
         active.status = "superseded"
@@ -1635,7 +1652,9 @@ def create_control_message_batch(
         active.error_code = "MESSAGE_BATCH_SUPERSEDED"
     from app.services.knowledge_management_service import current_release_for_batch
 
+    from app.services.reply_ownership import revision
     batch = MessageBatch(
+        ownership_revision=revision(conversation),
         conversation_id=conversation_id,
         status="collecting",
         active=True,
@@ -1734,7 +1753,9 @@ def collect_message_batch(
 
     from app.services.knowledge_management_service import current_release_for_batch
 
+    from app.services.reply_ownership import revision
     batch = MessageBatch(
+        ownership_revision=revision(conversation),
         conversation_id=conversation_id,
         status="collecting",
         active=True,
@@ -1895,7 +1916,9 @@ def collect_recovered_customer_message_batch(
 
     from app.services.knowledge_management_service import current_release_for_batch
 
+    from app.services.reply_ownership import revision
     batch = MessageBatch(
+        ownership_revision=revision(conversation),
         conversation_id=conversation_id,
         status="collecting",
         active=True,
@@ -2582,7 +2605,7 @@ def enforce_open_handoff_gate(
         "rejected",
     }:
         conversation.status = "waiting_sales_reply"
-    elif not events and conversation.status == "waiting_sales_reply":
+    elif not events and conversation.status == "waiting_sales_reply" and not reply_ownership.human_owned(conversation):
         logger.error(
             "handoff projection inconsistent conversation_id=%s error_code=%s",
             conversation.conversation_id,
@@ -2615,7 +2638,6 @@ def close_open_handoffs_for_human_sales(
 
     closed: list[HandoffEvent] = []
     proof_sources: set[str] = set()
-    resume_ai = False
     closed_at = utcnow()
     for event in open_handoff_events_for_conversation(
         db,
@@ -2686,8 +2708,6 @@ def close_open_handoffs_for_human_sales(
                 continue
             proof_source = "reliable_occurred_at"
 
-        if batch and (batch.status == "paused" or batch.decision == "pause"):
-            resume_ai = True
         evidence_refs = list(event.evidence_refs or [])
         sales_ref = f"sales_message_event:{sales_message.id}"
         if sales_ref not in evidence_refs:
@@ -2714,7 +2734,6 @@ def close_open_handoffs_for_human_sales(
         "closed_count": len(closed),
         "closed_handoff_ids": [event.id for event in closed],
         "remaining_open_count": len(remaining),
-        "resume_ai": resume_ai,
         "time_order_proven": bool(closed),
         "reason": (
             "sales_message_after_handoff_proven"
@@ -2812,6 +2831,8 @@ def _create_or_reuse_open_handoff(
             existing.ai_payload = {**(existing.ai_payload or {}), **ai_payload}
         if conversation.status not in {"closed", "rejected"}:
             conversation.status = "waiting_sales_reply"
+        from app.services.reply_ownership import take_handoff
+        take_handoff(db,conversation,existing,created=False)
         return existing, False
 
     event = HandoffEvent(
@@ -2828,6 +2849,8 @@ def _create_or_reuse_open_handoff(
     )
     db.add(event)
     db.flush()
+    from app.services.reply_ownership import take_handoff
+    take_handoff(db,conversation,event,created=True)
     from app.services.observability_service import (
         process_run_id_for_handoff_event,
         record_server_stage_best_effort,
@@ -3259,6 +3282,12 @@ def claim_message_batch_generation(
         WechatSessionBinding.conversation_id==batch.conversation_id,WechatSessionBinding.deleted_at.is_(None)))
     if native_binding and native_binding.native_self_wxid and (native_binding.worker.run_status!='running' or not native_client_admitted):
         return {"run":False,"terminal":False,"batch":_batch_to_dict(batch),"suggested_action":"wait_worker_resume"}
+    from app.services.reply_ownership import allows_batch
+    owner_conversation=db.get(Conversation,batch.conversation_id)
+    if owner_conversation and not allows_batch(owner_conversation,batch):
+        cancel_active_batches_for_conversation_change(db,batch.conversation_id,reason="回复负责人已变化，取消未发送 AI 工作")
+        db.flush()
+        return {"run":False,"terminal":True,"error_code":"HUMAN_REPLY_OWNERSHIP_REQUIRED"}
     stale = message_batch_generation_is_stale(batch)
     retry_due = message_batch_retry_is_due(batch)
     if stale_only and not stale and not retry_due:
@@ -3349,7 +3378,8 @@ def generate_for_batch(
     if batch.status == "cancelled" and batch.error_code == "HISTORICAL_TEXT_CORRECTED":
         return {"decision": "no_action", "error_code": batch.error_code, "task_id": None}
     if expected_generation_attempt is not None and (
-        batch.status != "generating"
+        not reply_ownership.allows_batch(db.get(Conversation,batch.conversation_id),batch)
+        or batch.status != "generating"
         or int(batch.generation_attempt_count or 0) != int(expected_generation_attempt)
     ):
         return {
@@ -3381,7 +3411,7 @@ def generate_for_batch(
     if binding.native_self_wxid and expected_generation_attempt is None and (not native_client_admitted or binding.worker.run_status!='running'):
         return {'decision':'retry_later','suggested_action':'wait_worker_resume','task_id':None,'error_code':'HOOK_MODEL_CLIENT_ADMISSION_REQUIRED'}
     try:
-        _ensure_conversation_eligible(binding, conversation)
+        _ensure_conversation_eligible(binding, conversation,batch)
     except AppError as exc:
         batch.status = "no_action"
         batch.active = False
@@ -3595,7 +3625,8 @@ def generate_for_batch(
         stable_key=f"{batch.id}:{generation_attempt}",
     )
     if (
-        batch.status != "generating"
+        not reply_ownership.allows_batch(db.get(Conversation,batch.conversation_id),batch)
+        or batch.status != "generating"
         or int(batch.generation_attempt_count or 0) != generation_attempt
         or context.get("effective_context_digest", "") != effective_context_digest(db, batch.conversation_id)
         or (binding.native_self_wxid and (not (binding.native_context or {}).get('history_ready')
@@ -4242,25 +4273,23 @@ def sent_ack(db: Session, *, reply_action_id: str, payload: Any, native_verified
             if open_handoffs:
                 conversation.status = "waiting_sales_reply"
                 conversation.next_recall_at = None
-        elif not followup_cancelled and not newer_customer_turn and not newer_sales_turn:
-            conversation.status = "recalled_waiting_user" if batch and batch.trigger_type == "recall" else "waiting_user_reply"
-            if batch and batch.trigger_type == "recall" and action.segment_index == 1:
-                conversation.status = "recalled_waiting_user"
-                conversation.recall_origin_status = None
-                conversation.recall_cycle_id = None
-                local_today = action.sent_at.astimezone(
-                    ZoneInfo("Asia/Shanghai")
-                ).date()
-                if conversation.recall_daily_date != local_today:
-                    conversation.recall_daily_date = local_today
-                    conversation.recall_daily_count = 0
-                conversation.recall_count = int(conversation.recall_count or 0) + 1
-                conversation.recall_daily_count = int(
-                    conversation.recall_daily_count or 0
-                ) + 1
-            conversation.next_recall_at = action.sent_at + timedelta(
-                hours=get_settings().c3_recall_after_hours
-            )
+        elif not followup_cancelled and not newer_customer_turn and not newer_sales_turn and reply_ownership.allows_batch(conversation,batch):
+            first_recall=bool(batch and batch.trigger_type=='recall' and action.segment_index==1)
+            accepted=not first_recall or reply_ownership.recall_succeeded(db,conversation,action,binding,batch)
+            if accepted:
+                conversation.status='recalled_waiting_user' if batch and batch.trigger_type=='recall' else 'waiting_user_reply'
+                conversation.next_recall_at=action.sent_at+timedelta(hours=get_settings().c3_recall_after_hours)
+                if first_recall:
+                    conversation.recall_origin_status=conversation.recall_cycle_id=None
+        # Successful physical recalls count even when a later human fact means
+        # this ACK is no longer entitled to change the current reply owner.
+        if batch and batch.trigger_type=='recall' and action.segment_index==1:
+            local_today=_aware_datetime(action.sent_at).astimezone(ZoneInfo('Asia/Shanghai')).date()
+            if conversation.recall_daily_date is None or conversation.recall_daily_date<=local_today:
+                if conversation.recall_daily_date!=local_today:
+                    conversation.recall_daily_date=local_today;conversation.recall_daily_count=0
+                conversation.recall_daily_count=int(conversation.recall_daily_count or 0)+1
+            conversation.recall_count=int(conversation.recall_count or 0)+1
         finish_task_and_release_worker(task)
         _write_event(db, task, TaskEventType.completed, from_status=before, to_status=task.status, worker_id=payload.worker_id, remark=payload.remark)
     elif native_verified and payload.action_phase=='not_attempted' and payload.send_result=='failed' and (payload.evidence or {}).get('native_no_trigger_verified') is True:

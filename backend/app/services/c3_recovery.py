@@ -132,6 +132,8 @@ class C3BatchRecoveryLoop:
                 notify_result: dict[str, Any] = (
                     recover_pending_handoff_notifications_once()
                 )
+                from app.services.human_reminder_service import recover_reminders_once
+                recover_reminders_once()
                 batch_result: dict[str, Any] = recover_due_message_batches_once()
                 send_result: dict[str, Any] = recover_stale_reply_sends_once()
                 if (

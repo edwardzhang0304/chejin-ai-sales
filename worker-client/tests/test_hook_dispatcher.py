@@ -277,3 +277,39 @@ def test_relationship_review_respects_gates_and_retirement_is_customer_scoped(la
             assert bindings[1]['binding_id'] in reads
         assert runner.binding.run_status==status
     finally:manager.close()
+
+
+@pytest.mark.parametrize('current_owner',['ai','human'])
+def test_history_owner_supersedes_stale_voice_inventory(lab,backend_peer,tmp_path,monkeypatch,current_owner):
+    manager,credentials,state,response=setup(lab,backend_peer)
+    prepared=manager.prepare(credentials,state);scope=prepared.registration.scope
+    account={k:getattr(scope,k) for k in ('self_wxid','account_epoch','process_generation')}
+    binding={'binding_id':'owner-binding','binding_revision':1,'peer_wxid':'wxid_customer_A',
+        'conversation_id':'owner-conversation','history_since_create_time':'1','batch_ids':[],
+        'reply_ownership':{'owner':'ai','revision':0},'open_handoffs':[],
+        'voice_jobs':[{'native_msg_id':'8000000000000000001'}]}
+    captured=[]
+    monkeypatch.setattr('chejin_worker_client.hook_dispatcher.capture_voice_audio',lambda *a,**kw:captured.append(True))
+    class Client:
+        def call(self,credentials,method,path,body=None,**kwargs):
+            if path.endswith('native-work'):
+                return {'schema_version':'hook-native-work-v1','observation_query_version':1,**account,
+                    'run_status':'running','inflight_flow':{},'bindings':[binding],
+                    'invitations':[],'retained_sends':[],'inflight_task':None}
+            if path.endswith('tasks/pull'):return {'task':None}
+            pytest.fail(path)
+    class Runtime:
+        def __init__(self,*a,**kw):
+            self.credentials=credentials;self.account=account;self.scope=scope
+            self.active_flow_id=self.active_task_id=None;self.clock=SimpleNamespace(observe=lambda _:None)
+        def barrier(self,b):return (0,0)
+        def sync(self,b):return {'history_ready':True,'reply_ownership':{'owner':current_owner,'revision':1}}
+    runner=SimpleNamespace(binding=SimpleNamespace(run_status='running'),stop_event=threading.Event(),api=SimpleNamespace(),
+        _can_start_new_flow=lambda:True,can_pull_tasks=lambda:True,_worker_transaction_barrier_ready=lambda *a,**kw:True)
+    services=SimpleNamespace(connection=manager,_credentials=credentials,startup_window_ready_for=lambda _:True)
+    dispatcher=HookBusinessDispatcher(Client(),tmp_path/'owner',lambda *a:None,lambda *a:None,
+        automatic_transcription_disabled=lambda:True,runtime_factory=Runtime)
+    try:
+        dispatcher.tick(runner,services)
+        assert len(captured)==int(current_owner=='ai')
+    finally:manager.close()

@@ -18,7 +18,7 @@ def test_late_original_voice_result_does_not_reopen_human_covered_handoff(monkey
     append_row(value,kind='34',text='<msg><voicemsg length="43"/></msg>')
     mid=value['scans'][0]['databases'][0]['pages'][0][-1]['MsgSvrID']
     r,_=upload(w,p,b,value,monkeypatch);assert r.status_code==200,r.text
-    assert r.json()['data']['reason_code']=='HOOK_VOICE_PENDING'
+    assert r.json()['data']['history_ready'] and r.json()['data']['reply_ownership']['owner']=='human'
     with SessionLocal() as db:
         original=db.scalar(select(HandoffEvent));assert original.closed_at is None
         original_id=original.id
@@ -43,7 +43,7 @@ def test_late_original_voice_result_does_not_reopen_human_covered_handoff(monkey
             'events':[{'id':e.id,'reason':e.handoff_reason_code,'closed':e.closed_at is not None} for e in events]}
     (tmp_path/f'late-voice-{voice_state}.json').write_text(json.dumps(evidence,ensure_ascii=False,indent=2))
     assert evidence['open_handoff_count']==0,evidence
-    assert evidence['handoff_count']==1 and evidence['new_customer_batch'],evidence
+    assert evidence['handoff_count']==1 and evidence['new_customer_batch'] is None,evidence
 
 
 @pytest.mark.parametrize('case',['first_after_unproven_scan','legacy_replay','new_process_replay','after_human_voice','ai_echo','unknown_source','order_unproved'])
@@ -119,4 +119,4 @@ def test_late_voice_uses_original_trusted_human_scope(monkeypatch,case):
     if expected_covered:
         append_row(value,text='现在想了解十五万元的车型')
         next_round,_=upload(w,p,b,value,monkeypatch)
-        assert next_round.status_code==200 and next_round.json()['data']['message_batch'],next_round.text
+        assert next_round.status_code==200 and next_round.json()['data']['message_batch'] is None,next_round.text

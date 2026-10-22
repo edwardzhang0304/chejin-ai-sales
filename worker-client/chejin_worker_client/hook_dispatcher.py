@@ -61,6 +61,7 @@ class HookBusinessDispatcher:
         self._batch_stages={}
         self._live_batches_by_binding={}
         self._open_handoffs_by_binding={}
+        self._reply_owners_by_binding={}
         self._initial_read_finished=False
         self._started_at=datetime.now(timezone.utc)
 
@@ -160,6 +161,15 @@ class HookBusinessDispatcher:
             if event_id not in current:
                 emit_progress(runner,context,'handoff_closed','done','handoff_closed')
         self._open_handoffs_by_binding[key]=current
+        ownership=binding.get('reply_ownership') or {}
+        owner=ownership.get('owner')
+        signature=(owner,ownership.get('revision'),bool(ownership.get('round_id')))
+        if owner in {'ai','human'} and self._reply_owners_by_binding.get(key)!=signature:
+            context='ownership:'+key
+            register_progress(runner,context,label=binding.get('remark_code',''),kind='batch')
+            note=('human_wait' if ownership.get('round_id') else 'human_replied') if owner=='human' else 'ai_owner'
+            emit_progress(runner,context,'reply_owner','done',note)
+            self._reply_owners_by_binding[key]=signature
 
     def _publish_batch_progress(self,runner,bid,data):
         action=data.get('reply_action') or {}
@@ -217,7 +227,7 @@ class HookBusinessDispatcher:
         from .hook_process import inspect_windows_generation_exited
         rt=self.runtime
         for binding in bindings:
-            for job in binding.get('voice_jobs',[]):
+            for job in [*binding.get('voice_jobs',[]),*binding.get('retained_voice_jobs',[])]:
                 saved=self.voice.saved_parent(rt.scope,binding['peer_wxid'],job['native_msg_id'])
                 if not saved:continue
                 result=self.voice.recover_interrupted(rt.scope,binding['peer_wxid'],job['native_msg_id'],
@@ -514,6 +524,10 @@ class HookBusinessDispatcher:
                     if saved and saved['state'] in {'transcribed','failed','uncertain'}:
                         result=saved
                     else:
+                        # Inventory may precede the history read that detected
+                        # a human reply. Consume the newer server projection.
+                        owner=(synced.get('reply_ownership') or binding.get('reply_ownership') or {}).get('owner')
+                        if saved is None and owner in {'human','legacy'}:continue
                         audio=capture_voice_audio(scope,binding['peer_wxid'],job['native_msg_id'],
                             max_audio_bytes=self.voice.max_audio_bytes,verified_metadata_xml=job.get('voice_metadata_xml'))
                         if audio is None:

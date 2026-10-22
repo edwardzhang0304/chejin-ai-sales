@@ -3,7 +3,7 @@ from datetime import timezone
 from sqlalchemy import select
 from app.models.wechat import WechatSessionBinding,MessageEvent
 from app.models.task import Task,TaskEvidence
-from app.models.c3 import MessageBatch,ReplyAction,HandoffEvent
+from app.models.c3 import Conversation,MessageBatch,ReplyAction,HandoffEvent
 from app.services.hook_business_service import account
 from app.services.followup_eligibility import followup_block_reason
 from app.services import task_service
@@ -30,15 +30,18 @@ def inventory(db,authenticated,instance,payload):
         from app.services.hook_history_service import human_covered_voice_ids
         history_ids=ctx.get('history_message_event_ids',[])
         covered=human_covered_voice_ids(db,binding)
-        voices=[]
+        voices=[];retained_voices=[]
+        from app.services.reply_ownership import human_owned, state
+        conversation=db.get(Conversation,binding.conversation_id)
+        human=bool(conversation and human_owned(conversation))
         for message in db.scalars(select(MessageEvent).where(MessageEvent.binding_id==binding.id,
                 MessageEvent.sender_role=='customer',MessageEvent.message_type=='voice',
                 MessageEvent.item_state.in_({'metadata_observed','uncertain'}))):
-            if message.id not in history_ids or message.id in covered:continue
+            if message.id not in history_ids:continue
             # An admitted unknown result already handed to sales is terminal
             # for automation, not a transcription job to re-advertise forever.
             if message.item_state=='uncertain' and message.id in ctx.get('media_handoff_applied_ids',[]):continue
-            voices.append({'native_msg_id':message.raw_payload['native_msg_id'],
+            (retained_voices if human or message.id in covered else voices).append({'native_msg_id':message.raw_payload['native_msg_id'],
                 'voice_metadata_xml':(message.raw_payload or {}).get('native_media_xml'),
                 'message_event_id':message.id,'item_state':message.item_state})
         batches=list(db.scalars(select(MessageBatch.id).where(MessageBatch.conversation_id==binding.conversation_id,
@@ -47,7 +50,8 @@ def inventory(db,authenticated,instance,payload):
         bindings.append({'binding_id':binding.id,'binding_revision':binding.authorization_revision,
             'conversation_id':binding.conversation_id,'peer_wxid':binding.native_peer_wxid,
             'history_since_create_time':ctx['history_since_create_time'],'source_task_id':ctx['source_task_id'],
-            'history_ready':ctx.get('history_ready') is True,'voice_jobs':voices,'batch_ids':batches,
+            'history_ready':ctx.get('history_ready') is True,'voice_jobs':voices,'retained_voice_jobs':retained_voices,'batch_ids':batches,
+            'reply_ownership':state(conversation) if conversation else {},
             'remark_code':binding.remark_code or ''})
     invitations=[]
     for task in db.scalars(select(Task).where(Task.worker_id==w.id,Task.deleted_at.is_(None),

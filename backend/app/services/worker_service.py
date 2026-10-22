@@ -307,6 +307,8 @@ def heartbeat_worker(db: Session, worker_id: str, worker_token: str | None, payl
     )
     worker = _lock_worker(db, authenticated.id)
 
+    if computed_online_status(worker) != "online":
+        worker.reply_history_required_after = utcnow()
     worker.online_status = "online"
     if payload.run_status is not None:
         if payload.run_status not in RUN_STATUS_VALUES:

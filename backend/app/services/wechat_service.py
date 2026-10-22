@@ -3023,7 +3023,11 @@ def _prepare_due_recall(
     settings = get_settings()
     if conversation.status not in {"waiting_user_reply", "sales_replied_waiting_user", "recalled_waiting_user"}:
         return
-    if not conversation.ai_enabled or not conversation.next_recall_at or conversation.recall_count >= settings.c3_recall_max_cycles:
+    from app.services.reply_ownership import state
+    owner=state(conversation)
+    if owner["owner"]=="legacy" or owner.get("round_id"):
+        return
+    if not conversation.ai_enabled or not conversation.next_recall_at or int(owner.get("recall_streak",0)) >= settings.c3_recall_max_cycles:
         return
     now = utcnow()
     comparable_now = now if getattr(conversation.next_recall_at, "tzinfo", None) else now.replace(tzinfo=None)
@@ -4935,6 +4939,10 @@ def ingest_messages(db: Session, worker: Worker, payload: WechatMessageIngestReq
         binding.last_ingested_at = message.ingested_at
         event_time = message.occurred_at or message.ingested_at
         if state_transition_allowed:
+            # Include freshly persisted rows in the existing trusted final-frame
+            # order map; keep the original OCR event-time fallback for timers.
+            visible_message_orders = _visible_existing_message_orders(db,
+                conversation_id=payload.conversation_id,evidence_payload=evidence_payload)
             if message.sender_role == "customer":
                 conversation.last_inbound_at = _latest_datetime(
                     conversation.last_inbound_at,
@@ -4943,7 +4951,9 @@ def ingest_messages(db: Session, worker: Worker, payload: WechatMessageIngestReq
                 conversation.recall_cycle_id = None
                 conversation.recall_origin_status = None
                 conversation.next_recall_at = None
-                if open_handoff_active:
+                from app.services.reply_ownership import apply_message, human_owned
+                apply_message(db,conversation,message,orders=visible_message_orders,effective_at=event_time)
+                if open_handoff_active or human_owned(conversation):
                     conversation.status = "waiting_sales_reply"
                     from app.services.c3_service import supersede_open_reply_actions_for_new_inbound
                     supersede_open_reply_actions_for_new_inbound(db, binding.conversation_id)
@@ -4979,6 +4989,9 @@ def ingest_messages(db: Session, worker: Worker, payload: WechatMessageIngestReq
                         close_open_handoffs_for_human_sales,
                     )
 
+                    from app.services.reply_ownership import apply_message
+                    message.raw_payload={**(message.raw_payload or {}),"sender_source":"human"}
+                    apply_message(db,conversation,message,orders=visible_message_orders,effective_at=event_time)
                     had_open_handoff = open_handoff_active
                     handoff_resolution = close_open_handoffs_for_human_sales(
                         db,
@@ -5005,8 +5018,6 @@ def ingest_messages(db: Session, worker: Worker, payload: WechatMessageIngestReq
                     ) or open_handoff_active:
                         conversation.status = "waiting_sales_reply"
                     else:
-                        if handoff_resolution["resume_ai"]:
-                            conversation.ai_enabled = True
                         conversation.last_sales_reply_at = _latest_datetime(
                             conversation.last_sales_reply_at,
                             event_time,

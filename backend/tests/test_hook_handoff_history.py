@@ -65,7 +65,8 @@ def test_human_reply_can_close_media_handoff_without_automated_voice_retry(monke
 
     assert not evidence['voice_jobs'] and evidence['open_handoff_count']==0
     if 'later_customer_history_ready' in evidence:
-        assert evidence['later_customer_history_ready'] and evidence['later_customer_message_batch']
+        # 2026-10-22 confirmed rule: human ownership survives event closure.
+        assert evidence['later_customer_history_ready'] and evidence['later_customer_message_batch'] is None
     if mode in {'uncertain_voice','uncertain_after_restart'}:
         with SessionLocal() as db:
             voice=db.scalar(select(MessageEvent).where(MessageEvent.message_type=='voice'))
@@ -142,7 +143,7 @@ def test_media_handoff_history_boundaries(monkeypatch,case):
         if case in {'rejected','ai_disabled'}:assert conv.ai_enabled is False
         if case=='rejected':assert conv.status=='rejected'
     if case=='later_voice':
-        assert response.json()['data']['reason_code']=='HOOK_VOICE_PENDING'
+        assert response.json()['data']['history_ready']
         inventory=post(w,f"/workers/{w['id']}/wechat/native-work",{**p,'retained_flow_id':None}).json()['data']
-        jobs=inventory['bindings'][0]['voice_jobs'];assert len(jobs)==1
-        assert jobs[0]['native_msg_id']==value['scans'][0]['databases'][0]['pages'][0][-1]['MsgSvrID']
+        jobs=inventory['bindings'][0]['voice_jobs'];assert jobs==[]
+        assert inventory['bindings'][0]['reply_ownership']['owner']=='human'

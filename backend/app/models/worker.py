@@ -25,6 +25,7 @@ class Worker(Base, TimestampMixin):
     local_lock_summary: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
     inflight_flow_state: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
     last_heartbeat_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    reply_history_required_after: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     worker_token_hash: Mapped[str] = mapped_column(String(128), nullable=False)
     worker_token_encrypted: Mapped[str] = mapped_column(Text, nullable=False)
     vision_api_key_encrypted: Mapped[str | None] = mapped_column(Text, nullable=True)

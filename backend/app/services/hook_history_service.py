@@ -61,21 +61,22 @@ def _apply_history_actors(db, binding, conv, rows, ctx, checked):
     for message in rows:
         if message.id in applied:continue
         at=c3_service._aware_datetime(message.occurred_at)
+        from app.services.reply_ownership import apply_message
         if message.sender_role=='customer':
-            conv.last_inbound_at=max(filter(None,[c3_service._aware_datetime(conv.last_inbound_at),at]))
-            conv.recall_cycle_id=conv.recall_origin_status=conv.next_recall_at=None
+            if apply_message(db,conv,message,orders=native_orders):
+                conv.last_inbound_at=max(filter(None,[c3_service._aware_datetime(conv.last_inbound_at),at]))
         else:
             raw=dict(message.raw_payload or {})
             conv.last_outbound_at=max(filter(None,[c3_service._aware_datetime(conv.last_outbound_at),at]))
             if raw.get('sender_source') in {'unresolved','human'}:
                 raw['sender_source']='human';message.raw_payload=raw
+                applied_owner=apply_message(db,conv,message,orders=native_orders)
                 resolution=c3_service.close_open_handoffs_for_human_sales(db,
                     conversation_id=binding.conversation_id,sales_message=message,native_history_orders=native_orders,
                     native_handoff_orders=handoff_orders)
                 if resolution['remaining_open_count']:
                     conv.status='waiting_sales_reply'
-                else:
-                    if resolution['resume_ai']:conv.ai_enabled=True
+                elif applied_owner:
                     conv.last_sales_reply_at=max(filter(None,[c3_service._aware_datetime(conv.last_sales_reply_at),at]))
                     conv.sales_first_reply_at=conv.sales_first_reply_at or at
                     conv.status='sales_replied_waiting_user';conv.handoff_reason_code=None
@@ -300,7 +301,12 @@ def accept_coverage(db,authenticated,instance,payload):
         if conv and conv.status not in {'closed','rejected'}:
             _apply_history_actors(db,binding,conv,rows,ctx,checked)
     covered=human_covered_voice_ids(db,binding,verified_rows=rows) if facts_ready else set()
-    if any(m.sender_role=='customer' and m.message_type=='voice'
+    from app.services.reply_ownership import human_owned, state
+    ownership_conversation=db.get(Conversation,binding.conversation_id)
+    if reconciliation is None:
+        ctx['actors_ready']=facts_ready
+        binding.native_context=dict(ctx)
+    if not (ownership_conversation and human_owned(ownership_conversation)) and any(m.sender_role=='customer' and m.message_type=='voice'
             and m.item_state not in {'completed','failed'} and m.id not in covered for m in rows):
         reason=reason or 'HOOK_VOICE_PENDING'
         # Media content readiness cannot postpone a verified stop restriction.
@@ -349,10 +355,11 @@ def accept_coverage(db,authenticated,instance,payload):
             open_handoffs=c3_service.enforce_open_handoff_gate(db,conv,for_update=True)
             last_self=max((i for i,m in enumerate(rows) if m.sender_role=='self'),default=-1)
             inbound=[m.id for m in rows[last_self+1:] if m.sender_role=='customer']
-            if inbound and conv.ai_enabled and not open_handoffs:
+            from app.services.reply_ownership import allows_batch
+            if inbound and conv.ai_enabled and not open_handoffs and allows_batch(conv):
                 conv.status='ai_active'
                 batch=c3_service.collect_customer_message_batch(db,conversation_id=binding.conversation_id,message_event_ids=inbound,trace_id=payload.capture_id)
-            elif rows and conv.ai_enabled and not open_handoffs and w.run_status=='running':
+            elif rows and not inbound and conv.ai_enabled and not open_handoffs and w.run_status=='running':
                 from app.services.wechat_service import _prepare_due_recall
                 _prepare_due_recall(conv,binding=binding,worker=w,db=db)
                 if conv.status=='recall_precheck' and conv.recall_cycle_id:
@@ -364,12 +371,13 @@ def accept_coverage(db,authenticated,instance,payload):
                     batch=c3_service.create_control_message_batch(db,conversation_id=binding.conversation_id,
                         trigger_type='recall',trigger_key=cycle,recall_cycle_id=cycle)
                     conv.status='ai_active';conv.next_recall_at=None
-            elif not rows and conv.ai_enabled and not open_handoffs:
+            elif not rows and conv.ai_enabled and not open_handoffs and allows_batch(conv):
                 batch=c3_service.create_control_message_batch(db,conversation_id=binding.conversation_id,
                     trigger_type='friend_welcome',trigger_key='hook-invite:'+ctx['source_task_id'])
     result={'process_run_id':process_run_id,'conversation_id':binding.conversation_id,'capture_id':payload.capture_id,'history_receipt_id':receipt.id,'binding_id':binding.id,
         'history_ready':ready,'reason_code':reason,'message_event_ids':ids,'new_message_event_ids':new_ids,
         'history_state_digest':state_digest,'coverage_digest':payload.coverage_digest,'message_batch':batch,'native_send_ready':False,
+        'reply_ownership':state(ownership_conversation) if ownership_conversation else {},
         'reconciliation_only':reconciliation is not None,
         # This admits only original unknown-result settlement, never new work
         # or a positive send proof. The raw two-pass snapshot is retained.

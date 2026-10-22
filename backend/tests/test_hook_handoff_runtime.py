@@ -32,6 +32,9 @@ from chejin_worker_client.hook_formal_runtime import HookFormalRuntime
 @pytest.mark.parametrize('mode',['uncertain_voice','voice_during_image_handoff','late_uncertain_inventory'])
 def test_human_reply_unblocks_later_customer_through_actual_pipeline(
         identity_client,lab,connection_factory,tmp_path,monkeypatch,recovery_provider_factory,mode):
+    monkeypatch.setattr(get_settings(),"c3_recall_after_hours",0.001)
+    monkeypatch.setattr(get_settings(),"c3_recall_quiet_start_hour",0)
+    monkeypatch.setattr(get_settings(),"c3_recall_quiet_end_hour",0)
     w,task,account,binding=bound()
     server,gateway,*_=lab
     manager,credentials,prepared=connection_factory(w)
@@ -68,7 +71,7 @@ def test_human_reply_unblocks_later_customer_through_actual_pipeline(
         # not admission of new work during handoff. The real transcriber persists
         # its unknown result; the real dispatcher later recovers the saved row.
         parent=append(34,0,voice)
-        assert runtime.sync(binding)['reason_code']=='HOOK_VOICE_PENDING'
+        assert runtime.sync(binding)['reply_ownership']['owner']=='human'
         from dataclasses import replace
         from test_hook_voice import AUDIO,persist
         from chejin_worker_client.hook_voice import capture_voice_audio,process_voice_call_unresolved
@@ -92,16 +95,16 @@ def test_human_reply_unblocks_later_customer_through_actual_pipeline(
         server.current_process=replace(prepared.process,started_at=prepared.process.started_at+1)
         manager,credentials,prepared=connection_factory(w)
         runtime=HookFormalRuntime(runtime.client,credentials,gateway,prepared,tmp_path/'runtime')
-        assert runtime.sync(binding)['reason_code']=='HOOK_VOICE_PENDING'
+        assert runtime.sync(binding)['reply_ownership']['owner']=='human'
         inventory=runtime.client.call(credentials,'POST',f"/workers/{w['id']}/wechat/native-work",
             {**runtime.account,'retained_flow_id':None})
-        assert [j['native_msg_id'] for j in inventory['bindings'][0]['voice_jobs']]==[parent]
+        assert [j['native_msg_id'] for j in inventory['bindings'][0]['retained_voice_jobs']]==[parent]
     with SessionLocal() as db:
         handoff=db.scalar(select(HandoffEvent));assert handoff and handoff.closed_at is None
         handoff_id=handoff.id
     if mode=='voice_during_image_handoff':
         parent=append(34,0,voice)
-        assert runtime.sync(binding)['reason_code']=='HOOK_VOICE_PENDING'
+        assert runtime.sync(binding)['reply_ownership']['owner']=='human'
     append(1,1,'我是销售，刚才的问题已经解释过了，您还想了解什么？')
     if mode=='late_uncertain_inventory':
         from types import SimpleNamespace
@@ -130,6 +133,21 @@ def test_human_reply_unblocks_later_customer_through_actual_pipeline(
         assert original.item_state==('metadata_observed' if mode=='voice_during_image_handoff' else 'uncertain') and original.content is None
     inventory=runtime.client.call(credentials,'POST',f"/workers/{w['id']}/wechat/native-work",{**runtime.account,'retained_flow_id':None})
     assert not inventory['bindings'][0]['voice_jobs'] and not inventory['bindings'][0]['open_handoffs']
+    # Closing the event keeps human ownership; only a confirmed recall returns
+    # it to AI. The short configured delay is solely a local test clock aid.
+    from datetime import datetime,timezone
+    with SessionLocal() as db:
+        due=db.get(Conversation,binding['conversation_id']).next_recall_at.replace(tzinfo=timezone.utc)
+    time.sleep(max(0,(due-datetime.now(timezone.utc)).total_seconds())+.05)
+    root=str(Path(__file__).resolve().parents[2]/'worker-client/omniauto-rpa')
+    monkeypatch.setenv('C3_OMNIAUTO_ROOT',root);monkeypatch.setattr(get_settings(),'c3_omniauto_root',root)
+    monkeypatch.setattr(c3_service,'get_ai_engine_adapter',RealOmniAutoAIEngineAdapter)
+    recovery_provider_factory('之前聊过购车的事情，您最近还有想了解的吗？可以按您的节奏慢慢聊。')
+    recall=runtime.sync(binding);assert recall['message_batch'],recall
+    recalled=drive_reply(runtime,binding,recall['message_batch']['batch_id'])
+    assert len(recalled['sends'])==1 and recalled['sends'][0]['local_send_observed'],recalled
+    with SessionLocal() as db:
+        assert db.get(Conversation,binding['conversation_id']).reply_ownership['owner']=='ai'
     append(1,0,'现在想先了解十五万元左右的车型，暂时不预约看车。')
     incoming=runtime.sync(binding);assert incoming['history_ready'] and incoming['message_batch']
     bid=incoming['message_batch']['batch_id']
@@ -155,10 +173,10 @@ def test_human_reply_unblocks_later_customer_through_actual_pipeline(
         {'X-Inflight-Flow-Id':identity['flow_id'],'X-Task-Lease-Fencing-Token':str(identity['lease_fencing_token'])})
     assert repeated.status_code==200 and repeated.json()['data']==settlement['result']
     with SessionLocal() as db:
-        assert len(list(db.scalars(select(SentAck))))==1
+        assert len(list(db.scalars(select(SentAck))))==2
         assert len(list(db.scalars(select(HandoffEvent))))==1
     assert not drive_reply(runtime,binding,bid,max_wait_seconds=5)['sends']
-    assert len([r for r in server.requests if r[0]=='/SendTextMsg'])==1
+    assert len([r for r in server.requests if r[0]=='/SendTextMsg'])==2
     assert len([r for r in server.requests if r[0]=='/Voice2Text'])==(1 if mode=='late_uncertain_inventory' else 0)
     assert all(server.lock_observations[i]['locked'] for i,r in enumerate(server.requests) if r[0]=='/SendTextMsg')
     assert list((tmp_path/'runtime/finished').glob('*.json'))
