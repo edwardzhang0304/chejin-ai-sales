@@ -680,17 +680,17 @@
     "recall_author_and_reviewer_shared_trigger_context"
   ],
   "current_release": {
-    "version": "0.10.10",
+    "version": "0.10.11",
     "source_commit": "209f7fb66a01a05736fdd32e54808e54a9b66ce3",
     "source_state": "gray_release_candidate",
     "published": false,
-    "contract_revision": "0.10.10",
-    "contract_sha256": "dd92cb9d4952fad3bc6d1f33fe4b475c55849d79952d1c54be04f8e9561a2258",
+    "contract_revision": "0.10.11",
+    "contract_sha256": "2c796edc04994beac964cea64421e4b1acbefa448a727a9469efc2339eb4d791",
     "scope": [
       "native_hook_state_and_release_preparation",
       "schema_revision_sync"
     ],
-    "note": "0.10.10 release preparation includes reviewed disk maintenance, friend restriction handoff and terminal display, confirmed reinvitation and original-evidence closure, native private identity compatibility. Original data retained; voice timeout excluded. Windows package and original-machine binding/reply acceptance pending."
+    "note": "0.10.11 preparation from reviewed d7f7ad4: catalog fact references, restricted send closure, offline Hook component maintenance, persistent human ownership/reminders and silence accounting. Preserve original data and receipts. Windows package, original button upgrade, PostgreSQL migration and physical component/business acceptance pending."
   },
   "historical_integrations": [
     {
