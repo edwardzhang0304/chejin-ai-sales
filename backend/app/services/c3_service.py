@@ -1137,6 +1137,8 @@ def _ensure_reply_action_send_eligible(
            for event in open_handoff_events_for_conversation(db, conversation.conversation_id)):
         raise AppError(friend_restriction, '微信好友验证限制尚未处理，不能自动发送', 409,
                        {'suggested_action': 'do_not_send'})
+    from app.services.hook_relationship_service import ensure_send_authorization
+    ensure_send_authorization(binding)
     # Restriction is a definite refusal, even while media is unfinished.
     # Admitting any send still requires the full original coverage check.
     _ensure_native_ai_coverage(binding)

@@ -241,6 +241,12 @@ def _binding_to_dict(binding: WechatSessionBinding) -> dict:
         "disabled_at": binding.disabled_at,
         "disabled_by": binding.disabled_by,
         "replacement_binding_id": binding.replacement_binding_id,
+        "reinvite_available": bool(session and not block_reason and binding.native_self_wxid
+            and not binding.replacement_binding_id and not binding.deleted_at
+            and (binding.bind_status == 'bound' or
+                 (binding.bind_status == 'disabled' and binding.disable_reason == 'operator_reinvite'))),
+        "relationship_review_required": bool((binding.native_context or {}).get('relationship_review_required')),
+        "reinvite_task_id": ((binding.native_context or {}).get('reinvite_request') or {}).get('task_id'),
         "unread_hint": binding.unread_hint,
         "last_message_preview": binding.last_message_preview,
         "last_message_preview_time": binding.last_message_preview_time,

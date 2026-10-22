@@ -892,6 +892,10 @@ def claim_task(
     task = db.scalar(_task_claim_statement(task_id).execution_options(populate_existing=True))
     if not task:
         raise AppError("TASK_NOT_FOUND", "任务不存在", 404)
+    if (claim_source=='hook_conversation_flow' and task.worker_id==worker_id and task.task_type=='chat_reply'
+            and task.status==TaskStatus.cancelled.value
+            and task.cancel_reason in {'HOOK_AUTHORIZATION_RETIRED','HOOK_CONTACT_REMARK_CHANGED'}):
+        raise AppError(task.cancel_reason,'该客户的自动处理已停止，按原任务收尾',409)
     if task.status != TaskStatus.pending.value:
         raise AppError("TASK_CLAIM_NOT_ALLOWED", "仅 pending 任务可领取", 409)
     if task.task_type == "add_friend" and not unclaimed_add_friend(task):
@@ -1312,7 +1316,7 @@ def add_evidence(
 ) -> dict[str, Any]:
     if evidence_type == 'hook_recovery_terminal':
         raise AppError('HOOK_RECOVERY_PROOF_ROUTE_REQUIRED', '恢复终态证据只能由原任务核验接口生成', 409)
-    if evidence_type in {'hook_invite_preparation', 'hook_invite_submission'}:
+    if evidence_type in {'hook_invite_preparation', 'hook_invite_submission', 'hook_reinvite_authorization', 'hook_relationship_review'}:
         raise AppError('HOOK_INVITE_PROOF_ROUTE_REQUIRED', '正式申请证据必须通过任务专用接口校验', 409)
     task = get_task_or_404(db, task_id)
     if worker_id and task.worker_id and task.worker_id != worker_id:

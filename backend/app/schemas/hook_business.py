@@ -134,3 +134,25 @@ class HookRecoveryRequest(HookAccountAction):
     original_process_generation: str | None = Field(default=None, min_length=1, max_length=128)
     lease_fencing_token: int | None = Field(default=None, ge=1)
     evidence_digest: str = Field(pattern=r'^[a-f0-9]{64}$')
+
+
+class HookRelationshipObservation(HookAccountAction):
+    binding_id: str = Field(min_length=36,max_length=36)
+    binding_revision: int = Field(ge=1)
+    friend_list: dict | list
+    raw_evidence_digest: str = Field(pattern=r'^[a-f0-9]{64}$')
+
+
+class HookReinviteRequest(BaseModel):
+    model_config = ConfigDict(extra='forbid', strict=True)
+    binding_id: str = Field(min_length=36,max_length=36)
+    binding_revision: int = Field(ge=1)
+    confirm_end_previous: Literal[True]
+    reason: str = Field(min_length=1, max_length=500)
+
+    @field_validator('confirm_end_previous', mode='before')
+    @classmethod
+    def explicit_confirmation(cls, value):
+        if value is not True:
+            raise ValueError('Explicit confirmation is required')
+        return value

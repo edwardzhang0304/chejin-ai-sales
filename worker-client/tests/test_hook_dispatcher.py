@@ -232,3 +232,47 @@ def test_voice_admission_and_update_share_lock(lab, backend_peer, tmp_path, monk
         dispatcher.tick(runner,services)
         assert calls == ([] if update_wins else ['voice'])
     finally:manager.close()
+
+
+@pytest.mark.parametrize('mode',['paused','faulted','startup_pending','retired_during_read'])
+def test_relationship_review_respects_gates_and_retirement_is_customer_scoped(lab,backend_peer,tmp_path,mode):
+    from chejin_worker_client.api import ApiError
+    manager,credentials,state,response=setup(lab,backend_peer)
+    prepared=manager.prepare(credentials,state);scope=prepared.registration.scope
+    account={k:getattr(scope,k) for k in ('self_wxid','account_epoch','process_generation')}
+    bindings=[{'binding_id':str(uuid.uuid4()),'binding_revision':1,'peer_wxid':f'wxid_customer_{i}',
+        'conversation_id':str(uuid.uuid4()),'history_since_create_time':'1','voice_jobs':[],
+        'batch_ids':[]} for i in range(2)]
+    reviews=[];reads=[]
+    status='faulted' if mode=='faulted' else 'paused'
+    class Client:
+        def call(self,credentials,method,path,body=None,**kwargs):
+            assert path.endswith('native-work')
+            return {'schema_version':'hook-native-work-v1','observation_query_version':1,**account,
+                'run_status':status,'inflight_flow':{},'bindings':bindings,'invitations':[],
+                'retained_sends':[],'inflight_task':None,'relationship_query_version':1,'relationship_bindings':bindings}
+    class Runtime:
+        def __init__(self,*args,**kwargs):
+            self.credentials=credentials;self.account=account;self.scope=scope
+            self.active_flow_id=None;self.active_task_id=None;self.clock=SimpleNamespace(observe=lambda x:None)
+        def review_relationships(self,items):reviews.append([b['binding_id'] for b in items])
+        def barrier(self,b):return (0,0)
+        def sync(self,b):
+            reads.append(b['binding_id'])
+            if mode=='retired_during_read' and b is bindings[0]:
+                raise ApiError('HOOK_AUTHORIZATION_RETIRED','old authorization ended',409)
+            return {'history_ready':True}
+    runner=SimpleNamespace(binding=SimpleNamespace(run_status=status),stop_event=threading.Event(),
+        api=SimpleNamespace(),_can_start_new_flow=lambda:False,can_pull_tasks=lambda:False,
+        _worker_transaction_barrier_ready=lambda *a,**kw:True)
+    services=SimpleNamespace(connection=manager,_credentials=credentials,startup_window_ready_for=lambda _:mode!='startup_pending')
+    dispatcher=HookBusinessDispatcher(Client(),tmp_path/'continuous',lambda *a:None,lambda *a:None,
+        automatic_transcription_disabled=lambda:True,runtime_factory=Runtime)
+    try:
+        dispatcher.tick(runner,services);dispatcher.tick(runner,services)
+        if mode in {'faulted','startup_pending'}:assert not reviews and not reads
+        else:
+            assert reviews==[[b['binding_id'] for b in bindings]]
+            assert bindings[1]['binding_id'] in reads
+        assert runner.binding.run_status==status
+    finally:manager.close()

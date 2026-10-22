@@ -282,6 +282,27 @@ class HookFormalRuntime:
         self.progress(task_id,'bind','done')
         return result
 
+    def review_relationships(self, bindings):
+        from .hook_gateway import HookLocalError
+        try:
+            friends=self.gateway.friend_list(self.process,self.scope).payload
+        except HookLocalError as exc:
+            if exc.code not in {'HOOK_LOCAL_TRANSPORT_FAILED','HOOK_LOCAL_RESPONSE_INVALID',
+                                'HOOK_HTTP_RESPONSE_REJECTED','HOOK_RESPONSE_TOO_LARGE'}:
+                raise
+            storage.append_log('INFO','hook_relationship_review_unconfirmed',
+                '联系人关系暂未核实，不据此判断删除或恢复托管。',metadata={'reason_code':exc.code},include_exception_text=False)
+            return
+        for binding in bindings:
+            try:
+                self.client.call(self.credentials,'POST',f'/workers/{self.credentials.worker_id}/wechat/native-relationships/observe',
+                    {**self.account,'binding_id':binding['binding_id'],'binding_revision':binding['binding_revision'],
+                     'friend_list':friends,'raw_evidence_digest':rules.digest(friends)})
+            except ApiError as exc:
+                if exc.status_code!=409 or exc.code!='HOOK_BINDING_NOT_AUTHORIZED':raise
+                # The operator may retire this exact inventory entry concurrently.
+                continue
+
     def delivery(self,binding):
         return HookDeliveryScope(self.credentials.worker_id,self.credentials.client_instance_id,self.scope.self_wxid,
             self.scope.account_epoch,binding['binding_id'],binding['binding_revision'],binding['peer_wxid'])
@@ -666,7 +687,7 @@ class HookFormalRuntime:
                     # A definite customer restriction before trigger reuses the
                     # original no-trigger receipt. Network/identity/other 409s
                     # remain errors, and an existing trigger always forbids this.
-                    if exc.status_code!=409 or exc.code!='HOOK_FRIEND_VERIFICATION_REQUIRED':raise
+                    if exc.status_code!=409 or exc.code not in {'HOOK_FRIEND_VERIFICATION_REQUIRED','HOOK_CONTACT_REMARK_CHANGED','HOOK_AUTHORIZATION_RETIRED'}:raise
                     code='HOOK_SEND_LATEST_CONTEXT_STALE'
                 else:code=str(exc)
                 allowed={'HOOK_SEND_LATEST_CONTEXT_STALE','HOOK_RUNTIME_NOT_RUNNING','HOOK_SEND_SYNC_PENDING',

@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 
 import { CloseIcon } from "../../../shared/ui/Icons";
+import { HookReinviteAction } from "./HookReinviteAction";
 import type { LeadDetail } from "../types";
 
 type Props = {
@@ -151,6 +152,7 @@ export function LeadDetailDrawer({ detail, loading, error, onClose, onRetry, onM
                 ))}
               </section>
 
+              <HookReinviteAction key={detail.id} leadId={detail.id} />
               <section className="detail-block task-flow-block">
                 <h3>任务链路</h3>
                 <ol className="flow-list">

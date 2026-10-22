@@ -1,5 +1,5 @@
 @startuml main
-' 文档修订：r6；更新日期：2026-10-22；好友验证交接与发送终态展示、磁盘维护源码待交付。
+' 文档修订：r7；更新日期：2026-10-22；好友验证交接与发送终态展示、磁盘维护源码待交付。
 ' 0.10.9候选更新（2026-10-21）：纳入已审2620508，补齐启动登记丢失、发送许可回包丢失和未知语音进程退出后的统一恢复。原凭证保留，不补发、不猜成功、不自动恢复接单；当前成品及销售原机仍待验。此前7e3e83c同版本候选已构建但未发布，保留并标为被替代候选；本次按用户要求保持0.10.9，以源码和包哈希区分。
 ' 本轮0.10.9基于已审提交a1de7f3，修复无服务器消息编号的本地发出记录阻断恢复，并补齐故障取证。0.10.8封存包不重打；原机仍有旧发送与未结流程，采用保留数据安装，不删除凭证、不补发、不自动解除暂停。已有测试按哈希复用；正式成品、Windows安装与销售原机恢复分别验收，当前均待本轮执行。后端、后台、Worker和合同统一0.10.9。
 ' 0.10.9候选：成品升级与原机恢复待验；旧记录保留。
@@ -18,7 +18,7 @@ skinparam activityDiamondBorderColor #58718C
 skinparam ArrowColor #58718C
 skinparam noteBackgroundColor #FFF4D9
 skinparam noteBorderColor #CDA556
-title 车金 0.10.9 · 完整业务主流程（r6，2026-10-22）
+title 车金 0.10.9 · 完整业务主流程（r7，2026-10-22）
 start
 :管理员交付前安装指定微信与 DLL
 按盒子配置路径/端口/回调，首次激活
@@ -73,6 +73,16 @@ fork
       :清本次弹窗和搜索框残留并核对
 提交事实不被收尾失败覆盖
 释放物理锁，回执/Flow 按原规则结算;
+      :已绑定客户周期复核同一 wxid 的短码
+缺项/空列表/查询失败不推断删除
+明确备注变化仅该客户转人工，停止新发送;
+      if (运营明确确认重新邀请?) then (是)
+        :事务内结束旧托管＋创建新邀请任务
+保留旧绑定、会话与发送凭证
+旧发送按原证据核对，禁止补发;
+        :只认最新正式邀请轮次＋原账号/客户/唯一短码
+手工加回、已是好友、旧轮次不重建授权;
+      endif
       :后续调度核对联系人，不占锁等待通过
 只认系统任务写码＋邀请证据＋唯一好友;
       if (任务来源与 wxid 唯一核验通过?) then (是)
@@ -212,7 +222,7 @@ skinparam activityDiamondBorderColor #58718C
 skinparam ArrowColor #58718C
 skinparam noteBackgroundColor #FFF4D9
 skinparam noteBorderColor #CDA556
-title 车金 0.10.9 · 支撑 1：故障、暂停与恢复（r6）
+title 车金 0.10.9 · 支撑 1：故障、暂停与恢复（r7）
 start
 :发现人工暂停、连接等待或技术故障;
 :记录原原因/作用域/incident_id
@@ -264,7 +274,7 @@ skinparam activityDiamondBorderColor #58718C
 skinparam ArrowColor #58718C
 skinparam noteBackgroundColor #FFF4D9
 skinparam noteBorderColor #CDA556
-title 车金 0.10.9 · 支撑 2：事实、耗时与后台展示（r6）
+title 车金 0.10.9 · 支撑 2：事实、耗时与后台展示（r7）
 participant "微信 / Hook" as H
 participant "Worker 业务线程" as W
 database "本机 SQLite / Outbox" as L
@@ -306,7 +316,7 @@ skinparam activityDiamondBorderColor #58718C
 skinparam ArrowColor #58718C
 skinparam noteBackgroundColor #FFF4D9
 skinparam noteBorderColor #CDA556
-title 车金 0.10.9 · 支撑 3：检查更新与保留数据安装（r6）
+title 车金 0.10.9 · 支撑 3：检查更新与保留数据安装（r7）
 start
 :设置展示与实际入口共用安全状态
 暂停/故障/业务离线本身不禁止检查;

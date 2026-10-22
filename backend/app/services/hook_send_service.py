@@ -45,6 +45,16 @@ def identity(db,worker,instance,action_id,payload,flow,token,*,current=True):
         origin_action=db.get(ReplyAction,origin.reply_action_id) if origin else None
         if origin is None or origin.worker_id!=w.id or origin_action is None or origin_action.batch_id!=action.batch_id:
             raise AppError('HOOK_SEND_FLOW_REQUIRED','分段发送必须属于同一批次的原在途流程',409)
+        if (task.status=='cancelled' and task.cancel_reason in {'HOOK_AUTHORIZATION_RETIRED','HOOK_CONTACT_REMARK_CHANGED'}
+                and str(task.lease_fencing_token)==str(token)
+                and not (action.ai_payload or {}).get('native_send_identity')
+                and not (action.ai_payload or {}).get('native_send_attempt')):
+            # Cancellation clears the lease owner. The authenticated Worker,
+            # original Flow and fencing generation above still identify this
+            # unpermitted action. Return a refusal only; never grant a lease or
+            # apply this route to an issued send permit/physical attempt.
+            from app.services.hook_relationship_service import ensure_send_authorization
+            ensure_send_authorization(binding)
         task_service.validate_task_lease(task,worker_id=w.id,client_instance_id=instance,lease_fencing_token=token)
         ensure_history_context(binding)
     return w,binding,action,task
@@ -52,6 +62,8 @@ def identity(db,worker,instance,action_id,payload,flow,token,*,current=True):
 
 def claim_native(db,worker,instance,action_id,payload,flow,token):
     w,binding,action,task=identity(db,worker,instance,action_id,payload,flow,token)
+    from app.services.hook_relationship_service import ensure_send_authorization
+    ensure_send_authorization(binding)
     ensure_coverage(binding)
     ctx=binding.native_context or {};batch=db.get(MessageBatch,action.batch_id)
     if (payload.history_state_digest!=ctx.get('history_state_digest')

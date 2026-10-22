@@ -66,6 +66,10 @@ def handoff_history_orders(db, binding, checked, ctx):
                  if history.is_friend_verification_required_notice(row)}
     boundaries = {}
     for event in c3_service.open_handoff_events_for_conversation(db, binding.conversation_id):
+        if 'contact_identity_unconfirmed' in (event.risk_flags or []):
+            # A chat reply cannot establish a new managed identity.
+            boundaries[event.id] = None
+            continue
         payload = event.ai_payload or {}
         if 'native_friend_verification_notice_keys' not in payload:
             continue

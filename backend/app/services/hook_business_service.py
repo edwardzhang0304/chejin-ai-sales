@@ -144,7 +144,10 @@ def bind_friend(db, authenticated, instance, payload):
         (WechatSessionBinding.lead_id == task.lead_id) |
         ((WechatSessionBinding.native_self_wxid == w.hook_self_wxid) & (WechatSessionBinding.native_peer_wxid == peer)) |
         (WechatSessionBinding.remark_code == proof['shortcode'])).with_for_update()))
-    if existing:
+    current=[b for b in existing if (b.native_context or {}).get('source_task_id')==task.id]
+    predecessor=None
+    if current:
+        existing=current
         if (len(existing) != 1 or existing[0].bind_status != 'bound' or existing[0].worker_id != w.id
                 or existing[0].lead_id != task.lead_id or existing[0].native_peer_wxid != peer
                 or existing[0].native_self_wxid != w.hook_self_wxid
@@ -155,6 +158,10 @@ def bind_friend(db, authenticated, instance, payload):
         if not binding.allow_listening or binding.listen_status not in {'listening', 'degraded'}:
             raise AppError('HOOK_BINDING_NOT_AUTHORIZED', '原客户绑定已暂停，不自动恢复', 409)
     else:
+        if existing or db.scalar(select(TaskEvidence.id).where(TaskEvidence.task_id==task.id,
+                TaskEvidence.evidence_type=='hook_reinvite_authorization')):
+            from app.services.hook_relationship_service import replacement_predecessor
+            predecessor=replacement_predecessor(db,w,task,peer,existing)
         binding = WechatSessionBinding(lead_id=task.lead_id, sales_id=task.sales_id, worker_id=w.id,
             display_name=proof['shortcode'], remark_code=proof['shortcode'],
             native_self_wxid=w.hook_self_wxid, native_peer_wxid=peer,
@@ -165,6 +172,9 @@ def bind_friend(db, authenticated, instance, payload):
                 'history_ready': False,
                 'binding_evidence_digest': payload.raw_evidence_digest, 'bound_process_generation': payload.process_generation})
         db.add(binding); db.flush()
+        if predecessor is not None:
+            predecessor.replacement_binding_id=binding.id
+            binding.native_context={**binding.native_context,'previous_binding_id':predecessor.id}
         db.add(Conversation(conversation_id=binding.conversation_id, lead_id=task.lead_id,
             sales_id=task.sales_id, worker_id=w.id, friend_state='friend_active', status='ai_active', ai_enabled=True))
         db.flush()

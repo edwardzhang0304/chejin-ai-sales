@@ -747,3 +747,28 @@ def recover_native_ack(worker_id: str, payload: HookRecoveryRequest, db: Session
         result=reconcile(db,worker,instance,payload)
         db.commit();return ok(result)
     except Exception:db.rollback();raise
+
+
+from app.schemas.hook_business import HookRelationshipObservation, HookReinviteRequest
+
+@router.post('/workers/{worker_id}/wechat/native-relationships/observe')
+def observe_native_relationship(worker_id: str, payload: HookRelationshipObservation,
+        db: Session = Depends(get_db),
+        x_worker_token: str | None = Header(default=None,alias='X-Worker-Token'),
+        x_client_instance_id: str | None = Header(default=None,alias='X-Client-Instance-Id')):
+    from app.services.hook_relationship_service import observe
+    try:
+        worker=worker_service.authenticate_worker_client(db,worker_id,x_worker_token,x_client_instance_id)
+        data=observe(db,worker,x_client_instance_id,payload);db.commit();return ok(data)
+    except Exception:
+        db.rollback();raise
+
+
+@router.post('/leads/{lead_id}/wechat/reinvite',dependencies=[Depends(require_admin_auth)])
+def reinvite_native_customer(lead_id: str, payload: HookReinviteRequest,
+        db: Session = Depends(get_db), actor: ActorContext = Depends(get_actor_context)):
+    from app.services.hook_relationship_service import reinvite
+    try:
+        data=reinvite(db,lead_id,payload,actor);db.commit();return ok(data)
+    except Exception:
+        db.rollback();raise

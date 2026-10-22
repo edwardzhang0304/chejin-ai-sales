@@ -30,6 +30,7 @@ NOTIFY_FAILED = "failed"
 
 
 HANDOFF_REASON_LABELS = {
+    "HOOK_CONTACT_REMARK_CHANGED": "客户备注识别信息已变化，请人工核对后在后台重新邀请",
     "HOOK_FRIEND_VERIFICATION_REQUIRED": "微信提示需要好友验证，请销售确认好友关系后人工处理",
     "HOOK_CUSTOMER_IMAGE_HANDOFF": "客户发来图片，需要销售人工处理",
     "CUSTOMER_HIGH_INTENT": "客户表达了明确购车意向",

@@ -44,6 +44,7 @@ class HookBusinessDispatcher:
         self._startup_window_lock=threading.Lock()
         self._next_customer=0
         self._friend_read_due=0
+        self._relationship_read_due=0
         self._reconciled=False
         self._last_wait_codes={}
         self._sync_cache={}
@@ -420,6 +421,11 @@ class HookBusinessDispatcher:
         if runner.binding.run_status=='faulted':
             self._observe_clock(rt,prepared.account)
             self.resolve_wait('business',phase='clock_wait')
+        if (inventory.get('relationship_query_version')==1 and inventory.get('relationship_bindings')
+                and inventory['run_status']!='faulted' and runner.binding.run_status!='faulted'
+                and services.startup_window_ready_for(prepared) and time.monotonic()>=self._relationship_read_due):
+            self._relationship_read_due=time.monotonic()+30
+            rt.review_relationships(inventory['relationship_bindings'])
         self._adopt_flow(runner,inventory)
         byid={b['binding_id']:b for b in inventory['bindings']}
         for metadata in inventory['retained_sends']:
@@ -577,6 +583,14 @@ class HookBusinessDispatcher:
                     if result:return
                     # Do not reuse this local receipt for another batch either.
                     break
+            except ApiError as exc:
+                if exc.status_code==409 and exc.code in {'HOOK_AUTHORIZATION_RETIRED','HOOK_CONTACT_REMARK_CHANGED'}:
+                    # Inventory can race an explicit operator retirement. Only
+                    # this customer's new work stops; original sends stay in
+                    # retained_sends and are reconciled on the next pass.
+                    self._sync_cache.pop(key,None)
+                    continue
+                raise
             except ValueError as exc:
                 if str(exc) in TRANSIENT_HISTORY:
                     all_history_ready=False;pending_work=True;self._report_wait(str(exc))

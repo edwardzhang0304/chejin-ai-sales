@@ -55,6 +55,13 @@ def inventory(db,authenticated,instance,payload):
         if task.id in source_tasks or followup_block_reason(db,task.lead_id,lock=False):continue
         proof=db.scalar(select(TaskEvidence).where(TaskEvidence.task_id==task.id,TaskEvidence.evidence_type=='hook_invite_submission'))
         data=proof.extra_metadata or {} if proof else {}
+        grant=db.scalar(select(TaskEvidence).where(TaskEvidence.task_id==task.id,
+            TaskEvidence.evidence_type=='hook_reinvite_authorization'))
+        if grant:
+            previous=db.get(WechatSessionBinding,(grant.extra_metadata or {}).get('previous_binding_id'))
+            if (previous is None or previous.replacement_binding_id or
+                    ((previous.native_context or {}).get('reinvite_request') or {}).get('task_id')!=task.id):
+                continue
         if (proof and data.get('backend_validated') is True and data.get('self_wxid')==payload.self_wxid
                 and data.get('account_epoch')==payload.account_epoch):
             invitations.append({'source_task_id':task.id})
@@ -92,6 +99,7 @@ def inventory(db,authenticated,instance,payload):
     return {'retained_flow_terminal':retained_flow_terminal,'schema_version':'hook-native-work-v1',**payload.model_dump(),'run_status':w.run_status,
         'inflight_flow':flow,'inflight_task':current_task,
         'inflight_batch_id':(db.get(ReplyAction,current.reply_action_id).batch_id if current and current.reply_action_id and db.get(ReplyAction,current.reply_action_id) else None),'bindings':bindings,'invitations':invitations,
+        'relationship_query_version':1,'relationship_bindings':[{k:b[k] for k in ('binding_id','binding_revision','peer_wxid','remark_code')} for b in bindings],
         'retained_sends':retained,'can_send':False,'observation_query_version':1}
 
 

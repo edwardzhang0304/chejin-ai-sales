@@ -146,6 +146,11 @@ def accept_coverage(db,authenticated,instance,payload):
         .with_for_update().execution_options(populate_existing=True))
     ctx=dict(binding.native_context or {}) if binding else {}
     reconciliation=payload.reconciliation
+    if (reconciliation is None and binding and not binding.deleted_at
+            and binding.worker_id==w.id and binding.native_self_wxid==payload.self_wxid
+            and ctx.get('account_epoch')==payload.account_epoch and binding.disable_reason=='operator_reinvite'
+            and binding.bind_status=='disabled' and payload.binding_revision < binding.authorization_revision):
+        raise AppError('HOOK_AUTHORIZATION_RETIRED','旧托管已结束，仅保留原发送核对',409)
     if reconciliation is None and (binding is None or binding.deleted_at or binding.worker_id!=w.id or binding.bind_status!='bound'
             or not binding.allow_listening or binding.listen_status not in {'listening','degraded'}
             or binding.authorization_revision!=payload.binding_revision or ctx.get('business_enabled') is not True
