@@ -24,8 +24,10 @@ GATE="brain-global-v1"
 def _host_scope():
     # Distinguish PID namespaces/hosts before using local PID evidence.
     values=[socket.gethostname(),str(uuid.getnode())]
-    try:values.append(os.readlink('/proc/self/ns/pid'))
-    except OSError:pass
+    try:
+        values.append(os.readlink('/proc/self/ns/pid'))
+    except OSError:
+        pass
     return hashlib.sha256('|'.join(values).encode()).hexdigest()
 
 HOST=_host_scope()
@@ -42,7 +44,8 @@ class GenerationCallSlot:
 def _lock(db):
     dialect=db.get_bind().dialect.name
     insert={"sqlite":sqlite_insert,"postgresql":pg_insert}.get(dialect)
-    if insert is None:raise AppError("AI_CAPACITY_DATABASE_UNSUPPORTED","AI 调度数据库不受支持",503)
+    if insert is None:
+        raise AppError("AI_CAPACITY_DATABASE_UNSUPPORTED","AI 调度数据库不受支持",503)
     db.execute(insert(AIGenerationGate).values(id=GATE,revision=0).on_conflict_do_nothing(index_elements=["id"]))
     # SQLite's no-op SELECT FOR UPDATE cannot serialize writers. An actual
     # UPDATE takes its writer lock; PostgreSQL locks the same singleton row.
@@ -50,26 +53,33 @@ def _lock(db):
 
 
 def _owner_finished(row):
-    if row.owner_host!=HOST:return False
+    if row.owner_host!=HOST:
+        return False
     try:
         process=psutil.Process(row.owner_pid)
         return (not process.is_running() or process.status()==psutil.STATUS_ZOMBIE
                 or repr(process.create_time())!=row.owner_process_started)
-    except psutil.NoSuchProcess:return True
-    except (psutil.AccessDenied,psutil.Error,OSError):return False
+    except psutil.NoSuchProcess:
+        return True
+    except (psutil.AccessDenied,psutil.Error,OSError):
+        return False
 
 
 def acquire_call_slot(engine,*,conversation_id,batch_id,generation_attempt,limit):
-    if type(limit) is not int or limit<1:raise ValueError("AI_CAPACITY_LIMIT_INVALID")
+    if type(limit) is not int or limit<1:
+        raise ValueError("AI_CAPACITY_LIMIT_INVALID")
     with Session(bind=engine,autoflush=False) as db:
         _lock(db)
         for row in db.scalars(select(AIGenerationSlot)):
-            if _owner_finished(row):db.delete(row)
+            if _owner_finished(row):
+                db.delete(row)
         db.flush()
         if db.scalar(select(AIGenerationSlot.token).where(AIGenerationSlot.conversation_id==conversation_id)):
-            db.commit();return None
+            db.commit()
+            return None
         if db.scalar(select(func.count()).select_from(AIGenerationSlot))>=limit:
-            db.commit();return None
+            db.commit()
+            return None
         token=str(uuid.uuid4())
         db.add(AIGenerationSlot(token=token,conversation_id=conversation_id,batch_id=batch_id,
             generation_attempt=generation_attempt,owner_host=HOST,owner_pid=os.getpid(),
