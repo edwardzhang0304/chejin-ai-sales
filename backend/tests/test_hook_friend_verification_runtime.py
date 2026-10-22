@@ -47,28 +47,25 @@ def test_friend_verification_after_first_segment_keeps_original_journal_and_stop
         table.execute('INSERT INTO MSG VALUES(?,?,?,?,?,?,?,?,?,?)',
             (n,str(8200000000000000000+n),kind,sender,now,now*1000+n,0,n,binding['peer_wxid'],text))
     add(1,0,'想了解二手车的选购方式，暂时不预约。')
+    restricted_peer=binding['peer_wxid']
     def hook(path):
         server.raw_override=None
         if path=='/SendTextMsg':
             add(1,1,server.requests[-1][1]['msg'])
-            if zero_id:table.execute('UPDATE MSG SET MsgSvrID=0 WHERE IsSender=1')
-            add(10000,0,NOTICE)
+            if binding['peer_wxid']==restricted_peer:
+                if zero_id:table.execute('UPDATE MSG SET MsgSvrID=0 WHERE IsSender=1 AND StrTalker=?',(restricted_peer,))
+                add(10000,0,NOTICE)
             server.raw_override=b'{"SendTextMsg":"1"}'
     server.on_request=hook
-    if zero_id:
-        # Move only the server confirmation clock after the real post-send
-        # history read. This exercises reply_once's terminal-unknown entry.
-        from app.services import hook_send_service
-        from datetime import timedelta
-        observe=HookFormalClient.observe_send
-        def after_deadline(*args,**kwargs):
-            now=hook_send_service.utcnow()
-            monkeypatch.setattr(hook_send_service,'utcnow',lambda:now+timedelta(seconds=301))
-            return observe(*args,**kwargs)
-        monkeypatch.setattr(HookFormalClient,'observe_send',after_deadline)
+    observations=[];original_observe=HookFormalClient.observe_send
+    def observe(*args):
+        result=original_observe(*args);observations.append(result);return result
+    monkeypatch.setattr(HookFormalClient,'observe_send',observe)
     first=runtime.sync(binding)
     result=drive_reply(runtime,binding,first['message_batch']['batch_id'])
     assert len(result['sends'])==1
+    assert observations and not observations[0]['deadline_elapsed']
+    if zero_id:assert observations[0]['early_settlement_reason']==REASON
     assert len([r for r in server.requests if r[0]=='/SendTextMsg'])==1
     assert not runtime.active_flow_id
     with SessionLocal() as db:
@@ -91,4 +88,39 @@ def test_friend_verification_after_first_segment_keeps_original_journal_and_stop
     assert len(sent)==1
     assert len([r for r in server.requests if r[0]=='/SendTextMsg'])==1
     assert (runtime.private_root/'send-receipts'/f'{original_action}.json').exists()
+    if zero_id:
+        # A different customer's complete real task/flow/reply chain must work
+        # after the restricted send closes, without resetting Worker or journals.
+        from test_hook_account_http import client
+        from test_hook_business_http import post,proof,body
+        lead=client.post('/api/leads',json={'customer_name':'Synthetic healthy customer','phones':['13800000004']})
+        assert lead.status_code==200,lead.text
+        pulled=client.get(f"/api/workers/{w['id']}/tasks/pull",headers={
+            'X-Worker-Token':w['worker_token'],'X-Client-Instance-Id':w['instance']})
+        task=pulled.json()['data']['task'];assert task['business_object']['lead']['id']==lead.json()['data']['id']
+        assert post(w,f"/workers/{w['id']}/inflight-flow/start",{'flow_id':task['id'],'flow_kind':'task'}).status_code==200
+        headers={'X-Inflight-Flow-Id':task['id']}
+        claimed=post(w,f"/tasks/{task['id']}/claim",{'worker_id':w['id']},headers)
+        assert claimed.status_code==200,claimed.text
+        headers['X-Task-Lease-Fencing-Token']=str(claimed.json()['data']['lease_fencing_token'])
+        account={k:getattr(runtime.scope,k) for k in ('self_wxid','account_epoch','process_generation')}
+        prep=post(w,f"/tasks/{task['id']}/hook-invite/prepare",account,headers).json()['data']
+        submitted=post(w,f"/tasks/{task['id']}/hook-invite/submitted",proof(account,prep),headers)
+        assert submitted.status_code==200,submitted.text
+        assert post(w,f"/workers/{w['id']}/inflight-flow/finish",{'flow_id':task['id'],'terminal_kind':'task_terminal'},headers).status_code==200
+        bound_result=post(w,f"/workers/{w['id']}/wechat/native-bindings",body(task,account,prep,('wxid_customer_B',)))
+        assert bound_result.status_code==200,bound_result.text
+        binding=bound_result.json()['data']
+        while int(time.time())<=int(binding['history_since_create_time']):time.sleep(.02)
+        add(1,0,'请介绍一下选购方式。')
+        synced=runtime.sync(binding);assert synced['message_batch']
+        healthy=drive_reply(runtime,binding,synced['message_batch']['batch_id'])
+        assert len(healthy['sends'])==2 and not runtime.active_flow_id
+        assert all(item['status']=='sent' for item in healthy['sends'])
+        assert before=={p.name:p.read_bytes() for p in folder.iterdir()}
+        assert len([r for r in server.requests if r[0]=='/SendTextMsg'])==3
+        with SessionLocal() as db:
+            assert db.get(ReplyAction,original_action).status=='unknown_send_result'
+            assert db.get(Worker,w['id']).run_status=='running'
+            assert not db.get(Worker,w['id']).inflight_flow_state
     manager.close();table.close()

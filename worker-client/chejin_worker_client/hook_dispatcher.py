@@ -17,7 +17,7 @@ from .models import Task
 from .hook_progress import emit_progress,register_progress,complete_send_progress
 from .hook_formal_c1 import _save
 from .hook_formal_runtime import HookFormalRuntime, publish_current_task,read_batch_view
-from .hook_sender import RetainedNativeSendPermit
+from .hook_sender import RetainedNativeSendPermit,send_observation_can_settle
 from .hook_voice import HookVoiceTranscriber, capture_voice_audio
 from .shared_rules import hook_contract_rules as rules
 from .hook_timing import timed_call
@@ -282,7 +282,6 @@ class HookBusinessDispatcher:
         rt=self.runtime
         if hasattr(rt,'register_binding_progress'):
             rt.register_binding_progress(binding,metadata['task_id'],group=metadata.get('batch_id') or metadata['task_id'],kind='batch')
-        emit_progress(getattr(self,'_progress_runner',None),metadata['task_id'],'send_confirm')
         root=self.private_root/'sends'/rt.credentials.worker_id/rt.scope.account_epoch/metadata['reply_action_id']
         if not (root/'trigger.json').exists():
             try:
@@ -336,7 +335,7 @@ class HookBusinessDispatcher:
         observation=self.client.observe_send(rt.credentials,permit,outcome)
         if observation.get('settlement'):
             settled=observation['settlement']['result']
-        elif not observation['unique_local_send_observed'] and not observation['deadline_elapsed']:
+        elif not send_observation_can_settle(observation,outcome):
             emit_progress(getattr(self,'_progress_runner',None),metadata['task_id'],'send_confirm','waiting','send_wait')
             self._report_wait('HOOK_SEND_CONFIRMATION_PENDING');return False
         else:settled=self.client.native_send_settle(rt.credentials,permit,outcome)

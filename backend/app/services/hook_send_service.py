@@ -76,7 +76,8 @@ def claim_native(db,worker,instance,action_id,payload,flow,token):
     identity_value={**payload.model_dump(),'worker_id':w.id,'client_instance_id':instance,
         'binding_id':binding.id,'binding_revision':binding.authorization_revision,'peer_wxid':binding.native_peer_wxid,
         'reply_action_id':action.id,'flow_id':flow,'lease_fencing_token':token,
-        'baseline_native_ids':[(m.raw_payload or {})['native_msg_id'] for m in ordered_messages(db,binding)]}
+        'baseline_native_ids':[(m.raw_payload or {})['native_msg_id'] for m in ordered_messages(db,binding)],
+        'baseline_friend_notice_keys':list(ctx.get('friend_verification_notice_keys',[]))}
     previous=(action.ai_payload or {}).get('native_send_identity')
     if previous and previous!=identity_value:raise AppError('HOOK_SEND_PERMIT_CONFLICT','原发送许可不可替换',409)
     action.ai_payload={**(action.ai_payload or {}),'native_send_identity':identity_value}
@@ -111,24 +112,30 @@ def begin_native(db,worker,instance,action_id,payload,flow,token):
     return {'attempt_registered':True,'duplicated':False,'may_call_hook':True}
 
 
-def candidate_events(db,action,binding,completed_at):
-    native=(action.ai_payload or {}).get('native_send_identity',{});attempt=(action.ai_payload or {}).get('native_send_attempt',{})
-    if not native or not attempt:return []
+def original_send_history(db,action,binding,*,allow_pending_outgoing=False):
+    """One identity/coverage gate for positive matching and restricted closure."""
+    native=(action.ai_payload or {}).get('native_send_identity',{})
+    if not native or not (action.ai_payload or {}).get('native_send_attempt'):return None
     rules=shared_adapter('hook_history_rules')
-    lower=int(rules.utc(attempt['attempted_at']).timestamp());upper=int(rules.utc(completed_at).timestamp())+1
     receipt=db.get(HookHistoryReceipt,(binding.native_context or {}).get('active_history_receipt_id'))
     if (receipt is None or receipt.binding_id!=binding.id or receipt.worker_id!=native.get('worker_id')
             or any(receipt.payload_json.get(k)!=native.get(k) for k in
-                ('self_wxid','account_epoch','binding_revision'))):return []
+                ('self_wxid','account_epoch','binding_revision'))):return None
     runtime=(binding.worker.hook_runtime_context or {}) if binding.worker else {}
     if (receipt.payload_json.get('process_generation')!=runtime.get('process_generation')
             or binding.worker.hook_account_epoch!=native.get('account_epoch')
-            or binding.worker.hook_self_wxid!=native.get('self_wxid')):return []
-    # Read only backend-validated, complete bounded scans. Readiness may be held
-    # for pending actor reconciliation; that is not a fabricated missing page.
+            or binding.worker.hook_self_wxid!=native.get('self_wxid')):return None
     data=rules.validate_coverage(receipt.payload_json['coverage'],binding.native_peer_wxid,
         int((binding.native_context or {})['history_since_create_time']))
-    if not data['ready']:return []
+    return data if (data['ready'] or (allow_pending_outgoing and data['reason_code']==rules.OUTGOING_ID_PENDING)) else None
+
+
+def candidate_events(db,action,binding,completed_at):
+    native=(action.ai_payload or {}).get('native_send_identity',{});attempt=(action.ai_payload or {}).get('native_send_attempt',{})
+    data=original_send_history(db,action,binding)
+    if data is None:return []
+    rules=shared_adapter('hook_history_rules')
+    lower=int(rules.utc(attempt['attempted_at']).timestamp());upper=int(rules.utc(completed_at).timestamp())+1
     ids=[]
     for row in data['text_rows']:
         if (row['IsSender']=='1' and row['StrContent']==action.reply_text
@@ -176,7 +183,8 @@ def reconcile_native(db,worker,instance,action_id,payload,flow,token):
         error_code=None if confirmed else 'HOOK_NATIVE_SEND_UNCONFIRMED',remark='原生历史唯一正文与时间关联' if confirmed else '保留原发送尝试，不自动重发',
         evidence={'transport':'hook','journal_sha256':payload.journal_sha256,
             'native_msg_id':(event.raw_payload or {}).get('native_msg_id') if event else None,
-            'candidate_count':len(candidates),'recipient_delivery_confirmed':False})
+            'candidate_count':len(candidates),'recipient_delivery_confirmed':False,
+            'closure_reason':None if confirmed else restricted_send_closure_reason(db,action,binding,payload)})
     if confirmed and (binding.native_context or {}).get('history_reason_code')=='HOOK_NATIVE_SEND_ACTOR_PENDING':
         runtime=w.hook_runtime_context or {}
         if (w.hook_account_epoch==payload.account_epoch and w.hook_self_wxid==payload.self_wxid
@@ -198,6 +206,29 @@ def reconcile_native(db,worker,instance,action_id,payload,flow,token):
     db.flush();return result
 
 
+def restricted_send_closure_reason(db,action,binding,payload):
+    """A trusted new restriction ends waiting, never proves delivery/failure."""
+    from app.services.hook_customer_notice_service import notice_key, REASON
+    if payload.call_completed is not True or (binding.worker.hook_runtime_context or {}).get('blocked'):
+        return None
+    checked=original_send_history(db,action,binding,allow_pending_outgoing=True)
+    if checked is None:return None
+    keys={key for event in c3_service.open_handoff_events_for_conversation(db,binding.conversation_id)
+          for key in (event.ai_payload or {}).get('native_friend_verification_notice_keys',[])}
+    native=action.ai_payload['native_send_identity'];attempt=action.ai_payload['native_send_attempt']
+    baseline=native.get('baseline_friend_notice_keys')
+    lower=int(shared_adapter('hook_history_rules').utc(attempt['attempted_at']).timestamp())
+    for row in checked['friend_verification_notices']:
+        key=notice_key(row,binding.native_context or {})
+        # Old permits have no notice baseline. Same-second ordering is then
+        # unproven: retain the original deadline rather than infer causality.
+        created=int(row['CreateTime'])
+        if (key in keys and key not in (baseline or []) and
+                (created>=lower if baseline is not None else created>lower)):
+            return REASON
+    return None
+
+
 def observe_original_send(db,worker,instance,action_id,payload,flow,token):
     w,binding,action,task=original_send(db,worker,instance,action_id,payload,flow,token)
     attempt=(action.ai_payload or {}).get('native_send_attempt',{})
@@ -210,7 +241,8 @@ def observe_original_send(db,worker,instance,action_id,payload,flow,token):
     deadline=shared_adapter('hook_history_rules').utc(attempt['attempted_at'])+timedelta(seconds=get_settings().c3_send_ack_stale_after_seconds)
     return {'candidate_count':len(candidates),'unique_local_send_observed':len(candidates)==1,
         'confirmation_deadline_utc':deadline.isoformat(),'deadline_elapsed':utcnow()>=deadline,
-        'settlement':(action.ai_payload or {}).get('native_send_settlement'),'may_call_hook':False}
+        'settlement':(action.ai_payload or {}).get('native_send_settlement'),'may_call_hook':False,
+        'early_settlement_reason':restricted_send_closure_reason(db,action,binding,payload)}
 
 
 def settle_no_trigger(db,worker,instance,action_id,payload,flow,token):

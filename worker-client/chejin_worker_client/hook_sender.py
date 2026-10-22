@@ -12,6 +12,14 @@ from .hook_active_calls import reserve,finish
 from .hook_timing import timed_call
 
 
+def send_observation_can_settle(observation, outcome):
+    """Shared polling/restart decision; only the server settles original proof."""
+    return bool(observation.get('settlement') or observation.get('unique_local_send_observed') is True
+                or observation.get('deadline_elapsed') is True
+                or (outcome.get('call_completed') is True and
+                    observation.get('early_settlement_reason')=='HOOK_FRIEND_VERIFICATION_REQUIRED'))
+
+
 @dataclass(frozen=True)
 class NativeSendPermit:
     worker_id: str

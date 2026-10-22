@@ -13,7 +13,7 @@ from chejin_worker_client.hook_history_sync import HookHistorySynchronizer
 from chejin_worker_client.shared_rules import hook_history_rules
 
 
-@pytest.mark.parametrize('result', ['observed', 'pending', 'timeout'])
+@pytest.mark.parametrize('result', ['observed', 'pending', 'timeout', 'restricted'])
 def test_restart_reconciles_numeric_history_without_replaying_original_send(
         history_lab, retained, result):
     server, gateway, process, scope, delivery, _, db = history_lab
@@ -57,7 +57,8 @@ def test_restart_reconciles_numeric_history_without_replaying_original_send(
             calls.append('observe')
             send_rows = [row for row in checked['text_rows'] if row['IsSender'] == '1']
             return {'unique_local_send_observed': len(send_rows) == 1,
-                    'deadline_elapsed': result == 'timeout'}
+                    'deadline_elapsed': result == 'timeout',
+                    'early_settlement_reason': 'HOOK_FRIEND_VERIFICATION_REQUIRED' if result=='restricted' else None}
 
         def native_send_settle(self, cred, permit, outcome):
             assert calls[-1] == 'observe' and result != 'pending'
@@ -86,6 +87,11 @@ def test_restart_reconciles_numeric_history_without_replaying_original_send(
     # A new dispatcher uses the same original credentials/journals and fixed read.
     server.query_response = query
     dispatcher = restarted_dispatcher()
+    from chejin_worker_client.hook_progress import HookProgressTimeline
+    from copy import deepcopy
+    timeline=HookProgressTimeline();events=[]
+    def progress(event):events.append(event);timeline.apply(event)
+    dispatcher._progress_runner=SimpleNamespace(on_runtime_process=progress)
     assert dispatcher._recover_send(binding, metadata) is (result != 'pending')
     assert calls == ['history', 'observe'] + ([] if result == 'pending' else ['settle'])
     receipt = private / 'send-receipts' / f"{metadata['reply_action_id']}.json"
@@ -95,13 +101,20 @@ def test_restart_reconciles_numeric_history_without_replaying_original_send(
             'ack': {'send_result': 'sent' if result == 'observed' else 'unknown'}}
         assert dispatcher.runtime._send_result_pending is False
         assert dispatcher.runtime._finish_note == ('sent' if result == 'observed' else 'send_unknown')
+    if result=='pending':
+        first=deepcopy(timeline.steps)
+        for _ in range(2):assert dispatcher._recover_send(binding,metadata) is False
+        assert timeline.steps==first
+        assert all(e.get('state')=='waiting' for e in events if e.get('phase')=='send_confirm')
+    else:
+        assert timeline.latest[(metadata['task_id'],'send_confirm')]['state']=='done'
     assert {p.name: p.read_bytes() for p in folder.iterdir()} == before
     assert not any(path == '/SendTextMsg' for path, *_ in server.requests)
     assert not list(private.rglob('not-triggered.json'))
 
 
-@pytest.mark.parametrize('deadline', [False, True])
-def test_secondary_retained_entry_uses_same_unknown_gate_and_original_deadline(retained,deadline):
+@pytest.mark.parametrize('deadline,restricted', [(False,False),(True,False),(False,True)])
+def test_secondary_retained_entry_uses_same_unknown_gate_and_original_deadline(retained,deadline,restricted):
     from chejin_worker_client.hook_formal_runtime import HookFormalRuntime
     root,credentials,scope,binding,metadata,folder=retained
     source=root/'original';(source/'sends').mkdir(parents=True)
@@ -116,10 +129,10 @@ def test_secondary_retained_entry_uses_same_unknown_gate_and_original_deadline(r
         calls.append('history')
         return {'history_ready':False,'reason_code':hook_history_rules.OUTGOING_ID_PENDING,
                 'reconciliation_only':True,'recovery_settlement_allowed':True}
-    def observe(*args):calls.append('observe');return {'deadline_elapsed':deadline}
+    def observe(*args):calls.append('observe');return {'deadline_elapsed':deadline,'early_settlement_reason':'HOOK_FRIEND_VERIFICATION_REQUIRED' if restricted else None}
     def settle(*args):calls.append('settle');return {'local_send_observed':False,'automatic_resend_allowed':False}
     runtime.sync=sync;runtime.client=SimpleNamespace(observe_send=observe,native_send_settle=settle)
-    if deadline:
+    if deadline or restricted:
         result=runtime.settle_retained_send(binding,source,metadata)
         assert result=={'local_send_observed':False,'automatic_resend_allowed':False}
         assert calls==['history','observe','settle']
@@ -129,3 +142,10 @@ def test_secondary_retained_entry_uses_same_unknown_gate_and_original_deadline(r
         assert calls==['history','observe']
         assert not list(runtime.private_root.rglob('*.json'))
     assert before=={p.name:p.read_bytes() for p in folder.iterdir()}
+
+
+@pytest.mark.parametrize('completed,reason,expected',[(False,'HOOK_FRIEND_VERIFICATION_REQUIRED',False),
+    (True,'untrusted_reason',False),(True,'HOOK_FRIEND_VERIFICATION_REQUIRED',True)])
+def test_early_closure_needs_completed_local_call_and_server_reason(completed,reason,expected):
+    from chejin_worker_client.hook_sender import send_observation_can_settle
+    assert send_observation_can_settle({'early_settlement_reason':reason},{'call_completed':completed}) is expected

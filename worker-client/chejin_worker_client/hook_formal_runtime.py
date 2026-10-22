@@ -23,7 +23,7 @@ from .hook_timing import timed_call, record_raw_delivery
 from .hook_history_sync import HookHistorySynchronizer
 from .hook_outbox import HookDeliveryScope,HookDeliveryOutbox
 from .hook_projection import NativeProjectionStore
-from .hook_sender import NativeSendPermit,HookNativeSender,RetainedNativeSendPermit
+from .hook_sender import NativeSendPermit,HookNativeSender,RetainedNativeSendPermit,send_observation_can_settle
 from .shared_rules import hook_contract_rules as rules
 
 
@@ -621,7 +621,7 @@ class HookFormalRuntime:
             raise ValueError(synced['reason_code'] or 'HOOK_HISTORY_COVERAGE_REQUIRED')
         if synced.get('reason_code') == hook_history_rules.OUTGOING_ID_PENDING:
             observed=self.client.observe_send(self.credentials,permit,outcome)
-            if not observed.get('settlement') and not observed.get('deadline_elapsed'):
+            if not send_observation_can_settle(observed,outcome):
                 raise ValueError('HOOK_SEND_CONFIRMATION_PENDING')
         settled=self.client.native_send_settle(self.credentials,permit,outcome)
         saved=self.private_root/'send-receipts'/f'{permit.reply_action_id}.json'
@@ -730,7 +730,7 @@ class HookFormalRuntime:
             # uses the original retained-send recovery; it never triggers again.
             self.sync(binding,show_progress=False,reconciliation=retained)
             observed=self.client.observe_send(self.credentials,permit,outcome)
-            if not observed['unique_local_send_observed'] and not observed['deadline_elapsed']:
+            if not send_observation_can_settle(observed,outcome):
                 return {'task_id':task['id'],'reply_action_id':action['id'],'flow_id':flow,'status':'confirmation_pending',
                     'automatic_resend_allowed':False}
             settled=timed_call('hook.send_reconcile',
