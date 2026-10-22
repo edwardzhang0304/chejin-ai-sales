@@ -710,20 +710,29 @@ def _pre_send_fact_checkpoint_response(
     }
 
 
-def _brain_plan_vehicle_ids(payload: dict[str, Any]) -> list[str]:
+def _brain_plan_vehicle_references(payload: dict[str, Any]) -> tuple[list[str], bool]:
     raw_payload = payload.get("raw_payload") if isinstance(payload.get("raw_payload"), dict) else {}
     result = raw_payload.get("omniauto_brain_result") if isinstance(raw_payload.get("omniauto_brain_result"), dict) else {}
     plan = result.get("brain_plan") if isinstance(result.get("brain_plan"), dict) else {}
     evidence = plan.get("evidence_used") if isinstance(plan.get("evidence_used"), dict) else {}
     values = evidence.get("product_ids") if isinstance(evidence.get("product_ids"), list) else []
     vehicle_ids = {str(value).strip() for value in values if str(value).strip()}
+    catalog_reference = False
     for fact in plan.get("facts_claimed") or []:
         if not isinstance(fact, dict) or str(fact.get("source_level") or "") != "product_master":
             continue
         source_id = str(fact.get("source_id") or "").strip()
-        if source_id and source_id != "multiple":
+        if source_id == "product_master":
+            # A catalog-level claim (including absence of matching stock) is
+            # not a vehicle ID. It depends on the whole generation catalog.
+            catalog_reference = True
+        elif source_id and source_id != "multiple":
             vehicle_ids.add(source_id)
-    return sorted(vehicle_ids)
+    return sorted(vehicle_ids), catalog_reference
+
+
+def _brain_plan_vehicle_ids(payload: dict[str, Any]) -> list[str]:
+    return _brain_plan_vehicle_references(payload)[0]
 
 
 def _vehicle_fact_query(vehicle_ids: list[str] | None = None):
@@ -761,6 +770,9 @@ def _action_vehicle_fingerprint_key(action: ReplyAction) -> str:
 
 
 def _lock_vehicle_facts_for_action(db: Session, reply_action_id: str) -> list[KnowledgeItem]:
+    payload = db.scalar(select(ReplyAction.ai_payload).where(ReplyAction.id == reply_action_id)) or {}
+    if _brain_plan_vehicle_references(payload)[1]:
+        return list(db.scalars(_vehicle_fact_query().order_by(KnowledgeItem.item_id).with_for_update()))
     vehicle_ids = list(
         db.scalars(
             select(ReplyActionVehicleFact.vehicle_id)
@@ -769,14 +781,7 @@ def _lock_vehicle_facts_for_action(db: Session, reply_action_id: str) -> list[Kn
         )
     )
     if not vehicle_ids:
-        legacy_payload = db.scalar(
-            select(ReplyAction.ai_payload).where(
-                ReplyAction.id == reply_action_id,
-                ReplyAction.deleted_at.is_(None),
-            )
-        )
-        if isinstance(legacy_payload, dict):
-            vehicle_ids = _brain_plan_vehicle_ids(legacy_payload)
+        vehicle_ids = _brain_plan_vehicle_ids(payload)
     if not vehicle_ids:
         return []
     return list(db.scalars(_vehicle_fact_query(vehicle_ids).order_by(KnowledgeItem.item_id).with_for_update()))
@@ -789,8 +794,16 @@ def _snapshot_action_vehicle_facts(
     payload: dict[str, Any],
     generation_vehicle_facts: dict[str, dict[str, str]],
 ) -> list[str]:
-    vehicle_ids = _brain_plan_vehicle_ids(payload)
-    if not vehicle_ids:
+    vehicle_ids, catalog_reference = _brain_plan_vehicle_references(payload)
+    if catalog_reference:
+        current_ids = set(db.scalars(_vehicle_fact_query().with_only_columns(KnowledgeItem.item_id)
+                                    .where(KnowledgeItem.status == "active")))
+        if current_ids != set(generation_vehicle_facts):
+            raise AppError(VEHICLE_FACT_STALE_CODE, "生成期间库存范围已变化，请重新生成", 409,
+                           {"vehicle_ids": sorted(current_ids ^ set(generation_vehicle_facts)),
+                            "suggested_action": "regenerate"})
+        vehicle_ids = sorted(set(vehicle_ids) | set(generation_vehicle_facts))
+    if not vehicle_ids and not catalog_reference:
         return []
     vehicles = list(db.scalars(_vehicle_fact_query(vehicle_ids).order_by(KnowledgeItem.item_id).with_for_update().execution_options(populate_existing=True)))
     by_id = {vehicle.item_id: vehicle for vehicle in vehicles}
@@ -815,6 +828,12 @@ def _snapshot_action_vehicle_facts(
     if stale:
         raise AppError(VEHICLE_FACT_STALE_CODE, "生成期间引用车辆资料已变化，请重新生成", 409,
                        {"vehicle_ids": stale, "suggested_action": "regenerate"})
+    if catalog_reference:
+        # Server-owned membership plus the normal per-vehicle snapshots guard
+        # additions, removals and edits at final claim, even for empty stock.
+        action.ai_payload = {**payload, "vehicle_catalog_snapshot": {
+            "version": 1, "vehicle_ids": sorted(generation_vehicle_facts),
+        }}
     for vehicle_id in vehicle_ids:
         vehicle = by_id[vehicle_id]
         db.add(
@@ -842,6 +861,19 @@ def _stale_action_vehicle_ids(
             .order_by(ReplyActionVehicleFact.vehicle_id)
         )
     )
+    catalog_reference = _brain_plan_vehicle_references(action.ai_payload or {})[1]
+    if catalog_reference:
+        catalog = (action.ai_payload or {}).get("vehicle_catalog_snapshot")
+        if (not isinstance(catalog, dict) or catalog.get("version") != 1
+                or not isinstance(catalog.get("vehicle_ids"), list)):
+            return ["product_master"]  # Old actions lack a certified catalog.
+        expected = set(catalog["vehicle_ids"])
+        current = set(db.scalars(_vehicle_fact_query().with_only_columns(KnowledgeItem.item_id)
+                                .where(KnowledgeItem.status == "active")))
+        if current != expected:
+            return sorted(current ^ expected)
+        if not expected.issubset({snapshot.vehicle_id for snapshot in snapshots}):
+            return ["product_master"]
     if not snapshots:
         return _brain_plan_vehicle_ids(action.ai_payload or {})
     vehicles = locked_vehicles if locked_vehicles is not None else list(
@@ -1371,7 +1403,8 @@ def invalidate_vehicle_dependent_reply_actions(db: Session, vehicle_id: str, *, 
     action_ids.update(
         action.id
         for action in legacy_candidates
-        if vehicle_id in _brain_plan_vehicle_ids(action.ai_payload or {})
+        if (vehicle_id in _brain_plan_vehicle_ids(action.ai_payload or {})
+            or _brain_plan_vehicle_references(action.ai_payload or {})[1])
     )
     if not action_ids:
         return []
