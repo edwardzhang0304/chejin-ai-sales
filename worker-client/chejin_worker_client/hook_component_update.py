@@ -228,7 +228,8 @@ def run_cli(args):
                 _atomic(args.write_report,_json(result))
         except Exception as report_error:
             result['report_error']=exception_details(report_error)
-            record_capture_failure('hook_component_report',report_error,error_code=result['error_code'])
+            record_capture_failure('hook_component_report',report_error,
+                                   error_code=result['error_code'],safe_context=result)
         # A wholly unwritable disk cannot guarantee local evidence. Emit the
         # sanitized record as well, without raw exception text or credentials.
         from .main import emit_cli_output

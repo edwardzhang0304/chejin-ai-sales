@@ -102,7 +102,7 @@ def test_primary_and_restoration_errors_both_survive_export_and_retry(installati
     assert snapshot()==before
 
 
-def test_report_failure_does_not_claim_success_or_mask_primary_error(installation,monkeypatch,capsys):
+def test_report_failure_does_not_claim_success_or_mask_primary_error(installation,monkeypatch,tmp_path):
     candidate,target,*_=installation
     report=storage.APP_DIR/'artifacts/hook/component-updates/result.json'
     real=update._atomic
@@ -111,9 +111,20 @@ def test_report_failure_does_not_claim_success_or_mask_primary_error(installatio
         if path==report:raise PermissionError(errno.EACCES,'SECRET_EXCEPTION_BODY')
         return real(path,data)
     monkeypatch.setattr(update,'_atomic',atomic)
+    from chejin_worker_client import main
+    monkeypatch.setattr(main,'emit_cli_output',lambda _: None)  # frozen windowed executable
     assert cli(monkeypatch,candidate,report)==4
-    record=json.loads(capsys.readouterr().out)
+    fallback=storage.APP_DIR/'artifacts/runtime/evidence-recorder-failures.jsonl'
+    record=json.loads(fallback.read_text())['context']
     assert record['errno']==errno.ENOSPC and record['report_error']['errno']==errno.EACCES
     assert not report.exists()
     fallback=storage.APP_DIR/'artifacts/runtime/evidence-recorder-failures.jsonl'
     assert json.loads(fallback.read_text())['original_error_code']=='HOOK_COMPONENT_DISK_FULL'
+    with zipfile.ZipFile(export_bundle(storage.APP_DIR,tmp_path/'fallback.zip')) as archive:
+        member=next(name for name in archive.namelist() if name.endswith('/evidence-recorder-failures.jsonl'))
+        exported=json.loads(archive.read(member))['context']
+        assert exported==record
+        assert exported['phase']=='replace_dll' and exported['rollback_attempted']
+        assert exported['file_outcome']=='restored' and exported['config_outcome']=='rolled_back'
+        assert exported['journal_id']==update.NEW_HASH and exported['frames']
+        assert b'SECRET_EXCEPTION_BODY' not in archive.read(member)

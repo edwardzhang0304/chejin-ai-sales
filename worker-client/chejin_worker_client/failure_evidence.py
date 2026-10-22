@@ -35,8 +35,11 @@ def exception_details(exc: BaseException) -> dict[str, Any]:
     }
 
 
-def record_capture_failure(origin: str, exc: BaseException, *, error_code: str = "") -> None:
-    """Independent, bounded fallback when SQLite or incident capture fails."""
+def record_capture_failure(
+    origin: str, exc: BaseException, *, error_code: str = "",
+    safe_context: dict[str, Any] | None = None,
+) -> None:
+    """Independent, bounded fallback; safe_context must exclude raw messages and secrets."""
     from .config import CONFIG
 
     record = {
@@ -47,6 +50,8 @@ def record_capture_failure(origin: str, exc: BaseException, *, error_code: str =
     }
     if re.fullmatch(r"[A-Z][A-Z0-9_]{0,127}", error_code):
         record["original_error_code"] = error_code
+    if safe_context is not None:
+        record["context"] = safe_context
     data = json.dumps(record, ensure_ascii=True) + "\n"
     try:
         with _FALLBACK_LOCK:
