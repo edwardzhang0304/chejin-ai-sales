@@ -1,0 +1,211 @@
+{
+  "original": {
+    "run_id": 39596278756,
+    "attempt": 1,
+    "job_id": 119209263431,
+    "artifact_id": 12344152893,
+    "artifact_sha256": "4a8c5e36ed866b7edc766b952658e7ec9693efa173665e05605cc3ad6f1684a2",
+    "commit": "93442961cb0ac024d652d1b67e9cdda5843086b3",
+    "branch": "gray-release-0.10.x"
+  },
+  "additional_originals": [
+    {
+      "run_id": 39739314755,
+      "attempt": 1,
+      "job_id": 119692424920,
+      "artifact_id": 12408921004,
+      "artifact_sha256": "1797c1ca1b7296ce3db4638b10959070a58accec3b69fcca582fbbf8fe9be5cb",
+      "commit": "7ff1041c03bb30d79f93bd09de1786cf2116f816",
+      "branch": "gray-release-0.10.x",
+      "changed_inputs": {
+        "ops/formal_release/handoffs/hook-reviewed-d7f7ad4.json": {
+          "reason": "Release version/provenance metadata only, no runtime change; exact current inputs and source version normalization validated. Prior business tests not reexecuted.",
+          "covered_by": [
+            "ops/formal_release/tests/test_tooling_handoff.py"
+          ]
+        },
+        "ops/formal_release/handoffs/tooling-01011-scope.json": {
+          "reason": "Release version/provenance metadata only, no runtime change; exact current inputs and source version normalization validated. Prior business tests not reexecuted.",
+          "covered_by": [
+            "ops/formal_release/tests/test_tooling_handoff.py"
+          ]
+        },
+        "ops/formal_release/run_evidence_checks.py": {
+          "reason": "Independent multi-origin evidence fix reviewed by architect5 at fe37233; versioned strict provenance, XML mapping, per-origin dependencies and retained case coverage. Current focused producer-reader-final-consumer tests required.",
+          "covered_by": [
+            "ops/formal_release/tests/test_tooling_handoff.py"
+          ]
+        },
+        "ops/formal_release/tests/test_hook_component_packaging.py": {
+          "reason": "Only Hook copies three reviewed offline-maintenance entry files and invokes existing native PS5.1 validator with fatal failure before manifest sealing. Static transport/copy/fail-close check added; native parser and copied script validator execute in Windows before package is admitted. OCR branch preserved.",
+          "covered_by": [
+            "ops/formal_release/tests/test_hook_component_packaging.py",
+            "windows-parser",
+            "hook-launcher-setup"
+          ]
+        },
+        "ops/formal_release/tests/test_tooling_handoff.py": {
+          "reason": "Independent multi-origin evidence fix reviewed by architect5 at fe37233; versioned strict provenance, XML mapping, per-origin dependencies and retained case coverage. Current focused producer-reader-final-consumer tests required.",
+          "covered_by": [
+            "ops/formal_release/tests/test_tooling_handoff.py"
+          ]
+        },
+        "ops/formal_release/tooling_handoff.py": {
+          "reason": "Independent multi-origin evidence fix reviewed by architect5 at fe37233; versioned strict provenance, XML mapping, per-origin dependencies and retained case coverage. Current focused producer-reader-final-consumer tests required.",
+          "covered_by": [
+            "ops/formal_release/tests/test_tooling_handoff.py"
+          ]
+        },
+        "worker-client/chejin_worker_client/__init__.py": {
+          "reason": "Release version/provenance metadata only, no runtime change; exact current inputs and source version normalization validated. Prior business tests not reexecuted.",
+          "covered_by": [
+            "ops/formal_release/tests/test_tooling_handoff.py"
+          ]
+        },
+        "worker-client/scripts/build-windows.ps1": {
+          "reason": "Only Hook copies three reviewed offline-maintenance entry files and invokes existing native PS5.1 validator with fatal failure before manifest sealing. Static transport/copy/fail-close check added; native parser and copied script validator execute in Windows before package is admitted. OCR branch preserved.",
+          "covered_by": [
+            "ops/formal_release/tests/test_hook_component_packaging.py",
+            "windows-parser",
+            "hook-launcher-setup"
+          ]
+        }
+      }
+    }
+  ],
+  "changed_inputs": {
+    ".github/workflows/hook-windows-build.yml": {
+      "reason": "Hook build host changed to the same Windows 2022 family validated by native GUI smoke. No commands, source gates, package inputs or artifact naming changed.",
+      "covered_by": [
+        "windows-parser",
+        "gui-driver"
+      ]
+    },
+    ".github/workflows/release-evidence.yml": {
+      "reason": "Separate diagnostic/resume modes, historical component handoff env, Qt-compatible Hook Windows host; existing source, signing, package contents and Fast UAT steps unchanged.",
+      "covered_by": [
+        "ops/formal_release/tests/test_tooling_handoff.py",
+        "windows-parser",
+        "gui-driver",
+        "hook-launcher-setup"
+      ]
+    },
+    "ops/formal_release/handoffs/hook-reviewed-22eb0b1.json": {
+      "reason": "Release version/provenance metadata only, no runtime change; exact current inputs and source version normalization validated. Prior business tests not reexecuted.",
+      "covered_by": [
+        "ops/formal_release/tests/test_tooling_handoff.py"
+      ]
+    },
+    "ops/formal_release/handoffs/hook-reviewed-d7f7ad4.json": {
+      "reason": "Release version/provenance metadata only, no runtime change; exact current inputs and source version normalization validated. Prior business tests not reexecuted.",
+      "covered_by": [
+        "ops/formal_release/tests/test_tooling_handoff.py"
+      ]
+    },
+    "ops/formal_release/handoffs/tooling-01010-reviewed.json": {
+      "reason": "Release version/provenance metadata only, no runtime change; exact current inputs and source version normalization validated. Prior business tests not reexecuted.",
+      "covered_by": [
+        "ops/formal_release/tests/test_tooling_handoff.py"
+      ]
+    },
+    "ops/formal_release/handoffs/tooling-01010-scope.json": {
+      "reason": "Release version/provenance metadata only, no runtime change; exact current inputs and source version normalization validated. Prior business tests not reexecuted.",
+      "covered_by": [
+        "ops/formal_release/tests/test_tooling_handoff.py"
+      ]
+    },
+    "ops/formal_release/handoffs/tooling-01011-scope.json": {
+      "reason": "Release version/provenance metadata only, no runtime change; exact current inputs and source version normalization validated. Prior business tests not reexecuted.",
+      "covered_by": [
+        "ops/formal_release/tests/test_tooling_handoff.py"
+      ]
+    },
+    "ops/formal_release/handoffs/tooling-gui-recovery-reviewed.json": {
+      "reason": "Release version/provenance metadata only, no runtime change; exact current inputs and source version normalization validated. Prior business tests not reexecuted.",
+      "covered_by": [
+        "ops/formal_release/tests/test_tooling_handoff.py"
+      ]
+    },
+    "ops/formal_release/handoffs/tooling-gui-recovery-scope.json": {
+      "reason": "Release version/provenance metadata only, no runtime change; exact current inputs and source version normalization validated. Prior business tests not reexecuted.",
+      "covered_by": [
+        "ops/formal_release/tests/test_tooling_handoff.py"
+      ]
+    },
+    "ops/formal_release/maintenance.py": {
+      "reason": "Allow existing identical active fence through the original validated reload and bounded old-worker drain path, without disabling or changing scope; reject missing include/unknown content.",
+      "covered_by": [
+        "ops/formal_release/tests/test_recovery_cutover.py",
+        "ops/formal_release/tests/test_release_environment.py"
+      ]
+    },
+    "ops/formal_release/recovery_cutover.py": {
+      "reason": "Idempotent enable of the same fence uses the original reload/drain mechanism; save pre-switch failures; verify six real loopback TLS grant probes before Docker switch. All old readiness/hash/data/backup gates remain.",
+      "covered_by": [
+        "ops/formal_release/tests/test_recovery_cutover.py"
+      ]
+    },
+    "ops/formal_release/run_evidence_checks.py": {
+      "reason": "Independent multi-origin evidence fix reviewed by architect5 at fe37233; versioned strict provenance, XML mapping, per-origin dependencies and retained case coverage. Current focused producer-reader-final-consumer tests required.",
+      "covered_by": [
+        "ops/formal_release/tests/test_tooling_handoff.py"
+      ]
+    },
+    "ops/formal_release/tests/test_hook_component_packaging.py": {
+      "reason": "Only Hook copies three reviewed offline-maintenance entry files and invokes existing native PS5.1 validator with fatal failure before manifest sealing. Static transport/copy/fail-close check added; native parser and copied script validator execute in Windows before package is admitted. OCR branch preserved.",
+      "covered_by": [
+        "ops/formal_release/tests/test_hook_component_packaging.py",
+        "windows-parser",
+        "hook-launcher-setup"
+      ]
+    },
+    "ops/formal_release/tests/test_recovery_cutover.py": {
+      "reason": "Exercise both inactive and already active maintenance and reject invalid existing fence before any Docker switch.",
+      "covered_by": [
+        "ops/formal_release/tests/test_recovery_cutover.py"
+      ]
+    },
+    "ops/formal_release/tests/test_tooling_handoff.py": {
+      "reason": "Independent multi-origin evidence fix reviewed by architect5 at fe37233; versioned strict provenance, XML mapping, per-origin dependencies and retained case coverage. Current focused producer-reader-final-consumer tests required.",
+      "covered_by": [
+        "ops/formal_release/tests/test_tooling_handoff.py"
+      ]
+    },
+    "ops/formal_release/tooling_handoff.py": {
+      "reason": "Independent multi-origin evidence fix reviewed by architect5 at fe37233; versioned strict provenance, XML mapping, per-origin dependencies and retained case coverage. Current focused producer-reader-final-consumer tests required.",
+      "covered_by": [
+        "ops/formal_release/tests/test_tooling_handoff.py"
+      ]
+    },
+    "worker-client/chejin_worker_client/__init__.py": {
+      "reason": "Release version/provenance metadata only, no runtime change; exact current inputs and source version normalization validated. Prior business tests not reexecuted.",
+      "covered_by": [
+        "ops/formal_release/tests/test_tooling_handoff.py"
+      ]
+    },
+    "worker-client/scripts/build-windows.ps1": {
+      "reason": "Only Hook copies three reviewed offline-maintenance entry files and invokes existing native PS5.1 validator with fatal failure before manifest sealing. Static transport/copy/fail-close check added; native parser and copied script validator execute in Windows before package is admitted. OCR branch preserved.",
+      "covered_by": [
+        "ops/formal_release/tests/test_hook_component_packaging.py",
+        "windows-parser",
+        "hook-launcher-setup"
+      ]
+    },
+    "worker-client/scripts/run-windows-client-upgrade-test.py": {
+      "reason": "Only synthetic fixture readiness/diagnostics changed. QtPage, actual updater/Worker UI driver and business assertions byte-equivalent AST to baseline.",
+      "covered_by": [
+        "gui-driver"
+      ]
+    }
+  },
+  "pytest": [
+    {
+      "cwd": ".",
+      "nodes": [
+        "ops/formal_release/tests/test_tooling_handoff.py",
+        "ops/formal_release/tests/test_hook_component_packaging.py"
+      ]
+    }
+  ],
+  "unaffected_scope_review": "Each original run is authenticated at its actual commit and attempt. Actual fresh XML only; composed historical summary ignored. Original 39596278756 tests and actual 39739314755 tests are combined without count loss. Source evidence/recovery/environment test bytes and their declared dependencies match latest executed origin. No runtime change to remaining tool modules; changes in scope metadata and current version covered by new provenance tests and source identity verifier. New packaging entries have focused static check plus Windows native copy/validator during formal build. This is not real business or DLL acceptance."
+}
