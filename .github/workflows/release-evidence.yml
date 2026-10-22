@@ -227,6 +227,7 @@ jobs:
             ${{ runner.temp }}/hook-upgrade/plan.json
             ${{ runner.temp }}/hook-upgrade/gui/**/upgrade-result.json
             ${{ runner.temp }}/hook-upgrade/gui/**/before.png
+            ${{ runner.temp }}/hook-upgrade/gui/**/failure.png
             ${{ runner.temp }}/hook-upgrade/gui/**/after.png
             ${{ runner.temp }}/hook-upgrade/gui/**/result.json
             ${{ runner.temp }}/hook-upgrade/gui/**/data-checkpoints.json

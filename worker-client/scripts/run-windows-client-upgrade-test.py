@@ -324,6 +324,93 @@ def assert_preserved(before, after):
     assert datetime.fromisoformat(after_control[2]) >= datetime.fromisoformat(before_control[2]), "Runtime timestamp regressed"
 
 
+def collect_failure_evidence(case, data, debug_port, clicked_at):
+    """Read only this synthetic case; collection errors never replace its failure."""
+    evidence = {"captured_at": datetime.now(timezone.utc).isoformat(),
+                "seconds_after_click": None if clicked_at is None else round(time.monotonic() - clicked_at, 3)}
+    try:
+        with QtPage(debug_port) as page:
+            page.screenshot(case / "failure.png")
+            evidence["ui"] = page.evaluate("""(() => ({text: document.body.innerText.slice(0, 4000),
+              buttons: [...document.querySelectorAll('button')].slice(0, 30).map(b =>
+                ({text: b.innerText.slice(0, 100), disabled: b.disabled}))}))()""")
+    except Exception as exc:
+        evidence["ui_error"] = type(exc).__name__
+    fields = {"state", "update_request_id", "download_percent", "target_version", "result_code",
+              "result_reconciled", "status_restore_pending", "install_started", "waiting_reason_code",
+              "waiting_reason_text", "message", "result_message", "healthy", "version"}
+    paths = {case / "updates" / "update-state.json"}
+    control = []
+    try:
+        for name in ("update-state.json", "update-result.json", "healthy.json", "updater-ready.json"):
+            paths.update(case.rglob(name))
+        for path in sorted(paths)[:40]:
+            item = {"path": str(path.relative_to(case))}
+            control.append(item)
+            try:
+                if not path.exists():
+                    item["read_status"] = "missing"
+                    continue
+                stat = path.stat()
+                item.update(size=stat.st_size, mtime=stat.st_mtime)
+                if not path.resolve().is_relative_to(case.resolve()):
+                    item["read_status"] = "outside_case_skipped"
+                elif stat.st_size > 65536:
+                    item["read_status"] = "oversize_skipped"
+                else:
+                    payload = read_json(path)
+                    item["values"] = {k: v for k, v in payload.items() if k in fields and isinstance(v, (str, int, float, bool, type(None)))}
+                    item["read_status"] = "read"
+            except Exception as exc:
+                item["read_status"] = "read_failed"
+                item["error_type"] = type(exc).__name__
+    except Exception as exc:
+        evidence["control_scan_error"] = type(exc).__name__
+    evidence["control_files"] = control
+    try:
+        root = case / "updates"
+        inventory = {"exists": root.exists(), "entries": [], "scanned": 0, "truncated": False}
+        for path in root.rglob("*"):
+            inventory["scanned"] += 1
+            if inventory["scanned"] > 5000:
+                inventory["truncated"] = True
+                break
+            if path.is_symlink():
+                continue
+            if path.is_file() and path.suffix not in {".partial", ".zip"} and path.name != "plan.json":
+                continue
+            if len(inventory["entries"]) >= 80:
+                inventory["truncated"] = True
+                continue
+            stat = path.stat()
+            inventory["entries"].append({"path": str(path.relative_to(root)), "directory": path.is_dir(),
+                                         "size": stat.st_size, "mtime": stat.st_mtime})
+        evidence["update_cache"] = inventory
+    except Exception as exc:
+        evidence["cache_error"] = type(exc).__name__
+    try:
+        database = data / "worker_client.sqlite3"
+        if not database.exists():
+            evidence["local_logs"] = {"read_status": "missing"}
+        else:
+            connection = sqlite3.connect(database.resolve().as_uri() + "?mode=ro", uri=True, timeout=1)
+            try:
+                rows = connection.execute("SELECT created_at,event,error_code,message,metadata FROM local_logs "
+                    "WHERE event LIKE 'client_update_%' OR level='ERROR' ORDER BY created_at DESC LIMIT 40").fetchall()
+                logs = []
+                for created, event, code, message, metadata in rows:
+                    meta = json.loads(metadata or "{}")
+                    logs.append({"created_at": created, "event": event, "error_code": code,
+                                 "message": str(message or "").replace(TOKEN, "[synthetic-token]")[:500],
+                                 "metadata": {k: v for k, v in meta.items() if k in fields and isinstance(v, (str, int, float, bool, type(None)))}})
+                evidence["local_logs"] = {"read_status": "read", "entries": logs}
+            finally:
+                connection.close()
+    except Exception as exc:
+        evidence["local_logs"] = {"read_status": "read_failed", "error_type": type(exc).__name__}
+    return evidence
+
+
 def run_case(args, status):
     import psutil
     plan = load_release_plan(getattr(args, "plan", None))
@@ -376,6 +463,7 @@ def run_case(args, status):
     before = preserved_values(data)
     checkpoints = {"synthetic_test_data_only": True, "seeded": before}
     processes = []
+    clicked_at = None
     report = {"current_version": current_version, "target_version": target_version, "initial_run_status": status,
               "old_exe_sha256": baseline["exe_sha256"], "old_updater_sha256": baseline["updater_sha256"],
               "target_zip_sha256": digest(args.archive), "status": "failed"}
@@ -482,6 +570,7 @@ def run_case(args, status):
                               original_updater_used=False, original_data_directory_reused=True)
                 return report
             report["free_disk_bytes_before_button"] = shutil.disk_usage(case).free
+            clicked_at = time.monotonic()
             page.click_button("检查更新")
             report["real_settings_button_clicked"] = True
             # The original coordinator owns plan creation and normal shutdown.
@@ -563,6 +652,10 @@ def run_case(args, status):
     except Exception as exc:
         report["failure"] = str(exc)[:500]
         report["free_disk_bytes_at_failure"] = shutil.disk_usage(case).free
+        try:
+            report["failure_evidence"] = collect_failure_evidence(case, data, debug_port, clicked_at)
+        except Exception as collection_error:
+            report["failure_evidence_error"] = type(collection_error).__name__
         # Only this isolated run's synthetic state is inspected. Retain bounded
         # diagnostics before the runner is destroyed; do not weaken acceptance.
         diagnostic_files = []
