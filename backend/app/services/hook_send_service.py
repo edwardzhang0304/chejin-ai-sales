@@ -16,7 +16,7 @@ from app.models.wechat import WechatSessionBinding, MessageEvent
 from app.models.hook_native import HookHistoryReceipt
 from app.services import c3_service, task_service, worker_service
 from app.services.hook_business_service import account
-from app.services.hook_history_service import ensure_coverage, ordered_messages
+from app.services.hook_history_service import ensure_coverage, ensure_history_context, ordered_messages
 from app.services.followup_eligibility import lock_leads
 
 
@@ -46,12 +46,13 @@ def identity(db,worker,instance,action_id,payload,flow,token,*,current=True):
         if origin is None or origin.worker_id!=w.id or origin_action is None or origin_action.batch_id!=action.batch_id:
             raise AppError('HOOK_SEND_FLOW_REQUIRED','分段发送必须属于同一批次的原在途流程',409)
         task_service.validate_task_lease(task,worker_id=w.id,client_instance_id=instance,lease_fencing_token=token)
-        ensure_coverage(binding)
+        ensure_history_context(binding)
     return w,binding,action,task
 
 
 def claim_native(db,worker,instance,action_id,payload,flow,token):
     w,binding,action,task=identity(db,worker,instance,action_id,payload,flow,token)
+    ensure_coverage(binding)
     ctx=binding.native_context or {};batch=db.get(MessageBatch,action.batch_id)
     if (payload.history_state_digest!=ctx.get('history_state_digest')
             or ((action.ai_payload or {}).get('native_pre_send_checkpoint',{}) if action.segment_index>1 else (batch.ai_request_snapshot or {}).get('native_sync_checkpoint',{})).get('history_state_digest')!=payload.history_state_digest):

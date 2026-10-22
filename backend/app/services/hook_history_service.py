@@ -20,13 +20,20 @@ from app.services.hook_business_service import account
 from app.services.hook_message_service import message_key
 
 
-def ensure_coverage(binding):
+def ensure_history_context(binding):
+    """Validate identity/generation independently of content readiness."""
     if not binding.native_self_wxid:return
     ctx=binding.native_context or {}; worker=binding.worker
     runtime=worker.hook_runtime_context or {} if worker else {}
-    if (ctx.get('history_ready') is not True or ctx.get('coverage_process_generation')!=runtime.get('process_generation')
+    if (ctx.get('coverage_process_generation')!=runtime.get('process_generation')
             or not worker or not worker.enabled or runtime.get('blocked') or worker.wechat_status!='logged_in'
             or worker.hook_self_wxid!=binding.native_self_wxid or worker.hook_account_epoch!=ctx.get('account_epoch')):
+        raise AppError('HOOK_HISTORY_COVERAGE_REQUIRED','申请后的原生历史尚未完整同步或顺序尚未确认',409)
+
+
+def ensure_coverage(binding):
+    ensure_history_context(binding)
+    if binding.native_self_wxid and (binding.native_context or {}).get('history_ready') is not True:
         raise AppError('HOOK_HISTORY_COVERAGE_REQUIRED','申请后的原生历史尚未完整同步或顺序尚未确认',409)
 
 

@@ -1127,7 +1127,6 @@ def _ensure_reply_action_send_eligible(
     action: ReplyAction,
     native_authorized: bool = False,
 ) -> None:
-    _ensure_native_ai_coverage(binding)
     if binding.native_self_wxid and not native_authorized:
         raise AppError('HOOK_NATIVE_SEND_PERMIT_REQUIRED', '原生发送需独立同步许可和发送回执', 409)
     # A boundary reply may coexist with its own handoff, but never with a
@@ -1138,6 +1137,9 @@ def _ensure_reply_action_send_eligible(
            for event in open_handoff_events_for_conversation(db, conversation.conversation_id)):
         raise AppError(friend_restriction, '微信好友验证限制尚未处理，不能自动发送', 409,
                        {'suggested_action': 'do_not_send'})
+    # Restriction is a definite refusal, even while media is unfinished.
+    # Admitting any send still requires the full original coverage check.
+    _ensure_native_ai_coverage(binding)
     if action.decision != "reply_then_handoff":
         _ensure_conversation_eligible(binding, conversation)
         return

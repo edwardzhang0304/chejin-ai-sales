@@ -129,3 +129,44 @@ def test_notice_arrives_during_send_delay(identity_client,lab,connection_factory
 @pytest.mark.parametrize('arrival',['identity_rejection','network_rejection'])
 def test_other_denials_are_not_swallowed_as_friend_restriction(identity_client,lab,connection_factory,monkeypatch,tmp_path,arrival):
  test_notice_arrives_during_send_delay(identity_client,lab,connection_factory,monkeypatch,tmp_path,'zero','send_reply',arrival)
+
+
+@pytest.mark.parametrize('decision',['send_reply','reply_then_handoff'])
+@pytest.mark.parametrize('notice_id',['zero','positive'])
+def test_pending_voice_and_restriction_at_begin_close_original_unsent_flow(identity_client,lab,connection_factory,monkeypatch,tmp_path,decision,notice_id):
+ # The last refresh was ready; both facts arrive at the begin boundary.
+ # Exercise the shared case assertions, including durable no-trigger receipt.
+ import sys
+ original=append
+ def voice_then_notice(value,*args,**kwargs):
+  original(value,kind='34',sender='0',text='<msg><voicemsg voicelength="1000"/></msg>')
+  return original(value,*args,**kwargs)
+ monkeypatch.setattr(sys.modules[__name__],'append',voice_then_notice)
+ test_notice_arrives_during_send_delay(identity_client,lab,connection_factory,monkeypatch,tmp_path,notice_id,decision,'begin')
+
+
+@pytest.mark.parametrize('damage',['binding_account','binding_epoch','history_generation','voice_without_restriction'])
+def test_begin_preserves_history_identity_and_content_guards(monkeypatch,damage):
+ from datetime import datetime,timezone
+ from test_hook_native_send_http import permitted
+ w,p,b,h,permit,value=permitted(monkeypatch)
+ value['schema_version']='hook-history-coverage-v2'
+ append(value,kind='34',sender='0',text='<msg><voicemsg voicelength="1000"/></msg>')
+ if damage!='voice_without_restriction':append(value)
+ response,_=upload(w,p,b,value,monkeypatch)
+ assert response.status_code==200,response.text
+ assert not response.json()['data']['history_ready']
+ with SessionLocal() as db:
+  binding=db.get(WechatSessionBinding,b['binding_id'])
+  if damage=='binding_account':binding.native_self_wxid='wxid_different_account'
+  elif damage=='binding_epoch':binding.native_context={**binding.native_context,'account_epoch':'different-epoch'}
+  elif damage=='history_generation':binding.native_context={**binding.native_context,'coverage_process_generation':'different-generation'}
+  db.commit()
+ request={**p,'task_id':permit['task_id'],'history_state_digest':b['history_state_digest'],
+          'send_token':permit['send_token'],'journal_sha256':'d'*64,'attempted_at':datetime.now(timezone.utc).isoformat()}
+ response=post(w,f"/workers/{w['id']}/wechat/native-replies/{permit['reply_action_id']}/begin",request,h)
+ assert response.status_code==409 and response.json()['code']=='HOOK_HISTORY_COVERAGE_REQUIRED',response.text
+ with SessionLocal() as db:
+  action=db.get(ReplyAction,permit['reply_action_id'])
+  assert not action.ai_payload.get('native_send_attempt')
+  assert not action.ai_payload.get('native_no_trigger_settlement')
