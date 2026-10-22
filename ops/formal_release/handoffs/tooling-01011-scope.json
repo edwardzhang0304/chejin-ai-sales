@@ -70,7 +70,20 @@
             "hook-launcher-setup"
           ]
         }
-      }
+      },
+      "parameter_expansions": [
+        {
+          "cwd": ".",
+          "node": "ops/formal_release/tests/test_recovery_cutover.py",
+          "classname": "ops.formal_release.tests.test_recovery_cutover",
+          "name": "test_complete_cutover_control_flow_with_explicit_host_adapters",
+          "parameters": [
+            "test_complete_cutover_control_flow_with_explicit_host_adapters[False]",
+            "test_complete_cutover_control_flow_with_explicit_host_adapters[True]"
+          ],
+          "reason": "Prior release parameterized the original full cutover control flow over existing inactive and active maintenance fences. Both exact expanded cases passed in 39739314755/1 and source matches current unchanged test file. Original unparameterized identity is explicitly superseded, not silently lost."
+        }
+      ]
     }
   ],
   "changed_inputs": {
