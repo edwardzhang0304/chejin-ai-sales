@@ -385,7 +385,7 @@ class HookFormalRuntime:
             if claim is None:break
             receipt=self.identity_client.store_observations(self.credentials,claim)
             # Dispatch before local delivery acknowledgement; idempotent retry retains facts.
-            dispatched = self.client.call(self.credentials,'POST',f'/workers/{self.credentials.worker_id}/wechat/native-events/{claim.event_uuid}/dispatch')
+            dispatched = self.client.call(self.credentials,'POST',f'/workers/{self.credentials.worker_id}/wechat/native-events/{claim.event_uuid}/dispatch',self.account)
             record_raw_delivery(dispatched)
             if not self.outbox.mark_stored(claim,receipt,now=utc_now_iso()):raise ValueError('HOOK_OUTBOX_ACK_NOT_SAVED')
 

@@ -21,7 +21,7 @@ def message_key(self_wxid, peer_wxid, mid):
     return 'hook-msg:'+hashlib.sha256(f'{self_wxid}|{peer_wxid}|{mid}'.encode()).hexdigest()
 
 
-def dispatch_facts(db, authenticated, instance, event_uuid):
+def dispatch_facts(db, authenticated, instance, event_uuid, *, current_account=None):
     receipt=db.scalar(select(HookNativeReceipt).where(HookNativeReceipt.worker_id==authenticated.id,
         HookNativeReceipt.event_uuid==event_uuid))
     if receipt is None:raise AppError('HOOK_NATIVE_RECEIPT_NOT_FOUND','消息尚未可靠保存',404)
@@ -30,8 +30,11 @@ def dispatch_facts(db, authenticated, instance, event_uuid):
         raise AppError('HOOK_REQUEST_IDENTITY_MISMATCH','消息不是由本客户端上报',409)
     hint=db.get(WechatSessionBinding,receipt.binding_id)
     lock_leads(db,[hint.lead_id] if hint else [])
-    w=account(db,authenticated,instance,SimpleNamespace(**{key:payload[key]
-        for key in ('self_wxid','account_epoch','process_generation')}))
+    original_account=SimpleNamespace(**{key:payload[key]
+        for key in ('self_wxid','account_epoch','process_generation')})
+    if current_account and any(getattr(current_account,k)!=payload[k] for k in ('self_wxid','account_epoch')):
+        raise AppError('HOOK_REQUEST_IDENTITY_MISMATCH','原消息与当前账号身份不一致',409)
+    w=account(db,authenticated,instance,current_account or original_account)
     binding=db.scalar(select(WechatSessionBinding).where(WechatSessionBinding.id==receipt.binding_id)
         .with_for_update().execution_options(populate_existing=True))
     receipt=db.scalar(select(HookNativeReceipt).where(HookNativeReceipt.id==receipt.id)
@@ -40,6 +43,9 @@ def dispatch_facts(db, authenticated, instance, event_uuid):
     proof=db.get(TaskEvidence,ctx.get('invite_evidence_id')) if ctx.get('invite_evidence_id') else None
     from app.services.hook_relationship_service import retired_evidence_scope
     retired=retired_evidence_scope(binding,w.id,payload)
+    if not retired:
+        # Active business admission retains its original process-generation fence.
+        account(db,authenticated,instance,original_account)
     if (binding is None or binding.deleted_at or binding.worker_id!=w.id or (not retired and (binding.bind_status!='bound'
             or not binding.allow_listening or binding.listen_status not in {'listening','degraded'}))
             or binding.native_self_wxid!=payload['self_wxid'] or binding.native_peer_wxid!=payload['peer_wxid']

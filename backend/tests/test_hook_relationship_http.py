@@ -396,3 +396,41 @@ def test_retirement_archival_callback_does_not_accept_unrelated_evidence(case):
         db.commit()
     rejected=store(w,payload);assert rejected.status_code==409,rejected.text
     with SessionLocal() as db:assert not list(db.scalars(select(HookNativeReceipt)))
+
+
+@pytest.mark.parametrize('mode',['retired_current','retired_missing','retired_old','retired_other_account','active_current'])
+def test_retired_callback_after_process_restart_requires_current_and_original_scope(mode):
+    from test_hook_native_http import prepared,post as store
+    from test_hook_account_http import heartbeat,context
+    from app.models.hook_native import HookNativeReceipt
+    from app.models.wechat import MessageEvent
+    w,payload=prepared()
+    assert store(w,payload).status_code==200
+    with SessionLocal() as db:
+        binding=db.get(WechatSessionBinding,payload['binding_id'])
+        ctx=dict(binding.native_context)
+        ctx['business_enabled']=mode=='active_current'
+        if mode!='active_current':
+            ctx['retired_authorization_revision']=1
+            binding.bind_status='disabled';binding.allow_listening=False
+            binding.disable_reason='operator_reinvite';binding.authorization_revision=2
+        binding.native_context=ctx
+        evidence=db.get(TaskEvidence,ctx['invite_evidence_id'])
+        evidence.extra_metadata={**evidence.extra_metadata,'backend_validated':True}
+        db.commit()
+    result=heartbeat(w,context(process_generation='process-2',account_epoch=payload['account_epoch']))
+    assert result.status_code==200 and not result.json()['data']['hook_context']['blocked']
+    current={k:payload[k] for k in ('self_wxid','account_epoch','process_generation')}
+    current['process_generation']='process-2'
+    if mode=='retired_old':current['process_generation']='process-1'
+    if mode=='retired_other_account':current['self_wxid']='wxid_other_account'
+    response=post(w,f"/workers/{w['id']}/wechat/native-events/{payload['event_uuid']}/dispatch",
+        None if mode=='retired_missing' else current)
+    assert response.status_code==(200 if mode=='retired_current' else 409),response.text
+    if mode=='retired_current':
+        assert response.json()['data']['dispatch_status']=='authorization_retired'
+        assert response.json()['data']['can_send'] is False
+    with SessionLocal() as db:
+        receipt=db.scalar(select(HookNativeReceipt))
+        assert receipt.payload_json==payload and receipt.payload_json['process_generation']=='process-1'
+        assert not list(db.scalars(select(MessageEvent)))

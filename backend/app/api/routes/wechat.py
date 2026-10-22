@@ -599,7 +599,7 @@ def interrupt_reply_sequence(worker_id: str, batch_id: str, payload: ReplySequen
         raise
 
 
-from app.schemas.hook_business import HookFriendBinding
+from app.schemas.hook_business import HookFriendBinding, HookAccountAction
 
 @router.post('/workers/{worker_id}/wechat/native-bindings')
 def native_binding(worker_id: str, payload: HookFriendBinding, db: Session = Depends(get_db),
@@ -615,13 +615,13 @@ def native_binding(worker_id: str, payload: HookFriendBinding, db: Session = Dep
 
 
 @router.post('/workers/{worker_id}/wechat/native-events/{event_uuid}/dispatch')
-def dispatch_native_event(worker_id: str, event_uuid: str, db: Session = Depends(get_db),
+def dispatch_native_event(worker_id: str, event_uuid: str, payload: HookAccountAction | None = None, db: Session = Depends(get_db),
         x_worker_token: str | None = Header(default=None, alias='X-Worker-Token'),
         x_client_instance_id: str | None = Header(default=None, alias='X-Client-Instance-Id')):
     from app.services.hook_message_service import dispatch_facts
     try:
         worker=worker_service.authenticate_worker_client(db,worker_id,x_worker_token,x_client_instance_id)
-        data=dispatch_facts(db,worker,x_client_instance_id,event_uuid)
+        data=dispatch_facts(db,worker,x_client_instance_id,event_uuid,current_account=payload)
         db.commit();return ok(data)
     except Exception:
         db.rollback();raise
