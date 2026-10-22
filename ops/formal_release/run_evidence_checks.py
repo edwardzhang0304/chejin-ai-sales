@@ -104,7 +104,8 @@ def main():
         code = execute([sys.executable, "-m", "pytest", *nodes, "-q", "--junitxml", str(report)], cwd, output / f"pytest-{index}.log", group["env"])
         require(report.is_file(), "TEST_REPORT_MISSING")
         counts = junit(report)
-        scope.append({"cwd": cwd, "nodes": nodes, **({"environment_profile":group["profile"]} if "profile" in group else {})})
+        scope.append({"cwd": cwd, "nodes": nodes, "report_xml": report.name,
+                      **({"environment_profile":group["profile"]} if "profile" in group else {})})
         results.append({"exit_code": code, **counts})
         require(code == 0 and counts["passed"] > 0 and counts["failed"] == 0 and counts["skipped"] == 0,
                 "TESTS_FAILED_EMPTY_OR_SKIPPED: select the applicable tests; no completion evidence written")

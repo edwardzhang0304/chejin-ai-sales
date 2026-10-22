@@ -94,7 +94,7 @@ def handoff(tmp_path):
           'review':{'result':'passed','thread_id':'reviewer','turn_id':'turn','evidence_sha256':'f'*64}}
     p=tmp_path/filename;p.parent.mkdir(parents=True);p.write_text(json.dumps(data))
     cases=[ET.fromstring('<testcase classname="ops.formal_release.tests.test_old" name="test_old"/>')]
-    group=({'cwd':'.','nodes':[old]},cases)
+    group=({'cwd':'.','nodes':[old], 'report_xml':'pytest-0.xml', 'scope_index':0, 'result_index':0},cases)
     def run():
         with patch.object(h,'ROOT',tmp_path),patch.object(h,'git',return_value=json.dumps(scope).encode()),patch.object(h,'inputs',side_effect=[before,after,after]),patch.object(h,'original',return_value=[group]):
             return h.validate(filename)
@@ -149,7 +149,7 @@ def test_resume_without_handoff_fails_instead_of_running_all_tests(tmp_path,monk
         execute.assert_not_called()
 
 
-def test_resume_reports_reused_and_executed_separately_and_runs_only_selection(tmp_path,monkeypatch):
+def test_resume_reports_reused_and_executed_separately_and_runs_only_selection(tmp_path,monkeypatch,origin):
     import run_evidence_checks as runner
     monkeypatch.setenv('CHECK_KIND','tooling');monkeypatch.setenv('EVIDENCE_DIR',str(tmp_path))
     monkeypatch.setenv('TOOLING_REUSE_REQUIRED','true');monkeypatch.setenv('TOOLING_HANDOFF','reviewed.json')
@@ -160,10 +160,117 @@ def test_resume_reports_reused_and_executed_separately_and_runs_only_selection(t
         assert argv[3:-3]==[node]  # sys.executable -m pytest <only selected> -q --junitxml path
         Path(argv[-1]).write_text('<testsuites><testsuite><testcase name="new"/></testsuite></testsuites>')
         return 0
-    with patch.object(runner,'identity',return_value={'commit':'b'*40,'run_id':'43','attempt':'1'}),patch.object(h,'validate',return_value=reuse),patch.object(runner,'fingerprint',return_value='f'*64),patch.object(runner,'execute',side_effect=execute):
+    with patch.object(runner,'identity',return_value={'commit':'a'*40,'run_id':'42','attempt':'1'}),patch.object(h,'validate',return_value=reuse),patch.object(runner,'fingerprint',return_value='f'*64),patch.object(runner,'execute',side_effect=execute):
         runner.main()
     report=json.loads((tmp_path/'evidence.json').read_text())
     assert report['results'][0]['type']=='original_ci_evidence_reuse'
     assert report['results'][0]['passed']==7 and report['results'][0]['tests_executed']==0
     assert report['results'][1]['passed']==1
     assert report['tooling_reuse']['original']=={'run_id':42,'attempt':1}
+    assert report['scope'][1]['report_xml']=='pytest-0.xml'
+    # Consume exactly the report and XML produced above, without filling any fields.
+    groups=read_changed_report(origin,report,(tmp_path/'pytest-0.xml').read_text())
+    assert len(groups)==1 and len(groups[0][1])==1
+    assert groups[0][0]['scope_index']==1 and groups[0][0]['report_xml']=='pytest-0.xml'
+
+
+def read_changed_report(origin, report, xml=None):
+    stream=io.BytesIO()
+    with zipfile.ZipFile(stream,'w') as z:
+        z.writestr('evidence.json',json.dumps(report))
+        if xml is not None:z.writestr('pytest-0.xml',xml)
+    raw=stream.getvalue();origin[0]['artifact_sha256']=hashlib.sha256(raw).hexdigest()
+    oldapi=origin[-1]
+    with patch.object(h,'api',side_effect=lambda path,**kw:raw if path.endswith('/zip') else oldapi(path)),patch('source_evidence.fingerprint',return_value='f'*64),patch('source_evidence.git',return_value=b'workflow'):
+        return h.original(origin[0], allow_composed=True)
+
+
+def mixed_report(origin):
+    report=copy.deepcopy(origin[4])
+    report['tooling_reuse']={'count':153}
+    report['scope'].insert(0,{'check':'reviewed_unaffected_tool_checks','mode':'reused','original':{},'cases':[]})
+    report['results'].insert(0,{'exit_code':0,'passed':153,'failed':0,'skipped':0,'type':'original_ci_evidence_reuse','tests_executed':0})
+    return report
+
+
+@pytest.mark.parametrize('explicit_xml',[False,True])
+def test_composed_origin_reads_only_actual_xml_not_historical_summary(origin,explicit_xml):
+    report=mixed_report(origin)
+    if explicit_xml:report['scope'][1]['report_xml']='pytest-0.xml'
+    groups=read_changed_report(origin,report,'<testsuites><testsuite><testcase classname="ops.formal_release.tests.test_old" name="test_old"/></testsuite></testsuites>')
+    assert len(groups)==1 and len(groups[0][1])==1
+    assert groups[0][1][0].get('name')=='test_old'
+
+
+@pytest.mark.parametrize('change',['missing_xml','wrong_xml_mapping','summary_only','wrong_summary_type','wrong_count','skip_actual','extra_result'])
+def test_composed_origin_cannot_relabel_missing_or_reused_work(origin,change):
+    report=mixed_report(origin)
+    xml='<testsuites><testsuite><testcase name="actual"/></testsuite></testsuites>'
+    if change=='missing_xml':xml=None
+    elif change=='wrong_xml_mapping':report['scope'][1]['report_xml']='pytest-1.xml'
+    elif change=='summary_only':report['scope']=report['scope'][:1];report['results']=report['results'][:1]
+    elif change=='wrong_summary_type':report['results'][0]['type']='executed'
+    elif change=='wrong_count':report['results'][1]['passed']=2
+    elif change=='skip_actual':xml='<testsuites><testsuite><testcase name="actual"><skipped/></testcase></testsuite></testsuites>'
+    else:report['results'].append(report['results'][1])
+    with pytest.raises(ValueError):read_changed_report(origin,report,xml)
+
+
+def test_multiple_origins_choose_latest_exact_node_and_preserve_per_case_provenance(handoff):
+    scope,data,p,before,after,group,_=handoff
+    record={'commit':'c'*40,'run_id':43,'attempt':1}
+    scope['additional_originals']=[record]
+    data['schema_version']=2;p.write_text(json.dumps(data))
+    scope['changed_inputs']['ops/formal_release/changed.py']['covered_by']=[group[0]['nodes'][0]]
+    def input_rows(ref,*args):return before if ref=='a'*40 else after
+    with patch.object(h,'ROOT',p.parents[3]),patch.object(h,'git',return_value=json.dumps(scope).encode()),patch.object(h,'inputs',side_effect=input_rows),patch.object(h,'original',return_value=[group]):
+        result=h.validate(str(p.relative_to(p.parents[3])))
+    assert result['count']==1
+    assert result['cases'][0]['origin']==record
+    assert len(result['originals'])==2
+    assert result['cases'][0]['locator']=={'report_xml':'pytest-0.xml','scope_index':0,'result_index':0}
+
+
+def test_reused_execution_must_include_current_changed_dependency(handoff):
+    scope,data,p,before,after,group,run=handoff
+    scope['changed_inputs']['ops/formal_release/changed.py']['covered_by']=[group[0]['nodes'][0]]
+    with pytest.raises(ValueError,match='REUSED_TOOL_DEPENDENCY_CHANGED'):run()
+
+
+def test_overlapping_selectors_cannot_double_count_one_case(handoff):
+    scope,data,p,before,after,group,run=handoff
+    # Distinct selectors selecting the same original case are ambiguous.
+    group[0]['nodes'].append(group[0]['nodes'][0]+'::test_old')
+    with pytest.raises(ValueError,match='TOOL_ORIGINAL_SCOPE_AMBIGUOUS'):run()
+
+
+def test_v1_still_rejects_composed_origin(origin):
+    origin[4]['tooling_reuse']={'count':153}
+    raw=origin[5]()
+    oldapi=origin[-1]
+    with patch.object(h,'api',side_effect=lambda path,**kw:raw if path.endswith('/zip') else oldapi(path)),patch('source_evidence.fingerprint',return_value='f'*64),patch('source_evidence.git',return_value=b'workflow'):
+        with pytest.raises(ValueError,match='TOOL_COMPONENT_MUST_BE_ORIGINAL_EXECUTION'):h.original(origin[0])
+
+
+def test_summary_cannot_be_inserted_after_fresh_execution(origin):
+    report=mixed_report(origin)
+    report['scope'].reverse();report['results'].reverse()
+    with pytest.raises(ValueError,match='TOOL_COMPONENT_SCOPE_INVALID'):
+        read_changed_report(origin,report,'<testsuites><testsuite><testcase name="actual"/></testsuite></testsuites>')
+
+
+def test_v1_cannot_silently_enable_multiple_origins(handoff):
+    scope,*_=handoff
+    scope['additional_originals']=[]
+    with pytest.raises(ValueError,match='INVALID_TOOL_REVIEW_SCOPE'):handoff[-1]()
+
+
+def test_duplicate_zip_xml_is_rejected(origin):
+    stream=io.BytesIO()
+    with zipfile.ZipFile(stream,'w') as z:
+        z.writestr('evidence.json',json.dumps(origin[4]))
+        for _ in range(2):z.writestr('pytest-0.xml','<testsuites/>')
+    raw=stream.getvalue();origin[0]['artifact_sha256']=hashlib.sha256(raw).hexdigest()
+    oldapi=origin[-1]
+    with patch.object(h,'api',side_effect=lambda path,**kw:raw if path.endswith('/zip') else oldapi(path)),patch('source_evidence.fingerprint',return_value='f'*64),patch('source_evidence.git',return_value=b'workflow'):
+        with pytest.raises(ValueError,match='TOOL_COMPONENT_FILE_INVALID'):h.original(origin[0])

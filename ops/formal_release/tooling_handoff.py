@@ -25,7 +25,7 @@ def inputs(ref, handoff):
     return rows
 
 
-def original(record):
+def original(record, *, allow_composed=False):
     """Read a successful *component* from its original attempt, not latest retry."""
     run_id, attempt = str(record['run_id']), str(record['attempt'])
     require(all(re.fullmatch(r'[1-9][0-9]*', v) for v in (run_id, attempt)), 'INVALID_TOOL_ORIGIN')
@@ -54,16 +54,28 @@ def original(record):
             return archive.read(entries[0])
         report = json.loads(read('evidence.json'))
         validate_report(report, run, 'tooling', reference=record['commit'])
-        # Chaining reused reports is deliberately unsupported; use original executions.
-        require(not report.get('tooling_reuse'), 'TOOL_COMPONENT_MUST_BE_ORIGINAL_EXECUTION')
+        require(allow_composed or not report.get('tooling_reuse'), 'TOOL_COMPONENT_MUST_BE_ORIGINAL_EXECUTION')
+        # A composed report may contribute only XML actually executed in this run.
+        # Its historical summary is never recursively trusted or counted as fresh.
+        require(len(report['scope']) == len(report['results']), 'TOOL_COMPONENT_SCOPE_INVALID')
         groups = []
-        for index, scope in enumerate(report['scope']):
-            require(set(scope) == {'cwd', 'nodes'}, 'TOOL_COMPONENT_SCOPE_INVALID')
-            cases = ET.fromstring(read(f'pytest-{index}.xml')).findall('.//testcase')
+        for index, (scope, result) in enumerate(zip(report['scope'], report['results'])):
+            if scope.get('mode') == 'reused':
+                require(index == 0 and report.get('tooling_reuse') and scope.get('check') == 'reviewed_unaffected_tool_checks'
+                        and result.get('type') == 'original_ci_evidence_reuse'
+                        and result.get('tests_executed') == 0, 'TOOL_COMPONENT_SCOPE_INVALID')
+                continue
+            require(set(scope) in ({'cwd', 'nodes'}, {'cwd', 'nodes', 'report_xml'})
+                    and not result.get('type'), 'TOOL_COMPONENT_SCOPE_INVALID')
+            xml = f'pytest-{len(groups)}.xml'
+            require(scope.get('report_xml', xml) == xml, 'TOOL_COMPONENT_XML_MAPPING_INVALID')
+            cases = ET.fromstring(read(xml)).findall('.//testcase')
             require(cases and all(c.find('failure') is None and c.find('error') is None
                                  and c.find('skipped') is None for c in cases), 'TOOL_COMPONENT_CASE_NOT_PASSED')
-            require(report['results'][index]['passed'] == len(cases), 'TOOL_COMPONENT_COUNT_MISMATCH')
-            groups.append((scope, cases))
+            require(result['passed'] == len(cases), 'TOOL_COMPONENT_COUNT_MISMATCH')
+            groups.append(({'cwd': scope['cwd'], 'nodes': scope['nodes'], 'report_xml': xml,
+                            'scope_index': index, 'result_index': index}, cases))
+        require(groups, 'TOOL_COMPONENT_NO_FRESH_EXECUTION')
     return groups
 
 
@@ -80,7 +92,8 @@ def validate(path):
     path = Path(path)
     require(path.parent == Path('ops/formal_release/handoffs') and path.suffix == '.json', 'INVALID_TOOL_HANDOFF_PATH')
     data = json.loads((ROOT / path).read_text())
-    require(data.get('schema_version') == 1 and data.get('repository') == REPO, 'INVALID_TOOL_HANDOFF')
+    version = data.get('schema_version')
+    require(version in (1, 2) and data.get('repository') == REPO, 'INVALID_TOOL_HANDOFF')
     review = data['review']
     require(review.get('result') == 'passed' and review.get('thread_id') and review.get('turn_id')
             and re.fullmatch(r'[0-9a-f]{64}', review.get('evidence_sha256', '')), 'TOOL_REVIEW_REQUIRED')
@@ -89,7 +102,8 @@ def validate(path):
     require(scope_path.parent == Path('ops/formal_release/handoffs') and scope_path.suffix == '.json'
             and scope_path != path, 'INVALID_TOOL_REVIEW_SCOPE_PATH')
     scope = json.loads(git('show', ref + ':' + str(scope_path)))
-    require(set(scope) == {'original', 'changed_inputs', 'pytest', 'unaffected_scope_review'}, 'INVALID_TOOL_REVIEW_SCOPE')
+    fields = {'original', 'changed_inputs', 'pytest', 'unaffected_scope_review'}
+    require(set(scope) == (fields if version == 1 else fields | {'additional_originals'}), 'INVALID_TOOL_REVIEW_SCOPE')
     base = scope['original']['commit']
     require(all(re.fullmatch(r'[0-9a-f]{40}', r) for r in (ref, base)), 'INVALID_TOOL_REVIEW_COMMIT')
     git('merge-base', '--is-ancestor', base, ref)
@@ -105,22 +119,51 @@ def validate(path):
     require(plan and all(set(g) == {'cwd', 'nodes'} and g['nodes'] for g in plan), 'TOOL_SELECTION_REQUIRED')
     fresh = {str(Path(g['cwd']) / node) for g in plan for node in g['nodes']}
     require(all('::' not in node for node in fresh), 'TOOL_RECHECK_FULL_AFFECTED_FILES_REQUIRED')
-    allowed = fresh | {'windows-parser', 'gui-driver', 'hook-launcher-setup'}
+    records = [scope['original'], *scope.get('additional_originals', [])]
+    require(1 <= len(records) <= 8, 'INVALID_TOOL_ORIGIN_COUNT')
+    require(len({r['commit'] for r in records}) == len(records), 'DUPLICATE_TOOL_ORIGIN')
+    executions = {}
+    previous = base
+    for record in records:
+        commit = record['commit']
+        require(re.fullmatch(r'[0-9a-f]{40}', commit), 'INVALID_TOOL_REVIEW_COMMIT')
+        git('merge-base', '--is-ancestor', previous, commit)
+        git('merge-base', '--is-ancestor', commit, ref)
+        previous = commit
+        origin_inputs = before if commit == base else inputs(commit, str(path))
+        for group, cases in original(record, allow_composed=version == 2):
+            assigned = [sum(belongs(n, c) for n in group['nodes']) for c in cases]
+            require(all(n == 1 for n in assigned), 'TOOL_ORIGINAL_SCOPE_AMBIGUOUS')
+            for node in group['nodes']:
+                key = (group['cwd'], node)
+                found = [c for c in cases if belongs(node, c)]
+                require(found, 'TOOL_ORIGINAL_CASE_MISSING')
+                # Later exact-node executions replace older ones, never add their counts.
+                require(key not in executions or executions[key][0]['commit'] != commit,
+                        'DUPLICATE_TOOL_EXECUTION')
+                executions[key] = (record, origin_inputs, found, {k: group[k] for k in ('report_xml', 'scope_index', 'result_index')})
+    reusable = {str(Path(cwd) / node.split('::')[0]) for cwd, node in executions} - fresh
+    allowed = fresh | reusable | {'windows-parser', 'gui-driver', 'hook-launcher-setup'}
     require(all(set(v['covered_by']) <= allowed for v in scope['changed_inputs'].values()), 'TOOL_IMPACT_SELECTION_MISSING')
     rows = []
-    for group, cases in original(scope['original']):
-        assigned = [sum(belongs(n, c) for n in group['nodes']) for c in cases]
-        require(all(n == 1 for n in assigned), 'TOOL_ORIGINAL_SCOPE_AMBIGUOUS')
-        for node in group['nodes']:
-            file = str(Path(group['cwd']) / node.split('::')[0])
-            require(before.get(file) == reviewed.get(file) or file in fresh, 'CHANGED_TEST_NOT_REEXECUTED')
-            if file in fresh:
-                continue
-            found = [c for c in cases if belongs(node, c)]
-            require(found, 'TOOL_ORIGINAL_CASE_MISSING')
-            rows.extend({'cwd': group['cwd'], 'node': node, 'classname': c.get('classname'), 'name': c.get('name'),
-                         'result': 'passed', 'mode': 'reused'} for c in found)
+    identities = set()
+    for (cwd, node), (record, origin_inputs, found, locator) in executions.items():
+        file = str(Path(cwd) / node.split('::')[0])
+        require(origin_inputs.get(file) == reviewed.get(file) or file in fresh, 'CHANGED_TEST_NOT_REEXECUTED')
+        if file in fresh:
+            continue
+        # A changed dependency can be covered by an earlier execution only if
+        # that run already contained exactly the reviewed dependency bytes.
+        for name, impact in scope['changed_inputs'].items():
+            if file in impact['covered_by']:
+                require(origin_inputs.get(name) == reviewed.get(name), 'REUSED_TOOL_DEPENDENCY_CHANGED')
+        for case in found:
+            identity = (cwd, case.get('classname'), case.get('name'))
+            require(identity not in identities, 'DUPLICATE_TOOL_CASE')
+            identities.add(identity)
+            rows.append({'cwd': cwd, 'node': node, 'classname': case.get('classname'), 'name': case.get('name'),
+                         'result': 'passed', 'mode': 'reused', 'origin': record, 'locator': locator})
     require(rows and scope.get('unaffected_scope_review'), 'TOOL_UNAFFECTED_SCOPE_REVIEW_REQUIRED')
-    return {'original': scope['original'], 'review': review, 'cases': rows,
+    return {'original': scope['original'], 'originals': records, 'review': review, 'cases': rows,
             'count': len(rows), 'pytest': plan, 'reason': scope['unaffected_scope_review'],
             'changed_inputs': scope['changed_inputs'], 'business_tests_executed': 0}
