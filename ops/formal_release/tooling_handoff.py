@@ -137,6 +137,7 @@ def validate(path):
         require(set(impact) == delta, 'TOOL_ORIGIN_DELTA_INCOMPLETE')
         require(all(v.get('reason') and v.get('covered_by') for v in impact.values()), 'TOOL_IMPACT_REVIEW_REQUIRED')
         origin_impacts[commit] = impact
+        used_expansions = set()
         for group, cases in original(record, allow_composed=version == 2):
             assigned = [sum(belongs(n, c) for n in group['nodes']) for c in cases]
             require(all(n == 1 for n in assigned), 'TOOL_ORIGINAL_SCOPE_AMBIGUOUS')
@@ -152,7 +153,7 @@ def validate(path):
                     new_cases = {(c.get('classname'), c.get('name')) for c in found}
                     missing = old_cases - new_cases
                     expansions = record.get('parameter_expansions', [])
-                    for item in expansions:
+                    for expansion_index, item in enumerate(expansions):
                         if (item.get('cwd'), item.get('node')) != key:
                             continue
                         old = (item['classname'], item['name'])
@@ -164,8 +165,10 @@ def validate(path):
                                 and executions[key][1].get(file) != origin_inputs.get(file)
                                 and origin_inputs.get(file) == reviewed.get(file), 'TOOL_PARAMETER_EXPANSION_INVALID')
                         missing.remove(old)
+                        used_expansions.add(expansion_index)
                     require(not missing, 'TOOL_ORIGINAL_CASE_COVERAGE_LOST')
                 executions[key] = (record, origin_inputs, found, {k: group[k] for k in ('report_xml', 'scope_index', 'result_index')})
+        require(used_expansions == set(range(len(record.get('parameter_expansions', [])))), 'TOOL_PARAMETER_EXPANSION_INVALID')
     reusable = {str(Path(cwd) / node.split('::')[0]) for cwd, node in executions} - fresh
     allowed = fresh | reusable | {'windows-parser', 'gui-driver', 'hook-launcher-setup'}
     require(all(set(v['covered_by']) <= allowed for impact in origin_impacts.values() for v in impact.values()), 'TOOL_IMPACT_SELECTION_MISSING')
