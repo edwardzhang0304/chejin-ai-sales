@@ -150,7 +150,21 @@ def validate(path):
                 if key in executions and str(Path(group['cwd']) / node.split('::')[0]) not in fresh:
                     old_cases = {(c.get('classname'), c.get('name')) for c in executions[key][2]}
                     new_cases = {(c.get('classname'), c.get('name')) for c in found}
-                    require(old_cases <= new_cases, 'TOOL_ORIGINAL_CASE_COVERAGE_LOST')
+                    missing = old_cases - new_cases
+                    expansions = record.get('parameter_expansions', [])
+                    for item in expansions:
+                        if (item.get('cwd'), item.get('node')) != key:
+                            continue
+                        old = (item['classname'], item['name'])
+                        targets = {(item['classname'], name) for name in item['parameters']}
+                        file = str(Path(key[0]) / key[1].split('::')[0])
+                        require(item.get('reason') and old in missing and targets and targets <= new_cases
+                                and '[' not in item['name']
+                                and all(name.startswith(item['name'] + '[') and name.endswith(']') for _, name in targets)
+                                and executions[key][1].get(file) != origin_inputs.get(file)
+                                and origin_inputs.get(file) == reviewed.get(file), 'TOOL_PARAMETER_EXPANSION_INVALID')
+                        missing.remove(old)
+                    require(not missing, 'TOOL_ORIGINAL_CASE_COVERAGE_LOST')
                 executions[key] = (record, origin_inputs, found, {k: group[k] for k in ('report_xml', 'scope_index', 'result_index')})
     reusable = {str(Path(cwd) / node.split('::')[0]) for cwd, node in executions} - fresh
     allowed = fresh | reusable | {'windows-parser', 'gui-driver', 'hook-launcher-setup'}

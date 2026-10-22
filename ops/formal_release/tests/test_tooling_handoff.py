@@ -309,3 +309,26 @@ def test_later_xml_cannot_drop_previously_required_parameter_case(handoff):
     def input_rows(ref,*args):return before if ref=='a'*40 else after
     with patch.object(h,'ROOT',p.parents[3]),patch.object(h,'git',return_value=json.dumps(scope).encode()),patch.object(h,'inputs',side_effect=input_rows),patch.object(h,'original',side_effect=[[old],[new]]):
         with pytest.raises(ValueError,match='TOOL_ORIGINAL_CASE_COVERAGE_LOST'):h.validate(str(p.relative_to(p.parents[3])))
+
+
+@pytest.mark.parametrize('fault', ['', 'unchanged_source', 'missing_parameter', 'unrelated_name'])
+def test_reviewed_parameter_expansion_requires_actual_changed_source_and_cases(handoff,fault):
+    scope,data,p,before,after,group,_=handoff
+    node=group[0]['nodes'][0];cls='ops.formal_release.tests.test_old'
+    expansion={'cwd':'.','node':node,'classname':cls,'name':'test_old','parameters':['test_old[False]','test_old[True]'],'reason':'Reviewed expansion of previous case into both branch states'}
+    record={'commit':'c'*40,'run_id':43,'attempt':1,'parameter_expansions':[expansion]}
+    scope['additional_originals']=[record];data['schema_version']=2
+    if fault!='unchanged_source':
+        after[node]='changed parameterized source'
+        scope['changed_inputs'][node]={'reason':'Reviewed parametrization already executed by latest origin','covered_by':[node]}
+    if fault=='unrelated_name':expansion['parameters']=['other[False]']
+    names=['test_old[False]'] if fault=='missing_parameter' else ['test_old[False]','test_old[True]']
+    new=(group[0],[ET.fromstring(f'<testcase classname="{cls}" name="{name}"/>') for name in names])
+    p.write_text(json.dumps(data))
+    def input_rows(ref,*args):return before if ref=='a'*40 else after
+    with patch.object(h,'ROOT',p.parents[3]),patch.object(h,'git',return_value=json.dumps(scope).encode()),patch.object(h,'inputs',side_effect=input_rows),patch.object(h,'original',side_effect=[[group],[new]]):
+        if fault:
+            with pytest.raises(ValueError,match='TOOL_PARAMETER_EXPANSION_INVALID'):h.validate(str(p.relative_to(p.parents[3])))
+        else:
+            result=h.validate(str(p.relative_to(p.parents[3])))
+            assert result['count']==2 and {c['name'] for c in result['cases']}==set(names)
