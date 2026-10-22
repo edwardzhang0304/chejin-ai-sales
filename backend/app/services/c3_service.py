@@ -1378,6 +1378,9 @@ def _supersede_action_for_stale_vehicle_facts(
 
 
 def invalidate_vehicle_dependent_reply_actions(db: Session, vehicle_id: str, *, image_order_only: bool = False) -> list[str]:
+    # Reuse the final-send comparison against this transaction's new catalog,
+    # including a just-listed/unlisted row (sessions disable autoflush).
+    db.flush()
     action_ids = set(
         db.scalars(
             select(ReplyActionVehicleFact.reply_action_id)
@@ -1418,7 +1421,10 @@ def invalidate_vehicle_dependent_reply_actions(db: Session, vehicle_id: str, *, 
     )
     for action in actions:
         if action.status in SUPERSEDABLE_ACTION_STATUSES and action.current:
-            if image_order_only and is_image_order_independent(action.ai_payload) and not _stale_action_vehicle_ids(db, action):
+            concrete_ids, catalog_reference = _brain_plan_vehicle_references(action.ai_payload or {})
+            compare_snapshot = (catalog_reference and vehicle_id not in concrete_ids) or (
+                image_order_only and is_image_order_independent(action.ai_payload))
+            if compare_snapshot and not _stale_action_vehicle_ids(db, action):
                 continue
             _supersede_action_for_stale_vehicle_facts(db, action, vehicle_ids=[vehicle_id])
     db.flush()

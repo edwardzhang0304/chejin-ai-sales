@@ -135,3 +135,23 @@ def test_legacy_empty_catalog_action_without_checkpoint_blocks(monkeypatch):
     response=claim_send(w,r,claimed)
     assert response.status_code==409
     assert response.json()['code']=='REPLY_ACTION_VEHICLE_FACT_STALE'
+
+@pytest.mark.parametrize('mutation',['price','image_order'])
+def test_archived_vehicle_edits_preserve_unchanged_active_catalog(monkeypatch,mutation):
+    active=api._create_listed_vehicle()
+    archived=api._create_listed_vehicle()
+    assert api.client.post(f'/api/vehicles/{archived}/unlist',headers=api.HEADERS).status_code==200
+    w,b,r=generate(monkeypatch,CatalogAdapter())
+    if mutation=='price':
+        response=api.client.put(f'/api/vehicles/{archived}',json={'public_price':9.99},headers=api.HEADERS)
+    else:
+        assert api.client.post(f'/api/vehicles/{archived}/images',files={'files':('extra.png',api.PNG_1X1,'image/png')},headers=api.HEADERS).status_code==200
+        images=api.client.get(f'/api/vehicles/{archived}',headers=api.HEADERS).json()['data']['images']
+        response=api.client.put(f'/api/vehicles/{archived}/images/order',json={'image_ids':[row['id'] for row in reversed(images)]},headers=api.HEADERS)
+    assert response.status_code==200,response.text
+    with SessionLocal() as db:
+        a=db.get(ReplyAction,r['reply_action_id'])
+        assert a.status=='queued' and c3_service._stale_action_vehicle_ids(db,a)==[]
+        assert a.ai_payload['vehicle_catalog_snapshot']['vehicle_ids']==[active]
+    response=claim_send(w,r,claim(w,b,r))
+    assert response.status_code==200,response.text
