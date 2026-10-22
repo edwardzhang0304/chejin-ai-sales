@@ -180,7 +180,7 @@ def test_resume_reports_reused_and_executed_separately_and_runs_only_selection(t
     result=consume()
     assert result['count']==1 and result['cases'][0]['name']=='test_new'
     assert result['cases'][0]['locator']['scope_index']==1
-    assert result['cases'][0]['locator']['report_xml']=='pytest-0.xml' 
+    assert result['cases'][0]['locator']['report_xml']=='pytest-0.xml'
 
 
 def read_changed_report(origin, report, xml=None):
