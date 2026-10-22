@@ -149,7 +149,7 @@ def test_resume_without_handoff_fails_instead_of_running_all_tests(tmp_path,monk
         execute.assert_not_called()
 
 
-def test_resume_reports_reused_and_executed_separately_and_runs_only_selection(tmp_path,monkeypatch,origin):
+def test_resume_reports_reused_and_executed_separately_and_runs_only_selection(tmp_path,monkeypatch,origin,handoff):
     import run_evidence_checks as runner
     monkeypatch.setenv('CHECK_KIND','tooling');monkeypatch.setenv('EVIDENCE_DIR',str(tmp_path))
     monkeypatch.setenv('TOOLING_REUSE_REQUIRED','true');monkeypatch.setenv('TOOLING_HANDOFF','reviewed.json')
@@ -158,7 +158,7 @@ def test_resume_reports_reused_and_executed_separately_and_runs_only_selection(t
     reuse={'count':7,'cases':[{'mode':'reused'}], 'original':{'run_id':42,'attempt':1},'pytest':[{'cwd':'.','nodes':[node]}]}
     def execute(argv,cwd,path,environment):
         assert argv[3:-3]==[node]  # sys.executable -m pytest <only selected> -q --junitxml path
-        Path(argv[-1]).write_text('<testsuites><testsuite><testcase name="new"/></testsuite></testsuites>')
+        Path(argv[-1]).write_text('<testsuites><testsuite><testcase classname="ops.formal_release.tests.test_tooling_handoff" name="test_new"/></testsuite></testsuites>')
         return 0
     with patch.object(runner,'identity',return_value={'commit':'a'*40,'run_id':'42','attempt':'1'}),patch.object(h,'validate',return_value=reuse),patch.object(runner,'fingerprint',return_value='f'*64),patch.object(runner,'execute',side_effect=execute):
         runner.main()
@@ -172,6 +172,15 @@ def test_resume_reports_reused_and_executed_separately_and_runs_only_selection(t
     groups=read_changed_report(origin,report,(tmp_path/'pytest-0.xml').read_text())
     assert len(groups)==1 and len(groups[0][1])==1
     assert groups[0][0]['scope_index']==1 and groups[0][0]['report_xml']=='pytest-0.xml'
+    scope,data,p,before,after,group,consume=handoff
+    old='ops/formal_release/tests/test_old.py'
+    before[node]=before.pop(old);after[node]=after.pop(old)
+    p.write_text(json.dumps(data))
+    group[0].clear();group[0].update(groups[0][0]);group[1][:]=groups[0][1]
+    result=consume()
+    assert result['count']==1 and result['cases'][0]['name']=='test_new'
+    assert result['cases'][0]['locator']['scope_index']==1
+    assert result['cases'][0]['locator']['report_xml']=='pytest-0.xml' 
 
 
 def read_changed_report(origin, report, xml=None):
@@ -274,3 +283,29 @@ def test_duplicate_zip_xml_is_rejected(origin):
     oldapi=origin[-1]
     with patch.object(h,'api',side_effect=lambda path,**kw:raw if path.endswith('/zip') else oldapi(path)),patch('source_evidence.fingerprint',return_value='f'*64),patch('source_evidence.git',return_value=b'workflow'):
         with pytest.raises(ValueError,match='TOOL_COMPONENT_FILE_INVALID'):h.original(origin[0])
+
+
+@pytest.mark.parametrize('declare_impact', [False, True])
+def test_intermediate_dependency_change_cannot_hide_behind_base_reversion(handoff,declare_impact):
+    scope,data,p,before,after,group,_=handoff
+    mid={**after,'ops/formal_release/reverted.py':'B'}
+    before['ops/formal_release/reverted.py']='A';after['ops/formal_release/reverted.py']='A'
+    record={'commit':'c'*40,'run_id':43,'attempt':1}
+    if declare_impact:
+        record['changed_inputs']={'ops/formal_release/reverted.py':{'reason':'changed dependency', 'covered_by':[group[0]['nodes'][0]]}}
+    scope['additional_originals']=[record];data['schema_version']=2;p.write_text(json.dumps(data))
+    def input_rows(ref,*args):return before if ref=='a'*40 else mid if ref=='c'*40 else after
+    with patch.object(h,'ROOT',p.parents[3]),patch.object(h,'git',return_value=json.dumps(scope).encode()),patch.object(h,'inputs',side_effect=input_rows),patch.object(h,'original',return_value=[group]):
+        with pytest.raises(ValueError,match='REUSED_TOOL_DEPENDENCY_CHANGED' if declare_impact else 'TOOL_ORIGIN_DELTA_INCOMPLETE'):
+            h.validate(str(p.relative_to(p.parents[3])))
+
+
+def test_later_xml_cannot_drop_previously_required_parameter_case(handoff):
+    scope,data,p,before,after,group,_=handoff
+    scope['additional_originals']=[{'commit':'c'*40,'run_id':43,'attempt':1}]
+    data['schema_version']=2;p.write_text(json.dumps(data))
+    old=(group[0], [ET.fromstring('<testcase classname="ops.formal_release.tests.test_old" name="test_old[one]"/>'),ET.fromstring('<testcase classname="ops.formal_release.tests.test_old" name="test_old[two]"/>')])
+    new=(group[0],old[1][:1])
+    def input_rows(ref,*args):return before if ref=='a'*40 else after
+    with patch.object(h,'ROOT',p.parents[3]),patch.object(h,'git',return_value=json.dumps(scope).encode()),patch.object(h,'inputs',side_effect=input_rows),patch.object(h,'original',side_effect=[[old],[new]]):
+        with pytest.raises(ValueError,match='TOOL_ORIGINAL_CASE_COVERAGE_LOST'):h.validate(str(p.relative_to(p.parents[3])))

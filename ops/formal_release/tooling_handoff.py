@@ -123,6 +123,7 @@ def validate(path):
     require(1 <= len(records) <= 8, 'INVALID_TOOL_ORIGIN_COUNT')
     require(len({r['commit'] for r in records}) == len(records), 'DUPLICATE_TOOL_ORIGIN')
     executions = {}
+    origin_impacts = {}
     previous = base
     for record in records:
         commit = record['commit']
@@ -131,6 +132,11 @@ def validate(path):
         git('merge-base', '--is-ancestor', commit, ref)
         previous = commit
         origin_inputs = before if commit == base else inputs(commit, str(path))
+        impact = scope['changed_inputs'] if commit == base else record.get('changed_inputs', {})
+        delta = {n for n in origin_inputs.keys() | reviewed.keys() if origin_inputs.get(n) != reviewed.get(n)}
+        require(set(impact) == delta, 'TOOL_ORIGIN_DELTA_INCOMPLETE')
+        require(all(v.get('reason') and v.get('covered_by') for v in impact.values()), 'TOOL_IMPACT_REVIEW_REQUIRED')
+        origin_impacts[commit] = impact
         for group, cases in original(record, allow_composed=version == 2):
             assigned = [sum(belongs(n, c) for n in group['nodes']) for c in cases]
             require(all(n == 1 for n in assigned), 'TOOL_ORIGINAL_SCOPE_AMBIGUOUS')
@@ -141,10 +147,14 @@ def validate(path):
                 # Later exact-node executions replace older ones, never add their counts.
                 require(key not in executions or executions[key][0]['commit'] != commit,
                         'DUPLICATE_TOOL_EXECUTION')
+                if key in executions and str(Path(group['cwd']) / node.split('::')[0]) not in fresh:
+                    old_cases = {(c.get('classname'), c.get('name')) for c in executions[key][2]}
+                    new_cases = {(c.get('classname'), c.get('name')) for c in found}
+                    require(old_cases <= new_cases, 'TOOL_ORIGINAL_CASE_COVERAGE_LOST')
                 executions[key] = (record, origin_inputs, found, {k: group[k] for k in ('report_xml', 'scope_index', 'result_index')})
     reusable = {str(Path(cwd) / node.split('::')[0]) for cwd, node in executions} - fresh
     allowed = fresh | reusable | {'windows-parser', 'gui-driver', 'hook-launcher-setup'}
-    require(all(set(v['covered_by']) <= allowed for v in scope['changed_inputs'].values()), 'TOOL_IMPACT_SELECTION_MISSING')
+    require(all(set(v['covered_by']) <= allowed for impact in origin_impacts.values() for v in impact.values()), 'TOOL_IMPACT_SELECTION_MISSING')
     rows = []
     identities = set()
     for (cwd, node), (record, origin_inputs, found, locator) in executions.items():
@@ -154,7 +164,7 @@ def validate(path):
             continue
         # A changed dependency can be covered by an earlier execution only if
         # that run already contained exactly the reviewed dependency bytes.
-        for name, impact in scope['changed_inputs'].items():
+        for name, impact in origin_impacts[record['commit']].items():
             if file in impact['covered_by']:
                 require(origin_inputs.get(name) == reviewed.get(name), 'REUSED_TOOL_DEPENDENCY_CHANGED')
         for case in found:
