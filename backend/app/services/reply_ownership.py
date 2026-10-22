@@ -94,6 +94,7 @@ def apply_message(db,conversation,message,*,orders=None,effective_at=None):
     value.update(last_message_id=message.id,revision=int(value.get('revision',0))+1)
     if customer:
         value['recall_streak']=0
+        value['silence_revision']=int(value.get('silence_revision',0))+1
     else:
         value['owner']='human'
     conversation.reply_ownership=value
@@ -164,8 +165,27 @@ def recall_succeeded(db,conversation,action,binding,batch):
         if any(may_be_human(rows[mid]) for mid in ids[position+1:]):return False
         value['last_message_id']=ids[position]
     value['owner']='ai'
-    value['recall_streak']=int(value.get('recall_streak',0))+1
     # The same revision admits the remaining segments of this current recall.
     conversation.reply_ownership=value
     close_round(db,conversation)
     return True
+
+
+def record_recall_success(conversation,action,batch):
+    """Account for a first-segment success independently of reply ownership.
+
+    Called once by original ACK settlement. Human replies never end customer
+    silence; a newer customer turn fences late ACKs out of the new silence epoch.
+    """
+    if not batch or batch.trigger_type!='recall' or action.segment_index!=1:return
+    from zoneinfo import ZoneInfo
+    local_today=aware(action.sent_at).astimezone(ZoneInfo('Asia/Shanghai')).date()
+    if conversation.recall_daily_date is None or conversation.recall_daily_date<=local_today:
+        if conversation.recall_daily_date!=local_today:
+            conversation.recall_daily_date=local_today;conversation.recall_daily_count=0
+        conversation.recall_daily_count=int(conversation.recall_daily_count or 0)+1
+    conversation.recall_count=int(conversation.recall_count or 0)+1
+    value=state(conversation)
+    if value['owner']!='legacy' and batch.silence_revision==int(value.get('silence_revision',0)):
+        value['recall_streak']=int(value.get('recall_streak',0))+1
+        conversation.reply_ownership=value

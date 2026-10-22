@@ -34,6 +34,8 @@ def test_upgrade_twice_preserves_old_receipts_and_does_not_backfill(monkeypatch,
         assert db.execute(text('SELECT reply_ownership FROM conversations')).scalar_one()==before
         assert db.execute(text('SELECT payload FROM original_send_receipts')).scalar_one()=='original-unknown'
         assert db.execute(text('SELECT ownership_revision FROM message_batches')).scalar_one() is None
+        assert db.execute(text('SELECT silence_revision FROM message_batches')).scalar_one() is None
+        assert 'last_checked_at' in {c['name'] for c in inspect(db).get_columns('human_reply_reminders')}
         db.execute(text("INSERT INTO human_reply_reminders (id,conversation_id,first_message_id,started_at,next_attempt_at,status,attempt_count,attempts,created_at,updated_at) VALUES ('r','conversation','m',CURRENT_TIMESTAMP,CURRENT_TIMESTAMP,'unknown',1,'[]',CURRENT_TIMESTAMP,CURRENT_TIMESTAMP)"))
     with pytest.raises(RuntimeError,match='Cannot discard'):command.downgrade(config,'20261012_0041')
     with engine.connect() as db:

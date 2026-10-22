@@ -1655,6 +1655,7 @@ def create_control_message_batch(
     from app.services.reply_ownership import revision
     batch = MessageBatch(
         ownership_revision=revision(conversation),
+        silence_revision=int(reply_ownership.state(conversation).get("silence_revision",0)),
         conversation_id=conversation_id,
         status="collecting",
         active=True,
@@ -1756,6 +1757,7 @@ def collect_message_batch(
     from app.services.reply_ownership import revision
     batch = MessageBatch(
         ownership_revision=revision(conversation),
+        silence_revision=int(reply_ownership.state(conversation).get("silence_revision",0)),
         conversation_id=conversation_id,
         status="collecting",
         active=True,
@@ -1919,6 +1921,7 @@ def collect_recovered_customer_message_batch(
     from app.services.reply_ownership import revision
     batch = MessageBatch(
         ownership_revision=revision(conversation),
+        silence_revision=int(reply_ownership.state(conversation).get("silence_revision",0)),
         conversation_id=conversation_id,
         status="collecting",
         active=True,
@@ -4281,15 +4284,7 @@ def sent_ack(db: Session, *, reply_action_id: str, payload: Any, native_verified
                 conversation.next_recall_at=action.sent_at+timedelta(hours=get_settings().c3_recall_after_hours)
                 if first_recall:
                     conversation.recall_origin_status=conversation.recall_cycle_id=None
-        # Successful physical recalls count even when a later human fact means
-        # this ACK is no longer entitled to change the current reply owner.
-        if batch and batch.trigger_type=='recall' and action.segment_index==1:
-            local_today=_aware_datetime(action.sent_at).astimezone(ZoneInfo('Asia/Shanghai')).date()
-            if conversation.recall_daily_date is None or conversation.recall_daily_date<=local_today:
-                if conversation.recall_daily_date!=local_today:
-                    conversation.recall_daily_date=local_today;conversation.recall_daily_count=0
-                conversation.recall_daily_count=int(conversation.recall_daily_count or 0)+1
-            conversation.recall_count=int(conversation.recall_count or 0)+1
+        reply_ownership.record_recall_success(conversation,action,batch)
         finish_task_and_release_worker(task)
         _write_event(db, task, TaskEventType.completed, from_status=before, to_status=task.status, worker_id=payload.worker_id, remark=payload.remark)
     elif native_verified and payload.action_phase=='not_attempted' and payload.send_result=='failed' and (payload.evidence or {}).get('native_no_trigger_verified') is True:

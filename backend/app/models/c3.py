@@ -75,6 +75,7 @@ class MessageBatch(Base, TimestampMixin):
         nullable=True,
     )
     ownership_revision: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    silence_revision: Mapped[int | None] = mapped_column(Integer, nullable=True)
     origin_conversation_status: Mapped[str | None] = mapped_column(
         String(32),
         nullable=True,
@@ -250,6 +251,7 @@ class HumanReplyReminder(Base, TimestampMixin):
     first_message_id: Mapped[str] = mapped_column(String(36), nullable=False)
     started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     next_attempt_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    last_checked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     status: Mapped[str] = mapped_column(String(24), nullable=False, default="pending")
     attempt_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     attempted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

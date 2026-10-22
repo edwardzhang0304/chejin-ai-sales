@@ -144,6 +144,13 @@ def test_first_recall_segment_ownership_uses_native_order_and_keeps_receipts(
     add_message(table,sender=0,text='先了解一下')
     add_message(table,sender=1,text='销售先为您介绍')
     assert runtime.sync(binding)['history_ready']
+    _run_recall_cycle(human_runtime,monkeypatch,recovery_provider_factory,interruption)
+
+
+def _run_recall_cycle(human_runtime,monkeypatch,recovery_provider_factory,interruption):
+    runtime,binding,table,server,w=human_runtime
+    with SessionLocal() as db:
+        previous_count=db.get(Conversation,binding['conversation_id']).recall_count
     with SessionLocal() as db:
         due=db.get(Conversation,binding['conversation_id']).next_recall_at.replace(tzinfo=timezone.utc)
     time.sleep(max(0,(due-datetime.now(timezone.utc)).total_seconds())+.05)
@@ -173,7 +180,7 @@ def test_first_recall_segment_ownership_uses_native_order_and_keeps_receipts(
     with SessionLocal() as db:
         conv=db.get(Conversation,binding['conversation_id'])
         assert conv.reply_ownership['owner']==('ai' if interruption in {'none','customer_after'} else 'human')
-        assert conv.recall_count==1
+        assert conv.recall_count==previous_count+1
         assert db.scalar(select(SentAck)).send_result=='sent'
     runtime.sync(binding,show_progress=False)
     with SessionLocal() as db:
@@ -184,6 +191,39 @@ def test_first_recall_segment_ownership_uses_native_order_and_keeps_receipts(
         else:assert actions[1].status=='queued'
         assert conv.reply_ownership['owner']==('human' if interruption in {'human_after','customer_before'} else 'ai')
         if interruption=='customer_before':assert conv.reply_ownership['round_id']
-        if interruption=='customer_after':assert conv.reply_ownership['recall_streak']==0
-        assert len(list(db.scalars(select(SentAck))))==1
-    assert len([r for r in server.requests if r[0]=='/SendTextMsg'])==1
+        assert conv.reply_ownership['recall_streak']==(0 if interruption in {'customer_after','customer_before'} else previous_count+1)
+        # Replayed original ACK cannot consume a second quota or change owner.
+        before=dict(conv.reply_ownership);counts=(conv.recall_count,conv.recall_daily_count)
+        replay=c3_service.sent_ack(db,reply_action_id=actions[0].id,payload=SimpleNamespace(),native_verified=True)
+        assert replay['duplicated']
+        assert conv.reply_ownership==before and (conv.recall_count,conv.recall_daily_count)==counts
+        assert len(list(db.scalars(select(SentAck))))==previous_count+1
+    assert len([r for r in server.requests if r[0]=='/SendTextMsg'])==previous_count+1
+    if interruption!='none':
+        terminal=runtime.batch_view(bid)
+        assert terminal['reply_sequence']['terminal']
+        with SessionLocal() as db:
+            task=db.get(Task,first['task_id']);token=task.lease_fencing_token
+        runtime.finish(first['task_id'],runtime.active_flow_id,token,binding['conversation_id'])
+
+
+def test_three_confirmed_recalls_with_human_retake_exhaust_silence_quota(human_runtime,monkeypatch,recovery_provider_factory):
+    # Compress three days into this loop; daily-limit=1 is covered separately.
+    # Keep the real three-success silence limit and physical/ACK pipeline.
+    monkeypatch.setattr(get_settings(),'c3_recall_daily_limit',3)
+    runtime,binding,table,server,w=human_runtime
+    add_message(table,sender=0,text='先看看')
+    add_message(table,sender=1,text='我先处理')
+    assert runtime.sync(binding)['history_ready']
+    for _ in range(3):
+        _run_recall_cycle(human_runtime,monkeypatch,recovery_provider_factory,'human_after')
+    with SessionLocal() as db:
+        conv=db.get(Conversation,binding['conversation_id'])
+        assert conv.reply_ownership['owner']=='human' and conv.reply_ownership['recall_streak']==3
+        assert conv.recall_count==3 and conv.recall_daily_count==3
+        due=conv.next_recall_at.replace(tzinfo=timezone.utc)
+    time.sleep(max(0,(due-datetime.now(timezone.utc)).total_seconds())+.05)
+    # Allow daily headroom so this assertion specifically proves silence gating.
+    monkeypatch.setattr(get_settings(),'c3_recall_daily_limit',4)
+    assert runtime.sync(binding)['message_batch'] is None
+    assert len([r for r in server.requests if r[0]=='/SendTextMsg'])==3

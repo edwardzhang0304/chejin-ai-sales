@@ -241,3 +241,66 @@ def test_failed_retry_crossing_quiet_hours_keeps_original_round(monkeypatch):
     send_history(w,p,b,value,monkeypatch,now)
     assert reminders.dispatch_reminder(rid,adapter=adapter)=='succeeded'
     assert len(adapter.calls)==2
+
+
+def test_unready_older_rounds_do_not_starve_ready_customer(monkeypatch):
+    from copy import deepcopy
+    # The eligible target and its round come from actual task/binding/history APIs.
+    w,p,b,value,rid,start=unanswered(monkeypatch)
+    now=daytime_after(start)
+    monkeypatch.setattr(reminders,'utcnow',lambda:now)
+    send_history(w,p,b,value,monkeypatch,now)
+    with SessionLocal() as db:
+        original=db.get(Conversation,b['conversation_id'])
+        binding=db.get(WechatSessionBinding,b['binding_id'])
+        # Queue-scale fixture: distinct synthetic customers awaiting fresh history.
+        # No mocks in recovery scheduler, dispatch, eligibility or adapter handling.
+        for n in range(20):
+            cid=f'blocked-customer-{n:02d}';round_id=f'blocked-round-{n:02d}'
+            conv=Conversation(conversation_id=cid,lead_id=original.lead_id,sales_id=original.sales_id,
+                worker_id=original.worker_id,status='waiting_sales_reply',reply_ownership={
+                    'owner':'human','revision':1,'recall_streak':0,'round_id':round_id})
+            data={c.name:deepcopy(getattr(binding,c.name)) for c in binding.__table__.columns
+                if c.name not in {'id','conversation_id'}}
+            data['native_peer_wxid']=f'wxid_blocked_{n}'
+            data['remark_code']=f'BLOCKED{n}'
+            data['native_context']={**data['native_context'],'history_observed_at':(now-timedelta(days=2)).isoformat()}
+            db.add_all([conv,WechatSessionBinding(id=f'blocked-binding-{n:02d}',conversation_id=cid,**data),
+                HumanReplyReminder(id=round_id,conversation_id=cid,first_message_id=f'old-msg-{n}',
+                    started_at=start-timedelta(hours=3),next_attempt_at=start-timedelta(hours=2))])
+        db.commit()
+    adapter=Adapter()
+    results=[reminders.recover_reminders_once(adapter=adapter) for _ in range(3)]
+    with SessionLocal() as db:status=db.get(HumanReplyReminder,rid).status
+    assert len(adapter.calls)==1 and status=='succeeded'
+    with SessionLocal() as db:
+        blocked=list(db.scalars(select(HumanReplyReminder).where(HumanReplyReminder.id.like('blocked-round-%'))))
+        assert len(blocked)==20
+        assert all(r.status=='pending' and r.attempt_count==0 and r.closed_at is None for r in blocked)
+        assert all(reminders.aware(r.started_at)==start-timedelta(hours=3) for r in blocked)
+        assert all(reminders.aware(r.next_attempt_at)==start-timedelta(hours=2) for r in blocked)
+        assert all(r.last_checked_at is not None for r in blocked)
+
+
+def test_late_success_accounting_does_not_enter_new_customer_silence_epoch(monkeypatch):
+    from types import SimpleNamespace
+    # Actual verified customer ingestion produces the epoch; this focused
+    # accounting test represents an older first segment settling afterwards.
+    w,p,b,value,rid,start=unanswered(monkeypatch)
+    with SessionLocal() as db:
+        previous=int(db.get(Conversation,b['conversation_id']).reply_ownership['silence_revision'])
+    append_row(value,text='客户真正提出新问题，开始新的阶段')
+    response,_=upload(w,p,b,value,monkeypatch);assert response.status_code==200
+    with SessionLocal() as db:
+        conv=db.get(Conversation,b['conversation_id'])
+        assert conv.reply_ownership['silence_revision']==previous+1
+        batch=SimpleNamespace(trigger_type='recall',silence_revision=previous)
+        action=SimpleNamespace(segment_index=1,sent_at=start)
+        reply_ownership.record_recall_success(conv,action,batch)
+        assert conv.reply_ownership['recall_streak']==0
+        assert conv.reply_ownership['owner']=='human'
+        assert conv.recall_count==1 and conv.recall_daily_count==1
+        # Later segment success is not a second successful recall cycle.
+        action.segment_index=2
+        reply_ownership.record_recall_success(conv,action,batch)
+        assert conv.recall_count==1 and conv.recall_daily_count==1

@@ -74,10 +74,14 @@ def dispatch_reminder(reminder_id,*,adapter=None):
             if row.status in {'pending','failed'}:row.status='cancelled'
             db.commit();return 'closed'
         if row.status not in {'pending','failed'} or row.attempt_count>=3 or aware(row.next_attempt_at)>now:return 'not_due'
+        # Rotate checked rounds independently of their business due time. A
+        # disconnected customer's original timer must not starve other rounds.
+        row.last_checked_at=now
         permitted=next_daytime(now)
         if permitted>now:
             row.next_attempt_at=permitted;db.commit();return 'quiet'
-        if not _facts_ready(binding,row,now):return 'await_history'
+        if not _facts_ready(binding,row,now):
+            db.commit();return 'await_history'
         row.status='sending';row.attempt_count+=1;row.attempted_at=now
         db.commit()  # crash after this point is unknown, never retried blindly
     with SessionLocal() as db:
@@ -130,7 +134,9 @@ def recover_reminders_once(*,adapter=None,limit=20):
             row.attempts=[*(row.attempts or []),{'number':row.attempt_count,'at':now.isoformat(),'result':'unknown','error_code':row.error_code}]
         ids=list(db.scalars(select(HumanReplyReminder.id).where(HumanReplyReminder.closed_at.is_(None),
             HumanReplyReminder.status.in_({'pending','failed'}),HumanReplyReminder.attempt_count<3,
-            HumanReplyReminder.next_attempt_at<=now).order_by(HumanReplyReminder.next_attempt_at,HumanReplyReminder.id).limit(limit)))
+            HumanReplyReminder.next_attempt_at<=now).order_by(
+                HumanReplyReminder.last_checked_at.asc().nullsfirst(),
+                HumanReplyReminder.next_attempt_at,HumanReplyReminder.id).limit(limit)))
         db.commit()
     results=[dispatch_reminder(mid,adapter=adapter) for mid in ids]
     return {'examined':len(ids),'attempted':sum(r in {'succeeded','failed','unknown'} for r in results)}

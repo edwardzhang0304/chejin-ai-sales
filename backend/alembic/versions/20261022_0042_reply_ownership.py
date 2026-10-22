@@ -11,6 +11,7 @@ def upgrade():
     op.add_column('workers',sa.Column('reply_history_required_after',sa.DateTime(timezone=True),nullable=True))
     op.add_column('conversations',sa.Column('reply_ownership',sa.JSON(),nullable=True))
     op.add_column('message_batches',sa.Column('ownership_revision',sa.Integer(),nullable=True))
+    op.add_column('message_batches',sa.Column('silence_revision',sa.Integer(),nullable=True))
     # User excluded historical backfill. New verified post-upgrade messages
     # start new cycles; original settings, handoffs and receipts stay intact.
     table=sa.table('conversations',sa.column('reply_ownership',sa.JSON()))
@@ -21,6 +22,7 @@ def upgrade():
         sa.Column('first_message_id',sa.String(36),nullable=False),
         sa.Column('started_at',sa.DateTime(timezone=True),nullable=False),
         sa.Column('next_attempt_at',sa.DateTime(timezone=True),nullable=False),
+        sa.Column('last_checked_at',sa.DateTime(timezone=True)),
         sa.Column('status',sa.String(24),nullable=False),sa.Column('attempt_count',sa.Integer(),nullable=False),
         sa.Column('attempted_at',sa.DateTime(timezone=True)),sa.Column('closed_at',sa.DateTime(timezone=True)),
         sa.Column('error_code',sa.String(100)),sa.Column('attempts',sa.JSON(),nullable=False),
@@ -36,4 +38,5 @@ def downgrade():
     op.drop_table('human_reply_reminders')
     op.drop_column('workers','reply_history_required_after')
     op.drop_column('message_batches','ownership_revision')
+    op.drop_column('message_batches','silence_revision')
     op.drop_column('conversations','reply_ownership')
