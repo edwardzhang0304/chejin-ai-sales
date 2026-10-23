@@ -1,4 +1,5 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
+import { useAutoRefresh } from "../../shared/hooks/useAutoRefresh";
 import {
   RefreshCw,
   UserRound,
@@ -251,6 +252,16 @@ export function DashboardPage() {
     !vehicleEnd ||
     vehicleStart > vehicleEnd ||
     vehicleEnd > today;
+  const refresh = useCallback(async (signal: AbortSignal) => {
+    const result = await getDashboard({
+      start, end, vehicle_start: vehicleStart, vehicle_end: vehicleEnd,
+      sales_id: sales, mode, status_sales_id: statusSales,
+    }, signal);
+    if (!signal.aborted) {
+      setData(result);
+      setOptions(result.sales_options);
+    }
+  }, [start, end, vehicleStart, vehicleEnd, sales, mode, statusSales]);
   useEffect(() => {
     const controller = new AbortController();
     setData(null);
@@ -260,24 +271,7 @@ export function DashboardPage() {
       return () => controller.abort();
     }
     setLoading(true);
-    void getDashboard(
-      {
-        start,
-        end,
-        vehicle_start: vehicleStart,
-        vehicle_end: vehicleEnd,
-        sales_id: sales,
-        mode,
-        status_sales_id: statusSales,
-      },
-      controller.signal,
-    )
-      .then((result) => {
-        if (!controller.signal.aborted) {
-          setData(result);
-          setOptions(result.sales_options);
-        }
-      })
+    void refresh(controller.signal)
       .catch((reason) => {
         if (!controller.signal.aborted)
           setError(formatBusinessError(reason, "统计服务暂不可用，请重试。"));
@@ -286,17 +280,10 @@ export function DashboardPage() {
         if (!controller.signal.aborted) setLoading(false);
       });
     return () => controller.abort();
-  }, [
-    start,
-    end,
-    vehicleStart,
-    vehicleEnd,
-    sales,
-    mode,
-    statusSales,
-    revision,
-    invalidDates,
-  ]);
+  }, [refresh, revision, invalidDates]);
+  // Share the existing visible-page refresh scheduler; failures retain the
+  // last successful snapshot and its timestamp, without clearing the page.
+  useAutoRefresh(refresh, !loading && !invalidDates && data !== null);
   const coverage = [
     ...new Set(
       [

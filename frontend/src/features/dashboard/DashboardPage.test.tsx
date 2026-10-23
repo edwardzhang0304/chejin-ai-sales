@@ -115,4 +115,25 @@ describe("真实看板请求及缺失数据展示", () => {
       true,
     );
   });
+  it("复用自动刷新，后台失败保留旧快照，筛选后旧刷新不能覆盖", async () => {
+    api.getDashboard.mockResolvedValueOnce(data(17));
+    render(<DashboardPage />);
+    await screen.findAllByText("17");
+    api.getDashboard.mockRejectedValueOnce(new Error("temporary offline"));
+    fireEvent.focus(window);
+    await waitFor(() => expect(api.getDashboard).toHaveBeenCalledTimes(2));
+    expect(screen.getAllByText("17").length).toBeGreaterThan(0);
+    let resolveLate!: (value: DashboardData) => void;
+    api.getDashboard.mockImplementationOnce(() => new Promise(resolve => { resolveLate = resolve; }));
+    fireEvent.focus(window);
+    await waitFor(() => expect(api.getDashboard).toHaveBeenCalledTimes(3));
+    const staleSignal = api.getDashboard.mock.calls[2][1] as AbortSignal;
+    api.getDashboard.mockResolvedValueOnce(data(23));
+    fireEvent.click(screen.getByRole("button", {name:"AI",exact:true}));
+    await screen.findAllByText("23");
+    expect(staleSignal.aborted).toBe(true);
+    resolveLate(data(999));
+    await waitFor(() => expect(screen.queryByText("999")).toBeNull());
+  });
+
 });
