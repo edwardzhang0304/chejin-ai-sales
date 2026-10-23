@@ -261,6 +261,7 @@ def run_flow(ui, *, phone: str, verify_message: str, remark_name: str,
             if callback is not None:callback(name,state,note)
         except Exception:pass
     def step(name):
+        ui.guard_phase = name
         ui.guard()
         if report['steps']:progress(report['steps'][-1],'done')
         report['steps'].append(name);progress(name,'current')
@@ -337,6 +338,7 @@ def run_flow(ui, *, phone: str, verify_message: str, remark_name: str,
         if search_owned and not form_open and not form_transition:
             try:
                 progress('cleanup','current')
+                ui.guard_phase = 'cleanup'
                 ui.clear_search()
                 progress('cleanup','done')
                 report['cleanup'] = 'search_empty_verified'
@@ -351,6 +353,8 @@ def run_flow(ui, *, phone: str, verify_message: str, remark_name: str,
             report['cleanup'] = 'deferred_invite_dialog_still_open'
         elif form_transition:
             report['cleanup'] = 'deferred_invite_dialog_unconfirmed'
+        if getattr(ui, 'guard_failures', None):
+            report['guard_failures'] = list(ui.guard_failures)
         recorder = getattr(ui, 'record_outcome_diagnostic', None)
         if recorder is not None:
             try:
@@ -396,27 +400,93 @@ class NativeUI:
             folder.mkdir(parents=True, exist_ok=True)
             (folder/'outcome.json').write_text(json.dumps(report,ensure_ascii=False),encoding='utf-8')
 
+    def _guard_stop(self, condition, *, code='WINDOW_FOCUS_OR_GEOMETRY_CHANGED', observed=None):
+        """Best-effort metadata only; a failed diagnostic must never unblock input.
+
+        observed holds the value used by the failed check. The supplemental
+        snapshot is sampled afterwards and may already reflect a changed window.
+        No titles, chat text, process paths, screenshots or Hook calls are read.
+        """
+        try:
+            failures = getattr(self, 'guard_failures', None)
+            if failures is None:
+                failures = self.guard_failures = []
+            if len(failures) < 8:
+                event = {'condition': condition, 'error_code': code,
+                         'phase': getattr(self, 'guard_phase', 'initialization'),
+                         'operation': getattr(self, 'guard_operation', 'guard'),
+                         'time_utc': time.time(), 'observed': observed or {},
+                         'expected': {'main_hwnd': self.main, 'current_hwnd': self.current,
+                                      'pid': self.pid, 'main_geometry': dict(self.initial),
+                                      'dpi': getattr(self, 'dpi', None)},
+                         'snapshot': {}, 'read_errors': []}
+                failures.append(event)
+                o = self.ops; gui = o.win32gui
+                def read(name, callback):
+                    try:
+                        value = callback()
+                        event['snapshot'][name] = value
+                        return value
+                    except Exception as exc:
+                        event['read_errors'].append({'field': name, 'type': type(exc).__name__})
+                foreground = read('foreground_hwnd', gui.GetForegroundWindow)
+                for name, hwnd in [('main', self.main), ('current', self.current), ('foreground', foreground)]:
+                    if hwnd is None or not read(name + '_exists', lambda: bool(gui.IsWindow(hwnd))):
+                        continue
+                    read(name + '_pid', lambda: o.win32process.GetWindowThreadProcessId(hwnd)[1])
+                    read(name + '_class', lambda: gui.GetClassName(hwnd))
+                    read(name + '_visible', lambda: bool(gui.IsWindowVisible(hwnd)))
+                    read(name + '_minimized', lambda: bool(gui.IsIconic(hwnd)))
+                    read(name + '_geometry', lambda: o.get_window_geometry(hwnd))
+                if hasattr(self, 'dpi'):
+                    read('main_dpi', lambda: o.window_dpi_scale(self.main))
+        except Exception:
+            pass  # The original stop remains authoritative even if evidence fails.
+        raise FlowStop(code)
+
     def _guard_main_window(self):
         self.identity_guard()
         o = self.ops;gui = o.win32gui
-        if (not gui.IsWindow(self.main) or gui.IsIconic(self.main)
-                or not gui.IsWindowVisible(self.main)
-                or o.get_window_geometry(self.main) != self.initial
-                or o.win32process.GetWindowThreadProcessId(self.main)[1] != self.pid):
-            raise FlowStop('WINDOW_FOCUS_OR_GEOMETRY_CHANGED')
-        if hasattr(self,'dpi') and abs(o.window_dpi_scale(self.main)-self.dpi)>.01:
-            raise FlowStop('WINDOW_DPI_CHANGED')
+        if not gui.IsWindow(self.main):
+            self._guard_stop('main_window_missing')
+        if gui.IsIconic(self.main):
+            self._guard_stop('main_window_minimized')
+        if not gui.IsWindowVisible(self.main):
+            self._guard_stop('main_window_hidden')
+        geometry = o.get_window_geometry(self.main)
+        if geometry != self.initial:
+            self._guard_stop('main_geometry_changed', observed={'geometry': geometry})
+        pid = o.win32process.GetWindowThreadProcessId(self.main)[1]
+        if pid != self.pid:
+            self._guard_stop('main_process_changed', observed={'pid': pid})
+        if hasattr(self, 'dpi'):
+            dpi = o.window_dpi_scale(self.main)
+            if abs(dpi-self.dpi)>.01:
+                self._guard_stop('main_dpi_changed', code='WINDOW_DPI_CHANGED', observed={'dpi': dpi})
 
     def guard(self, frame=None):
         self._guard_main_window()
         o = self.ops;gui = o.win32gui
-        if (not gui.IsWindow(self.current) or gui.GetForegroundWindow() != self.current
-                or o.win32process.GetWindowThreadProcessId(self.current)[1] != self.pid):
-            raise FlowStop('WINDOW_FOCUS_OR_GEOMETRY_CHANGED')
+        if not gui.IsWindow(self.current):
+            self._guard_stop('current_window_missing')
+        foreground = gui.GetForegroundWindow()
+        if foreground != self.current:
+            self._guard_stop('foreground_changed', observed={'foreground_hwnd': foreground})
+        pid = o.win32process.GetWindowThreadProcessId(self.current)[1]
+        if pid != self.pid:
+            self._guard_stop('current_process_changed', observed={'pid': pid})
         if frame is not None:
-            if (frame.hwnd != self.current or o.get_window_client_geometry(self.current) != frame.geometry
-                    or time.monotonic()-frame.timestamp > 15 or frame is not self.last_frame):
-                raise FlowStop('STALE_ROI_FRAME')
+            if frame.hwnd != self.current:
+                self._guard_stop('frame_window_changed', code='STALE_ROI_FRAME', observed={'frame_hwnd': frame.hwnd})
+            geometry = o.get_window_client_geometry(self.current)
+            if geometry != frame.geometry:
+                self._guard_stop('frame_geometry_changed', code='STALE_ROI_FRAME',
+                                 observed={'geometry': geometry, 'frame_geometry': frame.geometry})
+            age = time.monotonic()-frame.timestamp
+            if age > 15:
+                self._guard_stop('frame_expired', code='STALE_ROI_FRAME', observed={'age_seconds': age})
+            if frame is not self.last_frame:
+                self._guard_stop('frame_replaced', code='STALE_ROI_FRAME')
 
     def _bounds(self, label: str, w: int, h: int):
         if label == 'header':return (0, 0, int(w*.62), min(h, 90))
@@ -505,6 +575,7 @@ class NativeUI:
         self.card_hwnd = foreground
 
     def capture(self, label: str) -> Frame:
+        self.guard_operation = 'capture:' + label
         # The one caret observation already waits in verified_empty_search.
         if label != 'search_empty':
             self.ops.humanized_action_sleep(1800, 2400) if label == 'card' else self.ops.humanized_action_sleep(450, 800)
@@ -521,9 +592,12 @@ class NativeUI:
             raise FlowStop('ROI_CAPTURE_FAILED')
         # No second screenshot / full-frame fallback when OCR fails.
         image.save(getattr(self,'screenshot_evidence',self.evidence)/f'{self.count:02d}-{label}.png')
-        if o.get_window_client_geometry(self.current) != c:
-            raise FlowStop('CAPTURE_GEOMETRY_CHANGED')
+        geometry = o.get_window_client_geometry(self.current)
+        if geometry != c:
+            self._guard_stop('capture_geometry_changed', code='CAPTURE_GEOMETRY_CHANGED',
+                             observed={'geometry': geometry, 'frame_geometry': c})
         self.guard()
+        self.guard_operation = 'ocr:' + label
         rows = o.run_ocr(image);self.ocr_count += 1
         self.guard()
         frame = Frame(image, rows, label, self.current, (left, top), c, captured_at)
@@ -534,6 +608,7 @@ class NativeUI:
         return frame
 
     def click(self, frame: Frame, t: dict, action: str):
+        self.guard_operation = 'click:' + action
         self.guard(frame)
         p = t['point'];b = t['bounds']
         if not (b[0] <= p[0] < b[2] and b[1] <= p[1] < b[3]
@@ -572,6 +647,7 @@ class NativeUI:
         finally:o.ensure_left_button_released()
 
     def replace(self, frame: Frame, text: str):
+        self.guard_operation = 'replace:' + frame.name
         self.guard(frame)
         self.ops.hotkey(self.ops.win32con.VK_CONTROL, ord('A'))
         self.guard(frame)
@@ -649,7 +725,7 @@ class NativeUI:
                         and c.get('width', 0) > 0 and c.get('height', 0) > 0):
                     candidate = signature
                 elif event.get('same_process') is False:
-                    raise FlowStop('WINDOW_FOCUS_OR_GEOMETRY_CHANGED')
+                    self._guard_stop('invite_foreground_process_changed', observed={'foreground_hwnd': foreground})
             if candidate is not None and candidate == previous:
                 # No fixed-size form template: existing form OCR, pixels,
                 # field readback and per-action guards still authorize input.
@@ -710,8 +786,9 @@ class NativeUI:
             deadline = time.monotonic()+2
             while gui.IsWindow(card) and gui.IsWindowVisible(card):
                 self.identity_guard()
-                if gui.GetForegroundWindow() != card:
-                    raise FlowStop('WINDOW_FOCUS_OR_GEOMETRY_CHANGED')
+                foreground = gui.GetForegroundWindow()
+                if foreground != card:
+                    self._guard_stop('cleanup_foreground_changed', observed={'foreground_hwnd': foreground})
                 if time.monotonic() >= deadline:
                     raise FlowStop('CONTACT_CARD_CLOSE_UNCONFIRMED')
                 time.sleep(.1)
@@ -735,6 +812,7 @@ class NativeUI:
         return narrow,{'bounds':b,'point':[b[2]//2,b[3]//2],'frame':narrow.name,'proof':'focused_empty_pixels'}
 
     def clear_search(self):
+        self.guard_operation = 'clear_search'
         self.return_to_main()
         frame = self.capture('header')
         try:

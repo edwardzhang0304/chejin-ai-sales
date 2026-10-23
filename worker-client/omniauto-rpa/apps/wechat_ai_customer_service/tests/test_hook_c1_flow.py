@@ -231,6 +231,127 @@ class NativeGuardTests(unittest.TestCase):
         self.ui.identity_guard=Mock();self.ui.count=0;self.ui.ocr_count=0;self.ui.last_frame=None;self.ui.evidence=Path(self.tmp.name)
         self.fr=frames()['header'];self.fr.hwnd=11;self.fr.origin=(12,12);self.fr.geometry=dict(self.client);self.fr.timestamp=f.time.monotonic();self.ui.last_frame=self.fr
     def tearDown(self):self.tmp.cleanup()
+    def test_guard_failure_distinguishes_each_original_condition(self):
+        cases = [
+            ('main_window_missing', lambda: setattr(self.gui, 'IsWindow', lambda h: False)),
+            ('main_window_minimized', lambda: setattr(self.gui, 'IsIconic', lambda h: True)),
+            ('main_window_hidden', lambda: setattr(self.gui, 'IsWindowVisible', lambda h: False)),
+            ('main_geometry_changed', lambda: self.geom.update(left=25)),
+            ('main_geometry_changed', lambda: self.geom.update(width=1100)),
+            ('main_process_changed', lambda: setattr(self.ops.win32process, 'GetWindowThreadProcessId', lambda h: (1, 100))),
+            ('foreground_changed', lambda: setattr(self, 'foreground', 22)),
+        ]
+        for condition, change in cases:
+            with self.subTest(condition=condition):
+                self.geom.update(left=12, width=1060); self.foreground=11
+                self.gui.IsWindow=lambda h:True
+                self.gui.IsIconic=lambda h:False
+                self.gui.IsWindowVisible=lambda h:True
+                self.ops.win32process.GetWindowThreadProcessId=lambda h:(1,99)
+                self.ui.guard_failures=[]
+                change()
+                with self.assertRaisesRegex(f.FlowStop, '^WINDOW_FOCUS_OR_GEOMETRY_CHANGED$'):
+                    self.ui.guard(self.fr)
+                event=self.ui.guard_failures[0]
+                self.assertEqual(event['condition'],condition)
+                self.assertEqual(event['expected']['main_geometry']['left'],12)
+                if condition=='main_geometry_changed':
+                    self.assertEqual(event['observed']['geometry'],self.geom)
+                self.ops.win32api.mouse_event.assert_not_called()
+                self.ops.win32api.SetCursorPos.assert_not_called()
+
+    def test_current_window_conditions_have_distinct_evidence(self):
+        self.ui.current=22;self.foreground=22
+        self.gui.IsWindow=lambda h:h!=22
+        with self.assertRaises(f.FlowStop):self.ui.guard()
+        self.assertEqual(self.ui.guard_failures[-1]['condition'],'current_window_missing')
+        self.gui.IsWindow=lambda h:True
+        self.ops.win32process.GetWindowThreadProcessId=lambda h:(1,99 if h==11 else 100)
+        with self.assertRaises(f.FlowStop):self.ui.guard()
+        self.assertEqual(self.ui.guard_failures[-1]['condition'],'current_process_changed')
+
+    def test_diagnostic_reread_failure_cannot_mask_or_relax_original_stop(self):
+        from unittest.mock import Mock
+        self.gui.GetForegroundWindow=Mock(side_effect=[22, OSError('private detail')])
+        self.gui.GetClassName=Mock(side_effect=OSError('private detail'))
+        with self.assertRaisesRegex(f.FlowStop,'^WINDOW_FOCUS_OR_GEOMETRY_CHANGED$'):
+            self.ui.guard(self.fr)
+        event=self.ui.guard_failures[0]
+        self.assertEqual(event['observed']['foreground_hwnd'],22)
+        self.assertIn({'field':'foreground_hwnd','type':'OSError'},event['read_errors'])
+        self.assertNotIn('private detail',json.dumps(event))
+        self.assertNotIn('title',json.dumps(event))
+        self.ops.win32api.mouse_event.assert_not_called()
+
+    def test_original_observation_survives_focus_return_and_events_are_bounded(self):
+        from unittest.mock import Mock
+        self.gui.GetForegroundWindow=Mock(side_effect=[22,11]*12)
+        for _ in range(8):
+            with self.assertRaises(f.FlowStop):self.ui.guard()
+        self.assertEqual(self.ui.guard_failures[0]['observed']['foreground_hwnd'],22)
+        self.assertEqual(self.ui.guard_failures[0]['snapshot']['foreground_hwnd'],11)
+        self.foreground=22;self.gui.GetForegroundWindow=lambda:22
+        for _ in range(4):
+            with self.assertRaises(f.FlowStop):self.ui.guard()
+        self.assertEqual(len(self.ui.guard_failures),8)
+
+    def test_lookup_focus_loss_after_screenshot_stops_before_ocr(self):
+        from unittest.mock import Mock
+        image=Image.new('RGB',(int(self.client['width']*.38),int(self.client['height']*.43)),'white')
+        def capture(_):
+            self.foreground=22
+            return image
+        self.ops.try_image_grab=Mock(side_effect=capture);self.ops.run_ocr=Mock()
+        with self.assertRaisesRegex(f.FlowStop,'^WINDOW_FOCUS_OR_GEOMETRY_CHANGED$'):
+            self.ui.capture('lookup')
+        self.assertTrue((self.ui.evidence/'01-lookup.png').exists())
+        self.assertEqual(self.ui.guard_failures[0]['operation'],'capture:lookup')
+        self.ops.run_ocr.assert_not_called();self.ops.win32api.mouse_event.assert_not_called()
+
+    def test_lookup_ocr_focus_loss_keeps_primary_cleanup_and_export_evidence(self):
+        from unittest.mock import Mock,patch
+        from chejin_worker_client.diagnostic_bundle import export_bundle
+        import zipfile
+        root=Path(self.tmp.name)
+        self.ui.organized_evidence=True
+        self.ui.evidence=root/'artifacts/tasks/synthetic-task'
+        self.ui.screenshot_evidence=self.ui.evidence/'screenshots'
+        self.ui.ocr_evidence=self.ui.evidence/'ocr'
+        self.ui.screenshot_evidence.mkdir(parents=True);self.ui.ocr_evidence.mkdir()
+        self.ui.verified_empty_search=Mock(return_value=(self.fr,f.empty_search(self.fr)))
+        self.ui.replace=Mock()  # No physical typing; native lookup/guards/cleanup run.
+        self.ui.click=Mock()  # Initial search focus only; later lookup click must not occur.
+        image=Image.new('RGB',(int(self.client['width']*.38),int(self.client['height']*.43)),'white')
+        self.ops.try_image_grab=Mock(return_value=image)
+        def ocr(_):
+            self.foreground=22
+            return []
+        self.ops.run_ocr=Mock(side_effect=ocr)
+        journal=f.SubmitJournal(root/'transactions/hook/invites/synthetic-task/submit.json')
+        old=root/'transactions/hook/sends/original/outcome.json'
+        old.parent.mkdir(parents=True);old.write_text('{"state":"uncertain"}')
+        original=old.read_bytes()
+        result=f.run_flow(self.ui,phone='13800000003',verify_message='您好我是测试销售',
+                          remark_name='测试 CJH5N28',remark_code='CJH5N28',journal=journal)
+        self.assertFalse(result['submit_attempted']);self.assertFalse(journal.path.exists())
+        self.assertEqual(result['error_code'],'WINDOW_FOCUS_OR_GEOMETRY_CHANGED')
+        self.assertEqual(result['cleanup_error_code'],result['error_code'])
+        self.assertEqual([x['phase'] for x in result['guard_failures']],
+                         ['query_verified_and_network_lookup','cleanup'])
+        self.assertEqual(result['guard_failures'][0]['operation'],'ocr:lookup')
+        self.assertEqual(self.ui.click.call_count,1)
+        self.ops.win32api.mouse_event.assert_not_called()
+        saved=json.loads((self.ui.evidence/'diagnostics/outcome.json').read_text())
+        self.assertEqual(saved,result)
+        with patch.dict('os.environ',{'CHEJIN_UPDATE_STAGING_ROOT':str(root/'empty-updates')}):
+            exported=export_bundle(root,root/'artifacts/exports/evidence.zip')
+        with zipfile.ZipFile(exported) as z:
+            evidence=json.loads(z.read('tasks/synthetic-task/diagnostics/outcome.json'))
+            self.assertEqual(evidence['guard_failures'],result['guard_failures'])
+            self.assertIn('tasks/synthetic-task/screenshots/01-lookup.png',z.namelist())
+            self.assertEqual(json.loads(z.read('receipts/hook/sends/original/outcome.json')),json.loads(original))
+        self.assertEqual(old.read_bytes(),original)
+
     def test_foreign_foreground_stops(self):
         self.foreground=12
         with self.assertRaisesRegex(f.FlowStop,'WINDOW_FOCUS'):self.ui.guard(self.fr)
