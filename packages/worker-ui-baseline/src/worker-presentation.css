@@ -321,7 +321,7 @@
 .cw-window .cw-step {
   position: relative;
   display: grid;
-  grid-template-columns: 22px minmax(0, 1fr);
+  grid-template-columns: 52px 22px minmax(0, 1fr);
   gap: 12px;
   min-height: 64px;
   padding: 0 0 24px;
@@ -339,7 +339,7 @@
 .cw-window .cw-step-marker {
   position: relative;
   top: 0;
-  grid-column: 1;
+  grid-column: 2;
   width: 22px;
   height: 22px;
   border: 0;
@@ -356,7 +356,7 @@
 .cw-window .cw-step:not(:last-child):after {
   content: "";
   position: absolute;
-  left: 10px;
+  left: 74px;
   top: 24px;
   bottom: 0;
   width: 2px;
@@ -366,7 +366,7 @@
   display: none !important;
 }
 .cw-window .cw-step-content {
-  grid-column: 2;
+  grid-column: 3;
   min-width: 0;
 }
 .cw-window .cw-step strong {
@@ -613,10 +613,10 @@
   height: 16px;
 }
 .cw-window .cw-step-time {
-  display: block;
-  margin-top: 3px;
+  grid-column: 1;
+  grid-row: 1;
   font-size: 11px;
-  line-height: 18px;
+  line-height: 22px;
 }
 .cw-window .cw-step strong {
   font-size: 14px;
@@ -725,7 +725,7 @@
   height: calc(100% - 82px);
 }
 .cw-window .cw-step-marker {
-  grid-column: 1;
+  grid-column: 2;
   grid-row: 1;
 }
 .cw-window .cw-step-content {
