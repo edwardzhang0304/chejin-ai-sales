@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 import hashlib
 import ipaddress
@@ -41,8 +42,52 @@ def digest(path):
         return hashlib.file_digest(stream, "sha256").hexdigest()
 
 
+@contextmanager
+def observation_stream(path):
+    """Observe live state without denying the application's atomic replacement.
+
+    Python's ordinary Windows open omits FILE_SHARE_DELETE. The test observer
+    must not lock the state file it polls. This grants sharing, not delete/write
+    access; missing files, denied reads and malformed JSON still fail normally.
+    """
+    if os.name != "nt":
+        with Path(path).open("rb") as stream:
+            yield stream
+        return
+    import ctypes
+    from ctypes import wintypes
+    import msvcrt
+
+    kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+    create = kernel.CreateFileW
+    create.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD,
+                       wintypes.LPVOID, wintypes.DWORD, wintypes.DWORD, wintypes.HANDLE]
+    create.restype = wintypes.HANDLE
+    close = kernel.CloseHandle
+    close.argtypes = [wintypes.HANDLE]
+    close.restype = wintypes.BOOL
+    # GENERIC_READ; SHARE_READ | SHARE_WRITE | SHARE_DELETE; OPEN_EXISTING.
+    handle = create(str(Path(path).absolute()), 0x80000000, 0x7, None, 3, 0x80, None)
+    if handle == ctypes.c_void_p(-1).value:
+        raise ctypes.WinError(ctypes.get_last_error())
+    try:
+        fd = msvcrt.open_osfhandle(handle, os.O_RDONLY | os.O_BINARY)
+    except BaseException:
+        close(handle)
+        raise
+    # open_osfhandle transferred handle ownership to the descriptor.
+    try:
+        stream = os.fdopen(fd, "rb")
+    except BaseException:
+        os.close(fd)
+        raise
+    with stream:
+        yield stream
+
+
 def read_json(path):
-    return json.loads(Path(path).read_text(encoding="utf-8-sig"))
+    with observation_stream(path) as stream:
+        return json.loads(stream.read().decode("utf-8-sig"))
 
 
 def write_json(path, value):
