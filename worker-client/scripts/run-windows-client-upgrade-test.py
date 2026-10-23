@@ -435,7 +435,7 @@ def terminal_update_ui(debug_port, old, report, deadline):
     A displayed result is only a read trigger: all durable result, exit,
     identity and protected-data assertions below remain authoritative.
     """
-    from websockets.exceptions import ConnectionClosed
+    from websockets.exceptions import ConnectionClosed, InvalidMessage
     try:
         with QtPage(debug_port, deadline=deadline) as view:
             text = view.evaluate("document.body.innerText") or ""
@@ -446,7 +446,7 @@ def terminal_update_ui(debug_port, old, report, deadline):
                     view.click_button("打开设置", wait=False)
                 report.pop("terminal_ui_observation", None)
                 return False
-    except (OSError, TimeoutError, ConnectionClosed):
+    except (OSError, TimeoutError, ConnectionClosed, InvalidMessage):
         # Expected while the original process exits and its replacement starts.
         report.pop("terminal_ui_observation", None)
         return False

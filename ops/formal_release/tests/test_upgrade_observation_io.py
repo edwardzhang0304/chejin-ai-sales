@@ -26,7 +26,9 @@ class TerminalUIObservationTests(unittest.TestCase):
         exec(compile(ast.Module(body=[node], type_ignores=[]), str(SCRIPT), 'exec'), namespace)
         self.observe = namespace['terminal_update_ui']
         self.connection_error = type('ConnectionClosed', (Exception,), {})
-        modules = {'websockets.exceptions': types.SimpleNamespace(ConnectionClosed=self.connection_error)}
+        self.handshake_error = type('InvalidMessage', (Exception,), {})
+        modules = {'websockets.exceptions': types.SimpleNamespace(
+            ConnectionClosed=self.connection_error, InvalidMessage=self.handshake_error)}
         self.enterContext(patch.dict('sys.modules', modules))
 
     def check(self, text):
@@ -67,6 +69,18 @@ class TerminalUIObservationTests(unittest.TestCase):
         self.factory.side_effect = self.connection_error()
         self.assertFalse(self.observe(1234, self.old, self.report, 300))
         self.assertNotIn('terminal_ui_observation', self.report)
+
+    def test_invalid_message_during_restart_retries_without_granting_success(self):
+        self.report['terminal_ui_observation'] = {'text': 'old', 'since': 0}
+        self.factory.side_effect = self.handshake_error('incomplete HTTP response')
+        self.assertFalse(self.observe(1234, self.old, self.report, 300))
+        self.assertNotIn('terminal_ui_observation', self.report)
+        self.view.evaluate.assert_not_called()
+
+    def test_invalid_message_at_deadline_cannot_grant_success(self):
+        self.clock.monotonic.return_value = 300
+        self.factory.side_effect = self.handshake_error('incomplete HTTP response')
+        self.assertFalse(self.observe(1234, self.old, self.report, 300))
 
     def test_unexpected_ui_assertion_is_not_hidden(self):
         self.factory.side_effect = AssertionError('ambiguous pages')
