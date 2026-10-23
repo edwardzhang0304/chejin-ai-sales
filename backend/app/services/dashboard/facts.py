@@ -53,7 +53,8 @@ def message_facts(rows, actions, acks, now):
         if reason:
             issues.append(CoverageIssue(reason, row.sales_id, at))
             continue
-        sequence = str(raw.get('ordering_fields', {}).get('Sequence') or '')
+        ordering = raw.get('ordering_fields')
+        sequence = str(ordering.get('Sequence') or '') if isinstance(ordering, dict) else ''
         order = int(sequence) if sequence.isascii() and sequence.isdigit() and int(sequence) > 0 else None
         fact = MessageFact(identity, row.lead_id, row.conversation_id, row.sales_id, at, source,
                            order, frozenset([row.id]),

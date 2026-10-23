@@ -158,3 +158,11 @@ def test_new_unanswered_round_uses_formal_message_identity_not_reminder_timestam
     reminders['conversation'][0].closed_at = BASE+timedelta(hours=9)
     result = human_response(facts, {}, BASE, BASE+timedelta(days=1), 'all', reminders)
     assert result[0]['value'] == 450 and result[1:] == (2, 0)
+
+
+@pytest.mark.parametrize('ordering', [None, {}, 'legacy-unstructured'])
+def test_missing_legacy_order_is_unavailable_not_a_dashboard_crash(ordering):
+    facts, issues = message_facts([row(9, ordering_fields=ordering)], {}, {}, BASE+timedelta(hours=1))
+    assert len(facts) == 1 and facts[0].order is None
+    response, completed, pending = human_response(facts, {}, BASE, BASE+timedelta(days=1), 'all')
+    assert response['reason'] and completed is None and pending is None
