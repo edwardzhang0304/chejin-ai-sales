@@ -513,12 +513,6 @@
   font-size: 14px;
   height: 36px;
 }
-.cw-window .cw-settings-note {
-  font-size: 12px;
-  line-height: 20px;
-  color: #8c98ac;
-  font-weight: 400;
-}
 .cw-window .cw-switch[aria-pressed="true"] {
   background: #397af0;
 }

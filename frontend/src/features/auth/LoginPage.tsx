@@ -51,7 +51,7 @@ export function LoginPage({ message, onAuthenticated }: Props) {
 
         <div className="login-heading">
           <h1 id="login-title">登录运营后台</h1>
-          <p>使用已开通的运营账号登录</p>
+
         </div>
 
         {error || message ? (

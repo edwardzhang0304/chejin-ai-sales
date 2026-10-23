@@ -268,7 +268,6 @@ export function SalesPage({ openIntent }: { openIntent?: SalesOpenIntent | null 
     <div className="sales-page screen-sales">
       <PageHeader as="header" className="page-header">
         <div>
-          <p className="eyebrow">销售运营</p>
           <h1>销售管理</h1>
         </div>
         <button type="button" className="primary-button" onClick={() => setCreateOpen(true)}>
@@ -280,22 +279,18 @@ export function SalesPage({ openIntent }: { openIntent?: SalesOpenIntent | null 
         <article>
           <span>销售总数</span>
           <strong>{items.length}</strong>
-          <p>启用 {metrics.enabledCount} 人</p>
         </article>
         <article>
           <span>已绑定 Worker</span>
           <strong>{metrics.boundCount}</strong>
-          <p>未绑定 {Math.max(0, items.length - metrics.boundCount)} 人</p>
         </article>
         <article>
           <span>今日分配</span>
           <strong>{metrics.today}</strong>
-          <p>轮询自动分配</p>
         </article>
         <article>
           <span>阻塞任务</span>
           <strong className="warning-text">{metrics.blocked}</strong>
-          <p>需运营处理</p>
         </article>
       </MetricStrip>
 

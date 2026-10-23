@@ -245,15 +245,15 @@ export function VehiclesPage() {
     <div className="vehicles-page">
       <Toast message={toast?.message || null} tone={toast?.tone} onDismiss={dismissToast} />
       <PageHeader as="header" className="page-header">
-        <div><p className="eyebrow">车辆资料运营</p><h1>车辆管理</h1></div>
+        <div><h1>车辆管理</h1></div>
         <div className="page-actions"><button type="button" className="secondary-button" onClick={openImportVehicles}>导入车辆</button><button type="button" className="primary-button" onClick={openCreateVehicle}>新增车辆</button></div>
       </PageHeader>
 
       <MetricStrip as="section" className="metric-grid" aria-label="车辆管理指标" aria-busy={loading}>
-        <article><span>车辆总数</span><strong>{metric("total")}</strong><p>近 30 天新增 {metric("created_last_30_days")} 辆</p></article>
-        <article><span>已上架</span><strong>{metric("listed")}</strong><p>可用于客服查询与推荐</p></article>
-        <article><span>已下架</span><strong>{metric("unlisted")}</strong><p>仍可在后台维护</p></article>
-        <article><span>待补充资料</span><strong className="warning-text">{metric("needs_details")}</strong><p>缺价格或有效图片</p></article>
+        <article><span>车辆总数</span><strong>{metric("total")}</strong></article>
+        <article><span>已上架</span><strong>{metric("listed")}</strong></article>
+        <article><span>已下架</span><strong>{metric("unlisted")}</strong></article>
+        <article><span>待补充资料</span><strong className="warning-text">{metric("needs_details")}</strong></article>
       </MetricStrip>
 
       <div className="management-grid vehicle-management-grid">

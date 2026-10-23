@@ -320,7 +320,6 @@ export function WorkersPage({ openIntent }: { openIntent?: WorkerOpenIntent | nu
     <div className="workers-page screen-workers">
       <PageHeader as="header" className="page-header">
         <div>
-          <p className="eyebrow">Worker 运营</p>
           <h1>Worker 管理</h1>
         </div>
         <button type="button" className="primary-button" onClick={() => setCreateOpen(true)}>
@@ -332,22 +331,18 @@ export function WorkersPage({ openIntent }: { openIntent?: WorkerOpenIntent | nu
         <article>
           <span>Worker 总数</span>
           <strong>{items.length}</strong>
-          <p>启用 {metrics.enabledCount} 台</p>
         </article>
         <article>
           <span>客户端已绑定</span>
           <strong>{metrics.boundCount}</strong>
-          <p>未绑定 {Math.max(0, items.length - metrics.boundCount)} 台</p>
         </article>
         <article>
           <span>在线</span>
           <strong>{metrics.onlineCount}</strong>
-          <p>离线 {Math.max(0, items.length - metrics.onlineCount)} 台</p>
         </article>
         <article>
           <span>忙碌</span>
           <strong className="warning-text">{metrics.busyCount}</strong>
-          <p>当前任务 {metrics.busyCount} 个</p>
         </article>
       </MetricStrip>
 
@@ -507,7 +502,7 @@ export function WorkersPage({ openIntent }: { openIntent?: WorkerOpenIntent | nu
                 <dl className="drawer-dl">
                   <div><dt>当前销售</dt><dd>{display(detail.bound_sales_name, "未绑定")}</dd></div>
                 </dl>
-                <p className="drawer-hint">如需绑定或更换销售，请前往销售管理 &gt; 销售详情 &gt; 编辑销售处理。</p>
+
               </section>
 
               </DrawerContent>

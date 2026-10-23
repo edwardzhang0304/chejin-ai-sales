@@ -556,7 +556,7 @@ export function DashboardPage() {
               {formatMetric(data?.vehicles.amount, "amount")}
             </strong>
           </div>
-          <p className="vehicle-footnote">下架时公开售价；重新上架冲回原统计</p>
+
         </section>
       </div>
       <section className="dashboard-band dashboard-sales">
@@ -602,7 +602,7 @@ export function DashboardPage() {
           )}
         </div>
       </section>
-      <details className="dashboard-coverage" open>
+      <details className="dashboard-coverage">
         <summary>统计覆盖说明</summary>
         {coverage.map((message) => (
           <p key={message}>{message}</p>
@@ -611,7 +611,7 @@ export function DashboardPage() {
           <p>
             人工已回复轮次：{data.metrics.human_replied_rounds ?? "—"}
             ；待人工响应轮次：{data.metrics.human_pending_rounds ?? "—"}
-            。无样本或不可用显示“—”，不计为 0。
+            。
           </p>
         )}
       </details>

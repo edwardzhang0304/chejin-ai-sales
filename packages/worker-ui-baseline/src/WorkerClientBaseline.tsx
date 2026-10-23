@@ -800,7 +800,6 @@ function ScheduleSettingsScreen({
               <label><span>结束</span><input type="time" value={model.schedule.end} onChange={(event) => updateSchedule({ end: event.currentTarget.value })} /></label>
             </div>
           </div>
-          <p className="cw-settings-note">非接单时段保持连接，但不领取新任务；执行中的任务会先完成。</p>
         </section>
       </div>
     </section>

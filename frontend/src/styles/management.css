@@ -354,13 +354,7 @@ textarea:focus-visible {
   color: var(--ink);
   margin: 2px 0;
 }
-.glass-admin .ui-metric-strip p {
-  font-size: 12px;
-  line-height: 20px;
-  margin: 0;
-  color: #8993a5;
-  font-weight: 400;
-}
+
 .glass-admin .knowledge-metric-interactive button {
   padding: 0;
   text-align: left;
@@ -1420,12 +1414,6 @@ textarea:focus-visible {
   border: 0 !important;
   background: none !important;
 }
-.vehicle-footnote {
-  font-size: 11px;
-  text-align: right;
-  color: #8b97aa;
-  margin: 0;
-}
 .custom-range {
   display: flex;
   align-items: center;
@@ -1641,9 +1629,7 @@ textarea:focus-visible {
   .ui-metric-icon {
     display: none;
   }
-  .glass-admin .ui-metric-strip p {
-    font-size: 11px;
-  }
+
   .glass-admin .ui-metric-strip span:not(.ui-metric-icon) {
     font-size: 12px;
   }
@@ -1722,9 +1708,7 @@ textarea:focus-visible {
   .glass-admin .ui-metric-strip article:nth-child(2n) {
     border-right: 0;
   }
-  .glass-admin .ui-metric-strip p {
-    display: none;
-  }
+
   .glass-admin .ui-list-surface {
     padding: 16px 12px;
   }

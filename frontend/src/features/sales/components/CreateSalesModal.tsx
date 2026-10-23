@@ -112,7 +112,7 @@ export function CreateSalesModal({ submitting, error, workerOptions, onClose, on
                 </select>
               </label>
             </div>
-            <p className="drawer-hint">如需后续绑定或更换 Worker，请进入销售详情抽屉，点击“编辑销售”处理。</p>
+
           </section>
         </div>
 

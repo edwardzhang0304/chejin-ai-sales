@@ -527,7 +527,6 @@ export function TasksPage({ onOpenWorker, onOpenSalesWorkerBinding }: Props) {
     <div className="tasks-page screen-tasks">
       <PageHeader as="header" className="page-header">
         <div>
-          <p className="eyebrow">任务运营</p>
           <h1>任务中心</h1>
         </div>
       </PageHeader>
@@ -536,27 +535,22 @@ export function TasksPage({ onOpenWorker, onOpenSalesWorkerBinding }: Props) {
         <article>
           <span>阻塞任务</span>
           <strong className="warning-text">{formatMetric(metrics?.blocked)}</strong>
-          <p>需运营处理</p>
         </article>
         <article>
           <span>待处理任务</span>
           <strong>{formatMetric(metrics?.pending)}</strong>
-          <p>等待执行方领取</p>
         </article>
         <article>
           <span>处理中任务</span>
           <strong>{formatMetric(metrics?.running)}</strong>
-          <p>执行方正在处理</p>
         </article>
         <article>
           <span>今日已完成</span>
           <strong>{formatMetric(metrics?.completed_today)}</strong>
-          <p>邀请 / 回复 / 召回</p>
         </article>
         <article>
           <span>今日失败</span>
           <strong className="warning-text">{formatMetric(metrics?.failed_today)}</strong>
-          <p>需复盘处理</p>
         </article>
       </MetricStrip>
 
@@ -568,7 +562,7 @@ export function TasksPage({ onOpenWorker, onOpenSalesWorkerBinding }: Props) {
           <ListHeader as="div" className="panel-header">
             <div>
               <h2>任务列表</h2>
-              <p>任务状态由服务端维护，Worker / RPA / 人工只上报执行事实。</p>
+
             </div>
           </ListHeader>
 

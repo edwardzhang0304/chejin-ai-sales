@@ -629,23 +629,23 @@ export function KnowledgePage() {
   return (
     <div className="knowledge-page">
       <PageHeader as="header" className="page-header">
-        <div><p className="eyebrow">业务知识运营</p><h1>知识管理</h1></div>
+        <div><h1>知识管理</h1></div>
         <button type="button" className="primary-button" onClick={() => { setCreateDraft({ title: "", content: "" }); setFormError(null); setCreateOpen(true); }}>新增知识</button>
       </PageHeader>
 
       <MetricStrip as="section" className="metric-grid" aria-label="知识概览">
         <article className="knowledge-metric-interactive">
           <button type="button" onClick={() => void openReleases()}>
-            <span>当前线上版本</span><strong>{summary?.current_release.version || "—"}</strong><p>{summary ? formatDateTime(summary.current_release.published_at) : "正在加载"}</p>
+            <span>当前线上版本</span><strong>{summary?.current_release.version || "—"}</strong>
           </button>
         </article>
-        <article><span>今日发布</span><strong>{summary?.published_today ?? "—"}</strong><p>{summary ? `${summary.published_today_breakdown.create} 新增 · ${summary.published_today_breakdown.update} 修改 · ${summary.published_today_breakdown.archive} 归档` : "成功发布次数"}</p></article>
-        <article><span>已发布知识</span><strong>{summary?.published_count ?? "—"}</strong><p>累计已归档 {summary?.archived_count ?? "—"} 条</p></article>
+        <article><span>今日发布</span><strong>{summary?.published_today ?? "—"}</strong></article>
+        <article><span>已发布知识</span><strong>{summary?.published_count ?? "—"}</strong></article>
       </MetricStrip>
 
       <div className="management-grid knowledge-management-grid">
         <ListSurface as="section" className="panel management-list-panel knowledge-list-panel">
-          <ListHeader as="header" className="panel-header"><div><h2>知识列表</h2><p>发布成功后，仅新创建的 AI 对话批次使用新版本</p></div></ListHeader>
+          <ListHeader as="header" className="panel-header"><div><h2>知识列表</h2></div></ListHeader>
           <FilterBar as="div" className="management-filter-card two-field-management-filter knowledge-filter-card">
             <label className="management-search-field"><span>搜索</span><input type="search" value={keyword} placeholder="标题或正文关键词" aria-label="搜索知识" onChange={(event) => setKeyword(event.target.value)} /></label>
             <label><span>状态</span><select aria-label="筛选知识状态" value={status} onChange={(event) => { setStatus(event.target.value as KnowledgeFilterStatus); setPage(1); }}><option value="all">全部状态</option><option value="draft">草稿</option><option value="published">已发布</option><option value="archived">已归档</option></select></label>

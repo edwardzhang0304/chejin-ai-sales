@@ -131,7 +131,7 @@ export function VehicleImportModal({ open, onClose, onImported }: Props) {
   return (
     <ModalLayer className="modal-backdrop" role="presentation">
       <DialogSurface as="section" className="modal vehicle-import-modal" role="dialog" aria-modal="true" aria-labelledby="vehicle-import-title">
-        <header><div><h2 id="vehicle-import-title">Excel 导入车辆</h2><p>仅接受系统最新模板</p></div></header>
+        <header><div><h2 id="vehicle-import-title">Excel 导入车辆</h2></div></header>
         <ol className="import-stepper" aria-label="导入步骤">
           <li className={step === "upload" ? "is-active" : "is-complete"}><span>1</span>上传文件</li>
           <li className={step === "preview" ? "is-active" : step === "result" ? "is-complete" : ""}><span>2</span>预览校验</li>
@@ -148,7 +148,7 @@ export function VehicleImportModal({ open, onClose, onImported }: Props) {
                 <button type="button" className="primary-button" disabled={busy} onClick={() => inputRef.current?.click()}>{busy ? "解析中..." : "选择文件"}</button>
               </div>
               <button type="button" className="text-button" disabled={busy} onClick={() => void downloadTemplate()}>下载最新模板</button>
-              <p className="import-footnote">上传和解析阶段不会写入正式车辆数据，Excel 不导入车辆图片。</p>
+
               {error ? <div className="inline-alert error" role="alert">{error}</div> : null}
             </section>
           ) : step === "preview" && preview ? (

@@ -222,9 +222,6 @@ export function LeadsPage() {
   const selectedCount = leads.selectedIds.size;
   const assignedCount = leads.stats?.assigned_count ?? 0;
   const unassignedCount = leads.stats?.unassigned_count ?? 0;
-  const successRate = leads.stats?.assignment_success_rate === null || leads.stats?.assignment_success_rate === undefined
-    ? "-"
-    : `${leads.stats.assignment_success_rate.toFixed(1)}%`;
   const totalPages = Math.max(1, Math.ceil(leads.total / leads.query.page_size));
   const restoreLeadItem = restoreLeadId
     ? leads.items.find((item) => item.id === restoreLeadId) || (leads.detail?.id === restoreLeadId ? leads.detail : null)
@@ -234,7 +231,6 @@ export function LeadsPage() {
     <div className="leads-page">
       <PageHeader as="header" className="page-header">
         <div>
-          <p className="eyebrow">线索运营</p>
           <h1>线索管理</h1>
         </div>
         <button type="button" className="primary-button" onClick={() => setCreateOpen(true)}>
@@ -246,22 +242,18 @@ export function LeadsPage() {
         <article>
           <span>今日新增</span>
           <strong>{statValue(leads.stats?.today_new_count)}</strong>
-          <p>今日创建 {statValue(leads.stats?.today_new_count)} 条</p>
         </article>
         <article>
           <span>已分配</span>
           <strong>{statValue(leads.stats?.assigned_count)}</strong>
-          <p>轮询成功率 {successRate}</p>
         </article>
         <article>
           <span>未分配</span>
           <strong className="warning-text">{statValue(leads.stats?.unassigned_count)}</strong>
-          <p>无可用销售 {statValue(leads.stats?.unassigned_count)} 条</p>
         </article>
         <article>
           <span>重复录入</span>
           <strong>{statValue(leads.stats?.duplicate_event_count)}</strong>
-          <p>备注已追加到原线索</p>
         </article>
       </MetricStrip>
 
@@ -273,7 +265,7 @@ export function LeadsPage() {
           <ListHeader as="div" className="panel-header">
             <div>
               <h2>线索列表</h2>
-              <p>手机号默认脱敏，无效线索可按状态筛选。</p>
+
             </div>
             <button
               className="text-button icon-text-button"

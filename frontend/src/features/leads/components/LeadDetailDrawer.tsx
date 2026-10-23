@@ -71,7 +71,6 @@ export function LeadDetailDrawer({ detail, loading, error, onClose, onRetry, onM
     <DetailDrawer as="aside" className="detail-drawer" aria-label="线索详情">
       <DrawerHeader as="div" className="drawer-head">
         <div>
-          <p className="eyebrow">线索详情</p>
           <h2 title={loading ? undefined : detail?.customer_name}>{loading ? "加载中" : detail?.customer_name}</h2>
         </div>
         <button type="button" className="icon-button drawer-close-button" onClick={onClose} aria-label="关闭详情">

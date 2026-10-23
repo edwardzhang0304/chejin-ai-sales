@@ -730,11 +730,6 @@ p {
   line-height: 35px;
 }
 
-.metric-grid p {
-  margin: -4px 0 0;
-  color: var(--muted);
-  font-size: 13px;
-}
 
 .warning-text {
   color: var(--warning) !important;
@@ -3716,8 +3711,7 @@ tbody tr:hover td {
   font-size: 16px;
 }
 
-.import-upload-zone p,
-.import-footnote {
+.import-upload-zone p {
   margin: 0;
   color: var(--muted);
   font-size: 12px;
@@ -3734,9 +3728,6 @@ tbody tr:hover td {
   font-weight: 700;
 }
 
-.import-footnote {
-  margin-top: 12px;
-}
 
 .import-summary-grid {
   display: grid;
