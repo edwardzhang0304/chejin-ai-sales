@@ -580,7 +580,13 @@ def run_case(args, status):
             def finished():
                 if not state_path.exists():
                     return False
-                state = read_json(state_path)
+                try:
+                    state = read_json(state_path)
+                except PermissionError:
+                    # Windows can briefly deny reads while the client replaces
+                    # its state file. Retry only this poll, within its existing deadline.
+                    report["state_read_contention_count"] = report.get("state_read_contention_count", 0) + 1
+                    return False
                 if state.get("state") in {"failed", "rolled_back", "rollback_failed"}:
                     report["failure_update_state"] = {
                         key: state.get(key) for key in (
