@@ -68,3 +68,28 @@ def record_update_startup_failure(
             sys.stderr.write(data if "data" in locals() else "update_diagnostic_write_failed\n")
         except Exception:
             pass
+
+
+def token_argument(option: str, token: str) -> str:
+    """Keep opaque values beginning with '-' out of argparse's option grammar."""
+    if option not in {"--token", "--post-update-token"}:
+        raise ValueError("UPDATE_TOKEN_OPTION_INVALID")
+    return option + "=" + token
+
+
+def record_update_handoff(path: Path, phase: str, **fields) -> None:
+    """Fixed-shape, secret-free lifecycle evidence; failure never grants admission."""
+    allowed = {"elapsed_seconds", "remaining_seconds", "exit_code", "token_leading_hyphen",
+               "exception_type", "stage", "state"}
+    try:
+        record = {"phase": phase, "pid": os.getpid(), "timestamp_epoch": time.time(),
+                  "monotonic_seconds": time.monotonic()}
+        record.update({k: v for k, v in fields.items() if k in allowed})
+        data = json.dumps(record, ensure_ascii=True) + "\n"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        if path.exists() and path.stat().st_size + len(data) > MAX_DIAGNOSTIC_BYTES:
+            path.replace(path.with_suffix(".previous.jsonl"))
+        with path.open("a", encoding="utf-8") as handle:
+            handle.write(data)
+    except Exception:
+        pass

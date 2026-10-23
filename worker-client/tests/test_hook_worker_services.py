@@ -226,7 +226,9 @@ def test_update_timeout_cannot_take_ownership_before_callback_commit(runtime,mon
     assert entered.wait(2)
     try:
         with pytest.raises(RuntimeError,match='UPDATE_WRITERS_NOT_STOPPED'):runner.stop_for_update(.01)
-        assert runner.thread.is_alive()
+        # Callback writer is now drained by the shared shutdown owner, not
+        # indirectly by the heartbeat thread. It must still be alive/protected.
+        assert sender.is_alive() and services.connection._receiver_thread.is_alive()
     finally:release.set();sender.join(3)
     runner.stop_for_update(5)
     with storage.db_connection() as conn:

@@ -19,6 +19,7 @@ from .emergency_stop import emergency_stop_requested, trigger_emergency_stop
 from .hook_backend import BACKEND_WAIT_CODES, HookHeartbeatState, HookWorkerCredentials
 from .hook_connection import HookConnectionManager
 from .hook_clock import CLOCK_WAIT_CODES
+from .hook_formal_runtime import HookRuntimeStopping
 from .hook_projection import NativeProjectionStore
 from .hook_process import inspect_windows_window_geometry
 from . import storage, ui_lock
@@ -284,6 +285,12 @@ class HookWorkerServices:
             if runner.binding is not None:
                 try:
                     self.dispatcher.tick(runner,self)
+                except HookRuntimeStopping:
+                    # Only the explicit normal-stop signal takes this path.
+                    # SQLite, lease and unknown-send failures still use existing gates.
+                    if not runner.stop_event.is_set():
+                        raise
+                    return
                 except ApiError as exc:
                     if exc.code in BACKEND_WAIT_CODES:
                         self.dispatcher._report_wait(exc.code)
@@ -368,8 +375,8 @@ class HookWorkerServices:
     def health_snapshot(self) -> dict:
         return self.connection.receiver_health_snapshot()
 
-    def close(self) -> None:
-        self.connection.close()  # Wait for the actual callback SQLite commit.
+    def close(self, *, deadline: float | None = None) -> None:
+        self.connection.close(deadline=deadline)  # Wait for the actual callback SQLite commit.
         self._credentials = None
         self._failure = None
         self._startup_position_payload = None
