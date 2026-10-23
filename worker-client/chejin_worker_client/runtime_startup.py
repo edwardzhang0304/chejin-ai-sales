@@ -86,12 +86,6 @@ def schedule_post_update_startup(window, startup_update: dict, single_shot) -> N
     )
 
 
-def stop_storage_maintenance(window) -> None:
-    service = getattr(window, "storage_maintenance", None)
-    if service is not None:
-        service.stop()
-
-
 def show_storage_warning(window, message: str) -> None:
     """UI-thread notice only: never change pause/fault/admission state."""
     from PySide6.QtCore import Qt

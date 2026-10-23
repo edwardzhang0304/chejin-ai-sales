@@ -288,7 +288,8 @@ class StorageMaintenance:
                 pass
             self.stopped.wait(INTERVAL)
 
-    def stop(self):
+    def stop(self, timeout_seconds=3):
         self.stopped.set()
         if self.thread is not None:
-            self.thread.join(timeout=3)
+            self.thread.join(timeout=max(0, timeout_seconds))
+        return self.thread is None or not self.thread.is_alive()

@@ -43,7 +43,9 @@ if os.environ.get('HANDOFF_TEST_DAMAGE') == 'stale-before-exit':
     import json,time
     from pathlib import Path
     from chejin_worker_client import update_data_snapshot as snapshots
-    token=sys.argv[sys.argv.index('--token')+1]
+    import argparse
+    parser=argparse.ArgumentParser(add_help=False);parser.add_argument('--token',required=True)
+    token=parser.parse_known_args()[0].token
     stale=snapshots.protected_update_snapshot(digest_key=token)
     Path(sys.argv[sys.argv.index('--plan')+1]).with_name('ablation-early-read.json').write_text(json.dumps({'captured_at':time.time()}))
     snapshots.protected_update_snapshot=lambda **kwargs: stale

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import asdict
 import hashlib
+import hmac
 import json
 import os
 from pathlib import Path
@@ -14,6 +15,9 @@ import time
 from typing import Any, Callable
 
 import psutil
+
+from .update_diagnostics import token_argument, record_update_handoff
+from .update_shutdown import WRITER_STOP_SECONDS, OLD_EXIT_SECONDS
 
 from . import __version__
 from .update_filesystem import update_filesystem_path
@@ -173,6 +177,8 @@ class UpdateCoordinator:
         self._install_started = False
         self._exit_updater: tuple[Any, Path] | None = None
         self._exit_request_token = ""
+        self._exit_plan_path = None
+        self._exit_request_id = ""
         self._post_update_plan: dict[str, Any] | None = None
         self._post_update_token = ""
         try:
@@ -502,6 +508,8 @@ class UpdateCoordinator:
                 self._install_started = False
                 self._exit_updater = None
                 self._exit_request_token = ""
+                self._exit_plan_path = None
+                self._exit_request_id = ""
                 self._publish(state)
                 self._worker = threading.Thread(
                     target=self._run,
@@ -539,13 +547,63 @@ class UpdateCoordinator:
     def stop(self) -> None:
         self._stop.set()
 
-    def _request_worker_exit(self, process: Any, executable: Path, token: str) -> None:
+    def _request_worker_exit(
+        self, process: Any, executable: Path, token: str, *,
+        plan_path: Path, request_id: str,
+    ) -> None:
+        # Both install and missing-result recovery must bind cancellation to
+        # this exact authenticated request before emitting the UI close.
+        self._exit_plan_path = plan_path
+        self._exit_request_id = request_id
+        self._exit_deadline = time.monotonic() + WRITER_STOP_SECONDS
         self._exit_updater = (process, executable)
         self._exit_request_token = token
         try:
             self.request_normal_exit()
         except Exception:
             self.report_normal_exit_result(stopped=False)
+
+    def shutdown_deadline(self) -> float:
+        return self._exit_deadline
+
+    def record_shutdown_stage(self, stage: str, *, remaining_seconds: float = 0,
+                              exception_type: str | None = None) -> None:
+        try:
+            state = self.store.load()
+            plan = Path(state["plan_path"])
+            record_update_handoff(plan.parent / "worker-shutdown.jsonl", "shutdown_stage",
+                                  stage=stage, remaining_seconds=max(0, remaining_seconds),
+                                  exception_type=exception_type)
+        except Exception:
+            pass
+
+    def ensure_shutdown_cancelled(self) -> bool:
+        """Authenticate cancellation independently of the mutable UI state store.
+
+        A failed state save must not let a later manual close make the waiting
+        updater proceed. The exact handoff context is captured before requesting UI exit.
+        """
+        if not self._exit_request_token or not self._exit_plan_path or not self._exit_request_id:
+            return False
+        payload = {"schema_version": 1, "update_request_id": self._exit_request_id, "stopped": False}
+        expected_auth = authenticate(payload, self._exit_request_token)
+        path = self._exit_plan_path.parent / "worker-shutdown-failed.json"
+
+        def confirmed():
+            record = json.loads(path.read_text(encoding="utf-8"))
+            return (record.get("payload") == payload and
+                    hmac.compare_digest(str(record.get("auth") or ""), expected_auth))
+
+        try:
+            if confirmed():
+                return True
+        except (OSError, ValueError, TypeError, AttributeError):
+            pass
+        try:
+            _atomic_json_write(path, {"payload": payload, "auth": expected_auth})
+            return confirmed()
+        except (OSError, ValueError, TypeError, AttributeError):
+            return False
 
     def report_normal_exit_result(self, *, stopped: bool) -> None:
         """Receive the UI shutdown outcome, including an asynchronous Qt slot.
@@ -554,6 +612,8 @@ class UpdateCoordinator:
         result. Never launch a second updater or force a writer to exit.
         """
         with self._lock:
+            if not stopped and not self.ensure_shutdown_cancelled():
+                raise RuntimeError("UPDATE_SHUTDOWN_CANCEL_UNCONFIRMED")
             state = self.store.load()
             if state.get("shutdown_failed") is True:
                 return
@@ -563,10 +623,6 @@ class UpdateCoordinator:
             self._fault_after_request = True
             state = self._save({**state, "shutdown_failed": True, "fault_after_request": True,
                                 "shutdown_error_code": "UPDATE_WRITERS_NOT_STOPPED"})
-            if self._exit_request_token:
-                payload = {"schema_version": 1, "update_request_id": state["update_request_id"], "stopped": False}
-                _atomic_json_write(Path(state["plan_path"]).parent / "worker-shutdown-failed.json",
-                                   {"payload": payload, "auth": authenticate(payload, self._exit_request_token)})
             preparing_worker = self._worker
 
             def settle_failed_shutdown() -> None:
@@ -982,7 +1038,8 @@ class UpdateCoordinator:
                                     ),
                                 }
                             )
-                            self._request_worker_exit(process, updater, token)
+                            self._request_worker_exit(process, updater, token,
+                                                      plan_path=plan_path, request_id=request_id)
                             return "exit_requested"
                         raise ValueError("missing-result recovery request mismatch")
                     poll = getattr(process, "poll", None)
@@ -1268,7 +1325,7 @@ class UpdateCoordinator:
             "old_pid": os.getpid(),
             "old_process_identity": process_identity(os.getpid()),
             "old_child_identities": [process_identity(child.pid) for child in psutil.Process().children(recursive=True)],
-            "old_exit_timeout_seconds": 30,
+            "old_exit_timeout_seconds": OLD_EXIT_SECONDS,
             "health_timeout_seconds": 120,
             "result_timeout_seconds": 180,
             "one_time_token_sha256": hashlib.sha256(token.encode("utf-8")).hexdigest(),
@@ -1319,7 +1376,10 @@ class UpdateCoordinator:
                         )
                     break
                 poll = getattr(updater_process, "poll", None)
-                if callable(poll) and poll() is not None:
+                exit_code = poll() if callable(poll) else None
+                if exit_code is not None:
+                    record_update_handoff(control_root / "worker-shutdown.jsonl", "updater_exited_before_ready",
+                                          exit_code=exit_code, token_leading_hyphen=token.startswith("-"))
                     raise ClientUpdateError(
                         "UPDATE_INSTALL_FAILED",
                         "独立更新器未通过启动校验",
@@ -1350,7 +1410,8 @@ class UpdateCoordinator:
                 },
             )
             self._install_started = True
-            self._request_worker_exit(updater_process, updater_copy, token)
+            self._request_worker_exit(updater_process, updater_copy, token,
+                                      plan_path=plan_path, request_id=request_id)
         except Exception:
             if not self._install_started:
                 self._terminate_preinstall_updater(updater_process)
@@ -1377,7 +1438,7 @@ class UpdateCoordinator:
             plan_path.parent / "updater-startup.jsonl"
         )
         return subprocess.Popen(
-            [str(updater), "--plan", str(plan_path), "--token", token],
+            [str(updater), "--plan", str(plan_path), token_argument("--token", token)],
             cwd=str(updater.parent),
             stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL,
@@ -1403,8 +1464,7 @@ class UpdateCoordinator:
                 "--recover-missing-result",
                 "--plan",
                 str(plan_path),
-                "--token",
-                token,
+                token_argument("--token", token),
                 "--current-pid",
                 str(current_pid),
             ],

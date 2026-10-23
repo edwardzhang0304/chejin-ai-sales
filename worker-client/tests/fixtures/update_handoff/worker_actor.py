@@ -82,7 +82,7 @@ if os.environ.get('HANDOFF_TEST_DAMAGE') == 'shutdown-timeout':
     cls=next(n for n in tree.body if isinstance(n,ast.ClassDef) and n.name=='WorkerWebWindow')
     fn=next(n for n in cls.body if isinstance(n,ast.FunctionDef) and n.name=='_quit_for_update')
     fn.decorator_list=[]
-    ns={}
+    ns={"__name__":"chejin_worker_client.ui_test","__package__":"chejin_worker_client"}
     exec(compile(ast.fix_missing_locations(ast.Module(body=[fn],type_ignores=[])),'<production-ui-slot>','exec'),ns)
     api=SimpleNamespace(set_run_status=lambda binding,status:SimpleNamespace(run_status=status,inflight_flow_state={}))
     runner=TaskRunner(api,SimpleNamespace(),on_profile=lambda v:None,on_status=lambda v:None,
@@ -117,8 +117,13 @@ if os.environ.get('HANDOFF_TEST_DAMAGE') == 'shutdown-timeout':
     preparing.start()
     assert exit_requested.wait(10)
     closed=[]
-    ui=SimpleNamespace(runner=SimpleNamespace(stop_for_update=lambda:runner.stop_for_update(.01)),
-        update_coordinator=coordinator,close=lambda:closed.append(True))
+    from chejin_worker_client.update_shutdown import prepare_window_close
+    coordinator._exit_deadline=time.monotonic()+.01
+    ui=SimpleNamespace(runner=runner,update_coordinator=coordinator,
+        error_signal=SimpleNamespace(emit=lambda _:None))
+    def close():
+        if prepare_window_close(ui):closed.append(True)
+    ui.close=close
     ns['_quit_for_update'](ui)
     assert runner.thread.is_alive() and not closed
     release_writer.set()

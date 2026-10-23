@@ -408,7 +408,7 @@ class HookBusinessDispatcher:
             if self.runtime and self.runtime.scope.account_epoch!=scope.account_epoch:
                 raise ValueError('HOOK_RUNTIME_ACCOUNT_CHANGED')
             self.runtime=self.runtime_factory(self.client,services._credentials,services.connection.gateway,
-                prepared,self.private_root,fault_check=lambda:runner.stop_event.is_set(),
+                prepared,self.private_root,stop_check=lambda:runner.stop_event.is_set(),
                 wait=lambda seconds: runner.stop_event.wait(seconds))
             self._reconciled=False
         rt=self.runtime

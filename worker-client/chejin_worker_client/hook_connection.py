@@ -94,7 +94,7 @@ class HookConnectionManager:
         return {"ready": not registered or alive, "receiver_required": registered,
                 "receiver_alive": alive}
 
-    def _close_receiver(self) -> None:
+    def _close_receiver(self, *, deadline: float | None = None) -> None:
         # shutdown waits until the current callback completes SQLite commit.
         # Do not swap the scope of a live HTTP handler or delete stored records.
         self._prepared = None
@@ -109,8 +109,8 @@ class HookConnectionManager:
                     name="CheJinHookReceiverDrain", daemon=True)
                 self._shutdown_thread.start()
             budget = self.receiver_timeout_seconds + 1
-            deadline = time.monotonic() + budget
-            self._shutdown_thread.join(timeout=budget)
+            deadline = min(deadline, time.monotonic() + budget) if deadline is not None else time.monotonic() + budget
+            self._shutdown_thread.join(timeout=max(0, deadline - time.monotonic()))
             thread.join(timeout=max(0, deadline - time.monotonic()))
             if self._shutdown_thread.is_alive() or thread.is_alive():
                 raise HookLocalError("HOOK_RECEIVER_STOP_UNCONFIRMED", outcome_unknown=True)
@@ -118,10 +118,16 @@ class HookConnectionManager:
         self._receiver = self._receiver_thread = None
         self._shutdown_thread = None
 
-    def close(self) -> None:
-        """Called by original stop/update/exit cleanup; not from receiver callbacks."""
-        with self._operation_lock:
-            self._close_receiver()
+    def close(self, *, deadline: float | None = None) -> None:
+        """Drain callbacks within the caller's budget; retain unconfirmed writers."""
+        acquired = (self._operation_lock.acquire() if deadline is None else
+                    self._operation_lock.acquire(timeout=max(0, deadline - time.monotonic())))
+        if not acquired:
+            raise HookLocalError("HOOK_RECEIVER_STOP_UNCONFIRMED", outcome_unknown=True)
+        try:
+            self._close_receiver(deadline=deadline)
+        finally:
+            self._operation_lock.release()
 
     def _report_logout(self, credentials, process, state):
         # Report the last authenticated account as logged out, never as a new

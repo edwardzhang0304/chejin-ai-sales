@@ -4212,6 +4212,7 @@ class TaskRunner:
         return accepted
 
     def start(self, binding: Binding) -> None:
+        self._managed_shutdown = False
         self.binding = binding
         if self.hook_services is None and not self._refresh_vision_credential(binding):
             return
@@ -4299,20 +4300,33 @@ class TaskRunner:
         self._task_wake_event.set()
         self.c2_manual_scan_requested.set()
 
-    def stop_for_update(self, timeout_seconds: float = 25.0) -> None:
+    def stop_for_update(self, timeout_seconds: float = 25.0, *, on_stage=None) -> None:
         """Finish normal writer loops before the updater may take ownership."""
+        self._managed_shutdown = True
         self.stop()
         deadline = time.monotonic() + timeout_seconds
+        def stage(name):
+            if on_stage is not None:
+                on_stage(name)
         for thread in (self.thread, self.c2_thread, getattr(self, "hook_intake_thread", None), getattr(self, "hook_business_thread", None), self.thread_monitor):
             if thread is not None and thread is not threading.current_thread():
+                stage("writer_" + thread.name)
                 thread.join(max(0.0, deadline - time.monotonic()))
                 if thread.is_alive():
                     raise RuntimeError("UPDATE_WRITERS_NOT_STOPPED")
         if getattr(self, "hook_services", None) is not None:
-            self.hook_services.close()
+            stage("hook_callbacks")
+            from .hook_gateway import HookLocalError
+            try:
+                self.hook_services.close(deadline=deadline)
+            except HookLocalError as exc:
+                if exc.code != "HOOK_RECEIVER_STOP_UNCONFIRMED":
+                    raise
+                raise RuntimeError("UPDATE_WRITERS_NOT_STOPPED") from exc
             if time.monotonic() > deadline:
                 raise RuntimeError("UPDATE_WRITERS_NOT_STOPPED")
         from .incident_evidence import stop_incident_worker
+        stage("incident_evidence")
         if not stop_incident_worker(wait=True, timeout_seconds=max(0.0, deadline - time.monotonic())):
             raise RuntimeError("UPDATE_WRITERS_NOT_STOPPED")
 
@@ -7223,11 +7237,12 @@ class TaskRunner:
             # A DLL call may still be returning. Keep passive reception alive
             # until the business writer has saved its result; updates with a
             # shorter deadline stay blocked rather than taking its storage.
-            thread=self.hook_business_thread
-            if thread and thread is not threading.current_thread():
-                thread.join(90)
-                if thread.is_alive():raise RuntimeError('HOOK_BUSINESS_WRITER_NOT_STOPPED')
-            self.hook_services.close()
+            if not getattr(self, "_managed_shutdown", False):
+                thread=self.hook_business_thread
+                if thread and thread is not threading.current_thread():
+                    thread.join(90)
+                    if thread.is_alive():raise RuntimeError('HOOK_BUSINESS_WRITER_NOT_STOPPED')
+                self.hook_services.close()
 
     def _loop(self) -> None:
         if self.hook_services is not None:

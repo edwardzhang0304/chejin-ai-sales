@@ -81,10 +81,15 @@ def history_read_cycle(runtime):
         runtime._history_cycle_token = None
 
 
+class HookRuntimeStopping(Exception):
+    """Normal lifecycle cancellation, distinct from persisted-data faults."""
+
+
 class HookFormalRuntime:
-    def __init__(self,client,credentials,gateway,prepared,private_root:Path,*,fault_check=lambda:False,wait=time.sleep):
+    def __init__(self,client,credentials,gateway,prepared,private_root:Path,*,fault_check=lambda:False,stop_check=lambda:False,wait=time.sleep):
         self.client,self.credentials,self.gateway,self.prepared,self.private_root=client,credentials,gateway,prepared,private_root
         self.fault_check,self.wait=fault_check,wait
+        self.stop_check=stop_check
         self.clock=prepared.clock
         self.c1=HookFormalC1(client,credentials,private_root/'invites',clock=self.clock)
         self.c1_results=HookC1ResultReceipts(self)
@@ -130,9 +135,15 @@ class HookFormalRuntime:
             observation_query_version=getattr(self, '_observation_query_version', 0),
         )
 
+    def _check_lifecycle(self):
+        if self.fault_check():
+            raise ValueError('HOOK_LOCAL_PERSISTENCE_FAULT')
+        if getattr(self, 'stop_check', lambda: False)():
+            raise HookRuntimeStopping()
+
     def heartbeat(self,task_id=None,*,new_work=False,passive=False):
         task_id=task_id or self.active_task_id
-        if self.fault_check():raise ValueError('HOOK_LOCAL_PERSISTENCE_FAULT')
+        self._check_lifecycle()
         if (new_work or not passive) and not self.history_budget.ready:
             raise ValueError('HOOK_HISTORY_STORAGE_CAPACITY_EXCEEDED')
         login=self.gateway.login_status(self.process)
@@ -237,7 +248,8 @@ class HookFormalRuntime:
             if runner and runner.binding.run_status=='faulted':raise ValueError('HOOK_ORIGINAL_FLOW_CONTINUATION_BLOCKED')
             if runner and hasattr(runner,'_can_continue_inflight_flow') and not runner._can_continue_inflight_flow():
                 raise ValueError('HOOK_ORIGINAL_FLOW_CONTINUATION_BLOCKED')
-            if guard.cancel_requested() or self.fault_check():raise ValueError(guard.error_code or 'HOOK_TASK_LEASE_LOST')
+            if guard.cancel_requested():raise ValueError(guard.error_code or 'HOOK_TASK_LEASE_LOST')
+            self._check_lifecycle()
         try:yield check
         finally:guard.stop()
 
@@ -313,7 +325,7 @@ class HookFormalRuntime:
 
     def barrier(self,binding=None):
         if binding is not None:return self._binding_barrier(binding)
-        if self.fault_check():raise ValueError('HOOK_LOCAL_PERSISTENCE_FAULT')
+        self._check_lifecycle()
         with storage.db_connection() as conn:
             names={r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
             if 'hook_raw_inbox' not in names:return (0,0)
@@ -327,7 +339,7 @@ class HookFormalRuntime:
             return (value[0],value[1] or 0)
 
     def _binding_barrier(self,binding):
-        if self.fault_check():raise ValueError('HOOK_LOCAL_PERSISTENCE_FAULT')
+        self._check_lifecycle()
         peer=binding['peer_wxid']
         with storage.db_connection() as conn:
             if conn.execute("SELECT 1 FROM sqlite_master WHERE name='hook_raw_inbox'").fetchone() is None:return (0,0)

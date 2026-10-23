@@ -1167,13 +1167,8 @@ class WorkerWindow(QMainWindow):
         self.refresh_view()
 
     def _quit_for_update(self) -> None:
-        try:
-            self.runner.stop_for_update()
-        except Exception:
-            self.update_coordinator.report_normal_exit_result(stopped=False)
-            return
-        self.update_coordinator.report_normal_exit_result(stopped=True)
-        self.close()
+        from .update_shutdown import request_update_close
+        request_update_close(self)
 
     def refresh_update_controls(self) -> None:
         if not hasattr(self, 'update_button') or not self.update_button.isVisible():
@@ -1399,15 +1394,10 @@ class WorkerWindow(QMainWindow):
         self.logs_table.resizeRowsToContents()
 
     def closeEvent(self, event) -> None:  # noqa: N802
-        self.update_coordinator.stop()
-        if self.runner.hook_services is not None:
-            try:self.runner.stop_for_update(80)
-            except Exception:
-                event.ignore()
-                self.error_signal.emit('工作微信记录还在保存，请稍后退出。')
-                return
-        else:self.runner.stop()
-        runtime_startup.stop_storage_maintenance(self)
+        from .update_shutdown import prepare_window_close
+        if not prepare_window_close(self):
+            event.ignore()
+            return
         super().closeEvent(event)
 
     def _apply_style(self) -> None:

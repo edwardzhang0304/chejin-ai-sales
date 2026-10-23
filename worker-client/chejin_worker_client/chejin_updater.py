@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import argparse
+
+from .update_diagnostics import token_argument
 import hashlib
 import hmac
 import json
@@ -35,6 +37,10 @@ def _startup_diagnostic(phase: str, **details: Any) -> None:
         value = details.get(key)
         if isinstance(value, (int, float)):
             payload[key] = value
+    if isinstance(details.get("processes"), list):
+        payload["processes"] = [{k: v for k, v in item.items()
+                                 if k in {"role", "pid", "create_time", "state", "error_type"}}
+                                for item in details["processes"][:128]]
     try:
         from .storage_maintenance import append_bounded_log
         append_bounded_log(Path(raw_path),
@@ -354,17 +360,38 @@ def _check_shutdown_outcome(plan: dict[str, Any], plan_path: Path, token: str) -
 
 
 def wait_for_old_writers(plan: dict[str, Any], *, cancel_check: Callable[[], None] | None = None) -> bool:
-    deadline = time.monotonic() + float(plan["old_exit_timeout_seconds"])
+    started = time.monotonic()
+    deadline = started + float(plan["old_exit_timeout_seconds"])
     identities = [plan["old_process_identity"], *plan["old_child_identities"]]
+
+    def sample(*, final=False):
+        states = []
+        error = None
+        for index, identity in enumerate(identities):
+            state = {"role": "main" if index == 0 else "child", "pid": identity["pid"],
+                     "create_time": identity["create_time"]}
+            try:
+                state["state"] = "alive" if identity_alive(identity) else "exited"
+            except Exception as exc:
+                state.update(state="unverifiable", error_type=type(exc).__name__)
+                error = error or exc
+            states.append(state)
+        if final or error is not None:
+            _startup_diagnostic("old_writer_wait_snapshot", processes=states,
+                                elapsed_ms=int((time.monotonic() - started) * 1000))
+        if error is not None:
+            raise error  # An unreadable identity is never evidence of exit.
+        return all(state["state"] == "exited" for state in states)
+
     while time.monotonic() < deadline:
         if cancel_check is not None:
             cancel_check()
-        if not any(identity_alive(identity) for identity in identities):
+        if sample():
             return True
         time.sleep(0.1)
     if cancel_check is not None:
         cancel_check()
-    return not any(identity_alive(identity) for identity in identities)
+    return sample(final=True)
 
 
 def _process_creation_flags() -> int:
@@ -378,8 +405,7 @@ def _start_worker(executable: Path, *, plan_path: Path, token: str, rollback: bo
         str(executable),
         "--post-rollback-plan" if rollback else "--post-update-plan",
         str(plan_path),
-        "--post-update-token",
-        token,
+        token_argument("--post-update-token", token),
     ]
     return subprocess.Popen(
         arguments,
@@ -769,7 +795,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--token", required=True)
     parser.add_argument("--recover-missing-result", action="store_true")
     parser.add_argument("--current-pid", type=int, default=0)
-    args = parser.parse_args(argv)
+    try:
+        args = parser.parse_args(argv)
+    except SystemExit as exc:
+        _startup_diagnostic("argument_parse_failed", exit_code=exc.code)
+        raise
     if args.recover_missing_result:
         return run_missing_result_recovery(
             args.plan.resolve(),
