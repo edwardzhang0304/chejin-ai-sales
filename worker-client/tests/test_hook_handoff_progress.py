@@ -327,3 +327,33 @@ def test_real_worker_model_displays_current_friend_hold_while_keeps_original_pau
    rows=w._state()['model']['hookProcessSteps']
    assert any(row['title']=='当前回复负责人' and '销售持续负责' in row['description'] for row in rows)
    assert w.binding.run_status=='paused'
+
+
+def test_authoritative_owner_reappears_after_default_timeline_retirement(runtime):
+ from chejin_worker_client.hook_progress import register_progress,forget_completed_progress_group
+ d,r,t,events=runtime
+ a={'binding_id':'A','remark_code':'CJTESTA','open_handoffs':[fact('HOOK_FRIEND_VERIFICATION_REQUIRED')],
+    'reply_ownership':{'owner':'human','revision':1,'round_id':None}}
+ b={'binding_id':'B','remark_code':'CJTESTB','open_handoffs':[],
+    'reply_ownership':{'owner':'human','revision':1,'round_id':'round'}}
+ d._publish_open_handoffs(r,a);d._publish_open_handoffs(r,b)
+ for i in range(110):
+  register_progress(r,f'finished-{i}',kind='batch')
+  emit_progress(r,f'finished-{i}','finished','done')
+  for group in t.take_retired_groups():forget_completed_progress_group(r,group)
+ assert ('ownership:A','reply_owner') not in t.latest
+ original=copy.deepcopy((a,b))
+ d._publish_open_handoffs(r,{**a,'open_handoffs':[]});d._publish_open_handoffs(r,b)
+ rows={row['stepId']:row for row in t.model(historical=False)}
+ assert rows['ownership:A:reply_owner']['time']==''
+ assert '销售持续负责' in rows['ownership:A:reply_owner']['description']
+ assert '等待销售回复' in rows['ownership:B:reply_owner']['description']
+ before=copy.deepcopy(t.model());count=len(events)
+ for _ in range(3):d._publish_open_handoffs(r,{**a,'open_handoffs':[]})
+ assert t.model()==before and len(events)==count
+ d._publish_open_handoffs(r,a)
+ assert not any(row['stepId']=='ownership:A:reply_owner' for row in t.model(historical=False))
+ assert any(row['stepId']=='ownership:B:reply_owner' for row in t.model(historical=False))
+ d._publish_open_handoffs(r,{'binding_id':'A'})
+ assert not any(row['stepId']=='ownership:A:reply_owner' for row in t.model(historical=False))
+ assert (a,b)==original and r.binding.run_status=='running'

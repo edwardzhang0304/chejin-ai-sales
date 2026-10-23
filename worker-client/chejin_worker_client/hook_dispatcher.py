@@ -14,7 +14,7 @@ from . import storage
 from .api import ApiError
 from .c1_receipts import clear_confirmed_add_friend_receipt
 from .models import Task
-from .hook_progress import emit_progress,register_progress,complete_send_progress
+from .hook_progress import emit_progress,register_progress,complete_send_progress,has_progress_context
 from .hook_formal_c1 import _save
 from .hook_formal_runtime import HookFormalRuntime, publish_current_task,read_batch_view
 from .hook_sender import RetainedNativeSendPermit,send_observation_can_settle
@@ -180,11 +180,14 @@ class HookBusinessDispatcher:
         ownership=binding.get('reply_ownership') or {}
         owner=ownership.get('owner')
         signature=(owner,ownership.get('revision'),bool(ownership.get('round_id')))
-        if owner in {'ai','human'} and self._reply_owners_by_binding.get(key)!=signature:
-            context='ownership:'+key
+        context='ownership:'+key
+        if owner in {'ai','human'} and (self._reply_owners_by_binding.get(key)!=signature
+                or not has_progress_context(runner,context)):
             register_progress(runner,context,label=binding.get('remark_code',''),kind='batch',binding_id=key)
             note=('human_wait' if ownership.get('round_id') else 'human_replied') if owner=='human' else 'ai_owner'
-            emit_progress(runner,context,'reply_owner','done',note)
+            # This is the current authoritative snapshot, not a newly occurred
+            # business event. Rehydration after UI trimming must not invent time.
+            emit_progress(runner,context,'reply_owner','done',note,occurred_at='')
             self._reply_owners_by_binding[key]=signature
 
     def _publish_batch_progress(self,runner,bid,data):

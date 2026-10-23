@@ -63,6 +63,12 @@ NOTES = {
 _REGISTRY_LOCK = threading.RLock()
 
 
+def has_progress_context(runner, context):
+    """The UI retires completed display groups from this same registry."""
+    with _REGISTRY_LOCK:
+        return context in getattr(runner, '_hook_progress_contexts', {})
+
+
 def _merge_progress_metadata(metadata, prior):
     result = dict(metadata)
     if prior and result.get('group') == prior.get('group') and not result.get('binding_id'):
