@@ -366,3 +366,43 @@ print(json.dumps(result))
     subprocess.run([sys.executable,'-c',code,str(s.root),str(destination_failure),TASK],
                    check=True,timeout=25,env={**os.environ,'QT_QPA_PLATFORM':'offscreen'})
     assert all(p.read_bytes()==raw for p,raw in before.items())
+
+
+@pytest.mark.parametrize('history_count',[24,405,1000])
+def test_capacity_and_directory_limits_preserve_current_fallback_before_optional_history(scene,monkeypatch,history_count):
+    from chejin_worker_client.diagnostic_bundle import Collector, update_root
+    s=scene('init_focus');write=Path.write_text
+    def denied(path,*args,**kwargs):
+        if path.parent.name=='diagnostics':raise PermissionError(13,'private diagnosis denied')
+        return write(path,*args,**kwargs)
+    with monkeypatch.context() as fault:
+        fault.setattr(Path,'write_text',denied)
+        with pytest.raises(flow.FlowStop,match='WINDOW_FOCUS'):s.execute(monkeypatch)
+    fallback=s.root/'artifacts/runtime/evidence-recorder-failures.jsonl'
+    assert 'foreground_changed' in fallback.read_text()
+    # Background update/incident metadata are fixtures; the actual failure and
+    # fallback above are produced by the real formal execution chain.
+    updates=update_root(s.root)/'control';updates.mkdir(parents=True,exist_ok=True)
+    update=updates/'update-result.json';update.write_text('{"stage":"verify","ok":false}')
+    incident=s.root/'artifacts/incidents/current.json';incident.parent.mkdir(parents=True)
+    incident.write_text('{"task_id":"'+TASK+'","event":"current_fault"}')
+    before={p:p.read_bytes() for p in [fallback,update,incident,*original(s).glob('*.json')]}
+    for i in range(history_count):
+        p=s.root/f'artifacts/tasks/old-{i:04d}/diagnostics/outcome.json';p.parent.mkdir(parents=True)
+        p.write_text(json.dumps({'payload':'x'*65536,'status':'old'}))
+    # Small configurable budget exercises exactly the default capacity branch;
+    # essential facts fit, optional historical payloads cannot all fit.
+    collector=Collector(s.root,s.root/'limited.zip',max_bytes=200000)
+    path=collector.run()
+    with zipfile.ZipFile(path) as z:
+        assert b'foreground_changed' in z.read('logs/runtime/evidence-recorder-failures.jsonl')
+        assert 'logs/update/control/update-result.json' in z.namelist()
+        assert 'incidents/current/current.json' in z.namelist()
+        assert any(n.endswith('/ui-started.json') for n in z.namelist())
+        manifest=json.loads(z.read('收集清单.json'))
+        assert manifest['partial']
+        assert any(e.get('reason')=='total_size_limit' and e['source'].startswith('tasks/') for e in manifest['sources'])
+        assert len([n for n in z.namelist() if n.startswith('tasks/old-')])<history_count
+    assert collector.tree_usage['tasks'][0]<=400
+    assert collector.visited<=3000
+    assert all(p.read_bytes()==raw for p,raw in before.items())

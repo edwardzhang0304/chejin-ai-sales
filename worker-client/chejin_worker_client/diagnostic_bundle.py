@@ -112,6 +112,7 @@ class Collector:
         self.members = set()
         self.latest_logs = []
         self.priority_tasks = set()
+        self.tree_usage = {}
         self.source_deadline = self.deadline
         self.source_end = MAX_FILES
 
@@ -512,7 +513,7 @@ class Collector:
                         continue
                     collect(pool / ref)
 
-    def tree(self, folder, prefix, archive, *, update_only=False, allowed_root=None, ocr=False):
+    def tree(self, folder, prefix, archive, *, update_only=False, allowed_root=None, ocr=False, task_priority=None):
         if not folder.exists():
             self.record(prefix, "absent")
             return
@@ -520,8 +521,12 @@ class Collector:
             self.record(prefix, "omitted", reason="source_boundary")
             return
         # One noisy/legacy source cannot consume the entire export budget.
-        self.source_end = self.visited + 400
-        self.source_deadline = min(self.deadline, time.monotonic() + 4)
+        # The two task passes share the original source budget. Splitting
+        # essential and historical evidence must not double its allowance.
+        used_count, used_seconds = self.tree_usage.get(prefix, (0, 0))
+        started, first_visited = time.monotonic(), self.visited
+        self.source_end = self.visited + max(0, 400-used_count)
+        self.source_deadline = min(self.deadline, started + max(0, 4-used_seconds))
         def walk(directory, relative, depth=0):
             if self.limited() or depth > 32:
                 self.record(prefix, "omitted", reason="time_or_file_limit")
@@ -550,6 +555,9 @@ class Collector:
                     recent.sort(key=lambda item: (directory == folder and prefix == 'tasks'
                                 and item[1].name in self.priority_tasks, item[0]), reverse=True)
                     for _, entry in recent:
+                        if directory == folder and task_priority is not None:
+                            if (entry.name in self.priority_tasks) != task_priority:
+                                continue
                         if self.limited():
                             self.record(prefix, "omitted", reason="time_or_file_limit")
                             return
@@ -582,7 +590,11 @@ class Collector:
                                       ocr=ocr or (prefix == "tasks" and "ocr" in Path(rel).parts))
             except OSError as exc:
                 self.record(f"{prefix}/{relative}", "read_failed", error_type=type(exc).__name__)
-        walk(folder, "")
+        try:
+            walk(folder, "")
+        finally:
+            self.tree_usage[prefix] = (used_count+self.visited-first_visited,
+                                       used_seconds+time.monotonic()-started)
 
     def file(self, path, member, archive, *, allowed_root=None, ocr=False):
         if not self.source_allowed(path, allowed_root):
@@ -652,14 +664,16 @@ class Collector:
                 self.priority_recovery(archive)
                 self.file(self.root/"storage-maintenance.json", "logs/storage-maintenance.json",
                           archive, allowed_root=self.root)
+                # A failed task diagnostic may exist only in this bounded
+                # fallback log. Keep it with current proofs before old images.
+                self.tree(artifacts(self.root)/"runtime", "logs/runtime", archive)
+                self.tree(artifacts(self.root)/"tasks", "tasks", archive, task_priority=True)
                 updates_root = update_root(self.root).absolute()
                 # Current recovery proofs first; legacy incident volume cannot starve them.
                 sources = [
-                    (artifacts(self.root)/"tasks", "tasks", False, self.root, False),
                     *[(self.root/"transactions"/"hook"/name, "receipts/hook/"+name, False, self.root, False)
                       for name in ("sends", "send-receipts", "history-receipts", "history-captures")],
                     (self.root/"transactions", "receipts", False, self.root, False),
-                    (artifacts(self.root)/"runtime", "logs/runtime", False, self.root, False),
                     (updates_root, "logs/update", True, updates_root, False),
                     (self.root/"diagnostics", "logs/legacy-startup", False, self.root, False),
                     (self.root.parent/"CheJinWorker"/"diagnostics", "logs/legacy-packaging-startup", False, self.root.parent, False),
@@ -669,10 +683,12 @@ class Collector:
                     (artifacts(self.root)/"wechat_c2", "tasks/legacy-ocr", False, self.root, True),
                     (artifacts(self.root), "tasks/legacy-artifacts", False, self.root, False),
                     (incident_roots(self.root)[1], "incidents/legacy", False, self.root, False),
+                    (artifacts(self.root)/"tasks", "tasks", False, self.root, False),
                 ]
                 for index, (folder, prefix, updates, boundary, ocr) in enumerate(sources):
                     self.emit(25 + int(index * 65 / len(sources)), "收集现场和关联凭证")
-                    self.tree(folder, prefix, archive, update_only=updates, allowed_root=boundary, ocr=ocr)
+                    self.tree(folder, prefix, archive, update_only=updates, allowed_root=boundary, ocr=ocr,
+                              task_priority=False if prefix == "tasks" else None)
                 issues = [e for e in self.entries if e["status"] in {"read_failed", "omitted"}]
                 manifest = {"schema_version": 1, "exported_at": datetime.now(timezone.utc).isoformat(),
                             "build": build_identity(),
