@@ -41,11 +41,12 @@ def run_fixed(args, **kwargs):
     return result.stdout
 
 
-def require_publication_approval(folder, meta):
+def require_publication_approval(folder, meta, approval=None):
     # A reviewed operator receipt is local/root-owned, never taken from the artifact.
     from build_admin import validate_browser_receipt
     from maintenance import BLOCK, INCLUDE, SNIPPET, SITE, validate_ingress
-    approval = json.loads((folder / "production-approval.json").read_text())
+    if approval is None:
+        approval = json.loads((folder / "production-approval.json").read_text())
     require(approval.get("version") == meta["version"] and approval.get("commit") == meta["commit"] and approval.get("sha256") == meta["sha256"], "PRODUCTION_APPROVAL_IDENTITY_MISMATCH")
     if approval.get('component_plan'):
         from component_release import worker_publication_approval

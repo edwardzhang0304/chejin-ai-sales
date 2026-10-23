@@ -106,7 +106,7 @@ def owner(name):
     if name.startswith(('docs/', 'rules/', 'deliverables/', 'output/', 'ops/formal_release/',
                         '.github/', 'worker-client/tests/', 'backend/tests/')) or name in {'rules.md', 'AGENTS.md'}:
         return None
-    if name.startswith('frontend/') or name == 'backend/compose.web.yml':
+    if name.startswith(('frontend/src/', 'frontend/public/')) or name in {'frontend/index.html', 'backend/compose.web.yml'}:
         return 'admin'
     if name.startswith('backend/'):
         if name.startswith(('backend/alembic/', 'backend/app/contracts/', 'backend/app/schemas/',
@@ -128,7 +128,18 @@ def make_plan(root, base, target='HEAD'):
     before = identities(lambda n: read(root, base, n))
     after = identities(lambda n: read(root, target, n))
     paths = [n for n in git(root, 'diff', '--no-renames', '--name-only', '-z', base, target).decode().split('\0') if n]
-    changed = {owner(n) for n in paths} - {None}
+    def affected(name):
+        if name in {'frontend/package.json', 'frontend/package-lock.json'}:
+            # Worker esbuild/React resolve from frontend/node_modules. Only the
+            # application's version fields are independent metadata.
+            def dependencies(ref):
+                obj = json.loads(read(root, ref, name)); obj.pop('version', None)
+                if name.endswith('package-lock.json'):
+                    obj.get('packages', {}).get('', {}).pop('version', None)
+                return obj
+            return 'admin' if dependencies(base) == dependencies(target) else 'full'
+        return owner(name)
+    changed = {affected(n) for n in paths} - {None}
     scope = next(iter(changed)) if len(changed) == 1 else ('full' if changed else 'none')
     if before['contract_sha256'] != after['contract_sha256']:
         scope = 'full'
@@ -169,6 +180,10 @@ def environment_stage(stage, root=ROOT):
         plan = load_plan(path, root)
         require(git(root, 'rev-parse', 'HEAD').decode().strip() == plan['source_commit'], 'COMPONENT_CHECKOUT_CHANGED')
         require_stage(plan, stage, root)
+        # Candidate bytes must match the reviewed commit, including untracked
+        # build inputs; a plan from another checkout cannot bless local edits.
+        dirty = git(root, 'status', '--porcelain', '--untracked-files=all', '-z')
+        require(not dirty, 'COMPONENT_CHECKOUT_DIRTY')
         return plan
     return None  # Existing coordinated/OCR route retains its existing gates.
 
@@ -220,7 +235,12 @@ def worker_publication_approval(approval, meta):
     # pinned by the operator's checked old build receipt, not by the reports.
     from acceptance_cases import validate_case
     old = approval['old_client']
-    require(old['version'] == meta['current_version'], 'UPGRADE_START_MISMATCH')
+    require(old['version'] == meta['current_version'] == plan['before']['worker'], 'UPGRADE_START_MISMATCH')
+    for field in ('version', 'zip_sha256', 'exe_sha256', 'updater_sha256'):
+        require(old.get(field) == approval['live_baseline'].get('worker_baseline', {}).get(field)
+                and old.get(field) is not None, 'UPGRADE_BASELINE_IDENTITY_MISMATCH')
+        if field != 'version':
+            require(re.fullmatch(r'[0-9a-f]{64}', old[field]) is not None, 'UPGRADE_BASELINE_HASH_INVALID')
     proof = {'version': meta['version'], 'build_commit': meta['commit'],
              'files': {f"chejin-worker-v{meta['version']}-windows-x64.zip": meta['sha256']}}
     reports = approval['upgrade_reports']

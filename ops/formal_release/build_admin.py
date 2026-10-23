@@ -27,8 +27,14 @@ def validate_browser_receipt(candidate, receipt):
 def main():
     ap=argparse.ArgumentParser();ap.add_argument('--environment',required=True,choices=['production','fast-uat']);ap.add_argument('--api-base',required=True);ap.add_argument('--source-root',required=True);ap.add_argument('--output',required=True);a=ap.parse_args()
     from component_release import environment_stage
-    environment_stage('admin_build')
-    validate_api(a.environment,a.api_base);root=Path(a.source_root).resolve();front=root/'frontend';out=Path(a.output)
+    root=Path(a.source_root).resolve()
+    plan=environment_stage('admin_build', root)
+    validate_api(a.environment,a.api_base);front=root/'frontend';out=Path(a.output)
+    if plan:
+        from component_release import git, require
+        tracked = set(git(root, 'ls-files', '-z', 'frontend').decode().split('\0'))
+        require(all(p.relative_to(root).as_posix() in tracked for p in front.glob('.env*')),
+                'UNREVIEWED_FRONTEND_ENV_FILE')
     env={**os.environ,'VITE_API_BASE_URL':a.api_base}
     # Explicit CLI value overrides inherited Vite env files; no secret value is logged.
     subprocess.run(['npm','run','build'],cwd=front,env=env,check=True)
@@ -39,5 +45,6 @@ def main():
     pattern=r'VITE_API_BASE_URL\s*:\s*'+re.escape(json.dumps(a.api_base))
     if not re.search(pattern,javascript):raise ValueError('COMPILED_API_CONFIGURATION_MISSING')
     result={'environment':a.environment,'api_base':a.api_base,'files':files,'package_lock_sha256':sha(front/'package-lock.json'),'browser_gate':'pending'}
+    if plan: result.update(source_commit=plan['source_commit'], component_plan_sha256=hashlib.sha256(json.dumps(plan,ensure_ascii=False,sort_keys=True,separators=(',', ':')).encode()).hexdigest())
     out.write_text(json.dumps(result,indent=2));print('ADMIN_CANDIDATE_CONFIG_VERIFIED_BROWSER_GATE_PENDING')
 if __name__=='__main__':main()

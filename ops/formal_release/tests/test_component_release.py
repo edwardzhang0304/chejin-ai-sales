@@ -113,7 +113,7 @@ def test_forged_stage_list_scope_and_source_are_rejected(repo):
 def approval_for(plan):
     meta = {'version': plan['after']['worker'], 'commit': plan['source_commit'], 'sha256': 'f' * 64,
             'current_version': plan['before']['worker']}
-    old = {'version': meta['current_version'], 'exe_sha256': 'd' * 64, 'updater_sha256': 'e' * 64}
+    old = {'version': meta['current_version'], 'exe_sha256': 'd' * 64, 'updater_sha256': 'e' * 64, 'zip_sha256': 'c' * 64}
     reports = {}
     for state in ('paused', 'faulted'):
         reports[state] = {'status': 'passed', 'initial_run_status': state, 'current_version': old['version'],
@@ -123,7 +123,7 @@ def approval_for(plan):
                               'paused_intent_and_idle_gate_preserved', 'real_settings_button_clicked', 'original_updater_used',
                               'actual_backend_download', 'runtime_threads_alive', 'immutable_handoff_baseline', 'hook_bound_upgrade'], True)}
     return {**meta, 'component_plan': plan, 'component_plan_sha256': cr.sha(cr.canonical(plan)),
-            'live_baseline': {**plan['before'], 'healthy': True}, 'old_client': old, 'upgrade_reports': reports}, meta
+            'live_baseline': {**plan['before'], 'healthy': True, 'worker_baseline': dict(old)}, 'old_client': old, 'upgrade_reports': reports}, meta
 
 
 def test_production_worker_gate_uses_original_upgrade_protections_without_admin_or_maintenance(repo, monkeypatch):
@@ -158,8 +158,14 @@ def test_fixed_hook_publish_does_not_restart_services_or_deploy_admin(repo, monk
     put(root, 'production-approval.json', approval)
     put(root, 'release.json', {'channel': 'gray-hook', 'version': meta['version'], 'git_commit': meta['commit'], 'artifact_sha256': meta['sha256']})
     put(root, 'public-keys.json', '{}')
+    approvals = root / 'approvals'; approvals.mkdir()
+    put(approvals, meta['sha256'] + '.json', approval)
+    monkeypatch.setattr(publish_hook, 'trusted_path', lambda p: Path(p))  # isolated non-root test directory
+    monkeypatch.setattr(publish_hook, 'verify_hook', lambda *a: {k: approval['component_plan']['after'][k] for k in ('contract_revision', 'contract_sha256')})  # verified separately using real signed ZIPs
     monkeypatch.setattr(publish_hook, 'digest', lambda _: meta['sha256'])
-    monkeypatch.setattr(publish_hook, 'require_publication_approval', lambda *a: cr.worker_publication_approval(approval, meta))
+    monkeypatch.setattr(publish_hook, 'require_publication_approval', lambda *a, **kw: cr.worker_publication_approval(approval, meta))
+    package = root / 'package'; package.mkdir()
+    for name in ('release.json', 'public-keys.json'): (package / name).write_bytes((root / name).read_bytes())
     calls = []
     def execute(args, **kw):
         calls.append((args, kw))
@@ -167,7 +173,7 @@ def test_fixed_hook_publish_does_not_restart_services_or_deploy_admin(repo, monk
         if '-' in args: return '{"ok":true,"publication":"published"}'
         return ''
     monkeypatch.setattr(publish_hook, 'run_fixed', execute)
-    result = publish_hook.publish(root, {'public_keys': str(root / 'public-keys.json'), 'container': 'test-api'})
+    result = publish_hook.publish(root / 'package', {'component_approvals': str(approvals), 'public_keys': str(root / 'public-keys.json'), 'container': 'test-api'})
     assert result['backend_deployed'] is False and result['admin_deployed'] is False
     register = next((args, kw) for args, kw in calls if '-' in args)
     assert '0.10.13' in register[0]  # Contract retained, package is 0.10.14.
@@ -243,3 +249,75 @@ def test_reviewed_handoff_component_path_consumes_real_source_versions(repo, mon
     assert h.validate(path)['checks_reexecuted'] == 0
     data.pop('component_base_commit'); put(root, path, data)
     with pytest.raises(ValueError, match='TARGET_VERSION_MISMATCH'): h.validate(path)
+
+
+@pytest.mark.parametrize('name', ['frontend/package.json', 'frontend/package-lock.json', 'frontend/.npmrc', 'frontend/vite.config.ts'])
+def test_shared_build_inputs_do_not_take_admin_shortcut(repo, name):
+    root, base = repo; bump(root, 'admin')
+    if name.endswith('.json'):
+        obj = json.loads((root / name).read_text())
+        target = obj if name.endswith('package.json') else obj['packages']['']
+        target.setdefault('dependencies', {})['react'] = '99.0.0'
+        put(root, name, obj)
+    else: put(root, name, 'changed')
+    commit(root)
+    assert cr.make_plan(root, base)['scope'] == 'full'
+
+
+def test_upgrade_proof_cannot_substitute_old_version_or_original_binary(repo):
+    root, base = repo; bump(root, 'worker'); commit(root)
+    approval, meta = approval_for(cr.make_plan(root, base))
+    cr.worker_publication_approval(approval, meta)
+    for field, value in [('version', '0.10.11'), ('exe_sha256', 'a'*64), ('updater_sha256', 'b'*64), ('zip_sha256', 'd'*64)]:
+        changed = copy.deepcopy(approval); changed['old_client'][field] = value
+        with pytest.raises(ValueError): cr.worker_publication_approval(changed, meta)
+    changed = copy.deepcopy(approval); changed['upgrade_reports']['faulted']['target_zip_sha256'] = 'a'*64
+    with pytest.raises(ValueError): cr.worker_publication_approval(changed, meta)
+
+
+def test_actual_build_checkout_must_match_plan_and_be_clean(repo, monkeypatch, tmp_path):
+    root, base = repo; bump(root, 'admin'); commit(root); plan = cr.make_plan(root, base)
+    # Plan outside the source root, so the evidence itself does not dirty source.
+    import tempfile
+    with tempfile.TemporaryDirectory() as temp:
+        path = Path(temp) / 'plan.json'; put(path.parent, path.name, plan)
+        monkeypatch.setenv('CHEJIN_COMPONENT_PLAN', str(path))
+        assert cr.environment_stage('admin_build', root) == plan
+        put(root, 'frontend/src/example.ts', 'unreviewed')
+        with pytest.raises(ValueError, match='DIRTY'): cr.environment_stage('admin_build', root)
+        cr.git(root, 'checkout', '--', 'frontend/src/example.ts')
+        put(root, 'frontend/unreviewed.ts', 'untracked')
+        with pytest.raises(ValueError, match='DIRTY'): cr.environment_stage('admin_build', root)
+        (root/'frontend/unreviewed.ts').unlink()
+        cr.git(root, 'checkout', '--detach', base)
+        with pytest.raises(ValueError, match='CHECKOUT_CHANGED'): cr.environment_stage('admin_build', root)
+
+
+def test_admin_main_checks_actual_source_before_npm_and_records_identity(repo, monkeypatch):
+    import tempfile
+    import build_admin
+    root, base = repo
+    put(root,'.gitignore','frontend/dist/\n'); base=commit(root)
+    bump(root,'admin'); commit(root); plan=cr.make_plan(root,base)
+    calls=[]
+    real_run = subprocess.run
+    def npm(*args,**kwargs):
+        if args[0][0] != 'npm': return real_run(*args, **kwargs)
+        calls.append(kwargs['cwd'])
+        put(root,'frontend/dist/index.html','fixture')
+        put(root,'frontend/dist/assets/app.js','const config={VITE_API_BASE_URL:"/api"};')
+    monkeypatch.setattr(build_admin.subprocess,'run',npm)
+    with tempfile.TemporaryDirectory() as temp:
+        path=Path(temp)/'plan.json'; put(path.parent,path.name,plan)
+        monkeypatch.setenv('CHEJIN_COMPONENT_PLAN',str(path))
+        output=Path(temp)/'candidate.json'
+        monkeypatch.setattr(sys,'argv',['build_admin','--environment','production','--api-base','/api',
+                                       '--source-root',str(root),'--output',str(output)])
+        build_admin.main()
+        assert json.loads(output.read_text())['source_commit']==plan['source_commit']
+        put(root,'frontend/src/example.ts','unreviewed')
+        with pytest.raises(ValueError,match='DIRTY'):build_admin.main()
+        cr.git(root,'checkout','--','frontend/src/example.ts')
+        cr.git(root,'checkout','--detach',base)
+        with pytest.raises(ValueError,match='CHECKOUT_CHANGED'):build_admin.main()
+        assert calls==[root/'frontend']
