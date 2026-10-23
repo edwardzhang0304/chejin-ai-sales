@@ -169,23 +169,14 @@ def validate(path):
         require(hashlib.sha256(git("show", base + ":" + name)).hexdigest() == expected, "HANDOFF_REVIEWED_HASH_MISMATCH")
     version = data["target_version"]
     contract = json.loads(git("show", "HEAD:" + CONTRACT))
-    component = None
-    if hook and data.get('component_base_commit'):
-        from component_release import make_plan, validate_source_versions
-        component = make_plan(ROOT, data['component_base_commit'])
-        require(component['scope'] in {'worker', 'backend', 'admin'}, 'SINGLE_COMPONENT_SCOPE_REQUIRED')
-        require(component['after'][component['scope']] == version, 'HANDOFF_TARGET_VERSION_MISMATCH')
-        validate_source_versions(ROOT)
-    else:
-        require(contract["contract_revision"] == version, "HANDOFF_TARGET_VERSION_MISMATCH")
+    require(contract["contract_revision"] == version, "HANDOFF_TARGET_VERSION_MISMATCH")
     contract_sha = hashlib.sha256(json.dumps(contract, sort_keys=True, ensure_ascii=False, separators=(",", ":")).encode()).hexdigest()
     schema = json.loads(git("show", "HEAD:" + SCHEMA))
-    require(schema["contract_revision"] == contract['contract_revision'] and schema["contract_sha256"] == contract_sha,
+    require(schema["contract_revision"] == version and schema["contract_sha256"] == contract_sha,
             "HANDOFF_GENERATED_SCHEMA_MISMATCH")
-    if component is None:
-        require(git("show", "HEAD:" + VERSION_FILE).decode().strip() == '__version__ = "' + version + '"',
-                "HANDOFF_APPLICATION_VERSION_MISMATCH")
-    if hook and component is None:
+    require(git("show", "HEAD:" + VERSION_FILE).decode().strip() == '__version__ = "' + version + '"',
+            "HANDOFF_APPLICATION_VERSION_MISMATCH")
+    if hook:
         front = json.loads(git('show', 'HEAD:frontend/package.json'))
         lock = json.loads(git('show', 'HEAD:frontend/package-lock.json'))
         back = tomllib.loads(git('show', 'HEAD:backend/pyproject.toml').decode())

@@ -1,7 +1,6 @@
 """Verify signed formal artifacts with an installed, previously shipped client verifier."""
 from __future__ import annotations
 
-from contextlib import contextmanager
 import hashlib
 import json
 from pathlib import Path, PurePosixPath
@@ -93,13 +92,33 @@ def manual_acceptance(delivery):
             and SHA.fullmatch(delivery["pending_read_install_report_sha256"]) is not None)
 
 
-@contextmanager
-def verified_package_files(archive_path):
+def verify(folder, meta, config):
+    stem, _ = identity(meta)
+    for name, info in meta["files"].items():
+        file = folder / name
+        require(file.is_file() and not file.is_symlink(), "MISSING_ARTIFACT")
+        require(file.stat().st_size == info["size"] and digest(file) == info["sha256"], "ARTIFACT_HASH_MISMATCH")
+    desc = json.loads((folder / (stem + ".release.json")).read_text(encoding="utf-8-sig"))
+    release, contract = check_descriptor(meta, desc, config)
+    delivery = json.loads((folder / (stem + ".delivery.json")).read_text(encoding="utf-8-sig"))
+    expected = {"version": meta["version"], "build_commit": meta["commit"],
+                "default_api_base_url": config["api_origin"], "tests_status": "passed",
+                "preflight_status": "passed", "vision_credential_embedded": False,
+                "vision_credential_source": "worker_backend", "vision_configuration_locked": True,
+                "vision_live_probe_check": "runtime_after_binding"}
+    require(all(delivery.get(k) == v and type(delivery.get(k)) is type(v) for k, v in expected.items()), "DELIVERY_GATE_FAILED")
+    require(delivery.get("upgrade_start_version") == meta["current_version"]
+            and ((delivery.get("original_client_upgrade_check") == "passed"
+            and isinstance(delivery.get("original_client_upgrade_report_sha256"), str)
+            and SHA.fullmatch(delivery["original_client_upgrade_report_sha256"])) or manual_acceptance(delivery)), "ORIGINAL_CLIENT_UPGRADE_GATE_FAILED")
+    require(str(delivery.get("workflow_run_id")) == str(meta["run_id"]), "RUN_ID_MISMATCH")
+    require(str(delivery.get("zip_sha256", "")).lower() == meta["sha256"], "DELIVERY_HASH_MISMATCH")
+    require((folder / (stem + ".sha256.txt")).read_text().strip().split() == [meta["sha256"], stem + ".zip"], "CHECKSUM_FILE_MISMATCH")
     marker = re.compile(rb"\bsk-[A-Za-z0-9_-]{30,}|-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----")
     tls = {"CheJinWorkerClient/_internal/PySide6/Qt6Network.dll",
            "CheJinWorkerClient/_internal/PySide6/plugins/tls/qopensslbackend.dll",
            "CheJinWorkerClient/_internal/PySide6/plugins/tls/qschannelbackend.dll"}
-    with tempfile.TemporaryDirectory(prefix="verify-") as temp, zipfile.ZipFile(archive_path) as archive:
+    with tempfile.TemporaryDirectory(prefix="verify-", dir=folder) as temp, zipfile.ZipFile(folder / (stem + ".zip")) as archive:
         entries = archive.infolist()
         names = [i.filename.replace("\\", "/") for i in entries]
         require(len(names) == len(set(n.casefold() for n in names)), "DUPLICATE_ZIP_PATH")
@@ -125,32 +144,6 @@ def verified_package_files(archive_path):
                 require(name in tls and match.group().startswith(b"-----BEGIN")
                         and content[match.end():match.end() + 1] == b"\0", "PACKAGED_SECRET_SHAPE")
         package = Path(temp) / "CheJinWorkerClient"
-        yield package
-
-
-def verify(folder, meta, config):
-    stem, _ = identity(meta)
-    for name, info in meta["files"].items():
-        file = folder / name
-        require(file.is_file() and not file.is_symlink(), "MISSING_ARTIFACT")
-        require(file.stat().st_size == info["size"] and digest(file) == info["sha256"], "ARTIFACT_HASH_MISMATCH")
-    desc = json.loads((folder / (stem + ".release.json")).read_text(encoding="utf-8-sig"))
-    release, contract = check_descriptor(meta, desc, config)
-    delivery = json.loads((folder / (stem + ".delivery.json")).read_text(encoding="utf-8-sig"))
-    expected = {"version": meta["version"], "build_commit": meta["commit"],
-                "default_api_base_url": config["api_origin"], "tests_status": "passed",
-                "preflight_status": "passed", "vision_credential_embedded": False,
-                "vision_credential_source": "worker_backend", "vision_configuration_locked": True,
-                "vision_live_probe_check": "runtime_after_binding"}
-    require(all(delivery.get(k) == v and type(delivery.get(k)) is type(v) for k, v in expected.items()), "DELIVERY_GATE_FAILED")
-    require(delivery.get("upgrade_start_version") == meta["current_version"]
-            and ((delivery.get("original_client_upgrade_check") == "passed"
-            and isinstance(delivery.get("original_client_upgrade_report_sha256"), str)
-            and SHA.fullmatch(delivery["original_client_upgrade_report_sha256"])) or manual_acceptance(delivery)), "ORIGINAL_CLIENT_UPGRADE_GATE_FAILED")
-    require(str(delivery.get("workflow_run_id")) == str(meta["run_id"]), "RUN_ID_MISMATCH")
-    require(str(delivery.get("zip_sha256", "")).lower() == meta["sha256"], "DELIVERY_HASH_MISMATCH")
-    require((folder / (stem + ".sha256.txt")).read_text().strip().split() == [meta["sha256"], stem + ".zip"], "CHECKSUM_FILE_MISMATCH")
-    with verified_package_files(folder / (stem + ".zip")) as package:
         manifest = contract.verify_staged_package(release, package)
         for name, field in (("CheJinWorkerClient.exe", "exe_sha256"), ("CheJinUpdater.exe", "updater_exe_sha256")):
             require(digest(package / name) == delivery[field].lower(), "EXECUTABLE_HASH_MISMATCH")

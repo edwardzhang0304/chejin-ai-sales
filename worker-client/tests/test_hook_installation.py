@@ -126,9 +126,19 @@ def test_missing_localappdata_still_keeps_transport_homes_separate(monkeypatch, 
     assert config.default_app_dir() == Path.home() / name
 
 
-def test_current_component_versions_and_protocol_identity_are_consistent():
-    import importlib.util
+def test_current_product_versions_are_unified():
+    import ast
+    import tomllib
+    from chejin_worker_client import __version__
     root = Path(__file__).resolve().parents[2]
-    spec = importlib.util.spec_from_file_location('component_release', root / 'ops/formal_release/component_release.py')
-    module = importlib.util.module_from_spec(spec); spec.loader.exec_module(module)
-    module.validate_source_versions(root)
+    frontend = json.loads((root / 'frontend/package.json').read_text())
+    lock = json.loads((root / 'frontend/package-lock.json').read_text())
+    backend = tomllib.loads((root / 'backend/pyproject.toml').read_text())
+    contract = json.loads((root / 'contracts/c2_contract_v3.json').read_text())
+    hook = json.loads((root / 'contracts/hook_contract_v1.json').read_text())
+    entry = ast.parse((root / 'worker-client/packaging/chejin_worker_client_entry.py').read_text())
+    entry_version = next(ast.literal_eval(n.value) for n in entry.body if isinstance(n, ast.Assign)
+                         and any(isinstance(t, ast.Name) and t.id == 'ENTRY_VERSION' for t in n.targets))
+    assert {__version__, frontend['version'], lock['version'], lock['packages']['']['version'],
+            backend['project']['version'], contract['contract_revision'], hook['product_version'],
+            entry_version} == {__version__}

@@ -49,45 +49,17 @@ def git(*args, root=ROOT):
 def relevant(name, kind):
     tooling = name.startswith(("ops/formal_release/", ".github/")) or name in TOOL_FILES
     if kind == "tooling":
-        if name.startswith('ops/formal_release/handoffs/') or name == 'ops/formal_release/component-release.json':
-            return False  # Release parameters are validated on consumption, not tool implementation.
         # Toolkit dependencies are explicit and share no mutable business test state.
         return tooling or name in TOOL_DEPENDENCIES
     return not (tooling or name.startswith(EXCLUDED) or name == "rules.md")
-
-
-def tooling_input(meta, name, ref, root=ROOT):
-    if name == 'worker-client/chejin_worker_client/__init__.py':
-        raw = git('show', ref + ':' + name, root=root)
-        raw = re.sub(rb'(?m)^__version__ = "[0-9]+\.[0-9]+\.[0-9]+"$', b'__version__ = "RELEASE"', raw)
-        # Preserve file mode/type and every non-version byte.
-        return ' '.join(meta.split()[:2]) + ' ' + hashlib.sha256(raw).hexdigest()
-    return meta
 
 
 def fingerprint(ref, kind, root=ROOT):
     rows = []
     for row in git("ls-tree", "-rz", ref, root=root).split(b"\0"):
         if row and relevant(row.split(b"\t", 1)[1].decode(), kind):
-            meta, name = row.decode().split('\t', 1)
-            rows.append((tooling_input(meta, name, ref, root) if kind == 'tooling' else meta) + '\t' + name)
+            rows.append(row.decode())
     require(bool(rows), "EMPTY_INPUT_FINGERPRINT")
-    return hashlib.sha256(json.dumps(rows, ensure_ascii=False).encode()).hexdigest()
-
-
-def recorded_fingerprint(ref, kind):
-    # Historical reports retain their original algorithm; equality against
-    # today's inputs is still checked separately with today's implementation.
-    producer = git('show', ref + ':ops/formal_release/source_evidence.py')
-    if kind != 'tooling' or b'def tooling_input(' in producer:
-        return fingerprint(ref, kind)
-    rows = []
-    for row in git('ls-tree', '-rz', ref).split(b'\0'):
-        if row:
-            require(b'\t' in row, 'INVALID_HISTORICAL_TOOL_TREE')
-            name = row.split(b'\t', 1)[1].decode()
-            if name.startswith(('ops/formal_release/', '.github/')) or name in TOOL_FILES | TOOL_DEPENDENCIES:
-                rows.append(row.decode())
     return hashlib.sha256(json.dumps(rows, ensure_ascii=False).encode()).hexdigest()
 
 
@@ -129,8 +101,7 @@ def validate_report(report, run, kind, legacy=False, reference="HEAD"):
                 "EVIDENCE_PRODUCER_CHANGED")
         require(report.get("schema_version") == 2 and report.get("kind") == kind
                 and report.get("commit") == sha and report.get("status") == "passed"
-                and (report.get("fingerprint") == fingerprint(sha, kind)
-                     or report.get("fingerprint") == recorded_fingerprint(sha, kind))
+                and report.get("fingerprint") == fingerprint(sha, kind)
                 and report.get("scope") and report.get("results"), "INVALID_EVIDENCE_REPORT")
         for result in report["results"]:
             require(result.get("exit_code") == 0 and result.get("passed", 0) > 0

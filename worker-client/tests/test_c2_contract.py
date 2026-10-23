@@ -659,15 +659,10 @@ class C2ContractTests(unittest.TestCase):
                     1,
                 )
 
-    def test_independent_worker_version_keeps_slot_contract_assertions(self):
-        import chejin_worker_client
-        with patch.object(chejin_worker_client, "__version__", "0.10.14"):
-            self.test_slot_ledger_contract_separates_fact_scope_from_delivery()
-
     def test_slot_ledger_contract_separates_fact_scope_from_delivery(self):
         schema = c2_contract_v3()["slot_ledger_state_schema"]
-        from chejin_worker_client.c2_contract import contract_revision
-        self.assertEqual(c2_contract_v3()["contract_revision"], contract_revision())
+        from chejin_worker_client import __version__
+        self.assertEqual(c2_contract_v3()["contract_revision"], __version__)
         self.assertIn(
             "anchor_aliases",
             c2_contract_v3()["message_limits"][

@@ -266,15 +266,13 @@ def test_manifest_capability_requires_actual_packaged_contracts(tmp_path, case, 
         assert 'packaged recovery contract ' + ('missing' if case == 'missing' else 'mismatch') in result.stderr
 
 
-@pytest.mark.parametrize('application_version', ['0.9.87', '0.10.14'])
-def test_manifest_entry_with_087_contract_declares_exact_published_086_resource(tmp_path, application_version):
+def test_manifest_entry_with_087_label_declares_exact_published_086_resource(tmp_path):
     # Run the unchanged manifest script and runtime modules under the intended
     # release label. Synthetic EXEs test inventory only, not Windows startup.
     root = Path(__file__).resolve().parents[1]
     runtime = tmp_path / 'runtime'
     shutil.copytree(root / 'chejin_worker_client', runtime / 'worker-client/chejin_worker_client',
                     ignore=shutil.ignore_patterns('__pycache__'))
-    (runtime / 'worker-client/chejin_worker_client/__init__.py').write_text('__version__ = "' + application_version + '"\n')
     adapters = Path('omniauto-rpa/apps/wechat_ai_customer_service/adapters')
     shutil.copytree(root / adapters, runtime / 'worker-client' / adapters,
                     ignore=shutil.ignore_patterns('__pycache__'))
@@ -292,13 +290,12 @@ def test_manifest_entry_with_087_contract_declares_exact_published_086_resource(
         (package / name).write_bytes(b'synthetic executable; manifest test only')
     output = package / 'update-package-manifest.json'
     result = subprocess.run([sys.executable, str(script), '--package-root', str(package),
-                             '--version', application_version, '--git-commit', 'a' * 40,
+                             '--version', '0.9.87', '--git-commit', 'a' * 40,
                              '--output', str(output)], capture_output=True, text=True, timeout=10)
     assert result.returncode == 0, result.stderr
     manifest = json.loads(output.read_text())
     capability = manifest['pending_read_recovery']
-    assert manifest['version'] == application_version
-    assert capability['contracts'][-1]['revision'] == '0.9.87'
+    assert manifest['version'] == capability['contracts'][-1]['revision'] == '0.9.87'
     assert {'revision': '0.9.86', 'sha256':
             'fa530187463e11e8cdb340417139bd44a1aa27af8137e97efd3ffdc199a71f96'} in capability['contracts']
     assert '_internal/contracts/recovery/c2_contract_v3_0.9.86.json' in manifest['files']

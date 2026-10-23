@@ -11,7 +11,7 @@ import re
 import xml.etree.ElementTree as ET
 import zipfile
 
-from source_evidence import ROOT, REPO, WORKFLOW, api, git, relevant, require, validate_report, tooling_input
+from source_evidence import ROOT, REPO, WORKFLOW, api, git, relevant, require, validate_report
 
 
 def inputs(ref, handoff):
@@ -21,7 +21,7 @@ def inputs(ref, handoff):
             continue
         meta, name = row.decode().split('\t', 1)
         if relevant(name, 'tooling') and name != handoff:
-            rows[name] = tooling_input(meta, name, ref)
+            rows[name] = meta
     return rows
 
 

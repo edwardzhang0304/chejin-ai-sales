@@ -861,16 +861,6 @@ class PackagingScriptsTest(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "OMNIAUTO_TREE_MISMATCH"):
                 verify_same_tree(source, packaged)
 
-    def test_protocol_provenance_survives_independent_worker_version(self):
-        from chejin_worker_client.c2_contract import contract_revision, contract_sha256
-        import chejin_worker_client
-        with patch.object(chejin_worker_client, "__version__", "0.10.14"):
-            provenance = load_source_provenance(ROOT / "omniauto-rpa")
-            current = provenance["current_release"]
-            self.assertEqual(current["version"], contract_revision())
-            self.assertEqual(current["contract_revision"], contract_revision())
-            self.assertEqual(current["contract_sha256"], contract_sha256())
-
     def test_omniauto_provenance_records_merged_upstream_and_history(
         self,
     ):
@@ -1230,10 +1220,11 @@ class PackagingScriptsTest(unittest.TestCase):
                 {'source_commit': '4c137ed558d8113da731b557eb4ed8f3256f15df', 'scope': ['c2_contract_0_9_79_generated_schema']},
             ],
         )
-        from chejin_worker_client.c2_contract import contract_sha256, contract_revision
+        from chejin_worker_client import __version__
+        from chejin_worker_client.c2_contract import contract_sha256
         current=provenance['current_release']
-        self.assertEqual(current['version'],contract_revision())
-        self.assertEqual(current['contract_revision'],contract_revision())
+        self.assertEqual(current['version'],__version__)
+        self.assertEqual(current['contract_revision'],__version__)
         self.assertEqual(current['contract_sha256'],contract_sha256())
         self.assertRegex(current['source_commit'],r'^[0-9a-f]{40}$')
         self.assertFalse(current['published'])
