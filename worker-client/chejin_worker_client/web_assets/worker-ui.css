@@ -8,9 +8,9 @@
   --cw-clientbar-height: 42px;
 
   position: relative;
-  width: 316px;
-  height: 628px;
-  min-height: 628px;
+  width: 380px;
+  height: 720px;
+  min-height: 0;
   overflow: hidden;
   color: var(--cw-ink);
   background: var(--cw-surface);

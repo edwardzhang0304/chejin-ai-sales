@@ -5,6 +5,13 @@ from typing import Any
 
 
 WECHAT_WINDOW_GAP = 12
+WORKER_WINDOW_SIZE = (380, 720)
+
+
+def worker_size_for_available_area(width: int, height: int) -> tuple[int, int]:
+    """Qt logical size, leaving a small margin inside the usable desktop."""
+    return tuple(min(preferred, max(1, available - 24))
+                 for preferred, available in zip(WORKER_WINDOW_SIZE, (width, height)))
 
 
 def position_to_right_of_wechat(

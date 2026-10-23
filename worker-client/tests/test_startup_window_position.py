@@ -4,11 +4,28 @@ import unittest
 
 from chejin_worker_client.startup_window_position import (
     WECHAT_WINDOW_GAP,
+    worker_size_for_available_area,
     position_to_right_of_wechat,
 )
 
 
 class StartupWindowPositionTest(unittest.TestCase):
+    def test_default_and_short_desktops_use_logical_available_area(self):
+        for area, expected in [((1920, 1040), (380, 720)), ((1366, 728), (380, 704)),
+                               ((1280, 680), (380, 656)), ((960, 500), (380, 476)),
+                               ((360, 640), (336, 616))]:
+            with self.subTest(area=area):
+                size = worker_size_for_available_area(*area)
+                self.assertEqual(size, expected)
+                position = position_to_right_of_wechat(
+                    {"ok": True, "geometry": {"left": 15, "top": 15, "right": 1075,
+                     "width": 1060, "height": 740}}, window_size=size,
+                    screen_bounds=(0, 0, *area))
+                self.assertGreaterEqual(position[0], 0)
+                self.assertGreaterEqual(position[1], 0)
+                self.assertLessEqual(position[0] + size[0], area[0])
+                self.assertLessEqual(position[1] + size[1], area[1])
+
     def test_uses_existing_wechat_status_geometry_with_small_gap(self):
         result = position_to_right_of_wechat(
             {

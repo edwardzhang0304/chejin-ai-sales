@@ -1,5 +1,4 @@
-/* Compact production presentation. Native window remains 316 × 628. */
-/* Shared primitives use the native 316 × 628 geometry. */
+/* Shared presentation fills the native viewport; previews default to 380 × 720. */
 
 .cw-window {
   --cw-ink: #111a2b;
@@ -15,14 +14,13 @@
   --cw-line: #e0e7f1;
   --cw-soft-line: #eaf0f7;
   --cw-radius: 6px;
-  width: 316px;
   max-width: 100%;
 }
 .cw-window {
   --cw-titlebar-height: 36px;
   --cw-clientbar-height: 54px;
-  width: 100%;
-  height: 628px;
+  width: min(380px, 100%);
+  height: min(720px, 100vh);
   min-height: 0;
   border: 1px solid #fff;
   border-radius: 8px;
@@ -32,9 +30,6 @@
     0 18px 65px #45608420,
     inset 0 0 40px #e7eef94d;
   font-weight: 400;
-}
-.cw-window {
-  height: 628px;
 }
 .cw-window .cw-titlebar {
   padding-left: 12px;
@@ -326,10 +321,10 @@
 .cw-window .cw-step {
   position: relative;
   display: grid;
-  grid-template-columns: 62px 22px minmax(0, 1fr);
-  gap: 10px;
-  min-height: 54px;
-  padding: 0 0 20px;
+  grid-template-columns: 22px minmax(0, 1fr);
+  gap: 12px;
+  min-height: 64px;
+  padding: 0 0 24px;
 }
 .cw-window .cw-step:before {
   display: none;
@@ -344,7 +339,7 @@
 .cw-window .cw-step-marker {
   position: relative;
   top: 0;
-  grid-column: 2;
+  grid-column: 1;
   width: 22px;
   height: 22px;
   border: 0;
@@ -361,7 +356,7 @@
 .cw-window .cw-step:not(:last-child):after {
   content: "";
   position: absolute;
-  left: 82px;
+  left: 10px;
   top: 24px;
   bottom: 0;
   width: 2px;
@@ -371,7 +366,7 @@
   display: none !important;
 }
 .cw-window .cw-step-content {
-  grid-column: 3;
+  grid-column: 2;
   min-width: 0;
 }
 .cw-window .cw-step strong {
@@ -423,8 +418,8 @@
   left: 0;
   right: 0;
   bottom: 0;
-  height: 80px;
-  padding: 14px 22px 16px;
+  height: 76px;
+  padding: 14px 20px;
   border: 0;
   border-top: 1px solid var(--cw-line);
   border-radius: 0;
@@ -591,10 +586,10 @@
   color: #59739c;
 }
 .cw-window .cw-client-bar {
-  padding: 0 16px;
+  padding: 0 20px;
 }
 .cw-window .cw-workspace {
-  padding: 0 16px 72px;
+  padding: 0 20px 76px;
 }
 .cw-window .cw-status-card {
   padding: 12px 0;
@@ -617,18 +612,14 @@
   width: 16px;
   height: 16px;
 }
-.cw-window .cw-step {
-  grid-template-columns: 52px 20px minmax(0, 1fr);
-  gap: 8px;
-}
-.cw-window .cw-step:not(:last-child):after {
-  left: 69px;
-}
 .cw-window .cw-step-time {
-  font-size: 10px;
+  display: block;
+  margin-top: 3px;
+  font-size: 11px;
+  line-height: 18px;
 }
 .cw-window .cw-step strong {
-  font-size: 13px;
+  font-size: 14px;
 }
 .cw-window .cw-step p {
   font-size: 12px;
@@ -640,8 +631,8 @@
   margin-bottom: 14px;
 }
 .cw-window .cw-dock {
-  height: 72px;
-  padding: 12px 16px;
+  height: 76px;
+  padding: 14px 20px;
 }
 .cw-window .cw-dock .cw-button {
   height: 46px;
@@ -681,9 +672,6 @@
 }
 .cw-window .cw-process-task-summary {
   margin-bottom: 15px;
-}
-.cw-window .cw-step {
-  min-height: 52px;
 }
 .cw-window .cw-step p {
   margin-top: 3px;
@@ -737,14 +725,8 @@
   height: calc(100% - 82px);
 }
 .cw-window .cw-step-marker {
-  grid-column: 2;
-  grid-row: 1;
-}
-.cw-window .cw-step-time {
   grid-column: 1;
   grid-row: 1;
-  white-space: normal;
-  overflow-wrap: anywhere;
 }
 .cw-window .cw-step-content {
   grid-row: 1;
@@ -772,15 +754,13 @@
   stroke: #67758a;
 }
 .cw-window .cw-progress-group {
-  position: sticky;
-  top: 0;
-  z-index: 2;
-  background: #fbfdff;
+  position: static;
+  background: transparent;
   font-size: 13px;
   line-height: 21px;
   color: #59677b;
-  padding: 12px 0 10px;
-  margin: 0 0 16px;
+  padding: 12px 0;
+  margin: 8px 0 20px;
   border-bottom: 1px solid #e5eaf1;
   overflow-wrap: anywhere;
 }
@@ -802,24 +782,17 @@
   position: static;
   background: none;
 }
-.cw-window .cw-screen[data-screen-view="hook-waterfall"] .cw-workspace {
-  padding-bottom: 80px;
-}
 .cw-window .cw-screen[data-screen-view="hook-waterfall"] .cw-dock {
   left: 0;
   right: 0;
   bottom: 0;
-  height: 80px;
-  padding: 14px 22px 16px;
+  height: 76px;
+  padding: 14px 20px;
   border-top: 1px solid var(--cw-line);
   background: #f8fbfff0;
 }
 .cw-window .cw-screen[data-screen-view="hook-waterfall"] .cw-workspace {
-  padding-bottom: 72px;
-}
-.cw-window .cw-screen[data-screen-view="hook-waterfall"] .cw-dock {
-  height: 72px;
-  padding: 12px 16px;
+  padding-bottom: 76px;
 }
 .cw-window[data-active-screen="bind"] .cw-bind-layout h2 {
   display: none;
@@ -827,9 +800,8 @@
 .cw-window[data-active-screen="bind"] .cw-form-panel > div:first-child {
   display: none;
 }
-.cw-window .cw-progress-group {
-  font-size: 12px;
-  margin-bottom: 12px;
+.cw-window .cw-progress-group:first-child {
+  margin-top: 0;
 }
 .cw-window .cw-step-content p {
   overflow-wrap: anywhere;
@@ -861,9 +833,4 @@
   .cw-window .cw-step-current .cw-step-marker svg {
     animation: none;
   }
-}
-
-.cw-window {
-  width: 316px;
-  max-width: 100%;
 }

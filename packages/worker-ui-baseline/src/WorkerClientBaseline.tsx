@@ -230,9 +230,9 @@ function TimelineStep({ step }: { step: TimelineStepModel }) {
       <span className="cw-step-marker">
         {step.state === "current" ? <LoaderCircle aria-hidden="true" /> : step.state === "waiting" ? <Clock3 aria-hidden="true" /> : <Icon name={step.state === "error" ? "x" : "check"} />}
       </span>
-      <time className="cw-step-time">{step.time || ""}</time>
       <div className="cw-step-content">
         <strong>{step.title}</strong>
+        {step.time ? <time className="cw-step-time">{step.time}</time> : null}
         {step.description ? <p>{friendlyText(step.description, "当前步骤未完成，请稍后重试。")}</p> : null}
         <StepScreenshot step={step} />
         {step.finalText ? <em className="cw-step-final-text">{step.finalText}</em> : null}

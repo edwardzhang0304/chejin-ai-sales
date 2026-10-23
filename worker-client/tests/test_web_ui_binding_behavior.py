@@ -20,6 +20,9 @@ class _Signal:
     def connect(self, callback) -> None:
         self._callbacks.append(callback)
 
+    def disconnect(self, callback) -> None:
+        self._callbacks.remove(callback)
+
     def emit(self, *args) -> None:
         for callback in list(self._callbacks):
             callback(*args)
@@ -174,6 +177,7 @@ class WebUiBindingBehaviorTest(unittest.TestCase):
             height=lambda: 1080,
         )
         screen = types.SimpleNamespace(
+            availableGeometryChanged=_Signal(),
             availableGeometry=lambda: available,
             devicePixelRatio=lambda: 1.0,
         )
@@ -182,6 +186,14 @@ class WebUiBindingBehaviorTest(unittest.TestCase):
             primaryScreen=lambda: screen,
         )
         window = module.WorkerWebWindow.__new__(module.WorkerWebWindow)
+        window._layout_screen = None
+        window._screen_signal_connected = False
+        size = list(module.WORKER_WINDOW_SIZE)
+        window.setFixedSize = Mock(side_effect=lambda w, h: size.__setitem__(slice(None), [w, h]))
+        window.width = lambda: size[0]
+        window.height = lambda: size[1]
+        window.x = lambda: 0
+        window.y = lambda: 0
         window.binding = binding
         window.profile = None
         window.accept_schedule = {"enabled": False, "start": "09:00", "end": "21:00"}
@@ -201,6 +213,34 @@ class WebUiBindingBehaviorTest(unittest.TestCase):
         window._startup_position_attempted = False
         window.bridge = module.WorkerWebBridge(window)
         return window
+
+    def test_screen_fit_tracks_available_area_and_actual_titlebar_controls(self):
+        with _headless_web_ui_module() as module:
+            window = self._window(module, None)
+            screen = module.QGuiApplication.primaryScreen()
+            window.move = Mock()
+            window._fit_to_screen(screen)
+            self.assertEqual((window.width(), window.height()), (380, 720))
+            self.assertEqual(len(screen.availableGeometryChanged._callbacks), 1)
+            # Moving to a smaller desktop, then changing its taskbar work area.
+            area = types.SimpleNamespace(x=lambda: 0, y=lambda: 0, width=lambda: 360, height=lambda: 640)
+            small = types.SimpleNamespace(availableGeometry=lambda: area, availableGeometryChanged=_Signal())
+            window.x = lambda: 1700
+            window.y = lambda: 800
+            window._fit_to_screen(small)
+            self.assertEqual(len(screen.availableGeometryChanged._callbacks), 0)
+            self.assertEqual((window.width(), window.height()), (336, 616))
+            window.move.assert_called_with(24, 24)
+            area.height = lambda: 520
+            small.availableGeometryChanged.emit(area)
+            self.assertEqual(window.height(), 496)
+            self.assertEqual(len(small.availableGeometryChanged._callbacks), 1)
+            window.showMinimized = Mock()
+            window.close = Mock()
+            window._handle_window_control_click(window.width() - 75)
+            window._handle_window_control_click(window.width() - 15)
+            window.showMinimized.assert_called_once()
+            window.close.assert_called_once()
 
     def test_startup_wechat_probe_positions_window_once_and_keeps_dragging_free(self):
         with _headless_web_ui_module() as module:
@@ -233,7 +273,8 @@ class WebUiBindingBehaviorTest(unittest.TestCase):
                 height=lambda: 864,
             )
             screen = types.SimpleNamespace(
-                availableGeometry=lambda: available,
+                availableGeometryChanged=_Signal(),
+            availableGeometry=lambda: available,
                 devicePixelRatio=lambda: 1.25,
             )
             module.QGuiApplication = types.SimpleNamespace(

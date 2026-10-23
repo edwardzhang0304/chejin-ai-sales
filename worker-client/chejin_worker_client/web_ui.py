@@ -25,7 +25,7 @@ from .models import Binding, RpaResult, RpaStep, Task, WorkerProfile, task_type_
 from .qt_application import GuardedQApplication
 from .rpa_bridge import RpaBridge
 from .runtime_process_timeline import RuntimeProcessTimeline
-from .startup_window_position import position_to_right_of_wechat
+from .startup_window_position import WORKER_WINDOW_SIZE, position_to_right_of_wechat, worker_size_for_available_area
 from .storage import (
     append_log,
     clear_binding,
@@ -44,8 +44,7 @@ from .update_startup_context import take_update_startup_context
 from .ui_lock import lock_summary
 from .ui_state_mapping import runtime_process_screen, runtime_step_title
 
-WINDOW_WIDTH = 316
-WINDOW_HEIGHT = 628
+WINDOW_WIDTH, WINDOW_HEIGHT = WORKER_WINDOW_SIZE
 CLIENT_VERSION = f"V{__version__}"
 TITLEBAR_HEIGHT = 28
 WINDOW_CONTROL_WIDTH = 90
@@ -265,7 +264,10 @@ class WorkerWebWindow(QMainWindow):
         self.setWindowTitle("车金 Worker 客户端")
         self.setWindowFlags(Qt.WindowType.FramelessWindowHint | Qt.WindowType.Window)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+        self._layout_screen = None
+        self._screen_signal_connected = False
         self.setFixedSize(WINDOW_WIDTH, WINDOW_HEIGHT)
+        self._fit_to_screen(QGuiApplication.primaryScreen())
 
         self.api = WorkerApiClient()
         self.rpa_bridge = RpaBridge()
@@ -346,6 +348,33 @@ class WorkerWebWindow(QMainWindow):
     def post_update_runtime_health_snapshot(self) -> dict[str, Any]:
         return runtime_startup.post_update_runtime_health_snapshot(self)
 
+    def showEvent(self, event: Any) -> None:
+        super().showEvent(event)
+        handle = self.windowHandle()
+        if handle is not None:
+            if not self._screen_signal_connected:
+                handle.screenChanged.connect(self._fit_to_screen)
+                self._screen_signal_connected = True
+            self._fit_to_screen(handle.screen())
+
+    def _fit_to_screen(self, screen: Any) -> None:
+        if screen is None:
+            return
+        if self._layout_screen is not screen:
+            if self._layout_screen is not None:
+                self._layout_screen.availableGeometryChanged.disconnect(self._available_area_changed)
+            self._layout_screen = screen
+            screen.availableGeometryChanged.connect(self._available_area_changed)
+        available = screen.availableGeometry()
+        self.setFixedSize(*worker_size_for_available_area(available.width(), available.height()))
+        x = min(max(self.x(), available.x()), available.x() + available.width() - self.width())
+        y = min(max(self.y(), available.y()), available.y() + available.height() - self.height())
+        if (x, y) != (self.x(), self.y()):
+            self.move(x, y)
+
+    def _available_area_changed(self, _geometry: Any) -> None:
+        self._fit_to_screen(self._layout_screen)
+
     def resizeEvent(self, event: Any) -> None:
         super().resizeEvent(event)
         self._apply_rounded_mask()
@@ -367,7 +396,7 @@ class WorkerWebWindow(QMainWindow):
         if event.type() == QEvent.Type.MouseButtonPress and event.button() == Qt.MouseButton.LeftButton:
             pos = event.position().toPoint()
             if pos.y() <= TITLEBAR_HEIGHT:
-                if pos.x() >= WINDOW_WIDTH - WINDOW_CONTROL_WIDTH:
+                if pos.x() >= self.width() - WINDOW_CONTROL_WIDTH:
                     return self._handle_window_control_click(pos.x())
                 self._drag_origin = event.globalPosition().toPoint() - self.frameGeometry().topLeft()
                 return True
@@ -379,7 +408,7 @@ class WorkerWebWindow(QMainWindow):
         return super().eventFilter(watched, event)
 
     def _handle_window_control_click(self, x: int) -> bool:
-        control_index = max(0, min(2, (x - (WINDOW_WIDTH - WINDOW_CONTROL_WIDTH)) // 30))
+        control_index = max(0, min(2, (x - (self.width() - WINDOW_CONTROL_WIDTH)) // 30))
         if control_index == 0:
             self.showMinimized()
         elif control_index == 2:
@@ -439,9 +468,10 @@ class WorkerWebWindow(QMainWindow):
             screen_bounds = None
         if screen_bounds is None:
             return
+        self._fit_to_screen(screen)
         position = position_to_right_of_wechat(
             probe_payload,
-            window_size=(WINDOW_WIDTH, WINDOW_HEIGHT),
+            window_size=(self.width(), self.height()),
             screen_bounds=screen_bounds,
             native_device_pixel_ratio=device_pixel_ratio,
         )
