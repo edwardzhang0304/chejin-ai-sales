@@ -111,6 +111,7 @@ class Collector:
         self.visited = 0
         self.members = set()
         self.latest_logs = []
+        self.priority_tasks = set()
         self.source_deadline = self.deadline
         self.source_end = MAX_FILES
 
@@ -126,13 +127,45 @@ class Collector:
     def clean(self, value, *, ocr=False):
         return _sanitize(_content_safe(value, ocr=ocr), self.secrets)
 
-    def text_bytes(self, data, suffix, *, ocr=False):
+    def evidence_issues(self, value, source):
+        if not isinstance(value, dict):
+            return
+        if value.get('event') == 'evidence_capture_failed':
+            self.record(source, 'read_failed', reason='source_evidence_capture_failed',
+                        context=self.clean(value.get('context', {})))
+        evidence = value.get('evidence', {})
+        if isinstance(evidence, dict):
+            failures = evidence.get('failures', [])
+            if not isinstance(failures, list):
+                self.record(source, 'read_failed', reason='invalid_evidence_failures')
+                return
+            for failure in failures[:64]:
+                self.record(source, 'read_failed', reason='source_evidence_capture_failed',
+                            context=self.clean(failure))
+
+    def text_bytes(self, data, suffix, *, ocr=False, source='text'):
         text = data.decode("utf-8", errors="replace")
         if suffix == ".json":
-            return _json(self.clean(json.loads(text), ocr=ocr))
+            value = json.loads(text)
+            self.evidence_issues(value, source)
+            return _json(self.clean(value, ocr=ocr))
         if suffix == ".jsonl":
-            return b"\n".join(_json(self.clean(json.loads(line), ocr=ocr)).replace(b"\n", b" ")
-                              for line in text.splitlines() if line.strip())
+            lines = []
+            for number, raw in enumerate(data.splitlines(), 1):
+                if time.monotonic() >= min(self.deadline, self.source_deadline) or number > 10000:
+                    self.record(source, 'omitted', reason='jsonl_line_or_time_limit', line=number)
+                    break
+                if not raw.strip():
+                    continue
+                try:
+                    value = json.loads(raw)
+                    self.evidence_issues(value, source)
+                    lines.append(_json(self.clean(value, ocr=ocr)).replace(b"\n", b" "))
+                except (ValueError, UnicodeError, RecursionError) as exc:
+                    self.record(source, 'read_failed', reason='invalid_jsonl_line', line=number,
+                                bytes=len(raw), sha256=hashlib.sha256(raw).hexdigest(),
+                                error_type=type(exc).__name__)
+            return b"\n".join(lines)
         return _sanitize(text, self.secrets).encode("utf-8")
 
     def add(self, archive, member, data, source):
@@ -413,6 +446,20 @@ class Collector:
                 flow = request.get('flow_id')
                 if isinstance(flow, str) and Path(flow).name == flow and flow not in {'.', '..'}:
                     collect(hook / 'flows' / (flow + '.json'))
+        self.priority_tasks.update(flows)
+        for row in self.latest_logs[:50]:
+            task = row.get("task_id")
+            if isinstance(task, str) and task and all(c.isalnum() or c in "-_" for c in task):
+                self.priority_tasks.add(task)
+        for path, started in records(hook / "invites", "ui-started.json"):
+            task = started.get("task_id")
+            if isinstance(task, str) and path.parent.name == task and (task in flows or not self.source_allowed(hook / 'finished' / (task + '.json'))):
+                self.priority_tasks.add(task)
+                diagnostic = artifacts(self.root)/'tasks'/task/'diagnostics'
+                if not any(self.source_allowed(diagnostic/name) for name in ('outcome.json', 'initialization.json')):
+                    self.record('tasks/'+task+'/diagnostics', 'read_failed', reason='required_c1_diagnostics_missing', task_id=task)
+                for name in ("pre-ui.json", "preparation.json", "ui-started.json", "submit-attempt.json", "outcome.json", "submission-proof.json"):
+                    collect(path.parent / name)
         actions = set()
         for path, intent in records(hook / "sends", "intent.json"):
             action = intent.get("reply_action_id")
@@ -475,16 +522,14 @@ class Collector:
         # One noisy/legacy source cannot consume the entire export budget.
         self.source_end = self.visited + 400
         self.source_deadline = min(self.deadline, time.monotonic() + 4)
-        stack = [(folder, "")]
-        while stack:
-            directory, relative = stack.pop(0)
-            if self.limited():
+        def walk(directory, relative, depth=0):
+            if self.limited() or depth > 32:
                 self.record(prefix, "omitted", reason="time_or_file_limit")
-                break
+                return
             try:
                 if not self.source_allowed(directory, allowed_root):
                     self.record(f"{prefix}/{relative}", "omitted", reason="source_boundary")
-                    continue
+                    return
                 if update_only:
                     expected = {"update-state.json"} if directory == folder else (
                         {"update-result.json", "worker-startup.jsonl", "updater-startup.jsonl"}
@@ -498,14 +543,17 @@ class Collector:
                         if len(recent) >= MAX_FILES or self.limited():
                             self.record(f"{prefix}/{relative}", "omitted", reason="directory_listing_limit")
                             break
-                        recent.append(entry)
-                    # Most recent evidence first, even in a long-lived data home.
-                    recent.sort(key=lambda e: e.stat(follow_symlinks=False).st_mtime, reverse=True)
-                    for entry in recent:
-                        self.visited += 1
+                        try:
+                            recent.append((entry.stat(follow_symlinks=False).st_mtime, entry))
+                        except OSError as exc:
+                            self.record(f"{prefix}/{relative}/{entry.name}", "read_failed", error_type=type(exc).__name__)
+                    recent.sort(key=lambda item: (directory == folder and prefix == 'tasks'
+                                and item[1].name in self.priority_tasks, item[0]), reverse=True)
+                    for _, entry in recent:
                         if self.limited():
                             self.record(prefix, "omitted", reason="time_or_file_limit")
                             return
+                        self.visited += 1
                         rel = f"{relative}/{entry.name}".lstrip("/")
                         if not self.source_allowed(Path(entry.path), allowed_root):
                             self.record(f"{prefix}/{rel}", "omitted", reason="source_boundary")
@@ -519,12 +567,11 @@ class Collector:
                                 "tasks", "runtime", "incidents", "ui_failures", "wechat_c2",
                             }:
                                 continue
-                            # Never recurse into generated exports, installed programs or update payloads.
                             if entry.name in {"exports", "download", "staging", "backup", "control", "failed-program", "roi"}:
                                 if update_only and entry.name == "control":
-                                    stack.append((Path(entry.path), rel))
+                                    walk(Path(entry.path), rel, depth+1)
                                 continue
-                            stack.append((Path(entry.path), rel))
+                            walk(Path(entry.path), rel, depth+1)
                         elif entry.is_file(follow_symlinks=False):
                             path = Path(entry.path)
                             if path.resolve() == self.destination.resolve() or path.name.endswith(".tmp"):
@@ -535,6 +582,7 @@ class Collector:
                                       ocr=ocr or (prefix == "tasks" and "ocr" in Path(rel).parts))
             except OSError as exc:
                 self.record(f"{prefix}/{relative}", "read_failed", error_type=type(exc).__name__)
+        walk(folder, "")
 
     def file(self, path, member, archive, *, allowed_root=None, ocr=False):
         if not self.source_allowed(path, allowed_root):
@@ -551,7 +599,7 @@ class Collector:
                 self.record(member, "omitted", reason="file_size_limit")
                 return
             if path.suffix.lower() in TEXT_SUFFIXES:
-                data = self.text_bytes(data, path.suffix.lower(), ocr=ocr)
+                data = self.text_bytes(data, path.suffix.lower(), ocr=ocr, source=member)
         except (OSError, ValueError, RuntimeError, RecursionError) as exc:
             self.record(member, "read_failed", error_type=type(exc).__name__)
             return
@@ -579,10 +627,15 @@ class Collector:
                         or path.suffix.lower() not in TEXT_SUFFIXES | IMAGE_SUFFIXES):
                     self.record(f"{member}/{info.filename}", "omitted", reason="unsafe_or_oversize_member")
                     continue
-                raw = source.read(info)
-                if path.suffix.lower() in TEXT_SUFFIXES:
-                    raw = self.text_bytes(raw, path.suffix.lower(), ocr="ocr" in path.parts)
-                self.add(archive, f"{member.removesuffix('.zip')}/{info.filename}", raw, f"{member}!/{info.filename}")
+                source_name = f"{member}!/{info.filename}"
+                try:
+                    raw = source.read(info)
+                    if path.suffix.lower() in TEXT_SUFFIXES:
+                        raw = self.text_bytes(raw, path.suffix.lower(), ocr="ocr" in path.parts, source=source_name)
+                except (OSError, ValueError, RuntimeError, RecursionError, zipfile.BadZipFile) as exc:
+                    self.record(source_name, "read_failed", error_type=type(exc).__name__)
+                    continue
+                self.add(archive, f"{member.removesuffix('.zip')}/{info.filename}", raw, source_name)
 
     def run(self):
         self.destination.parent.mkdir(parents=True, exist_ok=True)
@@ -602,6 +655,7 @@ class Collector:
                 updates_root = update_root(self.root).absolute()
                 # Current recovery proofs first; legacy incident volume cannot starve them.
                 sources = [
+                    (artifacts(self.root)/"tasks", "tasks", False, self.root, False),
                     *[(self.root/"transactions"/"hook"/name, "receipts/hook/"+name, False, self.root, False)
                       for name in ("sends", "send-receipts", "history-receipts", "history-captures")],
                     (self.root/"transactions", "receipts", False, self.root, False),
@@ -610,7 +664,6 @@ class Collector:
                     (self.root/"diagnostics", "logs/legacy-startup", False, self.root, False),
                     (self.root.parent/"CheJinWorker"/"diagnostics", "logs/legacy-packaging-startup", False, self.root.parent, False),
                     (incident_roots(self.root)[0], "incidents/current", False, self.root, False),
-                    (artifacts(self.root)/"tasks", "tasks", False, self.root, False),
                     (self.root/"transactions"/"hook"/"roi", "tasks/legacy-hook", False, self.root, True),
                     (artifacts(self.root)/"ui_failures", "tasks/legacy-ui", False, self.root, True),
                     (artifacts(self.root)/"wechat_c2", "tasks/legacy-ocr", False, self.root, True),

@@ -96,11 +96,17 @@ class WindowsC1:
             if not result.get('ok'):raise ValueError('HOOK_C1_STARTUP_WINDOW_UNVERIFIED')
     def ui(self,process,preparation,guard):
         from apps.wechat_ai_customer_service.adapters.wechat_win32_ocr.hook_c1_flow import NativeUI
-        ops,hwnd=self._window(process)
         if self.artifact_root is not None:
             from .evidence_paths import task_artifacts
             evidence=task_artifacts(self.artifact_root.parent,preparation['task_id'])
         else:
             evidence=self.root/'roi'/preparation['task_id']
+        from .c1_diagnostics import C1Diagnostics
+        diagnostics=C1Diagnostics(evidence, preparation['task_id'])
+        try:
+            ops,hwnd=self._window(process)
+        except Exception as exc:
+            diagnostics.initialization_failure(exc)
+            raise
         return NativeUI(ops,hwnd,process.pid,evidence,guard,
-            organized_evidence=self.artifact_root is not None)
+            organized_evidence=self.artifact_root is not None, diagnostics=diagnostics)

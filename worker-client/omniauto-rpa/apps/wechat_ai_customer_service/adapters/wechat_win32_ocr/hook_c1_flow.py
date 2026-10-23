@@ -330,6 +330,8 @@ def run_flow(ui, *, phone: str, verify_message: str, remark_name: str,
     except Exception as exc:
         code = str(exc)
         report['error_code'] = code if re.fullmatch('[A-Z_]+', code) else 'C1_ACTION_FAILED'
+        details = getattr(ui, 'exception_diagnostic', None)
+        if details is not None:report['exception'] = details(exc)
         if report['submit_attempted']:report['status'] = 'submission_unknown'
         if report['steps']:progress(report['steps'][-1],'waiting' if report['submit_attempted'] else 'error','failed')
     finally:
@@ -349,24 +351,41 @@ def run_flow(ui, *, phone: str, verify_message: str, remark_name: str,
                 report['cleanup'] = 'failed_preserve_business_outcome'
                 code = str(exc)
                 report['cleanup_error_code'] = code if re.fullmatch('[A-Z_]+', code) else 'SEARCH_CLEANUP_FAILED'
+                details = getattr(ui, 'exception_diagnostic', None)
+                if details is not None:report['cleanup_exception'] = details(exc)
         elif form_open:
             report['cleanup'] = 'deferred_invite_dialog_still_open'
         elif form_transition:
             report['cleanup'] = 'deferred_invite_dialog_unconfirmed'
         if getattr(ui, 'guard_failures', None):
             report['guard_failures'] = list(ui.guard_failures)
+        if getattr(ui, 'evidence_state', None) is not None:
+            report['evidence'] = ui.evidence_state
         recorder = getattr(ui, 'record_outcome_diagnostic', None)
         if recorder is not None:
             try:
                 recorder(report)
-            except OSError:
-                pass  # Optional diagnostic copy never changes the business outcome.
+            except Exception as exc:
+                fallback = getattr(ui, 'record_capture_error', None)
+                if fallback is not None:fallback('diagnostics/outcome.json', exc, report)
     return report
 
 
 class NativeUI:
     """Bounded ROI capture + original humanized input, with per-frame guards."""
-    def __init__(self, ops, hwnd: int, pid: int, evidence: Path, identity_guard, *, organized_evidence=False):
+    def __init__(self, ops, hwnd: int, pid: int, evidence: Path, identity_guard, *, organized_evidence=False, diagnostics=None):
+        self.diagnostics = diagnostics
+        self.evidence_state = {'frames': [], 'failures': []}
+        self.guard_phase = 'initialization'
+        self.guard_operation = 'create_ui'
+        try:
+            self._initialize(ops, hwnd, pid, evidence, identity_guard, organized_evidence=organized_evidence)
+        except Exception as exc:
+            if diagnostics is not None:
+                diagnostics.initialization_failure(exc, self)
+            raise
+
+    def _initialize(self, ops, hwnd, pid, evidence, identity_guard, *, organized_evidence):
         self.ops, self.main, self.pid = ops, hwnd, pid
         self.current = hwnd;self.evidence = evidence;self.identity_guard = identity_guard
         self.organized_evidence = organized_evidence
@@ -387,18 +406,45 @@ class NativeUI:
         if not ops.ensure_dpi_awareness_status().get('per_monitor_aware'):
             raise FlowStop('DPI_AWARENESS_UNVERIFIED')
         if abs(self.initial['width']-1060) > 6 or abs(self.initial['height']-740) > 6:
-            raise FlowStop('ACCEPTED_WINDOW_SIZE_CHANGED')
+            self._guard_stop('initial_window_size_rejected', code='ACCEPTED_WINDOW_SIZE_CHANGED',
+                             observed={'geometry': self.initial, 'accepted_size': [1060, 740], 'tolerance': 6})
         from .hook_c1 import classify_visible_other_windows
         if classify_visible_other_windows(ops, hwnd, pid)['blocking_window_details']:
             raise FlowStop('CLOSE_WECHAT_POPUP_FIRST')
         ops.activate_window(hwnd, foreground_only=True)
         self.guard()
 
+    def exception_diagnostic(self, exc):
+        diagnostics = getattr(self, 'diagnostics', None)
+        if diagnostics is not None:
+            return diagnostics.details(exc, self)
+        # Standalone adapter callers have no Worker sink; do not expose messages.
+        return {'exception_type': type(exc).__name__, 'phase': getattr(self, 'guard_phase', None),
+                'operation': getattr(self, 'guard_operation', None)}
+
+    def record_capture_error(self, target, exc, report):
+        diagnostics = getattr(self, 'diagnostics', None)
+        if diagnostics is not None:
+            diagnostics.capture_failure(target, exc, report)
+        else:
+            state = report.setdefault('evidence', {'frames': [], 'failures': []})
+            state['failures'].append({'target': target, **self.exception_diagnostic(exc)})
+
     def record_outcome_diagnostic(self, report):
-        if getattr(self, 'organized_evidence', False):
+        diagnostics = getattr(self, 'diagnostics', None)
+        if diagnostics is not None:
+            diagnostics.write('outcome.json', report)
+        elif getattr(self, 'organized_evidence', False):
             folder = self.evidence/'diagnostics'
             folder.mkdir(parents=True, exist_ok=True)
             (folder/'outcome.json').write_text(json.dumps(report,ensure_ascii=False),encoding='utf-8')
+
+    def _save_frame_material(self, target, writer):
+        try:
+            writer()
+        except Exception as exc:
+            self.record_capture_error(target, exc, {'evidence': self.evidence_state})
+            raise  # Preserve the original write-failure stop, never authorize input.
 
     def _guard_stop(self, condition, *, code='WINDOW_FOCUS_OR_GEOMETRY_CHANGED', observed=None):
         """Best-effort metadata only; a failed diagnostic must never unblock input.
@@ -576,6 +622,9 @@ class NativeUI:
 
     def capture(self, label: str) -> Frame:
         self.guard_operation = 'capture:' + label
+        if not hasattr(self, 'evidence_state'):self.evidence_state = {'frames': [], 'failures': []}
+        material = {'label': label, 'screenshot': 'not_produced', 'ocr': 'not_produced', 'action_authorized': False}
+        self.evidence_state['frames'].append(material)
         # The one caret observation already waits in verified_empty_search.
         if label != 'search_empty':
             self.ops.humanized_action_sleep(1800, 2400) if label == 'card' else self.ops.humanized_action_sleep(450, 800)
@@ -591,7 +640,11 @@ class NativeUI:
         if image is None or image.size != (bounds[2]-bounds[0], bounds[3]-bounds[1]):
             raise FlowStop('ROI_CAPTURE_FAILED')
         # No second screenshot / full-frame fallback when OCR fails.
-        image.save(getattr(self,'screenshot_evidence',self.evidence)/f'{self.count:02d}-{label}.png')
+        screenshot = f'{self.count:02d}-{label}.png'
+        material.update(screenshot='produced_not_saved', screenshot_file=screenshot)
+        self._save_frame_material('screenshots/'+screenshot, lambda: image.save(
+            getattr(self,'screenshot_evidence',self.evidence)/screenshot))
+        material['screenshot'] = 'saved'
         geometry = o.get_window_client_geometry(self.current)
         if geometry != c:
             self._guard_stop('capture_geometry_changed', code='CAPTURE_GEOMETRY_CHANGED',
@@ -599,12 +652,17 @@ class NativeUI:
         self.guard()
         self.guard_operation = 'ocr:' + label
         rows = o.run_ocr(image);self.ocr_count += 1
+        ocr_file = f'{self.count:02d}-{label}.json'
+        material.update(ocr='produced_not_saved', ocr_file=ocr_file)
+        self._save_frame_material('ocr/'+ocr_file, lambda: (getattr(self,'ocr_evidence',self.evidence)/ocr_file).write_text(
+            json.dumps(rows,ensure_ascii=False),encoding='utf-8'))
+        material['ocr'] = 'saved'
         self.guard()
         frame = Frame(image, rows, label, self.current, (left, top), c, captured_at)
         self.last_frame = frame
         self.guard(frame)
-        (getattr(self,'ocr_evidence',self.evidence)/f'{self.count:02d}-{label}.json').write_text(json.dumps(rows,ensure_ascii=False),encoding='utf-8')
         if restricted(frame):raise FlowStop('ACCOUNT_RESTRICTED')
+        material['action_authorized'] = True
         return frame
 
     def click(self, frame: Frame, t: dict, action: str):
