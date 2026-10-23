@@ -188,3 +188,74 @@ def test_restoring_old_zero_rejection_blocks_real_chain_before_any_ack(
         assert db.scalar(select(Worker)).inflight_flow_state
     assert not list((tmp_path/'retained/send-receipts').glob('*.json'))
     assert not any(path=='/SendTextMsg' for path,*_ in history_lab[0].requests)
+
+
+def test_settled_friend_restriction_restart_shows_current_sales_hold_with_real_history(
+        history_lab,identity_client,connection_factory,tmp_path,monkeypatch):
+    from datetime import datetime,timezone,timedelta
+    from types import SimpleNamespace
+    from chejin_worker_client.hook_dispatcher import HookBusinessDispatcher
+    from chejin_worker_client.hook_formal_runtime import HookFormalRuntime
+    from chejin_worker_client.hook_progress import HookProgressTimeline
+    from app.services import hook_send_service,c3_service
+    server,gateway,process,scope,delivery,catalog,db_native=history_lab
+    w,p,b,h,permit,value,d,runner,services=retained_scenario(
+        identity_client,tmp_path,monkeypatch,invalidate=False)
+    since=int(b['history_since_create_time'])
+    append(value,second=since+41)
+    rows=value['scans'][0]['databases'][0]['pages'][0]
+    rows[-2]['MsgSvrID']='0'
+    notifications(w,monkeypatch)
+    db_native.execute('DELETE FROM MSG')
+    fields=['localId','MsgSvrID','Type','IsSender','CreateTime','Sequence','MsgServerSeq','MsgSequence','StrTalker','StrContent']
+    db_native.executemany('INSERT INTO MSG VALUES(?,?,?,?,?,?,?,?,?,?)',[
+        tuple(row[k] for k in fields) for row in rows])
+    manager,credentials,prepared=connection_factory(w)
+    runtime=HookFormalRuntime(d.client,credentials,gateway,prepared,d.private_root)
+    d.runtime=runtime
+    runtime.clock.now=lambda:datetime.fromtimestamp(since+600,timezone.utc)
+    services.connection=manager;services._credentials=credentials
+    with SessionLocal() as db:
+        db.get(Worker,w['id']).run_status='faulted';db.commit()
+    runner.binding.run_status='faulted'
+    monkeypatch.setattr(hook_send_service,'utcnow',lambda:datetime.fromtimestamp(since+600,timezone.utc))
+    monkeypatch.setattr(c3_service,'generate_for_batch',lambda *a,**kw:pytest.fail('Recovery started AI'))
+    files={f:f.read_bytes() for f in (runtime.private_root/'sends').rglob('*.json')}
+    # Real QueryDB -> history HTTP -> terminal unknown ACK -> original flow
+    # completion. Start after its confirmation deadline; do not invent delivery.
+    for _ in range(3):d.tick(runner,services)
+    with SessionLocal() as db:
+        assert db.scalar(select(SentAck)).send_result=='unknown'
+        assert not db.get(Worker,w['id']).inflight_flow_state
+        assert db.get(Worker,w['id']).run_status=='faulted'
+    inventory=runtime.client.call(runtime.credentials,'POST',
+        f'/workers/{runtime.credentials.worker_id}/wechat/native-work',
+        {**runtime.account,'retained_flow_id':None})
+    assert not inventory['retained_sends']
+    binding=inventory['bindings'][0]
+    assert binding['open_handoffs'][0]['handoff_reason_code']==REASON
+    timeline=HookProgressTimeline()
+    runner=SimpleNamespace(on_runtime_process=timeline.apply)
+    restarted=HookBusinessDispatcher(runtime.client,tmp_path/'restart-ui',None,None,
+        automatic_transcription_disabled=lambda:True)
+    restarted._started_at=datetime.now(timezone.utc)+timedelta(days=1)
+    runtime.lifecycle_runner=runner
+    runtime._progress_started_at=restarted._started_at
+    # Fault/recovery gates are not bypassed: this explicitly exercises the
+    # read-only observation and presentation methods, not a resumed work tick.
+    for _ in range(2):
+        restarted._publish_open_handoffs(runner,binding)
+        result=runtime.sync(binding)
+        assert result['history_ready'] is False and result['reason_code']==rules.OUTGOING_ID_PENDING
+    rows=timeline.model(historical=False)
+    assert any(r['title']=='需要好友验证，等待销售处理' and r['state']=='waiting' for r in rows)
+    assert not any(r['title']=='读取并补齐客户消息' for r in rows)
+    assert any(r['title']=='读取并补齐客户消息' for r in timeline.model())
+    assert timeline.groups[f"{binding['binding_id']}:initial"]['kind']=='reconcile'
+    assert any(r['title']=='已转人工，等待销售处理' for r in timeline.model(historical=True))
+    assert all(f.read_bytes()==raw for f,raw in files.items())
+    assert not any(path=='/SendTextMsg' for path,*_ in history_lab[0].requests)
+    with SessionLocal() as db:
+        assert db.scalar(select(SentAck)).send_result=='unknown'
+        assert db.scalar(select(func.count()).select_from(HandoffEvent))==1
+        assert db.scalar(select(HandoffEvent)).closed_at is None

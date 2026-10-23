@@ -250,3 +250,75 @@ def test_persistent_owner_projection_does_not_flash_or_claim_ai_on_event_closure
  d._publish_open_handoffs(r,binding)
  assert 'AI' in t.model()[-1]['description']
  assert r.binding.run_status=='running'
+
+
+def test_open_friend_hold_survives_restart_and_polling_without_hiding_real_checks(runtime):
+ from chejin_worker_client.hook_formal_runtime import HookFormalRuntime
+ d,r,t,_=runtime
+ binding={'binding_id':'binding-A','remark_code':'CJTESTA',
+          'open_handoffs':[fact('HOOK_FRIEND_VERIFICATION_REQUIRED')]}
+ original=copy.deepcopy(binding)
+ rt=HookFormalRuntime.__new__(HookFormalRuntime);rt.lifecycle_runner=r
+ rt.register_binding_progress(binding,'binding-A:initial',kind='reconcile')
+ emit_progress(r,'binding-A:initial','history','waiting','history_wait')
+ rt.register_binding_progress(binding,'retained-send',kind='batch')
+ emit_progress(r,'retained-send','send_confirm','waiting','send_wait')
+ other={'binding_id':'binding-B','remark_code':'CJTESTB'}
+ rt.register_binding_progress(other,'binding-B:initial',kind='reconcile')
+ emit_progress(r,'binding-B:initial','history','waiting','history_wait')
+ for _ in range(3):
+  d._publish_open_handoffs(r,binding)
+  emit_progress(r,'binding-A:initial','history')
+  emit_progress(r,'binding-A:initial','history','waiting','history_wait')
+ current=t.model(historical=False)
+ hold=next(row for row in current if row['title']=='需要好友验证，等待销售处理')
+ assert hold['state']=='waiting' and '不会自动补发' in hold['description']
+ assert hold['time']==t.model(historical=True)[-1]['time']
+ assert not any(row['stepId']=='binding-A:initial:history' for row in current)
+ assert any(row['stepId']=='binding-B:initial:history' for row in current)
+ assert any(row['stepId']=='retained-send:send_confirm' for row in current)
+ assert any(row['stepId']=='binding-A:initial:history' for row in t.model())
+ assert binding==original and r.binding.run_status=='running'
+ # An actual observation failure and a batch's pre-send read remain visible.
+ emit_progress(r,'binding-A:initial','history','error','failed')
+ emit_progress(r,'retained-send','history','waiting','history_wait')
+ assert any(row['stepId']=='binding-A:initial:history' and row['state']=='error' for row in t.model(historical=False))
+ assert any(row['stepId']=='retained-send:history' for row in t.model(historical=False))
+
+
+def test_friend_hold_requires_authoritative_open_record_and_explicit_closure(runtime):
+ d,r,t,_=runtime
+ binding={'binding_id':'binding','remark_code':'CJTEST',
+          'open_handoffs':[fact('HOOK_FRIEND_VERIFICATION_REQUIRED')]}
+ d._publish_open_handoffs(r,binding)
+ before=copy.deepcopy(t.model(historical=False))
+ for records in (None,[None],[{'id':''}]):
+  d._publish_open_handoffs(r,{**binding,'open_handoffs':records})
+  assert t.model(historical=False)==before
+ d._publish_open_handoffs(r,{**binding,'open_handoffs':[]})
+ assert t.model(historical=False)[-1]['title']=='本次交接事项已处理'
+ assert 'AI' not in t.model(historical=False)[-1]['description']
+ d._publish_open_handoffs(r,{**binding,'open_handoffs':[{**binding['open_handoffs'][0],'id':'new-event'}]})
+ assert t.model(historical=False)[-1]['title']=='需要好友验证，等待销售处理'
+ assert t.model(historical=False)[-1]['state']=='waiting'
+
+
+def test_real_worker_model_displays_current_friend_hold_while_keeps_original_pause(runtime):
+ from chejin_worker_client.hook_formal_runtime import HookFormalRuntime
+ d,_,_,_=runtime
+ with _headless_web_ui_module() as module:
+  with patch.object(module,'_log_rows',lambda:[]),patch.object(module,'latest_incident',lambda:None),patch.object(module,'lock_summary',lambda:{}):
+   w=WebUiBindingBehaviorTest._window(module,Binding('worker','synthetic','client','paused'))
+   w._publish=Mock();w.runner.hook_services=SimpleNamespace(startup_check_state=checks.passed)
+   runner=SimpleNamespace(on_runtime_process=w.on_runtime_process)
+   binding={'binding_id':'binding','remark_code':'CJTEST',
+       'open_handoffs':[fact('HOOK_FRIEND_VERIFICATION_REQUIRED')]}
+   d._publish_open_handoffs(runner,binding)
+   rt=HookFormalRuntime.__new__(HookFormalRuntime);rt.lifecycle_runner=runner
+   rt.register_binding_progress(binding,'binding:initial',kind='reconcile')
+   for _ in range(3):
+    emit_progress(runner,'binding:initial','history')
+    emit_progress(runner,'binding:initial','history','waiting','history_wait')
+   rows=w._state()['model']['hookProcessSteps']
+   assert [row['title'] for row in rows]==['需要好友验证，等待销售处理']
+   assert rows[0]['state']=='waiting' and w.binding.run_status=='paused'

@@ -115,7 +115,8 @@ class HookFormalRuntime:
 
     def register_binding_progress(self,binding,context,*,group=None,kind='customer',aliases=(),historical=False):
         register_progress(getattr(self,'lifecycle_runner',None),context,group=group,
-            label=binding.get('remark_code',''),kind=kind,aliases=aliases,historical=historical)
+            label=binding.get('remark_code',''),kind=kind,aliases=aliases,historical=historical,
+            binding_id=binding.get('binding_id'))
 
     def register_batch_progress(self,binding,bid,data):
         aliases=[f"{binding['binding_id']}:{mid}" for mid in data.get('progress_native_ids',[])]
@@ -534,7 +535,7 @@ class HookFormalRuntime:
         if show_progress:
             received=getattr(self,'_incoming_occurred_at',None)
             started=getattr(self,'_progress_started_at',None)
-            fresh=True
+            fresh=bool(has_incoming and received)
             if received and started:
                 try:fresh=datetime.fromisoformat(received.replace('Z','+00:00'))>=started
                 except (ValueError,TypeError):fresh=False

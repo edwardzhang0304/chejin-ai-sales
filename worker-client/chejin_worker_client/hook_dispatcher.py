@@ -61,6 +61,7 @@ class HookBusinessDispatcher:
         self._batch_stages={}
         self._live_batches_by_binding={}
         self._open_handoffs_by_binding={}
+        self._friend_holds_by_binding={}
         self._reply_owners_by_binding={}
         self._initial_read_finished=False
         self._started_at=datetime.now(timezone.utc)
@@ -161,6 +162,21 @@ class HookBusinessDispatcher:
             if event_id not in current:
                 emit_progress(runner,context,'handoff_closed','done','handoff_closed')
         self._open_handoffs_by_binding[key]=current
+        # An old handoff event stays in history, but an unclosed restriction is
+        # a current customer state. Only this authoritative inventory can clear
+        # it; an omitted field or an unreadable history is not proof of closure.
+        friend_hold=next((record for record in records
+            if record.get('handoff_reason_code')=='HOOK_FRIEND_VERIFICATION_REQUIRED'),None)
+        hold_context='customer-hold:'+key
+        if friend_hold is not None or key in self._friend_holds_by_binding:
+            register_progress(runner,hold_context,label=binding.get('remark_code',''),
+                kind='customer',binding_id=key)
+            emit_progress(runner,hold_context,'customer_hold',
+                'waiting' if friend_hold is not None else 'done',
+                'friend_verification_hold' if friend_hold is not None else 'handoff_closed',
+                occurred_at=(friend_hold.get('created_at') or '') if friend_hold is not None else None)
+            if friend_hold is not None:self._friend_holds_by_binding[key]=friend_hold['id']
+            else:self._friend_holds_by_binding.pop(key,None)
         ownership=binding.get('reply_ownership') or {}
         owner=ownership.get('owner')
         signature=(owner,ownership.get('revision'),bool(ownership.get('round_id')))

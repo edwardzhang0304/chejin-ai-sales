@@ -22,6 +22,7 @@ PHASES = {
  'handoff': '已转人工，等待销售处理',
  'handoff_closed': '本次交接事项已处理',
  'reply_owner': '当前回复负责人',
+ 'customer_hold': '需要好友验证，等待销售处理',
  'clock_wait': '等待后台响应稳定', 'stopped': '已停止接单',
  'model_queue': '等待 AI 处理', 'model_retry': '等待 AI 重试',
  'invite_finished': '好友申请处理已结束',
@@ -33,6 +34,7 @@ NOTES = {
  'voice_wait': '语音结果尚未确认，保留原记录。',
  'model_wait': '等待后台处理结果。', 'no_reply': '本次消息无需发送回复。',
  'handoff': '此客户的 AI 自动回复已暂停，等待销售处理。',
+ 'friend_verification_hold': '好友验证限制尚未处理，AI 不会自动回复。原发送结果和凭证保留，不会自动补发。',
  'handoff_ai_failure': 'AI 回复处理失败，已按规则转人工。',
  'handoff_voice_unknown': '语音转写结果未确认，已转人工处理；原语音不会自动重试。',
  'handoff_closed': '本次交接事项已处理，后续由当前回复负责人继续处理。',
@@ -63,6 +65,8 @@ _REGISTRY_LOCK = threading.RLock()
 
 def _merge_progress_metadata(metadata, prior):
     result = dict(metadata)
+    if prior and result.get('group') == prior.get('group') and not result.get('binding_id'):
+        result['binding_id'] = prior.get('binding_id')
     # Batch polling registers general aliases before their segment details.
     # Missing details must not erase a known segment between those two events.
     # Keep producer and UI registry semantics identical; never inherit across
@@ -76,7 +80,7 @@ def _merge_progress_metadata(metadata, prior):
 
 
 def register_progress(runner, context, *, group=None, label='', kind='customer',
-                      historical=False, aliases=(), segment=None):
+                      historical=False, aliases=(), segment=None, binding_id=None):
     """Explicit business identities only. This registry never authorizes work."""
     if runner is None:return
     context=str(context);group=str(group or context)
@@ -89,6 +93,7 @@ def register_progress(runner, context, *, group=None, label='', kind='customer',
         historical=bool(historical and not (prior and not prior['historical']))
         metadata={'group':group,'label':safe_label or (prior or {}).get('label',''),
                   'kind':kind,'historical':historical}
+        if isinstance(binding_id,str) and binding_id:metadata['binding_id']=binding_id
         if isinstance(segment,int) and 1<=segment<=20:metadata['segment']=segment
         accepted=[]
         for alias in (context,*aliases):
@@ -217,7 +222,7 @@ class HookProgressTimeline:
                 if affected and prior.get('_group')==affected and prior['state']=='current':
                     prior['state']='waiting';prior['description']=NOTES['interrupted']
         # Heartbeat/history polling cannot reopen an already completed stage.
-        if old and ((phase!='reply_owner' and old['state']=='done' and state in {'current','done','waiting'}) or (old['state']==state and old.get('_note')==event.get('note'))):return
+        if old and ((phase not in {'reply_owner','customer_hold'} and old['state']=='done' and state in {'current','done','waiting'}) or (old['state']==state and old.get('_note')==event.get('note'))):return
         if old and (old['state'] not in {'error','done'} or event.get('group')):
             item=old
         else:
@@ -226,7 +231,10 @@ class HookProgressTimeline:
         item['description']=event.get('description') or NOTES.get(event.get('note'),'')
         if phase=='bind' and event.get('note')=='invite_replaced':item['title']='本轮好友绑定已结束'
         item.update(_group=event.get('group',context),_kind=event.get('kind',''),
-                    _label=event.get('label',''),_historical=bool(event.get('historical')))
+                    _label=event.get('label',''),_historical=bool(event.get('historical')),
+                    _binding_id=event.get('binding_id'))
+        if phase=='customer_hold':
+            item['title']=PHASES['customer_hold'] if state=='waiting' else PHASES['handoff_closed']
         if phase in {'send_submit','send_confirm'} and state=='done' and event.get('note')=='send_unknown':
             item['title']='发送尝试已结束' if phase=='send_submit' else '发送结果核对已结束'
         if phase=='finished':
@@ -299,14 +307,15 @@ class HookProgressTimeline:
     def _register(self,event):
         group=event.get('group');aliases=event.get('aliases',[])
         if not isinstance(group,str) or not isinstance(aliases,list):return
-        meta={k:event.get(k) for k in ('group','label','kind','historical','segment')}
+        meta={k:event.get(k) for k in ('group','label','kind','historical','segment','binding_id')}
         for context in aliases:
             if not isinstance(context,str):continue
             self.groups[context]=_merge_progress_metadata(meta,self.groups.get(context))
             for item in self.steps:
                 if item.get('_context')==context:
                     item.update(_group=group,_label=meta.get('label') or '',
-                        _kind=meta.get('kind') or '',_historical=bool(meta.get('historical')))
+                        _kind=meta.get('kind') or '',_historical=bool(meta.get('historical')),
+                        _binding_id=self.groups[context].get('binding_id'))
         # Several incoming parents may form one model batch. Fold preliminary
         # read facts only; separate send task/segment confirmations stay intact.
         kept={}
@@ -323,6 +332,15 @@ class HookProgressTimeline:
 
     def model(self,*,historical=None):
         selected=[s for s in self.steps if historical is None or bool(s.get('_historical'))==historical]
+        if historical is False:
+            held={s.get('_binding_id') for s in self.steps
+                  if s['_phase']=='customer_hold' and s['state']=='waiting' and s.get('_binding_id')}
+            # Only the ordinary observation display yields to a current hold.
+            # Keep the original events, completed facts, errors and all batch /
+            # retained-send checks. This projection never changes readiness.
+            selected=[s for s in selected if not (
+                s.get('_binding_id') in held and s.get('_kind') in {'customer','reconcile'}
+                and s['_phase']=='history' and s['state'] in {'current','waiting'})]
         # Registry-free events keep the original API used by the OCR shell.
         if not self.groups:
             return [{k:v for k,v in s.items() if not k.startswith('_')} for s in selected]
