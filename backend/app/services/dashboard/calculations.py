@@ -33,28 +33,41 @@ class MessageFact:
     action_id: str | None = None
 
 
-def communication(facts, start, end, sales_id, mode):
-    outgoing = {m.lead_id for m in facts if start <= m.at < end
-                and m.source in ({"ai", "human"} if mode == "all" else {mode})
-                and (sales_id == "all" or (m.sales_id or "unassigned") == sales_id)}
-    # The lookback is by customer, includes exactly 24h, and spans conversations.
-    previous = {}
-    effective = set()
+def communication_population(facts, start, end, mode):
+    """Build customer sets once per period; sales rows reuse the same population."""
+    by_sales = defaultdict(set)
+    for message in facts:
+        if start <= message.at < end and message.source in ({"ai", "human"} if mode == "all" else {mode}):
+            by_sales[message.sales_id or 'unassigned'].add(message.lead_id)
+    previous, effective = {}, set()
     for message in sorted((m for m in facts if m.source == "customer"), key=lambda m: (m.at, m.identity)):
         prior = previous.get(message.lead_id)
         if prior is not None and start <= message.at < end and message.at - prior <= timedelta(hours=24):
             effective.add(message.lead_id)
         previous[message.lead_id] = message.at
+    overall = set().union(*by_sales.values()) if by_sales else set()
+    return by_sales, overall, effective
+
+
+def communication_counts(population, sales_id):
+    by_sales, overall, effective = population
+    outgoing = overall if sales_id == 'all' else by_sales.get(sales_id, set())
     return len(outgoing), len(outgoing & effective)
 
 
-def human_response(facts, handoffs, start, end, sales_id):
+def communication(facts, start, end, sales_id, mode):
+    return communication_counts(communication_population(facts, start, end, mode), sales_id)
+
+
+def human_response(facts, handoffs, start, end, sales_id, reminders=None):
     """Statistics only: never borrow reminder close-time or change reply ownership.
 
-    Explicit handoff message IDs anchor the pending round. A first human reply
-    without a handoff is usable when its start is unambiguous; multiple AI turns
-    before that first reply cannot establish an old human-round boundary.
+    Handoff/reminder message IDs prove that human handling is required, not
+    when the round began. The earliest unanswered customer fact stays the
+    start even if a later message triggered the handoff. Reminder timestamps
+    are never used as message or reply times.
     """
+    reminders = reminders or {}
     by_conversation = defaultdict(list)
     for message in facts:
         by_conversation[message.conversation_id].append(message)
@@ -68,16 +81,17 @@ def human_response(facts, handoffs, start, end, sales_id):
         if len({(m.at, m.order) for m in messages}) != len(messages):
             ambiguous |= relevant
             continue
-        first, prior_human, actions = None, False, set()
+        first, prior_human, actions, unanswered_ids = None, False, set(), set()
         triggers = {mid for h in handoffs.get(conversation_id, []) for mid in h.trigger_message_event_ids}
+        triggers.update(r.first_message_id for r in reminders.get(conversation_id, []))
+        open_required = {mid for h in handoffs.get(conversation_id, []) if h.closed_at is None
+                         for mid in h.trigger_message_event_ids}
+        open_required.update(r.first_message_id for r in reminders.get(conversation_id, []) if r.closed_at is None)
         for message in messages:
             if message.source == 'customer':
                 if first is None:
                     first = message
-                # A formal pending-human event supplies a concrete round start.
-                if not prior_human and message.event_ids & triggers and not first.event_ids & triggers:
-                    first = message
-                    actions.clear()
+                unanswered_ids.update(message.event_ids)
             elif message.source == 'ai':
                 if first:
                     actions.add(message.action_id or message.identity)
@@ -87,11 +101,13 @@ def human_response(facts, handoffs, start, end, sales_id):
                         ambiguous = True
                     else:
                         seconds.append((message.at - first.at).total_seconds())
-                first, prior_human, actions = None, True, set()
+                first, prior_human, actions, unanswered_ids = None, True, set(), set()
         if first and start <= first.at < end and (sales_id == 'all' or (first.sales_id or 'unassigned') == sales_id):
-            if any(h.closed_at is None and first.event_ids & set(h.trigger_message_event_ids)
-                   for h in handoffs.get(conversation_id, [])):
-                pending += 1
+            if unanswered_ids & open_required:
+                if not prior_human and not first.event_ids & triggers and len(actions) > 1:
+                    ambiguous = True
+                else:
+                    pending += 1
     if ambiguous:
         return metric(reason='部分人工响应轮缺少可靠起点或原生顺序'), None, None
     return metric(round(sum(seconds) / len(seconds), 2) if seconds else None), len(seconds), pending

@@ -151,3 +151,14 @@ def test_optional_statistics_revision_does_not_block_vehicle_transition():
     assert client.post(f'/api/vehicles/{vid}/list', headers=ADMIN_HEADERS).status_code == 200
     assert client.post(f'/api/vehicles/{vid}/unlist', headers=ADMIN_HEADERS).status_code == 200
     assert client.get('/api/dashboard').json()['data']['vehicles']['amount']['value'] == '128800.00'
+
+
+def test_client_credential_reset_does_not_unassign_sales_in_realtime_dashboard():
+    w, *_ = claimed()
+    with SessionLocal() as db:
+        worker = db.get(Worker, w['id'])
+        worker.client_binding_state, worker.client_instance_id = 'unbound', None
+        db.commit()
+    data = client.get('/api/dashboard').json()['data']['realtime']
+    assert data['counts']['unbound'] == 0
+    assert data['counts']['running'] == 0 and data['unavailable'] == 1

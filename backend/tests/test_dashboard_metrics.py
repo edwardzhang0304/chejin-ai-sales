@@ -139,3 +139,22 @@ def test_optional_invitation_statistics_time_cannot_invent_a_precise_date():
     facts, accepted = invitation_facts({'task':task}, [proof])
     assert accepted['proof'] is task
     assert invitation_cohort(facts, set(), BASE, BASE+timedelta(days=1), 'all')[2]
+
+
+def test_handoff_trigger_on_appended_message_never_moves_first_response_start():
+    facts = [fact(1, 0, 'customer'), fact(2, 2, 'customer'), fact(3, 3, 'ai'), fact(4, 10, 'human')]
+    handoffs = {'conversation':[Row(trigger_message_event_ids=['2'], closed_at=None)]}
+    assert human_response(facts, handoffs, BASE, BASE+timedelta(days=1), 'all')[0]['value'] == 600
+    pending = human_response(facts[:3], handoffs, BASE, BASE+timedelta(days=1), 'all')
+    assert pending[0]['value'] is None and pending[1:] == (0, 1)
+
+
+def test_new_unanswered_round_uses_formal_message_identity_not_reminder_timestamps():
+    facts = [fact(1, 0, 'customer'), fact(2, 10, 'human'), fact(3, 20, 'customer'), fact(4, 21, 'customer')]
+    reminders = {'conversation':[Row(first_message_id='3', closed_at=None, started_at=BASE+timedelta(hours=8))]}
+    result = human_response(facts, {}, BASE, BASE+timedelta(days=1), 'all', reminders)
+    assert result[0]['value'] == 600 and result[1:] == (1, 1)
+    facts.append(fact(5, 25, 'human'))
+    reminders['conversation'][0].closed_at = BASE+timedelta(hours=9)
+    result = human_response(facts, {}, BASE, BASE+timedelta(days=1), 'all', reminders)
+    assert result[0]['value'] == 450 and result[1:] == (2, 0)

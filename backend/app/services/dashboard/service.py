@@ -9,14 +9,14 @@ from types import SimpleNamespace
 from app.errors import AppError
 from app.models.audit import OperationLog
 from app.models.base import utcnow
-from app.models.c3 import HandoffEvent, ReplyAction, SentAck
+from app.models.c3 import HandoffEvent, HumanReplyReminder, ReplyAction, SentAck
 from app.models.lead import Lead, LeadAssignment
 from app.models.sales import Sales
 from app.models.task import Task, TaskEvidence
 from app.models.wechat import MessageEvent, WechatSessionBinding
 from app.models.worker import Worker
 from app.models.vehicle import KnowledgeItem
-from app.services.dashboard.calculations import aware, communication, human_response, metric, ratio, vehicle_sales
+from app.services.dashboard.calculations import aware, communication, communication_counts, communication_population, human_response, metric, ratio, vehicle_sales
 from app.services.dashboard.facts import friend_pass_facts, invitation_cohort, invitation_facts, message_facts
 from app.services.vehicle_service import _vehicle_query
 from app.services.worker_service import operational_status
@@ -42,6 +42,13 @@ def bounded(db, query):
     if len(values) > MAX_FACTS:
         raise AppError('DASHBOARD_CAPACITY_EXCEEDED', '历史统计容量已达到上限，请联系维护人员扩展统计投影', 422)
     return values
+
+
+def bounded_rows(db, query):
+    rows = list(db.execute(query.limit(MAX_FACTS + 1)))
+    if len(rows) > MAX_FACTS:
+        raise AppError('DASHBOARD_CAPACITY_EXCEEDED', '历史统计容量已达到上限，请联系维护人员扩展统计投影', 422)
+    return rows
 
 
 def owner_at(lead, assignments, at):
@@ -112,14 +119,27 @@ def dashboard(db, *, start=None, end=None, vehicle_start=None, vehicle_end=None,
                  SentAck.evidence['native_msg_id'].label('native_msg_id')).where(
                  SentAck.reply_action_id.in_(action_ids), SentAck.created_at < now))}
     facts, message_issues = message_facts(rows, actions, acks, now)
-    handoffs = defaultdict(list)
-    for h in bounded(db, select(HandoffEvent).where(HandoffEvent.created_at < now)):
+    handoffs, reminders = defaultdict(list), defaultdict(list)
+    for h in bounded_rows(db, select(HandoffEvent.conversation_id, HandoffEvent.trigger_message_event_ids,
+                               HandoffEvent.closed_at).where(HandoffEvent.created_at < now,
+                               HandoffEvent.conversation_id.in_(relevant_conversations))):
         handoffs[h.conversation_id].append(h)
+    for r in bounded_rows(db, select(HumanReplyReminder.conversation_id, HumanReplyReminder.first_message_id,
+                               HumanReplyReminder.closed_at).where(HumanReplyReminder.created_at < now,
+                               HumanReplyReminder.conversation_id.in_(relevant_conversations))):
+        reminders[r.conversation_id].append(r)
 
     def message_reason(selected, a, b):
         # Incoming lookback is necessary for the rolling-24h effective condition.
         reasons = {issue.reason for issue in message_issues if issue.applies(a - timedelta(hours=24), b, selected)}
         return '；'.join(sorted(reasons)) or None
+
+    communication_sets = communication_population(facts, left, right, mode)
+    conversation_facts, sales_conversations = defaultdict(list), defaultdict(set)
+    for message in facts:
+        conversation_facts[message.conversation_id].append(message)
+        sales_conversations[message.sales_id or 'unassigned'].add(message.conversation_id)
+    first_fact_at = min((m.at for m in facts), default=left)
 
     def summary(selected):
         def matches(owner):
@@ -149,12 +169,16 @@ def dashboard(db, *, start=None, end=None, vehicle_start=None, vehicle_end=None,
             for lead_id, owner, at in pass_issues
         )
         pass_reason = '存在缺少正式邀请来源的旧绑定，不能确认首次通过' if pass_missing else None
-        comm_count, effective_count = communication(facts, left, right, selected, mode)
+        comm_count, effective_count = communication_counts(communication_sets, selected)
         reason = message_reason(selected, left, right)
         comm, effective = metric(comm_count, reason), metric(effective_count, reason)
         # Mode deliberately does not filter the human-response or customer metrics.
-        response, completed, pending = human_response(facts, handoffs, left, right, selected)
-        response_reason = message_reason(selected, min((m.at for m in facts), default=left), now)
+        # Keep full chronological conversations when ownership changed, but do
+        # not re-sort unrelated sales' message histories for every table row.
+        response_facts = facts if selected == 'all' else [
+            m for cid in sales_conversations[selected] for m in conversation_facts[cid]]
+        response, completed, pending = human_response(response_facts, handoffs, left, right, selected, reminders)
+        response_reason = message_reason(selected, first_fact_at, now)
         if response_reason:
             response, completed, pending = metric(reason=response_reason), None, None
         return {

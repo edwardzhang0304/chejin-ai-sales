@@ -81,7 +81,9 @@ def operational_status(worker: Worker | None, *, now=None) -> str:
     if worker is None or worker.deleted_at:
         return "unavailable"
     if worker.client_binding_state != "bound" or not worker.client_instance_id:
-        return "unbound"
+        # Client credentials can be reset while Sales.worker_id stays assigned.
+        # Only the sales projection can call that seller "unbound".
+        return "unavailable"
     online = computed_online_status(worker, now=now)
     if online == "offline":
         return "offline"

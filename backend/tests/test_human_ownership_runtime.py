@@ -88,6 +88,8 @@ def test_human_recall_ai_reply_human_again_and_one_reminder(human_runtime,monkey
     with SessionLocal() as db:
         conv=db.get(Conversation,binding['conversation_id'])
         assert conv.reply_ownership['owner']=='human'
+        from app.services.dashboard.service import dashboard
+        assert dashboard(db)['metrics']['human_pending_rounds'] == 0
         due=conv.next_recall_at.replace(tzinfo=timezone.utc)
     time.sleep(max(0,(due-datetime.now(timezone.utc)).total_seconds())+.05)
     recall=runtime.sync(binding);assert recall['message_batch'],recall
@@ -104,6 +106,7 @@ def test_human_recall_ai_reply_human_again_and_one_reminder(human_runtime,monkey
         conv=db.get(Conversation,binding['conversation_id'])
         assert conv.reply_ownership['owner']=='ai' and conv.reply_ownership['recall_streak']==1
         assert conv.recall_count==1
+        assert dashboard(db)['metrics']['human_pending_rounds'] == 0
     # A real new customer fact (not replay or transcript replacement) resets
     # the silence streak, while the confirmed daily usage remains recorded.
     from app.models.base import utcnow
@@ -123,6 +126,7 @@ def test_human_recall_ai_reply_human_again_and_one_reminder(human_runtime,monkey
         assert conv.reply_ownership['owner']=='human' and conv.reply_ownership['recall_streak']==0
         assert conv.recall_daily_count==1
         rid=row.id
+        assert dashboard(db)['metrics']['human_pending_rounds'] == 1
         # Move only the round due time for this consumer check. The producer
         # timestamp and complete hour/night arithmetic have separate API tests.
         row.next_attempt_at=datetime.now(timezone.utc)-timedelta(seconds=1)
