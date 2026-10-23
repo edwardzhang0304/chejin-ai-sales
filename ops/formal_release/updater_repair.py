@@ -10,6 +10,7 @@ import shutil
 import subprocess
 import sys
 import zipfile
+from concurrent.futures import ThreadPoolExecutor
 
 from sign_existing_hook import api, require, validate_build
 from workflow_scripts import windows_powershell_environment
@@ -56,8 +57,12 @@ def fetch_package(run_id, folder):
 def prepare(args):
     area = args.root
     area.mkdir(parents=True)
-    old = fetch_package(args.old_run, area / 'old')
-    target = fetch_package(args.target_run, area / 'target')
+    # Independent immutable downloads; both must finish verification before any
+    # trust comparison, GUI execution or publication. Exceptions still abort.
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        old_future = pool.submit(fetch_package, args.old_run, area / 'old')
+        target_future = pool.submit(fetch_package, args.target_run, area / 'target')
+        old, target = old_future.result(), target_future.result()
     require(target['version'] == args.version and target['zip_sha256'] == args.sha256, 'WRONG_TARGET_PACKAGE')
     keys = (area / 'old/CheJinWorkerClient/_internal/release-signing-public-keys.json').read_bytes()
     require(keys == (area / 'target/CheJinWorkerClient/_internal/release-signing-public-keys.json').read_bytes(), 'TRUST_CHANGED')

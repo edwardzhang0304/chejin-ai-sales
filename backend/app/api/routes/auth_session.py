@@ -80,8 +80,8 @@ def login(
 
 @router.get("/system/version", dependencies=[Depends(require_admin_auth)])
 def system_version():
-    from app.contracts.c2 import contract_revision
-    return ok({"product_version": contract_revision(), "c2_protocol_version": 3, "hook_protocol_version": "hook-v1"})
+    from app.version import application_version
+    return ok({"product_version": application_version(), "c2_protocol_version": 3, "hook_protocol_version": "hook-v1"})
 
 
 @router.get("/auth/session", dependencies=[Depends(require_admin_auth)])

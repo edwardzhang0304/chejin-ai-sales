@@ -34,7 +34,7 @@ on:
         description: 'Version already inside the sealed ZIP; no rebuild'
         default: ''
       existing_package_sha256:
-        description: 'Expected sealed inner ZIP SHA-256'
+        description: 'Expected sealed inner ZIP SHA-256; sign-existing may leave empty to use authenticated build identity'
         default: ''
       old_build_run:
         description: 'Original installed Hook Worker build; updater-only repair'

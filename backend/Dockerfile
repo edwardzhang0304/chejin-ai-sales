@@ -11,6 +11,7 @@ COPY backend/requirements.txt backend/requirements.lock ./
 RUN pip install -r requirements.lock
 
 COPY backend/app ./app
+COPY backend/pyproject.toml ./pyproject.toml
 COPY backend/alembic.ini ./
 COPY backend/alembic ./alembic
 COPY backend/configs ./configs

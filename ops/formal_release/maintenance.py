@@ -38,8 +38,22 @@ def validate_ingress():
         # The existing download vhost permits artifacts only and explicitly denies other API paths.
         assert p.name=='update.jiangsuchejin.com.conf' and 'location ^~ /api/client-releases/artifacts/' in s and re.search(r'location\s+\^~\s+/api/\s*\{\s*return\s+(403|404);\s*\}', s),'UNREVIEWED_API_INGRESS'
 
+def validate_unfreeze(approved):
+    from component_release import operator_plan
+    assert approved.get('backend_ready') and approved.get('workers_safe'),'Release acceptance incomplete'
+    if approved.get('component_plan'):
+        plan = operator_plan(approved, 'backend')
+        assert approved.get('deployed_source_commit') == plan['source_commit'], 'Backend source mismatch'
+        assert approved.get('backend_smoke') == 'passed' and approved.get('data_preserved') is True, 'Backend acceptance incomplete'
+    else:
+        assert approved.get('admin_browser_gate')=='passed', 'Release acceptance incomplete'
+        from build_admin import validate_browser_receipt
+        validate_browser_receipt(approved['admin_candidate'], approved['admin_browser_receipt'])
+
 def main():
     ap=argparse.ArgumentParser();ap.add_argument('operation',choices=['enable','status','disable']);ap.add_argument('--evidence-dir',required=True);a=ap.parse_args()
+    from component_release import environment_stage
+    environment_stage('unfreeze' if a.operation == 'disable' else 'maintenance')
     evidence=Path(a.evidence_dir);evidence.mkdir(parents=True,exist_ok=True)
     active=SNIPPET.exists() and SNIPPET.read_text()==BLOCK
     if a.operation=='status':
@@ -59,9 +73,7 @@ def main():
     else:
         assert active and (evidence/'release-approved.json').exists(),'Explicit accepted release evidence required to unfreeze'
         approved=json.loads((evidence/'release-approved.json').read_text())
-        assert approved.get('backend_ready') and approved.get('admin_browser_gate')=='passed' and approved.get('workers_safe'),'Release acceptance incomplete'
-        from build_admin import validate_browser_receipt
-        validate_browser_receipt(approved['admin_candidate'], approved['admin_browser_receipt'])
+        validate_unfreeze(approved)
         atomic(SNIPPET,'# release maintenance inactive\n')
     try:subprocess.run(['nginx','-t'],capture_output=True,check=True)
     except Exception:

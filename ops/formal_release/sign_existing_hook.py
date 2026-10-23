@@ -40,6 +40,24 @@ def validate_build(run, artifacts, version):
     return matches[0]
 
 
+def build_package_hash(run, artifacts, version):
+    """Trusted small build artifact: signing needn't wait for server transfer."""
+    matches = [a for a in artifacts if a.get('name') == 'hook-package-identity' and not a.get('expired')]
+    require(len(matches) == 1 and matches[0]['size_in_bytes'] <= 100_000, 'BUILD_PACKAGE_IDENTITY_REQUIRED')
+    item = matches[0]
+    raw = api(f"actions/artifacts/{item['id']}/zip", binary=True)
+    require(item.get('digest') == 'sha256:' + hashlib.sha256(raw).hexdigest(), 'BUILD_IDENTITY_DIGEST_MISMATCH')
+    with zipfile.ZipFile(io.BytesIO(raw)) as z:
+        entries = z.infolist()
+        require(len(entries) == 1 and entries[0].filename == 'package-identity.json'
+                and entries[0].file_size <= 20_000, 'BUILD_IDENTITY_CONTENT_INVALID')
+        identity = json.loads(z.read(entries[0]).decode('utf-8-sig'))
+    require(identity.get('version') == version and identity.get('source_commit') == run['head_sha']
+            and str(identity.get('build_run')) == str(run['id'])
+            and re.fullmatch(r'[0-9a-f]{64}', identity.get('package_sha256', '')), 'BUILD_IDENTITY_MISMATCH')
+    return identity['package_sha256']
+
+
 def verify_package(raw, expected_sha, version, commit):
     require(hashlib.sha256(raw).hexdigest() == expected_sha, "PACKAGE_HASH_MISMATCH")
     with zipfile.ZipFile(io.BytesIO(raw)) as archive:
@@ -75,10 +93,12 @@ def main():
     args = p.parse_args()
     require(re.fullmatch(r"[1-9][0-9]*", args.run), "INVALID_BUILD_RUN")
     require(re.fullmatch(r"\d+\.\d+\.\d+", args.version), "INVALID_VERSION")
-    require(re.fullmatch(r"[0-9a-f]{64}", args.sha256), "INVALID_HASH")
     run = api(f"actions/runs/{args.run}")
     artifacts = api(f"actions/runs/{args.run}/artifacts?per_page=100")["artifacts"]
     artifact = validate_build(run, artifacts, args.version)
+    if not args.sha256:
+        args.sha256 = build_package_hash(run, artifacts, args.version)
+    require(re.fullmatch(r"[0-9a-f]{64}", args.sha256), "INVALID_HASH")
     raw = api(f"actions/artifacts/{artifact['id']}/zip", binary=True)
     digest = hashlib.sha256(raw).hexdigest()
     require(artifact.get("digest") == "sha256:" + digest, "GITHUB_ARTIFACT_DIGEST_MISMATCH")

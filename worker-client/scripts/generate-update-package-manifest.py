@@ -50,8 +50,11 @@ def main() -> int:
     if not files or any(not SHA256_RE.fullmatch(value) for value in files.values()):
         raise SystemExit("package file hash inventory is invalid")
     recovery = package_recovery_capability()
-    if recovery['contracts'][-1]['revision'] != args.version.strip():
-        raise SystemExit('package version differs from recovery runtime contract')
+    # Artifact identity and protocol identity are independent. The package's
+    # actual contract bytes are checked below, including every recovery schema.
+    from chejin_worker_client import __version__
+    if __version__ != args.version.strip():
+        raise SystemExit('package version differs from Worker runtime version')
     # Capability is declared only when the actual candidate contains both
     # exact contract resources; source files alone are not delivery evidence.
     for pair in recovery['contracts']:

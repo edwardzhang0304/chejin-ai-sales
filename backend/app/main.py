@@ -161,11 +161,11 @@ def create_app() -> FastAPI:
         finally:
             recovery.stop()
 
-    from app.contracts.c2 import contract_revision
+    from app.version import application_version
 
     app = FastAPI(
         title=settings.app_name,
-        version=contract_revision(),
+        version=application_version(),
         docs_url=docs_url,
         redoc_url=None,
         openapi_url=openapi_url,

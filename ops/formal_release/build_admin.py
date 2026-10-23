@@ -26,6 +26,8 @@ def validate_browser_receipt(candidate, receipt):
 
 def main():
     ap=argparse.ArgumentParser();ap.add_argument('--environment',required=True,choices=['production','fast-uat']);ap.add_argument('--api-base',required=True);ap.add_argument('--source-root',required=True);ap.add_argument('--output',required=True);a=ap.parse_args()
+    from component_release import environment_stage
+    environment_stage('admin_build')
     validate_api(a.environment,a.api_base);root=Path(a.source_root).resolve();front=root/'frontend';out=Path(a.output)
     env={**os.environ,'VITE_API_BASE_URL':a.api_base}
     # Explicit CLI value overrides inherited Vite env files; no secret value is logged.

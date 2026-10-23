@@ -15,6 +15,9 @@ on:
       tool_run_id:
         description: Matching release-tool evidence run
         required: true
+      component_base_commit:
+        description: Exact deployed source base for Worker-only UI release; empty keeps coordinated release
+        default: ''
 permissions:
   contents: read
   actions: read
@@ -40,13 +43,22 @@ jobs:
           PYTHON
       - uses: actions/setup-python@v5
         with: {python-version: '3.12.10'}
+      - name: Derive Worker-only scope from exact source diff when requested
+        if: inputs.component_base_commit != ''
+        env: {COMPONENT_BASE: '${{ inputs.component_base_commit }}'}
+        run: python ops/formal_release/component_release.py plan --base "$COMPONENT_BASE" --expect worker --output component-plan.json
+      - name: Preserve coordinated version gate without a component plan
+        if: inputs.component_base_commit == ''
+        run: python ops/formal_release/component_release.py versions --coordinated
       - name: Verify exact source and tool evidence
         env: {GH_TOKEN: '${{ github.token }}'}
         run: python ops/formal_release/source_evidence.py resolve --source-run "$SOURCE_RUN_ID" --output native-source-evidence.json
       - uses: actions/upload-artifact@v4
         with:
           name: native-build-evidence
-          path: native-source-evidence.json
+          path: |
+            native-source-evidence.json
+            component-plan.json
           if-no-files-found: error
   build:
     needs: evidence
@@ -69,7 +81,7 @@ jobs:
           python -m venv .venv
           .\.venv\Scripts\python.exe -m pip install --disable-pip-version-check -r requirements.txt -r requirements-test.txt PyInstaller
           if ($LASTEXITCODE -ne 0) { throw 'HOOK_BUILD_DEPENDENCY_FAILED' }
-      - name: Verify installation and unified product version
+      - name: Verify installation and component identities
         working-directory: worker-client
         run: |
           $env:PYTHONPATH = "$PWD;$PWD\omniauto-rpa"
@@ -92,6 +104,13 @@ jobs:
           $PackageName = "CheJinWorkerClient_V$($Version.Trim())"
           Compress-Archive -Path .\dist\CheJinWorkerClient -DestinationPath ".\dist\$PackageName.zip"
           "package_name=$PackageName" >> $env:GITHUB_OUTPUT
+          $ArchiveHash = (Get-FileHash -Algorithm SHA256 ".\dist\$PackageName.zip").Hash.ToLowerInvariant()
+          @{version=$Version.Trim();source_commit=$env:GITHUB_SHA;package_sha256=$ArchiveHash;build_run=$env:GITHUB_RUN_ID} | ConvertTo-Json | Set-Content -Encoding utf8 .\dist\package-identity.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: hook-package-identity
+          path: worker-client/dist/package-identity.json
+          if-no-files-found: error
       - uses: actions/upload-artifact@v4
         with:
           name: ${{ steps.archive.outputs.package_name }}
