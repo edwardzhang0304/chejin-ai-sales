@@ -182,7 +182,7 @@ class HookBusinessDispatcher:
         signature=(owner,ownership.get('revision'),bool(ownership.get('round_id')))
         if owner in {'ai','human'} and self._reply_owners_by_binding.get(key)!=signature:
             context='ownership:'+key
-            register_progress(runner,context,label=binding.get('remark_code',''),kind='batch')
+            register_progress(runner,context,label=binding.get('remark_code',''),kind='batch',binding_id=key)
             note=('human_wait' if ownership.get('round_id') else 'human_replied') if owner=='human' else 'ai_owner'
             emit_progress(runner,context,'reply_owner','done',note)
             self._reply_owners_by_binding[key]=signature

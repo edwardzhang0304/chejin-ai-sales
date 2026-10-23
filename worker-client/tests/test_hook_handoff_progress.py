@@ -312,6 +312,7 @@ def test_real_worker_model_displays_current_friend_hold_while_keeps_original_pau
    w._publish=Mock();w.runner.hook_services=SimpleNamespace(startup_check_state=checks.passed)
    runner=SimpleNamespace(on_runtime_process=w.on_runtime_process)
    binding={'binding_id':'binding','remark_code':'CJTEST',
+       'reply_ownership':{'owner':'human','round_id':None,'revision':1},
        'open_handoffs':[fact('HOOK_FRIEND_VERIFICATION_REQUIRED')]}
    d._publish_open_handoffs(runner,binding)
    rt=HookFormalRuntime.__new__(HookFormalRuntime);rt.lifecycle_runner=runner
@@ -322,3 +323,7 @@ def test_real_worker_model_displays_current_friend_hold_while_keeps_original_pau
    rows=w._state()['model']['hookProcessSteps']
    assert [row['title'] for row in rows]==['需要好友验证，等待销售处理']
    assert rows[0]['state']=='waiting' and w.binding.run_status=='paused'
+   d._publish_open_handoffs(runner,{**binding,'open_handoffs':[]})
+   rows=w._state()['model']['hookProcessSteps']
+   assert any(row['title']=='当前回复负责人' and '销售持续负责' in row['description'] for row in rows)
+   assert w.binding.run_status=='paused'

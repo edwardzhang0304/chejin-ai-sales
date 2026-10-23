@@ -335,12 +335,13 @@ class HookProgressTimeline:
         if historical is False:
             held={s.get('_binding_id') for s in self.steps
                   if s['_phase']=='customer_hold' and s['state']=='waiting' and s.get('_binding_id')}
-            # Only the ordinary observation display yields to a current hold.
+            # Ordinary observation and generic owner hints yield to a hold.
             # Keep the original events, completed facts, errors and all batch /
             # retained-send checks. This projection never changes readiness.
             selected=[s for s in selected if not (
-                s.get('_binding_id') in held and s.get('_kind') in {'customer','reconcile'}
-                and s['_phase']=='history' and s['state'] in {'current','waiting'})]
+                s.get('_binding_id') in held and (
+                    s['_phase']=='reply_owner' or (s.get('_kind') in {'customer','reconcile'}
+                    and s['_phase']=='history' and s['state'] in {'current','waiting'})))]
         # Registry-free events keep the original API used by the OCR shell.
         if not self.groups:
             return [{k:v for k,v in s.items() if not k.startswith('_')} for s in selected]
