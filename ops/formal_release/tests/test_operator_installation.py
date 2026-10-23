@@ -13,9 +13,15 @@ import operator_bundle as ob
 from test_hook_component_verification import package
 
 
-def isolated(installed, script, *args):
+def isolated(installed, script, *args, libraries=False):
     env={k:v for k,v in os.environ.items() if k not in {'PYTHONPATH','CHEJIN_COMPONENT_PLAN'}}
-    return subprocess.run([sys.executable,'-I','-c', 'import sys;sys.path.insert(0,sys.argv[1]);'+script,
+    prelude='import sys;sys.path.insert(0,sys.argv[1]);'
+    if libraries:
+        # Resolve third-party modules without executing .pth/editable hooks.
+        import sysconfig
+        prelude += 'sys.path.append(' + repr(sysconfig.get_paths()['purelib']) + ');'
+    prelude += "import importlib.util;assert importlib.util.find_spec('app') is None;"
+    return subprocess.run([sys.executable,'-I','-S','-c', prelude+script,
                            str(installed),*map(str,args)],cwd=installed,env=env,capture_output=True,text=True)
 
 
@@ -84,10 +90,10 @@ def transport(args,**kw):
 publish_hook.run_fixed=transport
 result=publish_hook.publish(Path(sys.argv[2]),json.loads(Path(sys.argv[3]).read_text()));assert result['publication']=='published'
 """
-    result=isolated(installed,script,folder,configpath)
+    result=isolated(installed,script,folder,configpath,libraries=True)
     assert result.returncode==0,result.stderr
     seal(lambda f:f.pop('CheJinUpdater.exe'))
-    result=isolated(installed,script,folder,configpath)
+    result=isolated(installed,script,folder,configpath,libraries=True)
     assert result.returncode!=0 and 'ClientUpdateError' in result.stderr
 
 

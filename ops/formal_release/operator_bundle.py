@@ -12,6 +12,10 @@ import tempfile
 MODULES = ('capacity.py', 'receiver.py', 'verify.py', 'register.py', 'maintenance.py',
            'build_admin.py', 'manual_publication.py', 'manual_readiness.py',
            'component_release.py', 'upgrade_evidence.py', 'publish_hook.py', 'verify_hook.py', 'operator_bundle.py')
+# These are transported as fixed source into the existing API container, never
+# imported by the host. The host has neither SQLAlchemy nor the app package.
+CONTAINER_PAYLOADS = ('register.py', 'manual_readiness.py')
+HOST_MODULES = tuple(n for n in MODULES if n not in CONTAINER_PAYLOADS)
 
 
 def check_bundle(bundle):
@@ -22,8 +26,12 @@ def check_bundle(bundle):
     # Use ONLY the files that will actually be installed. No repository imports.
     with tempfile.TemporaryDirectory() as temp:
         for name in MODULES: shutil.copyfile(bundle / name, Path(temp) / name)
-        script = 'import sys;sys.path.insert(0,sys.argv[1]);' + ';'.join('import ' + n[:-3] for n in MODULES)
-        subprocess.run([sys.executable, '-I', '-c', script, temp], check=True, capture_output=True)
+        script = ('import sys,ast;from pathlib import Path;sys.path.insert(0,sys.argv[1]);'
+                  + ';'.join('ast.parse((Path(sys.argv[1])/' + repr(n) + ').read_text())' for n in CONTAINER_PAYLOADS)
+                  + ';' + ';'.join('import ' + n[:-3] for n in HOST_MODULES))
+        # -I alone still runs site and editable-package import hooks. Host tools
+        # need only stdlib at import time; prohibit site packages entirely.
+        subprocess.run([sys.executable, '-I', '-S', '-c', script, temp], check=True, capture_output=True)
 
 
 def merged_config(config, identities):
