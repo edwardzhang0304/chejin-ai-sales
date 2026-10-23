@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import argparse
 import base64
-from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 import hashlib
 import ipaddress
@@ -42,52 +41,8 @@ def digest(path):
         return hashlib.file_digest(stream, "sha256").hexdigest()
 
 
-@contextmanager
-def observation_stream(path):
-    """Observe live state without denying the application's atomic replacement.
-
-    Python's ordinary Windows open omits FILE_SHARE_DELETE. The test observer
-    must not lock the state file it polls. This grants sharing, not delete/write
-    access; missing files, denied reads and malformed JSON still fail normally.
-    """
-    if os.name != "nt":
-        with Path(path).open("rb") as stream:
-            yield stream
-        return
-    import ctypes
-    from ctypes import wintypes
-    import msvcrt
-
-    kernel = ctypes.WinDLL("kernel32", use_last_error=True)
-    create = kernel.CreateFileW
-    create.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD,
-                       wintypes.LPVOID, wintypes.DWORD, wintypes.DWORD, wintypes.HANDLE]
-    create.restype = wintypes.HANDLE
-    close = kernel.CloseHandle
-    close.argtypes = [wintypes.HANDLE]
-    close.restype = wintypes.BOOL
-    # GENERIC_READ; SHARE_READ | SHARE_WRITE | SHARE_DELETE; OPEN_EXISTING.
-    handle = create(str(Path(path).absolute()), 0x80000000, 0x7, None, 3, 0x80, None)
-    if handle == ctypes.c_void_p(-1).value:
-        raise ctypes.WinError(ctypes.get_last_error())
-    try:
-        fd = msvcrt.open_osfhandle(handle, os.O_RDONLY | os.O_BINARY)
-    except BaseException:
-        close(handle)
-        raise
-    # open_osfhandle transferred handle ownership to the descriptor.
-    try:
-        stream = os.fdopen(fd, "rb")
-    except BaseException:
-        os.close(fd)
-        raise
-    with stream:
-        yield stream
-
-
 def read_json(path):
-    with observation_stream(path) as stream:
-        return json.loads(stream.read().decode("utf-8-sig"))
+    return json.loads(Path(path).read_text(encoding="utf-8-sig"))
 
 
 def write_json(path, value):
@@ -117,14 +72,25 @@ class QtPage:
     actual UI; no bridge, coordinator, update plan or application state is set.
     """
 
-    def __init__(self, port):
+    def __init__(self, port, *, deadline=None):
+        self.deadline = deadline
         from websockets.sync.client import connect
-        with urllib.request.urlopen(f"http://127.0.0.1:{port}/json", timeout=10) as response:
+        with urllib.request.urlopen(f"http://127.0.0.1:{port}/json", timeout=self.remaining(10)) as response:
             pages = [p for p in json.load(response) if p.get("type") == "page"]
+        if not pages and deadline is not None:
+            raise ConnectionError("Worker page not created during restart")
         assert len(pages) == 1, "Expected one actual Worker page"
-        self.socket = connect(pages[0]["webSocketDebuggerUrl"], proxy=None, open_timeout=10,
+        self.socket = connect(pages[0]["webSocketDebuggerUrl"], proxy=None, open_timeout=self.remaining(10),
                               close_timeout=1, max_size=16 * 1024 * 1024)
         self.sequence = 0
+
+    def remaining(self, cap):
+        if self.deadline is None:
+            return cap
+        remaining = min(cap, self.deadline - time.monotonic())
+        if remaining <= 0:
+            raise TimeoutError("Overall upgrade observation deadline")
+        return remaining
 
     def __enter__(self):
         return self
@@ -133,11 +99,13 @@ class QtPage:
         self.socket.close()
 
     def call(self, method, **params):
+        self.remaining(15)
         self.sequence += 1
         self.socket.send(json.dumps({"id": self.sequence, "method": method, "params": params}))
-        deadline = time.monotonic() + 15
+        deadline = time.monotonic() + self.remaining(15)
         while time.monotonic() < deadline:
-            message = json.loads(self.socket.recv(timeout=max(0.1, deadline - time.monotonic())))
+            message = json.loads(self.socket.recv(timeout=self.remaining(max(0.001, deadline - time.monotonic()))))
+            self.remaining(15)
             if message.get("id") != self.sequence:
                 continue
             assert "error" not in message, f"CDP {method}: {message.get('error')}"
@@ -149,7 +117,7 @@ class QtPage:
         assert "exceptionDetails" not in result, "DOM inspection failed"
         return result.get("result", {}).get("value")
 
-    def click_button(self, name):
+    def click_button(self, name, *, wait=True):
         expression = """(() => {
           const matches = [...document.querySelectorAll('button')].filter(el => {
             const style = getComputedStyle(el), rect = el.getBoundingClientRect();
@@ -163,10 +131,14 @@ class QtPage:
           const hit = document.elementFromPoint(x, y);
           return hit && (hit === el || el.contains(hit)) ? {x, y} : null;
         })()""".replace("NAME", json.dumps(name))
-        point = wait_for(lambda: self.evaluate(expression), "visible clickable button " + name, 60)
+        point = (wait_for(lambda: self.evaluate(expression), "visible clickable button " + name, self.remaining(60))
+                 if wait else self.evaluate(expression))
+        if point is None:
+            return False
         self.call("Input.dispatchMouseEvent", type="mouseMoved", **point)
         self.call("Input.dispatchMouseEvent", type="mousePressed", button="left", buttons=1, clickCount=1, **point)
         self.call("Input.dispatchMouseEvent", type="mouseReleased", button="left", buttons=0, clickCount=1, **point)
+        return True
 
     def wait_text(self, value):
         expression = """[...document.querySelectorAll('body *')].some(el =>
@@ -456,6 +428,45 @@ def collect_failure_evidence(case, data, debug_port, clicked_at):
     return evidence
 
 
+def terminal_update_ui(debug_port, old, report, deadline):
+    """Wait for the visible terminal result before reading live update files.
+
+    The observer never opens update-state.json during download/installation.
+    A displayed result is only a read trigger: all durable result, exit,
+    identity and protected-data assertions below remain authoritative.
+    """
+    from websockets.exceptions import ConnectionClosed
+    try:
+        with QtPage(debug_port, deadline=deadline) as view:
+            text = view.evaluate("document.body.innerText") or ""
+            if "客户端版本号" not in text:
+                if old.poll() is not None:
+                    # The replacement starts on the workbench. Use the same
+                    # real settings button; never invoke a bridge or coordinator.
+                    view.click_button("打开设置", wait=False)
+                report.pop("terminal_ui_observation", None)
+                return False
+    except (OSError, TimeoutError, ConnectionClosed):
+        # Expected while the original process exits and its replacement starts.
+        report.pop("terminal_ui_observation", None)
+        return False
+    labels = ("已更新到V", "检查更新失败，请重试", "更新失败，已恢复到V",
+              "更新失败，请查看本机更新日志", "本次更新已结束")
+    terminal = next((line.strip() for line in text.splitlines()
+                     if any(label in line for label in labels)), None)
+    if terminal is None:
+        report.pop("terminal_ui_observation", None)
+        return False
+    observed = report.get("terminal_ui_observation")
+    if not observed or observed["text"] != terminal:
+        report["terminal_ui_observation"] = {"text": terminal, "since": time.monotonic()}
+        return False
+    # Let the client finish projecting/reconciling its terminal status. This
+    # does not extend the existing overall300second deadline or grant success.
+    now = time.monotonic()
+    return now < deadline and now - observed["since"] >= 2.0
+
+
 def run_case(args, status):
     import psutil
     plan = load_release_plan(getattr(args, "plan", None))
@@ -622,7 +633,11 @@ def run_case(args, status):
             # Do not close the browser, inject a plan, or terminate the old EXE.
             state_path = case / "updates" / "update-state.json"
 
+            finish_deadline = time.monotonic() + 300
+
             def finished():
+                if not terminal_update_ui(debug_port, old, report, finish_deadline):
+                    return False
                 if not state_path.exists():
                     return False
                 try:
@@ -646,7 +661,7 @@ def run_case(args, status):
                     if isinstance(diagnostic, dict):
                         report["failure_update_state"]["prepare_error_type"] = diagnostic.get("error_type")
                     raise AssertionError("Original GUI update failed: " + str(state.get("result_code")) + ": " + str(state.get("result_message") or state.get("message") or state.get("last_error") or ""))
-                return state if state.get("state") == "succeeded" and state.get("result_reconciled") is True and not state.get("status_restore_pending") else False
+                return state if time.monotonic() < finish_deadline and state.get("state") == "succeeded" and state.get("result_reconciled") is True and not state.get("status_restore_pending") else False
             state = wait_for(finished, "original GUI full upgrade", timeout=300)
             assert old.poll() is not None, "Original Worker did not exit"
             plan_path = Path(state["plan_path"])
@@ -679,7 +694,8 @@ def run_case(args, status):
             assert target_manifest["git_commit"] == read_json(args.release)["git_commit"]
             assert target_manifest["version"] == target_version
             with QtPage(debug_port) as new_page:
-                new_page.click_button("打开设置")
+                if "客户端版本号" not in (new_page.evaluate("document.body.innerText") or ""):
+                    new_page.click_button("打开设置")
                 new_page.wait_text("V" + target_version)
                 new_page.screenshot(case / "after.png")
             requests = [json.loads(line) for line in Path(spec["requests"]).read_text().splitlines()]

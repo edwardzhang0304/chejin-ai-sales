@@ -206,8 +206,6 @@ jobs:
       - uses: actions/setup-python@v5
         with: {python-version: '3.12.10'}
       - run: python -m pip install --disable-pip-version-check -r backend/requirements.txt 'numpy<2' 'PySide6==6.6.3.1' 'requests==2.32.3' 'psutil==5.9.8' 'websockets==15.0.1' 'PyYAML==6.0.2'
-      - name: Verify observer does not deny Windows state replacement
-        run: python -m unittest discover -s ops/formal_release/tests -p test_upgrade_observation_io.py -v
       - name: Verify saved old and target packages without repair or compilation
         run: |
           python ops/formal_release/updater_repair.py prepare --root "$env:RUNNER_TEMP/hook-upgrade" --old-run "$env:OLD_RUN" --target-run "$env:TARGET_RUN" --publication-run "$env:SIGN_RUN" --version "$env:TARGET_VERSION" --sha256 "$env:TARGET_SHA256" --repair-binary-run "$env:TARGET_RUN"

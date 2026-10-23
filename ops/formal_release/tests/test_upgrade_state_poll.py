@@ -16,7 +16,9 @@ def production_poll(tmp_path, reader):
     state = tmp_path / 'update-state.json'
     state.write_text('{}')
     report = {}
-    namespace = {'state_path': state, 'report': report, 'read_json': reader}
+    namespace = {'state_path': state, 'report': report, 'read_json': reader,
+                 'terminal_update_ui': Mock(return_value=True), 'debug_port': 1, 'old': Mock(), 'finish_deadline': 300,
+                 'time': Mock(monotonic=Mock(return_value=0))}
     exec(compile(ast.Module(body=[finished, waiter], type_ignores=[]), str(SCRIPT), 'exec'), namespace)
     return namespace, report, tree
 
@@ -69,4 +71,22 @@ def test_reconciliation_and_restore_guards_unchanged(tmp_path):
     env, _, _ = production_poll(tmp_path, Mock(side_effect=[{'state': 'succeeded', 'result_reconciled': False},
         {'state': 'succeeded', 'result_reconciled': True, 'status_restore_pending': True}]))
     assert env['finished']() is False
+    assert env['finished']() is False
+
+
+def test_active_ui_never_opens_live_state_file(tmp_path):
+    reader = Mock(return_value=success())
+    env, report, _ = production_poll(tmp_path, reader)
+    env['terminal_update_ui'].return_value = False
+    for _ in range(20):
+        assert env['finished']() is False
+    reader.assert_not_called()
+    env['terminal_update_ui'].return_value = True
+    assert env['finished']() == success()
+    reader.assert_called_once()
+
+
+def test_late_state_read_cannot_grant_success_after_deadline(tmp_path):
+    env, _, _ = production_poll(tmp_path, Mock(return_value=success()))
+    env['time'].monotonic.return_value = 301
     assert env['finished']() is False
