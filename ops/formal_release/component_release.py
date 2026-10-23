@@ -233,7 +233,7 @@ def worker_publication_approval(approval, meta):
             'COMPONENT_PACKAGE_IDENTITY_MISMATCH')
     # Reuse the existing upgrade protection validator, with the original EXEs
     # pinned by the operator's checked old build receipt, not by the reports.
-    from acceptance_cases import validate_case
+    from upgrade_evidence import validate_case
     old = approval['old_client']
     require(old['version'] == meta['current_version'] == plan['before']['worker'], 'UPGRADE_START_MISMATCH')
     for field in ('version', 'zip_sha256', 'exe_sha256', 'updater_sha256'):

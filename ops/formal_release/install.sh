@@ -1,6 +1,6 @@
 #!/bin/sh
 # Run from a reviewed bundle on the production host; no runtime configuration edits.
-# Required bundle: capacity.py receiver.py verify.py register.py maintenance.py build_admin.py manual_publication.py manual_readiness.py, baseline/<version>/chejin_worker_client,
+# Required bundle: operator_bundle.py module inventory, baseline/<version>/chejin_worker_client,
 # stage.pub, promote.pub, and trusted-public-keys.json copied from existing trust.
 set -eu
 bundle=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
@@ -15,7 +15,10 @@ if getent passwd "$user" >/dev/null; then
   exit 1
 fi
 python3 -c 'import cryptography'
-for file in capacity.py receiver.py verify.py register.py maintenance.py build_admin.py manual_publication.py manual_readiness.py disable.sh stage.pub promote.pub trusted-public-keys.json; do
+test -f "$bundle/operator_bundle.py"
+modules=$(python3 "$bundle/operator_bundle.py" list)
+python3 "$bundle/operator_bundle.py" check --bundle "$bundle"
+for file in $modules disable.sh stage.pub promote.pub trusted-public-keys.json; do
   test -f "$bundle/$file"
 done
 python3 - "$bundle" <<'PY'
@@ -36,12 +39,12 @@ for version in versions:
 PY
 install -d -m 755 "$target"
 install -m 700 "$bundle/disable.sh" "$target/disable.sh"
-install -m 644 "$bundle/capacity.py" "$bundle/receiver.py" "$bundle/verify.py" "$bundle/register.py" "$bundle/maintenance.py" "$bundle/build_admin.py" "$bundle/manual_publication.py" "$bundle/manual_readiness.py" "$target/"
+for file in $modules; do install -m 644 "$bundle/$file" "$target/"; done
 cp -R "$bundle/baseline" "$target/baseline"
 chown -R root:root "$target"
 chmod -R go-w "$target"
 install -m 644 "$bundle/trusted-public-keys.json" "$target/public-keys.json"
-install -d -m 700 /var/lib/chejin-formal-staging
+install -d -m 700 /var/lib/chejin-formal-staging /var/lib/chejin-component-approvals
 useradd --system --create-home --home-dir /var/lib/chejin-release --shell /bin/sh "$user"
 # An unlocked account is needed for public-key auth; this non-hash cannot authenticate a password.
 usermod --password '*' "$user"
@@ -73,8 +76,12 @@ config={'staging_root':'/var/lib/chejin-formal-staging','container':'chejin-lead
         'api_origin':'https://jiangsuchejin.com/api','staging_limit_bytes':4*1024**3}
 # Conservatively protect all installed baselines until operators register the rollback set.
 config['capacity']={'protected_versions':sorted(config['client_baselines'])}
+import sys
+sys.path.insert(0, '/opt/chejin-formal-release')
+from operator_bundle import merged_config
+config=merged_config(config, {})  # Hook publishing stays closed until authenticated baseline identities are imported.
 p=Path('/etc/chejin-formal-release.json');p.write_text(json.dumps(config)+'\n');p.chmod(0o600)
 PY
-python3 -m py_compile "$target/receiver.py" "$target/verify.py" "$target/register.py"
+python3 "$target/operator_bundle.py" check --bundle "$target"
 visudo -c >/dev/null
 echo 'FORMAL_RECEIVER_INSTALLED'
