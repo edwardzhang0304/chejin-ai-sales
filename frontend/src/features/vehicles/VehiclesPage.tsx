@@ -1,3 +1,4 @@
+import { PageHeader, MetricStrip, ListSurface, ListHeader, FilterBar, TableSurface } from '../../shared/ui/ManagementLayout';
 import { useAutoRefresh } from "../../shared/hooks/useAutoRefresh";
 import { useCallback, useEffect, useRef, useState } from "react";
 
@@ -243,27 +244,27 @@ export function VehiclesPage() {
   return (
     <div className="vehicles-page">
       <Toast message={toast?.message || null} tone={toast?.tone} onDismiss={dismissToast} />
-      <header className="page-header">
+      <PageHeader as="header" className="page-header">
         <div><p className="eyebrow">车辆资料运营</p><h1>车辆管理</h1></div>
         <div className="page-actions"><button type="button" className="secondary-button" onClick={openImportVehicles}>导入车辆</button><button type="button" className="primary-button" onClick={openCreateVehicle}>新增车辆</button></div>
-      </header>
+      </PageHeader>
 
-      <section className="metric-grid" aria-label="车辆管理指标" aria-busy={loading}>
+      <MetricStrip as="section" className="metric-grid" aria-label="车辆管理指标" aria-busy={loading}>
         <article><span>车辆总数</span><strong>{metric("total")}</strong><p>近 30 天新增 {metric("created_last_30_days")} 辆</p></article>
         <article><span>已上架</span><strong>{metric("listed")}</strong><p>可用于客服查询与推荐</p></article>
         <article><span>已下架</span><strong>{metric("unlisted")}</strong><p>仍可在后台维护</p></article>
         <article><span>待补充资料</span><strong className="warning-text">{metric("needs_details")}</strong><p>缺价格或有效图片</p></article>
-      </section>
+      </MetricStrip>
 
       <div className="management-grid vehicle-management-grid">
-        <section className="panel management-list-panel vehicle-list-panel">
-          <div className="panel-header"><div><h2>车辆列表</h2></div></div>
-          <div className="two-field-management-filter vehicle-filter-card">
+        <ListSurface as="section" className="panel management-list-panel vehicle-list-panel">
+          <ListHeader as="div" className="panel-header"><div><h2>车辆列表</h2></div></ListHeader>
+          <FilterBar as="div" className="two-field-management-filter vehicle-filter-card">
             <label className="management-search-field"><span>搜索</span><input type="search" value={keyword} onChange={(event) => setKeyword(event.target.value)} placeholder="车辆名称、编号、品牌、车系" aria-label="搜索车辆" /></label>
             <label><span>状态</span><select aria-label="筛选车辆状态" value={status} onChange={(event) => { setStatus(event.target.value as VehicleListingFilter); setPage(1); }}><option value="all">全部状态</option><option value="listed">已上架</option><option value="unlisted">已下架</option></select></label>
-          </div>
+          </FilterBar>
 
-          <div className="paginated-management-table-card vehicle-table-card">
+          <TableSurface as="div" className="paginated-management-table-card vehicle-table-card">
             {loading ? <div className="vehicle-empty state-box"><span className="loading-spinner" aria-hidden="true" /><strong>正在加载车辆</strong><span>请稍候。</span></div> : error ? <div className="vehicle-empty state-box error"><strong>车辆列表加载失败</strong><span>{error}</span><button type="button" onClick={() => void refreshList()}>重新加载</button></div> : items.length === 0 ? (
               <div className="vehicle-empty state-box">
                 <strong>{hasFilter ? "未找到匹配车辆" : "暂无车辆"}</strong>
@@ -286,7 +287,7 @@ export function VehiclesPage() {
                 </tr>)}</tbody>
               </table>
             )}
-          </div>
+          </TableSurface>
 
           {!loading && !error && items.length > 0 ? (
             <Pagination
@@ -309,7 +310,7 @@ export function VehiclesPage() {
               }}
             />
           ) : null}
-        </section>
+        </ListSurface>
 
         {activeCode ? <VehicleDetailDrawer vehicle={detail} loading={detailLoading} error={detailError} onRetry={() => void refreshDetail()} onClose={closeVehicleDetail} onDirtyChange={setDrawerDirty} onRefreshBlockedChange={setDrawerRefreshBlocked} onVehicleChanged={syncVehicle} onNotify={notify} /> : null}
       </div>

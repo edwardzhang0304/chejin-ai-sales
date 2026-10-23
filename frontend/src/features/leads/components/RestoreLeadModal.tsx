@@ -1,3 +1,4 @@
+import { ModalLayer, DialogSurface } from '../../../shared/ui/ManagementLayout';
 import { useLockBodyScroll } from "../../../shared/hooks/useLockBodyScroll";
 import type { LeadListItem } from "../types";
 
@@ -13,8 +14,8 @@ export function RestoreLeadModal({ lead, submitting, error, onClose, onConfirm }
   useLockBodyScroll();
 
   return (
-    <div className="modal-backdrop" role="presentation">
-      <section className="modal small-modal" role="dialog" aria-modal="true" aria-label="恢复为有效线索">
+    <ModalLayer className="modal-backdrop" role="presentation">
+      <DialogSurface as="section" className="modal small-modal" role="dialog" aria-modal="true" aria-label="恢复为有效线索">
         <header>
           <h2>恢复为有效线索</h2>
         </header>
@@ -31,7 +32,7 @@ export function RestoreLeadModal({ lead, submitting, error, onClose, onConfirm }
             {submitting ? "恢复中..." : "确认恢复有效"}
           </button>
         </footer>
-      </section>
-    </div>
+      </DialogSurface>
+    </ModalLayer>
   );
 }

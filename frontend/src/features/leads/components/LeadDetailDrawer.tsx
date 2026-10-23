@@ -1,3 +1,5 @@
+import { DrawerHeader, DrawerContent, DrawerFooter } from '../../../shared/ui/ManagementLayout';
+import { DetailDrawer } from '../../../shared/ui/ManagementLayout';
 import { useEffect, useState } from "react";
 
 import { CloseIcon } from "../../../shared/ui/Icons";
@@ -46,28 +48,28 @@ export function LeadDetailDrawer({ detail, loading, error, onClose, onRetry, onM
 
   if (error && !loading) {
     return (
-      <aside className="detail-drawer empty" aria-label="线索详情">
+      <DetailDrawer as="aside" className="detail-drawer empty" aria-label="线索详情">
         <div className="state-box error">
           <span>{error}</span>
           <button type="button" className="secondary-button" onClick={onRetry}>
             重试
           </button>
         </div>
-      </aside>
+      </DetailDrawer>
     );
   }
 
   if (!detail && !loading) {
     return (
-      <aside className="detail-drawer empty" aria-label="线索详情">
+      <DetailDrawer as="aside" className="detail-drawer empty" aria-label="线索详情">
         <p>选择一条线索查看详情</p>
-      </aside>
+      </DetailDrawer>
     );
   }
 
   return (
-    <aside className="detail-drawer" aria-label="线索详情">
-      <div className="drawer-head">
+    <DetailDrawer as="aside" className="detail-drawer" aria-label="线索详情">
+      <DrawerHeader as="div" className="drawer-head">
         <div>
           <p className="eyebrow">线索详情</p>
           <h2 title={loading ? undefined : detail?.customer_name}>{loading ? "加载中" : detail?.customer_name}</h2>
@@ -75,7 +77,7 @@ export function LeadDetailDrawer({ detail, loading, error, onClose, onRetry, onM
         <button type="button" className="icon-button drawer-close-button" onClick={onClose} aria-label="关闭详情">
           <CloseIcon />
         </button>
-      </div>
+      </DrawerHeader>
 
       {loading || !detail ? (
         <div className="state-box">正在加载详情...</div>
@@ -126,7 +128,7 @@ export function LeadDetailDrawer({ detail, loading, error, onClose, onRetry, onM
             ))}
           </div>
 
-          <div className="drawer-scroll-area">
+          <DrawerContent as="div" className="drawer-scroll-area">
             {activeTab === "overview" ? (
               <>
               <section className="detail-block contact-block">
@@ -223,10 +225,10 @@ export function LeadDetailDrawer({ detail, loading, error, onClose, onRetry, onM
               )}
             </section>
             ) : null}
-          </div>
+          </DrawerContent>
 
           {activeTab === "overview" ? (
-            <section className="drawer-action-section detail-actions" aria-label="线索操作">
+            <DrawerFooter as="section" className="drawer-action-section detail-actions" aria-label="线索操作">
               <h3>操作</h3>
               <div className="drawer-actions">
                 {detail.status === "invalid" ? (
@@ -235,10 +237,10 @@ export function LeadDetailDrawer({ detail, loading, error, onClose, onRetry, onM
                   <button type="button" className="secondary-button" onClick={() => onMarkInvalid(detail.id)}>标记无效</button>
                 )}
               </div>
-            </section>
+            </DrawerFooter>
           ) : null}
         </div>
       )}
-    </aside>
+    </DetailDrawer>
   );
 }

@@ -4,6 +4,7 @@ export type WorkerItem = {
   device_name: string | null;
   platform: string;
   enabled: boolean;
+  operational_status?: "running" | "paused" | "faulted" | "offline" | "unbound" | "unavailable";
   online_status: string;
   run_status: string;
   running_status: string;

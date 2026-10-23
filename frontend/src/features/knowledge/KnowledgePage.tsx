@@ -1,3 +1,5 @@
+import { ModalLayer, DrawerHeader, DrawerContent, DrawerFooter } from '../../shared/ui/ManagementLayout';
+import { DialogSurface, DetailDrawer, PageHeader, MetricStrip, ListSurface, ListHeader, FilterBar, TableSurface } from '../../shared/ui/ManagementLayout';
 import { useAutoRefresh } from "../../shared/hooks/useAutoRefresh";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
@@ -96,10 +98,10 @@ function PublishPreviewModal({ preview, busy, onCancel, onConfirm }: { preview: 
   if (!preview) return null;
   const firstChange = preview.change_set[0];
   return (
-    <div className="modal-backdrop knowledge-preview-backdrop" role="presentation" onMouseDown={(event) => {
+    <ModalLayer className="modal-backdrop knowledge-preview-backdrop" role="presentation" onMouseDown={(event) => {
       if (event.target === event.currentTarget && !busy) onCancel();
     }}>
-      <section className="modal knowledge-preview-modal" role="dialog" aria-modal="true" aria-labelledby="knowledge-preview-title">
+      <DialogSurface as="section" className="modal knowledge-preview-modal" role="dialog" aria-modal="true" aria-labelledby="knowledge-preview-title">
         <header className="modal-head">
           <div>
             <p>发布确认</p>
@@ -150,8 +152,8 @@ function PublishPreviewModal({ preview, busy, onCancel, onConfirm }: { preview: 
             <button type="button" className="primary-button" disabled={busy} onClick={onConfirm}>{busy ? "发布中..." : "确认发布"}</button>
           ) : null}
         </footer>
-      </section>
-    </div>
+      </DialogSurface>
+    </ModalLayer>
   );
 }
 
@@ -166,10 +168,10 @@ function CreateKnowledgeModal({ open, value, busy, error, onChange, onCancel, on
 }) {
   if (!open) return null;
   return (
-    <div className="modal-backdrop" role="presentation" onMouseDown={(event) => {
+    <ModalLayer className="modal-backdrop" role="presentation" onMouseDown={(event) => {
       if (event.target === event.currentTarget && !busy) onCancel();
     }}>
-      <section className="modal knowledge-create-modal" role="dialog" aria-modal="true" aria-labelledby="knowledge-create-title">
+      <DialogSurface as="section" className="modal knowledge-create-modal" role="dialog" aria-modal="true" aria-labelledby="knowledge-create-title">
         <header className="modal-head">
           <div><p>知识管理</p><h2 id="knowledge-create-title">新增知识</h2></div>
           <button className="icon-button" type="button" aria-label="关闭新增知识" disabled={busy} onClick={onCancel}><CloseIcon /></button>
@@ -180,8 +182,8 @@ function CreateKnowledgeModal({ open, value, busy, error, onChange, onCancel, on
           <button type="button" disabled={busy} onClick={onCancel}>取消</button>
           <button type="button" className="primary-button" disabled={busy} onClick={onSave}>{busy ? "保存中..." : "保存草稿"}</button>
         </footer>
-      </section>
-    </div>
+      </DialogSurface>
+    </ModalLayer>
   );
 }
 
@@ -202,28 +204,28 @@ function KnowledgeDetailDrawer({ item, loading, error, editing, draft, busy, onD
 }) {
   if (!item && !loading && !error) return null;
   return (
-    <aside className={`panel management-drawer standard-management-drawer knowledge-detail-drawer ${editing ? "is-editing" : ""}`} aria-label="知识详情">
-      <header className="drawer-head standard-management-drawer-head">
+    <DetailDrawer as="aside" className={`panel management-drawer standard-management-drawer knowledge-detail-drawer ${editing ? "is-editing" : ""}`} aria-label="知识详情">
+      <DrawerHeader as="header" className="drawer-head standard-management-drawer-head">
         <div><p>{editing ? "编辑知识" : "知识详情"}</p><h2>{item?.title || "加载中..."}</h2></div>
         <button className="icon-button drawer-close-button" type="button" aria-label="关闭知识详情" onClick={onClose}><CloseIcon /></button>
-      </header>
+      </DrawerHeader>
       {loading ? <div className="state-box">正在加载知识详情...</div> : null}
       {error ? <div className="state-box error" role="alert">{error}</div> : null}
       {item && !loading ? (
         editing ? (
           <div className="management-drawer-form knowledge-drawer-edit">
-            <div className="management-drawer-scroll"><KnowledgeEditorFields value={draft} onChange={onDraftChange} disabled={busy} /></div>
-            <footer className="management-drawer-actions">
+            <DrawerContent as="div" className="management-drawer-scroll"><KnowledgeEditorFields value={draft} onChange={onDraftChange} disabled={busy} /></DrawerContent>
+            <DrawerFooter as="footer" className="management-drawer-actions">
               <h3>操作</h3>
               <div className="drawer-actions">
                 <button type="button" disabled={busy} onClick={onCancelEdit}>取消</button>
                 <button type="button" className="primary-button" disabled={busy} onClick={onSaveDraft}>{busy ? "保存中..." : "保存草稿"}</button>
               </div>
-            </footer>
+            </DrawerFooter>
           </div>
         ) : (
           <div className="management-drawer-form knowledge-drawer-body">
-            <div className="management-drawer-scroll">
+            <DrawerContent as="div" className="management-drawer-scroll">
               <section className="drawer-section">
                 <h3>知识正文</h3>
                 <p className="knowledge-content">{item.content}</p>
@@ -237,19 +239,19 @@ function KnowledgeDetailDrawer({ item, loading, error, editing, draft, busy, onD
                   <div><dt>更新时间</dt><dd>{formatDateTime(item.updated_at)}</dd></div>
                 </dl>
               </section>
-            </div>
-            <footer className="management-drawer-actions">
+            </DrawerContent>
+            <DrawerFooter as="footer" className="management-drawer-actions">
               <h3>操作</h3>
               <div className="drawer-actions">
                 {item.draft_operation !== "archive" ? <button type="button" onClick={onEdit}>编辑知识</button> : null}
                 {item.draft_revision_id ? <button type="button" className="primary-button" disabled={busy} onClick={onPublish}>{busy ? "校验中..." : item.draft_operation === "archive" ? "发布归档" : "发布"}</button> : null}
                 {item.status === "published" && !item.draft_revision_id ? <button type="button" className="danger-button" disabled={busy} onClick={onArchive}>归档</button> : null}
               </div>
-            </footer>
+            </DrawerFooter>
           </div>
         )
       ) : null}
-    </aside>
+    </DetailDrawer>
   );
 }
 
@@ -264,12 +266,12 @@ function ReleaseHistoryDrawer({ open, releases, currentVersion, loading, error, 
 }) {
   if (!open) return null;
   return (
-    <aside className="panel management-drawer standard-management-drawer knowledge-release-drawer" aria-label="知识发布记录">
-      <header className="drawer-head standard-management-drawer-head">
+    <DetailDrawer as="aside" className="panel management-drawer standard-management-drawer knowledge-release-drawer" aria-label="知识发布记录">
+      <DrawerHeader as="header" className="drawer-head standard-management-drawer-head">
         <div><p>知识管理</p><h2>发布记录</h2></div>
         <button className="icon-button drawer-close-button" type="button" aria-label="关闭发布记录" onClick={onClose}><CloseIcon /></button>
-      </header>
-      <div className="management-drawer-scroll knowledge-release-scroll">
+      </DrawerHeader>
+      <DrawerContent as="div" className="management-drawer-scroll knowledge-release-scroll">
         <div className="knowledge-current-release-card"><span>当前线上版本</span><strong>{currentVersion}</strong></div>
         {loading ? <div className="state-box">正在加载发布记录...</div> : null}
         {error ? <div className="state-box error" role="alert">{error}</div> : null}
@@ -282,8 +284,8 @@ function ReleaseHistoryDrawer({ open, releases, currentVersion, loading, error, 
             </button>
           ))}
         </div>
-      </div>
-    </aside>
+      </DrawerContent>
+    </DetailDrawer>
   );
 }
 
@@ -296,10 +298,10 @@ function ReleaseDetailModal({ release, loading, error, onClose, onRollback }: {
 }) {
   if (!release && !loading && !error) return null;
   return (
-    <div className="modal-backdrop" role="presentation" onMouseDown={(event) => {
+    <ModalLayer className="modal-backdrop" role="presentation" onMouseDown={(event) => {
       if (event.target === event.currentTarget) onClose();
     }}>
-      <section className="modal knowledge-release-modal" role="dialog" aria-modal="true" aria-labelledby="knowledge-release-title">
+      <DialogSurface as="section" className="modal knowledge-release-modal" role="dialog" aria-modal="true" aria-labelledby="knowledge-release-title">
         <header className="modal-head">
           <div><p>知识发布记录</p><h2 id="knowledge-release-title">{release?.version || "版本详情"}</h2></div>
           <button className="icon-button" type="button" aria-label="关闭版本详情" onClick={onClose}><CloseIcon /></button>
@@ -324,8 +326,8 @@ function ReleaseDetailModal({ release, loading, error, onClose, onRollback }: {
           <button type="button" onClick={onClose}>关闭</button>
           {release && !release.is_current ? <button type="button" className="primary-button" onClick={() => onRollback(release.id)}>回滚到此版本</button> : null}
         </footer>
-      </section>
-    </div>
+      </DialogSurface>
+    </ModalLayer>
   );
 }
 
@@ -626,12 +628,12 @@ export function KnowledgePage() {
 
   return (
     <div className="knowledge-page">
-      <header className="page-header">
+      <PageHeader as="header" className="page-header">
         <div><p className="eyebrow">业务知识运营</p><h1>知识管理</h1></div>
         <button type="button" className="primary-button" onClick={() => { setCreateDraft({ title: "", content: "" }); setFormError(null); setCreateOpen(true); }}>新增知识</button>
-      </header>
+      </PageHeader>
 
-      <section className="metric-grid" aria-label="知识概览">
+      <MetricStrip as="section" className="metric-grid" aria-label="知识概览">
         <article className="knowledge-metric-interactive">
           <button type="button" onClick={() => void openReleases()}>
             <span>当前线上版本</span><strong>{summary?.current_release.version || "—"}</strong><p>{summary ? formatDateTime(summary.current_release.published_at) : "正在加载"}</p>
@@ -639,16 +641,16 @@ export function KnowledgePage() {
         </article>
         <article><span>今日发布</span><strong>{summary?.published_today ?? "—"}</strong><p>{summary ? `${summary.published_today_breakdown.create} 新增 · ${summary.published_today_breakdown.update} 修改 · ${summary.published_today_breakdown.archive} 归档` : "成功发布次数"}</p></article>
         <article><span>已发布知识</span><strong>{summary?.published_count ?? "—"}</strong><p>累计已归档 {summary?.archived_count ?? "—"} 条</p></article>
-      </section>
+      </MetricStrip>
 
       <div className="management-grid knowledge-management-grid">
-        <section className="panel management-list-panel knowledge-list-panel">
-          <header className="panel-header"><div><h2>知识列表</h2><p>发布成功后，仅新创建的 AI 对话批次使用新版本</p></div></header>
-          <div className="management-filter-card two-field-management-filter knowledge-filter-card">
+        <ListSurface as="section" className="panel management-list-panel knowledge-list-panel">
+          <ListHeader as="header" className="panel-header"><div><h2>知识列表</h2><p>发布成功后，仅新创建的 AI 对话批次使用新版本</p></div></ListHeader>
+          <FilterBar as="div" className="management-filter-card two-field-management-filter knowledge-filter-card">
             <label className="management-search-field"><span>搜索</span><input type="search" value={keyword} placeholder="标题或正文关键词" aria-label="搜索知识" onChange={(event) => setKeyword(event.target.value)} /></label>
             <label><span>状态</span><select aria-label="筛选知识状态" value={status} onChange={(event) => { setStatus(event.target.value as KnowledgeFilterStatus); setPage(1); }}><option value="all">全部状态</option><option value="draft">草稿</option><option value="published">已发布</option><option value="archived">已归档</option></select></label>
-          </div>
-          <div className="paginated-management-table-card knowledge-table-card">
+          </FilterBar>
+          <TableSurface as="div" className="paginated-management-table-card knowledge-table-card">
             {loading ? <div className="management-empty-state"><span className="loading-spinner" aria-hidden="true" /><strong>正在加载知识列表</strong><span>请稍候。</span></div> : error ? <div className="management-empty-state error" role="alert"><strong>知识列表加载失败</strong><span>{error}</span><button type="button" onClick={() => void refresh()}>重新加载</button></div> : isEmpty ? <div className="management-empty-state"><strong>{filteredEmpty ? "没有符合条件的知识" : "暂无知识"}</strong><span>{filteredEmpty ? "调整关键词或状态后再试" : "点击右上角新增第一条正式知识"}</span>{filteredEmpty ? <button type="button" onClick={() => { setKeyword(""); setStatus("all"); }}>清除筛选</button> : null}</div> : (
               <table className="management-table knowledge-table">
                 <thead><tr><th>知识标题</th><th>状态</th><th>最后编辑人</th><th>最后更新时间</th></tr></thead>
@@ -664,7 +666,7 @@ export function KnowledgePage() {
                 </tbody>
               </table>
             )}
-          </div>
+          </TableSurface>
           {!loading && !error && items.length > 0 ? (
             <Pagination
               ariaLabel="知识列表分页"
@@ -681,7 +683,7 @@ export function KnowledgePage() {
               onPageSizeChange={(value) => { setPageSize(value); setPage(1); }}
             />
           ) : null}
-        </section>
+        </ListSurface>
 
         {releasesOpen ? (
           <ReleaseHistoryDrawer open releases={releases} currentVersion={summary?.current_release.version || "—"} loading={releasesLoading} error={releasesError} onClose={() => setReleasesOpen(false)} onOpenRelease={(id) => void openReleaseDetail(id)} />

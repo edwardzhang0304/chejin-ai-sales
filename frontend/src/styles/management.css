@@ -1,0 +1,1994 @@
+/* One geometry system for every module. No per-page spacing overrides. */
+:root {
+  --ink: #141c2b;
+  --muted: #6c7890;
+  --subtle: #8b95a7;
+  --primary: #397af0;
+  --primary-active: #2869df;
+  --primary-deep: #2865c8;
+  --primary-soft: #e5eeff;
+  --line: #dfe5ee;
+  --soft-line: #ebeff5;
+  --surface: #fff;
+  --page: #eff3f8;
+  --danger: #b44349;
+  --danger-soft: #fff0f0;
+  --warning: #8b744b;
+  --warning-soft: #f7f2e8;
+  --glass: rgba(255, 255, 255, 0.83);
+  --radius: 8px;
+  --shadow: 0 12px 40px #3045640b;
+  --sidebar-width: 240px;
+  --page-padding: 22px;
+  --section-gap: 18px;
+  --control-height: 38px;
+  --drawer-width: 420px;
+  font-family:
+    -apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC",
+    "Microsoft YaHei", sans-serif;
+}
+* {
+  box-sizing: border-box;
+  letter-spacing: 0 !important;
+}
+body {
+  margin: 0;
+  min-width: 360px;
+  background: var(--page);
+  color: var(--ink);
+  font-size: 14px;
+  -webkit-font-smoothing: antialiased;
+}
+button,
+input,
+select,
+textarea {
+  font: inherit;
+}
+button {
+  cursor: pointer;
+}
+button:disabled {
+  cursor: not-allowed;
+}
+svg {
+  flex-shrink: 0;
+}
+button:focus-visible,
+a:focus-visible,
+input:focus-visible,
+select:focus-visible,
+textarea:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 3px;
+}
+
+/* Shared admin shell. */
+.glass-admin.app-shell {
+  display: grid;
+  grid-template-columns: var(--sidebar-width) minmax(0, 1fr);
+  min-height: 100vh;
+  background: #eff3f8;
+}
+.glass-admin.app-shell .sidebar {
+  position: sticky;
+  top: 0;
+  height: 100vh;
+  padding: 28px 16px 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 30px;
+  min-width: 0;
+  border: 1px solid #ffffffa8;
+  border-top: 0;
+  background: #e6edf7a6;
+  backdrop-filter: blur(32px);
+  color: var(--ink);
+}
+.glass-admin .brand-block {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 0 6px;
+  width: 100%;
+  min-width: 0;
+}
+.glass-admin .brand-mark {
+  width: 46px;
+  height: 46px;
+  flex-shrink: 0;
+  background: #efa657;
+  color: white;
+  border-radius: 8px;
+  font-size: 18px;
+  box-shadow: inset 0 1px 2px #ffffff80;
+}
+.glass-admin .brand-block strong {
+  color: #293d5d;
+  font-size: 18px;
+  line-height: 26px;
+}
+.glass-admin .brand-block span {
+  color: #62738f;
+  font-size: 14px;
+  line-height: 22px;
+}
+.glass-admin.app-shell .sidebar .module-nav {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: 100%;
+  margin: 0;
+}
+.glass-admin .module-item {
+  height: 48px;
+  min-height: 48px;
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 12px;
+  padding: 0 12px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  font-size: 15px;
+  font-weight: 500;
+  color: #465c7b;
+  text-align: left;
+}
+.glass-admin .module-item svg {
+  width: 21px;
+  height: 21px;
+  stroke-width: 1.6;
+}
+.glass-admin .module-item:hover {
+  background: #e0e9f7;
+}
+.glass-admin .module-item.active {
+  background: #dce9ffb8;
+  color: #2369df;
+  font-weight: 600;
+  box-shadow: inset 0 1px 1px #fff7;
+}
+.glass-admin .account-area {
+  margin-top: auto;
+  width: 100%;
+}
+.glass-admin .account-button {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  min-height: 54px;
+  padding: 10px 12px;
+  border: 1px solid #ffffffbc;
+  border-radius: 8px;
+  background: #ffffff3d;
+  color: #536581;
+}
+.glass-admin .account-avatar,
+.small-avatar {
+  display: inline-grid;
+  place-items: center;
+  flex-shrink: 0;
+  background: #7d8492;
+  color: #fff;
+  border-radius: 50%;
+  width: 32px;
+  height: 32px;
+  font-size: 13px;
+}
+.glass-admin .account-copy {
+  flex: 1;
+  text-align: left;
+}
+.glass-admin .account-copy strong {
+  font-size: 13px;
+  color: #536581;
+}
+.glass-admin .account-menu {
+  width: 100%;
+  background: #fff;
+  border: 1px solid var(--line);
+  box-shadow: var(--shadow);
+}
+.account-menu button {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.glass-admin .workspace {
+  padding: 24px var(--page-padding) 24px;
+  min-width: 0;
+  background: transparent;
+  min-height: 100vh;
+}
+.glass-admin .empty-workspace {
+  min-height: calc(100vh - 110px);
+}
+.glass-admin .empty-panel {
+  border: 0;
+  box-shadow: none;
+  background: none;
+}
+.glass-admin .empty-panel h1 {
+  font-size: 24px;
+}
+.glass-admin .empty-icon {
+  background: #e3eaf5;
+  color: #7586a2;
+}
+
+.glass-admin.app-shell {
+  height: 100vh;
+  overflow: hidden;
+}
+.glass-admin .workspace {
+  height: 100%;
+  min-height: 0;
+  overflow: auto;
+  overscroll-behavior: contain;
+}
+.glass-admin .screen-sales,
+.glass-admin .screen-workers,
+.glass-admin .screen-tasks {
+  min-height: 0;
+}
+/* PageHeader, MetricStrip, ListSurface, FilterBar, TableSurface. */
+.glass-admin .ui-page-header,
+.dashboard-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 20px;
+  min-height: 38px;
+  margin: 0 0 var(--section-gap);
+  width: 100%;
+  max-width: none;
+}
+.ui-page-header .eyebrow {
+  display: none;
+}
+.glass-admin .ui-page-header h1,
+.dashboard-heading h1 {
+  font-size: 30px;
+  line-height: 38px;
+  font-weight: 650;
+  margin: 0;
+  color: #101725;
+}
+.page-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.primary-button,
+.secondary-button,
+.ghost-button,
+.danger-button {
+  min-height: var(--control-height);
+  padding: 0 18px;
+  border-radius: 6px;
+  font-size: 14px;
+  font-weight: 500;
+}
+.primary-button {
+  color: #fff;
+  background: var(--primary);
+  border: 1px solid var(--primary);
+  box-shadow:
+    inset 0 1px 2px #fff5,
+    0 2px 5px #397af024;
+}
+.primary-button:hover {
+  background: var(--primary-active);
+}
+.secondary-button,
+.ghost-button {
+  background: #ffffffb8;
+  color: #53647e;
+  border: 1px solid #dfe5ef;
+}
+.danger-button {
+  color: var(--danger);
+  background: #fff5f5;
+  border-color: #f0d6d8;
+}
+.glass-admin .ui-metric-strip {
+  display: grid;
+  grid-auto-flow: column;
+  grid-auto-columns: minmax(0, 1fr);
+  grid-template-columns: none;
+  gap: 0;
+  margin: 0 0 var(--section-gap);
+  padding: 18px 6px;
+  min-height: 108px;
+  background: var(--glass);
+  border: 1px solid #fff;
+  border-radius: 8px;
+  box-shadow: var(--shadow);
+  width: 100%;
+  max-width: none;
+}
+.glass-admin .ui-metric-strip article {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  margin: 0;
+  padding: 0 24px;
+  min-width: 0;
+  min-height: 70px;
+  border: 0;
+  border-right: 1px solid var(--soft-line);
+  background: none;
+  border-radius: 0;
+  box-shadow: none;
+}
+.glass-admin .ui-metric-strip article:last-child {
+  border-right: 0;
+}
+.ui-metric-icon {
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  background: #eef0f5;
+  color: #727b8c;
+  flex-shrink: 0;
+}
+.ui-metric-copy {
+  min-width: 0;
+}
+.glass-admin .ui-metric-strip span:not(.ui-metric-icon) {
+  font-size: 14px;
+  color: var(--muted);
+  font-weight: 400;
+}
+.glass-admin .ui-metric-strip strong {
+  display: block;
+  font-size: 26px;
+  line-height: 32px;
+  font-weight: 600;
+  color: var(--ink);
+  margin: 2px 0;
+}
+.glass-admin .ui-metric-strip p {
+  font-size: 12px;
+  line-height: 20px;
+  margin: 0;
+  color: #8993a5;
+  font-weight: 400;
+}
+.glass-admin .knowledge-metric-interactive button {
+  padding: 0;
+  text-align: left;
+  border: 0;
+  background: none;
+}
+.glass-admin .knowledge-metric-interactive strong {
+  font-size: 22px;
+  white-space: nowrap;
+}
+.glass-admin .management-grid,
+.glass-admin .content-grid {
+  display: block;
+  min-width: 0;
+  width: 100%;
+}
+.glass-admin .ui-list-surface {
+  display: block;
+  width: 100%;
+  min-height: 0;
+  height: auto;
+  padding: 22px;
+  background: var(--glass);
+  border: 1px solid #fff;
+  border-radius: 8px;
+  box-shadow: var(--shadow);
+}
+.glass-admin .ui-list-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  min-height: 28px;
+  height: auto;
+  margin: 0 0 18px;
+  padding: 0;
+  border: 0;
+}
+.ui-list-header h2 {
+  font-size: 19px;
+  font-weight: 600;
+  line-height: 28px;
+  margin: 0;
+}
+.ui-list-header p {
+  display: none;
+}
+.ui-list-header button {
+  font-size: 14px;
+  font-weight: 500;
+  color: #4a73b5;
+}
+.glass-admin .ui-filter-bar {
+  display: grid;
+  grid-template-columns: minmax(260px, 2fr) repeat(2, minmax(160px, 1fr));
+  gap: 12px;
+  align-items: end;
+  margin: 0 0 14px;
+  padding: 0;
+  min-height: 56px;
+  height: auto;
+  width: 100%;
+  border: 0;
+  border-radius: 0;
+  background: none;
+}
+.glass-admin .ui-filter-bar.two-field-management-filter {
+  grid-template-columns: minmax(260px, 2fr) repeat(2, minmax(160px, 1fr));
+}
+.glass-admin .ui-filter-bar.task-filter-card {
+  grid-template-columns: minmax(260px, 2fr) repeat(3, minmax(140px, 1fr));
+}
+.glass-admin .ui-filter-bar .task-search {
+  grid-column: auto;
+}
+.glass-admin .ui-filter-bar label {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+}
+.glass-admin label > span {
+  font-size: 13px;
+  line-height: 18px;
+  color: #77849b;
+  font-weight: 400;
+}
+.glass-admin input:not([type="checkbox"]):not([type="radio"]),
+.glass-admin select,
+.glass-admin textarea {
+  width: 100%;
+  border: 1px solid #dce3ee;
+  border-radius: 6px;
+  background: #ffffffb8;
+  box-shadow: 0 1px 3px #263e5f03;
+  color: #3b4961;
+  font-size: 14px;
+  font-weight: 400;
+  min-height: var(--control-height);
+}
+.glass-admin input:not([type="checkbox"]):not([type="radio"]),
+.glass-admin select {
+  height: var(--control-height);
+  padding: 0 12px;
+}
+.glass-admin input::placeholder,
+.glass-admin textarea::placeholder {
+  color: #9aa5b7;
+}
+.glass-admin textarea {
+  padding: 12px;
+  line-height: 24px;
+}
+.glass-admin .ui-table-surface {
+  width: 100%;
+  height: auto;
+  min-height: 0;
+  overflow: auto;
+  border: 1px solid var(--soft-line);
+  border-radius: 6px;
+  margin: 0;
+}
+.glass-admin table {
+  width: 100%;
+  min-width: 760px;
+  table-layout: fixed;
+  border-collapse: collapse;
+}
+.glass-admin th {
+  height: 38px;
+  padding: 9px 12px;
+  background: #f3f5f9b8;
+  color: #7b879c;
+  font-size: 13px;
+  font-weight: 500;
+  text-align: left;
+  border-bottom: 1px solid var(--soft-line);
+}
+.glass-admin td {
+  height: 52px;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--soft-line);
+  font-size: 14px;
+  font-weight: 400;
+  color: #344158;
+  text-align: left;
+}
+.glass-admin td strong {
+  font-weight: 550;
+  font-size: 14px;
+}
+.glass-admin td small {
+  font-size: 12px;
+  font-weight: 400;
+  color: #8994a7;
+}
+.glass-admin tbody tr:hover {
+  background: #f0f5ff9c;
+}
+.glass-admin tbody tr.selected,
+.glass-admin tbody tr.active-row {
+  background: #eaf2ff;
+}
+.glass-admin tbody tr:last-child td {
+  border-bottom: 0;
+}
+.glass-admin .task-table {
+  min-width: 1140px;
+}
+.glass-admin .worker-table {
+  min-width: 1020px;
+}
+.glass-admin .vehicle-table {
+  min-width: 1120px;
+}
+.glass-admin .vehicle-table th:nth-child(2) {
+  width: 200px;
+}
+.glass-admin .worker-table th:nth-child(2) {
+  width: 220px;
+}
+.glass-admin .knowledge-table th:first-child {
+  width: 38%;
+}
+.glass-admin .vehicle-table th:first-child,
+.glass-admin .vehicle-table td:first-child {
+  width: 96px;
+}
+.glass-admin .vehicle-thumbnail,
+.glass-admin .vehicle-thumbnail-empty,
+.glass-admin .vehicle-thumbnail-cell .vehicle-image-skeleton,
+.glass-admin .vehicle-thumbnail-cell .vehicle-image-fallback {
+  width: 64px;
+  height: 44px;
+  object-fit: contain;
+  border-radius: 4px;
+  background: #edf0f5;
+}
+.glass-admin .status {
+  min-height: 25px;
+  padding: 3px 9px;
+  border: 0;
+  border-radius: 5px;
+  background: #edf0f5;
+  color: #69768d;
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 20px;
+  white-space: nowrap;
+}
+.glass-admin .status.assigned,
+.glass-admin .status.completed,
+.glass-admin .status.running {
+  background: #eaf1fc;
+  color: #456ca8;
+}
+.glass-admin .status.failed,
+.glass-admin .status.invalid,
+.glass-admin .status.blocked {
+  background: #fceff0;
+  color: #b45258;
+}
+.glass-admin .bulk-row {
+  font-size: 13px;
+  margin: 0 0 18px;
+  padding: 0;
+}
+.glass-admin .bulk-row button {
+  min-height: 30px;
+  font-size: 13px;
+}
+.glass-admin .pagination,
+.glass-admin .task-pagination,
+.glass-admin .paginated-management-pagination-row {
+  font-size: 13px;
+  margin: 22px 0 0;
+  width: 100%;
+  height: auto;
+}
+.glass-admin .pagination button {
+  height: 30px;
+  min-width: 30px;
+  font-size: 13px;
+}
+.state-box,
+.management-empty-state {
+  min-height: 270px;
+}
+
+.glass-admin .ui-page-header {
+  height: 38px;
+  min-height: 38px;
+}
+.glass-admin .ui-metric-strip {
+  height: 108px;
+}
+.glass-admin .ui-metric-strip article {
+  height: 70px;
+}
+.glass-admin .ui-metric-strip .warning-text {
+  color: var(--ink) !important;
+}
+.glass-admin .ui-list-header {
+  height: 28px;
+  min-height: 28px;
+}
+.glass-admin .ui-filter-bar label,
+.glass-admin .ui-filter-bar input,
+.glass-admin .ui-filter-bar select {
+  width: 100%;
+  max-width: none;
+}
+.glass-admin .ui-metric-icon {
+  display: grid;
+  visibility: visible;
+}
+/* Shared drawers and dialogs retain their feature-owned forms and actions. */
+.glass-admin .ui-detail-drawer:not(.closed):not(.empty) {
+  position: fixed;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 100;
+  width: min(var(--drawer-width), calc(100vw - 24px));
+  height: 100vh;
+  max-height: none;
+  padding: 18px;
+  background: #fafdfff5;
+  backdrop-filter: blur(30px);
+  border: 0;
+  border-left: 1px solid #fff;
+  border-radius: 0;
+  box-shadow: -18px 0 60px #344c7026;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+.glass-admin .ui-detail-drawer.closed,
+.glass-admin .ui-detail-drawer.empty {
+  display: none;
+}
+.glass-admin .ui-detail-drawer .drawer-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  border-bottom: 1px solid var(--soft-line);
+  padding: 0 0 14px;
+  margin: 0 0 4px;
+  height: auto;
+  min-height: 48px;
+}
+.drawer-head h2 {
+  font-size: 20px;
+  line-height: 28px;
+  max-width: 100%;
+  min-width: 0;
+}
+.drawer-head p {
+  font-size: 13px;
+  color: var(--muted);
+  font-weight: 400;
+}
+.drawer-close-button {
+  display: grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  min-width: 32px;
+  border: 1px solid #e5eaf2;
+  background: #f0f3f8;
+  border-radius: 6px;
+  color: #78869a;
+}
+.glass-admin .drawer-section {
+  padding: 14px 0;
+  border-bottom: 1px solid var(--soft-line);
+  margin: 0;
+}
+.glass-admin .drawer-section h3,
+.glass-admin .drawer-action-section h3 {
+  font-size: 15px;
+  font-weight: 600;
+  margin: 0 0 12px;
+}
+.glass-admin .drawer-dl {
+  display: grid;
+  gap: 12px;
+  font-size: 14px;
+}
+.glass-admin .drawer-dl > div {
+  grid-template-columns: 96px minmax(0, 1fr);
+  gap: 10px;
+  min-height: 22px;
+}
+.glass-admin .drawer-dl dt {
+  font-size: 13px;
+  color: #8190a5;
+  font-weight: 400;
+}
+.glass-admin .drawer-dl dd {
+  font-size: 14px;
+  font-weight: 500;
+  min-width: 0;
+}
+.glass-admin .drawer-dl input,
+.glass-admin .drawer-dl select {
+  width: 100%;
+}
+.glass-admin .drawer-action-section,
+.glass-admin .management-drawer-actions {
+  padding: 22px 0 0;
+  border-top: 0;
+}
+.glass-admin .drawer-actions {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.glass-admin .drawer-actions button {
+  min-height: 38px;
+  padding: 0 16px;
+  border-radius: 6px;
+  font-size: 14px;
+  font-weight: 500;
+}
+.drawer-hint {
+  font-size: 13px;
+  line-height: 22px;
+  color: #8793a6;
+  font-weight: 400;
+}
+.glass-admin .management-drawer-scroll {
+  max-height: none;
+  overflow: visible;
+}
+.glass-admin .management-drawer-form {
+  height: auto;
+}
+.glass-admin .standard-management-drawer {
+  display: block;
+}
+.glass-admin .copy-value {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.glass-admin .copy-value > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.glass-admin .drawer-head .click-copy-text {
+  max-width: 100%;
+  min-width: 0;
+}
+.glass-admin .drawer-scroll-area {
+  max-height: none;
+  overflow: visible;
+}
+.glass-admin .flow-list {
+  font-size: 13px;
+}
+.glass-admin .flow-list li {
+  padding-bottom: 18px;
+}
+.glass-admin .vehicle-detail-drawer {
+  display: flex !important;
+  flex-direction: column;
+  overflow: hidden !important;
+}
+.glass-admin .vehicle-drawer-head {
+  flex-shrink: 0;
+}
+.glass-admin .vehicle-drawer-form {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+.glass-admin .vehicle-drawer-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  max-height: none;
+  padding-right: 8px;
+}
+.glass-admin .vehicle-drawer-actions {
+  flex-shrink: 0;
+  border-top: 1px solid var(--line);
+  background: #fbfdff;
+  padding: 18px 0 0;
+}
+.glass-admin .vehicle-drawer-actions h3 {
+  font-size: 14px;
+  margin: 0 0 12px;
+}
+.modal-backdrop {
+  top: 0;
+  z-index: 200;
+  padding: 24px;
+  background: #31486a25;
+  backdrop-filter: blur(7px);
+}
+.ui-dialog {
+  padding: 28px;
+  border: 1px solid #fff;
+  border-radius: 8px;
+  background: #ffffffed;
+  box-shadow: 0 25px 90px #233d6030;
+  max-width: calc(100vw - 48px);
+  max-height: calc(100vh - 48px);
+  overflow-y: auto;
+  color: var(--ink);
+}
+.ui-dialog h2 {
+  font-size: 23px;
+  line-height: 30px;
+  font-weight: 600;
+}
+.modal-head {
+  padding: 0 0 22px;
+  margin: 0 0 22px;
+  border-bottom: 1px solid var(--soft-line);
+}
+.modal-head p {
+  font-size: 13px;
+  font-weight: 400;
+  color: #8490a3;
+}
+.ui-dialog input,
+.ui-dialog select,
+.ui-dialog textarea {
+  font-size: 14px;
+  font-weight: 400;
+  border: 1px solid #dce3ee;
+  border-radius: 6px;
+  min-height: 40px;
+}
+.ui-dialog label > span {
+  font-size: 14px;
+  font-weight: 500;
+}
+.ui-dialog footer,
+.modal-actions {
+  margin-top: 22px;
+  padding-top: 20px;
+  border-top: 1px solid var(--soft-line);
+}
+.ui-dialog footer button {
+  min-height: 40px;
+  font-size: 14px;
+  font-weight: 500;
+  border-radius: 6px;
+}
+.ui-dialog .form-section {
+  border: 0;
+  background: none;
+  padding: 0;
+}
+.inline-alert {
+  font-size: 14px;
+  font-weight: 400;
+  border-radius: 6px;
+}
+.login-view {
+  top: 0;
+  min-width: 0;
+  min-height: 0;
+  background: #edf2f8;
+}
+.login-panel {
+  width: 420px;
+  max-width: 100%;
+  padding: 36px;
+  border: 1px solid #fff;
+  background: #ffffffcc;
+  backdrop-filter: blur(24px);
+  box-shadow: var(--shadow);
+}
+.login-heading p {
+  display: none;
+}
+.login-submit {
+  background: var(--primary);
+}
+
+.glass-admin .ui-list-surface .ui-filter-bar {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+.glass-admin .ui-filter-bar > label:first-child {
+  grid-column: span 2;
+}
+@media (max-width: 1000px) {
+  .glass-admin .ui-metric-icon {
+    display: none;
+  }
+  .glass-admin .ui-list-surface .ui-filter-bar {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+@media (max-width: 650px) {
+  .glass-admin .ui-metric-strip {
+    height: auto;
+  }
+  .glass-admin .ui-page-header {
+    height: auto;
+    min-height: 44px;
+  }
+  .customer-heading {
+    flex-wrap: wrap;
+  }
+  .glass-admin .ui-list-surface .ui-filter-bar {
+    grid-template-columns: 1fr;
+  }
+  .glass-admin .ui-filter-bar > label:first-child {
+    grid-column: auto;
+  }
+}
+.glass-admin td .status {
+  display: inline-block;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  vertical-align: middle;
+}
+/* Images keep their native proportions; the drawer never stretches the image. */
+.glass-admin .vehicle-main-image-wrap {
+  min-height: 0;
+  aspect-ratio: 16/10;
+  max-height: 200px;
+  background: #edf0f5;
+}
+.glass-admin .vehicle-main-image {
+  display: block;
+  width: 100%;
+  height: 100%;
+  aspect-ratio: auto;
+  object-fit: contain;
+}
+.glass-admin .vehicle-image-strip img {
+  object-fit: contain;
+  background: #edf0f5;
+}
+.glass-admin .ui-detail-drawer img {
+  max-width: 100%;
+  object-fit: contain;
+}
+.glass-admin .ui-detail-drawer .drawer-head > div {
+  min-width: 0;
+  flex: 1;
+}
+/* All six drawers share a fixed header/footer and a single scroll owner. */
+.glass-admin .ui-detail-drawer:not(.closed):not(.empty) {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.glass-admin .ui-detail-drawer .drawer-mode,
+.glass-admin .ui-detail-drawer .management-drawer-form,
+.glass-admin .ui-detail-drawer .drawer-body {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  height: auto;
+  overflow: hidden;
+}
+.glass-admin .ui-detail-drawer .ui-drawer-header {
+  flex-shrink: 0;
+}
+.glass-admin .ui-detail-drawer .ui-drawer-content {
+  flex: 1;
+  min-height: 0;
+  max-height: none;
+  overflow-y: auto;
+  padding-right: 10px;
+}
+.glass-admin .ui-detail-drawer .ui-drawer-footer {
+  flex-shrink: 0;
+  margin: 0;
+  padding: 12px 0 0;
+  min-height: 74px;
+  border-top: 1px solid var(--line);
+  background: transparent;
+}
+.glass-admin .ui-drawer-footer h3 {
+  font-size: 14px;
+  margin: 0 0 12px;
+}
+.glass-admin .ui-drawer-footer .drawer-actions {
+  justify-content: flex-end;
+  width: 100%;
+}
+.glass-admin .ui-drawer-footer .drawer-actions button {
+  flex: 0 0 auto;
+  width: auto;
+  min-width: 88px;
+  min-height: 38px;
+}
+.glass-admin .ui-detail-drawer .identity-card,
+.glass-admin .ui-detail-drawer .tabs {
+  flex-shrink: 0;
+}
+/* Reference-led dashboard: retain breathing room and let shorter viewports scroll. */
+.dashboard .metric-label {
+  color: #6b7790;
+  font-weight: 500;
+}
+.glass-admin .dashboard-sales td {
+  color: #26334c;
+}
+.dashboard .ai-state > div > span {
+  color: #66748c;
+}
+.glass-admin .workspace:has(.dashboard) {
+  padding-bottom: 24px;
+}
+.dashboard-heading {
+  margin-bottom: 22px;
+}
+.glass-admin .dashboard-sales .small-avatar {
+  width: 28px;
+  height: 28px;
+  margin-right: 10px;
+}
+.customer-heading {
+  display: flex;
+  align-items: center;
+  gap: 18px;
+}
+.customer-heading .segmented button {
+  height: 26px;
+  min-height: 26px;
+  padding: 0 10px;
+  font-size: 12px;
+}
+.dashboard .customer-band {
+  padding: 20px;
+}
+.customer-band .dashboard-band-head {
+  min-height: 36px;
+  margin-bottom: 16px;
+}
+.vehicles-band .vehicle-period {
+  margin: 0;
+}
+.vehicles-band .vehicle-period select {
+  width: 85px !important;
+}
+.customer-metric .metric-icon:has(.lucide-users-round),
+.ai-state .metric-icon:has(.lucide-user-round) {
+  color: #6f7889;
+}
+.metric-icon .lucide-user-round {
+  fill: currentColor;
+  stroke-width: 1;
+}
+.dashboard-heading > div {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+.sample-tag {
+  font-size: 12px;
+  padding: 4px 10px;
+  border-radius: 12px;
+  background: #e3e8f0;
+  color: #74819a;
+}
+.dashboard-stamp {
+  font-size: 13px;
+  color: #66748d;
+}
+.dashboard-stamp i {
+  width: 1px;
+  height: 18px;
+  background: #d5dce7;
+  margin: 0 6px;
+}
+.dashboard-stamp button {
+  border: 0;
+  background: none;
+  display: flex;
+  color: #78869d;
+  padding: 0;
+}
+.ai-strip {
+  display: grid;
+  grid-template-columns: 180px repeat(5, minmax(0, 1fr));
+  align-items: center;
+  background: var(--glass);
+  border: 1px solid #fff;
+  border-radius: 8px;
+  min-height: 102px;
+  padding: 18px 20px;
+  margin-bottom: 18px;
+  box-shadow: var(--shadow);
+}
+.ai-strip-title {
+  display: grid;
+  gap: 4px;
+  padding-right: 12px;
+}
+.ai-strip-title strong {
+  font-size: 18px;
+  line-height: 26px;
+  font-weight: 600;
+}
+.ai-strip-title select {
+  width: 130px !important;
+  min-height: 26px !important;
+  height: 26px !important;
+  font-size: 12px !important;
+  border: 0 !important;
+  background: transparent !important;
+  padding: 0 !important;
+  color: #7c889e !important;
+}
+.ai-state {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  min-width: 0;
+  border-left: 1px solid var(--line);
+  padding: 0 12px;
+}
+.ai-state > div > span {
+  display: block;
+  font-size: 14px;
+  color: var(--muted);
+  white-space: nowrap;
+}
+.ai-state strong {
+  display: block;
+  font-size: 32px;
+  line-height: 40px;
+  font-weight: 600;
+}
+.ai-state strong small {
+  font-size: 15px;
+  font-weight: 400;
+}
+.metric-icon {
+  width: 48px;
+  height: 48px;
+  flex: 0 0 48px;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  background: #eef0f5;
+  color: #737b8c;
+}
+.metric-icon svg {
+  width: 24px;
+  height: 24px;
+  stroke-width: 2;
+}
+.danger-icon {
+  color: #bb4550;
+}
+.dashboard-band {
+  padding: 20px;
+  background: var(--glass);
+  border: 1px solid #fff;
+  border-radius: 8px;
+  box-shadow: var(--shadow);
+  min-width: 0;
+}
+.dashboard-band-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  min-height: 28px;
+  margin-bottom: 10px;
+}
+.dashboard h2 {
+  font-size: 22px;
+  line-height: 28px;
+  font-weight: 600;
+  margin: 0;
+}
+.dashboard h2 small {
+  font-size: 13px;
+  color: var(--muted);
+  font-weight: 400;
+  margin-left: 10px;
+}
+.dashboard-band-head > span {
+  font-size: 13px;
+  color: #8590a4;
+}
+.dashboard-filters {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.dashboard-filters select {
+  width: 130px;
+  height: 32px !important;
+  min-height: 32px !important;
+}
+.period-filter,
+.segmented {
+  display: flex;
+  padding: 3px;
+  gap: 2px;
+  background: #f1f4f9;
+  border-radius: 6px;
+}
+.period-filter button,
+.segmented button {
+  border: 0;
+  background: none;
+  border-radius: 5px;
+  height: 30px;
+  min-height: 30px;
+  padding: 0 9px;
+  font-size: 13px;
+  font-weight: 400;
+  color: #78859c;
+  white-space: nowrap;
+}
+.period-filter button.active {
+  color: white;
+  background: #4c83e8;
+  box-shadow:
+    inset 0 1px 2px #fff7,
+    0 2px 5px #397aec30;
+}
+.segmented button.active {
+  background: #fff;
+  color: #376ed0;
+  box-shadow: 0 1px 4px #34486915;
+}
+.customer-metrics {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  border-top: 1px solid var(--soft-line);
+}
+.customer-metric {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  min-height: 92px;
+  padding: 12px;
+  position: relative;
+}
+.customer-metric:nth-child(-n + 4) {
+  border-bottom: 1px solid var(--soft-line);
+}
+.customer-metric:not(:nth-child(4n)):after {
+  content: "";
+  position: absolute;
+  right: 0;
+  top: 24px;
+  width: 1px;
+  height: 44px;
+  background: var(--soft-line);
+}
+.metric-label {
+  font-size: 16px;
+  line-height: 22px;
+  color: #79849a;
+  display: flex;
+  gap: 5px;
+  align-items: center;
+  white-space: nowrap;
+}
+.metric-help {
+  display: flex;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: #a2adbf;
+  opacity: 0;
+}
+.customer-metric:hover .metric-help,
+.metric-help:focus-visible {
+  opacity: 1;
+}
+.customer-metric strong {
+  display: block;
+  font-size: 32px;
+  line-height: 40px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+.customer-metric strong small {
+  font-size: 16px;
+  font-weight: 400;
+}
+.customer-metric:last-child strong {
+  font-size: 30px;
+}
+.customer-metric:last-child .metric-label {
+  font-size: 12px;
+}
+.communication-filter {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  border-top: 1px solid var(--soft-line);
+  padding-top: 10px;
+  font-size: 12px;
+  color: #8491a5;
+}
+.communication-filter .segmented button {
+  height: 24px;
+  min-height: 24px;
+  font-size: 12px;
+  padding: 0 12px;
+}
+.scope-label {
+  display: none;
+}
+.dashboard-middle {
+  display: grid;
+  grid-template-columns: minmax(0, 1.92fr) minmax(360px, 1fr);
+  gap: 20px;
+  margin: 18px 0;
+}
+.chart-wrap {
+  height: 200px;
+  min-width: 0;
+}
+.trend-band .dashboard-band-head {
+  margin-bottom: 12px;
+}
+.dashboard-middle h2,
+.dashboard-sales h2 {
+  font-size: 22px;
+}
+.vehicles-band .dashboard-band-head {
+  margin-bottom: 16px;
+}
+.inventory-current,
+.vehicle-kpi {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  font-size: 14px;
+  color: #61708a;
+  min-height: 52px;
+  padding: 8px 12px;
+  border: 1px solid #edf0f5;
+  border-radius: 6px;
+  margin-bottom: 8px;
+}
+.inventory-current > svg,
+.vehicle-kpi > svg {
+  width: 34px;
+  height: 34px;
+  background: #edf0f5;
+  border-radius: 6px;
+  padding: 6px;
+  color: #758195;
+}
+.inventory-current strong,
+.vehicle-kpi strong {
+  display: flex;
+  align-items: baseline;
+  gap: 4px;
+  font-size: 30px;
+  line-height: 36px;
+  margin-left: auto;
+  color: #162034;
+  font-weight: 600;
+  white-space: nowrap;
+}
+.inventory-current strong small,
+.vehicle-kpi strong small {
+  font-size: 14px;
+  font-weight: 400;
+}
+.current-tag {
+  font-size: 10px;
+  color: #8b98ad;
+}
+.vehicle-kpi .amount {
+  font-size: 27px;
+  line-height: 34px;
+}
+.vehicle-period {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+.vehicle-period select {
+  width: 110px !important;
+  min-height: 27px !important;
+  height: 27px !important;
+  font-size: 12px !important;
+  border: 0 !important;
+  background: none !important;
+}
+.vehicle-footnote {
+  font-size: 11px;
+  text-align: right;
+  color: #8b97aa;
+  margin: 0;
+}
+.custom-range {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  justify-content: flex-end;
+  font-size: 12px;
+  margin: 10px 0;
+}
+.custom-range input {
+  max-width: 146px;
+}
+.vehicle-period:has(.custom-range) {
+  flex-wrap: wrap;
+}
+.vehicle-period .custom-range input {
+  max-width: 125px;
+}
+.dashboard-sales .table-scroll {
+  overflow: auto;
+  border: 1px solid var(--soft-line);
+  border-radius: 6px;
+}
+.dashboard-sales table {
+  min-width: 1100px;
+  table-layout: auto;
+  font-variant-numeric: tabular-nums;
+}
+.dashboard-sales th {
+  height: 38px;
+  padding: 10px 12px;
+  font-size: 12px;
+  white-space: nowrap;
+  text-align: center;
+}
+.dashboard-sales td {
+  height: 38px;
+  padding: 5px 12px;
+  font-size: 14px;
+  text-align: center;
+}
+.dashboard-sales td:first-child,
+.dashboard-sales th:first-child {
+  text-align: left;
+  min-width: 120px;
+  white-space: nowrap;
+}
+.small-avatar {
+  width: 28px;
+  height: 28px;
+  margin-right: 12px;
+  font-size: 12px;
+}
+.dashboard-sales .dashboard-band-head {
+  margin-bottom: 12px;
+}
+.dashboard-error {
+  min-height: 500px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 14px;
+  color: var(--muted);
+}
+.dashboard-error h2 {
+  font-size: 21px;
+}
+.is-loading .customer-metric strong,
+.is-loading .ai-state strong,
+.is-loading .inventory-current strong,
+.is-loading .vehicle-kpi strong {
+  color: transparent;
+  background: #edf0f5;
+  min-width: 70px;
+  border-radius: 4px;
+}
+.is-loading .chart-wrap {
+  opacity: 0.2;
+}
+.is-loading .dashboard-sales tbody {
+  visibility: hidden;
+}
+
+@media (max-width: 1250px) {
+  :root {
+    --sidebar-width: 184px;
+    --page-padding: 16px;
+  }
+  .glass-admin .module-item {
+    font-size: 15px;
+  }
+  .ai-strip {
+    grid-template-columns: 155px repeat(5, minmax(0, 1fr));
+    padding: 10px 12px;
+  }
+  .ai-state {
+    padding: 0 12px;
+    gap: 10px;
+  }
+  .ai-state .metric-icon {
+    width: 36px;
+    height: 36px;
+    flex-basis: 36px;
+  }
+  .ai-strip-title strong {
+    font-size: 17px;
+  }
+  .metric-icon {
+    width: 40px;
+    height: 40px;
+    flex-basis: 40px;
+  }
+  .customer-metric {
+    gap: 8px;
+    padding: 10px 8px;
+  }
+  .metric-label {
+    font-size: 12px;
+  }
+  .customer-metric:last-child .metric-label {
+    font-size: 11px;
+  }
+  .customer-metric strong {
+    font-size: 27px;
+  }
+  .dashboard-filters {
+    gap: 10px;
+  }
+  .period-filter button {
+    padding: 0 9px;
+  }
+  .dashboard-middle {
+    grid-template-columns: minmax(0, 1.7fr) minmax(310px, 1fr);
+  }
+  .glass-admin .ui-metric-strip article {
+    padding: 0 16px;
+    gap: 12px;
+  }
+  .ui-metric-icon {
+    width: 36px;
+    height: 36px;
+  }
+  .glass-admin .ui-filter-bar {
+    grid-template-columns: minmax(200px, 2fr) repeat(2, minmax(130px, 1fr));
+  }
+}
+@media (max-width: 1000px) {
+  :root {
+    --sidebar-width: 170px;
+    --page-padding: 18px;
+  }
+  .glass-admin .sidebar {
+    padding: 22px 10px !important;
+  }
+  .glass-admin .module-item {
+    gap: 12px;
+    padding: 0 10px;
+    font-size: 14px;
+  }
+  .glass-admin .brand-block {
+    gap: 10px;
+  }
+  .glass-admin .brand-mark {
+    width: 36px;
+    height: 36px;
+  }
+  .glass-admin .brand-block strong {
+    font-size: 16px;
+  }
+  .glass-admin .brand-block span {
+    font-size: 12px;
+  }
+  .ai-state .metric-icon {
+    display: none;
+  }
+  .ai-strip {
+    grid-template-columns: 150px repeat(5, minmax(0, 1fr));
+  }
+  .ai-state {
+    padding: 0 10px;
+  }
+  .ai-state > div > span {
+    font-size: 12px;
+  }
+  .ai-state strong {
+    font-size: 25px;
+  }
+  .dashboard-band-head {
+    flex-wrap: wrap;
+  }
+  .dashboard-stamp {
+    display: none !important;
+  }
+  .customer-metrics {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .customer-metric:nth-child(-n + 6) {
+    border-bottom: 1px solid var(--soft-line);
+  }
+  .customer-metric:nth-child(2n):after {
+    display: none;
+  }
+  .metric-label,
+  .customer-metric:last-child .metric-label {
+    font-size: 13px;
+  }
+  .dashboard-middle {
+    grid-template-columns: 1fr;
+  }
+  .glass-admin .ui-metric-strip article {
+    padding: 0 14px;
+  }
+  .ui-metric-icon {
+    display: none;
+  }
+  .glass-admin .ui-metric-strip p {
+    font-size: 11px;
+  }
+  .glass-admin .ui-metric-strip span:not(.ui-metric-icon) {
+    font-size: 12px;
+  }
+  .glass-admin .ui-metric-strip strong {
+    font-size: 26px;
+  }
+  .glass-admin .knowledge-metric-interactive strong {
+    font-size: 17px;
+  }
+  .glass-admin .ui-list-surface {
+    padding: 20px;
+  }
+}
+@media (max-width: 650px) {
+  :root {
+    --sidebar-width: 60px;
+    --page-padding: 12px;
+  }
+  .glass-admin.app-shell .sidebar {
+    padding: 18px 7px !important;
+    gap: 28px;
+  }
+  .glass-admin .brand-block {
+    justify-content: center;
+    padding: 0;
+  }
+  .glass-admin .brand-block > div:not(.brand-mark),
+  .glass-admin .module-item span,
+  .glass-admin .account-copy,
+  .glass-admin .account-button > svg {
+    display: none;
+  }
+  .glass-admin .module-item {
+    justify-content: center;
+    padding: 0;
+    height: 44px;
+    min-height: 44px;
+  }
+  .glass-admin .account-button {
+    padding: 8px 4px;
+    justify-content: center;
+  }
+  .glass-admin .account-menu {
+    width: 130px;
+    left: 0;
+    right: auto;
+  }
+  .glass-admin .workspace {
+    padding-top: 18px;
+  }
+  .ui-page-header,
+  .dashboard-heading {
+    gap: 10px !important;
+  }
+  .glass-admin .ui-page-header h1,
+  .dashboard-heading h1 {
+    font-size: 23px;
+  }
+  .page-actions {
+    gap: 6px;
+    flex-wrap: wrap;
+  }
+  .ui-page-header button {
+    font-size: 12px;
+    padding: 0 10px;
+  }
+  .glass-admin .ui-metric-strip {
+    grid-auto-flow: row;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 16px 0;
+    padding: 16px 0;
+  }
+  .glass-admin .ui-metric-strip article {
+    min-height: 68px;
+  }
+  .glass-admin .ui-metric-strip article:nth-child(2n) {
+    border-right: 0;
+  }
+  .glass-admin .ui-metric-strip p {
+    display: none;
+  }
+  .glass-admin .ui-list-surface {
+    padding: 16px 12px;
+  }
+  .glass-admin .ui-filter-bar,
+  .glass-admin .ui-filter-bar.two-field-management-filter,
+  .glass-admin .ui-filter-bar.task-filter-card {
+    grid-template-columns: 1fr;
+  }
+  .ai-strip {
+    grid-template-columns: repeat(5, 1fr);
+    padding: 12px 6px;
+    gap: 12px 0;
+  }
+  .ai-strip-title {
+    grid-column: 1/-1;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0 6px 10px;
+    border-bottom: 1px solid var(--soft-line);
+  }
+  .ai-state {
+    padding: 0 5px;
+    border: 0;
+  }
+  .ai-state > div > span {
+    font-size: 10px;
+    white-space: normal;
+    min-height: 28px;
+  }
+  .ai-state strong {
+    font-size: 21px;
+  }
+  .ai-state strong small {
+    font-size: 11px;
+  }
+  .dashboard-band {
+    padding: 16px 12px;
+  }
+  .dashboard-filters {
+    flex-wrap: wrap;
+  }
+  .period-filter {
+    flex-wrap: wrap;
+  }
+  .period-filter button {
+    font-size: 12px;
+    padding: 0 8px;
+  }
+  .customer-metric .metric-icon {
+    display: none;
+  }
+  .customer-metric {
+    padding: 12px 5px;
+    min-height: 82px;
+  }
+  .metric-label,
+  .customer-metric:last-child .metric-label {
+    font-size: 11px;
+  }
+  .customer-metric strong {
+    font-size: 24px;
+  }
+  .customer-metric:last-child strong {
+    font-size: 20px;
+  }
+  .dashboard h2 {
+    font-size: 18px;
+  }
+  .trend-band .dashboard-band-head {
+    margin-bottom: 42px;
+  }
+  .trend-band .recharts-legend-wrapper {
+    top: -30px !important;
+    right: 0 !important;
+  }
+  .dashboard-middle {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .vehicle-kpi .amount {
+    font-size: 23px;
+    line-height: 28px;
+  }
+  .glass-admin .ui-detail-drawer:not(.closed):not(.empty) {
+    padding: 20px;
+  }
+  .modal-backdrop {
+    padding: 14px;
+  }
+  .ui-dialog {
+    padding: 20px;
+    max-width: 100%;
+  }
+  .login-view {
+    padding: 20px;
+  }
+  .login-panel {
+    padding: 28px;
+  }
+}
+
+/* Component slots own control geometry, including legacy feature forms. */
+.glass-admin .ui-page-header {
+  flex-direction: row;
+  text-align: left;
+}
+.ai-state > div {
+  min-width: 0;
+}
+.ai-state > div > span {
+  white-space: normal;
+  line-height: 20px;
+}
+.glass-admin .ui-detail-drawer .ui-drawer-footer .drawer-actions button {
+  width: auto;
+  min-width: 88px;
+  height: 38px;
+  min-height: 38px;
+  padding: 0 16px;
+  font-size: 14px;
+  line-height: 20px;
+  font-weight: 500;
+  border-radius: 6px;
+}
+.glass-admin .ui-detail-drawer .ui-drawer-content select {
+  height: 38px;
+  min-height: 38px;
+  font-size: 14px;
+  font-weight: 400;
+}
+.glass-admin .ui-page-header .page-actions {
+  margin: 0;
+}
+.glass-admin .ui-page-header :is(.primary-button, .secondary-button) {
+  width: auto;
+  min-width: 90px;
+  height: var(--control-height);
+  min-height: var(--control-height);
+  margin: 0;
+  padding: 0 16px;
+  font-size: 14px;
+  font-weight: 500;
+  line-height: 20px;
+  border-radius: 6px;
+  white-space: nowrap;
+}
+.glass-admin .ui-detail-drawer .drawer-close-button,
+.ui-dialog.modal .icon-button {
+  width: 32px;
+  min-width: 32px;
+  height: 32px;
+  min-height: 32px;
+  flex: 0 0 32px;
+  padding: 0;
+  border-radius: 6px;
+  display: grid;
+  place-items: center;
+}
+.ui-dialog.modal :is(footer, .modal-actions) button {
+  width: auto;
+  min-width: 72px;
+  height: 40px;
+  min-height: 40px;
+  padding: 0 16px;
+  font-size: 14px;
+  font-weight: 500;
+  line-height: 20px;
+  border-radius: 6px;
+  white-space: nowrap;
+}
+.ui-dialog.modal
+  input:not([type="checkbox"]):not([type="radio"]):not([type="file"]),
+.ui-dialog.modal select {
+  height: 40px;
+  min-height: 40px;
+  font-size: 14px;
+  font-weight: 400;
+  border-radius: 6px;
+}
+.glass-admin .pagination-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin: 22px 0 0;
+  font-size: 13px;
+}
+.glass-admin .pagination-row .pagination-total,
+.glass-admin .pagination-row nav {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.glass-admin .pagination-row .pagination-total select {
+  width: 120px;
+  height: 32px;
+  min-height: 32px;
+  font-size: 13px;
+}
+.glass-admin .pagination-row nav :is(button, strong) {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 32px;
+  height: 32px;
+  min-height: 32px;
+  padding: 0 10px;
+  font-size: 13px;
+  font-weight: 500;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: #ffffffb8;
+  color: #53647e;
+}
+.glass-admin .pagination-row nav strong {
+  color: var(--primary-deep);
+  background: var(--primary-soft);
+  border-color: transparent;
+}
+.glass-admin .pagination-row nav button:disabled {
+  color: #a0a9b8;
+  background: #f5f7fa;
+}
+@media (max-width: 650px) {
+  .glass-admin .ui-page-header {
+    flex-wrap: wrap;
+  }
+  .glass-admin .ui-page-header :is(.primary-button, .secondary-button) {
+    min-width: 80px;
+    padding: 0 12px;
+    font-size: 13px;
+  }
+  .glass-admin .pagination-row .pagination-total {
+    flex-wrap: wrap;
+  }
+  .glass-admin .pagination-row nav {
+    gap: 4px;
+  }
+  .glass-admin .pagination-row nav :is(button, strong) {
+    padding: 0 7px;
+  }
+}
+.dashboard-coverage {
+  margin-top: 18px;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.7;
+}
+.dashboard-coverage summary {
+  cursor: pointer;
+}
+.dashboard-coverage p {
+  margin: 4px 0;
+}
+.metric-unavailable {
+  display: block;
+  color: var(--warning);
+  font-size: 11px;
+}
+.dashboard-stamp button:disabled {
+  opacity: 0.5;
+}
+
+.glass-admin .account-copy small {
+  color: #748198;
+}

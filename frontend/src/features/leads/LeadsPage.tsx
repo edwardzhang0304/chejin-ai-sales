@@ -1,3 +1,4 @@
+import { PageHeader, MetricStrip, ListSurface, ListHeader, FilterBar } from '../../shared/ui/ManagementLayout';
 import { useEffect, useState } from "react";
 
 import { ApiError, formatBusinessError } from "../../shared/api/client";
@@ -231,7 +232,7 @@ export function LeadsPage() {
 
   return (
     <div className="leads-page">
-      <header className="page-header">
+      <PageHeader as="header" className="page-header">
         <div>
           <p className="eyebrow">线索运营</p>
           <h1>线索管理</h1>
@@ -239,9 +240,9 @@ export function LeadsPage() {
         <button type="button" className="primary-button" onClick={() => setCreateOpen(true)}>
           新增客户
         </button>
-      </header>
+      </PageHeader>
 
-      <section className="metric-grid" aria-label="线索指标">
+      <MetricStrip as="section" className="metric-grid" aria-label="线索指标">
         <article>
           <span>今日新增</span>
           <strong>{statValue(leads.stats?.today_new_count)}</strong>
@@ -262,14 +263,14 @@ export function LeadsPage() {
           <strong>{statValue(leads.stats?.duplicate_event_count)}</strong>
           <p>备注已追加到原线索</p>
         </article>
-      </section>
+      </MetricStrip>
 
       {actionMessage ? <div className="inline-alert success">{actionMessage}</div> : null}
       {actionError ? <div className="inline-alert error">{actionError}</div> : null}
 
       <div className="content-grid">
-        <section className="list-region" aria-label="线索列表">
-          <div className="panel-header">
+        <ListSurface as="section" className="list-region" aria-label="线索列表">
+          <ListHeader as="div" className="panel-header">
             <div>
               <h2>线索列表</h2>
               <p>手机号默认脱敏，无效线索可按状态筛选。</p>
@@ -286,9 +287,9 @@ export function LeadsPage() {
               </svg>
               <span>重新分配线索</span>
             </button>
-          </div>
+          </ListHeader>
 
-          <section className="filter-card" aria-label="线索筛选">
+          <FilterBar as="section" className="filter-card" aria-label="线索筛选">
             <label className="search-field">
               <span>搜索</span>
               <input
@@ -336,7 +337,7 @@ export function LeadsPage() {
                 ))}
               </select>
             </label>
-          </section>
+          </FilterBar>
 
           <div className="bulk-row">
             <span>已选 {selectedCount} 条</span>
@@ -382,7 +383,7 @@ export function LeadsPage() {
               leads.setPage(1);
             }}
           />
-        </section>
+        </ListSurface>
 
         {leads.activeLeadId ? <LeadDetailDrawer
           detail={leads.detail}

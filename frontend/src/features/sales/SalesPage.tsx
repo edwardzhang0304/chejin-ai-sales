@@ -1,3 +1,5 @@
+import { DrawerHeader, DrawerFooter, DrawerContent } from '../../shared/ui/ManagementLayout';
+import { PageHeader, MetricStrip, ListSurface, ListHeader, FilterBar, TableSurface, DetailDrawer } from '../../shared/ui/ManagementLayout';
 import { useAutoRefresh } from "../../shared/hooks/useAutoRefresh";
 import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 
@@ -264,7 +266,7 @@ export function SalesPage({ openIntent }: { openIntent?: SalesOpenIntent | null 
 
   return (
     <div className="sales-page screen-sales">
-      <header className="page-header">
+      <PageHeader as="header" className="page-header">
         <div>
           <p className="eyebrow">销售运营</p>
           <h1>销售管理</h1>
@@ -272,9 +274,9 @@ export function SalesPage({ openIntent }: { openIntent?: SalesOpenIntent | null 
         <button type="button" className="primary-button" onClick={() => setCreateOpen(true)}>
           新增销售
         </button>
-      </header>
+      </PageHeader>
 
-      <section className="metric-grid management-metrics" aria-label="销售管理指标">
+      <MetricStrip as="section" className="metric-grid management-metrics" aria-label="销售管理指标">
         <article>
           <span>销售总数</span>
           <strong>{items.length}</strong>
@@ -295,20 +297,20 @@ export function SalesPage({ openIntent }: { openIntent?: SalesOpenIntent | null 
           <strong className="warning-text">{metrics.blocked}</strong>
           <p>需运营处理</p>
         </article>
-      </section>
+      </MetricStrip>
 
       {message ? <div className="inline-alert success">{message}</div> : null}
       {error ? <div className="inline-alert error">{error}</div> : null}
 
       <div className="management-grid">
-        <section className="panel management-list-panel">
-          <div className="panel-header">
+        <ListSurface as="section" className="panel management-list-panel">
+          <ListHeader as="div" className="panel-header">
             <div>
               <h2>销售列表</h2>
             </div>
-          </div>
+          </ListHeader>
 
-          <div className="management-filter-card">
+          <FilterBar as="div" className="management-filter-card">
             <label>
               <span>搜索</span>
               <input
@@ -343,9 +345,9 @@ export function SalesPage({ openIntent }: { openIntent?: SalesOpenIntent | null 
                 <option value="unbound">未绑定</option>
               </select>
             </label>
-          </div>
+          </FilterBar>
 
-          <div className="management-table-card">
+          <TableSurface as="div" className="management-table-card">
             <table className="management-table sales-table">
               <thead>
                 <tr>
@@ -390,26 +392,27 @@ export function SalesPage({ openIntent }: { openIntent?: SalesOpenIntent | null 
                 )}
               </tbody>
             </table>
-          </div>
-        </section>
+          </TableSurface>
+        </ListSurface>
 
-        <aside className={`panel management-drawer sales-detail-drawer ${editing ? "is-editing" : ""} ${drawerOpen ? "" : "closed"}`}>
+        <DetailDrawer as="aside" className={`panel management-drawer sales-detail-drawer ${editing ? "is-editing" : ""} ${drawerOpen ? "" : "closed"}`}>
           {!drawerOpen ? (
             <div className="state-box">点击销售行查看详情。</div>
           ) : detailLoading || !detail || !editForm ? (
             <div className="state-box">正在加载销售详情...</div>
           ) : (
             <form className="drawer-mode is-active" onSubmit={(event) => void handleSave(event)}>
-              <div className="drawer-head">
+              <DrawerHeader as="div" className="drawer-head">
                 <div>
                   <p><span className="read-value">销售详情</span><span className="edit-value">销售详情 · 编辑中</span></p>
                   <h2>{detail.sales_name}</h2>
                 </div>
                 <button className="icon-button drawer-close-button" type="button" onClick={() => setDrawerOpen(false)} aria-label="关闭销售详情"><CloseIcon /></button>
-              </div>
+              </DrawerHeader>
 
               {saveError ? <div className="inline-alert error" role="alert">{saveError}</div> : null}
 
+              <DrawerContent>
               <section className="drawer-section">
                 <h3>基础信息</h3>
                 <dl className="drawer-dl">
@@ -494,17 +497,18 @@ export function SalesPage({ openIntent }: { openIntent?: SalesOpenIntent | null 
                 </dl>
               </section>
 
-              <section className="drawer-action-section">
+              </DrawerContent>
+              <DrawerFooter as="section" className="drawer-action-section">
                 <h3>操作</h3>
                 <div className="drawer-actions">
                   <button className="read-value" type="button" onClick={() => setEditing(true)}>编辑销售</button>
                   <button className="edit-value" type="button" onClick={() => { setEditForm(toEditForm(detail)); setEditing(false); setSaveError(null); }}>取消</button>
                   <button className="primary-button edit-value" type="submit" disabled={submitting || !editForm.sales_name.trim()}>{submitting ? "保存中..." : "保存"}</button>
                 </div>
-              </section>
+              </DrawerFooter>
             </form>
           )}
-        </aside>
+        </DetailDrawer>
       </div>
 
       {createOpen ? (

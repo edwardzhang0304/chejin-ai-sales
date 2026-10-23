@@ -14,6 +14,8 @@ copyFileSync(resolve(packageRoot, "static/index.html"), resolve(outputDir, "inde
 copyFileSync(resolve(packageRoot, "src/worker-ui.css"), resolve(outputDir, "worker-ui.css"));
 copyFileSync(resolve(packageRoot, "src/worker-ui.tokens.css"), resolve(outputDir, "worker-ui.tokens.css"));
 
+copyFileSync(resolve(packageRoot, "src/worker-presentation.css"), resolve(outputDir, "worker-presentation.css"));
+
 const result = spawnSync(
   esbuildBin,
   [

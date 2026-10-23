@@ -126,6 +126,7 @@ def test_account_username_is_unique_after_server_side_normalization():
     "method,path,payload",
     [
         ("GET", "/api/leads", None),
+        ("GET", "/api/dashboard", None),
         ("GET", "/api/sales", None),
         ("GET", "/api/workers", None),
         ("GET", "/api/tasks", None),

@@ -1,3 +1,4 @@
+import { ModalLayer, DialogSurface } from '../../../shared/ui/ManagementLayout';
 import { FormEvent, useState } from "react";
 
 import { useLockBodyScroll } from "../../../shared/hooks/useLockBodyScroll";
@@ -35,8 +36,8 @@ export function InvalidLeadModal({ count, submitting, error, onClose, onSubmit }
   }
 
   return (
-    <div className="modal-backdrop" role="presentation">
-      <form className="modal small-modal invalid-modal" onSubmit={handleSubmit} aria-label="标记无效线索">
+    <ModalLayer className="modal-backdrop" role="presentation">
+      <DialogSurface as="form" className="modal small-modal invalid-modal" onSubmit={handleSubmit} aria-label="标记无效线索">
         <header>
           <div>
             <h2>标记为无效线索</h2>
@@ -70,7 +71,7 @@ export function InvalidLeadModal({ count, submitting, error, onClose, onSubmit }
             {submitting ? "处理中..." : "确认标记无效"}
           </button>
         </footer>
-      </form>
-    </div>
+      </DialogSurface>
+    </ModalLayer>
   );
 }

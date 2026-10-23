@@ -249,7 +249,7 @@ def create_lead(db: Session, payload: LeadCreate, actor: ActorContext) -> dict:
             )
         )
 
-    write_log(
+    creation_log = write_log(
         db,
         actor,
         event_type="lead_created",
@@ -280,6 +280,9 @@ def create_lead(db: Session, payload: LeadCreate, actor: ActorContext) -> dict:
     )
     assignment_started = time.perf_counter()
     assignment = assign_lead_round_robin(db, lead, actor)
+    # Immutable creation attribution, captured after the initial assignment in this transaction.
+    creation_log.extra_metadata = {"dashboard_fact_version": 1, "initial_sales_id": lead.sales_id}
+
     db.flush()
     record_server_stage_best_effort(
         db,

@@ -103,7 +103,7 @@ def submit_invite(db, authenticated, instance, task_id, payload, flow_id, token,
     proof = {'schema_version': 'hook-invite-proof-v1', 'backend_validated': True,
         'shortcode': prior['shortcode'], 'shortcode_written': True, 'invitation_submitted': True,
         'task_id': task.id, 'worker_id': w.id, 'client_instance_id': instance,
-        'lease_fencing_token': token, **payload.model_dump()}
+        'lease_fencing_token': token, **payload.model_dump(exclude_none=True)}
     old = db.scalar(select(TaskEvidence).where(TaskEvidence.task_id == task.id, TaskEvidence.evidence_type == 'hook_invite_submission'))
     if old is not None and old.extra_metadata != proof:
         raise AppError('HOOK_INVITE_PROOF_CONFLICT', '原提交记录不可覆盖', 409)

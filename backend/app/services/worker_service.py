@@ -62,7 +62,7 @@ def _lock_worker(db: Session, worker_id: str) -> Worker:
     return worker
 
 
-def computed_online_status(worker: Worker) -> str:
+def computed_online_status(worker: Worker, *, now=None) -> str:
     if not worker.enabled:
         return "offline"
     if not worker.last_heartbeat_at:
@@ -70,9 +70,24 @@ def computed_online_status(worker: Worker) -> str:
     last_heartbeat_at = worker.last_heartbeat_at
     if last_heartbeat_at.tzinfo is None:
         last_heartbeat_at = last_heartbeat_at.replace(tzinfo=timezone.utc)
-    if utcnow() - last_heartbeat_at > timedelta(seconds=ONLINE_TIMEOUT_SECONDS):
+    if (now or utcnow()) - last_heartbeat_at > timedelta(seconds=ONLINE_TIMEOUT_SECONDS):
         return "offline"
     return worker.online_status
+
+
+
+def operational_status(worker: Worker | None, *, now=None) -> str:
+    """Shared display projection; does not change any admission/recovery gates."""
+    if worker is None or worker.deleted_at:
+        return "unavailable"
+    if worker.client_binding_state != "bound" or not worker.client_instance_id:
+        return "unbound"
+    online = computed_online_status(worker, now=now)
+    if online == "offline":
+        return "offline"
+    if online != "online":
+        return "unavailable"
+    return worker.run_status if worker.run_status in RUN_STATUS_VALUES else "unavailable"
 
 
 def worker_offline_seconds(worker: Worker) -> int | None:
@@ -144,6 +159,7 @@ def worker_summary(db: Session, worker: Worker | None, *, include_token: bool = 
         "platform": worker.platform,
         "enabled": worker.enabled,
         "online_status": computed_online_status(worker),
+        "operational_status": operational_status(worker),
         "running_status": worker.running_status,
         "run_status": worker.run_status,
         "rpa_component_status": worker.rpa_component_status,

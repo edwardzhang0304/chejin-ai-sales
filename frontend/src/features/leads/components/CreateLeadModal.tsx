@@ -1,3 +1,4 @@
+import { ModalLayer, DialogSurface } from '../../../shared/ui/ManagementLayout';
 import { FormEvent, useState } from "react";
 
 import { useLockBodyScroll } from "../../../shared/hooks/useLockBodyScroll";
@@ -78,8 +79,8 @@ export function CreateLeadModal({ submitting, error, duplicateData, onClose, onO
   }
 
   return (
-    <div className="modal-backdrop" role="presentation">
-      <form className="modal create-lead-modal" onSubmit={(event) => void handleSubmit(event)} aria-label="新增客户">
+    <ModalLayer className="modal-backdrop" role="presentation">
+      <DialogSurface as="form" className="modal create-lead-modal" onSubmit={(event) => void handleSubmit(event)} aria-label="新增客户">
         <header className="modal-head">
           <div>
             <h2>新增客户</h2>
@@ -196,7 +197,7 @@ export function CreateLeadModal({ submitting, error, duplicateData, onClose, onO
             </button>
           </div>
         </footer>
-      </form>
-    </div>
+      </DialogSurface>
+    </ModalLayer>
   );
 }

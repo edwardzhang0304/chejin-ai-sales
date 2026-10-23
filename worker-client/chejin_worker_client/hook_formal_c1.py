@@ -102,6 +102,12 @@ class HookFormalC1:
         _save(root/'outcome.json',outcome)
         if outcome.get('status')!='submitted_pending_recipient':return outcome
         proof=invitation_proof(preparation,outcome,ui,journal)
+        # Reporting precision is optional; a stale clock must not lose the
+        # original successful UI proof or introduce a second invitation.
+        try:
+            proof['submitted_at'] = (self.clock.now() if self.clock else datetime.now(timezone.utc)).isoformat()
+        except Exception:
+            pass  # Legacy bounded attempt-to-receipt interval remains available.
         _save(root/'submission-proof.json',proof)
         return {**outcome,'formal_submission_proof_saved':True}
 

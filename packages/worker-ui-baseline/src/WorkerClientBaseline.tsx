@@ -1,3 +1,4 @@
+import { Minus, Square, X, Settings, ArrowLeft, Check, Search, ChevronRight, Pause, Play, UserRound, LoaderCircle, Clock3 } from "lucide-react";
 import React, { useEffect, useLayoutEffect, useRef, useState } from "react";
 import type {
   TimelineStepModel,
@@ -25,22 +26,8 @@ interface WorkerClientBaselineProps {
 }
 
 function Icon({ name }: { name: "min" | "max" | "close" | "gear" | "back" | "check" | "search" | "x" | "chevron" }) {
-  if (name === "min") return <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h14" /></svg>;
-  if (name === "max") return <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 5h14v14H5z" /></svg>;
-  if (name === "close") return <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M18 6 6 18" /><path d="m6 6 12 12" /></svg>;
-  if (name === "gear") {
-    return (
-      <svg viewBox="0 0 24 24" aria-hidden="true">
-        <path d="M9.671 4.136a2.34 2.34 0 0 1 4.659 0 2.34 2.34 0 0 0 3.319 1.915 2.34 2.34 0 0 1 2.33 4.033 2.34 2.34 0 0 0 0 3.831 2.34 2.34 0 0 1-2.33 4.033 2.34 2.34 0 0 0-3.319 1.915 2.34 2.34 0 0 1-4.659 0 2.34 2.34 0 0 0-3.32-1.915 2.34 2.34 0 0 1-2.33-4.033 2.34 2.34 0 0 0 0-3.831A2.34 2.34 0 0 1 6.35 6.051a2.34 2.34 0 0 0 3.319-1.915" />
-        <circle cx="12" cy="12" r="3" />
-      </svg>
-    );
-  }
-  if (name === "back") return <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m12 19-7-7 7-7" /><path d="M19 12H5" /></svg>;
-  if (name === "check") return <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 6 9 17l-5-5" /></svg>;
-  if (name === "search") return <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="8" /><path d="m21 21-4.3-4.3" /></svg>;
-  if (name === "x") return <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m18 6-12 12" /><path d="m6 6 12 12" /></svg>;
-  return <svg className="cw-chevron" viewBox="0 0 24 24" aria-hidden="true"><path d="m9 18 6-6-6-6" /></svg>;
+  const Component = { min: Minus, max: Square, close: X, gear: Settings, back: ArrowLeft, check: Check, search: Search, x: X, chevron: ChevronRight }[name];
+  return <Component aria-hidden="true" />;
 }
 
 function clientTitle(screen: WorkerClientScreen) {
@@ -48,7 +35,7 @@ function clientTitle(screen: WorkerClientScreen) {
   if (screen === "settings") return "设置";
   if (screen === "schedule-settings") return "接单时段设置";
   if (screen === "logs") return "本机执行日志";
-  return "Worker 工作台";
+  return "工作台";
 }
 
 function chipClass(text: string) {
@@ -115,9 +102,11 @@ function StatusSummary({ model, stateText }: { model: WorkerClientModel; stateTe
   return (
     <section className="cw-status-card status-grid" aria-label="Worker 状态摘要">
       <div className="cw-status-top">
+        <span className="cw-person-avatar" aria-hidden="true"><UserRound /></span>
         <strong className="cw-status-seller">{model.status.sellerName}</strong>
         <span className={`cw-chip chip ${chipClass(stateText || model.status.receiveState)}`}>{stateText || model.status.receiveState}</span>
       </div>
+      <ConnectionLine model={model} />
     </section>
   );
 }
@@ -239,11 +228,11 @@ function TimelineStep({ step }: { step: TimelineStepModel }) {
     {step.groupTitle ? <li className="cw-progress-group">{step.groupTitle}</li> : null}
     <li className={className}>
       <span className="cw-step-marker">
-        <Icon name={step.state === "error" ? "x" : (step.state === "current" || step.state === "waiting") ? "search" : "check"} />
+        {step.state === "current" ? <LoaderCircle aria-hidden="true" /> : step.state === "waiting" ? <Clock3 aria-hidden="true" /> : <Icon name={step.state === "error" ? "x" : "check"} />}
       </span>
-      <div>
+      <time className="cw-step-time">{step.time || ""}</time>
+      <div className="cw-step-content">
         <strong>{step.title}</strong>
-        {step.time ? <p>{step.time}</p> : null}
         {step.description ? <p>{friendlyText(step.description, "当前步骤未完成，请稍后重试。")}</p> : null}
         <StepScreenshot step={step} />
         {step.finalText ? <em className="cw-step-final-text">{step.finalText}</em> : null}
@@ -467,7 +456,7 @@ function Dock({
         disabled={disabled}
         onClick={accepting ? onPauseAccepting : onStartAccepting}
       >
-        {accepting ? "暂停接单" : "开始接单"}
+        {accepting ? <Pause aria-hidden="true" /> : <Play aria-hidden="true" />}{accepting ? "暂停接单" : "开始接单"}
       </button>
     </footer>
   );
@@ -496,8 +485,7 @@ function EmptyWorkbench({
     <section className="cw-screen screen active" data-screen-view={screen}>
       <div className="cw-workspace workspace">
         <header className="cw-workspace-head workspace-head">
-          <ConnectionLine model={model} />
-        </header>
+          </header>
         <StatusSummary model={model} stateText={stateText} />
         <CurrentProcess
           message={model.startupCheck && model.startupCheck.state !== "passed" ? model.startupCheck.title : processText}
@@ -533,8 +521,7 @@ function TaskScreen({
     <section className="cw-screen cw-screen-task screen active" data-screen-view={screen}>
       <div className="cw-workspace workspace">
         <header className="cw-workspace-head workspace-head">
-          <ConnectionLine model={model} />
-        </header>
+          </header>
         <section className="cw-task-layout task-layout">
           <StatusSummary model={model} stateText={dockState} />
           <CurrentProcess
@@ -572,8 +559,7 @@ function BackgroundProcessScreen({
     <section className="cw-screen cw-screen-task screen active" data-screen-view={screen}>
       <div className="cw-workspace workspace">
         <header className="cw-workspace-head workspace-head">
-          <ConnectionLine model={model} />
-        </header>
+          </header>
         <section className="cw-task-layout task-layout">
           <StatusSummary model={model} stateText={dockState} />
           <CurrentProcess steps={steps} state="neutral" duration={active ? elapsed : undefined} />
@@ -752,10 +738,6 @@ function SettingsScreen({ model, onScreenChange, onCheckForUpdates }: Pick<Worke
         <section className="cw-settings-list settings-list">
           <button className="cw-settings-row settings-row" type="button" onClick={() => onScreenChange?.("schedule-settings")}>
             <span><strong>自动接单时段</strong><em>{model.schedule.enabled ? "开启" : "关闭"} · {model.schedule.start} 至 {model.schedule.end}</em></span>
-            <Icon name="chevron" />
-          </button>
-          <button className="cw-settings-row settings-row" type="button" onClick={() => onScreenChange?.("logs")}>
-            <span><strong>本机执行日志</strong><em>查看最近 30 天，最多 1000 条本机日志</em></span>
             <Icon name="chevron" />
           </button>
           <div className="cw-settings-row cw-version-settings-row settings-row">

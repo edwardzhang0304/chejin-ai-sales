@@ -1,3 +1,4 @@
+import { ModalLayer, DialogSurface } from '../../../shared/ui/ManagementLayout';
 import { useEffect, useRef, useState } from "react";
 import type { ChangeEvent, DragEvent, KeyboardEvent } from "react";
 
@@ -209,12 +210,12 @@ export function VehicleImageManager({ vehicleCode, listingStatus, images, disabl
       ) : null}
 
       {preview ? (
-        <div className="modal-backdrop vehicle-preview-backdrop" role="presentation">
-          <section className="modal vehicle-preview-modal" role="dialog" aria-modal="true" aria-label="车辆图片大图预览">
+        <ModalLayer className="modal-backdrop vehicle-preview-backdrop" role="presentation">
+          <DialogSurface as="section" className="modal vehicle-preview-modal" role="dialog" aria-modal="true" aria-label="车辆图片大图预览">
             <div className="vehicle-preview-stage"><AuthenticatedVehicleImage imageId={preview.id} alt={preview.original_filename} /></div>
             <footer><span title={preview.original_filename}>{preview.original_filename}</span><button type="button" className="primary-button" onClick={() => setPreview(null)}>关闭</button></footer>
-          </section>
-        </div>
+          </DialogSurface>
+        </ModalLayer>
       ) : null}
 
       <ConfirmModal

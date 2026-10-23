@@ -1,3 +1,4 @@
+import { ModalLayer, DialogSurface } from './ManagementLayout';
 type Props = {
   open: boolean;
   title: string;
@@ -12,10 +13,10 @@ type Props = {
 export function ConfirmModal({ open, title, description, confirmLabel, dangerous = false, busy = false, onCancel, onConfirm }: Props) {
   if (!open) return null;
   return (
-    <div className="modal-backdrop" role="presentation" onMouseDown={(event) => {
+    <ModalLayer className="modal-backdrop" role="presentation" onMouseDown={(event) => {
       if (event.target === event.currentTarget && !busy) onCancel();
     }}>
-      <section className="modal small-modal confirm-modal" role="alertdialog" aria-modal="true" aria-labelledby="confirm-modal-title" aria-describedby="confirm-modal-description">
+      <DialogSurface as="section" className="modal small-modal confirm-modal" role="alertdialog" aria-modal="true" aria-labelledby="confirm-modal-title" aria-describedby="confirm-modal-description">
         <div className="modal-head">
           <div>
             <p>请确认</p>
@@ -29,7 +30,7 @@ export function ConfirmModal({ open, title, description, confirmLabel, dangerous
             {busy ? "处理中..." : confirmLabel}
           </button>
         </footer>
-      </section>
-    </div>
+      </DialogSurface>
+    </ModalLayer>
   );
 }

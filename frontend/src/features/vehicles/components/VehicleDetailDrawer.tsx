@@ -1,3 +1,5 @@
+import { DrawerHeader, DrawerContent, DrawerFooter } from '../../../shared/ui/ManagementLayout';
+import { DetailDrawer } from '../../../shared/ui/ManagementLayout';
 import { useEffect, useMemo, useState } from "react";
 import type { FormEvent } from "react";
 
@@ -235,20 +237,20 @@ export function VehicleDetailDrawer({ vehicle, loading, error, onRetry, onClose,
   }
 
   return (
-    <aside className={`panel management-drawer standard-management-drawer vehicle-detail-drawer ${editing ? "is-editing" : ""}`} aria-label="车辆详情">
-      <div className="drawer-head standard-management-drawer-head vehicle-drawer-head">
+    <DetailDrawer as="aside" className={`panel management-drawer standard-management-drawer vehicle-detail-drawer ${editing ? "is-editing" : ""}`} aria-label="车辆详情">
+      <DrawerHeader as="div" className="drawer-head standard-management-drawer-head vehicle-drawer-head">
         <div>
           <p>{editing ? "车辆详情 · 编辑中" : "车辆详情"}</p>
           <h2 title={vehicle?.display_name || "车辆详情"}>{vehicle?.display_name || "车辆详情"}</h2>
         </div>
         <button className="icon-button drawer-close-button" type="button" onClick={requestClose} aria-label="关闭车辆详情"><CloseIcon /></button>
-      </div>
+      </DrawerHeader>
 
       {loading ? <div className="state-box">正在加载车辆详情...</div> : error ? (
         <div className="state-box error"><span>{error}</span><button type="button" onClick={onRetry}>重试</button></div>
       ) : !vehicle || !form ? <div className="state-box">车辆详情不存在或已不可访问。</div> : (
         <form className="management-drawer-form vehicle-drawer-form" onSubmit={(event) => void handleSave(event)}>
-          <div className="management-drawer-scroll vehicle-drawer-scroll">
+          <DrawerContent as="div" className="management-drawer-scroll vehicle-drawer-scroll">
             <section className="drawer-section vehicle-image-section">
               <VehicleImageManager
                 vehicleCode={vehicle.vehicle_code}
@@ -332,9 +334,9 @@ export function VehicleDetailDrawer({ vehicle, loading, error, onRetry, onClose,
                 <ReadRow label="更新时间" value={formatDate(vehicle.updated_at)} />
               </dl>
             </section>
-          </div>
+          </DrawerContent>
 
-          <footer className="management-drawer-actions vehicle-drawer-actions">
+          <DrawerFooter as="footer" className="management-drawer-actions vehicle-drawer-actions">
             {saveError ? <div className="inline-alert error" role="alert">{saveError}</div> : null}
             {listingMissing.length ? <div className="listing-missing" role="alert"><strong>暂不能上架，请补齐：</strong><ul>{listingMissing.map((item) => <li key={item}>{item}</li>)}</ul></div> : null}
             <h3>操作</h3>
@@ -343,7 +345,7 @@ export function VehicleDetailDrawer({ vehicle, loading, error, onRetry, onClose,
             ) : (
               <div className="drawer-actions"><button type="button" onClick={() => { setForm(toForm(vehicle)); setEditing(true); setSaveError(null); }}>编辑车辆</button><button type="button" className={vehicle.listing_status === "listed" ? "danger-button" : "primary-button"} onClick={requestListingChange}>{vehicle.listing_status === "listed" ? "下架" : "上架"}</button></div>
             )}
-          </footer>
+          </DrawerFooter>
         </form>
       )}
 
@@ -358,6 +360,6 @@ export function VehicleDetailDrawer({ vehicle, loading, error, onRetry, onClose,
         onCancel={() => setListingConfirm(null)}
         onConfirm={() => void confirmListingChange()}
       />
-    </aside>
+    </DetailDrawer>
   );
 }

@@ -116,7 +116,8 @@ def test_generic_evidence_cannot_forge_origin():
     assert r.status_code==409 and r.json()['code']=='HOOK_INVITE_PROOF_ROUTE_REQUIRED'
 
 
-def test_worker_formal_c1_real_http_preserves_fields_and_replays_only_receipt(tmp_path, identity_client, monkeypatch):
+@pytest.mark.parametrize("report_clock_failed", [False, True])
+def test_worker_formal_c1_real_http_preserves_fields_and_replays_only_receipt(tmp_path, identity_client, monkeypatch, report_clock_failed):
     from chejin_worker_client.hook_backend import HookWorkerCredentials
     from chejin_worker_client.hook_formal_client import HookFormalClient
     from chejin_worker_client.hook_formal_c1 import HookFormalC1
@@ -144,6 +145,17 @@ def test_worker_formal_c1_real_http_preserves_fields_and_replays_only_receipt(tm
     with pytest.raises(ValueError,match='PREPARATION_IDENTITY'):
         c1.execute_prepared(t['id'],token+1,prep,lambda:wrong_ui)
     assert wrong_ui.actions==[]
+    if report_clock_failed:
+        class ExpiringClock:
+            calls = 0
+            def now(self):
+                self.calls += 1
+                if self.calls > 1:
+                    raise RuntimeError('synthetic statistics clock expired after submit')
+                return datetime.now(timezone.utc)
+            def evidence(self):
+                return {}
+        c1.clock = ExpiringClock()
     ui=ClipboardReplay();outcome=c1.execute_prepared(t['id'],token,prep,lambda:ui)
     assert outcome.get('formal_submission_proof_saved') is True,outcome
     with SessionLocal() as db:assert db.get(Task,t['id']).status=='running'

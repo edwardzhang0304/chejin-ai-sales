@@ -1,3 +1,4 @@
+import { ModalLayer, DialogSurface } from '../../../shared/ui/ManagementLayout';
 import { useEffect, useRef, useState } from "react";
 
 type Props = {
@@ -20,8 +21,8 @@ export function CreateVehicleModal({ open, busy, error, onCancel, onSubmit }: Pr
 
   if (!open) return null;
   return (
-    <div className="modal-backdrop" role="presentation">
-      <form
+    <ModalLayer className="modal-backdrop" role="presentation">
+      <DialogSurface as="form"
         className="modal small-modal vehicle-create-modal"
         role="dialog"
         aria-modal="true"
@@ -50,7 +51,7 @@ export function CreateVehicleModal({ open, busy, error, onCancel, onSubmit }: Pr
           <button type="button" disabled={busy} onClick={onCancel}>取消</button>
           <button className="primary-button" type="submit" disabled={busy || !displayName.trim()}>{busy ? "保存中..." : "保存"}</button>
         </footer>
-      </form>
-    </div>
+      </DialogSurface>
+    </ModalLayer>
   );
 }

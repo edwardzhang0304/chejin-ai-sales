@@ -7,6 +7,7 @@ const contract = JSON.parse(readFileSync(new URL("../contracts/c2_contract_v3.js
 
 export default defineConfig({
   plugins: [react()],
+  resolve: { dedupe: ["react", "react-dom", "lucide-react"] },
   define: { "import.meta.env.VITE_PRODUCT_VERSION": JSON.stringify(contract.contract_revision) },
   server: {
     host: "127.0.0.1",

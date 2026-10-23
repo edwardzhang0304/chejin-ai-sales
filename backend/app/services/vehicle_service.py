@@ -300,6 +300,7 @@ def _build_product_payload(
             "updated_at": now,
             "created_by": old_metadata.get("created_by") or operator_id,
             "updated_by": operator_id,
+            **{key: old_metadata[key] for key in ("dashboard_origin", "listing_revision", "last_listing_event_id") if key in old_metadata},
         },
     }
 
@@ -417,6 +418,7 @@ def get_vehicle(db: Session, vehicle_id: str) -> dict:
 def _create_with_id(db: Session, vehicle_id: str, fields: dict, actor: ActorContext) -> KnowledgeItem:
     _ensure_catalog(db)
     payload = _build_product_payload(vehicle_id, fields, listed=False, actor=actor)
+    payload["metadata"]["dashboard_origin"] = {"version": 1, "listing_status": "unlisted"}
     row = KnowledgeItem(
         tenant_id=_tenant_id(),
         layer=PRODUCT_LAYER,
@@ -477,6 +479,18 @@ def update_vehicle(db: Session, vehicle_id: str, payload: VehicleUpdate, actor: 
     return _vehicle_dict(db, row)
 
 
+def _unlisting_price_snapshot(fields: dict) -> str | None:
+    # Legacy incomplete catalog data must remain unlistable. Missing statistics
+    # are explicit; report instrumentation never becomes a new business gate.
+    try:
+        price = Decimal(str(fields.get("public_price")))
+        if not price.is_finite() or price <= 0:
+            return None
+        return str((price * Decimal("10000")).quantize(Decimal("0.01")))
+    except (InvalidOperation, TypeError, ValueError):
+        return None
+
+
 def set_listing(db: Session, vehicle_id: str, *, listed: bool, actor: ActorContext) -> dict:
     row = _vehicle_or_404(db, vehicle_id, lock=True)
     was_listed = row.status != "archived"
@@ -494,6 +508,12 @@ def set_listing(db: Session, vehicle_id: str, *, listed: bool, actor: ActorConte
             raise AppError("VEHICLE_LISTING_PRICE_REQUIRED", "上架前必须填写大于 0 的公开售价", 409)
         if not _images(db, vehicle_id):
             raise AppError("VEHICLE_LISTING_IMAGE_REQUIRED", "上架前必须至少上传一张车辆图片", 409)
+    prior_metadata = (row.payload or {}).get("metadata", {})
+    try:
+        revision = max(0, int(prior_metadata.get("listing_revision", 0))) + 1
+    except (TypeError, ValueError, OverflowError):
+        # Optional reporting metadata must not block an otherwise valid transition.
+        revision = 1
     row.status = "active" if listed else "archived"
     row.payload = _build_product_payload(
         vehicle_id,
@@ -504,7 +524,7 @@ def set_listing(db: Session, vehicle_id: str, *, listed: bool, actor: ActorConte
     )
     row.search_text = _search_text(row.payload)
     row.updated_at = utcnow()
-    write_log(
+    listing_log = write_log(
         db,
         actor,
         event_type="vehicle_listed" if listed else "vehicle_unlisted",
@@ -513,7 +533,20 @@ def set_listing(db: Session, vehicle_id: str, *, listed: bool, actor: ActorConte
         target_id=vehicle_id,
         before_data={"listing_status": "listed" if was_listed else "unlisted"},
         after_data={"listing_status": "listed" if listed else "unlisted"},
+        metadata={
+            "dashboard_fact_version": 1,
+            "listing_revision": revision,
+            "reverses_event_id": prior_metadata.get("last_listing_event_id") if listed else None,
+            "tenant_id": row.tenant_id,
+            "unlisting_public_price_yuan": (
+                _unlisting_price_snapshot(fields)
+                if not listed else None
+            ),
+        },
     )
+    db.flush()
+    row.payload = {**row.payload, "metadata": {**row.payload["metadata"],
+        "listing_revision": revision, "last_listing_event_id": listing_log.id}}
     _invalidate_pending_vehicle_replies(db, vehicle_id)
     db.flush()
     return _vehicle_dict(db, row)

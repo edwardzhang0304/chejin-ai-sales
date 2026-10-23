@@ -1,4 +1,5 @@
-import { useEffect, useRef, useState } from "react";
+import { lazy, Suspense, useEffect, useRef, useState } from "react";
+import { BarChart3, UsersRound, CarFront, BookOpen, ContactRound, Monitor, ListTodo, type LucideIcon } from "lucide-react";
 
 import { LoginPage } from "./features/auth/LoginPage";
 import { EmptyWorkspace } from "./features/home/EmptyWorkspace";
@@ -13,15 +14,18 @@ import type { AuthSession } from "./shared/api/auth";
 import { ApiError, onUnauthorized, runtimeConfig } from "./shared/api/client";
 import { ChevronRightIcon } from "./shared/ui/Icons";
 
-type ModuleKey = "leads" | "vehicles" | "knowledge" | "sales" | "workers" | "tasks";
+const DashboardPage = lazy(() => import("./features/dashboard/DashboardPage").then(module => ({ default: module.DashboardPage })));
 
-const modules: Array<{ key: ModuleKey; label: string }> = [
-  { key: "leads", label: "线索管理" },
-  { key: "vehicles", label: "车辆管理" },
-  { key: "knowledge", label: "知识管理" },
-  { key: "sales", label: "销售管理" },
-  { key: "workers", label: "Worker 管理" },
-  { key: "tasks", label: "任务中心" },
+type ModuleKey = "dashboard" | "leads" | "vehicles" | "knowledge" | "sales" | "workers" | "tasks";
+
+const modules: Array<{ key: ModuleKey; label: string; icon: LucideIcon }> = [
+  { key: "dashboard", label: "数据看板", icon: BarChart3 },
+  { key: "leads", label: "线索管理", icon: UsersRound },
+  { key: "vehicles", label: "车辆管理", icon: CarFront },
+  { key: "knowledge", label: "知识管理", icon: BookOpen },
+  { key: "sales", label: "销售管理", icon: ContactRound },
+  { key: "workers", label: "Worker 管理", icon: Monitor },
+  { key: "tasks", label: "任务中心", icon: ListTodo },
 ];
 
 type AuthState = "checking" | "authenticated" | "unauthenticated";
@@ -138,7 +142,7 @@ export function App() {
   const accountAvatar = accountLabel.slice(0, 1) || "运";
 
   return (
-    <main className="app-shell">
+    <main className="app-shell glass-admin">
       <aside className="sidebar" aria-label="运营后台导航">
         <div className="brand-block">
           <div className="brand-mark" aria-hidden="true">
@@ -154,11 +158,13 @@ export function App() {
           {modules.map((item) => (
             <button
               key={item.key}
+              aria-label={item.label}
+              title={item.label}
               type="button"
               className={activeModule === item.key ? "module-item active" : "module-item"}
               onClick={() => setActiveModule(item.key)}
             >
-              <span>{item.label}</span>
+              <item.icon size={21} aria-hidden="true" /><span>{item.label}</span>
             </button>
           ))}
         </nav>
@@ -191,6 +197,7 @@ export function App() {
       </aside>
 
       <section className="workspace">
+        {activeModule === "dashboard" ? <Suspense fallback={<div className="state-box">正在加载数据看板...</div>}><DashboardPage /></Suspense> : null}
         {activeModule === "leads" ? <LeadsPage /> : null}
         {activeModule === "vehicles" ? <VehiclesPage /> : null}
         {activeModule === "knowledge" ? <KnowledgePage /> : null}

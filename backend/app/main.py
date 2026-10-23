@@ -8,6 +8,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import text
 
+from app.api.routes import dashboard
 from app.api.response import error_response
 from app.api.routes import assignment, auth_session, c3, client_releases, debug, knowledge_management, leads, observability, operation_logs, sales, tasks, vehicles, wechat, workers
 from app.core.config import get_settings
@@ -269,6 +270,7 @@ def create_app() -> FastAPI:
             "feishu": feishu,
         }
 
+    app.include_router(dashboard.router, prefix=settings.api_prefix)
     app.include_router(leads.router, prefix=settings.api_prefix)
     app.include_router(auth_session.router, prefix=settings.api_prefix)
     app.include_router(sales.router, prefix=settings.api_prefix)

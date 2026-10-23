@@ -1,3 +1,4 @@
+import { TableSurface } from '../../../shared/ui/ManagementLayout';
 import type { LeadListItem } from "../types";
 
 type Props = {
@@ -51,7 +52,7 @@ export function LeadsTable({
   }
 
   return (
-    <div className="table-card">
+    <TableSurface as="div" className="table-card">
       <table>
         <thead>
           <tr>
@@ -96,6 +97,6 @@ export function LeadsTable({
           ))}
         </tbody>
       </table>
-    </div>
+    </TableSurface>
   );
 }

@@ -18,8 +18,8 @@ afterEach(() => {
   vi.clearAllMocks();
 });
 
-function uploadXlsx(container: HTMLElement) {
-  const input = container.querySelector('input[type="file"]') as HTMLInputElement;
+function uploadXlsx() {
+  const input = screen.getByLabelText("上传车辆 Excel") as HTMLInputElement;
   const file = new File(["xlsx"], "车辆导入.xlsx", { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
   fireEvent.change(input, { target: { files: [file] } });
 }
@@ -47,9 +47,9 @@ describe("车辆 Excel 三步导入", () => {
       can_confirm: false,
       rows: [{ row_number: 12, vehicle_code: "CJ-NOT-EXISTS", action: "update", data: {}, errors: ["车辆编号不存在；如需新增请清空车辆编号，由系统生成"] }],
     }));
-    const { container } = render(<VehicleImportModal open onClose={vi.fn()} onImported={vi.fn()} />);
+    render(<VehicleImportModal open onClose={vi.fn()} onImported={vi.fn()} />);
 
-    uploadXlsx(container);
+    uploadXlsx();
 
     expect(await screen.findByText("第 12 行 · 车辆 CJ-NOT-EXISTS")).toBeTruthy();
     expect(screen.getByText("车辆编号不存在；如需新增请清空车辆编号，由系统生成")).toBeTruthy();
@@ -63,9 +63,9 @@ describe("车辆 Excel 三步导入", () => {
     api.previewVehicleImport.mockResolvedValue(validPreview);
     api.confirmVehicleImport.mockResolvedValue(result);
     const onImported = vi.fn();
-    const { container } = render(<VehicleImportModal open onClose={vi.fn()} onImported={onImported} />);
+    render(<VehicleImportModal open onClose={vi.fn()} onImported={onImported} />);
 
-    uploadXlsx(container);
+    uploadXlsx();
     const confirm = await screen.findByRole("button", { name: "确认导入" });
     expect((confirm as HTMLButtonElement).disabled).toBe(false);
     fireEvent.click(confirm);
@@ -80,9 +80,9 @@ describe("车辆 Excel 三步导入", () => {
     api.previewVehicleImport.mockResolvedValue(validPreview);
     api.confirmVehicleImport.mockResolvedValue({ ...validPreview, status: "confirmed", duplicated: false, imported_count: 1 });
     const onImported = vi.fn().mockRejectedValue(new Error("refresh failed"));
-    const { container } = render(<VehicleImportModal open onClose={vi.fn()} onImported={onImported} />);
+    render(<VehicleImportModal open onClose={vi.fn()} onImported={onImported} />);
 
-    uploadXlsx(container);
+    uploadXlsx();
     fireEvent.click(await screen.findByRole("button", { name: "确认导入" }));
 
     expect(await screen.findByText("车辆导入完成")).toBeTruthy();

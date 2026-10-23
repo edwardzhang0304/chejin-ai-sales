@@ -1,3 +1,4 @@
+import { ModalLayer, DialogSurface } from '../../../shared/ui/ManagementLayout';
 import { FormEvent, useState } from "react";
 
 import { useLockBodyScroll } from "../../../shared/hooks/useLockBodyScroll";
@@ -47,8 +48,8 @@ export function CreateSalesModal({ submitting, error, workerOptions, onClose, on
   }
 
   return (
-    <div className="modal-backdrop" role="presentation">
-      <form className="modal sales-modal" onSubmit={(event) => void handleSubmit(event)} aria-label="新增销售">
+    <ModalLayer className="modal-backdrop" role="presentation">
+      <DialogSurface as="form" className="modal sales-modal" onSubmit={(event) => void handleSubmit(event)} aria-label="新增销售">
         <header>
           <h2>新增销售</h2>
         </header>
@@ -123,7 +124,7 @@ export function CreateSalesModal({ submitting, error, workerOptions, onClose, on
             {submitting ? "保存中..." : "保存"}
           </button>
         </footer>
-      </form>
-    </div>
+      </DialogSurface>
+    </ModalLayer>
   );
 }

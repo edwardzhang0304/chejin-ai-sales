@@ -1,12 +1,23 @@
 import type { WorkerItem } from "./types";
 
-type WorkerState = Pick<WorkerItem, "online_status" | "run_status" | "running_status" | "current_task" | "hook_context">;
+type WorkerState = Pick<WorkerItem, "operational_status" | "online_status" | "run_status" | "running_status" | "current_task" | "hook_context">;
 
 export function workerIsBusy(worker: Pick<WorkerState, "current_task" | "running_status">) {
   return Boolean(worker.current_task) || worker.running_status === "running";
 }
 
 export function workerStatus(worker: WorkerState) {
+  if (worker.hook_context && worker.operational_status) {
+    const states = {
+      running: { label: "接单中", className: "assigned" },
+      paused: { label: "暂停接单", className: "unassigned" },
+      faulted: { label: "已停止接单（客户端故障）", className: "invalid" },
+      offline: { label: "离线", className: "unassigned" },
+      unbound: { label: "客户端未绑定", className: "unassigned" },
+      unavailable: { label: "状态待确认", className: "unassigned" },
+    };
+    return states[worker.operational_status];
+  }
   if (worker.online_status !== "online") return { label: "离线", className: "unassigned" };
   if (worker.run_status === "faulted") return { label: "已停止接单（客户端故障）", className: "invalid" };
   if (worker.hook_context) {

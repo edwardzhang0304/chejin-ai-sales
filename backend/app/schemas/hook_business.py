@@ -10,6 +10,8 @@ class HookAccountAction(BaseModel):
     process_generation: str = Field(min_length=1, max_length=128)
 
 class HookInviteSubmission(HookAccountAction):
+    # Optional for original durable proofs created before dashboard instrumentation.
+    submitted_at: str | None = Field(default=None, pattern=r'^\d{4}-\d{2}-\d{2}T.*\+00:00$')
     attempted_at: str = Field(pattern=r'^\d{4}-\d{2}-\d{2}T.*\+00:00$')
     preparation_id: str = Field(min_length=36, max_length=36)
     form_verified: Literal[True]

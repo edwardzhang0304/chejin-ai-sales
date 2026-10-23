@@ -1,3 +1,5 @@
+import { ModalLayer, DrawerHeader, DrawerFooter, DrawerContent } from '../../shared/ui/ManagementLayout';
+import { DialogSurface, PageHeader, MetricStrip, ListSurface, ListHeader, FilterBar, TableSurface, DetailDrawer } from '../../shared/ui/ManagementLayout';
 import { useAutoRefresh } from "../../shared/hooks/useAutoRefresh";
 import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
 
@@ -84,8 +86,8 @@ function CreateWorkerModal({
   }
 
   return (
-    <div className="modal-backdrop" role="presentation">
-      <form className="modal worker-modal" aria-label="新增 Worker" onSubmit={(event) => void handleSubmit(event)}>
+    <ModalLayer className="modal-backdrop" role="presentation">
+      <DialogSurface as="form" className="modal worker-modal" aria-label="新增 Worker" onSubmit={(event) => void handleSubmit(event)}>
         <header>
           <h2>新增 Worker</h2>
         </header>
@@ -116,8 +118,8 @@ function CreateWorkerModal({
           <button type="button" onClick={onClose} disabled={submitting}>取消</button>
           <button className="primary-button" type="submit" disabled={submitting || !workerName.trim()}>{submitting ? "保存中..." : "保存"}</button>
         </footer>
-      </form>
-    </div>
+      </DialogSurface>
+    </ModalLayer>
   );
 }
 
@@ -316,7 +318,7 @@ export function WorkersPage({ openIntent }: { openIntent?: WorkerOpenIntent | nu
 
   return (
     <div className="workers-page screen-workers">
-      <header className="page-header">
+      <PageHeader as="header" className="page-header">
         <div>
           <p className="eyebrow">Worker 运营</p>
           <h1>Worker 管理</h1>
@@ -324,9 +326,9 @@ export function WorkersPage({ openIntent }: { openIntent?: WorkerOpenIntent | nu
         <button type="button" className="primary-button" onClick={() => setCreateOpen(true)}>
           新增 Worker
         </button>
-      </header>
+      </PageHeader>
 
-      <section className="metric-grid management-metrics" aria-label="Worker 管理指标">
+      <MetricStrip as="section" className="metric-grid management-metrics" aria-label="Worker 管理指标">
         <article>
           <span>Worker 总数</span>
           <strong>{items.length}</strong>
@@ -347,20 +349,20 @@ export function WorkersPage({ openIntent }: { openIntent?: WorkerOpenIntent | nu
           <strong className="warning-text">{metrics.busyCount}</strong>
           <p>当前任务 {metrics.busyCount} 个</p>
         </article>
-      </section>
+      </MetricStrip>
 
       {message ? <div className="inline-alert success">{message}</div> : null}
       {error ? <div className="inline-alert error">{error}</div> : null}
 
       <div className="management-grid">
-        <section className="panel management-list-panel">
-          <div className="panel-header">
+        <ListSurface as="section" className="panel management-list-panel">
+          <ListHeader as="div" className="panel-header">
             <div>
               <h2>Worker 列表</h2>
             </div>
-          </div>
+          </ListHeader>
 
-          <div className="management-filter-card">
+          <FilterBar as="div" className="management-filter-card">
             <label>
               <span>搜索</span>
               <input
@@ -387,9 +389,9 @@ export function WorkersPage({ openIntent }: { openIntent?: WorkerOpenIntent | nu
                 <option value="unbound">未绑定</option>
               </select>
             </label>
-          </div>
+          </FilterBar>
 
-          <div className="management-table-card">
+          <TableSurface as="div" className="management-table-card">
             <table className="management-table worker-table">
               <thead>
                 <tr>
@@ -422,10 +424,10 @@ export function WorkersPage({ openIntent }: { openIntent?: WorkerOpenIntent | nu
                         }}
                       >
                         <td className="lead-cell"><strong>{item.worker_name}</strong></td>
-                        <td className="copy-value"><span title={item.id}>{item.id}</span><CopyButton label="Worker ID" value={item.id} /></td>
+                        <td><div className="copy-value"><span title={item.id}>{item.id}</span><CopyButton label="Worker ID" value={item.id} /></div></td>
                         <td className="status-cell"><span className={`status ${statusClass(item.enabled)}`}>{item.enabled ? "启用" : "停用"}</span></td>
                         <td className="status-cell"><span className={`status ${binding.className}`}>{binding.label}</span></td>
-                        <td className="status-cell"><span className={`status ${current.className}`}>{current.label}</span></td>
+                        <td className="status-cell"><span title={current.label} className={`status ${current.className}`}>{current.label}</span></td>
                         <td>{display(item.bound_sales_name, "未绑定")}</td>
                         <td>{formatHeartbeat(item.last_heartbeat_at)}</td>
                       </tr>
@@ -434,26 +436,27 @@ export function WorkersPage({ openIntent }: { openIntent?: WorkerOpenIntent | nu
                 )}
               </tbody>
             </table>
-          </div>
-        </section>
+          </TableSurface>
+        </ListSurface>
 
-        <aside className={`panel management-drawer worker-detail-drawer ${editing ? "is-editing" : ""} ${drawerOpen ? "" : "closed"}`}>
+        <DetailDrawer as="aside" className={`panel management-drawer worker-detail-drawer ${editing ? "is-editing" : ""} ${drawerOpen ? "" : "closed"}`}>
           {!drawerOpen ? (
             <div className="state-box">点击 Worker 行查看详情。</div>
           ) : detailLoading || !detail || !editForm ? (
             <div className="state-box">正在加载 Worker 详情...</div>
           ) : (
             <form className="drawer-mode is-active" onSubmit={(event) => void handleSave(event)}>
-              <div className="drawer-head">
+              <DrawerHeader as="div" className="drawer-head">
                 <div>
                   <p><span className="read-value">Worker 详情</span><span className="edit-value">Worker 详情 · 编辑中</span></p>
                   <h2>{detail.worker_name}</h2>
                 </div>
                 <button className="icon-button drawer-close-button" type="button" onClick={() => setDrawerOpen(false)} disabled={submitting} aria-label="关闭 Worker 详情"><CloseIcon /></button>
-              </div>
+              </DrawerHeader>
 
               {saveError ? <div className="inline-alert error">{saveError}</div> : null}
 
+              <DrawerContent>
               <section className="drawer-section">
                 <h3>基础信息</h3>
                 <dl className="drawer-dl">
@@ -507,7 +510,8 @@ export function WorkersPage({ openIntent }: { openIntent?: WorkerOpenIntent | nu
                 <p className="drawer-hint">如需绑定或更换销售，请前往销售管理 &gt; 销售详情 &gt; 编辑销售处理。</p>
               </section>
 
-              <section className="drawer-action-section">
+              </DrawerContent>
+              <DrawerFooter as="section" className="drawer-action-section">
                 <h3>操作</h3>
                 <div className="drawer-actions">
                   <button className="read-value" type="button" onClick={() => setEditing(true)}>编辑 Worker</button>
@@ -515,10 +519,10 @@ export function WorkersPage({ openIntent }: { openIntent?: WorkerOpenIntent | nu
                   <button className="edit-value" type="button" disabled={submitting} onClick={() => { setEditForm(toEditForm(detail)); setEditing(false); setSaveError(null); }}>取消</button>
                   <button className="primary-button edit-value" type="submit" disabled={submitting || !editForm.worker_name.trim()}>{submitting ? "保存中..." : "保存"}</button>
                 </div>
-              </section>
+              </DrawerFooter>
             </form>
           )}
-        </aside>
+        </DetailDrawer>
       </div>
 
       {createOpen ? (
@@ -534,8 +538,8 @@ export function WorkersPage({ openIntent }: { openIntent?: WorkerOpenIntent | nu
       ) : null}
 
       {resetOpen && detail ? (
-        <div className="modal-backdrop" role="presentation">
-          <section className="modal small-modal" aria-label="重置客户端绑定">
+        <ModalLayer className="modal-backdrop" role="presentation">
+          <DialogSurface as="section" className="modal small-modal" aria-label="重置客户端绑定">
             <header>
               <h2>重置客户端绑定</h2>
             </header>
@@ -548,8 +552,8 @@ export function WorkersPage({ openIntent }: { openIntent?: WorkerOpenIntent | nu
                 {submitting ? "重置中..." : "确认重置绑定"}
               </button>
             </footer>
-          </section>
-        </div>
+          </DialogSurface>
+        </ModalLayer>
       ) : null}
     </div>
   );

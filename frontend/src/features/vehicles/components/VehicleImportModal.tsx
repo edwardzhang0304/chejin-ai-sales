@@ -1,3 +1,4 @@
+import { ModalLayer, DialogSurface } from '../../../shared/ui/ManagementLayout';
 import { useEffect, useRef, useState } from "react";
 
 import { ApiError, formatBusinessError } from "../../../shared/api/client";
@@ -128,8 +129,8 @@ export function VehicleImportModal({ open, onClose, onImported }: Props) {
   const errors = preview?.rows.flatMap((row) => row.errors.map((message) => ({ row: row.row_number, code: row.vehicle_code, message }))) || [];
 
   return (
-    <div className="modal-backdrop" role="presentation">
-      <section className="modal vehicle-import-modal" role="dialog" aria-modal="true" aria-labelledby="vehicle-import-title">
+    <ModalLayer className="modal-backdrop" role="presentation">
+      <DialogSurface as="section" className="modal vehicle-import-modal" role="dialog" aria-modal="true" aria-labelledby="vehicle-import-title">
         <header><div><h2 id="vehicle-import-title">Excel 导入车辆</h2><p>仅接受系统最新模板</p></div></header>
         <ol className="import-stepper" aria-label="导入步骤">
           <li className={step === "upload" ? "is-active" : "is-complete"}><span>1</span>上传文件</li>
@@ -140,7 +141,7 @@ export function VehicleImportModal({ open, onClose, onImported }: Props) {
         <div className="vehicle-import-body">
           {step === "upload" ? (
             <section className="import-stage is-active">
-              <input ref={inputRef} className="sr-only" type="file" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" onChange={(event) => chooseFile(event.target.files?.[0] || null)} />
+              <input ref={inputRef} className="sr-only" type="file" aria-label="上传车辆 Excel" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" onChange={(event) => chooseFile(event.target.files?.[0] || null)} />
               <div className="import-upload-zone">
                 <strong>{busy ? "正在解析车辆 Excel" : file ? file.name : "上传车辆 Excel"}</strong>
                 <p>{file ? `${(file.size / 1024).toFixed(1)} KB` : "仅支持 .xlsx，最大 8MB，单次最多 2000 行"}</p>
@@ -185,7 +186,7 @@ export function VehicleImportModal({ open, onClose, onImported }: Props) {
           {step === "preview" ? <><button type="button" disabled={busy} onClick={() => { setStep("upload"); setPreview(null); }}>重新选择文件</button><button type="button" className="primary-button" disabled={!preview?.can_confirm || busy} onClick={() => void handleConfirm()}>{busy ? "导入中..." : "确认导入"}</button></> : null}
           {step === "result" ? <><button type="button" onClick={() => { setStep("upload"); setPreview(null); setResult(null); setResultError(null); setRefreshFailed(false); }}>再导入一批</button><button type="button" className="primary-button" onClick={onClose}>返回车辆列表</button></> : null}
         </footer>
-      </section>
-    </div>
+      </DialogSurface>
+    </ModalLayer>
   );
 }

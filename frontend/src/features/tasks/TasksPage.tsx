@@ -1,3 +1,5 @@
+import { DrawerHeader, DrawerFooter, DrawerContent } from '../../shared/ui/ManagementLayout';
+import { PageHeader, MetricStrip, ListSurface, ListHeader, FilterBar, TableSurface, DetailDrawer } from '../../shared/ui/ManagementLayout';
 import { useAutoRefresh } from "../../shared/hooks/useAutoRefresh";
 import { useCallback, useEffect, useMemo, useState } from "react";
 
@@ -523,14 +525,14 @@ export function TasksPage({ onOpenWorker, onOpenSalesWorkerBinding }: Props) {
 
   return (
     <div className="tasks-page screen-tasks">
-      <header className="page-header">
+      <PageHeader as="header" className="page-header">
         <div>
           <p className="eyebrow">任务运营</p>
           <h1>任务中心</h1>
         </div>
-      </header>
+      </PageHeader>
 
-      <section className="metric-grid task-metrics" aria-label="任务中心指标">
+      <MetricStrip as="section" className="metric-grid task-metrics" aria-label="任务中心指标">
         <article>
           <span>阻塞任务</span>
           <strong className="warning-text">{formatMetric(metrics?.blocked)}</strong>
@@ -556,21 +558,21 @@ export function TasksPage({ onOpenWorker, onOpenSalesWorkerBinding }: Props) {
           <strong className="warning-text">{formatMetric(metrics?.failed_today)}</strong>
           <p>需复盘处理</p>
         </article>
-      </section>
+      </MetricStrip>
 
       {message ? <div className="inline-alert success">{message}</div> : null}
       {error ? <div className="inline-alert error">{error}</div> : null}
 
       <div className="management-grid task-management-grid">
-        <section className="panel management-list-panel task-list-panel">
-          <div className="panel-header">
+        <ListSurface as="section" className="panel management-list-panel task-list-panel">
+          <ListHeader as="div" className="panel-header">
             <div>
               <h2>任务列表</h2>
               <p>任务状态由服务端维护，Worker / RPA / 人工只上报执行事实。</p>
             </div>
-          </div>
+          </ListHeader>
 
-          <div className="task-filter-card">
+          <FilterBar as="div" className="task-filter-card">
             <label className="task-search">
               <span>搜索</span>
               <input
@@ -638,9 +640,9 @@ export function TasksPage({ onOpenWorker, onOpenSalesWorkerBinding }: Props) {
                 ))}
               </select>
             </label>
-          </div>
+          </FilterBar>
 
-          <div className="management-table-card task-table-card">
+          <TableSurface as="div" className="management-table-card task-table-card">
             <table className="task-table">
               <thead>
                 <tr>
@@ -688,7 +690,7 @@ export function TasksPage({ onOpenWorker, onOpenSalesWorkerBinding }: Props) {
                 )}
               </tbody>
             </table>
-          </div>
+          </TableSurface>
 
           <Pagination
             as="div"
@@ -706,23 +708,24 @@ export function TasksPage({ onOpenWorker, onOpenSalesWorkerBinding }: Props) {
             onPageChange={(value) => updateQuery({ page: value })}
             onPageSizeChange={(value) => updateQuery({ page_size: value, page: 1 })}
           />
-        </section>
+        </ListSurface>
 
-        <aside className={`panel management-drawer task-detail-drawer ${drawerOpen ? "" : "closed"}`}>
+        <DetailDrawer as="aside" className={`panel management-drawer task-detail-drawer ${drawerOpen ? "" : "closed"}`}>
           {!drawerOpen ? (
             <div className="state-box">点击任务行查看详情。</div>
           ) : detailLoading || !detail ? (
             <div className="state-box">正在加载任务详情...</div>
           ) : (
             <>
-              <div className="drawer-head">
+              <DrawerHeader as="div" className="drawer-head">
                 <div>
                   <p>任务详情</p>
                   <h2><ClickToCopyText label="任务 ID" value={detail.id} /></h2>
                 </div>
                 <button className="icon-button drawer-close-button" type="button" onClick={() => setDrawerOpen(false)} aria-label="关闭任务详情"><CloseIcon /></button>
-              </div>
+              </DrawerHeader>
 
+              <DrawerContent>
               <div className="task-status-row">
                 <span className={`status ${formatStatus(detail.status).className}`}>{formatStatus(detail.status).label}</span>
               </div>
@@ -799,7 +802,8 @@ export function TasksPage({ onOpenWorker, onOpenSalesWorkerBinding }: Props) {
                 )}
               </section>
 
-              <section className="drawer-action-section">
+              </DrawerContent>
+              <DrawerFooter as="section" className="drawer-action-section">
                 <h3>操作</h3>
                 <div className="drawer-actions">
                   {detailActions.map((label) => (
@@ -808,10 +812,10 @@ export function TasksPage({ onOpenWorker, onOpenSalesWorkerBinding }: Props) {
                     </button>
                   ))}
                 </div>
-              </section>
+              </DrawerFooter>
             </>
           )}
-        </aside>
+        </DetailDrawer>
       </div>
     </div>
   );
