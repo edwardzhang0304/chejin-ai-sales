@@ -1,0 +1,433 @@
+{
+  "original": {
+    "run_id": 39596278756,
+    "attempt": 1,
+    "job_id": 119209263431,
+    "artifact_id": 12344152893,
+    "artifact_sha256": "4a8c5e36ed866b7edc766b952658e7ec9693efa173665e05605cc3ad6f1684a2",
+    "commit": "93442961cb0ac024d652d1b67e9cdda5843086b3",
+    "branch": "gray-release-0.10.x"
+  },
+  "additional_originals": [
+    {
+      "run_id": 39739314755,
+      "attempt": 1,
+      "job_id": 119692424920,
+      "artifact_id": 12408921004,
+      "artifact_sha256": "1797c1ca1b7296ce3db4638b10959070a58accec3b69fcca582fbbf8fe9be5cb",
+      "commit": "7ff1041c03bb30d79f93bd09de1786cf2116f816",
+      "branch": "gray-release-0.10.x",
+      "changed_inputs": {
+        ".github/workflows/release-evidence.yml": {
+          "reason": "Retain reviewed ecd5c7a failure diagnostics and c3fe7a4 observer-only transient PermissionError handling. Eight local state-poll tests plus architect5 audit and successful original Windows run39907996479 reused. Success conditions and original deadline unchanged; current Windows parser and sealed artifact button acceptance required.",
+          "covered_by": [
+            "windows-parser",
+            "gui-driver"
+          ]
+        },
+        "ops/formal_release/handoffs/hook-reviewed-1ed1d7c.json": {
+          "reason": "Release version/provenance metadata only; unchanged toolkit logic and product checks reused.",
+          "covered_by": [
+            "ops/formal_release/tests/test_tooling_handoff.py"
+          ]
+        },
+        "ops/formal_release/handoffs/hook-reviewed-d44f8e5.json": {
+          "reason": "Release version/provenance metadata only; unchanged toolkit logic and product checks reused.",
+          "covered_by": [
+            "ops/formal_release/tests/test_tooling_handoff.py"
+          ]
+        },
+        "ops/formal_release/handoffs/hook-reviewed-d7f7ad4.json": {
+          "reason": "Release version/provenance metadata only; unchanged toolkit logic and product checks reused.",
+          "covered_by": [
+            "ops/formal_release/tests/test_tooling_handoff.py"
+          ]
+        },
+        "ops/formal_release/handoffs/tooling-01011-reviewed.json": {
+          "reason": "Release version/provenance metadata only; unchanged toolkit logic and product checks reused.",
+          "covered_by": [
+            "ops/formal_release/tests/test_tooling_handoff.py"
+          ]
+        },
+        "ops/formal_release/handoffs/tooling-01011-scope.json": {
+          "reason": "Release version/provenance metadata only; unchanged toolkit logic and product checks reused.",
+          "covered_by": [
+            "ops/formal_release/tests/test_tooling_handoff.py"
+          ]
+        },
+        "ops/formal_release/handoffs/tooling-01012-reviewed.json": {
+          "reason": "Release version/provenance metadata only; unchanged toolkit logic and product checks reused.",
+          "covered_by": [
+            "ops/formal_release/tests/test_tooling_handoff.py"
+          ]
+        },
+        "ops/formal_release/handoffs/tooling-01012-scope.json": {
+          "reason": "Release version/provenance metadata only; unchanged toolkit logic and product checks reused.",
+          "covered_by": [
+            "ops/formal_release/tests/test_tooling_handoff.py"
+          ]
+        },
+        "ops/formal_release/handoffs/tooling-01013-scope.json": {
+          "reason": "Release version/provenance metadata only; unchanged toolkit logic and product checks reused.",
+          "covered_by": [
+            "ops/formal_release/tests/test_tooling_handoff.py"
+          ]
+        },
+        "ops/formal_release/run_evidence_checks.py": {
+          "reason": "Independent multi-origin evidence fix reviewed by architect5 at fe37233; versioned strict provenance, XML mapping, per-origin dependencies and retained case coverage. Current focused producer-reader-final-consumer tests required.",
+          "covered_by": [
+            "ops/formal_release/tests/test_tooling_handoff.py"
+          ]
+        },
+        "ops/formal_release/tests/test_hook_component_packaging.py": {
+          "reason": "Only Hook copies three reviewed offline-maintenance entry files and invokes existing native PS5.1 validator with fatal failure before manifest sealing. Static transport/copy/fail-close check added; native parser and copied script validator execute in Windows before package is admitted. OCR branch preserved.",
+          "covered_by": [
+            "ops/formal_release/tests/test_hook_component_packaging.py",
+            "windows-parser",
+            "hook-launcher-setup"
+          ]
+        },
+        "ops/formal_release/tests/test_tooling_handoff.py": {
+          "reason": "Independent multi-origin evidence fix reviewed by architect5 at fe37233; versioned strict provenance, XML mapping, per-origin dependencies and retained case coverage. Current focused producer-reader-final-consumer tests required.",
+          "covered_by": [
+            "ops/formal_release/tests/test_tooling_handoff.py"
+          ]
+        },
+        "ops/formal_release/tests/test_upgrade_state_poll.py": {
+          "reason": "Retain reviewed ecd5c7a failure diagnostics and c3fe7a4 observer-only transient PermissionError handling. Eight local state-poll tests plus architect5 audit and successful original Windows run39907996479 reused. Success conditions and original deadline unchanged; current Windows parser and sealed artifact button acceptance required.",
+          "covered_by": [
+            "windows-parser",
+            "gui-driver"
+          ]
+        },
+        "ops/formal_release/tooling_handoff.py": {
+          "reason": "Independent multi-origin evidence fix reviewed by architect5 at fe37233; versioned strict provenance, XML mapping, per-origin dependencies and retained case coverage. Current focused producer-reader-final-consumer tests required.",
+          "covered_by": [
+            "ops/formal_release/tests/test_tooling_handoff.py"
+          ]
+        },
+        "worker-client/chejin_worker_client/__init__.py": {
+          "reason": "Release version/provenance metadata only; unchanged toolkit logic and product checks reused.",
+          "covered_by": [
+            "ops/formal_release/tests/test_tooling_handoff.py"
+          ]
+        },
+        "worker-client/scripts/build-windows.ps1": {
+          "reason": "Only Hook copies three reviewed offline-maintenance entry files and invokes existing native PS5.1 validator with fatal failure before manifest sealing. Static transport/copy/fail-close check added; native parser and copied script validator execute in Windows before package is admitted. OCR branch preserved.",
+          "covered_by": [
+            "ops/formal_release/tests/test_hook_component_packaging.py",
+            "windows-parser",
+            "hook-launcher-setup"
+          ]
+        },
+        "worker-client/scripts/run-windows-client-upgrade-test.py": {
+          "reason": "Retain reviewed ecd5c7a failure diagnostics and c3fe7a4 observer-only transient PermissionError handling. Eight local state-poll tests plus architect5 audit and successful original Windows run39907996479 reused. Success conditions and original deadline unchanged; current Windows parser and sealed artifact button acceptance required.",
+          "covered_by": [
+            "windows-parser",
+            "gui-driver"
+          ]
+        }
+      },
+      "parameter_expansions": [
+        {
+          "cwd": ".",
+          "node": "ops/formal_release/tests/test_recovery_cutover.py",
+          "classname": "ops.formal_release.tests.test_recovery_cutover",
+          "name": "test_complete_cutover_control_flow_with_explicit_host_adapters",
+          "parameters": [
+            "test_complete_cutover_control_flow_with_explicit_host_adapters[False]",
+            "test_complete_cutover_control_flow_with_explicit_host_adapters[True]"
+          ],
+          "reason": "Prior release parameterized the original full cutover control flow over existing inactive and active maintenance fences. Both exact expanded cases passed in 39739314755/1 and source matches current unchanged test file. Original unparameterized identity is explicitly superseded, not silently lost."
+        }
+      ]
+    },
+    {
+      "run_id": 39795761997,
+      "attempt": 1,
+      "job_id": 119882569294,
+      "artifact_id": 12432019652,
+      "artifact_sha256": "8012b328918cf34fb8e77ba331d8ef6ac67bc19944e6816c920197678abb41d6",
+      "commit": "992e64434ebe454848427eabd0d8ff655662df9b",
+      "branch": "gray-release-0.10.x",
+      "changed_inputs": {
+        ".github/workflows/release-evidence.yml": {
+          "reason": "Retain reviewed ecd5c7a failure diagnostics and c3fe7a4 observer-only transient PermissionError handling. Eight local state-poll tests plus architect5 audit and successful original Windows run39907996479 reused. Success conditions and original deadline unchanged; current Windows parser and sealed artifact button acceptance required.",
+          "covered_by": [
+            "windows-parser",
+            "gui-driver"
+          ]
+        },
+        "ops/formal_release/handoffs/hook-reviewed-1ed1d7c.json": {
+          "reason": "Release version/provenance metadata only; unchanged toolkit logic and product checks reused.",
+          "covered_by": [
+            "ops/formal_release/tests/test_tooling_handoff.py"
+          ]
+        },
+        "ops/formal_release/handoffs/hook-reviewed-d44f8e5.json": {
+          "reason": "Release version/provenance metadata only; unchanged toolkit logic and product checks reused.",
+          "covered_by": [
+            "ops/formal_release/tests/test_tooling_handoff.py"
+          ]
+        },
+        "ops/formal_release/handoffs/tooling-01012-reviewed.json": {
+          "reason": "Release version/provenance metadata only; unchanged toolkit logic and product checks reused.",
+          "covered_by": [
+            "ops/formal_release/tests/test_tooling_handoff.py"
+          ]
+        },
+        "ops/formal_release/handoffs/tooling-01012-scope.json": {
+          "reason": "Release version/provenance metadata only; unchanged toolkit logic and product checks reused.",
+          "covered_by": [
+            "ops/formal_release/tests/test_tooling_handoff.py"
+          ]
+        },
+        "ops/formal_release/handoffs/tooling-01013-scope.json": {
+          "reason": "Release version/provenance metadata only; unchanged toolkit logic and product checks reused.",
+          "covered_by": [
+            "ops/formal_release/tests/test_tooling_handoff.py"
+          ]
+        },
+        "ops/formal_release/tests/test_upgrade_state_poll.py": {
+          "reason": "Retain reviewed ecd5c7a failure diagnostics and c3fe7a4 observer-only transient PermissionError handling. Eight local state-poll tests plus architect5 audit and successful original Windows run39907996479 reused. Success conditions and original deadline unchanged; current Windows parser and sealed artifact button acceptance required.",
+          "covered_by": [
+            "windows-parser",
+            "gui-driver"
+          ]
+        },
+        "worker-client/chejin_worker_client/__init__.py": {
+          "reason": "Release version/provenance metadata only; unchanged toolkit logic and product checks reused.",
+          "covered_by": [
+            "ops/formal_release/tests/test_tooling_handoff.py"
+          ]
+        },
+        "worker-client/scripts/run-windows-client-upgrade-test.py": {
+          "reason": "Retain reviewed ecd5c7a failure diagnostics and c3fe7a4 observer-only transient PermissionError handling. Eight local state-poll tests plus architect5 audit and successful original Windows run39907996479 reused. Success conditions and original deadline unchanged; current Windows parser and sealed artifact button acceptance required.",
+          "covered_by": [
+            "windows-parser",
+            "gui-driver"
+          ]
+        }
+      }
+    },
+    {
+      "run_id": 39903869298,
+      "attempt": 1,
+      "job_id": 120251257518,
+      "artifact_id": 12479173947,
+      "artifact_sha256": "e3f8e966de019bbcf0c37287dd39b8b648eb61a15591ae5c7737cf83ab112215",
+      "commit": "232b1acb5f742960bb208eca5f2a026aeab437d6",
+      "branch": "gray-release-0.10.x",
+      "changed_inputs": {
+        "ops/formal_release/handoffs/hook-reviewed-d44f8e5.json": {
+          "reason": "Release version/provenance metadata only; unchanged toolkit logic and product checks reused.",
+          "covered_by": [
+            "ops/formal_release/tests/test_tooling_handoff.py"
+          ]
+        },
+        "ops/formal_release/handoffs/tooling-01013-scope.json": {
+          "reason": "Release version/provenance metadata only; unchanged toolkit logic and product checks reused.",
+          "covered_by": [
+            "ops/formal_release/tests/test_tooling_handoff.py"
+          ]
+        },
+        "ops/formal_release/tests/test_upgrade_state_poll.py": {
+          "reason": "Retain reviewed ecd5c7a failure diagnostics and c3fe7a4 observer-only transient PermissionError handling. Eight local state-poll tests plus architect5 audit and successful original Windows run39907996479 reused. Success conditions and original deadline unchanged; current Windows parser and sealed artifact button acceptance required.",
+          "covered_by": [
+            "windows-parser",
+            "gui-driver"
+          ]
+        },
+        "worker-client/chejin_worker_client/__init__.py": {
+          "reason": "Release version/provenance metadata only; unchanged toolkit logic and product checks reused.",
+          "covered_by": [
+            "ops/formal_release/tests/test_tooling_handoff.py"
+          ]
+        },
+        "worker-client/scripts/run-windows-client-upgrade-test.py": {
+          "reason": "Retain reviewed ecd5c7a failure diagnostics and c3fe7a4 observer-only transient PermissionError handling. Eight local state-poll tests plus architect5 audit and successful original Windows run39907996479 reused. Success conditions and original deadline unchanged; current Windows parser and sealed artifact button acceptance required.",
+          "covered_by": [
+            "windows-parser",
+            "gui-driver"
+          ]
+        }
+      }
+    }
+  ],
+  "changed_inputs": {
+    ".github/workflows/hook-windows-build.yml": {
+      "reason": "Hook build host changed to the same Windows 2022 family validated by native GUI smoke. No commands, source gates, package inputs or artifact naming changed.",
+      "covered_by": [
+        "windows-parser",
+        "gui-driver"
+      ]
+    },
+    ".github/workflows/release-evidence.yml": {
+      "reason": "Retain reviewed ecd5c7a failure diagnostics and c3fe7a4 observer-only transient PermissionError handling. Eight local state-poll tests plus architect5 audit and successful original Windows run39907996479 reused. Success conditions and original deadline unchanged; current Windows parser and sealed artifact button acceptance required.",
+      "covered_by": [
+        "windows-parser",
+        "gui-driver"
+      ]
+    },
+    "ops/formal_release/handoffs/hook-reviewed-1ed1d7c.json": {
+      "reason": "Release version/provenance metadata only; unchanged toolkit logic and product checks reused.",
+      "covered_by": [
+        "ops/formal_release/tests/test_tooling_handoff.py"
+      ]
+    },
+    "ops/formal_release/handoffs/hook-reviewed-22eb0b1.json": {
+      "reason": "Release version/provenance metadata only; unchanged toolkit logic and product checks reused.",
+      "covered_by": [
+        "ops/formal_release/tests/test_tooling_handoff.py"
+      ]
+    },
+    "ops/formal_release/handoffs/hook-reviewed-d44f8e5.json": {
+      "reason": "Release version/provenance metadata only; unchanged toolkit logic and product checks reused.",
+      "covered_by": [
+        "ops/formal_release/tests/test_tooling_handoff.py"
+      ]
+    },
+    "ops/formal_release/handoffs/hook-reviewed-d7f7ad4.json": {
+      "reason": "Release version/provenance metadata only; unchanged toolkit logic and product checks reused.",
+      "covered_by": [
+        "ops/formal_release/tests/test_tooling_handoff.py"
+      ]
+    },
+    "ops/formal_release/handoffs/tooling-01010-reviewed.json": {
+      "reason": "Release version/provenance metadata only; unchanged toolkit logic and product checks reused.",
+      "covered_by": [
+        "ops/formal_release/tests/test_tooling_handoff.py"
+      ]
+    },
+    "ops/formal_release/handoffs/tooling-01010-scope.json": {
+      "reason": "Release version/provenance metadata only; unchanged toolkit logic and product checks reused.",
+      "covered_by": [
+        "ops/formal_release/tests/test_tooling_handoff.py"
+      ]
+    },
+    "ops/formal_release/handoffs/tooling-01011-reviewed.json": {
+      "reason": "Release version/provenance metadata only; unchanged toolkit logic and product checks reused.",
+      "covered_by": [
+        "ops/formal_release/tests/test_tooling_handoff.py"
+      ]
+    },
+    "ops/formal_release/handoffs/tooling-01011-scope.json": {
+      "reason": "Release version/provenance metadata only; unchanged toolkit logic and product checks reused.",
+      "covered_by": [
+        "ops/formal_release/tests/test_tooling_handoff.py"
+      ]
+    },
+    "ops/formal_release/handoffs/tooling-01012-reviewed.json": {
+      "reason": "Release version/provenance metadata only; unchanged toolkit logic and product checks reused.",
+      "covered_by": [
+        "ops/formal_release/tests/test_tooling_handoff.py"
+      ]
+    },
+    "ops/formal_release/handoffs/tooling-01012-scope.json": {
+      "reason": "Release version/provenance metadata only; unchanged toolkit logic and product checks reused.",
+      "covered_by": [
+        "ops/formal_release/tests/test_tooling_handoff.py"
+      ]
+    },
+    "ops/formal_release/handoffs/tooling-01013-scope.json": {
+      "reason": "Release version/provenance metadata only; unchanged toolkit logic and product checks reused.",
+      "covered_by": [
+        "ops/formal_release/tests/test_tooling_handoff.py"
+      ]
+    },
+    "ops/formal_release/handoffs/tooling-gui-recovery-reviewed.json": {
+      "reason": "Release version/provenance metadata only; unchanged toolkit logic and product checks reused.",
+      "covered_by": [
+        "ops/formal_release/tests/test_tooling_handoff.py"
+      ]
+    },
+    "ops/formal_release/handoffs/tooling-gui-recovery-scope.json": {
+      "reason": "Release version/provenance metadata only; unchanged toolkit logic and product checks reused.",
+      "covered_by": [
+        "ops/formal_release/tests/test_tooling_handoff.py"
+      ]
+    },
+    "ops/formal_release/maintenance.py": {
+      "reason": "Allow existing identical active fence through the original validated reload and bounded old-worker drain path, without disabling or changing scope; reject missing include/unknown content.",
+      "covered_by": [
+        "ops/formal_release/tests/test_recovery_cutover.py",
+        "ops/formal_release/tests/test_release_environment.py"
+      ]
+    },
+    "ops/formal_release/recovery_cutover.py": {
+      "reason": "Idempotent enable of the same fence uses the original reload/drain mechanism; save pre-switch failures; verify six real loopback TLS grant probes before Docker switch. All old readiness/hash/data/backup gates remain.",
+      "covered_by": [
+        "ops/formal_release/tests/test_recovery_cutover.py"
+      ]
+    },
+    "ops/formal_release/run_evidence_checks.py": {
+      "reason": "Independent multi-origin evidence fix reviewed by architect5 at fe37233; versioned strict provenance, XML mapping, per-origin dependencies and retained case coverage. Current focused producer-reader-final-consumer tests required.",
+      "covered_by": [
+        "ops/formal_release/tests/test_tooling_handoff.py"
+      ]
+    },
+    "ops/formal_release/tests/test_hook_component_packaging.py": {
+      "reason": "Only Hook copies three reviewed offline-maintenance entry files and invokes existing native PS5.1 validator with fatal failure before manifest sealing. Static transport/copy/fail-close check added; native parser and copied script validator execute in Windows before package is admitted. OCR branch preserved.",
+      "covered_by": [
+        "ops/formal_release/tests/test_hook_component_packaging.py",
+        "windows-parser",
+        "hook-launcher-setup"
+      ]
+    },
+    "ops/formal_release/tests/test_recovery_cutover.py": {
+      "reason": "Exercise both inactive and already active maintenance and reject invalid existing fence before any Docker switch.",
+      "covered_by": [
+        "ops/formal_release/tests/test_recovery_cutover.py"
+      ]
+    },
+    "ops/formal_release/tests/test_tooling_handoff.py": {
+      "reason": "Independent multi-origin evidence fix reviewed by architect5 at fe37233; versioned strict provenance, XML mapping, per-origin dependencies and retained case coverage. Current focused producer-reader-final-consumer tests required.",
+      "covered_by": [
+        "ops/formal_release/tests/test_tooling_handoff.py"
+      ]
+    },
+    "ops/formal_release/tests/test_upgrade_state_poll.py": {
+      "reason": "Retain reviewed ecd5c7a failure diagnostics and c3fe7a4 observer-only transient PermissionError handling. Eight local state-poll tests plus architect5 audit and successful original Windows run39907996479 reused. Success conditions and original deadline unchanged; current Windows parser and sealed artifact button acceptance required.",
+      "covered_by": [
+        "windows-parser",
+        "gui-driver"
+      ]
+    },
+    "ops/formal_release/tooling_handoff.py": {
+      "reason": "Independent multi-origin evidence fix reviewed by architect5 at fe37233; versioned strict provenance, XML mapping, per-origin dependencies and retained case coverage. Current focused producer-reader-final-consumer tests required.",
+      "covered_by": [
+        "ops/formal_release/tests/test_tooling_handoff.py"
+      ]
+    },
+    "worker-client/chejin_worker_client/__init__.py": {
+      "reason": "Release version/provenance metadata only; unchanged toolkit logic and product checks reused.",
+      "covered_by": [
+        "ops/formal_release/tests/test_tooling_handoff.py"
+      ]
+    },
+    "worker-client/scripts/build-windows.ps1": {
+      "reason": "Only Hook copies three reviewed offline-maintenance entry files and invokes existing native PS5.1 validator with fatal failure before manifest sealing. Static transport/copy/fail-close check added; native parser and copied script validator execute in Windows before package is admitted. OCR branch preserved.",
+      "covered_by": [
+        "ops/formal_release/tests/test_hook_component_packaging.py",
+        "windows-parser",
+        "hook-launcher-setup"
+      ]
+    },
+    "worker-client/scripts/run-windows-client-upgrade-test.py": {
+      "reason": "Retain reviewed ecd5c7a failure diagnostics and c3fe7a4 observer-only transient PermissionError handling. Eight local state-poll tests plus architect5 audit and successful original Windows run39907996479 reused. Success conditions and original deadline unchanged; current Windows parser and sealed artifact button acceptance required.",
+      "covered_by": [
+        "windows-parser",
+        "gui-driver"
+      ]
+    }
+  },
+  "pytest": [
+    {
+      "cwd": ".",
+      "nodes": [
+        "ops/formal_release/tests/test_tooling_handoff.py"
+      ]
+    }
+  ],
+  "unaffected_scope_review": "Preserve original CI XML provenance, no duplicated historical test counts. UI source tests already passed and reviewed in7e97e073/d44f8e5. Tool observer fix c3fe7a4 passed eight local tests, architect5 code audit and original Windows39907996479; reuse these. Only existing55 metadata handoff checks run for newly changed release input descriptors, plus mandatory Windows parser and actual0.10.12→0.10.13 button acceptance. Backend PostgreSQL business checks unchanged and reused. No product test rerun or weakened assertion."
+}
