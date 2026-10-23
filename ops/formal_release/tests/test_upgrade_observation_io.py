@@ -2,6 +2,7 @@
 import ast
 import io
 import json
+import subprocess
 from pathlib import Path
 import types
 import unittest
@@ -81,6 +82,17 @@ class TerminalUIObservationTests(unittest.TestCase):
         self.clock.monotonic.return_value = 300
         self.factory.side_effect = self.handshake_error('incomplete HTTP response')
         self.assertFalse(self.observe(1234, self.old, self.report, 300))
+
+    def test_page_without_body_remains_pending_and_uses_null_safe_dom_expression(self):
+        self.assertFalse(self.check(''))
+        expression = self.view.evaluate.call_args.args[0]
+        result = subprocess.run(['node', '-e',
+            "let document={body:null};const expression=process.argv[1];const waiting=eval(expression);"
+            "document.body={innerText:'已更新到V0.10.14'};const loaded=eval(expression);"
+            "console.log(JSON.stringify([waiting,loaded]));", expression],
+            capture_output=True, text=True, check=True, timeout=10)
+        self.assertEqual(json.loads(result.stdout), ['', '已更新到V0.10.14'])
+        self.view.click_button.assert_not_called()
 
     def test_unexpected_ui_assertion_is_not_hidden(self):
         self.factory.side_effect = AssertionError('ambiguous pages')

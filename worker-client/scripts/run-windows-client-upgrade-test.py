@@ -438,7 +438,7 @@ def terminal_update_ui(debug_port, old, report, deadline):
     from websockets.exceptions import ConnectionClosed, InvalidMessage
     try:
         with QtPage(debug_port, deadline=deadline) as view:
-            text = view.evaluate("document.body.innerText") or ""
+            text = view.evaluate("document.body ? document.body.innerText : ''") or ""
             if "客户端版本号" not in text:
                 if old.poll() is not None:
                     # The replacement starts on the workbench. Use the same
