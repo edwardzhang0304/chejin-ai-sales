@@ -32,7 +32,7 @@
           ]
         },
         "ops/formal_release/handoffs/hook-reviewed-bbe404a.json": {
-          "reason": "Release identity metadata only; exact tool implementation unchanged.",
+          "reason": "0.10.18 reviewed source provenance and unified version metadata only; release tools implementation unchanged. Reuse previous source/code audits per approved metadata-only SOP 18.0.4.",
           "covered_by": [
             "ops/formal_release/tests/test_tooling_handoff.py"
           ]
@@ -104,7 +104,7 @@
           ]
         },
         "ops/formal_release/handoffs/tooling-01015-scope.json": {
-          "reason": "Release identity metadata only; exact tool implementation unchanged.",
+          "reason": "0.10.18 reviewed source provenance and unified version metadata only; release tools implementation unchanged. Reuse previous source/code audits per approved metadata-only SOP 18.0.4.",
           "covered_by": [
             "ops/formal_release/tests/test_tooling_handoff.py"
           ]
@@ -149,7 +149,7 @@
           ]
         },
         "worker-client/chejin_worker_client/__init__.py": {
-          "reason": "Release identity metadata only; exact tool implementation unchanged.",
+          "reason": "0.10.18 reviewed source provenance and unified version metadata only; release tools implementation unchanged. Reuse previous source/code audits per approved metadata-only SOP 18.0.4.",
           "covered_by": [
             "ops/formal_release/tests/test_tooling_handoff.py"
           ]
@@ -207,7 +207,7 @@
           ]
         },
         "ops/formal_release/handoffs/hook-reviewed-bbe404a.json": {
-          "reason": "Release identity metadata only; exact tool implementation unchanged.",
+          "reason": "0.10.18 reviewed source provenance and unified version metadata only; release tools implementation unchanged. Reuse previous source/code audits per approved metadata-only SOP 18.0.4.",
           "covered_by": [
             "ops/formal_release/tests/test_tooling_handoff.py"
           ]
@@ -261,7 +261,7 @@
           ]
         },
         "ops/formal_release/handoffs/tooling-01015-scope.json": {
-          "reason": "Release identity metadata only; exact tool implementation unchanged.",
+          "reason": "0.10.18 reviewed source provenance and unified version metadata only; release tools implementation unchanged. Reuse previous source/code audits per approved metadata-only SOP 18.0.4.",
           "covered_by": [
             "ops/formal_release/tests/test_tooling_handoff.py"
           ]
@@ -280,7 +280,7 @@
           ]
         },
         "worker-client/chejin_worker_client/__init__.py": {
-          "reason": "Release identity metadata only; exact tool implementation unchanged.",
+          "reason": "0.10.18 reviewed source provenance and unified version metadata only; release tools implementation unchanged. Reuse previous source/code audits per approved metadata-only SOP 18.0.4.",
           "covered_by": [
             "ops/formal_release/tests/test_tooling_handoff.py"
           ]
@@ -304,7 +304,7 @@
       "branch": "gray-release-0.10.x",
       "changed_inputs": {
         "ops/formal_release/handoffs/hook-reviewed-bbe404a.json": {
-          "reason": "Release identity metadata only; exact tool implementation unchanged.",
+          "reason": "0.10.18 reviewed source provenance and unified version metadata only; release tools implementation unchanged. Reuse previous source/code audits per approved metadata-only SOP 18.0.4.",
           "covered_by": [
             "ops/formal_release/tests/test_tooling_handoff.py"
           ]
@@ -346,7 +346,7 @@
           ]
         },
         "ops/formal_release/handoffs/tooling-01015-scope.json": {
-          "reason": "Release identity metadata only; exact tool implementation unchanged.",
+          "reason": "0.10.18 reviewed source provenance and unified version metadata only; release tools implementation unchanged. Reuse previous source/code audits per approved metadata-only SOP 18.0.4.",
           "covered_by": [
             "ops/formal_release/tests/test_tooling_handoff.py"
           ]
@@ -365,7 +365,7 @@
           ]
         },
         "worker-client/chejin_worker_client/__init__.py": {
-          "reason": "Release identity metadata only; exact tool implementation unchanged.",
+          "reason": "0.10.18 reviewed source provenance and unified version metadata only; release tools implementation unchanged. Reuse previous source/code audits per approved metadata-only SOP 18.0.4.",
           "covered_by": [
             "ops/formal_release/tests/test_tooling_handoff.py"
           ]
@@ -389,19 +389,19 @@
       "branch": "gray-release-0.10.x",
       "changed_inputs": {
         "ops/formal_release/handoffs/hook-reviewed-bbe404a.json": {
-          "reason": "Release identity metadata only; exact tool implementation unchanged.",
+          "reason": "0.10.18 reviewed source provenance and unified version metadata only; release tools implementation unchanged. Reuse previous source/code audits per approved metadata-only SOP 18.0.4.",
           "covered_by": [
             "ops/formal_release/tests/test_tooling_handoff.py"
           ]
         },
         "ops/formal_release/handoffs/tooling-01015-scope.json": {
-          "reason": "Release identity metadata only; exact tool implementation unchanged.",
+          "reason": "0.10.18 reviewed source provenance and unified version metadata only; release tools implementation unchanged. Reuse previous source/code audits per approved metadata-only SOP 18.0.4.",
           "covered_by": [
             "ops/formal_release/tests/test_tooling_handoff.py"
           ]
         },
         "worker-client/chejin_worker_client/__init__.py": {
-          "reason": "Release identity metadata only; exact tool implementation unchanged.",
+          "reason": "0.10.18 reviewed source provenance and unified version metadata only; release tools implementation unchanged. Reuse previous source/code audits per approved metadata-only SOP 18.0.4.",
           "covered_by": [
             "ops/formal_release/tests/test_tooling_handoff.py"
           ]
@@ -437,7 +437,7 @@
       ]
     },
     "ops/formal_release/handoffs/hook-reviewed-bbe404a.json": {
-      "reason": "Release identity metadata only; exact tool implementation unchanged.",
+      "reason": "0.10.18 reviewed source provenance and unified version metadata only; release tools implementation unchanged. Reuse previous source/code audits per approved metadata-only SOP 18.0.4.",
       "covered_by": [
         "ops/formal_release/tests/test_tooling_handoff.py"
       ]
@@ -521,7 +521,7 @@
       ]
     },
     "ops/formal_release/handoffs/tooling-01015-scope.json": {
-      "reason": "Release identity metadata only; exact tool implementation unchanged.",
+      "reason": "0.10.18 reviewed source provenance and unified version metadata only; release tools implementation unchanged. Reuse previous source/code audits per approved metadata-only SOP 18.0.4.",
       "covered_by": [
         "ops/formal_release/tests/test_tooling_handoff.py"
       ]
@@ -597,7 +597,7 @@
       ]
     },
     "worker-client/chejin_worker_client/__init__.py": {
-      "reason": "Release identity metadata only; exact tool implementation unchanged.",
+      "reason": "0.10.18 reviewed source provenance and unified version metadata only; release tools implementation unchanged. Reuse previous source/code audits per approved metadata-only SOP 18.0.4.",
       "covered_by": [
         "ops/formal_release/tests/test_tooling_handoff.py"
       ]
@@ -626,5 +626,5 @@
       ]
     }
   ],
-  "unaffected_scope_review": "0.10.17 metadata only: reuse211 unchanged tool cases;55 descriptor checks. Exact tool runtime unchanged since reviewed01016. User-approved technical plan18.0.4 exempts repeated metadata audit; existing reviewer provenance retained, no new review claimed. Original0.10.16 button requires sealed artifact."
+  "unaffected_scope_review": "0.10.18: only version identity and reviewed source provenance metadata updated after 0.10.17. Release tools and unrelated test bytes unchanged; retain original code audits and reuse exact unaffected tool checks. Run only descriptor validation and sealed Windows build/upgrade. No new architect code review claimed for metadata-only changes (approved SOP 18.0.4)."
 }
