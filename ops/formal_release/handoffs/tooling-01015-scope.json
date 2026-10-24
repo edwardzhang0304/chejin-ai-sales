@@ -388,7 +388,19 @@
       "commit": "3ec66b46664630649064f6d1da19d8ecc4b80877",
       "branch": "gray-release-0.10.x",
       "changed_inputs": {
+        "ops/formal_release/handoffs/hook-reviewed-bbe404a.json": {
+          "reason": "Release metadata; identity validator covers change.",
+          "covered_by": [
+            "ops/formal_release/tests/test_tooling_handoff.py"
+          ]
+        },
         "ops/formal_release/handoffs/tooling-01015-scope.json": {
+          "reason": "Release metadata; identity validator covers change.",
+          "covered_by": [
+            "ops/formal_release/tests/test_tooling_handoff.py"
+          ]
+        },
+        "worker-client/chejin_worker_client/__init__.py": {
           "reason": "Release metadata; identity validator covers change.",
           "covered_by": [
             "ops/formal_release/tests/test_tooling_handoff.py"
@@ -614,5 +626,5 @@
       ]
     }
   ],
-  "unaffected_scope_review": "Reuse prior CI and all79 checks from40088599870 by exact input. Only this changed descriptor needs validation. Shortened repeated metadata reasons preserve the same impact mappings; no executable code, pass criteria or size limit changed. Original Windows button remains a distinct gate."
+  "unaffected_scope_review": "0.10.16 metadata changes only. Keep same active descriptor paths; prior versions preserved by immutable Git and CI. Reuse211 unchanged tool cases; execute55 descriptor checks. No runtime tool changes. Original0.10.15 button requires current sealed package; physical sales acceptance paused."
 }
