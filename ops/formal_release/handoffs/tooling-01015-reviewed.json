@@ -1,7 +1,7 @@
 {
   "schema_version": 2,
   "repository": "edwardzhang0304/chejin-ai-sales",
-  "reviewed_commit": "a14e1616bd6629b002470217fe835892253c5d87",
+  "reviewed_commit": "351965856905def1975f1d4b483da3ffc8ef223c",
   "scope_file": "ops/formal_release/handoffs/tooling-01015-scope.json",
   "reviewed_inputs": {
     ".github/actions/worker-release-checks/action.yml": "100644 blob d52d02ca82a127917695e0d80c5ab1f6697b7d62",
@@ -71,7 +71,7 @@
     "ops/formal_release/handoffs/tooling-01013-scope.json": "100644 blob 9fb8f418276b2e195289b304eb358c1d9189008e",
     "ops/formal_release/handoffs/tooling-01014-reviewed.json": "100644 blob 4ed9be107759c576dfc865b4d6368b16bfd3e9bc",
     "ops/formal_release/handoffs/tooling-01014-scope.json": "100644 blob a265f852acaf4c891ee5c9b13cb9ff4444d3b714",
-    "ops/formal_release/handoffs/tooling-01015-scope.json": "100644 blob ec014d30af84d4c2230d692fd725557db2beef49",
+    "ops/formal_release/handoffs/tooling-01015-scope.json": "100644 blob 4e1c0fb6747dff539ba27efc6f0aac326293c518",
     "ops/formal_release/handoffs/tooling-gui-recovery-reviewed.json": "100644 blob aa928cc4a2b780683270bbea9fd06e6340dca724",
     "ops/formal_release/handoffs/tooling-gui-recovery-scope.json": "100644 blob a294688798685d49198fc2fe7772a90811a3cc9d",
     "ops/formal_release/handoffs/unified-recovery-58c90b3.json": "100644 blob aa8688d1777a4e68fe2a382493de1cff25dc10e1",
@@ -148,8 +148,8 @@
   "review": {
     "result": "passed",
     "thread_id": "01a0d26f-f47a-7343-9ad8-cda8320d7c86",
-    "turn_id": "01a16d96-1f80-75d2-9d39-9f833bb7478e",
-    "evidence_sha256": "b7295b7c523ace57443353c90b97ecbc98b7800abce9fde6a15200e2453e5c4b",
-    "scope": "Source/tool evidence scope approved; exact943eded observer implementation preserved; three affected toolingfiles only. No business rerun or Windows acceptance claimed."
+    "turn_id": "01a16d9c-bcf8-71e0-996c-edc90b80d142",
+    "evidence_sha256": "d4ccfa72f86c204ef4152fad8c91213c4efe38a9e376c5670ca742bd4b61d046",
+    "scope": "Compact metadata with original coverage mappings; latest79checks reused except55descriptor checks. Runtime tool code unchanged; actual CI size and Windows remain required."
   }
 }
