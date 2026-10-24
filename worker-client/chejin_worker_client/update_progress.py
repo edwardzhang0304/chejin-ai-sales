@@ -100,7 +100,8 @@ class UpdateProgress:
                 pass
 
     def close(self):
-        self.finish()
+        # Closing the informational window cannot certify a running phase.
+        self.finish("interrupted")
         self.closed.set()
         if self.thread is not None:
             try:

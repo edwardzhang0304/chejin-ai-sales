@@ -606,6 +606,7 @@ def run_update(plan_path: Path, token: str) -> int:
                 "artifact_sha256": plan.get("release", {}).get("artifact_sha256"),
             },
         )
+        progress.finish()
         return 0
     except Exception as exc:
         code = exc.code if isinstance(exc, ClientUpdateError) else "UPDATE_INSTALL_FAILED"
@@ -623,7 +624,8 @@ def run_update(plan_path: Path, token: str) -> int:
             error_code=code,
         )
         progress.finish("failed")
-        progress.begin("rollback")
+        if replacement_started or old_exit_confirmed:
+            progress.begin("rollback")
         message = str(exc)
         try:
             paths = plan.get("_paths") if isinstance(plan.get("_paths"), dict) else {}
@@ -683,6 +685,7 @@ def run_update(plan_path: Path, token: str) -> int:
             state = "rollback_failed"
             result_code = "UPDATE_ROLLBACK_FAILED"
             message = f"{message}; rollback={type(rollback_exc).__name__}: {rollback_exc}"
+        progress.finish("failed" if state == "rollback_failed" else "completed")
         _atomic_json_write(
             result_path,
             {

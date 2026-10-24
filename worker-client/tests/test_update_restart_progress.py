@@ -164,3 +164,21 @@ def test_window_api_uses_pointer_sized_handles_and_does_not_activate(tmp_path, m
     assert creation[0][0] == 0x08000000
     assert creation[1][8] == 2**40
     assert user32.CreateWindowExW.restype == ctypes.wintypes.HWND
+
+
+def test_rollback_failure_is_never_recorded_as_complete(tmp_path, monkeypatch):
+    from test_chejin_updater import FAILED_WORKER, _write_worker
+    plan_path, token, current, *_ = _prepare_plan(tmp_path, monkeypatch, new_worker=FAILED_WORKER)
+    _write_worker(current / 'worker.py', FAILED_WORKER)
+    assert updater.run_update(plan_path, token) == 1
+    result = json.loads((plan_path.parent / 'update-result.json').read_text())
+    assert result['state'] == 'rollback_failed'
+    rows = [json.loads(line) for line in (plan_path.parent / 'updater-progress.jsonl').read_text().splitlines()]
+    assert [r['event'] for r in rows if r['phase'] == 'rollback'] == ['started', 'failed']
+
+
+def test_close_does_not_invent_phase_success(tmp_path):
+    progress = UpdateProgress(tmp_path / 'plan.json', 'updater')
+    progress.begin('replace')
+    progress.close()
+    assert json.loads((tmp_path / 'updater-progress.json').read_text())['event'] == 'interrupted'
