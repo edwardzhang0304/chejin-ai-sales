@@ -49,6 +49,7 @@ def test_denied_activation_waits_then_passively_recovers_without_extra_captures(
     n.startup(p,g,{})
     assert n.startup_layout_ready()
     assert o.activate_window.call_count==1 and o.try_image_grab.call_count==1
+
     assert o.run_ocr.call_count==1
     o.win32api.mouse_event.assert_not_called()
     reports=[json.loads(p.read_text()) for p in (root/'artifacts/tasks').glob('*/diagnostics/startup-check.json')]
@@ -272,3 +273,23 @@ def test_foreground_observation_failure_is_read_only_reported_and_recovers(calib
     n.startup(p,g,{})
     assert n.startup_layout_ready() and n._startup_probe_error is None
     assert o.activate_window.call_count==1 and o.try_image_grab.call_count==1
+
+
+def test_distinct_window_observation_failures_both_survive_export(calibration,home,monkeypatch):
+    n,g,p,s,o,root,fg,now=actual_window(calibration)
+    with pytest.raises(StartupWindowError,match='FOREGROUND_REQUIRED'):n.startup(p,g,{})
+    now[0]=11
+    for error in (OSError('synthetic read error one'), RuntimeError('synthetic read error two')):
+        monkeypatch.setattr(o.win32gui,'EnumWindows',Mock(side_effect=error))
+        for _ in range(3):
+            with pytest.raises(StartupWindowWait,match='OBSERVATION_FAILED'):n.startup(p,g,{})
+    bundle=export_bundle(root,root/'exports')
+    with zipfile.ZipFile(bundle) as z:
+        names=[name for name in z.namelist() if name.endswith('/diagnostics/window-observation.json')]
+        reports=[json.loads(z.read(name)) for name in names]
+    assert len(reports)==2
+    assert len({r['task_id'] for r in reports})==2
+    assert {r['exception']['exception_type'] for r in reports}=={'OSError','RuntimeError'}
+    assert all(r['read_only'] and r['phase']=='foreground_observation' for r in reports)
+    assert n._startup_attempts.count==1 and o.activate_window.call_count==1
+    o.try_image_grab.assert_not_called()

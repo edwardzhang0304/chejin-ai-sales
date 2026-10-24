@@ -131,7 +131,8 @@ class WindowsC1:
             except Exception as exc:
                 signature = (attempts.key, type(exc).__name__, str(exc))
                 if self._startup_probe_error != signature:
-                    diagnostics = self._startup_diagnostics('startup-window-observation')
+                    import uuid
+                    diagnostics = self._startup_diagnostics('startup-window-observation-' + uuid.uuid4().hex)
                     diagnostics.write('window-observation.json', {
                         'status': 'failed', 'phase': 'foreground_observation',
                         'elapsed_ms': round((time.monotonic()-started)*1000, 3),
