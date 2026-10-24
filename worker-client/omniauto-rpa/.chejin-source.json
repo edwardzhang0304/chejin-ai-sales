@@ -680,17 +680,17 @@
     "recall_author_and_reviewer_shared_trigger_context"
   ],
   "current_release": {
-    "version": "0.10.17",
+    "version": "0.10.18",
     "source_commit": "209f7fb66a01a05736fdd32e54808e54a9b66ce3",
     "source_state": "gray_release_candidate",
     "published": false,
-    "contract_revision": "0.10.17",
-    "contract_sha256": "e340de21340dba1390c4a62de9174cfb96dc426cc4a6f4bfa197e3ec9c288073",
+    "contract_revision": "0.10.18",
+    "contract_sha256": "e04bea5a2d75abc39251f215b73d9a51204e423535b41e4dfb4b567f4e39b4e9",
     "scope": [
       "native_hook_state_and_release_preparation",
       "schema_revision_sync"
     ],
-    "note": "0.10.17 reviewed431e825: bounded startup/OCR retries, no repeated activation, preserve distinct startup diagnostics. Original0.10.16 button acceptance pending; DLL unchanged."
+    "note": "0.10.18 reviewed4a2e44e: restart progress, stage timing, one redundant unused ZIP hash removed. Preserve signed files, binding and unfinished records. Original0.10.17 button acceptance pending. DLL unchanged."
   },
   "historical_integrations": [
     {

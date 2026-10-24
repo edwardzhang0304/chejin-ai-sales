@@ -3,9 +3,9 @@
   "repository": "edwardzhang0304/chejin-ai-sales",
   "transport": "hook",
   "reuse_mode": "reviewed_delta",
-  "approval": "User explicitly authorized release startup focus fixes; all contract identities synchronize. Reuse unchanged checks. No sales Windows operation.",
-  "reviewed_commit": "431e825f599947d1ec8e55d69b6ba6662a63bb50",
-  "target_version": "0.10.17",
+  "approval": "User explicitly authorized reviewed restart fix release and Mac download; unify version/contract metadata. Reuse unchanged evidence.",
+  "reviewed_commit": "4a2e44ed7bcadc65013e0235c6bf101af7d4af3a",
+  "target_version": "0.10.18",
   "source_sha256": {
     ".dockerignore": "953c4ae7fbf88d1f9655d96aac647bb20157d4531062155de4922562c924cc6c",
     ".gitattributes": "c3fb393b0b0757bb56c2aa4c733114aa8d394be2ca0d60bf11fc5cba47dfaf3a",
@@ -15,7 +15,7 @@
     "backend/.env.example": "b05297fc521cdca87a13002e4d8b531cf869a69b4dd63fed474d92e9b55e53b2",
     "backend/.gitignore": "8b318bea4f5c746fe6ca7be41e98f0bf331e7325f63141bb90609e23b54e6dfc",
     "backend/Dockerfile": "04085e37fc190b6e6b0124fb240cc2d54cefad329921e994bfbaf8a4d78c95c4",
-    "backend/README.md": "1526864a26b6b492576847bf601f04e021c8257a6a01be5e67b06e32fd2aab82",
+    "backend/README.md": "64ee12d9b5afe59ca98beaada493e8e70b771a2c58d9d8a3432936eff9ee0620",
     "backend/alembic.ini": "10ec633dfef6fbfb3e27a073d6d7dd4e18e6acc668794811364e042585721651",
     "backend/alembic/env.py": "f5be2904c022729043ff3b310708dce49b4a9ea148f4061f41b9f8232c15593a",
     "backend/alembic/versions/20260603_0001_initial_schema.py": "1fe592366e724473b586a2ea6a5f5ec4062194bda80f10c340c922d7e3b84b11",
@@ -192,11 +192,11 @@
     "backend/app/services/worker_token_service.py": "afe266c745229920a75c836415469437b51891ebe03b1b63c3ff50b3b58b9142",
     "backend/app/services/worker_vision_credential_service.py": "6d427532d9e56f6cf9da8845f0ad6fb184fce066f5cac30c6302c3dc199f6f3c",
     "backend/compose.uat.yml": "58bf77325c1667295eab1bbaa5d42f4b81032f1a82e2104467a0371cb2a076f0",
-    "backend/compose.web.yml": "acdce01cb4f23f1421038711b59ee8588bce9c50cf93d362f29f7a9c3003e1cc",
+    "backend/compose.web.yml": "49367ca38271be1cf9c4f6ad102123439519c4436ae58996e016e6e11e11d5c4",
     "backend/configs/chejin_c3_brain.json": "e83598ec354a4fc5ed6ca8b82c3b0866f2171f76b33d1647de37e905fe1ef5ba",
-    "backend/docker-compose.yml": "1aec7e868e32146b2178c8c0f21cac3ed1040b52871d7660d893c454b4f8ec92",
+    "backend/docker-compose.yml": "60398751e8a84b8a5f1edc85a92214743395100812a32f2d1cb259a21f7ed36c",
     "backend/docker/entrypoint.sh": "2db4def08af9248f4d4215154ce20ca474b7188a7c985a8458be1035e2a3509d",
-    "backend/pyproject.toml": "ef233bdba04d057982aae4ee5dcff5b7d718ff9724406e04c9802a1960285418",
+    "backend/pyproject.toml": "667ad252436e038d3a24b006a67bd478bbfb77e7e51253dce065cbbc55b84ac4",
     "backend/requirements.lock": "e50b91f6bf1794bf7cd589604c8c6adba248fa97762da3f2b981d21731b4d573",
     "backend/requirements.txt": "158c8f61c1b48f2473561cc8543fe5b55b62fc45d9c34e46286ac015384c7117",
     "backend/scripts/admin_accounts.py": "8d142e4d7ce889b19ff05b4d1a3816110ca47c8fa7b87a8cc1c7e3da281d8f6b",
@@ -391,9 +391,9 @@
     "backend/tests/worker_media_recovery_probe.py": "cec15755d5c7d0aee1aef709e675bc3251f01cddf9895815e504c079752c3783",
     "backend/tests/worker_partition_recovery_probe.py": "c94d000b8cd179da6091c87a90806d1aeed3fc1d40495c69340e2aff91c66af2",
     "backend/tests/worker_sequence_recovery_probe.py": "89402c39e79193530cb17dacd9bf9e1c55873e84baf744a7eb541ab8441c2a01",
-    "contracts/c2_contract_v3.json": "78d5175f4ef1819df8b06e34a3f5d5ba376305ab0ab7336da4375171461e92c3",
+    "contracts/c2_contract_v3.json": "0c1823df7a8534b3929cd4dec6c0853c9b80cc26360108e19632b52adcc51bb3",
     "contracts/examples/c2_v3_mixed_roundtrip.json": "0e9023e920627328c49eac031c34fd3ce77d504195d5ef6f7a9848ccf1e4f98f",
-    "contracts/hook_contract_v1.json": "10ab0e053cd3b72df89c0b179d0a6d4beddcb1070fcbff1b877d4d6bcf3d1152",
+    "contracts/hook_contract_v1.json": "dab625e47dac78abe0fa17c1220a33307ab73a7472a58917fd867324519e0f14",
     "contracts/recovery/c2_contract_v3_0.9.75.json": "b7b4b2ab04d2feca8766c84bc4655ccf56170d2fc645e3e161e9b5a0fdf47f51",
     "contracts/recovery/c2_contract_v3_0.9.78.json": "c17c82e54ab5f1736f74384e3720f7dc158af058dc46673230cbf87d074792d5",
     "contracts/recovery/c2_contract_v3_0.9.80.json": "52c984a290e9029c3eb6f475ce5a05581502b04c3cd0c4a5f3b44a1fb194e585",
@@ -407,7 +407,7 @@
     "frontend/.gitignore": "23b7ede583be8ca215ffe4f491ec44e1953f381aba0aea67d8d1b077d667655a",
     "frontend/Dockerfile": "b504d18db2c1129e366f2831f7e6859b732779ef84212f1c7adcaf003de2fda7",
     "frontend/Dockerfile.dockerignore": "52e40f48dd3e7170465825714aa94570ef1d7960d9ec5d4f1673f52a697613d2",
-    "frontend/README.md": "2c1b44508d66dc7b7f47228aaf922c43f76b241280e1caddc558361fb7555805",
+    "frontend/README.md": "55a5d2ad881198dc36356f3ca4e68701b3a60d91a126ce7f5ba7544e5cf889d7",
     "frontend/design-evidence/knowledge-common-button-sizing-1280x720.png": "33587f04fdf6476483a9e73a0bdf99cd7718f0139f27cd7a4e877cbb34a21f1b",
     "frontend/design-evidence/knowledge-common-components-1280x720.png": "e91c998bc1f7b4e365e4514ccbb1766ac41ae62973d8b34a369760a252f1f268",
     "frontend/design-evidence/knowledge-common-drawer-1280x720.png": "f76d57207b1e07a779ab40f307312abe615d5fa11702a28d2acf25619bc1cfb9",
@@ -439,8 +439,8 @@
     "frontend/design-evidence/knowledge-title-only-list-1280x720.png": "0aba9e306baa1b8689364ce9d4ba461231394e0ed3dcdfd8c86ba271b7c99e16",
     "frontend/docker/default.conf": "9c1da4ae99181da52716e57611b9db46c8411e9cdefb3a63fce48181eb6f058c",
     "frontend/index.html": "3e106d2519d0b3ad9a6bc94da7ce98280758330ba6ad7a7ce304804296908e56",
-    "frontend/package-lock.json": "a6e477762e921aafb77187f6a117b4e06dd4172883ab1fd2fc7189e4c4dad34d",
-    "frontend/package.json": "75b6d891ea2be04585699f23fcfa9bf8df6b7f68e73a26386f046a688bf48acb",
+    "frontend/package-lock.json": "bb90f1ab4ac01b5e2273e8c03084d83bf13372bba890fae1794ace73efa3567c",
+    "frontend/package.json": "64b0f6619b9429d5e6f59696a33dbc77603174f1e61d18ead2cad49632bb8b9b",
     "frontend/scripts/run-unit-tests.mjs": "6f2855f6cb9e7cab5c55277f5982dbb18f336de409b33f3699de3378cb3b0f2d",
     "frontend/src/App.test.tsx": "1ab020138232217c8b19d55ebca8b714c943206c939b9071724cc1d66911fbb7",
     "frontend/src/App.tsx": "570df29154f664be4bd8009459f1d1c7ca17f041821bc8a27f96ff7c0f5e1693",
@@ -572,7 +572,7 @@
     "website/worker-workbench.html": "2f36ee72bfd4d3cafe13cc5caf17a49150d2ca7fcb94412fd1fc02891258d7ad",
     "website/worker-workbench.js": "b6530e214ab5e7870c1f6621dd1c1438c053c0442cdad46791fc9830055820d7",
     "worker-client/README.md": "f520827f23bd8eb1b109f9febfeda199c70a90e720a8f4bb0e12e0b116a8d0af",
-    "worker-client/chejin_worker_client/__init__.py": "e36246a085180b7393707bf8f15c9e6eba9ad73bedd14974e46812ea78ed8cb4",
+    "worker-client/chejin_worker_client/__init__.py": "4b95a28eadebab8febfa0605e39e580a3d8a7157cd33e40996433f7fc4e2e31d",
     "worker-client/chejin_worker_client/action_journal.py": "e9cfb2fc0158a7d619fa6390a35f5a4a62cbfb227512d29f6e1b4efcaacd1f6c",
     "worker-client/chejin_worker_client/api.py": "34d1b77833f868edeee47feb1671400735074f3c8db0115ba2313f060da980d4",
     "worker-client/chejin_worker_client/artifact_retention.py": "0b7859a3d9b1e125ca321509b3d193ad560c84f6ed081bbed7180ac2bb370223",
@@ -580,10 +580,10 @@
     "worker-client/chejin_worker_client/c1_receipts.py": "ba7aa2c10b7d61cf8f4d617b1dcf15b921c592e75f1d5b68d3ef68bdfba7c4a0",
     "worker-client/chejin_worker_client/c2_contract.py": "ef4f4176ae66c115c6b078806f163c097a42cf4141f78a2b9dd4738bda4c1702",
     "worker-client/chejin_worker_client/c2_outbox_recovery.py": "d8cc7bb79dcca2a7df158b0957719048a1a723e01938955d7ed1f7b378f3db37",
-    "worker-client/chejin_worker_client/chejin_updater.py": "0eb180268f7015b682bb9ccc9711af9f81444ff245b51aa023807f76f76c3d5a",
+    "worker-client/chejin_worker_client/chejin_updater.py": "5004c75c7a54ea827b97f685c16005b82d199e63700476a836c3aa0f792ad4c7",
     "worker-client/chejin_worker_client/client_update.py": "39df774fe505110fda4bf98aa0e3eb4ac3d193f41cece73e488b9f5145d27ffb",
     "worker-client/chejin_worker_client/config.py": "679f4b46501ccfea01a194dc7e03e60d4c608869c41679e090aa14e93282655f",
-    "worker-client/chejin_worker_client/diagnostic_bundle.py": "ea596dc8cc76d6fb3f4e140cb87db148509dbf1c1ae6a7b00ef37817dae7c414",
+    "worker-client/chejin_worker_client/diagnostic_bundle.py": "e51fb396fbfdc14cb392851101c05ac247532b301d6b68d9bdd1aadf9e6cc97c",
     "worker-client/chejin_worker_client/diagnostic_ui.py": "1a9340232c42637731551de86b70ebff0f38094b9380e9d00bae75a08dc3cb78",
     "worker-client/chejin_worker_client/emergency_stop.py": "8292e0db94566260d251e60e914c06e27789165f33bc1f9a0e83852041af80c6",
     "worker-client/chejin_worker_client/evidence_paths.py": "4cd854a3f1eca7c41681214e9d3678771a0346b1f7aa7ebe5f5f2ea66329bbb9",
@@ -636,7 +636,7 @@
     "worker-client/chejin_worker_client/omniauto_vision.py": "1bdf7dd1b5547a26f28a5f15c1bd17ed179c0652509a06f220baefd7fa00e52b",
     "worker-client/chejin_worker_client/pending_read_recovery.py": "6337a5038488fcfd4c7db00d87ba97a4ca22f1509fc4f14f688c314d9c22f935",
     "worker-client/chejin_worker_client/post_send_customer_read.py": "d78eca7d145ff7e90dd893d00745c8fdfb084c11201d044495ae137001c7df95",
-    "worker-client/chejin_worker_client/post_update_health.py": "6d6265c79ff21fa0122c80510d37ee1588efff0da99d9e4f39f40587d89da1ed",
+    "worker-client/chejin_worker_client/post_update_health.py": "cf3b58082e6a1ebc1a8883f75427f7fd085b480ea6732ccbd6153caceb89e7ad",
     "worker-client/chejin_worker_client/pre_send_checkpoint.py": "5239d7b49edb6dc9592ed8521ebe186dcbd90d6848982c02b686655430a263f3",
     "worker-client/chejin_worker_client/pre_send_read_recovery.py": "4800df4b1102e7d1dd8c7a17bc1baa7d4ecfe6d2512ac2a721199f5a3ebdd55f",
     "worker-client/chejin_worker_client/preflight.py": "f7e5c2ef85385513314f972261ac2039ac0232eaf7fc48a7cca1323d2bb7e642",
@@ -664,14 +664,15 @@
     "worker-client/chejin_worker_client/text_correction_outbox.py": "93aabb370948e1c4e9682180995fb1d925f7466858a69e0066895af511c21f64",
     "worker-client/chejin_worker_client/text_recheck.py": "23f37bae9362ea2e3bbbf4e80acf66648f8f30f193513efe850b48af32e19fab",
     "worker-client/chejin_worker_client/transaction_outcomes.py": "349f909154a59b282a72a6a7545207a9ab568d5582362585fa820540aa55a800",
-    "worker-client/chejin_worker_client/ui.py": "862796fbc3b68d6dee10b0532d94c0374fd1282a8833d433bf691b010f55fe6f",
+    "worker-client/chejin_worker_client/ui.py": "6a976c539a8c61e2072bb61c8be612ee43f790c688de431d7284309563c6d453",
     "worker-client/chejin_worker_client/ui_lock.py": "112995575d2f72801d2527ff6bc982812229eb372513b1bfb57f43d6e66f541e",
     "worker-client/chejin_worker_client/ui_state_mapping.py": "484ae54a9c552d2f52518ca21e385902a7b82beb46c57f543cd88f40010e7879",
-    "worker-client/chejin_worker_client/update_coordinator.py": "e580ff2be1b9505dfdd84597e163a47469bbdc9de333d6548a75ac97280c8072",
+    "worker-client/chejin_worker_client/update_coordinator.py": "a68b90dce20f6bbb255c74673c08e8d22fd9ae071673ce93c0d289073cd8511e",
     "worker-client/chejin_worker_client/update_data_access.py": "eedad0bea47ce72795a5d5b0ff1f8cb5ef0392ff1daa2d23b135ea7747a496b5",
     "worker-client/chejin_worker_client/update_data_snapshot.py": "11b7c1a1213f2804968c3e01407600832367866e779fe8db46a4cb419bfcb24a",
     "worker-client/chejin_worker_client/update_diagnostics.py": "7ee54c751f381a918481c8f5713686d88d0c4df2a1c61aa15de50a2dbd38bd0a",
     "worker-client/chejin_worker_client/update_filesystem.py": "13b808260440b40ad0d90d63aea45e2bacb78acec5bb3a40ceb580d75ec17260",
+    "worker-client/chejin_worker_client/update_progress.py": "61ee01ea830efe61a993b366ae5020f660814f0dafd25f8f42b52070f34ece94",
     "worker-client/chejin_worker_client/update_runtime_health_contract.py": "ad6d7675b4cab6bef68f0bc3e7c2b5fe5586610311ee0b6ba242c1cd498b8c79",
     "worker-client/chejin_worker_client/update_safety.py": "a55e416a3ff2dc86bb8783488acfed2b6cd0dbc2c2bdee070773e19d09ab5d73",
     "worker-client/chejin_worker_client/update_shutdown.py": "93567e14f196c0f034e9c54784361f5f1eb16c4959955a6bcdabf0cc1ed84e46",
@@ -683,10 +684,10 @@
     "worker-client/chejin_worker_client/web_assets/worker-ui.css": "18c8eff4399dca953f59ffffaed0b58a0f4efd0ceaa7c3afa015d39c32bc8691",
     "worker-client/chejin_worker_client/web_assets/worker-ui.tokens.css": "081ce7cc992c9bdb55f010752cdd29a70dfe749a37d5970419d034e63075d323",
     "worker-client/chejin_worker_client/web_assets/worker-web-app.js": "8c7426a570ee4c650c79df52f5ec83391b21e5ee25b2e70ebc317f8b4d61d04c",
-    "worker-client/chejin_worker_client/web_ui.py": "1069fdc10748b3dd799c56229a696ecff1c8b02e19d29eec49692fe5c0d46abf",
+    "worker-client/chejin_worker_client/web_ui.py": "63a1e07635fe30b34e8755a8e7945b63c81f2cc4e4e9f19cdbfb3a4a21818857",
     "worker-client/chejin_worker_client/wechat_c2.py": "3b441f8a68c0e4efabf6f6970149e26af84f51097e9a43809759cad60d12f8f7",
     "worker-client/chejin_worker_client/window_render_evidence.py": "1c6764c970f685d337df338e7d39147f475a49ce96c1699ebac5419736b3e8c8",
-    "worker-client/omniauto-rpa/.chejin-source.json": "42885c5606f06952ff3a9e28d63c18bbb3ecfcc60212b1bfc2bedf81acfe9e1c",
+    "worker-client/omniauto-rpa/.chejin-source.json": "d87236225cfed379fb4b5c444c606be5981cae8118d39198c9daf2c7c12c7b73",
     "worker-client/omniauto-rpa/PROJECT_STRUCTURE.md": "ca9b8b2d1bf0c59c88fc1ff9fd86fbd1cafa500b06ee60f00c910bfef6f5c486",
     "worker-client/omniauto-rpa/README.md": "b8c509514efd339d87ea2e515a9bccf761426a29804b1076854e30d15cffe11a",
     "worker-client/omniauto-rpa/START_HERE.md": "372e6fdcefcc012da3f554af9227781cf05181d9b733b933671f17ee25e73b89",
@@ -712,7 +713,7 @@
     "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/adapters/add_friend_routes.py": "8c93cc66252318df0885109ab05961bf33b88d84d34d5e25527e0f7e42ac5b7d",
     "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/adapters/add_friend_screenshot.py": "60bf1a90a13ed86ecfe85065337c3ac8979e2c379fc03bfc71bf42c262571eb2",
     "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/adapters/business_viewport_continuity.py": "82ffb5747acb753d20f4e70cb5ae5254f7e4ba51f2858307613e36e61c9a23e7",
-    "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/adapters/chejin_c2_observation_schema.generated.json": "41eca00148606f455a45ceef96aab66d4b3e72934cabf4f3e3674b4d814d828b",
+    "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/adapters/chejin_c2_observation_schema.generated.json": "d9a7b729036a4dcab9581751fc7936381366e4f6a52614434d2340a645c4a118",
     "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/adapters/circle_plus_icon.py": "2367e83de1dfd25508a560657cb7efd93d9e2e8bafa5d1edeadd155d57734d6f",
     "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/adapters/client_release_rules.py": "f2d1a4077f5d10064158dae89050020e7a2a21a4e786ff2f8fa85bc6e222efd5",
     "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/adapters/confirmed_sent_history.py": "d2371d89dbbd41f215440ed01a54ebbbf960cd3f344d7627e9d70313ffcb0d89",
@@ -1251,7 +1252,7 @@
     "worker-client/packaging/chejin-updater.spec": "d8c2a540e7043462fd3d36056118758820bd8f2243cb69c09347cdc49e250e86",
     "worker-client/packaging/chejin-worker-client.spec": "66cab3bb85b28db08c39642d3de8d98a192e2c84324c3786884dd64c3aad35f0",
     "worker-client/packaging/chejin_updater_entry.py": "0fe85c173c3c6f6e74cb8bc42a98698b6479bef0dde0dfb90cc851439bc0e4da",
-    "worker-client/packaging/chejin_worker_client_entry.py": "9e195dbfe994aac86107b885fac5c93b6d49af0cc97c95856433cd9494bf063b",
+    "worker-client/packaging/chejin_worker_client_entry.py": "a13ce830483bc9948e2787b827f3071b9e61253b7ff9da76b9c20cefd51fcd71",
     "worker-client/packaging/collect-uat-evidence.ps1": "f7a84bce02dc1b04eb148139a371755d85966d57bd794d10d100ff11334f9fce",
     "worker-client/packaging/collect_uat_evidence.py": "f6feda78c4c6a45b7c367a9416b17c0145019ac7d314dd1d9216a8992b4e61ae",
     "worker-client/packaging/release-signing-public-keys.json": "2be8440e9e3f564d5f1a5e930aa9e75f15fe492145cefd8804b5b12cbb0a6924",
@@ -1480,6 +1481,7 @@
     "worker-client/tests/test_update_handoff_baseline.py": "8bbb74f228e336caaf550dfa121a9f08ec7de6387151013f0d7fd48aef9587b3",
     "worker-client/tests/test_update_handoff_process.py": "b6d146a16e7faf09f7fdd751d6218a2e238a5c6e9d021b8ca8147a5bb9499544",
     "worker-client/tests/test_update_long_paths.py": "910870ff3c6db2f63c6abfb9095bce3807bc503c65fd001f99efcbe3d25ebfec",
+    "worker-client/tests/test_update_restart_progress.py": "d3ea6b98f37f8e874e5b9490eb4388fbc1202aaab18aa1e4d2ea5c12e9bd998c",
     "worker-client/tests/test_update_safety_boundary.py": "fc7fd91c131f2208722a17d9be7ac45df26da70acba9b75cf5d69c26c32c082d",
     "worker-client/tests/test_update_shutdown_ui.py": "4f46fa73852223b011f847cb05909b6f59693602ad1d0ef776c28b360eb4a289",
     "worker-client/tests/test_update_storage_gate.py": "cfe4bc0b898db2e110f7a2adec624a72cc9bb3c1d79b4ad906540422a60e89d7",
@@ -1540,7 +1542,7 @@
       ]
     }
   ],
-  "environment": "Original reviewed source evidence, synthetic Win32/OCR; original EXE button acceptance separate. No claim field performance accepted.",
+  "environment": "Reviewed synthetic process/file/SQLite/export tests. Original EXE button and Windows native progress acceptance are separate.",
   "checks": [
     {
       "original_xml_sha256": "b6885c699eb9ae772a196e9124a3fe9aef1e7b15235a1a6aa761c04f06a56855",
@@ -15129,11 +15131,170 @@
         }
       ],
       "nonpassing_not_counted": 0
+    },
+    {
+      "report": "update-restart-progress-20261025/architect-increment.xml",
+      "original_xml_sha256": "0aea29e23b978af3cf521047a0cf6eb8d6475d95a3121593c71e4e8712edc06b",
+      "count": 18,
+      "cases": [
+        {
+          "classname": "worker-client.tests.test_update_restart_progress",
+          "name": "test_phase_durations_and_no_credentials",
+          "result": "passed"
+        },
+        {
+          "classname": "worker-client.tests.test_update_restart_progress",
+          "name": "test_failed_phase_preserves_exception",
+          "result": "passed"
+        },
+        {
+          "classname": "worker-client.tests.test_update_restart_progress",
+          "name": "test_unwritable_progress_does_not_change_business_result",
+          "result": "passed"
+        },
+        {
+          "classname": "worker-client.tests.test_update_restart_progress",
+          "name": "test_worker_phase_visible_and_bad_record_ignored",
+          "result": "passed"
+        },
+        {
+          "classname": "worker-client.tests.test_update_restart_progress",
+          "name": "test_window_shown_records_ui_boundary_only",
+          "result": "passed"
+        },
+        {
+          "classname": "worker-client.tests.test_update_restart_progress",
+          "name": "test_revalidation_skips_only_archive_read",
+          "result": "passed"
+        },
+        {
+          "classname": "worker-client.tests.test_update_restart_progress",
+          "name": "test_optimized_check_still_rejects_tampering[file]",
+          "result": "passed"
+        },
+        {
+          "classname": "worker-client.tests.test_update_restart_progress",
+          "name": "test_optimized_check_still_rejects_tampering[manifest]",
+          "result": "passed"
+        },
+        {
+          "classname": "worker-client.tests.test_update_restart_progress",
+          "name": "test_optimized_check_still_rejects_tampering[signature]",
+          "result": "passed"
+        },
+        {
+          "classname": "worker-client.tests.test_update_restart_progress",
+          "name": "test_optimized_check_still_rejects_tampering[binding_boundary]",
+          "result": "passed"
+        },
+        {
+          "classname": "worker-client.tests.test_update_restart_progress",
+          "name": "test_optimized_check_still_rejects_tampering[token]",
+          "result": "passed"
+        },
+        {
+          "classname": "worker-client.tests.test_update_restart_progress",
+          "name": "test_progress_is_exportable",
+          "result": "passed"
+        },
+        {
+          "classname": "worker-client.tests.test_update_restart_progress",
+          "name": "test_real_upgrade_hashes_zip_once",
+          "result": "passed"
+        },
+        {
+          "classname": "worker-client.tests.test_update_restart_progress",
+          "name": "test_tampering_after_ready_never_replaces_program",
+          "result": "passed"
+        },
+        {
+          "classname": "worker-client.tests.test_update_restart_progress",
+          "name": "test_old_updater_gets_worker_progress_fallback[None-1]",
+          "result": "passed"
+        },
+        {
+          "classname": "worker-client.tests.test_update_restart_progress",
+          "name": "test_old_updater_gets_worker_progress_fallback[1-0]",
+          "result": "passed"
+        },
+        {
+          "classname": "worker-client.tests.test_update_restart_progress",
+          "name": "test_closing_progress_does_not_cancel_installer",
+          "result": "passed"
+        },
+        {
+          "classname": "worker-client.tests.test_update_restart_progress",
+          "name": "test_window_api_uses_pointer_sized_handles_and_does_not_activate",
+          "result": "passed"
+        }
+      ],
+      "nonpassing_not_counted": 0
+    },
+    {
+      "report": "update-restart-progress-20261025/architect-r2-rollback.xml",
+      "original_xml_sha256": "9e1c155b8903e4ef2903b1b2419362c83cee844b89be3e8784787c8b3eedae79",
+      "count": 1,
+      "cases": [
+        {
+          "classname": "architect-probes",
+          "name": "test_failed_rollback_diagnostic_matches_actual_result",
+          "result": "passed"
+        }
+      ],
+      "nonpassing_not_counted": 0
+    },
+    {
+      "report": "update-restart-progress-20261025/architect-r3-increment.xml",
+      "original_xml_sha256": "cc5e8e052561c970ecc3c5c4e93b126e0894e9575604301ccac5ca5ea41d8980",
+      "count": 8,
+      "cases": [
+        {
+          "classname": "private.tmp.architect-update-4a2e44e.worker-client.tests.test_update_restart_progress",
+          "name": "test_progress_io_failure_reason_is_in_actual_export[write_state]",
+          "result": "passed"
+        },
+        {
+          "classname": "private.tmp.architect-update-4a2e44e.worker-client.tests.test_update_restart_progress",
+          "name": "test_progress_io_failure_reason_is_in_actual_export[replace_state]",
+          "result": "passed"
+        },
+        {
+          "classname": "private.tmp.architect-update-4a2e44e.worker-client.tests.test_update_restart_progress",
+          "name": "test_progress_io_failure_reason_is_in_actual_export[append_log]",
+          "result": "passed"
+        },
+        {
+          "classname": "private.tmp.architect-update-4a2e44e.worker-client.tests.test_update_restart_progress",
+          "name": "test_old_exit_has_one_real_terminal_event_in_export[normal]",
+          "result": "passed"
+        },
+        {
+          "classname": "private.tmp.architect-update-4a2e44e.worker-client.tests.test_update_restart_progress",
+          "name": "test_old_exit_has_one_real_terminal_event_in_export[timeout]",
+          "result": "passed"
+        },
+        {
+          "classname": "private.tmp.architect-update-4a2e44e.worker-client.tests.test_update_restart_progress",
+          "name": "test_old_exit_has_one_real_terminal_event_in_export[cancelled]",
+          "result": "passed"
+        },
+        {
+          "classname": "Users.zhangwentao.Documents.车金.output.update-restart-progress-20261025.architect-probes",
+          "name": "test_failed_progress_write_has_exported_missing_evidence_reason",
+          "result": "passed"
+        },
+        {
+          "classname": "Users.zhangwentao.Documents.车金.output.update-restart-progress-20261025.architect-r3-probes",
+          "name": "test_progress_write_failure_keeps_real_upgrade_data_and_result",
+          "result": "passed"
+        }
+      ],
+      "nonpassing_not_counted": 0
     }
   ],
   "packaging_reviewed_commit": "ffc6a97718d4d75f58b9fa90ae601a3132331101",
   "reviewed_delta_sha256": {
-    "backend/README.md": "1526864a26b6b492576847bf601f04e021c8257a6a01be5e67b06e32fd2aab82",
+    "backend/README.md": "64ee12d9b5afe59ca98beaada493e8e70b771a2c58d9d8a3432936eff9ee0620",
     "backend/alembic/versions/20261022_0042_reply_ownership.py": "89f604cd391984c723bf2d02528a5af1cb2c495fab2433ca1d2c7d7a15e82e2f",
     "backend/app/api/routes/dashboard.py": "dad33624be3ae577789efa755559137f0e319b1c8b16465ee71e5cfd6d4e5a96",
     "backend/app/api/routes/wechat.py": "1e763fd849528fb11bf13737bcdff8af51349e850bf10fdc22de3a92ca1efb2a",
@@ -15172,9 +15333,9 @@
     "backend/app/services/vehicle_service.py": "430aa16c058fe990c78106e1eacb428083a65af120b0e3ba70155a36fe01eb34",
     "backend/app/services/wechat_service.py": "d4a5feb75496f04138fadffbd7b4ad8f2cf0a7122bfa40f8a50f04e52e498dde",
     "backend/app/services/worker_service.py": "d24a4dbf22b60aa269e5de0e20f3a37ef1f4c12ab53b00b75ae4d5998596e944",
-    "backend/compose.web.yml": "acdce01cb4f23f1421038711b59ee8588bce9c50cf93d362f29f7a9c3003e1cc",
-    "backend/docker-compose.yml": "1aec7e868e32146b2178c8c0f21cac3ed1040b52871d7660d893c454b4f8ec92",
-    "backend/pyproject.toml": "ef233bdba04d057982aae4ee5dcff5b7d718ff9724406e04c9802a1960285418",
+    "backend/compose.web.yml": "49367ca38271be1cf9c4f6ad102123439519c4436ae58996e016e6e11e11d5c4",
+    "backend/docker-compose.yml": "60398751e8a84b8a5f1edc85a92214743395100812a32f2d1cb259a21f7ed36c",
+    "backend/pyproject.toml": "667ad252436e038d3a24b006a67bd478bbfb77e7e51253dce065cbbc55b84ac4",
     "backend/tests/maintenance_recovery_fixture.py": "4f2df35463f04bb1cd361cf4bc106478e2b9c923a5a6f04dfbae6a7aad5d296c",
     "backend/tests/test_auth_api.py": "e3fd2a9023945ed27c9b3954fdb54928e0708e79bda1dfc1ce41ccd1b311b2a4",
     "backend/tests/test_catalog_fact_references.py": "7cbc31c2746d529da1b75b3c084808aa294e8aa5b1eb6dfa5b8e68a95c8fee88",
@@ -15213,11 +15374,11 @@
     "backend/tests/test_partial_reply_recovery_provider.py": "61c7a3bf8056b2efde7ccf8b9858eff1916e876e56699c232a68c83e3f39258d",
     "backend/tests/test_reply_ownership_migration.py": "3248b0982cd4c1a5e72ed4c6caf7012058cf566249c4b69a98bc051ae08cc2de",
     "backend/tests/test_wechat_c2_api.py": "18634f624d0ea0148abc287b924c46ecd5397349b8a30f5f9355a37501c0d0cf",
-    "contracts/c2_contract_v3.json": "78d5175f4ef1819df8b06e34a3f5d5ba376305ab0ab7336da4375171461e92c3",
-    "contracts/hook_contract_v1.json": "10ab0e053cd3b72df89c0b179d0a6d4beddcb1070fcbff1b877d4d6bcf3d1152",
-    "frontend/README.md": "2c1b44508d66dc7b7f47228aaf922c43f76b241280e1caddc558361fb7555805",
-    "frontend/package-lock.json": "a6e477762e921aafb77187f6a117b4e06dd4172883ab1fd2fc7189e4c4dad34d",
-    "frontend/package.json": "75b6d891ea2be04585699f23fcfa9bf8df6b7f68e73a26386f046a688bf48acb",
+    "contracts/c2_contract_v3.json": "0c1823df7a8534b3929cd4dec6c0853c9b80cc26360108e19632b52adcc51bb3",
+    "contracts/hook_contract_v1.json": "dab625e47dac78abe0fa17c1220a33307ab73a7472a58917fd867324519e0f14",
+    "frontend/README.md": "55a5d2ad881198dc36356f3ca4e68701b3a60d91a126ce7f5ba7544e5cf889d7",
+    "frontend/package-lock.json": "bb90f1ab4ac01b5e2273e8c03084d83bf13372bba890fae1794ace73efa3567c",
+    "frontend/package.json": "64b0f6619b9429d5e6f59696a33dbc77603174f1e61d18ead2cad49632bb8b9b",
     "frontend/src/App.test.tsx": "1ab020138232217c8b19d55ebca8b714c943206c939b9071724cc1d66911fbb7",
     "frontend/src/App.tsx": "570df29154f664be4bd8009459f1d1c7ca17f041821bc8a27f96ff7c0f5e1693",
     "frontend/src/features/auth/LoginPage.tsx": "b81b9d6acb4ceef34e15206b9bbdaf3c8ec2687b36487e2a66d1b1e4c2cfa572",
@@ -15265,11 +15426,11 @@
     "packages/worker-ui-baseline/src/worker-ui.css": "18c8eff4399dca953f59ffffaed0b58a0f4efd0ceaa7c3afa015d39c32bc8691",
     "packages/worker-ui-baseline/static/index.html": "d00e80a135909161cc4ec9d2b3e852fb5c7ee0c349d16b7e621d9d7aa9acc1ff",
     "worker-client/README.md": "f520827f23bd8eb1b109f9febfeda199c70a90e720a8f4bb0e12e0b116a8d0af",
-    "worker-client/chejin_worker_client/__init__.py": "e36246a085180b7393707bf8f15c9e6eba9ad73bedd14974e46812ea78ed8cb4",
+    "worker-client/chejin_worker_client/__init__.py": "4b95a28eadebab8febfa0605e39e580a3d8a7157cd33e40996433f7fc4e2e31d",
     "worker-client/chejin_worker_client/c1_diagnostics.py": "1a5137c8ba2e4954a46151e0ff970d8e9e4cd2fd0c6a4f8a08954d3b4ad23c68",
-    "worker-client/chejin_worker_client/chejin_updater.py": "0eb180268f7015b682bb9ccc9711af9f81444ff245b51aa023807f76f76c3d5a",
+    "worker-client/chejin_worker_client/chejin_updater.py": "5004c75c7a54ea827b97f685c16005b82d199e63700476a836c3aa0f792ad4c7",
     "worker-client/chejin_worker_client/client_update.py": "39df774fe505110fda4bf98aa0e3eb4ac3d193f41cece73e488b9f5145d27ffb",
-    "worker-client/chejin_worker_client/diagnostic_bundle.py": "ea596dc8cc76d6fb3f4e140cb87db148509dbf1c1ae6a7b00ef37817dae7c414",
+    "worker-client/chejin_worker_client/diagnostic_bundle.py": "e51fb396fbfdc14cb392851101c05ac247532b301d6b68d9bdd1aadf9e6cc97c",
     "worker-client/chejin_worker_client/diagnostic_ui.py": "1a9340232c42637731551de86b70ebff0f38094b9380e9d00bae75a08dc3cb78",
     "worker-client/chejin_worker_client/evidence_paths.py": "4cd854a3f1eca7c41681214e9d3678771a0346b1f7aa7ebe5f5f2ea66329bbb9",
     "worker-client/chejin_worker_client/failure_evidence.py": "6857f458e9f6684c539fd03d16afb566a34516befa228d93d242ed96eced6ed8",
@@ -15295,27 +15456,29 @@
     "worker-client/chejin_worker_client/hook_worker_services.py": "9ed8df68db115eac959c878892fc408ea91e998013ed31169a3f2b4afd28fa2c",
     "worker-client/chejin_worker_client/incident_evidence.py": "8821582ea3ddbf25decd782bd03fe13a6d005b472875ad39cf9112565605efcb",
     "worker-client/chejin_worker_client/main.py": "b4fb60e9164e56c6486ed5157e0e289037bcc09a3fa46b8db4562f423547419c",
+    "worker-client/chejin_worker_client/post_update_health.py": "cf3b58082e6a1ebc1a8883f75427f7fd085b480ea6732ccbd6153caceb89e7ad",
     "worker-client/chejin_worker_client/runtime_startup.py": "65faed29fb538515b1f61f115c6421f40c0b5c0bef734edc03510a200fc9dc06",
     "worker-client/chejin_worker_client/startup_check_state.py": "1c91c56d69ef1bde2c446e4619054b695d6c839cef4291096cf0732133dfcf53",
     "worker-client/chejin_worker_client/startup_window_position.py": "322623a13bc7426198697d9ade8aa70c6050f25faeb41e7926ddf319c4562597",
     "worker-client/chejin_worker_client/storage.py": "331ffe03a3ae884cce36c3ef396e02c7e36539aa55f60a4be9c12c1276d7db5e",
     "worker-client/chejin_worker_client/storage_maintenance.py": "dff6e905c530389d92e7a87b2f21e7d72721434c9c7899d22d1c9d6c070b035a",
     "worker-client/chejin_worker_client/task_runner.py": "c7938bd418fefaf94a09e03aac61536c73aecb30dfc16f7872b59fbf78ecbec3",
-    "worker-client/chejin_worker_client/ui.py": "862796fbc3b68d6dee10b0532d94c0374fd1282a8833d433bf691b010f55fe6f",
-    "worker-client/chejin_worker_client/update_coordinator.py": "e580ff2be1b9505dfdd84597e163a47469bbdc9de333d6548a75ac97280c8072",
+    "worker-client/chejin_worker_client/ui.py": "6a976c539a8c61e2072bb61c8be612ee43f790c688de431d7284309563c6d453",
+    "worker-client/chejin_worker_client/update_coordinator.py": "a68b90dce20f6bbb255c74673c08e8d22fd9ae071673ce93c0d289073cd8511e",
     "worker-client/chejin_worker_client/update_diagnostics.py": "7ee54c751f381a918481c8f5713686d88d0c4df2a1c61aa15de50a2dbd38bd0a",
+    "worker-client/chejin_worker_client/update_progress.py": "61ee01ea830efe61a993b366ae5020f660814f0dafd25f8f42b52070f34ece94",
     "worker-client/chejin_worker_client/update_safety.py": "a55e416a3ff2dc86bb8783488acfed2b6cd0dbc2c2bdee070773e19d09ab5d73",
     "worker-client/chejin_worker_client/update_shutdown.py": "93567e14f196c0f034e9c54784361f5f1eb16c4959955a6bcdabf0cc1ed84e46",
     "worker-client/chejin_worker_client/web_assets/index.html": "d00e80a135909161cc4ec9d2b3e852fb5c7ee0c349d16b7e621d9d7aa9acc1ff",
     "worker-client/chejin_worker_client/web_assets/worker-presentation.css": "cfbaed57e82595549c8e0f30ca45202b8ab775712075ea5b682d44d501f6cb3c",
     "worker-client/chejin_worker_client/web_assets/worker-ui.css": "18c8eff4399dca953f59ffffaed0b58a0f4efd0ceaa7c3afa015d39c32bc8691",
     "worker-client/chejin_worker_client/web_assets/worker-web-app.js": "8c7426a570ee4c650c79df52f5ec83391b21e5ee25b2e70ebc317f8b4d61d04c",
-    "worker-client/chejin_worker_client/web_ui.py": "1069fdc10748b3dd799c56229a696ecff1c8b02e19d29eec49692fe5c0d46abf",
+    "worker-client/chejin_worker_client/web_ui.py": "63a1e07635fe30b34e8755a8e7945b63c81f2cc4e4e9f19cdbfb3a4a21818857",
     "worker-client/chejin_worker_client/window_render_evidence.py": "1c6764c970f685d337df338e7d39147f475a49ce96c1699ebac5419736b3e8c8",
-    "worker-client/omniauto-rpa/.chejin-source.json": "42885c5606f06952ff3a9e28d63c18bbb3ecfcc60212b1bfc2bedf81acfe9e1c",
+    "worker-client/omniauto-rpa/.chejin-source.json": "d87236225cfed379fb4b5c444c606be5981cae8118d39198c9daf2c7c12c7b73",
     "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/adapters/add_friend_layout.py": "2978fdb588bd256f6a91958e9dd17088d0cf584b5a6a338c28a123941997369f",
     "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/adapters/add_friend_ocr.py": "92b8c5f66499c86d4e60f2c2559dcdbaa433abd1e532feb07affe3704e13b6a7",
-    "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/adapters/chejin_c2_observation_schema.generated.json": "41eca00148606f455a45ceef96aab66d4b3e72934cabf4f3e3674b4d814d828b",
+    "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/adapters/chejin_c2_observation_schema.generated.json": "d9a7b729036a4dcab9581751fc7936381366e4f6a52614434d2340a645c4a118",
     "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/adapters/hook_contact_rules.py": "cc3072ea75f4015fd0b7554c5e91a740b52834559f10c0291494bb51cef0e9e2",
     "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/adapters/hook_contract_rules.py": "bdec9434d9f2b109cf614aa74b52300ecf17f99f874bff15ed89f42a7d71f772",
     "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/adapters/hook_history_rules.py": "da9c87d2176c902e59ccab43f0e1637eca38c0b19c4d5a33a96615cf8e1c0d9f",
@@ -15331,7 +15494,7 @@
     "worker-client/packaging/Diagnose-CheJin.cmd": "3c00362034cefab35ddf887818373cf87cf5bd2e6246529bf5c0ebceef340541",
     "worker-client/packaging/Rollback-CheJin-Hook.cmd": "510f5d6b45003efb9f2801bb04154789f67a50abbf4ccba7fc4011c6792ed8ad",
     "worker-client/packaging/Update-CheJin-Hook.cmd": "46e00b1f8f78d9a02e78449466100610d40bb4eeb7d6a7827dc0634796363ac1",
-    "worker-client/packaging/chejin_worker_client_entry.py": "9e195dbfe994aac86107b885fac5c93b6d49af0cc97c95856433cd9494bf063b",
+    "worker-client/packaging/chejin_worker_client_entry.py": "a13ce830483bc9948e2787b827f3071b9e61253b7ff9da76b9c20cefd51fcd71",
     "worker-client/packaging/start-hook.ps1": "1a9f543993fa90b3acd1265f3fc2f4fd2faf1061ba98cb40b925d9ca01fb4080",
     "worker-client/packaging/update-hook-component.ps1": "39a288d057967a2d3dc62d7d2d1bbc9fb63501fb833d2e200cc51649da25721a",
     "worker-client/scripts/run-windows-hook-preserve-install.py": "c7a2bf31c1af8f9b47b546b5d5317dcdd2ee7be3b38d63592c10c9c60a4ce5ab",
@@ -15373,17 +15536,18 @@
     "worker-client/tests/test_update_exit_regression.py": "9a348edbb9676c3b7135be68a3fe39de1689c6d2b3b4872db7edede0a0d14c0b",
     "worker-client/tests/test_update_handoff_process.py": "b6d146a16e7faf09f7fdd751d6218a2e238a5c6e9d021b8ca8147a5bb9499544",
     "worker-client/tests/test_update_long_paths.py": "910870ff3c6db2f63c6abfb9095bce3807bc503c65fd001f99efcbe3d25ebfec",
+    "worker-client/tests/test_update_restart_progress.py": "d3ea6b98f37f8e874e5b9490eb4388fbc1202aaab18aa1e4d2ea5c12e9bd998c",
     "worker-client/tests/test_update_shutdown_ui.py": "4f46fa73852223b011f847cb05909b6f59693602ad1d0ef776c28b360eb4a289",
     "worker-client/tests/test_web_ui_binding_behavior.py": "43147376a88965d31025f5bfbb55be07fa27ad47e232759bc0bcebbe04958320",
     "worker-client/tests/test_window_render_evidence.py": "cdb8276f6dbd1ae9a4f2be6ac0ba0264aa5ae5693210e7a7f6fecc1fa4499538"
   },
   "delta_review": {
-    "commit": "431e825f599947d1ec8e55d69b6ba6662a63bb50",
+    "commit": "4a2e44ed7bcadc65013e0235c6bf101af7d4af3a",
     "result": "passed for source push",
     "thread_id": "01a0d26f-f47a-7343-9ad8-cda8320d7c86",
-    "turn_id": "01a16ead-51e6-7f80-8c7f-a1fa07a9d35c",
-    "review_file_sha256": "dc1a730005a038b373c25b4b327b368b7c8fb9bc63c8183d923d5d843e4bd8dc",
-    "scope": "Final431e825 closes STARTUP-01/02; all changed source hashes verified. Metadata only after review; Windows field paused."
+    "turn_id": "01a1704a-efaa-7821-9e58-ac12b3287417",
+    "review_file_sha256": "3497f55e5a3a7ce7115d4e5265bdb936626fa63539d49f9454be52d4303b3372",
+    "scope": "Final4a2e44e closes all progress evidence findings. All reviewed file hashes matched. Only release metadata after review; Windows native rendering/latency pending."
   },
   "historical_baseline_tests": 1371,
   "reviewed_delta_deleted_sha256": {
@@ -15424,7 +15588,9 @@
     "Historical reports overlap; identity inventory is not newly executed tests.",
     "No resending, data clearing, DLL replacement or automatic intake.",
     "Three unchanged FakeQt availableGeometryChanged baseline failures retained.",
-    "Sunlogin interference not proven; startup performance on physical Windows pending."
+    "Sunlogin interference not proven; startup performance on physical Windows pending.",
+    "Four coordinator baseline fixture failures retained; isolated environment required.",
+    "Old updater cannot retroactively gain new pre-start progress; first-hop new Worker startup progress only."
   ],
   "prior_recovery_review": {
     "commit": "a1de7f317d600b65650eb44c16d404067e22ef58",
@@ -15473,7 +15639,10 @@
     "7499f8b",
     "89d3b49",
     "3cc430a",
-    "431e825"
+    "431e825",
+    "de1c5fb",
+    "96b6ddb",
+    "4a2e44e"
   ],
   "cumulative_source_reviews": [
     {
@@ -15813,6 +15982,12 @@
       "report": "startup-focus-fix-20261024/architect-review-r3.json",
       "sha256": "dc1a730005a038b373c25b4b327b368b7c8fb9bc63c8183d923d5d843e4bd8dc",
       "candidate": "431e825f599947d1ec8e55d69b6ba6662a63bb50",
+      "decision": "PASS_SOURCE_REVIEW"
+    },
+    {
+      "report": "update-restart-progress-20261025/architect-review.json",
+      "sha256": "3497f55e5a3a7ce7115d4e5265bdb936626fa63539d49f9454be52d4303b3372",
+      "candidate": "4a2e44ed7bcadc65013e0235c6bf101af7d4af3a",
       "decision": "PASS_SOURCE_REVIEW"
     }
   ],
