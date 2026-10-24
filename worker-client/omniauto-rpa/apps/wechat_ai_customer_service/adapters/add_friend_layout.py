@@ -6,7 +6,7 @@ import re
 from typing import Any, Callable
 
 from apps.wechat_ai_customer_service.adapters.add_friend_locator import make_locator_result, normalize_bounds, normalize_point
-from apps.wechat_ai_customer_service.adapters.add_friend_ocr import compact_ocr_text
+from apps.wechat_ai_customer_service.adapters.add_friend_ocr import compact_ocr_text, normalize_shortcode_caret
 from apps.wechat_ai_customer_service.adapters.circle_plus_icon import circle_plus_icon_candidates
 
 
@@ -484,9 +484,7 @@ def high_confidence_eight_char_code_visible(
     candidates: list[dict[str, Any]] = []
     for item in items:
         text = compact_ocr_text(item.get("text"))
-        # A focused edit can OCR as the eight-character code followed by its caret.
-        if len(text) == 9 and text.endswith("|"):
-            text = text[:-1]
+        text = normalize_shortcode_caret(text, length=8)
         confidence = float(item.get("confidence") or 0.0)
         if re.fullmatch(r"[a-z0-9]{8}", text) and confidence >= minimum_confidence:
             candidates.append({"text": text, "confidence": confidence})

@@ -14,6 +14,7 @@ import random
 from pathlib import Path
 from typing import Any
 from ..add_friend_contract import validate_add_friend_entry_click_contract
+from ..add_friend_ocr import normalize_shortcode_caret
 from .c1_layout import MAIN_REGIONS, main_regions, form_regions, valid_rect, main_key
 
 
@@ -274,7 +275,13 @@ def verify_fields(frame: Frame, greeting: str, remark: str, *, layout=None) -> d
     # Labels, pixel control bounds, non-overlap and action/identity guards remain.
     rows = [r for r in frame.rows if contains(fields['remark']['bounds'], r)]
     actual = ''.join(clean(r.get('text')) for r in rows)
-    if actual != clean(remark) or not rows or any(r.get('confidence', 0) < .90 for r in rows):
+    expected = clean(remark)
+    # Only the known single-row code+caret OCR shape is compatible. Separate
+    # bars/other fragments remain ambiguous; exact task-code equality still owns
+    # admission. Do not import the legacy any-eight-character candidate rule.
+    if len(rows) == 1 and re.fullmatch(r'[A-Z0-9]{7,8}', expected):
+        actual = normalize_shortcode_caret(actual, length=len(expected))
+    if actual != expected or not rows or any(r.get('confidence', 0) < .90 for r in rows):
         raise FlowStop('INVITE_FIELD_VERIFICATION_FAILED')
     return fields
 

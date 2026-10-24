@@ -122,10 +122,10 @@ def test_geometry_failure_exports_observed_frame_and_expected_map(scene,monkeypa
     assert (original(s)/'outcome.json').read_bytes()==before
 
 
-def test_full_native_invite_uses_startup_map_and_single_form_layout(scene,monkeypatch):
+@pytest.fixture
+def native_invite(scene):
     s=scene();o=s.ops;b=s.boundary
     rows={r['label']:copy.deepcopy(r['rows']) for r in json.loads((flow_tests.FIX/'native-roi-synthetic.json').read_text())}
-    saved=copy.deepcopy(s.native._search_control_cache)
     physical={'clicks':0,'dialog':False,'clipboard':'','fields':0}
     main_geometry=o.get_window_geometry
     main_client=o.get_window_client_geometry
@@ -166,6 +166,12 @@ def test_full_native_invite_uses_startup_map_and_single_form_layout(scene,monkey
                 next(r for r in result if r['top']==204)['text']=physical['clipboard']
         return result
     o.try_image_grab.side_effect=grab;o.run_ocr.side_effect=ocr
+    return s,physical
+
+
+def test_full_native_invite_uses_startup_map_and_single_form_layout(native_invite,monkeypatch):
+    s,physical=native_invite;o=s.ops
+    saved=copy.deepcopy(s.native._search_control_cache)
     original_target=flow.target
     def task_target(frame,row,*,filled=None):
         assert filled!='search','task relocated search input'
