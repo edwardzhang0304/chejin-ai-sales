@@ -19,7 +19,7 @@
       "branch": "gray-release-0.10.x",
       "changed_inputs": {
         ".github/workflows/release-evidence.yml": {
-          "reason": "Retain reviewed ecd5c7a failure diagnostics and c3fe7a4 observer-only transient PermissionError handling. Eight local state-poll tests plus architect5 audit and successful original Windows run39907996479 reused. Success conditions and original deadline unchanged; current Windows parser and sealed artifact button acceptance required.",
+          "reason": "Inherited impact from tooling-01014-scope.json; coverage unchanged.",
           "covered_by": [
             "windows-parser",
             "gui-driver"
@@ -110,13 +110,13 @@
           ]
         },
         "ops/formal_release/run_evidence_checks.py": {
-          "reason": "Independent multi-origin evidence fix reviewed by architect5 at fe37233; versioned strict provenance, XML mapping, per-origin dependencies and retained case coverage. Current focused producer-reader-final-consumer tests required.",
+          "reason": "Inherited impact from tooling-01014-scope.json; coverage unchanged.",
           "covered_by": [
             "ops/formal_release/tests/test_tooling_handoff.py"
           ]
         },
         "ops/formal_release/tests/test_hook_component_packaging.py": {
-          "reason": "Only Hook copies three reviewed offline-maintenance entry files and invokes existing native PS5.1 validator with fatal failure before manifest sealing. Static transport/copy/fail-close check added; native parser and copied script validator execute in Windows before package is admitted. OCR branch preserved.",
+          "reason": "Inherited impact from tooling-01014-scope.json; coverage unchanged.",
           "covered_by": [
             "ops/formal_release/tests/test_hook_component_packaging.py",
             "windows-parser",
@@ -124,26 +124,26 @@
           ]
         },
         "ops/formal_release/tests/test_tooling_handoff.py": {
-          "reason": "Independent multi-origin evidence fix reviewed by architect5 at fe37233; versioned strict provenance, XML mapping, per-origin dependencies and retained case coverage. Current focused producer-reader-final-consumer tests required.",
+          "reason": "Inherited impact from tooling-01014-scope.json; coverage unchanged.",
           "covered_by": [
             "ops/formal_release/tests/test_tooling_handoff.py"
           ]
         },
         "ops/formal_release/tests/test_upgrade_observation_io.py": {
-          "reason": "Previously locally audited observer tests first recorded in composed tooling CI; no business tests.",
+          "reason": "Audited943eded observer; retain actual Windows39982989157.",
           "covered_by": [
             "ops/formal_release/tests/test_upgrade_observation_io.py"
           ]
         },
         "ops/formal_release/tests/test_upgrade_state_poll.py": {
-          "reason": "Retain reviewed ecd5c7a failure diagnostics and c3fe7a4 observer-only transient PermissionError handling. Eight local state-poll tests plus architect5 audit and successful original Windows run39907996479 reused. Success conditions and original deadline unchanged; current Windows parser and sealed artifact button acceptance required.",
+          "reason": "Inherited impact from tooling-01014-scope.json; coverage unchanged.",
           "covered_by": [
             "windows-parser",
             "gui-driver"
           ]
         },
         "ops/formal_release/tooling_handoff.py": {
-          "reason": "Independent multi-origin evidence fix reviewed by architect5 at fe37233; versioned strict provenance, XML mapping, per-origin dependencies and retained case coverage. Current focused producer-reader-final-consumer tests required.",
+          "reason": "Inherited impact from tooling-01014-scope.json; coverage unchanged.",
           "covered_by": [
             "ops/formal_release/tests/test_tooling_handoff.py"
           ]
@@ -155,7 +155,7 @@
           ]
         },
         "worker-client/scripts/build-windows.ps1": {
-          "reason": "Only Hook copies three reviewed offline-maintenance entry files and invokes existing native PS5.1 validator with fatal failure before manifest sealing. Static transport/copy/fail-close check added; native parser and copied script validator execute in Windows before package is admitted. OCR branch preserved.",
+          "reason": "Inherited impact from tooling-01014-scope.json; coverage unchanged.",
           "covered_by": [
             "ops/formal_release/tests/test_hook_component_packaging.py",
             "windows-parser",
@@ -163,7 +163,7 @@
           ]
         },
         "worker-client/scripts/run-windows-client-upgrade-test.py": {
-          "reason": "Retain reviewed ecd5c7a failure diagnostics and c3fe7a4 observer-only transient PermissionError handling. Eight local state-poll tests plus architect5 audit and successful original Windows run39907996479 reused. Success conditions and original deadline unchanged; current Windows parser and sealed artifact button acceptance required.",
+          "reason": "Inherited impact from tooling-01014-scope.json; coverage unchanged.",
           "covered_by": [
             "windows-parser",
             "gui-driver"
@@ -194,7 +194,7 @@
       "branch": "gray-release-0.10.x",
       "changed_inputs": {
         ".github/workflows/release-evidence.yml": {
-          "reason": "Retain reviewed ecd5c7a failure diagnostics and c3fe7a4 observer-only transient PermissionError handling. Eight local state-poll tests plus architect5 audit and successful original Windows run39907996479 reused. Success conditions and original deadline unchanged; current Windows parser and sealed artifact button acceptance required.",
+          "reason": "Inherited impact from tooling-01014-scope.json; coverage unchanged.",
           "covered_by": [
             "windows-parser",
             "gui-driver"
@@ -267,13 +267,13 @@
           ]
         },
         "ops/formal_release/tests/test_upgrade_observation_io.py": {
-          "reason": "Previously locally audited observer tests first recorded in composed tooling CI; no business tests.",
+          "reason": "Audited943eded observer; retain actual Windows39982989157.",
           "covered_by": [
             "ops/formal_release/tests/test_upgrade_observation_io.py"
           ]
         },
         "ops/formal_release/tests/test_upgrade_state_poll.py": {
-          "reason": "Retain reviewed ecd5c7a failure diagnostics and c3fe7a4 observer-only transient PermissionError handling. Eight local state-poll tests plus architect5 audit and successful original Windows run39907996479 reused. Success conditions and original deadline unchanged; current Windows parser and sealed artifact button acceptance required.",
+          "reason": "Inherited impact from tooling-01014-scope.json; coverage unchanged.",
           "covered_by": [
             "windows-parser",
             "gui-driver"
@@ -286,7 +286,7 @@
           ]
         },
         "worker-client/scripts/run-windows-client-upgrade-test.py": {
-          "reason": "Retain reviewed ecd5c7a failure diagnostics and c3fe7a4 observer-only transient PermissionError handling. Eight local state-poll tests plus architect5 audit and successful original Windows run39907996479 reused. Success conditions and original deadline unchanged; current Windows parser and sealed artifact button acceptance required.",
+          "reason": "Inherited impact from tooling-01014-scope.json; coverage unchanged.",
           "covered_by": [
             "windows-parser",
             "gui-driver"
@@ -352,13 +352,13 @@
           ]
         },
         "ops/formal_release/tests/test_upgrade_observation_io.py": {
-          "reason": "Previously locally audited observer tests first recorded in composed tooling CI; no business tests.",
+          "reason": "Audited943eded observer; retain actual Windows39982989157.",
           "covered_by": [
             "ops/formal_release/tests/test_upgrade_observation_io.py"
           ]
         },
         "ops/formal_release/tests/test_upgrade_state_poll.py": {
-          "reason": "Retain reviewed ecd5c7a failure diagnostics and c3fe7a4 observer-only transient PermissionError handling. Eight local state-poll tests plus architect5 audit and successful original Windows run39907996479 reused. Success conditions and original deadline unchanged; current Windows parser and sealed artifact button acceptance required.",
+          "reason": "Inherited impact from tooling-01014-scope.json; coverage unchanged.",
           "covered_by": [
             "windows-parser",
             "gui-driver"
@@ -371,7 +371,7 @@
           ]
         },
         "worker-client/scripts/run-windows-client-upgrade-test.py": {
-          "reason": "Retain reviewed ecd5c7a failure diagnostics and c3fe7a4 observer-only transient PermissionError handling. Eight local state-poll tests plus architect5 audit and successful original Windows run39907996479 reused. Success conditions and original deadline unchanged; current Windows parser and sealed artifact button acceptance required.",
+          "reason": "Inherited impact from tooling-01014-scope.json; coverage unchanged.",
           "covered_by": [
             "windows-parser",
             "gui-driver"
@@ -399,14 +399,14 @@
   ],
   "changed_inputs": {
     ".github/workflows/hook-windows-build.yml": {
-      "reason": "Hook build host changed to the same Windows 2022 family validated by native GUI smoke. No commands, source gates, package inputs or artifact naming changed.",
+      "reason": "Inherited impact from tooling-01014-scope.json; coverage unchanged.",
       "covered_by": [
         "windows-parser",
         "gui-driver"
       ]
     },
     ".github/workflows/release-evidence.yml": {
-      "reason": "Retain reviewed ecd5c7a failure diagnostics and c3fe7a4 observer-only transient PermissionError handling. Eight local state-poll tests plus architect5 audit and successful original Windows run39907996479 reused. Success conditions and original deadline unchanged; current Windows parser and sealed artifact button acceptance required.",
+      "reason": "Inherited impact from tooling-01014-scope.json; coverage unchanged.",
       "covered_by": [
         "windows-parser",
         "gui-driver"
@@ -527,26 +527,26 @@
       ]
     },
     "ops/formal_release/maintenance.py": {
-      "reason": "Allow existing identical active fence through the original validated reload and bounded old-worker drain path, without disabling or changing scope; reject missing include/unknown content.",
+      "reason": "Inherited impact from tooling-01014-scope.json; coverage unchanged.",
       "covered_by": [
         "ops/formal_release/tests/test_recovery_cutover.py",
         "ops/formal_release/tests/test_release_environment.py"
       ]
     },
     "ops/formal_release/recovery_cutover.py": {
-      "reason": "Idempotent enable of the same fence uses the original reload/drain mechanism; save pre-switch failures; verify six real loopback TLS grant probes before Docker switch. All old readiness/hash/data/backup gates remain.",
+      "reason": "Inherited impact from tooling-01014-scope.json; coverage unchanged.",
       "covered_by": [
         "ops/formal_release/tests/test_recovery_cutover.py"
       ]
     },
     "ops/formal_release/run_evidence_checks.py": {
-      "reason": "Independent multi-origin evidence fix reviewed by architect5 at fe37233; versioned strict provenance, XML mapping, per-origin dependencies and retained case coverage. Current focused producer-reader-final-consumer tests required.",
+      "reason": "Inherited impact from tooling-01014-scope.json; coverage unchanged.",
       "covered_by": [
         "ops/formal_release/tests/test_tooling_handoff.py"
       ]
     },
     "ops/formal_release/tests/test_hook_component_packaging.py": {
-      "reason": "Only Hook copies three reviewed offline-maintenance entry files and invokes existing native PS5.1 validator with fatal failure before manifest sealing. Static transport/copy/fail-close check added; native parser and copied script validator execute in Windows before package is admitted. OCR branch preserved.",
+      "reason": "Inherited impact from tooling-01014-scope.json; coverage unchanged.",
       "covered_by": [
         "ops/formal_release/tests/test_hook_component_packaging.py",
         "windows-parser",
@@ -554,32 +554,32 @@
       ]
     },
     "ops/formal_release/tests/test_recovery_cutover.py": {
-      "reason": "Exercise both inactive and already active maintenance and reject invalid existing fence before any Docker switch.",
+      "reason": "Inherited impact from tooling-01014-scope.json; coverage unchanged.",
       "covered_by": [
         "ops/formal_release/tests/test_recovery_cutover.py"
       ]
     },
     "ops/formal_release/tests/test_tooling_handoff.py": {
-      "reason": "Independent multi-origin evidence fix reviewed by architect5 at fe37233; versioned strict provenance, XML mapping, per-origin dependencies and retained case coverage. Current focused producer-reader-final-consumer tests required.",
+      "reason": "Inherited impact from tooling-01014-scope.json; coverage unchanged.",
       "covered_by": [
         "ops/formal_release/tests/test_tooling_handoff.py"
       ]
     },
     "ops/formal_release/tests/test_upgrade_observation_io.py": {
-      "reason": "Previously locally audited observer tests first recorded in composed tooling CI; no business tests.",
+      "reason": "Audited943eded observer; retain actual Windows39982989157.",
       "covered_by": [
         "ops/formal_release/tests/test_upgrade_observation_io.py"
       ]
     },
     "ops/formal_release/tests/test_upgrade_state_poll.py": {
-      "reason": "Retain reviewed ecd5c7a failure diagnostics and c3fe7a4 observer-only transient PermissionError handling. Eight local state-poll tests plus architect5 audit and successful original Windows run39907996479 reused. Success conditions and original deadline unchanged; current Windows parser and sealed artifact button acceptance required.",
+      "reason": "Inherited impact from tooling-01014-scope.json; coverage unchanged.",
       "covered_by": [
         "windows-parser",
         "gui-driver"
       ]
     },
     "ops/formal_release/tooling_handoff.py": {
-      "reason": "Independent multi-origin evidence fix reviewed by architect5 at fe37233; versioned strict provenance, XML mapping, per-origin dependencies and retained case coverage. Current focused producer-reader-final-consumer tests required.",
+      "reason": "Inherited impact from tooling-01014-scope.json; coverage unchanged.",
       "covered_by": [
         "ops/formal_release/tests/test_tooling_handoff.py"
       ]
@@ -591,7 +591,7 @@
       ]
     },
     "worker-client/scripts/build-windows.ps1": {
-      "reason": "Only Hook copies three reviewed offline-maintenance entry files and invokes existing native PS5.1 validator with fatal failure before manifest sealing. Static transport/copy/fail-close check added; native parser and copied script validator execute in Windows before package is admitted. OCR branch preserved.",
+      "reason": "Inherited impact from tooling-01014-scope.json; coverage unchanged.",
       "covered_by": [
         "ops/formal_release/tests/test_hook_component_packaging.py",
         "windows-parser",
@@ -599,7 +599,7 @@
       ]
     },
     "worker-client/scripts/run-windows-client-upgrade-test.py": {
-      "reason": "Retain reviewed ecd5c7a failure diagnostics and c3fe7a4 observer-only transient PermissionError handling. Eight local state-poll tests plus architect5 audit and successful original Windows run39907996479 reused. Success conditions and original deadline unchanged; current Windows parser and sealed artifact button acceptance required.",
+      "reason": "Inherited impact from tooling-01014-scope.json; coverage unchanged.",
       "covered_by": [
         "windows-parser",
         "gui-driver"
