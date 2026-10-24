@@ -880,6 +880,31 @@ class NativeUI:
             cache['key'] = key
         return cache.get('bounds')
 
+    def calibrate_search_control(self):
+        """Startup read-only calibration; existing text is never removed."""
+        frame = self.capture('header')
+        bounds = search_control_bounds(frame)
+        try:
+            target = empty_search(frame)
+            bounds = target['bounds']
+        except FlowStop:
+            from ..search_control_icons import magnifier_candidates
+            height = bounds[3]-bounds[1]
+            candidates = magnifier_candidates(frame.image,
+                search_bounds=[bounds[0],bounds[1],bounds[0]+height,bounds[3]])
+            if len(candidates) != 1:
+                raise FlowStop('SEARCH_STARTUP_CONTROL_UNRESOLVED')
+        self.guard(frame)
+        self.cached_search_bounds(frame)
+        self.search_control_cache['bounds'] = list(bounds)
+        def save_layout():
+            folder = self.evidence/'diagnostics'
+            folder.mkdir(parents=True,exist_ok=True)
+            (folder/'search-layout.json').write_text(
+                json.dumps({'source':'startup','bounds':bounds,'key':self.search_control_cache['key'],
+                            'read_only':True},ensure_ascii=False),encoding='utf-8')
+        self._save_frame_material('diagnostics/search-layout.json', save_layout)
+
     def verified_empty_search(self, frame=None):
         frame = frame or self.capture('header')
         bounds = self.cached_search_bounds(frame)
@@ -913,11 +938,34 @@ class NativeUI:
         expected = getattr(self, 'owned_search_query', None)
         if not expected:
             raise FlowStop('SEARCH_CONTENT_OWNERSHIP_UNRESOLVED')
-        texts = [clean(row.get('text')) for row in frame.rows
-                 if contains(bounds,row) and row.get('confidence',0) >= .8]
-        if not any(value in (expected,'Q'+expected,'O'+expected) for value in texts):
+        from ..search_control_icons import clear_icon_candidates, magnifier_candidates
+        height = bounds[3]-bounds[1]
+        left_icons = magnifier_candidates(frame.image,
+            search_bounds=[bounds[0],bounds[1],bounds[0]+height,bounds[3]])
+        right_icons = clear_icon_candidates(frame.image,
+            search_bounds=[bounds[2]-height,bounds[1],bounds[2],bounds[3]])
+        matches = 0
+        for row in frame.rows:
+            value = clean(row.get('text'))
+            if not value:continue
+            r = box(row)
+            if r[2] <= bounds[0] or r[0] >= bounds[2] or r[3] <= bounds[1] or r[1] >= bounds[3]:continue
+            if not contains(bounds,row):
+                raise FlowStop('SEARCH_CONTENT_OWNERSHIP_UNRESOLVED')
+            left_proved = len(left_icons)==1
+            right_proved = len(right_icons)==1
+            merged_icon = (value in ('Q'+expected,'O'+expected) and left_proved
+                           and r[0] < bounds[0]+height*.8)
+            if (value == expected or merged_icon) and row.get('confidence',0) >= .8:
+                matches += 1
+                continue
+            # Exempt OCR icon tokens only in the pixel-verified icon itself.
+            if value in ('Q','O','0') and left_proved and contains(left_icons[0]['bounds'],row):continue
+            if value in ('X','x','×') and right_proved and contains(right_icons[0]['bounds'],row):continue
+            # Unknown/low-confidence text inside or crossing the input is not
+            # discarded; it prevents both icon deletion and keyboard fallback.
             raise FlowStop('SEARCH_CONTENT_OWNERSHIP_UNRESOLVED')
-        if any(value not in (expected,'Q'+expected,'O'+expected,'Q','O','0','X','x','×') for value in texts):
+        if matches != 1:
             raise FlowStop('SEARCH_CONTENT_OWNERSHIP_UNRESOLVED')
 
     def clear_search(self):

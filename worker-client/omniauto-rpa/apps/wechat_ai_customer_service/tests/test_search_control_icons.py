@@ -120,6 +120,35 @@ class SearchControls(unittest.TestCase):
         fr.image.paste(icon,(320,25))
         with self.assertRaisesRegex(f.FlowStop,'SEARCH_CLEAR_ICON'):f.search_clear_target(fr)
 
+    def test_extra_or_uncertain_rows_block_both_delete_branches(self):
+        for suffix in ('X','Q','O','0','×','Y'):
+            for confidence in (.99,.79):
+                for phase in ('before_icon','before_fallback'):
+                    with self.subTest(suffix=suffix,confidence=confidence,phase=phase):
+                        dirty=header(query='13800000003');changed=header(query='13800000003')
+                        ImageDraw.Draw(changed.image).text((205,29),suffix,fill=(60,60,60))
+                        changed.rows.append(dict(text=suffix,confidence=confidence,left=205,top=29,right=214,bottom=42))
+                        ui=self.native(changed if phase=='before_icon' else dirty,changed)
+                        with self.assertRaisesRegex(f.FlowStop,'OWNERSHIP'):ui.clear_search()
+                        self.assertEqual(ui.click.call_count,0 if phase=='before_icon' else 1)
+                        ui.replace.assert_not_called()
+
+    def test_cross_boundary_row_and_low_confidence_query_block_deletion(self):
+        for crossed in (True,False):
+            dirty=header(query='13800000003')
+            if crossed:dirty.rows.append(dict(text='X',confidence=.99,left=254,top=29,right=260,bottom=42))
+            else:dirty.rows[0]['confidence']=.79
+            ui=self.native(dirty)
+            with self.assertRaisesRegex(f.FlowStop,'OWNERSHIP'):ui.clear_search()
+            ui.click.assert_not_called();ui.replace.assert_not_called()
+
+    def test_low_confidence_icon_tokens_only_allowed_at_verified_icon_pixels(self):
+        dirty=header(query='13800000003')
+        dirty.rows.extend([dict(text='Q',confidence=.6,left=71,top=32,right=84,bottom=45),
+                           dict(text='X',confidence=.6,left=241,top=34,right=248,bottom=41)])
+        ui=self.native(dirty,header());ui.clear_search()
+        self.assertEqual(ui.click.call_count,1);ui.replace.assert_not_called()
+
     def test_cache_reused_for_cleanup_without_relocating(self):
         from unittest.mock import patch
         empty=header();dirty=header(query='13800000003')

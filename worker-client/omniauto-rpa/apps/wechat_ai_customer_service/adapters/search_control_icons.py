@@ -17,16 +17,26 @@ def empty_references():
     return tuple(Image.open(io.BytesIO(base64.b64decode(p))).convert("RGB") for p in _EMPTY_REFERENCES)
 
 
-@lru_cache(maxsize=1)
-def clear_templates():
-    sources = [ref.crop((ref.width-ref.height, 0, ref.width, ref.height)).convert("L") for ref in empty_references()]
+@lru_cache(maxsize=2)
+def input_icon_templates(kind):
+    if kind == 'clear':
+        sources = [ref.crop((ref.width-ref.height, 0, ref.width, ref.height)).convert("L") for ref in empty_references()]
+    elif kind == 'magnifier':
+        sources = [ref.crop((0, 0, round(ref.height*.8), ref.height)).convert("L") for ref in empty_references()]
+    else:
+        raise ValueError(kind)
     return tuple((scale, np.asarray(ref.resize((round(ref.width*scale), round(ref.height*scale)), Image.Resampling.BILINEAR), dtype=np.float64))
                  for ref in sources for scale in (.8, 1., 1.25, 1.5, 2.))
 
 
 def clear_icon_candidates(image, *, search_bounds):
-    return icon_candidates(image, search_bounds=search_bounds, templates=clear_templates(),
+    return icon_candidates(image, search_bounds=search_bounds, templates=input_icon_templates('clear'),
                            source="vision_clear_icon", method="clear_template")
+
+
+def magnifier_candidates(image, *, search_bounds):
+    return icon_candidates(image, search_bounds=search_bounds, templates=input_icon_templates('magnifier'),
+                           source="vision_magnifier_icon", method="magnifier_template")
 
 
 def empty_pixel_error(image):

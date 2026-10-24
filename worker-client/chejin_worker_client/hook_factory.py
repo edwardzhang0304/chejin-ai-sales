@@ -96,6 +96,28 @@ class WindowsC1:
             gateway._history_identity(process,scope)
             lease.raise_if_lost()
             if not result.get('ok'):raise ValueError('HOOK_C1_STARTUP_WINDOW_UNVERIFIED')
+            # Calibrate once under the same startup action lease. This only
+            # reads the header; tasks reuse the bounds but still prove content.
+            import uuid
+            from apps.wechat_ai_customer_service.adapters.wechat_win32_ocr.hook_c1_flow import NativeUI
+            from .c1_diagnostics import C1Diagnostics
+            from .evidence_paths import task_artifacts
+            calibration_id = 'startup-search-' + uuid.uuid4().hex
+            evidence = (task_artifacts(self.artifact_root.parent, calibration_id)
+                if self.artifact_root is not None else self.root/'roi'/calibration_id)
+            diagnostics = C1Diagnostics(evidence, calibration_id)
+            def guard():
+                gateway._history_identity(process,scope)
+                lease.raise_if_lost()
+            ui = NativeUI(ops,hwnd,process.pid,evidence,guard,organized_evidence=True,
+                diagnostics=diagnostics,search_control_cache=self._search_control_cache)
+            try:
+                ui.calibrate_search_control()
+                guard()
+            except Exception as exc:
+                self._search_control_cache.clear()
+                diagnostics.initialization_failure(exc, ui)
+                raise
     def ui(self,process,preparation,guard):
         from apps.wechat_ai_customer_service.adapters.wechat_win32_ocr.hook_c1_flow import NativeUI
         if self.artifact_root is not None:
