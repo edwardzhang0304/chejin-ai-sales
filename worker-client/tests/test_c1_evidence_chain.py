@@ -60,6 +60,18 @@ class FormalScene:
         # No action/business function is replaced. The synthetic native OCR card
         # says this number is absent, a normal terminal lookup result.
         self.capture_rows['card']=[{'text':'该用户不存在','confidence':.99,'left':10,'right':200,'top':10,'bottom':30}]
+        # Production tasks now consume a startup map. Establish it through the
+        # real adapter before injecting the task fault; do not bypass the guard.
+        from contextlib import nullcontext
+        from unittest.mock import patch
+        self.fault='none'
+        gateway=SimpleNamespace(_locked=lambda *args:nullcontext(SimpleNamespace(raise_if_lost=lambda:None)),
+                                _history_identity=lambda *args:None)
+        with patch.object(hook_c1,'prepare_window',return_value={'ok':True}):
+            self.native.startup(SimpleNamespace(pid=99),gateway,account)
+        o.activate_window.reset_mock()  # Assertions below measure task actions after startup.
+        self.grabs.clear();self.ocr_calls.clear()
+        self.fault=fault
 
     def activate(self,*args,**kwargs):
         if self.fault=='init_focus':self.boundary.foreground=22
