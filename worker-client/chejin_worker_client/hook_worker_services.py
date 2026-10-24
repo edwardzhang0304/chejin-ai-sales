@@ -25,6 +25,7 @@ from .hook_process import inspect_windows_window_geometry
 from . import storage, ui_lock
 from . import startup_check_state
 from .hook_progress import emit_progress,register_progress,_deliver
+from .hook_startup_window import StartupWindowWait
 
 
 def _protocol_check(error):
@@ -161,9 +162,18 @@ class HookWorkerServices:
                 if local_flow or (isinstance(flow, dict) and flow.get('flow_id')):
                     self._startup_check = startup_check_state.failed('HOOK_STARTUP_WINDOW_PENDING')
                 else:
-                    emit_progress(runner,'startup','wechat_window')
                     try:
+                        check_retry = getattr(self.dispatcher, 'check_startup_retry', None)
+                        if check_retry is not None:
+                            check_retry(prepared)
+                        emit_progress(runner,'startup','wechat_window')
                         self.dispatcher.prepare_startup_window(prepared, self.connection.gateway)
+                    except StartupWindowWait as exc:
+                        self._startup_check = startup_check_state.failed(exc.code)
+                        emit_progress(runner,'startup','wechat_window','waiting',
+                                      {'HOOK_STARTUP_FOREGROUND_REQUIRED':'startup_foreground',
+                                       'HOOK_STARTUP_RETRY_WAIT':'startup_retry',
+                                       'HOOK_STARTUP_RETRY_EXHAUSTED':'startup_exhausted'}[exc.code])
                     except ui_lock.UiLockError as exc:
                         if exc.code in {ui_lock.UI_LOCK_BUSY, ui_lock.UI_LOCK_ACQUIRE_TIMEOUT}:
                             self._startup_check = startup_check_state.failed('HOOK_STARTUP_WINDOW_PENDING')
@@ -171,7 +181,8 @@ class HookWorkerServices:
                             self._fault(runner,'HOOK_ACTION_LOCK_FAILED');return
                     except Exception as exc:
                         code = getattr(exc,'code',None) or str(exc)
-                        self._fault(runner,code if isinstance(code,str) and code.startswith('HOOK_') else 'HOOK_C1_STARTUP_WINDOW_UNVERIFIED')
+                        emit_progress(runner,'startup','wechat_window','error','failed')
+                        self._fault(runner,code if isinstance(code,str) and code.startswith('HOOK_') else 'HOOK_C1_STARTUP_WINDOW_UNVERIFIED',local_error=exc)
                         return
                     else:
                         self._startup_window_key = key

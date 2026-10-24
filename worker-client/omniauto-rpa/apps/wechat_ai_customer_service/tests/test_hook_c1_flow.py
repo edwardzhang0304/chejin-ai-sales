@@ -431,8 +431,13 @@ class NativeGuardTests(unittest.TestCase):
         from unittest.mock import Mock,patch
         data=json.loads((FIX/'native-roi-synthetic.json').read_text());record=next(r for r in data if r['label']=='header')
         with Image.open(FIX/'native-header.png') as im:image=im.convert('RGB')
-        self.ops.try_image_grab=Mock(return_value=image);self.ops.run_ocr=Mock(return_value=record['rows'])
-        with patch.object(f.time,'monotonic',side_effect=[1.0,20.0]):
+        self.ops.try_image_grab=Mock(return_value=image)
+        clock=[1.0]
+        def slow_ocr(_image):
+            clock[0]=20.0
+            return record['rows']
+        self.ops.run_ocr=Mock(side_effect=slow_ocr)
+        with patch.object(f.time,'monotonic',side_effect=lambda:clock[0]):
             with self.assertRaisesRegex(f.FlowStop,'STALE_ROI_FRAME'):self.ui.capture('header')
         self.ops.win32api.mouse_event.assert_not_called()
 

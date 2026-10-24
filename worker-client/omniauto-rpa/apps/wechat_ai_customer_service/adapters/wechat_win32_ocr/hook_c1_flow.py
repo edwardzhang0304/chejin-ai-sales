@@ -448,7 +448,7 @@ def run_flow(ui, *, phone: str, verify_message: str, remark_name: str,
 
 class NativeUI:
     """Bounded ROI capture + original humanized input, with per-frame guards."""
-    def __init__(self, ops, hwnd: int, pid: int, evidence: Path, identity_guard, *, organized_evidence=False, diagnostics=None, search_control_cache=None, require_startup_search_cache=False):
+    def __init__(self, ops, hwnd: int, pid: int, evidence: Path, identity_guard, *, organized_evidence=False, diagnostics=None, search_control_cache=None, require_startup_search_cache=False, activate_on_init=True):
         self.diagnostics = diagnostics
         self.search_control_cache = search_control_cache if search_control_cache is not None else {}
         self.require_startup_search_cache = require_startup_search_cache
@@ -456,13 +456,14 @@ class NativeUI:
         self.guard_phase = 'initialization'
         self.guard_operation = 'create_ui'
         try:
-            self._initialize(ops, hwnd, pid, evidence, identity_guard, organized_evidence=organized_evidence)
+            self._initialize(ops, hwnd, pid, evidence, identity_guard, organized_evidence=organized_evidence,
+                             activate_on_init=activate_on_init)
         except Exception as exc:
             if diagnostics is not None:
                 diagnostics.initialization_failure(exc, self)
             raise
 
-    def _initialize(self, ops, hwnd, pid, evidence, identity_guard, *, organized_evidence):
+    def _initialize(self, ops, hwnd, pid, evidence, identity_guard, *, organized_evidence, activate_on_init):
         self.ops, self.main, self.pid = ops, hwnd, pid
         self.current = hwnd;self.evidence = evidence;self.identity_guard = identity_guard
         self.organized_evidence = organized_evidence
@@ -488,7 +489,8 @@ class NativeUI:
         from .hook_c1 import classify_visible_other_windows
         if classify_visible_other_windows(ops, hwnd, pid)['blocking_window_details']:
             raise FlowStop('CLOSE_WECHAT_POPUP_FIRST')
-        ops.activate_window(hwnd, foreground_only=True)
+        if activate_on_init:
+            ops.activate_window(hwnd, foreground_only=True)
         self.guard()
 
     def exception_diagnostic(self, exc):
@@ -733,6 +735,7 @@ class NativeUI:
         left, top = c['screen_left']+bounds[0], c['screen_top']+bounds[1]
         captured_at=time.monotonic()
         image = o.try_image_grab((left, top, c['screen_left']+bounds[2], c['screen_top']+bounds[3]))
+        material['capture_elapsed_ms'] = round((time.monotonic()-captured_at)*1000, 3)
         self.count += 1
         if image is None or image.size != (bounds[2]-bounds[0], bounds[3]-bounds[1]):
             raise FlowStop('ROI_CAPTURE_FAILED')
@@ -748,7 +751,11 @@ class NativeUI:
                              observed={'geometry': geometry, 'frame_geometry': c})
         self.guard()
         self.guard_operation = 'ocr:' + label
-        rows = o.run_ocr(image);self.ocr_count += 1
+        ocr_started = time.monotonic()
+        try:
+            rows = o.run_ocr(image);self.ocr_count += 1
+        finally:
+            material['ocr_elapsed_ms'] = round((time.monotonic()-ocr_started)*1000, 3)
         ocr_file = f'{self.count:02d}-{label}.json'
         material.update(ocr='produced_not_saved', ocr_file=ocr_file)
         self._save_frame_material('ocr/'+ocr_file, lambda: (getattr(self,'ocr_evidence',self.evidence)/ocr_file).write_text(

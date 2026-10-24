@@ -34,11 +34,12 @@ class HookBusinessDispatcher:
 
     def __init__(self, client, private_root: Path, ui_factory, startup, *,
                  automatic_transcription_disabled, interval_seconds=1, runtime_factory=HookFormalRuntime,
-                 startup_layout_check=None):
+                 startup_layout_check=None, startup_retry_check=None):
         if not 0 < interval_seconds <= 5: raise ValueError('HOOK_DISPATCH_INTERVAL_INVALID')
         self.client,self.private_root,self.ui_factory,self.startup=client,private_root,ui_factory,startup
         self.automatic_transcription_disabled=automatic_transcription_disabled
         self._startup_layout_check=startup_layout_check
+        self._startup_retry_check=startup_retry_check
         self.interval_seconds,self.runtime_factory=interval_seconds,runtime_factory
         self.runtime=None
         self.voice=HookVoiceTranscriber(max_audio_bytes=1024*1024,max_text_bytes=65536)
@@ -79,6 +80,10 @@ class HookBusinessDispatcher:
             if key not in self._started_generations:
                 self.startup(prepared.process, gateway, scope)
                 self._started_generations.add(key)
+
+    def check_startup_retry(self, prepared):
+        if self._startup_retry_check is not None:
+            self._startup_retry_check(prepared.process, prepared.registration.scope)
 
     def pending_wait_snapshot(self):
         with self._wait_lock:return {k:set(v) for k,v in self._pending_wait_phases.items()}

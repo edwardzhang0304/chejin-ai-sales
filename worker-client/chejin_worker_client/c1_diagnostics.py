@@ -9,6 +9,7 @@ from .failure_evidence import exception_details, record_capture_failure
 class C1Diagnostics:
     def __init__(self, folder: Path, task_id: str):
         self.folder, self.task_id = Path(folder), task_id
+        self.initialization_report = None
 
     def details(self, exc, ui=None):
         return {**exception_details(exc),
@@ -46,4 +47,5 @@ class C1Diagnostics:
         report = {'stage': 'initialization', 'exception': self.details(exc, ui),
                   'guard_failures': getattr(ui, 'guard_failures', [])[:8],
                   'evidence': getattr(ui, 'evidence_state', {'frames': [], 'failures': []})}
+        self.initialization_report = report
         self.write('initialization.json', report)

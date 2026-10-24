@@ -91,7 +91,7 @@ def classify_visible_other_windows(ops: Any, hwnd: int, process_id: int) -> dict
 
 
 def prepare_window(ops: Any, hwnd: int, process_id: int, *, artifact_dir: str,
-                   capture_evidence: bool = True) -> dict:
+                   capture_evidence: bool = True, allow_activation: bool = True) -> dict:
     """One Hook startup geometry preparation, then visible capture evidence.
 
 The caller holds the original Worker action lease and verifies account/
@@ -116,7 +116,8 @@ process before and after this call. Missing OCR leaves geometry evidence only.
     if not awareness.get('per_monitor_aware'):
         result.update(reason='hook_c1_dpi_awareness_unverified', dpi_awareness=awareness)
         return result
-    ops.activate_window(hwnd, foreground_only=True)
+    if allow_activation:
+        ops.activate_window(hwnd, foreground_only=True)
     if gui.GetForegroundWindow() != hwnd:
         result['reason'] = 'hook_c1_foreground_unconfirmed'
         return result
@@ -130,8 +131,7 @@ process before and after this call. Missing OCR leaves geometry evidence only.
         result['reason'] = 'hook_c1_foreground_changed_before_capture'
         return result
     if not capture_evidence:
-        # Startup needs verified geometry only. C1 takes its own current ROI
-        # when a real task begins; no screenshot/OCR is repeated here.
+        # Caller calibrates the search ROI after this geometry-only step.
         if (ops.get_window_geometry(hwnd) != normalized.get('after')
                 or abs(ops.window_dpi_scale(hwnd)-normalized.get('after_dpi_scale', 0)) > .01
                 or ops.win32process.GetWindowThreadProcessId(hwnd)[1] != process_id):

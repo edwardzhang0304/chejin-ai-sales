@@ -1,5 +1,10 @@
 """Sales-facing projections of existing checks; no active probe or auto-resume."""
 ISSUES = {
+ 'HOOK_STARTUP_FOREGROUND_REQUIRED': ('请将微信主窗口切到前台', '点击工作微信主窗口并保持在前台，客户端会继续校验；不会自动开始接单。'),
+ 'HOOK_STARTUP_RETRY_WAIT': ('等待再次校验微信窗口', '启动检查未完成，稍后在微信主窗口处于前台时重新校验；不会反复抢占前台。'),
+ 'HOOK_STARTUP_RETRY_EXHAUSTED': ('请重开 Worker 校验微信窗口', '本次启动已连续检查失败三次。请保留数据和微信登录，关闭微信弹窗后重开 Worker；原任务不会重新提交。'),
+ 'HOOK_STARTUP_FRAME_EXPIRED': ('启动画面校验超时', '截图到校验完成超过有效期，未使用过期画面；请保持微信主窗口在前台等待重新校验。'),
+ 'HOOK_STARTUP_DPI_UNVERIFIED': ('屏幕缩放检查未通过', '客户端无法确认屏幕缩放状态，暂不操作微信，请导出故障证据。'),
  'HOOK_SEARCH_LAYOUT_RESTART_REQUIRED': ('请重开 Worker 校验微信位置', '启动定位已失效。请关闭并重新打开 Worker，保留原数据和微信登录；原任务仍按记录核对，不会重新提交申请。'),
  'HOOK_C1_POPUP_PENDING': ('请先关闭微信弹窗', '微信仍有未关闭的窗口。请核对并取消遗留申请窗口，关闭其他弹窗后再恢复接单；程序不会自动提交。'),
  'HOOK_STARTUP_WINDOW_PENDING': ('等待微信窗口初始化', '先确认上次流程结果，再调整微信窗口；完成前不执行新任务。'),

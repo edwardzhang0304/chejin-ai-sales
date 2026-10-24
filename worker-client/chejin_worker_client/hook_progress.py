@@ -28,6 +28,9 @@ PHASES = {
  'invite_finished': '好友申请处理已结束',
 }
 NOTES = {
+ 'startup_foreground': '请点击工作微信主窗口并保持在前台，校验通过后再手动开始接单。',
+ 'startup_retry': '等待再次校验，不自动切换前台。',
+ 'startup_exhausted': '已停止自动重试，请保留数据和微信登录，重开 Worker 校验。',
  'binding_conflict': '微信已关联其他客户档案，等待运营核对归属。',
  'recipient': '申请已提交，等待好友列表确认并完成绑定。', 'not_found': '未找到可添加的客户。',
  'already_friend': '对方已是好友，沿原任务规则处理。',
