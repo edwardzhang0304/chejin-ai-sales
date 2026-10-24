@@ -42,7 +42,7 @@ def dispatch_facts(db, authenticated, instance, event_uuid, *, current_account=N
     ctx=dict(binding.native_context or {}) if binding else {}
     proof=db.get(TaskEvidence,ctx.get('invite_evidence_id')) if ctx.get('invite_evidence_id') else None
     from app.services.hook_relationship_service import retired_evidence_scope
-    retired=retired_evidence_scope(binding,w.id,payload)
+    retired=retired_evidence_scope(db,binding,w.id,payload)
     if not retired:
         # Active business admission retains its original process-generation fence.
         account(db,authenticated,instance,original_account)

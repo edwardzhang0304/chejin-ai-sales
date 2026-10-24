@@ -143,7 +143,7 @@ def with_open_handoffs(db,worker_id,self_wxid,account_epoch,bindings):
 
 def retired_evidence_inventory(db,w,payload):
     """Advertise only archival retry identity, never a listening/transcription job."""
-    from app.services.hook_relationship_service import retired_evidence_scope
+    from app.services.hook_relationship_service import retired_evidence_scope, retired_evidence_revisions
     result=[]
     for binding in db.scalars(select(WechatSessionBinding).where(
             WechatSessionBinding.worker_id==w.id,WechatSessionBinding.bind_status=='disabled',
@@ -152,13 +152,14 @@ def retired_evidence_inventory(db,w,payload):
         scope={'self_wxid':payload.self_wxid,'account_epoch':payload.account_epoch,
             'peer_wxid':binding.native_peer_wxid,'binding_revision':ctx.get('retired_authorization_revision')}
         proof=db.get(TaskEvidence,ctx.get('invite_evidence_id')) if ctx.get('invite_evidence_id') else None
-        if (not retired_evidence_scope(binding,w.id,scope) or proof is None
+        if (not retired_evidence_scope(db,binding,w.id,scope) or proof is None
                 or (proof.extra_metadata or {}).get('backend_validated') is not True):continue
         voices=[]
         for parent in db.scalars(select(MessageEvent).where(MessageEvent.binding_id==binding.id,
                 MessageEvent.message_type=='voice',MessageEvent.sender_role=='customer')):
             if parent.id not in ctx.get('history_message_event_ids',[]):continue
             voices.append({'native_msg_id':parent.raw_payload['native_msg_id']})
-        result.append({'binding_id':binding.id,'binding_revision':scope['binding_revision'],
-            'peer_wxid':binding.native_peer_wxid,'voice_jobs':voices})
+        for revision in retired_evidence_revisions(db,binding):
+            result.append({'binding_id':binding.id,'binding_revision':revision,
+                'peer_wxid':binding.native_peer_wxid,'voice_jobs':voices})
     return result

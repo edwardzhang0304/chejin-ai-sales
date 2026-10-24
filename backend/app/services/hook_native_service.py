@@ -37,7 +37,7 @@ def store_observations(db: Session, authenticated: Worker, payload: dict, instan
     sales = db.scalar(select(Sales).where(Sales.worker_id == worker.id, Sales.deleted_at.is_(None)))
     context = dict(binding.native_context or {})
     from app.services.hook_relationship_service import retired_evidence_scope
-    retired=retired_evidence_scope(binding,worker.id,payload)
+    retired=retired_evidence_scope(db,binding,worker.id,payload)
     if (binding.deleted_at or (not retired and (binding.bind_status != 'bound' or not binding.allow_listening
             or binding.listen_status not in {'listening', 'degraded'})) or not binding.remark_code or not binding.lead_id
             or binding.worker_id != worker.id or binding.native_self_wxid != payload['self_wxid']

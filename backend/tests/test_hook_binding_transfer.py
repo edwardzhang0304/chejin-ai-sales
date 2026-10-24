@@ -58,6 +58,8 @@ def test_confirm_reverify_bind_history_ai_and_preserve_pause(monkeypatch,submitt
             TaskEvidence.evidence_type.in_(['hook_invite_preparation','hook_invite_submission'])))}
     r=client.post(url,json=payload);assert r.status_code==200,r.text
     assert r.json()['data']['created']
+    refreshed=client.get(url).json()['data']
+    assert refreshed['candidate'] is None and refreshed['pending_verification']
     assert client.post(url,json=payload).json()['data']['created'] is False
     with SessionLocal() as db:
         assert db.get(Worker,w['id']).run_status=='paused'
@@ -79,6 +81,19 @@ def test_confirm_reverify_bind_history_ai_and_preserve_pause(monkeypatch,submitt
         # Real intake provenance must accept the transferred binding as well
         # as history coverage, not merely the bind endpoint's return value.
         transfer.require_binding_origin(db,db.get(WechatSessionBinding,new['binding_id']),db.get(Worker,w['id']))
+    callback={**p,'transport':'hook','schema_version':'hook-v1','worker_id':w['id'],'client_instance_id':w['instance'],
+        'binding_id':new['binding_id'],'binding_revision':new['binding_revision'],'peer_wxid':new['peer_wxid'],
+        'source_event_uuid':str(uuid.uuid4()),'receive_seq':'1','raw_evidence_digest':'a'*64,
+        'observed_at':datetime.now(timezone.utc).isoformat(),
+        'messages':[{'native_msg_id':'8000000000000000001','entry_position':0,'direction':'incoming','message_type':'text',
+            'content':'先看宝马','source':'native_callback','source_revision':'b'*64,
+            'source_time_raw':datetime.now(timezone.utc).isoformat(),'media_stage':None,'ordering_fields':{},
+            'database':None,'database_generation':None,'from_wxid':new['peer_wxid'],'to_wxid':p['self_wxid'],
+            'conversation_type':'private','raw_direction':'2'}]}
+    callback['event_uuid']=shared_adapter('hook_contract_rules').delivery_id(callback['source_event_uuid'],
+        w['id'],w['instance'],p['account_epoch'],new['binding_id'],new['binding_revision'])
+    intake=post(w,f"/workers/{w['id']}/wechat/messages/native-observations",callback)
+    assert intake.status_code==200,intake.text
     result,_=upload(w,p,new,coverage(new),monkeypatch)
     assert result.status_code==200,result.text
     assert result.json()['data']['history_ready']

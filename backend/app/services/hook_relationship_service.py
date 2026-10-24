@@ -204,7 +204,35 @@ def ensure_send_authorization(binding):
         raise AppError('HOOK_AUTHORIZATION_RETIRED','旧托管已结束，只能核对原发送结果',409,{'suggested_action':'do_not_send'})
 
 
-def retired_evidence_scope(binding, worker_id, payload):
+def retired_evidence_revisions(db, binding):
+    """Trace only server-recorded revocations back from the retired authority.
+
+    mark-invalid/restore can advance the revision before explicit retirement.
+    Their audit records preserve the original generation; an integer range or
+    the current revision alone is not proof of an earlier authorization.
+    """
+    from app.models.audit import OperationLog
+    revision=(binding.native_context or {}).get('retired_authorization_revision')
+    if type(revision) is not int or revision <= 0:
+        return []
+    transitions={}
+    for log in db.scalars(select(OperationLog).where(
+            OperationLog.lead_id==binding.lead_id,
+            OperationLog.event_type.in_(['lead_followup_revoked','lead_followup_restored']))):
+        for item in (log.extra_metadata or {}).get('bindings',[]):
+            old,new=item.get('old_revision'),item.get('new_revision')
+            if (item.get('binding_id')==binding.id and item.get('worker_id')==binding.worker_id
+                    and item.get('conversation_id')==binding.conversation_id
+                    and type(old) is int and type(new) is int and old > 0 and new==old+1):
+                transitions[new]=old
+    revisions={revision}
+    while revision in transitions:
+        revision=transitions[revision]
+        revisions.add(revision)
+    return sorted(revisions)
+
+
+def retired_evidence_scope(db, binding, worker_id, payload):
     """Exact former authorization may archive evidence, never admit business work."""
     if binding is None:return False
     ctx=binding.native_context or {}
@@ -212,7 +240,7 @@ def retired_evidence_scope(binding, worker_id, payload):
         and binding.bind_status=='disabled' and binding.disable_reason==REINVITE_REASON
         and not binding.allow_listening and ctx.get('business_enabled') is False
         and type(payload.get('binding_revision')) is int
-        and payload['binding_revision']==ctx.get('retired_authorization_revision')
+        and payload['binding_revision'] in retired_evidence_revisions(db,binding)
         and binding.native_self_wxid==payload.get('self_wxid')
         and binding.native_peer_wxid==payload.get('peer_wxid')
         and ctx.get('account_epoch')==payload.get('account_epoch'))

@@ -49,6 +49,11 @@ def preview(db, lead_id):
     if len(rows) != 1 or task is None:
         return {'candidate': None, 'needs_review': bool(rows)}
     binding = rows[0]
+    authorization=grant(db,task.id)
+    if (authorization and (authorization.extra_metadata or {}).get('mode')==TRANSFER
+            and (authorization.extra_metadata or {}).get('previous_binding_id')==binding.id
+            and ((binding.native_context or {}).get('reinvite_request') or {}).get('task_id')==task.id):
+        return {'candidate':None,'needs_review':True,'pending_verification':True}
     old = db.get(Lead, binding.lead_id)
     return {'needs_review': True, 'candidate': {
         'binding_id': binding.id, 'binding_revision': binding.authorization_revision,

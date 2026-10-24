@@ -22,7 +22,7 @@ def finish_voice(db,authenticated,instance,payload):
     ctx=dict(binding.native_context or {}) if binding else {}
     proof=db.get(TaskEvidence,ctx.get('invite_evidence_id')) if ctx.get('invite_evidence_id') else None
     from app.services.hook_relationship_service import retired_evidence_scope
-    retired=retired_evidence_scope(binding,w.id,payload.model_dump())
+    retired=retired_evidence_scope(db,binding,w.id,payload.model_dump())
     if (binding is None or binding.deleted_at or binding.worker_id!=w.id or (not retired and (binding.bind_status!='bound'
             or not binding.allow_listening or binding.listen_status not in {'listening','degraded'}))
             or binding.native_self_wxid!=payload.self_wxid or binding.native_peer_wxid!=payload.peer_wxid

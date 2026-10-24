@@ -65,3 +65,10 @@ it("shows both records before transfer and never invokes reinvite", async () => 
   expect(api.mock.calls.some(([url]) => url.endsWith("/reinvite"))).toBe(false);
   expect(screen.queryByRole("button", { name: "接续已有微信" })).not.toBeInTheDocument();
 });
+
+it("refresh keeps an authorized transfer pending without another confirm button", async () => {
+  api.mockResolvedValueOnce({ items: [] }).mockResolvedValueOnce({ candidate: null, needs_review: true, pending_verification: true });
+  render(<HookReinviteAction leadId="new-lead" />);
+  expect(await screen.findByText(/已确认档案接续。等待 Worker 核验原微信身份/)).toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: "接续已有微信" })).not.toBeInTheDocument();
+});

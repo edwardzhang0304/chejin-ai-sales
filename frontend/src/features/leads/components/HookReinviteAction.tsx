@@ -9,6 +9,8 @@ type Binding = {
   reinvite_available: boolean;
 };
 
+const transferPending = "已确认档案接续。等待 Worker 核验原微信身份；不会重复加好友或补发旧消息。";
+
 type Transfer = {
   binding_id: string; binding_revision: number; source_task_id: string;
   previous_lead_id: string; previous_name: string; previous_remark_code: string; target_name: string;
@@ -30,10 +32,11 @@ export function HookReinviteAction({ leadId }: { leadId: string }) {
     setTarget(null); setTransfer(null); setNeedsReview(false); setConfirm(false); setTransferConfirm(false); setMessage(""); setError(""); setLoading(true);
     Promise.all([
       request<{ items: Binding[] }>(`/leads/${leadId}/wechat-bindings`, { signal: controller.signal }),
-      request<{ candidate: Transfer | null; needs_review: boolean }>(`/leads/${leadId}/wechat/transfer`, { signal: controller.signal }),
+      request<{ candidate: Transfer | null; needs_review: boolean; pending_verification?: boolean }>(`/leads/${leadId}/wechat/transfer`, { signal: controller.signal }),
     ]).then(([{ items }, succession]) => {
         if (controller.signal.aborted) return;
         setTransfer(succession.candidate); setNeedsReview(succession.needs_review);
+        if (succession.pending_verification) setMessage(transferPending);
         // Ambiguous bindings need operator investigation, never choose one silently.
         const eligible = items.filter((item) => item.reinvite_available);
         setTarget(eligible.length === 1 ? eligible[0] : null);
@@ -71,7 +74,7 @@ export function HookReinviteAction({ leadId }: { leadId: string }) {
         reason: "运营确认同一微信以后由当前新档案处理",
       } });
       setTransferConfirm(false); setTransfer(null); setTarget(null);
-      setMessage("已确认档案接续。等待 Worker 核验原微信身份；不会重复加好友或补发旧消息。");
+      setMessage(transferPending);
     } catch (failure) {
       setTransferConfirm(false);
       setError(failure instanceof Error ? failure.message : "档案接续失败，请刷新后核对");
