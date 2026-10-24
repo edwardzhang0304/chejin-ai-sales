@@ -1,6 +1,6 @@
 {
   "name": "chejin-ops-admin-frontend",
-  "version": "0.10.15",
+  "version": "0.10.16",
   "private": true,
   "type": "module",
   "scripts": {

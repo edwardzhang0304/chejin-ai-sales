@@ -680,17 +680,17 @@
     "recall_author_and_reviewer_shared_trigger_context"
   ],
   "current_release": {
-    "version": "0.10.15",
+    "version": "0.10.16",
     "source_commit": "209f7fb66a01a05736fdd32e54808e54a9b66ce3",
     "source_state": "gray_release_candidate",
     "published": false,
-    "contract_revision": "0.10.15",
-    "contract_sha256": "bcf65fc4f9e1f6bbd101fec84544e0a6f02f203335225ec5793089ce2a4d089d",
+    "contract_revision": "0.10.16",
+    "contract_sha256": "8a90b6f7cbff0baa9799b349d602870bb194a9c2cc66cb04bc205b3c2f52a17d",
     "scope": [
       "native_hook_state_and_release_preparation",
       "schema_revision_sync"
     ],
-    "note": "0.10.15 reviewed cumulative bbe404a including6f2bdd8: startup/form layout reuse, opacity and render evidence, terminal result reconciliation. Original0.10.14 button and physical Windows pending. No DLL change."
+    "note": "0.10.16 cumulative7499f8b: explicit binding succession with original message/voice archival, shared search cache, strict shortcode caret. Original0.10.15 button pending package validation. Physical sales acceptance paused by user. No DLL change."
   },
   "historical_integrations": [
     {
