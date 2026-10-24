@@ -3,9 +3,9 @@
   "repository": "edwardzhang0304/chejin-ai-sales",
   "transport": "hook",
   "reuse_mode": "reviewed_delta",
-  "approval": "User explicitly confirmed release all reviewed commits including38ec365/67448fd/4bfeadb/bf8a291/7499f8b. Physical sales acceptance remains paused.",
-  "reviewed_commit": "7499f8b002ef5af916c6fdf5053ab4f1c4d3fec0",
-  "target_version": "0.10.16",
+  "approval": "User explicitly authorized release startup focus fixes; all contract identities synchronize. Reuse unchanged checks. No sales Windows operation.",
+  "reviewed_commit": "431e825f599947d1ec8e55d69b6ba6662a63bb50",
+  "target_version": "0.10.17",
   "source_sha256": {
     ".dockerignore": "953c4ae7fbf88d1f9655d96aac647bb20157d4531062155de4922562c924cc6c",
     ".gitattributes": "c3fb393b0b0757bb56c2aa4c733114aa8d394be2ca0d60bf11fc5cba47dfaf3a",
@@ -15,7 +15,7 @@
     "backend/.env.example": "b05297fc521cdca87a13002e4d8b531cf869a69b4dd63fed474d92e9b55e53b2",
     "backend/.gitignore": "8b318bea4f5c746fe6ca7be41e98f0bf331e7325f63141bb90609e23b54e6dfc",
     "backend/Dockerfile": "04085e37fc190b6e6b0124fb240cc2d54cefad329921e994bfbaf8a4d78c95c4",
-    "backend/README.md": "90e1775ac740e66ed620c59101ede438e9538176a188fc259136c10547640beb",
+    "backend/README.md": "1526864a26b6b492576847bf601f04e021c8257a6a01be5e67b06e32fd2aab82",
     "backend/alembic.ini": "10ec633dfef6fbfb3e27a073d6d7dd4e18e6acc668794811364e042585721651",
     "backend/alembic/env.py": "f5be2904c022729043ff3b310708dce49b4a9ea148f4061f41b9f8232c15593a",
     "backend/alembic/versions/20260603_0001_initial_schema.py": "1fe592366e724473b586a2ea6a5f5ec4062194bda80f10c340c922d7e3b84b11",
@@ -192,11 +192,11 @@
     "backend/app/services/worker_token_service.py": "afe266c745229920a75c836415469437b51891ebe03b1b63c3ff50b3b58b9142",
     "backend/app/services/worker_vision_credential_service.py": "6d427532d9e56f6cf9da8845f0ad6fb184fce066f5cac30c6302c3dc199f6f3c",
     "backend/compose.uat.yml": "58bf77325c1667295eab1bbaa5d42f4b81032f1a82e2104467a0371cb2a076f0",
-    "backend/compose.web.yml": "58e504b349fbcd06cdf3f996dacdee340f1cea10f33c1f992305bdc8d948f01a",
+    "backend/compose.web.yml": "acdce01cb4f23f1421038711b59ee8588bce9c50cf93d362f29f7a9c3003e1cc",
     "backend/configs/chejin_c3_brain.json": "e83598ec354a4fc5ed6ca8b82c3b0866f2171f76b33d1647de37e905fe1ef5ba",
-    "backend/docker-compose.yml": "192166ab565dbc85276db069e7e5add139790f8d841620627c62dacfca4d8c2b",
+    "backend/docker-compose.yml": "1aec7e868e32146b2178c8c0f21cac3ed1040b52871d7660d893c454b4f8ec92",
     "backend/docker/entrypoint.sh": "2db4def08af9248f4d4215154ce20ca474b7188a7c985a8458be1035e2a3509d",
-    "backend/pyproject.toml": "17b65224142615f25b2883c79b2612951e42020f3fd7ccccccfa3be0c86f539e",
+    "backend/pyproject.toml": "ef233bdba04d057982aae4ee5dcff5b7d718ff9724406e04c9802a1960285418",
     "backend/requirements.lock": "e50b91f6bf1794bf7cd589604c8c6adba248fa97762da3f2b981d21731b4d573",
     "backend/requirements.txt": "158c8f61c1b48f2473561cc8543fe5b55b62fc45d9c34e46286ac015384c7117",
     "backend/scripts/admin_accounts.py": "8d142e4d7ce889b19ff05b4d1a3816110ca47c8fa7b87a8cc1c7e3da281d8f6b",
@@ -391,9 +391,9 @@
     "backend/tests/worker_media_recovery_probe.py": "cec15755d5c7d0aee1aef709e675bc3251f01cddf9895815e504c079752c3783",
     "backend/tests/worker_partition_recovery_probe.py": "c94d000b8cd179da6091c87a90806d1aeed3fc1d40495c69340e2aff91c66af2",
     "backend/tests/worker_sequence_recovery_probe.py": "89402c39e79193530cb17dacd9bf9e1c55873e84baf744a7eb541ab8441c2a01",
-    "contracts/c2_contract_v3.json": "7bc022684af47410eb608e891950c52ae5b39af130adbaba9afa1ca60e69c8ea",
+    "contracts/c2_contract_v3.json": "78d5175f4ef1819df8b06e34a3f5d5ba376305ab0ab7336da4375171461e92c3",
     "contracts/examples/c2_v3_mixed_roundtrip.json": "0e9023e920627328c49eac031c34fd3ce77d504195d5ef6f7a9848ccf1e4f98f",
-    "contracts/hook_contract_v1.json": "cdfe0035c40e949b5ce612821f1f2338f2eaf08c14da543d66c77f87d7eb240d",
+    "contracts/hook_contract_v1.json": "10ab0e053cd3b72df89c0b179d0a6d4beddcb1070fcbff1b877d4d6bcf3d1152",
     "contracts/recovery/c2_contract_v3_0.9.75.json": "b7b4b2ab04d2feca8766c84bc4655ccf56170d2fc645e3e161e9b5a0fdf47f51",
     "contracts/recovery/c2_contract_v3_0.9.78.json": "c17c82e54ab5f1736f74384e3720f7dc158af058dc46673230cbf87d074792d5",
     "contracts/recovery/c2_contract_v3_0.9.80.json": "52c984a290e9029c3eb6f475ce5a05581502b04c3cd0c4a5f3b44a1fb194e585",
@@ -407,7 +407,7 @@
     "frontend/.gitignore": "23b7ede583be8ca215ffe4f491ec44e1953f381aba0aea67d8d1b077d667655a",
     "frontend/Dockerfile": "b504d18db2c1129e366f2831f7e6859b732779ef84212f1c7adcaf003de2fda7",
     "frontend/Dockerfile.dockerignore": "52e40f48dd3e7170465825714aa94570ef1d7960d9ec5d4f1673f52a697613d2",
-    "frontend/README.md": "f41da6b4d73efcfd96240ccbb0f8ab23c565caf2522b2b17c020b12837bcaa68",
+    "frontend/README.md": "2c1b44508d66dc7b7f47228aaf922c43f76b241280e1caddc558361fb7555805",
     "frontend/design-evidence/knowledge-common-button-sizing-1280x720.png": "33587f04fdf6476483a9e73a0bdf99cd7718f0139f27cd7a4e877cbb34a21f1b",
     "frontend/design-evidence/knowledge-common-components-1280x720.png": "e91c998bc1f7b4e365e4514ccbb1766ac41ae62973d8b34a369760a252f1f268",
     "frontend/design-evidence/knowledge-common-drawer-1280x720.png": "f76d57207b1e07a779ab40f307312abe615d5fa11702a28d2acf25619bc1cfb9",
@@ -439,8 +439,8 @@
     "frontend/design-evidence/knowledge-title-only-list-1280x720.png": "0aba9e306baa1b8689364ce9d4ba461231394e0ed3dcdfd8c86ba271b7c99e16",
     "frontend/docker/default.conf": "9c1da4ae99181da52716e57611b9db46c8411e9cdefb3a63fce48181eb6f058c",
     "frontend/index.html": "3e106d2519d0b3ad9a6bc94da7ce98280758330ba6ad7a7ce304804296908e56",
-    "frontend/package-lock.json": "cac979441c148d1c24aa2bb96670614dd09c0759263107cbe3bf37ed379ca18e",
-    "frontend/package.json": "7550f7fdb13e905fb2840dcf0367ea543a25dcca884032159dd7d7ce627a77f7",
+    "frontend/package-lock.json": "a6e477762e921aafb77187f6a117b4e06dd4172883ab1fd2fc7189e4c4dad34d",
+    "frontend/package.json": "75b6d891ea2be04585699f23fcfa9bf8df6b7f68e73a26386f046a688bf48acb",
     "frontend/scripts/run-unit-tests.mjs": "6f2855f6cb9e7cab5c55277f5982dbb18f336de409b33f3699de3378cb3b0f2d",
     "frontend/src/App.test.tsx": "1ab020138232217c8b19d55ebca8b714c943206c939b9071724cc1d66911fbb7",
     "frontend/src/App.tsx": "570df29154f664be4bd8009459f1d1c7ca17f041821bc8a27f96ff7c0f5e1693",
@@ -572,11 +572,11 @@
     "website/worker-workbench.html": "2f36ee72bfd4d3cafe13cc5caf17a49150d2ca7fcb94412fd1fc02891258d7ad",
     "website/worker-workbench.js": "b6530e214ab5e7870c1f6621dd1c1438c053c0442cdad46791fc9830055820d7",
     "worker-client/README.md": "f520827f23bd8eb1b109f9febfeda199c70a90e720a8f4bb0e12e0b116a8d0af",
-    "worker-client/chejin_worker_client/__init__.py": "1246ffe0b423959d9b571c10fc9d6028d296ff012834ce2389a6442c42cfd446",
+    "worker-client/chejin_worker_client/__init__.py": "e36246a085180b7393707bf8f15c9e6eba9ad73bedd14974e46812ea78ed8cb4",
     "worker-client/chejin_worker_client/action_journal.py": "e9cfb2fc0158a7d619fa6390a35f5a4a62cbfb227512d29f6e1b4efcaacd1f6c",
     "worker-client/chejin_worker_client/api.py": "34d1b77833f868edeee47feb1671400735074f3c8db0115ba2313f060da980d4",
     "worker-client/chejin_worker_client/artifact_retention.py": "0b7859a3d9b1e125ca321509b3d193ad560c84f6ed081bbed7180ac2bb370223",
-    "worker-client/chejin_worker_client/c1_diagnostics.py": "c21706305317046f6cf45352ab733a181142f9fb30baf62f1b5e5bdf9732813d",
+    "worker-client/chejin_worker_client/c1_diagnostics.py": "1a5137c8ba2e4954a46151e0ff970d8e9e4cd2fd0c6a4f8a08954d3b4ad23c68",
     "worker-client/chejin_worker_client/c1_receipts.py": "ba7aa2c10b7d61cf8f4d617b1dcf15b921c592e75f1d5b68d3ef68bdfba7c4a0",
     "worker-client/chejin_worker_client/c2_contract.py": "ef4f4176ae66c115c6b078806f163c097a42cf4141f78a2b9dd4738bda4c1702",
     "worker-client/chejin_worker_client/c2_outbox_recovery.py": "d8cc7bb79dcca2a7df158b0957719048a1a723e01938955d7ed1f7b378f3db37",
@@ -598,8 +598,8 @@
     "worker-client/chejin_worker_client/hook_connection.py": "84d7284f2abbafcb6bab78f5b879034eb53e5f925d76bab4dbe92959768ea680",
     "worker-client/chejin_worker_client/hook_contacts.py": "22efc9ae3af547ff6ba0980b5ac4ba6a7288223262bc89331220d48b48791f85",
     "worker-client/chejin_worker_client/hook_diagnostics.py": "7ec48f8b0e2558504960dd39759efc441914cdaa9141ba1bb28c9d98b33dca8e",
-    "worker-client/chejin_worker_client/hook_dispatcher.py": "df5e7937b666b68b0a95663e69441620d0a8aefde98e7b577f810e4ae56d3a9e",
-    "worker-client/chejin_worker_client/hook_factory.py": "d6e181a5b53d27696931a9e9dc0fce3535feea3d0df86050ab938ddb3a3718b6",
+    "worker-client/chejin_worker_client/hook_dispatcher.py": "1d04e84c51e19ed1697f79a13299e464369034998f6ad3a95ff81b48ef4dd4a9",
+    "worker-client/chejin_worker_client/hook_factory.py": "a1da2c13dcc15575a39ab94e186bd1510963633bf651b62d577a8a27d34c9f92",
     "worker-client/chejin_worker_client/hook_facts.py": "360b092ee30f7c37e94dc0d43851fe6401fbbba9b08f7356df40984ba9a54397",
     "worker-client/chejin_worker_client/hook_formal_c1.py": "bbb3c30bac941f91ca05ede17f56cbff798939e3ffd3c0a40b39046b267ef7df",
     "worker-client/chejin_worker_client/hook_formal_client.py": "04ccafac6a0d8622b8108f73b257791f1fb51df36c70941a2925e196593ffd78",
@@ -612,15 +612,16 @@
     "worker-client/chejin_worker_client/hook_installation.py": "fe8211d36c8c451c4a4b45d4cdbb234ae7ae115b7912273d79e937c711c038be",
     "worker-client/chejin_worker_client/hook_outbox.py": "cd92de285b914ce32f061827887b3218cbffa7dced3a0d108b280da9d8e93072",
     "worker-client/chejin_worker_client/hook_process.py": "f3172a0629f7d164522e806ae08cc54486cf504a396de6e383c6de1cf7cdebed",
-    "worker-client/chejin_worker_client/hook_progress.py": "8429ea4ef8da7977766dbc1afbb18543eccf6523c3e96ed6cc96437295755a60",
+    "worker-client/chejin_worker_client/hook_progress.py": "de48ccf106861f5298e9d608e50b270821a1a62e317d608206744b4d92b82336",
     "worker-client/chejin_worker_client/hook_projection.py": "52bcc49894d762ec77d15f6bc248225a400dcfcb7dea0bdc3355a6d660be1db7",
     "worker-client/chejin_worker_client/hook_receiver.py": "83b7786d89989a03f9d8a6705bc66bf3845d8fed263925aa72e1e6a7a2a197ec",
     "worker-client/chejin_worker_client/hook_recovery.py": "31bf9f8513e558172a38678a6958b03d1fcfc85ba2c71f838ed316917be1521d",
     "worker-client/chejin_worker_client/hook_retention.py": "aa67378ba686b559e9a66da7841ae084fcd48ee53f87b3077f713c463567badc",
     "worker-client/chejin_worker_client/hook_sender.py": "9b4d44740267a20bf6d6dececaec2429470c0159ab7e15893b82657a1b666865",
+    "worker-client/chejin_worker_client/hook_startup_window.py": "60458efc4bc76693f544fa489534ce02629ec9f62bcfec11a98a98d0671bff65",
     "worker-client/chejin_worker_client/hook_timing.py": "d3f41c37a3be70a9c981b0fe5bdc3c0cf4b4fc5448a60be060e30fdce52adde6",
     "worker-client/chejin_worker_client/hook_voice.py": "e45248392e0e8e7e8177d58cb02dca380c99adf2692fe8af64a0c394549ae3b7",
-    "worker-client/chejin_worker_client/hook_worker_services.py": "5e33a847f8d8b5a8e1fda968c3720a03548041eb347e3c079db63e5b7effce0a",
+    "worker-client/chejin_worker_client/hook_worker_services.py": "9ed8df68db115eac959c878892fc408ea91e998013ed31169a3f2b4afd28fa2c",
     "worker-client/chejin_worker_client/image_phase.py": "0beb081b9cb4acbce3400847c34caa301d789de2a57d2d74f2cda62510a328e8",
     "worker-client/chejin_worker_client/incident_evidence.py": "8821582ea3ddbf25decd782bd03fe13a6d005b472875ad39cf9112565605efcb",
     "worker-client/chejin_worker_client/layout_recovery.py": "0c851e0bd087f60f28fae75d45129cf040c8054718669d15c7ceafcfd2be3da8",
@@ -653,7 +654,7 @@
     "worker-client/chejin_worker_client/sequence_alignment.py": "761526bae59cbe04e83756ead28812d9eb9c33c348a88433473080cd5dbc2480",
     "worker-client/chejin_worker_client/shared_rules.py": "8880ab013d01a12d9740e2bdb65d1c54141837e185e91a41edfd6dd6d33b78dd",
     "worker-client/chejin_worker_client/single_instance.py": "00f35e84d610a04f3ed2fddd118e5f5ea02bb904ddf43867b146a3c3a25e1844",
-    "worker-client/chejin_worker_client/startup_check_state.py": "2c39714bc9368e871d2509bd993e8ebee4b7e2baa981fcf85e4b56806f381947",
+    "worker-client/chejin_worker_client/startup_check_state.py": "1c91c56d69ef1bde2c446e4619054b695d6c839cef4291096cf0732133dfcf53",
     "worker-client/chejin_worker_client/startup_window_position.py": "322623a13bc7426198697d9ade8aa70c6050f25faeb41e7926ddf319c4562597",
     "worker-client/chejin_worker_client/storage.py": "331ffe03a3ae884cce36c3ef396e02c7e36539aa55f60a4be9c12c1276d7db5e",
     "worker-client/chejin_worker_client/storage_maintenance.py": "dff6e905c530389d92e7a87b2f21e7d72721434c9c7899d22d1c9d6c070b035a",
@@ -685,7 +686,7 @@
     "worker-client/chejin_worker_client/web_ui.py": "1069fdc10748b3dd799c56229a696ecff1c8b02e19d29eec49692fe5c0d46abf",
     "worker-client/chejin_worker_client/wechat_c2.py": "3b441f8a68c0e4efabf6f6970149e26af84f51097e9a43809759cad60d12f8f7",
     "worker-client/chejin_worker_client/window_render_evidence.py": "1c6764c970f685d337df338e7d39147f475a49ce96c1699ebac5419736b3e8c8",
-    "worker-client/omniauto-rpa/.chejin-source.json": "eb1df71d7a31c8a89823ef9da45fe2916d32e67dd5c44239d9d64822eff62208",
+    "worker-client/omniauto-rpa/.chejin-source.json": "42885c5606f06952ff3a9e28d63c18bbb3ecfcc60212b1bfc2bedf81acfe9e1c",
     "worker-client/omniauto-rpa/PROJECT_STRUCTURE.md": "ca9b8b2d1bf0c59c88fc1ff9fd86fbd1cafa500b06ee60f00c910bfef6f5c486",
     "worker-client/omniauto-rpa/README.md": "b8c509514efd339d87ea2e515a9bccf761426a29804b1076854e30d15cffe11a",
     "worker-client/omniauto-rpa/START_HERE.md": "372e6fdcefcc012da3f554af9227781cf05181d9b733b933671f17ee25e73b89",
@@ -711,7 +712,7 @@
     "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/adapters/add_friend_routes.py": "8c93cc66252318df0885109ab05961bf33b88d84d34d5e25527e0f7e42ac5b7d",
     "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/adapters/add_friend_screenshot.py": "60bf1a90a13ed86ecfe85065337c3ac8979e2c379fc03bfc71bf42c262571eb2",
     "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/adapters/business_viewport_continuity.py": "82ffb5747acb753d20f4e70cb5ae5254f7e4ba51f2858307613e36e61c9a23e7",
-    "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/adapters/chejin_c2_observation_schema.generated.json": "b294fed749c1fff3e0ceecbda378eae84b6c7db2ade087f3a1f07bbc3220d52a",
+    "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/adapters/chejin_c2_observation_schema.generated.json": "41eca00148606f455a45ceef96aab66d4b3e72934cabf4f3e3674b4d814d828b",
     "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/adapters/circle_plus_icon.py": "2367e83de1dfd25508a560657cb7efd93d9e2e8bafa5d1edeadd155d57734d6f",
     "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/adapters/client_release_rules.py": "f2d1a4077f5d10064158dae89050020e7a2a21a4e786ff2f8fa85bc6e222efd5",
     "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/adapters/confirmed_sent_history.py": "d2371d89dbbd41f215440ed01a54ebbbf960cd3f344d7627e9d70313ffcb0d89",
@@ -753,8 +754,8 @@
     "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/adapters/wechat_win32_ocr/field_value_readback.py": "8e0eace013eed3310fb703e73af24d1ec21051a29fffca7196ef5d57327dbf6a",
     "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/adapters/wechat_win32_ocr/frame_avatars.py": "d9cd9ed4a9bedea751cb41810c20a7021f436b06782f48359149b370de2ea63a",
     "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/adapters/wechat_win32_ocr/geometry.py": "8480576b33ce32a3e7c28ff81a99d6b27d57320aa45409b1bab57d865d26f2f9",
-    "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/adapters/wechat_win32_ocr/hook_c1.py": "24246b91e606cf9ed043725ab49939962a7db4263841c50a5d00e8217bd03223",
-    "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/adapters/wechat_win32_ocr/hook_c1_flow.py": "9c1f8af93cf924d4062081e9a9f982df5958362ef997383d319ec039a520d75f",
+    "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/adapters/wechat_win32_ocr/hook_c1.py": "65b7b0519747e7992fca4f3ca25cec629f4110dec35826751718d2bfbc29a739",
+    "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/adapters/wechat_win32_ocr/hook_c1_flow.py": "1bddd0f2f46932653dedc5fe2e523a4a87f3db50ee68d77d0e08317cce6de9aa",
     "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/adapters/wechat_win32_ocr/humanized_input.py": "d4efec719b77ce5acab386358cc5efca32606ba1ad80697a3fc63b3a2398ab20",
     "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/adapters/wechat_win32_ocr/interaction_evidence.py": "b3104f469663f2dbb2302608939b1c3e7a9ad9c6cea8a94ed1ee7d84cc7f4c33",
     "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/adapters/wechat_win32_ocr/ocr_engine.py": "6bf6cae49610812f998364e33e3bb1629e8e5481cc4787361e8a3866ec415db2",
@@ -1156,7 +1157,7 @@
     "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/tests/test_historical_confidence_scores.py": "f48f92f6201e19510b525808f87ec3ece2b3e3a5775eb86444e94619a0ab5c36",
     "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/tests/test_historical_punctuation.py": "f20a3916eedcdf7ad4cea13a9003d20870ef31e48df163c128f4313b2c2b1e54",
     "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/tests/test_historical_text_alignment.py": "19eca47f695ee0843da5448f07ca28b77022e47d87661f08c41dae9f0051e44e",
-    "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/tests/test_hook_c1_flow.py": "ee0c3268c807de38798634cb0d910e7a74ef2b3502233abc1a32c08f7233d912",
+    "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/tests/test_hook_c1_flow.py": "fc111f7ae2527ba691ca96330c79f5472e072fc739325adba04b10522582cc48",
     "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/tests/test_hook_c1_startup.py": "4b87fd19829f0b783e67fbad5750e5329f1de875dcd4beeb7dd387f34b1b158a",
     "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/tests/test_image_order_dependencies.py": "065eb664d864c9bb8c329fcf92e3e70ef78caa5c06435edf7bff02edc94ca529",
     "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/tests/test_input_boundary_gap.py": "54a781de4f8d1da468ec64eaf62fb99e8d9e7fd5f0398f8e31a86fcb45f60627",
@@ -1250,7 +1251,7 @@
     "worker-client/packaging/chejin-updater.spec": "d8c2a540e7043462fd3d36056118758820bd8f2243cb69c09347cdc49e250e86",
     "worker-client/packaging/chejin-worker-client.spec": "66cab3bb85b28db08c39642d3de8d98a192e2c84324c3786884dd64c3aad35f0",
     "worker-client/packaging/chejin_updater_entry.py": "0fe85c173c3c6f6e74cb8bc42a98698b6479bef0dde0dfb90cc851439bc0e4da",
-    "worker-client/packaging/chejin_worker_client_entry.py": "946e41eca17506ec765838e9dbb41400df4d27ef9439a65f4c6de24d97dae2e1",
+    "worker-client/packaging/chejin_worker_client_entry.py": "9e195dbfe994aac86107b885fac5c93b6d49af0cc97c95856433cd9494bf063b",
     "worker-client/packaging/collect-uat-evidence.ps1": "f7a84bce02dc1b04eb148139a371755d85966d57bd794d10d100ff11334f9fce",
     "worker-client/packaging/collect_uat_evidence.py": "f6feda78c4c6a45b7c367a9416b17c0145019ac7d314dd1d9216a8992b4e61ae",
     "worker-client/packaging/release-signing-public-keys.json": "2be8440e9e3f564d5f1a5e930aa9e75f15fe492145cefd8804b5b12cbb0a6924",
@@ -1402,9 +1403,10 @@
     "worker-client/tests/test_hook_retained_send.py": "ec7e0e578af47c6f9de6c9b1e0fe9bc9142601b52953fa27708cbbea6db6e8bc",
     "worker-client/tests/test_hook_retention.py": "060c5259bcb5cba6882944f45c8509979308d12e3e2cf7d0b69da0029c9fe478",
     "worker-client/tests/test_hook_search_cache_consumer.py": "e232410346ac02f3ffc4871003580e55e2abecf2b9f08bb1bf4ab284f2413874",
-    "worker-client/tests/test_hook_search_startup_cache.py": "cdd119df1e46f6e3fbf2697e11a83edf7cded802d23ce380ec19fc5b26e982f4",
+    "worker-client/tests/test_hook_search_startup_cache.py": "ed1e4a58205a48f30adde0d0787baa7b4911d4d109913d6dc567ef777fd2778a",
     "worker-client/tests/test_hook_segment_progress_stability.py": "ae1df807dadcdfa9c5685809c2b2172fd54d457246e11ecb84bfa8ad4b860db3",
     "worker-client/tests/test_hook_shared_clock.py": "4757269344d7d3973439fa3651611f2b2661d1f7d28c1e9ea0fc1dc5bdee1ec3",
+    "worker-client/tests/test_hook_startup_focus.py": "711fa162099ac14430f70908411cef607a76035f7749edca3129a82ff7b01374",
     "worker-client/tests/test_hook_startup_order.py": "5498a7983deb08645b3dbdb5bffc2ba5eb2a7870aa6f00ab777738571f97fd11",
     "worker-client/tests/test_hook_state_contract.py": "f7fc5f3beec52b807e7e255d32c83bebd6fce10fbb0fced6f596a77d1b8bf951",
     "worker-client/tests/test_hook_storage_failure.py": "8ea19b8c0853c04a9caa76e0cd778cad00ffca029f61bc0c5ea052bf71a6a154",
@@ -1538,7 +1540,7 @@
       ]
     }
   ],
-  "environment": "Original engineering and architect source results reused; synthetic Windows/OCR and SQLite limitations retained. CI verifies exact source identity; sealed original0.10.15 button is a separate required gate.",
+  "environment": "Original reviewed source evidence, synthetic Win32/OCR; original EXE button acceptance separate. No claim field performance accepted.",
   "checks": [
     {
       "original_xml_sha256": "b6885c699eb9ae772a196e9124a3fe9aef1e7b15235a1a6aa761c04f06a56855",
@@ -12553,11 +12555,2585 @@
         }
       ],
       "nonpassing_not_counted": 2
+    },
+    {
+      "report": "startup-focus-fix-20261024/targeted.xml",
+      "original_xml_sha256": "9e2fbed3bbbfff847138398caf177f87a5848a163d98e99a591a676174bd84d1",
+      "count": 268,
+      "cases": [
+        {
+          "classname": "",
+          "name": "test_denied_activation_waits_then_passively_recovers_without_extra_captures",
+          "result": "passed"
+        },
+        {
+          "classname": "",
+          "name": "test_retries_are_bounded_with_original_guard_evidence_and_account_reset",
+          "result": "passed"
+        },
+        {
+          "classname": "",
+          "name": "test_actual_heartbeat_wait_preserves_paused_flow_and_recovers_without_start",
+          "result": "passed"
+        },
+        {
+          "classname": "",
+          "name": "test_slow_ocr_keeps_15_second_guard_and_exports_its_elapsed_time",
+          "result": "passed"
+        },
+        {
+          "classname": "",
+          "name": "test_focus_lost_inside_native_constructor_keeps_original_diagnostics",
+          "result": "passed"
+        },
+        {
+          "classname": "",
+          "name": "test_startup_normalizes_before_worker_geometry_even_when_stopped[paused]",
+          "result": "passed"
+        },
+        {
+          "classname": "",
+          "name": "test_startup_normalizes_before_worker_geometry_even_when_stopped[faulted]",
+          "result": "passed"
+        },
+        {
+          "classname": "",
+          "name": "test_startup_normalizes_before_worker_geometry_even_when_stopped[running]",
+          "result": "passed"
+        },
+        {
+          "classname": "",
+          "name": "test_busy_startup_does_not_publish_old_geometry_or_fault",
+          "result": "passed"
+        },
+        {
+          "classname": "",
+          "name": "test_failed_normalization_never_publishes_worker_position",
+          "result": "passed"
+        },
+        {
+          "classname": "",
+          "name": "test_retained_flow_defers_movement_until_original_settlement",
+          "result": "passed"
+        },
+        {
+          "classname": "",
+          "name": "test_dispatcher_startup_normalizes_once_per_approved_account_and_generation",
+          "result": "passed"
+        },
+        {
+          "classname": "",
+          "name": "test_timeline_hides_removed_fault_resume_explanation",
+          "result": "passed"
+        },
+        {
+          "classname": "",
+          "name": "test_pending_window_blocks_new_work_but_allows_confirmed_old_flow_to_finish",
+          "result": "passed"
+        },
+        {
+          "classname": "",
+          "name": "test_startup_captures_once_no_clear_and_task_reuses_cached_position[]",
+          "result": "passed"
+        },
+        {
+          "classname": "",
+          "name": "test_startup_captures_once_no_clear_and_task_reuses_cached_position[13800000003]",
+          "result": "passed"
+        },
+        {
+          "classname": "",
+          "name": "test_startup_unrecognized_frame_stops_without_stale_cache_or_input",
+          "result": "passed"
+        },
+        {
+          "classname": "",
+          "name": "test_all_main_rois_reuse_startup_table_and_missing_region_stops",
+          "result": "passed"
+        },
+        {
+          "classname": "",
+          "name": "test_active_task_geometry_guard_invalidates_shared_startup_readiness",
+          "result": "passed"
+        },
+        {
+          "classname": "",
+          "name": "test_task_invalidated_startup_cache_stops_without_relocation_or_input[missing]",
+          "result": "passed"
+        },
+        {
+          "classname": "",
+          "name": "test_task_invalidated_startup_cache_stops_without_relocation_or_input[missing_bounds]",
+          "result": "passed"
+        },
+        {
+          "classname": "",
+          "name": "test_task_invalidated_startup_cache_stops_without_relocation_or_input[corrupt_bounds]",
+          "result": "passed"
+        },
+        {
+          "classname": "",
+          "name": "test_task_invalidated_startup_cache_stops_without_relocation_or_input[origin]",
+          "result": "passed"
+        },
+        {
+          "classname": "",
+          "name": "test_task_invalidated_startup_cache_stops_without_relocation_or_input[geometry]",
+          "result": "passed"
+        },
+        {
+          "classname": "",
+          "name": "test_task_invalidated_startup_cache_stops_without_relocation_or_input[hwnd]",
+          "result": "passed"
+        },
+        {
+          "classname": "",
+          "name": "test_task_invalidated_startup_cache_stops_without_relocation_or_input[pid]",
+          "result": "passed"
+        },
+        {
+          "classname": "",
+          "name": "test_task_invalidated_startup_cache_stops_without_relocation_or_input[dpi]",
+          "result": "passed"
+        },
+        {
+          "classname": "",
+          "name": "test_original_service_requires_worker_restart_then_settlement_before_layout_recovery",
+          "result": "passed"
+        },
+        {
+          "classname": "",
+          "name": "test_placeholder_uses_startup_coordinates_without_relocating[\\u641c\\u7d22]",
+          "result": "passed"
+        },
+        {
+          "classname": "",
+          "name": "test_placeholder_uses_startup_coordinates_without_relocating[Q\\u641c\\u7d22]",
+          "result": "passed"
+        },
+        {
+          "classname": "",
+          "name": "test_placeholder_uses_startup_coordinates_without_relocating[O\\u641c\\u7d22]",
+          "result": "passed"
+        },
+        {
+          "classname": "",
+          "name": "test_placeholder_uses_startup_coordinates_without_relocating[0\\u641c\\u7d22]",
+          "result": "passed"
+        },
+        {
+          "classname": "",
+          "name": "test_placeholder_uses_startup_coordinates_without_relocating[\\u641c\\u7d20]",
+          "result": "passed"
+        },
+        {
+          "classname": "",
+          "name": "test_placeholder_uses_startup_coordinates_without_relocating[Q\\u641c\\u7d20]",
+          "result": "passed"
+        },
+        {
+          "classname": "",
+          "name": "test_placeholder_uses_startup_coordinates_without_relocating[O\\u641c\\u7d20]",
+          "result": "passed"
+        },
+        {
+          "classname": "",
+          "name": "test_placeholder_uses_startup_coordinates_without_relocating[0\\u641c\\u7d20]",
+          "result": "passed"
+        },
+        {
+          "classname": "",
+          "name": "test_cached_position_never_overrules_current_content_or_layout[low_confidence]",
+          "result": "passed"
+        },
+        {
+          "classname": "",
+          "name": "test_cached_position_never_overrules_current_content_or_layout[duplicate]",
+          "result": "passed"
+        },
+        {
+          "classname": "",
+          "name": "test_cached_position_never_overrules_current_content_or_layout[foreign_text]",
+          "result": "passed"
+        },
+        {
+          "classname": "",
+          "name": "test_cached_position_never_overrules_current_content_or_layout[layout_moved]",
+          "result": "passed"
+        },
+        {
+          "classname": "",
+          "name": "test_formal_flow_retains_current_content_checks_and_cache_authority",
+          "result": "passed"
+        },
+        {
+          "classname": "",
+          "name": "test_geometry_failure_exports_observed_frame_and_expected_map[False]",
+          "result": "passed"
+        },
+        {
+          "classname": "",
+          "name": "test_geometry_failure_exports_observed_frame_and_expected_map[True]",
+          "result": "passed"
+        },
+        {
+          "classname": "",
+          "name": "test_full_native_invite_uses_startup_map_and_single_form_layout",
+          "result": "passed"
+        },
+        {
+          "classname": ".WebUiBindingBehaviorTest",
+          "name": "test_backend_profile_before_first_probe_does_not_consume_position_attempt",
+          "result": "passed"
+        },
+        {
+          "classname": ".WebUiBindingBehaviorTest",
+          "name": "test_binding_success_emits_workbench_state_and_starts_runner",
+          "result": "passed"
+        },
+        {
+          "classname": ".WebUiBindingBehaviorTest",
+          "name": "test_delayed_profile_callback_never_rewrites_runner_run_status",
+          "result": "passed"
+        },
+        {
+          "classname": ".WebUiBindingBehaviorTest",
+          "name": "test_existing_binding_initial_state_restores_workbench",
+          "result": "passed"
+        },
+        {
+          "classname": ".WebUiBindingBehaviorTest",
+          "name": "test_fault_start_uses_existing_bridge_and_runner_guard",
+          "result": "passed"
+        },
+        {
+          "classname": ".WebUiBindingBehaviorTest",
+          "name": "test_faulted_state_wins_over_offline_and_sync_failure",
+          "result": "passed"
+        },
+        {
+          "classname": ".WebUiBindingBehaviorTest",
+          "name": "test_lock_projection_permission_error_keeps_worker_running",
+          "result": "passed"
+        },
+        {
+          "classname": ".WebUiBindingBehaviorTest",
+          "name": "test_missing_wechat_geometry_keeps_default_window_position",
+          "result": "passed"
+        },
+        {
+          "classname": ".WebUiBindingBehaviorTest",
+          "name": "test_paused_idle_worker_does_not_keep_stale_scan_card",
+          "result": "passed"
+        },
+        {
+          "classname": ".WebUiBindingBehaviorTest",
+          "name": "test_pending_finish_uses_existing_timeline_until_confirmation",
+          "result": "passed"
+        },
+        {
+          "classname": ".WebUiBindingBehaviorTest",
+          "name": "test_real_automation_unavailable_keeps_environment_issue_screen",
+          "result": "passed"
+        },
+        {
+          "classname": ".WebUiBindingBehaviorTest",
+          "name": "test_real_bridge_normalize_payload_flows_through_status_callback_to_qt_move",
+          "result": "passed"
+        },
+        {
+          "classname": ".WebUiBindingBehaviorTest",
+          "name": "test_runtime_control_read_failure_does_not_project_client_offline",
+          "result": "passed"
+        },
+        {
+          "classname": ".WebUiBindingBehaviorTest",
+          "name": "test_screen_fit_tracks_available_area_and_actual_titlebar_controls",
+          "result": "passed"
+        },
+        {
+          "classname": ".WebUiBindingBehaviorTest",
+          "name": "test_startup_position_converts_native_pixels_at_125_percent_scaling",
+          "result": "passed"
+        },
+        {
+          "classname": ".WebUiBindingBehaviorTest",
+          "name": "test_startup_wechat_probe_positions_window_once_and_keeps_dragging_free",
+          "result": "passed"
+        },
+        {
+          "classname": "",
+          "name": "test_reads_approved_main_rectangle_and_restores_thread_dpi",
+          "result": "passed"
+        },
+        {
+          "classname": "",
+          "name": "test_untrusted_or_unavailable_window_never_used[pid_reuse]",
+          "result": "passed"
+        },
+        {
+          "classname": "",
+          "name": "test_untrusted_or_unavailable_window_never_used[other_owner]",
+          "result": "passed"
+        },
+        {
+          "classname": "",
+          "name": "test_untrusted_or_unavailable_window_never_used[hidden]",
+          "result": "passed"
+        },
+        {
+          "classname": "",
+          "name": "test_untrusted_or_unavailable_window_never_used[minimized]",
+          "result": "passed"
+        },
+        {
+          "classname": "",
+          "name": "test_untrusted_or_unavailable_window_never_used[shadow]",
+          "result": "passed"
+        },
+        {
+          "classname": "",
+          "name": "test_untrusted_or_unavailable_window_never_used[ambiguous]",
+          "result": "passed"
+        },
+        {
+          "classname": "",
+          "name": "test_untrusted_or_unavailable_window_never_used[invalid_rect]",
+          "result": "passed"
+        },
+        {
+          "classname": "",
+          "name": "test_changed_process_after_rectangle_read_is_rejected",
+          "result": "passed"
+        },
+        {
+          "classname": "",
+          "name": "test_window_read_failure_restores_dpi_context",
+          "result": "passed"
+        },
+        {
+          "classname": "",
+          "name": "test_missing_hook_window_does_not_use_other_account_ocr_geometry",
+          "result": "passed"
+        },
+        {
+          "classname": "",
+          "name": "test_gui_snapshot_has_no_connection_lock_or_calls_and_cannot_mutate_cache",
+          "result": "passed"
+        },
+        {
+          "classname": "",
+          "name": "test_exact_shortcode_and_only_single_ascii_caret[-True-CJH5N28]",
+          "result": "passed"
+        },
+        {
+          "classname": "",
+          "name": "test_exact_shortcode_and_only_single_ascii_caret[-True-CJ8NZRD9]",
+          "result": "passed"
+        },
+        {
+          "classname": "",
+          "name": "test_exact_shortcode_and_only_single_ascii_caret[|-True-CJH5N28]",
+          "result": "passed"
+        },
+        {
+          "classname": "",
+          "name": "test_exact_shortcode_and_only_single_ascii_caret[|-True-CJ8NZRD9]",
+          "result": "passed"
+        },
+        {
+          "classname": "",
+          "name": "test_exact_shortcode_and_only_single_ascii_caret[||-False-CJH5N28]",
+          "result": "passed"
+        },
+        {
+          "classname": "",
+          "name": "test_exact_shortcode_and_only_single_ascii_caret[||-False-CJ8NZRD9]",
+          "result": "passed"
+        },
+        {
+          "classname": "",
+          "name": "test_exact_shortcode_and_only_single_ascii_caret[I-False-CJH5N28]",
+          "result": "passed"
+        },
+        {
+          "classname": "",
+          "name": "test_exact_shortcode_and_only_single_ascii_caret[I-False-CJ8NZRD9]",
+          "result": "passed"
+        },
+        {
+          "classname": "",
+          "name": "test_exact_shortcode_and_only_single_ascii_caret[l-False-CJH5N28]",
+          "result": "passed"
+        },
+        {
+          "classname": "",
+          "name": "test_exact_shortcode_and_only_single_ascii_caret[l-False-CJ8NZRD9]",
+          "result": "passed"
+        },
+        {
+          "classname": "",
+          "name": "test_exact_shortcode_and_only_single_ascii_caret[1-False-CJH5N28]",
+          "result": "passed"
+        },
+        {
+          "classname": "",
+          "name": "test_exact_shortcode_and_only_single_ascii_caret[1-False-CJ8NZRD9]",
+          "result": "passed"
+        },
+        {
+          "classname": "",
+          "name": "test_exact_shortcode_and_only_single_ascii_caret[\\uff5c-False-CJH5N28]",
+          "result": "passed"
+        },
+        {
+          "classname": "",
+          "name": "test_exact_shortcode_and_only_single_ascii_caret[\\uff5c-False-CJ8NZRD9]",
+          "result": "passed"
+        },
+        {
+          "classname": "",
+          "name": "test_caret_never_authorizes_ambiguous_or_wrong_task_code[wrong_code]",
+          "result": "passed"
+        },
+        {
+          "classname": "",
+          "name": "test_caret_never_authorizes_ambiguous_or_wrong_task_code[lowercase]",
+          "result": "passed"
+        },
+        {
+          "classname": "",
+          "name": "test_caret_never_authorizes_ambiguous_or_wrong_task_code[leading_bar]",
+          "result": "passed"
+        },
+        {
+          "classname": "",
+          "name": "test_caret_never_authorizes_ambiguous_or_wrong_task_code[internal_bar]",
+          "result": "passed"
+        },
+        {
+          "classname": "",
+          "name": "test_caret_never_authorizes_ambiguous_or_wrong_task_code[low_confidence]",
+          "result": "passed"
+        },
+        {
+          "classname": "",
+          "name": "test_caret_never_authorizes_ambiguous_or_wrong_task_code[outside]",
+          "result": "passed"
+        },
+        {
+          "classname": "",
+          "name": "test_caret_never_authorizes_ambiguous_or_wrong_task_code[duplicate]",
+          "result": "passed"
+        },
+        {
+          "classname": "",
+          "name": "test_caret_never_authorizes_ambiguous_or_wrong_task_code[separate_bar]",
+          "result": "passed"
+        },
+        {
+          "classname": "",
+          "name": "test_caret_never_authorizes_ambiguous_or_wrong_task_code[prefix_name]",
+          "result": "passed"
+        },
+        {
+          "classname": "",
+          "name": "test_native_form_completion_without_extra_capture_or_weaker_admission[normal]",
+          "result": "passed"
+        },
+        {
+          "classname": "",
+          "name": "test_native_form_completion_without_extra_capture_or_weaker_admission[caret]",
+          "result": "passed"
+        },
+        {
+          "classname": "",
+          "name": "test_native_form_completion_without_extra_capture_or_weaker_admission[wrong_code]",
+          "result": "passed"
+        },
+        {
+          "classname": "",
+          "name": "test_native_form_completion_without_extra_capture_or_weaker_admission[low_confidence]",
+          "result": "passed"
+        },
+        {
+          "classname": "",
+          "name": "test_native_form_completion_without_extra_capture_or_weaker_admission[separate_bar]",
+          "result": "passed"
+        },
+        {
+          "classname": "",
+          "name": "test_constructor_failure_from_formal_entry_is_exported_and_never_replayed[init_focus-foreground_changed]",
+          "result": "passed"
+        },
+        {
+          "classname": "",
+          "name": "test_constructor_failure_from_formal_entry_is_exported_and_never_replayed[init_geometry-main_geometry_changed]",
+          "result": "passed"
+        },
+        {
+          "classname": "",
+          "name": "test_constructor_failure_from_formal_entry_is_exported_and_never_replayed[init_dpi-main_dpi_changed]",
+          "result": "passed"
+        },
+        {
+          "classname": "",
+          "name": "test_real_ocr_exception_and_cleanup_exception_have_distinct_safe_causes[timeout-TimeoutError]",
+          "result": "passed"
+        },
+        {
+          "classname": "",
+          "name": "test_real_ocr_exception_and_cleanup_exception_have_distinct_safe_causes[permission-PermissionError]",
+          "result": "passed"
+        },
+        {
+          "classname": "",
+          "name": "test_actual_capture_stages_export_existing_material_without_authorizing_action[before_grab-not_produced-not_produced]",
+          "result": "passed"
+        },
+        {
+          "classname": "",
+          "name": "test_actual_capture_stages_export_existing_material_without_authorizing_action[after_grab-saved-not_produced]",
+          "result": "passed"
+        },
+        {
+          "classname": "",
+          "name": "test_actual_capture_stages_export_existing_material_without_authorizing_action[timeout-saved-not_produced]",
+          "result": "passed"
+        },
+        {
+          "classname": "",
+          "name": "test_actual_capture_stages_export_existing_material_without_authorizing_action[after_ocr-saved-saved]",
+          "result": "passed"
+        },
+        {
+          "classname": "",
+          "name": "test_actual_capture_stages_export_existing_material_without_authorizing_action[expired-saved-saved]",
+          "result": "passed"
+        },
+        {
+          "classname": "",
+          "name": "test_normal_lookup_uses_native_flow_and_keeps_evidence_authorization_separate",
+          "result": "passed"
+        },
+        {
+          "classname": "",
+          "name": "test_diagnostic_write_failures_preserve_formal_outcome_and_mark_export_partial[permission-False]",
+          "result": "passed"
+        },
+        {
+          "classname": "",
+          "name": "test_diagnostic_write_failures_preserve_formal_outcome_and_mark_export_partial[disk-False]",
+          "result": "passed"
+        },
+        {
+          "classname": "",
+          "name": "test_diagnostic_write_failures_preserve_formal_outcome_and_mark_export_partial[permission-True]",
+          "result": "passed"
+        },
+        {
+          "classname": "",
+          "name": "test_current_failed_task_survives_history_flood_with_original_proofs[init_focus-405]",
+          "result": "passed"
+        },
+        {
+          "classname": "",
+          "name": "test_current_failed_task_survives_history_flood_with_original_proofs[init_focus-1000]",
+          "result": "passed"
+        },
+        {
+          "classname": "",
+          "name": "test_current_failed_task_survives_history_flood_with_original_proofs[after_ocr-405]",
+          "result": "passed"
+        },
+        {
+          "classname": "",
+          "name": "test_current_failed_task_survives_history_flood_with_original_proofs[after_ocr-1000]",
+          "result": "passed"
+        },
+        {
+          "classname": "",
+          "name": "test_constructor_diagnostic_and_fallback_failure_still_exposes_missing_material",
+          "result": "passed"
+        },
+        {
+          "classname": "",
+          "name": "test_real_failure_log_with_torn_line_keeps_good_lines_and_safe_member_isolation[tail]",
+          "result": "passed"
+        },
+        {
+          "classname": "",
+          "name": "test_real_failure_log_with_torn_line_keeps_good_lines_and_safe_member_isolation[middle]",
+          "result": "passed"
+        },
+        {
+          "classname": "",
+          "name": "test_capture_write_failure_keeps_original_error_and_unusable_frame[screenshot]",
+          "result": "passed"
+        },
+        {
+          "classname": "",
+          "name": "test_capture_write_failure_keeps_original_error_and_unusable_frame[ocr]",
+          "result": "passed"
+        },
+        {
+          "classname": "",
+          "name": "test_unwritable_original_journal_never_enters_ui",
+          "result": "passed"
+        },
+        {
+          "classname": "",
+          "name": "test_invalid_evidence_metadata_does_not_drop_other_log_lines",
+          "result": "passed"
+        },
+        {
+          "classname": "",
+          "name": "test_desktop_main_exports_real_fault_chain_with_responsive_status[False]",
+          "result": "passed"
+        },
+        {
+          "classname": "",
+          "name": "test_desktop_main_exports_real_fault_chain_with_responsive_status[True]",
+          "result": "passed"
+        },
+        {
+          "classname": "",
+          "name": "test_capacity_and_directory_limits_preserve_current_fallback_before_optional_history[24]",
+          "result": "passed"
+        },
+        {
+          "classname": "",
+          "name": "test_capacity_and_directory_limits_preserve_current_fallback_before_optional_history[405]",
+          "result": "passed"
+        },
+        {
+          "classname": "",
+          "name": "test_capacity_and_directory_limits_preserve_current_fallback_before_optional_history[1000]",
+          "result": "passed"
+        },
+        {
+          "classname": "apps.wechat_ai_customer_service.tests.test_hook_c1_startup",
+          "name": "test_hook_outer_size_matches_screenshot_pixels_on_current_monitor[1-size0]",
+          "result": "passed"
+        },
+        {
+          "classname": "apps.wechat_ai_customer_service.tests.test_hook_c1_startup",
+          "name": "test_hook_outer_size_matches_screenshot_pixels_on_current_monitor[1.25-size1]",
+          "result": "passed"
+        },
+        {
+          "classname": "apps.wechat_ai_customer_service.tests.test_hook_c1_startup",
+          "name": "test_hook_outer_size_matches_screenshot_pixels_on_current_monitor[1.5-size2]",
+          "result": "passed"
+        },
+        {
+          "classname": "apps.wechat_ai_customer_service.tests.test_hook_c1_startup",
+          "name": "test_hook_outer_size_matches_screenshot_pixels_on_current_monitor[2-size3]",
+          "result": "passed"
+        },
+        {
+          "classname": "apps.wechat_ai_customer_service.tests.test_hook_c1_startup",
+          "name": "test_already_normalized_and_too_small_screen",
+          "result": "passed"
+        },
+        {
+          "classname": "apps.wechat_ai_customer_service.tests.test_hook_c1_startup",
+          "name": "test_old_default_profile_is_unchanged_and_unknown_profile_stops",
+          "result": "passed"
+        },
+        {
+          "classname": "apps.wechat_ai_customer_service.tests.test_hook_c1_startup",
+          "name": "test_search_is_inside_sidebar_and_needs_no_chat_or_composer",
+          "result": "passed"
+        },
+        {
+          "classname": "apps.wechat_ai_customer_service.tests.test_hook_c1_startup",
+          "name": "test_missing_outside_weak_or_ambiguous_search_cannot_authorize_click[anchors0]",
+          "result": "passed"
+        },
+        {
+          "classname": "apps.wechat_ai_customer_service.tests.test_hook_c1_startup",
+          "name": "test_missing_outside_weak_or_ambiguous_search_cannot_authorize_click[anchors1]",
+          "result": "passed"
+        },
+        {
+          "classname": "apps.wechat_ai_customer_service.tests.test_hook_c1_startup",
+          "name": "test_missing_outside_weak_or_ambiguous_search_cannot_authorize_click[anchors2]",
+          "result": "passed"
+        },
+        {
+          "classname": "apps.wechat_ai_customer_service.tests.test_hook_c1_startup",
+          "name": "test_missing_outside_weak_or_ambiguous_search_cannot_authorize_click[anchors3]",
+          "result": "passed"
+        },
+        {
+          "classname": "apps.wechat_ai_customer_service.tests.test_hook_c1_startup",
+          "name": "test_real_normalizer_preserves_old_client_gate_and_accepts_hook_c1",
+          "result": "passed"
+        },
+        {
+          "classname": "apps.wechat_ai_customer_service.tests.test_hook_c1_startup",
+          "name": "test_prepare_uses_original_normalizer_no_clicks_and_reports_missing_ocr",
+          "result": "passed"
+        },
+        {
+          "classname": "apps.wechat_ai_customer_service.tests.test_hook_c1_startup",
+          "name": "test_preparation_stops_at_unsafe_boundary[popup]",
+          "result": "passed"
+        },
+        {
+          "classname": "apps.wechat_ai_customer_service.tests.test_hook_c1_startup",
+          "name": "test_preparation_stops_at_unsafe_boundary[wrong_pid]",
+          "result": "passed"
+        },
+        {
+          "classname": "apps.wechat_ai_customer_service.tests.test_hook_c1_startup",
+          "name": "test_preparation_stops_at_unsafe_boundary[focus]",
+          "result": "passed"
+        },
+        {
+          "classname": "apps.wechat_ai_customer_service.tests.test_hook_c1_startup",
+          "name": "test_preparation_stops_at_unsafe_boundary[dpi]",
+          "result": "passed"
+        },
+        {
+          "classname": "apps.wechat_ai_customer_service.tests.test_hook_c1_startup",
+          "name": "test_preparation_stops_at_unsafe_boundary[capture_changed]",
+          "result": "passed"
+        },
+        {
+          "classname": "apps.wechat_ai_customer_service.tests.test_hook_c1_startup",
+          "name": "test_actual_wechat_shadow_and_real_popup_boundaries[main_shadow]",
+          "result": "passed"
+        },
+        {
+          "classname": "apps.wechat_ai_customer_service.tests.test_hook_c1_startup",
+          "name": "test_actual_wechat_shadow_and_real_popup_boundaries[other_owner]",
+          "result": "passed"
+        },
+        {
+          "classname": "apps.wechat_ai_customer_service.tests.test_hook_c1_startup",
+          "name": "test_actual_wechat_shadow_and_real_popup_boundaries[real_popup]",
+          "result": "passed"
+        },
+        {
+          "classname": "apps.wechat_ai_customer_service.tests.test_hook_c1_startup",
+          "name": "test_actual_wechat_shadow_and_real_popup_boundaries[large_shadow]",
+          "result": "passed"
+        },
+        {
+          "classname": "apps.wechat_ai_customer_service.tests.test_hook_c1_startup",
+          "name": "test_actual_wechat_shadow_and_real_popup_boundaries[inside_main]",
+          "result": "passed"
+        },
+        {
+          "classname": "apps.wechat_ai_customer_service.tests.test_hook_c1_startup",
+          "name": "test_actual_wechat_shadow_and_real_popup_boundaries[foreground_shadow]",
+          "result": "passed"
+        },
+        {
+          "classname": "apps.wechat_ai_customer_service.tests.test_hook_c1_startup",
+          "name": "test_actual_wechat_shadow_and_real_popup_boundaries[other_process]",
+          "result": "passed"
+        },
+        {
+          "classname": "apps.wechat_ai_customer_service.tests.test_hook_c1_startup",
+          "name": "test_actual_wechat_shadow_and_real_popup_boundaries[both]",
+          "result": "passed"
+        },
+        {
+          "classname": "apps.wechat_ai_customer_service.tests.test_hook_c1_startup",
+          "name": "test_invalid_shadow_dpi_cannot_skip_blocker[0]",
+          "result": "passed"
+        },
+        {
+          "classname": "apps.wechat_ai_customer_service.tests.test_hook_c1_startup",
+          "name": "test_invalid_shadow_dpi_cannot_skip_blocker[nan]",
+          "result": "passed"
+        },
+        {
+          "classname": "apps.wechat_ai_customer_service.tests.test_hook_c1_startup",
+          "name": "test_invalid_shadow_dpi_cannot_skip_blocker[inf]",
+          "result": "passed"
+        },
+        {
+          "classname": "apps.wechat_ai_customer_service.tests.test_hook_c1_startup",
+          "name": "test_invalid_shadow_dpi_cannot_skip_blocker[5]",
+          "result": "passed"
+        },
+        {
+          "classname": "apps.wechat_ai_customer_service.tests.test_hook_c1_startup",
+          "name": "test_old_ocr_dpi_profile_keeps_its_original_targets[1-size0]",
+          "result": "passed"
+        },
+        {
+          "classname": "apps.wechat_ai_customer_service.tests.test_hook_c1_startup",
+          "name": "test_old_ocr_dpi_profile_keeps_its_original_targets[1.25-size1]",
+          "result": "passed"
+        },
+        {
+          "classname": "apps.wechat_ai_customer_service.tests.test_hook_c1_startup",
+          "name": "test_old_ocr_dpi_profile_keeps_its_original_targets[1.5-size2]",
+          "result": "passed"
+        },
+        {
+          "classname": "apps.wechat_ai_customer_service.tests.test_hook_c1_startup",
+          "name": "test_hook_physical_target_is_stable_at_125_percent",
+          "result": "passed"
+        },
+        {
+          "classname": "apps.wechat_ai_customer_service.tests.test_hook_c1_startup",
+          "name": "test_actual_125_percent_oversized_frame_is_resized_once",
+          "result": "passed"
+        },
+        {
+          "classname": "apps.wechat_ai_customer_service.tests.test_hook_c1_startup",
+          "name": "test_compact_profile_fits_smaller_work_area_without_enlarging",
+          "result": "passed"
+        },
+        {
+          "classname": "apps.wechat_ai_customer_service.tests.test_hook_c1_startup",
+          "name": "test_roi_uses_client_width_without_manufacturing_pixels",
+          "result": "passed"
+        },
+        {
+          "classname": "apps.wechat_ai_customer_service.tests.test_hook_c1_startup",
+          "name": "test_roi_invalid_reference_width_stops[100]",
+          "result": "passed"
+        },
+        {
+          "classname": "apps.wechat_ai_customer_service.tests.test_hook_c1_startup",
+          "name": "test_roi_invalid_reference_width_stops[0]",
+          "result": "passed"
+        },
+        {
+          "classname": "apps.wechat_ai_customer_service.tests.test_hook_c1_startup",
+          "name": "test_roi_invalid_reference_width_stops[-1]",
+          "result": "passed"
+        },
+        {
+          "classname": "apps.wechat_ai_customer_service.tests.test_hook_c1_startup",
+          "name": "test_roi_invalid_reference_width_stops[1060]",
+          "result": "passed"
+        },
+        {
+          "classname": "apps.wechat_ai_customer_service.tests.test_hook_c1_startup",
+          "name": "test_roi_captures_once_no_full_window_no_resize_no_ui_input",
+          "result": "passed"
+        },
+        {
+          "classname": "apps.wechat_ai_customer_service.tests.test_hook_c1_startup",
+          "name": "test_roi_failure_never_recaptures_or_clicks[engine]",
+          "result": "passed"
+        },
+        {
+          "classname": "apps.wechat_ai_customer_service.tests.test_hook_c1_startup",
+          "name": "test_roi_failure_never_recaptures_or_clicks[focus]",
+          "result": "passed"
+        },
+        {
+          "classname": "apps.wechat_ai_customer_service.tests.test_hook_c1_startup",
+          "name": "test_roi_failure_never_recaptures_or_clicks[size]",
+          "result": "passed"
+        },
+        {
+          "classname": "apps.wechat_ai_customer_service.tests.test_hook_c1_startup",
+          "name": "test_roi_failure_never_recaptures_or_clicks[dpi]",
+          "result": "passed"
+        },
+        {
+          "classname": "apps.wechat_ai_customer_service.tests.test_hook_c1_startup",
+          "name": "test_roi_failure_never_recaptures_or_clicks[existing_image]",
+          "result": "passed"
+        },
+        {
+          "classname": "apps.wechat_ai_customer_service.tests.test_hook_c1_startup",
+          "name": "test_roi_failure_never_recaptures_or_clicks[capture_size]",
+          "result": "passed"
+        },
+        {
+          "classname": "apps.wechat_ai_customer_service.tests.test_hook_c1_startup",
+          "name": "test_roi_failure_never_recaptures_or_clicks[ocr_unresolved]",
+          "result": "passed"
+        },
+        {
+          "classname": "apps.wechat_ai_customer_service.tests.test_hook_c1_startup",
+          "name": "test_roi_failure_never_recaptures_or_clicks[ocr_frame_changed]",
+          "result": "passed"
+        },
+        {
+          "classname": "apps.wechat_ai_customer_service.tests.test_hook_c1_startup",
+          "name": "test_header_roi_can_resolve_thin_separator_on_equal_surfaces",
+          "result": "passed"
+        },
+        {
+          "classname": "apps.wechat_ai_customer_service.tests.test_hook_c1_startup",
+          "name": "test_header_text_strokes_are_not_full_height_separators",
+          "result": "passed"
+        },
+        {
+          "classname": "apps.wechat_ai_customer_service.tests.test_hook_c1_startup",
+          "name": "test_geometry_only_startup_takes_no_screenshot_or_ocr",
+          "result": "passed"
+        },
+        {
+          "classname": "apps.wechat_ai_customer_service.tests.test_hook_c1_startup",
+          "name": "test_geometry_only_startup_rejects_changed_frame_without_capture",
+          "result": "passed"
+        },
+        {
+          "classname": "apps.wechat_ai_customer_service.tests.test_hook_c1_flow.Tests",
+          "name": "test_account_change_no_actions",
+          "result": "passed"
+        },
+        {
+          "classname": "apps.wechat_ai_customer_service.tests.test_hook_c1_flow.Tests",
+          "name": "test_actual_focused_empty_input_pixels_without_placeholder",
+          "result": "passed"
+        },
+        {
+          "classname": "apps.wechat_ai_customer_service.tests.test_hook_c1_flow.Tests",
+          "name": "test_ambiguous_card_fails",
+          "result": "passed"
+        },
+        {
+          "classname": "apps.wechat_ai_customer_service.tests.test_hook_c1_flow.Tests",
+          "name": "test_blank_rectangle_cannot_replace_search_control_icons",
+          "result": "passed"
+        },
+        {
+          "classname": "apps.wechat_ai_customer_service.tests.test_hook_c1_flow.Tests",
+          "name": "test_cleanup_failure_preserves_submit_outcome",
+          "result": "passed"
+        },
+        {
+          "classname": "apps.wechat_ai_customer_service.tests.test_hook_c1_flow.Tests",
+          "name": "test_complete_replay_synthetic_ocr_anchors_simulated_input",
+          "result": "passed"
+        },
+        {
+          "classname": "apps.wechat_ai_customer_service.tests.test_hook_c1_flow.Tests",
+          "name": "test_duplicate_network_anchor_fails",
+          "result": "passed"
+        },
+        {
+          "classname": "apps.wechat_ai_customer_service.tests.test_hook_c1_flow.Tests",
+          "name": "test_exact_existing_fixture_not_completion_proof",
+          "result": "passed"
+        },
+        {
+          "classname": "apps.wechat_ai_customer_service.tests.test_hook_c1_flow.Tests",
+          "name": "test_existing_friend_no_invite_no_remark",
+          "result": "passed"
+        },
+        {
+          "classname": "apps.wechat_ai_customer_service.tests.test_hook_c1_flow.Tests",
+          "name": "test_failed_dialog_transition_never_cleans_through_old_card",
+          "result": "passed"
+        },
+        {
+          "classname": "apps.wechat_ai_customer_service.tests.test_hook_c1_flow.Tests",
+          "name": "test_failure_at_each_pre_submit_stage_never_retries",
+          "result": "passed"
+        },
+        {
+          "classname": "apps.wechat_ai_customer_service.tests.test_hook_c1_flow.Tests",
+          "name": "test_focused_pixels_reject_wrong_height_and_other_frame",
+          "result": "passed"
+        },
+        {
+          "classname": "apps.wechat_ai_customer_service.tests.test_hook_c1_flow.Tests",
+          "name": "test_focused_query_not_recognized_by_ocr_still_rejected",
+          "result": "passed"
+        },
+        {
+          "classname": "apps.wechat_ai_customer_service.tests.test_hook_c1_flow.Tests",
+          "name": "test_green_button_needs_actual_pixels",
+          "result": "passed"
+        },
+        {
+          "classname": "apps.wechat_ai_customer_service.tests.test_hook_c1_flow.Tests",
+          "name": "test_low_confidence_remarks_no_submit",
+          "result": "passed"
+        },
+        {
+          "classname": "apps.wechat_ai_customer_service.tests.test_hook_c1_flow.Tests",
+          "name": "test_modified_icon_border_and_colored_residue_rejected",
+          "result": "passed"
+        },
+        {
+          "classname": "apps.wechat_ai_customer_service.tests.test_hook_c1_flow.Tests",
+          "name": "test_no_second_submit_after_unknown",
+          "result": "passed"
+        },
+        {
+          "classname": "apps.wechat_ai_customer_service.tests.test_hook_c1_flow.Tests",
+          "name": "test_non_form_candidate_cannot_authorize_typing_or_submit",
+          "result": "passed"
+        },
+        {
+          "classname": "apps.wechat_ai_customer_service.tests.test_hook_c1_flow.Tests",
+          "name": "test_not_found_no_submit",
+          "result": "passed"
+        },
+        {
+          "classname": "apps.wechat_ai_customer_service.tests.test_hook_c1_flow.Tests",
+          "name": "test_open_click_failure_conservatively_defers_cleanup",
+          "result": "passed"
+        },
+        {
+          "classname": "apps.wechat_ai_customer_service.tests.test_hook_c1_flow.Tests",
+          "name": "test_original_contract_missing_code",
+          "result": "passed"
+        },
+        {
+          "classname": "apps.wechat_ai_customer_service.tests.test_hook_c1_flow.Tests",
+          "name": "test_original_search_placeholder_variants_still_require_real_input_pixels",
+          "result": "passed"
+        },
+        {
+          "classname": "apps.wechat_ai_customer_service.tests.test_hook_c1_flow.Tests",
+          "name": "test_placeholder_plus_residual_query_is_not_empty",
+          "result": "passed"
+        },
+        {
+          "classname": "apps.wechat_ai_customer_service.tests.test_hook_c1_flow.Tests",
+          "name": "test_placeholder_variant_on_unresolved_pixels_is_rejected",
+          "result": "passed"
+        },
+        {
+          "classname": "apps.wechat_ai_customer_service.tests.test_hook_c1_flow.Tests",
+          "name": "test_query_cannot_be_accepted_as_placeholder_variant",
+          "result": "passed"
+        },
+        {
+          "classname": "apps.wechat_ai_customer_service.tests.test_hook_c1_flow.Tests",
+          "name": "test_query_only_in_lower_search_not_accepted",
+          "result": "passed"
+        },
+        {
+          "classname": "apps.wechat_ai_customer_service.tests.test_hook_c1_flow.Tests",
+          "name": "test_red_annotation_cannot_authorize_button",
+          "result": "passed"
+        },
+        {
+          "classname": "apps.wechat_ai_customer_service.tests.test_hook_c1_flow.Tests",
+          "name": "test_remaining_form_is_unknown_no_auto_retry",
+          "result": "passed"
+        },
+        {
+          "classname": "apps.wechat_ai_customer_service.tests.test_hook_c1_flow.Tests",
+          "name": "test_restricted_dominates_add_button",
+          "result": "passed"
+        },
+        {
+          "classname": "apps.wechat_ai_customer_service.tests.test_hook_c1_flow.Tests",
+          "name": "test_single_stroke_at_text_origin_is_unresolved_not_a_caret_pass",
+          "result": "passed"
+        },
+        {
+          "classname": "apps.wechat_ai_customer_service.tests.test_hook_c1_flow.Tests",
+          "name": "test_submit_failed_still_durable",
+          "result": "passed"
+        },
+        {
+          "classname": "apps.wechat_ai_customer_service.tests.test_hook_c1_flow.Tests",
+          "name": "test_wrong_field_never_confirms",
+          "result": "passed"
+        },
+        {
+          "classname": "apps.wechat_ai_customer_service.tests.test_hook_c1_flow.Tests",
+          "name": "test_wrong_phone_fails",
+          "result": "passed"
+        },
+        {
+          "classname": "apps.wechat_ai_customer_service.tests.test_hook_c1_flow.NativeGuardTests",
+          "name": "test_all_runtime_rois_synthetic_ocr_recognition",
+          "result": "passed"
+        },
+        {
+          "classname": "apps.wechat_ai_customer_service.tests.test_hook_c1_flow.NativeGuardTests",
+          "name": "test_ambiguous_stroke_has_one_narrow_observation_and_needs_blank_pixels",
+          "result": "passed"
+        },
+        {
+          "classname": "apps.wechat_ai_customer_service.tests.test_hook_c1_flow.NativeGuardTests",
+          "name": "test_both_invite_fields_use_clipboard_once_not_unicode_typing",
+          "result": "passed"
+        },
+        {
+          "classname": "apps.wechat_ai_customer_service.tests.test_hook_c1_flow.NativeGuardTests",
+          "name": "test_cached_remark_position_keeps_all_native_action_guards",
+          "result": "passed"
+        },
+        {
+          "classname": "apps.wechat_ai_customer_service.tests.test_hook_c1_flow.NativeGuardTests",
+          "name": "test_capture_failure_no_retry_no_ocr",
+          "result": "passed"
+        },
+        {
+          "classname": "apps.wechat_ai_customer_service.tests.test_hook_c1_flow.NativeGuardTests",
+          "name": "test_capture_single_exact_roi_once",
+          "result": "passed"
+        },
+        {
+          "classname": "apps.wechat_ai_customer_service.tests.test_hook_c1_flow.NativeGuardTests",
+          "name": "test_changed_clipboard_does_not_paste",
+          "result": "passed"
+        },
+        {
+          "classname": "apps.wechat_ai_customer_service.tests.test_hook_c1_flow.NativeGuardTests",
+          "name": "test_clear_fallback_uses_existing_guarded_select_all_delete_once",
+          "result": "passed"
+        },
+        {
+          "classname": "apps.wechat_ai_customer_service.tests.test_hook_c1_flow.NativeGuardTests",
+          "name": "test_click_never_uses_fullscreen_or_hardcoded_absolute_coordinates",
+          "result": "passed"
+        },
+        {
+          "classname": "apps.wechat_ai_customer_service.tests.test_hook_c1_flow.NativeGuardTests",
+          "name": "test_close_only_verified_card_not_main_or_dialog",
+          "result": "passed"
+        },
+        {
+          "classname": "apps.wechat_ai_customer_service.tests.test_hook_c1_flow.NativeGuardTests",
+          "name": "test_current_window_conditions_have_distinct_evidence",
+          "result": "passed"
+        },
+        {
+          "classname": "apps.wechat_ai_customer_service.tests.test_hook_c1_flow.NativeGuardTests",
+          "name": "test_default_search_placeholder_and_magnifier_variants_need_no_cleanup",
+          "result": "passed"
+        },
+        {
+          "classname": "apps.wechat_ai_customer_service.tests.test_hook_c1_flow.NativeGuardTests",
+          "name": "test_diagnostic_reread_failure_cannot_mask_or_relax_original_stop",
+          "result": "passed"
+        },
+        {
+          "classname": "apps.wechat_ai_customer_service.tests.test_hook_c1_flow.NativeGuardTests",
+          "name": "test_dpi_change_stops_even_without_resize",
+          "result": "passed"
+        },
+        {
+          "classname": "apps.wechat_ai_customer_service.tests.test_hook_c1_flow.NativeGuardTests",
+          "name": "test_expired_or_replaced_frame_stops",
+          "result": "passed"
+        },
+        {
+          "classname": "apps.wechat_ai_customer_service.tests.test_hook_c1_flow.NativeGuardTests",
+          "name": "test_focus_change_after_clipboard_copy_does_not_paste",
+          "result": "passed"
+        },
+        {
+          "classname": "apps.wechat_ai_customer_service.tests.test_hook_c1_flow.NativeGuardTests",
+          "name": "test_focus_changes_during_mouse_move_no_mouse_down",
+          "result": "passed"
+        },
+        {
+          "classname": "apps.wechat_ai_customer_service.tests.test_hook_c1_flow.NativeGuardTests",
+          "name": "test_foreign_dialog_immediately_stops_without_input",
+          "result": "passed"
+        },
+        {
+          "classname": "apps.wechat_ai_customer_service.tests.test_hook_c1_flow.NativeGuardTests",
+          "name": "test_foreign_foreground_stops",
+          "result": "passed"
+        },
+        {
+          "classname": "apps.wechat_ai_customer_service.tests.test_hook_c1_flow.NativeGuardTests",
+          "name": "test_geometry_change_after_capture_no_ocr",
+          "result": "passed"
+        },
+        {
+          "classname": "apps.wechat_ai_customer_service.tests.test_hook_c1_flow.NativeGuardTests",
+          "name": "test_guard_failure_distinguishes_each_original_condition",
+          "result": "passed"
+        },
+        {
+          "classname": "apps.wechat_ai_customer_service.tests.test_hook_c1_flow.NativeGuardTests",
+          "name": "test_hidden_main_guard_refuses_keyboard_action",
+          "result": "passed"
+        },
+        {
+          "classname": "apps.wechat_ai_customer_service.tests.test_hook_c1_flow.NativeGuardTests",
+          "name": "test_indirect_owner_other_process_no_capture",
+          "result": "passed"
+        },
+        {
+          "classname": "apps.wechat_ai_customer_service.tests.test_hook_c1_flow.NativeGuardTests",
+          "name": "test_invite_dimensions_are_not_a_fixed_template_gate",
+          "result": "passed"
+        },
+        {
+          "classname": "apps.wechat_ai_customer_service.tests.test_hook_c1_flow.NativeGuardTests",
+          "name": "test_invite_transient_size_then_stable_normal_form",
+          "result": "passed"
+        },
+        {
+          "classname": "apps.wechat_ai_customer_service.tests.test_hook_c1_flow.NativeGuardTests",
+          "name": "test_invite_transition_keeps_main_geometry_and_identity_guards",
+          "result": "passed"
+        },
+        {
+          "classname": "apps.wechat_ai_customer_service.tests.test_hook_c1_flow.NativeGuardTests",
+          "name": "test_lookup_focus_loss_after_screenshot_stops_before_ocr",
+          "result": "passed"
+        },
+        {
+          "classname": "apps.wechat_ai_customer_service.tests.test_hook_c1_flow.NativeGuardTests",
+          "name": "test_lookup_ocr_focus_loss_keeps_primary_cleanup_and_export_evidence",
+          "result": "passed"
+        },
+        {
+          "classname": "apps.wechat_ai_customer_service.tests.test_hook_c1_flow.NativeGuardTests",
+          "name": "test_missing_low_confidence_or_extra_remark_text_still_blocks",
+          "result": "passed"
+        },
+        {
+          "classname": "apps.wechat_ai_customer_service.tests.test_hook_c1_flow.NativeGuardTests",
+          "name": "test_moved_window_stops",
+          "result": "passed"
+        },
+        {
+          "classname": "apps.wechat_ai_customer_service.tests.test_hook_c1_flow.NativeGuardTests",
+          "name": "test_network_click_records_pretransition_visible_windows",
+          "result": "passed"
+        },
+        {
+          "classname": "apps.wechat_ai_customer_service.tests.test_hook_c1_flow.NativeGuardTests",
+          "name": "test_new_visible_unowned_card_accepted_after_guarded_lookup",
+          "result": "passed"
+        },
+        {
+          "classname": "apps.wechat_ai_customer_service.tests.test_hook_c1_flow.NativeGuardTests",
+          "name": "test_nonempty_search_clears_once_and_checks_one_new_header",
+          "result": "passed"
+        },
+        {
+          "classname": "apps.wechat_ai_customer_service.tests.test_hook_c1_flow.NativeGuardTests",
+          "name": "test_normal_invite_requires_two_equal_samples",
+          "result": "passed"
+        },
+        {
+          "classname": "apps.wechat_ai_customer_service.tests.test_hook_c1_flow.NativeGuardTests",
+          "name": "test_occluded_click_no_mouse_down",
+          "result": "passed"
+        },
+        {
+          "classname": "apps.wechat_ai_customer_service.tests.test_hook_c1_flow.NativeGuardTests",
+          "name": "test_original_observation_survives_focus_return_and_events_are_bounded",
+          "result": "passed"
+        },
+        {
+          "classname": "apps.wechat_ai_customer_service.tests.test_hook_c1_flow.NativeGuardTests",
+          "name": "test_other_process_contact_surface_rejected",
+          "result": "passed"
+        },
+        {
+          "classname": "apps.wechat_ai_customer_service.tests.test_hook_c1_flow.NativeGuardTests",
+          "name": "test_owned_contact_surface_captured_only",
+          "result": "passed"
+        },
+        {
+          "classname": "apps.wechat_ai_customer_service.tests.test_hook_c1_flow.NativeGuardTests",
+          "name": "test_persistent_zero_size_invite_is_bounded_and_diagnosed",
+          "result": "passed"
+        },
+        {
+          "classname": "apps.wechat_ai_customer_service.tests.test_hook_c1_flow.NativeGuardTests",
+          "name": "test_phone_pacing_uses_real_typer_one_digit_and_four_to_five_seconds",
+          "result": "passed"
+        },
+        {
+          "classname": "apps.wechat_ai_customer_service.tests.test_hook_c1_flow.NativeGuardTests",
+          "name": "test_placeholder_search_cleanup_skips_all_input_and_main_stays_visible",
+          "result": "passed"
+        },
+        {
+          "classname": "apps.wechat_ai_customer_service.tests.test_hook_c1_flow.NativeGuardTests",
+          "name": "test_preexisting_or_shadow_or_hidden_candidate_never_accepted",
+          "result": "passed"
+        },
+        {
+          "classname": "apps.wechat_ai_customer_service.tests.test_hook_c1_flow.NativeGuardTests",
+          "name": "test_preexisting_unowned_card_no_capture",
+          "result": "passed"
+        },
+        {
+          "classname": "apps.wechat_ai_customer_service.tests.test_hook_c1_flow.NativeGuardTests",
+          "name": "test_same_process_indirect_owner_card_accepted",
+          "result": "passed"
+        },
+        {
+          "classname": "apps.wechat_ai_customer_service.tests.test_hook_c1_flow.NativeGuardTests",
+          "name": "test_search_shadow_and_other_noncard_classes_no_capture",
+          "result": "passed"
+        },
+        {
+          "classname": "apps.wechat_ai_customer_service.tests.test_hook_c1_flow.NativeGuardTests",
+          "name": "test_synthetic_long_greeting_clipping_does_not_block_correct_shortcode",
+          "result": "passed"
+        },
+        {
+          "classname": "apps.wechat_ai_customer_service.tests.test_hook_c1_flow.NativeGuardTests",
+          "name": "test_transient_absent_foreground_waits_without_input",
+          "result": "passed"
+        },
+        {
+          "classname": "apps.wechat_ai_customer_service.tests.test_hook_c1_flow.NativeGuardTests",
+          "name": "test_unknown_cleanup_dialog_is_not_closed",
+          "result": "passed"
+        },
+        {
+          "classname": "apps.wechat_ai_customer_service.tests.test_hook_c1_flow.NativeGuardTests",
+          "name": "test_unowned_card_outside_main_no_capture",
+          "result": "passed"
+        },
+        {
+          "classname": "apps.wechat_ai_customer_service.tests.test_hook_c1_flow.NativeGuardTests",
+          "name": "test_unowned_card_without_lookup_baseline_no_capture",
+          "result": "passed"
+        },
+        {
+          "classname": "apps.wechat_ai_customer_service.tests.test_hook_c1_flow.NativeGuardTests",
+          "name": "test_wrong_shortcode_on_synthetic_form_still_blocks",
+          "result": "passed"
+        }
+      ],
+      "nonpassing_not_counted": 4
+    },
+    {
+      "report": "startup-focus-fix-20261024/final-new.xml",
+      "original_xml_sha256": "e8749d93439bcc1eb929ad5ebc43da339988815b926ed5f74441fbb2c487fd96",
+      "count": 6,
+      "cases": [
+        {
+          "classname": "apps.wechat_ai_customer_service.tests.test_hook_c1_flow.NativeGuardTests",
+          "name": "test_ocr_slow_frame_expires_no_click",
+          "result": "passed"
+        },
+        {
+          "classname": "",
+          "name": "test_denied_activation_waits_then_passively_recovers_without_extra_captures",
+          "result": "passed"
+        },
+        {
+          "classname": "",
+          "name": "test_retries_are_bounded_with_original_guard_evidence_and_account_reset",
+          "result": "passed"
+        },
+        {
+          "classname": "",
+          "name": "test_actual_heartbeat_wait_preserves_paused_flow_and_recovers_without_start",
+          "result": "passed"
+        },
+        {
+          "classname": "",
+          "name": "test_slow_ocr_keeps_15_second_guard_and_exports_its_elapsed_time",
+          "result": "passed"
+        },
+        {
+          "classname": "",
+          "name": "test_focus_lost_inside_native_constructor_keeps_original_diagnostics",
+          "result": "passed"
+        }
+      ],
+      "nonpassing_not_counted": 0
+    },
+    {
+      "report": "startup-focus-fix-20261024/final-cycle.xml",
+      "original_xml_sha256": "640aed9f59fe53ab7cd5b4ff34b868057901d1a9ce626a95f94a3b2b05d4ea0b",
+      "count": 36,
+      "cases": [
+        {
+          "classname": "worker-client.tests.test_hook_startup_focus",
+          "name": "test_denied_activation_waits_then_passively_recovers_without_extra_captures",
+          "result": "passed"
+        },
+        {
+          "classname": "worker-client.tests.test_hook_startup_focus",
+          "name": "test_retries_are_bounded_with_original_guard_evidence_and_account_reset",
+          "result": "passed"
+        },
+        {
+          "classname": "worker-client.tests.test_hook_startup_focus",
+          "name": "test_successful_layout_revalidation_does_not_exhaust_failure_budget",
+          "result": "passed"
+        },
+        {
+          "classname": "worker-client.tests.test_hook_startup_focus",
+          "name": "test_actual_heartbeat_wait_preserves_paused_flow_and_recovers_without_start",
+          "result": "passed"
+        },
+        {
+          "classname": "worker-client.tests.test_hook_startup_focus",
+          "name": "test_slow_ocr_keeps_15_second_guard_and_exports_its_elapsed_time",
+          "result": "passed"
+        },
+        {
+          "classname": "worker-client.tests.test_hook_startup_focus",
+          "name": "test_focus_lost_inside_native_constructor_keeps_original_diagnostics",
+          "result": "passed"
+        },
+        {
+          "classname": "worker-client.tests.test_hook_search_startup_cache",
+          "name": "test_startup_captures_once_no_clear_and_task_reuses_cached_position[]",
+          "result": "passed"
+        },
+        {
+          "classname": "worker-client.tests.test_hook_search_startup_cache",
+          "name": "test_startup_captures_once_no_clear_and_task_reuses_cached_position[13800000003]",
+          "result": "passed"
+        },
+        {
+          "classname": "worker-client.tests.test_hook_search_startup_cache",
+          "name": "test_startup_unrecognized_frame_stops_without_stale_cache_or_input",
+          "result": "passed"
+        },
+        {
+          "classname": "worker-client.tests.test_hook_search_startup_cache",
+          "name": "test_all_main_rois_reuse_startup_table_and_missing_region_stops",
+          "result": "passed"
+        },
+        {
+          "classname": "worker-client.tests.test_hook_search_startup_cache",
+          "name": "test_active_task_geometry_guard_invalidates_shared_startup_readiness",
+          "result": "passed"
+        },
+        {
+          "classname": "worker-client.tests.test_hook_search_startup_cache",
+          "name": "test_task_invalidated_startup_cache_stops_without_relocation_or_input[missing]",
+          "result": "passed"
+        },
+        {
+          "classname": "worker-client.tests.test_hook_search_startup_cache",
+          "name": "test_task_invalidated_startup_cache_stops_without_relocation_or_input[missing_bounds]",
+          "result": "passed"
+        },
+        {
+          "classname": "worker-client.tests.test_hook_search_startup_cache",
+          "name": "test_task_invalidated_startup_cache_stops_without_relocation_or_input[corrupt_bounds]",
+          "result": "passed"
+        },
+        {
+          "classname": "worker-client.tests.test_hook_search_startup_cache",
+          "name": "test_task_invalidated_startup_cache_stops_without_relocation_or_input[origin]",
+          "result": "passed"
+        },
+        {
+          "classname": "worker-client.tests.test_hook_search_startup_cache",
+          "name": "test_task_invalidated_startup_cache_stops_without_relocation_or_input[geometry]",
+          "result": "passed"
+        },
+        {
+          "classname": "worker-client.tests.test_hook_search_startup_cache",
+          "name": "test_task_invalidated_startup_cache_stops_without_relocation_or_input[hwnd]",
+          "result": "passed"
+        },
+        {
+          "classname": "worker-client.tests.test_hook_search_startup_cache",
+          "name": "test_task_invalidated_startup_cache_stops_without_relocation_or_input[pid]",
+          "result": "passed"
+        },
+        {
+          "classname": "worker-client.tests.test_hook_search_startup_cache",
+          "name": "test_task_invalidated_startup_cache_stops_without_relocation_or_input[dpi]",
+          "result": "passed"
+        },
+        {
+          "classname": "worker-client.tests.test_hook_search_startup_cache",
+          "name": "test_original_service_requires_worker_restart_then_settlement_before_layout_recovery",
+          "result": "passed"
+        },
+        {
+          "classname": "worker-client.tests.test_hook_search_cache_consumer",
+          "name": "test_placeholder_uses_startup_coordinates_without_relocating[\\u641c\\u7d22]",
+          "result": "passed"
+        },
+        {
+          "classname": "worker-client.tests.test_hook_search_cache_consumer",
+          "name": "test_placeholder_uses_startup_coordinates_without_relocating[Q\\u641c\\u7d22]",
+          "result": "passed"
+        },
+        {
+          "classname": "worker-client.tests.test_hook_search_cache_consumer",
+          "name": "test_placeholder_uses_startup_coordinates_without_relocating[O\\u641c\\u7d22]",
+          "result": "passed"
+        },
+        {
+          "classname": "worker-client.tests.test_hook_search_cache_consumer",
+          "name": "test_placeholder_uses_startup_coordinates_without_relocating[0\\u641c\\u7d22]",
+          "result": "passed"
+        },
+        {
+          "classname": "worker-client.tests.test_hook_search_cache_consumer",
+          "name": "test_placeholder_uses_startup_coordinates_without_relocating[\\u641c\\u7d20]",
+          "result": "passed"
+        },
+        {
+          "classname": "worker-client.tests.test_hook_search_cache_consumer",
+          "name": "test_placeholder_uses_startup_coordinates_without_relocating[Q\\u641c\\u7d20]",
+          "result": "passed"
+        },
+        {
+          "classname": "worker-client.tests.test_hook_search_cache_consumer",
+          "name": "test_placeholder_uses_startup_coordinates_without_relocating[O\\u641c\\u7d20]",
+          "result": "passed"
+        },
+        {
+          "classname": "worker-client.tests.test_hook_search_cache_consumer",
+          "name": "test_placeholder_uses_startup_coordinates_without_relocating[0\\u641c\\u7d20]",
+          "result": "passed"
+        },
+        {
+          "classname": "worker-client.tests.test_hook_search_cache_consumer",
+          "name": "test_cached_position_never_overrules_current_content_or_layout[low_confidence]",
+          "result": "passed"
+        },
+        {
+          "classname": "worker-client.tests.test_hook_search_cache_consumer",
+          "name": "test_cached_position_never_overrules_current_content_or_layout[duplicate]",
+          "result": "passed"
+        },
+        {
+          "classname": "worker-client.tests.test_hook_search_cache_consumer",
+          "name": "test_cached_position_never_overrules_current_content_or_layout[foreign_text]",
+          "result": "passed"
+        },
+        {
+          "classname": "worker-client.tests.test_hook_search_cache_consumer",
+          "name": "test_cached_position_never_overrules_current_content_or_layout[layout_moved]",
+          "result": "passed"
+        },
+        {
+          "classname": "worker-client.tests.test_hook_search_cache_consumer",
+          "name": "test_formal_flow_retains_current_content_checks_and_cache_authority",
+          "result": "passed"
+        },
+        {
+          "classname": "worker-client.tests.test_hook_search_cache_consumer",
+          "name": "test_geometry_failure_exports_observed_frame_and_expected_map[False]",
+          "result": "passed"
+        },
+        {
+          "classname": "worker-client.tests.test_hook_search_cache_consumer",
+          "name": "test_geometry_failure_exports_observed_frame_and_expected_map[True]",
+          "result": "passed"
+        },
+        {
+          "classname": "worker-client.tests.test_hook_search_cache_consumer",
+          "name": "test_full_native_invite_uses_startup_map_and_single_form_layout",
+          "result": "passed"
+        }
+      ],
+      "nonpassing_not_counted": 0
+    },
+    {
+      "report": "startup-focus-fix-20261024/probe-fixed.xml",
+      "original_xml_sha256": "178d9ef85d727e7598f24387d6033948c86fe9c4a89aa6870cd023414f6654c3",
+      "count": 40,
+      "cases": [
+        {
+          "classname": "worker-client.tests.test_hook_startup_focus",
+          "name": "test_denied_activation_waits_then_passively_recovers_without_extra_captures",
+          "result": "passed"
+        },
+        {
+          "classname": "worker-client.tests.test_hook_startup_focus",
+          "name": "test_retries_are_bounded_with_original_guard_evidence_and_account_reset",
+          "result": "passed"
+        },
+        {
+          "classname": "worker-client.tests.test_hook_startup_focus",
+          "name": "test_successful_layout_revalidation_does_not_exhaust_failure_budget",
+          "result": "passed"
+        },
+        {
+          "classname": "worker-client.tests.test_hook_startup_focus",
+          "name": "test_actual_heartbeat_wait_preserves_paused_flow_and_recovers_without_start",
+          "result": "passed"
+        },
+        {
+          "classname": "worker-client.tests.test_hook_startup_focus",
+          "name": "test_slow_ocr_keeps_15_second_guard_and_exports_its_elapsed_time",
+          "result": "passed"
+        },
+        {
+          "classname": "worker-client.tests.test_hook_startup_focus",
+          "name": "test_focus_lost_inside_native_constructor_keeps_original_diagnostics",
+          "result": "passed"
+        },
+        {
+          "classname": "worker-client.tests.test_hook_startup_focus",
+          "name": "test_ocr_initialization_failure_uses_bounded_real_heartbeat_and_keeps_reports[False]",
+          "result": "passed"
+        },
+        {
+          "classname": "worker-client.tests.test_hook_startup_focus",
+          "name": "test_ocr_initialization_failure_uses_bounded_real_heartbeat_and_keeps_reports[True]",
+          "result": "passed"
+        },
+        {
+          "classname": "worker-client.tests.test_hook_startup_focus",
+          "name": "test_foreground_observation_failure_is_read_only_reported_and_recovers[EnumWindows]",
+          "result": "passed"
+        },
+        {
+          "classname": "worker-client.tests.test_hook_startup_focus",
+          "name": "test_foreground_observation_failure_is_read_only_reported_and_recovers[GetForegroundWindow]",
+          "result": "passed"
+        },
+        {
+          "classname": "worker-client.tests.test_hook_search_startup_cache",
+          "name": "test_startup_captures_once_no_clear_and_task_reuses_cached_position[]",
+          "result": "passed"
+        },
+        {
+          "classname": "worker-client.tests.test_hook_search_startup_cache",
+          "name": "test_startup_captures_once_no_clear_and_task_reuses_cached_position[13800000003]",
+          "result": "passed"
+        },
+        {
+          "classname": "worker-client.tests.test_hook_search_startup_cache",
+          "name": "test_startup_unrecognized_frame_stops_without_stale_cache_or_input",
+          "result": "passed"
+        },
+        {
+          "classname": "worker-client.tests.test_hook_search_startup_cache",
+          "name": "test_all_main_rois_reuse_startup_table_and_missing_region_stops",
+          "result": "passed"
+        },
+        {
+          "classname": "worker-client.tests.test_hook_search_startup_cache",
+          "name": "test_active_task_geometry_guard_invalidates_shared_startup_readiness",
+          "result": "passed"
+        },
+        {
+          "classname": "worker-client.tests.test_hook_search_startup_cache",
+          "name": "test_task_invalidated_startup_cache_stops_without_relocation_or_input[missing]",
+          "result": "passed"
+        },
+        {
+          "classname": "worker-client.tests.test_hook_search_startup_cache",
+          "name": "test_task_invalidated_startup_cache_stops_without_relocation_or_input[missing_bounds]",
+          "result": "passed"
+        },
+        {
+          "classname": "worker-client.tests.test_hook_search_startup_cache",
+          "name": "test_task_invalidated_startup_cache_stops_without_relocation_or_input[corrupt_bounds]",
+          "result": "passed"
+        },
+        {
+          "classname": "worker-client.tests.test_hook_search_startup_cache",
+          "name": "test_task_invalidated_startup_cache_stops_without_relocation_or_input[origin]",
+          "result": "passed"
+        },
+        {
+          "classname": "worker-client.tests.test_hook_search_startup_cache",
+          "name": "test_task_invalidated_startup_cache_stops_without_relocation_or_input[geometry]",
+          "result": "passed"
+        },
+        {
+          "classname": "worker-client.tests.test_hook_search_startup_cache",
+          "name": "test_task_invalidated_startup_cache_stops_without_relocation_or_input[hwnd]",
+          "result": "passed"
+        },
+        {
+          "classname": "worker-client.tests.test_hook_search_startup_cache",
+          "name": "test_task_invalidated_startup_cache_stops_without_relocation_or_input[pid]",
+          "result": "passed"
+        },
+        {
+          "classname": "worker-client.tests.test_hook_search_startup_cache",
+          "name": "test_task_invalidated_startup_cache_stops_without_relocation_or_input[dpi]",
+          "result": "passed"
+        },
+        {
+          "classname": "worker-client.tests.test_hook_search_startup_cache",
+          "name": "test_original_service_requires_worker_restart_then_settlement_before_layout_recovery",
+          "result": "passed"
+        },
+        {
+          "classname": "worker-client.tests.test_hook_search_cache_consumer",
+          "name": "test_placeholder_uses_startup_coordinates_without_relocating[\\u641c\\u7d22]",
+          "result": "passed"
+        },
+        {
+          "classname": "worker-client.tests.test_hook_search_cache_consumer",
+          "name": "test_placeholder_uses_startup_coordinates_without_relocating[Q\\u641c\\u7d22]",
+          "result": "passed"
+        },
+        {
+          "classname": "worker-client.tests.test_hook_search_cache_consumer",
+          "name": "test_placeholder_uses_startup_coordinates_without_relocating[O\\u641c\\u7d22]",
+          "result": "passed"
+        },
+        {
+          "classname": "worker-client.tests.test_hook_search_cache_consumer",
+          "name": "test_placeholder_uses_startup_coordinates_without_relocating[0\\u641c\\u7d22]",
+          "result": "passed"
+        },
+        {
+          "classname": "worker-client.tests.test_hook_search_cache_consumer",
+          "name": "test_placeholder_uses_startup_coordinates_without_relocating[\\u641c\\u7d20]",
+          "result": "passed"
+        },
+        {
+          "classname": "worker-client.tests.test_hook_search_cache_consumer",
+          "name": "test_placeholder_uses_startup_coordinates_without_relocating[Q\\u641c\\u7d20]",
+          "result": "passed"
+        },
+        {
+          "classname": "worker-client.tests.test_hook_search_cache_consumer",
+          "name": "test_placeholder_uses_startup_coordinates_without_relocating[O\\u641c\\u7d20]",
+          "result": "passed"
+        },
+        {
+          "classname": "worker-client.tests.test_hook_search_cache_consumer",
+          "name": "test_placeholder_uses_startup_coordinates_without_relocating[0\\u641c\\u7d20]",
+          "result": "passed"
+        },
+        {
+          "classname": "worker-client.tests.test_hook_search_cache_consumer",
+          "name": "test_cached_position_never_overrules_current_content_or_layout[low_confidence]",
+          "result": "passed"
+        },
+        {
+          "classname": "worker-client.tests.test_hook_search_cache_consumer",
+          "name": "test_cached_position_never_overrules_current_content_or_layout[duplicate]",
+          "result": "passed"
+        },
+        {
+          "classname": "worker-client.tests.test_hook_search_cache_consumer",
+          "name": "test_cached_position_never_overrules_current_content_or_layout[foreign_text]",
+          "result": "passed"
+        },
+        {
+          "classname": "worker-client.tests.test_hook_search_cache_consumer",
+          "name": "test_cached_position_never_overrules_current_content_or_layout[layout_moved]",
+          "result": "passed"
+        },
+        {
+          "classname": "worker-client.tests.test_hook_search_cache_consumer",
+          "name": "test_formal_flow_retains_current_content_checks_and_cache_authority",
+          "result": "passed"
+        },
+        {
+          "classname": "worker-client.tests.test_hook_search_cache_consumer",
+          "name": "test_geometry_failure_exports_observed_frame_and_expected_map[False]",
+          "result": "passed"
+        },
+        {
+          "classname": "worker-client.tests.test_hook_search_cache_consumer",
+          "name": "test_geometry_failure_exports_observed_frame_and_expected_map[True]",
+          "result": "passed"
+        },
+        {
+          "classname": "worker-client.tests.test_hook_search_cache_consumer",
+          "name": "test_full_native_invite_uses_startup_map_and_single_form_layout",
+          "result": "passed"
+        }
+      ],
+      "nonpassing_not_counted": 0
+    },
+    {
+      "report": "startup-focus-fix-20261024/probe-zip.xml",
+      "original_xml_sha256": "b1f707f33778884d324d7e1444ff2b78cd5021640f5904f2e3d35a1a3c5383ae",
+      "count": 2,
+      "cases": [
+        {
+          "classname": "worker-client.tests.test_hook_startup_focus",
+          "name": "test_ocr_initialization_failure_uses_bounded_real_heartbeat_and_keeps_reports[False]",
+          "result": "passed"
+        },
+        {
+          "classname": "worker-client.tests.test_hook_startup_focus",
+          "name": "test_ocr_initialization_failure_uses_bounded_real_heartbeat_and_keeps_reports[True]",
+          "result": "passed"
+        }
+      ],
+      "nonpassing_not_counted": 0
+    },
+    {
+      "report": "startup-focus-fix-20261024/ocr-failure.xml",
+      "original_xml_sha256": "2d99e69e12bbf7c615387f10eded012db2b7332a2e87f6a4e52201bc6987f841",
+      "count": 36,
+      "cases": [
+        {
+          "classname": "worker-client.tests.test_hook_startup_focus",
+          "name": "test_denied_activation_waits_then_passively_recovers_without_extra_captures",
+          "result": "passed"
+        },
+        {
+          "classname": "worker-client.tests.test_hook_startup_focus",
+          "name": "test_retries_are_bounded_with_original_guard_evidence_and_account_reset",
+          "result": "passed"
+        },
+        {
+          "classname": "worker-client.tests.test_hook_startup_focus",
+          "name": "test_successful_layout_revalidation_does_not_exhaust_failure_budget",
+          "result": "passed"
+        },
+        {
+          "classname": "worker-client.tests.test_hook_startup_focus",
+          "name": "test_actual_heartbeat_wait_preserves_paused_flow_and_recovers_without_start",
+          "result": "passed"
+        },
+        {
+          "classname": "worker-client.tests.test_hook_startup_focus",
+          "name": "test_slow_ocr_keeps_15_second_guard_and_exports_its_elapsed_time",
+          "result": "passed"
+        },
+        {
+          "classname": "worker-client.tests.test_hook_startup_focus",
+          "name": "test_focus_lost_inside_native_constructor_keeps_original_diagnostics",
+          "result": "passed"
+        },
+        {
+          "classname": "worker-client.tests.test_hook_search_startup_cache",
+          "name": "test_startup_captures_once_no_clear_and_task_reuses_cached_position[]",
+          "result": "passed"
+        },
+        {
+          "classname": "worker-client.tests.test_hook_search_startup_cache",
+          "name": "test_startup_captures_once_no_clear_and_task_reuses_cached_position[13800000003]",
+          "result": "passed"
+        },
+        {
+          "classname": "worker-client.tests.test_hook_search_startup_cache",
+          "name": "test_startup_unrecognized_frame_stops_without_stale_cache_or_input",
+          "result": "passed"
+        },
+        {
+          "classname": "worker-client.tests.test_hook_search_startup_cache",
+          "name": "test_all_main_rois_reuse_startup_table_and_missing_region_stops",
+          "result": "passed"
+        },
+        {
+          "classname": "worker-client.tests.test_hook_search_startup_cache",
+          "name": "test_active_task_geometry_guard_invalidates_shared_startup_readiness",
+          "result": "passed"
+        },
+        {
+          "classname": "worker-client.tests.test_hook_search_startup_cache",
+          "name": "test_task_invalidated_startup_cache_stops_without_relocation_or_input[missing]",
+          "result": "passed"
+        },
+        {
+          "classname": "worker-client.tests.test_hook_search_startup_cache",
+          "name": "test_task_invalidated_startup_cache_stops_without_relocation_or_input[missing_bounds]",
+          "result": "passed"
+        },
+        {
+          "classname": "worker-client.tests.test_hook_search_startup_cache",
+          "name": "test_task_invalidated_startup_cache_stops_without_relocation_or_input[corrupt_bounds]",
+          "result": "passed"
+        },
+        {
+          "classname": "worker-client.tests.test_hook_search_startup_cache",
+          "name": "test_task_invalidated_startup_cache_stops_without_relocation_or_input[origin]",
+          "result": "passed"
+        },
+        {
+          "classname": "worker-client.tests.test_hook_search_startup_cache",
+          "name": "test_task_invalidated_startup_cache_stops_without_relocation_or_input[geometry]",
+          "result": "passed"
+        },
+        {
+          "classname": "worker-client.tests.test_hook_search_startup_cache",
+          "name": "test_task_invalidated_startup_cache_stops_without_relocation_or_input[hwnd]",
+          "result": "passed"
+        },
+        {
+          "classname": "worker-client.tests.test_hook_search_startup_cache",
+          "name": "test_task_invalidated_startup_cache_stops_without_relocation_or_input[pid]",
+          "result": "passed"
+        },
+        {
+          "classname": "worker-client.tests.test_hook_search_startup_cache",
+          "name": "test_task_invalidated_startup_cache_stops_without_relocation_or_input[dpi]",
+          "result": "passed"
+        },
+        {
+          "classname": "worker-client.tests.test_hook_search_startup_cache",
+          "name": "test_original_service_requires_worker_restart_then_settlement_before_layout_recovery",
+          "result": "passed"
+        },
+        {
+          "classname": "worker-client.tests.test_hook_search_cache_consumer",
+          "name": "test_placeholder_uses_startup_coordinates_without_relocating[\\u641c\\u7d22]",
+          "result": "passed"
+        },
+        {
+          "classname": "worker-client.tests.test_hook_search_cache_consumer",
+          "name": "test_placeholder_uses_startup_coordinates_without_relocating[Q\\u641c\\u7d22]",
+          "result": "passed"
+        },
+        {
+          "classname": "worker-client.tests.test_hook_search_cache_consumer",
+          "name": "test_placeholder_uses_startup_coordinates_without_relocating[O\\u641c\\u7d22]",
+          "result": "passed"
+        },
+        {
+          "classname": "worker-client.tests.test_hook_search_cache_consumer",
+          "name": "test_placeholder_uses_startup_coordinates_without_relocating[0\\u641c\\u7d22]",
+          "result": "passed"
+        },
+        {
+          "classname": "worker-client.tests.test_hook_search_cache_consumer",
+          "name": "test_placeholder_uses_startup_coordinates_without_relocating[\\u641c\\u7d20]",
+          "result": "passed"
+        },
+        {
+          "classname": "worker-client.tests.test_hook_search_cache_consumer",
+          "name": "test_placeholder_uses_startup_coordinates_without_relocating[Q\\u641c\\u7d20]",
+          "result": "passed"
+        },
+        {
+          "classname": "worker-client.tests.test_hook_search_cache_consumer",
+          "name": "test_placeholder_uses_startup_coordinates_without_relocating[O\\u641c\\u7d20]",
+          "result": "passed"
+        },
+        {
+          "classname": "worker-client.tests.test_hook_search_cache_consumer",
+          "name": "test_placeholder_uses_startup_coordinates_without_relocating[0\\u641c\\u7d20]",
+          "result": "passed"
+        },
+        {
+          "classname": "worker-client.tests.test_hook_search_cache_consumer",
+          "name": "test_cached_position_never_overrules_current_content_or_layout[low_confidence]",
+          "result": "passed"
+        },
+        {
+          "classname": "worker-client.tests.test_hook_search_cache_consumer",
+          "name": "test_cached_position_never_overrules_current_content_or_layout[duplicate]",
+          "result": "passed"
+        },
+        {
+          "classname": "worker-client.tests.test_hook_search_cache_consumer",
+          "name": "test_cached_position_never_overrules_current_content_or_layout[foreign_text]",
+          "result": "passed"
+        },
+        {
+          "classname": "worker-client.tests.test_hook_search_cache_consumer",
+          "name": "test_cached_position_never_overrules_current_content_or_layout[layout_moved]",
+          "result": "passed"
+        },
+        {
+          "classname": "worker-client.tests.test_hook_search_cache_consumer",
+          "name": "test_formal_flow_retains_current_content_checks_and_cache_authority",
+          "result": "passed"
+        },
+        {
+          "classname": "worker-client.tests.test_hook_search_cache_consumer",
+          "name": "test_geometry_failure_exports_observed_frame_and_expected_map[False]",
+          "result": "passed"
+        },
+        {
+          "classname": "worker-client.tests.test_hook_search_cache_consumer",
+          "name": "test_geometry_failure_exports_observed_frame_and_expected_map[True]",
+          "result": "passed"
+        },
+        {
+          "classname": "worker-client.tests.test_hook_search_cache_consumer",
+          "name": "test_full_native_invite_uses_startup_map_and_single_form_layout",
+          "result": "passed"
+        }
+      ],
+      "nonpassing_not_counted": 1
+    },
+    {
+      "report": "startup-focus-fix-20261024/observation-preserve.xml",
+      "original_xml_sha256": "70730b501759fc7b1327bab24b78edff41f6cf1ec20d67ce4d94e969cdc5f2b7",
+      "count": 4,
+      "cases": [
+        {
+          "classname": "worker-client.tests.test_hook_startup_focus",
+          "name": "test_denied_activation_waits_then_passively_recovers_without_extra_captures",
+          "result": "passed"
+        },
+        {
+          "classname": "worker-client.tests.test_hook_startup_focus",
+          "name": "test_foreground_observation_failure_is_read_only_reported_and_recovers[EnumWindows]",
+          "result": "passed"
+        },
+        {
+          "classname": "worker-client.tests.test_hook_startup_focus",
+          "name": "test_foreground_observation_failure_is_read_only_reported_and_recovers[GetForegroundWindow]",
+          "result": "passed"
+        },
+        {
+          "classname": "worker-client.tests.test_hook_startup_focus",
+          "name": "test_distinct_window_observation_failures_both_survive_export",
+          "result": "passed"
+        }
+      ],
+      "nonpassing_not_counted": 0
+    },
+    {
+      "report": "startup-focus-fix-20261024/architect-targeted.xml",
+      "original_xml_sha256": "ec413b39b9269327da9dacecd188015cb6125156c1d0bb8027043e58d223d389",
+      "count": 20,
+      "cases": [
+        {
+          "classname": "worker-client.tests.test_hook_startup_focus",
+          "name": "test_denied_activation_waits_then_passively_recovers_without_extra_captures",
+          "result": "passed"
+        },
+        {
+          "classname": "worker-client.tests.test_hook_startup_focus",
+          "name": "test_retries_are_bounded_with_original_guard_evidence_and_account_reset",
+          "result": "passed"
+        },
+        {
+          "classname": "worker-client.tests.test_hook_startup_focus",
+          "name": "test_successful_layout_revalidation_does_not_exhaust_failure_budget",
+          "result": "passed"
+        },
+        {
+          "classname": "worker-client.tests.test_hook_startup_focus",
+          "name": "test_slow_ocr_keeps_15_second_guard_and_exports_its_elapsed_time",
+          "result": "passed"
+        },
+        {
+          "classname": "worker-client.tests.test_hook_startup_focus",
+          "name": "test_focus_lost_inside_native_constructor_keeps_original_diagnostics",
+          "result": "passed"
+        },
+        {
+          "classname": "worker-client.tests.test_hook_search_startup_cache",
+          "name": "test_startup_captures_once_no_clear_and_task_reuses_cached_position[]",
+          "result": "passed"
+        },
+        {
+          "classname": "worker-client.tests.test_hook_search_startup_cache",
+          "name": "test_startup_captures_once_no_clear_and_task_reuses_cached_position[13800000003]",
+          "result": "passed"
+        },
+        {
+          "classname": "worker-client.tests.test_hook_search_startup_cache",
+          "name": "test_startup_unrecognized_frame_stops_without_stale_cache_or_input",
+          "result": "passed"
+        },
+        {
+          "classname": "worker-client.tests.test_hook_search_startup_cache",
+          "name": "test_all_main_rois_reuse_startup_table_and_missing_region_stops",
+          "result": "passed"
+        },
+        {
+          "classname": "worker-client.tests.test_hook_search_startup_cache",
+          "name": "test_active_task_geometry_guard_invalidates_shared_startup_readiness",
+          "result": "passed"
+        },
+        {
+          "classname": "worker-client.tests.test_hook_search_startup_cache",
+          "name": "test_task_invalidated_startup_cache_stops_without_relocation_or_input[missing]",
+          "result": "passed"
+        },
+        {
+          "classname": "worker-client.tests.test_hook_search_startup_cache",
+          "name": "test_task_invalidated_startup_cache_stops_without_relocation_or_input[missing_bounds]",
+          "result": "passed"
+        },
+        {
+          "classname": "worker-client.tests.test_hook_search_startup_cache",
+          "name": "test_task_invalidated_startup_cache_stops_without_relocation_or_input[corrupt_bounds]",
+          "result": "passed"
+        },
+        {
+          "classname": "worker-client.tests.test_hook_search_startup_cache",
+          "name": "test_task_invalidated_startup_cache_stops_without_relocation_or_input[origin]",
+          "result": "passed"
+        },
+        {
+          "classname": "worker-client.tests.test_hook_search_startup_cache",
+          "name": "test_task_invalidated_startup_cache_stops_without_relocation_or_input[geometry]",
+          "result": "passed"
+        },
+        {
+          "classname": "worker-client.tests.test_hook_search_startup_cache",
+          "name": "test_task_invalidated_startup_cache_stops_without_relocation_or_input[hwnd]",
+          "result": "passed"
+        },
+        {
+          "classname": "worker-client.tests.test_hook_search_startup_cache",
+          "name": "test_task_invalidated_startup_cache_stops_without_relocation_or_input[pid]",
+          "result": "passed"
+        },
+        {
+          "classname": "worker-client.tests.test_hook_search_startup_cache",
+          "name": "test_task_invalidated_startup_cache_stops_without_relocation_or_input[dpi]",
+          "result": "passed"
+        },
+        {
+          "classname": "worker-client.tests.test_hook_startup_order",
+          "name": "test_dispatcher_startup_normalizes_once_per_approved_account_and_generation",
+          "result": "passed"
+        },
+        {
+          "classname": "worker-client.tests.test_hook_startup_order",
+          "name": "test_timeline_hides_removed_fault_resume_explanation",
+          "result": "passed"
+        }
+      ],
+      "nonpassing_not_counted": 11
+    },
+    {
+      "report": "startup-focus-fix-20261024/architect-localhttp.xml",
+      "original_xml_sha256": "77ec53a0ad36fa4664d48091f413be4f7a580ce435488771aa4a19628a65cc6a",
+      "count": 11,
+      "cases": [
+        {
+          "classname": "worker-client.tests.test_hook_startup_focus",
+          "name": "test_actual_heartbeat_wait_preserves_paused_flow_and_recovers_without_start",
+          "result": "passed"
+        },
+        {
+          "classname": "worker-client.tests.test_hook_search_startup_cache",
+          "name": "test_original_service_requires_worker_restart_then_settlement_before_layout_recovery",
+          "result": "passed"
+        },
+        {
+          "classname": "worker-client.tests.test_hook_startup_order",
+          "name": "test_startup_normalizes_before_worker_geometry_even_when_stopped[paused]",
+          "result": "passed"
+        },
+        {
+          "classname": "worker-client.tests.test_hook_startup_order",
+          "name": "test_startup_normalizes_before_worker_geometry_even_when_stopped[faulted]",
+          "result": "passed"
+        },
+        {
+          "classname": "worker-client.tests.test_hook_startup_order",
+          "name": "test_startup_normalizes_before_worker_geometry_even_when_stopped[running]",
+          "result": "passed"
+        },
+        {
+          "classname": "worker-client.tests.test_hook_startup_order",
+          "name": "test_busy_startup_does_not_publish_old_geometry_or_fault",
+          "result": "passed"
+        },
+        {
+          "classname": "worker-client.tests.test_hook_startup_order",
+          "name": "test_failed_normalization_never_publishes_worker_position",
+          "result": "passed"
+        },
+        {
+          "classname": "worker-client.tests.test_hook_startup_order",
+          "name": "test_retained_flow_defers_movement_until_original_settlement",
+          "result": "passed"
+        },
+        {
+          "classname": "worker-client.tests.test_hook_startup_order",
+          "name": "test_dispatcher_startup_normalizes_once_per_approved_account_and_generation",
+          "result": "passed"
+        },
+        {
+          "classname": "worker-client.tests.test_hook_startup_order",
+          "name": "test_timeline_hides_removed_fault_resume_explanation",
+          "result": "passed"
+        },
+        {
+          "classname": "worker-client.tests.test_hook_startup_order",
+          "name": "test_pending_window_blocks_new_work_but_allows_confirmed_old_flow_to_finish",
+          "result": "passed"
+        }
+      ],
+      "nonpassing_not_counted": 0
+    },
+    {
+      "report": "startup-focus-fix-20261024/architect-shared.xml",
+      "original_xml_sha256": "e9926ed21c4d4bb4b908cd5e1d4df9e9c433a2730c25532413757eb3e626620a",
+      "count": 55,
+      "cases": [
+        {
+          "classname": "apps.wechat_ai_customer_service.tests.test_hook_c1_startup",
+          "name": "test_hook_outer_size_matches_screenshot_pixels_on_current_monitor[1-size0]",
+          "result": "passed"
+        },
+        {
+          "classname": "apps.wechat_ai_customer_service.tests.test_hook_c1_startup",
+          "name": "test_hook_outer_size_matches_screenshot_pixels_on_current_monitor[1.25-size1]",
+          "result": "passed"
+        },
+        {
+          "classname": "apps.wechat_ai_customer_service.tests.test_hook_c1_startup",
+          "name": "test_hook_outer_size_matches_screenshot_pixels_on_current_monitor[1.5-size2]",
+          "result": "passed"
+        },
+        {
+          "classname": "apps.wechat_ai_customer_service.tests.test_hook_c1_startup",
+          "name": "test_hook_outer_size_matches_screenshot_pixels_on_current_monitor[2-size3]",
+          "result": "passed"
+        },
+        {
+          "classname": "apps.wechat_ai_customer_service.tests.test_hook_c1_startup",
+          "name": "test_already_normalized_and_too_small_screen",
+          "result": "passed"
+        },
+        {
+          "classname": "apps.wechat_ai_customer_service.tests.test_hook_c1_startup",
+          "name": "test_old_default_profile_is_unchanged_and_unknown_profile_stops",
+          "result": "passed"
+        },
+        {
+          "classname": "apps.wechat_ai_customer_service.tests.test_hook_c1_startup",
+          "name": "test_search_is_inside_sidebar_and_needs_no_chat_or_composer",
+          "result": "passed"
+        },
+        {
+          "classname": "apps.wechat_ai_customer_service.tests.test_hook_c1_startup",
+          "name": "test_missing_outside_weak_or_ambiguous_search_cannot_authorize_click[anchors0]",
+          "result": "passed"
+        },
+        {
+          "classname": "apps.wechat_ai_customer_service.tests.test_hook_c1_startup",
+          "name": "test_missing_outside_weak_or_ambiguous_search_cannot_authorize_click[anchors1]",
+          "result": "passed"
+        },
+        {
+          "classname": "apps.wechat_ai_customer_service.tests.test_hook_c1_startup",
+          "name": "test_missing_outside_weak_or_ambiguous_search_cannot_authorize_click[anchors2]",
+          "result": "passed"
+        },
+        {
+          "classname": "apps.wechat_ai_customer_service.tests.test_hook_c1_startup",
+          "name": "test_missing_outside_weak_or_ambiguous_search_cannot_authorize_click[anchors3]",
+          "result": "passed"
+        },
+        {
+          "classname": "apps.wechat_ai_customer_service.tests.test_hook_c1_startup",
+          "name": "test_real_normalizer_preserves_old_client_gate_and_accepts_hook_c1",
+          "result": "passed"
+        },
+        {
+          "classname": "apps.wechat_ai_customer_service.tests.test_hook_c1_startup",
+          "name": "test_prepare_uses_original_normalizer_no_clicks_and_reports_missing_ocr",
+          "result": "passed"
+        },
+        {
+          "classname": "apps.wechat_ai_customer_service.tests.test_hook_c1_startup",
+          "name": "test_preparation_stops_at_unsafe_boundary[popup]",
+          "result": "passed"
+        },
+        {
+          "classname": "apps.wechat_ai_customer_service.tests.test_hook_c1_startup",
+          "name": "test_preparation_stops_at_unsafe_boundary[wrong_pid]",
+          "result": "passed"
+        },
+        {
+          "classname": "apps.wechat_ai_customer_service.tests.test_hook_c1_startup",
+          "name": "test_preparation_stops_at_unsafe_boundary[focus]",
+          "result": "passed"
+        },
+        {
+          "classname": "apps.wechat_ai_customer_service.tests.test_hook_c1_startup",
+          "name": "test_preparation_stops_at_unsafe_boundary[dpi]",
+          "result": "passed"
+        },
+        {
+          "classname": "apps.wechat_ai_customer_service.tests.test_hook_c1_startup",
+          "name": "test_preparation_stops_at_unsafe_boundary[capture_changed]",
+          "result": "passed"
+        },
+        {
+          "classname": "apps.wechat_ai_customer_service.tests.test_hook_c1_startup",
+          "name": "test_actual_wechat_shadow_and_real_popup_boundaries[main_shadow]",
+          "result": "passed"
+        },
+        {
+          "classname": "apps.wechat_ai_customer_service.tests.test_hook_c1_startup",
+          "name": "test_actual_wechat_shadow_and_real_popup_boundaries[other_owner]",
+          "result": "passed"
+        },
+        {
+          "classname": "apps.wechat_ai_customer_service.tests.test_hook_c1_startup",
+          "name": "test_actual_wechat_shadow_and_real_popup_boundaries[real_popup]",
+          "result": "passed"
+        },
+        {
+          "classname": "apps.wechat_ai_customer_service.tests.test_hook_c1_startup",
+          "name": "test_actual_wechat_shadow_and_real_popup_boundaries[large_shadow]",
+          "result": "passed"
+        },
+        {
+          "classname": "apps.wechat_ai_customer_service.tests.test_hook_c1_startup",
+          "name": "test_actual_wechat_shadow_and_real_popup_boundaries[inside_main]",
+          "result": "passed"
+        },
+        {
+          "classname": "apps.wechat_ai_customer_service.tests.test_hook_c1_startup",
+          "name": "test_actual_wechat_shadow_and_real_popup_boundaries[foreground_shadow]",
+          "result": "passed"
+        },
+        {
+          "classname": "apps.wechat_ai_customer_service.tests.test_hook_c1_startup",
+          "name": "test_actual_wechat_shadow_and_real_popup_boundaries[other_process]",
+          "result": "passed"
+        },
+        {
+          "classname": "apps.wechat_ai_customer_service.tests.test_hook_c1_startup",
+          "name": "test_actual_wechat_shadow_and_real_popup_boundaries[both]",
+          "result": "passed"
+        },
+        {
+          "classname": "apps.wechat_ai_customer_service.tests.test_hook_c1_startup",
+          "name": "test_invalid_shadow_dpi_cannot_skip_blocker[0]",
+          "result": "passed"
+        },
+        {
+          "classname": "apps.wechat_ai_customer_service.tests.test_hook_c1_startup",
+          "name": "test_invalid_shadow_dpi_cannot_skip_blocker[nan]",
+          "result": "passed"
+        },
+        {
+          "classname": "apps.wechat_ai_customer_service.tests.test_hook_c1_startup",
+          "name": "test_invalid_shadow_dpi_cannot_skip_blocker[inf]",
+          "result": "passed"
+        },
+        {
+          "classname": "apps.wechat_ai_customer_service.tests.test_hook_c1_startup",
+          "name": "test_invalid_shadow_dpi_cannot_skip_blocker[5]",
+          "result": "passed"
+        },
+        {
+          "classname": "apps.wechat_ai_customer_service.tests.test_hook_c1_startup",
+          "name": "test_old_ocr_dpi_profile_keeps_its_original_targets[1-size0]",
+          "result": "passed"
+        },
+        {
+          "classname": "apps.wechat_ai_customer_service.tests.test_hook_c1_startup",
+          "name": "test_old_ocr_dpi_profile_keeps_its_original_targets[1.25-size1]",
+          "result": "passed"
+        },
+        {
+          "classname": "apps.wechat_ai_customer_service.tests.test_hook_c1_startup",
+          "name": "test_old_ocr_dpi_profile_keeps_its_original_targets[1.5-size2]",
+          "result": "passed"
+        },
+        {
+          "classname": "apps.wechat_ai_customer_service.tests.test_hook_c1_startup",
+          "name": "test_hook_physical_target_is_stable_at_125_percent",
+          "result": "passed"
+        },
+        {
+          "classname": "apps.wechat_ai_customer_service.tests.test_hook_c1_startup",
+          "name": "test_actual_125_percent_oversized_frame_is_resized_once",
+          "result": "passed"
+        },
+        {
+          "classname": "apps.wechat_ai_customer_service.tests.test_hook_c1_startup",
+          "name": "test_compact_profile_fits_smaller_work_area_without_enlarging",
+          "result": "passed"
+        },
+        {
+          "classname": "apps.wechat_ai_customer_service.tests.test_hook_c1_startup",
+          "name": "test_roi_uses_client_width_without_manufacturing_pixels",
+          "result": "passed"
+        },
+        {
+          "classname": "apps.wechat_ai_customer_service.tests.test_hook_c1_startup",
+          "name": "test_roi_invalid_reference_width_stops[100]",
+          "result": "passed"
+        },
+        {
+          "classname": "apps.wechat_ai_customer_service.tests.test_hook_c1_startup",
+          "name": "test_roi_invalid_reference_width_stops[0]",
+          "result": "passed"
+        },
+        {
+          "classname": "apps.wechat_ai_customer_service.tests.test_hook_c1_startup",
+          "name": "test_roi_invalid_reference_width_stops[-1]",
+          "result": "passed"
+        },
+        {
+          "classname": "apps.wechat_ai_customer_service.tests.test_hook_c1_startup",
+          "name": "test_roi_invalid_reference_width_stops[1060]",
+          "result": "passed"
+        },
+        {
+          "classname": "apps.wechat_ai_customer_service.tests.test_hook_c1_startup",
+          "name": "test_roi_captures_once_no_full_window_no_resize_no_ui_input",
+          "result": "passed"
+        },
+        {
+          "classname": "apps.wechat_ai_customer_service.tests.test_hook_c1_startup",
+          "name": "test_roi_failure_never_recaptures_or_clicks[engine]",
+          "result": "passed"
+        },
+        {
+          "classname": "apps.wechat_ai_customer_service.tests.test_hook_c1_startup",
+          "name": "test_roi_failure_never_recaptures_or_clicks[focus]",
+          "result": "passed"
+        },
+        {
+          "classname": "apps.wechat_ai_customer_service.tests.test_hook_c1_startup",
+          "name": "test_roi_failure_never_recaptures_or_clicks[size]",
+          "result": "passed"
+        },
+        {
+          "classname": "apps.wechat_ai_customer_service.tests.test_hook_c1_startup",
+          "name": "test_roi_failure_never_recaptures_or_clicks[dpi]",
+          "result": "passed"
+        },
+        {
+          "classname": "apps.wechat_ai_customer_service.tests.test_hook_c1_startup",
+          "name": "test_roi_failure_never_recaptures_or_clicks[existing_image]",
+          "result": "passed"
+        },
+        {
+          "classname": "apps.wechat_ai_customer_service.tests.test_hook_c1_startup",
+          "name": "test_roi_failure_never_recaptures_or_clicks[capture_size]",
+          "result": "passed"
+        },
+        {
+          "classname": "apps.wechat_ai_customer_service.tests.test_hook_c1_startup",
+          "name": "test_roi_failure_never_recaptures_or_clicks[ocr_unresolved]",
+          "result": "passed"
+        },
+        {
+          "classname": "apps.wechat_ai_customer_service.tests.test_hook_c1_startup",
+          "name": "test_roi_failure_never_recaptures_or_clicks[ocr_frame_changed]",
+          "result": "passed"
+        },
+        {
+          "classname": "apps.wechat_ai_customer_service.tests.test_hook_c1_startup",
+          "name": "test_header_roi_can_resolve_thin_separator_on_equal_surfaces",
+          "result": "passed"
+        },
+        {
+          "classname": "apps.wechat_ai_customer_service.tests.test_hook_c1_startup",
+          "name": "test_header_text_strokes_are_not_full_height_separators",
+          "result": "passed"
+        },
+        {
+          "classname": "apps.wechat_ai_customer_service.tests.test_hook_c1_startup",
+          "name": "test_geometry_only_startup_takes_no_screenshot_or_ocr",
+          "result": "passed"
+        },
+        {
+          "classname": "apps.wechat_ai_customer_service.tests.test_hook_c1_startup",
+          "name": "test_geometry_only_startup_rejects_changed_frame_without_capture",
+          "result": "passed"
+        },
+        {
+          "classname": "apps.wechat_ai_customer_service.tests.test_hook_c1_flow.NativeGuardTests",
+          "name": "test_ocr_slow_frame_expires_no_click",
+          "result": "passed"
+        }
+      ],
+      "nonpassing_not_counted": 0
+    },
+    {
+      "report": "startup-focus-fix-20261024/architect-r2-increment.xml",
+      "original_xml_sha256": "d03184f8de94ce7aeb74c071a0e5e3fa82b34219ffdb04aa47b46a504bba41aa",
+      "count": 10,
+      "cases": [
+        {
+          "classname": "worker-client.tests.test_hook_startup_focus",
+          "name": "test_denied_activation_waits_then_passively_recovers_without_extra_captures",
+          "result": "passed"
+        },
+        {
+          "classname": "worker-client.tests.test_hook_startup_focus",
+          "name": "test_retries_are_bounded_with_original_guard_evidence_and_account_reset",
+          "result": "passed"
+        },
+        {
+          "classname": "worker-client.tests.test_hook_startup_focus",
+          "name": "test_successful_layout_revalidation_does_not_exhaust_failure_budget",
+          "result": "passed"
+        },
+        {
+          "classname": "worker-client.tests.test_hook_startup_focus",
+          "name": "test_actual_heartbeat_wait_preserves_paused_flow_and_recovers_without_start",
+          "result": "passed"
+        },
+        {
+          "classname": "worker-client.tests.test_hook_startup_focus",
+          "name": "test_slow_ocr_keeps_15_second_guard_and_exports_its_elapsed_time",
+          "result": "passed"
+        },
+        {
+          "classname": "worker-client.tests.test_hook_startup_focus",
+          "name": "test_focus_lost_inside_native_constructor_keeps_original_diagnostics",
+          "result": "passed"
+        },
+        {
+          "classname": "worker-client.tests.test_hook_startup_focus",
+          "name": "test_ocr_initialization_failure_uses_bounded_real_heartbeat_and_keeps_reports[False]",
+          "result": "passed"
+        },
+        {
+          "classname": "worker-client.tests.test_hook_startup_focus",
+          "name": "test_ocr_initialization_failure_uses_bounded_real_heartbeat_and_keeps_reports[True]",
+          "result": "passed"
+        },
+        {
+          "classname": "worker-client.tests.test_hook_startup_focus",
+          "name": "test_foreground_observation_failure_is_read_only_reported_and_recovers[EnumWindows]",
+          "result": "passed"
+        },
+        {
+          "classname": "worker-client.tests.test_hook_startup_focus",
+          "name": "test_foreground_observation_failure_is_read_only_reported_and_recovers[GetForegroundWindow]",
+          "result": "passed"
+        }
+      ],
+      "nonpassing_not_counted": 0
+    },
+    {
+      "report": "startup-focus-fix-20261024/architect-r3-increment.xml",
+      "original_xml_sha256": "c4fce0f125fc3d8753fbd68476b8af9b96f67cb7987c1c32d758d2efa272e396",
+      "count": 5,
+      "cases": [
+        {
+          "classname": "Users.zhangwentao.Documents.车金.output.startup-focus-fix-20261024.architect-r3-probe",
+          "name": "test_observation_recovery_account_and_restart_keep_all_originals",
+          "result": "passed"
+        },
+        {
+          "classname": "private.tmp.architect-startup-431e825.worker-client.tests.test_hook_startup_focus",
+          "name": "test_denied_activation_waits_then_passively_recovers_without_extra_captures",
+          "result": "passed"
+        },
+        {
+          "classname": "private.tmp.architect-startup-431e825.worker-client.tests.test_hook_startup_focus",
+          "name": "test_foreground_observation_failure_is_read_only_reported_and_recovers[EnumWindows]",
+          "result": "passed"
+        },
+        {
+          "classname": "private.tmp.architect-startup-431e825.worker-client.tests.test_hook_startup_focus",
+          "name": "test_foreground_observation_failure_is_read_only_reported_and_recovers[GetForegroundWindow]",
+          "result": "passed"
+        },
+        {
+          "classname": "private.tmp.architect-startup-431e825.worker-client.tests.test_hook_startup_focus",
+          "name": "test_distinct_window_observation_failures_both_survive_export",
+          "result": "passed"
+        }
+      ],
+      "nonpassing_not_counted": 0
+    },
+    {
+      "report": "startup-focus-fix-20261024/architect-r3-original.xml",
+      "original_xml_sha256": "5822348ace9fc3f76495497eac7dc1fdb33556931ffad515cba0ac83892b7664",
+      "count": 1,
+      "cases": [
+        {
+          "classname": "architect-r2-probe",
+          "name": "test_different_window_read_faults_preserve_original_evidence",
+          "result": "passed"
+        }
+      ],
+      "nonpassing_not_counted": 0
     }
   ],
   "packaging_reviewed_commit": "ffc6a97718d4d75f58b9fa90ae601a3132331101",
   "reviewed_delta_sha256": {
-    "backend/README.md": "90e1775ac740e66ed620c59101ede438e9538176a188fc259136c10547640beb",
+    "backend/README.md": "1526864a26b6b492576847bf601f04e021c8257a6a01be5e67b06e32fd2aab82",
     "backend/alembic/versions/20261022_0042_reply_ownership.py": "89f604cd391984c723bf2d02528a5af1cb2c495fab2433ca1d2c7d7a15e82e2f",
     "backend/app/api/routes/dashboard.py": "dad33624be3ae577789efa755559137f0e319b1c8b16465ee71e5cfd6d4e5a96",
     "backend/app/api/routes/wechat.py": "1e763fd849528fb11bf13737bcdff8af51349e850bf10fdc22de3a92ca1efb2a",
@@ -12596,9 +15172,9 @@
     "backend/app/services/vehicle_service.py": "430aa16c058fe990c78106e1eacb428083a65af120b0e3ba70155a36fe01eb34",
     "backend/app/services/wechat_service.py": "d4a5feb75496f04138fadffbd7b4ad8f2cf0a7122bfa40f8a50f04e52e498dde",
     "backend/app/services/worker_service.py": "d24a4dbf22b60aa269e5de0e20f3a37ef1f4c12ab53b00b75ae4d5998596e944",
-    "backend/compose.web.yml": "58e504b349fbcd06cdf3f996dacdee340f1cea10f33c1f992305bdc8d948f01a",
-    "backend/docker-compose.yml": "192166ab565dbc85276db069e7e5add139790f8d841620627c62dacfca4d8c2b",
-    "backend/pyproject.toml": "17b65224142615f25b2883c79b2612951e42020f3fd7ccccccfa3be0c86f539e",
+    "backend/compose.web.yml": "acdce01cb4f23f1421038711b59ee8588bce9c50cf93d362f29f7a9c3003e1cc",
+    "backend/docker-compose.yml": "1aec7e868e32146b2178c8c0f21cac3ed1040b52871d7660d893c454b4f8ec92",
+    "backend/pyproject.toml": "ef233bdba04d057982aae4ee5dcff5b7d718ff9724406e04c9802a1960285418",
     "backend/tests/maintenance_recovery_fixture.py": "4f2df35463f04bb1cd361cf4bc106478e2b9c923a5a6f04dfbae6a7aad5d296c",
     "backend/tests/test_auth_api.py": "e3fd2a9023945ed27c9b3954fdb54928e0708e79bda1dfc1ce41ccd1b311b2a4",
     "backend/tests/test_catalog_fact_references.py": "7cbc31c2746d529da1b75b3c084808aa294e8aa5b1eb6dfa5b8e68a95c8fee88",
@@ -12637,11 +15213,11 @@
     "backend/tests/test_partial_reply_recovery_provider.py": "61c7a3bf8056b2efde7ccf8b9858eff1916e876e56699c232a68c83e3f39258d",
     "backend/tests/test_reply_ownership_migration.py": "3248b0982cd4c1a5e72ed4c6caf7012058cf566249c4b69a98bc051ae08cc2de",
     "backend/tests/test_wechat_c2_api.py": "18634f624d0ea0148abc287b924c46ecd5397349b8a30f5f9355a37501c0d0cf",
-    "contracts/c2_contract_v3.json": "7bc022684af47410eb608e891950c52ae5b39af130adbaba9afa1ca60e69c8ea",
-    "contracts/hook_contract_v1.json": "cdfe0035c40e949b5ce612821f1f2338f2eaf08c14da543d66c77f87d7eb240d",
-    "frontend/README.md": "f41da6b4d73efcfd96240ccbb0f8ab23c565caf2522b2b17c020b12837bcaa68",
-    "frontend/package-lock.json": "cac979441c148d1c24aa2bb96670614dd09c0759263107cbe3bf37ed379ca18e",
-    "frontend/package.json": "7550f7fdb13e905fb2840dcf0367ea543a25dcca884032159dd7d7ce627a77f7",
+    "contracts/c2_contract_v3.json": "78d5175f4ef1819df8b06e34a3f5d5ba376305ab0ab7336da4375171461e92c3",
+    "contracts/hook_contract_v1.json": "10ab0e053cd3b72df89c0b179d0a6d4beddcb1070fcbff1b877d4d6bcf3d1152",
+    "frontend/README.md": "2c1b44508d66dc7b7f47228aaf922c43f76b241280e1caddc558361fb7555805",
+    "frontend/package-lock.json": "a6e477762e921aafb77187f6a117b4e06dd4172883ab1fd2fc7189e4c4dad34d",
+    "frontend/package.json": "75b6d891ea2be04585699f23fcfa9bf8df6b7f68e73a26386f046a688bf48acb",
     "frontend/src/App.test.tsx": "1ab020138232217c8b19d55ebca8b714c943206c939b9071724cc1d66911fbb7",
     "frontend/src/App.tsx": "570df29154f664be4bd8009459f1d1c7ca17f041821bc8a27f96ff7c0f5e1693",
     "frontend/src/features/auth/LoginPage.tsx": "b81b9d6acb4ceef34e15206b9bbdaf3c8ec2687b36487e2a66d1b1e4c2cfa572",
@@ -12689,8 +15265,8 @@
     "packages/worker-ui-baseline/src/worker-ui.css": "18c8eff4399dca953f59ffffaed0b58a0f4efd0ceaa7c3afa015d39c32bc8691",
     "packages/worker-ui-baseline/static/index.html": "d00e80a135909161cc4ec9d2b3e852fb5c7ee0c349d16b7e621d9d7aa9acc1ff",
     "worker-client/README.md": "f520827f23bd8eb1b109f9febfeda199c70a90e720a8f4bb0e12e0b116a8d0af",
-    "worker-client/chejin_worker_client/__init__.py": "1246ffe0b423959d9b571c10fc9d6028d296ff012834ce2389a6442c42cfd446",
-    "worker-client/chejin_worker_client/c1_diagnostics.py": "c21706305317046f6cf45352ab733a181142f9fb30baf62f1b5e5bdf9732813d",
+    "worker-client/chejin_worker_client/__init__.py": "e36246a085180b7393707bf8f15c9e6eba9ad73bedd14974e46812ea78ed8cb4",
+    "worker-client/chejin_worker_client/c1_diagnostics.py": "1a5137c8ba2e4954a46151e0ff970d8e9e4cd2fd0c6a4f8a08954d3b4ad23c68",
     "worker-client/chejin_worker_client/chejin_updater.py": "0eb180268f7015b682bb9ccc9711af9f81444ff245b51aa023807f76f76c3d5a",
     "worker-client/chejin_worker_client/client_update.py": "39df774fe505110fda4bf98aa0e3eb4ac3d193f41cece73e488b9f5145d27ffb",
     "worker-client/chejin_worker_client/diagnostic_bundle.py": "ea596dc8cc76d6fb3f4e140cb87db148509dbf1c1ae6a7b00ef37817dae7c414",
@@ -12700,8 +15276,8 @@
     "worker-client/chejin_worker_client/hook_backend.py": "4de3862417efd6e2bec4c96612dab8a4c14f18545ae6d143b749f144c7854935",
     "worker-client/chejin_worker_client/hook_component_update.py": "e2a7aec1825f2a1742b7e0e64ef1a92f45dc186ad8817c20a2b801c059ee200d",
     "worker-client/chejin_worker_client/hook_connection.py": "84d7284f2abbafcb6bab78f5b879034eb53e5f925d76bab4dbe92959768ea680",
-    "worker-client/chejin_worker_client/hook_dispatcher.py": "df5e7937b666b68b0a95663e69441620d0a8aefde98e7b577f810e4ae56d3a9e",
-    "worker-client/chejin_worker_client/hook_factory.py": "d6e181a5b53d27696931a9e9dc0fce3535feea3d0df86050ab938ddb3a3718b6",
+    "worker-client/chejin_worker_client/hook_dispatcher.py": "1d04e84c51e19ed1697f79a13299e464369034998f6ad3a95ff81b48ef4dd4a9",
+    "worker-client/chejin_worker_client/hook_factory.py": "a1da2c13dcc15575a39ab94e186bd1510963633bf651b62d577a8a27d34c9f92",
     "worker-client/chejin_worker_client/hook_facts.py": "360b092ee30f7c37e94dc0d43851fe6401fbbba9b08f7356df40984ba9a54397",
     "worker-client/chejin_worker_client/hook_formal_c1.py": "bbb3c30bac941f91ca05ede17f56cbff798939e3ffd3c0a40b39046b267ef7df",
     "worker-client/chejin_worker_client/hook_formal_runtime.py": "35f8afd9bd4734f4513b8bde4567bc78a70150c6523103fea742ce031af703b3",
@@ -12709,17 +15285,18 @@
     "worker-client/chejin_worker_client/hook_history.py": "c85e95901ac47d6caf0a9271704b9c1b1d5b93e54a6d189fee09b672d333161b",
     "worker-client/chejin_worker_client/hook_outbox.py": "cd92de285b914ce32f061827887b3218cbffa7dced3a0d108b280da9d8e93072",
     "worker-client/chejin_worker_client/hook_process.py": "f3172a0629f7d164522e806ae08cc54486cf504a396de6e383c6de1cf7cdebed",
-    "worker-client/chejin_worker_client/hook_progress.py": "8429ea4ef8da7977766dbc1afbb18543eccf6523c3e96ed6cc96437295755a60",
+    "worker-client/chejin_worker_client/hook_progress.py": "de48ccf106861f5298e9d608e50b270821a1a62e317d608206744b4d92b82336",
     "worker-client/chejin_worker_client/hook_projection.py": "52bcc49894d762ec77d15f6bc248225a400dcfcb7dea0bdc3355a6d660be1db7",
     "worker-client/chejin_worker_client/hook_recovery.py": "31bf9f8513e558172a38678a6958b03d1fcfc85ba2c71f838ed316917be1521d",
     "worker-client/chejin_worker_client/hook_retention.py": "aa67378ba686b559e9a66da7841ae084fcd48ee53f87b3077f713c463567badc",
     "worker-client/chejin_worker_client/hook_sender.py": "9b4d44740267a20bf6d6dececaec2429470c0159ab7e15893b82657a1b666865",
+    "worker-client/chejin_worker_client/hook_startup_window.py": "60458efc4bc76693f544fa489534ce02629ec9f62bcfec11a98a98d0671bff65",
     "worker-client/chejin_worker_client/hook_voice.py": "e45248392e0e8e7e8177d58cb02dca380c99adf2692fe8af64a0c394549ae3b7",
-    "worker-client/chejin_worker_client/hook_worker_services.py": "5e33a847f8d8b5a8e1fda968c3720a03548041eb347e3c079db63e5b7effce0a",
+    "worker-client/chejin_worker_client/hook_worker_services.py": "9ed8df68db115eac959c878892fc408ea91e998013ed31169a3f2b4afd28fa2c",
     "worker-client/chejin_worker_client/incident_evidence.py": "8821582ea3ddbf25decd782bd03fe13a6d005b472875ad39cf9112565605efcb",
     "worker-client/chejin_worker_client/main.py": "b4fb60e9164e56c6486ed5157e0e289037bcc09a3fa46b8db4562f423547419c",
     "worker-client/chejin_worker_client/runtime_startup.py": "65faed29fb538515b1f61f115c6421f40c0b5c0bef734edc03510a200fc9dc06",
-    "worker-client/chejin_worker_client/startup_check_state.py": "2c39714bc9368e871d2509bd993e8ebee4b7e2baa981fcf85e4b56806f381947",
+    "worker-client/chejin_worker_client/startup_check_state.py": "1c91c56d69ef1bde2c446e4619054b695d6c839cef4291096cf0732133dfcf53",
     "worker-client/chejin_worker_client/startup_window_position.py": "322623a13bc7426198697d9ade8aa70c6050f25faeb41e7926ddf319c4562597",
     "worker-client/chejin_worker_client/storage.py": "331ffe03a3ae884cce36c3ef396e02c7e36539aa55f60a4be9c12c1276d7db5e",
     "worker-client/chejin_worker_client/storage_maintenance.py": "dff6e905c530389d92e7a87b2f21e7d72721434c9c7899d22d1c9d6c070b035a",
@@ -12735,25 +15312,26 @@
     "worker-client/chejin_worker_client/web_assets/worker-web-app.js": "8c7426a570ee4c650c79df52f5ec83391b21e5ee25b2e70ebc317f8b4d61d04c",
     "worker-client/chejin_worker_client/web_ui.py": "1069fdc10748b3dd799c56229a696ecff1c8b02e19d29eec49692fe5c0d46abf",
     "worker-client/chejin_worker_client/window_render_evidence.py": "1c6764c970f685d337df338e7d39147f475a49ce96c1699ebac5419736b3e8c8",
-    "worker-client/omniauto-rpa/.chejin-source.json": "eb1df71d7a31c8a89823ef9da45fe2916d32e67dd5c44239d9d64822eff62208",
+    "worker-client/omniauto-rpa/.chejin-source.json": "42885c5606f06952ff3a9e28d63c18bbb3ecfcc60212b1bfc2bedf81acfe9e1c",
     "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/adapters/add_friend_layout.py": "2978fdb588bd256f6a91958e9dd17088d0cf584b5a6a338c28a123941997369f",
     "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/adapters/add_friend_ocr.py": "92b8c5f66499c86d4e60f2c2559dcdbaa433abd1e532feb07affe3704e13b6a7",
-    "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/adapters/chejin_c2_observation_schema.generated.json": "b294fed749c1fff3e0ceecbda378eae84b6c7db2ade087f3a1f07bbc3220d52a",
+    "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/adapters/chejin_c2_observation_schema.generated.json": "41eca00148606f455a45ceef96aab66d4b3e72934cabf4f3e3674b4d814d828b",
     "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/adapters/hook_contact_rules.py": "cc3072ea75f4015fd0b7554c5e91a740b52834559f10c0291494bb51cef0e9e2",
     "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/adapters/hook_contract_rules.py": "bdec9434d9f2b109cf614aa74b52300ecf17f99f874bff15ed89f42a7d71f772",
     "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/adapters/hook_history_rules.py": "da9c87d2176c902e59ccab43f0e1637eca38c0b19c4d5a33a96615cf8e1c0d9f",
     "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/adapters/icon_similarity.py": "830c7248bd208b43b623a9e0ab33057655e3b6d7a165ffe7ad93feef3177a36d",
     "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/adapters/search_control_icons.py": "3f9f8c5aad61cd55928f33150e852ca55c2c6c2de8e5ca321de6dc972bcdbb8c",
     "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/adapters/wechat_win32_ocr/c1_layout.py": "8ffa663f07be7223f272b2fae336ff060fd15dd74362974b92c2d8785c0a0a09",
-    "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/adapters/wechat_win32_ocr/hook_c1_flow.py": "9c1f8af93cf924d4062081e9a9f982df5958362ef997383d319ec039a520d75f",
+    "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/adapters/wechat_win32_ocr/hook_c1.py": "65b7b0519747e7992fca4f3ca25cec629f4110dec35826751718d2bfbc29a739",
+    "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/adapters/wechat_win32_ocr/hook_c1_flow.py": "1bddd0f2f46932653dedc5fe2e523a4a87f3db50ee68d77d0e08317cce6de9aa",
     "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/tests/test_c1_layout_reuse.py": "58ef2ab4916853d6fb1a9fd16a4492f1ec06a19ab583415f14ddbbf3ee238cc9",
-    "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/tests/test_hook_c1_flow.py": "ee0c3268c807de38798634cb0d910e7a74ef2b3502233abc1a32c08f7233d912",
+    "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/tests/test_hook_c1_flow.py": "fc111f7ae2527ba691ca96330c79f5472e072fc739325adba04b10522582cc48",
     "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/tests/test_search_control_icons.py": "33b3ee1a497442eb829685480f027f3c00d2a5fe42738f569348cb5ddb0ec7a6",
     "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/workflows/customer_service_brain_contract.py": "6a890888db6f116e1ed292ea54a72842e1956723823b220b5f2f05ed585cfdde",
     "worker-client/packaging/Diagnose-CheJin.cmd": "3c00362034cefab35ddf887818373cf87cf5bd2e6246529bf5c0ebceef340541",
     "worker-client/packaging/Rollback-CheJin-Hook.cmd": "510f5d6b45003efb9f2801bb04154789f67a50abbf4ccba7fc4011c6792ed8ad",
     "worker-client/packaging/Update-CheJin-Hook.cmd": "46e00b1f8f78d9a02e78449466100610d40bb4eeb7d6a7827dc0634796363ac1",
-    "worker-client/packaging/chejin_worker_client_entry.py": "946e41eca17506ec765838e9dbb41400df4d27ef9439a65f4c6de24d97dae2e1",
+    "worker-client/packaging/chejin_worker_client_entry.py": "9e195dbfe994aac86107b885fac5c93b6d49af0cc97c95856433cd9494bf063b",
     "worker-client/packaging/start-hook.ps1": "1a9f543993fa90b3acd1265f3fc2f4fd2faf1061ba98cb40b925d9ca01fb4080",
     "worker-client/packaging/update-hook-component.ps1": "39a288d057967a2d3dc62d7d2d1bbc9fb63501fb833d2e200cc51649da25721a",
     "worker-client/scripts/run-windows-hook-preserve-install.py": "c7a2bf31c1af8f9b47b546b5d5317dcdd2ee7be3b38d63592c10c9c60a4ce5ab",
@@ -12781,8 +15359,9 @@
     "worker-client/tests/test_hook_relationship_runtime.py": "71292ff58a85948af7a1eb6a7473f5d70437dc6bc1a80c4e6b59796d230fbd54",
     "worker-client/tests/test_hook_remark_caret.py": "2b4165552446cb1b94d39734e4fe6977e0f64a5ab9093fb45b80826229f9ca51",
     "worker-client/tests/test_hook_search_cache_consumer.py": "e232410346ac02f3ffc4871003580e55e2abecf2b9f08bb1bf4ab284f2413874",
-    "worker-client/tests/test_hook_search_startup_cache.py": "cdd119df1e46f6e3fbf2697e11a83edf7cded802d23ce380ec19fc5b26e982f4",
+    "worker-client/tests/test_hook_search_startup_cache.py": "ed1e4a58205a48f30adde0d0787baa7b4911d4d109913d6dc567ef777fd2778a",
     "worker-client/tests/test_hook_segment_progress_stability.py": "ae1df807dadcdfa9c5685809c2b2172fd54d457246e11ecb84bfa8ad4b860db3",
+    "worker-client/tests/test_hook_startup_focus.py": "711fa162099ac14430f70908411cef607a76035f7749edca3129a82ff7b01374",
     "worker-client/tests/test_hook_worker_services.py": "e5979ef9cb631389e1b63feb0abd766a1b2fc1c00eaec7c23b552bbeb42b8b84",
     "worker-client/tests/test_packaging_entry.py": "f5723b8761917643f1afcdaf5ea2c4297077b55b816f533b03800fcc3f4b1a84",
     "worker-client/tests/test_runtime_startup.py": "ca92d21924151f20ed699f42ded228c228c9dd2e9bad220a50626c4ffb421b19",
@@ -12799,12 +15378,12 @@
     "worker-client/tests/test_window_render_evidence.py": "cdb8276f6dbd1ae9a4f2be6ac0ba0264aa5ae5693210e7a7f6fecc1fa4499538"
   },
   "delta_review": {
-    "commit": "7499f8b002ef5af916c6fdf5053ab4f1c4d3fec0",
+    "commit": "431e825f599947d1ec8e55d69b6ba6662a63bb50",
     "result": "passed for source push",
     "thread_id": "01a0d26f-f47a-7343-9ad8-cda8320d7c86",
-    "turn_id": "01a16e37-3941-7492-9fe5-8f9a37b8da20",
-    "review_file_sha256": "ae2e865e58d894f7e1d92c1b6fb9693c280ab81f46ac9f17fcb56d5c52ebd0cc",
-    "scope": "Final4bfeadb closes binding review findings; bf8a291 search reuse and7499f8b exact caret source reviews passed. No physical Windows or PG concurrency claim."
+    "turn_id": "01a16ead-51e6-7f80-8c7f-a1fa07a9d35c",
+    "review_file_sha256": "dc1a730005a038b373c25b4b327b368b7c8fb9bc63c8183d923d5d843e4bd8dc",
+    "scope": "Final431e825 closes STARTUP-01/02; all changed source hashes verified. Metadata only after review; Windows field paused."
   },
   "historical_baseline_tests": 1371,
   "reviewed_delta_deleted_sha256": {
@@ -12843,7 +15422,9 @@
     "SQLite/source tests do not prove PostgreSQL concurrent locking. No production binding transfer executed.",
     "Four Worker recovery and one old media baseline failures retained;2 original-image cases skipped.",
     "Historical reports overlap; identity inventory is not newly executed tests.",
-    "No resending, data clearing, DLL replacement or automatic intake."
+    "No resending, data clearing, DLL replacement or automatic intake.",
+    "Three unchanged FakeQt availableGeometryChanged baseline failures retained.",
+    "Sunlogin interference not proven; startup performance on physical Windows pending."
   ],
   "prior_recovery_review": {
     "commit": "a1de7f317d600b65650eb44c16d404067e22ef58",
@@ -12889,7 +15470,10 @@
     "67448fd",
     "4bfeadb",
     "bf8a291",
-    "7499f8b"
+    "7499f8b",
+    "89d3b49",
+    "3cc430a",
+    "431e825"
   ],
   "cumulative_source_reviews": [
     {
@@ -13212,6 +15796,24 @@
       "sha256": "ae2e865e58d894f7e1d92c1b6fb9693c280ab81f46ac9f17fcb56d5c52ebd0cc",
       "candidate": "7499f8b002ef5af916c6fdf5053ab4f1c4d3fec0",
       "decision": "SOURCE_REVIEW_PASS_WINDOWS_PAUSED"
+    },
+    {
+      "report": "startup-focus-fix-20261024/architect-review.json",
+      "sha256": "8fdcd623d30bf57e94a62544ca1f611144be25e1e3a05df2d49564c0a33f9da8",
+      "candidate": "89d3b492ea36414e2527e22c7f4949f0b2e5a5b6",
+      "decision": "BLOCKED_STARTUP_RETRY_PROBE_BYPASS"
+    },
+    {
+      "report": "startup-focus-fix-20261024/architect-review-r2.json",
+      "sha256": "c14466849b90d027f65f20807b894b0549a636eb9b04e2798cb44bbea0ea5dc0",
+      "candidate": "3cc430a0b59823b7a25f7f020f915b1362071b02",
+      "decision": "BLOCKED_OBSERVATION_EVIDENCE_OVERWRITE"
+    },
+    {
+      "report": "startup-focus-fix-20261024/architect-review-r3.json",
+      "sha256": "dc1a730005a038b373c25b4b327b368b7c8fb9bc63c8183d923d5d843e4bd8dc",
+      "candidate": "431e825f599947d1ec8e55d69b6ba6662a63bb50",
+      "decision": "PASS_SOURCE_REVIEW"
     }
   ],
   "prior_release_delta_review_01011": {
