@@ -388,9 +388,10 @@ def run_flow(ui, *, phone: str, verify_message: str, remark_name: str,
 
 class NativeUI:
     """Bounded ROI capture + original humanized input, with per-frame guards."""
-    def __init__(self, ops, hwnd: int, pid: int, evidence: Path, identity_guard, *, organized_evidence=False, diagnostics=None, search_control_cache=None):
+    def __init__(self, ops, hwnd: int, pid: int, evidence: Path, identity_guard, *, organized_evidence=False, diagnostics=None, search_control_cache=None, require_startup_search_cache=False):
         self.diagnostics = diagnostics
         self.search_control_cache = search_control_cache if search_control_cache is not None else {}
+        self.require_startup_search_cache = require_startup_search_cache
         self.evidence_state = {'frames': [], 'failures': []}
         self.guard_phase = 'initialization'
         self.guard_operation = 'create_ui'
@@ -877,7 +878,17 @@ class NativeUI:
             cache = self.search_control_cache = {}
         if cache.get('key') != key:
             cache.clear()
+            if getattr(self, 'require_startup_search_cache', False):
+                raise FlowStop('SEARCH_STARTUP_LAYOUT_INVALIDATED')
             cache['key'] = key
+        if getattr(self, 'require_startup_search_cache', False):
+            bounds = cache.get('bounds')
+            if not (isinstance(bounds, (list, tuple)) and len(bounds)==4
+                    and all(type(value) is int for value in bounds)
+                    and 0 <= bounds[0] < bounds[2] <= frame.image.width
+                    and 0 <= bounds[1] < bounds[3] <= frame.image.height):
+                cache.clear()
+                raise FlowStop('SEARCH_STARTUP_LAYOUT_INVALIDATED')
         return cache.get('bounds')
 
     def calibrate_search_control(self):

@@ -134,4 +134,4 @@ class WindowsC1:
             raise
         return NativeUI(ops,hwnd,process.pid,evidence,guard,
             organized_evidence=self.artifact_root is not None, diagnostics=diagnostics,
-            search_control_cache=self._search_control_cache)
+            search_control_cache=self._search_control_cache, require_startup_search_cache=True)

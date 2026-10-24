@@ -58,3 +58,33 @@ def test_startup_unrecognized_frame_stops_without_stale_cache_or_input(calibrati
     assert native._search_control_cache=={}
     ops.win32api.mouse_event.assert_not_called()
     assert list((root/'artifacts'/'tasks').glob('startup-search-*/diagnostics/initialization.json'))
+
+
+@pytest.mark.parametrize('change',['missing','missing_bounds','corrupt_bounds','origin','geometry','hwnd','pid','dpi'])
+def test_task_invalidated_startup_cache_stops_without_relocation_or_input(calibration,monkeypatch,change):
+    native,gateway,process,state,ops,root=calibration
+    monkeypatch.setattr(hook_c1,'prepare_window',Mock(return_value={'ok':True}))
+    native.startup(process,gateway,{})
+    ui=native.ui(process,{'task_id':'invalidated-layout'},Mock())
+    frame=ui.capture('header')
+    if change=='missing':native._search_control_cache.clear()
+    elif change=='missing_bounds':native._search_control_cache.pop('bounds')
+    elif change=='corrupt_bounds':native._search_control_cache['bounds']=[66,25,66,50]
+    elif change=='origin':frame.origin=(200,0)
+    elif change=='geometry':frame.geometry={**frame.geometry,'width':999}
+    elif change=='hwnd':frame.hwnd=12
+    elif change=='pid':ui.pid=100
+    elif change=='dpi':ui.dpi=1.25
+    with patch.object(flow,'search_control_bounds',side_effect=AssertionError('task must not relocate')):
+        with pytest.raises(flow.FlowStop,match='SEARCH_STARTUP_LAYOUT_INVALIDATED'):
+            ui.verified_empty_search(frame)
+        with patch.object(ui,'capture',return_value=frame), patch.object(ui,'return_to_main'):
+            with pytest.raises(flow.FlowStop,match='SEARCH_STARTUP_LAYOUT_INVALIDATED'):
+                ui.clear_search()
+    assert not native._search_control_cache
+    ops.win32api.SetCursorPos.assert_not_called();ops.win32api.mouse_event.assert_not_called()
+    # The same startup entry can re-establish a valid layout without input.
+    native.startup(process,gateway,{})
+    fresh=native.ui(process,{'task_id':'after-startup-recheck'},Mock())
+    with patch.object(flow,'search_control_bounds',side_effect=AssertionError('must reuse refreshed startup')):
+        fresh.verified_empty_search()
