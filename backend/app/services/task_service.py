@@ -813,6 +813,9 @@ def create_add_friend_task(
         created_by=str(actor.operator_id),
         updated_by=str(actor.operator_id),
     )
+    from app.services.hook_binding_transfer import invitation_needs_review, BLOCK
+    if invitation_needs_review(db, task):
+        task.status, task.block_code = 'blocked', BLOCK
     db.add(task)
     db.flush()
     if lead.custom_fields is None or not isinstance(lead.custom_fields, dict):
@@ -821,7 +824,7 @@ def create_add_friend_task(
         lead.custom_fields = {**lead.custom_fields, "remark_code": _task_remark_code(task)}
     _write_event(db, task, TaskEventType.created, actor=actor, to_status=task.status, remark=remark)
     if task.status == TaskStatus.blocked.value:
-        _write_event(db, task, TaskEventType.blocked, actor=actor, to_status=task.status, remark="销售未绑定可用 Worker")
+        _write_event(db, task, TaskEventType.blocked, actor=actor, to_status=task.status, remark="客户绑定待确认" if task.block_code == BLOCK else "销售未绑定可用 Worker")
     _write_task_log(
         db,
         actor,

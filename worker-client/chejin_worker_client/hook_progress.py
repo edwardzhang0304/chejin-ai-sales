@@ -28,6 +28,7 @@ PHASES = {
  'invite_finished': '好友申请处理已结束',
 }
 NOTES = {
+ 'binding_conflict': '微信已关联其他客户档案，等待运营核对归属。',
  'recipient': '申请已提交，等待好友列表确认并完成绑定。', 'not_found': '未找到可添加的客户。',
  'already_friend': '对方已是好友，沿原任务规则处理。',
  'history_wait': '消息尚未核对完整，核对完成后继续。',
@@ -235,7 +236,8 @@ class HookProgressTimeline:
             item={'title':PHASES[phase],'state':'current','_context':context,'_phase':phase};self._insert_step(item);self.latest[key]=item
         item.update(state=state,time=event.get('time',''),_note=event.get('note'))
         item['description']=event.get('description') or NOTES.get(event.get('note'),'')
-        if phase=='bind' and event.get('note')=='invite_replaced':item['title']='本轮好友绑定已结束'
+        if phase=='bind':
+            item['title']={'invite_replaced':'本轮好友绑定已结束','binding_conflict':'客户绑定冲突，等待运营处理'}.get(event.get('note'),PHASES['bind'])
         item.update(_group=event.get('group',context),_kind=event.get('kind',''),
                     _label=event.get('label',''),_historical=bool(event.get('historical')),
                     _binding_id=event.get('binding_id'))

@@ -60,6 +60,8 @@ const resultCodeMeta: Record<string, string> = {
 
 const reasonCodeMeta: Record<string, string> = {
   SALES_WORKER_NOT_BOUND: "销售未绑定 Worker",
+  HOOK_BINDING_TRANSFER_REQUIRED: "客户绑定待确认",
+  operator_lead_transfer: "已确认接续原微信，无需再次邀请",
   PHONE_NOT_FOUND: "手机号未找到客户",
   TASK_PAYLOAD_INVALID: "任务入参缺失或不合法",
   RPA_COMPONENT_NOT_READY: "RPA 组件未就绪",
@@ -608,6 +610,7 @@ export function TasksPage({ onOpenWorker, onOpenSalesWorkerBinding }: Props) {
               <span>异常原因</span>
               <select value={query.exception_code} onChange={(event) => updateQuery({ exception_code: event.target.value })} aria-label="筛选异常原因">
                 <option value="all">全部原因</option>
+                <option value="HOOK_BINDING_TRANSFER_REQUIRED">客户绑定待确认</option>
                 <option value="SALES_WORKER_NOT_BOUND">销售未绑定 Worker</option>
                 <option value="PHONE_NOT_FOUND">手机号未找到客户</option>
                 <option value="WECHAT_WINDOW_NOT_FOUND">微信窗口未找到</option>

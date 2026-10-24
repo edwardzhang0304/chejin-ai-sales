@@ -112,21 +112,7 @@ def reinvite(db, lead_id, payload, actor):
         sales_id=binding.sales_id,worker_id=binding.worker_id,remark='运营确认结束旧托管后重新邀请：'+payload.reason.strip())
     if not result.get('created'):raise AppError('HOOK_REINVITE_TASK_PENDING','已有加好友任务待处理',409)
     task_id=result['task']['id']
-    wechat_service._set_binding_state(binding,status='disabled',listen_status='disabled',allow_listening=False,
-        error_code='HOOK_AUTHORIZATION_RETIRED',remark_code=binding.remark_code,preserve_lead=True)
-    if repeat:
-        binding.authorization_revision = original_revision + 1
-    binding.disable_reason=REINVITE_REASON;binding.disabled_at=utcnow();binding.disabled_by=str(actor.operator_id)
-    ctx.setdefault('retired_authorization_revision',original_revision)
-    ctx['business_enabled']=False
-    ctx['reinvite_request']={'task_id':task_id,'original_revision':original_revision,
-        'reason':payload.reason.strip(),'requested_at':utcnow().isoformat()}
-    binding.native_context=ctx
-    conversation=db.get(Conversation,binding.conversation_id)
-    if conversation:
-        conversation.ai_enabled=False;conversation.status='closed'
-        conversation.recall_cycle_id=conversation.recall_origin_status=conversation.next_recall_at=None
-        c3_service.cancel_active_batches_for_conversation_change(db,binding.conversation_id,reason='HOOK_AUTHORIZATION_RETIRED')
+    retire_binding(db,binding,task_id,payload.reason.strip(),actor,repeat=bool(repeat))
     db.add(TaskEvidence(task_id=task_id,worker_id=binding.worker_id,evidence_type='hook_reinvite_authorization',
         extra_metadata={'previous_binding_id':binding.id,'previous_revision':original_revision,
             'self_wxid':binding.native_self_wxid,'account_epoch':ctx.get('account_epoch'),
@@ -139,16 +125,40 @@ def reinvite(db, lead_id, payload, actor):
     return {**result,'previous_binding_id':binding.id}
 
 
+def retire_binding(db, binding, task_id, reason, actor, *, repeat=False):
+    """One retirement boundary for reinvitation and operator lead succession."""
+    from app.services import wechat_service, c3_service
+    original_revision=binding.authorization_revision
+    ctx=dict(binding.native_context or {})
+    wechat_service._set_binding_state(binding,status='disabled',listen_status='disabled',allow_listening=False,
+        error_code='HOOK_AUTHORIZATION_RETIRED',remark_code=binding.remark_code,preserve_lead=True)
+    if repeat:
+        binding.authorization_revision = original_revision + 1
+    binding.disable_reason=REINVITE_REASON;binding.disabled_at=utcnow();binding.disabled_by=str(actor.operator_id)
+    ctx.setdefault('retired_authorization_revision',original_revision)
+    ctx['business_enabled']=False
+    ctx['reinvite_request']={'task_id':task_id,'original_revision':original_revision,
+        'reason':reason,'requested_at':utcnow().isoformat()}
+    binding.native_context=ctx
+    conversation=db.get(Conversation,binding.conversation_id)
+    if conversation:
+        conversation.ai_enabled=False;conversation.status='closed'
+        conversation.recall_cycle_id=conversation.recall_origin_status=conversation.next_recall_at=None
+        c3_service.cancel_active_batches_for_conversation_change(db,binding.conversation_id,reason='HOOK_AUTHORIZATION_RETIRED')
+
+
 def replacement_predecessor(db,w,task,peer,existing):
     authorization=db.scalar(select(TaskEvidence).where(TaskEvidence.task_id==task.id,
         TaskEvidence.evidence_type=='hook_reinvite_authorization'))
     proof=authorization.extra_metadata or {} if authorization else {}
     predecessor=next((b for b in existing if b.id==proof.get('previous_binding_id')),None)
     ctx=predecessor.native_context or {} if predecessor else {}
+    from app.services.hook_binding_transfer import TRANSFER
+    previous_lead_id=proof.get('previous_lead_id') if proof.get('mode')==TRANSFER else task.lead_id
     scope={'self_wxid':w.hook_self_wxid,'account_epoch':w.hook_account_epoch,
            'peer_wxid':peer,'lead_id':task.lead_id,'sales_id':task.sales_id}
     if (predecessor and authorization.worker_id==w.id and predecessor.worker_id==w.id
-            and predecessor.lead_id==task.lead_id and predecessor.sales_id==task.sales_id
+            and predecessor.lead_id==previous_lead_id and predecessor.sales_id==task.sales_id
             and predecessor.native_self_wxid==w.hook_self_wxid and predecessor.native_peer_wxid==peer
             and ctx.get('account_epoch')==w.hook_account_epoch
             and all(proof.get(k)==v for k,v in scope.items())
@@ -160,7 +170,7 @@ def replacement_predecessor(db,w,task,peer,existing):
             or ctx.get('business_enabled') is not False
             or (ctx.get('reinvite_request') or {}).get('task_id')!=task.id
             or proof.get('previous_revision')!=(ctx.get('reinvite_request') or {}).get('original_revision')
-            or predecessor.worker_id!=w.id or predecessor.lead_id!=task.lead_id or predecessor.sales_id!=task.sales_id
+            or predecessor.worker_id!=w.id or predecessor.lead_id!=previous_lead_id or predecessor.sales_id!=task.sales_id
             or predecessor.native_self_wxid!=w.hook_self_wxid or predecessor.native_peer_wxid!=peer
             or ctx.get('account_epoch')!=w.hook_account_epoch
             or any(proof.get(k)!=v for k,v in {'self_wxid':w.hook_self_wxid,'account_epoch':w.hook_account_epoch,
@@ -173,9 +183,11 @@ def replacement_predecessor(db,w,task,peer,existing):
 def require_binding_chain(existing, current):
     """Allow only this binding and its retained disabled predecessors."""
     allowed={current.id}
+    by_id={b.id:b for b in existing}
     while True:
         added={b.id for b in existing if b.bind_status=='disabled' and b.replacement_binding_id in allowed
-               and b.worker_id==current.worker_id and b.lead_id==current.lead_id
+               and b.worker_id==current.worker_id and (b.lead_id==current.lead_id
+                   or (b.native_context or {}).get('successor_lead_id')==by_id[b.replacement_binding_id].lead_id)
                and b.sales_id==current.sales_id and b.native_self_wxid==current.native_self_wxid
                and b.native_peer_wxid==current.native_peer_wxid}
         if added<=allowed:break

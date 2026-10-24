@@ -55,20 +55,20 @@ def inventory(db,authenticated,instance,payload):
             'remark_code':binding.remark_code or ''})
     invitations=[]
     for task in db.scalars(select(Task).where(Task.worker_id==w.id,Task.deleted_at.is_(None),
-            Task.task_type=='add_friend',Task.status=='completed',Task.result_code=='invite_sent').order_by(Task.created_at,Task.id)):
+            Task.task_type=='add_friend',Task.status.in_(['completed','cancelled'])).order_by(Task.created_at,Task.id)):
         if task.id in source_tasks or followup_block_reason(db,task.lead_id,lock=False):continue
-        proof=db.scalar(select(TaskEvidence).where(TaskEvidence.task_id==task.id,TaskEvidence.evidence_type=='hook_invite_submission'))
-        data=proof.extra_metadata or {} if proof else {}
-        grant=db.scalar(select(TaskEvidence).where(TaskEvidence.task_id==task.id,
-            TaskEvidence.evidence_type=='hook_reinvite_authorization'))
-        if grant:
-            previous=db.get(WechatSessionBinding,(grant.extra_metadata or {}).get('previous_binding_id'))
+        from app.services.hook_binding_transfer import binding_origin
+        from app.errors import AppError
+        try:
+            proof,data,authorization=binding_origin(db,task,w)
+        except AppError:
+            continue
+        if authorization:
+            previous=db.get(WechatSessionBinding,authorization.get('previous_binding_id'))
             if (previous is None or previous.replacement_binding_id or
                     ((previous.native_context or {}).get('reinvite_request') or {}).get('task_id')!=task.id):
                 continue
-        if (proof and data.get('backend_validated') is True and data.get('self_wxid')==payload.self_wxid
-                and data.get('account_epoch')==payload.account_epoch):
-            invitations.append({'source_task_id':task.id})
+        invitations.append({'source_task_id':task.id})
     bindings=with_open_handoffs(db,w.id,payload.self_wxid,payload.account_epoch,bindings)
     flow=dict(w.inflight_flow_state or {})
     current=db.get(Task,flow.get('flow_id')) if flow.get('flow_id') else None

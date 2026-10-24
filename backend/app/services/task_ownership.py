@@ -86,6 +86,10 @@ def task_owner_matches(db: Session, task: Task, worker_id: str, *, executors: di
 
 def require_task_owner(db: Session, task: Task, worker_id: str, *, allow_started: bool = False) -> None:
     executors = lock_task_executors(db, [task], worker_ids=[worker_id]) if task.task_type == "add_friend" else {}
+    if unclaimed_add_friend(task) and (not allow_started or not has_unsettled_task_flow(task, executors)):
+        from app.services.hook_binding_transfer import invitation_needs_review, BLOCK
+        if invitation_needs_review(db, task):
+            raise AppError(BLOCK, '该微信已有客户档案，请在客户详情确认接续归属', 409)
     if allow_started and task.task_type == "add_friend" and (
         not unclaimed_add_friend(task) or has_unsettled_task_flow(task, executors)
     ):
@@ -117,6 +121,9 @@ def synchronize_unstarted_task(db: Session, task: Task, actor, *, executors: dic
         from app.services.followup_eligibility import followup_block_reason
         if not followup_block_reason(db, task.lead_id, lock=False):
             task.status, task.block_code = "pending", None
+    from app.services.hook_binding_transfer import invitation_needs_review, BLOCK
+    if usable and invitation_needs_review(db, task):
+        task.status, task.block_code = 'blocked', BLOCK
     after = {"worker_id": task.worker_id, "status": task.status, "block_code": task.block_code}
     if before == after:
         return False

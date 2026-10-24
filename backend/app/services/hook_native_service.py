@@ -45,18 +45,23 @@ def store_observations(db: Session, authenticated: Worker, payload: dict, instan
             or (not retired and int(binding.authorization_revision or 1) != payload['binding_revision'])
             or sales is None or not sales.enabled or sales.id != worker.hook_sales_id or binding.sales_id != sales.id):
         raise AppError('HOOK_BINDING_NOT_AUTHORIZED', '客户绑定或授权已失效', 409)
-    origin = db.get(Task, context.get('source_task_id')) if context.get('source_task_id') else None
-    evidence = db.get(TaskEvidence, context.get('invite_evidence_id')) if context.get('invite_evidence_id') else None
-    proof = dict(evidence.extra_metadata or {}) if evidence else {}
-    if (origin is None or origin.deleted_at or origin.task_type != 'add_friend' or origin.status != 'completed'
-            or origin.result_code != 'invite_sent' or origin.worker_id != worker.id or origin.sales_id != sales.id
-            or origin.lead_id != binding.lead_id or evidence is None or evidence.task_id != origin.id
-            or evidence.worker_id != worker.id or evidence.evidence_type != 'hook_invite_submission'
-            or proof.get('schema_version') != 'hook-invite-proof-v1' or proof.get('shortcode') != binding.remark_code
-            or proof.get('self_wxid') != payload['self_wxid'] or proof.get('account_epoch') != payload['account_epoch']
-            or (retired and proof.get('backend_validated') is not True)
-            or proof.get('shortcode_written') is not True or proof.get('invitation_submitted') is not True):
-        raise AppError('HOOK_INVITE_ORIGIN_REQUIRED', '缺少系统加好友申请的绑定依据', 409)
+    from app.services.hook_binding_transfer import require_binding_origin, grant, TRANSFER
+    authorization=grant(db,context.get('source_task_id'))
+    if authorization and (authorization.extra_metadata or {}).get('mode')==TRANSFER:
+        require_binding_origin(db,binding,worker)
+    else:
+        origin = db.get(Task, context.get('source_task_id')) if context.get('source_task_id') else None
+        evidence = db.get(TaskEvidence, context.get('invite_evidence_id')) if context.get('invite_evidence_id') else None
+        proof = dict(evidence.extra_metadata or {}) if evidence else {}
+        if (origin is None or origin.deleted_at or origin.task_type != 'add_friend' or origin.status != 'completed'
+                or origin.result_code != 'invite_sent' or origin.worker_id != worker.id or origin.sales_id != sales.id
+                or origin.lead_id != binding.lead_id or evidence is None or evidence.task_id != origin.id
+                or evidence.worker_id != worker.id or evidence.evidence_type != 'hook_invite_submission'
+                or proof.get('schema_version') != 'hook-invite-proof-v1' or proof.get('shortcode') != binding.remark_code
+                or proof.get('self_wxid') != payload['self_wxid'] or proof.get('account_epoch') != payload['account_epoch']
+                or (retired and proof.get('backend_validated') is not True)
+                or proof.get('shortcode_written') is not True or proof.get('invitation_submitted') is not True):
+            raise AppError('HOOK_INVITE_ORIGIN_REQUIRED', '缺少系统加好友申请的绑定依据', 409)
     # Intake immediately invalidates AI/send admission, before asynchronous dispatch.
     if not retired:
         context.update(history_ready=False,history_reason_code='HOOK_HISTORY_NEW_FACTS_PENDING')

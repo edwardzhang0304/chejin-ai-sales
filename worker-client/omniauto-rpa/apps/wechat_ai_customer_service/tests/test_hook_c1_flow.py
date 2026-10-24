@@ -68,7 +68,7 @@ class Tests(unittest.TestCase):
     def test_complete_replay_synthetic_ocr_anchors_simulated_input(self):
         r=self.run_flow();self.assertEqual(r['status'],'submitted_pending_recipient');self.assertFalse(r['delivery_confirmed']);self.assertFalse(r['ai_admission'])
         self.assertEqual(self.ui.actions,['focus_main_search','network_lookup','open_invite_form','dialog_selected','focus_greeting','focus_remark','confirm_invite_once','search_cleanup'])
-        self.assertEqual(self.ui.captures,['header','lookup','card','fields','fields_after_greeting','fields_filled','footer']);self.assertEqual(r['cleanup'],'search_empty_verified')
+        self.assertEqual(self.ui.captures,['header','lookup','card','fields','fields_filled','footer']);self.assertEqual(r['cleanup'],'search_empty_verified')
         self.assertTrue(json.loads(self.j.path.read_text())['submit_attempted'])
     def test_no_second_submit_after_unknown(self):
         self.ui.fail='observe';r=self.run_flow();self.assertEqual(r['status'],'submission_unknown');self.assertTrue(self.j.path.exists())
@@ -141,7 +141,7 @@ class Tests(unittest.TestCase):
     def test_red_annotation_cannot_authorize_button(self):
         frame=self.ui.frames['header'];row=f.unique_text(frame,('Q搜索','搜索'));t=f.target(frame,row,filled='search');self.assertEqual(t['bounds'],[83,31,320,62])
     def test_failure_at_each_pre_submit_stage_never_retries(self):
-        for stage in ['header','lookup','card','fields','fields_after_greeting','fields_filled','footer']:
+        for stage in ['header','lookup','card','fields','fields_filled','footer']:
             with self.subTest(stage=stage):
                 self.ui=ReplayUI();self.ui.fail=stage;r=self.run_flow();self.assertFalse(r['submit_attempted']);self.assertNotIn('confirm_invite_once',self.ui.actions)
 
@@ -231,6 +231,21 @@ class NativeGuardTests(unittest.TestCase):
         self.ui.identity_guard=Mock();self.ui.count=0;self.ui.ocr_count=0;self.ui.last_frame=None;self.ui.evidence=Path(self.tmp.name)
         self.fr=frames()['header'];self.fr.hwnd=11;self.fr.origin=(12,12);self.fr.geometry=dict(self.client);self.fr.timestamp=f.time.monotonic();self.ui.last_frame=self.fr
     def tearDown(self):self.tmp.cleanup()
+    def test_cached_remark_position_keeps_all_native_action_guards(self):
+        for change in ('expired','focus','geometry','occluded'):
+            with self.subTest(change=change):
+                self.foreground=11;self.hit=11;self.client['width']=1063
+                frame=frames()['fields'];frame.hwnd=11;frame.origin=(12,12)
+                frame.geometry=dict(self.client);frame.timestamp=f.time.monotonic()
+                self.ui.last_frame=frame
+                target=f.form_fields(frame)['remark']
+                if change=='expired':frame.timestamp-=16
+                if change=='focus':self.foreground=22
+                if change=='geometry':self.client['width']+=1
+                if change=='occluded':self.hit=22
+                with self.assertRaises(f.FlowStop):self.ui.click(frame,target,'focus_remark')
+                self.ops.win32api.mouse_event.assert_not_called()
+
     def test_guard_failure_distinguishes_each_original_condition(self):
         cases = [
             ('main_window_missing', lambda: setattr(self.gui, 'IsWindow', lambda h: False)),

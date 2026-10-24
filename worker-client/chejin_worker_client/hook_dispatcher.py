@@ -46,6 +46,7 @@ class HookBusinessDispatcher:
         self._startup_window_lock=threading.Lock()
         self._next_customer=0
         self._friend_read_due=0
+        self._binding_conflicts=set()
         self._relationship_read_due=0
         self._reconciled=False
         self._last_wait_codes={}
@@ -400,6 +401,33 @@ class HookBusinessDispatcher:
         rt.c1_results.settle_before_ui(task)
         rt.finish(task['id'],rt.active_flow_id,token)
 
+    def _discover_invitations(self,runner,invitations):
+        rt=self.runtime
+        self._binding_conflicts.intersection_update(i['source_task_id'] for i in invitations)
+        # Discover only invitations proved to originate from this system.
+        if invitations and time.monotonic()>=self._friend_read_due:
+            self._friend_read_due=time.monotonic()+8
+            for invite in invitations:
+                task_id=invite['source_task_id']
+                self.diagnostic_context={'source_task_id':task_id,'phase':'native_friend_binding'}
+                try:
+                    rt.discover(task_id)
+                    self._binding_conflicts.discard(task_id)
+                except ApiError as exc:
+                    if exc.status_code==409 and exc.code=='HOOK_INVITE_AUTHORIZATION_RETIRED':
+                        emit_progress(runner,invite['source_task_id'],'bind','done','invite_replaced')
+                        continue
+                    if exc.status_code==409 and exc.code=='HOOK_BINDING_CONFLICT':
+                        emit_progress(runner,task_id,'bind','waiting','binding_conflict')
+                        if task_id not in self._binding_conflicts:
+                            storage.append_log('WARN','hook_binding_conflict','客户绑定待运营确认，其他客户继续处理。',
+                                task_id=task_id,error_code=exc.code,include_exception_text=False,
+                                metadata={'source_task_id':task_id,'phase':'native_friend_binding'})
+                            self._binding_conflicts.add(task_id)
+                        continue
+                    emit_progress(runner,task_id,'bind','waiting','recipient')
+                    if exc.code not in {'HOOK_SHORTCODE_NOT_UNIQUE','HOOK_FRIEND_NOT_FOUND','HOOK_SHORTCODE_MATCH_REQUIRED','HOOK_FRIEND_CANDIDATE_UNRESOLVED'}:raise
+
     def tick(self,runner,services):
         before=self._wait_events
         self._business_cycle_verified=False
@@ -491,17 +519,7 @@ class HookBusinessDispatcher:
         if not services.startup_window_ready_for(prepared):
             self._report_wait('HOOK_STARTUP_WINDOW_PENDING');return
         self._business_cycle_verified=True
-        # Discover only invitations proved to originate from this system.
-        if inventory['invitations'] and time.monotonic()>=self._friend_read_due:
-            self._friend_read_due=time.monotonic()+8
-            for invite in inventory['invitations']:
-                try:rt.discover(invite['source_task_id'])
-                except ApiError as exc:
-                    if exc.status_code==409 and exc.code=='HOOK_INVITE_AUTHORIZATION_RETIRED':
-                        emit_progress(runner,invite['source_task_id'],'bind','done','invite_replaced')
-                        continue
-                    emit_progress(runner,invite['source_task_id'],'bind','waiting','recipient')
-                    if exc.code not in {'HOOK_SHORTCODE_NOT_UNIQUE','HOOK_FRIEND_NOT_FOUND','HOOK_SHORTCODE_MATCH_REQUIRED','HOOK_FRIEND_CANDIDATE_UNRESOLVED'}:raise
+        self._discover_invitations(runner,inventory['invitations'])
         if not rt.active_flow_id and time.monotonic()>=self._housekeeping_due:
             from .hook_retention import retire_inbox,retire_c1_roi,retire_history_artifacts
             from .config import CONFIG

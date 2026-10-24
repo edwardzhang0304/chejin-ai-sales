@@ -296,3 +296,16 @@ def test_terminal_receipt_is_complete_but_never_guesses_delivery(observed,ack,ex
   assert '无法确认送达' in confirm['description']
   assert not any('已发送' in row.get('description','') for row in timeline.model())
  else:assert timeline.latest[('task','finished')]['title']=='本轮回复已完成'
+
+
+def test_binding_conflict_wait_is_stable_and_closes_after_verified_binding():
+    timeline=HookProgressTimeline()
+    timeline.apply(evt('bind','waiting','invite','recipient'))
+    timeline.apply(evt('bind','waiting','invite','binding_conflict'))
+    before=[dict(row) for row in timeline.steps]
+    for _ in range(4):timeline.apply(evt('bind','waiting','invite','binding_conflict'))
+    assert timeline.steps==before
+    assert timeline.steps[-1]['title']=='客户绑定冲突，等待运营处理'
+    timeline.apply(evt('bind','done','invite'))
+    assert timeline.steps[-1]['state']=='done'
+    assert timeline.steps[-1]['title']=='核对好友并绑定客户'

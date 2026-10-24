@@ -120,14 +120,8 @@ def bind_friend(db, authenticated, instance, payload):
     w = account(db, authenticated, instance, payload)
     task = _task(db, payload.source_task_id, w)
     require_followup(db, task.lead_id)
-    proof_row = db.scalar(select(TaskEvidence).where(TaskEvidence.task_id == task.id,
-        TaskEvidence.evidence_type == 'hook_invite_submission'))
-    proof = dict(proof_row.extra_metadata or {}) if proof_row else {}
-    if (task.status != 'completed' or task.result_code != 'invite_sent' or proof.get('backend_validated') is not True
-            or proof.get('schema_version') != 'hook-invite-proof-v1' or proof.get('self_wxid') != w.hook_self_wxid
-            or proof.get('account_epoch') != w.hook_account_epoch or proof_row.worker_id != w.id
-            or proof.get('invitation_submitted') is not True or proof.get('shortcode_written') is not True):
-        raise AppError('HOOK_INVITE_ORIGIN_REQUIRED', '缺少系统正式申请的绑定依据', 409)
+    from app.services.hook_binding_transfer import binding_origin
+    proof_row,proof,authorization=binding_origin(db,task,w)
     rules = shared_adapter('hook_contract_rules')
     if rules.digest(payload.friend_list) != payload.raw_evidence_digest:
         raise AppError('HOOK_FRIEND_EVIDENCE_MISMATCH', '好友列表证据摘要不一致', 409)
@@ -171,7 +165,7 @@ def bind_friend(db, authenticated, instance, payload):
             bind_status='bound', listen_status='listening', allow_listening=True,
             native_context={'account_epoch': w.hook_account_epoch, 'source_task_id': task.id,
                 'invite_evidence_id': proof_row.id, 'business_enabled': True,
-                'history_since_create_time': str(int(shared_adapter('hook_history_rules').utc(proof['attempted_at']).timestamp())),
+                'history_since_create_time': str(int(shared_adapter('hook_history_rules').utc(authorization['authorized_at'] if authorization.get('reuse_previous_invitation') else proof['attempted_at']).timestamp())),
                 'history_ready': False,
                 'binding_evidence_digest': payload.raw_evidence_digest, 'bound_process_generation': payload.process_generation})
         db.add(binding); db.flush()

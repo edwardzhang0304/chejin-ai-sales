@@ -45,3 +45,16 @@ def test_mutating_geometry_does_not_mutate_saved_form_identity():
     frame=ReplayUI().frames['fields'];frame.geometry={'width':450}
     layout=f.InviteFormLayout(frame);frame.geometry['width']=451
     with pytest.raises(f.FlowStop,match='LAYOUT_CHANGED'):layout.current(frame)
+
+
+def test_both_inputs_use_the_same_initial_frame_then_one_shortcode_read(tmp_path):
+    ui=ReplayUI();replace=ui.replace;used=[]
+    def record(frame,text):
+        if frame.name.startswith('fields'):used.append(frame)
+        replace(frame,text)
+    ui.replace=record
+    result=f.run_flow(ui,phone='13800000003',verify_message='您好',remark_name='CJH5N28',
+        remark_code='CJH5N28',journal=f.SubmitJournal(tmp_path/'submit.json'))
+    assert result['status']=='submitted_pending_recipient'
+    assert len(used)==2 and used[0] is used[1]
+    assert [name for name in ui.captures if name.startswith('fields')]==['fields','fields_filled']

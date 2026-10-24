@@ -333,10 +333,8 @@ def run_flow(ui, *, phone: str, verify_message: str, remark_name: str,
                                  'field_bounds':{key:list(value['bounds']) for key,value in fields.items()}}
         ui.click(frame, fields['greeting'], 'focus_greeting')
         ui.replace(frame, verify_message)
-        # Filling one input changes its text but not the other field. Reacquire
-        # only this ROI to obtain a new frame for the next click.
-        frame = ui.capture('fields_after_greeting')
-        fields = form_layout.current(frame)
+        # Reuse this form's positions. NativeUI still checks age, focus,
+        # window geometry and occlusion before each input operation.
         ui.click(frame, fields['remark'], 'focus_remark')
         ui.replace(frame, remark_name)
         step('verify_remark_shortcode')

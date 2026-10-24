@@ -20,8 +20,9 @@ def test_default_ocr_selection_and_explicit_bad_setting_do_not_fallback(lab):
         create_hook_services(SimpleNamespace(base_url='http://127.0.0.1:12345/api'))
 
 
-@pytest.mark.parametrize("pending_friend", [False, True])
-def test_one_customer_model_wait_does_not_block_other_customer(lab,backend_peer,tmp_path,pending_friend):
+@pytest.mark.parametrize("run_status", ["running", "paused"])
+@pytest.mark.parametrize("pending_friend", [False, True, "conflict"])
+def test_one_customer_model_wait_does_not_block_other_customer(lab,backend_peer,tmp_path,pending_friend,run_status):
     manager,credentials,state,response=setup(lab,backend_peer)
     prepared=manager.prepare(credentials,state)
     scope=prepared.registration.scope
@@ -34,29 +35,30 @@ def test_one_customer_model_wait_does_not_block_other_customer(lab,backend_peer,
         def call(self,credentials,method,path,body=None,**kwargs):
             calls.append(path)
             if path.endswith('native-work'):
-                return {'schema_version':'hook-native-work-v1','observation_query_version':1,**account,'run_status':'running','inflight_flow':{},
+                return {'schema_version':'hook-native-work-v1','observation_query_version':1,**account,'run_status':run_status,'inflight_flow':{},
                     'bindings':bindings,'invitations':[{'source_task_id':'pending-friend'}] if pending_friend else [],'retained_sends':[],'inflight_task':None}
-            if bindings[0]['batch_ids'][0] in path:return {'processing':True}
-            return {'reply_action':{'status':'queued'},'task':{'id':str(uuid.uuid4())}}
+            if bindings[0]['batch_ids'][0] in path:return {'processing':True,'observation_only':run_status=='paused'}
+            return {'reply_action':{'status':'queued'},'task':{'id':str(uuid.uuid4())},'observation_only':run_status=='paused'}
     class Runtime:
         def __init__(self,*args,**kwargs):self.credentials=credentials;self.account=account;self.scope=scope;self.active_flow_id=None;self.active_task_id=None;self.clock=SimpleNamespace(observe=lambda x:None)
         def discover(self,task_id):
             from chejin_worker_client.api import ApiError
             calls.append(task_id)
-            raise ApiError('HOOK_FRIEND_NOT_FOUND','synthetic waiting',409)
+            raise ApiError('HOOK_BINDING_CONFLICT' if pending_friend=='conflict' else 'HOOK_FRIEND_NOT_FOUND','synthetic waiting',409)
         def barrier(self,b):return (0,0)
         def sync(self,b):return {'history_ready':True}
         def reply_once(self,b,data,*,history):sends.append(b['binding_id']);return {'status':'sent'}
-    runner=SimpleNamespace(binding=SimpleNamespace(run_status='running'),stop_event=threading.Event(),api=SimpleNamespace(),
-        _can_start_new_flow=lambda:True,_worker_transaction_barrier_ready=lambda *a,**kw:True)
+    runner=SimpleNamespace(binding=SimpleNamespace(run_status=run_status),stop_event=threading.Event(),api=SimpleNamespace(),
+        _can_start_new_flow=lambda:run_status=='running',_worker_transaction_barrier_ready=lambda *a,**kw:True)
     services=SimpleNamespace(connection=manager,_credentials=credentials,startup_window_ready_for=lambda _:True)
     dispatcher=HookBusinessDispatcher(Client(),tmp_path/'continuous',lambda *a:None,lambda *a:None,
         automatic_transcription_disabled=lambda:True,runtime_factory=Runtime)
     try:
         dispatcher.tick(runner,services)
-        assert ('pending-friend' in calls)==pending_friend
-        assert sends==[bindings[1]['binding_id']]
-        assert any(bindings[0]['batch_ids'][0] in path for path in calls)
+        assert ('pending-friend' in calls)==bool(pending_friend)
+        assert sends==([bindings[1]['binding_id']] if run_status=='running' else [])
+        assert runner.binding.run_status==run_status
+        if run_status=='running':assert any(bindings[0]['batch_ids'][0] in path for path in calls)
     finally:manager.close()
 
 

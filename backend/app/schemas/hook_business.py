@@ -159,3 +159,7 @@ class HookReinviteRequest(BaseModel):
         if value is not True:
             raise ValueError('Explicit confirmation is required')
         return value
+
+
+class HookBindingTransferRequest(HookReinviteRequest):
+    source_task_id: str = Field(min_length=36, max_length=36)

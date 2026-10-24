@@ -1,7 +1,7 @@
 import { request } from "../../shared/api/client";
 import type { TaskCancelPayload, TaskCommentPayload, TaskDetail, TaskEvent, TaskListResponse, TaskQuery } from "./types";
 
-const blockReasonCodes = new Set(["SALES_WORKER_NOT_BOUND"]);
+const blockReasonCodes = new Set(["SALES_WORKER_NOT_BOUND", "HOOK_BINDING_TRANSFER_REQUIRED"]);
 
 function queryParams(query: TaskQuery) {
   const exceptionCode = query.exception_code === "all" ? "" : query.exception_code;

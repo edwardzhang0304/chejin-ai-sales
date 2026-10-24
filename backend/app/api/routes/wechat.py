@@ -772,3 +772,21 @@ def reinvite_native_customer(lead_id: str, payload: HookReinviteRequest,
         data=reinvite(db,lead_id,payload,actor);db.commit();return ok(data)
     except Exception:
         db.rollback();raise
+
+
+@router.get('/leads/{lead_id}/wechat/transfer', dependencies=[Depends(require_admin_auth)])
+def preview_native_transfer(lead_id: str, db: Session = Depends(get_db)):
+    from app.services.hook_binding_transfer import preview
+    return ok(preview(db, lead_id))
+
+
+from app.schemas.hook_business import HookBindingTransferRequest
+
+@router.post('/leads/{lead_id}/wechat/transfer', dependencies=[Depends(require_admin_auth)])
+def authorize_native_transfer(lead_id: str, payload: HookBindingTransferRequest,
+        db: Session = Depends(get_db), actor: ActorContext = Depends(get_actor_context)):
+    from app.services.hook_binding_transfer import authorize
+    try:
+        data=authorize(db,lead_id,payload,actor);db.commit();return ok(data)
+    except Exception:
+        db.rollback();raise

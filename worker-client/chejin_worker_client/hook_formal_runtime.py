@@ -290,7 +290,6 @@ class HookFormalRuntime:
         return {'task_id':task['id'],'outcome':outcome,'settlement':result,'preparation':preparation}
 
     def discover(self,task_id):
-        self.progress(task_id,'bind','waiting','recipient')
         friends=self.gateway.friend_list(self.process,self.scope)
         path=self.private_root/'friend-reads'/f'{rules.digest([self.process.generation,friends.payload])}.json'
         if not path.exists():_save(path,friends.payload)
