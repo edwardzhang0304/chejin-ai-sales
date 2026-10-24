@@ -680,17 +680,17 @@
     "recall_author_and_reviewer_shared_trigger_context"
   ],
   "current_release": {
-    "version": "0.10.14",
+    "version": "0.10.15",
     "source_commit": "209f7fb66a01a05736fdd32e54808e54a9b66ce3",
     "source_state": "gray_release_candidate",
     "published": false,
-    "contract_revision": "0.10.14",
-    "contract_sha256": "3acc753b254dc99a1d1770e66cc03b7e30483ff1d5e030fd0a07d92baf402246",
+    "contract_revision": "0.10.15",
+    "contract_sha256": "bcf65fc4f9e1f6bbd101fec84544e0a6f02f203335225ec5793089ce2a4d089d",
     "scope": [
       "native_hook_state_and_release_preparation",
       "schema_revision_sync"
     ],
-    "note": "0.10.14 reviewed evidence-chain through eeeca83: preserve C1 cause/material, bounded current-fault priority, visible collection gaps, desktop-only diagnostic export. Unified contract metadata; original0.10.13 button and Windows desktop export pending. No DLL change."
+    "note": "0.10.15 reviewed cumulative bbe404a including6f2bdd8: startup/form layout reuse, opacity and render evidence, terminal result reconciliation. Original0.10.14 button and physical Windows pending. No DLL change."
   },
   "historical_integrations": [
     {
