@@ -18,7 +18,9 @@ from .c1_layout import MAIN_REGIONS, main_regions, form_regions, valid_rect, mai
 
 
 class FlowStop(RuntimeError):
-    pass
+    def __init__(self, code, *, search_geometry=None):
+        super().__init__(code)
+        self.search_geometry = search_geometry
 
 
 def clean(value: Any) -> str:
@@ -85,6 +87,30 @@ def target(frame: Frame, row: dict, *, filled: str | None = None) -> dict:
     return {'bounds': b, 'point': [(b[0]+b[2])//2, (b[1]+b[3])//2], 'frame': frame.name}
 
 
+def verify_cached_search_geometry(frame: Frame, bounds, *, focused=False) -> None:
+    """Validate local chrome around the saved input; never return a new position.
+
+    The small halo detects changed/clipped edges. Component coordinates are
+    diagnostic observations only; every action still uses the startup bounds.
+    Focused input chrome retains the existing antialias-border tolerance.
+    """
+    if not valid_rect(bounds, frame.image.width, frame.image.height):
+        raise FlowStop('SEARCH_STARTUP_LAYOUT_INVALIDATED')
+    tolerance = max(1, round((bounds[3]-bounds[1])*.15)) if focused else 0
+    halo = tolerance+1
+    region = [max(0,bounds[0]-halo),max(0,bounds[1]-halo),
+              min(frame.image.width,bounds[2]+halo),min(frame.image.height,bounds[3]+halo)]
+    crop = frame.image.crop(tuple(region))
+    observed = [[b[0]+region[0],b[1]+region[1],b[2]+region[0],b[3]+region[1]]
+                for kind in (('search','white') if focused else ('search',))
+                for b in components(crop,kind)]
+    matches = [b for b in observed if all(abs(a-c)<=tolerance for a,c in zip(b,bounds))]
+    if len(matches)!=1:
+        raise FlowStop('SEARCH_CONTROL_GEOMETRY_CHANGED', search_geometry={
+            'expected_bounds':list(bounds),'observed_local_components':observed,
+            'verification_region':region,'tolerance':tolerance})
+
+
 def empty_search(frame: Frame, cached_bounds=None) -> dict:
     w, h = frame.image.size
     # The default grey 搜索 placeholder is an empty input, not a query.
@@ -97,12 +123,16 @@ def empty_search(frame: Frame, cached_bounds=None) -> dict:
             focused_search_empty_pixels(frame.image.crop(tuple(b)))
         return {'bounds':b,'point':[(b[0]+b[2])//2,(b[1]+b[3])//2],'frame':frame.name,'proof':'focused_empty_pixels'}
     row = unique_text(frame, aliases, region=[0, 0, w, h])
-    result = target(frame, row, filled='search')
+    if cached_bounds is None:
+        result = target(frame, row, filled='search')  # Startup / standalone replay only.
+    else:
+        b = list(cached_bounds)
+        verify_cached_search_geometry(frame, b)
+        if not contains(b,row):raise FlowStop('SEARCH_CONTROL_GEOMETRY_CHANGED')
+        result = {'bounds':b,'point':[(b[0]+b[2])//2,(b[1]+b[3])//2],'frame':frame.name}
     # Restrict the control to the left header; Q is an OCR rendering of the
     # magnifier, admitted only inside the actual neutral input pixels.
     b = result['bounds']
-    if cached_bounds is not None and b != list(cached_bounds):
-        raise FlowStop('SEARCH_CONTROL_GEOMETRY_CHANGED')
     if b[1] < 8 or b[3] > h or b[2]-b[0] > .6*w:
         raise FlowStop('SEARCH_CONTROL_OUT_OF_REGION')
     # A placeholder is insufficient when another OCR row still contains a query.
@@ -456,11 +486,12 @@ class NativeUI:
 
     def exception_diagnostic(self, exc):
         diagnostics = getattr(self, 'diagnostics', None)
-        if diagnostics is not None:
-            return diagnostics.details(exc, self)
-        # Standalone adapter callers have no Worker sink; do not expose messages.
-        return {'exception_type': type(exc).__name__, 'phase': getattr(self, 'guard_phase', None),
-                'operation': getattr(self, 'guard_operation', None)}
+        details = diagnostics.details(exc, self) if diagnostics is not None else {
+            'exception_type': type(exc).__name__, 'phase': getattr(self, 'guard_phase', None),
+            'operation': getattr(self, 'guard_operation', None)}
+        if isinstance(exc,FlowStop) and exc.search_geometry is not None:
+            details['search_control'] = exc.search_geometry
+        return details
 
     def record_capture_error(self, target, exc, report):
         diagnostics = getattr(self, 'diagnostics', None)
@@ -968,9 +999,10 @@ class NativeUI:
         try:
             target = empty_search(frame, bounds)
         except FlowStop as exc:
+            if str(exc)=='SEARCH_CONTROL_GEOMETRY_CHANGED':self.search_control_cache.clear()
             if str(exc)!='SEARCH_EMPTY_CARET_OR_TEXT_UNRESOLVED':raise
         else:
-            self.search_control_cache['bounds'] = list(target['bounds'])
+            if bounds is None:self.search_control_cache['bounds'] = list(target['bounds'])
             return frame, target
         # One purposeful input-only observation for a possible blinking caret.
         # Never mask a thin glyph; success needs an actually mark-free frame.
@@ -979,7 +1011,7 @@ class NativeUI:
         self.ops.humanized_action_sleep(450,550)
         narrow=self.capture('search_empty')
         focused_search_empty_pixels(narrow.image)
-        self.search_control_cache['bounds'] = list(self.search_empty_bounds)
+        if bounds is None:self.search_control_cache['bounds'] = list(self.search_empty_bounds)
         b=[0,0,narrow.image.width,narrow.image.height]
         return narrow,{'bounds':b,'point':[b[2]//2,b[3]//2],'frame':narrow.name,'proof':'focused_empty_pixels'}
 
@@ -988,10 +1020,11 @@ class NativeUI:
         # else's input. Only this flow's exact query authorizes deletion.
         # Validate cached bounds against this already captured frame, without
         # selecting a new point. Internal layout changes must not reuse it.
-        margin = max(1, round((bounds[3]-bounds[1])*.15))
-        observed = components(frame.image,'search') + components(frame.image,'white')
-        if not any(all(abs(a-b) <= margin for a,b in zip(control,bounds)) for control in observed):
-            raise FlowStop('SEARCH_CONTROL_GEOMETRY_CHANGED')
+        try:
+            verify_cached_search_geometry(frame,bounds,focused=True)
+        except FlowStop:
+            getattr(self,'search_control_cache',{}).clear()
+            raise
         expected = getattr(self, 'owned_search_query', None)
         if not expected:
             raise FlowStop('SEARCH_CONTENT_OWNERSHIP_UNRESOLVED')
@@ -1032,7 +1065,8 @@ class NativeUI:
         try:
             frame, target = self.verified_empty_search(frame)
         except FlowStop as exc:
-            if str(exc) == 'SEARCH_EMPTY_CARET_OR_TEXT_UNRESOLVED':raise
+            if str(exc) in {'SEARCH_EMPTY_CARET_OR_TEXT_UNRESOLVED',
+                            'SEARCH_CONTROL_GEOMETRY_CHANGED', 'SEARCH_STARTUP_LAYOUT_INVALIDATED'}:raise
         else:
             self.cleanup_empty_proof = target.get('proof', 'placeholder_and_ocr')
             self.cleanup_action = 'already_empty_no_input'
@@ -1056,7 +1090,8 @@ class NativeUI:
             try:
                 checked, target = self.verified_empty_search(frame)
             except FlowStop as exc:
-                if str(exc) == 'SEARCH_EMPTY_CARET_OR_TEXT_UNRESOLVED':raise
+                if str(exc) in {'SEARCH_EMPTY_CARET_OR_TEXT_UNRESOLVED',
+                                'SEARCH_CONTROL_GEOMETRY_CHANGED', 'SEARCH_STARTUP_LAYOUT_INVALIDATED'}:raise
             else:
                 self.cleanup_empty_proof = target.get('proof','placeholder_and_ocr')
                 self.cleanup_action = 'clear_icon_clicked_once'
