@@ -173,6 +173,7 @@ class HookWorkerServices:
                         emit_progress(runner,'startup','wechat_window','waiting',
                                       {'HOOK_STARTUP_FOREGROUND_REQUIRED':'startup_foreground',
                                        'HOOK_STARTUP_RETRY_WAIT':'startup_retry',
+                                       'HOOK_STARTUP_WINDOW_OBSERVATION_FAILED':'startup_observation',
                                        'HOOK_STARTUP_RETRY_EXHAUSTED':'startup_exhausted'}[exc.code])
                     except ui_lock.UiLockError as exc:
                         if exc.code in {ui_lock.UI_LOCK_BUSY, ui_lock.UI_LOCK_ACQUIRE_TIMEOUT}:

@@ -20,7 +20,7 @@ from .hook_worker_services import HookWorkerServices
 from .hook_formal_client import HookFormalClient
 from .hook_dispatcher import HookBusinessDispatcher
 from .shared_rules import hook_contract_rules as rules
-from .hook_startup_window import StartupWindowAttempts, StartupWindowError, PREPARE_FAILURES
+from .hook_startup_window import StartupWindowAttempts, StartupWindowError, StartupWindowWait, PREPARE_FAILURES
 
 
 
@@ -61,6 +61,7 @@ class WindowsC1:
         self._ops=None
         self._search_control_cache = {}
         self._startup_attempts = StartupWindowAttempts()
+        self._startup_probe_error = None
     def startup_layout_ready(self):
         # NativeUI invalidates this shared map before raising. Readiness is
         # consumed by the original startup/recovery gates, without a screenshot.
@@ -81,13 +82,34 @@ class WindowsC1:
         import ctypes
         if not ctypes.windll.user32.SetThreadDpiAwarenessContext(ctypes.c_void_p(-4)):
             raise ValueError('HOOK_C1_DPI_CONTEXT_UNAVAILABLE')
+        return ops, self._main_window(ops.win32gui, ops.win32process, process)
+
+    @staticmethod
+    def _main_window(gui, processes, process):
         windows=[]
         def collect(hwnd,_):
-            if (ops.win32gui.IsWindowVisible(hwnd) and ops.win32gui.GetClassName(hwnd)=='WeChatMainWndForPC'
-                    and ops.win32process.GetWindowThreadProcessId(hwnd)[1]==process.pid):windows.append(hwnd)
-        ops.win32gui.EnumWindows(collect,None)
+            if (gui.IsWindowVisible(hwnd) and gui.GetClassName(hwnd)=='WeChatMainWndForPC'
+                    and processes.GetWindowThreadProcessId(hwnd)[1]==process.pid):windows.append(hwnd)
+        gui.EnumWindows(collect,None)
         if len(windows)!=1:raise ValueError('HOOK_C1_MAIN_WINDOW_AMBIGUOUS')
-        return ops,windows[0]
+        return windows[0]
+
+    def _foreground_ready(self, process):
+        # This observation must not initialize OCR, set DPI, or activate UI.
+        if self._ops is None:
+            import win32gui as gui
+            import win32process as processes
+        else:
+            gui, processes = self._ops.win32gui, self._ops.win32process
+        hwnd = self._main_window(gui, processes, process)
+        return gui.GetForegroundWindow() == hwnd and not gui.IsIconic(hwnd)
+
+    def _startup_diagnostics(self, identifier):
+        from .c1_diagnostics import C1Diagnostics
+        from .evidence_paths import task_artifacts
+        folder = (task_artifacts(self.artifact_root.parent, identifier)
+            if self.artifact_root is not None else self.root/'roi'/identifier)
+        return C1Diagnostics(folder, identifier)
     def check_recovery_window(self, process):
         """Read-only; reuse startup/C1 popup classification without activating UI."""
         from apps.wechat_ai_customer_service.adapters.wechat_win32_ocr.hook_c1 import classify_visible_other_windows
@@ -101,18 +123,27 @@ class WindowsC1:
         attempts = self._startup_attempts
         attempts.select(process, scope)
         def foreground_ready():
-            ops, hwnd = self._window(process)
-            gui = ops.win32gui
-            return (gui.GetForegroundWindow() == hwnd and gui.IsWindowVisible(hwnd)
-                    and not gui.IsIconic(hwnd))
+            started = time.monotonic()
+            try:
+                ready = self._foreground_ready(process)
+                self._startup_probe_error = None
+                return ready
+            except Exception as exc:
+                signature = (attempts.key, type(exc).__name__, str(exc))
+                if self._startup_probe_error != signature:
+                    diagnostics = self._startup_diagnostics('startup-window-observation')
+                    diagnostics.write('window-observation.json', {
+                        'status': 'failed', 'phase': 'foreground_observation',
+                        'elapsed_ms': round((time.monotonic()-started)*1000, 3),
+                        'exception': diagnostics.details(exc), 'read_only': True})
+                    self._startup_probe_error = signature
+                raise StartupWindowWait('HOOK_STARTUP_WINDOW_OBSERVATION_FAILED') from exc
         # No activation, screenshot, or OCR while waiting for the operator.
         attempts.check(foreground_ready)
 
     def startup(self,process,gateway,scope):
         from apps.wechat_ai_customer_service.adapters.wechat_win32_ocr.hook_c1 import prepare_window
         from apps.wechat_ai_customer_service.adapters.wechat_win32_ocr.hook_c1_flow import NativeUI
-        from .c1_diagnostics import C1Diagnostics
-        from .evidence_paths import task_artifacts
         import uuid
         attempts = self._startup_attempts
         self.check_startup_retry(process, scope)
@@ -121,9 +152,8 @@ class WindowsC1:
             allow_activation = attempts.begin()
             self._search_control_cache.clear()
             calibration_id = 'startup-search-' + uuid.uuid4().hex
-            evidence = (task_artifacts(self.artifact_root.parent, calibration_id)
-                if self.artifact_root is not None else self.root/'roi'/calibration_id)
-            diagnostics = C1Diagnostics(evidence, calibration_id)
+            diagnostics = self._startup_diagnostics(calibration_id)
+            evidence = diagnostics.folder
             report = {'attempt': attempts.count, 'allow_activation': allow_activation,
                       'phases': [], 'status': 'checking'}
             @contextmanager

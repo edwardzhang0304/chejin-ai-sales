@@ -1,5 +1,6 @@
 """Real startup/heartbeat/ZIP chain, synthetic Win32 and OCR only."""
 import json
+import sys
 import zipfile
 from types import SimpleNamespace
 from unittest.mock import Mock
@@ -21,6 +22,8 @@ from apps.wechat_ai_customer_service.adapters.wechat_win32_ocr import hook_c1_fl
 def actual_window(calibration):
     native,gateway,process,state,ops,root=calibration
     foreground=[22]
+    native._ops=ops
+    ops.win32gui.EnumWindows=lambda visit,arg:visit(11,arg)
     ops.win32gui.GetForegroundWindow=lambda:foreground[0]
     ops.normalize_wechat_window=Mock(side_effect=lambda *a,**kw:{
         'ok':True,'after':ops.get_window_geometry(11),'after_dpi_scale':1.0})
@@ -186,3 +189,86 @@ def test_focus_lost_inside_native_constructor_keeps_original_diagnostics(calibra
     assert report['guard_failures'][-1]['condition']=='foreground_changed'
     assert report['exception']['operation']=='create_ui'
     assert o.try_image_grab.call_count==0
+
+
+@pytest.mark.parametrize('recover',[False,True])
+def test_ocr_initialization_failure_uses_bounded_real_heartbeat_and_keeps_reports(runtime,calibration,monkeypatch,recover):
+    from apps.wechat_ai_customer_service.adapters import wechat_win32_ocr_sidecar as sidecar
+    runner,services,binding,profiles,errors,statuses,posted,_=runtime
+    n,g,p,s,o,root,fg,now=actual_window(calibration)
+    runner.binding=binding;services.attach(binding,lambda:None)
+    process=services.connection.gateway.inspect()
+    o.win32process.GetWindowThreadProcessId=lambda h:(1,process.pid)
+    fg[0]=11
+    loaded_window=n._window
+    n._ops=None;del n._window  # Use the actual loader, including RapidOCR.
+    monkeypatch.setitem(sys.modules,'win32gui',o.win32gui)
+    monkeypatch.setitem(sys.modules,'win32process',o.win32process)
+    monkeypatch.setattr(sidecar,'_OCR_IMPORT_ERROR',None)
+    engine=Mock(side_effect=RuntimeError('synthetic OCR initialization failure'))
+    monkeypatch.setattr(sidecar,'RapidOCR',engine)
+    for key in ('UI_ACTION_GUARD_PATH','UI_ACTION_AUDIT_PATH','RENDER_RECOVERY_GUARD_PATH'):
+        monkeypatch.setattr(sidecar,key,getattr(sidecar,key))
+    dispatcher=HookBusinessDispatcher(None,root,None,n.startup,
+        automatic_transcription_disabled=lambda:True,startup_layout_check=n.startup_layout_ready,
+        startup_retry_check=n.check_startup_retry)
+    dispatcher._business_clock_ready=True;services.dispatcher=dispatcher
+    if recover:
+        services.tick(runner)
+        assert engine.call_count==1 and not services.startup_check_state()['canStart']
+        # The engine is now available; reuse the original synthetic Win32/OCR
+        # boundary and exercise the real remaining startup/heartbeat chain.
+        n._ops=o;n._window=loaded_window;now[0]=11
+        monkeypatch.setattr('chejin_worker_client.hook_worker_services.inspect_windows_window_geometry',
+            lambda p:{'ok':True,'geometry':{'left':12,'top':12,'right':1072,'bottom':752,'width':1060,'height':740}})
+        services.tick(runner)
+        assert services.startup_check_state()['canStart']
+        assert n._startup_attempts.count==0 and n.startup_layout_ready()
+        assert binding.run_status=='faulted' and 'running' not in posted
+        assert o.try_image_grab.call_count==1
+        o.activate_window.assert_not_called()
+        return
+    for attempt in range(3):
+        now[0]=attempt*11
+        services.tick(runner)
+        assert engine.call_count==attempt+1
+        for _ in range(3):services.tick(runner)
+        assert engine.call_count==attempt+1  # Precheck must never reload OCR.
+        assert not services.startup_check_state()['canStart']
+    now[0]=100
+    for _ in range(5):services.tick(runner)
+    assert engine.call_count==3 and n._startup_attempts.count==3
+    assert services.startup_check_state()['title']=='请重开 Worker 校验微信窗口'
+    reports=[json.loads(p.read_text()) for p in (root/'artifacts/tasks').glob('*/diagnostics/startup-check.json')]
+    assert len(reports)==3
+    assert all(r['phases'][-1]['name']=='load_ocr_and_find_window' and
+               r['phases'][-1]['status']=='failed' for r in reports)
+    assert len(list((root/'artifacts/tasks').glob('*/diagnostics/initialization.json')))==3
+    bundle=export_bundle(root,root/'exports')
+    with zipfile.ZipFile(bundle) as z:
+        exported=[json.loads(z.read(name)) for name in z.namelist() if name.endswith('/diagnostics/startup-check.json')]
+    assert len(exported)==3 and all(r['phases'][-1]['status']=='failed' for r in exported)
+    assert binding.run_status=='faulted' and 'running' not in posted
+    o.activate_window.assert_not_called();o.try_image_grab.assert_not_called()
+
+
+@pytest.mark.parametrize('operation',['EnumWindows','GetForegroundWindow'])
+def test_foreground_observation_failure_is_read_only_reported_and_recovers(calibration,home,monkeypatch,operation):
+    n,g,p,s,o,root,fg,now=actual_window(calibration)
+    with pytest.raises(StartupWindowError,match='FOREGROUND_REQUIRED'):n.startup(p,g,{})
+    now[0]=11;fg[0]=11
+    original=getattr(o.win32gui,operation)
+    monkeypatch.setattr(o.win32gui,operation,Mock(side_effect=OSError('synthetic window read failure')))
+    for _ in range(3):
+        with pytest.raises(StartupWindowWait,match='OBSERVATION_FAILED'):n.startup(p,g,{})
+    assert n._startup_attempts.count==1 and o.activate_window.call_count==1
+    assert o.try_image_grab.call_count==0
+    bundle=export_bundle(root,root/'exports')
+    with zipfile.ZipFile(bundle) as z:
+        reports=[json.loads(z.read(name)) for name in z.namelist() if name.endswith('/diagnostics/window-observation.json')]
+    assert len(reports)==1 and reports[0]['read_only']
+    assert reports[0]['phase']=='foreground_observation' and reports[0]['elapsed_ms']>=0
+    monkeypatch.setattr(o.win32gui,operation,original)
+    n.startup(p,g,{})
+    assert n.startup_layout_ready() and n._startup_probe_error is None
+    assert o.activate_window.call_count==1 and o.try_image_grab.call_count==1

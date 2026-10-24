@@ -25,6 +25,7 @@ def calibration(tmp_path):
     ops.try_image_grab=Mock(side_effect=lambda box:state['frame'].image.crop((0,0,box[2]-box[0],box[3]-box[1])))
     ops.run_ocr=Mock(side_effect=lambda im:state['frame'].rows)
     native=WindowsC1(tmp_path/'transactions'/'hook',tmp_path/'artifacts')
+    native._ops=ops
     native._window=Mock(return_value=(ops,11))
     gateway=SimpleNamespace(_locked=Mock(return_value=nullcontext(SimpleNamespace(raise_if_lost=Mock()))),_history_identity=Mock())
     yield native,gateway,SimpleNamespace(pid=99),state,ops,tmp_path

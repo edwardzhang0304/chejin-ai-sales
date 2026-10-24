@@ -1,5 +1,6 @@
 """Sales-facing projections of existing checks; no active probe or auto-resume."""
 ISSUES = {
+ 'HOOK_STARTUP_WINDOW_OBSERVATION_FAILED': ('微信窗口状态暂时无法确认', '客户端暂时无法读取微信窗口状态，已暂停准备操作；仍未恢复时请导出故障证据。'),
  'HOOK_STARTUP_FOREGROUND_REQUIRED': ('请将微信主窗口切到前台', '点击工作微信主窗口并保持在前台，客户端会继续校验；不会自动开始接单。'),
  'HOOK_STARTUP_RETRY_WAIT': ('等待再次校验微信窗口', '启动检查未完成，稍后在微信主窗口处于前台时重新校验；不会反复抢占前台。'),
  'HOOK_STARTUP_RETRY_EXHAUSTED': ('请重开 Worker 校验微信窗口', '本次启动已连续检查失败三次。请保留数据和微信登录，关闭微信弹窗后重开 Worker；原任务不会重新提交。'),

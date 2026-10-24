@@ -28,6 +28,7 @@ PHASES = {
  'invite_finished': '好友申请处理已结束',
 }
 NOTES = {
+ 'startup_observation': '暂时无法读取微信窗口状态，等待核验；不会自动操作微信。',
  'startup_foreground': '请点击工作微信主窗口并保持在前台，校验通过后再手动开始接单。',
  'startup_retry': '等待再次校验，不自动切换前台。',
  'startup_exhausted': '已停止自动重试，请保留数据和微信登录，重开 Worker 校验。',
