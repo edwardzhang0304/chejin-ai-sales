@@ -1398,3 +1398,198 @@ def test_unverifiable_updater_identity_never_starts_parallel_recovery(
     assert gates == []
     assert terminations == []
     assert recoveries == []
+
+
+def _terminal_receipt(plan, status="succeeded"):
+    return {"schema_version": 1, "state": status,
+            "result_code": {"succeeded": "UPDATE_SUCCEEDED", "rolled_back": "UPDATE_ROLLED_BACK",
+                            "rollback_failed": "UPDATE_ROLLBACK_FAILED"}[status],
+            "update_request_id": plan["update_request_id"],
+            "target_version": plan["target_version"],
+            "artifact_sha256": plan["release"]["artifact_sha256"]}
+
+
+@pytest.mark.parametrize("arrival", ["launch", "poll", "exception", "deadline", "real_helper"])
+@pytest.mark.parametrize("outcome", ["succeeded", "rolled_back", "rollback_failed"])
+def test_recovery_terminal_receipt_wins_over_helper_exit(tmp_path, monkeypatch, arrival, outcome):
+    """The real recovery helper exits 0 without ready when a result exists."""
+    token = "synthetic-race-token"
+    store, path, plan = _missing_result_plan(tmp_path, request_id="race", token=token)
+    result = path.parent / "update-result.json"
+    runner = FakeRunner(None, [])
+    exits = []
+    clock = [0.0]
+    def publish():
+        result.write_text(json.dumps(_terminal_receipt(plan, outcome)))
+    class Helper:
+        pid = 321
+        def poll(self):
+            if arrival == "poll":
+                publish()
+                return 0
+            if arrival == "deadline":
+                publish()
+                clock[0] = 6.0
+                return None
+            return 0
+    def launch(*_):
+        if arrival in {"launch", "exception", "real_helper"}:
+            publish()
+        if arrival == "real_helper":
+            from chejin_worker_client.chejin_updater import run_missing_result_recovery
+            exit_code = run_missing_result_recovery(path, token, 123)
+            assert exit_code == 0
+            assert not (path.parent / "missing-result-recovery-ready.json").exists()
+            return SimpleNamespace(pid=321, poll=lambda: exit_code)
+        if arrival == "exception":
+            raise OSError("launcher observed helper exit")
+        return Helper()
+    monkeypatch.setattr(coordinator_module, "set_update_new_work_gate", lambda *a, **kw: None)
+    c = UpdateCoordinator(FakeApi(_release()), runner, binding_provider=lambda: None,
+                          on_state=lambda _: None, request_normal_exit=lambda: exits.append(1),
+                          state_store=store, formal_package=True,
+                          current_program_dir=Path(plan["current_program_dir"]),
+                          recovery_updater_launcher=launch, process_identity=lambda _: None,
+                          missing_result_grace_seconds=0, monotonic=lambda: clock[0], sleep=lambda _: None)
+    c.set_post_update_context(plan, token)
+    c.start_result_reconciliation(); _wait(c)
+    assert store.load()["state"] == outcome
+    assert store.load()["result_code"] == _terminal_receipt(plan, outcome)["result_code"]
+    assert store.load()["result_reconciled"] is True
+    assert exits == []
+    assert runner.statuses == []
+
+
+@pytest.mark.parametrize("damage", ["request", "target", "hash", "state", "code", "json"])
+def test_late_recovery_receipt_is_validated_not_assumed_success(tmp_path, monkeypatch, damage):
+    token = "synthetic-invalid-token"
+    store, path, plan = _missing_result_plan(tmp_path, request_id="invalid-race", token=token)
+    result = path.parent / "update-result.json"
+    def launch(*_):
+        receipt = _terminal_receipt(plan)
+        key = {"request": "update_request_id", "target": "target_version", "hash": "artifact_sha256",
+               "state": "state", "code": "result_code"}.get(damage)
+        if key:
+            receipt[key] = "mismatch"
+        result.write_text("{" if damage == "json" else json.dumps(receipt))
+        return SimpleNamespace(poll=lambda: 0)
+    monkeypatch.setattr(coordinator_module, "set_update_new_work_gate", lambda *a, **kw: None)
+    c = UpdateCoordinator(FakeApi(_release()), FakeRunner(None, []), binding_provider=lambda: None,
+                          on_state=lambda _: None, request_normal_exit=lambda: pytest.fail("must not exit"),
+                          state_store=store, formal_package=True, recovery_updater_launcher=launch,
+                          process_identity=lambda _: None, missing_result_grace_seconds=0)
+    c.set_post_update_context(plan, token)
+    c.start_result_reconciliation(); _wait(c)
+    assert store.load()["result_code"] == "UPDATE_STATE_INVALID"
+
+
+@pytest.mark.parametrize("status", ["paused", "faulted"])
+def test_persisted_false_failure_reconciles_without_resuming_work(tmp_path, monkeypatch, status):
+    store, path, plan = _missing_result_plan(tmp_path, request_id="persisted-race", token="t")
+    plan["pre_update_run_status"] = "running"
+    path.write_text(json.dumps(plan))
+    (path.parent / "update-result.json").write_text(json.dumps(_terminal_receipt(plan)))
+    store.save({**store.load(), "state": "failed", "result_code": "UPDATE_RESULT_MISSING",
+                "message": "missing-result recovery updater exited", "result_reconciled": True})
+    binding = Binding("w", "token", "instance", run_status=status)
+    runner = FakeRunner(binding, [])
+    monkeypatch.setattr(coordinator_module, "__version__", plan["target_version"])
+    monkeypatch.setattr(coordinator_module, "set_update_new_work_gate", lambda *a, **kw: None)
+    c = UpdateCoordinator(FakeApi(_release()), runner, binding_provider=lambda: binding,
+                          on_state=lambda _: None, request_normal_exit=lambda: pytest.fail("must not exit"),
+                          state_store=store, formal_package=True,
+                          current_program_dir=Path(plan["current_program_dir"]))
+    c.start_result_reconciliation(); _wait(c)
+    assert store.load()["state"] == "succeeded"
+    assert runner.statuses == []
+    assert binding.run_status == status
+
+
+@pytest.mark.parametrize("guard", ["version", "path", "hash_missing", "shutdown", "integrity", "no_result"])
+def test_persisted_false_failure_requires_matching_installation(tmp_path, monkeypatch, guard):
+    store, path, plan = _missing_result_plan(tmp_path, request_id="guarded-race", token="t")
+    receipt = _terminal_receipt(plan)
+    if guard == "hash_missing": receipt.pop("artifact_sha256")
+    if guard != "no_result": (path.parent / "update-result.json").write_text(json.dumps(receipt))
+    store.save({**store.load(), "state": "failed", "result_code": "UPDATE_RESULT_MISSING",
+                "message": "missing-result recovery updater exited", "result_reconciled": True,
+                "shutdown_failed": guard == "shutdown", "data_integrity_failed": guard == "integrity"})
+    monkeypatch.setattr(coordinator_module, "__version__", "wrong" if guard == "version" else plan["target_version"])
+    monkeypatch.setattr(coordinator_module, "set_update_new_work_gate", lambda *a, **kw: None)
+    c = UpdateCoordinator(FakeApi(_release()), FakeRunner(None, []), binding_provider=lambda: None,
+                          on_state=lambda _: None, request_normal_exit=lambda: pytest.fail("must not exit"),
+                          state_store=store, formal_package=True,
+                          current_program_dir=tmp_path if guard == "path" else Path(plan["current_program_dir"]),
+                          recovery_updater_launcher=lambda *_: pytest.fail("must not launch"))
+    c.start_result_reconciliation()
+    if guard in {"shutdown", "integrity"}:
+        assert c._worker is None
+    else:
+        _wait(c)
+    assert store.load()["state"] == "failed"
+
+
+def test_final_result_appears_during_termination_identity_check(tmp_path, monkeypatch):
+    store, path, plan = _missing_result_plan(tmp_path, request_id="termination-race", token="t")
+    monkeypatch.setattr(coordinator_module, "set_update_new_work_gate", lambda *a, **kw: None)
+    c = UpdateCoordinator(FakeApi(_release()), FakeRunner(None, []), binding_provider=lambda: None,
+                          on_state=lambda _: None, request_normal_exit=lambda: pytest.fail("must not exit"),
+                          state_store=store, formal_package=True, wall_time=lambda: 2000,
+                          recovery_updater_launcher=lambda *_: pytest.fail("must not launch"))
+    monkeypatch.setattr(c, "_updater_identity_status", lambda _: "matching")
+    def ended(_):
+        (path.parent / "update-result.json").write_text(json.dumps(_terminal_receipt(plan)))
+        return False
+    monkeypatch.setattr(c, "_terminate_verified_updater", ended)
+    c.start_result_reconciliation(); _wait(c)
+    assert store.load()["state"] == "succeeded"
+
+
+@pytest.mark.parametrize("damage", ["release_type", "missing_current_path"])
+def test_persisted_result_invalid_plan_fails_closed(tmp_path, monkeypatch, damage):
+    store, path, plan = _missing_result_plan(tmp_path, request_id="bad-plan", token="t")
+    (path.parent / "update-result.json").write_text(json.dumps(_terminal_receipt(plan)))
+    if damage == "release_type": plan["release"] = ["invalid"]
+    else: plan.pop("current_program_dir")
+    path.write_text(json.dumps(plan))
+    store.save({**store.load(), "state": "failed", "result_code": "UPDATE_RESULT_MISSING",
+                "message": "missing-result recovery updater exited", "result_reconciled": True})
+    monkeypatch.setattr(coordinator_module, "__version__", plan["target_version"])
+    monkeypatch.setattr(coordinator_module, "set_update_new_work_gate", lambda *a, **kw: None)
+    c = UpdateCoordinator(FakeApi(_release()), FakeRunner(None, []), binding_provider=lambda: None,
+                          on_state=lambda _: None, request_normal_exit=lambda: pytest.fail("must not exit"),
+                          state_store=store, formal_package=True)
+    c.start_result_reconciliation(); _wait(c)
+    assert store.load()["result_code"] == "UPDATE_STATE_INVALID"
+
+
+@pytest.mark.parametrize("late_receipt", [False, True])
+def test_baseline_fault_cannot_be_overridden_by_concurrent_success(tmp_path, monkeypatch, late_receipt):
+    token = "synthetic-baseline-fault"
+    store, path, plan = _missing_result_plan(tmp_path, request_id="baseline-race", token=token)
+    plan["pre_update_run_status"] = "running"
+    path.write_text(json.dumps(plan))
+    binding = Binding("w", "token", "instance", run_status="paused")
+    runner = FakeRunner(binding, [])
+    def failed_baseline(*_):
+        if late_receipt:
+            (path.parent / "update-result.json").write_text(json.dumps(_terminal_receipt(plan)))
+        raise RuntimeError("UPDATE_DATA_BASELINE_INVALID")
+    monkeypatch.setattr(coordinator_module, "load_data_baseline", failed_baseline)
+    monkeypatch.setattr(coordinator_module, "set_update_new_work_gate", lambda *a, **kw: None)
+    c = UpdateCoordinator(FakeApi(_release()), runner, binding_provider=lambda: binding,
+                          on_state=lambda _: None, request_normal_exit=lambda: pytest.fail("must not exit"),
+                          state_store=store, formal_package=True,
+                          current_program_dir=Path(plan["current_program_dir"]),
+                          process_identity=lambda _: None, missing_result_grace_seconds=0,
+                          recovery_updater_launcher=lambda *_: pytest.fail("must not recover"))
+    c.set_post_update_context(plan, token)
+    c.start_result_reconciliation(); _wait(c)
+    assert store.load()["state"] == "failed"
+    assert store.load()["data_integrity_failed"] is True
+    assert runner.statuses == ["faulted"]
+    assert binding.run_status == "faulted"
+    c.start_result_reconciliation()
+    assert runner.statuses == ["faulted"]
+    if late_receipt:
+        assert json.loads((path.parent / "update-result.json").read_text())["state"] == "succeeded"

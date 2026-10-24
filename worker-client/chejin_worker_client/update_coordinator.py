@@ -679,17 +679,20 @@ class UpdateCoordinator:
             } and not bool(state.get("install_started")):
                 self._reconcile_interrupted_preinstall(state)
                 return
+            # A recovery helper can observe the final result and exit before
+            # writing ready. Older clients incorrectly persisted this as failure.
+            late_result = self._is_missing_result_race(state)
             if state.get("result_reconciled") is True and not state.get(
                 "status_restore_pending"
-            ):
+            ) and not late_result:
                 return
-            if not state.get("plan_path") or state.get("state") not in {
+            if not state.get("plan_path") or (not late_result and state.get("state") not in {
                 "installing",
                 "restarting",
                 "verifying",
                 "succeeded",
                 "rolled_back",
-            }:
+            }):
                 return
             self._stop.clear()
             self._worker = threading.Thread(
@@ -730,6 +733,55 @@ class UpdateCoordinator:
             }
         )
 
+    @staticmethod
+    def _is_missing_result_race(state: dict[str, Any]) -> bool:
+        return bool(
+            state.get("state") == "failed"
+            and state.get("result_code") == "UPDATE_RESULT_MISSING"
+            and state.get("message") == "missing-result recovery updater exited"
+            and not state.get("shutdown_failed")
+            and not state.get("data_integrity_failed")
+        )
+
+    def _read_terminal_result(
+        self, state: dict[str, Any], plan: dict[str, Any], result_path: Path,
+    ) -> dict[str, Any]:
+        result = json.loads(result_path.read_text(encoding="utf-8"))
+        if not isinstance(result, dict):
+            raise ValueError("update result is not an object")
+        if result.get("update_request_id") != state.get("update_request_id"):
+            raise ValueError("update result request mismatch")
+        terminal_codes = {
+            "succeeded": "UPDATE_SUCCEEDED",
+            "rolled_back": "UPDATE_ROLLED_BACK",
+            "rollback_failed": "UPDATE_ROLLBACK_FAILED",
+        }
+        status = result.get("state")
+        if status not in {*terminal_codes, "failed"}:
+            raise ValueError("update result is not terminal")
+        if status in terminal_codes and result.get("result_code") != terminal_codes[status]:
+            raise ValueError("update result state/code mismatch")
+        release = plan.get("release") or {}
+        if not isinstance(release, dict):
+            raise ValueError("update plan release is not an object")
+        expected_hash = release.get("artifact_sha256")
+        # Older failure records may omit these fields; when present they must
+        # agree. Repair of a previously settled UI failure requires both.
+        for key, expected in (("target_version", plan.get("target_version")),
+                              ("artifact_sha256", expected_hash)):
+            if key in result and result[key] != expected:
+                raise ValueError("update result " + key + " mismatch")
+        if self._is_missing_result_race(state):
+            running_version = plan.get("target_version") if status == "succeeded" else plan.get("current_version")
+            if (status not in {"succeeded", "rolled_back"}
+                    or not expected_hash
+                    or result.get("artifact_sha256") != expected_hash
+                    or result.get("target_version") != plan.get("target_version")
+                    or __version__ != running_version
+                    or self.current_program_dir != Path(plan["current_program_dir"]).resolve(strict=True)):
+                raise ValueError("late update result does not match running installation")
+        return result
+
     def _reconcile_result(self, state: dict[str, Any]) -> None:
         plan_path = Path(str(state.get("plan_path") or ""))
         result_path = plan_path.parent / "update-result.json"
@@ -743,6 +795,11 @@ class UpdateCoordinator:
             self._settle_missing_result_failure(state, str(exc))
             return
 
+        late_result = self._is_missing_result_race(state)
+        if late_result and not result_path.is_file():
+            # Reopen only the UI receipt, never launch another installation or
+            # recovery merely because a historical result is unavailable.
+            return
         result_timeout_seconds = 0.0
         if not result_path.is_file():
             try:
@@ -775,6 +832,8 @@ class UpdateCoordinator:
                     if result_path.is_file():
                         break
                     if not self._terminate_verified_updater(state):
+                        if result_path.is_file():
+                            break
                         self._settle_result_reconciliation_failure(
                             state,
                             result_code="UPDATE_UPDATER_TERMINATION_FAILED",
@@ -845,12 +904,8 @@ class UpdateCoordinator:
         if self._stop.is_set():
             return
         try:
-            result = json.loads(result_path.read_text(encoding="utf-8"))
-            if not isinstance(result, dict):
-                raise ValueError("update result is not an object")
-            if result.get("update_request_id") != state.get("update_request_id"):
-                raise ValueError("update result request mismatch")
-        except (OSError, UnicodeDecodeError, json.JSONDecodeError, ValueError) as exc:
+            result = self._read_terminal_result(state, plan, result_path)
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError, ValueError, KeyError, TypeError) as exc:
             self._settle_result_reconciliation_failure(
                 state,
                 result_code="UPDATE_STATE_INVALID",
@@ -898,7 +953,7 @@ class UpdateCoordinator:
         if merged.get("data_integrity_failed") is True:
             self._save({**merged, "result_reconciled": True})
             return
-        if str(plan.get("pre_update_run_status") or "") != "running":
+        if late_result or str(plan.get("pre_update_run_status") or "") != "running":
             self._save({**merged, "result_reconciled": True})
             return
         while not self._stop.is_set():
@@ -939,6 +994,11 @@ class UpdateCoordinator:
     ) -> str:
         """Settle a dead updater once, never wait forever or guess business data."""
 
+        # The original updater may commit between the caller's last check and
+        # recovery. Route every observed result through _reconcile_result's
+        # single validator; existence alone never means success.
+        if result_path.is_file():
+            return "result_ready"
         request_id = str(state.get("update_request_id") or "")
         context = self._post_update_plan or {}
         token = self._post_update_token
@@ -966,8 +1026,16 @@ class UpdateCoordinator:
             try:
                 load_data_baseline(plan, plan_path, token)
             except RuntimeError:
-                context_matches = False
-                state = {**state, "data_integrity_failed": True}
+                # This verified data fault outranks a concurrently arriving
+                # installer receipt. Settle it here so a local flag cannot be
+                # lost when returning to the outer reconciliation loop.
+                self._settle_missing_result_failure(
+                    {**state, "data_integrity_failed": True},
+                    "更新数据保护基线校验失败，保持故障并保留原记录",
+                )
+                return "terminal_failure"
+        if result_path.is_file():
+            return "result_ready"
         if (
             context_matches
             and running_from_current
@@ -1012,6 +1080,8 @@ class UpdateCoordinator:
                         "result_recovery_started_at": self.wall_time(),
                     }
                 )
+                if result_path.is_file():
+                    return "result_ready"
                 process = self.recovery_updater_launcher(
                     updater,
                     plan_path,
@@ -1020,6 +1090,8 @@ class UpdateCoordinator:
                 )
                 deadline = self.monotonic() + 5.0
                 while self.monotonic() < deadline:
+                    if result_path.is_file():
+                        return "result_ready"
                     if ready_path.is_file():
                         ready = json.loads(ready_path.read_text(encoding="utf-8"))
                         if (
@@ -1044,12 +1116,18 @@ class UpdateCoordinator:
                         raise ValueError("missing-result recovery request mismatch")
                     poll = getattr(process, "poll", None)
                     if callable(poll) and poll() is not None:
+                        if result_path.is_file():
+                            return "result_ready"
                         raise RuntimeError("missing-result recovery updater exited")
                     self.sleep(0.1)
             except Exception as exc:
+                if result_path.is_file():
+                    return "result_ready"
                 self._settle_missing_result_failure(recovery_state, str(exc))
                 return "terminal_failure"
 
+        if result_path.is_file():
+            return "result_ready"
         self._settle_missing_result_failure(
             state,
             "更新器结果缺失，且无法验证当前版本或自动回滚",
