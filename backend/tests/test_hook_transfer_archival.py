@@ -63,6 +63,7 @@ def test_original_outbox_and_late_voice_finish_after_transfer_and_restart(identi
     assert heartbeat(w,context(**current)).status_code==200
     assert post(w,f"/workers/{w['id']}/run-status",{'client_instance_id':w['instance'],'run_status':'paused'}).status_code==200
     inv=post(w,f"/workers/{w['id']}/wechat/native-work",current).json()['data']
+    assert sum(len(x['voice_jobs']) for x in inv['retired_evidence'])==rounds
     for original in originals:
         assert any(x['binding_id']==original['binding_id'] and x['binding_revision']==original['binding_revision']
                    for x in inv['retired_evidence'])
@@ -137,4 +138,32 @@ def test_archival_rejects_changed_scope_or_original_payload(monkeypatch,tmp_path
     assert response.status_code in {409,422},response.text
     with SessionLocal() as db:
         assert len(list(db.scalars(select(HookNativeReceipt))))==(1 if case=='content' else 0)
+        assert not list(db.scalars(select(ReplyAction)))
+
+
+def test_archival_voice_inventory_retries_original_receipt_revision(identity_client,monkeypatch,tmp_path):
+    w,t,p,b=bound()
+    assert client.post(f"/api/leads/{b['lead_id']}/mark-invalid",json={'invalid_reason':'test_data'}).status_code==200
+    assert client.post(f"/api/leads/{b['lead_id']}/restore").status_code==200
+    inv=post(w,f"/workers/{w['id']}/wechat/native-work",p).json()['data']
+    b={**b,**inv['bindings'][0]}
+    value=media_coverage(b);result,_=upload(w,p,b,value,monkeypatch)
+    assert result.status_code==200,result.text
+    voice=voice_payload(w,p,b,value['scans'][0]['databases'][0]['pages'][0][0]['MsgSvrID'])
+    first=post(w,f"/workers/{w['id']}/wechat/native-voice/result",voice)
+    assert first.status_code==200,first.text
+    # Backend committed, but local acknowledgement was lost. Keep the saved
+    # attempt untouched and use the inventory exactly as the Worker consumes it.
+    _,_,_,_,lead,tid,prep,url,payload=successor(monkeypatch,existing=(w,t,p,b))
+    assert client.post(url,json=payload).status_code==200
+    inv=post(w,f"/workers/{w['id']}/wechat/native-work",p).json()['data']
+    job=next(x for x in inv['retired_evidence'] if x['voice_jobs'])
+    saved={k:v for k,v in voice.items() if k not in {'binding_id','binding_revision','attempt_digest'}}
+    returned=HookFormalClient(identity_client.base_url,5).voice_result(
+        HookWorkerCredentials(w['id'],w['worker_token'],w['instance']),p,job,saved)
+    assert returned==first.json()['data']
+    assert job['binding_revision']==voice['binding_revision']
+    with SessionLocal() as db:
+        receipt=db.scalar(select(HookVoiceReceipt))
+        assert receipt.payload_json['binding_revision']==voice['binding_revision']
         assert not list(db.scalars(select(ReplyAction)))

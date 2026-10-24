@@ -154,12 +154,20 @@ def retired_evidence_inventory(db,w,payload):
         proof=db.get(TaskEvidence,ctx.get('invite_evidence_id')) if ctx.get('invite_evidence_id') else None
         if (not retired_evidence_scope(db,binding,w.id,scope) or proof is None
                 or (proof.extra_metadata or {}).get('backend_validated') is not True):continue
-        voices=[]
+        from app.models.hook_native import HookVoiceReceipt
+        revisions=retired_evidence_revisions(db,binding)
+        voices={revision:[] for revision in revisions}
         for parent in db.scalars(select(MessageEvent).where(MessageEvent.binding_id==binding.id,
                 MessageEvent.message_type=='voice',MessageEvent.sender_role=='customer')):
             if parent.id not in ctx.get('history_message_event_ids',[]):continue
-            voices.append({'native_msg_id':parent.raw_payload['native_msg_id']})
-        for revision in retired_evidence_revisions(db,binding):
+            receipt=db.scalar(select(HookVoiceReceipt).where(HookVoiceReceipt.worker_id==w.id,
+                HookVoiceReceipt.message_event_id==parent.id))
+            # A lost local acknowledgement must replay the version already
+            # stored by the server, not the first historical inventory entry.
+            revision=(receipt.payload_json or {}).get('binding_revision') if receipt else scope['binding_revision']
+            if revision in voices:
+                voices[revision].append({'native_msg_id':parent.raw_payload['native_msg_id']})
+        for revision in revisions:
             result.append({'binding_id':binding.id,'binding_revision':revision,
-                'peer_wxid':binding.native_peer_wxid,'voice_jobs':voices})
+                'peer_wxid':binding.native_peer_wxid,'voice_jobs':voices[revision]})
     return result
