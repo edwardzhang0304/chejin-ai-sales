@@ -43,7 +43,8 @@ def create_hook_services(api):
         proof=_setting(VOICE_SETTING_KEY)
         return proof=={'deployment_revision':deployment.revision,'disabled':True,'operator_confirmed':True}
     dispatcher=HookBusinessDispatcher(formal,private,native.ui,native.startup,
-        automatic_transcription_disabled=automatic_text_disabled)
+        automatic_transcription_disabled=automatic_text_disabled,
+        startup_layout_check=native.startup_layout_ready)
     return HookWorkerServices(connection,NativeProjectionStore(max_projection_bytes=128*1024*1024,max_entries=200),
         intake_interval_seconds=.2,projection_batch_size=100,dispatcher=dispatcher,
         recovery_window_check=native.check_recovery_window)
@@ -55,6 +56,10 @@ class WindowsC1:
         self.artifact_root=artifact_root
         self._ops=None
         self._search_control_cache = {}
+    def startup_layout_ready(self):
+        # NativeUI invalidates this shared map before raising. Readiness is
+        # consumed by the original startup/recovery gates, without a screenshot.
+        return bool(self._search_control_cache.get('key') and self._search_control_cache.get('bounds'))
     def _window(self,process):
         if self._ops is None:
             from apps.wechat_ai_customer_service.adapters import wechat_win32_ocr_sidecar as ops

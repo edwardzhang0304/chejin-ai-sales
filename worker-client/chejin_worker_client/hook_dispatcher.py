@@ -33,10 +33,12 @@ class HookBusinessDispatcher:
         return budget is None or budget.ready
 
     def __init__(self, client, private_root: Path, ui_factory, startup, *,
-                 automatic_transcription_disabled, interval_seconds=1, runtime_factory=HookFormalRuntime):
+                 automatic_transcription_disabled, interval_seconds=1, runtime_factory=HookFormalRuntime,
+                 startup_layout_check=None):
         if not 0 < interval_seconds <= 5: raise ValueError('HOOK_DISPATCH_INTERVAL_INVALID')
         self.client,self.private_root,self.ui_factory,self.startup=client,private_root,ui_factory,startup
         self.automatic_transcription_disabled=automatic_transcription_disabled
+        self._startup_layout_check=startup_layout_check
         self.interval_seconds,self.runtime_factory=interval_seconds,runtime_factory
         self.runtime=None
         self.voice=HookVoiceTranscriber(max_audio_bytes=1024*1024,max_text_bytes=65536)
@@ -65,6 +67,9 @@ class HookBusinessDispatcher:
         self._reply_owners_by_binding={}
         self._initial_read_finished=False
         self._started_at=datetime.now(timezone.utc)
+
+    def startup_layout_ready(self):
+        return self._startup_layout_check is None or self._startup_layout_check()
 
     def prepare_startup_window(self, prepared, gateway):
         scope = prepared.registration.scope

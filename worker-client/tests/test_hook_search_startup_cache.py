@@ -9,6 +9,9 @@ from chejin_worker_client.hook_factory import WindowsC1
 from apps.wechat_ai_customer_service.adapters.wechat_win32_ocr import hook_c1, hook_c1_flow as flow
 from apps.wechat_ai_customer_service.tests import test_hook_c1_flow as flow_tests
 from apps.wechat_ai_customer_service.tests.test_search_control_icons import header
+from test_hook_worker_services import runtime
+from test_hook_gateway import lab
+from test_hook_backend import peer as backend_peer
 
 
 @pytest.fixture
@@ -88,3 +91,63 @@ def test_task_invalidated_startup_cache_stops_without_relocation_or_input(calibr
     fresh=native.ui(process,{'task_id':'after-startup-recheck'},Mock())
     with patch.object(flow,'search_control_bounds',side_effect=AssertionError('must reuse refreshed startup')):
         fresh.verified_empty_search()
+
+
+def test_original_service_requires_worker_restart_then_settlement_before_layout_recovery(runtime,calibration,monkeypatch):
+    from chejin_worker_client import storage
+    from chejin_worker_client.hook_dispatcher import HookBusinessDispatcher
+    native,gateway,process,state,ops,root=calibration
+    runner,services,binding,_,_,_,posted,_=runtime
+    runner.binding=binding
+    services.attach(binding,lambda:None)
+    monkeypatch.setattr(hook_c1,'prepare_window',Mock(return_value={'ok':True}))
+    monkeypatch.setattr('chejin_worker_client.hook_worker_services.inspect_windows_window_geometry',
+        lambda process:{'ok':True,'geometry':ops.get_window_geometry(11)})
+    # Real service and dispatcher call the real startup adapter. Only native
+    # identity/Win32 are synthetic; no test directly invokes startup to recover.
+    def new_dispatcher():
+        dispatcher=HookBusinessDispatcher(None,root,None,
+            lambda _process,_gateway,scope:native.startup(process,gateway,scope),
+            automatic_transcription_disabled=lambda:True,startup_layout_check=native.startup_layout_ready)
+        dispatcher._business_clock_ready=True;dispatcher._observation_query_version=1
+        return dispatcher
+    services.dispatcher=new_dispatcher()
+    services._recovery_window_check=Mock()
+    services.tick(runner)
+    assert services.startup_check_state()['canStart'] and ops.try_image_grab.call_count==1
+    ui=native.ui(process,{'task_id':'layout-changed-task'},Mock())
+    frame=ui.capture('header');frame.origin=(200,0)
+    with pytest.raises(flow.FlowStop,match='SEARCH_STARTUP_LAYOUT_INVALIDATED'):ui.verified_empty_search(frame)
+    assert not services.startup_check_state()['canStart']
+    assert not services.fault_recovery_check()['canStart']
+    assert not services.startup_window_ready_for(services.connection.prepared)
+    assert runner.set_run_status('running') is False and posted==[]
+    captures=ops.try_image_grab.call_count
+    services.tick(runner)
+    services.dispatcher.prepare_startup_window(services.connection.prepared,services.connection.gateway)
+    assert ops.try_image_grab.call_count==captures  # heartbeat cannot move/recalibrate
+    assert '重开 Worker' in services.startup_check_state()['title']
+    assert services.startup_window_position_payload() is None
+    # Original in-flight gate owns settlement. Neither map repair nor Start may
+    # jump over that gate or erase a retained submission receipt.
+    receipt=root/'transactions'/'retained-submit.json';receipt.parent.mkdir(exist_ok=True)
+    receipt.write_text('{"submitted":true,"result":"unknown"}')
+    original=receipt.read_bytes()
+    storage.begin_runtime_flow('retained-search-flow','task')
+    # Model a Worker restart: new native/dispatcher, original SQLite and files.
+    services.close()
+    restarted=WindowsC1(native.root,native.artifact_root);restarted._window=native._window
+    native=restarted
+    services.dispatcher=new_dispatcher()
+    services.attach(binding,lambda:None)
+    services.tick(runner)
+    assert ops.try_image_grab.call_count==captures and not services.startup_check_state()['canStart']
+    storage.finish_runtime_flow('retained-search-flow')  # simulate original settlement completion
+    services.tick(runner)
+    assert ops.try_image_grab.call_count==captures+1
+    assert services.fault_recovery_check()['canStart']
+    assert binding.run_status=='paused' and posted==[] and receipt.read_bytes()==original
+    assert len(list((root/'artifacts'/'tasks').glob('startup-search-*/diagnostics/search-layout.json')))==2
+    assert runner.set_run_status('running') is True and posted==['running']
+    assert binding.run_status=='running' and receipt.read_bytes()==original
+    ops.win32api.mouse_event.assert_not_called()

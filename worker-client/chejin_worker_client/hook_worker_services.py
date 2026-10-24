@@ -176,6 +176,9 @@ class HookWorkerServices:
                     else:
                         self._startup_window_key = key
                         emit_progress(runner,'startup','wechat_window','done')
+            if self._startup_window_key == key and not self._startup_layout_ready():
+                self._startup_check = startup_check_state.failed('HOOK_SEARCH_LAYOUT_RESTART_REQUIRED')
+                self._startup_position_payload = None
             if self.startup_window_ready_for(prepared):
                 self._startup_position_payload = inspect_windows_window_geometry(prepared.process)
                 if self._startup_position_payload is None:
@@ -340,6 +343,8 @@ class HookWorkerServices:
 
     def startup_check_state(self) -> dict:
         value = dict(self._startup_check)
+        if value['canStart'] and not self._startup_layout_ready():
+            value = startup_check_state.failed('HOOK_SEARCH_LAYOUT_RESTART_REQUIRED')
         pending=self.dispatcher.pending_wait_snapshot() if hasattr(self.dispatcher,'pending_wait_snapshot') else getattr(self.dispatcher,'_pending_wait_phases',{}) if self.dispatcher else {}
         if value['canStart'] and any(pending.values()):
             phase='connection_wait' if any('connection_wait' in v for v in pending.values()) else 'clock_wait'
@@ -365,7 +370,11 @@ class HookWorkerServices:
         return (scope.self_wxid, scope.account_epoch, scope.process_generation)
 
     def startup_window_ready_for(self, prepared) -> bool:
-        return self._startup_window_key == self._window_key(prepared) and self._startup_check['canStart']
+        return (self._startup_window_key == self._window_key(prepared)
+                and self._startup_check['canStart'] and self._startup_layout_ready())
+
+    def _startup_layout_ready(self):
+        return getattr(self.dispatcher,'startup_layout_ready',lambda:True)()
 
     def startup_window_position_payload(self) -> dict | None:
         # GUI reads a published snapshot; it must not wait on connection HTTP locks.

@@ -1,5 +1,6 @@
 """Sales-facing projections of existing checks; no active probe or auto-resume."""
 ISSUES = {
+ 'HOOK_SEARCH_LAYOUT_RESTART_REQUIRED': ('请重开 Worker 校验微信位置', '启动定位已失效。请关闭并重新打开 Worker，保留原数据和微信登录；原任务仍按记录核对，不会重新提交申请。'),
  'HOOK_C1_POPUP_PENDING': ('请先关闭微信弹窗', '微信仍有未关闭的窗口。请核对并取消遗留申请窗口，关闭其他弹窗后再恢复接单；程序不会自动提交。'),
  'HOOK_STARTUP_WINDOW_PENDING': ('等待微信窗口初始化', '先确认上次流程结果，再调整微信窗口；完成前不执行新任务。'),
  'HOOK_C1_STARTUP_WINDOW_UNVERIFIED': ('微信窗口调整未通过', '请保持微信主窗口打开，关闭微信弹窗后重新检查；暂不执行新任务。'),
