@@ -1404,6 +1404,7 @@ class UpdateCoordinator:
             "old_process_identity": process_identity(os.getpid()),
             "old_child_identities": [process_identity(child.pid) for child in psutil.Process().children(recursive=True)],
             "old_exit_timeout_seconds": OLD_EXIT_SECONDS,
+            "restart_progress_protocol": 1,
             "health_timeout_seconds": 120,
             "result_timeout_seconds": 180,
             "one_time_token_sha256": hashlib.sha256(token.encode("utf-8")).hexdigest(),

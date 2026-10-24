@@ -56,31 +56,37 @@ def verify_post_update_startup(plan_path: Path, token: str) -> dict[str, Any]:
     files = manifest.get("files")
     if not isinstance(files, dict) or not files:
         raise RuntimeError("UPDATE_STARTUP_MANIFEST_FILES_MISSING")
-    for relative, expected in files.items():
-        relative_path = Path(str(relative or ""))
-        if relative_path.is_absolute() or ".." in relative_path.parts:
-            raise RuntimeError("UPDATE_STARTUP_MANIFEST_PATH_INVALID")
-        target = (current_dir / relative_path).resolve(strict=True)
-        target.relative_to(current_dir)
-        if hash_file(target) != str(expected or "").lower():
-            raise RuntimeError("UPDATE_STARTUP_FILE_HASH_MISMATCH")
+    from .update_progress import start_worker_progress
+    progress = start_worker_progress(plan_path, plan)
+    with progress.stage("startup_files"):
+        for relative, expected in files.items():
+            relative_path = Path(str(relative or ""))
+            if relative_path.is_absolute() or ".." in relative_path.parts:
+                raise RuntimeError("UPDATE_STARTUP_MANIFEST_PATH_INVALID")
+            target = (current_dir / relative_path).resolve(strict=True)
+            target.relative_to(current_dir)
+            if hash_file(target) != str(expected or "").lower():
+                raise RuntimeError("UPDATE_STARTUP_FILE_HASH_MISMATCH")
 
     if CONFIG.app_dir.resolve() != Path(plan["data_dir"]).resolve():
         raise RuntimeError("UPDATE_STARTUP_DATA_DIR_MISMATCH")
     from .legacy_update_handoff import legacy_handoff
     scope = legacy_handoff(plan, plan_path, token) if plan.get("schema_version") == 1 else nullcontext(plan)
-    with scope as plan:
-        baseline = load_data_baseline(plan, plan_path, token)
-        authorize_update_writer(plan, token)
-        from .storage import initialize_post_update_database
-        initialize_post_update_database(CONFIG.app_dir)
-        assert_protected_update_snapshot(baseline["snapshot"], data_dir=CONFIG.app_dir, digest_key=token)
-        if baseline.get('pending_read_handoff') is not None:
-            from .pending_read_recovery import accepts_handoff, package_recovery_capability, inspect_pending_read
-            handoff = baseline['pending_read_handoff']
-            if (not accepts_handoff(package_recovery_capability(), handoff)
-                    or inspect_pending_read(CONFIG.app_dir) != handoff):
-                raise RuntimeError('UPDATE_PENDING_READ_HANDOFF_INVALID')
+    with progress.stage("startup_data"):
+        with scope as plan:
+            baseline = load_data_baseline(plan, plan_path, token)
+            authorize_update_writer(plan, token)
+            from .storage import initialize_post_update_database
+            initialize_post_update_database(CONFIG.app_dir)
+            assert_protected_update_snapshot(baseline["snapshot"], data_dir=CONFIG.app_dir, digest_key=token)
+            if baseline.get('pending_read_handoff') is not None:
+                from .pending_read_recovery import accepts_handoff, package_recovery_capability, inspect_pending_read
+                handoff = baseline['pending_read_handoff']
+                if (not accepts_handoff(package_recovery_capability(), handoff)
+                        or inspect_pending_read(CONFIG.app_dir) != handoff):
+                    raise RuntimeError('UPDATE_PENDING_READ_HANDOFF_INVALID')
+
+    progress.begin("startup_ui")
 
     return plan
 

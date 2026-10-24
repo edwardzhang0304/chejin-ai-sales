@@ -41,6 +41,7 @@ BODY_KEYS = {"text", "content", "msg", "message_text", "reply_text", "transcript
 
 
 UPDATE_DIAGNOSTICS = {
+    "updater-progress.json", "updater-progress.jsonl", "worker-progress.json", "worker-progress.jsonl",
     "update-state.json", "update-result.json", "worker-startup.jsonl",
     "worker-shutdown-failed.json", "worker-shutdown.jsonl", "worker-shutdown.previous.jsonl", "updater-startup.jsonl",
     "updater-recovery-startup.jsonl", "updater-ready.json", "healthy.json",

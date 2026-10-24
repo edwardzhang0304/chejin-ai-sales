@@ -116,7 +116,7 @@ def _safe_absolute_path(value: Any, *, label: str) -> Path:
     return path.resolve(strict=False)
 
 
-def validate_update_plan(plan_path: Path, token: str) -> dict[str, Any]:
+def validate_update_plan(plan_path: Path, token: str, *, verify_archive: bool = True) -> dict[str, Any]:
     plan = _load_json(plan_path)
     if int(plan.get("schema_version") or 0) != PLAN_SCHEMA_VERSION:
         raise ClientUpdateError("UPDATE_INSTALL_FAILED", "更新计划版本不兼容")
@@ -257,7 +257,7 @@ def validate_update_plan(plan_path: Path, token: str) -> dict[str, Any]:
         expected_channel=selected_release_channel(data_dir, build_root=current),
     )
     verify_release_signature(release, trusted_keys=load_trusted_release_keys())
-    if hash_file(archive) != str(release.artifact_sha256 or "").lower():
+    if verify_archive and hash_file(archive) != str(release.artifact_sha256 or "").lower():
         raise ClientUpdateError("UPDATE_PACKAGE_HASH_MISMATCH", "Updater重新校验更新包失败")
     package_manifest = verify_staged_package(release, staged)
     if handoff is not None:
@@ -486,6 +486,8 @@ def _terminate_process(process: subprocess.Popen) -> None:
 
 
 def run_update(plan_path: Path, token: str) -> int:
+    from .update_progress import UpdateProgress
+    progress = UpdateProgress(plan_path, "updater")
     result_path = plan_path.parent / "update-result.json"
     replacement_started = False
     retired_previous: Path | None = None
@@ -508,6 +510,8 @@ def run_update(plan_path: Path, token: str) -> int:
         ready_path = _safe_absolute_path(
             plan.get("updater_ready_path"), label="Updater就绪标记"
         )
+        progress.begin("old_exit")
+        progress.show()
         _atomic_json_write(
             ready_path,
             {
@@ -518,17 +522,26 @@ def run_update(plan_path: Path, token: str) -> int:
             },
         )
         _startup_diagnostic("ready_marker_written")
-        if not wait_for_old_writers(plan, cancel_check=lambda: _check_shutdown_outcome(plan, plan_path, token)):
-            raise ClientUpdateError("UPDATE_INSTALL_FAILED", "旧客户端未能正常退出")
+        with progress.stage("old_exit"):
+            if not wait_for_old_writers(plan, cancel_check=lambda: _check_shutdown_outcome(plan, plan_path, token)):
+                raise ClientUpdateError("UPDATE_INSTALL_FAILED", "旧客户端未能正常退出")
         _check_shutdown_outcome(plan, plan_path, token)
         old_exit_confirmed = True
         _startup_diagnostic("old_writers_exited")
-        data_access = acquire_update_access(plan, token)
+        with progress.stage("data_lock"):
+            data_access = acquire_update_access(plan, token)
         _startup_diagnostic("data_exclusive_acquired")
-        capture_data_baseline(plan, plan_path, token)
+        with progress.stage("data_snapshot"):
+            capture_data_baseline(plan, plan_path, token)
         _startup_diagnostic("data_baseline_captured")
-        # Revalidate immutable package/paths while data ownership remains held.
-        validate_update_plan(plan_path, token)
+        # The archive was authenticated before ready. It is never extracted again.
+        # Recheck signed manifest + EVERY staged file under exclusive data ownership;
+        # rereading the unused ZIP adds no integrity protection to executable bytes.
+        with progress.stage("package_check"):
+            revalidated = validate_update_plan(plan_path, token, verify_archive=False)
+            if revalidated != plan:
+                raise ClientUpdateError("UPDATE_INSTALL_FAILED", "更新计划在交接后发生变化")
+        progress.begin("replace")
 
         if update_filesystem_path(previous).exists():
             retired_previous = previous.with_name(previous.name + ".retired-" + str(plan.get("update_request_id") or "unknown"))
@@ -548,6 +561,7 @@ def run_update(plan_path: Path, token: str) -> int:
         worker_executable = current / str(plan.get("worker_executable_relative") or "CheJinWorkerClient.exe")
         if not update_filesystem_path(worker_executable).is_file():
             raise ClientUpdateError("UPDATE_RESTART_FAILED", "新客户端可执行文件不存在")
+        progress.begin("new_start")
         startup_diagnostic["phase"] = "start_new_worker"
         new_process = _start_worker(worker_executable, plan_path=plan_path, token=token)
         startup_diagnostic["phase"] = "wait_for_health"
@@ -608,6 +622,8 @@ def run_update(plan_path: Path, token: str) -> int:
             error_type=type(exc).__name__,
             error_code=code,
         )
+        progress.finish("failed")
+        progress.begin("rollback")
         message = str(exc)
         try:
             paths = plan.get("_paths") if isinstance(plan.get("_paths"), dict) else {}
@@ -684,6 +700,7 @@ def run_update(plan_path: Path, token: str) -> int:
         )
         return 1
     finally:
+        progress.close()
         if data_access is not None:
             data_access.close()
 

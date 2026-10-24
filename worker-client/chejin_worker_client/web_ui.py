@@ -1201,6 +1201,8 @@ def run_app() -> int:
     window = WorkerWebWindow(auto_start_runtime=not is_post_update)
     window.show()
     if is_post_update:
+        from .update_progress import record_window_shown
+        QTimer.singleShot(0, lambda: record_window_shown(startup_update))
         runtime_startup.schedule_post_update_startup(
             window, startup_update, QTimer.singleShot,
         )
