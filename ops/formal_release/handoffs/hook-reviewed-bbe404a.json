@@ -10466,7 +10466,7 @@
     {
       "report": "hook-layout-render-20261024/architect-targeted.xml",
       "original_xml_sha256": "49546ff2918921426d085fd3adba8d61e4b38a89b35e580e74088953936a18ca",
-      "count": 23,
+      "count": 11,
       "cases": [
         {
           "classname": "apps.wechat_ai_customer_service.tests.test_c1_layout_reuse",
@@ -10510,67 +10510,7 @@
         },
         {
           "classname": "",
-          "name": "test_startup_captures_once_no_clear_and_task_reuses_cached_position[]",
-          "result": "passed"
-        },
-        {
-          "classname": "",
-          "name": "test_startup_captures_once_no_clear_and_task_reuses_cached_position[13800000003]",
-          "result": "passed"
-        },
-        {
-          "classname": "",
-          "name": "test_startup_unrecognized_frame_stops_without_stale_cache_or_input",
-          "result": "passed"
-        },
-        {
-          "classname": "",
-          "name": "test_all_main_rois_reuse_startup_table_and_missing_region_stops",
-          "result": "passed"
-        },
-        {
-          "classname": "",
           "name": "test_active_task_geometry_guard_invalidates_shared_startup_readiness",
-          "result": "passed"
-        },
-        {
-          "classname": "",
-          "name": "test_task_invalidated_startup_cache_stops_without_relocation_or_input[missing]",
-          "result": "passed"
-        },
-        {
-          "classname": "",
-          "name": "test_task_invalidated_startup_cache_stops_without_relocation_or_input[missing_bounds]",
-          "result": "passed"
-        },
-        {
-          "classname": "",
-          "name": "test_task_invalidated_startup_cache_stops_without_relocation_or_input[corrupt_bounds]",
-          "result": "passed"
-        },
-        {
-          "classname": "",
-          "name": "test_task_invalidated_startup_cache_stops_without_relocation_or_input[origin]",
-          "result": "passed"
-        },
-        {
-          "classname": "",
-          "name": "test_task_invalidated_startup_cache_stops_without_relocation_or_input[geometry]",
-          "result": "passed"
-        },
-        {
-          "classname": "",
-          "name": "test_task_invalidated_startup_cache_stops_without_relocation_or_input[hwnd]",
-          "result": "passed"
-        },
-        {
-          "classname": "",
-          "name": "test_task_invalidated_startup_cache_stops_without_relocation_or_input[pid]",
-          "result": "passed"
-        },
-        {
-          "classname": "",
-          "name": "test_task_invalidated_startup_cache_stops_without_relocation_or_input[dpi]",
           "result": "passed"
         },
         {
@@ -10584,7 +10524,8 @@
           "result": "passed"
         }
       ],
-      "nonpassing_not_counted": 0
+      "nonpassing_not_counted": 0,
+      "overlapping_executions_recorded_separately": 12
     }
   ],
   "packaging_reviewed_commit": "ffc6a97718d4d75f58b9fa90ae601a3132331101",
@@ -11227,5 +11168,76 @@
     "turn_id": "01a1670c-e315-7a31-92d2-32917fabeabb",
     "review_file_sha256": "7bb51a7027814165d1c71a1838bd2f2f59817034f34d62d584af5127f7605ae8",
     "scope": "Four cumulative source reviews; final1ed1d7c copy cleanup only, does not replace earlier source reviews or physical acceptance."
-  }
+  },
+  "independent_review_checks_not_added_to_pass_count": [
+    {
+      "report": "hook-layout-render-20261024/architect-targeted.xml",
+      "original_xml_sha256": "49546ff2918921426d085fd3adba8d61e4b38a89b35e580e74088953936a18ca",
+      "count": 12,
+      "cases": [
+        {
+          "classname": "",
+          "name": "test_startup_captures_once_no_clear_and_task_reuses_cached_position[]",
+          "result": "passed"
+        },
+        {
+          "classname": "",
+          "name": "test_startup_captures_once_no_clear_and_task_reuses_cached_position[13800000003]",
+          "result": "passed"
+        },
+        {
+          "classname": "",
+          "name": "test_startup_unrecognized_frame_stops_without_stale_cache_or_input",
+          "result": "passed"
+        },
+        {
+          "classname": "",
+          "name": "test_all_main_rois_reuse_startup_table_and_missing_region_stops",
+          "result": "passed"
+        },
+        {
+          "classname": "",
+          "name": "test_task_invalidated_startup_cache_stops_without_relocation_or_input[missing]",
+          "result": "passed"
+        },
+        {
+          "classname": "",
+          "name": "test_task_invalidated_startup_cache_stops_without_relocation_or_input[missing_bounds]",
+          "result": "passed"
+        },
+        {
+          "classname": "",
+          "name": "test_task_invalidated_startup_cache_stops_without_relocation_or_input[corrupt_bounds]",
+          "result": "passed"
+        },
+        {
+          "classname": "",
+          "name": "test_task_invalidated_startup_cache_stops_without_relocation_or_input[origin]",
+          "result": "passed"
+        },
+        {
+          "classname": "",
+          "name": "test_task_invalidated_startup_cache_stops_without_relocation_or_input[geometry]",
+          "result": "passed"
+        },
+        {
+          "classname": "",
+          "name": "test_task_invalidated_startup_cache_stops_without_relocation_or_input[hwnd]",
+          "result": "passed"
+        },
+        {
+          "classname": "",
+          "name": "test_task_invalidated_startup_cache_stops_without_relocation_or_input[pid]",
+          "result": "passed"
+        },
+        {
+          "classname": "",
+          "name": "test_task_invalidated_startup_cache_stops_without_relocation_or_input[dpi]",
+          "result": "passed"
+        }
+      ],
+      "nonpassing_not_counted": 0,
+      "reason": "Same tests in engineer88 report; different pytest module prefix must not add counts."
+    }
+  ]
 }
