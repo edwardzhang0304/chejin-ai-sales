@@ -263,7 +263,13 @@ class WorkerWebWindow(QMainWindow):
         super().__init__()
         self.setWindowTitle("车金 Worker 客户端")
         self.setWindowFlags(Qt.WindowType.FramelessWindowHint | Qt.WindowType.Window)
-        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+        # Keep a solid native backing when Chromium has no frame to composite.
+        # Rounded corners remain a window mask, not a transparent whole window.
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, False)
+        self.setAutoFillBackground(True)
+        palette = self.palette()
+        palette.setColor(self.backgroundRole(), QColor(255, 255, 255))
+        self.setPalette(palette)
         self._layout_screen = None
         self._screen_signal_connected = False
         self.setFixedSize(WINDOW_WIDTH, WINDOW_HEIGHT)
@@ -322,6 +328,14 @@ class WorkerWebWindow(QMainWindow):
         self.channel.registerObject("chejinBridge", self.bridge)
 
         self.view = QWebEngineView(self)
+        from .window_render_evidence import WindowRenderEvidence
+        self._render_evidence = WindowRenderEvidence(CONFIG.app_dir)
+        QGuiApplication.instance().aboutToQuit.connect(self._render_evidence.close)
+        self.installEventFilter(self)
+        self.view.loadStarted.connect(lambda: self._record_render_event('load_started', 'view'))
+        self.view.loadFinished.connect(lambda ok: self._record_render_event('load_finished', 'view', ok=ok))
+        self.view.renderProcessTerminated.connect(lambda status, code: self._record_render_event(
+            'renderer_terminated', 'view', exit_code=code, termination_status=status.value))
         self.view.renderProcessTerminated.connect(
             lambda status, code: record_ui_failure(self, json.dumps({
                 "kind": "renderer_terminated", "exit_code": code,
@@ -331,8 +345,8 @@ class WorkerWebWindow(QMainWindow):
             lambda ok: None if ok else record_ui_failure(self, '{"kind":"page_load_failed"}')
         )
         self.view.page().setWebChannel(self.channel)
-        self.view.page().setBackgroundColor(QColor(0, 0, 0, 0))
-        self.view.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+        self.view.page().setBackgroundColor(QColor(255, 255, 255))
+        self.view.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, False)
         self.view.setContextMenuPolicy(Qt.ContextMenuPolicy.NoContextMenu)
         self.view.installEventFilter(self)
         self.setCentralWidget(self.view)
@@ -366,11 +380,14 @@ class WorkerWebWindow(QMainWindow):
             self._layout_screen = screen
             screen.availableGeometryChanged.connect(self._available_area_changed)
         available = screen.availableGeometry()
-        self.setFixedSize(*worker_size_for_available_area(available.width(), available.height()))
+        size = worker_size_for_available_area(available.width(), available.height())
+        if size != (self.width(), self.height()):
+            self.setFixedSize(*size)
         x = min(max(self.x(), available.x()), available.x() + available.width() - self.width())
         y = min(max(self.y(), available.y()), available.y() + available.height() - self.height())
         if (x, y) != (self.x(), self.y()):
             self.move(x, y)
+        self._record_render_event('screen', 'window')
 
     def _available_area_changed(self, _geometry: Any) -> None:
         self._fit_to_screen(self._layout_screen)
@@ -391,6 +408,11 @@ class WorkerWebWindow(QMainWindow):
         self.setMask(mask)
 
     def eventFilter(self, watched: QObject, event: QEvent) -> bool:
+        kinds = {QEvent.Type.Show:'show', QEvent.Type.Hide:'hide', QEvent.Type.Move:'move',
+                 QEvent.Type.Resize:'resize', QEvent.Type.WindowStateChange:'window_state'}
+        if watched is self or watched is self.view:
+            kind = kinds.get(event.type())
+            if kind:self._record_render_event(kind, 'window' if watched is self else 'view')
         if watched is not self.view:
             return super().eventFilter(watched, event)
         if event.type() == QEvent.Type.MouseButtonPress and event.button() == Qt.MouseButton.LeftButton:
@@ -406,6 +428,13 @@ class WorkerWebWindow(QMainWindow):
         if event.type() in {QEvent.Type.MouseButtonRelease, QEvent.Type.Leave}:
             self._drag_origin = None
         return super().eventFilter(watched, event)
+
+    def _record_render_event(self, event, surface, **values):
+        recorder = getattr(self, '_render_evidence', None)
+        if recorder is None:return
+        recorder.record(event, surface, x=self.x(), y=self.y(), width=self.width(), height=self.height(),
+                        visible=self.isVisible(), view_visible=self.view.isVisible(),
+                        window_state=self.windowState().value, dpr=self.devicePixelRatioF(), **values)
 
     def _handle_window_control_click(self, x: int) -> bool:
         control_index = max(0, min(2, (x - (self.width() - WINDOW_CONTROL_WIDTH)) // 30))

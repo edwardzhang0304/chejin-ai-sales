@@ -63,6 +63,36 @@ def test_startup_unrecognized_frame_stops_without_stale_cache_or_input(calibrati
     assert list((root/'artifacts'/'tasks').glob('startup-search-*/diagnostics/initialization.json'))
 
 
+def test_all_main_rois_reuse_startup_table_and_missing_region_stops(calibration,monkeypatch):
+    native,gateway,process,state,ops,root=calibration
+    monkeypatch.setattr(hook_c1,'prepare_window',Mock(return_value={'ok':True}))
+    native.startup(process,gateway,{})
+    ui=native.ui(process,{'task_id':'all-main-regions'},Mock())
+    geometry=ops.get_window_client_geometry(11)
+    regions=dict(native._search_control_cache['regions'])
+    with patch.object(flow,'main_regions',side_effect=AssertionError('must not calculate regions per task')):
+        for label,bounds in regions.items():
+            assert ui._bounds(label,geometry['width'],geometry['height'])==tuple(bounds)
+        ui.verified_empty_search()
+        native._search_control_cache['regions'].pop('chat_header')
+        captures=ops.try_image_grab.call_count
+        with pytest.raises(flow.FlowStop,match='LAYOUT_INVALIDATED'):ui.capture('chat_header')
+        assert ops.try_image_grab.call_count==captures
+    assert not native.startup_layout_ready()
+
+
+def test_active_task_geometry_guard_invalidates_shared_startup_readiness(calibration,monkeypatch):
+    native,gateway,process,state,ops,root=calibration
+    monkeypatch.setattr(hook_c1,'prepare_window',Mock(return_value={'ok':True}))
+    native.startup(process,gateway,{})
+    ui=native.ui(process,{'task_id':'move-during-task'},Mock())
+    original=dict(ops.get_window_geometry(11))
+    ops.get_window_geometry=lambda hwnd:{**original,'left':original['left']+50}
+    with pytest.raises(flow.FlowStop,match='WINDOW_FOCUS_OR_GEOMETRY_CHANGED'):ui.guard()
+    assert not native.startup_layout_ready()
+    ops.win32api.mouse_event.assert_not_called()
+
+
 @pytest.mark.parametrize('change',['missing','missing_bounds','corrupt_bounds','origin','geometry','hwnd','pid','dpi'])
 def test_task_invalidated_startup_cache_stops_without_relocation_or_input(calibration,monkeypatch,change):
     native,gateway,process,state,ops,root=calibration

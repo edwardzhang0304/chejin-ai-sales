@@ -59,7 +59,8 @@ class WindowsC1:
     def startup_layout_ready(self):
         # NativeUI invalidates this shared map before raising. Readiness is
         # consumed by the original startup/recovery gates, without a screenshot.
-        return bool(self._search_control_cache.get('key') and self._search_control_cache.get('bounds'))
+        return bool(self._search_control_cache.get('key') and self._search_control_cache.get('bounds')
+                    and self._search_control_cache.get('regions'))
     def _window(self,process):
         if self._ops is None:
             from apps.wechat_ai_customer_service.adapters import wechat_win32_ocr_sidecar as ops

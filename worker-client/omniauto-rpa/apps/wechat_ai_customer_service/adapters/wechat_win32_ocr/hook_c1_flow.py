@@ -14,6 +14,7 @@ import random
 from pathlib import Path
 from typing import Any
 from ..add_friend_contract import validate_add_friend_entry_click_contract
+from .c1_layout import MAIN_REGIONS, main_regions, form_regions, valid_rect, main_key
 
 
 class FlowStop(RuntimeError):
@@ -162,9 +163,9 @@ def search_clear_target(frame: Frame, cached_bounds=None) -> dict:
     return {**candidates[0], 'frame': frame.name}
 
 
-def search_query(frame: Frame, query: str) -> dict:
+def search_query(frame: Frame, query: str, *, bounds=None) -> dict:
     w, h = frame.image.size
-    upper = [0, 0, w, min(h, 90)]
+    upper = bounds if bounds is not None else [0, 0, w, min(h, 90)]
     row = unique_text(frame, (query,), region=upper)
     return target(frame, row)
 
@@ -174,10 +175,10 @@ def restricted(frame: Frame) -> bool:
     return any(any(token in clean(r.get('text')) for token in tokens) for r in frame.rows)
 
 
-def lookup(frame: Frame, query: str) -> dict:
+def lookup(frame: Frame, query: str, *, search_bounds=None) -> dict:
     if restricted(frame):
         raise FlowStop('ACCOUNT_RESTRICTED')
-    search_query(frame, query)
+    search_query(frame, query, bounds=search_bounds)
     return target(frame, unique_text(frame, ('网络查找手机/QQ号', '网络查找手机／QQ号')))
 
 
@@ -216,8 +217,28 @@ def form_fields(frame: Frame) -> dict:
     return result
 
 
-def verify_fields(frame: Frame, greeting: str, remark: str) -> dict:
-    fields = form_fields(frame)
+class InviteFormLayout:
+    """One form instance's field positions, with fresh content/shape checks."""
+    def __init__(self, frame):
+        self.key = (frame.hwnd, frame.origin, dict(frame.geometry) if frame.geometry is not None else None, frame.image.size)
+        self.fields = form_fields(frame)
+        self.labels = {label: box(unique_text(frame, (label,))) for label in
+                       ('申请添加朋友', '发送添加朋友申请', '备注名')}
+
+    def current(self, frame):
+        if (frame.hwnd, frame.origin, frame.geometry, frame.image.size) != self.key:
+            raise FlowStop('INVITE_FORM_LAYOUT_CHANGED')
+        for label, bounds in self.labels.items():
+            if box(unique_text(frame, (label,))) != bounds:
+                raise FlowStop('INVITE_FORM_LAYOUT_CHANGED')
+        whites = components(frame.image, 'white')
+        if any(field['bounds'] not in whites for field in self.fields.values()):
+            raise FlowStop('INVITE_FORM_LAYOUT_CHANGED')
+        return {key: {**field, 'frame': frame.name} for key, field in self.fields.items()}
+
+
+def verify_fields(frame: Frame, greeting: str, remark: str, *, layout=None) -> dict:
+    fields = layout.current(frame) if layout is not None else form_fields(frame)
     # User-confirmed policy: the original greeting is pasted once, but it may
     # scroll horizontally. The final OCR gate checks the remark shortcode only.
     # Labels, pixel control bounds, non-overlap and action/identity guards remain.
@@ -287,7 +308,7 @@ def run_flow(ui, *, phone: str, verify_message: str, remark_name: str,
         ui.replace(frame, query)
         step('query_verified_and_network_lookup')
         frame = ui.capture('lookup')
-        t = lookup(frame, query)
+        t = ui.lookup_target(frame, query) if hasattr(ui, 'lookup_target') else lookup(frame, query)
         ui.click(frame, t, 'network_lookup')
         frame = ui.capture('card')
         step('contact_result')
@@ -305,18 +326,22 @@ def run_flow(ui, *, phone: str, verify_message: str, remark_name: str,
         ui.select_invite_dialog();form_open = True
         step('invite_form_fields')
         frame = ui.capture('fields')
-        fields = form_fields(frame)
+        form_layout = InviteFormLayout(frame)
+        fields = form_layout.fields
+        report['form_layout'] = {'source_frame':frame.name, 'hwnd':frame.hwnd,
+                                 'origin':frame.origin, 'geometry':frame.geometry,
+                                 'field_bounds':{key:list(value['bounds']) for key,value in fields.items()}}
         ui.click(frame, fields['greeting'], 'focus_greeting')
         ui.replace(frame, verify_message)
         # Filling one input changes its text but not the other field. Reacquire
         # only this ROI to obtain a new frame for the next click.
         frame = ui.capture('fields_after_greeting')
-        fields = form_fields(frame)
+        fields = form_layout.current(frame)
         ui.click(frame, fields['remark'], 'focus_remark')
         ui.replace(frame, remark_name)
         step('verify_remark_shortcode')
         frame = ui.capture('fields_filled')
-        verify_fields(frame, verify_message, remark_name)
+        verify_fields(frame, verify_message, remark_name, layout=form_layout)
         report['field_verification'] = {'mode': 'remark_shortcode_only', 'verified': True, 'greeting_readback_calls': 0}
         step('confirm_once')
         footer = ui.capture('footer')
@@ -470,6 +495,10 @@ class NativeUI:
         snapshot is sampled afterwards and may already reflect a changed window.
         No titles, chat text, process paths, screenshots or Hook calls are read.
         """
+        if (condition in {'main_window_missing','main_geometry_changed','main_process_changed','main_dpi_changed'}
+                or (self.current == self.main and condition in {'capture_geometry_changed','frame_geometry_changed'})):
+            cache = getattr(self, 'search_control_cache', None)
+            if cache is not None:cache.clear()
         try:
             failures = getattr(self, 'guard_failures', None)
             if failures is None:
@@ -552,13 +581,28 @@ class NativeUI:
                 self._guard_stop('frame_replaced', code='STALE_ROI_FRAME')
 
     def _bounds(self, label: str, w: int, h: int):
-        if label == 'header':return (0, 0, int(w*.62), min(h, 90))
+        if label in MAIN_REGIONS:
+            if getattr(self, 'require_startup_search_cache', False):
+                cache = self.search_control_cache
+                geometry = self.ops.get_window_client_geometry(self.main)
+                key = main_key(self.main, self.pid, geometry, self.dpi)
+                regions = cache.get('regions', {})
+                if (cache.get('key') != key or set(regions) != set(MAIN_REGIONS)
+                        or any(not valid_rect(r, w, h) for r in regions.values())):
+                    cache.clear()
+                    raise FlowStop('SEARCH_STARTUP_LAYOUT_INVALIDATED')
+                return tuple(regions[label])
+            return main_regions(w, h)[label]  # Startup calibration / standalone replay.
         if label == 'search_empty':return tuple(self.search_empty_bounds)
-        if label == 'lookup':return (0, 0, int(w*.38), int(h*.43))
-        if label == 'card':return (int(w*.34), 0, int(w*.80), int(h*.55))
-        if label.startswith('fields'):return (0, 0, w, int(h*.36))
-        if label == 'footer':return (0, int(h*.80), w, h)
-        if label == 'chat_header':return (int(w*.36), 0, int(w*.80), min(h, 90))
+        if label.startswith('fields') or label == 'footer':
+            geometry = self.ops.get_window_client_geometry(self.current)
+            key = (self.current, dict(geometry), self.ops.window_dpi_scale(self.current))
+            cache = getattr(self, '_invite_regions', None)
+            if cache is None:
+                self._invite_regions = (key, form_regions(w, h))
+            elif cache[0] != key:
+                raise FlowStop('INVITE_FORM_LAYOUT_CHANGED')
+            return self._invite_regions[1]['fields' if label.startswith('fields') else 'footer']
         raise ValueError(label)
 
     def visible_wechat_windows(self):
@@ -768,6 +812,7 @@ class NativeUI:
         if not result.get('ok'):raise FlowStop('TEXT_INPUT_FAILED')
 
     def select_invite_dialog(self):
+        self._invite_regions = None
         self.contact_surface = self.current
         baseline = getattr(self, 'invite_visible_windows', None)
         if baseline is None:
@@ -873,7 +918,8 @@ class NativeUI:
     def cached_search_bounds(self, frame):
         cache = getattr(self, 'search_control_cache', None)
         key = {'hwnd': frame.hwnd, 'pid': getattr(self, 'pid', None), 'origin': frame.origin,
-               'geometry': frame.geometry, 'dpi': getattr(self, 'dpi', None)}
+               'geometry': dict(frame.geometry) if frame.geometry is not None else None,
+               'dpi': getattr(self, 'dpi', None)}
         if cache is None:
             cache = self.search_control_cache = {}
         if cache.get('key') != key:
@@ -883,13 +929,13 @@ class NativeUI:
             cache['key'] = key
         if getattr(self, 'require_startup_search_cache', False):
             bounds = cache.get('bounds')
-            if not (isinstance(bounds, (list, tuple)) and len(bounds)==4
-                    and all(type(value) is int for value in bounds)
-                    and 0 <= bounds[0] < bounds[2] <= frame.image.width
-                    and 0 <= bounds[1] < bounds[3] <= frame.image.height):
+            if not valid_rect(bounds, frame.image.width, frame.image.height):
                 cache.clear()
                 raise FlowStop('SEARCH_STARTUP_LAYOUT_INVALIDATED')
         return cache.get('bounds')
+
+    def lookup_target(self, frame, query):
+        return lookup(frame, query, search_bounds=self.cached_search_bounds(frame))
 
     def calibrate_search_control(self):
         """Startup read-only calibration; existing text is never removed."""
@@ -908,11 +954,13 @@ class NativeUI:
         self.guard(frame)
         self.cached_search_bounds(frame)
         self.search_control_cache['bounds'] = list(bounds)
+        self.search_control_cache['regions'] = main_regions(frame.geometry['width'], frame.geometry['height'])
         def save_layout():
             folder = self.evidence/'diagnostics'
             folder.mkdir(parents=True,exist_ok=True)
             (folder/'search-layout.json').write_text(
                 json.dumps({'source':'startup','bounds':bounds,'key':self.search_control_cache['key'],
+                            'regions':self.search_control_cache['regions'],
                             'read_only':True},ensure_ascii=False),encoding='utf-8')
         self._save_frame_material('diagnostics/search-layout.json', save_layout)
 
