@@ -33,23 +33,44 @@ class UpdateProgress:
         self.role = role
         self.phase = ''
         self.phase_active = False
+        self.reported_failures = set()
         self.started = time.monotonic()
         self.closed = threading.Event()
         self.thread = None
 
     def _write(self, phase, event, elapsed_ms=0):
+        record = {'phase': phase, 'event': event, 'elapsed_ms': elapsed_ms,
+                  'timestamp_epoch': time.time(), 'pid': os.getpid()}
+        text = json.dumps(record, ensure_ascii=True)
+        path = self.root / (self.role + '-progress.json')
+        temporary = path.with_suffix('.tmp')
+        operation, target = 'write_state', temporary.name
+        try:
+            temporary.write_text(text, encoding='utf-8')
+            operation, target = 'replace_state', path.name
+            os.replace(temporary, path)
+        except Exception as exc:
+            self._capture_failure(phase, operation, target, exc)
         try:
             from .storage_maintenance import append_bounded_log
-            record = {'phase': phase, 'event': event, 'elapsed_ms': elapsed_ms,
-                      'timestamp_epoch': time.time(), 'pid': os.getpid()}
-            text = json.dumps(record, ensure_ascii=True)
-            path = self.root / (self.role + '-progress.json')
-            temporary = path.with_suffix('.tmp')
-            temporary.write_text(text, encoding='utf-8')
-            os.replace(temporary, path)
             append_bounded_log(path.with_suffix('.jsonl'), text + '\n')
+        except Exception as exc:
+            self._capture_failure(phase, 'append_log', path.with_suffix('.jsonl').name, exc)
+
+    def _capture_failure(self, phase, operation, target, exc):
+        key = (phase, operation)
+        if key in self.reported_failures:
+            return
+        self.reported_failures.add(key)
+        try:
+            # Reuse the bounded update failure channel in control/, not artifacts/:
+            # writing protected business evidence after baseline would change it.
+            from .update_diagnostics import record_update_startup_failure
+            record_update_startup_failure(
+                self.root / 'update-plan.json',
+                phase=f'progress:{self.role}:{phase}:{operation}:{target}', exc=exc)
         except Exception:
-            pass
+            pass  # The original recorder also has a non-recursive stderr fallback.
 
     def begin(self, phase):
         if phase not in LABELS:

@@ -182,3 +182,70 @@ def test_close_does_not_invent_phase_success(tmp_path):
     progress.begin('replace')
     progress.close()
     assert json.loads((tmp_path / 'updater-progress.json').read_text())['event'] == 'interrupted'
+
+
+from test_failure_evidence_boundaries import home
+
+
+@pytest.mark.parametrize('operation', ['write_state', 'replace_state', 'append_log'])
+def test_progress_io_failure_reason_is_in_actual_export(home, monkeypatch, operation):
+    import zipfile
+    from chejin_worker_client.diagnostic_bundle import export_bundle
+    from chejin_worker_client import storage_maintenance
+    from chejin_worker_client import update_progress as module
+    control = home / 'update'
+    control.mkdir()
+    monkeypatch.setenv('CHEJIN_UPDATE_STAGING_ROOT', str(control))
+    write, replace, append = Path.write_text, module.os.replace, storage_maintenance.append_bounded_log
+    def write_error(path, *args, **kwargs):
+        if operation == 'write_state' and path.name == 'updater-progress.tmp':
+            raise PermissionError(13, 'SECRET_SHOULD_NOT_BE_EXPORTED')
+        return write(path, *args, **kwargs)
+    def replace_error(source, destination):
+        if operation == 'replace_state' and Path(source).name == 'updater-progress.tmp':
+            raise PermissionError(13, 'SECRET_SHOULD_NOT_BE_EXPORTED')
+        return replace(source, destination)
+    def append_error(path, *args, **kwargs):
+        if operation == 'append_log' and path.name == 'updater-progress.jsonl':
+            raise PermissionError(13, 'SECRET_SHOULD_NOT_BE_EXPORTED')
+        return append(path, *args, **kwargs)
+    monkeypatch.setattr(Path, 'write_text', write_error)
+    monkeypatch.setattr(module.os, 'replace', replace_error)
+    monkeypatch.setattr(storage_maintenance, 'append_bounded_log', append_error)
+    with UpdateProgress(control / 'plan.json', 'updater').stage('data_snapshot'):
+        pass
+    assert not (home / 'artifacts/runtime/evidence-recorder-failures.jsonl').exists()
+    bundle = export_bundle(home, home / 'exports')
+    with zipfile.ZipFile(bundle) as archive:
+        target = next(n for n in archive.namelist() if n.endswith('/worker-startup.jsonl'))
+        evidence = archive.read(target).decode()
+    records = [json.loads(line) for line in evidence.splitlines()]
+    assert len(records) == 1  # repeated start/finish failures bounded per operation/phase
+    assert operation in records[0]['phase'] and 'updater-progress.' in records[0]['phase']
+    assert records[0]['exception_type'] == 'PermissionError'
+    assert 'SECRET_SHOULD_NOT_BE_EXPORTED' not in evidence
+
+
+@pytest.mark.parametrize('outcome', ['normal', 'timeout', 'cancelled'])
+def test_old_exit_has_one_real_terminal_event_in_export(tmp_path, monkeypatch, outcome):
+    import time
+    import zipfile
+    from chejin_worker_client.diagnostic_bundle import export_bundle
+    plan_path, token, *_ = _prepare_plan(tmp_path, monkeypatch, new_worker=HEALTHY_WORKER)
+    original = updater.wait_for_old_writers
+    def wait(*args, **kwargs):
+        time.sleep(0.025)
+        if outcome == 'cancelled':
+            raise updater.ClientUpdateError('UPDATE_WRITERS_NOT_STOPPED', 'synthetic cancellation')
+        return original(*args, **kwargs) if outcome == 'normal' else False
+    monkeypatch.setattr(updater, 'wait_for_old_writers', wait)
+    assert updater.run_update(plan_path, token) == (0 if outcome == 'normal' else 1)
+    raw = json.loads(plan_path.read_text())
+    monkeypatch.setenv('CHEJIN_UPDATE_STAGING_ROOT', str(plan_path.parent))
+    bundle = export_bundle(Path(raw['data_dir']), tmp_path / 'exports')
+    with zipfile.ZipFile(bundle) as archive:
+        target = next(n for n in archive.namelist() if n.endswith('/updater-progress.jsonl'))
+        rows = [json.loads(line) for line in archive.read(target).decode().splitlines()]
+    rows = [r for r in rows if r['phase'] == 'old_exit']
+    assert [r['event'] for r in rows] == ['started', 'completed' if outcome == 'normal' else 'failed']
+    assert rows[-1]['elapsed_ms'] >= 20

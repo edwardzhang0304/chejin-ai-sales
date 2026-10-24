@@ -510,7 +510,6 @@ def run_update(plan_path: Path, token: str) -> int:
         ready_path = _safe_absolute_path(
             plan.get("updater_ready_path"), label="Updater就绪标记"
         )
-        progress.begin("old_exit")
         progress.show()
         _atomic_json_write(
             ready_path,
