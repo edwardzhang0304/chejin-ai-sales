@@ -84,19 +84,24 @@ def target(frame: Frame, row: dict, *, filled: str | None = None) -> dict:
     return {'bounds': b, 'point': [(b[0]+b[2])//2, (b[1]+b[3])//2], 'frame': frame.name}
 
 
-def empty_search(frame: Frame) -> dict:
+def empty_search(frame: Frame, cached_bounds=None) -> dict:
     w, h = frame.image.size
     # The default grey 搜索 placeholder is an empty input, not a query.
     aliases = ('搜索', 'Q搜索', 'O搜索', '0搜索', '搜素', 'Q搜素', 'O搜素', '0搜素')
     if not any(clean(r.get('text')) in aliases for r in frame.rows):
-        b=search_control_bounds(frame)
-        focused_search_empty_pixels(frame.image.crop(tuple(b)))
+        b = list(cached_bounds) if cached_bounds is not None else search_control_bounds(frame)
+        if cached_bounds is None:
+            b = focused_empty_bounds(frame, b)
+        else:
+            focused_search_empty_pixels(frame.image.crop(tuple(b)))
         return {'bounds':b,'point':[(b[0]+b[2])//2,(b[1]+b[3])//2],'frame':frame.name,'proof':'focused_empty_pixels'}
     row = unique_text(frame, aliases, region=[0, 0, w, h])
     result = target(frame, row, filled='search')
     # Restrict the control to the left header; Q is an OCR rendering of the
     # magnifier, admitted only inside the actual neutral input pixels.
     b = result['bounds']
+    if cached_bounds is not None and b != list(cached_bounds):
+        raise FlowStop('SEARCH_CONTROL_GEOMETRY_CHANGED')
     if b[1] < 8 or b[3] > h or b[2]-b[0] > .6*w:
         raise FlowStop('SEARCH_CONTROL_OUT_OF_REGION')
     # A placeholder is insufficient when another OCR row still contains a query.
@@ -118,38 +123,43 @@ def search_control_bounds(frame: Frame) -> list[int]:
     return choices[0]
 
 
-# User-provided 237x31 empty focused input, containing only neutral UI pixels
-# and the magnifier/clear icons. No contact, message or desktop content.
-_EMPTY_SEARCH_PNG = 'iVBORw0KGgoAAAANSUhEUgAAAO0AAAAfCAIAAACEdd3KAAAEaklEQVR4nO3cTU/qShgHcKa0QNupvF0D3sgHgJgoISxMTFwYo2FldMlnk7Bjwco97l2xgISzEC8x4caA59ILzkBLceYGmhAuL4rgiZjz/FZ16JQh+afOPJ0U9Xo9h8NhGgalxDRNB+cOADYeQsjldqsqdns8wz97vV77X73b7aqKqmoYIeGrRwjA+zjnlBBKiaIoXp9fNA2j2+0Ggn/IsrxEdwA2hc/vd3s8//x8drs9AqVEVTGEGHxHsixr2hYhL0LfNFWMv3o8AKwIa3hgWQLnHCG06kUA+GIIDTMsfvUwAPgfQki73e73+w6Hw+Vyeb1evMR8AXIMNgJjTNf1VqtlWda4cVhMa7clSfL7/YFAQBAWFtMgx+DrMcbq9TohZO6nlmU1m01KaSQSWRRlqBaDjQ7xGKW0Xq8zxla5HzcajUqlQilVFCUWi4XD4TUGDMAcuq6PQ/z6+ioIwmThgTGGRuyps67rwWDwAznmnBcKhVwuJ4qi0+lkjFmWdXV1lUqloL4BPlGr1bIPXl9fi8ViJBKZvF3WajXTNGOx2Pjkj+W4UCjc3Nyk0+lkMokxppQWi8V8Po8QSqVSn/k7wG+MEDJe2AmCEIlEqtUq5zwcDnPOa7Vas9nc29sbn29ZVqfT2draWirHjUYjl8ul0+mTkxO7RdO04+Njp9OZyWQSiUQoFPplPw38Rtrt9vgYIWTHt1KpiKJoGMbj42MymdQ0barLsjm2L5RMJqfa4/E4xrhSqUCOwaew68STwuGwKIo/fvxACM2GeG6XhfUKSqnT6ZytP8uyLEkSpXS9wQOwEOfcMAyEEOfcNE2+3Ebi+TlWFIUxNptXwzAGg4GiKMtcGoB3uVyuqZZarXZ/f39wcBCLxcrlcqPRmDpBkqRlcxyLxSzLKhaLU+2lUokQMl48ArAmr9c7PmaMPTw8NJtNezoRDAaj0Wi1Wn16eprs4vP5Zq8zf34cDoevrq7y+bzT6YzH47IsG4ZRKpWy2Ww0Gt3e3l53+ACMYIwlSbJLFggh0zT39vbsOfF42TdZ55UkaXaR91bdza4TZzIZ+5sGgwEhZH9/v1wuFwqFs7OzRR0B+BC/399sNu3gzv6r39nZmTp57kUW5tiuEycSicnneaFQ6O7uLpfLWZZ1fn4uirA9A6wrEAjQkXfPVBQlEAjM/eidIIZGJlsODw8Hg0E2m8UYHx8fw7M9sCb78ce7WywURXljn9AqN9SjoyOM8fX1ta7rFxcXEGWwJkEQdnd3Z/dt2n7Vvk2EUDwev7y8vL29PT09XWabMwBvEwQhONLpdMb76CVJ8vl8cxd2U9Bf1fvQzp8rzHQ558O3BajqRzsC8IkYY09/11fff4wQghCDDTHc67nkoz8ANpCdXkGSXF3YLwG+LUqIy+0WVA2/vHQMY/iWNwC+F8PodTptRVVFj0dWVfXn8zPGGta0N0obAGwOzhl5IS8vHXlIGb6ncJjrXo8S0rf68L5N4PgOEEKiJGGseUbvJfwPBTr8Dq/4S3YAAAAASUVORK5CYII='
-
-
 def focused_search_empty_pixels(image) -> None:
-    """Fail closed unless every input pixel matches the observed empty style.
+    from ..search_control_icons import empty_pixel_error
+    error = empty_pixel_error(image)
+    if error:
+        raise FlowStop(error)
 
-    Match both icon shapes and the border, with a uniform middle stretched only
-    horizontally. OCR silence is never emptiness proof. A single vertical mark
-    at the text origin is unresolved (caret OR text), not an accepted caret.
-    """
-    import base64,io
-    import numpy as np
-    import cv2
-    from PIL import Image
-    a=np.array(image.convert('RGB')).astype(int)
-    height,width=a.shape[:2]
-    if height!=31 or not 180<=width<=330:raise FlowStop('SEARCH_EMPTY_STYLE_UNSUPPORTED')
-    with Image.open(io.BytesIO(base64.b64decode(_EMPTY_SEARCH_PNG))) as im:
-        ref=np.array(im.convert('RGB')).astype(int)
-    expected=np.repeat(ref[:,100:101,:],width,axis=1)
-    expected[:,:31,:]=ref[:,:31,:];expected[:,-31:,:]=ref[:,-31:,:]
-    different=np.max(np.abs(a-expected),axis=2)>18
-    if not different.any():return
-    count,_,stats,_=cv2.connectedComponentsWithStats(different.astype('uint8'),8)
-    marks=stats[1:count]
-    if len(marks)==1:
-        x,y,w,h,area=map(int,marks[0])
-        if 24<=x<=30 and w<=2 and 4<=y and y+h<=27 and 10<=h<=23 and area>=h:
-            raise FlowStop('SEARCH_EMPTY_CARET_OR_TEXT_UNRESOLVED')
-    raise FlowStop('SEARCH_QUERY_OR_STYLE_REMAINS')
+
+def focused_empty_bounds(frame: Frame, bounds: list[int]) -> list[int]:
+    # Antialiased borders may lie outside the neutral-fill component at higher
+    # DPI. Only extend symmetrically nearby, and still prove EVERY native pixel
+    # including the border. Never erase/rescale observed text to make it match.
+    error = None
+    radius = max(1, round((bounds[3]-bounds[1])*.15))
+    for margin in range(radius+1):
+        b = [bounds[0]-margin, bounds[1]-margin, bounds[2]+margin, bounds[3]+margin]
+        if b[0] < 0 or b[1] < 8 or b[2] > frame.image.width or b[3] > frame.image.height:
+            continue
+        try:
+            focused_search_empty_pixels(frame.image.crop(tuple(b)))
+            return b
+        except FlowStop as exc:
+            if error is None or str(exc) == 'SEARCH_EMPTY_CARET_OR_TEXT_UNRESOLVED':
+                error = exc
+    raise error or FlowStop('SEARCH_EMPTY_STYLE_UNSUPPORTED')
+
+
+def search_clear_target(frame: Frame, cached_bounds=None) -> dict:
+    """Only a unique circle-X inside the current search input can clear it."""
+    from ..search_control_icons import clear_icon_candidates
+    if frame.name != 'header':raise FlowStop('SEARCH_FRAME_INVALID')
+    b = list(cached_bounds) if cached_bounds is not None else search_control_bounds(frame)
+    height = b[3]-b[1]
+    candidates = clear_icon_candidates(frame.image,
+        search_bounds=[b[2]-height, b[1], b[2], b[3]])
+    if len(candidates) != 1:
+        raise FlowStop('SEARCH_CLEAR_ICON_MISSING_OR_AMBIGUOUS')
+    return {**candidates[0], 'frame': frame.name}
 
 
 def search_query(frame: Frame, query: str) -> dict:
@@ -273,6 +283,7 @@ def run_flow(ui, *, phone: str, verify_message: str, remark_name: str,
             frame = ui.capture('header');t = empty_search(frame)
         ui.click(frame, t, 'focus_main_search')
         search_owned = True
+        ui.owned_search_query = query
         ui.replace(frame, query)
         step('query_verified_and_network_lookup')
         frame = ui.capture('lookup')
@@ -357,6 +368,10 @@ def run_flow(ui, *, phone: str, verify_message: str, remark_name: str,
             report['cleanup'] = 'deferred_invite_dialog_still_open'
         elif form_transition:
             report['cleanup'] = 'deferred_invite_dialog_unconfirmed'
+        if getattr(ui, 'cleanup_fallback_used', False):
+            report['cleanup_fallback_used'] = True
+        if getattr(ui, 'cleanup_control_match', None):
+            report['cleanup_control_match'] = ui.cleanup_control_match
         if getattr(ui, 'guard_failures', None):
             report['guard_failures'] = list(ui.guard_failures)
         if getattr(ui, 'evidence_state', None) is not None:
@@ -373,8 +388,9 @@ def run_flow(ui, *, phone: str, verify_message: str, remark_name: str,
 
 class NativeUI:
     """Bounded ROI capture + original humanized input, with per-frame guards."""
-    def __init__(self, ops, hwnd: int, pid: int, evidence: Path, identity_guard, *, organized_evidence=False, diagnostics=None):
+    def __init__(self, ops, hwnd: int, pid: int, evidence: Path, identity_guard, *, organized_evidence=False, diagnostics=None, search_control_cache=None):
         self.diagnostics = diagnostics
+        self.search_control_cache = search_control_cache if search_control_cache is not None else {}
         self.evidence_state = {'frames': [], 'failures': []}
         self.guard_phase = 'initialization'
         self.guard_operation = 'create_ui'
@@ -853,45 +869,102 @@ class NativeUI:
             self.current = self.main
         self.guard()
 
+    def cached_search_bounds(self, frame):
+        cache = getattr(self, 'search_control_cache', None)
+        key = {'hwnd': frame.hwnd, 'pid': getattr(self, 'pid', None), 'origin': frame.origin,
+               'geometry': frame.geometry, 'dpi': getattr(self, 'dpi', None)}
+        if cache is None:
+            cache = self.search_control_cache = {}
+        if cache.get('key') != key:
+            cache.clear()
+            cache['key'] = key
+        return cache.get('bounds')
+
     def verified_empty_search(self, frame=None):
         frame = frame or self.capture('header')
+        bounds = self.cached_search_bounds(frame)
         try:
-            return frame,empty_search(frame)
+            target = empty_search(frame, bounds)
         except FlowStop as exc:
             if str(exc)!='SEARCH_EMPTY_CARET_OR_TEXT_UNRESOLVED':raise
+        else:
+            self.search_control_cache['bounds'] = list(target['bounds'])
+            return frame, target
         # One purposeful input-only observation for a possible blinking caret.
         # Never mask a thin glyph; success needs an actually mark-free frame.
         self.guard(frame)
-        self.search_empty_bounds=search_control_bounds(frame)
+        self.search_empty_bounds = list(bounds) if bounds is not None else search_control_bounds(frame)
         self.ops.humanized_action_sleep(450,550)
         narrow=self.capture('search_empty')
         focused_search_empty_pixels(narrow.image)
+        self.search_control_cache['bounds'] = list(self.search_empty_bounds)
         b=[0,0,narrow.image.width,narrow.image.height]
         return narrow,{'bounds':b,'point':[b[2]//2,b[3]//2],'frame':narrow.name,'proof':'focused_empty_pixels'}
+
+    def require_owned_search_query(self, frame, bounds):
+        # An icon alone is not proof of text, nor permission to erase someone
+        # else's input. Only this flow's exact query authorizes deletion.
+        # Validate cached bounds against this already captured frame, without
+        # selecting a new point. Internal layout changes must not reuse it.
+        margin = max(1, round((bounds[3]-bounds[1])*.15))
+        observed = components(frame.image,'search') + components(frame.image,'white')
+        if not any(all(abs(a-b) <= margin for a,b in zip(control,bounds)) for control in observed):
+            raise FlowStop('SEARCH_CONTROL_GEOMETRY_CHANGED')
+        expected = getattr(self, 'owned_search_query', None)
+        if not expected:
+            raise FlowStop('SEARCH_CONTENT_OWNERSHIP_UNRESOLVED')
+        texts = [clean(row.get('text')) for row in frame.rows
+                 if contains(bounds,row) and row.get('confidence',0) >= .8]
+        if not any(value in (expected,'Q'+expected,'O'+expected) for value in texts):
+            raise FlowStop('SEARCH_CONTENT_OWNERSHIP_UNRESOLVED')
+        if any(value not in (expected,'Q'+expected,'O'+expected,'Q','O','0','X','x','×') for value in texts):
+            raise FlowStop('SEARCH_CONTENT_OWNERSHIP_UNRESOLVED')
 
     def clear_search(self):
         self.guard_operation = 'clear_search'
         self.return_to_main()
         frame = self.capture('header')
         try:
-            t = empty_search(frame)
+            frame, target = self.verified_empty_search(frame)
         except FlowStop as exc:
-            if str(exc) == 'SEARCH_EMPTY_CARET_OR_TEXT_UNRESOLVED':
-                frame, t = self.verified_empty_search(frame)
-                self.cleanup_empty_proof = t.get('proof', 'placeholder_and_ocr')
-                self.cleanup_action = 'already_empty_no_input'
-                self.guard(frame)
-                return
+            if str(exc) == 'SEARCH_EMPTY_CARET_OR_TEXT_UNRESOLVED':raise
         else:
-            self.cleanup_empty_proof = t.get('proof', 'placeholder_and_ocr')
+            self.cleanup_empty_proof = target.get('proof', 'placeholder_and_ocr')
             self.cleanup_action = 'already_empty_no_input'
             self.guard(frame)
             return
-        b=search_control_bounds(frame)
-        t={'bounds':b,'point':[(b[0]+b[2])//2,(b[1]+b[3])//2]}
-        self.click(frame,t,'focus_search_cleanup')
-        self.replace(frame,'')
-        frame,t=self.verified_empty_search(self.capture('header'))
-        self.cleanup_empty_proof=t.get('proof','placeholder_and_ocr')
-        self.cleanup_action = 'query_cleared_once'
-        self.guard(frame)
+        bounds = self.cached_search_bounds(frame)
+        if bounds is None:
+            # Compatibility for a standalone cleanup caller. Normal C1 caches
+            # this on the initial, verified empty header before typing.
+            bounds = search_control_bounds(frame)
+            self.search_control_cache['bounds'] = list(bounds)
+        self.require_owned_search_query(frame, bounds)
+        try:
+            target = search_clear_target(frame, bounds)
+        except FlowStop as exc:
+            if str(exc) != 'SEARCH_CLEAR_ICON_MISSING_OR_AMBIGUOUS':raise
+        else:
+            self.cleanup_control_match = {k:target[k] for k in ('method','bounds','confidence','template_scale')}
+            self.click(frame, target, 'clear_search_icon')
+            frame = self.capture('header')
+            try:
+                checked, target = self.verified_empty_search(frame)
+            except FlowStop as exc:
+                if str(exc) == 'SEARCH_EMPTY_CARET_OR_TEXT_UNRESOLVED':raise
+            else:
+                self.cleanup_empty_proof = target.get('proof','placeholder_and_ocr')
+                self.cleanup_action = 'clear_icon_clicked_once'
+                self.guard(checked)
+                return
+        # At most one fallback, at the cached input point. Its fresh screenshot
+        # proves retained owned content; it does not relocate the input.
+        self.require_owned_search_query(frame, bounds)
+        target = {'bounds':list(bounds),'point':[(bounds[0]+bounds[2])//2,(bounds[1]+bounds[3])//2], 'frame':frame.name}
+        self.cleanup_fallback_used = True
+        self.click(frame, target, 'focus_search_cleanup_fallback')
+        self.replace(frame, '')
+        checked, target = self.verified_empty_search(self.capture('header'))
+        self.cleanup_empty_proof = target.get('proof','placeholder_and_ocr')
+        self.cleanup_action = 'clear_fallback_deleted_once'
+        self.guard(checked)

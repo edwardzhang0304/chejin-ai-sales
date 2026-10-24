@@ -54,6 +54,7 @@ class WindowsC1:
         self.root=root
         self.artifact_root=artifact_root
         self._ops=None
+        self._search_control_cache = {}
     def _window(self,process):
         if self._ops is None:
             from apps.wechat_ai_customer_service.adapters import wechat_win32_ocr_sidecar as ops
@@ -87,6 +88,7 @@ class WindowsC1:
 
     def startup(self,process,gateway,scope):
         from apps.wechat_ai_customer_service.adapters.wechat_win32_ocr.hook_c1 import prepare_window
+        self._search_control_cache.clear()
         with gateway._locked(process,'hook_startup_window') as lease:
             gateway._history_identity(process,scope)
             ops,hwnd=self._window(process)
@@ -109,4 +111,5 @@ class WindowsC1:
             diagnostics.initialization_failure(exc)
             raise
         return NativeUI(ops,hwnd,process.pid,evidence,guard,
-            organized_evidence=self.artifact_root is not None, diagnostics=diagnostics)
+            organized_evidence=self.artifact_root is not None, diagnostics=diagnostics,
+            search_control_cache=self._search_control_cache)

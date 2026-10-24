@@ -588,7 +588,13 @@ class NativeGuardTests(unittest.TestCase):
     def test_nonempty_search_clears_once_and_checks_one_new_header(self):
         from unittest.mock import Mock
         self.input_setup();self.fr.name='header'
+        self.ui.owned_search_query='13800000003'
         dirty=copy.deepcopy(self.fr)
+        from PIL import ImageDraw
+        from apps.wechat_ai_customer_service.adapters.search_control_icons import empty_references
+        bounds=f.empty_search(dirty)['bounds']
+        dirty.image.paste(empty_references()[1], tuple(bounds[:2]))
+        ImageDraw.Draw(dirty.image).text((bounds[0]+40,bounds[1]+7),'13800000003',fill=(70,70,70))
         next(r for r in dirty.rows if f.clean(r.get('text')) in ('搜索','Q搜索'))['text']='13800000003'
         def capture(name):
             frame=dirty if self.ui.capture.call_count==1 else self.fr
@@ -596,10 +602,33 @@ class NativeGuardTests(unittest.TestCase):
         self.ui.capture=Mock(side_effect=capture);self.ui.click=Mock()
         self.ui.clear_search()
         self.assertEqual(self.ui.capture.call_count,2)
+        self.ops.hotkey.assert_not_called()
+        self.ops.key_press.assert_not_called()
+        self.ops.clipboard_copy.assert_not_called()
+        self.assertEqual(self.ui.click.call_count,1)
+        self.assertEqual(self.ui.click.call_args.args[2],'clear_search_icon')
+        self.assertEqual(self.ui.cleanup_action,'clear_icon_clicked_once')
+
+    def test_clear_fallback_uses_existing_guarded_select_all_delete_once(self):
+        from unittest.mock import Mock
+        from PIL import ImageDraw
+        from apps.wechat_ai_customer_service.adapters.search_control_icons import empty_references
+        self.input_setup();self.fr.name='header';self.ui.owned_search_query='13800000003'
+        dirty=copy.deepcopy(self.fr);bounds=f.empty_search(dirty)['bounds']
+        dirty.image.paste(empty_references()[1],tuple(bounds[:2]))
+        ImageDraw.Draw(dirty.image).text((bounds[0]+40,bounds[1]+7),'13800000003',fill=(70,70,70))
+        next(r for r in dirty.rows if f.clean(r.get('text')) in ('搜索','Q搜索'))['text']='13800000003'
+        def capture(name):
+            frame=self.fr if self.ui.capture.call_count==3 else dirty
+            self.ui.last_frame=frame;return frame
+        self.ui.capture=Mock(side_effect=capture);self.ui.click=Mock()
+        self.ui.clear_search()
+        self.assertEqual(self.ui.capture.call_count,3)
+        self.assertEqual([c.args[2] for c in self.ui.click.call_args_list],['clear_search_icon','focus_search_cleanup_fallback'])
         self.assertEqual([c.args for c in self.ops.hotkey.call_args_list],[(17,65)])
         self.assertEqual([c.args for c in self.ops.key_press.call_args_list],[(8,)])
-        self.assertEqual(self.ui.click.call_count,1)
-        self.assertEqual(self.ui.cleanup_action,'query_cleared_once')
+        self.ops.clipboard_copy.assert_not_called();self.ops.type_text_with_sendinput_unicode.assert_not_called()
+        self.assertEqual(self.ui.cleanup_action,'clear_fallback_deleted_once')
 
     def test_phone_pacing_uses_real_typer_one_digit_and_four_to_five_seconds(self):
         from unittest.mock import Mock,patch
