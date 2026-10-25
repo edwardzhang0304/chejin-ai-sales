@@ -15,6 +15,38 @@ STATE_COLUMNS = {
 }
 
 
+def _object_sql(expression, kind=None):
+    # json_each.value for a JSON string is unquoted; checking its SQL value
+    # alone could both throw and mistake an encoded object for an object.
+    if kind:
+        return f"CASE WHEN {kind}='object' THEN {expression} ELSE '{{}}' END"
+    return (f"CASE WHEN json_valid({expression}) THEN CASE WHEN json_type({expression})='object' "
+            f"THEN {expression} ELSE '{{}}' END ELSE '{{}}' END")
+
+
+def _array_sql(document, field):
+    return (f"CASE WHEN json_type({document},'$.{field}')='array' "
+            f"THEN json_extract({document},'$.{field}') ELSE '[]' END")
+
+
+def json_shape_invalid(table, field, value):
+    """Only evidence-shape diagnostics; never a business acceptance decision."""
+    children = {('hook_observation_projection', 'projection_json'): 'observations',
+                ('hook_delivery_outbox', 'payload_json'): 'messages'}.get((table, field))
+    if children is None:
+        return False
+    if not isinstance(value, dict) or not isinstance(value.get(children), list):
+        return True
+    if children == 'messages' and any(not isinstance(value.get(k), str)
+            for k in ('self_wxid', 'account_epoch', 'peer_wxid')):
+        return True
+    for item in value[children]:
+        fields = ('native_msg_id',) if children == 'messages' else ('self_wxid', 'account_epoch', 'message_type', 'disposition')
+        if not isinstance(item, dict) or any(not isinstance(item.get(k), str) for k in fields):
+            return True
+    return False
+
+
 class SnapshotPriority:
     def __init__(self, db, limit, record, voice_receipt_known=lambda _: False, *, deadline):
         self.db, self.limit, self.record = db, limit, record
@@ -88,48 +120,47 @@ class SnapshotPriority:
         if {'receive_seq', 'status'} <= self.columns.get('hook_delivery_outbox', set()):
             collect('hook_delivery_outbox', "SELECT DISTINCT receive_seq FROM hook_delivery_outbox WHERE status IS NULL OR status!='stored' ORDER BY receive_seq", 1)
         if {'receive_seq', 'projection_json'} <= projection:
-            collect('hook_observation_projection', "SELECT receive_seq FROM hook_observation_projection WHERE CASE WHEN json_valid(projection_json) THEN coalesce(json_extract(projection_json,'$.status'),'')!='projected' ELSE 1 END ORDER BY receive_seq", 1)
-            # Projection commits before enqueue. Even a stored delivery may
-            # cover only part of a multi-message callback. Match each retained
-            # fact to its stored envelope; projection alone is not settlement.
+            document = _object_sql('projection_json')
+            collect('hook_observation_projection', f"SELECT receive_seq FROM hook_observation_projection WHERE coalesce(json_extract({document},'$.status'),'')!='projected' ORDER BY receive_seq", 1)
+            # Normalize before every JSON read. One damaged row cannot prevent
+            # finding a different callback interrupted before/partway through enqueue.
+            ctes = f"projections AS (SELECT receive_seq,{_object_sql('projection_json')} AS document FROM hook_observation_projection)"
+            observation = _object_sql('o.value', 'o.type')
+            message = _object_sql('m.value', 'm.type')
             stored = '0'
             if {'receive_seq', 'status', 'payload_json'} <= self.columns.get('hook_delivery_outbox', set()):
-                stored = """EXISTS (SELECT 1 FROM hook_delivery_outbox d,
-                    json_each(CASE WHEN json_valid(d.payload_json) THEN d.payload_json ELSE '{}' END,'$.messages') m
+                ctes += f", deliveries AS (SELECT receive_seq,status,{_object_sql('payload_json')} AS document FROM hook_delivery_outbox)"
+                stored = f"""EXISTS (SELECT 1 FROM deliveries d,
+                    json_each({_array_sql('d.document', 'messages')}) m
                     WHERE d.receive_seq=p.receive_seq AND d.status='stored'
-                    AND json_extract(d.payload_json,'$.self_wxid')=json_extract(o.value,'$.self_wxid')
-                    AND json_extract(d.payload_json,'$.account_epoch')=json_extract(o.value,'$.account_epoch')
-                    AND json_extract(d.payload_json,'$.peer_wxid')=json_extract(o.value,'$.peer_wxid')
-                    AND json_extract(m.value,'$.native_msg_id')=json_extract(o.value,'$.native_msg_id'))"""
+                    AND json_type(d.document,'$.self_wxid')='text'
+                    AND json_type(d.document,'$.account_epoch')='text'
+                    AND json_type(d.document,'$.peer_wxid')='text'
+                    AND json_type({message},'$.native_msg_id')='text'
+                    AND json_extract(d.document,'$.self_wxid')=json_extract({observation},'$.self_wxid')
+                    AND json_extract(d.document,'$.account_epoch')=json_extract({observation},'$.account_epoch')
+                    AND json_extract(d.document,'$.peer_wxid')=json_extract({observation},'$.peer_wxid')
+                    AND json_extract({message},'$.native_msg_id')=json_extract({observation},'$.native_msg_id'))"""
             voice_settled = '0'
             if {'self_wxid', 'account_epoch', 'native_msg_id', 'peer_wxid', 'state'} <= voice_columns:
                 excluded = ','.join(map(str, self.voice_rows)) or '0'
                 voice_settled = f"""EXISTS (SELECT 1 FROM hook_voice_attempts v
-                    WHERE v.self_wxid=json_extract(o.value,'$.self_wxid')
-                    AND v.account_epoch=json_extract(o.value,'$.account_epoch')
-                    AND v.native_msg_id=json_extract(o.value,'$.native_msg_id')
-                    AND (v.peer_wxid=json_extract(o.value,'$.peer_wxid') OR
-                        (json_extract(o.value,'$.peer_wxid') IS NULL AND json_extract(o.value,'$.media_stage')='audio_observed'))
+                    WHERE v.self_wxid=json_extract({observation},'$.self_wxid')
+                    AND v.account_epoch=json_extract({observation},'$.account_epoch')
+                    AND v.native_msg_id=json_extract({observation},'$.native_msg_id')
+                    AND (v.peer_wxid=json_extract({observation},'$.peer_wxid') OR
+                        (json_extract({observation},'$.peer_wxid') IS NULL AND json_extract({observation},'$.media_stage')='audio_observed'))
                     AND v.state IN ('transcribed','failed') AND v.rowid<={self.voice_terminal_checked}
                     AND v.rowid NOT IN ({excluded}))"""
-            collect('hook_observation_projection', f"""SELECT p.receive_seq FROM hook_observation_projection p
-                WHERE CASE WHEN json_valid(p.projection_json) THEN json_extract(p.projection_json,'$.status')='projected' ELSE 0 END
-                AND EXISTS (SELECT 1 FROM json_each(p.projection_json,'$.observations') o
-                    WHERE coalesce(json_extract(o.value,'$.reason_code'),'')!='HOOK_GROUP_EXCLUDED'
-                    AND CASE WHEN json_extract(o.value,'$.message_type')='voice' THEN NOT ({voice_settled})
-                        ELSE coalesce(json_extract(o.value,'$.disposition'),'')!='message_candidate' OR NOT ({stored}) END)
+            collect('hook_observation_projection', f"""WITH {ctes}
+                SELECT p.receive_seq FROM projections p
+                WHERE json_extract(p.document,'$.status')='projected'
+                AND (coalesce(json_type(p.document,'$.observations'),'')!='array' OR
+                    EXISTS (SELECT 1 FROM json_each({_array_sql('p.document', 'observations')}) o
+                    WHERE coalesce(json_extract({observation},'$.reason_code'),'')!='HOOK_GROUP_EXCLUDED'
+                    AND CASE WHEN json_extract({observation},'$.message_type')='voice' THEN NOT ({voice_settled})
+                        ELSE coalesce(json_extract({observation},'$.disposition'),'')!='message_candidate' OR NOT ({stored}) END))
                 ORDER BY p.receive_seq""", 1)
-            if self.voice_rows:
-                # Link on the complete retained account/peer identity. IDs from
-                # another account must never provide evidence for this parent.
-                collect('hook_voice_attempts', f"""SELECT DISTINCT p.receive_seq FROM hook_observation_projection p,
-                    json_each(CASE WHEN json_valid(p.projection_json) THEN p.projection_json ELSE '{{}}' END,'$.observations') o
-                    JOIN hook_voice_attempts v ON v.self_wxid=json_extract(o.value,'$.self_wxid')
-                    AND v.account_epoch=json_extract(o.value,'$.account_epoch')
-                    AND v.native_msg_id=json_extract(o.value,'$.native_msg_id')
-                    AND (v.peer_wxid=json_extract(o.value,'$.peer_wxid') OR
-                        (json_extract(o.value,'$.peer_wxid') IS NULL AND json_extract(o.value,'$.media_stage')='audio_observed'))
-                    WHERE v.rowid IN ({','.join(map(str,self.voice_rows))}) ORDER BY p.receive_seq""", 1)
         ordered = sorted(roots, key=lambda seq: (roots[seq], seq))
         self.sequences = ordered[:limit]
         if len(ordered) > limit:

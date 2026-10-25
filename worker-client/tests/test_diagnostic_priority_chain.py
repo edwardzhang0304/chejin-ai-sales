@@ -323,7 +323,7 @@ def test_drain_interruption_preserves_unacknowledged_projection_chain(local_db, 
     class OldQueries:
         def __init__(self, db): self.db = db
         def execute(self, query, *args):
-            if "coalesce(json_extract(o.value,'$.reason_code'),'')!='HOOK_GROUP_EXCLUDED'" in query:
+            if query.startswith('WITH projections AS'):
                 return iter(())
             return self.db.execute(query, *args)
     def old_init(self, db, *args, **kwargs):
@@ -333,3 +333,65 @@ def test_drain_interruption_preserves_unacknowledged_projection_chain(local_db, 
         legacy = read(export_bundle(local_db, local_db/'drain-gap-old.zip'))
     assert original_seq not in {r['receive_seq'] for r in legacy['state/hook_raw_inbox.json']['rows']}
     assert rows_before() == original
+
+
+def test_bad_json_isolated_from_other_unfinished_receive_chain(local_db, monkeypatch):
+    import sqlite3
+    import hashlib
+    from chejin_worker_client import diagnostic_selection
+    scope = HookReceiveScope('wxid_json_budget', str(uuid.uuid4()), 'json-generation', 30251)
+    raw = json.dumps({'ServerPort': '30251', 'selfwxid': scope.self_wxid, 'sendorrecv': '2', 'msgnumber': '1',
+        'msglist': [{'msgsvrid': '800001', 'msgtype': '1', 'fromtype': '1', 'fromid': 'wxid_json_peer',
+                     'toid': scope.self_wxid, 'msg': 'private unfinished body'}]}).encode()
+    original_seq = NativeInbox(max_body_bytes=65536, max_inbox_bytes=128*1024*1024).persist(raw, scope)['receive_seq']
+    create_projection_store().project_next(scope)  # Interrupted before enqueue.
+    damaged_seq = produce(1005, completed=True)[-1][1]['receive_seq']
+    cases = [('healthy', None, None), ('outbox_syntax', 'hook_delivery_outbox', 'syntax'),
+             ('projection_syntax', 'hook_observation_projection', 'syntax')]
+    for table in ('hook_delivery_outbox', 'hook_observation_projection'):
+        for shape in ('top_scalar', 'array_object', 'array_scalar', 'element_scalar', 'encoded_element', 'field_object'):
+            cases.append((table+'_'+shape, table, shape))
+    for name, table, shape in cases:
+        root = local_db/name; root.mkdir()
+        target = root/'worker_client.sqlite3'
+        # Copy official producer output, then explicitly corrupt one stored
+        # record. This injection is not a hand-built normal business fixture.
+        with storage.db_connection() as source, sqlite3.connect(target) as db:
+            source.backup(db)
+            if table:
+                field = 'payload_json' if table == 'hook_delivery_outbox' else 'projection_json'
+                children = 'messages' if table == 'hook_delivery_outbox' else 'observations'
+                value = json.loads(db.execute(f'SELECT {field} FROM {table} WHERE receive_seq=?', (damaged_seq,)).fetchone()[0])
+                if shape == 'syntax': encoded = 'broken-json'
+                else:
+                    if shape == 'top_scalar': value = 'not an object'
+                    elif shape == 'array_object': value[children] = {'0': value[children][0]}
+                    elif shape == 'array_scalar': value[children] = 'not an array'
+                    elif shape == 'element_scalar': value[children] = ['broken-json', 7, None]
+                    elif shape == 'encoded_element': value[children] = [json.dumps(value[children][0])]
+                    elif shape == 'field_object':
+                        if table == 'hook_delivery_outbox': value['self_wxid'] = {'invalid': True}
+                        else: value[children][0]['self_wxid'] = {'invalid': True}
+                    encoded = json.dumps(value)
+                db.execute(f'UPDATE {table} SET {field}=? WHERE receive_seq=?', (encoded, damaged_seq))
+        before = hashlib.sha256(target.read_bytes()).hexdigest()
+        result = read(export_bundle(root, root/'result.zip'))
+        for chain_table in ('hook_raw_inbox', 'hook_observation_projection'):
+            assert original_seq in {r['receive_seq'] for r in result[f'state/{chain_table}.json']['rows']}, name
+        omissions = result['evidence-index/export.json']['omissions']
+        assert not any(r.get('reason') == 'priority_selection_failed' for r in omissions), name
+        if table:
+            assert any(r.get('source') == table and r.get('receive_seq') == damaged_seq and
+                       r.get('reason') in {'invalid_snapshot_json', 'invalid_snapshot_json_shape'} for r in omissions), name
+        assert 'private unfinished body' not in json.dumps(result)
+        assert 'private synthetic body' not in json.dumps(result)
+        assert hashlib.sha256(target.read_bytes()).hexdigest() == before
+        if name == 'outbox_syntax':
+            object_sql = diagnostic_selection._object_sql
+            with monkeypatch.context() as old:
+                old.setattr(diagnostic_selection, '_object_sql', lambda expression, kind=None:
+                    expression if expression == 'payload_json' else object_sql(expression, kind))
+                legacy = read(export_bundle(root, root/'unsafe-control.zip'))
+            assert original_seq not in {r['receive_seq'] for r in legacy['state/hook_raw_inbox.json']['rows']}
+            assert any(r.get('reason') == 'priority_selection_failed' for r in legacy['evidence-index/export.json']['omissions'])
+            assert hashlib.sha256(target.read_bytes()).hexdigest() == before

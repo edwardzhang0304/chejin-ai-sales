@@ -21,7 +21,7 @@ from datetime import datetime, timezone
 from .evidence_paths import artifacts, incident_roots, update_root
 from .incident_evidence import _sanitize, _SECRET_KEY_RE, _FORBIDDEN_FILE_RE
 from . import __version__
-from .diagnostic_selection import SnapshotPriority
+from .diagnostic_selection import SnapshotPriority, json_shape_invalid
 
 MAX_BYTES = 100 * 1024 * 1024
 MAX_FILE_BYTES = 8 * 1024 * 1024
@@ -364,8 +364,15 @@ class Collector:
                             if isinstance(v, str) and (k.endswith("_json") or k in {"metadata", "value"}):
                                 try:
                                     record[k] = json.loads(v)
-                                except ValueError:
+                                    if json_shape_invalid(table, k, record[k]):
+                                        self.record(table, "read_failed", reason="invalid_snapshot_json_shape", field=k,
+                                                    receive_seq=record.get('receive_seq'), event_uuid=record.get('event_uuid'))
+                                        record[k] = {"invalid_json_shape": True, "bytes": len(v.encode('utf-8')),
+                                                     "sha256": hashlib.sha256(v.encode('utf-8')).hexdigest()}
+                                except (ValueError, RecursionError):
                                     record[k] = {"invalid_json": True}
+                                    self.record(table, "read_failed", reason="invalid_snapshot_json", field=k,
+                                                receive_seq=record.get('receive_seq'), event_uuid=record.get('event_uuid'))
                         cleaned = self.clean(record)
                         size = len(_json(cleaned))
                         if table_bytes + size > MAX_FILE_BYTES:
