@@ -483,10 +483,12 @@ class NativeUI:
         self.ocr_evidence.mkdir(parents=True, exist_ok=True)
         if not ops.ensure_dpi_awareness_status().get('per_monitor_aware'):
             raise FlowStop('DPI_AWARENESS_UNVERIFIED')
-        if abs(self.initial['width']-1060) > 6 or abs(self.initial['height']-740) > 6:
+        from .hook_c1 import accepted_main_window_plan, classify_visible_other_windows
+        accepted = accepted_main_window_plan(self.initial, ops.get_window_client_geometry(hwnd),
+                                            self.dpi, ops.screen_work_area(hwnd))
+        if not accepted['ok']:
             self._guard_stop('initial_window_size_rejected', code='ACCEPTED_WINDOW_SIZE_CHANGED',
-                             observed={'geometry': self.initial, 'accepted_size': [1060, 740], 'tolerance': 6})
-        from .hook_c1 import classify_visible_other_windows
+                             observed={'geometry': self.initial, 'accepted_plan': accepted, 'tolerance': 6})
         if classify_visible_other_windows(ops, hwnd, pid)['blocking_window_details']:
             raise FlowStop('CLOSE_WECHAT_POPUP_FIRST')
         if activate_on_init:

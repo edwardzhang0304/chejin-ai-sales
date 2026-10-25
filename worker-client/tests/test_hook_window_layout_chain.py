@@ -4,12 +4,14 @@ Only Win32/Qt surfaces are substituted; dimensions never come from fixtures.
 """
 from types import SimpleNamespace as NS
 from unittest.mock import Mock
+import math
+from PIL import Image, ImageDraw
 import pytest
 import test_web_ui_binding_behavior as ui_fixture
 from chejin_worker_client.hook_process import _approved_window_geometry
 from chejin_worker_client.hook_worker_services import HookWorkerServices
 from apps.wechat_ai_customer_service.adapters import wechat_win32_ocr_sidecar as ops
-from apps.wechat_ai_customer_service.adapters.wechat_win32_ocr import hook_c1
+from apps.wechat_ai_customer_service.adapters.wechat_win32_ocr import hook_c1, hook_c1_flow
 
 
 @pytest.mark.parametrize('scale,width,height,origin', [
@@ -22,14 +24,14 @@ def test_actual_preparation_and_qt_share_scale(monkeypatch,tmp_path,scale,width,
     rect={'left':x+50,'top':y+50,'width':800,'height':700,'right':x+850,'bottom':y+750}
     def move(_hwnd,left,top,w,h,_repaint):
         rect.update(left=left,top=top,width=w,height=h,right=left+w,bottom=top+h)
-    gui=NS(IsWindowVisible=lambda _:True,IsIconic=lambda _:False,
+    gui=NS(IsWindow=lambda _:True,IsWindowVisible=lambda _:True,IsIconic=lambda _:False,
         GetClassName=lambda _:'WeChatMainWndForPC',GetForegroundWindow=lambda:11,
         GetWindow=lambda *_:0,EnumWindows=lambda cb,arg:cb(11,arg),IsZoomed=lambda _:False,
         MoveWindow=Mock(side_effect=move),GetWindowRect=lambda _:tuple(rect[k] for k in ('left','top','right','bottom')))
     owners=NS(GetWindowThreadProcessId=lambda _:(1,99))
     for name,value in dict(win32gui=gui,win32process=owners,
         get_window_geometry=lambda _:dict(rect),
-        get_window_client_geometry=lambda _:{'width':rect['width']-16,'height':rect['height']-30},
+        get_window_client_geometry=lambda _:{'width':rect['width']-16,'height':rect['height']-30,'screen_left':rect['left']+8,'screen_top':rect['top']+30},
         window_dpi_scale=lambda _:scale,
         screen_work_area=lambda _:{'left':x,'top':y,'width':width,'height':height},
         ensure_dpi_awareness_status=lambda:{'per_monitor_aware':True},
@@ -39,6 +41,28 @@ def test_actual_preparation_and_qt_share_scale(monkeypatch,tmp_path,scale,width,
     prepared=hook_c1.prepare_window(ops,11,99,artifact_dir=str(tmp_path),capture_evidence=False)
     assert prepared['ok'],prepared
     assert prepared['click_actions']==prepared['input_actions']==prepared['screenshot_call_count']==0
+    # Continue through the real startup search ROI and C1 constructor. OCR/native
+    # pixels are boundary fixtures; acceptance/region recognition remains real.
+    client=ops.get_window_client_geometry(11)
+    image=Image.new('RGB',(math.ceil(client['width']*.62),math.ceil(64*scale)),(245,245,245))
+    draw=ImageDraw.Draw(image)
+    draw.rectangle((0,0,round(68*scale)-1,image.height-1),fill=(45,45,45))
+    draw.rectangle((round(68*scale),0,round(376*scale)-1,image.height-1),fill=(235,235,235))
+    anchors=[{'text':'搜索','left':round(83*scale),'top':round(37*scale),
+              'right':round(119*scale),'bottom':round(54*scale),'confidence':.99}]
+    monkeypatch.setattr(ops,'_OCR_IMPORT_ERROR','')
+    monkeypatch.setattr(ops,'try_image_grab',Mock(return_value=image))
+    monkeypatch.setattr(ops,'run_ocr',Mock(return_value=anchors))
+    search=hook_c1.inspect_main_search_roi(ops,11,99,screenshot_path=str(tmp_path/'search.png'))
+    assert search['ok'],search
+    assert search['screenshot_call_count']==search['ocr_call_count']==1
+    identity=Mock()
+    ui=hook_c1_flow.NativeUI(ops,11,99,tmp_path/'task',identity,activate_on_init=False)
+    ui.guard()
+    identity.assert_called()
+    assert ui.initial==rect and ui.dpi==scale
+    ops.try_image_grab.assert_called_once()
+    ops.run_ocr.assert_called_once()
     process=NS(pid=99,started_at=12.5,exe=r'C:\fixture\WeChat.exe')
     live=NS(is_running=lambda:True,create_time=lambda:12.5,exe=lambda:process.exe)
     user32=NS(SetThreadDpiAwarenessContext=Mock(return_value=-3),GetDpiForWindow=lambda _:round(96*scale))
@@ -76,6 +100,15 @@ def test_actual_preparation_and_qt_share_scale(monkeypatch,tmp_path,scale,width,
         assert window.move.call_count==calls
         assert window._startup_position_attempted
     ops.capture_wechat.assert_not_called()
+    # A resized frame still fails before another capture/input. No tolerance widened.
+    rect['width']+=20;rect['right']+=20
+    rejected=hook_c1.inspect_main_search_roi(ops,11,99,screenshot_path=str(tmp_path/'bad.png'))
+    assert not rejected['ok'] and rejected['screenshot_call_count']==0
+    with pytest.raises(hook_c1_flow.FlowStop,match='ACCEPTED_WINDOW_SIZE_CHANGED'):
+        hook_c1_flow.NativeUI(ops,11,99,tmp_path/'bad-task',identity,activate_on_init=False)
+    with pytest.raises(hook_c1_flow.FlowStop,match='WINDOW_FOCUS_OR_GEOMETRY_CHANGED'):
+        ui.guard()
+    ops.try_image_grab.assert_called_once()
 
 
 @pytest.mark.parametrize('dpi',[0,float('nan'),float('inf'),500])

@@ -166,6 +166,21 @@ process before and after this call. Missing OCR leaves geometry evidence only.
     return result
 
 
+def accepted_main_window_plan(geometry, client, dpi, work_area):
+    """Validate the shared startup target without moving or locating anything."""
+    import math
+    from .window_action_planning import plan_normalize_wechat_window
+    if not math.isfinite(dpi) or not .5 <= dpi <= 4:
+        return {'ok': False, 'reason': 'hook_c1_invalid_window_dpi'}
+    plan = plan_normalize_wechat_window(geometry, dpi_scale=dpi,
+        work_area=work_area, startup_profile=STARTUP_PROFILE)
+    if plan['ok']:
+        plan['ok'] = (abs(geometry.get('width', 0)-plan['width']) <= 6
+                      and abs(geometry.get('height', 0)-plan['height']) <= 6
+                      and client.get('width', 0) >= 700 and client.get('height', 0) >= 600)
+    return plan
+
+
 def inspect_main_search_roi(ops: Any, hwnd: int, process_id: int, *, screenshot_path: str) -> dict:
     """Capture one top-left client ROI and recognize it once, without UI input.
 
@@ -200,10 +215,9 @@ def inspect_main_search_roi(ops: Any, hwnd: int, process_id: int, *, screenshot_
     geometry = ops.get_window_geometry(hwnd)
     client = ops.get_window_client_geometry(hwnd)
     dpi = ops.window_dpi_scale(hwnd)
-    if (abs(geometry.get('width', 0)-1060) > 6
-            or abs(geometry.get('height', 0)-740) > 6
-            or client.get('width', 0) < 700 or client.get('height', 0) < 600
-            or not math.isfinite(dpi) or not .5 <= dpi <= 4):
+    accepted = accepted_main_window_plan(geometry, client, dpi, ops.screen_work_area(hwnd))
+    result['accepted_window_plan'] = accepted
+    if not accepted['ok']:
         result['reason'] = 'hook_c1_accepted_window_geometry_changed'
         return result
     ops.activate_window(hwnd, foreground_only=True)
