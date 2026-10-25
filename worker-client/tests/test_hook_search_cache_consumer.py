@@ -140,15 +140,21 @@ def native_invite(scene):
     o.clipboard_read.side_effect=lambda:physical['clipboard']
     def grab(bbox):
         size=(bbox[2]-bbox[0],bbox[3]-bbox[1])
-        label={(659,90):'header',(403,317):'lookup',(489,405):'card',(450,280):'fields',(450,156):'footer'}[size]
+        label={(659,90):'header',(403,317):'lookup',(489,405):'card',(450,280):'fields',(450,156):'footer',(450,780):'review'}[size]
         s.grabs.append(label)
-        image=Image.open(flow_tests.FIX/f'native-{label}.png').convert('RGB')
+        if label=='review':
+            image=Image.new('RGB',(450,780),(240,240,240))
+            image.paste(Image.open(flow_tests.FIX/'native-fields.png'),(0,0))
+            image.paste(Image.open(flow_tests.FIX/'native-footer.png'),(0,624))
+        else:
+            image=Image.open(flow_tests.FIX/f'native-{label}.png').convert('RGB')
         image.info['scene_label']=label
         return image
     def ocr(image):
         label=image.info['scene_label'];s.ocr_calls.append(label)
-        result=copy.deepcopy(rows[label])
-        if label=='fields':
+        result=copy.deepcopy(rows['fields' if label=='review' else label])
+        if label=='review':result.extend({**r,'top':r['top']+624,'bottom':r['bottom']+624} for r in rows['footer'])
+        if label in ('fields','review'):
             physical['fields']+=1
             if physical['fields']==2:
                 # Native paste above must really have reached the second field.
@@ -172,7 +178,7 @@ def test_full_native_invite_uses_startup_map_and_single_form_layout(native_invit
     assert result['cleanup']=='search_empty_verified'
     assert result['submit_attempted'] and not result['delivery_confirmed'] and not result['ai_admission']
     assert locate_form.call_count==1
-    assert s.grabs==['header','lookup','card','fields','fields','footer','header']
+    assert s.grabs==['header','lookup','card','fields','review','header']
     assert physical['clicks']==6 and o.clipboard_copy.call_count==2
     assert s.native._search_control_cache==saved
     before=(original(s)/'submit-attempt.json').read_bytes()

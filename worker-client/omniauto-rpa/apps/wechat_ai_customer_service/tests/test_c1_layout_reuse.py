@@ -27,9 +27,9 @@ def test_filled_page_does_not_revalidate_form_layout(tmp_path, change):
             if change == 'one_pixel_label':
                 next(r for r in frame.rows if r['text'] == '发送添加朋友申请')['right'] -= 1
             elif change == 'missing_labels':
-                frame.rows = [r for r in frame.rows if r['text'] == 'CJH5N28']
+                frame.rows = [r for r in frame.rows if r['text'] == 'CJH5N28' or r['top'] >= frame.image.height*.8]
             else:
-                ImageDraw.Draw(frame.image).rectangle((0, 0, *frame.image.size), fill=(100, 100, 100))
+                ImageDraw.Draw(frame.image).rectangle((0, 0, frame.image.width, ui.frames['fields'].image.height-1), fill=(100, 100, 100))
         return frame
     ui.capture = changed
     with patch.object(f, 'form_fields', wraps=f.form_fields) as locate:
@@ -38,7 +38,7 @@ def test_filled_page_does_not_revalidate_form_layout(tmp_path, change):
     assert locate.call_count == 1
     assert result['status'] == 'submitted_pending_recipient'
     assert ui.actions.count('confirm_invite_once') == 1
-    assert ui.captures == ['header', 'lookup', 'card', 'fields', 'fields_filled', 'footer']
+    assert ui.captures == ['header', 'lookup', 'card', 'fields', 'fields_filled']
 
 
 @pytest.mark.parametrize('change', ['wrong', 'missing', 'low_confidence', 'outside'])
@@ -47,9 +47,9 @@ def test_shortcode_failure_still_blocks_submission(tmp_path, change):
     def changed(label):
         frame = capture(label)
         if label == 'fields_filled':
-            row = frame.rows[-1]
+            row = next(r for r in frame.rows if r['text'] == 'CJH5N28')
             if change == 'wrong': row['text'] = 'CJOTHER'
-            elif change == 'missing': frame.rows.pop()
+            elif change == 'missing': frame.rows.remove(row)
             elif change == 'low_confidence': row['confidence'] = .89
             else: row['left'] = -1
         return frame

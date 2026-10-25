@@ -21,6 +21,16 @@ def frames():
     out['header']=f.Frame(image,json.loads((FIX/'header-rows.json').read_text()),'header')
     return out
 
+def combined_review(fields, footer):
+    height=footer.image.height*5
+    image=Image.new('RGB',(fields.image.width,height),(240,240,240))
+    image.paste(fields.image,(0,0));offset=height-footer.image.height
+    image.paste(footer.image,(0,offset))
+    rows=copy.deepcopy(fields.rows)
+    rows.extend({**r,'top':r['top']+offset,'bottom':r['bottom']+offset} for r in footer.rows)
+    return f.Frame(image,rows,'fields_filled')
+
+
 class ReplayUI:
     def __init__(self):
         self.frames=frames();self.actions=[];self.captures=[];self.texts={};self.cleanup=True
@@ -39,6 +49,8 @@ class ReplayUI:
                 if 192 < row['top'] < 235 and 'remark' in self.texts:row['text']=self.texts['remark']
         if self.fail=='wrong_remark' and name=='fields_filled':
             frame.rows[-1]['text']='错误备注'
+        if name=='fields_filled':
+            frame=combined_review(frame,self.frames['footer'])
         if name=='card' and self.kind!='new_contact':
             row=next(r for r in frame.rows if r['text']=='添加到通讯录')
             row['text']='发消息' if self.kind=='already_friend' else '该用户不存在'
@@ -68,7 +80,7 @@ class Tests(unittest.TestCase):
     def test_complete_replay_synthetic_ocr_anchors_simulated_input(self):
         r=self.run_flow();self.assertEqual(r['status'],'submitted_pending_recipient');self.assertFalse(r['delivery_confirmed']);self.assertFalse(r['ai_admission'])
         self.assertEqual(self.ui.actions,['focus_main_search','network_lookup','open_invite_form','dialog_selected','focus_greeting','focus_remark','confirm_invite_once','search_cleanup'])
-        self.assertEqual(self.ui.captures,['header','lookup','card','fields','fields_filled','footer']);self.assertEqual(r['cleanup'],'search_empty_verified')
+        self.assertEqual(self.ui.captures,['header','lookup','card','fields','fields_filled']);self.assertEqual(r['cleanup'],'search_empty_verified')
         self.assertTrue(json.loads(self.j.path.read_text())['submit_attempted'])
     def test_no_second_submit_after_unknown(self):
         self.ui.fail='observe';r=self.run_flow();self.assertEqual(r['status'],'submission_unknown');self.assertTrue(self.j.path.exists())
@@ -141,7 +153,7 @@ class Tests(unittest.TestCase):
     def test_red_annotation_cannot_authorize_button(self):
         frame=self.ui.frames['header'];row=f.unique_text(frame,('Q搜索','搜索'));t=f.target(frame,row,filled='search');self.assertEqual(t['bounds'],[83,31,320,62])
     def test_failure_at_each_pre_submit_stage_never_retries(self):
-        for stage in ['header','lookup','card','fields','fields_filled','footer']:
+        for stage in ['header','lookup','card','fields','fields_filled']:
             with self.subTest(stage=stage):
                 self.ui=ReplayUI();self.ui.fail=stage;r=self.run_flow();self.assertFalse(r['submit_attempted']);self.assertNotIn('confirm_invite_once',self.ui.actions)
 

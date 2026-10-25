@@ -16,6 +16,7 @@ def main_regions(width, height):
 
 def form_regions(width, height):
     return {'fields': (0, 0, width, int(height*.36)),
+            'review': (0, 0, width, height),
             'footer': (0, int(height*.80), width, height)}
 
 

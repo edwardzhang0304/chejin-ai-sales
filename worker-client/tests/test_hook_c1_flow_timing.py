@@ -38,7 +38,7 @@ def test_native_full_invite_separates_cached_positions_from_fresh_content(native
     o.humanized_action_sleep.side_effect=lambda low,high:clock.__setitem__(0,clock[0]+high/1000)
     o.add_friend_paced_pause.side_effect=lambda tier,**kw:clock.__setitem__(0,clock[0]+(3.5 if tier=='input' else .35))
     def slow_ocr(image):
-        if image.info['scene_label']=='fields':
+        if image.info['scene_label'] in ('fields','review'):
             if physical['fields']==0:clock[0]+=18  # position OCR only
             elif mode=='stale_final_shortcode':clock[0]+=16
         return ocr(image)
@@ -48,7 +48,7 @@ def test_native_full_invite_separates_cached_positions_from_fresh_content(native
         assert result['status']=='submitted_pending_recipient',result
         assert result['cleanup']=='search_empty_verified'
         assert physical['clicks']==6 and o.clipboard_copy.call_count==2
-        assert s.grabs==['header','lookup','card','fields','fields','footer','header']
+        assert s.grabs==['header','lookup','card','fields','review','header']
         saved=(original(s)/'submit-attempt.json').read_bytes()
         with pytest.raises(ValueError,match='PREVIOUS_ATTEMPT'):s.execute(monkeypatch)
         assert (original(s)/'submit-attempt.json').read_bytes()==saved

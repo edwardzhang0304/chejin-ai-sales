@@ -52,7 +52,7 @@ def test_native_form_completion_without_extra_capture_or_weaker_admission(native
     s,physical=native_invite;ocr=s.ops.run_ocr.side_effect;raw=[]
     def observe(image):
         rows=ocr(image)
-        if image.info['scene_label']=='fields' and physical['fields']==2:
+        if image.info['scene_label']=='review' and physical['fields']==2:
             row=next(r for r in rows if r['top']==204)
             if case=='caret':row['text']+='|'
             elif case=='wrong_code':row['text']='CJOTHER|'
@@ -65,14 +65,14 @@ def test_native_form_completion_without_extra_capture_or_weaker_admission(native
         result=s.execute(monkeypatch)
     assert locate.call_count==1 and physical['fields']==2
     assert s.ops.clipboard_copy.call_count==2  # No refill/copy-back detour.
-    assert s.grabs[:5]==['header','lookup','card','fields','fields']
+    assert s.grabs[:5]==['header','lookup','card','fields','review']
     z=s.export();saved=outcome(z)
     assert json.loads(z[f'tasks/{TASK}/ocr/05-fields_filled.json'])==raw
     if case in {'normal','caret'}:
         assert result['status']=='submitted_pending_recipient',result
         assert result['field_verification']['verified']
         assert result['cleanup']=='search_empty_verified'
-        assert s.grabs==['header','lookup','card','fields','fields','footer','header']
+        assert s.grabs==['header','lookup','card','fields','review','header']
         assert physical['clicks']==6 and result['submit_attempted']
         assert not result['delivery_confirmed'] and not result['ai_admission']
         before=(original(s)/'submit-attempt.json').read_bytes()
@@ -83,5 +83,5 @@ def test_native_form_completion_without_extra_capture_or_weaker_admission(native
         assert result['error_code']=='INVITE_FIELD_VERIFICATION_FAILED'
         assert saved['error_code']==result['error_code']
         assert physical['clicks']==5 and not result['submit_attempted']
-        assert s.grabs==['header','lookup','card','fields','fields']
+        assert s.grabs==['header','lookup','card','fields','review']
         assert not (original(s)/'submit-attempt.json').exists()

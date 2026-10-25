@@ -240,6 +240,23 @@ def verify_fields(frame: Frame, greeting: str, remark: str, *, fields=None) -> d
     return fields
 
 
+def invite_confirmation_target(frame: Frame) -> dict:
+    # The filled review is one full-dialog capture. Limit system-message and
+    # button recognition to the footer; greeting/remark text is user input.
+    footer = form_regions(*frame.image.size)['footer']
+    left, top = footer[:2]
+    rows = [{**row, 'left':row['left']-left, 'right':row['right']-left,
+             'top':row['top']-top, 'bottom':row['bottom']-top}
+            for row in frame.rows if contains(footer, row)]
+    # Crop the saved image in memory, not the screen. This preserves the old
+    # footer-only pixel/button scope without another capture or OCR call.
+    view = Frame(frame.image.crop(footer), rows, frame.name)
+    if restricted(view):raise FlowStop('ACCOUNT_RESTRICTED')
+    button = target(view, unique_text(view, ('确定',)), filled='green')
+    x1, y1, x2, y2 = button['bounds'];x, y = button['point']
+    return {**button, 'bounds':[x1+left,y1+top,x2+left,y2+top], 'point':[x+left,y+top]}
+
+
 class SubmitJournal:
     """Exclusive, fsynced pre-click record; failed/unknown attempts are retained."""
     def __init__(self, path: Path, *, clock=None):
@@ -282,9 +299,12 @@ def run_flow(ui, *, phone: str, verify_message: str, remark_name: str,
             callback=getattr(ui,'on_progress',None)
             if callback is not None:callback(name,state,note)
         except Exception:pass
-    def step(name):
+    def step(name, *, progress_only=False):
         ui.guard_phase = name
-        ui.guard()
+        # Added display boundaries do not add synchronous account checks.
+        # Lookup capture adopts/checks a possible new contact surface itself;
+        # every actual capture/click/input retains its native action guards.
+        if not progress_only:ui.guard()
         if report['steps']:progress(report['steps'][-1],'done')
         report['steps'].append(name);progress(name,'current')
     try:
@@ -293,6 +313,7 @@ def run_flow(ui, *, phone: str, verify_message: str, remark_name: str,
             frame,t = ui.verified_empty_search()
         else:
             frame = ui.capture('header');t = empty_search(frame)
+        step('search_input', progress_only=True)
         ui.click(frame, t, 'focus_main_search')
         search_owned = True
         ui.owned_search_query = query
@@ -301,8 +322,8 @@ def run_flow(ui, *, phone: str, verify_message: str, remark_name: str,
         frame = ui.capture('lookup')
         t = ui.lookup_target(frame, query) if hasattr(ui, 'lookup_target') else lookup(frame, query)
         ui.click(frame, t, 'network_lookup')
+        step('contact_result', progress_only=True)
         frame = ui.capture('card')
-        step('contact_result')
         kind, t = classify_card(frame)
         if kind == 'not_found':
             report['status'] = 'not_found';progress('contact_result','error','not_found');return report
@@ -312,6 +333,7 @@ def run_flow(ui, *, phone: str, verify_message: str, remark_name: str,
             report['status'] = 'already_friend';progress('contact_result','done','already_friend');return report
         # From this point a click may have opened a new surface even if the
         # subsequent observation fails. Never clean up through the old card.
+        step('invite_form_open', progress_only=True)
         form_transition = True
         ui.click(frame, t, 'open_invite_form')
         ui.select_invite_dialog();form_open = True
@@ -331,14 +353,12 @@ def run_flow(ui, *, phone: str, verify_message: str, remark_name: str,
         frame = ui.capture('fields_filled')
         verify_fields(frame, verify_message, remark_name, fields=fields)
         report['field_verification'] = {'mode': 'remark_shortcode_only', 'verified': True, 'greeting_readback_calls': 0}
+        t = invite_confirmation_target(frame)
         step('confirm_once')
-        footer = ui.capture('footer')
-        if restricted(footer):raise FlowStop('ACCOUNT_RESTRICTED')
-        t = target(footer, unique_text(footer, ('确定',)), filled='green')
         ui.guard()
         journal.begin(query, verify_message, remark_name)
         report['submit_attempted'] = True
-        ui.click(footer, t, 'confirm_invite_once')
+        ui.click(frame, t, 'confirm_invite_once')
         outcome = ui.observe_submit()
         form_open = outcome.get('form_open', True)
         form_transition = not outcome.get('form_closed', False)
@@ -589,7 +609,8 @@ class NativeUI:
         if label.startswith('fields') or label == 'footer':
             if getattr(self, '_invite_regions', None) is None:
                 self._invite_regions = form_regions(w, h)
-            return self._invite_regions['fields' if label.startswith('fields') else 'footer']
+            key = 'review' if label == 'fields_filled' else ('fields' if label.startswith('fields') else 'footer')
+            return self._invite_regions[key]
         raise ValueError(label)
 
     def visible_wechat_windows(self):

@@ -8,10 +8,12 @@ PHASES = {
  'wechat_window': '调整微信窗口位置和大小',
  'worker_window': '将 Worker 放到微信旁边',
  'invite_received': '领取加好友任务', 'invite_prepare': '准备申请文案和备注',
- 'search_empty': '定位微信搜索框', 'query_verified_and_network_lookup': '输入手机号并查找客户',
- 'contact_result': '确认搜索结果', 'invite_form_fields': '填写申请文案和备注',
+ 'search_empty': '检查搜索框', 'search_input': '输入手机号',
+ 'query_verified_and_network_lookup': '查找客户',
+ 'contact_result': '确认搜索结果', 'invite_form_open': '打开申请页面',
+ 'invite_form_fields': '填写申请语和备注',
  'verify_remark_shortcode': '核对备注短码', 'confirm_once': '提交好友申请',
- 'cleanup': '清理本次搜索内容', 'invite_receipt': '确认邀请任务结果',
+ 'cleanup': '清理本次搜索内容', 'invite_receipt': '回传申请结果',
  'bind': '核对好友并绑定客户', 'history': '读取并补齐客户消息',
  'voice': '语音转文字', 'decision': 'AI 处理客户消息', 'reply_ready': 'AI 回复已准备',
  'send_conditions': '核验发送条件', 'send_delay': '等待发送间隔',
@@ -27,6 +29,10 @@ PHASES = {
  'model_queue': '等待 AI 处理', 'model_retry': '等待 AI 重试',
  'invite_finished': '好友申请处理已结束',
 }
+INVITE_ACTION_PHASES = frozenset(('search_empty', 'search_input', 'query_verified_and_network_lookup',
+    'contact_result', 'invite_form_open', 'invite_form_fields', 'verify_remark_shortcode',
+    'confirm_once', 'cleanup', 'invite_receipt'))
+
 NOTES = {
  'startup_observation': '暂时无法读取微信窗口状态，等待核验；不会自动操作微信。',
  'startup_foreground': '请点击工作微信主窗口并保持在前台，校验通过后再手动开始接单。',
@@ -238,7 +244,10 @@ class HookProgressTimeline:
             item=old
         else:
             item={'title':PHASES[phase],'state':'current','_context':context,'_phase':phase};self._insert_step(item);self.latest[key]=item
-        item.update(state=state,time=event.get('time',''),_note=event.get('note'))
+        # Invitation actions retain the first event time across completion or
+        # failure. Repeated business observations in other flows keep their policy.
+        shown_time = item.get('time') if phase in INVITE_ACTION_PHASES else None
+        item.update(state=state,time=shown_time or event.get('time',''),_note=event.get('note'))
         item['description']=event.get('description') or NOTES.get(event.get('note'),'')
         if phase=='bind':
             item['title']={'invite_replaced':'本轮好友绑定已结束','binding_conflict':'客户绑定冲突，等待运营处理'}.get(event.get('note'),PHASES['bind'])
@@ -362,8 +371,8 @@ class HookProgressTimeline:
         order=list(grouped)
         order.sort(key=lambda g:0 if g=='startup' else 2 if grouped[g][0].get('_historical') else 1)
         rank={phase:i for i,phase in enumerate((
-            *STARTUP_PHASES,'invite_received','invite_prepare','search_empty','query_verified_and_network_lookup',
-            'contact_result','invite_form_fields','verify_remark_shortcode','confirm_once','cleanup','invite_receipt',
+            *STARTUP_PHASES,'invite_received','invite_prepare','search_empty','search_input','query_verified_and_network_lookup',
+            'contact_result','invite_form_open','invite_form_fields','verify_remark_shortcode','confirm_once','cleanup','invite_receipt',
             'invite_finished','bind','messages_saved','history','voice','model_queue','model_retry','decision',
             'reply_ready','send_conditions','send_delay','pre_send','send_submit','send_confirm','handoff',
             'handoff_closed','reply_owner','finished','sync_finished','stopped'))}

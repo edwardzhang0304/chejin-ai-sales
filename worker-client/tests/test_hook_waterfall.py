@@ -74,12 +74,13 @@ def test_actual_c1_replay_progress_matches_actions_and_preserves_capture_count(t
     if mode=='unknown':ui.fail='observe'
     ui.on_progress=Mock(side_effect=RuntimeError('display failure')) if mode=='display_failure' else lambda *args:events.append(args)
     result=m.f.run_flow(ui,phone='13800000003',verify_message='您好我是测试销售',remark_name='测试 CJH5N28',remark_code='CJH5N28',journal=m.f.SubmitJournal(tmp_path/'submit.json'))
-    assert ui.actions.count('confirm_invite_once')==1 and len(ui.captures)==7
+    assert ui.actions.count('confirm_invite_once')==1
+    assert ui.captures==['header','lookup','card','fields','fields_filled']  # Replay cleanup has no native capture.
     if mode=='unknown':assert not any(p=='confirm_once' and s=='done' for p,s,*_ in events)
     else:assert result['status']=='submitted_pending_recipient'
     if mode=='normal':
         phases=[p for p,s,*_ in events if s=='current']
-        assert phases==['search_empty','query_verified_and_network_lookup','contact_result','invite_form_fields','verify_remark_shortcode','confirm_once','cleanup']
+        assert phases==['search_empty','search_input','query_verified_and_network_lookup','contact_result','invite_form_open','invite_form_fields','verify_remark_shortcode','confirm_once','cleanup']
 
 
 def test_actual_worker_waterfall_state_artifacts(monkeypatch):
@@ -90,7 +91,7 @@ def test_actual_worker_waterfall_state_artifacts(monkeypatch):
         w.profile=WorkerProfile('worker','测试销售','running',rpa_component_status='ready',wechat_status='logged_in')
         w.runner.hook_services=SimpleNamespace(startup_check_state=checks.passed)
         states=[]
-        for phase in ['environment','ready','invite_received','invite_prepare','search_empty','query_verified_and_network_lookup','contact_result','invite_form_fields','verify_remark_shortcode','confirm_once','cleanup','invite_receipt','bind','history']:
+        for phase in ['environment','ready','invite_received','invite_prepare','search_empty','search_input','query_verified_and_network_lookup','contact_result','invite_form_open','invite_form_fields','verify_remark_shortcode','confirm_once','cleanup','invite_receipt','bind','history']:
             w.on_runtime_process(event(phase,'done'))
         w.on_runtime_process(event('decision',note='model_wait'));states.append(w._state())
         w.on_runtime_process(event('decision','done'))
@@ -98,7 +99,7 @@ def test_actual_worker_waterfall_state_artifacts(monkeypatch):
         states.append(w._state())
         w.binding.run_status='paused';states.append(w._state())
         w.binding.run_status='faulted';w.runner.hook_services.startup_check_state=lambda:checks.failed('HOOK_BACKEND_NETWORK_FAILED');states.append(w._state())
-        assert len(states[0]['model']['hookProcessSteps'])==15 and len(states[1]['model']['hookProcessSteps'])==22
+        assert len(states[0]['model']['hookProcessSteps'])==17 and len(states[1]['model']['hookProcessSteps'])==24
         assert states[0]['model']['hookProcessSteps'][-1]['state']=='current'
         assert all(s['state']=='done' for s in states[1]['model']['hookProcessSteps'])
         target=os.environ.get('CHEJIN_WATERFALL_UI_STATES')
