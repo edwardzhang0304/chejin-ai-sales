@@ -38,6 +38,7 @@ def test_combined_review_cannot_submit_bad_content(native_invite,monkeypatch,dam
     o.run_ocr.side_effect=changed
     result=s.execute(monkeypatch)
     assert not result['submit_attempted'] and physical['clicks']==5
+    assert result['steps'][-1]==('verify_remark_shortcode' if damage in ('wrong_shortcode','low_shortcode_confidence') else 'confirm_once')
     assert not (original(s)/'submit-attempt.json').exists()
     assert outcome(s.export())['error_code']==result['error_code']
     saved=(original(s)/'outcome.json').read_bytes()

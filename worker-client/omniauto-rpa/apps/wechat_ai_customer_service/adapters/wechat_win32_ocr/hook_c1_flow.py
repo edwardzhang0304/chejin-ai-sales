@@ -353,8 +353,8 @@ def run_flow(ui, *, phone: str, verify_message: str, remark_name: str,
         frame = ui.capture('fields_filled')
         verify_fields(frame, verify_message, remark_name, fields=fields)
         report['field_verification'] = {'mode': 'remark_shortcode_only', 'verified': True, 'greeting_readback_calls': 0}
-        t = invite_confirmation_target(frame)
         step('confirm_once')
+        t = invite_confirmation_target(frame)
         ui.guard()
         journal.begin(query, verify_message, remark_name)
         report['submit_attempted'] = True
