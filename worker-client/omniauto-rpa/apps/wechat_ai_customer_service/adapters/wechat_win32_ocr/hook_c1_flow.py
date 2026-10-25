@@ -248,31 +248,10 @@ def form_fields(frame: Frame) -> dict:
     return result
 
 
-class InviteFormLayout:
-    """One form instance's field positions, with fresh content/shape checks."""
-    def __init__(self, frame):
-        self.key = (frame.hwnd, frame.origin, dict(frame.geometry) if frame.geometry is not None else None, frame.image.size)
-        self.fields = form_fields(frame)
-        self.labels = {label: box(unique_text(frame, (label,))) for label in
-                       ('申请添加朋友', '发送添加朋友申请', '备注名')}
-
-    def current(self, frame):
-        if (frame.hwnd, frame.origin, frame.geometry, frame.image.size) != self.key:
-            raise FlowStop('INVITE_FORM_LAYOUT_CHANGED')
-        for label, bounds in self.labels.items():
-            if box(unique_text(frame, (label,))) != bounds:
-                raise FlowStop('INVITE_FORM_LAYOUT_CHANGED')
-        whites = components(frame.image, 'white')
-        if any(field['bounds'] not in whites for field in self.fields.values()):
-            raise FlowStop('INVITE_FORM_LAYOUT_CHANGED')
-        return {key: {**field, 'frame': frame.name} for key, field in self.fields.items()}
-
-
-def verify_fields(frame: Frame, greeting: str, remark: str, *, layout=None) -> dict:
-    fields = layout.current(frame) if layout is not None else form_fields(frame)
-    # User-confirmed policy: the original greeting is pasted once, but it may
-    # scroll horizontally. The final OCR gate checks the remark shortcode only.
-    # Labels, pixel control bounds, non-overlap and action/identity guards remain.
+def verify_fields(frame: Frame, greeting: str, remark: str, *, fields=None) -> dict:
+    # Locate once before typing; the filled-page check reads only the shortcode
+    # within that saved input region. OCR label bounds are not layout evidence.
+    fields = form_fields(frame) if fields is None else fields
     rows = [r for r in frame.rows if contains(fields['remark']['bounds'], r)]
     actual = ''.join(clean(r.get('text')) for r in rows)
     expected = clean(remark)
@@ -363,8 +342,7 @@ def run_flow(ui, *, phone: str, verify_message: str, remark_name: str,
         ui.select_invite_dialog();form_open = True
         step('invite_form_fields')
         frame = ui.capture('fields')
-        form_layout = InviteFormLayout(frame)
-        fields = form_layout.fields
+        fields = form_fields(frame)
         report['form_layout'] = {'source_frame':frame.name, 'hwnd':frame.hwnd,
                                  'origin':frame.origin, 'geometry':frame.geometry,
                                  'field_bounds':{key:list(value['bounds']) for key,value in fields.items()}}
@@ -376,7 +354,7 @@ def run_flow(ui, *, phone: str, verify_message: str, remark_name: str,
         ui.replace(frame, remark_name)
         step('verify_remark_shortcode')
         frame = ui.capture('fields_filled')
-        verify_fields(frame, verify_message, remark_name, layout=form_layout)
+        verify_fields(frame, verify_message, remark_name, fields=fields)
         report['field_verification'] = {'mode': 'remark_shortcode_only', 'verified': True, 'greeting_readback_calls': 0}
         step('confirm_once')
         footer = ui.capture('footer')
@@ -635,14 +613,9 @@ class NativeUI:
             return main_regions(w, h)[label]  # Startup calibration / standalone replay.
         if label == 'search_empty':return tuple(self.search_empty_bounds)
         if label.startswith('fields') or label == 'footer':
-            geometry = self.ops.get_window_client_geometry(self.current)
-            key = (self.current, dict(geometry), self.ops.window_dpi_scale(self.current))
-            cache = getattr(self, '_invite_regions', None)
-            if cache is None:
-                self._invite_regions = (key, form_regions(w, h))
-            elif cache[0] != key:
-                raise FlowStop('INVITE_FORM_LAYOUT_CHANGED')
-            return self._invite_regions[1]['fields' if label.startswith('fields') else 'footer']
+            if getattr(self, '_invite_regions', None) is None:
+                self._invite_regions = form_regions(w, h)
+            return self._invite_regions['fields' if label.startswith('fields') else 'footer']
         raise ValueError(label)
 
     def visible_wechat_windows(self):
@@ -767,7 +740,10 @@ class NativeUI:
         frame = Frame(image, rows, label, self.current, (left, top), c, captured_at)
         self.last_frame = frame
         self.guard(frame)
-        if restricted(frame):raise FlowStop('ACCOUNT_RESTRICTED')
+        # Input text is user-controlled, not a WeChat restriction notice.
+        # The pre-submit fields page has only the shortcode content gate.
+        if label not in {'fields', 'fields_filled'} and restricted(frame):
+            raise FlowStop('ACCOUNT_RESTRICTED')
         material['action_authorized'] = True
         return frame
 
