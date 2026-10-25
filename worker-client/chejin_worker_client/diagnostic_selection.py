@@ -16,10 +16,11 @@ STATE_COLUMNS = {
 
 
 class SnapshotPriority:
-    def __init__(self, db, limit, record, voice_receipt_known=lambda _: False, *, deadline=float("inf")):
+    def __init__(self, db, limit, record, voice_receipt_known=lambda _: False, *, deadline):
         self.db, self.limit, self.record = db, limit, record
         self.sequences = []
         self.voice_rows = []
+        self.voice_terminal_checked = 0
         self.columns = {r[0]: {c['name'] for c in db.execute(f'PRAGMA table_info("{r[0]}")')}
                         for r in db.execute("SELECT name FROM sqlite_master WHERE type='table'")
                         if r[0] in (*CHAIN, *STATE_COLUMNS, 'local_logs', 'hook_voice_interruptions')}
@@ -57,16 +58,25 @@ class SnapshotPriority:
             try:
                 quoted = ['"'+c.replace('"', '""')+'"' for c in sorted(voice_columns)]
                 fields = ','.join(f'CASE WHEN length({c})>65536 THEN NULL ELSE {c} END AS {c}' for c in quoted)
-                voices = list(db.execute(f"SELECT rowid AS diagnostic_id,{fields} FROM hook_voice_attempts ORDER BY CASE WHEN state IN ('transcribed','failed') THEN 1 ELSE 0 END,rowid LIMIT ?", (limit+1,)))
-                if len(voices) > limit:
-                    record('hook_voice_attempts', 'omitted', reason='voice_receipt_discovery_limit', omitted_at_least=1)
-                for voice in voices[:limit]:
-                    if time.monotonic() >= deadline:
-                        record('hook_voice_attempts', 'omitted', reason='voice_receipt_time_limit')
-                        break
+                # Stream within the shared snapshot deadline. A confirmed old
+                # receipt consumes time, not one of the critical evidence slots.
+                voices = db.execute(f"SELECT rowid AS diagnostic_id,{fields} FROM hook_voice_attempts ORDER BY CASE WHEN state IN ('transcribed','failed') THEN 1 ELSE 0 END,rowid")
+                for voice in voices:
                     value = dict(voice); rowid = value.pop('diagnostic_id')
+                    reference = {k: value[k] for k in ('self_wxid', 'account_epoch', 'peer_wxid', 'native_msg_id')}
+                    if time.monotonic() >= deadline:
+                        record('hook_voice_attempts', 'omitted', reason='voice_receipt_time_limit', voice_reference=reference)
+                        break
                     if value['state'] not in {'transcribed', 'failed'} or not voice_receipt_known(value):
+                        if len(self.voice_rows) >= limit:
+                            record('hook_voice_attempts', 'omitted', reason='critical_voice_limit',
+                                   omitted_at_least=1, voice_reference=reference,
+                                   missing_relations=['parent_raw', 'audio_raw', 'projection', 'voice_receipt'])
+                            break
                         self.voice_rows.append(rowid)
+                    if value['state'] in {'transcribed', 'failed'}:
+                        self.voice_terminal_checked = rowid
+                voices.close()
             except sqlite3.Error as exc:
                 record('hook_voice_attempts', 'read_failed', reason='voice_priority_failed', error_type=type(exc).__name__)
         raw = self.columns.get('hook_raw_inbox', set())
@@ -79,6 +89,36 @@ class SnapshotPriority:
             collect('hook_delivery_outbox', "SELECT DISTINCT receive_seq FROM hook_delivery_outbox WHERE status IS NULL OR status!='stored' ORDER BY receive_seq", 1)
         if {'receive_seq', 'projection_json'} <= projection:
             collect('hook_observation_projection', "SELECT receive_seq FROM hook_observation_projection WHERE CASE WHEN json_valid(projection_json) THEN coalesce(json_extract(projection_json,'$.status'),'')!='projected' ELSE 1 END ORDER BY receive_seq", 1)
+            # Projection commits before enqueue. Even a stored delivery may
+            # cover only part of a multi-message callback. Match each retained
+            # fact to its stored envelope; projection alone is not settlement.
+            stored = '0'
+            if {'receive_seq', 'status', 'payload_json'} <= self.columns.get('hook_delivery_outbox', set()):
+                stored = """EXISTS (SELECT 1 FROM hook_delivery_outbox d,
+                    json_each(CASE WHEN json_valid(d.payload_json) THEN d.payload_json ELSE '{}' END,'$.messages') m
+                    WHERE d.receive_seq=p.receive_seq AND d.status='stored'
+                    AND json_extract(d.payload_json,'$.self_wxid')=json_extract(o.value,'$.self_wxid')
+                    AND json_extract(d.payload_json,'$.account_epoch')=json_extract(o.value,'$.account_epoch')
+                    AND json_extract(d.payload_json,'$.peer_wxid')=json_extract(o.value,'$.peer_wxid')
+                    AND json_extract(m.value,'$.native_msg_id')=json_extract(o.value,'$.native_msg_id'))"""
+            voice_settled = '0'
+            if {'self_wxid', 'account_epoch', 'native_msg_id', 'peer_wxid', 'state'} <= voice_columns:
+                excluded = ','.join(map(str, self.voice_rows)) or '0'
+                voice_settled = f"""EXISTS (SELECT 1 FROM hook_voice_attempts v
+                    WHERE v.self_wxid=json_extract(o.value,'$.self_wxid')
+                    AND v.account_epoch=json_extract(o.value,'$.account_epoch')
+                    AND v.native_msg_id=json_extract(o.value,'$.native_msg_id')
+                    AND (v.peer_wxid=json_extract(o.value,'$.peer_wxid') OR
+                        (json_extract(o.value,'$.peer_wxid') IS NULL AND json_extract(o.value,'$.media_stage')='audio_observed'))
+                    AND v.state IN ('transcribed','failed') AND v.rowid<={self.voice_terminal_checked}
+                    AND v.rowid NOT IN ({excluded}))"""
+            collect('hook_observation_projection', f"""SELECT p.receive_seq FROM hook_observation_projection p
+                WHERE CASE WHEN json_valid(p.projection_json) THEN json_extract(p.projection_json,'$.status')='projected' ELSE 0 END
+                AND EXISTS (SELECT 1 FROM json_each(p.projection_json,'$.observations') o
+                    WHERE coalesce(json_extract(o.value,'$.reason_code'),'')!='HOOK_GROUP_EXCLUDED'
+                    AND CASE WHEN json_extract(o.value,'$.message_type')='voice' THEN NOT ({voice_settled})
+                        ELSE coalesce(json_extract(o.value,'$.disposition'),'')!='message_candidate' OR NOT ({stored}) END)
+                ORDER BY p.receive_seq""", 1)
             if self.voice_rows:
                 # Link on the complete retained account/peer identity. IDs from
                 # another account must never provide evidence for this parent.
