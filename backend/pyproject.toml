@@ -1,6 +1,6 @@
 [project]
 name = "chejin-leads-backend"
-version = "0.10.18"
+version = "0.10.19"
 description = "Chejin AI ops backend for manual lead entry, dedupe, assignment and audit."
 requires-python = ">=3.11"
 dependencies = [

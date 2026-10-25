@@ -26,85 +26,85 @@
           ]
         },
         "ops/formal_release/handoffs/hook-reviewed-1ed1d7c.json": {
-          "reason": "Release identity metadata only; exact tool implementation unchanged.",
+          "reason": "0.10.19 metadata only; unchanged executable tools; approved SOP18.0.4.",
           "covered_by": [
             "ops/formal_release/tests/test_tooling_handoff.py"
           ]
         },
         "ops/formal_release/handoffs/hook-reviewed-bbe404a.json": {
-          "reason": "0.10.18 identity metadata only; exact tool code unchanged; SOP18.0.4.",
+          "reason": "0.10.19 metadata only; unchanged executable tools; approved SOP18.0.4.",
           "covered_by": [
             "ops/formal_release/tests/test_tooling_handoff.py"
           ]
         },
         "ops/formal_release/handoffs/hook-reviewed-d44f8e5.json": {
-          "reason": "Release identity metadata only; exact tool implementation unchanged.",
+          "reason": "0.10.19 metadata only; unchanged executable tools; approved SOP18.0.4.",
           "covered_by": [
             "ops/formal_release/tests/test_tooling_handoff.py"
           ]
         },
         "ops/formal_release/handoffs/hook-reviewed-d7f7ad4.json": {
-          "reason": "Release identity metadata only; exact tool implementation unchanged.",
+          "reason": "0.10.19 metadata only; unchanged executable tools; approved SOP18.0.4.",
           "covered_by": [
             "ops/formal_release/tests/test_tooling_handoff.py"
           ]
         },
         "ops/formal_release/handoffs/hook-reviewed-evidence-01014.json": {
-          "reason": "Release identity metadata only; exact tool implementation unchanged.",
+          "reason": "0.10.19 metadata only; unchanged executable tools; approved SOP18.0.4.",
           "covered_by": [
             "ops/formal_release/tests/test_tooling_handoff.py"
           ]
         },
         "ops/formal_release/handoffs/tooling-01011-reviewed.json": {
-          "reason": "Release identity metadata only; exact tool implementation unchanged.",
+          "reason": "0.10.19 metadata only; unchanged executable tools; approved SOP18.0.4.",
           "covered_by": [
             "ops/formal_release/tests/test_tooling_handoff.py"
           ]
         },
         "ops/formal_release/handoffs/tooling-01011-scope.json": {
-          "reason": "Release identity metadata only; exact tool implementation unchanged.",
+          "reason": "0.10.19 metadata only; unchanged executable tools; approved SOP18.0.4.",
           "covered_by": [
             "ops/formal_release/tests/test_tooling_handoff.py"
           ]
         },
         "ops/formal_release/handoffs/tooling-01012-reviewed.json": {
-          "reason": "Release identity metadata only; exact tool implementation unchanged.",
+          "reason": "0.10.19 metadata only; unchanged executable tools; approved SOP18.0.4.",
           "covered_by": [
             "ops/formal_release/tests/test_tooling_handoff.py"
           ]
         },
         "ops/formal_release/handoffs/tooling-01012-scope.json": {
-          "reason": "Release identity metadata only; exact tool implementation unchanged.",
+          "reason": "0.10.19 metadata only; unchanged executable tools; approved SOP18.0.4.",
           "covered_by": [
             "ops/formal_release/tests/test_tooling_handoff.py"
           ]
         },
         "ops/formal_release/handoffs/tooling-01013-reviewed.json": {
-          "reason": "Release identity metadata only; exact tool implementation unchanged.",
+          "reason": "0.10.19 metadata only; unchanged executable tools; approved SOP18.0.4.",
           "covered_by": [
             "ops/formal_release/tests/test_tooling_handoff.py"
           ]
         },
         "ops/formal_release/handoffs/tooling-01013-scope.json": {
-          "reason": "Release identity metadata only; exact tool implementation unchanged.",
+          "reason": "0.10.19 metadata only; unchanged executable tools; approved SOP18.0.4.",
           "covered_by": [
             "ops/formal_release/tests/test_tooling_handoff.py"
           ]
         },
         "ops/formal_release/handoffs/tooling-01014-reviewed.json": {
-          "reason": "Release identity metadata only; exact tool implementation unchanged.",
+          "reason": "0.10.19 metadata only; unchanged executable tools; approved SOP18.0.4.",
           "covered_by": [
             "ops/formal_release/tests/test_tooling_handoff.py"
           ]
         },
         "ops/formal_release/handoffs/tooling-01014-scope.json": {
-          "reason": "Release identity metadata only; exact tool implementation unchanged.",
+          "reason": "0.10.19 metadata only; unchanged executable tools; approved SOP18.0.4.",
           "covered_by": [
             "ops/formal_release/tests/test_tooling_handoff.py"
           ]
         },
         "ops/formal_release/handoffs/tooling-01015-scope.json": {
-          "reason": "0.10.18 identity metadata only; exact tool code unchanged; SOP18.0.4.",
+          "reason": "0.10.19 metadata only; unchanged executable tools; approved SOP18.0.4.",
           "covered_by": [
             "ops/formal_release/tests/test_tooling_handoff.py"
           ]
@@ -149,7 +149,7 @@
           ]
         },
         "worker-client/chejin_worker_client/__init__.py": {
-          "reason": "0.10.18 identity metadata only; exact tool code unchanged; SOP18.0.4.",
+          "reason": "0.10.19 metadata only; unchanged executable tools; approved SOP18.0.4.",
           "covered_by": [
             "ops/formal_release/tests/test_tooling_handoff.py"
           ]
@@ -201,67 +201,67 @@
           ]
         },
         "ops/formal_release/handoffs/hook-reviewed-1ed1d7c.json": {
-          "reason": "Release identity metadata only; exact tool implementation unchanged.",
+          "reason": "0.10.19 metadata only; unchanged executable tools; approved SOP18.0.4.",
           "covered_by": [
             "ops/formal_release/tests/test_tooling_handoff.py"
           ]
         },
         "ops/formal_release/handoffs/hook-reviewed-bbe404a.json": {
-          "reason": "0.10.18 identity metadata only; exact tool code unchanged; SOP18.0.4.",
+          "reason": "0.10.19 metadata only; unchanged executable tools; approved SOP18.0.4.",
           "covered_by": [
             "ops/formal_release/tests/test_tooling_handoff.py"
           ]
         },
         "ops/formal_release/handoffs/hook-reviewed-d44f8e5.json": {
-          "reason": "Release identity metadata only; exact tool implementation unchanged.",
+          "reason": "0.10.19 metadata only; unchanged executable tools; approved SOP18.0.4.",
           "covered_by": [
             "ops/formal_release/tests/test_tooling_handoff.py"
           ]
         },
         "ops/formal_release/handoffs/hook-reviewed-evidence-01014.json": {
-          "reason": "Release identity metadata only; exact tool implementation unchanged.",
+          "reason": "0.10.19 metadata only; unchanged executable tools; approved SOP18.0.4.",
           "covered_by": [
             "ops/formal_release/tests/test_tooling_handoff.py"
           ]
         },
         "ops/formal_release/handoffs/tooling-01012-reviewed.json": {
-          "reason": "Release identity metadata only; exact tool implementation unchanged.",
+          "reason": "0.10.19 metadata only; unchanged executable tools; approved SOP18.0.4.",
           "covered_by": [
             "ops/formal_release/tests/test_tooling_handoff.py"
           ]
         },
         "ops/formal_release/handoffs/tooling-01012-scope.json": {
-          "reason": "Release identity metadata only; exact tool implementation unchanged.",
+          "reason": "0.10.19 metadata only; unchanged executable tools; approved SOP18.0.4.",
           "covered_by": [
             "ops/formal_release/tests/test_tooling_handoff.py"
           ]
         },
         "ops/formal_release/handoffs/tooling-01013-reviewed.json": {
-          "reason": "Release identity metadata only; exact tool implementation unchanged.",
+          "reason": "0.10.19 metadata only; unchanged executable tools; approved SOP18.0.4.",
           "covered_by": [
             "ops/formal_release/tests/test_tooling_handoff.py"
           ]
         },
         "ops/formal_release/handoffs/tooling-01013-scope.json": {
-          "reason": "Release identity metadata only; exact tool implementation unchanged.",
+          "reason": "0.10.19 metadata only; unchanged executable tools; approved SOP18.0.4.",
           "covered_by": [
             "ops/formal_release/tests/test_tooling_handoff.py"
           ]
         },
         "ops/formal_release/handoffs/tooling-01014-reviewed.json": {
-          "reason": "Release identity metadata only; exact tool implementation unchanged.",
+          "reason": "0.10.19 metadata only; unchanged executable tools; approved SOP18.0.4.",
           "covered_by": [
             "ops/formal_release/tests/test_tooling_handoff.py"
           ]
         },
         "ops/formal_release/handoffs/tooling-01014-scope.json": {
-          "reason": "Release identity metadata only; exact tool implementation unchanged.",
+          "reason": "0.10.19 metadata only; unchanged executable tools; approved SOP18.0.4.",
           "covered_by": [
             "ops/formal_release/tests/test_tooling_handoff.py"
           ]
         },
         "ops/formal_release/handoffs/tooling-01015-scope.json": {
-          "reason": "0.10.18 identity metadata only; exact tool code unchanged; SOP18.0.4.",
+          "reason": "0.10.19 metadata only; unchanged executable tools; approved SOP18.0.4.",
           "covered_by": [
             "ops/formal_release/tests/test_tooling_handoff.py"
           ]
@@ -280,7 +280,7 @@
           ]
         },
         "worker-client/chejin_worker_client/__init__.py": {
-          "reason": "0.10.18 identity metadata only; exact tool code unchanged; SOP18.0.4.",
+          "reason": "0.10.19 metadata only; unchanged executable tools; approved SOP18.0.4.",
           "covered_by": [
             "ops/formal_release/tests/test_tooling_handoff.py"
           ]
@@ -304,49 +304,49 @@
       "branch": "gray-release-0.10.x",
       "changed_inputs": {
         "ops/formal_release/handoffs/hook-reviewed-bbe404a.json": {
-          "reason": "0.10.18 identity metadata only; exact tool code unchanged; SOP18.0.4.",
+          "reason": "0.10.19 metadata only; unchanged executable tools; approved SOP18.0.4.",
           "covered_by": [
             "ops/formal_release/tests/test_tooling_handoff.py"
           ]
         },
         "ops/formal_release/handoffs/hook-reviewed-d44f8e5.json": {
-          "reason": "Release identity metadata only; exact tool implementation unchanged.",
+          "reason": "0.10.19 metadata only; unchanged executable tools; approved SOP18.0.4.",
           "covered_by": [
             "ops/formal_release/tests/test_tooling_handoff.py"
           ]
         },
         "ops/formal_release/handoffs/hook-reviewed-evidence-01014.json": {
-          "reason": "Release identity metadata only; exact tool implementation unchanged.",
+          "reason": "0.10.19 metadata only; unchanged executable tools; approved SOP18.0.4.",
           "covered_by": [
             "ops/formal_release/tests/test_tooling_handoff.py"
           ]
         },
         "ops/formal_release/handoffs/tooling-01013-reviewed.json": {
-          "reason": "Release identity metadata only; exact tool implementation unchanged.",
+          "reason": "0.10.19 metadata only; unchanged executable tools; approved SOP18.0.4.",
           "covered_by": [
             "ops/formal_release/tests/test_tooling_handoff.py"
           ]
         },
         "ops/formal_release/handoffs/tooling-01013-scope.json": {
-          "reason": "Release identity metadata only; exact tool implementation unchanged.",
+          "reason": "0.10.19 metadata only; unchanged executable tools; approved SOP18.0.4.",
           "covered_by": [
             "ops/formal_release/tests/test_tooling_handoff.py"
           ]
         },
         "ops/formal_release/handoffs/tooling-01014-reviewed.json": {
-          "reason": "Release identity metadata only; exact tool implementation unchanged.",
+          "reason": "0.10.19 metadata only; unchanged executable tools; approved SOP18.0.4.",
           "covered_by": [
             "ops/formal_release/tests/test_tooling_handoff.py"
           ]
         },
         "ops/formal_release/handoffs/tooling-01014-scope.json": {
-          "reason": "Release identity metadata only; exact tool implementation unchanged.",
+          "reason": "0.10.19 metadata only; unchanged executable tools; approved SOP18.0.4.",
           "covered_by": [
             "ops/formal_release/tests/test_tooling_handoff.py"
           ]
         },
         "ops/formal_release/handoffs/tooling-01015-scope.json": {
-          "reason": "0.10.18 identity metadata only; exact tool code unchanged; SOP18.0.4.",
+          "reason": "0.10.19 metadata only; unchanged executable tools; approved SOP18.0.4.",
           "covered_by": [
             "ops/formal_release/tests/test_tooling_handoff.py"
           ]
@@ -365,7 +365,7 @@
           ]
         },
         "worker-client/chejin_worker_client/__init__.py": {
-          "reason": "0.10.18 identity metadata only; exact tool code unchanged; SOP18.0.4.",
+          "reason": "0.10.19 metadata only; unchanged executable tools; approved SOP18.0.4.",
           "covered_by": [
             "ops/formal_release/tests/test_tooling_handoff.py"
           ]
@@ -389,19 +389,19 @@
       "branch": "gray-release-0.10.x",
       "changed_inputs": {
         "ops/formal_release/handoffs/hook-reviewed-bbe404a.json": {
-          "reason": "0.10.18 identity metadata only; exact tool code unchanged; SOP18.0.4.",
+          "reason": "0.10.19 metadata only; unchanged executable tools; approved SOP18.0.4.",
           "covered_by": [
             "ops/formal_release/tests/test_tooling_handoff.py"
           ]
         },
         "ops/formal_release/handoffs/tooling-01015-scope.json": {
-          "reason": "0.10.18 identity metadata only; exact tool code unchanged; SOP18.0.4.",
+          "reason": "0.10.19 metadata only; unchanged executable tools; approved SOP18.0.4.",
           "covered_by": [
             "ops/formal_release/tests/test_tooling_handoff.py"
           ]
         },
         "worker-client/chejin_worker_client/__init__.py": {
-          "reason": "0.10.18 identity metadata only; exact tool code unchanged; SOP18.0.4.",
+          "reason": "0.10.19 metadata only; unchanged executable tools; approved SOP18.0.4.",
           "covered_by": [
             "ops/formal_release/tests/test_tooling_handoff.py"
           ]
@@ -425,115 +425,115 @@
       ]
     },
     "ops/formal_release/handoffs/hook-reviewed-1ed1d7c.json": {
-      "reason": "Release identity metadata only; exact tool implementation unchanged.",
+      "reason": "0.10.19 metadata only; unchanged executable tools; approved SOP18.0.4.",
       "covered_by": [
         "ops/formal_release/tests/test_tooling_handoff.py"
       ]
     },
     "ops/formal_release/handoffs/hook-reviewed-22eb0b1.json": {
-      "reason": "Release identity metadata only; exact tool implementation unchanged.",
+      "reason": "0.10.19 metadata only; unchanged executable tools; approved SOP18.0.4.",
       "covered_by": [
         "ops/formal_release/tests/test_tooling_handoff.py"
       ]
     },
     "ops/formal_release/handoffs/hook-reviewed-bbe404a.json": {
-      "reason": "0.10.18 identity metadata only; exact tool code unchanged; SOP18.0.4.",
+      "reason": "0.10.19 metadata only; unchanged executable tools; approved SOP18.0.4.",
       "covered_by": [
         "ops/formal_release/tests/test_tooling_handoff.py"
       ]
     },
     "ops/formal_release/handoffs/hook-reviewed-d44f8e5.json": {
-      "reason": "Release identity metadata only; exact tool implementation unchanged.",
+      "reason": "0.10.19 metadata only; unchanged executable tools; approved SOP18.0.4.",
       "covered_by": [
         "ops/formal_release/tests/test_tooling_handoff.py"
       ]
     },
     "ops/formal_release/handoffs/hook-reviewed-d7f7ad4.json": {
-      "reason": "Release identity metadata only; exact tool implementation unchanged.",
+      "reason": "0.10.19 metadata only; unchanged executable tools; approved SOP18.0.4.",
       "covered_by": [
         "ops/formal_release/tests/test_tooling_handoff.py"
       ]
     },
     "ops/formal_release/handoffs/hook-reviewed-evidence-01014.json": {
-      "reason": "Release identity metadata only; exact tool implementation unchanged.",
+      "reason": "0.10.19 metadata only; unchanged executable tools; approved SOP18.0.4.",
       "covered_by": [
         "ops/formal_release/tests/test_tooling_handoff.py"
       ]
     },
     "ops/formal_release/handoffs/tooling-01010-reviewed.json": {
-      "reason": "Release identity metadata only; exact tool implementation unchanged.",
+      "reason": "0.10.19 metadata only; unchanged executable tools; approved SOP18.0.4.",
       "covered_by": [
         "ops/formal_release/tests/test_tooling_handoff.py"
       ]
     },
     "ops/formal_release/handoffs/tooling-01010-scope.json": {
-      "reason": "Release identity metadata only; exact tool implementation unchanged.",
+      "reason": "0.10.19 metadata only; unchanged executable tools; approved SOP18.0.4.",
       "covered_by": [
         "ops/formal_release/tests/test_tooling_handoff.py"
       ]
     },
     "ops/formal_release/handoffs/tooling-01011-reviewed.json": {
-      "reason": "Release identity metadata only; exact tool implementation unchanged.",
+      "reason": "0.10.19 metadata only; unchanged executable tools; approved SOP18.0.4.",
       "covered_by": [
         "ops/formal_release/tests/test_tooling_handoff.py"
       ]
     },
     "ops/formal_release/handoffs/tooling-01011-scope.json": {
-      "reason": "Release identity metadata only; exact tool implementation unchanged.",
+      "reason": "0.10.19 metadata only; unchanged executable tools; approved SOP18.0.4.",
       "covered_by": [
         "ops/formal_release/tests/test_tooling_handoff.py"
       ]
     },
     "ops/formal_release/handoffs/tooling-01012-reviewed.json": {
-      "reason": "Release identity metadata only; exact tool implementation unchanged.",
+      "reason": "0.10.19 metadata only; unchanged executable tools; approved SOP18.0.4.",
       "covered_by": [
         "ops/formal_release/tests/test_tooling_handoff.py"
       ]
     },
     "ops/formal_release/handoffs/tooling-01012-scope.json": {
-      "reason": "Release identity metadata only; exact tool implementation unchanged.",
+      "reason": "0.10.19 metadata only; unchanged executable tools; approved SOP18.0.4.",
       "covered_by": [
         "ops/formal_release/tests/test_tooling_handoff.py"
       ]
     },
     "ops/formal_release/handoffs/tooling-01013-reviewed.json": {
-      "reason": "Release identity metadata only; exact tool implementation unchanged.",
+      "reason": "0.10.19 metadata only; unchanged executable tools; approved SOP18.0.4.",
       "covered_by": [
         "ops/formal_release/tests/test_tooling_handoff.py"
       ]
     },
     "ops/formal_release/handoffs/tooling-01013-scope.json": {
-      "reason": "Release identity metadata only; exact tool implementation unchanged.",
+      "reason": "0.10.19 metadata only; unchanged executable tools; approved SOP18.0.4.",
       "covered_by": [
         "ops/formal_release/tests/test_tooling_handoff.py"
       ]
     },
     "ops/formal_release/handoffs/tooling-01014-reviewed.json": {
-      "reason": "Release identity metadata only; exact tool implementation unchanged.",
+      "reason": "0.10.19 metadata only; unchanged executable tools; approved SOP18.0.4.",
       "covered_by": [
         "ops/formal_release/tests/test_tooling_handoff.py"
       ]
     },
     "ops/formal_release/handoffs/tooling-01014-scope.json": {
-      "reason": "Release identity metadata only; exact tool implementation unchanged.",
+      "reason": "0.10.19 metadata only; unchanged executable tools; approved SOP18.0.4.",
       "covered_by": [
         "ops/formal_release/tests/test_tooling_handoff.py"
       ]
     },
     "ops/formal_release/handoffs/tooling-01015-scope.json": {
-      "reason": "0.10.18 identity metadata only; exact tool code unchanged; SOP18.0.4.",
+      "reason": "0.10.19 metadata only; unchanged executable tools; approved SOP18.0.4.",
       "covered_by": [
         "ops/formal_release/tests/test_tooling_handoff.py"
       ]
     },
     "ops/formal_release/handoffs/tooling-gui-recovery-reviewed.json": {
-      "reason": "Release identity metadata only; exact tool implementation unchanged.",
+      "reason": "0.10.19 metadata only; unchanged executable tools; approved SOP18.0.4.",
       "covered_by": [
         "ops/formal_release/tests/test_tooling_handoff.py"
       ]
     },
     "ops/formal_release/handoffs/tooling-gui-recovery-scope.json": {
-      "reason": "Release identity metadata only; exact tool implementation unchanged.",
+      "reason": "0.10.19 metadata only; unchanged executable tools; approved SOP18.0.4.",
       "covered_by": [
         "ops/formal_release/tests/test_tooling_handoff.py"
       ]
@@ -597,7 +597,7 @@
       ]
     },
     "worker-client/chejin_worker_client/__init__.py": {
-      "reason": "0.10.18 identity metadata only; exact tool code unchanged; SOP18.0.4.",
+      "reason": "0.10.19 metadata only; unchanged executable tools; approved SOP18.0.4.",
       "covered_by": [
         "ops/formal_release/tests/test_tooling_handoff.py"
       ]
@@ -626,5 +626,5 @@
       ]
     }
   ],
-  "unaffected_scope_review": "0.10.18: only version identity and reviewed source provenance metadata updated after 0.10.17. Release tools and unrelated test bytes unchanged; retain original code audits and reuse exact unaffected tool checks. Run only descriptor validation and sealed Windows build/upgrade. No new architect code review claimed for metadata-only changes (approved SOP 18.0.4)."
+  "unaffected_scope_review": "0.10.19 version/source-evidence metadata only. Tool implementation unchanged; retain original audit and unaffected CI checks. Run descriptor validation, native build/upgrade gates only. No new metadata architect audit claimed."
 }
