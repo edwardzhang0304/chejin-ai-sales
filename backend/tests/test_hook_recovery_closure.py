@@ -199,7 +199,10 @@ def test_interrupted_voice_uses_original_parent_manual_disposition_and_resume(id
         with SessionLocal() as db:assert db.scalar(select(MessageEvent).where(MessageEvent.message_type=='voice')).item_state=='metadata_observed'
     else:
         d.tick(runner,services) # Recovery must run even while the Worker is faulted.
-        assert d._recover_voice_attempts(inv['bindings']) # Same receipt replay, no new call.
+        receipts = {f: f.read_bytes() for f in d.private_root.rglob('*.json')}
+        assert receipts
+        assert d._recover_voice_attempts(inv['bindings']) is False  # No new work after persisted receipt.
+        assert all(f.read_bytes() == value for f, value in receipts.items())
         with SessionLocal() as db:
             assert db.scalar(select(MessageEvent).where(MessageEvent.message_type=='voice')).item_state=='uncertain'
             assert db.scalar(select(func.count()).select_from(HandoffEvent))==1

@@ -13,6 +13,9 @@ from app.models.c3 import ReplyAction, SentAck
 
 @pytest.mark.parametrize('result_mode',['sent','unknown'])
 def test_recall_through_actual_worker_sender_and_ack(identity_client,lab,tmp_path,monkeypatch,recovery_provider_factory,result_mode):
+    monkeypatch.setattr(get_settings(), "c3_recall_after_hours", 0.001)
+    monkeypatch.setattr(get_settings(), "c3_recall_quiet_start_hour", 0)
+    monkeypatch.setattr(get_settings(), "c3_recall_quiet_end_hour", 0)
     segments=1
     server,gateway,process,scope,*_=lab
     w,t,account=claimed(process_generation=process.generation,pending=True)
@@ -65,13 +68,15 @@ def test_recall_through_actual_worker_sender_and_ack(identity_client,lab,tmp_pat
         messages=list(db.scalars(select(MessageEvent).where(MessageEvent.sender_role=='self')))
         assert all(m.raw_payload['sender_source']=='ai' for m in messages)
     assert list((tmp_path/'coordinator'/'finished').glob('*.json'))
-    # Advance only the due-check clock to exercise the real recall trigger.
-    # All receiver/send/lease clocks remain real; no wait of 72 hours is claimed.
+    # Use one real clock across due check, leases, sender, history and ACK.
+    # Only the configurable recall delay is shortened; 72-hour policy is tested
+    # separately. No four-day precheck jump with a different settlement date.
     from app.services import wechat_service
     from app.models.c3 import Conversation,MessageBatch
     from datetime import datetime,timedelta,timezone
-    due_clock=(datetime.now(timezone.utc)+timedelta(days=4)).replace(hour=2,minute=0)
-    monkeypatch.setattr(wechat_service,'utcnow',lambda:due_clock)
+    with SessionLocal() as db:
+        due_clock=db.get(Conversation,binding['conversation_id']).next_recall_at.replace(tzinfo=timezone.utc)
+    time.sleep(max(0, (due_clock-datetime.now(timezone.utc)).total_seconds())+.05)
     next_sync=runtime.sync(binding)
     assert next_sync['history_ready'] and next_sync['message_batch'],next_sync
     recall_batch=next_sync['message_batch']['batch_id']

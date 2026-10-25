@@ -132,12 +132,19 @@ def test_zero_querydb_actual_runtime_through_deadline_unknown_ack_and_flow_finis
     clock=[since+50]
     monkeypatch.setattr(hook_send_service,'utcnow',lambda:datetime.fromtimestamp(clock[0],timezone.utc))
     originals={f:f.read_bytes() for f in (d.private_root/'sends').rglob('*.json')}
-    # Before the original confirmation deadline: real observation, no settlement.
+    # A trusted fresh friend restriction can settle a completed call early as
+    # unknown. Otherwise the original confirmation deadline still applies.
     d.tick(runner,services)
     with SessionLocal() as db:
-        assert db.scalar(select(SentAck)) is None
-        assert db.get(Worker,w['id']).inflight_flow_state
-    assert not (d.private_root/'send-receipts'/f"{permit['reply_action_id']}.json").exists()
+        early = friend_notice and not invalidated
+        ack = db.scalar(select(SentAck))
+        assert (ack is not None) is early
+        if early:
+            assert ack.send_result == 'unknown'
+            assert db.get(ReplyAction, permit['reply_action_id']).status == 'unknown_send_result'
+        else:
+            assert db.get(Worker,w['id']).inflight_flow_state
+    assert (d.private_root/'send-receipts'/f"{permit['reply_action_id']}.json").exists() is early
     assert any(path=='/QueryDB' for path,*_ in server.requests)
     with SessionLocal() as db:
         events=list(db.scalars(select(HandoffEvent)))

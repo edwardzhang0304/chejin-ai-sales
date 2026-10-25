@@ -21,6 +21,7 @@ from datetime import datetime, timezone
 from .evidence_paths import artifacts, incident_roots, update_root
 from .incident_evidence import _sanitize, _SECRET_KEY_RE, _FORBIDDEN_FILE_RE
 from . import __version__
+from .diagnostic_selection import SnapshotPriority
 
 MAX_BYTES = 100 * 1024 * 1024
 MAX_FILE_BYTES = 8 * 1024 * 1024
@@ -113,6 +114,7 @@ class Collector:
         self.members = set()
         self.latest_logs = []
         self.priority_tasks = set()
+        self.priority_voices = []
         self.tree_usage = {}
         self.source_deadline = self.deadline
         self.source_end = MAX_FILES
@@ -256,6 +258,30 @@ class Collector:
         except (OSError, sqlite3.Error):
             self.record("database_credentials", "read_failed", reason="credential_values_unavailable")
 
+    def voice_receipt_path(self, account, epoch, mid):
+        keys = (account, epoch, mid)
+        if not all(isinstance(v, str) and v not in {'.', '..'} and v and
+                   all(c.isalnum() or c in '-_' for c in v) for v in keys):
+            return None
+        return self.root / 'transactions/hook/voice-receipts' / account / epoch / (mid+'.json')
+
+    def voice_receipt_known(self, attempt):
+        """Collection hint only. Unreadable or mismatched receipts stay important."""
+        from .shared_rules import hook_contract_rules as rules
+        path = self.voice_receipt_path(*(attempt.get(k) for k in ('self_wxid', 'account_epoch', 'native_msg_id')))
+        if path is None:
+            return False
+        if not self.source_allowed(path):
+            return False
+        try:
+            with path.open('rb') as stream:
+                data = stream.read(65537)
+            value = json.loads(data) if len(data) <= 65536 else None
+            return (isinstance(value, dict) and isinstance(value.get('receipt'), dict)
+                    and value.get('attempt_digest') == rules.digest(attempt))
+        except (OSError, ValueError, RecursionError):
+            return False
+
     def database(self, archive, *, name="worker_client.sqlite3", tables=TABLES):
         if not (self.root / name).exists():
             self.record(name, "absent")
@@ -272,6 +298,7 @@ class Collector:
             db.set_progress_handler(lambda: int(time.monotonic() >= snapshot_deadline), 1000)
             db.execute("BEGIN")
             db.execute("SELECT name FROM sqlite_master LIMIT 1").fetchone()
+            priority = SnapshotPriority(db, MAX_ROWS, self.record, self.voice_receipt_known, deadline=snapshot_deadline) if name == "worker_client.sqlite3" else None
             for table in tables:
                 if self.limited() or time.monotonic() >= snapshot_deadline:
                     self.record(table, "omitted", reason="collection_limit")
@@ -292,16 +319,23 @@ class Collector:
                         expressions.append('length(raw_body) AS raw_body_bytes')
                         if table == "hook_raw_inbox":
                             expressions.append("CASE WHEN length(raw_body)<=65536 THEN raw_body END AS diagnostic_callback")
-                    rows = db.execute(f'SELECT {",".join(expressions)} FROM "{table}" ORDER BY rowid DESC LIMIT ?',
-                                      (MAX_ROWS + 1,))
+                    query = (priority.query(table, ",".join(expressions)) if priority else
+                             f'SELECT {",".join(expressions)}, 0 AS diagnostic_priority FROM "{table}" ORDER BY rowid DESC LIMIT ?')
+                    rows = db.execute(query, (MAX_ROWS + 1,))
                     payload = []
                     table_bytes = 0
                     truncated = False
                     for row in rows:
                         if len(payload) >= MAX_ROWS or self.limited() or time.monotonic() >= snapshot_deadline:
                             truncated = True
+                            if row["diagnostic_priority"]:
+                                self.record(table, "omitted", reason="critical_rows_limit", omitted_at_least=1)
                             break
                         record = dict(row)
+                        important = record.pop("diagnostic_priority", False)
+                        if table == 'hook_voice_attempts' and important:
+                            self.priority_voices.append(tuple(record.get(k) for k in
+                                ('self_wxid', 'account_epoch', 'native_msg_id')))
                         callback = record.pop("diagnostic_callback", None)
                         if callback is not None:
                             try:
@@ -341,19 +375,22 @@ class Collector:
                         table_bytes += size
                         payload.append(cleaned)
                     rows.close()
+                    if priority:
+                        priority.captured_chain(table, payload)
                     data = _json({
                         "snapshot_at": snapshot_at, "database": name,
                         "consistent_database_snapshot": True,
                         "captured_at": datetime.now(timezone.utc).isoformat(),
                         "rows": payload, "limit": MAX_ROWS, "truncated": truncated,
                         "raw_bodies_excluded": True,
+                        "selection_policy": "current_fault_then_unfinished_oldest_then_recent_history",
                     })
                     snapshots.append((f"state/{table}.json", data, table))
                     if table == "local_logs":
                         self.latest_logs = payload
                         snapshots.append(("logs/latest_logs.json", _json(payload), table))
                     if truncated:
-                        self.record(table, "omitted", reason="older_rows_limit")
+                        self.record(table, "omitted", reason="row_or_time_limit")
                 except (sqlite3.Error, ValueError) as exc:
                     self.record(table, "read_failed", error_type=type(exc).__name__)
         except sqlite3.Error as exc:
@@ -423,6 +460,13 @@ class Collector:
                 self.record(member, "omitted", reason="priority_budget_limit")
                 return
             self.file(path, member, archive)
+
+        for keys in self.priority_voices:
+            path = self.voice_receipt_path(*keys)
+            if path is None:
+                self.record('priority_recovery/voice', 'omitted', reason='invalid_voice_reference')
+            else:
+                collect(path)
 
         # A locally retained flow can outlive its ACK. Keep that journal too.
         flows = {p.stem for p, _ in records(hook / "flows")

@@ -140,6 +140,36 @@ def test_constructor_failure_from_formal_entry_is_exported_and_never_replayed(sc
     assert not (original(s)/'submit-attempt.json').exists()
 
 
+@pytest.mark.parametrize('boundary', ['missing_work_area', 'invalid_work_area', 'undersized_window', 'invalid_dpi'])
+def test_startup_contract_failure_keeps_attempt_and_exports_without_input(scene, monkeypatch, boundary):
+    s = scene()
+    if boundary == 'missing_work_area':
+        def unavailable(_):
+            raise OSError('synthetic work area unavailable')
+        s.ops.screen_work_area = unavailable
+    elif boundary == 'invalid_work_area':
+        s.ops.screen_work_area = lambda _: {'left': 0, 'top': 0, 'width': 0, 'height': 0}
+    elif boundary == 'undersized_window':
+        s.boundary.geom['width'] = 600
+    else:
+        s.dpi = float('nan')
+    expected_error = OSError if boundary == 'missing_work_area' else flow.FlowStop
+    with pytest.raises(expected_error):
+        s.execute(monkeypatch)
+    z = s.export()
+    saved = json.loads(z[f'tasks/{TASK}/diagnostics/initialization.json'])
+    assert saved['exception']['phase'] == 'initialization'
+    assert saved['task_id'] == TASK
+    before = {p: p.read_bytes() for p in original(s).glob('*.json')}
+    assert (original(s) / 'ui-started.json').exists()
+    with pytest.raises(ValueError, match='PREVIOUS_ATTEMPT'):
+        s.execute(monkeypatch)
+    assert all(p.read_bytes() == raw for p, raw in before.items())
+    s.ops.win32api.mouse_event.assert_not_called()
+    s.ops.type_text_with_sendinput_unicode.assert_not_called()
+    assert not (original(s) / 'submit-attempt.json').exists()
+
+
 @pytest.mark.parametrize('fault,kind',[('timeout','TimeoutError'),('permission','PermissionError')])
 def test_real_ocr_exception_and_cleanup_exception_have_distinct_safe_causes(scene,monkeypatch,fault,kind):
     s=scene(fault,cleanup_fault=True);r=s.execute(monkeypatch);z=s.export();r=outcome(z)

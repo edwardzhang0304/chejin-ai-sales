@@ -224,6 +224,7 @@ class NativeGuardTests(unittest.TestCase):
             EnumWindows=lambda fn,arg:fn(11,arg))
         self.ops=SimpleNamespace(win32gui=self.gui,win32process=SimpleNamespace(GetWindowThreadProcessId=lambda h:(1,99)),
             get_window_geometry=lambda h:dict(self.geom),get_window_client_geometry=lambda h:dict(self.client),
+            screen_work_area=lambda h:{"left":0,"top":0,"width":1920,"height":1040},
             humanized_action_sleep=Mock(),add_friend_paced_pause=Mock(),ensure_left_button_released=Mock(),require_active_ui_action_budget=Mock(),
             win32api=SimpleNamespace(GetCursorPos=lambda:(10,10),SetCursorPos=Mock(),mouse_event=Mock()),
             win32con=SimpleNamespace(MOUSEEVENTF_LEFTDOWN=2,MOUSEEVENTF_LEFTUP=4))

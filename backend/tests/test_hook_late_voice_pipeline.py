@@ -16,7 +16,7 @@ import pytest
 from sqlalchemy import select
 from app.core.database import SessionLocal
 from app.core.config import get_settings
-from app.models.c3 import MessageBatch, ReplyAction, HandoffEvent, SentAck
+from app.models.c3 import MessageBatch, ReplyAction, HandoffEvent, SentAck, Conversation
 from app.models.hook_native import HookVoiceReceipt
 from app.models.task import Task
 from app.models.wechat import MessageEvent, WechatSessionBinding
@@ -42,6 +42,9 @@ from chejin_worker_client.models import Binding
 @pytest.mark.parametrize('phase', ['inventory', 'generating', 'queued', 'send_begin', 'send_observed', 'settled'])
 def test_new_turn_survives_old_voice_result_at_actual_pipeline_boundary(
         identity_client, lab, connection_factory, monkeypatch, tmp_path, state, phase):
+    monkeypatch.setattr(get_settings(), 'c3_recall_after_hours', 0.001)
+    monkeypatch.setattr(get_settings(), 'c3_recall_quiet_start_hour', 0)
+    monkeypatch.setattr(get_settings(), 'c3_recall_quiet_end_hour', 0)
     w, _, _, binding = bound()
     server, gateway, *_ = lab
     manager, credentials, prepared = connection_factory(w)
@@ -64,8 +67,8 @@ def test_new_turn_survives_old_voice_result_at_actual_pipeline_boundary(
             (n, mid, kind, sender, now, now * 1000 + n, 0, n, binding['peer_wxid'], text))
         return mid
 
-    append(3, 0, '<msg><img md5="synthetic"/></msg>')
-    assert runtime.sync(binding)['history_ready']
+    # Start the voice while AI still owns the conversation; no new
+    # transcription may be started after a human handoff.
     parent = append(34, 0, f'<msg><voicemsg length="{len(AUDIO)}"/></msg>')
     assert runtime.sync(binding)['reason_code'] == 'HOOK_VOICE_PENDING'
     persist(lab, metadata=True, audio=True, mid=parent, data=AUDIO, scope=runtime.scope)
@@ -88,7 +91,39 @@ def test_new_turn_survives_old_voice_result_at_actual_pipeline_boundary(
             automatic_transcription_disabled=lambda: True)['state'] == state
     saved = dispatcher.voice.saved_parent(runtime.scope, binding['peer_wxid'], parent)
     assert saved['state'] == state
+    append(3, 0, '<msg><img md5="synthetic"/></msg>')
     append(1, 1, '我是销售，此前的问题已经处理，请问还有什么想了解的？')
+    # Human ownership must end through a confirmed recall, never through a
+    # customer's new question. Exercise the real Brain, send, history and ACK.
+    held = runtime.sync(binding)
+    assert held['history_ready'] and held['message_batch'] is None, held
+    from datetime import datetime, timezone
+    with SessionLocal() as db:
+        conversation = db.get(Conversation, binding['conversation_id'])
+        assert conversation.reply_ownership['owner'] == 'human'
+        due = conversation.next_recall_at.replace(tzinfo=timezone.utc)
+    time.sleep(max(0, (due-datetime.now(timezone.utc)).total_seconds())+.05)
+    recall = runtime.sync(binding)
+    assert recall['message_batch'], recall
+    recall_batch = recall['message_batch']['batch_id']
+    def recall_hook(path):
+        server.raw_override = None
+        if path == '/SendTextMsg':
+            append(1, 1, server.requests[-1][1]['msg'])
+            server.raw_override = b'{"SendTextMsg":"1"}'
+    server.on_request = recall_hook
+    engine = str(Path(__file__).resolve().parents[2] / 'worker-client/omniauto-rpa')
+    monkeypatch.setenv('C3_OMNIAUTO_ROOT', engine)
+    monkeypatch.setattr(get_settings(), 'c3_omniauto_root', engine)
+    monkeypatch.setattr(c3_service, 'get_ai_engine_adapter', RealOmniAutoAIEngineAdapter)
+    recall_requests = []
+    with controlled_recovery_provider(monkeypatch, '之前聊过购车的事情，您最近还有想了解的吗？', recall_requests):
+        recalled = drive_reply(runtime, binding, recall_batch)
+    assert len(recalled['sends']) == 1 and recalled['sends'][0]['local_send_observed'], recalled
+    with SessionLocal() as db:
+        assert db.get(Conversation, binding['conversation_id']).reply_ownership['owner'] == 'ai'
+        assert db.get(MessageBatch, recall_batch).trigger_type == 'recall'
+    assert [r['model'] for r in recall_requests] == ['recovery-author', 'recovery-reviewer']
     append(1, 0, '现在想了解十五万元左右的车型，暂时不预约看车。')
     delivered = []; checkpoints = []
     batch_id = None
@@ -162,9 +197,9 @@ def test_new_turn_survives_old_voice_result_at_actual_pipeline_boundary(
     with SessionLocal() as db:
         batches = list(db.scalars(select(MessageBatch)))
         action = db.scalar(select(ReplyAction).where(ReplyAction.batch_id == batch_id))
-        assert len(batches) == 1 and action.status == 'sent'
+        assert {b.id for b in batches} == {recall_batch, batch_id} and action.status == 'sent'
         assert db.get(Task, action.claimed_task_id).status == 'completed'
-        assert len(list(db.scalars(select(SentAck)))) == 1
+        assert len(list(db.scalars(select(SentAck)))) == 2
         assert all(h.closed_at for h in db.scalars(select(HandoffEvent)))
         voice = db.scalar(select(MessageEvent).where(MessageEvent.message_type == 'voice'))
         receipt = db.scalar(select(HookVoiceReceipt))
@@ -175,8 +210,20 @@ def test_new_turn_survives_old_voice_result_at_actual_pipeline_boundary(
     assert dispatcher.voice.saved_parent(runtime.scope, binding['peer_wxid'], parent) == saved
     assert process_voice_call_unresolved(old_generation) is (state == 'uncertain')
     assert len([r for r in server.requests if r[0] == '/Voice2Text']) == 1
-    assert len([r for r in server.requests if r[0] == '/SendTextMsg']) == 1
+    assert len([r for r in server.requests if r[0] == '/SendTextMsg']) == 2
     (tmp_path / 'late-batch-chain.json').write_text(json.dumps({'phase': phase, 'state': state,
         'batch_id': batch_id, 'reply_action_id': action.id, 'checkpoints': checkpoints,
         'provider_models': [r['model'] for r in requests], 'sends': len(sent['sends'])}, ensure_ascii=False, indent=2))
+    if phase == 'settled' and state == 'transcribed':
+        # The old result is harmless only because a real human response covered
+        # it. A genuinely new voice after recall must still block generation.
+        new_parent = append(34, 0, f'<msg><voicemsg length="{len(AUDIO)}"/></msg>')
+        waiting = runtime.sync(binding)
+        assert not waiting['history_ready'] and waiting['reason_code'] == 'HOOK_VOICE_PENDING'
+        assert waiting['message_batch'] is None
+        inventory = client.call(credentials, 'POST', f"/workers/{w['id']}/wechat/native-work", runtime.account)
+        current = next(b for b in inventory['bindings'] if b['binding_id'] == binding['binding_id'])
+        assert any(job['native_msg_id'] == new_parent for job in current['voice_jobs'])
+        assert len([r for r in server.requests if r[0] == '/Voice2Text']) == 1
+        assert len([r for r in server.requests if r[0] == '/SendTextMsg']) == 2
     table.close()

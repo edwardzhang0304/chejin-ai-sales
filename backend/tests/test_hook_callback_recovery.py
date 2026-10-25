@@ -3,6 +3,7 @@
 UI/OCR replay and model mode are explicitly simulated. No live WeChat action.
 """
 from types import SimpleNamespace
+from pathlib import Path
 import json,sqlite3,time,uuid,os
 import pytest
 from sqlalchemy import select
@@ -14,6 +15,7 @@ import test_hook_business_http
 from test_hook_account_client import identity_client
 from test_hook_gateway import lab
 from test_hook_formal_runtime import drive_reply
+from test_partial_reply_recovery_provider import recovery_provider_factory
 from maintenance_recovery_fixture import maintenance_proxy, require_disposable_postgres
 from chejin_worker_client.hook_backend import HookWorkerCredentials
 from chejin_worker_client.hook_formal_client import HookFormalClient
@@ -54,11 +56,11 @@ def connection_factory(identity_client, lab):
     for manager in managers: manager.close()
 
 
-@pytest.mark.parametrize('mode',['single_callback','retained_send','capacity_reconcile','paused_dispatcher',
+@pytest.mark.parametrize('mode',['single_callback','retained_send','capacity_reconcile','paused_dispatcher','projection_policy',
     pytest.param('maintenance_recovery',marks=pytest.mark.skipif(
         os.environ.get('CHEJIN_RUN_MAINTENANCE_PROXY_TEST')!='1',
         reason='Explicit isolated Docker/Nginx release acceptance only'))])
-def test_callback_during_post_send_scan_and_retained_settlement(identity_client,lab,tmp_path,monkeypatch,mode,connection_factory,maintenance_proxy):
+def test_callback_during_post_send_scan_and_retained_settlement(identity_client,lab,tmp_path,monkeypatch,mode,connection_factory,maintenance_proxy,recovery_provider_factory):
     segments=1
     server,gateway,process,scope,*_=lab
     if mode=='maintenance_recovery':
@@ -107,6 +109,41 @@ def test_callback_during_post_send_scan_and_retained_settlement(identity_client,
         table.execute('INSERT INTO MSG VALUES(?,?,?,?,?,?,?,?,?,?)',(1,'8000000000000000001',1,0,now,now*1000+1,0,1,binding['peer_wxid'],'想了解二手车，暂时不预约'))
     else:
         binding=runtime.discover(t['id'])
+    if mode == 'projection_policy':
+        # Receive real callback HTTP, cross the former 32 MiB limit using
+        # official producers, then consume through business/Brain/send/recovery.
+        from urllib.request import Request, urlopen
+        from chejin_worker_client.hook_projection import create_projection_store
+        from chejin_worker_client import storage
+        manager.inbox.max_body_bytes = 2*1024*1024
+        manager.inbox.max_inbox_bytes = 128*1024*1024
+        intake = create_projection_store()
+        active_scope = prepared.registration.scope
+        def callback(mid, peer, text):
+            raw = json.dumps({'ServerPort': str(active_scope.hook_api_port), 'selfwxid': active_scope.self_wxid,
+                'sendorrecv':'2', 'msgnumber':'1', 'msglist':[{'msgtype':'1','msgsvrid':str(mid),
+                'fromtype':'1','fromid':peer,'toid':active_scope.self_wxid,'msg':text}]}).encode()
+            with urlopen(Request(prepared.registration.callback_url, data=raw,
+                    headers={'Content-Type':'application/json'}),timeout=5) as response:
+                assert response.status == 200
+        for n in range(34):
+            callback(700000+n, 'wxid_other_customer', 'x'*(1024*1024))
+            (intake if n % 2 else runtime.projection).project_next(active_scope)
+        with storage.db_connection() as db:
+            assert db.execute('SELECT sum(length(cast(projection_json AS BLOB))) FROM hook_observation_projection').fetchone()[0] > 32*1024*1024
+        while int(time.time()) <= int(binding['history_since_create_time']): time.sleep(.02)
+        now=int(time.time());text='想了解十五万元左右的车型，暂时不预约看车。'
+        table.execute('INSERT INTO MSG VALUES(?,?,?,?,?,?,?,?,?,?)',
+            (1,'8000000000000000001',1,0,now,now*1000+1,0,1,binding['peer_wxid'],text))
+        for _ in range(2): callback('8000000000000000001',binding['peer_wxid'],text)
+        from app.services import c3_service
+        from app.services.ai_adapter import RealOmniAutoAIEngineAdapter
+        from app.core.config import get_settings
+        engine_path=str(Path(__file__).resolve().parents[2]/'worker-client/omniauto-rpa')
+        monkeypatch.setenv('C3_OMNIAUTO_ROOT',engine_path)
+        monkeypatch.setattr(get_settings(),'c3_omniauto_root',engine_path)
+        monkeypatch.setattr(c3_service,'get_ai_engine_adapter',RealOmniAutoAIEngineAdapter)
+        provider_requests=recovery_provider_factory('好的，先按十五万元左右了解，您更喜欢轿车还是SUV？')
     before=runtime.sync(binding);assert before['history_ready']
     batch=before['message_batch']['batch_id']
     from chejin_worker_client.hook_history_sync import HookHistorySynchronizer
@@ -120,7 +157,7 @@ def test_callback_during_post_send_scan_and_retained_settlement(identity_client,
         result=original_scan(*args,**kwargs)
         # The Hook call has happened and its row has landed. Emulate a callback
         # crossing the scan barrier once, or on all bounded attempts.
-        if any(r[0]=='/SendTextMsg' for r in server.requests) and (mode in {'retained_send','capacity_reconcile','paused_dispatcher','maintenance_recovery'} or changes[0]==0):
+        if any(r[0]=='/SendTextMsg' for r in server.requests) and (mode in {'retained_send','capacity_reconcile','paused_dispatcher','projection_policy','maintenance_recovery'} or changes[0]==0):
             changes[0]+=1
         return result
     monkeypatch.setattr(HookHistorySynchronizer,'scan',scan)
@@ -141,7 +178,8 @@ def test_callback_during_post_send_scan_and_retained_settlement(identity_client,
             assert action.status=='sending'
             metadata={k:identity[k] for k in ('task_id','reply_action_id','flow_id','lease_fencing_token')}
             metadata['journal_sha256']=attempt['journal_sha256']
-            claimed_task.lease_expires_at=__import__('datetime').datetime(2020,1,1,tzinfo=__import__('datetime').timezone.utc);db.commit()
+            if mode != 'projection_policy':
+                claimed_task.lease_expires_at=__import__('datetime').datetime(2020,1,1,tzinfo=__import__('datetime').timezone.utc);db.commit()
         post(w,f"/workers/{w['id']}/run-status",{'client_instance_id':w['instance'],'run_status':'paused'})
         retained=list((tmp_path/'coordinator'/'sends').rglob('*.json'))
         import hashlib
@@ -173,7 +211,22 @@ def test_callback_during_post_send_scan_and_retained_settlement(identity_client,
                 assert rejection.value.status_code in {403,404,409}
                 identity_rejections[field]=rejection.value.code
             (tmp_path/'maintenance-identity.json').write_text(json.dumps(identity_rejections))
-        manager,credentials,prepared=connection_factory(w)
+        if mode == 'projection_policy':
+            # Real callback HTTP can leave the closed loopback port in macOS
+            # TIME_WAIT. Wait for actual reuse; do not replace the receiver,
+            # relabel its scope or weaken the production exclusive bind.
+            import errno
+            deadline=time.monotonic()+90
+            while True:
+                try:
+                    manager,credentials,prepared=connection_factory(w)
+                    break
+                except OSError as exc:
+                    if exc.errno != errno.EADDRINUSE or time.monotonic() >= deadline:
+                        raise
+                    time.sleep(1)
+        else:
+            manager,credentials,prepared=connection_factory(w)
         recovery=HookFormalRuntime(runtime.client,credentials,gateway,prepared,tmp_path/'recovery')
         if mode=='capacity_reconcile':
             recovery.history_budget.maximum_bytes=16
@@ -290,4 +343,14 @@ def test_callback_during_post_send_scan_and_retained_settlement(identity_client,
         messages=list(db.scalars(select(MessageEvent).where(MessageEvent.sender_role=='self')))
         assert all(m.raw_payload['sender_source']=='ai' for m in messages)
     assert list((tmp_path/'coordinator'/'finished').glob('*.json'))
+    if mode == 'projection_policy':
+        assert [r['model'] for r in provider_requests] == ['recovery-author','recovery-reviewer']
+        with SessionLocal() as db:
+            incoming=list(db.scalars(select(MessageEvent).where(MessageEvent.sender_role=='customer')))
+            assert len(incoming)==1 and incoming[0].content==text
+            assert not any('wxid_other_customer' in str(m.raw_payload) for m in db.scalars(select(MessageEvent)))
+        with storage.db_connection() as db:
+            deliveries=list(db.execute('SELECT status,payload_json FROM hook_delivery_outbox'))
+            assert deliveries and all(r['status']=='stored' for r in deliveries)
+        assert all(server.lock_observations[i]['locked'] for i,r in enumerate(server.requests) if r[0]=='/SendTextMsg')
     table.close()

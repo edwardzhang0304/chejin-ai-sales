@@ -14,7 +14,7 @@ from .hook_config import load_hook_deployment, TRANSPORT_KEY, VOICE_SETTING_KEY
 from .hook_backend import HookIdentityClient
 from .hook_gateway import HookGateway
 from .hook_inbox import NativeInbox
-from .hook_projection import NativeProjectionStore
+from .hook_projection import create_projection_store
 from .hook_connection import HookConnectionManager
 from .hook_worker_services import HookWorkerServices
 from .hook_formal_client import HookFormalClient
@@ -49,7 +49,7 @@ def create_hook_services(api):
     dispatcher=HookBusinessDispatcher(formal,private,native.ui,native.startup,
         automatic_transcription_disabled=automatic_text_disabled,
         startup_layout_check=native.startup_layout_ready, startup_retry_check=native.check_startup_retry)
-    return HookWorkerServices(connection,NativeProjectionStore(max_projection_bytes=128*1024*1024,max_entries=200),
+    return HookWorkerServices(connection,create_projection_store(),
         intake_interval_seconds=.2,projection_batch_size=100,dispatcher=dispatcher,
         recovery_window_check=native.check_recovery_window)
 

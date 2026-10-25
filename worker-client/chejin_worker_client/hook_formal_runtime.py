@@ -22,7 +22,7 @@ from .hook_progress import emit_progress,register_progress,complete_send_progres
 from .hook_timing import timed_call, record_raw_delivery
 from .hook_history_sync import HookHistorySynchronizer
 from .hook_outbox import HookDeliveryScope,HookDeliveryOutbox
-from .hook_projection import NativeProjectionStore
+from .hook_projection import create_projection_store
 from .hook_sender import NativeSendPermit,HookNativeSender,RetainedNativeSendPermit,send_observation_can_settle
 from .shared_rules import hook_contract_rules as rules
 
@@ -94,7 +94,7 @@ class HookFormalRuntime:
         self.c1=HookFormalC1(client,credentials,private_root/'invites',clock=self.clock)
         self.c1_results=HookC1ResultReceipts(self)
         self.identity_client=HookIdentityClient(client.base_url,client.timeout_seconds,client.max_response_bytes)
-        self.projection=NativeProjectionStore(max_projection_bytes=32*1024*1024,max_entries=200)
+        self.projection=create_projection_store()
         self.outbox=HookDeliveryOutbox(max_storage_bytes=32*1024*1024)
         self.history_retry_events=[]
         self._history_checkpoint=None
