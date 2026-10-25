@@ -233,14 +233,13 @@ class NativeGuardTests(unittest.TestCase):
         self.fr=frames()['header'];self.fr.hwnd=11;self.fr.origin=(12,12);self.fr.geometry=dict(self.client);self.fr.timestamp=f.time.monotonic();self.ui.last_frame=self.fr
     def tearDown(self):self.tmp.cleanup()
     def test_cached_remark_position_keeps_all_native_action_guards(self):
-        for change in ('expired','focus','geometry','occluded'):
+        for change in ('focus','geometry','occluded'):
             with self.subTest(change=change):
                 self.foreground=11;self.hit=11;self.client['width']=1063
                 frame=frames()['fields'];frame.hwnd=11;frame.origin=(12,12)
                 frame.geometry=dict(self.client);frame.timestamp=f.time.monotonic()
                 self.ui.last_frame=frame
                 target=f.form_fields(frame)['remark']
-                if change=='expired':frame.timestamp-=16
                 if change=='focus':self.foreground=22
                 if change=='geometry':self.client['width']+=1
                 if change=='occluded':self.hit=22

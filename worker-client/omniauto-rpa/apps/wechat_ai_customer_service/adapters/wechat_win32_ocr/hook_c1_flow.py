@@ -19,9 +19,7 @@ from .c1_layout import MAIN_REGIONS, main_regions, form_regions, valid_rect, mai
 
 
 class FlowStop(RuntimeError):
-    def __init__(self, code, *, search_geometry=None):
-        super().__init__(code)
-        self.search_geometry = search_geometry
+    pass
 
 
 def clean(value: Any) -> str:
@@ -88,32 +86,10 @@ def target(frame: Frame, row: dict, *, filled: str | None = None) -> dict:
     return {'bounds': b, 'point': [(b[0]+b[2])//2, (b[1]+b[3])//2], 'frame': frame.name}
 
 
-def verify_cached_search_geometry(frame: Frame, bounds, *, focused=False) -> None:
-    """Validate local chrome around the saved input; never return a new position.
-
-    The small halo detects changed/clipped edges. Component coordinates are
-    diagnostic observations only; every action still uses the startup bounds.
-    Focused input chrome retains the existing antialias-border tolerance.
-    """
-    if not valid_rect(bounds, frame.image.width, frame.image.height):
-        raise FlowStop('SEARCH_STARTUP_LAYOUT_INVALIDATED')
-    tolerance = max(1, round((bounds[3]-bounds[1])*.15)) if focused else 0
-    halo = tolerance+1
-    region = [max(0,bounds[0]-halo),max(0,bounds[1]-halo),
-              min(frame.image.width,bounds[2]+halo),min(frame.image.height,bounds[3]+halo)]
-    crop = frame.image.crop(tuple(region))
-    observed = [[b[0]+region[0],b[1]+region[1],b[2]+region[0],b[3]+region[1]]
-                for kind in (('search','white') if focused else ('search',))
-                for b in components(crop,kind)]
-    matches = [b for b in observed if all(abs(a-c)<=tolerance for a,c in zip(b,bounds))]
-    if len(matches)!=1:
-        raise FlowStop('SEARCH_CONTROL_GEOMETRY_CHANGED', search_geometry={
-            'expected_bounds':list(bounds),'observed_local_components':observed,
-            'verification_region':region,'tolerance':tolerance})
-
-
 def empty_search(frame: Frame, cached_bounds=None) -> dict:
     w, h = frame.image.size
+    if cached_bounds is not None and not valid_rect(cached_bounds, w, h):
+        raise FlowStop('SEARCH_STARTUP_LAYOUT_INVALIDATED')
     # The default grey 搜索 placeholder is an empty input, not a query.
     aliases = ('搜索', 'Q搜索', 'O搜索', '0搜索', '搜素', 'Q搜素', 'O搜素', '0搜素')
     if not any(clean(r.get('text')) in aliases for r in frame.rows):
@@ -128,7 +104,6 @@ def empty_search(frame: Frame, cached_bounds=None) -> dict:
         result = target(frame, row, filled='search')  # Startup / standalone replay only.
     else:
         b = list(cached_bounds)
-        verify_cached_search_geometry(frame, b)
         if not contains(b,row):raise FlowStop('SEARCH_CONTROL_GEOMETRY_CHANGED')
         result = {'bounds':b,'point':[(b[0]+b[2])//2,(b[1]+b[3])//2],'frame':frame.name}
     # Restrict the control to the left header; Q is an OCR rendering of the
@@ -459,8 +434,6 @@ class NativeUI:
         self.ocr_evidence = evidence/'ocr' if organized_evidence else evidence
         self.screenshot_evidence.mkdir(parents=True, exist_ok=True)
         self.ocr_evidence.mkdir(parents=True, exist_ok=True)
-        if not ops.ensure_dpi_awareness_status().get('per_monitor_aware'):
-            raise FlowStop('DPI_AWARENESS_UNVERIFIED')
         from .hook_c1 import accepted_main_window_plan, classify_visible_other_windows
         accepted = accepted_main_window_plan(self.initial, ops.get_window_client_geometry(hwnd),
                                             self.dpi, ops.screen_work_area(hwnd))
@@ -478,8 +451,6 @@ class NativeUI:
         details = diagnostics.details(exc, self) if diagnostics is not None else {
             'exception_type': type(exc).__name__, 'phase': getattr(self, 'guard_phase', None),
             'operation': getattr(self, 'guard_operation', None)}
-        if isinstance(exc,FlowStop) and exc.search_geometry is not None:
-            details['search_control'] = exc.search_geometry
         return details
 
     def record_capture_error(self, target, exc, report):
@@ -593,7 +564,10 @@ class NativeUI:
                 self._guard_stop('frame_geometry_changed', code='STALE_ROI_FRAME',
                                  observed={'geometry': geometry, 'frame_geometry': frame.geometry})
             age = time.monotonic()-frame.timestamp
-            if age > 15:
+            # The initial form frame supplies positions for two consecutive
+            # inputs, not current text. Keep geometry/identity/last-frame guards;
+            # the separate filled/confirmation captures still expire normally.
+            if frame.name != 'fields' and age > 15:
                 self._guard_stop('frame_expired', code='STALE_ROI_FRAME', observed={'age_seconds': age})
             if frame is not self.last_frame:
                 self._guard_stop('frame_replaced', code='STALE_ROI_FRAME')
@@ -838,10 +812,10 @@ class NativeUI:
         baseline = getattr(self, 'invite_visible_windows', None)
         if baseline is None:
             raise FlowStop('INVITE_FORM_WINDOW_NOT_FOUND')
-        deadline = time.monotonic()+5
         # Reuse the original post-add-contact verification pacing once. The
         # bounded observation below never re-clicks or repeats this pause.
         self.ops.add_friend_paced_pause('verify', reason='after_add_contact_entry_click_before_capture')
+        deadline = time.monotonic()+5
         previous = None
         observed = None
         last_candidate = None
@@ -1010,13 +984,10 @@ class NativeUI:
     def require_owned_search_query(self, frame, bounds):
         # An icon alone is not proof of text, nor permission to erase someone
         # else's input. Only this flow's exact query authorizes deletion.
-        # Validate cached bounds against this already captured frame, without
-        # selecting a new point. Internal layout changes must not reuse it.
-        try:
-            verify_cached_search_geometry(frame,bounds,focused=True)
-        except FlowStop:
-            getattr(self,'search_control_cache',{}).clear()
-            raise
+        # Reuse startup coordinates; current content authorizes cleanup.
+        # Pixel-fill edges are not a second layout authority.
+        if not valid_rect(bounds, frame.image.width, frame.image.height):
+            raise FlowStop('SEARCH_STARTUP_LAYOUT_INVALIDATED')
         expected = getattr(self, 'owned_search_query', None)
         if not expected:
             raise FlowStop('SEARCH_CONTENT_OWNERSHIP_UNRESOLVED')

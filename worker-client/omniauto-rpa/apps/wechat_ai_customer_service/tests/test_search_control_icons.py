@@ -158,12 +158,16 @@ class SearchControls(unittest.TestCase):
             ui.clear_search()
         self.assertEqual(ui.capture.call_count,2)
 
-    def test_internal_input_moved_with_same_window_does_not_use_old_point(self):
-        empty=header();dirty=header(query='13800000003');ui=self.native(dirty)
+    def test_cleanup_ignores_fill_edge_variation_and_uses_cached_point(self):
+        from unittest.mock import patch
+        dirty=header(query='13800000003');empty=header();ui=self.native(dirty,empty)
         ui.verified_empty_search(empty)
-        control=dirty.image.crop((66,25,256,50));dirty.image.paste((247,247,247),(66,25,256,50));dirty.image.paste(control,(80,25))
-        with self.assertRaisesRegex(f.FlowStop,'GEOMETRY_CHANGED'):ui.clear_search()
-        ui.click.assert_not_called();ui.replace.assert_not_called()
+        ImageDraw.Draw(dirty.image).line((256,26,256,48),fill=(249,249,249))
+        with patch.object(f,'components',side_effect=AssertionError('no repeated pixel geometry locator')):
+            ui.clear_search()
+        self.assertEqual(ui.click.call_count,1)
+        ui.replace.assert_not_called()
+        self.assertEqual(ui.search_control_cache['bounds'],[66,25,256,50])
 
     def test_geometry_or_window_change_invalidates_cached_position(self):
         empty=header();ui=self.native(empty);ui.verified_empty_search(empty)

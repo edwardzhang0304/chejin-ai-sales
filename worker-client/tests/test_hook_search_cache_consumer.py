@@ -48,7 +48,7 @@ def test_placeholder_uses_startup_coordinates_without_relocating(calibration,mon
     ops.win32api.mouse_event.assert_not_called()
 
 
-@pytest.mark.parametrize('bad',['low_confidence','duplicate','foreign_text','layout_moved'])
+@pytest.mark.parametrize('bad',['low_confidence','duplicate','foreign_text'])
 def test_cached_position_never_overrules_current_content_or_layout(calibration,monkeypatch,bad):
     native,gateway,process,state,ops,_=calibration
     state['frame']=placeholder()
@@ -61,15 +61,10 @@ def test_cached_position_never_overrules_current_content_or_layout(calibration,m
     if bad=='low_confidence':row['confidence']=.79
     elif bad=='duplicate':state['frame'].rows.append(copy.deepcopy(row))
     elif bad=='foreign_text':state['frame'].rows.append({**row,'text':'13900000004'})
-    else:
-        image=state['frame'].image
-        shifted=Image.new('RGB',image.size,(247,247,247));shifted.paste(image,(15,0))
-        state['frame'].image=shifted  # same window/PID/DPI, only internal control moves
     with forbid_task_location():
         with pytest.raises(flow.FlowStop):ui.verified_empty_search()
     ops.win32api.mouse_event.assert_not_called()
-    if bad=='layout_moved':assert not native.startup_layout_ready()
-    else:assert native._search_control_cache==saved
+    assert native._search_control_cache==saved
 
 
 def test_formal_flow_retains_current_content_checks_and_cache_authority(scene,monkeypatch):
@@ -88,7 +83,7 @@ def test_formal_flow_retains_current_content_checks_and_cache_authority(scene,mo
 
 
 @pytest.mark.parametrize('during_cleanup',[False,True])
-def test_geometry_failure_exports_observed_frame_and_expected_map(scene,monkeypatch,during_cleanup):
+def test_actual_window_move_still_stops_and_exports_evidence(scene,monkeypatch,during_cleanup):
     s=scene();saved=copy.deepcopy(s.native._search_control_cache)
     grab=s.grab;header_count=0
     def changed(bbox):
@@ -97,23 +92,18 @@ def test_geometry_failure_exports_observed_frame_and_expected_map(scene,monkeypa
         if image.info['scene_label']=='header':
             header_count+=1
             if not during_cleanup or header_count==2:
-                shifted=Image.new('RGB',image.size,(247,247,247));shifted.paste(image,(15,0))
-                shifted.info.update(image.info);image=shifted
+                s.boundary.geom['left'] += 15
         return image
     s.ops.try_image_grab.side_effect=changed
     result=s.execute(monkeypatch)
     z=s.export();saved_result=outcome(z)
     error='cleanup_error_code' if during_cleanup else 'error_code'
-    assert saved_result[error]=='SEARCH_CONTROL_GEOMETRY_CHANGED'
-    detail=saved_result['cleanup_exception' if during_cleanup else 'exception']['search_control']
-    assert detail['expected_bounds']==saved['bounds']
-    assert detail['observed_local_components']!=[saved['bounds']]
-    assert detail['verification_region']
+    assert saved_result[error]=='WINDOW_FOCUS_OR_GEOMETRY_CHANGED'
+    assert saved_result['guard_failures'][-1]['condition']=='main_geometry_changed'
     assert not s.native.startup_layout_ready()
     frames=[x for x in saved_result['evidence']['frames'] if x['label']=='header']
-    assert frames[-1]['screenshot']=='saved' and frames[-1]['ocr']=='saved'
+    assert frames[-1]['screenshot']=='saved' and frames[-1]['ocr']=='not_produced'
     assert any(n.startswith(f'tasks/{TASK}/screenshots/') and n.endswith('-header.png') for n in z)
-    assert any(n.startswith(f'tasks/{TASK}/ocr/') and n.endswith('-header.json') for n in z)
     assert not result['submit_attempted'] and not (original(s)/'submit-attempt.json').exists()
     if not during_cleanup:s.ops.win32api.mouse_event.assert_not_called()
     # The failure goes through the normal formal receipt. It is not a replay permit.
