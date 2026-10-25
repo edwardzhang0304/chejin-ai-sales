@@ -2,14 +2,19 @@ from __future__ import annotations
 
 import math
 from typing import Any
+from .shared_rules import hook_window_layout
+
+window_pair_plan = hook_window_layout.window_pair_plan
 
 
-WECHAT_WINDOW_GAP = 12
-WORKER_WINDOW_SIZE = (380, 720)
+WECHAT_WINDOW_GAP = hook_window_layout.GAP
+WORKER_WINDOW_SIZE = hook_window_layout.WORKER_SIZE
 
 
-def worker_size_for_available_area(width: int, height: int) -> tuple[int, int]:
+def worker_size_for_available_area(width: int, height: int, *, paired=False) -> tuple[int, int]:
     """Qt logical size, leaving a small margin inside the usable desktop."""
+    if paired:
+        return window_pair_plan(width, height)['worker']
     return tuple(min(preferred, max(1, available - 24))
                  for preferred, available in zip(WORKER_WINDOW_SIZE, (width, height)))
 
@@ -21,6 +26,8 @@ def position_to_right_of_wechat(
     screen_bounds: tuple[int, int, int, int],
     gap: int = WECHAT_WINDOW_GAP,
     native_device_pixel_ratio: float = 1.0,
+    native_monitor_origin: tuple[int, int] | None = None,
+    logical_monitor_origin: tuple[int, int] | None = None,
 ) -> tuple[int, int] | None:
     """Place Worker beside WeChat while keeping it inside one display.
 
@@ -44,6 +51,11 @@ def position_to_right_of_wechat(
         top = round(int(geometry["top"]) / scale)
         width = round(int(geometry["width"]) / scale)
         height = round(int(geometry["height"]) / scale)
+        if native_monitor_origin is not None and logical_monitor_origin is not None:
+            # Windows/Qt mixed-DPI monitor origins are not globally scaled.
+            right = logical_monitor_origin[0] + round((int(geometry['right']) - native_monitor_origin[0]) / scale)
+            left = logical_monitor_origin[0] + round((int(geometry['left']) - native_monitor_origin[0]) / scale)
+            top = logical_monitor_origin[1] + round((int(geometry['top']) - native_monitor_origin[1]) / scale)
         window_width = int(window_size[0])
         window_height = int(window_size[1])
         screen_left, screen_top, screen_right, screen_bottom = (

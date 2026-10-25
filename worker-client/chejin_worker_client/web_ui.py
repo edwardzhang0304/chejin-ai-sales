@@ -380,7 +380,15 @@ class WorkerWebWindow(QMainWindow):
             self._layout_screen = screen
             screen.availableGeometryChanged.connect(self._available_area_changed)
         available = screen.availableGeometry()
-        size = worker_size_for_available_area(available.width(), available.height())
+        services = getattr(getattr(self, 'runner', None), 'hook_services', None)
+        size = worker_size_for_available_area(available.width(), available.height(), paired=services is not None)
+        monitor = getattr(self, '_startup_native_monitor', None)
+        if services is not None and monitor and screen.name() == monitor['name']:
+            from .startup_window_position import window_pair_plan
+            area = monitor['work_area']
+            pair = window_pair_plan(area[2]-area[0], area[3]-area[1], monitor['dpi_scale'])
+            size = tuple(min(round(value / screen.devicePixelRatio()), limit)
+                         for value, limit in zip(pair['worker'], (available.width(), available.height())))
         if size != (self.width(), self.height()):
             self.setFixedSize(*size)
         x = min(max(self.x(), available.x()), available.x() + available.width() - self.width())
@@ -473,10 +481,13 @@ class WorkerWebWindow(QMainWindow):
                 (int(geometry["left"]) + int(geometry["right"])) // 2,
                 (int(geometry["top"]) + int(geometry["bottom"])) // 2,
             )
-            screen = (
-                QGuiApplication.screenAt(center)
-                or QGuiApplication.primaryScreen()
-            )
+            monitor = probe_payload.get('monitor')
+            if services is not None and monitor:
+                screen = next((s for s in QGuiApplication.screens() if s.name() == monitor['name']), None)
+                if screen is None:
+                    return  # No trustworthy native-to-Qt display mapping yet.
+            else:
+                screen = QGuiApplication.screenAt(center) or QGuiApplication.primaryScreen()
             available = screen.availableGeometry() if screen is not None else None
             device_pixel_ratio = (
                 float(screen.devicePixelRatio())
@@ -497,12 +508,16 @@ class WorkerWebWindow(QMainWindow):
             screen_bounds = None
         if screen_bounds is None:
             return
+        if services is not None and monitor:
+            self._startup_native_monitor = monitor
         self._fit_to_screen(screen)
         position = position_to_right_of_wechat(
             probe_payload,
             window_size=(self.width(), self.height()),
             screen_bounds=screen_bounds,
             native_device_pixel_ratio=device_pixel_ratio,
+            native_monitor_origin=tuple(monitor['bounds'][:2]) if monitor else None,
+            logical_monitor_origin=(screen.geometry().x(), screen.geometry().y()) if monitor else None,
         )
         if position is None:
             return
@@ -711,13 +726,14 @@ class WorkerWebWindow(QMainWindow):
         )
         hook=getattr(self.runner,'hook_services',None)
         startup=self._startup_check_state()
-        if hook is not None and run_status=='running' and schedule_active:
+        if startup.get('state') == 'checking':
+            receive_state = '检查中'
+        elif hook is not None and run_status=='running' and schedule_active:
             if offline:receive_state='等待后台恢复'
             dispatcher=getattr(hook,'dispatcher',None)
             pending=dispatcher.pending_wait_snapshot() if hasattr(dispatcher,'pending_wait_snapshot') else getattr(dispatcher,'_pending_wait_phases',{})
             if any(pending.values()) or (startup.get('state')=='failed' and startup.get('title','').startswith(('等待后台','后台连接'))):
                 receive_state='等待后台恢复'
-            elif startup.get('state')=='checking':receive_state='检查中'
             elif startup.get('state')=='failed':receive_state='检查未通过'
         return {
             "workerId": self.binding.worker_id if self.binding else "",

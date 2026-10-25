@@ -876,6 +876,7 @@ function customerProcessStepsForScreen(
 }
 
 function HookWaterfallWorkbench({ screen, model, onStartAccepting, onPauseAccepting }: Pick<WorkerClientBaselineProps, "screen" | "model" | "onStartAccepting" | "onPauseAccepting">) {
+  const startupChecking = model.startupCheck?.state === "checking";
   const faulted = screen === "client-faulted";
   const accepting = model.status.acceptingIntent ?? model.status.receiveState === "接单中";
   const disabled = !accepting && (screen === "schedule-paused" || screen === "offline" || screen === "offline-empty" || model.startupCheck?.canStart === false || (faulted && (!model.faultRecovery?.ready || model.faultRecovery?.checking)));
@@ -883,13 +884,15 @@ function HookWaterfallWorkbench({ screen, model, onStartAccepting, onPauseAccept
   const recoveryReady = faulted && !recoveryChecking && Boolean(model.faultRecovery?.ready) && model.startupCheck?.canStart === true;
   // Recovered startup status replaces the old stop card; stored incidents stay intact.
   const processSteps = (model.hookProcessSteps || []).filter(step =>
-    !(recoveryReady || recoveryChecking) || step.title !== "已停止接单"
+    !(startupChecking || recoveryReady || recoveryChecking) || step.title !== "已停止接单"
   );
   const liveWaitAlreadyShown = !faulted && processSteps.some((step) => (
     step.state === "waiting" && (step.title === "等待连接恢复" || step.title === "等待后台响应稳定")
   ));
   const stoppedShown = processSteps.some(step=>step.title==='已停止接单');
-  const faultSteps: TimelineStepModel[] = recoveryChecking
+  const faultSteps: TimelineStepModel[] = startupChecking
+    ? [...processSteps, { state: "current", title: model.startupCheck!.title }]
+    : recoveryChecking
     ? [...processSteps, { state: "current", title: "正在恢复接单" }]
     : recoveryReady
     ? [...processSteps, { state: "done", title: "检查已通过，可以恢复接单", description: "点击开始接单恢复。" }]
@@ -920,7 +923,7 @@ function HookWaterfallWorkbench({ screen, model, onStartAccepting, onPauseAccept
 
 function renderScreen(props: WorkerClientBaselineProps) {
   const { screen, model, onScreenChange, onStartAccepting, onPauseAccepting, onUpdateAcceptSchedule } = props;
-  if (model.hookProcessSteps?.length && !["bind", "settings", "schedule-settings", "logs"].includes(screen)) {
+  if ((model.hookProcessSteps?.length || model.startupCheck?.state === "checking") && !["bind", "settings", "schedule-settings", "logs"].includes(screen)) {
     return <HookWaterfallWorkbench screen={screen} model={model} onStartAccepting={onStartAccepting} onPauseAccepting={onPauseAccepting} />;
   }
   const customerProcessSteps = customerProcessStepsForScreen(screen, model);

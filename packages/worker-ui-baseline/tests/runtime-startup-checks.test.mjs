@@ -13,10 +13,10 @@ const states=process.env.CHEJIN_STARTUP_UI_STATES ? JSON.parse(readFileSync(proc
 if(!states.length)test('startup DOM requires actual Worker state artifacts',{skip:true},()=>{});
 for(const [index,state] of states.entries())test(`actual startup state ${index}: central reason and Start gate`,async()=>{
  const dom=new JSDOM('<div id="root"></div>',{url:'http://localhost/'});
- const keys=['window','document','HTMLElement','MessageChannel','IS_REACT_ACT_ENVIRONMENT','__startupState'];
+ const keys=['window','document','HTMLElement','MessageChannel','IS_REACT_ACT_ENVIRONMENT','__startupState','ResizeObserver'];
  const old=new Map(keys.map(k=>[k,Object.getOwnPropertyDescriptor(globalThis,k)]));const channels=[];
  class TestChannel extends MessageChannel{constructor(){super();channels.push(this);}}
- Object.assign(globalThis,{window:dom.window,document:dom.window.document,HTMLElement:dom.window.HTMLElement,MessageChannel:TestChannel,IS_REACT_ACT_ENVIRONMENT:true,__startupState:state});
+ Object.assign(globalThis,{window:dom.window,document:dom.window.document,HTMLElement:dom.window.HTMLElement,MessageChannel:TestChannel,IS_REACT_ACT_ENVIRONMENT:true,__startupState:state,ResizeObserver:class{observe(){}disconnect(){}}});
  const dir=mkdtempSync(resolve(tmpdir(),'chejin-startup-dom-'));
  try{
   const output=resolve(dir,'render.mjs');
@@ -24,12 +24,19 @@ for(const [index,state] of states.entries())test(`actual startup state ${index}:
   const view=await import(pathToFileURL(output));await view.render();
   const text=document.body.textContent;
   assert.equal(document.querySelector('.cw-status-bottom'),null);assert.equal(document.querySelector('.cw-status-item'),null);
-  assert(text.includes(state.model.startupCheck.title));
-  if(state.model.startupCheck.message)assert(text.includes(state.model.startupCheck.message));
-  assert(document.querySelector('.cw-process-empty[role="status"][aria-live="polite"]'));
-  const button=[...document.querySelectorAll('button')].find(b=>b.textContent==='开始接单');assert(button);
-  assert.equal(button.disabled,!state.model.startupCheck.canStart);
-  await view.click(button);assert.equal(view.starts,state.model.startupCheck.canStart?1:0);
+  if(!state.model.hookProcessSteps?.length || state.model.startupCheck.state==='checking' || (state.model.startupCheck.state==='failed' && state.screen!=='client-faulted'))assert(text.includes(state.model.startupCheck.title));
+  if(state.model.startupCheck.message && state.screen!=='client-faulted')assert(text.includes(state.model.startupCheck.message));
+  if(state.model.startupCheck.state==='checking'){
+   assert(document.querySelector('.cw-hook-process[role="log"][aria-live="polite"]'));
+   assert.equal(state.model.status.receiveState,'检查中');
+   const titles=[...document.querySelectorAll('.cw-step-list li strong')].map(x=>x.textContent);
+   assert(!titles.includes('已停止接单'));
+  }else if(!state.model.hookProcessSteps?.length){
+   assert(document.querySelector('.cw-process-empty[role="status"][aria-live="polite"]'));
+  }
+  const button=[...document.querySelectorAll('button')].find(b=>b.textContent===(state.model.status.acceptingIntent?'暂停接单':'开始接单'));assert(button);
+  assert.equal(button.disabled,!state.model.status.acceptingIntent && (!state.model.startupCheck.canStart || (state.screen==='client-faulted' && !state.model.faultRecovery?.ready)));
+  await view.click(button);assert.equal(view.starts,!state.model.status.acceptingIntent && !button.disabled?1:0);
   await view.dispose();
  }finally{for(const c of channels){c.port1.close();c.port2.close();}dom.window.close();for(const key of keys){const descriptor=old.get(key);if(descriptor)Object.defineProperty(globalThis,key,descriptor);else delete globalThis[key];}rmSync(dir,{recursive:true,force:true});}
 });

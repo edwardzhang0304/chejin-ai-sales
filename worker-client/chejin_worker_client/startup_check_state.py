@@ -55,8 +55,8 @@ ISSUES.update({
 
 
 def checking():
-    return {'state':'checking','title':'正在检查启动环境…',
-            'message':'检查完成后即可开始接单。','canStart':False}
+    return {'state':'checking','title':'正在检查微信环境',
+            'message':'','canStart':False}
 
 
 def passed():

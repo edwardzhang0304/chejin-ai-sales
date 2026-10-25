@@ -13,9 +13,9 @@ def plan(dpi=1, work=None, before=None, profile='hook-3.9-c1'):
         work_area=work or {'left':0,'top':0,'width':1920,'height':1040},startup_profile=profile)
 
 
-@pytest.mark.parametrize('dpi,size',[(1,(1060,740)),(1.25,(1060,740)),(1.5,(1060,740)),(2,(1060,740))])
-def test_hook_outer_size_matches_screenshot_pixels_on_current_monitor(dpi,size):
-    value=plan(dpi,{'left':-2500,'top':40,'width':2500,'height':1800})
+@pytest.mark.parametrize('dpi,size',[(1,(1060,740)),(1.25,(1325,925)),(1.5,(1590,1110)),(2,(2120,1480))])
+def test_hook_logical_size_scales_on_current_monitor(dpi,size):
+    value=plan(dpi,{'left':-2500,'top':40,'width':3500,'height':2000})
     assert value['ok'] and (value['width'],value['height'])==size
     assert (value['left'],value['top'])==(-2500+round(12*dpi),40+round(12*dpi))
 
@@ -154,16 +154,16 @@ def test_old_ocr_dpi_profile_keeps_its_original_targets(dpi,size):
     assert value['ok'] and (value['width'],value['height'])==size
 
 
-def test_hook_physical_target_is_stable_at_125_percent():
-    before={'left':15,'top':15,'width':1060,'height':740}
+def test_hook_scaled_target_is_stable_at_125_percent():
+    before={'left':15,'top':15,'width':1325,'height':925}
     value=plan(1.25,before=before)
     assert value['ok'] and not value['move']
-    assert value['requested_target']=={'width':1060,'height':740}
+    assert value['requested_target']=={'width':1325,'height':925}
 
 
-def test_actual_125_percent_oversized_frame_is_resized_once(monkeypatch,tmp_path):
+def test_old_125_percent_unscaled_frame_is_resized_once(monkeypatch,tmp_path):
     gui,_=fake_ops(monkeypatch,tmp_path)
-    current={'left':15,'top':15,'right':1340,'bottom':940,'width':1325,'height':925}
+    current={'left':15,'top':15,'right':1075,'bottom':755,'width':1060,'height':740}
     monkeypatch.setattr(sidecar,'get_window_geometry',lambda h:dict(current))
     monkeypatch.setattr(sidecar,'get_window_client_geometry',lambda h:dict(current))
     monkeypatch.setattr(sidecar,'window_dpi_scale',lambda h:1.25)
@@ -173,15 +173,16 @@ def test_actual_125_percent_oversized_frame_is_resized_once(monkeypatch,tmp_path
     gui.MoveWindow=Mock(side_effect=move)
     value=sidecar.normalize_wechat_window(11,startup_profile='hook-3.9-c1')
     assert value['ok'] and value['applied']
-    assert value['after']['width']==1060 and value['after']['height']==740
+    assert value['after']['width']==1325 and value['after']['height']==925
     assert value['after_dpi_scale']==1.25
-    gui.MoveWindow.assert_called_once_with(11,15,15,1060,740,True)
+    gui.MoveWindow.assert_called_once_with(11,15,15,1325,925,True)
 
 
 def test_compact_profile_fits_smaller_work_area_without_enlarging():
-    value=plan(1.25,{'left':-900,'top':20,'width':900,'height':700})
+    value=plan(1.25,{'left':-1366,'top':20,'width':1366,'height':728})
     assert value['ok'] and value['width']<=1060 and value['height']<=740
-    assert value['right']<=-900+900-15 and value['bottom']<=20+700-15
+    assert value['right']<=-15 and value['bottom']<=20+728-15
+    assert not plan(1.25,{'left':0,'top':0,'width':900,'height':700})['ok']
 
 
 def search_roi_ops(monkeypatch,tmp_path):

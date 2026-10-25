@@ -217,13 +217,15 @@ def inspect_windows_window_geometry(process: HookProcessSnapshot) -> dict | None
         import psutil
         import win32gui
         import win32process
+        import win32api
         return _approved_window_geometry(process, psutil.Process(process.pid),
-            win32gui, win32process, ctypes.windll.user32)
+            win32gui, win32process, ctypes.windll.user32,
+            monitor_info=lambda hwnd: win32api.GetMonitorInfo(win32api.MonitorFromWindow(hwnd, 2)))
     except Exception:
         return None  # Presentation metadata must not interrupt facts or tasks.
 
 
-def _approved_window_geometry(process, live, gui, processes, user32):
+def _approved_window_geometry(process, live, gui, processes, user32, *, monitor_info=None):
     import ctypes
     def same_process():
         return (live.is_running() and live.create_time() == process.started_at
@@ -249,8 +251,28 @@ def _approved_window_geometry(process, live, gui, processes, user32):
         left, top, right, bottom = gui.GetWindowRect(windows[0])
         if right <= left or bottom <= top or not same_process():
             return None
-        return {'ok': True, 'geometry': {'left': left, 'top': top,
+        result = {'ok': True, 'geometry': {'left': left, 'top': top,
             'right': right, 'bottom': bottom, 'width': right-left, 'height': bottom-top}}
+        if monitor_info is not None:
+            monitor = monitor_info(windows[0])
+            window_dpi = user32.GetDpiForWindow
+            window_dpi.argtypes = [ctypes.c_void_p]
+            window_dpi.restype = ctypes.c_uint
+            scale = float(window_dpi(windows[0])) / 96
+            if not math.isfinite(scale) or not 0.5 <= scale <= 4:
+                return None
+            for key in ('Monitor', 'Work'):
+                rect = monitor[key]
+                if len(rect) != 4 or not all(isinstance(v, int) for v in rect) or rect[2] <= rect[0] or rect[3] <= rect[1]:
+                    return None
+            if not monitor['Device']:
+                return None
+            result['monitor'] = {'name': monitor['Device'],
+                'bounds': list(monitor['Monitor']), 'work_area': list(monitor['Work']),
+                'dpi_scale': scale}
+            if not same_process():
+                return None
+        return result
     finally:
         dpi(ctypes.c_void_p(previous))
 

@@ -67,9 +67,30 @@ def test_real_worker_state_artifacts_for_react_dom(monkeypatch):
         for state in [checks.checking(),checks.failed('HOOK_COMPONENT_VERSION_MISMATCH'),checks.failed('HOOK_ACCOUNT_NOT_CONFIRMED'),checks.passed()]:
             artifacts.append(window._state())
             assert artifacts[-1]['model']['startupCheck']==state
+        assert [value['screen'] for value in artifacts]==['paused-empty','automation-unavailable','automation-unavailable','paused-empty']
+        from chejin_worker_client.hook_worker_services import HookWorkerServices
+        service=HookWorkerServices(SimpleNamespace(on_persistence_failure=None),None,
+            intake_interval_seconds=1,projection_batch_size=10)
+        window.runner.hook_services=service
+        window.runner.set_run_status=Mock()
+        original_steps=[{'state':'error','title':'已停止接单','groupId':'system'},
+                        {'state':'waiting','title':'原发送结果待核对','groupId':'customer'}]
+        window.hook_progress_timeline=SimpleNamespace(model=lambda **_:list(original_steps))
+        for run in ('paused','faulted','running'):
+            window.binding.run_status=run
+            for state in (checks.checking(),checks.failed('HOOK_NOT_LOGGED_IN'),checks.passed()):
+                service._startup_check=state
+                projection=window._state()
+                artifacts.append(projection)
+                assert projection['model']['startupCheck']==service.startup_check_state()
+                assert projection['model']['status']['acceptingIntent']==(run=='running')
+                if state['state']=='checking':
+                    assert projection['model']['status']['receiveState']=='检查中'
+                assert window.binding.run_status==run
+                assert projection['model']['hookProcessSteps']==original_steps
+        window.runner.set_run_status.assert_not_called()
         target=os.environ.get('CHEJIN_STARTUP_UI_STATES')
         if target:Path(target).write_text(json.dumps(artifacts,ensure_ascii=False,indent=2))
-        assert [value['screen'] for value in artifacts]==['paused-empty','automation-unavailable','automation-unavailable','paused-empty']
 
 
 def test_persistence_callback_reports_save_failure_and_keeps_original_stop_callback():

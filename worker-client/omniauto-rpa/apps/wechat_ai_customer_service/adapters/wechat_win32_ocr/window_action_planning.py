@@ -59,10 +59,9 @@ def plan_normalize_wechat_window(
         }
 
     if startup_profile == "hook-3.9-c1":
-        # The user's screenshot specifies physical outer-window pixels.
-        # The caller is per-monitor DPI aware; multiplying these dimensions
-        # by DPI again would enlarge the window (1325x925 at 125%).
-        requested_width, requested_height = 1060, 740
+        from ..hook_window_layout import WECHAT_SIZE, window_pair_plan
+        pair = window_pair_plan(width, height, scale)
+        requested_width, requested_height = (round(v * scale) for v in WECHAT_SIZE)
         bucket = "hook-3.9-c1"
         minimum_client_width, minimum_client_height = 700, 600
     elif abs(scale - 1.0) <= 0.01:
@@ -84,8 +83,12 @@ def plan_normalize_wechat_window(
         available_width / max(1, requested_width),
         available_height / max(1, requested_height),
     )
+    if startup_profile == "hook-3.9-c1":
+        fit_scale = pair['fit_scale']
     target_width = max(1, int(requested_width * fit_scale))
     target_height = max(1, int(requested_height * fit_scale))
+    if startup_profile == "hook-3.9-c1":
+        target_width, target_height = pair['wechat']
     if target_width < int(minimum_client_width) or target_height < int(minimum_client_height):
         return {
             "ok": False,

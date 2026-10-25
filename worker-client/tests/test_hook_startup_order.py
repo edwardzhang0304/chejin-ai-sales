@@ -110,7 +110,7 @@ def test_real_gui_places_worker_only_after_wechat_preparation(runtime,monkeypatc
   window=WebUiBindingBehaviorTest._window(module,None)
   window.runner=runner;window.rpa_bridge=object();window.move=Mock(side_effect=lambda *args:calls.append('move_worker'))
   available=SimpleNamespace(x=lambda:0,y=lambda:0,width=lambda:1536,height=lambda:864)
-  screen=SimpleNamespace(availableGeometry=lambda:available,devicePixelRatio=lambda:1.25)
+  screen=SimpleNamespace(availableGeometryChanged=Mock(), availableGeometry=lambda:available,devicePixelRatio=lambda:1.25)
   module.QGuiApplication=SimpleNamespace(screenAt=lambda _:screen,primaryScreen=lambda:screen)
   window._position_next_to_wechat_once()
   assert calls==[] and not window._startup_position_attempted
@@ -134,7 +134,7 @@ def test_actual_startup_ui_shows_window_order_and_saved_fault(runtime,backend_pe
   w=WebUiBindingBehaviorTest._window(module,binding)
   w.runner=runner;w.connection_status='bound';w._publish=Mock();w.rpa_bridge=object();w.move=Mock()
   available=SimpleNamespace(x=lambda:0,y=lambda:0,width=lambda:1536,height=lambda:864)
-  screen=SimpleNamespace(availableGeometry=lambda:available,devicePixelRatio=lambda:1.25)
+  screen=SimpleNamespace(availableGeometryChanged=Mock(), availableGeometry=lambda:available,devicePixelRatio=lambda:1.25)
   module.QGuiApplication=SimpleNamespace(screenAt=lambda _:screen,primaryScreen=lambda:screen)
   runner.on_runtime_process=w.on_runtime_process
   def on_profile(profile):

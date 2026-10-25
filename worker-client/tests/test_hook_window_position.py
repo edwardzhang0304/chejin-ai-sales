@@ -59,7 +59,7 @@ def test_hook_ui_uses_published_geometry_without_ocr_then_keeps_manual_position(
         window.rpa_bridge=object()
         window.move=Mock()
         available=SimpleNamespace(x=lambda:0,y=lambda:0,width=lambda:1536,height=lambda:864)
-        screen=SimpleNamespace(availableGeometry=lambda:available,devicePixelRatio=lambda:1.25)
+        screen=SimpleNamespace(availableGeometryChanged=Mock(), availableGeometry=lambda:available,devicePixelRatio=lambda:1.25)
         module.QGuiApplication=SimpleNamespace(screenAt=lambda _:screen,primaryScreen=lambda:screen)
         window._position_next_to_wechat_once()
         window._position_next_to_wechat_once()

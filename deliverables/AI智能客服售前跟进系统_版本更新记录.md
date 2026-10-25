@@ -1,5 +1,11 @@
 # 版本更新记录（线上0.10.18；原机升级待验）
 
+## 两窗尺寸与启动提示修复候选（2026-10-25，文档修订 r4）
+
+基于 9f9204e / 已发布 0.10.18，分支 `codex/hook-window-layout-20261025`。统一 Hook 两窗逻辑尺寸与可用屏幕缩放，补齐原生显示器元数据到 Qt 的传递；启动检查优先显示，保持暂停／故障／恢复与在途凭证语义。旧 OCR 窗口规则、左侧时间轴布局、原安全检查均保留。应用版本及合同不变，现有成品不动。
+
+验证覆盖 Win32 原归一化→受核验窗口元数据→Hook 服务→Qt 摆放、100%/125%/150%/200% 与小屏/负坐标屏幕、实际状态投影→React DOM、启动顺序及旧 OCR 门禁。测试与原生 Qt/WebEngine 渲染原始证据位于本地 `output/window-layout-startup-20261025`；以该目录 selftest.json、architect-review.json 为最终结论。Windows 实机未验，本轮不打包、不部署、不操作销售微信。
+
 ## 0.10.18 微信＋Worker 新机包（2026-10-25，文档修订 r3）
 
 已按用户授权生成并保存 Mac 新机包 `deliverables/releases/0.10.18/CheJinWorkerClient_V0.10.18_Portable.zip`，SHA256 `826f75402d2c03cfb206e20fe6bcfc154aef909e44155e40ece326951c901f0c`。内嵌原 Worker SHA256 `57dd8707a4a544a634bdc4681189acd4a271dc3a313d6e33ea91724278aeae42`，未重打；微信 3.9.10.16 的 46 个程序文件保持原值，唯一替换项为新版 version.dll，SHA256 `eaab817334789b23cc788ea1dd14a84485d3776bb98d3114662384d3665110a7`。已审引导与封装脚本原样复用，无运行代码变更、不重跑未改测试、不再部署后端后台。文件核验原始证据 `deliverables/releases/0.10.18/new-pc/verification.json`；新机首次激活、实际快捷方式/DLL/端口/Worker 环境与语音实机验收待完成，验收到打开 Worker 为止，不开始接单。

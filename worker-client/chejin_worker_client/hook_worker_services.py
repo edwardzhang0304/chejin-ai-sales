@@ -7,6 +7,7 @@ OCR construction remains separate from this explicit Hook adapter.
 """
 from __future__ import annotations
 
+import copy
 import json
 import math
 import re
@@ -391,7 +392,7 @@ class HookWorkerServices:
     def startup_window_position_payload(self) -> dict | None:
         # GUI reads a published snapshot; it must not wait on connection HTTP locks.
         payload = self._startup_position_payload
-        return None if payload is None else {'ok': payload['ok'], 'geometry': dict(payload['geometry'])}
+        return copy.deepcopy(payload)
 
     def health_snapshot(self) -> dict:
         return self.connection.receiver_health_snapshot()
