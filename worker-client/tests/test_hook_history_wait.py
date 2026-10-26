@@ -12,11 +12,13 @@ from chejin_worker_client import storage
 from chejin_worker_client.hook_dispatcher import HookBusinessDispatcher
 from chejin_worker_client.hook_history_sync import HookHistorySynchronizer
 from chejin_worker_client.hook_worker_services import HookWorkerServices
+from chejin_worker_client.hook_gateway import HookLocalError
 from chejin_worker_client.shared_rules import hook_history_rules
 
 
+@pytest.mark.parametrize('change_kind', ['rows', 'catalog'])
 @pytest.mark.parametrize('pause_before_retry', [False, True])
-def test_changed_customer_yields_to_other_then_reads_fresh_before_reply(history_lab, tmp_path, pause_before_retry):
+def test_changed_customer_yields_to_other_then_reads_fresh_before_reply(history_lab, tmp_path, pause_before_retry, change_kind):
     server, gateway, process, scope, delivery, _, db = history_lab
     db.execute('DELETE FROM MSG WHERE Type=34')
     account = {k: getattr(scope, k) for k in ('self_wxid','account_epoch','process_generation')}
@@ -34,10 +36,16 @@ def test_changed_customer_yields_to_other_then_reads_fresh_before_reply(history_
     def save(capture):
         saved.append(capture)
         # A normal new message lands between the first and second scans.
-        if capture.query.kind == 'count' and not changed:
+        if change_kind == 'rows' and capture.query.kind == 'count' and not changed:
             db.execute('INSERT INTO MSG VALUES(5,9005,1,0,1791543700,1791543700000,1,14,?,?)',
                        (delivery.peer_wxid, 'synthetic new message'))
             changed.append(True)
+
+    def change_catalog(path):
+        if change_kind == 'catalog' and path == '/QueryDB' and not changed:
+            server.catalog_entries[0]['dbhandle'] = 'reopened-handle'
+            changed.append(True)
+    server.on_request = change_catalog
 
     class Client:
         def call(self, credentials, method, path, body=None, **kwargs):
@@ -88,12 +96,14 @@ def test_changed_customer_yields_to_other_then_reads_fresh_before_reply(history_
     assert not any(key[1]==bindings[0]['binding_id'] for key in dispatcher._sync_cache)
     with storage.db_connection() as conn:
         waits=conn.execute("SELECT error_code FROM local_logs WHERE event='hook_business_wait'").fetchall()
-    assert any(row[0]=='HOOK_HISTORY_CHANGED_DURING_READ' for row in waits)
+    expected_code = 'HOOK_HISTORY_CHANGED_DURING_READ' if change_kind == 'rows' else 'HOOK_HISTORY_CATALOG_CHANGED'
+    assert any(row[0]==expected_code for row in waits)
     if pause_before_retry:
         run_status[0]='paused'; runner.binding.run_status='paused'
     dispatcher.tick(runner,services)
     assert reads.count(bindings[0]['binding_id'])==2
-    assert '9005' in {r['MsgSvrID'] for r in verified[bindings[0]['binding_id']]['text_rows']}
+    ids = {r['MsgSvrID'] for r in verified[bindings[0]['binding_id']]['text_rows']}
+    assert ('9005' in ids) is (change_kind == 'rows')
     assert sends==[bindings[1]['binding_id']]+([] if pause_before_retry else [bindings[0]['binding_id']])
     assert runner.binding.run_status==run_status[0]
     assert not any(path=='/SendTextMsg' for path,*_ in server.requests)
@@ -120,20 +130,22 @@ def test_voice_arriving_between_scans_requires_fresh_read_and_audio(history_lab)
     assert capture_voice_audio(scope,delivery.peer_wxid,'9005',max_audio_bytes=1024*1024) is None
 
 
+@pytest.mark.parametrize('error_type', [ValueError, HookLocalError])
 @pytest.mark.parametrize('code,waits', [
     ('HOOK_HISTORY_CHANGED_DURING_READ',True),
     ('HOOK_HISTORY_CALLBACK_BARRIER_CHANGED',True),
+    ('HOOK_HISTORY_CATALOG_CHANGED',True),
     ('HOOK_HISTORY_ROW_SCOPE_INVALID',False),
     ('HOOK_HISTORY_MESSAGE_ID_UNRESOLVED',False),
     ('HOOK_PROCESS_GENERATION_CHANGED',False),
     ('HOOK_HISTORY_STORAGE_CAPACITY_EXCEEDED',False),
 ])
-def test_business_recovery_boundary_waits_only_for_read_holds(code,waits):
+def test_business_recovery_boundary_waits_only_for_read_holds(code,waits,error_type):
     runner=SimpleNamespace(binding=SimpleNamespace(run_status='paused'),stop_event=threading.Event())
     reports=[]; faults=[]
     def tick(*args):
         runner.stop_event.set()
-        raise ValueError(code)
+        raise error_type(code)
     services=HookWorkerServices.__new__(HookWorkerServices)
     services.dispatcher=SimpleNamespace(tick=tick,interval_seconds=.01,
                                        _report_wait=lambda value,**kwargs:reports.append(value))
@@ -142,3 +154,9 @@ def test_business_recovery_boundary_waits_only_for_read_holds(code,waits):
     assert reports==([code] if waits else [])
     assert faults==([] if waits else [code])
     assert runner.binding.run_status=='paused'
+
+
+def test_unknown_action_outcome_cannot_be_reclassified_as_history_wait():
+    from chejin_worker_client.hook_history_wait import is_history_wait
+    assert not is_history_wait(HookLocalError("HOOK_HISTORY_CATALOG_CHANGED", outcome_unknown=True))
+    assert not is_history_wait(RuntimeError("HOOK_HISTORY_CATALOG_CHANGED"))

@@ -20,7 +20,8 @@ from .emergency_stop import emergency_stop_requested, trigger_emergency_stop
 from .hook_backend import BACKEND_WAIT_CODES, HookHeartbeatState, HookWorkerCredentials
 from .hook_connection import HookConnectionManager
 from .hook_clock import CLOCK_WAIT_CODES
-from .hook_history_wait import TRANSIENT_HISTORY
+from .hook_gateway import HookLocalError
+from .hook_history_wait import is_history_wait
 from .hook_formal_runtime import HookRuntimeStopping
 from .hook_projection import NativeProjectionStore
 from .hook_process import inspect_windows_window_geometry
@@ -315,11 +316,11 @@ class HookWorkerServices:
                     if exc.code in BACKEND_WAIT_CODES:
                         self.dispatcher._report_wait(exc.code)
                     else:self._fault(runner,exc.code,http_status=exc.status_code)
-                except ValueError as exc:
+                except (ValueError, HookLocalError) as exc:
                     code=str(exc)
-                    if code in CLOCK_WAIT_CODES:
+                    if isinstance(exc, ValueError) and code in CLOCK_WAIT_CODES:
                         self._wait_for_clock(code,context='business',clock_check=getattr(exc, 'clock_check', None))
-                    elif code in TRANSIENT_HISTORY or code in {'HOOK_RUNTIME_NOT_RUNNING','HOOK_SEND_LATEST_CONTEXT_STALE'}:
+                    elif is_history_wait(exc) or (isinstance(exc, ValueError) and code in {'HOOK_RUNTIME_NOT_RUNNING','HOOK_SEND_LATEST_CONTEXT_STALE'}):
                         # Retained-send reconciliation precedes the per-customer
                         # loop. Its changing read must wait through the same
                         # classification without stopping the whole Worker.

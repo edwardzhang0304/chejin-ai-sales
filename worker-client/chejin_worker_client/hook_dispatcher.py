@@ -21,7 +21,8 @@ from .hook_sender import RetainedNativeSendPermit,send_observation_can_settle
 from .hook_voice import HookVoiceTranscriber, capture_voice_audio
 from .shared_rules import hook_contract_rules as rules
 from .hook_timing import timed_call
-from .hook_history_wait import TRANSIENT_HISTORY
+from .hook_gateway import HookLocalError
+from .hook_history_wait import is_history_wait
 
 
 class HookBusinessDispatcher:
@@ -657,8 +658,8 @@ class HookBusinessDispatcher:
                     self._sync_cache.pop(key,None)
                     continue
                 raise
-            except ValueError as exc:
-                if str(exc) in TRANSIENT_HISTORY:
+            except (ValueError, HookLocalError) as exc:
+                if is_history_wait(exc):
                     all_history_ready=False;pending_work=True;self._report_wait(str(exc))
                     context=getattr(rt,'_history_context',None) or f"{binding['binding_id']}:initial"
                     emit_progress(runner,context,'history','waiting','callback_wait' if str(exc)=='HOOK_HISTORY_CALLBACK_NOT_LANDED' else 'history_wait')

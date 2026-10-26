@@ -14,7 +14,7 @@ from chejin_worker_client.shared_rules import hook_history_rules
 
 
 @pytest.mark.parametrize('result', ['observed', 'pending', 'timeout', 'restricted'])
-@pytest.mark.parametrize('changing_history', [False, True])
+@pytest.mark.parametrize('changing_history', [None, 'rows', 'catalog'])
 def test_restart_reconciles_numeric_history_without_replaying_original_send(
         history_lab, retained, result, changing_history):
     server, gateway, process, scope, delivery, _, db = history_lab
@@ -41,7 +41,7 @@ def test_restart_reconciles_numeric_history_without_replaying_original_send(
 
     def save(capture):
         captures.append(capture)
-        if mutate[0] and capture.query.kind == 'count':
+        if changing_history == 'rows' and mutate[0] and capture.query.kind == 'count':
             mutate[0] = False
             db.execute("UPDATE MSG SET StrContent='synthetic updated inbound' WHERE localId=9")
 
@@ -104,6 +104,11 @@ def test_restart_reconciles_numeric_history_without_replaying_original_send(
         import threading
         from chejin_worker_client.hook_worker_services import HookWorkerServices
         mutate[0] = True
+        def change_catalog(path):
+            if changing_history == 'catalog' and mutate[0] and path == '/QueryDB':
+                mutate[0] = False
+                server.catalog_entries[0]['dbhandle'] = 'reopened-handle'
+        server.on_request = change_catalog
         runner = SimpleNamespace(binding=SimpleNamespace(run_status='paused'), stop_event=threading.Event())
         waits=[]; faults=[]; completed=[]
         def tick(*args):
@@ -120,7 +125,8 @@ def test_restart_reconciles_numeric_history_without_replaying_original_send(
             _report_wait=lambda code,**kwargs:waits.append(code))
         services._fault=fault
         services.business_loop(runner,lambda _:None)
-        assert not faults and waits==['HOOK_HISTORY_CHANGED_DURING_READ']
+        expected_code = 'HOOK_HISTORY_CHANGED_DURING_READ' if changing_history == 'rows' else 'HOOK_HISTORY_CATALOG_CHANGED'
+        assert not faults and waits==[expected_code]
         assert completed==[result!='pending'] and runner.binding.run_status=='paused'
     else:
         assert dispatcher._recover_send(binding, metadata) is (result != 'pending')
