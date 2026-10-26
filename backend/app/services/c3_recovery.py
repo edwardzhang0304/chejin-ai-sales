@@ -20,7 +20,8 @@ from app.services.human_reminder_service import recover_reminders_once
 logger = logging.getLogger(__name__)
 
 
-def _run_recovery_stage(stage: str, recover: Callable[[], dict[str, int]]) -> None:
+def _run_recovery_stage(stage: str, recover: Callable[[], dict[str, int]]) -> bool:
+    """Return only whether this stage completed without recorded failures."""
     try:
         result = recover()
         # These are only existing service counters for safe telemetry. Do not
@@ -30,10 +31,12 @@ def _run_recovery_stage(stage: str, recover: Callable[[], dict[str, int]]) -> No
                 or any(type(k) is not str or k not in counters
                        or type(v) is not int or v < 0 for k, v in result.items())):
             recovery_log(logger, logging.ERROR, "C3 recovery invalid result stage=%s", stage)
-            return
+            return False
         recovery_log(logger, logging.INFO, "C3 recovery completed stage=%s counters=%s", stage, result)
+        return not result.get("failed", 0)
     except Exception as exc:
         recovery_failure(logger, stage, exc)
+        return False
 
 
 def recover_due_message_batches_once(*, limit: int = 20) -> dict[str, int]:
@@ -138,6 +141,7 @@ class C3BatchRecoveryLoop:
 
     def _run(self) -> None:
         while not self._stop_event.is_set():
+            completed, failed = [], []
             # Preserve priority and each service's own sessions/transactions.
             # A failed stage is retried only by the existing next poll.
             for stage, recover in (
@@ -146,5 +150,11 @@ class C3BatchRecoveryLoop:
                 ("message_batches", recover_due_message_batches_once),
                 ("reply_sends", recover_stale_reply_sends_once),
             ):
-                _run_recovery_stage(stage, recover)
+                (completed if _run_recovery_stage(stage, recover) else failed).append(stage)
+            if failed:
+                # The default server threshold may suppress INFO. Keep the
+                # complete failed-pass outcome visible without enabling verbose
+                # logs or emitting payloads on every healthy idle poll.
+                recovery_log(logger, logging.WARNING,
+                             "C3 recovery pass incomplete completed=%s failed=%s", completed, failed)
             self._stop_event.wait(self.poll_seconds)

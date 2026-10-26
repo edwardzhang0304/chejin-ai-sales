@@ -140,3 +140,30 @@ def test_disabled_repeat_start_and_stop_during_active_pass(monkeypatch):
     loop.start()
     loop.stop()
     assert called == [0, 1, 2, 3]  # Existing stopped instance remains stopped.
+
+
+def test_failure_pass_records_continuation_at_default_warning_threshold(monkeypatch,caplog):
+    caplog.set_level(logging.WARNING,logger=recovery.__name__)
+    def fail():
+        raise RuntimeError('private payload must not leak')
+    monkeypatch.setattr(recovery,STAGES[0][1],fail)
+    for _,name in STAGES[1:]:
+        monkeypatch.setattr(recovery,name,lambda:{'examined':0})
+    run_rounds()
+    assert "completed=['human_reminders', 'message_batches', 'reply_sends']" in caplog.text
+    assert "failed=['handoff_notifications']" in caplog.text
+    assert 'private payload' not in caplog.text
+
+
+def test_database_wide_failure_keeps_poll_interval_and_no_success_summary(monkeypatch,caplog):
+    caplog.set_level(logging.WARNING,logger=recovery.__name__)
+    calls=[]
+    for stage,name in STAGES:
+        def fail(stage=stage):
+            calls.append(stage)
+            raise OSError('database unavailable')
+        monkeypatch.setattr(recovery,name,fail)
+    run_rounds(2)
+    assert calls==[s for s,_ in STAGES]*2
+    assert caplog.text.count('completed=[]')==2
+    assert caplog.text.count('error_type=OSError')==8
