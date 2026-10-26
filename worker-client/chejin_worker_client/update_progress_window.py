@@ -6,6 +6,7 @@ activity ring. The milky surface is intentionally opaque, including on Windows
 """
 from __future__ import annotations
 
+from contextlib import contextmanager
 import ctypes as c
 from ctypes import wintypes as w
 import math
@@ -52,6 +53,7 @@ def _apis():
         ('CreateWindowExW', w.HWND, (w.DWORD,w.LPCWSTR,w.LPCWSTR,w.DWORD,c.c_int,c.c_int,c.c_int,c.c_int,w.HWND,w.HMENU,w.HINSTANCE,w.LPVOID)),
         ('DefWindowProcW', LRESULT, (w.HWND,w.UINT,w.WPARAM,w.LPARAM)),
         ('DestroyWindow', w.BOOL, (w.HWND,)), ('IsWindow', w.BOOL, (w.HWND,)),
+        ('UpdateWindow', w.BOOL, (w.HWND,)),
         ('ShowWindow', w.BOOL, (w.HWND,c.c_int)),
         ('GetClientRect', w.BOOL, (w.HWND,ptr(w.RECT))),
         ('BeginPaint', w.HDC, (w.HWND,ptr(PaintStruct))),
@@ -93,9 +95,30 @@ def _color(value):
     return rgb[0] | rgb[1] << 8 | rgb[2] << 16
 
 
+def _require(value, operation):
+    if not value or value in (-1, c.c_void_p(-1).value):
+        error = getattr(c, 'get_last_error', lambda: 0)()
+        raise OSError(f'{operation} failed (winerror={error})')
+    return value
+
+
+def _cleanup(operations):
+    """Attempt every release, even when one native release itself fails."""
+    failures = []
+    for operation, function, args in operations:
+        try:
+            _require(function(*args), operation)
+        except Exception as exc:
+            failures.append(exc)
+    if failures:
+        raise failures[0]
+
+
 class Canvas:
     def __init__(self, u, g, dc, scale):
         self.u, self.g, self.dc, self.scale = u, g, dc, scale
+        # On failed restore, selected handles stay alive until their DC is deleted.
+        self.pending = set()
 
     def n(self, value):
         return round(value*self.scale)
@@ -104,22 +127,37 @@ class Canvas:
         x,y,width,height = box
         return w.RECT(self.n(x),self.n(y),self.n(x+width),self.n(y+height))
 
+    def release(self, handle):
+        _require(self.g.DeleteObject(handle), 'DeleteObject')
+        self.pending.discard(handle)
+
+    @contextmanager
+    def selected(self, handle, kind):
+        self.pending.add(handle)
+        old = None
+        try:
+            old = _require(self.g.SelectObject(self.dc,handle), 'SelectObject:'+kind)
+            yield
+        finally:
+            if old is not None:
+                # A failed restore aborts painting. Owner deletes DC before pending objects.
+                _require(self.g.SelectObject(self.dc,old), 'RestoreObject:'+kind)
+            self.release(handle)
+
     def fill(self, box, color):
-        brush = self.g.CreateSolidBrush(_color(color))
-        if not brush: raise OSError('progress brush unavailable')
-        try: self.u.FillRect(self.dc,c.byref(self.rect(box)),brush)
-        finally: self.g.DeleteObject(brush)
+        brush = _require(self.g.CreateSolidBrush(_color(color)), 'CreateSolidBrush')
+        self.pending.add(brush)
+        try:
+            _require(self.u.FillRect(self.dc,c.byref(self.rect(box)),brush), 'FillRect')
+        finally:
+            self.release(brush)
 
     def _stroke(self, points, color, width):
-        pen = self.g.CreatePen(0,max(1,self.n(width)),_color(color))
-        if not pen: raise OSError('progress pen unavailable')
-        old = self.g.SelectObject(self.dc,pen)
-        try:
-            self.g.MoveToEx(self.dc,self.n(points[0][0]),self.n(points[0][1]),None)
-            for x,y in points[1:]: self.g.LineTo(self.dc,self.n(x),self.n(y))
-        finally:
-            self.g.SelectObject(self.dc,old)
-            self.g.DeleteObject(pen)
+        pen = _require(self.g.CreatePen(0,max(1,self.n(width)),_color(color)), 'CreatePen')
+        with self.selected(pen,'pen'):
+            _require(self.g.MoveToEx(self.dc,self.n(points[0][0]),self.n(points[0][1]),None), 'MoveToEx')
+            for x,y in points[1:]:
+                _require(self.g.LineTo(self.dc,self.n(x),self.n(y)), 'LineTo')
 
     def line(self, ends, color, width):
         self._stroke((ends[:2],ends[2:]),color,width)
@@ -132,40 +170,34 @@ class Canvas:
         self._stroke(points,color,width)
 
     def text(self, box, value, size, color, bold, center):
-        font = self.g.CreateFontW(-self.n(size),0,0,0,500 if bold else 400,
-                                  0,0,0,1,0,0,4,0,'Microsoft YaHei UI')
-        if not font: raise OSError('progress font unavailable')
-        old = self.g.SelectObject(self.dc,font)
-        try:
-            self.g.SetBkMode(self.dc,1)
-            self.g.SetTextColor(self.dc,_color(color))
-            # All labels wrap within a bounded two-line area; no ellipsis hides a phase.
+        font = _require(self.g.CreateFontW(-self.n(size),0,0,0,500 if bold else 400,
+                                         0,0,0,1,0,0,4,0,'Microsoft YaHei UI'), 'CreateFontW')
+        with self.selected(font,'font'):
+            _require(self.g.SetBkMode(self.dc,1), 'SetBkMode')
+            if self.g.SetTextColor(self.dc,_color(color)) == 0xffffffff:
+                raise OSError('SetTextColor failed')
             rect = self.rect(box)
             flags = 0x10|0x800|(1 if center else 0)
             measured = self.rect(box)
-            self.u.DrawTextW(self.dc,value,-1,c.byref(measured),flags|0x400)
+            _require(self.u.DrawTextW(self.dc,value,-1,c.byref(measured),flags|0x400), 'MeasureText')
             rect.top += max(0, (rect.bottom-rect.top-(measured.bottom-measured.top))//2)
-            self.u.DrawTextW(self.dc,value,-1,c.byref(rect),flags)
-        finally:
-            self.g.SelectObject(self.dc,old)
-            self.g.DeleteObject(font)
+            _require(self.u.DrawTextW(self.dc,value,-1,c.byref(rect),flags), 'DrawTextW')
 
     def image(self, box, path):
         # Small packaged BMP; no image library or external process at update time.
-        bitmap = self.u.LoadImageW(None,str(path),0,self.n(box[2]),self.n(box[3]),0x10)
-        if not bitmap: raise OSError('progress brand asset unavailable')
-        source = self.g.CreateCompatibleDC(self.dc)
-        if not source:
-            self.g.DeleteObject(bitmap)
-            raise OSError('progress image DC unavailable')
-        old = self.g.SelectObject(source,bitmap)
+        bitmap = _require(self.u.LoadImageW(None,str(path),0,self.n(box[2]),self.n(box[3]),0x10), 'LoadImageW')
+        source = None
         try:
-            self.g.StretchBlt(self.dc,self.n(box[0]),self.n(box[1]),self.n(box[2]),self.n(box[3]),
-                              source,0,0,self.n(box[2]),self.n(box[3]),0x00CC0020)
+            source = _require(self.g.CreateCompatibleDC(self.dc), 'CreateImageDC')
+            _require(self.g.SelectObject(source,bitmap), 'SelectObject:image')
+            _require(self.g.StretchBlt(self.dc,self.n(box[0]),self.n(box[1]),self.n(box[2]),self.n(box[3]),
+                                      source,0,0,self.n(box[2]),self.n(box[3]),0x00CC0020), 'StretchBlt:image')
         finally:
-            self.g.SelectObject(source,old)
-            self.g.DeleteDC(source)
-            self.g.DeleteObject(bitmap)
+            # This private DC is discarded, so delete it before its selected bitmap.
+            # No attempt to restore a NULL or otherwise invalid old handle.
+            operations = [('DeleteImageDC',self.g.DeleteDC,(source,))] if source else []
+            operations.append(('DeleteImageBitmap',self.g.DeleteObject,(bitmap,)))
+            _cleanup(operations)
 
 
 def show_progress_window(display, closed):
@@ -195,25 +227,28 @@ def show_progress_window(display, closed):
     def repaint(handle):
         ps = PaintStruct()
         dc = u.BeginPaint(handle,c.byref(ps))
-        memory = bitmap = old = None
+        memory = bitmap = canvas = None
         try:
-            if not dc: raise OSError('progress paint DC unavailable')
+            _require(dc, 'BeginPaint')
             rect = w.RECT()
-            if not u.GetClientRect(handle,c.byref(rect)): raise OSError('progress bounds unavailable')
+            _require(u.GetClientRect(handle,c.byref(rect)), 'GetClientRect')
             width,height = rect.right,rect.bottom
-            memory = g.CreateCompatibleDC(dc)
-            bitmap = g.CreateCompatibleBitmap(dc,width*2,height*2)
-            if not memory or not bitmap: raise OSError('progress back buffer unavailable')
-            old = g.SelectObject(memory,bitmap)
+            memory = _require(g.CreateCompatibleDC(dc), 'CreatePaintDC')
+            bitmap = _require(g.CreateCompatibleBitmap(dc,width*2,height*2), 'CreatePaintBitmap')
+            _require(g.SelectObject(memory,bitmap), 'SelectObject:buffer')
             title,seconds = display()
-            paint(Canvas(u,g,memory,width*2/WIDTH),title,seconds,(time.monotonic()*220)%360)
-            g.SetStretchBltMode(dc,4)
-            g.StretchBlt(dc,0,0,width,height,memory,0,0,width*2,height*2,0x00CC0020)
+            canvas = Canvas(u,g,memory,width*2/WIDTH)
+            paint(canvas,title,seconds,(time.monotonic()*220)%360)
+            _require(g.SetStretchBltMode(dc,4), 'SetStretchBltMode')
+            _require(g.StretchBlt(dc,0,0,width,height,memory,0,0,width*2,height*2,0x00CC0020), 'StretchBlt:present')
         finally:
-            if old: g.SelectObject(memory,old)
-            if bitmap: g.DeleteObject(bitmap)
-            if memory: g.DeleteDC(memory)
-            u.EndPaint(handle,c.byref(ps))
+            # Deleting the private DC releases selections, including failed restores.
+            operations = [('DeletePaintDC',g.DeleteDC,(memory,))] if memory else []
+            if bitmap: operations.append(('DeletePaintBitmap',g.DeleteObject,(bitmap,)))
+            if canvas:
+                operations.extend(('DeletePendingObject',g.DeleteObject,(obj,)) for obj in canvas.pending)
+            operations.append(('EndPaint',u.EndPaint,(handle,c.byref(ps))))
+            _cleanup(operations)
 
     @WNDPROC
     def procedure(handle,message,wp,lp):
@@ -284,13 +319,15 @@ def show_progress_window(display, closed):
                                  *bounds,None,None,instance,None)
         if not hwnd: raise OSError('progress window unavailable')
         round_window(hwnd)
+        # Paint immediately after showing, rather than leave the first frame to a timer.
         u.ShowWindow(hwnd,4)  # SW_SHOWNOACTIVATE; no foreground/topmost request.
+        _require(u.UpdateWindow(hwnd), 'UpdateWindow')
         msg = w.MSG()
         while not closed.wait(0.05) and u.IsWindow(hwnd) and not callback_error:
             while u.PeekMessageW(c.byref(msg),None,0,0,1):
                 u.TranslateMessage(c.byref(msg))
                 u.DispatchMessageW(c.byref(msg))
-            if u.IsWindow(hwnd): u.InvalidateRect(hwnd,None,False)
+            if u.IsWindow(hwnd): _require(u.InvalidateRect(hwnd,None,False), 'InvalidateRect')
         if callback_error: raise callback_error[0]
     finally:
         if hwnd and u.IsWindow(hwnd): u.DestroyWindow(hwnd)

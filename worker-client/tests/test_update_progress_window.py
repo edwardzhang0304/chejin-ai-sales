@@ -125,3 +125,74 @@ def test_design_uses_packaged_brand_and_real_phase_labels():
 def test_dpi_change_clamps_suggested_position_and_size():
     x,y,width,height=window_bounds((-640,0,0,400),192,(-100,350))
     assert x==-533 and y==0 and width==533 and height==400
+
+
+class ResourceHarness(NativeHarness):
+    """Model selection ownership: selected objects cannot legally be deleted."""
+    def __init__(self, failure):
+        super().__init__('paint')
+        self.failure, self.injected = failure, False
+        self.kinds, self.slots = {}, {}
+        self.stock = {'bitmap':11,'font':12,'pen':13}
+        self.copy_count = 0
+
+    def __getattr__(self,name):
+        base=super().__getattr__(name)
+        def modeled(*args):
+            if name=='SelectObject':
+                dc,obj=args
+                restored = obj in self.stock.values()
+                kind = next((k for k,v in self.stock.items() if v==obj),self.kinds.get(obj))
+                assert kind in {'buffer','image','font','pen','bitmap'}, 'invalid restore handle'
+                slot='bitmap' if kind in {'buffer','image'} else kind
+                tag=('restore:' if restored else 'select:')+kind
+                self.calls.append((name,args))
+                if tag==self.failure and not self.injected:
+                    self.injected=True
+                    return 0
+                old=self.slots.setdefault(dc,{}).get(slot,self.stock[slot])
+                self.slots[dc][slot]=obj
+                return old
+            if name=='StretchBlt':
+                self.copy_count+=1
+                tag='copy:image' if self.copy_count==1 else 'copy:present'
+                if tag==self.failure and not self.injected:
+                    self.calls.append((name,args));self.injected=True;return 0
+            if name in {'FillRect','DrawTextW','MoveToEx','LineTo','SetStretchBltMode'}:
+                if name==self.failure and not self.injected:
+                    self.calls.append((name,args));self.injected=True;return 0
+            if name=='DeleteObject':
+                assert all(args[0] not in objects.values() for objects in self.slots.values()), 'deleted a selected object'
+            if name=='DeleteDC':self.slots.pop(args[0],None)
+            result=base(*args)
+            if name in {'CreateCompatibleBitmap','LoadImageW','CreateFontW','CreatePen'}:
+                self.kinds[result]={'CreateCompatibleBitmap':'buffer','LoadImageW':'image',
+                                    'CreateFontW':'font','CreatePen':'pen'}[name]
+            return result
+        return modeled
+
+
+@pytest.mark.parametrize('failure',[
+    None, 'select:buffer','select:image','select:font','select:pen',
+    'restore:font','restore:pen','copy:image','copy:present',
+    'FillRect','DrawTextW','MoveToEx','LineTo','SetStretchBltMode',
+])
+def test_native_return_failures_are_diagnosed_without_business_changes(tmp_path,monkeypatch,failure):
+    harness=ResourceHarness(failure)
+    monkeypatch.setattr(c,'WinDLL',lambda *a,**k:harness,raising=False)
+    progress=UpdateProgress(tmp_path/'plan.json','updater');progress.begin('replace')
+    before=(tmp_path/'updater-progress.json').read_bytes()
+    progress._window()
+    assert not harness.owned
+    assert not harness.slots
+    assert progress.phase_active and not progress.closed.is_set()
+    assert (tmp_path/'updater-progress.json').read_bytes()==before
+    assert not (tmp_path/'update-result.json').exists()
+    assert any(name=='EndPaint' for name,_ in harness.calls)
+    if failure:
+        assert harness.injected
+        assert (progress.phase,'show_window') in progress.reported_failures
+        evidence='\n'.join(p.read_text(errors='replace') for p in tmp_path.glob('*jsonl'))
+        assert 'show_window' in evidence
+    else:
+        assert not progress.reported_failures
