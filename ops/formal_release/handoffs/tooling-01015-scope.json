@@ -26,85 +26,85 @@
           ]
         },
         "ops/formal_release/handoffs/hook-reviewed-1ed1d7c.json": {
-          "reason": "0.10.20 metadata only; tools unchanged (SOP18.0.4).",
+          "reason": "0.10.21 metadata only (SOP18.0.4).",
           "covered_by": [
             "ops/formal_release/tests/test_tooling_handoff.py"
           ]
         },
         "ops/formal_release/handoffs/hook-reviewed-bbe404a.json": {
-          "reason": "0.10.20 metadata only; tools unchanged (SOP18.0.4).",
+          "reason": "0.10.21 metadata only (SOP18.0.4).",
           "covered_by": [
             "ops/formal_release/tests/test_tooling_handoff.py"
           ]
         },
         "ops/formal_release/handoffs/hook-reviewed-d44f8e5.json": {
-          "reason": "0.10.20 metadata only; tools unchanged (SOP18.0.4).",
+          "reason": "0.10.21 metadata only (SOP18.0.4).",
           "covered_by": [
             "ops/formal_release/tests/test_tooling_handoff.py"
           ]
         },
         "ops/formal_release/handoffs/hook-reviewed-d7f7ad4.json": {
-          "reason": "0.10.20 metadata only; tools unchanged (SOP18.0.4).",
+          "reason": "0.10.21 metadata only (SOP18.0.4).",
           "covered_by": [
             "ops/formal_release/tests/test_tooling_handoff.py"
           ]
         },
         "ops/formal_release/handoffs/hook-reviewed-evidence-01014.json": {
-          "reason": "0.10.20 metadata only; tools unchanged (SOP18.0.4).",
+          "reason": "0.10.21 metadata only (SOP18.0.4).",
           "covered_by": [
             "ops/formal_release/tests/test_tooling_handoff.py"
           ]
         },
         "ops/formal_release/handoffs/tooling-01011-reviewed.json": {
-          "reason": "0.10.20 metadata only; tools unchanged (SOP18.0.4).",
+          "reason": "0.10.21 metadata only (SOP18.0.4).",
           "covered_by": [
             "ops/formal_release/tests/test_tooling_handoff.py"
           ]
         },
         "ops/formal_release/handoffs/tooling-01011-scope.json": {
-          "reason": "0.10.20 metadata only; tools unchanged (SOP18.0.4).",
+          "reason": "0.10.21 metadata only (SOP18.0.4).",
           "covered_by": [
             "ops/formal_release/tests/test_tooling_handoff.py"
           ]
         },
         "ops/formal_release/handoffs/tooling-01012-reviewed.json": {
-          "reason": "0.10.20 metadata only; tools unchanged (SOP18.0.4).",
+          "reason": "0.10.21 metadata only (SOP18.0.4).",
           "covered_by": [
             "ops/formal_release/tests/test_tooling_handoff.py"
           ]
         },
         "ops/formal_release/handoffs/tooling-01012-scope.json": {
-          "reason": "0.10.20 metadata only; tools unchanged (SOP18.0.4).",
+          "reason": "0.10.21 metadata only (SOP18.0.4).",
           "covered_by": [
             "ops/formal_release/tests/test_tooling_handoff.py"
           ]
         },
         "ops/formal_release/handoffs/tooling-01013-reviewed.json": {
-          "reason": "0.10.20 metadata only; tools unchanged (SOP18.0.4).",
+          "reason": "0.10.21 metadata only (SOP18.0.4).",
           "covered_by": [
             "ops/formal_release/tests/test_tooling_handoff.py"
           ]
         },
         "ops/formal_release/handoffs/tooling-01013-scope.json": {
-          "reason": "0.10.20 metadata only; tools unchanged (SOP18.0.4).",
+          "reason": "0.10.21 metadata only (SOP18.0.4).",
           "covered_by": [
             "ops/formal_release/tests/test_tooling_handoff.py"
           ]
         },
         "ops/formal_release/handoffs/tooling-01014-reviewed.json": {
-          "reason": "0.10.20 metadata only; tools unchanged (SOP18.0.4).",
+          "reason": "0.10.21 metadata only (SOP18.0.4).",
           "covered_by": [
             "ops/formal_release/tests/test_tooling_handoff.py"
           ]
         },
         "ops/formal_release/handoffs/tooling-01014-scope.json": {
-          "reason": "0.10.20 metadata only; tools unchanged (SOP18.0.4).",
+          "reason": "0.10.21 metadata only (SOP18.0.4).",
           "covered_by": [
             "ops/formal_release/tests/test_tooling_handoff.py"
           ]
         },
         "ops/formal_release/handoffs/tooling-01015-scope.json": {
-          "reason": "0.10.20 metadata only; tools unchanged (SOP18.0.4).",
+          "reason": "0.10.21 metadata only (SOP18.0.4).",
           "covered_by": [
             "ops/formal_release/tests/test_tooling_handoff.py"
           ]
@@ -149,7 +149,7 @@
           ]
         },
         "worker-client/chejin_worker_client/__init__.py": {
-          "reason": "0.10.19 metadata only; unchanged executable tools; approved SOP18.0.4.",
+          "reason": "0.10.21 metadata only (SOP18.0.4).",
           "covered_by": [
             "ops/formal_release/tests/test_tooling_handoff.py"
           ]
@@ -163,9 +163,16 @@
           ]
         },
         "worker-client/scripts/run-windows-client-upgrade-test.py": {
-          "reason": "Inherited impact from tooling-01014-scope.json; coverage unchanged.",
+          "reason": "5-reviewed ddb37e6 failure evidence only.",
           "covered_by": [
-            "windows-parser",
+            "ops/formal_release/tests/test_upgrade_stop_evidence.py",
+            "gui-driver"
+          ]
+        },
+        "ops/formal_release/tests/test_upgrade_stop_evidence.py": {
+          "reason": "5-reviewed ddb37e6 failure evidence only.",
+          "covered_by": [
+            "ops/formal_release/tests/test_upgrade_stop_evidence.py",
             "gui-driver"
           ]
         }
@@ -201,67 +208,67 @@
           ]
         },
         "ops/formal_release/handoffs/hook-reviewed-1ed1d7c.json": {
-          "reason": "0.10.20 metadata only; tools unchanged (SOP18.0.4).",
+          "reason": "0.10.21 metadata only (SOP18.0.4).",
           "covered_by": [
             "ops/formal_release/tests/test_tooling_handoff.py"
           ]
         },
         "ops/formal_release/handoffs/hook-reviewed-bbe404a.json": {
-          "reason": "0.10.20 metadata only; tools unchanged (SOP18.0.4).",
+          "reason": "0.10.21 metadata only (SOP18.0.4).",
           "covered_by": [
             "ops/formal_release/tests/test_tooling_handoff.py"
           ]
         },
         "ops/formal_release/handoffs/hook-reviewed-d44f8e5.json": {
-          "reason": "0.10.20 metadata only; tools unchanged (SOP18.0.4).",
+          "reason": "0.10.21 metadata only (SOP18.0.4).",
           "covered_by": [
             "ops/formal_release/tests/test_tooling_handoff.py"
           ]
         },
         "ops/formal_release/handoffs/hook-reviewed-evidence-01014.json": {
-          "reason": "0.10.20 metadata only; tools unchanged (SOP18.0.4).",
+          "reason": "0.10.21 metadata only (SOP18.0.4).",
           "covered_by": [
             "ops/formal_release/tests/test_tooling_handoff.py"
           ]
         },
         "ops/formal_release/handoffs/tooling-01012-reviewed.json": {
-          "reason": "0.10.20 metadata only; tools unchanged (SOP18.0.4).",
+          "reason": "0.10.21 metadata only (SOP18.0.4).",
           "covered_by": [
             "ops/formal_release/tests/test_tooling_handoff.py"
           ]
         },
         "ops/formal_release/handoffs/tooling-01012-scope.json": {
-          "reason": "0.10.20 metadata only; tools unchanged (SOP18.0.4).",
+          "reason": "0.10.21 metadata only (SOP18.0.4).",
           "covered_by": [
             "ops/formal_release/tests/test_tooling_handoff.py"
           ]
         },
         "ops/formal_release/handoffs/tooling-01013-reviewed.json": {
-          "reason": "0.10.20 metadata only; tools unchanged (SOP18.0.4).",
+          "reason": "0.10.21 metadata only (SOP18.0.4).",
           "covered_by": [
             "ops/formal_release/tests/test_tooling_handoff.py"
           ]
         },
         "ops/formal_release/handoffs/tooling-01013-scope.json": {
-          "reason": "0.10.20 metadata only; tools unchanged (SOP18.0.4).",
+          "reason": "0.10.21 metadata only (SOP18.0.4).",
           "covered_by": [
             "ops/formal_release/tests/test_tooling_handoff.py"
           ]
         },
         "ops/formal_release/handoffs/tooling-01014-reviewed.json": {
-          "reason": "0.10.20 metadata only; tools unchanged (SOP18.0.4).",
+          "reason": "0.10.21 metadata only (SOP18.0.4).",
           "covered_by": [
             "ops/formal_release/tests/test_tooling_handoff.py"
           ]
         },
         "ops/formal_release/handoffs/tooling-01014-scope.json": {
-          "reason": "0.10.20 metadata only; tools unchanged (SOP18.0.4).",
+          "reason": "0.10.21 metadata only (SOP18.0.4).",
           "covered_by": [
             "ops/formal_release/tests/test_tooling_handoff.py"
           ]
         },
         "ops/formal_release/handoffs/tooling-01015-scope.json": {
-          "reason": "0.10.20 metadata only; tools unchanged (SOP18.0.4).",
+          "reason": "0.10.21 metadata only (SOP18.0.4).",
           "covered_by": [
             "ops/formal_release/tests/test_tooling_handoff.py"
           ]
@@ -280,15 +287,22 @@
           ]
         },
         "worker-client/chejin_worker_client/__init__.py": {
-          "reason": "0.10.19 metadata only; unchanged executable tools; approved SOP18.0.4.",
+          "reason": "0.10.21 metadata only (SOP18.0.4).",
           "covered_by": [
             "ops/formal_release/tests/test_tooling_handoff.py"
           ]
         },
         "worker-client/scripts/run-windows-client-upgrade-test.py": {
-          "reason": "Inherited impact from tooling-01014-scope.json; coverage unchanged.",
+          "reason": "5-reviewed ddb37e6 failure evidence only.",
           "covered_by": [
-            "windows-parser",
+            "ops/formal_release/tests/test_upgrade_stop_evidence.py",
+            "gui-driver"
+          ]
+        },
+        "ops/formal_release/tests/test_upgrade_stop_evidence.py": {
+          "reason": "5-reviewed ddb37e6 failure evidence only.",
+          "covered_by": [
+            "ops/formal_release/tests/test_upgrade_stop_evidence.py",
             "gui-driver"
           ]
         }
@@ -304,49 +318,49 @@
       "branch": "gray-release-0.10.x",
       "changed_inputs": {
         "ops/formal_release/handoffs/hook-reviewed-bbe404a.json": {
-          "reason": "0.10.20 metadata only; tools unchanged (SOP18.0.4).",
+          "reason": "0.10.21 metadata only (SOP18.0.4).",
           "covered_by": [
             "ops/formal_release/tests/test_tooling_handoff.py"
           ]
         },
         "ops/formal_release/handoffs/hook-reviewed-d44f8e5.json": {
-          "reason": "0.10.20 metadata only; tools unchanged (SOP18.0.4).",
+          "reason": "0.10.21 metadata only (SOP18.0.4).",
           "covered_by": [
             "ops/formal_release/tests/test_tooling_handoff.py"
           ]
         },
         "ops/formal_release/handoffs/hook-reviewed-evidence-01014.json": {
-          "reason": "0.10.20 metadata only; tools unchanged (SOP18.0.4).",
+          "reason": "0.10.21 metadata only (SOP18.0.4).",
           "covered_by": [
             "ops/formal_release/tests/test_tooling_handoff.py"
           ]
         },
         "ops/formal_release/handoffs/tooling-01013-reviewed.json": {
-          "reason": "0.10.20 metadata only; tools unchanged (SOP18.0.4).",
+          "reason": "0.10.21 metadata only (SOP18.0.4).",
           "covered_by": [
             "ops/formal_release/tests/test_tooling_handoff.py"
           ]
         },
         "ops/formal_release/handoffs/tooling-01013-scope.json": {
-          "reason": "0.10.20 metadata only; tools unchanged (SOP18.0.4).",
+          "reason": "0.10.21 metadata only (SOP18.0.4).",
           "covered_by": [
             "ops/formal_release/tests/test_tooling_handoff.py"
           ]
         },
         "ops/formal_release/handoffs/tooling-01014-reviewed.json": {
-          "reason": "0.10.20 metadata only; tools unchanged (SOP18.0.4).",
+          "reason": "0.10.21 metadata only (SOP18.0.4).",
           "covered_by": [
             "ops/formal_release/tests/test_tooling_handoff.py"
           ]
         },
         "ops/formal_release/handoffs/tooling-01014-scope.json": {
-          "reason": "0.10.20 metadata only; tools unchanged (SOP18.0.4).",
+          "reason": "0.10.21 metadata only (SOP18.0.4).",
           "covered_by": [
             "ops/formal_release/tests/test_tooling_handoff.py"
           ]
         },
         "ops/formal_release/handoffs/tooling-01015-scope.json": {
-          "reason": "0.10.20 metadata only; tools unchanged (SOP18.0.4).",
+          "reason": "0.10.21 metadata only (SOP18.0.4).",
           "covered_by": [
             "ops/formal_release/tests/test_tooling_handoff.py"
           ]
@@ -365,15 +379,22 @@
           ]
         },
         "worker-client/chejin_worker_client/__init__.py": {
-          "reason": "0.10.19 metadata only; unchanged executable tools; approved SOP18.0.4.",
+          "reason": "0.10.21 metadata only (SOP18.0.4).",
           "covered_by": [
             "ops/formal_release/tests/test_tooling_handoff.py"
           ]
         },
         "worker-client/scripts/run-windows-client-upgrade-test.py": {
-          "reason": "Inherited impact from tooling-01014-scope.json; coverage unchanged.",
+          "reason": "5-reviewed ddb37e6 failure evidence only.",
           "covered_by": [
-            "windows-parser",
+            "ops/formal_release/tests/test_upgrade_stop_evidence.py",
+            "gui-driver"
+          ]
+        },
+        "ops/formal_release/tests/test_upgrade_stop_evidence.py": {
+          "reason": "5-reviewed ddb37e6 failure evidence only.",
+          "covered_by": [
+            "ops/formal_release/tests/test_upgrade_stop_evidence.py",
             "gui-driver"
           ]
         }
@@ -389,21 +410,35 @@
       "branch": "gray-release-0.10.x",
       "changed_inputs": {
         "ops/formal_release/handoffs/hook-reviewed-bbe404a.json": {
-          "reason": "0.10.20 metadata only; tools unchanged (SOP18.0.4).",
+          "reason": "0.10.21 metadata only (SOP18.0.4).",
           "covered_by": [
             "ops/formal_release/tests/test_tooling_handoff.py"
           ]
         },
         "ops/formal_release/handoffs/tooling-01015-scope.json": {
-          "reason": "0.10.20 metadata only; tools unchanged (SOP18.0.4).",
+          "reason": "0.10.21 metadata only (SOP18.0.4).",
           "covered_by": [
             "ops/formal_release/tests/test_tooling_handoff.py"
           ]
         },
         "worker-client/chejin_worker_client/__init__.py": {
-          "reason": "0.10.19 metadata only; unchanged executable tools; approved SOP18.0.4.",
+          "reason": "0.10.21 metadata only (SOP18.0.4).",
           "covered_by": [
             "ops/formal_release/tests/test_tooling_handoff.py"
+          ]
+        },
+        "ops/formal_release/tests/test_upgrade_stop_evidence.py": {
+          "reason": "5-reviewed ddb37e6 failure evidence only.",
+          "covered_by": [
+            "ops/formal_release/tests/test_upgrade_stop_evidence.py",
+            "gui-driver"
+          ]
+        },
+        "worker-client/scripts/run-windows-client-upgrade-test.py": {
+          "reason": "5-reviewed ddb37e6 failure evidence only.",
+          "covered_by": [
+            "ops/formal_release/tests/test_upgrade_stop_evidence.py",
+            "gui-driver"
           ]
         }
       }
@@ -425,115 +460,115 @@
       ]
     },
     "ops/formal_release/handoffs/hook-reviewed-1ed1d7c.json": {
-      "reason": "0.10.20 metadata only; tools unchanged (SOP18.0.4).",
+      "reason": "0.10.21 metadata only (SOP18.0.4).",
       "covered_by": [
         "ops/formal_release/tests/test_tooling_handoff.py"
       ]
     },
     "ops/formal_release/handoffs/hook-reviewed-22eb0b1.json": {
-      "reason": "0.10.20 metadata only; tools unchanged (SOP18.0.4).",
+      "reason": "0.10.21 metadata only (SOP18.0.4).",
       "covered_by": [
         "ops/formal_release/tests/test_tooling_handoff.py"
       ]
     },
     "ops/formal_release/handoffs/hook-reviewed-bbe404a.json": {
-      "reason": "0.10.20 metadata only; tools unchanged (SOP18.0.4).",
+      "reason": "0.10.21 metadata only (SOP18.0.4).",
       "covered_by": [
         "ops/formal_release/tests/test_tooling_handoff.py"
       ]
     },
     "ops/formal_release/handoffs/hook-reviewed-d44f8e5.json": {
-      "reason": "0.10.20 metadata only; tools unchanged (SOP18.0.4).",
+      "reason": "0.10.21 metadata only (SOP18.0.4).",
       "covered_by": [
         "ops/formal_release/tests/test_tooling_handoff.py"
       ]
     },
     "ops/formal_release/handoffs/hook-reviewed-d7f7ad4.json": {
-      "reason": "0.10.20 metadata only; tools unchanged (SOP18.0.4).",
+      "reason": "0.10.21 metadata only (SOP18.0.4).",
       "covered_by": [
         "ops/formal_release/tests/test_tooling_handoff.py"
       ]
     },
     "ops/formal_release/handoffs/hook-reviewed-evidence-01014.json": {
-      "reason": "0.10.20 metadata only; tools unchanged (SOP18.0.4).",
+      "reason": "0.10.21 metadata only (SOP18.0.4).",
       "covered_by": [
         "ops/formal_release/tests/test_tooling_handoff.py"
       ]
     },
     "ops/formal_release/handoffs/tooling-01010-reviewed.json": {
-      "reason": "0.10.20 metadata only; tools unchanged (SOP18.0.4).",
+      "reason": "0.10.21 metadata only (SOP18.0.4).",
       "covered_by": [
         "ops/formal_release/tests/test_tooling_handoff.py"
       ]
     },
     "ops/formal_release/handoffs/tooling-01010-scope.json": {
-      "reason": "0.10.20 metadata only; tools unchanged (SOP18.0.4).",
+      "reason": "0.10.21 metadata only (SOP18.0.4).",
       "covered_by": [
         "ops/formal_release/tests/test_tooling_handoff.py"
       ]
     },
     "ops/formal_release/handoffs/tooling-01011-reviewed.json": {
-      "reason": "0.10.20 metadata only; tools unchanged (SOP18.0.4).",
+      "reason": "0.10.21 metadata only (SOP18.0.4).",
       "covered_by": [
         "ops/formal_release/tests/test_tooling_handoff.py"
       ]
     },
     "ops/formal_release/handoffs/tooling-01011-scope.json": {
-      "reason": "0.10.20 metadata only; tools unchanged (SOP18.0.4).",
+      "reason": "0.10.21 metadata only (SOP18.0.4).",
       "covered_by": [
         "ops/formal_release/tests/test_tooling_handoff.py"
       ]
     },
     "ops/formal_release/handoffs/tooling-01012-reviewed.json": {
-      "reason": "0.10.20 metadata only; tools unchanged (SOP18.0.4).",
+      "reason": "0.10.21 metadata only (SOP18.0.4).",
       "covered_by": [
         "ops/formal_release/tests/test_tooling_handoff.py"
       ]
     },
     "ops/formal_release/handoffs/tooling-01012-scope.json": {
-      "reason": "0.10.20 metadata only; tools unchanged (SOP18.0.4).",
+      "reason": "0.10.21 metadata only (SOP18.0.4).",
       "covered_by": [
         "ops/formal_release/tests/test_tooling_handoff.py"
       ]
     },
     "ops/formal_release/handoffs/tooling-01013-reviewed.json": {
-      "reason": "0.10.20 metadata only; tools unchanged (SOP18.0.4).",
+      "reason": "0.10.21 metadata only (SOP18.0.4).",
       "covered_by": [
         "ops/formal_release/tests/test_tooling_handoff.py"
       ]
     },
     "ops/formal_release/handoffs/tooling-01013-scope.json": {
-      "reason": "0.10.20 metadata only; tools unchanged (SOP18.0.4).",
+      "reason": "0.10.21 metadata only (SOP18.0.4).",
       "covered_by": [
         "ops/formal_release/tests/test_tooling_handoff.py"
       ]
     },
     "ops/formal_release/handoffs/tooling-01014-reviewed.json": {
-      "reason": "0.10.20 metadata only; tools unchanged (SOP18.0.4).",
+      "reason": "0.10.21 metadata only (SOP18.0.4).",
       "covered_by": [
         "ops/formal_release/tests/test_tooling_handoff.py"
       ]
     },
     "ops/formal_release/handoffs/tooling-01014-scope.json": {
-      "reason": "0.10.20 metadata only; tools unchanged (SOP18.0.4).",
+      "reason": "0.10.21 metadata only (SOP18.0.4).",
       "covered_by": [
         "ops/formal_release/tests/test_tooling_handoff.py"
       ]
     },
     "ops/formal_release/handoffs/tooling-01015-scope.json": {
-      "reason": "0.10.20 metadata only; tools unchanged (SOP18.0.4).",
+      "reason": "0.10.21 metadata only (SOP18.0.4).",
       "covered_by": [
         "ops/formal_release/tests/test_tooling_handoff.py"
       ]
     },
     "ops/formal_release/handoffs/tooling-gui-recovery-reviewed.json": {
-      "reason": "0.10.20 metadata only; tools unchanged (SOP18.0.4).",
+      "reason": "0.10.21 metadata only (SOP18.0.4).",
       "covered_by": [
         "ops/formal_release/tests/test_tooling_handoff.py"
       ]
     },
     "ops/formal_release/handoffs/tooling-gui-recovery-scope.json": {
-      "reason": "0.10.20 metadata only; tools unchanged (SOP18.0.4).",
+      "reason": "0.10.21 metadata only (SOP18.0.4).",
       "covered_by": [
         "ops/formal_release/tests/test_tooling_handoff.py"
       ]
@@ -597,7 +632,7 @@
       ]
     },
     "worker-client/chejin_worker_client/__init__.py": {
-      "reason": "0.10.19 metadata only; unchanged executable tools; approved SOP18.0.4.",
+      "reason": "0.10.21 metadata only (SOP18.0.4).",
       "covered_by": [
         "ops/formal_release/tests/test_tooling_handoff.py"
       ]
@@ -611,9 +646,16 @@
       ]
     },
     "worker-client/scripts/run-windows-client-upgrade-test.py": {
-      "reason": "Inherited impact from tooling-01014-scope.json; coverage unchanged.",
+      "reason": "5-reviewed ddb37e6 failure evidence only.",
       "covered_by": [
-        "windows-parser",
+        "ops/formal_release/tests/test_upgrade_stop_evidence.py",
+        "gui-driver"
+      ]
+    },
+    "ops/formal_release/tests/test_upgrade_stop_evidence.py": {
+      "reason": "5-reviewed ddb37e6 failure evidence only.",
+      "covered_by": [
+        "ops/formal_release/tests/test_upgrade_stop_evidence.py",
         "gui-driver"
       ]
     }
@@ -622,9 +664,10 @@
     {
       "cwd": ".",
       "nodes": [
-        "ops/formal_release/tests/test_tooling_handoff.py"
+        "ops/formal_release/tests/test_tooling_handoff.py",
+        "ops/formal_release/tests/test_upgrade_stop_evidence.py"
       ]
     }
   ],
-  "unaffected_scope_review": "0.10.20 audited merged source anchor metadata only. Tool implementation unchanged; preserve original tool audit and CI execution evidence; descriptor validation remains required."
+  "unaffected_scope_review": "0.10.21 metadata plus previously 5-reviewed ddb37e6 failure collector; unaffected original CI checks reused. Fresh descriptor55 and collector3; Windows parser/gui remain actual."
 }

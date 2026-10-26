@@ -680,17 +680,17 @@
     "recall_author_and_reviewer_shared_trigger_context"
   ],
   "current_release": {
-    "version": "0.10.20",
+    "version": "0.10.21",
     "source_commit": "209f7fb66a01a05736fdd32e54808e54a9b66ce3",
     "source_state": "gray_release_candidate",
     "published": false,
-    "contract_revision": "0.10.20",
-    "contract_sha256": "7851f2e9ba58f16588d0365f21580beb197e10a5ab381bcd613435264a8c93e9",
+    "contract_revision": "0.10.21",
+    "contract_sha256": "3eada68527699b93e0de3bfc71af0fab14f1e5059fdc840ed0e121432f3599df",
     "scope": [
       "native_hook_state_and_release_preparation",
       "schema_revision_sync"
     ],
-    "note": "0.10.20 cumulative reviewed d06caa6/de7d4d4/4969591: native updater presentation/evidence, explicit account block reasons, isolated recovery stages. Preserve binding, unfinished records and stopped intent. DLL unchanged."
+    "note": "0.10.21 cumulative reviewed 9f8a041/4a3b3dc/e313a92/3e63015/241c803: explicit guard adoption, binding review UI, bounded send diagnostics, safe search-query OCR handling. Preserve bindings and unfinished records; DLL unchanged."
   },
   "historical_integrations": [
     {
