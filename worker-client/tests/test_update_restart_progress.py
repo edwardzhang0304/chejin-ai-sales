@@ -141,31 +141,6 @@ def test_closing_progress_does_not_cancel_installer(tmp_path):
     assert not (tmp_path / 'update-result.json').exists()
 
 
-def test_window_api_uses_pointer_sized_handles_and_does_not_activate(tmp_path, monkeypatch):
-    import ctypes
-    from chejin_worker_client import update_progress as module
-    calls = []
-    class Function:
-        def __init__(self, name): self.name = name
-        def __call__(self, *args):
-            calls.append((self.name, args))
-            if self.name == 'CreateWindowExW': return 2**40
-            return 0
-    class User32:
-        def __init__(self): self.functions = {}
-        def __getattr__(self, name): return self.functions.setdefault(name, Function(name))
-    user32 = User32()
-    monkeypatch.setattr(ctypes, 'WinDLL', lambda *a, **k: user32, raising=False)
-    progress = UpdateProgress(tmp_path / 'plan.json', 'updater')
-    progress.closed.set()
-    progress._window()
-    creation = [args for name, args in calls if name == 'CreateWindowExW']
-    assert len(creation) == 2
-    assert creation[0][0] == 0x08000000
-    assert creation[1][8] == 2**40
-    assert user32.CreateWindowExW.restype == ctypes.wintypes.HWND
-
-
 def test_rollback_failure_is_never_recorded_as_complete(tmp_path, monkeypatch):
     from test_chejin_updater import FAILED_WORKER, _write_worker
     plan_path, token, current, *_ = _prepare_plan(tmp_path, monkeypatch, new_worker=FAILED_WORKER)

@@ -26,6 +26,7 @@ a = Analysis(
     pathex=[str(ROOT), str(SHARED_RULES_ROOT)],
     binaries=[],
     datas=[
+        (str(ROOT / "chejin_worker_client" / "web_assets" / "update-brand.bmp"), "chejin_worker_client/web_assets"),
         (str(UPDATER_TRUST_PATH), "."),
         (str(ROOT.parent / "contracts" / "c2_contract_v3.json"), "contracts"),
         (str(ROOT.parent / "contracts" / "hook_contract_v1.json"), "contracts"),

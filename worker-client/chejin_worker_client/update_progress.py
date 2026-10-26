@@ -17,10 +17,10 @@ LABELS = {
     'package_check': '正在校验新程序文件',
     'replace': '正在切换程序',
     'new_start': '正在启动新客户端',
-    'startup_files': '新客户端正在检查程序完整性',
-    'startup_data': '新客户端正在核对原数据',
+    'startup_files': '正在检查程序完整性',
+    'startup_data': '正在核对原数据',
     'startup_ui': '正在打开新客户端窗口',
-    'window_shown': '新客户端窗口已打开，正在完成检查',
+    'window_shown': '窗口已打开，正在完成检查',
     'rollback': '升级未完成，正在恢复原客户端',
 }
 
@@ -96,7 +96,7 @@ class UpdateProgress:
         else:
             self.finish()
 
-    def text(self):
+    def display(self):
         phase = self.phase
         seconds = int(time.monotonic() - self.started)
         if phase == 'new_start':
@@ -110,7 +110,11 @@ class UpdateProgress:
                         seconds = max(0, int(time.time() - float(data['timestamp_epoch'])))
             except Exception:
                 pass
-        return LABELS.get(phase, '正在准备升级') + f'\n\n本阶段已等待 {seconds} 秒\n请稍候，原绑定和业务记录将保留。'
+        return LABELS.get(phase, '正在准备升级'), max(0, seconds)
+
+    def text(self):
+        title, seconds = self.display()
+        return title + f'\n已等待 {seconds} 秒'
 
     def show(self):
         if os.name == 'nt':
@@ -131,43 +135,13 @@ class UpdateProgress:
                 pass
 
     def _window(self):
-        # Native controls avoid importing Qt into the standalone one-file updater.
-        # Closing this informational window does not cancel or terminate installation.
+        # Both standalone updater and legacy worker fallback use this renderer.
+        # User dismissal has no relationship to stage/installation completion.
         try:
-            import ctypes as c
-            from ctypes import wintypes as w
-            u = c.WinDLL('user32', use_last_error=True)
-            u.CreateWindowExW.argtypes = [w.DWORD, w.LPCWSTR, w.LPCWSTR, w.DWORD,
-                                         c.c_int, c.c_int, c.c_int, c.c_int,
-                                         w.HWND, w.HMENU, w.HINSTANCE, w.LPVOID]
-            u.CreateWindowExW.restype = w.HWND
-            u.SetWindowTextW.argtypes = [w.HWND, w.LPCWSTR]
-            u.IsWindow.argtypes = [w.HWND]
-            u.DestroyWindow.argtypes = [w.HWND]
-            u.PeekMessageW.argtypes = [c.POINTER(w.MSG), w.HWND, w.UINT, w.UINT, w.UINT]
-            u.TranslateMessage.argtypes = [c.POINTER(w.MSG)]
-            u.DispatchMessageW.argtypes = [c.POINTER(w.MSG)]
-            u.DispatchMessageW.restype = c.c_ssize_t
-            hwnd = u.CreateWindowExW(0x08000000, 'STATIC', '车金 Worker 更新',
-                                    0x10C80000, -2147483648, -2147483648, 440, 180,
-                                    None, None, None, None)
-            if not hwnd:
-                return
-            label = u.CreateWindowExW(0, 'STATIC', self.text(), 0x50000000,
-                                     20, 20, 395, 110, hwnd, None, None, None)
-            try:
-                msg = w.MSG()
-                while not self.closed.wait(0.1) and u.IsWindow(hwnd):
-                    while u.PeekMessageW(c.byref(msg), None, 0, 0, 1):
-                        u.TranslateMessage(c.byref(msg))
-                        u.DispatchMessageW(c.byref(msg))
-                    if label:
-                        u.SetWindowTextW(label, self.text())
-            finally:
-                if u.IsWindow(hwnd):
-                    u.DestroyWindow(hwnd)
-        except Exception:
-            pass  # UI availability cannot decide upgrade success.
+            from .update_progress_window import show_progress_window
+            show_progress_window(self.display, self.closed)
+        except Exception as exc:
+            self._capture_failure(self.phase, 'show_window', 'native-window', exc)
 
 
 def record_window_shown(context):
