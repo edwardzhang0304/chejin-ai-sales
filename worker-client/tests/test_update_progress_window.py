@@ -196,3 +196,55 @@ def test_native_return_failures_are_diagnosed_without_business_changes(tmp_path,
         assert 'show_window' in evidence
     else:
         assert not progress.reported_failures
+
+
+@pytest.mark.parametrize('failure,operation',[
+    ('select:buffer','SelectObject:buffer'),('restore:font','RestoreObject:font'),
+    ('copy:present','StretchBlt:present'),
+])
+@pytest.mark.parametrize('extended_error',[0,8])
+def test_native_operation_and_optional_os_error_reach_safe_jsonl(tmp_path,monkeypatch,failure,operation,extended_error):
+    import json
+    harness=ResourceHarness(failure)
+    monkeypatch.setattr(c,'WinDLL',lambda *a,**k:harness,raising=False)
+    monkeypatch.setattr(c,'get_last_error',lambda:extended_error,raising=False)
+    progress=UpdateProgress(tmp_path/'plan.json','updater');progress.begin('replace')
+    before=(tmp_path/'updater-progress.json').read_bytes()
+    progress._window()
+    records=[json.loads(line) for line in (tmp_path/'worker-startup.jsonl').read_text().splitlines()]
+    record=records[-1]
+    assert record['phase'].endswith('native-window:'+operation)
+    assert record['error_code']=='UPDATE_PROGRESS_'+operation.upper().replace(':','_')+'_FAILED'
+    assert record['winerror']==(extended_error or None)
+    assert not harness.owned and not harness.slots
+    assert (tmp_path/'updater-progress.json').read_bytes()==before
+    assert not (tmp_path/'update-result.json').exists()
+
+
+def test_native_diagnostic_does_not_export_exception_text_or_locals(tmp_path,monkeypatch):
+    from chejin_worker_client import update_progress_window as module
+    def failure(*args):
+        token='synthetic-test-token-not-for-export'
+        error=module.NativeDrawingError('SelectObject:buffer')
+        error.args=(token,)
+        raise error
+    monkeypatch.setattr(module,'show_progress_window',failure)
+    progress=UpdateProgress(tmp_path/'plan.json','updater');progress.begin('replace')
+    progress._window()
+    evidence=(tmp_path/'worker-startup.jsonl').read_text()
+    assert 'SelectObject:buffer' in evidence
+    assert 'synthetic-test-token-not-for-export' not in evidence
+    assert 'locals' not in evidence
+
+
+def test_native_error_reset_prevents_stale_os_error_attribution(monkeypatch):
+    last_error=[1234]
+    monkeypatch.setattr(c,'set_last_error',lambda value:last_error.__setitem__(0,value),raising=False)
+    monkeypatch.setattr(c,'get_last_error',lambda:last_error[0],raising=False)
+    class DLL:
+        pass
+    dll=DLL();dll.StretchBlt=lambda:0
+    fn=native._bind(dll,'StretchBlt',w.BOOL)
+    with pytest.raises(native.NativeDrawingError) as caught:
+        native._require(fn(),'StretchBlt:present')
+    assert caught.value.winerror is None

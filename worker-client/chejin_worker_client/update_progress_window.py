@@ -38,7 +38,15 @@ class PaintStruct(c.Structure):
 def _bind(dll, name, result, *args):
     fn = getattr(dll, name)
     fn.restype, fn.argtypes = result, list(args)
-    return fn
+    # Avoid attributing an unrelated earlier Win32 error to a GDI failure.
+    def call(*values):
+        clear_error = getattr(c, 'set_last_error', None)
+        if clear_error is not None:
+            clear_error(0)
+        return fn(*values)
+    call.restype, call.argtypes = result, list(args)
+    setattr(dll, name, call)
+    return call
 
 
 def _apis():
@@ -53,6 +61,7 @@ def _apis():
         ('CreateWindowExW', w.HWND, (w.DWORD,w.LPCWSTR,w.LPCWSTR,w.DWORD,c.c_int,c.c_int,c.c_int,c.c_int,w.HWND,w.HMENU,w.HINSTANCE,w.LPVOID)),
         ('DefWindowProcW', LRESULT, (w.HWND,w.UINT,w.WPARAM,w.LPARAM)),
         ('DestroyWindow', w.BOOL, (w.HWND,)), ('IsWindow', w.BOOL, (w.HWND,)),
+        ('ScreenToClient',w.BOOL,(w.HWND,ptr(w.POINT))),
         ('UpdateWindow', w.BOOL, (w.HWND,)),
         ('ShowWindow', w.BOOL, (w.HWND,c.c_int)),
         ('GetClientRect', w.BOOL, (w.HWND,ptr(w.RECT))),
@@ -95,10 +104,32 @@ def _color(value):
     return rgb[0] | rgb[1] << 8 | rgb[2] << 16
 
 
+# Only fixed renderer operations can enter the public diagnostic fields.
+NATIVE_OPERATIONS = frozenset({
+    'SelectObject:buffer', 'SelectObject:image', 'SelectObject:font', 'SelectObject:pen',
+    'RestoreObject:font', 'RestoreObject:pen', 'StretchBlt:image', 'StretchBlt:present',
+    'CreateSolidBrush', 'CreatePen', 'CreateFontW', 'CreateImageDC', 'LoadImageW',
+    'CreatePaintDC', 'CreatePaintBitmap', 'FillRect', 'MoveToEx', 'LineTo',
+    'SetBkMode', 'SetTextColor', 'MeasureText', 'DrawTextW', 'SetStretchBltMode',
+    'BeginPaint', 'GetClientRect', 'DeleteObject', 'DeleteImageDC', 'DeleteImageBitmap',
+    'DeletePaintDC', 'DeletePaintBitmap', 'DeletePendingObject', 'EndPaint',
+    'ScreenToClient', 'UpdateWindow', 'InvalidateRect',
+})
+
+
+class NativeDrawingError(OSError):
+    def __init__(self, operation):
+        self.operation = operation if operation in NATIVE_OPERATIONS else 'NativeDrawing'
+        self.code = 'UPDATE_PROGRESS_' + self.operation.upper().replace(':','_') + '_FAILED'
+        # Zero means the API supplied no extended error, not a guessed root cause.
+        value = getattr(c, 'get_last_error', lambda: 0)()
+        self.winerror = value if isinstance(value,int) and value > 0 else None
+        super().__init__(self.code)
+
+
 def _require(value, operation):
     if not value or value in (-1, c.c_void_p(-1).value):
-        error = getattr(c, 'get_last_error', lambda: 0)()
-        raise OSError(f'{operation} failed (winerror={error})')
+        raise NativeDrawingError(operation)
     return value
 
 
@@ -175,7 +206,7 @@ class Canvas:
         with self.selected(font,'font'):
             _require(self.g.SetBkMode(self.dc,1), 'SetBkMode')
             if self.g.SetTextColor(self.dc,_color(color)) == 0xffffffff:
-                raise OSError('SetTextColor failed')
+                raise NativeDrawingError('SetTextColor')
             rect = self.rect(box)
             flags = 0x10|0x800|(1 if center else 0)
             measured = self.rect(box)
@@ -266,7 +297,7 @@ def show_progress_window(display, closed):
                 rect = w.RECT()
                 # Client coordinates from screen coordinates through MapWindowPoints.
                 point = w.POINT(c.c_short(lp & 0xffff).value,c.c_short((lp >> 16)&0xffff).value)
-                _bind(u,'ScreenToClient',w.BOOL,w.HWND,c.POINTER(w.POINT))(handle,c.byref(point))
+                _require(u.ScreenToClient(handle,c.byref(point)), 'ScreenToClient')
                 u.GetClientRect(handle,c.byref(rect))
                 scale = rect.right/WIDTH
                 if point.y < 34*scale and point.x < 356*scale: return 2

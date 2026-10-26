@@ -137,11 +137,16 @@ class UpdateProgress:
     def _window(self):
         # Both standalone updater and legacy worker fallback use this renderer.
         # User dismissal has no relationship to stage/installation completion.
+        native_error_type = None
         try:
-            from .update_progress_window import show_progress_window
+            from .update_progress_window import NativeDrawingError, show_progress_window
+            native_error_type = NativeDrawingError
             show_progress_window(self.display, self.closed)
         except Exception as exc:
-            self._capture_failure(self.phase, 'show_window', 'native-window', exc)
+            target = 'native-window'
+            if native_error_type is not None and isinstance(exc, native_error_type):
+                target += ':' + exc.operation  # Fixed whitelist; never exception text/locals.
+            self._capture_failure(self.phase, 'show_window', target, exc)
 
 
 def record_window_shown(context):
