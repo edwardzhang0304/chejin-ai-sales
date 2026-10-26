@@ -14,8 +14,9 @@ from chejin_worker_client.shared_rules import hook_history_rules
 
 
 @pytest.mark.parametrize('result', ['observed', 'pending', 'timeout', 'restricted'])
+@pytest.mark.parametrize('changing_history', [False, True])
 def test_restart_reconciles_numeric_history_without_replaying_original_send(
-        history_lab, retained, result):
+        history_lab, retained, result, changing_history):
     server, gateway, process, scope, delivery, _, db = history_lab
     root, credentials, original_scope, binding, metadata, folder = retained
     private = root / 'restarted-worker'
@@ -36,13 +37,20 @@ def test_restart_reconciles_numeric_history_without_replaying_original_send(
     checked = {}
     calls = []
     captures = []
+    mutate = [False]
+
+    def save(capture):
+        captures.append(capture)
+        if mutate[0] and capture.query.kind == 'count':
+            mutate[0] = False
+            db.execute("UPDATE MSG SET StrContent='synthetic updated inbound' WHERE localId=9")
 
     def sync(current_binding, *, reconciliation):
         assert current_binding == binding
         assert reconciliation.process_generation == original_scope.process_generation
         assert reconciliation.journal_sha256 == metadata['journal_sha256']
         assert not hasattr(reconciliation, 'reply_text')
-        synchronizer = HookHistorySynchronizer(gateway, captures.append, lambda: (0, 0))
+        synchronizer = HookHistorySynchronizer(gateway, save, lambda: (0, 0))
         _, coverage = synchronizer.capture(process, scope, delivery, '1791543600')
         checked.update(hook_history_rules.validate_coverage(coverage, delivery.peer_wxid, 1791543600))
         assert checked['ready']
@@ -92,7 +100,30 @@ def test_restart_reconciles_numeric_history_without_replaying_original_send(
     timeline=HookProgressTimeline();events=[]
     def progress(event):events.append(event);timeline.apply(event)
     dispatcher._progress_runner=SimpleNamespace(on_runtime_process=progress)
-    assert dispatcher._recover_send(binding, metadata) is (result != 'pending')
+    if changing_history:
+        import threading
+        from chejin_worker_client.hook_worker_services import HookWorkerServices
+        mutate[0] = True
+        runner = SimpleNamespace(binding=SimpleNamespace(run_status='paused'), stop_event=threading.Event())
+        waits=[]; faults=[]; completed=[]
+        def tick(*args):
+            if waits:
+                assert calls == []
+                assert {p.name:p.read_bytes() for p in folder.iterdir()} == before
+                assert not (private/'send-receipts').exists()
+            completed.append(dispatcher._recover_send(binding,metadata))
+            runner.stop_event.set()
+        def fault(runner,code,**kwargs):
+            faults.append(code); runner.stop_event.set()
+        services=HookWorkerServices.__new__(HookWorkerServices)
+        services.dispatcher=SimpleNamespace(tick=tick,interval_seconds=.01,
+            _report_wait=lambda code,**kwargs:waits.append(code))
+        services._fault=fault
+        services.business_loop(runner,lambda _:None)
+        assert not faults and waits==['HOOK_HISTORY_CHANGED_DURING_READ']
+        assert completed==[result!='pending'] and runner.binding.run_status=='paused'
+    else:
+        assert dispatcher._recover_send(binding, metadata) is (result != 'pending')
     assert calls == ['history', 'observe'] + ([] if result == 'pending' else ['settle'])
     receipt = private / 'send-receipts' / f"{metadata['reply_action_id']}.json"
     assert receipt.exists() is (result != 'pending')

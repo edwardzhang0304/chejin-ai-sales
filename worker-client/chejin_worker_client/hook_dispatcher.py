@@ -21,10 +21,7 @@ from .hook_sender import RetainedNativeSendPermit,send_observation_can_settle
 from .hook_voice import HookVoiceTranscriber, capture_voice_audio
 from .shared_rules import hook_contract_rules as rules
 from .hook_timing import timed_call
-
-TRANSIENT_HISTORY = {'HOOK_HISTORY_CALLBACK_BARRIER_CHANGED','HOOK_HISTORY_LOCAL_PENDING',
-    'HOOK_HISTORY_CALLBACK_NOT_LANDED','HOOK_HISTORY_BOUND_CHANGED','HOOK_HISTORY_PAGINATION_INCOMPLETE',
-    'HOOK_HISTORY_SCAN_CHANGED','HOOK_HISTORY_CATALOG_CHANGED','HOOK_HISTORY_READ_BUDGET_EXCEEDED','HOOK_VOICE_PENDING'}
+from .hook_history_wait import TRANSIENT_HISTORY
 
 
 class HookBusinessDispatcher:

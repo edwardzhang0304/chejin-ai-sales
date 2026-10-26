@@ -20,6 +20,7 @@ from .emergency_stop import emergency_stop_requested, trigger_emergency_stop
 from .hook_backend import BACKEND_WAIT_CODES, HookHeartbeatState, HookWorkerCredentials
 from .hook_connection import HookConnectionManager
 from .hook_clock import CLOCK_WAIT_CODES
+from .hook_history_wait import TRANSIENT_HISTORY
 from .hook_formal_runtime import HookRuntimeStopping
 from .hook_projection import NativeProjectionStore
 from .hook_process import inspect_windows_window_geometry
@@ -318,7 +319,10 @@ class HookWorkerServices:
                     code=str(exc)
                     if code in CLOCK_WAIT_CODES:
                         self._wait_for_clock(code,context='business',clock_check=getattr(exc, 'clock_check', None))
-                    elif code in {'HOOK_RUNTIME_NOT_RUNNING','HOOK_SEND_LATEST_CONTEXT_STALE'}:
+                    elif code in TRANSIENT_HISTORY or code in {'HOOK_RUNTIME_NOT_RUNNING','HOOK_SEND_LATEST_CONTEXT_STALE'}:
+                        # Retained-send reconciliation precedes the per-customer
+                        # loop. Its changing read must wait through the same
+                        # classification without stopping the whole Worker.
                         self.dispatcher._report_wait(code,context='business')
                     else:self._fault(runner,code if code.startswith('HOOK_') else 'HOOK_BUSINESS_CHECK_FAILED',local_error=exc)
                 except sqlite3.Error as exc:
