@@ -26,7 +26,11 @@ export function useLeadsPage(autoRefresh = true) {
   const [error, setError] = useState<string | null>(null);
   const [stats, setStats] = useState<LeadStats | null>(null);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
-  const [activeLeadId, setActiveLeadId] = useState<string | null>(null);
+  const [detailSelection, setDetailSelection] = useState<{ id: string | null; retainUntilClose: boolean }>({ id: null, retainUntilClose: false });
+  const activeLeadId = detailSelection.id;
+  const setActiveLeadId = useCallback((id: string | null, options?: { retainUntilClose?: boolean }) => {
+    setDetailSelection({ id, retainUntilClose: id !== null && options?.retainUntilClose === true });
+  }, []);
   const [detail, setDetail] = useState<LeadDetail | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
   const [detailError, setDetailError] = useState<string | null>(null);
@@ -57,8 +61,9 @@ export function useLeadsPage(autoRefresh = true) {
       setItems(data.items);
       setTotal(data.total);
       setSelectedIds(current => background ? new Set([...current].filter(id => data.items.some(item => item.id === id))) : new Set());
-      setActiveLeadId((current) => (
-        current && data.items.some((item) => item.id === current) ? current : null
+      setDetailSelection((current) => (
+        current.retainUntilClose || (current.id && data.items.some((item) => item.id === current.id))
+          ? current : { id: null, retainUntilClose: false }
       ));
       return true;
     } catch (err) {

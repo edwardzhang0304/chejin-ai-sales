@@ -7,6 +7,7 @@ import { HookReinviteAction } from "./HookReinviteAction";
 import type { LeadDetail } from "../types";
 
 type Props = {
+  promptTransfer?: boolean;
   detail: LeadDetail | null;
   loading: boolean;
   error: string | null;
@@ -39,7 +40,7 @@ const detailTabs: Array<{ key: DetailTab; label: string }> = [
   { key: "assignments", label: "分配记录" },
 ];
 
-export function LeadDetailDrawer({ detail, loading, error, onClose, onRetry, onMarkInvalid, onRestore, revealedPhones, onRevealPhone }: Props) {
+export function LeadDetailDrawer({ promptTransfer = false, detail, loading, error, onClose, onRetry, onMarkInvalid, onRestore, revealedPhones, onRevealPhone }: Props) {
   const [activeTab, setActiveTab] = useState<DetailTab>("overview");
 
   useEffect(() => {
@@ -50,6 +51,7 @@ export function LeadDetailDrawer({ detail, loading, error, onClose, onRetry, onM
     return (
       <DetailDrawer as="aside" className="detail-drawer empty" aria-label="线索详情">
         <div className="state-box error">
+          <button type="button" className="icon-button drawer-close-button" onClick={onClose} aria-label="关闭详情"><CloseIcon /></button>
           <span>{error}</span>
           <button type="button" className="secondary-button" onClick={onRetry}>
             重试
@@ -153,7 +155,7 @@ export function LeadDetailDrawer({ detail, loading, error, onClose, onRetry, onM
                 ))}
               </section>
 
-              <HookReinviteAction key={detail.id} leadId={detail.id} />
+              <HookReinviteAction key={detail.id} leadId={detail.id} promptTransfer={promptTransfer} />
               <section className="detail-block task-flow-block">
                 <h3>任务链路</h3>
                 <ol className="flow-list">

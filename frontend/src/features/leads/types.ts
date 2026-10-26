@@ -86,6 +86,7 @@ export type InvalidLeadPayload = {
 };
 
 export type CreateLeadResult = {
+  next_action?: "review_wechat_transfer" | null;
   created: boolean;
   id: string;
   status: LeadStatus;

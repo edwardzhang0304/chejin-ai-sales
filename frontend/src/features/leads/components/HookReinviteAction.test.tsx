@@ -72,3 +72,23 @@ it("refresh keeps an authorized transfer pending without another confirm button"
   expect(await screen.findByText(/已确认档案接续。等待 Worker 核验原微信身份/)).toBeInTheDocument();
   expect(screen.queryByRole("button", { name: "接续已有微信" })).not.toBeInTheDocument();
 });
+
+it("prompts a newly created customer immediately but cancel never grants transfer", async () => {
+  api.mockResolvedValueOnce({ items: [] }).mockResolvedValueOnce({ needs_review: true, candidate: {
+    binding_id: "old-binding", binding_revision: 2, source_task_id: "new-task", previous_lead_id: "old-lead",
+    previous_name: "旧测试客户", previous_remark_code: "CJOLD01", target_name: "新测试客户",
+  } });
+  render(<HookReinviteAction leadId="new-lead" promptTransfer />);
+  expect(await screen.findByRole("alertdialog")).toHaveTextContent("旧测试客户（CJOLD01）");
+  expect(api).toHaveBeenCalledTimes(2);
+  fireEvent.click(screen.getByRole("button", { name: "取消" }));
+  expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "接续已有微信" })).toBeVisible();
+  expect(api.mock.calls.every(([, options]) => !options?.method || options.method === "GET")).toBe(true);
+});
+it("keeps ambiguous old identities for review without prompting a guessed choice", async () => {
+  api.mockResolvedValueOnce({ items: [] }).mockResolvedValueOnce({ candidate: null, needs_review: true });
+  render(<HookReinviteAction leadId="new-lead" promptTransfer />);
+  expect(await screen.findByText("存在旧档案关联，请先核对客户身份与原任务。")).toBeVisible();
+  expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument();
+});

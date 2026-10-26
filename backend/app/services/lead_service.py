@@ -310,8 +310,11 @@ def create_lead(db: Session, payload: LeadCreate, actor: ActorContext) -> dict:
         "wechat": _potential_duplicate_contacts(db, [c.contact_hash for c in normalized["wechats"]], ContactType.wechat, lead.id),
         "email": _potential_duplicate_contacts(db, [c.contact_hash for c in normalized["emails"]], ContactType.email, lead.id),
     }
+    from app.services.hook_binding_transfer import preview as transfer_preview
+    needs_transfer_review = transfer_preview(db, lead.id)["needs_review"]
     return {
         "created": True,
+        "next_action": "review_wechat_transfer" if needs_transfer_review else None,
         "id": lead.id,
         "status": lead.status,
         "assign_status": lead.assign_status,

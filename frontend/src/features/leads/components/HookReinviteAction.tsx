@@ -16,7 +16,7 @@ type Transfer = {
   previous_lead_id: string; previous_name: string; previous_remark_code: string; target_name: string;
 };
 
-export function HookReinviteAction({ leadId }: { leadId: string }) {
+export function HookReinviteAction({ leadId, promptTransfer = false }: { leadId: string; promptTransfer?: boolean }) {
   const [target, setTarget] = useState<Binding | null>(null);
   const [transfer, setTransfer] = useState<Transfer | null>(null);
   const [transferConfirm, setTransferConfirm] = useState(false);
@@ -36,6 +36,7 @@ export function HookReinviteAction({ leadId }: { leadId: string }) {
     ]).then(([{ items }, succession]) => {
         if (controller.signal.aborted) return;
         setTransfer(succession.candidate); setNeedsReview(succession.needs_review);
+        if (promptTransfer && succession.candidate) setTransferConfirm(true);
         if (succession.pending_verification) setMessage(transferPending);
         // Ambiguous bindings need operator investigation, never choose one silently.
         const eligible = items.filter((item) => item.reinvite_available);
@@ -46,7 +47,7 @@ export function HookReinviteAction({ leadId }: { leadId: string }) {
       })
       .finally(() => { if (!controller.signal.aborted) setLoading(false); });
     return () => controller.abort();
-  }, [leadId, revision]);
+  }, [leadId, revision, promptTransfer]);
 
   async function submit() {
     if (!target || busy) return;

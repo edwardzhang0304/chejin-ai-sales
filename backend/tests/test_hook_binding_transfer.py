@@ -262,3 +262,15 @@ def test_completed_invitation_with_registered_flow_is_not_overwritten(monkeypatc
     with SessionLocal() as db:
         assert transfer.grant(db,tid) is None
         assert db.get(WechatSessionBinding,b['binding_id']).bind_status=='bound'
+
+
+def test_create_surfaces_transfer_without_granting_or_reinviting(monkeypatch):
+    w,t,p,b,lead,tid,prep,url,payload=successor(monkeypatch)
+    assert lead['next_action']=='review_wechat_transfer'
+    with SessionLocal() as db:
+        assert transfer.grant(db,tid) is None
+        original=db.get(WechatSessionBinding,b['binding_id'])
+        assert original.bind_status=='bound'
+        assert original.replacement_binding_id is None
+        assert db.get(Task,tid).claimed_at is None
+        assert db.get(Task,tid).block_code==transfer.BLOCK

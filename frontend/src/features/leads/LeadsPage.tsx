@@ -30,6 +30,7 @@ function statValue(value: number | undefined) {
 
 export function LeadsPage() {
   const [createOpen, setCreateOpen] = useState(false);
+  const [transferReviewLeadId, setTransferReviewLeadId] = useState<string | null>(null);
   const [duplicateData, setDuplicateData] = useState<DuplicateLeadErrorData | null>(null);
   const [createError, setCreateError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
@@ -42,7 +43,7 @@ export function LeadsPage() {
   const [restoreError, setRestoreError] = useState<string | null>(null);
   const [salesOptions, setSalesOptions] = useState<SalesItem[]>([]);
   const [revealedPhones, setRevealedPhones] = useState<Record<string, string>>({});
-  const leads = useLeadsPage(!createOpen && !submitting && !actionBusy && !invalidLeadIds && !restoreLeadId);
+  const leads = useLeadsPage(!createOpen && !submitting && !actionBusy && !invalidLeadIds && !restoreLeadId && !transferReviewLeadId);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -57,8 +58,9 @@ export function LeadsPage() {
     setCreateError(null);
     setDuplicateData(null);
 
+    let created: Awaited<ReturnType<typeof createLead>>;
     try {
-      await createLead(payload);
+      created = await createLead(payload);
     } catch (err) {
       if (err instanceof ApiError && err.code === "LEAD_PHONE_DUPLICATED") {
         setDuplicateData(err.data as DuplicateLeadErrorData);
@@ -72,6 +74,15 @@ export function LeadsPage() {
       return false;
     }
 
+    if (created.next_action === "review_wechat_transfer") {
+      // The saved customer's next action must not depend on a list/stat refresh.
+      setCreateOpen(false);
+      setTransferReviewLeadId(created.id);
+      leads.setActiveLeadId(created.id, { retainUntilClose: true });
+      setActionMessage("客户档案已保存。检测到旧微信绑定，请先确认微信归属；确认前不会重复邀请。");
+      setSubmitting(false);
+      return true;
+    }
     if (!options?.continueAdding) setCreateOpen(false);
     const refreshed = await runPostMutationRefresh(() => leads.refresh());
     const successMessage = options?.continueAdding ? "已保存，可继续新增客户。" : "已新增客户。";
@@ -381,7 +392,14 @@ export function LeadsPage() {
           detail={leads.detail}
           loading={leads.detailLoading}
           error={leads.detailError}
-          onClose={() => leads.setActiveLeadId(null)}
+          promptTransfer={leads.activeLeadId === transferReviewLeadId && leads.detail?.id === transferReviewLeadId}
+          onClose={() => {
+            leads.setActiveLeadId(null);
+            if (transferReviewLeadId) {
+              setTransferReviewLeadId(null);
+              void leads.refresh();
+            }
+          }}
           onRetry={() => void leads.refreshDetail()}
           onMarkInvalid={(leadId) => {
             setInvalidError(null);
