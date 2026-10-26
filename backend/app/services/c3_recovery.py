@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import logging
 import threading
-from typing import Any
+from collections.abc import Callable
 
 from sqlalchemy import select
 
@@ -10,12 +10,33 @@ from app.core.config import get_settings
 from app.core.database import SessionLocal
 from app.models.c3 import MessageBatch, ReplyAction
 from app.services import c3_service
+from app.services.recovery_logging import recovery_log, recovery_failure
 from app.services.feishu_service import (
     recover_pending_handoff_notifications_once,
 )
+from app.services.human_reminder_service import recover_reminders_once
 
 
 logger = logging.getLogger(__name__)
+
+
+def _run_recovery_stage(stage: str, recover: Callable[[], dict[str, int]]) -> bool:
+    """Return only whether this stage completed without recorded failures."""
+    try:
+        result = recover()
+        # These are only existing service counters for safe telemetry. Do not
+        # stringify an unexpected return value or treat it as a successful pass.
+        counters = {"examined", "claimed", "generated", "failed", "recovered", "attempted"}
+        if (type(result) is not dict or not result
+                or any(type(k) is not str or k not in counters
+                       or type(v) is not int or v < 0 for k, v in result.items())):
+            recovery_log(logger, logging.ERROR, "C3 recovery invalid result stage=%s", stage)
+            return False
+        recovery_log(logger, logging.INFO, "C3 recovery completed stage=%s counters=%s", stage, result)
+        return not result.get("failed", 0)
+    except Exception as exc:
+        recovery_failure(logger, stage, exc)
+        return False
 
 
 def recover_due_message_batches_once(*, limit: int = 20) -> dict[str, int]:
@@ -60,12 +81,9 @@ def recover_due_message_batches_once(*, limit: int = 20) -> dict[str, int]:
                 db.commit()
                 if generated.get("decision") != "queued":
                     result["generated"] += 1
-        except Exception:
+        except Exception as exc:
             result["failed"] += 1
-            logger.exception(
-                "C3 durable batch recovery failed",
-                extra={"batch_id": batch_id, "generation_attempt": attempt},
-            )
+            recovery_failure(logger, "message_batches", exc, batch_id=batch_id, generation_attempt=attempt)
     return result
 
 
@@ -93,12 +111,9 @@ def recover_stale_reply_sends_once(*, limit: int = 20) -> dict[str, int]:
                 db.commit()
                 if recovered:
                     result["recovered"] += 1
-        except Exception:
+        except Exception as exc:
             result["failed"] += 1
-            logger.exception(
-                "C3 stale reply send recovery failed",
-                extra={"reply_action_id": action_id},
-            )
+            recovery_failure(logger, "reply_sends", exc, reply_action_id=action_id)
     return result
 
 
@@ -126,29 +141,20 @@ class C3BatchRecoveryLoop:
 
     def _run(self) -> None:
         while not self._stop_event.is_set():
-            try:
-                # Durable human-takeover delivery is latency-sensitive and
-                # must not wait behind a potentially slow Brain recovery.
-                notify_result: dict[str, Any] = (
-                    recover_pending_handoff_notifications_once()
-                )
-                from app.services.human_reminder_service import recover_reminders_once
-                recover_reminders_once()
-                batch_result: dict[str, Any] = recover_due_message_batches_once()
-                send_result: dict[str, Any] = recover_stale_reply_sends_once()
-                if (
-                    batch_result.get("claimed")
-                    or batch_result.get("failed")
-                    or send_result.get("recovered")
-                    or send_result.get("failed")
-                    or notify_result.get("attempted")
-                ):
-                    logger.info(
-                        "C3 durable recovery pass: batches=%s sends=%s notifications=%s",
-                        batch_result,
-                        send_result,
-                        notify_result,
-                    )
-            except Exception:
-                logger.exception("C3 durable batch recovery pass crashed")
+            completed, failed = [], []
+            # Preserve priority and each service's own sessions/transactions.
+            # A failed stage is retried only by the existing next poll.
+            for stage, recover in (
+                ("handoff_notifications", recover_pending_handoff_notifications_once),
+                ("human_reminders", recover_reminders_once),
+                ("message_batches", recover_due_message_batches_once),
+                ("reply_sends", recover_stale_reply_sends_once),
+            ):
+                (completed if _run_recovery_stage(stage, recover) else failed).append(stage)
+            if failed:
+                # The default server threshold may suppress INFO. Keep the
+                # complete failed-pass outcome visible without enabling verbose
+                # logs or emitting payloads on every healthy idle poll.
+                recovery_log(logger, logging.WARNING,
+                             "C3 recovery pass incomplete completed=%s failed=%s", completed, failed)
             self._stop_event.wait(self.poll_seconds)

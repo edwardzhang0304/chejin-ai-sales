@@ -1,0 +1,250 @@
+"""Native UI harness; lifecycle/ABI tests, not a substitute for Windows rendering."""
+import ctypes as c
+from ctypes import wintypes as w
+from pathlib import Path
+import threading
+
+import pytest
+
+from chejin_worker_client import update_progress_window as native
+from chejin_worker_client.update_progress import UpdateProgress, LABELS
+from chejin_worker_client.update_progress_design import BRAND_PATH, window_bounds, paint
+
+
+class NativeHarness:
+    def __init__(self, event='close', fail_paint=False):
+        self.calls, self.functions = [], {}
+        self.callback = None
+        self.event, self.fail_paint = event, fail_paint
+        self.alive, self.dispatched = False, False
+        self.handle = 2**40
+        self.next_object = self.handle+100
+        self.owned = set()
+
+    def __getattr__(self, name):
+        if name not in self.functions:
+            def fn(*args):
+                self.calls.append((name,args))
+                if name == 'RegisterClassW':
+                    self.callback = c.cast(args[0],c.POINTER(native.WindowClass)).contents.procedure
+                if name == 'SystemParametersInfoW':
+                    rect=c.cast(args[2],c.POINTER(w.RECT)).contents
+                    rect.left,rect.top,rect.right,rect.bottom=0,0,1920,1080
+                if name == 'CreateWindowExW':
+                    self.alive=True
+                    return self.handle
+                if name == 'GetDpiForSystem': return 144
+                if name == 'IsWindow': return self.alive
+                if name == 'DestroyWindow': self.alive=False
+                if name == 'GetClientRect':
+                    rect=c.cast(args[1],c.POINTER(w.RECT)).contents
+                    rect.right,rect.bottom=600,450
+                if name == 'PeekMessageW':
+                    if self.dispatched:return 0
+                    self.dispatched=True
+                    return 1
+                if name == 'DispatchMessageW':
+                    assert self.callback(self.handle,0x21,0,0)==3
+                    assert self.callback(self.handle,0x14,0,0)==1
+                    if self.event=='paint': self.callback(self.handle,0x0f,0,0)
+                    if self.event=='x':
+                        # Mouse-up alone must not close it, then a genuine click does.
+                        point=570 | (20 << 16)
+                        self.callback(self.handle,0x202,0,point);assert self.alive
+                        self.callback(self.handle,0x201,0,point)
+                        self.callback(self.handle,0x202,0,point)
+                    else:self.callback(self.handle,0x10,0,0)
+                if name=='CreateCompatibleBitmap' and self.fail_paint:return 0
+                if name in {'CreateSolidBrush','CreatePen','CreateFontW','CreateCompatibleDC',
+                            'CreateCompatibleBitmap','LoadImageW','CreateRoundRectRgn'}:
+                    self.next_object+=1;self.owned.add(self.next_object);return self.next_object
+                if name in {'DeleteObject','DeleteDC'}: self.owned.remove(args[0])
+                if name == 'SetWindowRgn': self.owned.remove(args[1]) # OS owns region now.
+                if name in {'BeginPaint','GetModuleHandleW','LoadCursorW','SelectObject'}:return self.handle
+                if name == 'SetThreadDpiAwarenessContext':return 0 # no context to restore in harness
+                return 1
+            self.functions[name]=fn
+        return self.functions[name]
+
+
+@pytest.mark.parametrize('event',['close','x','paint'])
+def test_native_lifecycle_dismissal_never_finishes_phase(tmp_path, monkeypatch,event):
+    harness=NativeHarness(event)
+    monkeypatch.setattr(c,'WinDLL',lambda *a,**k:harness,raising=False)
+    progress=UpdateProgress(tmp_path/'plan.json','updater');progress.begin('replace')
+    before={p.name:p.read_bytes() for p in tmp_path.iterdir()}
+    progress._window()
+    assert progress.phase_active and not progress.closed.is_set()
+    assert before=={p.name:p.read_bytes() for p in tmp_path.iterdir()}
+    creation=[args for name,args in harness.calls if name=='CreateWindowExW']
+    assert len(creation)==1 and creation[0][0]==0x08000000
+    assert creation[0][10]==harness.handle # pointer-sized module handle
+    assert harness.CreateWindowExW.restype==w.HWND
+    assert harness.SelectObject.restype==w.HGDIOBJ
+    assert harness.DefWindowProcW.restype==c.c_ssize_t
+    assert ('ShowWindow',(harness.handle,4)) in harness.calls
+    assert not harness.owned
+    assert any(name=='UnregisterClassW' for name,_ in harness.calls)
+
+
+def test_paint_failure_cleans_resources_and_preserves_business(tmp_path,monkeypatch):
+    harness=NativeHarness('paint',True)
+    monkeypatch.setattr(c,'WinDLL',lambda *a,**k:harness,raising=False)
+    progress=UpdateProgress(tmp_path/'plan.json','updater')
+    with progress.stage('replace'):
+        progress._window()
+    assert not harness.owned
+    assert not (tmp_path/'update-result.json').exists()
+    assert any(name=='EndPaint' for name,_ in harness.calls)
+    assert (progress.phase,'show_window') in progress.reported_failures
+
+
+@pytest.mark.parametrize('dpi',[96,120,144,192])
+@pytest.mark.parametrize('work',[(0,0,1920,1040),(-1280,0,0,720),(0,0,640,400)])
+def test_scaled_window_stays_in_available_desktop(dpi,work):
+    x,y,width,height=window_bounds(work,dpi)
+    assert work[0]<=x and work[1]<=y
+    assert x+width<=work[2] and y+height<=work[3]
+    assert abs(width/height-4/3)<.01
+
+
+def test_design_uses_packaged_brand_and_real_phase_labels():
+    assert BRAND_PATH.is_file() and BRAND_PATH.read_bytes()[:2]==b'BM'
+    class Recorder:
+        def __init__(self):self.texts=[]
+        def text(self,box,text,*args):
+            assert box[0]>=0 and box[0]+box[2]<=400
+            assert box[1]>=0 and box[1]+box[3]<=300
+            self.texts.append(text)
+        def __getattr__(self,name):return lambda *args:None
+    for label in LABELS.values():
+        recorder=Recorder();paint(recorder,label,1234,180)
+        assert recorder.texts==['车金 Worker 更新',label,'已等待 1234 秒']
+
+
+def test_dpi_change_clamps_suggested_position_and_size():
+    x,y,width,height=window_bounds((-640,0,0,400),192,(-100,350))
+    assert x==-533 and y==0 and width==533 and height==400
+
+
+class ResourceHarness(NativeHarness):
+    """Model selection ownership: selected objects cannot legally be deleted."""
+    def __init__(self, failure):
+        super().__init__('paint')
+        self.failure, self.injected = failure, False
+        self.kinds, self.slots = {}, {}
+        self.stock = {'bitmap':11,'font':12,'pen':13}
+        self.copy_count = 0
+
+    def __getattr__(self,name):
+        base=super().__getattr__(name)
+        def modeled(*args):
+            if name=='SelectObject':
+                dc,obj=args
+                restored = obj in self.stock.values()
+                kind = next((k for k,v in self.stock.items() if v==obj),self.kinds.get(obj))
+                assert kind in {'buffer','image','font','pen','bitmap'}, 'invalid restore handle'
+                slot='bitmap' if kind in {'buffer','image'} else kind
+                tag=('restore:' if restored else 'select:')+kind
+                self.calls.append((name,args))
+                if tag==self.failure and not self.injected:
+                    self.injected=True
+                    return 0
+                old=self.slots.setdefault(dc,{}).get(slot,self.stock[slot])
+                self.slots[dc][slot]=obj
+                return old
+            if name=='StretchBlt':
+                self.copy_count+=1
+                tag='copy:image' if self.copy_count==1 else 'copy:present'
+                if tag==self.failure and not self.injected:
+                    self.calls.append((name,args));self.injected=True;return 0
+            if name in {'FillRect','DrawTextW','MoveToEx','LineTo','SetStretchBltMode'}:
+                if name==self.failure and not self.injected:
+                    self.calls.append((name,args));self.injected=True;return 0
+            if name=='DeleteObject':
+                assert all(args[0] not in objects.values() for objects in self.slots.values()), 'deleted a selected object'
+            if name=='DeleteDC':self.slots.pop(args[0],None)
+            result=base(*args)
+            if name in {'CreateCompatibleBitmap','LoadImageW','CreateFontW','CreatePen'}:
+                self.kinds[result]={'CreateCompatibleBitmap':'buffer','LoadImageW':'image',
+                                    'CreateFontW':'font','CreatePen':'pen'}[name]
+            return result
+        return modeled
+
+
+@pytest.mark.parametrize('failure',[
+    None, 'select:buffer','select:image','select:font','select:pen',
+    'restore:font','restore:pen','copy:image','copy:present',
+    'FillRect','DrawTextW','MoveToEx','LineTo','SetStretchBltMode',
+])
+def test_native_return_failures_are_diagnosed_without_business_changes(tmp_path,monkeypatch,failure):
+    harness=ResourceHarness(failure)
+    monkeypatch.setattr(c,'WinDLL',lambda *a,**k:harness,raising=False)
+    progress=UpdateProgress(tmp_path/'plan.json','updater');progress.begin('replace')
+    before=(tmp_path/'updater-progress.json').read_bytes()
+    progress._window()
+    assert not harness.owned
+    assert not harness.slots
+    assert progress.phase_active and not progress.closed.is_set()
+    assert (tmp_path/'updater-progress.json').read_bytes()==before
+    assert not (tmp_path/'update-result.json').exists()
+    assert any(name=='EndPaint' for name,_ in harness.calls)
+    if failure:
+        assert harness.injected
+        assert (progress.phase,'show_window') in progress.reported_failures
+        evidence='\n'.join(p.read_text(errors='replace') for p in tmp_path.glob('*jsonl'))
+        assert 'show_window' in evidence
+    else:
+        assert not progress.reported_failures
+
+
+@pytest.mark.parametrize('failure,operation',[
+    ('select:buffer','SelectObject:buffer'),('restore:font','RestoreObject:font'),
+    ('copy:present','StretchBlt:present'),
+])
+@pytest.mark.parametrize('extended_error',[0,8])
+def test_native_operation_and_optional_os_error_reach_safe_jsonl(tmp_path,monkeypatch,failure,operation,extended_error):
+    import json
+    harness=ResourceHarness(failure)
+    monkeypatch.setattr(c,'WinDLL',lambda *a,**k:harness,raising=False)
+    monkeypatch.setattr(c,'get_last_error',lambda:extended_error,raising=False)
+    progress=UpdateProgress(tmp_path/'plan.json','updater');progress.begin('replace')
+    before=(tmp_path/'updater-progress.json').read_bytes()
+    progress._window()
+    records=[json.loads(line) for line in (tmp_path/'worker-startup.jsonl').read_text().splitlines()]
+    record=records[-1]
+    assert record['phase'].endswith('native-window:'+operation)
+    assert record['error_code']=='UPDATE_PROGRESS_'+operation.upper().replace(':','_')+'_FAILED'
+    assert record['winerror']==(extended_error or None)
+    assert not harness.owned and not harness.slots
+    assert (tmp_path/'updater-progress.json').read_bytes()==before
+    assert not (tmp_path/'update-result.json').exists()
+
+
+def test_native_diagnostic_does_not_export_exception_text_or_locals(tmp_path,monkeypatch):
+    from chejin_worker_client import update_progress_window as module
+    def failure(*args):
+        token='synthetic-test-token-not-for-export'
+        error=module.NativeDrawingError('SelectObject:buffer')
+        error.args=(token,)
+        raise error
+    monkeypatch.setattr(module,'show_progress_window',failure)
+    progress=UpdateProgress(tmp_path/'plan.json','updater');progress.begin('replace')
+    progress._window()
+    evidence=(tmp_path/'worker-startup.jsonl').read_text()
+    assert 'SelectObject:buffer' in evidence
+    assert 'synthetic-test-token-not-for-export' not in evidence
+    assert 'locals' not in evidence
+
+
+def test_native_error_reset_prevents_stale_os_error_attribution(monkeypatch):
+    last_error=[1234]
+    monkeypatch.setattr(c,'set_last_error',lambda value:last_error.__setitem__(0,value),raising=False)
+    monkeypatch.setattr(c,'get_last_error',lambda:last_error[0],raising=False)
+    class DLL:
+        pass
+    dll=DLL();dll.StretchBlt=lambda:0
+    fn=native._bind(dll,'StretchBlt',w.BOOL)
+    with pytest.raises(native.NativeDrawingError) as caught:
+        native._require(fn(),'StretchBlt:present')
+    assert caught.value.winerror is None

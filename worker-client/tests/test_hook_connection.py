@@ -97,7 +97,7 @@ def test_account_change_closes_receiver_until_backend_reset(lab,backend_peer):
     try:
         original=manager.prepare(credentials,state)
         lab[0].wxid='wxid_sales_B';response(blocked=True,rebind=True)
-        with pytest.raises(HookLocalError,match='ACCOUNT_NOT_CONFIRMED'):manager.prepare(credentials,state)
+        with pytest.raises(HookLocalError,match='HOOK_ACCOUNT_CHANGED'):manager.prepare(credentials,state)
         assert manager.prepared is None and not original.business_ready
         assert [x[0] for x in lab[0].requests].count('/ConfigureMsgReciveFullURL')==1
         lab[0].wxid='wxid_sales_A';response(blocked=True,rebind=True)

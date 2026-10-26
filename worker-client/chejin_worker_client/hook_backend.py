@@ -15,6 +15,7 @@ from urllib.parse import urlsplit
 import requests
 
 from .api import ApiError
+from .hook_account_issues import account_block_code, HookAccountConfirmationError
 from .hook_inbox import HookReceiveScope
 
 BACKEND_WAIT_CODES = frozenset({"HOOK_BACKEND_NETWORK_FAILED", "HOOK_BACKEND_TEMPORARILY_UNAVAILABLE"})
@@ -129,9 +130,17 @@ class HookAccountReceipt:
             raise ValueError("HOOK_WORKER_PROFILE_MISSING")
         return WorkerProfile.from_api(json.loads(self.worker_profile_json))
 
+    def blocking_code(self) -> str | None:
+        if self.blocked or self.rebind_required:
+            return account_block_code(self.reason_code)
+        if not self.self_wxid or not self.account_epoch:
+            return "HOOK_ACCOUNT_NOT_CONFIRMED"
+        return None
+
     def receive_scope(self, hook_api_port: int) -> HookReceiveScope:
-        if self.blocked or self.rebind_required or not self.self_wxid or not self.account_epoch:
-            raise ValueError("HOOK_ACCOUNT_NOT_CONFIRMED")
+        code = self.blocking_code()
+        if code is not None:
+            raise HookAccountConfirmationError(code)
         return HookReceiveScope(self.self_wxid, self.account_epoch, self.process_generation, hook_api_port)
 
 
@@ -183,6 +192,8 @@ class HookIdentityClient:
                 raise ValueError()
             if status != 200 or envelope.get("code") != "OK":
                 # Do not expose arbitrary upstream text/body or credentials in errors.
+                if status == 400 and envelope.get("code") == "WORKER_DISABLED":
+                    raise ApiError("HOOK_WORKER_DISABLED", "Worker 已停用，请联系管理员", status)
                 raise ApiError("HOOK_ACCOUNT_REQUEST_REJECTED", "工作微信账号核验未通过", status)
             data = envelope["data"]
             hook = data["hook_context"]

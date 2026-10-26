@@ -25,6 +25,7 @@ from .hook_projection import NativeProjectionStore
 from .hook_process import inspect_windows_window_geometry
 from . import storage, ui_lock
 from . import startup_check_state
+from .hook_account_issues import ACCOUNT_ISSUES
 from .hook_progress import emit_progress,register_progress,_deliver
 from .hook_startup_window import StartupWindowWait
 
@@ -118,18 +119,18 @@ class HookWorkerServices:
                 emit_progress(runner,"connection","connection_wait","waiting","connection_wait")
                 runner.on_status("connecting")
                 return  # Preserve same-account receiver; no work is admitted.
-            self._fault(runner, exc.code, http_status=exc.status_code)
+            self._fault(runner, exc.code, http_status=exc.status_code, startup_phase="environment")
             return
         except ui_lock.UiLockError as exc:
             if exc.code in {ui_lock.UI_LOCK_BUSY, ui_lock.UI_LOCK_ACQUIRE_TIMEOUT}:
                 return  # An existing physical action owns this same lock.
-            self._fault(runner, "HOOK_ACTION_LOCK_FAILED")
+            self._fault(runner, "HOOK_ACTION_LOCK_FAILED", startup_phase="environment")
             return
         except Exception as exc:
             code = getattr(exc, "code", None)
             if not isinstance(code, str) or not code.startswith("HOOK_"):
                 code = "HOOK_CONNECTION_CHECK_FAILED"
-            self._fault(runner, code, local_error=exc)
+            self._fault(runner, code, local_error=exc, startup_phase="environment")
             return
         runner.last_rpa_component_status = "ready"
         runner.last_wechat_status = "logged_in" if prepared else "logged_out"
@@ -240,7 +241,7 @@ class HookWorkerServices:
         if context=='connection':self._startup_check = startup_check_state.failed(code)
         self.dispatcher._report_wait(code,context=context,clock_check=clock_check)
 
-    def _fault(self, runner, code: str, *, http_status=None, local_error=None) -> None:
+    def _fault(self, runner, code: str, *, http_status=None, local_error=None, startup_phase=None) -> None:
         if isinstance(local_error, sqlite3.Error):
             code = 'HOOK_LOCAL_STORAGE_FAILED'
             # Durable recording is a prerequisite for every new physical action.
@@ -252,6 +253,8 @@ class HookWorkerServices:
         if not isinstance(operation,str) or operation not in {'IsLoginStatus','ConfigureMsgReciveFullURL','GetDBHandleAndPath','QueryDB','SendTextMsg','GetFriendAndChatRoomList','Voice2Text'}:operation=None
         if not isinstance(kind,str) or kind not in {'timeout','connection_error','request_error'}:kind=None
         detail=startup_check_state.failed(code,operation=operation,transport_kind=kind)
+        if startup_phase is not None:
+            emit_progress(runner,'startup',startup_phase,'error','interrupted')
         context=getattr(getattr(self.dispatcher,'runtime',None),'_progress_context',None)
         prior=getattr(runner,'_hook_progress_contexts',{}).get(context,{})
         # Without a matching call identity, a prior fault is not evidence of
@@ -266,7 +269,7 @@ class HookWorkerServices:
         runner._preserve_stopped_run_status("faulted")
         if self._last_error != code:
             clock = getattr(getattr(self.connection, 'prepared', None), 'clock', None)
-            message = (detail['title'] + '。' + detail['message'] if code == 'HOOK_LOCAL_STORAGE_FAILED'
+            message = (detail['title'] + '。' + detail['message'] if code == 'HOOK_LOCAL_STORAGE_FAILED' or code in ACCOUNT_ISSUES
                 else "工作微信连接异常，已停止接单；请检查微信后恢复。")
             try:
                 storage.append_log("ERROR", "hook_connection_fault", message,

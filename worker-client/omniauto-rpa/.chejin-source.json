@@ -680,17 +680,17 @@
     "recall_author_and_reviewer_shared_trigger_context"
   ],
   "current_release": {
-    "version": "0.10.19",
+    "version": "0.10.20",
     "source_commit": "209f7fb66a01a05736fdd32e54808e54a9b66ce3",
     "source_state": "gray_release_candidate",
     "published": false,
-    "contract_revision": "0.10.19",
-    "contract_sha256": "18a0e10318aaf523cadb6038a2d16d1b35496edc7edc386a011a4eb196ff9e96",
+    "contract_revision": "0.10.20",
+    "contract_sha256": "7851f2e9ba58f16588d0365f21580beb197e10a5ab381bcd613435264a8c93e9",
     "scope": [
       "native_hook_state_and_release_preparation",
       "schema_revision_sync"
     ],
-    "note": "0.10.19 cumulative reviewed eae560e: shared DPI layout/startup checks, projection diagnostics, shortcode-only and shared OCR/action progress. Preserve binding, unfinished evidence, pause and fault states. Original0.10.18 button acceptance pending; DLL unchanged."
+    "note": "0.10.20 cumulative reviewed d06caa6/de7d4d4/4969591: native updater presentation/evidence, explicit account block reasons, isolated recovery stages. Preserve binding, unfinished records and stopped intent. DLL unchanged."
   },
   "historical_integrations": [
     {

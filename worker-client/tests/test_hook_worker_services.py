@@ -390,3 +390,60 @@ def test_history_error_survives_actual_business_loop_log_and_export(runtime,tmp_
         assert record['error_code']=='HOOK_HISTORY_MESSAGE_ID_UNRESOLVED'
         assert meta['protocol_check']=={'identity_failure':'zero_id_not_outgoing_text','database':'MSG0.db',
             'localId':'7801','MsgSvrID':'0','Type':'1','IsSender':'0'}
+
+
+@pytest.mark.parametrize('reason,expected_title',[
+    ('HOOK_SALES_DISABLED','销售账号已停用'),
+    ('HOOK_ACCOUNT_CHANGED','工作微信账号与原绑定不一致'),
+    ('HOOK_SALES_BINDING_REQUIRED','销售绑定尚未确认'),
+    ('UNRECOGNIZED_REASON','工作微信账号核验未通过'),
+    ('WORKER_DISABLED','Worker 已停用'),
+])
+@pytest.mark.parametrize('action_locked',[False,True])
+def test_account_stop_reason_finishes_startup_step_and_keeps_original_evidence(runtime,lab,backend_peer,monkeypatch,reason,expected_title,action_locked):
+    from chejin_worker_client.hook_progress import HookProgressTimeline
+    runner,services,binding,_,errors,_,posted,response=runtime
+    timeline=HookProgressTimeline()
+    runner.on_runtime_process=timeline.apply
+    runner.binding=binding
+    services.attach(binding,runner._hook_persistence_failed)
+    runner.tick_once()
+    original=services.connection.prepared
+    callback(services.connection)
+    with storage.db_connection() as db:
+        raw_before=[tuple(row) for row in db.execute('SELECT * FROM hook_raw_inbox').fetchall()]
+    if action_locked:
+        from chejin_worker_client import ui_lock
+        monkeypatch.setattr(ui_lock,'lock_summary',lambda:{'locked':True})
+    response(blocked=True,rebind=reason=='HOOK_ACCOUNT_CHANGED')
+    body=json.loads(backend_peer.body)
+    body['data']['hook_context']['reason_code']=reason
+    backend_peer.body=json.dumps(body).encode()
+    if reason=='WORKER_DISABLED':
+        backend_peer.status=400;backend_peer.body=b'{"code":"WORKER_DISABLED","message":"private details"}'
+    runner.tick_once()
+    assert services.startup_check_state()['title']==expected_title
+    assert not services.startup_check_state()['canStart']
+    assert binding.run_status=='faulted' and services.connection.prepared is None
+    assert not runner._can_start_new_flow()
+    if reason!='UNRECOGNIZED_REASON':
+        assert expected_title in errors[-1]
+    assert 'running' not in posted
+    assert timeline.latest[('startup','environment')]['state']=='error'
+    assert not any(item['state']=='current' for item in timeline.steps if item.get('_group')=='startup')
+    with storage.db_connection() as db:
+        assert raw_before==[tuple(row) for row in db.execute('SELECT * FROM hook_raw_inbox').fetchall()]
+    # A later ready receipt cannot start work. Real server rebind latch is covered
+    # by test_hook_account_client; this synthetic peer only tests the client gate.
+    # macOS keeps the HTTP callback socket in TIME_WAIT after teardown. Allocate
+    # a fresh isolated test listener; never relax production exclusive-port policy.
+    from chejin_worker_client.hook_receiver import create_receiver
+    probe=create_receiver(port=0,inbox=services.connection.inbox,scope=original.registration.scope,
+        request_timeout_seconds=1,on_persistence_failure=lambda:None)
+    services.connection.gateway.deployment=replace(services.connection.gateway.deployment,receiver_port=probe.server_port)
+    probe.server_close()
+    backend_peer.status=200;response()
+    runner.tick_once()
+    assert binding.run_status=='faulted' and 'running' not in posted
+    assert services.connection.prepared is not None, (services.startup_check_state(), errors, runner.stop_event.is_set(), emergency_stop_requested())
+    assert services.connection.prepared.account.account_epoch==original.account.account_epoch

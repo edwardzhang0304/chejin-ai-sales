@@ -162,9 +162,9 @@ class HookConnectionManager:
                     identity = HookHeartbeatIdentity(scope.self_wxid,process.generation,
                         self.gateway.deployment.revision,process.dll_sha256,account_epoch=scope.account_epoch)
                     account = self.backend.heartbeat(credentials,identity,replace(state,wechat_status="logged_in"))
-                    if account.blocked or account.rebind_required:
+                    if (account_code := account.blocking_code()) is not None:
                         self._close_receiver()
-                        raise HookLocalError("HOOK_ACCOUNT_NOT_CONFIRMED")
+                        raise HookLocalError(account_code)
                     self._account = account
                     self._prepared = self._prepared_connection(account,process,old.registration)
                     return self._prepared
@@ -206,9 +206,9 @@ class HookConnectionManager:
                     self._close_receiver()
                 raise
             self._account = account
-            if account.blocked or account.rebind_required:
+            if (account_code := account.blocking_code()) is not None:
                 self._close_receiver()
-                raise HookLocalError("HOOK_ACCOUNT_NOT_CONFIRMED")
+                raise HookLocalError(account_code)
             scope = account.receive_scope(self.gateway.deployment.hook_api_port)
             # Backend requests hold no WeChat action lease. Reinspect afterwards.
             try:

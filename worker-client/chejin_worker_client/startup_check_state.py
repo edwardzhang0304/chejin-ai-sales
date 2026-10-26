@@ -70,3 +70,7 @@ def failed(code,*,operation=None,transport_kind=None):
     return {'state':'failed','title':title,'message':message,'canStart':False}
 
 ISSUES.update({'HOOK_MODEL_OBSERVATION_UNSUPPORTED':('后台能力检查未通过','后台版本不支持暂停期间只查看结果，请使用配套后台；期间暂不接单。'), 'HOOK_MODEL_OBSERVATION_UNCONFIRMED':('后台结果查询检查未通过','后台未确认只查看结果，已停止接单；请检查配套后台。')})
+
+# The same allowlist is used at account admission; no upstream free text is shown.
+from .hook_account_issues import ACCOUNT_ISSUES
+ISSUES.update(ACCOUNT_ISSUES)

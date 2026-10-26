@@ -26,85 +26,85 @@
           ]
         },
         "ops/formal_release/handoffs/hook-reviewed-1ed1d7c.json": {
-          "reason": "0.10.19 metadata only; unchanged executable tools; approved SOP18.0.4.",
+          "reason": "0.10.20 reviewed source/version evidence metadata only; executable tools unchanged; approved SOP18.0.4.",
           "covered_by": [
             "ops/formal_release/tests/test_tooling_handoff.py"
           ]
         },
         "ops/formal_release/handoffs/hook-reviewed-bbe404a.json": {
-          "reason": "0.10.19 metadata only; unchanged executable tools; approved SOP18.0.4.",
+          "reason": "0.10.20 reviewed source/version evidence metadata only; executable tools unchanged; approved SOP18.0.4.",
           "covered_by": [
             "ops/formal_release/tests/test_tooling_handoff.py"
           ]
         },
         "ops/formal_release/handoffs/hook-reviewed-d44f8e5.json": {
-          "reason": "0.10.19 metadata only; unchanged executable tools; approved SOP18.0.4.",
+          "reason": "0.10.20 reviewed source/version evidence metadata only; executable tools unchanged; approved SOP18.0.4.",
           "covered_by": [
             "ops/formal_release/tests/test_tooling_handoff.py"
           ]
         },
         "ops/formal_release/handoffs/hook-reviewed-d7f7ad4.json": {
-          "reason": "0.10.19 metadata only; unchanged executable tools; approved SOP18.0.4.",
+          "reason": "0.10.20 reviewed source/version evidence metadata only; executable tools unchanged; approved SOP18.0.4.",
           "covered_by": [
             "ops/formal_release/tests/test_tooling_handoff.py"
           ]
         },
         "ops/formal_release/handoffs/hook-reviewed-evidence-01014.json": {
-          "reason": "0.10.19 metadata only; unchanged executable tools; approved SOP18.0.4.",
+          "reason": "0.10.20 reviewed source/version evidence metadata only; executable tools unchanged; approved SOP18.0.4.",
           "covered_by": [
             "ops/formal_release/tests/test_tooling_handoff.py"
           ]
         },
         "ops/formal_release/handoffs/tooling-01011-reviewed.json": {
-          "reason": "0.10.19 metadata only; unchanged executable tools; approved SOP18.0.4.",
+          "reason": "0.10.20 reviewed source/version evidence metadata only; executable tools unchanged; approved SOP18.0.4.",
           "covered_by": [
             "ops/formal_release/tests/test_tooling_handoff.py"
           ]
         },
         "ops/formal_release/handoffs/tooling-01011-scope.json": {
-          "reason": "0.10.19 metadata only; unchanged executable tools; approved SOP18.0.4.",
+          "reason": "0.10.20 reviewed source/version evidence metadata only; executable tools unchanged; approved SOP18.0.4.",
           "covered_by": [
             "ops/formal_release/tests/test_tooling_handoff.py"
           ]
         },
         "ops/formal_release/handoffs/tooling-01012-reviewed.json": {
-          "reason": "0.10.19 metadata only; unchanged executable tools; approved SOP18.0.4.",
+          "reason": "0.10.20 reviewed source/version evidence metadata only; executable tools unchanged; approved SOP18.0.4.",
           "covered_by": [
             "ops/formal_release/tests/test_tooling_handoff.py"
           ]
         },
         "ops/formal_release/handoffs/tooling-01012-scope.json": {
-          "reason": "0.10.19 metadata only; unchanged executable tools; approved SOP18.0.4.",
+          "reason": "0.10.20 reviewed source/version evidence metadata only; executable tools unchanged; approved SOP18.0.4.",
           "covered_by": [
             "ops/formal_release/tests/test_tooling_handoff.py"
           ]
         },
         "ops/formal_release/handoffs/tooling-01013-reviewed.json": {
-          "reason": "0.10.19 metadata only; unchanged executable tools; approved SOP18.0.4.",
+          "reason": "0.10.20 reviewed source/version evidence metadata only; executable tools unchanged; approved SOP18.0.4.",
           "covered_by": [
             "ops/formal_release/tests/test_tooling_handoff.py"
           ]
         },
         "ops/formal_release/handoffs/tooling-01013-scope.json": {
-          "reason": "0.10.19 metadata only; unchanged executable tools; approved SOP18.0.4.",
+          "reason": "0.10.20 reviewed source/version evidence metadata only; executable tools unchanged; approved SOP18.0.4.",
           "covered_by": [
             "ops/formal_release/tests/test_tooling_handoff.py"
           ]
         },
         "ops/formal_release/handoffs/tooling-01014-reviewed.json": {
-          "reason": "0.10.19 metadata only; unchanged executable tools; approved SOP18.0.4.",
+          "reason": "0.10.20 reviewed source/version evidence metadata only; executable tools unchanged; approved SOP18.0.4.",
           "covered_by": [
             "ops/formal_release/tests/test_tooling_handoff.py"
           ]
         },
         "ops/formal_release/handoffs/tooling-01014-scope.json": {
-          "reason": "0.10.19 metadata only; unchanged executable tools; approved SOP18.0.4.",
+          "reason": "0.10.20 reviewed source/version evidence metadata only; executable tools unchanged; approved SOP18.0.4.",
           "covered_by": [
             "ops/formal_release/tests/test_tooling_handoff.py"
           ]
         },
         "ops/formal_release/handoffs/tooling-01015-scope.json": {
-          "reason": "0.10.19 metadata only; unchanged executable tools; approved SOP18.0.4.",
+          "reason": "0.10.20 reviewed source/version evidence metadata only; executable tools unchanged; approved SOP18.0.4.",
           "covered_by": [
             "ops/formal_release/tests/test_tooling_handoff.py"
           ]
@@ -201,67 +201,67 @@
           ]
         },
         "ops/formal_release/handoffs/hook-reviewed-1ed1d7c.json": {
-          "reason": "0.10.19 metadata only; unchanged executable tools; approved SOP18.0.4.",
+          "reason": "0.10.20 reviewed source/version evidence metadata only; executable tools unchanged; approved SOP18.0.4.",
           "covered_by": [
             "ops/formal_release/tests/test_tooling_handoff.py"
           ]
         },
         "ops/formal_release/handoffs/hook-reviewed-bbe404a.json": {
-          "reason": "0.10.19 metadata only; unchanged executable tools; approved SOP18.0.4.",
+          "reason": "0.10.20 reviewed source/version evidence metadata only; executable tools unchanged; approved SOP18.0.4.",
           "covered_by": [
             "ops/formal_release/tests/test_tooling_handoff.py"
           ]
         },
         "ops/formal_release/handoffs/hook-reviewed-d44f8e5.json": {
-          "reason": "0.10.19 metadata only; unchanged executable tools; approved SOP18.0.4.",
+          "reason": "0.10.20 reviewed source/version evidence metadata only; executable tools unchanged; approved SOP18.0.4.",
           "covered_by": [
             "ops/formal_release/tests/test_tooling_handoff.py"
           ]
         },
         "ops/formal_release/handoffs/hook-reviewed-evidence-01014.json": {
-          "reason": "0.10.19 metadata only; unchanged executable tools; approved SOP18.0.4.",
+          "reason": "0.10.20 reviewed source/version evidence metadata only; executable tools unchanged; approved SOP18.0.4.",
           "covered_by": [
             "ops/formal_release/tests/test_tooling_handoff.py"
           ]
         },
         "ops/formal_release/handoffs/tooling-01012-reviewed.json": {
-          "reason": "0.10.19 metadata only; unchanged executable tools; approved SOP18.0.4.",
+          "reason": "0.10.20 reviewed source/version evidence metadata only; executable tools unchanged; approved SOP18.0.4.",
           "covered_by": [
             "ops/formal_release/tests/test_tooling_handoff.py"
           ]
         },
         "ops/formal_release/handoffs/tooling-01012-scope.json": {
-          "reason": "0.10.19 metadata only; unchanged executable tools; approved SOP18.0.4.",
+          "reason": "0.10.20 reviewed source/version evidence metadata only; executable tools unchanged; approved SOP18.0.4.",
           "covered_by": [
             "ops/formal_release/tests/test_tooling_handoff.py"
           ]
         },
         "ops/formal_release/handoffs/tooling-01013-reviewed.json": {
-          "reason": "0.10.19 metadata only; unchanged executable tools; approved SOP18.0.4.",
+          "reason": "0.10.20 reviewed source/version evidence metadata only; executable tools unchanged; approved SOP18.0.4.",
           "covered_by": [
             "ops/formal_release/tests/test_tooling_handoff.py"
           ]
         },
         "ops/formal_release/handoffs/tooling-01013-scope.json": {
-          "reason": "0.10.19 metadata only; unchanged executable tools; approved SOP18.0.4.",
+          "reason": "0.10.20 reviewed source/version evidence metadata only; executable tools unchanged; approved SOP18.0.4.",
           "covered_by": [
             "ops/formal_release/tests/test_tooling_handoff.py"
           ]
         },
         "ops/formal_release/handoffs/tooling-01014-reviewed.json": {
-          "reason": "0.10.19 metadata only; unchanged executable tools; approved SOP18.0.4.",
+          "reason": "0.10.20 reviewed source/version evidence metadata only; executable tools unchanged; approved SOP18.0.4.",
           "covered_by": [
             "ops/formal_release/tests/test_tooling_handoff.py"
           ]
         },
         "ops/formal_release/handoffs/tooling-01014-scope.json": {
-          "reason": "0.10.19 metadata only; unchanged executable tools; approved SOP18.0.4.",
+          "reason": "0.10.20 reviewed source/version evidence metadata only; executable tools unchanged; approved SOP18.0.4.",
           "covered_by": [
             "ops/formal_release/tests/test_tooling_handoff.py"
           ]
         },
         "ops/formal_release/handoffs/tooling-01015-scope.json": {
-          "reason": "0.10.19 metadata only; unchanged executable tools; approved SOP18.0.4.",
+          "reason": "0.10.20 reviewed source/version evidence metadata only; executable tools unchanged; approved SOP18.0.4.",
           "covered_by": [
             "ops/formal_release/tests/test_tooling_handoff.py"
           ]
@@ -304,49 +304,49 @@
       "branch": "gray-release-0.10.x",
       "changed_inputs": {
         "ops/formal_release/handoffs/hook-reviewed-bbe404a.json": {
-          "reason": "0.10.19 metadata only; unchanged executable tools; approved SOP18.0.4.",
+          "reason": "0.10.20 reviewed source/version evidence metadata only; executable tools unchanged; approved SOP18.0.4.",
           "covered_by": [
             "ops/formal_release/tests/test_tooling_handoff.py"
           ]
         },
         "ops/formal_release/handoffs/hook-reviewed-d44f8e5.json": {
-          "reason": "0.10.19 metadata only; unchanged executable tools; approved SOP18.0.4.",
+          "reason": "0.10.20 reviewed source/version evidence metadata only; executable tools unchanged; approved SOP18.0.4.",
           "covered_by": [
             "ops/formal_release/tests/test_tooling_handoff.py"
           ]
         },
         "ops/formal_release/handoffs/hook-reviewed-evidence-01014.json": {
-          "reason": "0.10.19 metadata only; unchanged executable tools; approved SOP18.0.4.",
+          "reason": "0.10.20 reviewed source/version evidence metadata only; executable tools unchanged; approved SOP18.0.4.",
           "covered_by": [
             "ops/formal_release/tests/test_tooling_handoff.py"
           ]
         },
         "ops/formal_release/handoffs/tooling-01013-reviewed.json": {
-          "reason": "0.10.19 metadata only; unchanged executable tools; approved SOP18.0.4.",
+          "reason": "0.10.20 reviewed source/version evidence metadata only; executable tools unchanged; approved SOP18.0.4.",
           "covered_by": [
             "ops/formal_release/tests/test_tooling_handoff.py"
           ]
         },
         "ops/formal_release/handoffs/tooling-01013-scope.json": {
-          "reason": "0.10.19 metadata only; unchanged executable tools; approved SOP18.0.4.",
+          "reason": "0.10.20 reviewed source/version evidence metadata only; executable tools unchanged; approved SOP18.0.4.",
           "covered_by": [
             "ops/formal_release/tests/test_tooling_handoff.py"
           ]
         },
         "ops/formal_release/handoffs/tooling-01014-reviewed.json": {
-          "reason": "0.10.19 metadata only; unchanged executable tools; approved SOP18.0.4.",
+          "reason": "0.10.20 reviewed source/version evidence metadata only; executable tools unchanged; approved SOP18.0.4.",
           "covered_by": [
             "ops/formal_release/tests/test_tooling_handoff.py"
           ]
         },
         "ops/formal_release/handoffs/tooling-01014-scope.json": {
-          "reason": "0.10.19 metadata only; unchanged executable tools; approved SOP18.0.4.",
+          "reason": "0.10.20 reviewed source/version evidence metadata only; executable tools unchanged; approved SOP18.0.4.",
           "covered_by": [
             "ops/formal_release/tests/test_tooling_handoff.py"
           ]
         },
         "ops/formal_release/handoffs/tooling-01015-scope.json": {
-          "reason": "0.10.19 metadata only; unchanged executable tools; approved SOP18.0.4.",
+          "reason": "0.10.20 reviewed source/version evidence metadata only; executable tools unchanged; approved SOP18.0.4.",
           "covered_by": [
             "ops/formal_release/tests/test_tooling_handoff.py"
           ]
@@ -389,13 +389,13 @@
       "branch": "gray-release-0.10.x",
       "changed_inputs": {
         "ops/formal_release/handoffs/hook-reviewed-bbe404a.json": {
-          "reason": "0.10.19 metadata only; unchanged executable tools; approved SOP18.0.4.",
+          "reason": "0.10.20 reviewed source/version evidence metadata only; executable tools unchanged; approved SOP18.0.4.",
           "covered_by": [
             "ops/formal_release/tests/test_tooling_handoff.py"
           ]
         },
         "ops/formal_release/handoffs/tooling-01015-scope.json": {
-          "reason": "0.10.19 metadata only; unchanged executable tools; approved SOP18.0.4.",
+          "reason": "0.10.20 reviewed source/version evidence metadata only; executable tools unchanged; approved SOP18.0.4.",
           "covered_by": [
             "ops/formal_release/tests/test_tooling_handoff.py"
           ]
@@ -425,115 +425,115 @@
       ]
     },
     "ops/formal_release/handoffs/hook-reviewed-1ed1d7c.json": {
-      "reason": "0.10.19 metadata only; unchanged executable tools; approved SOP18.0.4.",
+      "reason": "0.10.20 reviewed source/version evidence metadata only; executable tools unchanged; approved SOP18.0.4.",
       "covered_by": [
         "ops/formal_release/tests/test_tooling_handoff.py"
       ]
     },
     "ops/formal_release/handoffs/hook-reviewed-22eb0b1.json": {
-      "reason": "0.10.19 metadata only; unchanged executable tools; approved SOP18.0.4.",
+      "reason": "0.10.20 reviewed source/version evidence metadata only; executable tools unchanged; approved SOP18.0.4.",
       "covered_by": [
         "ops/formal_release/tests/test_tooling_handoff.py"
       ]
     },
     "ops/formal_release/handoffs/hook-reviewed-bbe404a.json": {
-      "reason": "0.10.19 metadata only; unchanged executable tools; approved SOP18.0.4.",
+      "reason": "0.10.20 reviewed source/version evidence metadata only; executable tools unchanged; approved SOP18.0.4.",
       "covered_by": [
         "ops/formal_release/tests/test_tooling_handoff.py"
       ]
     },
     "ops/formal_release/handoffs/hook-reviewed-d44f8e5.json": {
-      "reason": "0.10.19 metadata only; unchanged executable tools; approved SOP18.0.4.",
+      "reason": "0.10.20 reviewed source/version evidence metadata only; executable tools unchanged; approved SOP18.0.4.",
       "covered_by": [
         "ops/formal_release/tests/test_tooling_handoff.py"
       ]
     },
     "ops/formal_release/handoffs/hook-reviewed-d7f7ad4.json": {
-      "reason": "0.10.19 metadata only; unchanged executable tools; approved SOP18.0.4.",
+      "reason": "0.10.20 reviewed source/version evidence metadata only; executable tools unchanged; approved SOP18.0.4.",
       "covered_by": [
         "ops/formal_release/tests/test_tooling_handoff.py"
       ]
     },
     "ops/formal_release/handoffs/hook-reviewed-evidence-01014.json": {
-      "reason": "0.10.19 metadata only; unchanged executable tools; approved SOP18.0.4.",
+      "reason": "0.10.20 reviewed source/version evidence metadata only; executable tools unchanged; approved SOP18.0.4.",
       "covered_by": [
         "ops/formal_release/tests/test_tooling_handoff.py"
       ]
     },
     "ops/formal_release/handoffs/tooling-01010-reviewed.json": {
-      "reason": "0.10.19 metadata only; unchanged executable tools; approved SOP18.0.4.",
+      "reason": "0.10.20 reviewed source/version evidence metadata only; executable tools unchanged; approved SOP18.0.4.",
       "covered_by": [
         "ops/formal_release/tests/test_tooling_handoff.py"
       ]
     },
     "ops/formal_release/handoffs/tooling-01010-scope.json": {
-      "reason": "0.10.19 metadata only; unchanged executable tools; approved SOP18.0.4.",
+      "reason": "0.10.20 reviewed source/version evidence metadata only; executable tools unchanged; approved SOP18.0.4.",
       "covered_by": [
         "ops/formal_release/tests/test_tooling_handoff.py"
       ]
     },
     "ops/formal_release/handoffs/tooling-01011-reviewed.json": {
-      "reason": "0.10.19 metadata only; unchanged executable tools; approved SOP18.0.4.",
+      "reason": "0.10.20 reviewed source/version evidence metadata only; executable tools unchanged; approved SOP18.0.4.",
       "covered_by": [
         "ops/formal_release/tests/test_tooling_handoff.py"
       ]
     },
     "ops/formal_release/handoffs/tooling-01011-scope.json": {
-      "reason": "0.10.19 metadata only; unchanged executable tools; approved SOP18.0.4.",
+      "reason": "0.10.20 reviewed source/version evidence metadata only; executable tools unchanged; approved SOP18.0.4.",
       "covered_by": [
         "ops/formal_release/tests/test_tooling_handoff.py"
       ]
     },
     "ops/formal_release/handoffs/tooling-01012-reviewed.json": {
-      "reason": "0.10.19 metadata only; unchanged executable tools; approved SOP18.0.4.",
+      "reason": "0.10.20 reviewed source/version evidence metadata only; executable tools unchanged; approved SOP18.0.4.",
       "covered_by": [
         "ops/formal_release/tests/test_tooling_handoff.py"
       ]
     },
     "ops/formal_release/handoffs/tooling-01012-scope.json": {
-      "reason": "0.10.19 metadata only; unchanged executable tools; approved SOP18.0.4.",
+      "reason": "0.10.20 reviewed source/version evidence metadata only; executable tools unchanged; approved SOP18.0.4.",
       "covered_by": [
         "ops/formal_release/tests/test_tooling_handoff.py"
       ]
     },
     "ops/formal_release/handoffs/tooling-01013-reviewed.json": {
-      "reason": "0.10.19 metadata only; unchanged executable tools; approved SOP18.0.4.",
+      "reason": "0.10.20 reviewed source/version evidence metadata only; executable tools unchanged; approved SOP18.0.4.",
       "covered_by": [
         "ops/formal_release/tests/test_tooling_handoff.py"
       ]
     },
     "ops/formal_release/handoffs/tooling-01013-scope.json": {
-      "reason": "0.10.19 metadata only; unchanged executable tools; approved SOP18.0.4.",
+      "reason": "0.10.20 reviewed source/version evidence metadata only; executable tools unchanged; approved SOP18.0.4.",
       "covered_by": [
         "ops/formal_release/tests/test_tooling_handoff.py"
       ]
     },
     "ops/formal_release/handoffs/tooling-01014-reviewed.json": {
-      "reason": "0.10.19 metadata only; unchanged executable tools; approved SOP18.0.4.",
+      "reason": "0.10.20 reviewed source/version evidence metadata only; executable tools unchanged; approved SOP18.0.4.",
       "covered_by": [
         "ops/formal_release/tests/test_tooling_handoff.py"
       ]
     },
     "ops/formal_release/handoffs/tooling-01014-scope.json": {
-      "reason": "0.10.19 metadata only; unchanged executable tools; approved SOP18.0.4.",
+      "reason": "0.10.20 reviewed source/version evidence metadata only; executable tools unchanged; approved SOP18.0.4.",
       "covered_by": [
         "ops/formal_release/tests/test_tooling_handoff.py"
       ]
     },
     "ops/formal_release/handoffs/tooling-01015-scope.json": {
-      "reason": "0.10.19 metadata only; unchanged executable tools; approved SOP18.0.4.",
+      "reason": "0.10.20 reviewed source/version evidence metadata only; executable tools unchanged; approved SOP18.0.4.",
       "covered_by": [
         "ops/formal_release/tests/test_tooling_handoff.py"
       ]
     },
     "ops/formal_release/handoffs/tooling-gui-recovery-reviewed.json": {
-      "reason": "0.10.19 metadata only; unchanged executable tools; approved SOP18.0.4.",
+      "reason": "0.10.20 reviewed source/version evidence metadata only; executable tools unchanged; approved SOP18.0.4.",
       "covered_by": [
         "ops/formal_release/tests/test_tooling_handoff.py"
       ]
     },
     "ops/formal_release/handoffs/tooling-gui-recovery-scope.json": {
-      "reason": "0.10.19 metadata only; unchanged executable tools; approved SOP18.0.4.",
+      "reason": "0.10.20 reviewed source/version evidence metadata only; executable tools unchanged; approved SOP18.0.4.",
       "covered_by": [
         "ops/formal_release/tests/test_tooling_handoff.py"
       ]

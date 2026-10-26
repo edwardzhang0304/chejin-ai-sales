@@ -109,3 +109,37 @@ def test_invalid_identity_fails_before_network(peer):
     with pytest.raises(ValueError):
         replace(state, local_lock_summary_json='[]')
     assert peer.requests == []
+
+
+@pytest.mark.parametrize('status,upstream,expected',[
+    (400,'WORKER_DISABLED','HOOK_WORKER_DISABLED'),
+    (400,'SOME_UNKNOWN_REASON','HOOK_ACCOUNT_REQUEST_REJECTED'),
+    (401,'WORKER_DISABLED','HOOK_ACCOUNT_REQUEST_REJECTED'),
+])
+def test_only_explicit_disabled_response_gets_disabled_message(peer,status,upstream,expected):
+    peer.status=status
+    peer.body=json.dumps({'code':upstream,'message':'secret-worker-token arbitrary text'}).encode()
+    client,credentials,identity,state=values(peer)
+    with pytest.raises(ApiError) as error:client.heartbeat(credentials,identity,state)
+    assert error.value.code==expected
+    assert 'secret-worker-token' not in str(error.value)
+
+
+@pytest.mark.parametrize('blocked,rebind,reason,identity_present,expected',[
+    (True,False,'HOOK_SALES_DISABLED',True,'HOOK_SALES_DISABLED'),
+    (True,True,'HOOK_ACCOUNT_CHANGED',True,'HOOK_ACCOUNT_CHANGED'),
+    (True,False,'HOOK_SALES_BINDING_REQUIRED',True,'HOOK_SALES_BINDING_REQUIRED'),
+    (True,False,'unrecognized-reason',True,'HOOK_ACCOUNT_NOT_CONFIRMED'),
+    (False,False,'HOOK_SALES_DISABLED',False,'HOOK_ACCOUNT_NOT_CONFIRMED'),
+    (False,False,None,True,None),
+])
+def test_receipt_scope_and_connection_share_confirmation_reason(blocked,rebind,reason,identity_present,expected):
+    from chejin_worker_client.hook_backend import HookAccountReceipt
+    receipt=HookAccountReceipt(str(uuid.uuid4()),'test-instance','wxid_test' if identity_present else None,
+        str(uuid.uuid4()) if identity_present else None,str(uuid.uuid4()),'process-1',blocked,rebind,reason,'paused')
+    assert receipt.blocking_code()==expected
+    if expected:
+        with pytest.raises(ValueError) as error:receipt.receive_scope(30001)
+        assert error.value.code==expected
+    else:
+        assert receipt.receive_scope(30001).self_wxid=='wxid_test'
