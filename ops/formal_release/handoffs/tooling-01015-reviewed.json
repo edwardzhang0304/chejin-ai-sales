@@ -1,7 +1,7 @@
 {
   "schema_version": 2,
   "repository": "edwardzhang0304/chejin-ai-sales",
-  "reviewed_commit": "720043cc53398d48f2fa0bf9f6d7367dfa18fd02",
+  "reviewed_commit": "8d01d6bb231e94af2aeaebdbb55110f70ff195af",
   "scope_file": "ops/formal_release/handoffs/tooling-01015-scope.json",
   "reviewed_inputs": {
     ".github/actions/worker-release-checks/action.yml": "100644 blob d52d02ca82a127917695e0d80c5ab1f6697b7d62",
@@ -36,7 +36,7 @@
     "ops/formal_release/handoffs/hook-reviewed-2620508.json": "100644 blob 68fc09bbf552eb6861b56e9725733fda8f3251ce",
     "ops/formal_release/handoffs/hook-reviewed-2fbf52a.json": "100644 blob 7ced64e5bb8eaf1a154ab286d974783ae8265bf1",
     "ops/formal_release/handoffs/hook-reviewed-a1de7f3.json": "100644 blob b6428d18ddb3e2e66cce756cc3a9a2f4785de4d0",
-    "ops/formal_release/handoffs/hook-reviewed-bbe404a.json": "100644 blob d45530f3d84759e4634546e1d0a73c82af38b768",
+    "ops/formal_release/handoffs/hook-reviewed-bbe404a.json": "100644 blob 4f8f6ed5a1a675787f9e4e5e5ddef511850eaefa",
     "ops/formal_release/handoffs/hook-reviewed-d44bae9.json": "100644 blob 0f7783557446559e5adabf0b4e91d518487047bf",
     "ops/formal_release/handoffs/hook-reviewed-d44f8e5.json": "100644 blob 2a7252bd9bd7ec188cd022f10ad79fbd7afa2f80",
     "ops/formal_release/handoffs/hook-reviewed-d7f7ad4.json": "100644 blob 28dfa3e652c9ccde2ef88fdcb8d08d7346569c70",
@@ -71,7 +71,7 @@
     "ops/formal_release/handoffs/tooling-01013-scope.json": "100644 blob 9fb8f418276b2e195289b304eb358c1d9189008e",
     "ops/formal_release/handoffs/tooling-01014-reviewed.json": "100644 blob 4ed9be107759c576dfc865b4d6368b16bfd3e9bc",
     "ops/formal_release/handoffs/tooling-01014-scope.json": "100644 blob a265f852acaf4c891ee5c9b13cb9ff4444d3b714",
-    "ops/formal_release/handoffs/tooling-01015-scope.json": "100644 blob 7aa83c211a4717b59a77488b7eb8ae8ddab7d11c",
+    "ops/formal_release/handoffs/tooling-01015-scope.json": "100644 blob 51989aa26a7eaa6894ada55a24b2d3c367e3a912",
     "ops/formal_release/handoffs/tooling-gui-recovery-reviewed.json": "100644 blob aa928cc4a2b780683270bbea9fd06e6340dca724",
     "ops/formal_release/handoffs/tooling-gui-recovery-scope.json": "100644 blob a294688798685d49198fc2fe7772a90811a3cc9d",
     "ops/formal_release/handoffs/unified-recovery-58c90b3.json": "100644 blob aa8688d1777a4e68fe2a382493de1cff25dc10e1",
