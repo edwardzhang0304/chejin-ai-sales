@@ -17,6 +17,7 @@ from app.models.lead import Lead, LeadContact
 from app.models.sales import Sales
 from app.models.wechat import WechatSessionBinding
 from app.services.audit_service import write_system_log
+from app.services.recovery_logging import recovery_failure
 from app.services.feishu_adapter import FeishuAdapter, FeishuAdapterError, get_feishu_adapter
 
 
@@ -66,16 +67,13 @@ def run_post_commit_effects(db: Session) -> None:
     for sales_id, normalized_phone in sales_syncs.items():
         try:
             sync_sales_open_id(sales_id, normalized_phone)
-        except Exception:
-            logger.exception("sales Feishu sync crashed sales_id=%s", sales_id)
+        except Exception as exc:
+            recovery_failure(logger, "sales_feishu_sync", exc, sales_id=sales_id)
     for handoff_event_id in handoff_ids:
         try:
             dispatch_handoff_notification(handoff_event_id)
-        except Exception:
-            logger.exception(
-                "handoff Feishu dispatch crashed handoff_event_id=%s",
-                handoff_event_id,
-            )
+        except Exception as exc:
+            recovery_failure(logger, "handoff_notifications", exc, handoff_event_id=handoff_event_id)
 
 
 def _safe_error_summary(value: str | None) -> str:

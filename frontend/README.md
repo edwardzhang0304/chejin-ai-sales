@@ -4,4 +4,4 @@
 
 联调查看构建：VITE_API_BASE_URL=/api VITE_OPS_READ_ONLY=1 npm run build。只读标记用于页面提示和省略 Worker Token 请求；服务端的真实鉴权、路由许可和数据库写入限制由 ops/hook_uat/read_only_admin.py 实施，不能依赖前端参数作为权限门禁。正式运营构建不设置只读标记，原有业务功能不变。
 
-联调构建不能代表生产部署或 Windows 实机验收完成。当前交付与验证边界见 [Hook 0.10.18 完整技术方案](../deliverables/AI智能客服售前跟进系统_Hook技术方案_v0.10.18_2026-10-16.md)。
+联调构建不能代表生产部署或 Windows 实机验收完成。当前交付与验证边界见 [Hook 0.10.18 完整技术方案](../deliverables/AI智能客服售前跟进系统_Hook技术方案_v0.10.19_2026-10-16.md)。
