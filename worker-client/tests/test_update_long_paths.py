@@ -28,7 +28,9 @@ def tmp_path():
     # Keep the control/download filenames below MAX_PATH so the negative
     # control fails at the same *package member* as the customer's incident.
     with tempfile.TemporaryDirectory(prefix="cjup-", dir=None if os.name == "nt" else "/tmp") as name:
-        yield Path(name)
+        # macOS /tmp is a system symlink; the fixture's trusted root is its
+        # canonical directory, not a simulated junction in the update cache.
+        yield Path(name).resolve()
 
 
 @pytest.mark.parametrize("plain,expected", [

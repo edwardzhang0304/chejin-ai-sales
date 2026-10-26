@@ -266,7 +266,7 @@ class HookWorkerServices:
         self._display_fault = dict(detail)
         self._had_fault=True
         runner.last_rpa_component_status = "unavailable"
-        runner._preserve_stopped_run_status("faulted")
+        runner._preserve_stopped_run_status("faulted", repeated_observation=True)
         if self._last_error != code:
             clock = getattr(getattr(self.connection, 'prepared', None), 'clock', None)
             message = (detail['title'] + '。' + detail['message'] if code == 'HOOK_LOCAL_STORAGE_FAILED' or code in ACCOUNT_ISSUES

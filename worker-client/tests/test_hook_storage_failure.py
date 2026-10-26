@@ -58,7 +58,7 @@ def test_sqlite_fault_uses_storage_message_and_keeps_stop_gate(monkeypatch, log_
     errors, statuses, logs, fallbacks = [], [], [], []
     services = HookWorkerServices(None, None, intake_interval_seconds=1, projection_batch_size=1)
     runner = SimpleNamespace(stop_event=threading.Event(), on_error=errors.append,
-        _preserve_stopped_run_status=statuses.append)
+        _preserve_stopped_run_status=lambda status, **kwargs: statuses.append(status))
     def log(*args, **kwargs):
         logs.append(kwargs)
         if not log_writable:

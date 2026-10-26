@@ -25,6 +25,7 @@ from .api import WorkerApiClient, ApiError
 from .client_update import (
     ClientUpdateError,
     UpdateStateStore,
+    STAGING_PROMOTION_FAILED,
     is_formal_update_runtime,
     prepare_release_package,
     update_status_text,
@@ -395,7 +396,8 @@ class UpdateCoordinator:
             update_request_id=request_id,
         )
 
-    def _cleanup_request_payload(self, request_id: str) -> None:
+    def _cleanup_request_payload(self, request_id: str, *, keep_download: bool = False,
+                                 keep_staging: bool = False) -> None:
         """Remove only this request's downloaded/staged program payload.
 
         Control documents, updater results and failed-program evidence remain
@@ -419,6 +421,8 @@ class UpdateCoordinator:
             return
         try:
             for name in ("download", "staging"):
+                if (name == "download" and keep_download) or (name == "staging" and keep_staging):
+                    continue
                 target = update_filesystem_path(request_root / name)
                 if target.is_dir():
                     shutil.rmtree(target)
@@ -1194,10 +1198,33 @@ class UpdateCoordinator:
         os.replace(temporary, path)
         return value
 
+    def _adopt_cached_download(self, initial: dict[str, Any]) -> None:
+        """Move only the last pre-install failed archive; never reuse controls.
+
+        A fresh signed release and a fresh SHA-256 check remain mandatory.
+        Moving rather than copying keeps one downloadable payload per retry.
+        Old request evidence retains its existing bounded housekeeping marker.
+        """
+        from .storage_maintenance import REQUEST_NAME, safe_path
+        previous = str(initial.get("cached_download_request_id") or "")
+        current = str(initial.get("update_request_id") or "")
+        if not REQUEST_NAME.fullmatch(previous) or not REQUEST_NAME.fullmatch(current) or previous == current:
+            return
+        root = self.store.root / "requests"
+        source = root / previous / "download" / "client-update.zip"
+        target = root / current / "download" / "client-update.zip"
+        if not safe_path(source, root) or not safe_path(target, root) or not source.is_file():
+            return
+        if target.exists():
+            raise ClientUpdateError("UPDATE_STATE_INVALID", "新的更新请求目录已存在下载文件")
+        target.parent.mkdir(parents=True, exist_ok=True)
+        os.replace(update_filesystem_path(source), update_filesystem_path(target))
+
     def _run(self, initial: dict[str, Any]) -> None:
         request_id = str(initial.get("update_request_id") or "")
         paused_for_update = False
         try:
+            self._adopt_cached_download(initial)
             if self._stop.is_set():
                 raise ClientUpdateError("UPDATE_CANCELLED", "更新检查已取消")
             release = self.api.latest_client_release(
@@ -1207,6 +1234,7 @@ class UpdateCoordinator:
             if self._stop.is_set():
                 raise ClientUpdateError("UPDATE_CANCELLED", "更新检查已取消")
             if not release.update_available:
+                self._cleanup_request_payload(request_id)
                 self._save(
                     {
                         **initial,
@@ -1235,17 +1263,27 @@ class UpdateCoordinator:
                 }
             )
             request_root = self.store.root / "requests" / request_id
+            preparation_started = time.monotonic()
 
             def on_download_progress(percent: int) -> None:
                 nonlocal downloading
                 if percent != downloading.get("download_percent"):
                     downloading = self._save({**downloading, "download_percent": percent})
 
+            def on_prepare(progress: dict[str, Any]) -> None:
+                nonlocal downloading
+                event = {**progress, "total_elapsed_ms": round((time.monotonic() - preparation_started) * 1000)}
+                events = [*(downloading.get("preparation_events") or []), event][-16:]
+                downloading = self._save({**downloading, "prepare_progress": progress,
+                                          "preparation_events": events})
+
             try:
                 prepared = prepare_release_package(
                     release,
                     request_root=request_root,
                     on_progress=on_download_progress,
+                    on_prepare=on_prepare,
+                    cancel_event=self._stop,
                 )
             except ClientUpdateError as exc:
                 if exc.code != "UPDATE_DOWNLOAD_URL_EXPIRED":
@@ -1268,6 +1306,8 @@ class UpdateCoordinator:
                     release,
                     request_root=request_root,
                     on_progress=on_download_progress,
+                    on_prepare=on_prepare,
+                    cancel_event=self._stop,
                 )
             waiting = self._save(
                 {
@@ -1315,7 +1355,8 @@ class UpdateCoordinator:
                 error_code=code,
                 metadata={"update_request_id": request_id, "prepare_diagnostic": prepare_diagnostic},
             )
-            self._cleanup_request_payload(request_id)
+            self._cleanup_request_payload(request_id, keep_download=code == STAGING_PROMOTION_FAILED,
+                                          keep_staging=prepare_diagnostic.get("staging_promoted") is False)
             self._save(
                 {
                     **initial,
@@ -1323,6 +1364,7 @@ class UpdateCoordinator:
                     "result_code": code,
                     "message": str(exc),
                     "prepare_diagnostic": prepare_diagnostic,
+                    "preparation_events": self.store.load().get("preparation_events", []),
                     "install_started": False,
                     "target_version": (
                         self.store.load().get("target_version")

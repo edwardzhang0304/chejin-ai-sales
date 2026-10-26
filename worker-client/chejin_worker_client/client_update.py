@@ -8,6 +8,7 @@ import re
 import shutil
 import stat
 import threading
+import time
 from typing import Any, Callable
 from urllib.parse import urlparse
 import uuid
@@ -66,6 +67,8 @@ WINDOWS_RESERVED_NAMES = {
     *(f"LPT{index}" for index in range(1, 10)),
 }
 WINDOWS_FORBIDDEN_COMPONENT_RE = re.compile(r'[<>:"|?*\x00-\x1f]')
+STAGING_PROMOTION_FAILED = "UPDATE_STAGING_PROMOTION_FAILED"
+STAGING_RETRY_DELAYS = (0.25, 0.5, 1.0, 1.5)
 
 
 def _atomic_json_write(path: Path, payload: dict[str, Any]) -> None:
@@ -157,6 +160,15 @@ class UpdateStateStore:
                     "operator_pause_after_request": False,
                     "fault_after_request": False,
                     "created_at": utc_now_iso(),
+                    # Only a preparation failure can donate a download. Each
+                    # attempt still receives a fresh updater nonce/request ID.
+                    "cached_download_request_id": (
+                        current.get("update_request_id")
+                        if current.get("state") == "failed"
+                        and current.get("result_code") == STAGING_PROMOTION_FAILED
+                        and current.get("install_started") is False
+                        else None
+                    ),
                 }
             )
 
@@ -173,6 +185,9 @@ def download_release_archive(
     destination = update_filesystem_path(destination)
     expected_size = int(release.artifact_size_bytes or 0)
     expected_sha = str(release.artifact_sha256 or "").lower()
+    from .storage_maintenance import safe_path
+    if not safe_path(destination, destination.parent):
+        raise ClientUpdateError("UPDATE_STATE_INVALID", "更新下载路径不安全")
     destination.parent.mkdir(parents=True, exist_ok=True)
     temporary = destination.with_suffix(destination.suffix + ".partial")
     digest = hashlib.sha256()
@@ -188,6 +203,13 @@ def download_release_archive(
 
     try:
         report_progress(0)
+        # The release signature is checked by prepare_release_package first;
+        # never trust existence, mtime or an earlier attempt's hash result.
+        if destination.is_file():
+            if destination.stat().st_size == expected_size and hash_file(destination) == expected_sha:
+                report_progress(100)
+                return logical_destination
+            destination.unlink()
         with client.get(str(release.artifact_url), stream=True, timeout=timeout_seconds) as response:
             if int(getattr(response, "status_code", 0) or 0) in {401, 403, 410}:
                 raise ClientUpdateError(
@@ -258,7 +280,49 @@ def _validated_member_path(member: zipfile.ZipInfo, destination: Path) -> Path:
     return target
 
 
-def extract_verified_archive(archive_path: Path, staging_root: Path) -> Path:
+def _promote_staging(temporary: Path, destination: Path, *,
+                     cancel_event: threading.Event | None = None,
+                     on_prepare: Callable[[dict[str, Any]], None] | None = None) -> None:
+    started = time.monotonic()
+    errors: list[int | None] = []
+    cancellation = cancel_event if cancel_event is not None else threading.Event()
+    for attempt in range(1, len(STAGING_RETRY_DELAYS) + 2):
+        if cancellation.is_set():
+            raise ClientUpdateError("UPDATE_CANCELLED", "更新准备已取消")
+        diagnostic = {"phase": "extract_archive", "operation": "promote_staging",
+                      "attempt": attempt, "elapsed_ms": round((time.monotonic() - started) * 1000),
+                      "prior_winerrors": list(errors)}
+        if on_prepare:
+            on_prepare(diagnostic)
+        try:
+            os.replace(temporary, destination)
+        except OSError as exc:
+            winerror = getattr(exc, "winerror", None)
+            errors.append(winerror)
+            diagnostic.update(exception_type=type(exc).__name__, errno=exc.errno,
+                              winerror=winerror, prior_winerrors=list(errors),
+                              staging_promoted=False,
+                              elapsed_ms=round((time.monotonic() - started) * 1000))
+            # Only retry Windows access/sharing/lock errors. Never delete a
+            # destination created by somebody else, change ACLs or kill holders.
+            retryable = winerror in {5, 32, 33}
+            if retryable and attempt <= len(STAGING_RETRY_DELAYS) and not destination.exists():
+                cancellation.wait(STAGING_RETRY_DELAYS[attempt - 1])
+                continue
+            raise ClientUpdateError(
+                STAGING_PROMOTION_FAILED if retryable else "UPDATE_CHECK_FAILED",
+                "下载已完成，但系统未允许准备更新目录；原程序未替换，请查看故障证据",
+                data=diagnostic,
+            ) from exc
+        if on_prepare:
+            on_prepare({**diagnostic, "completed": True,
+                        "elapsed_ms": round((time.monotonic() - started) * 1000)})
+        return
+
+
+def extract_verified_archive(archive_path: Path, staging_root: Path, *,
+                             cancel_event: threading.Event | None = None,
+                             on_prepare: Callable[[dict[str, Any]], None] | None = None) -> Path:
     logical_staging_root = staging_root
     staging_root = update_filesystem_path(staging_root)
     temporary = staging_root.with_name(staging_root.name + ".extracting")
@@ -278,6 +342,8 @@ def extract_verified_archive(archive_path: Path, staging_root: Path) -> Path:
                 raise ClientUpdateError("UPDATE_PACKAGE_INCOMPATIBLE", "更新包解压后体积超过限制")
             seen_windows_paths: set[str] = set()
             for member in members:
+                if cancel_event is not None and cancel_event.is_set():
+                    raise ClientUpdateError("UPDATE_CANCELLED", "更新准备已取消")
                 operation = "extract_member"
                 member_name = member.filename
                 target = _validated_member_path(member, temporary)
@@ -313,7 +379,7 @@ def extract_verified_archive(archive_path: Path, staging_root: Path) -> Path:
         target = staging_root
         if staging_root.exists():
             shutil.rmtree(staging_root)
-        os.replace(temporary, staging_root)
+        _promote_staging(temporary, staging_root, cancel_event=cancel_event, on_prepare=on_prepare)
         return logical_staging_root / PACKAGE_ROOT_NAME
     except Exception as exc:
         if temporary.exists():
@@ -342,6 +408,8 @@ def prepare_release_package(
     session: requests.Session | None = None,
     trusted_keys: dict[str, Ed25519PublicKey] | None = None,
     on_progress: Callable[[int], None] | None = None,
+    cancel_event: threading.Event | None = None,
+    on_prepare: Callable[[dict[str, Any]], None] | None = None,
 ) -> dict[str, Any]:
     from .release_transport import selected_release_channel
     validate_release_contract(release, expected_channel=selected_release_channel(CONFIG.app_dir))
@@ -350,16 +418,24 @@ def prepare_release_package(
     download_release_archive(release, archive_path, session=session, on_progress=on_progress)
     staging_root = request_root / "staging"
     try:
-        package_root = extract_verified_archive(archive_path, staging_root)
+        if on_prepare:
+            on_prepare({"operation": "extract_archive"})
+        package_root = extract_verified_archive(archive_path, staging_root,
+                                               cancel_event=cancel_event, on_prepare=on_prepare)
+        if on_prepare:
+            on_prepare({"operation": "verify_package"})
         package_manifest = verify_staged_package(release, package_root)
-    except Exception:
+    except Exception as exc:
         # A hash-valid archive can still fail its internal identity/inventory
         # contract.  It is not executable evidence, so remove only this
         # request's bounded staging and downloaded archive before failing.
         staging_io = update_filesystem_path(staging_root)
-        if staging_io.exists():
+        promotion_failed = (isinstance(exc, ClientUpdateError)
+                            and exc.data.get("staging_promoted") is False)
+        if not promotion_failed and staging_io.exists():
             shutil.rmtree(staging_io, ignore_errors=True)
-        update_filesystem_path(archive_path).unlink(missing_ok=True)
+        if not isinstance(exc, ClientUpdateError) or exc.code != STAGING_PROMOTION_FAILED:
+            update_filesystem_path(archive_path).unlink(missing_ok=True)
         raise
     return {
         "archive_path": str(archive_path),
@@ -383,6 +459,11 @@ def update_status_text(state: dict[str, Any]) -> str:
     if current_state == "checking":
         return "正在检查更新"
     if current_state == "downloading":
+        preparation = state.get("prepare_progress") or {}
+        if preparation.get("operation") == "promote_staging":
+            return f"下载已完成，正在准备更新目录（第 {preparation.get('attempt', 1)} 次）"
+        if preparation.get("operation") in {"extract_archive", "verify_package"}:
+            return "下载已完成，正在解压并校验更新文件"
         percent = state.get("download_percent")
         suffix = f" {percent}%" if type(percent) is int and 0 <= percent <= 100 else ""
         return f"发现新版本V{target}，正在下载{suffix}"
@@ -400,5 +481,7 @@ def update_status_text(state: dict[str, Any]) -> str:
     if current_state == "rolled_back":
         return f"更新失败，已恢复到V{state.get('previous_version') or __version__}"
     if current_state in {"failed", "rollback_failed"}:
+        if code == STAGING_PROMOTION_FAILED:
+            return "下载已完成，更新目录准备失败；原程序未替换，下载包已保留"
         return "检查更新失败，请重试" if not state.get("install_started") else "更新失败，请查看本机更新日志"
     return ""

@@ -107,10 +107,11 @@ def test_real_prepare_progress_reaches_ui_and_persisted_state(tmp_path, monkeypa
     percentages = [s["download_percent"] for s in states if s["state"] == "downloading"]
     assert persisted == percentages
     assert all(s["status_text"].endswith(f'正在下载 {s["download_percent"]}%')
-               for s in states if s["state"] == "downloading")
+               for s in states if s["state"] == "downloading" and not s.get("prepare_progress"))
+    assert any(s.get("prepare_progress", {}).get("operation") == "verify_package" for s in states)
     assert percentages[0] == 0 and percentages[-1] == 100
     assert any(0 < p < 99 for p in percentages)
-    assert percentages == sorted(set(percentages))
+    assert percentages == sorted(percentages)  # preparation keeps verified download at 100%
     assert session.calls == (2 if expired else 1)
     assert len(installs) == 1
     assert states[-1]["state"] == "waiting_for_safe_boundary"

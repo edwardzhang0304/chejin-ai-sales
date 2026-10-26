@@ -6841,7 +6841,7 @@ class TaskRunner:
                     metadata={"error": str(exc)},
                 )
 
-    def _apply_local_run_status(self, run_status: str) -> tuple[str, int] | None:
+    def _apply_local_run_status(self, run_status: str, *, new_intent: bool = True) -> tuple[str, int] | None:
         if not self.binding:
             return
         with self._run_status_intent_lock:
@@ -6851,7 +6851,11 @@ class TaskRunner:
                 run_status = "faulted"
             try:
                 if run_status in {"paused", "faulted"}:
-                    self._run_status_revision += 1
+                    # Reasserting a durable stop is not a new intent. A real
+                    # transition or an interruption of recovery still fences
+                    # any outstanding acknowledgement/start attempt.
+                    if new_intent:
+                        self._run_status_revision += 1
                     self._fault_recovery_requested = None
                     # Stop intake immediately, including when persistence fails.
                     self.binding.run_status = run_status  # type: ignore[assignment]
@@ -6876,16 +6880,24 @@ class TaskRunner:
             self._run_status_persistence_pending = False
             return run_status, self._run_status_revision
 
-    def _preserve_stopped_run_status(self, run_status: str) -> bool:
+    def _preserve_stopped_run_status(self, run_status: str, *, repeated_observation: bool = False) -> bool:
         """Shared local compensation for pause and fault recovery failures."""
         with self._run_status_intent_lock:
             if not self.binding:
                 return False
             stopped = "faulted" if "faulted" in {run_status, self.binding.run_status} else "paused"
-            self._pending_run_status_sync = stopped
+            confirmed = (repeated_observation and self.binding.run_status == stopped
+                         and self._backend_confirmed_run_status == stopped
+                         and self._pending_run_status_sync is None
+                         and not self._run_status_persistence_pending
+                         and self._fault_recovery_requested is None
+                         and not self._fault_recovery_processing)
+            if not confirmed:
+                self._pending_run_status_sync = stopped
             try:
-                self._apply_local_run_status(stopped)
+                self._apply_local_run_status(stopped, new_intent=not confirmed)
             except Exception as exc:
+                self._pending_run_status_sync = stopped
                 self.run_status_sync_error = type(exc).__name__
                 trigger_emergency_stop(reason="RUN_STATUS_PERSISTENCE_FAILED", origin="run_status")
                 return False
