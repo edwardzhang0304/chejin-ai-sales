@@ -837,13 +837,25 @@ class RealOmniAutoAIEngineAdapter:
                     suggested_action="retry_later",
                     raw_payload=raw_payload,
                 )
+            # Guard's warning severity is not a send denial. Translate only an
+            # explicit final approval at this adapter boundary; keep the full
+            # warning/boundary evidence in raw_payload and C3's send gate intact.
+            guard = result.get("guard") if isinstance(result.get("guard"), dict) else {}
+            approved_warning = (
+                guard_verdict == "warn"
+                and result.get("applied") is True
+                and result.get("adoptable") is True
+                and guard.get("allowed") is True
+                and guard.get("action") == "send_reply"
+                and str(guard.get("guard_verdict") or guard.get("severity") or "").strip().lower() == "warn"
+            )
             return AIEngineDecision(
                 decision="send_reply",
                 reply_text=reply_text,
                 confidence=confidence,
                 risk_flags=risk_flags,
                 evidence_refs=evidence_refs,
-                guard_result="pass" if guard_verdict in {"", "pass", "allow", "safe"} else guard_verdict,
+                guard_result="pass" if approved_warning or guard_verdict in {"", "pass", "allow", "safe"} else guard_verdict,
                 raw_payload=raw_payload,
             )
         if rule_name == "customer_service_brain_handoff" or recommended_action in {"handoff", "handoff_for_approval"}:
