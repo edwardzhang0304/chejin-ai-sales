@@ -372,7 +372,7 @@ def collect_failure_evidence(case, data, debug_port, clicked_at):
                 item.update(size=stat.st_size, mtime=stat.st_mtime)
                 if not path.resolve().is_relative_to(case.resolve()):
                     item["read_status"] = "outside_case_skipped"
-                elif stat.st_size > 65536:
+                elif stat.st_size > 1048576:
                     item["read_status"] = "oversize_skipped"
                 else:
                     payload = read_json(path)
@@ -413,18 +413,39 @@ def collect_failure_evidence(case, data, debug_port, clicked_at):
             connection = sqlite3.connect(database.resolve().as_uri() + "?mode=ro", uri=True, timeout=1)
             try:
                 rows = connection.execute("SELECT created_at,event,error_code,message,metadata FROM local_logs "
-                    "WHERE event LIKE 'client_update_%' OR level='ERROR' ORDER BY created_at DESC LIMIT 40").fetchall()
+                    "WHERE event LIKE 'client_update_%' OR level='ERROR' OR event IN "
+                    "('run_status_sync_retry_failed','run_status_sync_recovered') ORDER BY created_at DESC LIMIT 40").fetchall()
                 logs = []
                 for created, event, code, message, metadata in rows:
                     meta = json.loads(metadata or "{}")
                     logs.append({"created_at": created, "event": event, "error_code": code,
                                  "message": str(message or "").replace(TOKEN, "[synthetic-token]")[:500],
-                                 "metadata": {k: v for k, v in meta.items() if k in fields and isinstance(v, (str, int, float, bool, type(None)))}})
+                                 "metadata": {k: v for k, v in meta.items() if k in fields | {"requested_run_status", "run_status"} and isinstance(v, (str, int, float, bool, type(None)))}})
                 evidence["local_logs"] = {"read_status": "read", "entries": logs}
             finally:
                 connection.close()
     except Exception as exc:
         evidence["local_logs"] = {"read_status": "read_failed", "error_type": type(exc).__name__}
+    # Only after the existing failure: inspect this isolated backend's synthetic row.
+    # Do not write either database or modify the application's stop confirmation.
+    try:
+        database = case / "backend.sqlite3"
+        if not database.exists():
+            evidence["backend_stop_state"] = {"read_status": "missing"}
+        elif not database.resolve().is_relative_to(case.resolve()):
+            evidence["backend_stop_state"] = {"read_status": "outside_case_skipped"}
+        else:
+            connection = sqlite3.connect(database.resolve().as_uri() + "?mode=ro", uri=True, timeout=1)
+            try:
+                row = connection.execute("SELECT run_status, running_status, enabled FROM workers WHERE id=?", (WORKER_ID,)).fetchone()
+                evidence["backend_stop_state"] = {"read_status": "read", "worker_found": row is not None,
+                    "run_status": None if row is None else row[0],
+                    "running_status": None if row is None else row[1],
+                    "enabled": None if row is None else bool(row[2])}
+            finally:
+                connection.close()
+    except Exception as exc:
+        evidence["backend_stop_state"] = {"read_status": "read_failed", "error_type": type(exc).__name__}
     return evidence
 
 
