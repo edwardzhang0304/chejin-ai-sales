@@ -78,6 +78,7 @@ class RetainedNativeSendPermit:
     flow_id: str
     send_token: str = field(repr=False)
     journal_sha256: str = ''
+    source_journal_root: Path | None = field(default=None, repr=False, compare=False)
 
     def account(self):
         return {name:getattr(self,name) for name in ('self_wxid','account_epoch','process_generation')}
@@ -109,11 +110,12 @@ class RetainedNativeSendPermit:
             raise ValueError('HOOK_SEND_RETAINED_JOURNAL_INVALID') from None
         return cls(credentials.worker_id,credentials.client_instance_id,metadata['task_id'],metadata['reply_action_id'],
             scope.self_wxid,scope.account_epoch,scope.process_generation,metadata['lease_fencing_token'],metadata['flow_id'],
-            intent['send_token'],digest),outcome
+            intent['send_token'],digest,root),outcome
 
 
 class HookNativeSender:
-    def __init__(self,gateway,client,credentials,private_root:Path,*,wait=time.sleep,delay=lambda:random.uniform(.5,3),clock=None,progress=None,timing_context=None):
+    def __init__(self,gateway,client,credentials,private_root:Path,*,wait=time.sleep,delay=lambda:random.uniform(.5,3),clock=None,progress=None,timing_context=None,diagnostic_root=None):
+        self.diagnostic_root=diagnostic_root
         self.progress=progress or (lambda *args:None)
         self.gateway,self.client,self.credentials,self.private_root=gateway,client,credentials,private_root
         self.wait,self.delay=wait,delay
@@ -165,6 +167,7 @@ class HookNativeSender:
             _save(trigger,{'phase':'trigger_attempted','time_utc':self.now().isoformat(),
                 'intent_sha256':hashlib.sha256(journal.read_bytes()).hexdigest()})
             self._progress('send_submit','current')
+        call_started=time.perf_counter()
         try:
             response=timed_call('hook.send_call',
                 lambda: self.gateway.send_text_once(process,scope,permit,barrier,refresh.barrier,begin,mark_trigger),
@@ -185,4 +188,7 @@ class HookNativeSender:
             'journal_sha256':hashlib.sha256(journal.read_bytes()).hexdigest(),
             'completed_at':self.now().isoformat(),'automatic_resend_allowed':False})
         _save(root/'outcome.json',outcome)
+        if self.diagnostic_root is not None:
+            from .hook_send_diagnostics import record_submission
+            record_submission(self.diagnostic_root,permit,process,outcome,root,time.perf_counter()-call_started)
         return outcome

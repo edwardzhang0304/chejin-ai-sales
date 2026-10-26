@@ -6,12 +6,13 @@ past unseen data. A changed catalog, count, page or callback barrier is a hold.
 from datetime import datetime, timezone
 import uuid
 import time
-from .hook_history import HookHistoryQuery
+from .hook_history import HookHistoryQuery, schema_has_send_status
 from .shared_rules import hook_history_rules as rules
 
 
 class HookHistorySynchronizer:
-    def __init__(self,gateway,save_capture,barrier,*,max_rows=rules.MAX_ROWS,now=None,media_enabled=False):
+    def __init__(self,gateway,save_capture,barrier,*,max_rows=rules.MAX_ROWS,now=None,media_enabled=False,send_diagnostics=False):
+        self.send_diagnostics=send_diagnostics
         if type(max_rows) is not int or not 1<=max_rows<=rules.MAX_ROWS:raise ValueError('HOOK_HISTORY_LIMIT_INVALID')
         self.media_enabled=media_enabled
         self.gateway,self.save_capture,self.barrier,self.max_rows=gateway,save_capture,barrier,max_rows
@@ -20,13 +21,16 @@ class HookHistorySynchronizer:
     def scan(self,process,scope,delivery,since,*,reader):
         catalog=reader.history_catalog(process,scope); databases=[];total=0
         for database in catalog.databases:
+            include_status=False
             def query(kind,lower='0',upper=None):
                 q=HookHistoryQuery(database,kind,delivery if kind!='schema' else None,
-                    after_local_id=lower,upper_local_id=upper,since_create_time=since if kind!='schema' else None)
+                    after_local_id=lower,upper_local_id=upper,since_create_time=since if kind!='schema' else None,
+                    include_send_status=include_status and kind=='page')
                 capture=reader.history_capture(process,catalog,q)
                 self.save_capture(capture)
-                return capture.payload
-            query('schema')
+                return q.validate_response(capture.payload)
+            schema=query('schema')
+            include_status=self.send_diagnostics and schema_has_send_status(schema)
             bound=query('bound')['data'][0];upper=bound['upper_local_id'];count=int(bound['row_count'])
             total+=count
             if total>self.max_rows:raise ValueError('HOOK_HISTORY_RANGE_TOO_LARGE')

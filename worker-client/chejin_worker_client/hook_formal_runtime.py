@@ -561,7 +561,15 @@ class HookFormalRuntime:
                 if o.get('peer_wxid')==binding['peer_wxid'] and o.get('disposition')=='message_candidate'}
             budget.begin_capture(allow_retire=reconciliation is None and not self.active_flow_id)
             capture_files=set()
+            send_diagnostic=None
+            if reconciliation is not None:
+                from .hook_send_diagnostics import SendHistoryDiagnostics
+                send_diagnostic=SendHistoryDiagnostics(self.private_root.parent.parent,reconciliation,
+                    reconciliation.source_journal_root or
+                    self.private_root/'sends'/reconciliation.worker_id/reconciliation.account_epoch/reconciliation.reply_action_id,
+                    self.process,now=self.clock.now)
             def save(capture):
+                if send_diagnostic is not None:send_diagnostic.capture(capture)
                 value={'raw_utf8':capture.raw_body.decode('utf-8'),'query':capture.query.payload(),'generation':self.process.generation}
                 if reconciliation is not None:value['retained_reply_action_id']=reconciliation.reply_action_id
                 path=evidence_root/'history-captures'/f'{rules.digest(value)}.json'
@@ -569,10 +577,12 @@ class HookFormalRuntime:
                     if rules.loads(path.read_bytes())!=value:raise ValueError('HOOK_HISTORY_LOCAL_EVIDENCE_CHANGED')
                 else:budget.save(path,value)
                 capture_files.add(path.relative_to(evidence_root).as_posix())
-            synchronizer=HookHistorySynchronizer(self.gateway,save,lambda:self.barrier(binding),now=self.clock.now,media_enabled=True)
+            synchronizer=HookHistorySynchronizer(self.gateway,save,lambda:self.barrier(binding),now=self.clock.now,media_enabled=True,
+                send_diagnostics=send_diagnostic is not None)
             try:
                 capture,coverage=synchronizer.capture(self.process,self.scope,self.delivery(binding),binding['history_since_create_time'],callback_ids=callback_ids)
             except ValueError as exc:
+                if send_diagnostic is not None:send_diagnostic.finish(exc)
                 if str(exc) not in {'HOOK_HISTORY_CALLBACK_BARRIER_CHANGED','HOOK_HISTORY_LOCAL_PENDING'}:
                     raise
                 event={'reason_code':str(exc),'attempt':attempt+1,'retry_allowed':attempt<2,
@@ -582,6 +592,10 @@ class HookFormalRuntime:
                 if attempt==2:raise
                 self.wait(.5)
                 continue
+            except Exception as exc:
+                if send_diagnostic is not None:send_diagnostic.finish(exc)
+                raise
+            if send_diagnostic is not None:send_diagnostic.finish()
             captured_at=time.monotonic()
             self._history_profile = dict(synchronizer.profile)
             post_read_started=time.perf_counter()
@@ -700,7 +714,7 @@ class HookFormalRuntime:
                     return self.barrier()
             sender=HookNativeSender(self.gateway,self.client,self.credentials,self.private_root/'sends',wait=self.wait,clock=self.clock,
                 progress=lambda phase,state,note=None:self.progress(task['id'],phase,state,note),
-                timing_context=self.timing_context(latest))
+                timing_context=self.timing_context(latest),diagnostic_root=self.private_root.parent.parent)
             try:
                 outcome=sender.execute(permit,self.process,self.scope,Refresh())
             except (ValueError,ApiError) as exc:

@@ -108,8 +108,11 @@ class HookHistoryQuery:
     page_size: int = 100
     since_create_time: str | None = None
     native_msg_id: str | None = None
+    include_send_status: bool = False
 
     def __post_init__(self) -> None:
+        if type(self.include_send_status) is not bool or (self.include_send_status and self.kind != 'page'):
+            raise ValueError('HOOK_HISTORY_QUERY_INVALID')
         if (not isinstance(self.database, HookMessageDatabase)
                 or not re.fullmatch(r"MSG(?:0|[1-9][0-9]*)\.db", self.database.name)
                 or not isinstance(self.kind, str) or self.kind not in {"schema", "bound", "page", "count", "boundary_meta"}
@@ -159,6 +162,8 @@ class HookHistoryQuery:
                     f"AND localId<={_decimal(self.upper_local_id)}")
             else:
                 selection = ",".join(f"CAST({field} AS TEXT) AS {field}" for field in INTEGER_FIELDS)
+                if self.include_send_status:
+                    selection += ',substr(CAST(Status AS TEXT),1,64) AS diagnostic_status'
                 sql = (f"SELECT {selection},StrTalker,StrContent FROM MSG WHERE {predicate} "
                     # Qualify the numeric source column: the output alias localId
                     # is TEXT for lossless transport and would sort lexically.
@@ -195,6 +200,12 @@ class HookHistoryQuery:
                 if upper < lower or count > upper - lower or (count == 0) != (upper == lower):
                     raise ValueError("HOOK_HISTORY_AGGREGATE_INVALID")
         else:
+            if self.include_send_status:
+                # Optional diagnostic metadata never enters the business proof.
+                # Every other field and all original scope/cursor checks remain strict.
+                rows = [{k: v for k, v in row.items() if k != 'diagnostic_status'}
+                        if isinstance(row, dict) else row for row in rows]
+                response = {**response, 'data': rows}
             if len(rows) > self.page_size:
                 raise ValueError("HOOK_HISTORY_PAGE_LIMIT_EXCEEDED")
             previous = _decimal(self.after_local_id)
@@ -216,6 +227,12 @@ class HookHistoryQuery:
             if not rows and _decimal(self.after_local_id) != upper:
                 raise ValueError("HOOK_HISTORY_EMPTY_PAGE_BEFORE_BOUND")
         return response
+
+
+def schema_has_send_status(response: dict) -> bool:
+    """Only enable the fixed optional projection on an explicitly declared column."""
+    rows = response.get('data', [])
+    return bool(len(rows) == 1 and re.search(r'(?:\(|,)\s*Status\s+', rows[0].get('sql', ''), re.I))
 
 
 @dataclass(frozen=True)

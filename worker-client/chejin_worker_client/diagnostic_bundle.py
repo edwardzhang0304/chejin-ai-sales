@@ -518,6 +518,18 @@ class Collector:
             action = intent.get("reply_action_id")
             if not isinstance(action, str) or path.parent.name != action:
                 continue
+            task = intent.get('task_id')
+            if isinstance(task, str) and self.source_allowed(path.parent / 'trigger.json'):
+                from .hook_send_diagnostics import diagnostic_path
+                try:
+                    diagnostic = diagnostic_path(self.root, task, action)
+                    member = 'tasks/' + diagnostic.relative_to(artifacts(self.root) / 'tasks').as_posix()
+                    if self.source_allowed(diagnostic):
+                        self.file(diagnostic, member, archive)
+                    else:
+                        self.record(member, 'omitted', reason='send_diagnostics_unavailable_legacy_or_capture_failed')
+                except ValueError:
+                    self.record('send_diagnostics', 'omitted', reason='invalid_send_identifier')
             receipt = hook / "send-receipts" / (action + ".json")
             # A malformed/unreadable receipt is not evidence that we may omit
             # the original. Keep every unacknowledged action before history.
@@ -533,7 +545,7 @@ class Collector:
             if receipt_valid and intent.get("task_id") not in flows:
                 continue
             actions.add(action)
-            for name in ("permit.json", "intent.json", "trigger.json", "outcome.json"):
+            for name in ("permit.json", "intent.json", "trigger.json", "outcome.json", "response.json"):
                 collect(path.parent / name)
             collect(receipt)
             task = intent.get("task_id")
@@ -757,6 +769,17 @@ class Collector:
                     "files": [e for e in self.entries if e["status"] == "collected"],
                     "omissions": issues,
                 }))
+                archive.writestr('发送取证说明.txt', (
+                    '发送证据供技术提供方定位，不作为发送成功判定。\n'
+                    '1. tasks/<任务ID>/diagnostics/send-<回复动作ID>.json：原调用返回、耗时、微信版本、DLL摘要及历史记录变化。\n'
+                    '2. receipts/hook/sends/：原始申请、触发、返回及结果凭证；send-receipts/：后台最终结算。\n'
+                    '3. 按 database + database_generation + local_id 区分记录；同文的新 local_id 不能替代原发送。\n'
+                    '4. Status 仅原样取值（最多64字符），含义需提供方解释；空值、缺字段、读取失败分别记录。\n'
+                    '5. read_completed 只表示本次查询校验完成，不代表历史业务完整或发送成功。原记录查不到不等于删除或未送达。\n'
+                    '6. omitted_events/omitted_rows 是体积限制省略数；gaps 和收集清单列缺项。旧版本没有的现场无法补造。\n'
+                    '7. 未抓取网络包，也未获得提供方内部日志/微信服务器回执；这些原因仍可能需要提供方结合时间和编号查询。\n'
+                    '8. 本包排除正文和凭据；通过 reply_text_hash 比较同文。导出不会重发、重试或修改原凭证。\n'
+                ).encode('utf-8'))
                 archive.writestr("诊断摘要.txt", (
                     "车金故障证据\n包含故障现场、导出时状态和关联凭证；未执行任何业务动作。\n"
                     + ("部分材料未收集，请先查看收集清单中的缺项。\n" if issues else "已完成本次收集，请查看收集清单。\n")

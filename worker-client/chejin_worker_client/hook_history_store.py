@@ -106,7 +106,7 @@ class HookHistoryPageStore:
             capture = HookHistoryCapture(catalog, HookHistoryQuery(**values), row['raw_body'])
             if capture.query.kind != 'page' or not rules.aware(row['captured_at']):
                 raise ValueError()
-            rows = capture.payload.get('data', [])
+            rows = capture.query.validate_response(capture.payload).get('data', [])
             after = rows[-1]['localId'] if rows else capture.query.after_local_id
             if (row['cursor_before'] != capture.query.after_local_id or row['cursor_after'] != after
                     or row['upper_local_id'] != capture.query.upper_local_id
