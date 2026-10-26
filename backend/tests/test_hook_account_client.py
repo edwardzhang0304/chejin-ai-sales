@@ -59,7 +59,7 @@ def test_worker_receives_server_epoch_and_change_stays_blocked_until_original_re
     assert identity_client.heartbeat(credentials, identity, state).account_epoch == receipt.account_epoch
     changed = identity_client.heartbeat(credentials, replace(identity, self_wxid='wxid_sales_B'), state)
     assert changed.blocked and changed.rebind_required and changed.run_status == 'faulted'
-    with pytest.raises(ValueError, match='HOOK_ACCOUNT_NOT_CONFIRMED'):
+    with pytest.raises(ValueError, match='HOOK_ACCOUNT_CHANGED'):
         changed.receive_scope(30001)
     switched_back = identity_client.heartbeat(credentials, identity, state)
     assert switched_back.blocked and switched_back.rebind_required
@@ -96,3 +96,46 @@ def test_wrong_instance_is_rejected_and_heartbeat_keeps_original_task_and_lock_s
         assert row.client_instance_id == credentials.client_instance_id
         assert row.current_task == 'existing-task' and row.current_step == 'filling_form'
         assert row.local_lock_summary == {'action_lock': 'held_by_c1'}
+
+
+@pytest.mark.parametrize('disabled_kind',['sales','worker'])
+def test_disabled_reason_preserves_binding_and_requires_explicit_recovery(identity_client, disabled_kind):
+    from sqlalchemy import select
+    from app.core.database import SessionLocal
+    from app.models.worker import Worker
+    from app.models.sales import Sales
+    from chejin_worker_client.startup_check_state import failed
+    w=worker()
+    credentials=HookWorkerCredentials(w['id'],w['worker_token'],w['instance'])
+    identity=HookHeartbeatIdentity('wxid_sales_A','process-1','deployment-1','a'*64)
+    state=HookHeartbeatState('idle','ready','logged_in',None,None,'{}')
+    original=identity_client.heartbeat(credentials,identity,state)
+    identity=replace(identity,account_epoch=original.account_epoch)
+    with SessionLocal() as db:
+        row=db.get(Worker,w['id'])
+        row.inflight_flow_state={'flow_id':'original-flow','status':'active'}
+        if disabled_kind=='worker': row.enabled=False
+        else: db.scalar(select(Sales).where(Sales.worker_id==row.id)).enabled=False
+        db.commit()
+    if disabled_kind=='sales':
+        receipt=identity_client.heartbeat(credentials,identity,state)
+        assert receipt.blocked and not receipt.rebind_required
+        code=receipt.blocking_code()
+        assert code=='HOOK_SALES_DISABLED'
+        with pytest.raises(ValueError,match=code):receipt.receive_scope(30001)
+        assert failed(code)['title']=='销售账号已停用'
+    else:
+        with pytest.raises(ApiError) as error:identity_client.heartbeat(credentials,identity,state)
+        code=error.value.code
+        assert code=='HOOK_WORKER_DISABLED' and failed(code)['title']=='Worker 已停用'
+    assert not failed(code)['canStart']
+    with SessionLocal() as db:
+        row=db.get(Worker,w['id'])
+        assert row.hook_self_wxid==original.self_wxid and row.hook_account_epoch==original.account_epoch
+        assert row.hook_sales_id==original.sales_id and row.inflight_flow_state['flow_id']=='original-flow'
+        row.enabled=True
+        db.scalar(select(Sales).where(Sales.worker_id==row.id)).enabled=True
+        db.commit()
+    enabled=identity_client.heartbeat(credentials,identity,state)
+    assert not enabled.blocked and enabled.run_status!='running'
+    assert enabled.account_epoch==original.account_epoch

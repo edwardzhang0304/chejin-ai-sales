@@ -49,8 +49,11 @@ def apply_hook_heartbeat(db: Session, worker: Worker, context: HookHeartbeatCont
         reject("HOOK_CLIENT_BINDING_REQUIRED")
         return
     sales = db.scalar(select(Sales).where(Sales.worker_id == worker.id, Sales.deleted_at.is_(None)))
-    if sales is None or not sales.enabled:
+    if sales is None:
         reject("HOOK_SALES_BINDING_REQUIRED")
+        return
+    if not sales.enabled:
+        reject("HOOK_SALES_DISABLED")
         return
     if worker.wechat_status != "logged_in":
         reject("HOOK_LOGIN_REQUIRED")
