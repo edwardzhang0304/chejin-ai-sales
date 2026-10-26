@@ -172,7 +172,17 @@ def search_clear_target(frame: Frame, cached_bounds=None) -> dict:
 def search_query(frame: Frame, query: str, *, bounds=None) -> dict:
     w, h = frame.image.size
     upper = bounds if bounds is not None else [0, 0, w, min(h, 90)]
-    row = unique_text(frame, (query,), region=upper)
+    if bounds is None:  # Standalone legacy replay has no startup control map.
+        rows = [r for r in frame.rows if contains(upper, r) and clean(r.get('text')) == query]
+    else:
+        rows = [r for r in frame.rows if clean(r.get('text'))
+                and r['left'] < upper[2] and r['right'] > upper[0]
+                and r['top'] < upper[3] and r['bottom'] > upper[1]]
+    # An exact row plus a separate extra character must not pass either.
+    if (len(rows) != 1 or not contains(upper, rows[0]) or clean(rows[0].get('text')) != query
+            or not float(rows[0].get('confidence', 0)) >= .80):
+        raise FlowStop('SEARCH_QUERY_UNCONFIRMED')
+    row = rows[0]
     return target(frame, row)
 
 
@@ -721,9 +731,18 @@ class NativeUI:
                              observed={'geometry': geometry, 'frame_geometry': c})
         self.guard()
         self.guard_operation = 'ocr:' + label
+        ocr_image = image
+        if label == 'lookup':
+            from ..search_query_ocr import prepare_search_query_ocr
+            observation = Frame(image, [], label, self.current, (left, top), c, captured_at)
+            ocr_image, excluded = prepare_search_query_ocr(image, self.cached_search_bounds(observation))
+            material['ocr_excluded_icon_bounds'] = excluded
+            # The saved original + these exact rectangles/fill reconstruct the
+            # OCR input without another screenshot, OCR call or required write.
+            material['ocr_excluded_icon_fill'] = [255, 255, 255]
         ocr_started = time.monotonic()
         try:
-            rows = o.run_ocr(image);self.ocr_count += 1
+            rows = o.run_ocr(ocr_image);self.ocr_count += 1
         finally:
             material['ocr_elapsed_ms'] = round((time.monotonic()-ocr_started)*1000, 3)
         ocr_file = f'{self.count:02d}-{label}.json'

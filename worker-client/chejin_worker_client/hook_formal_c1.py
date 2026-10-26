@@ -192,11 +192,20 @@ class HookC1ResultReceipts(AddFriendResultReceipts):
             raise ValueError('HOOK_C1_RECEIPT_IDENTITY_MISMATCH')
         success = outcome.get('status') == 'already_friend'
         raw_code = outcome.get('error_code')
+        # Only this pre-lookup content failure, with verified cleanup and no
+        # guard failure, is task-local. Original receipt/finish gates still run.
+        query_failure = (raw_code == 'SEARCH_QUERY_UNCONFIRMED'
+            and outcome.get('status') == 'stopped'
+            and outcome.get('steps', [])[-1:] == ['query_verified_and_network_lookup']
+            and outcome.get('cleanup') == 'search_empty_verified'
+            and not outcome.get('guard_failures'))
         code = ('PHONE_NOT_FOUND' if outcome.get('status') == 'not_found' else
-                raw_code if c1_stop_status(raw_code) else 'WECHAT_UI_LAYOUT_UNRESOLVED')
+                raw_code if query_failure or c1_stop_status(raw_code) else 'WECHAT_UI_LAYOUT_UNRESOLVED')
         result = RpaResult(ok=success, result_code='already_friend' if success else None,
             error_code=None if success else code, failure_step='hook_c1',
-            message='客户已是好友' if success else '加好友未提交；原始结果已保留')
+            message='客户已是好友' if success else
+                '搜索号码未核对通过，本次未提交好友申请；搜索内容已清空，请核对后重新安排。' if query_failure else
+                '加好友未提交；原始结果已保留')
         self.stop_for_cleanup(outcome)
         return self._settle_result(task, result, kind='success' if success else 'failure')
 

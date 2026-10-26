@@ -63,6 +63,7 @@ const reasonCodeMeta: Record<string, string> = {
   HOOK_BINDING_TRANSFER_REQUIRED: "客户绑定待确认",
   operator_lead_transfer: "已确认接续原微信，无需再次邀请",
   PHONE_NOT_FOUND: "手机号未找到客户",
+  SEARCH_QUERY_UNCONFIRMED: "搜索号码未核对通过，未提交好友申请",
   TASK_PAYLOAD_INVALID: "任务入参缺失或不合法",
   RPA_COMPONENT_NOT_READY: "RPA 组件未就绪",
   RPA_SIDECAR_TIMEOUT: "RPA 执行超时",

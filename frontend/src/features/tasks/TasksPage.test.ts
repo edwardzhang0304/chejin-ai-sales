@@ -43,6 +43,10 @@ describe("任务中心中文业务映射", () => {
     })).toBe("自动发送已终止，禁止补发；会话已转销售正常接管");
   });
 
+  it("搜索核对失败明确说明尚未提交申请", () => {
+    expect(formatTaskBusinessCode("SEARCH_QUERY_UNCONFIRMED")).toBe("搜索号码未核对通过，未提交好友申请");
+  });
+
   it("未知工程码显示短横线，不创造兜底业务状态", () => {
     expect(formatTaskBusinessCode("UNDECLARED_ENGINEERING_CODE")).toBe("-");
   });
