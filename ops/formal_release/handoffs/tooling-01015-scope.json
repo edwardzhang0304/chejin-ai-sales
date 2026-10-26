@@ -626,5 +626,5 @@
       ]
     }
   ],
-  "unaffected_scope_review": "0.10.19 version/source-evidence metadata only. Tool implementation unchanged; retain original audit and unaffected CI checks. Run descriptor validation, native build/upgrade gates only. No new metadata architect audit claimed."
+  "unaffected_scope_review": "0.10.20 audited merged source anchor metadata only. Tool implementation unchanged; preserve original tool audit and CI execution evidence; descriptor validation remains required."
 }
