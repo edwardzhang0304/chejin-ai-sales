@@ -514,22 +514,11 @@ class Collector:
                 for name in ("pre-ui.json", "preparation.json", "ui-started.json", "submit-attempt.json", "outcome.json", "submission-proof.json"):
                     collect(path.parent / name)
         actions = set()
+        send_diagnostics = []
         for path, intent in records(hook / "sends", "intent.json"):
             action = intent.get("reply_action_id")
             if not isinstance(action, str) or path.parent.name != action:
                 continue
-            task = intent.get('task_id')
-            if isinstance(task, str) and self.source_allowed(path.parent / 'trigger.json'):
-                from .hook_send_diagnostics import diagnostic_path
-                try:
-                    diagnostic = diagnostic_path(self.root, task, action)
-                    member = 'tasks/' + diagnostic.relative_to(artifacts(self.root) / 'tasks').as_posix()
-                    if self.source_allowed(diagnostic):
-                        self.file(diagnostic, member, archive)
-                    else:
-                        self.record(member, 'omitted', reason='send_diagnostics_unavailable_legacy_or_capture_failed')
-                except ValueError:
-                    self.record('send_diagnostics', 'omitted', reason='invalid_send_identifier')
             receipt = hook / "send-receipts" / (action + ".json")
             # A malformed/unreadable receipt is not evidence that we may omit
             # the original. Keep every unacknowledged action before history.
@@ -551,6 +540,8 @@ class Collector:
             task = intent.get("task_id")
             if isinstance(task, str) and task in flows:
                 collect(hook / "flows" / (task + ".json"))
+            if isinstance(task, str) and self.source_allowed(path.parent / 'trigger.json'):
+                send_diagnostics.append((task, action))
         # Pick the latest complete capture per current action in each pool;
         # its references take priority over unrelated newer raw pages.
         for pool in (hook, hook / "history-reconcile"):
@@ -576,6 +567,25 @@ class Collector:
                         self.record("priority_recovery", "omitted", reason="invalid_index_reference")
                         continue
                     collect(pool / ref)
+
+        # Supplementary metadata must not consume the budget ahead of any
+        # unresolved original journal or its existing indexed history proof.
+        # Closed tasks remain in the ordinary task-artifact pass.
+        from .hook_send_diagnostics import diagnostic_path
+        for task, action in send_diagnostics:
+            try:
+                diagnostic = diagnostic_path(self.root, task, action)
+                member = 'tasks/' + diagnostic.relative_to(artifacts(self.root) / 'tasks').as_posix()
+                self.visited += 1
+                if self.limited():
+                    self.record(member, 'omitted', reason='priority_budget_limit')
+                    continue
+                if self.source_allowed(diagnostic):
+                    self.file(diagnostic, member, archive)
+                else:
+                    self.record(member, 'omitted', reason='send_diagnostics_unavailable_legacy_or_capture_failed')
+            except ValueError:
+                self.record('send_diagnostics', 'omitted', reason='invalid_send_identifier')
 
     def tree(self, folder, prefix, archive, *, update_only=False, allowed_root=None, ocr=False, task_priority=None):
         if not folder.exists():

@@ -245,3 +245,57 @@ def test_status_projection_paginates_numeric_ids_without_changing_queries(histor
     assert len(pages) == 4 and [len(c.payload['data']) for c in pages] == [100, 7, 100, 7]
     assert all(c.query.include_send_status for c in pages)
     assert 'diagnostic_status' not in json.dumps(coverage)
+
+
+@pytest.mark.parametrize('finished_first', [False, True])
+@pytest.mark.parametrize('finished_count', [0, 12])
+def test_unfinished_originals_precede_supplemental_diagnostics(lab, tmp_path, finished_first, finished_count):
+    import uuid
+    server, _, process, scope, sender, permit, _, refresh, _ = setup(lab, tmp_path)
+    root = tmp_path / 'home'
+    sender.private_root, sender.diagnostic_root = root / 'transactions/hook/sends', root
+    receipts = root / 'transactions/hook/send-receipts'
+    receipts.mkdir(parents=True)
+    pending = [replace(permit, task_id=str(uuid.uuid4()), reply_action_id=str(uuid.uuid4())) for _ in range(3)]
+    completed = [replace(permit, task_id=str(uuid.uuid4()), reply_action_id=str(uuid.uuid4())) for _ in range(finished_count)]
+    for item in (completed + pending if finished_first else pending + completed):
+        sender.execute(item, process, scope, refresh)
+        if item in completed:
+            # Only completion classification is a fixture; send files come from producer.
+            (receipts / (item.reply_action_id + '.json')).write_text(json.dumps({'automatic_resend_allowed': False}))
+    before = {p: p.read_bytes() for p in root.rglob('*') if p.is_file()}
+    from chejin_worker_client.diagnostic_bundle import Collector
+    dest = tmp_path / 'small.zip'
+    Collector(root, dest, max_bytes=12000).run()
+    with zipfile.ZipFile(dest) as z:
+        names = z.namelist()
+        required = []
+        for item in pending:
+            prefix = f'receipts/hook/sends/{item.worker_id}/{item.account_epoch}/{item.reply_action_id}/'
+            required.extend(prefix + name for name in ('intent.json','trigger.json','outcome.json','response.json'))
+        assert set(required) <= set(names)
+        diagnostics = [n for n in names if '/diagnostics/send-' in n]
+        assert diagnostics and min(names.index(n) for n in diagnostics) > max(names.index(n) for n in required)
+        manifest = json.loads(z.read('收集清单.json'))
+        if completed:
+            assert any(e.get('reason') == 'total_size_limit' for e in manifest['sources'])
+    assert {p: p.read_bytes() for p in root.rglob('*') if p.is_file()} == before
+    assert len([r for r in server.requests if r[0] == '/SendTextMsg']) == 3 + finished_count
+
+
+@pytest.mark.parametrize('limit', ['bytes', 'files', 'time'])
+def test_current_evidence_exceeding_budget_is_never_reported_complete(tmp_path, monkeypatch, limit):
+    import chejin_worker_client.diagnostic_bundle as bundle
+    permit, journal = seed(tmp_path / 'home')
+    (journal / 'outcome.json').write_text(json.dumps({'call_completed': True, 'automatic_resend_allowed': False}))
+    _append(tmp_path / 'home', permit.task_id, permit.reply_action_id, {'kind': 'synthetic'}, NOW.isoformat())
+    kwargs = {'max_bytes': 80} if limit == 'bytes' else {'max_seconds': 0} if limit == 'time' else {}
+    if limit == 'files':
+        monkeypatch.setattr(bundle, 'MAX_FILES', 2)
+    dest = tmp_path / 'limited.zip'
+    bundle.Collector(tmp_path / 'home', dest, **kwargs).run()
+    with zipfile.ZipFile(dest) as z:
+        manifest = json.loads(z.read('收集清单.json'))
+        assert manifest['partial'] is True
+        reasons = {e.get('reason') for e in manifest['sources']}
+        assert reasons & {'total_size_limit', 'priority_budget_limit', 'discovery_limit', 'time_or_file_limit'}
