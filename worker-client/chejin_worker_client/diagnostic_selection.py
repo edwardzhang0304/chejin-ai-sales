@@ -245,7 +245,10 @@ class SnapshotPriority:
                     WHERE c.state IN ('calling','uncertain')
                     AND c.process_generation=hook_transport_events.process_generation
                     AND c.action_id=hook_transport_events.action_id)"""
-            important=f'(CASE WHEN {active_call} THEN 3 WHEN {current_retry} THEN 2 WHEN {important} THEN 1 ELSE 0 END)'
+            # One history capture owns several successful requests before a
+            # later failure. Its successful prefix must not crowd out the
+            # actual unknown request sharing the same action_id.
+            important=f'(CASE WHEN {active_call} AND {important} THEN 4 WHEN {current_retry} THEN 3 WHEN {active_call} THEN 2 WHEN {important} THEN 1 ELSE 0 END)'
         # Keep oldest unresolved evidence ahead of ordinary recent history.
         linked_order = ''
         if table in CHAIN and 'receive_seq' in cols and self.sequences:

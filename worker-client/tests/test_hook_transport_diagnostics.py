@@ -5,9 +5,42 @@ import threading
 import zipfile
 import pytest
 from test_hook_gateway import lab
+from test_hook_history import history_lab
 from chejin_worker_client import hook_transport, storage
 from chejin_worker_client.hook_gateway import HookLocalError
 from chejin_worker_client.hook_active_calls import unresolved
+
+
+def test_history_failure_precedes_successful_prefix_of_same_call(history_lab,monkeypatch,tmp_path):
+    from chejin_worker_client.hook_history_sync import HookHistorySynchronizer
+    from chejin_worker_client import diagnostic_bundle
+    _,gateway,process,scope,delivery,*_=history_lab
+    listener=socket.socket();listener.bind(('127.0.0.1',0));listener.listen(1)
+    received=[]
+    def serve():
+        conn,_=listener.accept()
+        with conn:received.append(conn.recv(65536))
+    thread=threading.Thread(target=serve);thread.start()
+    post=hook_transport.post
+    def drop_page(conn,route,payload,limit):
+        if route=='QueryDB' and 'ORDER BY MSG.localId ASC' in payload['sql']:
+            return post(hook_transport.connection(listener.getsockname()[1],1),route,payload,limit)
+        return post(conn,route,payload,limit)
+    monkeypatch.setattr(hook_transport,'post',drop_page)
+    try:
+        with pytest.raises(HookLocalError):
+            HookHistorySynchronizer(gateway,lambda _:None,lambda:(0,0)).capture(process,scope,delivery,'0')
+        thread.join(2);assert received and unresolved(process.generation)
+    finally:listener.close()
+    with storage.db_connection() as db:
+        failure=dict(db.execute('SELECT * FROM hook_transport_events ORDER BY rowid DESC LIMIT 1').fetchone())
+        assert json.loads(failure['evidence'])['delivery']=='unknown'
+        assert db.execute('SELECT COUNT(*) FROM hook_transport_events WHERE action_id=?',(failure['action_id'],)).fetchone()[0]>2
+    monkeypatch.setattr(diagnostic_bundle,'MAX_ROWS',2)
+    path=diagnostic_bundle.export_bundle(storage.APP_DIR,tmp_path/'history-failure.zip')
+    with zipfile.ZipFile(path) as archive:
+        rows=json.loads(archive.read('state/hook_transport_events.json'))['rows']
+        assert rows[0]['event_id']==failure['event_id']
 
 
 @pytest.mark.parametrize('budget,reads',[(2,3),(1000,1001)])
