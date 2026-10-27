@@ -680,17 +680,17 @@
     "recall_author_and_reviewer_shared_trigger_context"
   ],
   "current_release": {
-    "version": "0.10.21",
+    "version": "0.10.22",
     "source_commit": "209f7fb66a01a05736fdd32e54808e54a9b66ce3",
     "source_state": "gray_release_candidate",
     "published": false,
-    "contract_revision": "0.10.21",
-    "contract_sha256": "3eada68527699b93e0de3bfc71af0fab14f1e5059fdc840ed0e121432f3599df",
+    "contract_revision": "0.10.22",
+    "contract_sha256": "92bab6bcdb71db1fe241160d792a45a6264998ecebda148bf106d525858dc457",
     "scope": [
       "native_hook_state_and_release_preparation",
       "schema_revision_sync"
     ],
-    "note": "0.10.21 cumulative reviewed 9f8a041/4a3b3dc/e313a92/3e63015/241c803: explicit guard adoption, binding review UI, bounded send diagnostics, safe search-query OCR handling. Preserve bindings and unfinished records; DLL unchanged."
+    "note": "0.10.22 cumulative reviewed f39c568/287db01/922734f/5265bcc/8bcb558/850dd79: bounded update preparation retries, preserved confirmed stops, history waits, customer-scoped reconciliation, shared delivery proofs and diagnostic priority. Bindings and unfinished records preserved; DLL unchanged."
   },
   "historical_integrations": [
     {
