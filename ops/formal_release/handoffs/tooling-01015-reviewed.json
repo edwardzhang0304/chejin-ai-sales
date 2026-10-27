@@ -1,7 +1,7 @@
 {
   "schema_version": 2,
   "repository": "edwardzhang0304/chejin-ai-sales",
-  "reviewed_commit": "25cd7e8af0042770c16ae0b5d00024af398757e1",
+  "reviewed_commit": "737896800a8a4528038034a1b803fa49adfe330f",
   "scope_file": "ops/formal_release/handoffs/tooling-01015-scope.json",
   "reviewed_inputs": {
     ".github/actions/worker-release-checks/action.yml": "100644 blob d52d02ca82a127917695e0d80c5ab1f6697b7d62",
@@ -71,7 +71,7 @@
     "ops/formal_release/handoffs/tooling-01013-scope.json": "100644 blob 9fb8f418276b2e195289b304eb358c1d9189008e",
     "ops/formal_release/handoffs/tooling-01014-reviewed.json": "100644 blob 4ed9be107759c576dfc865b4d6368b16bfd3e9bc",
     "ops/formal_release/handoffs/tooling-01014-scope.json": "100644 blob a265f852acaf4c891ee5c9b13cb9ff4444d3b714",
-    "ops/formal_release/handoffs/tooling-01015-scope.json": "100644 blob dc3698580bf25f982ccd0264a73a0aabf0199f52",
+    "ops/formal_release/handoffs/tooling-01015-scope.json": "100644 blob a0f7b8d9008ed1a07c58c349a79c9f9f703410c4",
     "ops/formal_release/handoffs/tooling-gui-recovery-reviewed.json": "100644 blob aa928cc4a2b780683270bbea9fd06e6340dca724",
     "ops/formal_release/handoffs/tooling-gui-recovery-scope.json": "100644 blob a294688798685d49198fc2fe7772a90811a3cc9d",
     "ops/formal_release/handoffs/unified-recovery-58c90b3.json": "100644 blob aa8688d1777a4e68fe2a382493de1cff25dc10e1",
