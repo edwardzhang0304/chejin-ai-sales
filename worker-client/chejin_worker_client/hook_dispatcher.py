@@ -472,6 +472,12 @@ class HookBusinessDispatcher:
                 or any(inventory.get(k)!=v for k,v in rt.account.items())):
             raise ValueError('HOOK_WORK_INVENTORY_INVALID')
         self.resolve_wait('business',phase='connection_wait')
+        from . import hook_read_retry
+        if hook_read_retry.pending():
+            recovery_bindings=[m['reconciliation_binding'] for m in inventory['retained_sends'] if m.get('reconciliation_binding')]
+            hook_read_retry.cancel_retired_history(rt.scope.process_generation,
+                [hook_read_retry.history_subject(rt.delivery(b),b['history_since_create_time'])
+                 for b in [*inventory['bindings'],*inventory.get('retired_evidence',[]),*recovery_bindings]])
         self._observation_query_version=inventory.get('observation_query_version',0)
         rt._observation_query_version=self._observation_query_version
         # Presentation is authorized by the validated inventory, even when the
@@ -541,6 +547,8 @@ class HookBusinessDispatcher:
                 if db.execute("SELECT 1 FROM sqlite_master WHERE name='hook_active_calls'").fetchone():
                     from datetime import datetime,timedelta,timezone
                     cutoff=(datetime.now(timezone.utc)-timedelta(days=CONFIG.artifact_critical_retention_days)).isoformat()
+                    from .hook_read_retry import retire_completed_evidence
+                    retire_completed_evidence(db,cutoff)
                     db.execute("DELETE FROM hook_active_calls WHERE state='completed' AND completed_at<?",(cutoff,));db.commit()
             self._housekeeping_due=time.monotonic()+CONFIG.artifact_cleanup_interval_seconds
         bindings=inventory['bindings']
@@ -668,6 +676,8 @@ class HookBusinessDispatcher:
                     continue
                 raise
             except (ValueError, HookLocalError) as exc:
+                from .hook_read_retry import ReadRetryWait
+                if isinstance(exc,ReadRetryWait):raise
                 if is_history_wait(exc):
                     all_history_ready=False;pending_work=True;self._report_wait(str(exc))
                     context=getattr(rt,'_history_context',None) or f"{binding['binding_id']}:initial"

@@ -8,6 +8,7 @@ import uuid
 import time
 from .hook_history import HookHistoryQuery, schema_has_send_status
 from .shared_rules import hook_history_rules as rules
+from . import hook_read_retry
 
 
 class HookHistorySynchronizer:
@@ -51,7 +52,8 @@ class HookHistorySynchronizer:
         started=time.perf_counter()
         start=self.barrier()
         if not isinstance(start,tuple) or len(start)!=2 or start[1]!=0:raise ValueError('HOOK_HISTORY_LOCAL_PENDING')
-        with self.gateway.history_session(process,scope) as reader:
+        subject=hook_read_retry.history_subject(delivery,since)
+        with self.gateway.history_session(process,scope,retry_subject=subject) as reader:
             scans=[self.scan(process,scope,delivery,since,reader=reader),self.scan(process,scope,delivery,since,reader=reader)]
             exclusions=[]
             if self.media_enabled and callback_ids:
@@ -81,6 +83,7 @@ class HookHistorySynchronizer:
             'scans':scans,'local_pending_count':end[1]}
         if self.media_enabled:coverage['excluded_pre_invite_metadata']=exclusions
         rules.validate_coverage(coverage,delivery.peer_wxid,int(since))
+        hook_read_retry.succeeded(process.generation,'QueryDB',subject)
         self.profile = {'capture_seconds': round(time.perf_counter()-started, 6),
                         'dll_http_seconds': round(reader.api_seconds, 6),
                         'dll_calls': reader.api_calls, 'full_process_inspections': 2,

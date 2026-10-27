@@ -6,6 +6,7 @@ import re
 PHASES = {
  'environment': '检查运行环境', 'ready': '运行环境检查通过',
  'wechat_window': '调整微信窗口位置和大小',
+ 'search_calibration': '定位微信搜索框',
  'worker_window': '将 Worker 放到微信旁边',
  'invite_received': '领取加好友任务', 'invite_prepare': '准备申请文案和备注',
  'search_empty': '检查搜索框', 'search_input': '输入手机号',
@@ -34,6 +35,7 @@ INVITE_ACTION_PHASES = frozenset(('search_empty', 'search_input', 'query_verifie
     'confirm_once', 'cleanup', 'invite_receipt'))
 
 NOTES = {
+ 'local_query_wait':'本地查询未送达，等待连接检查；原任务和暂停状态保留。',
  'startup_observation': '暂时无法读取微信窗口状态，等待核验；不会自动操作微信。',
  'startup_foreground': '请点击工作微信主窗口并保持在前台，校验通过后再手动开始接单。',
  'startup_retry': '等待再次校验，不自动切换前台。',
@@ -180,7 +182,7 @@ def complete_send_progress(runtime, runner, task_id, settlement):
                   None if confirmed else 'send_unknown')
 
 
-STARTUP_PHASES = ('environment','wechat_window','worker_window','ready')
+STARTUP_PHASES = ('environment','wechat_window','search_calibration','worker_window','ready')
 
 
 class HookProgressTimeline:
@@ -238,6 +240,12 @@ class HookProgressTimeline:
             for prior in self.steps:
                 if affected and prior.get('_group')==affected and prior['state']=='current':
                     prior['state']='waiting';prior['description']=NOTES['interrupted']
+        # Environment is the parent of startup preparation. A stopped/waiting
+        # child must not leave its parent showing an active spinner.
+        if context=='startup' and phase!='environment' and state in {'waiting','error'}:
+            parent=self.latest.get(('startup','environment'))
+            if parent and parent['state']=='current':
+                parent.update(state=state, description=NOTES.get(event.get('note'),''))
         # Heartbeat/history polling cannot reopen an already completed stage.
         if old and ((phase not in {'reply_owner','customer_hold'} and old['state']=='done' and state in {'current','done','waiting'}) or (old['state']==state and old.get('_note')==event.get('note'))):return
         if old and (old['state'] not in {'error','done'} or event.get('group')):

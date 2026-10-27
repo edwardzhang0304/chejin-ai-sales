@@ -1029,6 +1029,11 @@ class WorkerWebWindow(QMainWindow):
     def set_accepting(self, accepting: bool) -> None:
         if not self.binding:
             return
+        services=getattr(self.runner,'hook_services',None)
+        if accepting and services is not None and self._startup_check_state().get('canRecheck'):
+            services.request_connection_recheck()
+            self._publish()
+            return
         if accepting and self.binding.run_status != "faulted" and not self._startup_check_state()["canStart"]:
             self._publish()
             return

@@ -12,6 +12,10 @@ def header(height=25, query=''):
     width=round(reference.width*height/reference.height)
     control=reference.resize((width,height),Image.Resampling.BILINEAR)
     image=Image.new('RGB',(800,100),(247,247,247))
+    draw=ImageDraw.Draw(image)
+    draw.rectangle((0,0,53,image.height),(45,45,45))
+    split=max(304,66+width+48)
+    draw.line((split,0,split,image.height),fill=(210,210,210))
     image.paste(control,(66,25))
     rows=[]
     if query:

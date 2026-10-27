@@ -5,6 +5,7 @@ history, authorizes a send, clears a journal, or changes the operator's pause.
 """
 
 from .hook_gateway import HookLocalError
+from .hook_read_retry import ReadRetryWait
 
 
 TRANSIENT_HISTORY = frozenset({
@@ -19,7 +20,7 @@ TRANSIENT_HISTORY = frozenset({
 def is_history_wait(error: Exception) -> bool:
     """Only classified read holds may wait; uncertain actions retain fault handling."""
     return (not getattr(error, "outcome_unknown", False)
-            and (isinstance(error, HistoryCoveragePending)
+            and (isinstance(error, (HistoryCoveragePending,ReadRetryWait))
                  or (isinstance(error, (ValueError, HookLocalError))
                      and str(error) in TRANSIENT_HISTORY)))
 

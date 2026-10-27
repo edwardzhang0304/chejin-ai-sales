@@ -11,6 +11,7 @@ CHAIN = ('hook_raw_inbox', 'hook_observation_projection', 'hook_delivery_outbox'
 STATE_COLUMNS = {
     'hook_voice_attempts': ('state', ('transcribed', 'failed')),
     'hook_active_calls': ('state', ('completed',)),
+    'hook_read_retry': ('state', ('resolved','operator_recheck')),
 }
 
 
@@ -221,6 +222,11 @@ class SnapshotPriority:
         if table == 'hook_voice_interruptions' and 'result_json' in cols:
             # All interruption records represent unknown original calls; retain
             # oldest first. They are never inferred to be successful results.
+            parts.append('1')
+        if table == 'hook_transport_events' and 'evidence' in cols:
+            evidence=_object_sql('evidence')
+            parts.append(f"coalesce(json_extract({evidence},'$.delivery'),'unknown')!='responded'")
+        if table == 'hook_process_recovery':
             parts.append('1')
         important = '('+' OR '.join(parts)+')' if parts else '0'
         # Keep oldest unresolved evidence ahead of ordinary recent history.

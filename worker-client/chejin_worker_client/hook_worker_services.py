@@ -13,6 +13,8 @@ import math
 import re
 import sqlite3
 import threading
+import uuid
+from . import hook_read_retry
 from typing import Callable
 
 from .api import ApiError
@@ -75,6 +77,9 @@ class HookWorkerServices:
         self._startup_check = startup_check_state.checking()
         self._display_fault: dict | None = None
         self._had_fault=False
+        self._retry_instance=str(uuid.uuid4())
+        self._recheck_requested=threading.Event()
+        self._local_query_wait=False
 
     def attach(self, binding, on_persistence_failure: Callable[[], None]) -> None:
         self._had_fault=binding.run_status=='faulted'
@@ -101,6 +106,20 @@ class HookWorkerServices:
             captured = HookWorkerCredentials(binding.worker_id, binding.worker_token, binding.client_instance_id)
         if captured != self._credentials:
             raise ValueError("HOOK_RUNTIME_BINDING_CHANGED")
+        gateway=self.connection.gateway
+        gateway.retry_intent=lambda: self._retry_instance+':'+str(runner._run_status_revision)
+        gateway.retry_allowed=lambda: (not runner.stop_event.is_set()
+            and not emergency_stop_requested()
+            and not storage.load_runtime_control().get('update_no_new_work'))
+        if self._recheck_requested.is_set():
+            self._recheck_requested.clear()
+            if gateway.retry_allowed() and self._local_query_wait:
+                # Explicit recheck is not Start: persist pause before reopening
+                # the read budget. An existing technical fault remains faulted.
+                wanted='faulted' if binding.run_status=='faulted' else 'paused'
+                if runner._preserve_stopped_run_status(wanted):
+                    hook_read_retry.request_new_round()
+                    self._local_query_wait=False
         summary = ui_lock.lock_summary()
         # Lifecycle readiness is not permission for reply generation or sending.
         summary["capabilities"] = {"reply_sequence_version": 1}
@@ -123,6 +142,9 @@ class HookWorkerServices:
                 return  # Preserve same-account receiver; no work is admitted.
             self._fault(runner, exc.code, http_status=exc.status_code, startup_phase="environment")
             return
+        except hook_read_retry.ReadRetryWait as exc:
+            self._wait_for_local_query(runner,exc.code)
+            return
         except ui_lock.UiLockError as exc:
             if exc.code in {ui_lock.UI_LOCK_BUSY, ui_lock.UI_LOCK_ACQUIRE_TIMEOUT}:
                 return  # An existing physical action owns this same lock.
@@ -140,6 +162,7 @@ class HookWorkerServices:
             self._startup_check = startup_check_state.failed("HOOK_NOT_LOGGED_IN")
             runner.on_status("waiting_wechat")
             return  # A healthy installation may wait for a manual login.
+        self._local_query_wait=hook_read_retry.pending() is not None
         self._startup_check = startup_check_state.passed()
         if not prepared.process.window_available_for_actions:
             self._startup_check = startup_check_state.failed('HOOK_WINDOW_UNAVAILABLE')
@@ -186,12 +209,16 @@ class HookWorkerServices:
                             self._fault(runner,'HOOK_ACTION_LOCK_FAILED');return
                     except Exception as exc:
                         code = getattr(exc,'code',None) or str(exc)
-                        emit_progress(runner,'startup','wechat_window','error','failed')
+                        phase='search_calibration' if code=='HOOK_STARTUP_SEARCH_UNRESOLVED' else 'wechat_window'
+                        if phase=='search_calibration':
+                            emit_progress(runner,'startup','wechat_window','done')
+                        emit_progress(runner,'startup',phase,'error','failed')
                         self._fault(runner,code if isinstance(code,str) and code.startswith('HOOK_') else 'HOOK_C1_STARTUP_WINDOW_UNVERIFIED',local_error=exc)
                         return
                     else:
                         self._startup_window_key = key
                         emit_progress(runner,'startup','wechat_window','done')
+                        emit_progress(runner,'startup','search_calibration','done')
             if self._startup_window_key == key and not self._startup_layout_ready():
                 self._startup_check = startup_check_state.failed('HOOK_SEARCH_LAYOUT_RESTART_REQUIRED')
                 self._startup_position_payload = None
@@ -254,6 +281,7 @@ class HookWorkerServices:
         kind=getattr(local_error,'transport_kind',None)
         if not isinstance(operation,str) or operation not in {'IsLoginStatus','ConfigureMsgReciveFullURL','GetDBHandleAndPath','QueryDB','SendTextMsg','GetFriendAndChatRoomList','Voice2Text'}:operation=None
         if not isinstance(kind,str) or kind not in {'timeout','connection_error','request_error'}:kind=None
+        self._local_query_wait=False
         detail=startup_check_state.failed(code,operation=operation,transport_kind=kind)
         if startup_phase is not None:
             emit_progress(runner,'startup',startup_phase,'error','interrupted')
@@ -312,6 +340,8 @@ class HookWorkerServices:
                     if not runner.stop_event.is_set():
                         raise
                     return
+                except hook_read_retry.ReadRetryWait as exc:
+                    self._wait_for_local_query(runner,exc.code)
                 except ApiError as exc:
                     if exc.code in BACKEND_WAIT_CODES:
                         self.dispatcher._report_wait(exc.code)
@@ -362,6 +392,20 @@ class HookWorkerServices:
             return startup_check_state.failed(code)
         return check
 
+    def _wait_for_local_query(self,runner,code):
+        self._local_query_wait=True
+        self._startup_check=startup_check_state.failed(code)
+        emit_progress(runner,'startup','environment','waiting','local_query_wait')
+        if self._last_error!=code:
+            storage.append_log('WARN','hook_read_connection_wait','本地查询未送达，保留原任务等待连接。',
+                error_code=code,include_exception_text=False)
+        self._last_error=code
+
+    def request_connection_recheck(self):
+        if not self.startup_check_state().get('canRecheck'):return False
+        self._recheck_requested.set()
+        return True
+
     def startup_check_state(self) -> dict:
         value = dict(self._startup_check)
         if value['canStart'] and not self._startup_layout_ready():
@@ -380,6 +424,12 @@ class HookWorkerServices:
         storage_ready=getattr(self.dispatcher,'history_storage_ready',None)
         if value['canStart'] and callable(storage_ready) and not storage_ready():
             value=startup_check_state.failed('HOOK_HISTORY_STORAGE_CAPACITY_EXCEEDED')
+        if self._local_query_wait:
+            row=hook_read_retry.pending()
+            if row:
+                code='HOOK_READ_RETRY_EXHAUSTED' if row['state']=='exhausted' else 'HOOK_READ_RETRY_CANCELLED' if row['state']=='cancelled' else 'HOOK_READ_RETRY_WAIT'
+                value=startup_check_state.failed(code)
+                value['canRecheck']=row['state'] in {'exhausted','cancelled'} and not self._recheck_requested.is_set()
         if self._display_fault:
             value['faultTitle'] = self._display_fault['title']
             value['faultMessage'] = self._display_fault['message']

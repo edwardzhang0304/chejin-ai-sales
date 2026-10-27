@@ -31,12 +31,13 @@ for(const [index,state] of states.entries())test(`actual startup state ${index}:
    assert.equal(state.model.status.receiveState,'检查中');
    const titles=[...document.querySelectorAll('.cw-step-list li strong')].map(x=>x.textContent);
    assert(!titles.includes('已停止接单'));
-  }else if(!state.model.hookProcessSteps?.length){
+  }else if(!state.model.hookProcessSteps?.length && !state.model.startupCheck?.canRecheck){
    assert(document.querySelector('.cw-process-empty[role="status"][aria-live="polite"]'));
   }
-  const button=[...document.querySelectorAll('button')].find(b=>b.textContent===(state.model.status.acceptingIntent?'暂停接单':'开始接单'));assert(button);
-  assert.equal(button.disabled,!state.model.status.acceptingIntent && (!state.model.startupCheck.canStart || (state.screen==='client-faulted' && !state.model.faultRecovery?.ready)));
-  await view.click(button);assert.equal(view.starts,!state.model.status.acceptingIntent && !button.disabled?1:0);
+  const recheck=Boolean(state.model.startupCheck.canRecheck);
+  const button=[...document.querySelectorAll('button')].find(b=>b.textContent===(recheck?'重新检查连接':state.model.status.acceptingIntent?'暂停接单':'开始接单'));assert(button);
+  assert.equal(button.disabled,recheck?false:!state.model.status.acceptingIntent && (!state.model.startupCheck.canStart || (state.screen==='client-faulted' && !state.model.faultRecovery?.ready)));
+  await view.click(button);assert.equal(view.starts,(recheck || !state.model.status.acceptingIntent) && !button.disabled?1:0);
   await view.dispose();
  }finally{for(const c of channels){c.port1.close();c.port2.close();}dom.window.close();for(const key of keys){const descriptor=old.get(key);if(descriptor)Object.defineProperty(globalThis,key,descriptor);else delete globalThis[key];}rmSync(dir,{recursive:true,force:true});}
 });

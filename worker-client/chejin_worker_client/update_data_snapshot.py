@@ -230,6 +230,17 @@ def _hook_active_calls_snapshot(conn,digest_key):
     return authenticate([dict(row) for row in conn.execute('SELECT * FROM hook_active_calls ORDER BY process_generation,action_id')],digest_key)
 
 
+def _hook_recovery_snapshot(conn,digest_key):
+    from .hook_read_retry import TABLE_FIELDS, validate_schema
+    result={}
+    for table in TABLE_FIELDS:
+        if not conn.execute('SELECT 1 FROM sqlite_master WHERE name=?',(table,)).fetchone():
+            continue
+        validate_schema(conn,table)
+        result[table]=authenticate([dict(row) for row in conn.execute(f'SELECT * FROM {table} ORDER BY rowid')],digest_key)
+    return result
+
+
 def _hook_voice_snapshot(conn: sqlite3.Connection, digest_key: str) -> dict[str, Any] | None:
     from .hook_voice import VOICE_FIELDS
     if conn.execute("SELECT 1 FROM sqlite_master WHERE name='hook_voice_attempts'").fetchone() is None:
@@ -283,6 +294,7 @@ def protected_update_snapshot(*, data_dir: Path | None = None, digest_key: str =
         hook_history = _hook_history_snapshot(conn, digest_key)
         hook_voice = _hook_voice_snapshot(conn, digest_key)
         hook_active_calls = _hook_active_calls_snapshot(conn,digest_key)
+        hook_recovery = _hook_recovery_snapshot(conn,digest_key)
         hook_retired = _hook_retired_snapshot(conn,digest_key)
     files = {}
     for relative_root in PROTECTED_FILE_ROOTS:
@@ -320,6 +332,8 @@ def protected_update_snapshot(*, data_dir: Path | None = None, digest_key: str =
         payload['hook_retired_v1']=hook_retired
     if hook_active_calls is not None:
         payload['hook_active_calls_v1']=hook_active_calls
+    if hook_recovery:
+        payload['hook_recovery_v1']=hook_recovery
     return {**payload, "snapshot_sha256": authenticate(payload, digest_key)}
 
 
@@ -334,6 +348,8 @@ def assert_protected_update_snapshot(expected: dict[str, Any], *, data_dir: Path
             raise RuntimeError("UPDATE_PROTECTED_FILE_SNAPSHOT_INVALID")
     actual = protected_update_snapshot(data_dir=data_dir, digest_key=digest_key)
     differences = []
+    if expected.get('hook_recovery_v1',{})!=actual.get('hook_recovery_v1',{}):
+        differences.append({'table':'hook_recovery','recovery_evidence_changed':True})
     if expected.get('hook_retired_v1')!=actual.get('hook_retired_v1'):
         differences.append({'table':'hook_retired_observations','retired_observations_changed':True})
     if expected.get('hook_active_calls_v1')!=actual.get('hook_active_calls_v1'):

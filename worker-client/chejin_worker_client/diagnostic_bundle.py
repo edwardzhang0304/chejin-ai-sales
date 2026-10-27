@@ -30,7 +30,7 @@ MAX_ROWS = 1000
 MAX_SECONDS = 45
 TABLES = (
     "local_logs", "hook_raw_inbox", "hook_observation_projection",
-    "hook_delivery_outbox", "hook_voice_attempts", "hook_voice_interruptions", "hook_active_calls",
+    "hook_delivery_outbox", "hook_voice_attempts", "hook_voice_interruptions", "hook_active_calls", "hook_transport_events", "hook_read_retry", "hook_process_recovery",
     "hook_history_pages", "hook_retired_observations", "hook_retired_deliveries",
     "c2_runtime_state", "c2_message_ledger", "c2_ingest_outbox",
     "c2_action_journal", "reply_send_ack_outbox",

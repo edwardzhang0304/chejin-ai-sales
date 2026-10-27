@@ -5,6 +5,7 @@ from unittest.mock import Mock, patch
 import json
 import pytest
 from PIL import Image
+from PIL import ImageDraw
 from chejin_worker_client.hook_factory import WindowsC1
 from apps.wechat_ai_customer_service.adapters.wechat_win32_ocr import hook_c1, hook_c1_flow as flow
 from apps.wechat_ai_customer_service.tests import test_hook_c1_flow as flow_tests
@@ -58,10 +59,54 @@ def test_startup_unrecognized_frame_stops_without_stale_cache_or_input(calibrati
     native._search_control_cache['bounds']=[1,2,3,4]
     state['frame'].image=Image.new('RGB',state['frame'].image.size,'white')
     monkeypatch.setattr(hook_c1,'prepare_window',Mock(return_value={'ok':True}))
-    with pytest.raises(flow.FlowStop):native.startup(process,gateway,{})
+    from chejin_worker_client.hook_startup_window import StartupWindowError
+    with pytest.raises(StartupWindowError,match='HOOK_STARTUP_SEARCH_UNRESOLVED'):
+        native.startup(process,gateway,{})
     assert native._search_control_cache=={}
     ops.win32api.mouse_event.assert_not_called()
     assert list((root/'artifacts'/'tasks').glob('startup-search-*/diagnostics/initialization.json'))
+
+
+@pytest.mark.parametrize('query',['','13800000003'])
+def test_chat_bubble_cannot_compete_with_sidebar_search(calibration,monkeypatch,query):
+    native,gateway,process,state,ops,root=calibration
+    frame=header(query=query)
+    ImageDraw.Draw(frame.image).rectangle((373,62,621,83),fill='white')
+    # Even a chat message saying "搜索" cannot become the operation-row anchor.
+    frame.rows.append(dict(text='搜索',confidence=.99,left=390,top=65,right=430,bottom=80))
+    state['frame']=frame
+    monkeypatch.setattr(hook_c1,'prepare_window',Mock(return_value={'ok':True}))
+    with pytest.raises(flow.FlowStop,match='CONTROL_UNRESOLVED'):
+        flow.search_control_bounds(frame)  # Baseline unpartitioned selection fails.
+    native.startup(process,gateway,{})
+    assert native._search_control_cache['bounds']==[66,25,256,50]
+    assert ops.try_image_grab.call_count==1 and ops.run_ocr.call_count==1
+    ops.win32api.mouse_event.assert_not_called()
+
+
+def test_missing_left_search_never_falls_back_to_chat_control(calibration,monkeypatch):
+    native,gateway,process,state,ops,_=calibration
+    image=state['frame'].image
+    draw=ImageDraw.Draw(image)
+    draw.rectangle((66,25,256,50),fill=(247,247,247))
+    draw.rectangle((373,62,621,83),fill='white')
+    state['frame'].rows=[dict(text='搜索',confidence=.99,left=390,top=65,right=430,bottom=80)]
+    monkeypatch.setattr(hook_c1,'prepare_window',Mock(return_value={'ok':True}))
+    from chejin_worker_client.hook_startup_window import StartupWindowError
+    with pytest.raises(StartupWindowError,match='SEARCH_UNRESOLVED'):native.startup(process,gateway,{})
+    assert not native._search_control_cache
+    ops.win32api.mouse_event.assert_not_called()
+
+
+@pytest.mark.parametrize('height',[25,31,38,50])
+@pytest.mark.parametrize('query',['','13800000003'])
+def test_sidebar_search_accepts_scaled_synthetic_controls(calibration,monkeypatch,height,query):
+    native,gateway,process,state,ops,_=calibration
+    state['frame']=header(height,query=query)
+    monkeypatch.setattr(hook_c1,'prepare_window',Mock(return_value={'ok':True}))
+    native.startup(process,gateway,{})
+    assert native._search_control_cache['bounds']==[66,25,66+round(190*height/25),25+height]
+    assert ops.run_ocr.call_count==1 and ops.try_image_grab.call_count==1
 
 
 def test_all_main_rois_reuse_startup_table_and_missing_region_stops(calibration,monkeypatch):

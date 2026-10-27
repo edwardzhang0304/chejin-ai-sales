@@ -121,11 +121,13 @@ def empty_search(frame: Frame, cached_bounds=None) -> dict:
     return result
 
 
-def search_control_bounds(frame: Frame) -> list[int]:
+def search_control_bounds(frame: Frame, *, region=None) -> list[int]:
     if frame.name != 'header':raise FlowStop('SEARCH_FRAME_INVALID')
     w,h = frame.image.size
     choices = [c for c in components(frame.image,'search') + components(frame.image,'white')
-               if c[1]>=8 and c[3]<=h and c[2]-c[0]<=.6*w]
+               if c[1]>=8 and c[3]<=h and c[2]-c[0]<=.6*w
+               and (region is None or (region[0]<=c[0]<c[2]<=region[2]
+                                       and region[1]<=c[1]<c[3]<=region[3]))]
     if len(choices)!=1:raise FlowStop('SEARCH_CLEANUP_CONTROL_UNRESOLVED')
     return choices[0]
 
@@ -975,17 +977,49 @@ class NativeUI:
     def calibrate_search_control(self):
         """Startup read-only calibration; existing text is never removed."""
         frame = self.capture('header')
-        bounds = search_control_bounds(frame)
+        from .window_layout import build_add_friend_entry_layout_regions
+        from ..search_control_icons import magnifier_candidates
+        # Reuse the OCR entry's measured sidebar boundaries before considering
+        # filled controls. A chat bubble is never a search-control candidate.
+        aliases = {'搜索', 'Q搜索', 'O搜索', '0搜索', '搜素', 'Q搜素', 'O搜素', '0搜素'}
+        anchors = [r for r in frame.rows if clean(r.get('text')) in aliases
+                   and float(r.get('confidence', 0)) >= .80]
+        layout = build_add_friend_entry_layout_regions(frame.image,
+            search_anchor_items=anchors, full_client_width=frame.geometry['width'])
+        if layout.get('conflicts') == ['search_anchor_missing']:
+            # A populated/focused search has no placeholder. Its existing icon
+            # template supplies the operation-row anchor, never a click permit.
+            anchors = [dict(text='', confidence=c['confidence'],
+                left=c['bounds'][0], top=c['bounds'][1],
+                right=c['bounds'][2], bottom=c['bounds'][3])
+                for c in magnifier_candidates(frame.image,
+                    search_bounds=[0, 0, frame.image.width, frame.image.height])]
+            layout = build_add_friend_entry_layout_regions(frame.image,
+                search_anchor_items=anchors, full_client_width=frame.geometry['width'])
+        if not layout.get('ok'):
+            raise FlowStop('SEARCH_STARTUP_REGION_UNRESOLVED')
+        region = layout['regions']['sidebar_header_bounds']
+        bounds = search_control_bounds(frame, region=region)
         try:
-            target = empty_search(frame)
-            bounds = target['bounds']
+            # Reuse the existing native-pixel border proof. At higher scaling
+            # the neutral fill excludes a few antialiased border pixels; the
+            # startup cache must contain the whole input, not its inner fill.
+            bounds = focused_empty_bounds(frame,bounds)
         except FlowStop:
-            from ..search_control_icons import magnifier_candidates
             height = bounds[3]-bounds[1]
-            candidates = magnifier_candidates(frame.image,
-                search_bounds=[bounds[0],bounds[1],bounds[0]+height,bounds[3]])
+            radius=max(1,round(height*.15))
+            candidates = [c for c in magnifier_candidates(frame.image,search_bounds=region)
+                if abs(c['bounds'][0]-bounds[0])<=radius
+                and abs(c['bounds'][1]-bounds[1])<=radius
+                and abs(c['bounds'][3]-bounds[3])<=radius]
             if len(candidates) != 1:
                 raise FlowStop('SEARCH_STARTUP_CONTROL_UNRESOLVED')
+            icon=candidates[0]['bounds']
+            margin=max(0,bounds[0]-icon[0],bounds[1]-icon[1],icon[3]-bounds[3])
+            bounds=[bounds[0]-margin,bounds[1]-margin,bounds[2]+margin,bounds[3]+margin]
+        if not (region[0]<=bounds[0]<bounds[2]<=region[2]
+                and region[1]<=bounds[1]<bounds[3]<=region[3]):
+            raise FlowStop('SEARCH_STARTUP_CONTROL_UNRESOLVED')
         self.guard(frame)
         self.cached_search_bounds(frame)
         self.search_control_cache['bounds'] = list(bounds)
@@ -996,7 +1030,7 @@ class NativeUI:
             (folder/'search-layout.json').write_text(
                 json.dumps({'source':'startup','bounds':bounds,'key':self.search_control_cache['key'],
                             'regions':self.search_control_cache['regions'],
-                            'read_only':True},ensure_ascii=False),encoding='utf-8')
+                            'read_only':True,'sidebar_layout':layout},ensure_ascii=False),encoding='utf-8')
         self._save_frame_material('diagnostics/search-layout.json', save_layout)
 
     def verified_empty_search(self, frame=None):
