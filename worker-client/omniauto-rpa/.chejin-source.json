@@ -680,17 +680,17 @@
     "recall_author_and_reviewer_shared_trigger_context"
   ],
   "current_release": {
-    "version": "0.10.22",
+    "version": "0.10.23",
     "source_commit": "209f7fb66a01a05736fdd32e54808e54a9b66ce3",
     "source_state": "gray_release_candidate",
     "published": false,
-    "contract_revision": "0.10.22",
-    "contract_sha256": "92bab6bcdb71db1fe241160d792a45a6264998ecebda148bf106d525858dc457",
+    "contract_revision": "0.10.23",
+    "contract_sha256": "c216af7a3897268e2bbd17ea74a6990df3b40d623d972d389c7c40aef6b8cd25",
     "scope": [
       "native_hook_state_and_release_preparation",
       "schema_revision_sync"
     ],
-    "note": "0.10.22 cumulative reviewed f39c568/287db01/922734f/5265bcc/8bcb558/850dd79: bounded update preparation retries, preserved confirmed stops, history waits, customer-scoped reconciliation, shared delivery proofs and diagnostic priority. Bindings and unfinished records preserved; DLL unchanged."
+    "note": "0.10.23 reviewed cb8fe41 safe startup/recovery, actual transport evidence and bounded read retries; 5bee886 shared semantic reply authority and strict review contract. Bindings, unknown sends and manual pause preserved. DLL unchanged."
   },
   "historical_integrations": [
     {

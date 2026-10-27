@@ -26,85 +26,85 @@
           ]
         },
         "ops/formal_release/handoffs/hook-reviewed-1ed1d7c.json": {
-          "reason": "SOP18.0.4 metadata only.",
+          "reason": "0.10.23 version and reviewed-source descriptor only under SOP18.0.4.",
           "covered_by": [
             "ops/formal_release/tests/test_tooling_handoff.py"
           ]
         },
         "ops/formal_release/handoffs/hook-reviewed-bbe404a.json": {
-          "reason": "SOP18.0.4 metadata only.",
+          "reason": "0.10.23 version and reviewed-source descriptor only under SOP18.0.4.",
           "covered_by": [
             "ops/formal_release/tests/test_tooling_handoff.py"
           ]
         },
         "ops/formal_release/handoffs/hook-reviewed-d44f8e5.json": {
-          "reason": "SOP18.0.4 metadata only.",
+          "reason": "0.10.23 version and reviewed-source descriptor only under SOP18.0.4.",
           "covered_by": [
             "ops/formal_release/tests/test_tooling_handoff.py"
           ]
         },
         "ops/formal_release/handoffs/hook-reviewed-d7f7ad4.json": {
-          "reason": "SOP18.0.4 metadata only.",
+          "reason": "0.10.23 version and reviewed-source descriptor only under SOP18.0.4.",
           "covered_by": [
             "ops/formal_release/tests/test_tooling_handoff.py"
           ]
         },
         "ops/formal_release/handoffs/hook-reviewed-evidence-01014.json": {
-          "reason": "SOP18.0.4 metadata only.",
+          "reason": "0.10.23 version and reviewed-source descriptor only under SOP18.0.4.",
           "covered_by": [
             "ops/formal_release/tests/test_tooling_handoff.py"
           ]
         },
         "ops/formal_release/handoffs/tooling-01011-reviewed.json": {
-          "reason": "SOP18.0.4 metadata only.",
+          "reason": "0.10.23 version and reviewed-source descriptor only under SOP18.0.4.",
           "covered_by": [
             "ops/formal_release/tests/test_tooling_handoff.py"
           ]
         },
         "ops/formal_release/handoffs/tooling-01011-scope.json": {
-          "reason": "SOP18.0.4 metadata only.",
+          "reason": "0.10.23 version and reviewed-source descriptor only under SOP18.0.4.",
           "covered_by": [
             "ops/formal_release/tests/test_tooling_handoff.py"
           ]
         },
         "ops/formal_release/handoffs/tooling-01012-reviewed.json": {
-          "reason": "SOP18.0.4 metadata only.",
+          "reason": "0.10.23 version and reviewed-source descriptor only under SOP18.0.4.",
           "covered_by": [
             "ops/formal_release/tests/test_tooling_handoff.py"
           ]
         },
         "ops/formal_release/handoffs/tooling-01012-scope.json": {
-          "reason": "SOP18.0.4 metadata only.",
+          "reason": "0.10.23 version and reviewed-source descriptor only under SOP18.0.4.",
           "covered_by": [
             "ops/formal_release/tests/test_tooling_handoff.py"
           ]
         },
         "ops/formal_release/handoffs/tooling-01013-reviewed.json": {
-          "reason": "SOP18.0.4 metadata only.",
+          "reason": "0.10.23 version and reviewed-source descriptor only under SOP18.0.4.",
           "covered_by": [
             "ops/formal_release/tests/test_tooling_handoff.py"
           ]
         },
         "ops/formal_release/handoffs/tooling-01013-scope.json": {
-          "reason": "SOP18.0.4 metadata only.",
+          "reason": "0.10.23 version and reviewed-source descriptor only under SOP18.0.4.",
           "covered_by": [
             "ops/formal_release/tests/test_tooling_handoff.py"
           ]
         },
         "ops/formal_release/handoffs/tooling-01014-reviewed.json": {
-          "reason": "SOP18.0.4 metadata only.",
+          "reason": "0.10.23 version and reviewed-source descriptor only under SOP18.0.4.",
           "covered_by": [
             "ops/formal_release/tests/test_tooling_handoff.py"
           ]
         },
         "ops/formal_release/handoffs/tooling-01014-scope.json": {
-          "reason": "SOP18.0.4 metadata only.",
+          "reason": "0.10.23 version and reviewed-source descriptor only under SOP18.0.4.",
           "covered_by": [
             "ops/formal_release/tests/test_tooling_handoff.py"
           ]
         },
         "ops/formal_release/handoffs/tooling-01015-scope.json": {
-          "reason": "SOP18.0.4 metadata only.",
+          "reason": "0.10.23 version and reviewed-source descriptor only under SOP18.0.4.",
           "covered_by": [
             "ops/formal_release/tests/test_tooling_handoff.py"
           ]
@@ -149,7 +149,7 @@
           ]
         },
         "worker-client/chejin_worker_client/__init__.py": {
-          "reason": "SOP18.0.4 metadata only.",
+          "reason": "0.10.23 version and reviewed-source descriptor only under SOP18.0.4.",
           "covered_by": [
             "ops/formal_release/tests/test_tooling_handoff.py"
           ]
@@ -208,67 +208,67 @@
           ]
         },
         "ops/formal_release/handoffs/hook-reviewed-1ed1d7c.json": {
-          "reason": "SOP18.0.4 metadata only.",
+          "reason": "0.10.23 version and reviewed-source descriptor only under SOP18.0.4.",
           "covered_by": [
             "ops/formal_release/tests/test_tooling_handoff.py"
           ]
         },
         "ops/formal_release/handoffs/hook-reviewed-bbe404a.json": {
-          "reason": "SOP18.0.4 metadata only.",
+          "reason": "0.10.23 version and reviewed-source descriptor only under SOP18.0.4.",
           "covered_by": [
             "ops/formal_release/tests/test_tooling_handoff.py"
           ]
         },
         "ops/formal_release/handoffs/hook-reviewed-d44f8e5.json": {
-          "reason": "SOP18.0.4 metadata only.",
+          "reason": "0.10.23 version and reviewed-source descriptor only under SOP18.0.4.",
           "covered_by": [
             "ops/formal_release/tests/test_tooling_handoff.py"
           ]
         },
         "ops/formal_release/handoffs/hook-reviewed-evidence-01014.json": {
-          "reason": "SOP18.0.4 metadata only.",
+          "reason": "0.10.23 version and reviewed-source descriptor only under SOP18.0.4.",
           "covered_by": [
             "ops/formal_release/tests/test_tooling_handoff.py"
           ]
         },
         "ops/formal_release/handoffs/tooling-01012-reviewed.json": {
-          "reason": "SOP18.0.4 metadata only.",
+          "reason": "0.10.23 version and reviewed-source descriptor only under SOP18.0.4.",
           "covered_by": [
             "ops/formal_release/tests/test_tooling_handoff.py"
           ]
         },
         "ops/formal_release/handoffs/tooling-01012-scope.json": {
-          "reason": "SOP18.0.4 metadata only.",
+          "reason": "0.10.23 version and reviewed-source descriptor only under SOP18.0.4.",
           "covered_by": [
             "ops/formal_release/tests/test_tooling_handoff.py"
           ]
         },
         "ops/formal_release/handoffs/tooling-01013-reviewed.json": {
-          "reason": "SOP18.0.4 metadata only.",
+          "reason": "0.10.23 version and reviewed-source descriptor only under SOP18.0.4.",
           "covered_by": [
             "ops/formal_release/tests/test_tooling_handoff.py"
           ]
         },
         "ops/formal_release/handoffs/tooling-01013-scope.json": {
-          "reason": "SOP18.0.4 metadata only.",
+          "reason": "0.10.23 version and reviewed-source descriptor only under SOP18.0.4.",
           "covered_by": [
             "ops/formal_release/tests/test_tooling_handoff.py"
           ]
         },
         "ops/formal_release/handoffs/tooling-01014-reviewed.json": {
-          "reason": "SOP18.0.4 metadata only.",
+          "reason": "0.10.23 version and reviewed-source descriptor only under SOP18.0.4.",
           "covered_by": [
             "ops/formal_release/tests/test_tooling_handoff.py"
           ]
         },
         "ops/formal_release/handoffs/tooling-01014-scope.json": {
-          "reason": "SOP18.0.4 metadata only.",
+          "reason": "0.10.23 version and reviewed-source descriptor only under SOP18.0.4.",
           "covered_by": [
             "ops/formal_release/tests/test_tooling_handoff.py"
           ]
         },
         "ops/formal_release/handoffs/tooling-01015-scope.json": {
-          "reason": "SOP18.0.4 metadata only.",
+          "reason": "0.10.23 version and reviewed-source descriptor only under SOP18.0.4.",
           "covered_by": [
             "ops/formal_release/tests/test_tooling_handoff.py"
           ]
@@ -287,7 +287,7 @@
           ]
         },
         "worker-client/chejin_worker_client/__init__.py": {
-          "reason": "SOP18.0.4 metadata only.",
+          "reason": "0.10.23 version and reviewed-source descriptor only under SOP18.0.4.",
           "covered_by": [
             "ops/formal_release/tests/test_tooling_handoff.py"
           ]
@@ -318,49 +318,49 @@
       "branch": "gray-release-0.10.x",
       "changed_inputs": {
         "ops/formal_release/handoffs/hook-reviewed-bbe404a.json": {
-          "reason": "SOP18.0.4 metadata only.",
+          "reason": "0.10.23 version and reviewed-source descriptor only under SOP18.0.4.",
           "covered_by": [
             "ops/formal_release/tests/test_tooling_handoff.py"
           ]
         },
         "ops/formal_release/handoffs/hook-reviewed-d44f8e5.json": {
-          "reason": "SOP18.0.4 metadata only.",
+          "reason": "0.10.23 version and reviewed-source descriptor only under SOP18.0.4.",
           "covered_by": [
             "ops/formal_release/tests/test_tooling_handoff.py"
           ]
         },
         "ops/formal_release/handoffs/hook-reviewed-evidence-01014.json": {
-          "reason": "SOP18.0.4 metadata only.",
+          "reason": "0.10.23 version and reviewed-source descriptor only under SOP18.0.4.",
           "covered_by": [
             "ops/formal_release/tests/test_tooling_handoff.py"
           ]
         },
         "ops/formal_release/handoffs/tooling-01013-reviewed.json": {
-          "reason": "SOP18.0.4 metadata only.",
+          "reason": "0.10.23 version and reviewed-source descriptor only under SOP18.0.4.",
           "covered_by": [
             "ops/formal_release/tests/test_tooling_handoff.py"
           ]
         },
         "ops/formal_release/handoffs/tooling-01013-scope.json": {
-          "reason": "SOP18.0.4 metadata only.",
+          "reason": "0.10.23 version and reviewed-source descriptor only under SOP18.0.4.",
           "covered_by": [
             "ops/formal_release/tests/test_tooling_handoff.py"
           ]
         },
         "ops/formal_release/handoffs/tooling-01014-reviewed.json": {
-          "reason": "SOP18.0.4 metadata only.",
+          "reason": "0.10.23 version and reviewed-source descriptor only under SOP18.0.4.",
           "covered_by": [
             "ops/formal_release/tests/test_tooling_handoff.py"
           ]
         },
         "ops/formal_release/handoffs/tooling-01014-scope.json": {
-          "reason": "SOP18.0.4 metadata only.",
+          "reason": "0.10.23 version and reviewed-source descriptor only under SOP18.0.4.",
           "covered_by": [
             "ops/formal_release/tests/test_tooling_handoff.py"
           ]
         },
         "ops/formal_release/handoffs/tooling-01015-scope.json": {
-          "reason": "SOP18.0.4 metadata only.",
+          "reason": "0.10.23 version and reviewed-source descriptor only under SOP18.0.4.",
           "covered_by": [
             "ops/formal_release/tests/test_tooling_handoff.py"
           ]
@@ -379,7 +379,7 @@
           ]
         },
         "worker-client/chejin_worker_client/__init__.py": {
-          "reason": "SOP18.0.4 metadata only.",
+          "reason": "0.10.23 version and reviewed-source descriptor only under SOP18.0.4.",
           "covered_by": [
             "ops/formal_release/tests/test_tooling_handoff.py"
           ]
@@ -410,19 +410,19 @@
       "branch": "gray-release-0.10.x",
       "changed_inputs": {
         "ops/formal_release/handoffs/hook-reviewed-bbe404a.json": {
-          "reason": "SOP18.0.4 metadata only.",
+          "reason": "0.10.23 version and reviewed-source descriptor only under SOP18.0.4.",
           "covered_by": [
             "ops/formal_release/tests/test_tooling_handoff.py"
           ]
         },
         "ops/formal_release/handoffs/tooling-01015-scope.json": {
-          "reason": "SOP18.0.4 metadata only.",
+          "reason": "0.10.23 version and reviewed-source descriptor only under SOP18.0.4.",
           "covered_by": [
             "ops/formal_release/tests/test_tooling_handoff.py"
           ]
         },
         "worker-client/chejin_worker_client/__init__.py": {
-          "reason": "SOP18.0.4 metadata only.",
+          "reason": "0.10.23 version and reviewed-source descriptor only under SOP18.0.4.",
           "covered_by": [
             "ops/formal_release/tests/test_tooling_handoff.py"
           ]
@@ -453,19 +453,19 @@
       "branch": "gray-release-0.10.x",
       "changed_inputs": {
         "ops/formal_release/handoffs/hook-reviewed-bbe404a.json": {
-          "reason": "SOP18.0.4 metadata only.",
+          "reason": "0.10.23 version and reviewed-source descriptor only under SOP18.0.4.",
           "covered_by": [
             "ops/formal_release/tests/test_tooling_handoff.py"
           ]
         },
         "ops/formal_release/handoffs/tooling-01015-scope.json": {
-          "reason": "SOP18.0.4 metadata only.",
+          "reason": "0.10.23 version and reviewed-source descriptor only under SOP18.0.4.",
           "covered_by": [
             "ops/formal_release/tests/test_tooling_handoff.py"
           ]
         },
         "worker-client/chejin_worker_client/__init__.py": {
-          "reason": "SOP18.0.4 metadata only.",
+          "reason": "0.10.23 version and reviewed-source descriptor only under SOP18.0.4.",
           "covered_by": [
             "ops/formal_release/tests/test_tooling_handoff.py"
           ]
@@ -489,115 +489,115 @@
       ]
     },
     "ops/formal_release/handoffs/hook-reviewed-1ed1d7c.json": {
-      "reason": "SOP18.0.4 metadata only.",
+      "reason": "0.10.23 version and reviewed-source descriptor only under SOP18.0.4.",
       "covered_by": [
         "ops/formal_release/tests/test_tooling_handoff.py"
       ]
     },
     "ops/formal_release/handoffs/hook-reviewed-22eb0b1.json": {
-      "reason": "SOP18.0.4 metadata only.",
+      "reason": "0.10.23 version and reviewed-source descriptor only under SOP18.0.4.",
       "covered_by": [
         "ops/formal_release/tests/test_tooling_handoff.py"
       ]
     },
     "ops/formal_release/handoffs/hook-reviewed-bbe404a.json": {
-      "reason": "SOP18.0.4 metadata only.",
+      "reason": "0.10.23 version and reviewed-source descriptor only under SOP18.0.4.",
       "covered_by": [
         "ops/formal_release/tests/test_tooling_handoff.py"
       ]
     },
     "ops/formal_release/handoffs/hook-reviewed-d44f8e5.json": {
-      "reason": "SOP18.0.4 metadata only.",
+      "reason": "0.10.23 version and reviewed-source descriptor only under SOP18.0.4.",
       "covered_by": [
         "ops/formal_release/tests/test_tooling_handoff.py"
       ]
     },
     "ops/formal_release/handoffs/hook-reviewed-d7f7ad4.json": {
-      "reason": "SOP18.0.4 metadata only.",
+      "reason": "0.10.23 version and reviewed-source descriptor only under SOP18.0.4.",
       "covered_by": [
         "ops/formal_release/tests/test_tooling_handoff.py"
       ]
     },
     "ops/formal_release/handoffs/hook-reviewed-evidence-01014.json": {
-      "reason": "SOP18.0.4 metadata only.",
+      "reason": "0.10.23 version and reviewed-source descriptor only under SOP18.0.4.",
       "covered_by": [
         "ops/formal_release/tests/test_tooling_handoff.py"
       ]
     },
     "ops/formal_release/handoffs/tooling-01010-reviewed.json": {
-      "reason": "SOP18.0.4 metadata only.",
+      "reason": "0.10.23 version and reviewed-source descriptor only under SOP18.0.4.",
       "covered_by": [
         "ops/formal_release/tests/test_tooling_handoff.py"
       ]
     },
     "ops/formal_release/handoffs/tooling-01010-scope.json": {
-      "reason": "SOP18.0.4 metadata only.",
+      "reason": "0.10.23 version and reviewed-source descriptor only under SOP18.0.4.",
       "covered_by": [
         "ops/formal_release/tests/test_tooling_handoff.py"
       ]
     },
     "ops/formal_release/handoffs/tooling-01011-reviewed.json": {
-      "reason": "SOP18.0.4 metadata only.",
+      "reason": "0.10.23 version and reviewed-source descriptor only under SOP18.0.4.",
       "covered_by": [
         "ops/formal_release/tests/test_tooling_handoff.py"
       ]
     },
     "ops/formal_release/handoffs/tooling-01011-scope.json": {
-      "reason": "SOP18.0.4 metadata only.",
+      "reason": "0.10.23 version and reviewed-source descriptor only under SOP18.0.4.",
       "covered_by": [
         "ops/formal_release/tests/test_tooling_handoff.py"
       ]
     },
     "ops/formal_release/handoffs/tooling-01012-reviewed.json": {
-      "reason": "SOP18.0.4 metadata only.",
+      "reason": "0.10.23 version and reviewed-source descriptor only under SOP18.0.4.",
       "covered_by": [
         "ops/formal_release/tests/test_tooling_handoff.py"
       ]
     },
     "ops/formal_release/handoffs/tooling-01012-scope.json": {
-      "reason": "SOP18.0.4 metadata only.",
+      "reason": "0.10.23 version and reviewed-source descriptor only under SOP18.0.4.",
       "covered_by": [
         "ops/formal_release/tests/test_tooling_handoff.py"
       ]
     },
     "ops/formal_release/handoffs/tooling-01013-reviewed.json": {
-      "reason": "SOP18.0.4 metadata only.",
+      "reason": "0.10.23 version and reviewed-source descriptor only under SOP18.0.4.",
       "covered_by": [
         "ops/formal_release/tests/test_tooling_handoff.py"
       ]
     },
     "ops/formal_release/handoffs/tooling-01013-scope.json": {
-      "reason": "SOP18.0.4 metadata only.",
+      "reason": "0.10.23 version and reviewed-source descriptor only under SOP18.0.4.",
       "covered_by": [
         "ops/formal_release/tests/test_tooling_handoff.py"
       ]
     },
     "ops/formal_release/handoffs/tooling-01014-reviewed.json": {
-      "reason": "SOP18.0.4 metadata only.",
+      "reason": "0.10.23 version and reviewed-source descriptor only under SOP18.0.4.",
       "covered_by": [
         "ops/formal_release/tests/test_tooling_handoff.py"
       ]
     },
     "ops/formal_release/handoffs/tooling-01014-scope.json": {
-      "reason": "SOP18.0.4 metadata only.",
+      "reason": "0.10.23 version and reviewed-source descriptor only under SOP18.0.4.",
       "covered_by": [
         "ops/formal_release/tests/test_tooling_handoff.py"
       ]
     },
     "ops/formal_release/handoffs/tooling-01015-scope.json": {
-      "reason": "SOP18.0.4 metadata only.",
+      "reason": "0.10.23 version and reviewed-source descriptor only under SOP18.0.4.",
       "covered_by": [
         "ops/formal_release/tests/test_tooling_handoff.py"
       ]
     },
     "ops/formal_release/handoffs/tooling-gui-recovery-reviewed.json": {
-      "reason": "SOP18.0.4 metadata only.",
+      "reason": "0.10.23 version and reviewed-source descriptor only under SOP18.0.4.",
       "covered_by": [
         "ops/formal_release/tests/test_tooling_handoff.py"
       ]
     },
     "ops/formal_release/handoffs/tooling-gui-recovery-scope.json": {
-      "reason": "SOP18.0.4 metadata only.",
+      "reason": "0.10.23 version and reviewed-source descriptor only under SOP18.0.4.",
       "covered_by": [
         "ops/formal_release/tests/test_tooling_handoff.py"
       ]
@@ -661,7 +661,7 @@
       ]
     },
     "worker-client/chejin_worker_client/__init__.py": {
-      "reason": "SOP18.0.4 metadata only.",
+      "reason": "0.10.23 version and reviewed-source descriptor only under SOP18.0.4.",
       "covered_by": [
         "ops/formal_release/tests/test_tooling_handoff.py"
       ]
@@ -697,5 +697,5 @@
       ]
     }
   ],
-  "unaffected_scope_review": "0.10.22 metadata and source evidence descriptor only; tools unchanged. Reuse original executions including 40332019222 failure-evidence checks; execute only changed descriptor checks and actual Windows parser/gui."
+  "unaffected_scope_review": "0.10.23 metadata and source evidence descriptor only; tools unchanged. Reuse original executions including 40332019222 failure-evidence checks; execute only changed descriptor checks and actual Windows parser/gui."
 }
