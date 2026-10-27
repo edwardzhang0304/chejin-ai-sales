@@ -11,6 +11,7 @@ CHAIN = ('hook_raw_inbox', 'hook_observation_projection', 'hook_delivery_outbox'
 STATE_COLUMNS = {
     'hook_voice_attempts': ('state', ('transcribed', 'failed')),
     'hook_active_calls': ('state', ('completed',)),
+    'hook_read_retry': ('state', ('resolved','operator_recheck')),
 }
 
 
@@ -54,7 +55,8 @@ class SnapshotPriority:
         self.voice_terminal_checked = 0
         self.columns = {r[0]: {c['name'] for c in db.execute(f'PRAGMA table_info("{r[0]}")')}
                         for r in db.execute("SELECT name FROM sqlite_master WHERE type='table'")
-                        if r[0] in (*CHAIN, *STATE_COLUMNS, 'local_logs', 'hook_voice_interruptions')}
+                        if r[0] in (*CHAIN, *STATE_COLUMNS, 'local_logs', 'hook_voice_interruptions',
+                                    'hook_transport_events','hook_process_recovery')}
         self.delivery_pending = "(status IS NULL OR status!='stored')"
         delivery_fields = ('status','event_uuid','payload_digest','payload_json','receipt_json')
         if set(delivery_fields) <= self.columns.get('hook_delivery_outbox', set()):
@@ -222,7 +224,31 @@ class SnapshotPriority:
             # All interruption records represent unknown original calls; retain
             # oldest first. They are never inferred to be successful results.
             parts.append('1')
+        if table == 'hook_transport_events' and 'evidence' in cols:
+            evidence=_object_sql('evidence')
+            parts.append(f"coalesce(json_extract({evidence},'$.delivery'),'unknown')!='responded'")
+        if table == 'hook_process_recovery':
+            parts.append('new_generation=(SELECT new_generation FROM hook_process_recovery ORDER BY rowid DESC LIMIT 1)')
         important = '('+' OR '.join(parts)+')' if parts else '0'
+        if table == 'hook_transport_events' and {'process_generation','action_id','route','evidence','created_at'} <= cols:
+            current_retry = '0'
+            if {'process_generation','route','first_transport_event_id','state'} <= self.columns.get('hook_read_retry',set()):
+                current_retry = """EXISTS (SELECT 1 FROM hook_read_retry r
+                    WHERE r.state NOT IN ('resolved','operator_recheck')
+                    AND r.process_generation=hook_transport_events.process_generation
+                    AND r.route=hook_transport_events.route
+                    AND hook_transport_events.rowid>=(SELECT e.rowid FROM hook_transport_events e
+                        WHERE e.event_id=r.first_transport_event_id))"""
+            active_call = '0'
+            if {'process_generation','action_id','state'} <= self.columns.get('hook_active_calls',set()):
+                active_call = """EXISTS (SELECT 1 FROM hook_active_calls c
+                    WHERE c.state IN ('calling','uncertain')
+                    AND c.process_generation=hook_transport_events.process_generation
+                    AND c.action_id=hook_transport_events.action_id)"""
+            # One history capture owns several successful requests before a
+            # later failure. Its successful prefix must not crowd out the
+            # actual unknown request sharing the same action_id.
+            important=f'(CASE WHEN {active_call} AND {important} THEN 4 WHEN {current_retry} THEN 3 WHEN {active_call} THEN 2 WHEN {important} THEN 1 ELSE 0 END)'
         # Keep oldest unresolved evidence ahead of ordinary recent history.
         linked_order = ''
         if table in CHAIN and 'receive_seq' in cols and self.sequences:

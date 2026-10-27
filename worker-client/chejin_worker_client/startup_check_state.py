@@ -1,5 +1,10 @@
 """Sales-facing projections of existing checks; no active probe or auto-resume."""
 ISSUES = {
+ 'HOOK_READ_RETRY_WAIT': ('等待微信接口连接', '查询尚未送达，正在等待有限重试；原任务和暂停状态保留。'),
+ 'HOOK_READ_RETRY_EXHAUSTED': ('微信接口连接未恢复', '本轮查询重试已用尽。请点击重新检查连接；检查通过后再开始接单。'),
+ 'HOOK_READ_RETRY_CANCELLED': ('本轮连接检查已暂停', '运行状态已变化，请点击重新检查连接；不会自动开始接单。'),
+ 'HOOK_PREVIOUS_PROCESS_EXIT_UNCONFIRMED': ('原微信调用尚未安全结束', '请先导出故障证据，退出 Worker，正常关闭工作微信后用配套快捷方式登录原账号，再打开 Worker 核对原记录。'),
+ 'HOOK_STARTUP_SEARCH_UNRESOLVED': ('微信搜索框定位未通过', '未能确认左侧搜索区域，请导出故障证据；暂不执行新任务。'),
  'HOOK_STARTUP_WINDOW_OBSERVATION_FAILED': ('微信窗口状态暂时无法确认', '客户端暂时无法读取微信窗口状态，已暂停准备操作；仍未恢复时请导出故障证据。'),
  'HOOK_STARTUP_FOREGROUND_REQUIRED': ('请将微信主窗口切到前台', '点击工作微信主窗口并保持在前台，客户端会继续校验；不会自动开始接单。'),
  'HOOK_STARTUP_RETRY_WAIT': ('等待再次校验微信窗口', '启动检查未完成，稍后在微信主窗口处于前台时重新校验；不会反复抢占前台。'),
@@ -33,7 +38,7 @@ ISSUES = {
  'HOOK_ACCOUNT_REQUEST_REJECTED': ('账号核验未通过', '请检查客户端与后台的绑定，核验通过后按原恢复流程继续。'),
  'HOOK_BACKEND_NETWORK_FAILED': ('后台连接检查未通过', '请检查网络和后台服务，连接恢复后会重新检查。'),
  'HOOK_LOCAL_TRANSPORT_FAILED': ('Hook 接口连接异常', '请检查工作微信；未知调用结果不会自动重试。'),
- 'HOOK_PROCESS_ACTIVE_CALL_QUARANTINED': ('微信接口上次调用尚未确认', '已停止接单，请按故障恢复流程处理，避免重复操作。'),
+ 'HOOK_PROCESS_ACTIVE_CALL_QUARANTINED': ('微信接口上次调用尚未确认', '请先用桌面车金故障诊断导出证据，退出 Worker，正常关闭工作微信，再用配套工作微信快捷方式登录原账号并打开 Worker；原记录核对通过后才可开始接单。无法正常退出请联系管理员。'),
  'HOOK_PROCESS_INSPECTION_FAILED': ('工作微信运行检查未通过', '请检查指定微信是否正常运行，以及客户端的访问权限。'),
  'HOOK_CONNECTION_CHECK_FAILED': ('工作微信连接检查未通过', '请检查微信运行状态；具体记录可在本机日志中查看。'),
  'HOOK_C1_OCR_RUNTIME_UNAVAILABLE': ('OCR 识别组件不可用', '请检查客户端运行环境，恢复识别组件后再接单。'),

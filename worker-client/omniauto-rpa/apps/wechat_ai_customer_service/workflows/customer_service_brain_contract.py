@@ -1328,7 +1328,7 @@ def verify_brain_reply_quality(
             if contains_any(clean_reply, ("预算", "轿车还是", "SUV", "suv")) and not PRICE_VALUE_RE.search(clean_reply):
                 errors.append("asks_new_need_instead_of_answering_price")
         elif PRICE_VALUE_RE.search(clean_reply):
-            errors.append("price_answer_without_product_evidence")
+            warnings.append("price_answer_without_product_evidence")
 
     if contextual_recommendation_question and is_generic_stall_reply(clean_reply):
         errors.append("generic_stall_reply_for_contextual_recommendation")
@@ -1425,8 +1425,43 @@ def verify_brain_reply_quality(
             errors.append("incomplete_reply_segment")
             break
 
+    authority_review = (needs_authority_semantic_review(plan)
+                        or "price_answer_without_product_evidence" in warnings)
+    if authority_review:
+        warnings.append("authority_claim_requires_semantic_review")
+    warnings.extend(item for item in errors if item in SEMANTIC_QUALITY_HINTS)
+    errors = [item for item in errors if item not in SEMANTIC_QUALITY_HINTS]
     instruction = build_quality_repair_instruction(errors=errors, warnings=warnings, current_message=question, reply=clean_reply)
-    return {"ok": not errors, "errors": errors, "warnings": warnings, "repair_instruction": instruction}
+    return {"ok": not errors, "errors": errors, "warnings": warnings, "repair_instruction": instruction,
+            "authority_review_required": authority_review}
+
+
+def needs_authority_semantic_review(plan: dict[str, Any]) -> bool:
+    """A lexical fact hint is a review signal, never proof of a vehicle claim.
+
+    Explicit factual modes, product references and declared facts keep their
+    deterministic contract. The reviewer may only confirm non-factual speech;
+    it cannot grant missing vehicle or policy authority.
+    """
+    evidence = plan.get("evidence_used") or {}
+    return bool(
+        plan.get("recommended_action") == "send_reply"
+        and plan.get("answer_mode") not in {"recommend_from_catalog", "quote_product_fact"}
+        and not evidence.get("product_ids")
+        and not plan.get("facts_claimed")
+        and plan_requires_fact_claims(plan)
+    )
+
+
+# These checks infer conversational quality from wording. Feed the existing
+# semantic reviewer once before requesting any rewrite. Unknown errors and
+# evidence/commitment/transport limits remain blocking.
+SEMANTIC_QUALITY_HINTS = frozenset({
+    "reply_too_long", "missing_direct_price_response",
+    "missing_referenced_product_in_reply", "asks_new_need_instead_of_answering_price",
+    "generic_stall_reply_for_concrete_question", "generic_stall_reply_for_contextual_recommendation",
+    "missing_clear_recommendation_or_choice", "missing_multiple_product_recommendations",
+})
 
 
 def plan_requires_fact_claims(plan: dict[str, Any]) -> bool:

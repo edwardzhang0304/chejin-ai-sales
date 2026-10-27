@@ -439,15 +439,17 @@ function CurrentProcess({
 function Dock({
   state,
   disabled = false,
+  recheck = false,
   onStartAccepting,
   onPauseAccepting,
 }: {
   state: WorkerReceiveState;
   disabled?: boolean;
+  recheck?: boolean;
   onStartAccepting?: () => void;
   onPauseAccepting?: () => void;
 }) {
-  const accepting = state === "接单中";
+  const accepting = !recheck && state === "接单中";
   return (
     <footer className="cw-dock dock-action">
       <button
@@ -456,7 +458,7 @@ function Dock({
         disabled={disabled}
         onClick={accepting ? onPauseAccepting : onStartAccepting}
       >
-        {accepting ? <Pause aria-hidden="true" /> : <Play aria-hidden="true" />}{accepting ? "暂停接单" : "开始接单"}
+        {accepting ? <Pause aria-hidden="true" /> : <Play aria-hidden="true" />}{recheck ? "重新检查连接" : accepting ? "暂停接单" : "开始接单"}
       </button>
     </footer>
   );
@@ -915,7 +917,7 @@ function HookWaterfallWorkbench({ screen, model, onStartAccepting, onPauseAccept
           <TaskTimeline steps={steps} followLatest />
         </section>
         </section>
-        <Dock state={accepting ? "接单中" : model.status.receiveState} disabled={disabled} onStartAccepting={onStartAccepting} onPauseAccepting={onPauseAccepting} />
+        <Dock state={accepting ? "接单中" : model.status.receiveState} recheck={model.startupCheck?.canRecheck} disabled={model.startupCheck?.canRecheck ? false : disabled} onStartAccepting={onStartAccepting} onPauseAccepting={onPauseAccepting} />
       </div>
     </section>
   );
@@ -923,7 +925,7 @@ function HookWaterfallWorkbench({ screen, model, onStartAccepting, onPauseAccept
 
 function renderScreen(props: WorkerClientBaselineProps) {
   const { screen, model, onScreenChange, onStartAccepting, onPauseAccepting, onUpdateAcceptSchedule } = props;
-  if ((model.hookProcessSteps?.length || model.startupCheck?.state === "checking") && !["bind", "settings", "schedule-settings", "logs"].includes(screen)) {
+  if ((model.hookProcessSteps?.length || model.startupCheck?.state === "checking" || model.startupCheck?.canRecheck) && !["bind", "settings", "schedule-settings", "logs"].includes(screen)) {
     return <HookWaterfallWorkbench screen={screen} model={model} onStartAccepting={onStartAccepting} onPauseAccepting={onPauseAccepting} />;
   }
   const customerProcessSteps = customerProcessStepsForScreen(screen, model);

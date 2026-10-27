@@ -44,6 +44,7 @@ from customer_service_brain_contract import (
     social_message_requires_visible_brain_reply,
     strip_nonsemantic_runtime_markers,
     validate_brain_plan,
+    needs_authority_semantic_review,
     validate_social_visible_reply_contract,
     verify_brain_reply_quality,
 )
@@ -1024,7 +1025,7 @@ def _maybe_run_customer_service_brain_within_time_budget(
     if added_fact_claims:
         payload["brain_minimal_fact_claims_added"] = added_fact_claims
     validation = apply_social_visible_reply_contract(
-        validate_brain_plan(plan, require_fact_claims=bool(settings.get("require_fact_claims", True))),
+        validate_runtime_brain_plan(plan, settings=settings, brain_input=brain_input, evidence_pack=evidence_pack, combined=combined),
         plan,
         combined=combined,
     )
@@ -1093,7 +1094,7 @@ def _maybe_run_customer_service_brain_within_time_budget(
                 if retry_added_fact_claims:
                     payload["retry_brain_minimal_fact_claims_added"] = retry_added_fact_claims
                 retry_validation = apply_social_visible_reply_contract(
-                    validate_brain_plan(retry_plan, require_fact_claims=bool(settings.get("require_fact_claims", True))),
+                    validate_runtime_brain_plan(retry_plan, settings=settings, brain_input=brain_input, evidence_pack=evidence_pack, combined=combined),
                     retry_plan,
                     combined=combined,
                 )
@@ -1146,7 +1147,7 @@ def _maybe_run_customer_service_brain_within_time_budget(
                 if repaired_added_fact_claims:
                     payload["repaired_brain_minimal_fact_claims_added"] = repaired_added_fact_claims
                 repaired_validation = apply_social_visible_reply_contract(
-                    validate_brain_plan(repaired_plan, require_fact_claims=bool(settings.get("require_fact_claims", True))),
+                    validate_runtime_brain_plan(repaired_plan, settings=settings, brain_input=brain_input, evidence_pack=evidence_pack, combined=combined),
                     repaired_plan,
                     combined=combined,
                 )
@@ -1239,10 +1240,7 @@ def _maybe_run_customer_service_brain_within_time_budget(
                         if quality_retry_added_fact_claims:
                             payload["post_validation_quality_brain_minimal_fact_claims_added"] = quality_retry_added_fact_claims
                         quality_retry_validation = apply_social_visible_reply_contract(
-                            validate_brain_plan(
-                                quality_retry_plan,
-                                require_fact_claims=bool(settings.get("require_fact_claims", True)),
-                            ),
+                            validate_runtime_brain_plan(quality_retry_plan, settings=settings, brain_input=brain_input, evidence_pack=evidence_pack, combined=combined),
                             quality_retry_plan,
                             combined=combined,
                         )
@@ -1369,7 +1367,7 @@ def _maybe_run_customer_service_brain_within_time_budget(
             if repaired_added_fact_claims:
                 payload["repaired_brain_minimal_fact_claims_added"] = repaired_added_fact_claims
             repaired_validation = apply_social_visible_reply_contract(
-                validate_brain_plan(repaired_plan, require_fact_claims=bool(settings.get("require_fact_claims", True))),
+                validate_runtime_brain_plan(repaired_plan, settings=settings, brain_input=brain_input, evidence_pack=evidence_pack, combined=combined),
                 repaired_plan,
                 combined=combined,
             )
@@ -1397,6 +1395,7 @@ def _maybe_run_customer_service_brain_within_time_budget(
                 }
             if repaired_validation.get("ok") and repaired_quality.get("ok") and (
                 quality.get("source") == "semantic_reviewer"
+                or repaired_quality.get("authority_review_required")
                 or repaired_soft_pass.get("ok")
                 or str(settings.get("semantic_reviewer_mode") or "").strip().lower() == "always"
             ):
@@ -1565,7 +1564,7 @@ def _maybe_run_customer_service_brain_within_time_budget(
             if repaired_added_fact_claims:
                 payload["guard_repaired_brain_minimal_fact_claims_added"] = repaired_added_fact_claims
             repaired_validation = apply_social_visible_reply_contract(
-                validate_brain_plan(repaired_plan, require_fact_claims=bool(settings.get("require_fact_claims", True))),
+                validate_runtime_brain_plan(repaired_plan, settings=settings, brain_input=brain_input, evidence_pack=evidence_pack, combined=combined),
                 repaired_plan,
                 combined=combined,
             )
@@ -1660,10 +1659,7 @@ def _maybe_run_customer_service_brain_within_time_budget(
                     if guard_quality_retry_added_fact_claims:
                         payload["post_guard_quality_brain_minimal_fact_claims_added"] = guard_quality_retry_added_fact_claims
                     guard_quality_retry_validation = apply_social_visible_reply_contract(
-                        validate_brain_plan(
-                            guard_quality_retry_plan,
-                            require_fact_claims=bool(settings.get("require_fact_claims", True)),
-                        ),
+                        validate_runtime_brain_plan(guard_quality_retry_plan, settings=settings, brain_input=brain_input, evidence_pack=evidence_pack, combined=combined),
                         guard_quality_retry_plan,
                         combined=combined,
                     )
@@ -3786,6 +3782,7 @@ def compact_quality_verification(quality: dict[str, Any]) -> dict[str, Any]:
         "ok": bool(quality.get("ok")),
         "errors": list(quality.get("errors", []) or []),
         "warnings": list(quality.get("warnings", []) or []),
+        "authority_review_required": bool(quality.get("authority_review_required")),
         "repair_instruction": str(quality.get("repair_instruction") or "")[:500],
     }
 
@@ -3801,6 +3798,8 @@ def compact_semantic_review(review: dict[str, Any]) -> dict[str, Any]:
             "enforced",
             "verdict",
             "shadow_verdict",
+            "claim_kind",
+            "authority_review_required",
             "confidence",
             "semantic_errors",
             "hard_boundary_concerns",
@@ -4546,6 +4545,26 @@ def compact_repair_result(result: dict[str, Any]) -> dict[str, Any]:
         )
         if key in result
     }
+
+
+def validate_runtime_brain_plan(plan: dict[str, Any], *, settings: dict[str, Any],
+                                brain_input: dict[str, Any], evidence_pack: dict[str, Any],
+                                combined: str) -> dict[str, Any]:
+    validation = validate_brain_plan(plan, require_fact_claims=bool(settings.get("require_fact_claims", True)))
+    errors = validation.get("errors") or []
+    if errors and (errors != ["missing_fact_claims"] or not needs_authority_semantic_review(plan)):
+        return validation
+    quality = verify_brain_reply_quality(plan, current_message=combined, evidence_pack=evidence_pack, settings=settings)
+    if not quality.get("ok") or not quality.get("authority_review_required"):
+        return validation
+    # The same request is cached by the reviewer for the subsequent quality
+    # stage. Classification never bypasses source-ID or final send checks.
+    quality["authority_review_required"] = True
+    review = review_brain_reply_semantics(settings=settings, brain_input=brain_input,
+        evidence_pack=evidence_pack, plan=plan, deterministic_quality=quality)
+    if review.get("ok") and review.get("claim_kind") == "non_factual":
+        return {"ok": True, "errors": [], "authority_review": compact_semantic_review(review)}
+    return {"ok": False, "errors": errors or ["authority_claim_not_cleared"], "authority_review": compact_semantic_review(review)}
 
 
 def validate_plan_against_evidence(plan: dict[str, Any], evidence_pack: dict[str, Any]) -> dict[str, Any]:

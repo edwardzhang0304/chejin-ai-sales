@@ -26,6 +26,13 @@ def test_restart_reconciles_numeric_history_without_replaying_original_send(
     folder = sends / credentials.worker_id / original_scope.account_epoch / metadata['reply_action_id']
     before = {p.name: p.read_bytes() for p in folder.iterdir()}
     metadata = {**metadata, 'original_process_generation': original_scope.process_generation}
+    # RCV-1: the old process's unknown call survives the restart. Only explicit
+    # platform proof admits reads in the verified new generation; the original
+    # business journal below must still be reconciled, never resent.
+    from chejin_worker_client import hook_active_calls, storage
+    hook_active_calls.reserve(original_scope.process_generation,'old-unknown-call','send_text')
+    hook_active_calls.finish(original_scope.process_generation,'old-unknown-call',False)
+    gateway.generation_exited=lambda generation:generation==original_scope.process_generation
     scope = replace(scope, account_epoch=original_scope.account_epoch)
     delivery = replace(delivery, account_epoch=scope.account_epoch)
     db.execute('DELETE FROM MSG')
@@ -147,6 +154,9 @@ def test_restart_reconciles_numeric_history_without_replaying_original_send(
         assert timeline.latest[(metadata['task_id'],'send_confirm')]['state']=='done'
     assert {p.name: p.read_bytes() for p in folder.iterdir()} == before
     assert not any(path == '/SendTextMsg' for path, *_ in server.requests)
+    assert hook_active_calls.unresolved(original_scope.process_generation)
+    with storage.db_connection() as conn:
+        assert conn.execute('SELECT old_generation FROM hook_process_recovery').fetchone()[0]==original_scope.process_generation
     assert not list(private.rglob('not-triggered.json'))
 
 

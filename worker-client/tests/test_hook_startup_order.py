@@ -75,6 +75,22 @@ def test_failed_normalization_never_publishes_worker_position(runtime,monkeypatc
  assert services.startup_check_state()['title']=='微信窗口调整未通过'
 
 
+def test_search_failure_finishes_parent_and_does_not_blame_window(runtime,monkeypatch):
+ from chejin_worker_client.hook_startup_window import StartupWindowError
+ runner,services,binding,_,_=configure(runtime,monkeypatch)
+ events=[];runner.on_runtime_process=events.append
+ services.dispatcher.prepare_startup_window.side_effect=StartupWindowError('HOOK_STARTUP_SEARCH_UNRESOLVED')
+ services.tick(runner)
+ assert services.startup_check_state()['title']=='微信搜索框定位未通过'
+ assert binding.run_status=='faulted'
+ assert any(e.get('phase')=='wechat_window' and e.get('state')=='done' for e in events)
+ assert any(e.get('phase')=='search_calibration' and e.get('state')=='error' for e in events)
+ t=HookProgressTimeline()
+ for event in events:t.apply(event)
+ rows=t.model()
+ assert not any(r.get('state')=='current' for r in rows)
+
+
 def test_retained_flow_defers_movement_until_original_settlement(runtime,monkeypatch):
  runner,services,binding,calls,_=configure(runtime,monkeypatch)
  storage.begin_runtime_flow('retained-startup-flow','task')

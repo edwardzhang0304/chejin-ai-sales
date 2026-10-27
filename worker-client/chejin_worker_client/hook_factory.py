@@ -223,6 +223,8 @@ class WindowsC1:
                     raise StartupWindowError('HOOK_STARTUP_FOREGROUND_REQUIRED') from exc
                 if failures and failures[-1].get('condition') == 'frame_expired':
                     raise StartupWindowError('HOOK_STARTUP_FRAME_EXPIRED') from exc
+                if str(exc).startswith('SEARCH_') and any(p['name']=='search_calibration' and p['status']=='failed' for p in report['phases']):
+                    raise StartupWindowError('HOOK_STARTUP_SEARCH_UNRESOLVED') from exc
                 raise
             finally:
                 report['evidence'] = getattr(ui, 'evidence_state',

@@ -13,6 +13,7 @@ import time
 from typing import Callable
 
 from . import ui_lock
+from .hook_read_retry import ReadRetryWait
 from .api import ApiError
 from .hook_backend import BACKEND_WAIT_CODES, HookAccountReceipt, HookHeartbeatIdentity, HookHeartbeatState, HookIdentityClient, HookWorkerCredentials
 from .hook_gateway import HookGateway, HookLocalError, HookCallbackRegistration
@@ -177,6 +178,11 @@ class HookConnectionManager:
                 if exc.code not in {ui_lock.UI_LOCK_BUSY,ui_lock.UI_LOCK_ACQUIRE_TIMEOUT}:
                     self._close_receiver()
                 raise
+            except ReadRetryWait:
+                # No call reached the DLL. Preserve the already approved
+                # receiver and its scope while the bounded read retry waits.
+                # A new process/account is still verified by prepare normally.
+                raise
             except HookLocalError as exc:
                 old = self.prepared
                 from .hook_active_calls import unresolved
@@ -239,6 +245,10 @@ class HookConnectionManager:
                 registration = self.gateway.register_callback(current, scope, self._receiver, self._receiver_thread)
                 self._prepared = self._prepared_connection(account, current, registration)
                 return self._prepared
+            except ReadRetryWait:
+                if old is None:
+                    self._close_receiver()
+                raise
             except Exception:
                 self._close_receiver()
                 raise

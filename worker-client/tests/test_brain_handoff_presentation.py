@@ -91,8 +91,8 @@ def test_read_flow_projects_confirmed_handoff_to_ui(harness, revoked, reason):
     terminal = timeline.customer_model()[-1]
     assert timeline.customer_terminal_state == "handoff"
     if reason == "AI_ENGINE_RETRY_EXHAUSTED":
-        assert terminal["title"] == "AI 服务暂时不可用，已转人工"
-        assert terminal["description"] == "多次尝试仍未能生成回复，本轮未发送新回复。"
+        assert terminal["title"] == "系统回复异常，已转人工"
+        assert terminal["description"] == "系统未能完成自动回复，本轮未发送新回复。"
         assert terminal["finalText"] == "请销售手动回复客户。"
     else:
         assert terminal["title"] == "已转人工"
