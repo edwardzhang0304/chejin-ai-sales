@@ -88,6 +88,8 @@ def claim_native(db,worker,instance,action_id,payload,flow,token):
 
 def begin_native(db,worker,instance,action_id,payload,flow,token):
     w,binding,action,task=identity(db,worker,instance,action_id,payload,flow,token)
+    from app.services.followup_eligibility import require_followup
+    require_followup(db,binding.lead_id)
     saved=(action.ai_payload or {}).get('native_send_identity',{})
     expected={k:saved.get(k) for k in ('self_wxid','account_epoch','process_generation','task_id','history_state_digest')}
     if (not saved or saved.get('flow_id')!=flow or saved.get('lease_fencing_token')!=token or any(getattr(payload,k)!=v for k,v in expected.items()) or action.send_token!=payload.send_token

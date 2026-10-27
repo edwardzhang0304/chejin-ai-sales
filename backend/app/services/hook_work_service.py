@@ -97,12 +97,14 @@ def inventory(db,authenticated,instance,payload):
             'reconciliation_binding':reconciliation_binding,
             'journal_sha256':attempt['journal_sha256'] if attempt else None,'original_process_generation':native['process_generation'],
             'physical_begin_registered':bool(attempt)})
+    from app.services.hook_recovery_service import unpermitted_inventory
+    unpermitted=unpermitted_inventory(db,w,payload,flow,current)
     retired_evidence=retired_evidence_inventory(db,w,payload)
     retained_task=db.get(Task,payload.retained_flow_id) if payload.retained_flow_id else None
     retained_flow_terminal=bool(retained_task and retained_task.worker_id==w.id
         and retained_task.status in {'completed','failed','cancelled','canceled'} and not flow.get('flow_id'))
     return {'retained_flow_terminal':retained_flow_terminal,'schema_version':'hook-native-work-v1',**payload.model_dump(),'run_status':w.run_status,
-        'inflight_flow':flow,'inflight_task':current_task,
+        'inflight_flow':flow,'inflight_task':current_task,'inflight_unpermitted_tasks':unpermitted,
         'inflight_batch_id':(db.get(ReplyAction,current.reply_action_id).batch_id if current and current.reply_action_id and db.get(ReplyAction,current.reply_action_id) else None),'bindings':bindings,'invitations':invitations,
         'relationship_query_version':1,'relationship_bindings':[{k:b[k] for k in ('binding_id','binding_revision','peer_wxid','remark_code')} for b in bindings],
         'retired_evidence':retired_evidence,'retained_sends':retained,'can_send':False,'observation_query_version':1}

@@ -3126,9 +3126,9 @@ def hook_update_business_blockers(process_generation: str | None) -> dict[str, i
                 args.append(process_generation)
             counts['hook_unresolved_calls'] += int(conn.execute(sql, args).fetchone()[0])
         if 'hook_delivery_outbox' in tables:
-            counts['hook_pending_delivery'] = int(conn.execute(
-                "SELECT COUNT(*) FROM hook_delivery_outbox WHERE status != 'stored'"
-            ).fetchone()[0])
+            from .hook_delivery_lifecycle import terminal_delivery
+            counts['hook_pending_delivery'] = sum(not terminal_delivery(row) for row in conn.execute(
+                "SELECT * FROM hook_delivery_outbox WHERE status != 'stored'"))
     return counts
 
 

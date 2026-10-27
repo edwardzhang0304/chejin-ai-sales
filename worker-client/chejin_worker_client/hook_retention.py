@@ -5,6 +5,7 @@ from pathlib import Path
 import shutil
 from . import storage
 from .shared_rules import hook_contract_rules as rules
+from .hook_delivery_lifecycle import terminal_delivery
 
 FIELDS=('receive_seq','event_uuid','self_wxid','account_epoch','process_generation','raw_digest','retired_at')
 
@@ -53,12 +54,16 @@ def retire_inbox(private_root,*,retention_days,now=None,limit=100):
                 elif state!='message_candidate' or (item.get('peer_wxid'),mid) not in stored:
                     ready=False;break
             if not ready:continue
+            deliveries=[]
+            if 'hook_delivery_outbox' in names:
+                deliveries=conn.execute('SELECT * FROM hook_delivery_outbox WHERE receive_seq=?',(row['receive_seq'],)).fetchall()
+                # Pending delivery is retained work, not a corrupt inbox. A
+                # malformed coverage proof still raises and rolls back below.
+                if any(not terminal_delivery(d) for d in deliveries):continue
             conn.execute('CREATE TABLE IF NOT EXISTS hook_retired_observations (receive_seq INTEGER PRIMARY KEY,event_uuid TEXT NOT NULL,self_wxid TEXT NOT NULL,account_epoch TEXT NOT NULL,process_generation TEXT NOT NULL,raw_digest TEXT NOT NULL,retired_at TEXT NOT NULL)')
             if tuple(x['name'] for x in conn.execute('PRAGMA table_info(hook_retired_observations)'))!=FIELDS:raise ValueError('HOOK_RETENTION_SCHEMA_INVALID')
             conn.execute('INSERT INTO hook_retired_observations VALUES (?,?,?,?,?,?,?)',tuple(row[k] for k in FIELDS[:-1])+(now.isoformat(),))
             if 'hook_delivery_outbox' in names:
-                deliveries=conn.execute('SELECT * FROM hook_delivery_outbox WHERE receive_seq=?',(row['receive_seq'],)).fetchall()
-                if any(d['status']!='stored' for d in deliveries):raise ValueError('HOOK_RETENTION_PENDING_DELIVERY')
                 conn.execute('CREATE TABLE IF NOT EXISTS hook_retired_deliveries (event_uuid TEXT PRIMARY KEY,record_json TEXT NOT NULL,retired_at TEXT NOT NULL)')
                 for delivered in deliveries:
                     conn.execute('INSERT INTO hook_retired_deliveries VALUES (?,?,?)',(delivered['event_uuid'],rules.canonical(dict(delivered)),now.isoformat()))

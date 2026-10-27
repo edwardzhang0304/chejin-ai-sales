@@ -182,3 +182,29 @@ def settle_unpermitted(db,w,instance,payload,task,action):
     return {'status':'not_triggered','flow_id':payload.flow_id,'task_id':task.id,
         'reply_action_id':action.id,'may_call_hook':False,'physical_send_attempted':False,
         'automatic_resend_allowed':False,'already_terminal':terminal}
+
+
+def unpermitted_inventory(db,worker,payload,flow,root_task):
+    """Read-only identities from the original flow's batch, including stopped customers.
+
+    This grants neither a lease nor closure: reconcile rechecks every request.
+    Segment task IDs differ from the root Flow ID and must come from the server.
+    """
+    from app.models.wechat import WechatSessionBinding
+    if (not root_task or root_task.worker_id!=worker.id or root_task.deleted_at
+            or root_task.task_type!='chat_reply' or flow.get('flow_kind')!='chat_reply'):
+        return []
+    root=db.get(ReplyAction,root_task.reply_action_id)
+    binding=db.scalar(select(WechatSessionBinding).where(WechatSessionBinding.conversation_id==root.conversation_id)) if root else None
+    if (not binding or binding.deleted_at or binding.worker_id!=worker.id
+            or binding.native_self_wxid!=payload.self_wxid
+            or (binding.native_context or {}).get('account_epoch')!=payload.account_epoch
+            or flow.get('conversation_id')!=root.conversation_id):return []
+    rows=db.execute(select(Task,ReplyAction).join(ReplyAction,Task.reply_action_id==ReplyAction.id).where(
+        Task.worker_id==worker.id,Task.deleted_at.is_(None),Task.task_type=='chat_reply',
+        ReplyAction.batch_id==root.batch_id,ReplyAction.generation_no==root.generation_no,
+        ReplyAction.conversation_id==root.conversation_id,ReplyAction.deleted_at.is_(None),
+        ReplyAction.send_token.is_(None)).order_by(ReplyAction.segment_index))
+    return [{'task_id':task.id,'reply_action_id':action.id,'flow_id':flow['flow_id'],
+        'batch_id':action.batch_id,'conversation_id':action.conversation_id,
+        'lease_fencing_token':task.lease_fencing_token or None} for task,action in rows]

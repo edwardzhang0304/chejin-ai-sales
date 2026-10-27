@@ -493,13 +493,22 @@ class HookBusinessDispatcher:
             if not binding:raise ValueError('HOOK_RETAINED_BINDING_NOT_AUTHORIZED')
             if not self._recover_send(binding,metadata):return
         current=inventory.get('inflight_task')
-        if current and current.get('task_type')=='chat_reply':
-            request=self.private_root/'recovery'/'send_unpermitted'/current['id']/'request.json'
-            if request.exists():
-                saved=rules.loads(request.read_bytes())
-                rt.close_unpermitted_reply(current,{'id':saved['reply_action_id']},saved['flow_id'],
-                    saved['conversation_id'],saved.get('lease_fencing_token'))
-                return
+        for metadata in inventory.get('inflight_unpermitted_tasks',[]):
+            # Only the server's original Flow/batch may select a local request.
+            # Never scan/replay arbitrary recovery directories or current bindings.
+            if (metadata['flow_id']!=rt.active_flow_id
+                    or metadata['batch_id']!=inventory.get('inflight_batch_id')
+                    or metadata['conversation_id']!=inventory['inflight_flow'].get('conversation_id')):
+                raise ValueError('HOOK_RECOVERY_IDENTITY_MISMATCH')
+            request=self.private_root/'recovery'/'send_unpermitted'/metadata['task_id']/'request.json'
+            if not request.exists():continue
+            saved=rules.loads(request.read_bytes())
+            if any(saved.get(k)!=metadata[k] for k in
+                   ('task_id','reply_action_id','flow_id','conversation_id','lease_fencing_token')):
+                raise ValueError('HOOK_RECOVERY_IDENTITY_MISMATCH')
+            rt.close_unpermitted_reply({'id':metadata['task_id']},{'id':metadata['reply_action_id']},
+                metadata['flow_id'],metadata['conversation_id'],metadata['lease_fencing_token'])
+            return
         if current and current['task_type']=='add_friend':
             self._recover_invitation(current);return
         if self._observation_query_version!=1:

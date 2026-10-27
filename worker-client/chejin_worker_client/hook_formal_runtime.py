@@ -400,7 +400,10 @@ class HookFormalRuntime:
             # Dispatch before local delivery acknowledgement; idempotent retry retains facts.
             dispatched = self.client.call(self.credentials,'POST',f'/workers/{self.credentials.worker_id}/wechat/native-events/{claim.event_uuid}/dispatch',self.account)
             record_raw_delivery(dispatched)
-            if not self.outbox.mark_stored(claim,receipt,now=utc_now_iso()):raise ValueError('HOOK_OUTBOX_ACK_NOT_SAVED')
+            if not self.outbox.mark_stored(claim,receipt,now=utc_now_iso(),dispatched=dispatched):raise ValueError('HOOK_OUTBOX_ACK_NOT_SAVED')
+        for claim,receipt in self.outbox.pending_replacements(delivery):
+            dispatched=self.client.call(self.credentials,'POST',f'/workers/{self.credentials.worker_id}/wechat/native-events/{claim.event_uuid}/dispatch',self.account)
+            if not self.outbox.mark_stored(claim,receipt,now=utc_now_iso(),dispatched=dispatched):raise ValueError('HOOK_OUTBOX_ACK_NOT_SAVED')
 
     def verify_legacy_invitation_gap(self,binding,prepared_at,original_attempted_at):
         # An old wall-clock journal stays immutable. Never guess a corrected

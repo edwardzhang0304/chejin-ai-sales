@@ -7,6 +7,7 @@ import uuid
 from . import storage
 from .hook_projection import READABLE_PROJECTION_VERSIONS
 from .shared_rules import hook_contract_rules as rules
+from .hook_delivery_lifecycle import covers, envelope_for, validate_dispatch, terminal_delivery
 
 OUTBOX_FIELDS = ("event_uuid", "receive_seq", "worker_id", "client_instance_id", "self_wxid", "account_epoch",
     "binding_id", "binding_revision", "payload_digest", "payload_json", "status", "attempt_count", "lease_id",
@@ -68,6 +69,7 @@ class HookDeliveryOutbox:
             next_attempt_at TEXT NOT NULL, last_error TEXT, receipt_json TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)""")
         if tuple(r['name'] for r in conn.execute('PRAGMA table_info(hook_delivery_outbox)')) != OUTBOX_FIELDS:
             raise RuntimeError("HOOK_OUTBOX_SCHEMA_UNSUPPORTED")
+        conn.execute('CREATE INDEX IF NOT EXISTS hook_delivery_revision ON hook_delivery_outbox (binding_id,receive_seq,binding_revision,status)')
 
     def enqueue_projection(self, receive_seq: int, scope: HookDeliveryScope, *, now: str, allowed_native_ids=None):
         return self.enqueue_projections([receive_seq], scope, now=now,
@@ -188,7 +190,7 @@ class HookDeliveryOutbox:
                 conn.rollback()
                 raise
 
-    def mark_stored(self, claim: HookDeliveryClaim, receipt: dict, *, now: str):
+    def mark_stored(self, claim: HookDeliveryClaim, receipt: dict, *, now: str, dispatched=None):
         rules.validate_receipt(claim.envelope, receipt)
         encoded = rules.canonical(receipt)
         instant = _instant(now).isoformat()
@@ -200,6 +202,7 @@ class HookDeliveryOutbox:
                 if row is None or row['payload_digest'] != claim.payload_digest:
                     raise RuntimeError("HOOK_OUTBOX_CLAIM_MISMATCH")
                 if row['status'] == 'stored' and row['receipt_json'] == encoded:
+                    self._close_covered(conn, row, receipt, dispatched, instant)
                     conn.commit()
                     return True
                 if row['status'] != 'attempting' or row['lease_id'] != claim.lease_id:
@@ -210,11 +213,71 @@ class HookDeliveryOutbox:
                     raise RuntimeError("HOOK_OUTBOX_CAPACITY_EXCEEDED")
                 conn.execute("UPDATE hook_delivery_outbox SET status='stored',receipt_json=?,lease_id=NULL,lease_expires_at=NULL,last_error=NULL,updated_at=? WHERE event_uuid=?",
                     (encoded, instant, claim.event_uuid))
+                self._close_covered(conn, row, receipt, dispatched, instant)
                 conn.commit()
                 return True
             except Exception:
                 conn.rollback()
                 raise
+
+    def _close_covered(self, conn, replacement_row, receipt, dispatched, instant):
+        if dispatched is None or dispatched.get('dispatch_status') == 'authorization_retired':
+            return
+        replacement = envelope_for(replacement_row)
+        rules.validate_receipt(replacement, receipt)
+        validate_dispatch(replacement, dispatched)
+        rows = conn.execute("""SELECT * FROM hook_delivery_outbox
+            WHERE receive_seq=? AND binding_id=? AND binding_revision<?
+            AND status NOT IN ('stored','covered_by_new_authorization')""",
+            (replacement_row['receive_seq'], replacement['binding_id'], replacement['binding_revision'])).fetchall()
+        for row in rows:
+            original = envelope_for(row)
+            if not covers(original, replacement):
+                continue
+            proof = rules.canonical({'kind': 'hook-delivery-coverage-v1',
+                'original_event_uuid': original['event_uuid'],
+                'original_payload_digest': row['payload_digest'],
+                'original_receipt': row['receipt_json'],
+                'replacement_envelope': replacement, 'replacement_receipt': receipt,
+                'replacement_dispatch': dispatched})
+            candidate = {**dict(row), 'status': 'covered_by_new_authorization', 'receipt_json': proof}
+            terminal_delivery(candidate)
+            used = conn.execute('SELECT COALESCE(SUM(length(CAST(payload_json AS BLOB))+COALESCE(length(CAST(receipt_json AS BLOB)),0)),0) FROM hook_delivery_outbox').fetchone()[0]
+            if used + len(proof.encode('utf-8')) > self.max_storage_bytes:
+                raise RuntimeError('HOOK_OUTBOX_CAPACITY_EXCEEDED')
+            conn.execute("""UPDATE hook_delivery_outbox SET status='covered_by_new_authorization',
+                receipt_json=?,lease_id=NULL,lease_expires_at=NULL,updated_at=? WHERE event_uuid=?""",
+                (proof, instant, row['event_uuid']))
+
+    def pending_replacements(self, scope):
+        """Resume an old client's stored receipt only through a fresh dispatch ack."""
+        with storage.db_connection() as conn:
+            if conn.execute("SELECT 1 FROM sqlite_master WHERE name='hook_delivery_outbox'").fetchone() is None:
+                return []
+            self._schema(conn)
+            rows = conn.execute("""SELECT n.* FROM hook_delivery_outbox n WHERE n.status='stored'
+                AND n.worker_id=? AND n.client_instance_id=? AND n.self_wxid=? AND n.account_epoch=?
+                AND n.binding_id=? AND n.binding_revision=? AND EXISTS (
+                    SELECT 1 FROM hook_delivery_outbox o WHERE o.receive_seq=n.receive_seq
+                    AND o.binding_id=n.binding_id AND o.binding_revision<n.binding_revision
+                    AND o.status NOT IN ('stored','covered_by_new_authorization'))""",
+                (scope.worker_id,scope.client_instance_id,scope.self_wxid,scope.account_epoch,
+                 scope.binding_id,scope.binding_revision)).fetchall()
+            result = []
+            for row in rows:
+                envelope = envelope_for(row)
+                if any(envelope[k] != getattr(scope,k) for k in scope.__dataclass_fields__):
+                    raise ValueError('HOOK_OUTBOX_BINDING_CHANGED')
+                receipt = rules.validate_receipt(envelope, rules.loads(row['receipt_json']))
+                originals = conn.execute("""SELECT * FROM hook_delivery_outbox WHERE receive_seq=?
+                    AND binding_id=? AND binding_revision<?
+                    AND status NOT IN ('stored','covered_by_new_authorization')""",
+                    (row['receive_seq'],scope.binding_id,scope.binding_revision)).fetchall()
+                if not any(covers(envelope_for(old), envelope) for old in originals):
+                    continue
+                result.append((HookDeliveryClaim(row['event_uuid'], '', row['payload_digest'],
+                    row['payload_json'], row['attempt_count']), receipt))
+            return result
 
     def defer(self, claim: HookDeliveryClaim, *, now: str, next_attempt_at: str, error_code: str, blocked=False):
         instant, due = _instant(now), _instant(next_attempt_at)

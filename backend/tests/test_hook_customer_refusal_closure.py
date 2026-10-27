@@ -32,7 +32,18 @@ from chejin_worker_client.api import ApiError
 
 
 @pytest.fixture
-def case(identity_client,lab,tmp_path):
+def case(identity_client,lab,tmp_path,request,monkeypatch):
+    mode=getattr(request,'param',None)
+    if mode=='catalog':
+        from test_catalog_fact_references import CatalogAdapter
+        monkeypatch.setattr(c3_service,'get_ai_engine_adapter',CatalogAdapter)
+    elif mode=='boundary':
+        from app.services.ai_adapter import AIEngineDecision
+        class BoundaryModel:
+            def generate_reply_decision(self,**kwargs):
+                return AIEngineDecision(decision='reply_then_handoff',reply_text='好的，我们会结合您的实际需求核实车辆资料。',
+                    guard_result='pass',handoff_reason_code='CUSTOMER_HIGH_INTENT')
+        monkeypatch.setattr(c3_service,'get_ai_engine_adapter',BoundaryModel)
     w,_,account,binding=bound()
     server,gateway,process,scope,*_=lab
     scope=replace(scope,account_epoch=account['account_epoch'])
@@ -371,3 +382,60 @@ def test_human_owned_customer_does_not_block_second_customer(case,monkeypatch):
     with SessionLocal() as db:
         assert db.get(Worker,c.w['id']).run_status=='running'
         assert db.get(Conversation,c.binding['conversation_id']).reply_ownership['owner']=='human'
+
+
+@pytest.mark.parametrize('stage',['claim','begin'])
+@pytest.mark.parametrize('reason',['lead_invalid','conversation_closed'])
+def test_related_customer_refusal_closes_original(case,monkeypatch,stage,reason):
+    from test_hook_account_http import client
+    c=case;original=HookFormalClient.call;changed=False;codes=[]
+    def call(self,credentials,method,path,body=None,**kw):
+        nonlocal changed
+        if '/native-replies/' in path and path.endswith('/'+stage) and not changed:
+            changed=True
+            if reason=='lead_invalid':
+                r=client.post(f"/api/leads/{c.binding['lead_id']}/mark-invalid",json={'invalid_reason':'test_data'})
+                assert r.status_code==200,r.text
+            else:
+                with SessionLocal() as db:
+                    conv=db.get(Conversation,c.binding['conversation_id']);conv.status='closed';conv.ai_enabled=False;db.commit()
+        try:return original(self,credentials,method,path,body,**kw)
+        except Exception as e:codes.append(getattr(e,'code',str(e)));raise
+    monkeypatch.setattr(HookFormalClient,'call',call)
+    result=c.rt.reply_once(c.binding,c.data,history=c.history)
+    assert changed and result['status']=='not_triggered' and not result['automatic_resend_allowed']
+    assert c.rt.active_flow_id is None
+    assert not any(row[0]=='/SendTextMsg' for row in c.server.requests)
+    with SessionLocal() as db:
+        assert db.get(Task,c.data['task']['id']).status in {'failed','cancelled'}
+        assert db.get(Worker,c.w['id']).run_status=='running'
+    print(reason,stage,codes)
+
+
+@pytest.mark.parametrize('case',['catalog','boundary'],indirect=True)
+@pytest.mark.parametrize('stage',['claim','begin'])
+def test_changed_generated_business_context_closes_without_hook(case,stage,monkeypatch,request):
+    from app.models.c3 import HandoffEvent
+    from test_c3_api import _create_listed_vehicle
+    c=case;original=HookFormalClient.call;changed=False;codes=[]
+    mode=request.node.callspec.params['case']
+    def call(self,credentials,method,path,body=None,**kw):
+        nonlocal changed
+        if '/native-replies/' in path and path.endswith('/'+stage) and not changed:
+            changed=True
+            if mode=='catalog':_create_listed_vehicle()
+            else:
+                with SessionLocal() as db:
+                    event=db.scalar(select(HandoffEvent).where(HandoffEvent.conversation_id==c.binding['conversation_id']))
+                    assert event and not event.closed_at
+                    event.closed_at=datetime.now(timezone.utc);db.commit()
+        try:return original(self,credentials,method,path,body,**kw)
+        except Exception as e:codes.append(getattr(e,'code',str(e)));raise
+    monkeypatch.setattr(HookFormalClient,'call',call)
+    result=c.rt.reply_once(c.binding,c.data,history=c.history)
+    assert changed and result['status']=='not_triggered'
+    assert not result['automatic_resend_allowed'] and c.rt.active_flow_id is None
+    assert not any(row[0]=='/SendTextMsg' for row in c.server.requests)
+    assert not list(c.rt.private_root.rglob('trigger.json'))
+    with SessionLocal() as db:assert db.get(Worker,c.w['id']).run_status=='running'
+    assert codes
