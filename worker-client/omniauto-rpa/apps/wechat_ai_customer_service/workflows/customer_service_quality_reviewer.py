@@ -271,12 +271,19 @@ def review_brain_reply_semantics(
     cache_key = quality_review_cache_key(request)
     if cfg["cache_enabled"] and cache_key in _REVIEW_CACHE:
         cached = dict(_REVIEW_CACHE[cache_key])
-        cached["cache_hit"] = True
-        return apply_review_mode(cached, mode=mode)
+        if not authority_required or cached.get("authority_contract_validated") is True:
+            cached["cache_hit"] = True
+            return apply_review_mode(cached, mode=mode)
+        # Do not reuse a clearance created before raw-contract validation.
+        del _REVIEW_CACHE[cache_key]
 
     raw_result = reviewer_from_settings(cfg)
     if raw_result is None:
         raw_result = run_quality_reviewer_llm(settings=cfg, request=request)
+    if authority_required and not quality_reviewer_contract_is_complete(
+        raw_result or {}, authority_required=True,
+    ):
+        return authority_review_failure("authority_review_invalid_contract")
     review = normalize_quality_review_result(raw_result)
     if authority_required:
         # No shadow/outage/low-risk relaxation may decide that a factual claim
@@ -286,7 +293,7 @@ def review_brain_reply_semantics(
                 or review.get("claim_kind") != "non_factual"):
             return authority_review_failure("authority_claim_not_cleared", review)
         review.update(cache_key=cache_key, cache_hit=False, invoked=True, mode=mode,
-                      authority_review_required=True)
+                      authority_review_required=True, authority_contract_validated=True)
         if cfg["cache_enabled"]:
             _REVIEW_CACHE[cache_key] = dict(review)
         return apply_review_mode(review, mode=mode)
@@ -999,7 +1006,9 @@ def run_quality_reviewer_llm(*, settings: dict[str, Any], request: dict[str, Any
             "raw_response_text": raw_text[:1000],
             "elapsed_ms": response.get("elapsed_ms"),
         }
-    if not quality_reviewer_contract_is_complete(parsed):
+    if not quality_reviewer_contract_is_complete(
+        parsed, authority_required=bool(request.get("authority_review_required")),
+    ):
         return {
             "status": "error",
             "provider": response.get("provider"),
@@ -1018,8 +1027,18 @@ def run_quality_reviewer_llm(*, settings: dict[str, Any], request: dict[str, Any
     return parsed
 
 
-def quality_reviewer_contract_is_complete(payload: dict[str, Any]) -> bool:
-    """An omitted safety field cannot be silently filled into a passing review."""
+def quality_reviewer_contract_is_complete(
+    payload: dict[str, Any], *, authority_required: bool = False,
+) -> bool:
+    """Validate original fields before normalizing any source of a clearance."""
+    if authority_required:
+        # HTTP JSON need not carry transport status, but an explicit failure
+        # from any source must never be normalized/overwritten into success.
+        if "status" in payload and payload["status"] != "ok":
+            return False
+        if (not isinstance(payload.get("claim_kind"), str)
+                or payload["claim_kind"] not in {"non_factual", "factual", "uncertain"}):
+            return False
     if not isinstance(payload.get("verdict"), str) or payload["verdict"] not in REVIEWER_VERDICTS:
         return False
     confidence = payload.get("confidence")

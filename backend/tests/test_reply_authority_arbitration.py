@@ -1,4 +1,5 @@
 """Synthetic needs/quote contrasts; real contract/reviewer, no live model calls."""
+import json
 from copy import deepcopy
 import pytest
 import test_brain_fact_guidance_regression as fixture
@@ -99,3 +100,59 @@ def test_changed_draft_must_not_reuse_non_factual_clearance(monkeypatch):
     assert assess(plan())["ok"]
     assert not assess(plan(["这台车售价12万，现车随时可提。"]))["ok"]
     assert len(calls)==2
+
+
+CONTRACT_FAULTS = [
+    'missing_verdict', 'missing_errors', 'invalid_errors', 'error', 'skipped',
+    'missing_claim_kind', 'invalid_claim_kind', 'factual', 'uncertain',
+]
+
+
+def broken_review(fault):
+    result = verdict()
+    if fault == 'missing_verdict':
+        del result['verdict']
+    elif fault == 'missing_errors':
+        del result['semantic_errors']
+    elif fault == 'invalid_errors':
+        result['semantic_errors'] = ''
+    elif fault in {'error', 'skipped'}:
+        result['status'] = fault
+    elif fault == 'missing_claim_kind':
+        del result['claim_kind']
+    elif fault == 'invalid_claim_kind':
+        result['claim_kind'] = ['non_factual']
+    else:
+        result['claim_kind'] = fault
+    return result
+
+
+@pytest.mark.parametrize('field', ['semantic_reviewer_result', 'semantic_reviewer_response_text'])
+@pytest.mark.parametrize('fault', CONTRACT_FAULTS + ['valid'])
+def test_config_review_contract_reaches_real_task_boundary(monkeypatch, field, fault):
+    response = verdict() if fault == 'valid' else broken_review(fault)
+    settings = {field: json.dumps(response) if field.endswith('_text') else response}
+    monkeypatch.setattr(fixture, 'CANDIDATES', [REPLIES[0]])
+    fixture.test_c3_api_database_real_brain_and_provider_preserve_guided_reply(
+        monkeypatch, 0, False, expect_reply=fault == 'valid',
+        customer_text=QUESTION, review_settings=settings, cache_enabled=True,
+        expected_reviewer_calls=0)
+
+
+@pytest.mark.parametrize('fault', ['missing_verdict', 'missing_errors', 'error', 'missing_claim_kind'])
+def test_http_review_contract_reaches_real_task_boundary(monkeypatch, fault):
+    monkeypatch.setattr(fixture, 'CANDIDATES', [REPLIES[0]])
+    fixture.test_c3_api_database_real_brain_and_provider_preserve_guided_reply(
+        monkeypatch, 0, False, expect_reply=False, customer_text=QUESTION,
+        http_review_result=broken_review(fault), cache_enabled=True)
+
+
+def test_unvalidated_cache_entry_cannot_clear_authority(monkeypatch):
+    reviewer._REVIEW_CACHE.clear()
+    monkeypatch.setattr(reviewer, 'reviewer_from_settings', lambda cfg: verdict())
+    assert assess(plan())['ok']
+    entry = next(iter(reviewer._REVIEW_CACHE.values()))
+    del entry['authority_contract_validated']
+    monkeypatch.setattr(reviewer, 'reviewer_from_settings', lambda cfg: broken_review('error'))
+    assert not assess(plan())['ok']
+    assert not reviewer._REVIEW_CACHE

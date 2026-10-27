@@ -106,7 +106,7 @@ def test_c3_api_database_real_brain_and_provider_preserve_guided_reply(
     monkeypatch, candidate, bad_source_first, expect_reply=True, *,
     citation_format="source_id", expected_validation_error="missing_fact_claims", empty_first=False,
     customer_text="您好，之前咨询过二手车，想了解购车需求。", review_claim_kind=None,
-    cache_enabled=False, expected_reviewer_calls=None,
+    cache_enabled=False, expected_reviewer_calls=None, review_settings=None, http_review_result=None,
 ):
     """Public C3 API -> SQLite -> real child Brain/Guard -> HTTP provider.
 
@@ -167,6 +167,8 @@ def test_c3_api_database_real_brain_and_provider_preserve_guided_reply(
             } if review else plan
             if review and review_claim_kind is not None:
                 result["claim_kind"] = review_claim_kind
+            if review and http_review_result is not None:
+                result = deepcopy(http_review_result)
             if not review and bad_source_first and sum(item["model"] == "test-brain" for item in requests) == 1:
                 result = deepcopy(plan)
                 result["evidence_used"]["formal_knowledge_ids"] = ["invented-guidance-source"]
@@ -199,6 +201,7 @@ def test_c3_api_database_real_brain_and_provider_preserve_guided_reply(
         "raw_message_store": {"enabled": False},
         "final_visible_llm_polish": {"enabled": False},
     }
+    config["customer_service_brain"].update(review_settings or {})
     # Endpoint substitution only: _load_config normally pins the live DeepSeek URL.
     monkeypatch.setattr(RealOmniAutoAIEngineAdapter, "_load_config", staticmethod(lambda: deepcopy(config)))
     try:
@@ -252,9 +255,11 @@ def test_c3_api_database_real_brain_and_provider_preserve_guided_reply(
                 assert completed[1]["call_id"] != completed[0]["call_id"]
                 assert "ARTIFICIAL-PRIVATE-REASONING" not in json.dumps(events)
         assert sum(item["model"] == "test-brain" for item in requests) == (2 if bad_source_first or empty_first else 1)
-        assert sum(item["model"] == "test-semantic-reviewer" for item in requests) >= 1
+        review_calls = sum(item["model"] == "test-semantic-reviewer" for item in requests)
         if expected_reviewer_calls is not None:
-            assert sum(item["model"] == "test-semantic-reviewer" for item in requests) == expected_reviewer_calls
+            assert review_calls == expected_reviewer_calls
+        else:
+            assert review_calls >= 1
         prompt = json.dumps(requests[0], ensure_ascii=False)
         for title, _ in GUIDANCE:
             assert title in prompt
