@@ -1,7 +1,7 @@
 {
   "schema_version": 2,
   "repository": "edwardzhang0304/chejin-ai-sales",
-  "reviewed_commit": "edb62398f95a71d298d6059573657eaa02fcd682",
+  "reviewed_commit": "25cd7e8af0042770c16ae0b5d00024af398757e1",
   "scope_file": "ops/formal_release/handoffs/tooling-01015-scope.json",
   "reviewed_inputs": {
     ".github/actions/worker-release-checks/action.yml": "100644 blob d52d02ca82a127917695e0d80c5ab1f6697b7d62",
@@ -36,7 +36,7 @@
     "ops/formal_release/handoffs/hook-reviewed-2620508.json": "100644 blob 68fc09bbf552eb6861b56e9725733fda8f3251ce",
     "ops/formal_release/handoffs/hook-reviewed-2fbf52a.json": "100644 blob 7ced64e5bb8eaf1a154ab286d974783ae8265bf1",
     "ops/formal_release/handoffs/hook-reviewed-a1de7f3.json": "100644 blob b6428d18ddb3e2e66cce756cc3a9a2f4785de4d0",
-    "ops/formal_release/handoffs/hook-reviewed-bbe404a.json": "100644 blob 014e27e901a1c8549e859e52d878bff3f29f39d1",
+    "ops/formal_release/handoffs/hook-reviewed-bbe404a.json": "100644 blob 66be7952bd9433f37662e44410482e50f14a05e9",
     "ops/formal_release/handoffs/hook-reviewed-d44bae9.json": "100644 blob 0f7783557446559e5adabf0b4e91d518487047bf",
     "ops/formal_release/handoffs/hook-reviewed-d44f8e5.json": "100644 blob 2a7252bd9bd7ec188cd022f10ad79fbd7afa2f80",
     "ops/formal_release/handoffs/hook-reviewed-d7f7ad4.json": "100644 blob 28dfa3e652c9ccde2ef88fdcb8d08d7346569c70",
@@ -71,7 +71,7 @@
     "ops/formal_release/handoffs/tooling-01013-scope.json": "100644 blob 9fb8f418276b2e195289b304eb358c1d9189008e",
     "ops/formal_release/handoffs/tooling-01014-reviewed.json": "100644 blob 4ed9be107759c576dfc865b4d6368b16bfd3e9bc",
     "ops/formal_release/handoffs/tooling-01014-scope.json": "100644 blob a265f852acaf4c891ee5c9b13cb9ff4444d3b714",
-    "ops/formal_release/handoffs/tooling-01015-scope.json": "100644 blob ee855f49817a7f1bdc230bc4bbfbc5fd347bd860",
+    "ops/formal_release/handoffs/tooling-01015-scope.json": "100644 blob dc3698580bf25f982ccd0264a73a0aabf0199f52",
     "ops/formal_release/handoffs/tooling-gui-recovery-reviewed.json": "100644 blob aa928cc4a2b780683270bbea9fd06e6340dca724",
     "ops/formal_release/handoffs/tooling-gui-recovery-scope.json": "100644 blob a294688798685d49198fc2fe7772a90811a3cc9d",
     "ops/formal_release/handoffs/unified-recovery-58c90b3.json": "100644 blob aa8688d1777a4e68fe2a382493de1cff25dc10e1",
@@ -132,7 +132,7 @@
     "ops/formal_release/validate_dispatch.py": "100644 blob 0d486388dc25db37fcb2a7189bda7092ae2f7359",
     "ops/formal_release/verify.py": "100644 blob f3eaf18bc9e4ac1c005aa75a33cb0494a30c53b0",
     "ops/formal_release/workflow_scripts.py": "100644 blob 6a59480b33cc8ddd4c6cabea5ec8a13191a94144",
-    "worker-client/chejin_worker_client/__init__.py": "100644 blob 8f79dcc8b1128d3d2d9d012ed44065506a699a1d",
+    "worker-client/chejin_worker_client/__init__.py": "100644 blob f7ce50ec9209e71b7a0aad87b95cb9f5a7e6a6a5",
     "worker-client/chejin_worker_client/models.py": "100644 blob 70c7338cc6b22f213f18f0595814dfdc048bb763",
     "worker-client/chejin_worker_client/release_package_contract.py": "100644 blob f5ee8350e9cba1164885a36538a7f17848606ee6",
     "worker-client/requirements-test.txt": "100644 blob 2c78728ca5d7130bbea4a887dfc9b59b6f6a8d9c",
@@ -151,7 +151,7 @@
     "thread_id": "01a0d26f-f47a-7343-9ad8-cda8320d7c86",
     "turn_id": "01a16e5c-444e-7863-96de-be07b1475b2c",
     "evidence_sha256": "128f2fab099a4cf6301074d074855c6cd6f71a24bead2fa6a5ebb3e2a01e075a",
-    "scope": "Unchanged approved release tools; version/source descriptors updated under SOP18.0.4. Reuse exact 0.10.21 collector tests; three final source audits retained. This is not Windows upgrade approval."
+    "scope": "Unchanged approved release tools; version/source descriptors updated under SOP18.0.4. Reuse approved unchanged tool executions; two final source audits retained. This is not Windows upgrade approval."
   },
   "supplemental_reviews": [
     {
