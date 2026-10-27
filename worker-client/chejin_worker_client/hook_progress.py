@@ -48,7 +48,7 @@ NOTES = {
  'model_wait': '等待后台处理结果。', 'no_reply': '本次消息无需发送回复。',
  'handoff': '此客户的 AI 自动回复已暂停，等待销售处理。',
  'friend_verification_hold': '好友验证限制尚未处理，AI 不会自动回复。原发送结果和凭证保留，不会自动补发。',
- 'handoff_ai_failure': 'AI 回复处理失败，已按规则转人工。',
+ 'handoff_ai_failure': '系统未能完成自动回复，请销售接管。',
  'handoff_voice_unknown': '语音转写结果未确认，已转人工处理；原语音不会自动重试。',
  'handoff_closed': '本次交接事项已处理，后续由当前回复负责人继续处理。',
  'human_wait': '销售持续负责，此轮客户消息等待销售回复。',

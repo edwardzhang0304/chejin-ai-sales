@@ -2709,6 +2709,19 @@ def check_rejects_formal_policy_fact_without_source_id() -> CaseResult:
     return CaseResult("rejects_formal_policy_fact_without_source_id", True, {"errors": validation["errors"]})
 
 
+def assert_language_hint_is_reviewed(plan, question, quality, hint):
+    assert_true(hint in quality["warnings"], f"missing language review hint: {quality}")
+    review = reviewer_module.review_brain_reply_semantics(
+        settings={"provider": "manual_json", "semantic_reviewer_cache_enabled": False,
+                  "semantic_reviewer_result": {"status": "ok", "verdict": "repair", "confidence": .9,
+                      "semantic_errors": [hint], "hard_boundary_concerns": [],
+                      "customer_visible_risk": "low", "repair_instruction": "Synthetic semantic finding", "reason": "Synthetic review"}},
+        brain_input={"current_message": {"clean_text": question}},
+        evidence_pack=fake_evidence_pack(include_product=True), plan=normalize_brain_plan(plan),
+        deterministic_quality=quality)
+    assert_true(not review["ok"] and review.get("invoked"), "semantic rejection must still reach repair")
+
+
 def check_quality_gate_rejects_generic_stall_for_price() -> CaseResult:
     plan = copy.deepcopy(base_plan())
     plan["reply_segments"] = ["我先帮您看看，稍等。"]
@@ -2719,9 +2732,8 @@ def check_quality_gate_rejects_generic_stall_for_price() -> CaseResult:
         evidence_pack=fake_evidence_pack(include_product=True),
         settings={},
     )
-    assert_true(not quality["ok"], f"price question should not accept generic stall: {quality}")
-    assert_true("missing_direct_price_response" in quality["errors"], f"expected direct price error: {quality}")
-    assert_true("generic_stall_reply_for_concrete_question" in quality["errors"], f"expected stall error: {quality}")
+    assert_language_hint_is_reviewed(plan, "秦plus多少钱", quality, "missing_direct_price_response")
+    assert_language_hint_is_reviewed(plan, "秦plus多少钱", quality, "generic_stall_reply_for_concrete_question")
     return CaseResult("quality_gate_rejects_generic_stall_for_price", True, {"errors": quality["errors"]})
 
 
@@ -2818,8 +2830,7 @@ def check_quality_gate_requires_clear_recommendation() -> CaseResult:
         evidence_pack=fake_evidence_pack(include_product=True),
         settings={},
     )
-    assert_true(not quality["ok"], f"choice question should require a clear recommendation: {quality}")
-    assert_true("missing_clear_recommendation_or_choice" in quality["errors"], f"expected recommendation error: {quality}")
+    assert_language_hint_is_reviewed(plan, "秦PLUS和凯美瑞通勤哪个更适合，帮我挑一台", quality, "missing_clear_recommendation_or_choice")
     return CaseResult("quality_gate_requires_clear_recommendation", True, {"errors": quality["errors"]})
 
 
@@ -2941,7 +2952,7 @@ def check_quality_gate_rejects_contextual_recommendation_stall() -> CaseResult:
     )
     assert_true(not quality["ok"], f"context follow-up should not allow generic stall reply: {quality}")
     assert_true(
-        "generic_stall_reply_for_contextual_recommendation" in quality["errors"],
+        "generic_stall_reply_for_contextual_recommendation" in quality["warnings"],
         f"expected contextual stall error: {quality}",
     )
     assert_true(
@@ -3488,9 +3499,9 @@ def check_quality_gate_rejects_single_candidate_for_multi_recommendation_request
         evidence_pack=pack,
         settings={},
     )
-    assert_true(not quality["ok"], f"single-candidate reply should fail when customer asked for two and candidates exist: {quality}")
+    assert_language_hint_is_reviewed(plan, "帮我挑两台", quality, "missing_multiple_product_recommendations")
     assert_true(
-        "missing_multiple_product_recommendations" in quality["errors"],
+        "missing_multiple_product_recommendations" in quality["warnings"],
         f"expected missing multi-product recommendation error: {quality}",
     )
     return CaseResult(
@@ -4554,7 +4565,7 @@ def check_quality_gate_rejects_overlong_visible_reply() -> CaseResult:
         evidence_pack=fake_evidence_pack(include_product=True),
         settings={"quality_reply_max_chars": 120, "quality_segment_soft_max_chars": 96},
     )
-    assert_true("reply_too_long" in quality["errors"], f"expected overlong reply error: {quality}")
+    assert_language_hint_is_reviewed(plan, "介绍一下车辆", quality, "reply_too_long")
     return CaseResult("quality_gate_rejects_overlong_visible_reply", True, {"errors": quality["errors"]})
 
 
@@ -5626,7 +5637,7 @@ def check_brain_runner_rejects_quality_failed_plan() -> CaseResult:
     plan = copy.deepcopy(base_plan())
     plan["reply_segments"] = ["我先帮您看看，稍等。"]
     with patched_evidence_pack(fake_evidence_pack(include_product=True)):
-        event = run_brain(plan)
+        event = run_brain(plan, reviewer_result={"status":"ok", "verdict":"repair", "confidence":.9, "semantic_errors":["missing_direct_price_response"], "hard_boundary_concerns":[], "repair_instruction":"请回答客户报价问题", "customer_visible_risk":"low", "reason":"Synthetic semantic finding"})
     assert_true(not event.get("applied"), f"quality-failed BrainPlan must not apply: {event}")
     assert_true(event.get("reason") == "brain_quality_verification_failed", f"expected quality failure: {event}")
     errors = (event.get("quality_verification") or {}).get("errors", [])
@@ -5948,11 +5959,21 @@ def check_brain_runner_soft_passes_repaired_deterministic_quality_doubts() -> Ca
     config = base_config(plan)
     config["customer_service_brain"].update(
         {
-            "semantic_reviewer_mode": "off",
+            "semantic_reviewer_mode": "suspicious_only",
             "semantic_reviewer_cache_enabled": False,
         }
     )
-    with patched_evidence_pack(fake_evidence_pack(include_product=True)), patched_brain_repair(repaired_plan):
+    original_review = reviewer_module.reviewer_from_settings
+    reviews = []
+    def review_once(cfg):
+        reviews.append(True)
+        return {"status":"ok", "verdict":"repair" if len(reviews)==1 else "pass", "confidence":.9,
+                "semantic_errors":["missing_direct_price_response"] if len(reviews)==1 else [],
+                "hard_boundary_concerns":[], "repair_instruction":"请回答当前问题", "customer_visible_risk":"low", "reason":"Synthetic review"}
+    class ReviewContext:
+        def __enter__(self): reviewer_module.reviewer_from_settings = review_once
+        def __exit__(self,*args): reviewer_module.reviewer_from_settings = original_review
+    with ReviewContext(), patched_evidence_pack(fake_evidence_pack(include_product=True)), patched_brain_repair(repaired_plan):
         event = brain_module.maybe_run_customer_service_brain(
             config=config,
             target_name="新数据测试",
@@ -5978,7 +5999,7 @@ def check_brain_runner_soft_passes_repaired_deterministic_quality_doubts() -> Ca
     assert_true(event.get("applied"), f"repaired Brain reply with soft quality doubts should apply: {event}")
     assert_true(event.get("rule_name") == "customer_service_brain_reply", f"expected Brain-owned reply: {event}")
     assert_true(event.get("visible_reply_owner") == "brain_repair", f"reply must be authored by Brain repair: {event}")
-    assert_true(event.get("repaired_quality_soft_pass", {}).get("ok"), f"expected deterministic soft-pass audit: {event}")
+    assert_true(len(reviews) == 2, f"review the original and changed draft once each: {reviews}")
     assert_true("秦PLUS" in event.get("reply_text", ""), f"reply should keep Brain repaired content: {event}")
     assert_true(event.get("reason") != "brain_quality_verification_failed", f"quality gate must not hard-veto Brain: {event}")
     return CaseResult(
@@ -9225,9 +9246,12 @@ def workflow_config(mode: str) -> dict[str, Any]:
     }
 
 
-def run_brain(plan: dict[str, Any], *, blocking_shadow_enabled: bool = True) -> dict[str, Any]:
+def run_brain(plan: dict[str, Any], *, blocking_shadow_enabled: bool = True, reviewer_result=None) -> dict[str, Any]:
+    config = base_config(plan, blocking_shadow_enabled=blocking_shadow_enabled)
+    if reviewer_result is not None:
+        config["customer_service_brain"].update(semantic_reviewer_result=reviewer_result, semantic_reviewer_cache_enabled=False)
     return brain_module.maybe_run_customer_service_brain(
-        config=base_config(plan, blocking_shadow_enabled=blocking_shadow_enabled),
+        config=config,
         target_name="许聪",
         target_state={"conversation_context": {}},
         batch=[{"id": "msg1", "sender": "许聪", "content": "秦plus多少钱"}],

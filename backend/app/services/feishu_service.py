@@ -36,7 +36,7 @@ HANDOFF_REASON_LABELS = {
     "HOOK_CUSTOMER_IMAGE_HANDOFF": "客户发来图片，需要销售人工处理",
     "CUSTOMER_HIGH_INTENT": "客户表达了明确购车意向",
     "HANDOFF_REQUIRED": "当前咨询需要销售人工处理",
-    "AI_ENGINE_RETRY_EXHAUSTED": "自动回复连续失败，需要人工处理",
+    "AI_ENGINE_RETRY_EXHAUSTED": "系统未能完成自动回复，请销售接管（非客户业务转人工）",
     "AI_ENGINE_PAUSED_FOR_MANUAL_REVIEW": "自动回复已暂停，需要人工复核",
     "C2_IMAGE_UNDERSTANDING_FAILED": "客户图片暂时无法安全理解",
     "C2_MESSAGE_HISTORY_GAP": "会话消息上下文不完整",

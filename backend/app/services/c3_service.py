@@ -2765,7 +2765,9 @@ def _create_handoff(
         conversation=conversation,
         batch_id=batch.id,
         handoff_reason_code=handoff_reason_code,
-        reason_detail=decision.handoff_reason_code or handoff_reason_code,
+        reason_detail=("系统未能完成自动回复，需人工接管；不代表客户咨询必须人工处理。"
+                       if handoff_reason_code == "AI_ENGINE_RETRY_EXHAUSTED"
+                       else decision.handoff_reason_code or handoff_reason_code),
         trigger_message_event_ids=list(batch.message_event_ids or []),
         risk_flags=decision.risk_flags or [],
         evidence_refs=decision.evidence_refs or [],
@@ -3168,6 +3170,7 @@ def _handoff_exhausted_generation(
         error_code="AI_ENGINE_RETRY_EXHAUSTED",
         suggested_action="handoff",
         raw_payload={
+            "failure_category": "technical_generation_failure",
             "last_error_code": last_error_code,
             "generation_attempt_count": int(batch.generation_attempt_count or 0),
         },

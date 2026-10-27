@@ -3263,6 +3263,9 @@ def test_brain_retry_and_terminal_handoff_preserve_each_attempt_evidence(
         ] == [1, 2]
         assert row.ai_response_snapshot["decision"] == "handoff"
         assert event.ai_payload["generation_attempt_history"] == history
+        assert event.ai_payload["raw_payload"]["failure_category"] == "technical_generation_failure"
+        assert "系统未能完成" in event.reason_detail
+        assert "不代表客户咨询必须人工处理" in event.reason_detail
 
 
 def test_separate_ingest_calls_create_new_batch_after_prior_terminal_batch():

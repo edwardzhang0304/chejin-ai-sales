@@ -105,6 +105,8 @@ def test_fact_free_guidance_citation_must_exist_in_current_evidence(citation):
 def test_c3_api_database_real_brain_and_provider_preserve_guided_reply(
     monkeypatch, candidate, bad_source_first, expect_reply=True, *,
     citation_format="source_id", expected_validation_error="missing_fact_claims", empty_first=False,
+    customer_text="您好，之前咨询过二手车，想了解购车需求。", review_claim_kind=None,
+    cache_enabled=False, expected_reviewer_calls=None,
 ):
     """Public C3 API -> SQLite -> real child Brain/Guard -> HTTP provider.
 
@@ -163,6 +165,8 @@ def test_c3_api_database_real_brain_and_provider_preserve_guided_reply(
                 "customer_visible_risk": "low", "semantic_errors": [],
                 "hard_boundary_concerns": [], "repair_instruction": "", "reason": "Artificial review of a fact-free greeting/needs question",
             } if review else plan
+            if review and review_claim_kind is not None:
+                result["claim_kind"] = review_claim_kind
             if not review and bad_source_first and sum(item["model"] == "test-brain" for item in requests) == 1:
                 result = deepcopy(plan)
                 result["evidence_used"]["formal_knowledge_ids"] = ["invented-guidance-source"]
@@ -187,7 +191,7 @@ def test_c3_api_database_real_brain_and_provider_preserve_guided_reply(
             "api_key": "FAKE-BRAIN-GUIDANCE-TEST",
             "min_confidence": .2, "require_evidence": True, "require_fact_claims": True,
             "quality_verifier_enabled": True, "semantic_reviewer_enabled": True,
-            "semantic_reviewer_force": True, "semantic_reviewer_cache_enabled": False,
+            "semantic_reviewer_force": True, "semantic_reviewer_cache_enabled": cache_enabled,
             "semantic_reviewer_model": "test-semantic-reviewer",
             "require_final_visible_polish": False, "fallback_to_legacy_on_error": False,
         },
@@ -201,7 +205,7 @@ def test_c3_api_database_real_brain_and_provider_preserve_guided_reply(
         for title, content in GUIDANCE:
             api._publish_managed_knowledge(title, content)
         worker, binding = api._setup_bound_conversation()
-        event_id = api._ingest(worker, binding["conversation_id"], "incident-guidance-fixture", "您好，之前咨询过二手车，想了解购车需求。")
+        event_id = api._ingest(worker, binding["conversation_id"], "incident-guidance-fixture", customer_text)
         batch = api._collect(binding["conversation_id"], event_id)
         first = api._generate(batch["batch_id"])
         if not expect_reply:
@@ -249,6 +253,8 @@ def test_c3_api_database_real_brain_and_provider_preserve_guided_reply(
                 assert "ARTIFICIAL-PRIVATE-REASONING" not in json.dumps(events)
         assert sum(item["model"] == "test-brain" for item in requests) == (2 if bad_source_first or empty_first else 1)
         assert sum(item["model"] == "test-semantic-reviewer" for item in requests) >= 1
+        if expected_reviewer_calls is not None:
+            assert sum(item["model"] == "test-semantic-reviewer" for item in requests) == expected_reviewer_calls
         prompt = json.dumps(requests[0], ensure_ascii=False)
         for title, _ in GUIDANCE:
             assert title in prompt

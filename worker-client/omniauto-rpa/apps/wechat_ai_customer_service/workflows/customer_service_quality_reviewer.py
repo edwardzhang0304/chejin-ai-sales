@@ -243,12 +243,15 @@ def review_brain_reply_semantics(
     """
 
     cfg = effective_reviewer_settings(settings)
+    authority_required = bool((deterministic_quality or {}).get("authority_review_required"))
+    if authority_required and (not cfg["enabled"] or cfg["mode"] == "shadow"):
+        return authority_review_failure("authority_review_unavailable")
     if not cfg["enabled"]:
         return skipped_review("semantic_reviewer_disabled")
     mode = str(cfg["mode"] or "suspicious_only")
     if mode not in REVIEWER_MODES:
         mode = "suspicious_only"
-    suspicious = force or should_invoke_semantic_reviewer(
+    suspicious = authority_required or force or should_invoke_semantic_reviewer(
         plan=plan,
         current_message=current_message_text(brain_input, fallback=str(evidence_pack.get("current_message") or "")),
         evidence_pack=evidence_pack,
@@ -275,6 +278,18 @@ def review_brain_reply_semantics(
     if raw_result is None:
         raw_result = run_quality_reviewer_llm(settings=cfg, request=request)
     review = normalize_quality_review_result(raw_result)
+    if authority_required:
+        # No shadow/outage/low-risk relaxation may decide that a factual claim
+        # is merely a customer preference. A fresh changed draft is a new key.
+        if (review.get("status") != "ok" or review.get("verdict") != "pass"
+                or review.get("errors") or review.get("customer_visible_risk") != "low"
+                or review.get("claim_kind") != "non_factual"):
+            return authority_review_failure("authority_claim_not_cleared", review)
+        review.update(cache_key=cache_key, cache_hit=False, invoked=True, mode=mode,
+                      authority_review_required=True)
+        if cfg["cache_enabled"]:
+            _REVIEW_CACHE[cache_key] = dict(review)
+        return apply_review_mode(review, mode=mode)
     review = relax_allowed_common_sense_review(
         review=review,
         plan=plan,
@@ -308,6 +323,16 @@ def review_brain_reply_semantics(
     if cfg["cache_enabled"] and review.get("status") == "ok":
         _REVIEW_CACHE[cache_key] = dict(review)
     return apply_review_mode(review, mode=mode)
+
+
+def authority_review_failure(reason: str, review: dict[str, Any] | None = None) -> dict[str, Any]:
+    result = dict(review or {})
+    result.update(ok=False, status="error", verdict="block", enforced=True,
+                  authority_review_required=True, unavailable=False, soft_pass_low_risk=False,
+                  errors=list(result.get("errors") or []) + [reason],
+                  hard_boundary_concerns=list(result.get("hard_boundary_concerns") or []) + [reason],
+                  repair_instruction="区分客户需求复述与卖方事实承诺。若草稿断言车辆或政策事实，补齐真实来源与facts_claimed；无来源则由Brain重新写成有依据的需求确认，不得编造。")
+    return result
 
 
 def relax_allowed_common_sense_review(
@@ -1025,7 +1050,11 @@ def build_quality_reviewer_prompt(request: dict[str, Any]) -> tuple[str, str]:
         "conversation_strategy_state与关键词质量警告只是非权威线索，不能按历史闲聊次数或未命中关键词断定客户没有购车需求。"
         "结合当前消息和上下文判断：客户当前提出或继续购车需求时，正常回答和必要澄清不算强拉业务；即使历史有闲聊或拒绝，也应尊重本轮新需求。"
         "客户当前明确拒绝推销或确实仍在闲聊时，机械转回预算/车型/上一台车应写入semantic_errors交给Brain修复，而不是视为优点。"
-        "只输出裸JSON对象，不要Markdown，不要```json代码块，不要解释。字段：verdict(pass/repair/block/handoff_suggest), confidence(0-1), semantic_errors(list), hard_boundary_concerns(list), repair_instruction(str), customer_visible_risk(low/medium/high), reason(str)。"
+        "authority_review_required为true时，必须逐句区分客户需求的复述、偏好追问与卖方对具体车辆或业务的事实承诺。"
+        "复述客户预算不等于报价，复述期望车况不等于保证车况；不得仅凭价格词、金额或无商品库拦截。"
+        "返回claim_kind：non_factual仅限整份草稿没有卖方车辆事实或政策承诺；存在此类断言返回factual，不确定返回uncertain。"
+        "此审核只分类，不能授权缺失的事实；factual必须交Brain补齐声明及真实来源再走原核验。"
+        "只输出裸JSON对象，不要Markdown，不要```json代码块，不要解释。字段：claim_kind(non_factual/factual/uncertain), verdict(pass/repair/block/handoff_suggest), confidence(0-1), semantic_errors(list), hard_boundary_concerns(list), repair_instruction(str), customer_visible_risk(low/medium/high), reason(str)。"
     )
     user = json.dumps({"task": "审稿候选Brain回复，不要生成客户回复。", "review_request": request}, ensure_ascii=False)
     return system, user
@@ -1050,13 +1079,14 @@ def build_quality_review_request(
             "chat_type": str(target.get("chat_type") or ""),
         },
         "reply_trigger": reply_trigger_context(current_message.get("trigger_type")),
+        "authority_review_required": bool(deterministic_quality.get("authority_review_required")),
         "current_user_messages": [current_message_text(brain_input, fallback=str(evidence_pack.get("current_message") or ""))],
         "conversation_summary": clip(str(conversation.get("summary") or ""), int(settings.get("semantic_reviewer_summary_chars") or 260)),
         "recent_context": clip(str(conversation.get("history_text") or ""), int(settings.get("semantic_reviewer_history_chars") or 420)),
         "conversation_facts": compact_mapping(conversation.get("context") or {}, max_text_chars=160),
         "brain_plan_summary": compact_brain_plan_for_review(plan),
         "draft_segments": [str(item).strip() for item in plan.get("reply_segments", []) or [] if str(item).strip()],
-        "draft_reply": clip(reply, int(settings.get("semantic_reviewer_reply_chars") or 520)),
+        "draft_reply": reply if deterministic_quality.get("authority_review_required") else clip(reply, int(settings.get("semantic_reviewer_reply_chars") or 520)),
         "authority_evidence_summary": compact_authority_evidence_for_review(evidence_pack),
         "deterministic_quality": {
             "ok": bool(deterministic_quality.get("ok", True)),
@@ -1260,6 +1290,7 @@ def normalize_quality_review_result(result: dict[str, Any] | None) -> dict[str, 
         "invoked": True,
         "verdict": verdict,
         "confidence": confidence,
+        "claim_kind": payload.get("claim_kind"),
         "semantic_errors": semantic_errors,
         "hard_boundary_concerns": hard_concerns,
         "errors": errors,
