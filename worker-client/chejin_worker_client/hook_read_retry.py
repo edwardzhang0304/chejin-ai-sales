@@ -19,7 +19,7 @@ READ_STEPS = frozenset({'hook_login_check','hook_history_catalog','hook_history_
 WAIT_CODES = frozenset({'HOOK_READ_RETRY_WAIT','HOOK_READ_RETRY_EXHAUSTED','HOOK_READ_RETRY_CANCELLED'})
 TABLE_FIELDS = {
     'hook_read_retry': ('event_id','process_generation','request_hash','route','failures',
-                        'next_at','state','intent','created_at','updated_at','cancel_reason','scope_key'),
+                        'next_at','state','intent','created_at','updated_at','cancel_reason','scope_key','first_transport_event_id'),
     'hook_transport_events': ('event_id','action_id','process_generation','route','evidence','created_at'),
     'hook_process_recovery': ('old_generation','new_generation','evidence_sha256','death_proof','verified_at'),
 }
@@ -42,7 +42,8 @@ def ensure(conn):
         event_id TEXT PRIMARY KEY, process_generation TEXT NOT NULL,
         request_hash TEXT NOT NULL, route TEXT NOT NULL, failures INTEGER NOT NULL,
         next_at REAL NOT NULL, state TEXT NOT NULL, intent TEXT NOT NULL,
-        created_at TEXT NOT NULL, updated_at TEXT NOT NULL, cancel_reason TEXT, scope_key TEXT)''')
+        created_at TEXT NOT NULL, updated_at TEXT NOT NULL, cancel_reason TEXT, scope_key TEXT,
+        first_transport_event_id TEXT)''')
     conn.execute('''CREATE TABLE IF NOT EXISTS hook_transport_events (
         event_id TEXT PRIMARY KEY, action_id TEXT, process_generation TEXT,
         route TEXT NOT NULL, evidence TEXT NOT NULL, created_at TEXT NOT NULL)''')
@@ -89,6 +90,16 @@ def gate(generation, intent, *, now=None, allowed=True):
     with storage.db_connection() as conn:
         conn.execute('BEGIN IMMEDIATE');row=pending(conn)
         if not row:return
+        proof=conn.execute('SELECT * FROM hook_transport_events WHERE event_id=?',
+                           (row['first_transport_event_id'],)).fetchone()
+        try:
+            evidence=json.loads(proof['evidence']) if proof else {}
+        except (TypeError,ValueError):
+            evidence={}
+        if (not proof or proof['process_generation']!=row['process_generation']
+                or proof['route']!=row['route'] or not isinstance(evidence,dict)
+                or evidence.get('delivery')!='not_sent' or evidence.get('request_started') is not False):
+            raise RuntimeError('HOOK_RETRY_EVIDENCE_UNCONFIRMED')
         if not allowed or row['process_generation'] != generation or row['intent'] != intent:
             reason=('lifecycle_blocked' if not allowed else 'process_changed'
                     if row['process_generation'] != generation else 'operator_or_worker_changed')
@@ -101,14 +112,16 @@ def gate(generation, intent, *, now=None, allowed=True):
 
 
 def record_transport(generation, action_id, route, evidence):
+    event_id=str(uuid.uuid4())
     with storage.db_connection() as conn:
         ensure(conn)
         conn.execute('INSERT INTO hook_transport_events VALUES (?,?,?,?,?,?)',
-            (str(uuid.uuid4()),action_id,generation,route,json.dumps(evidence,sort_keys=True),utc_now_iso()))
+            (event_id,action_id,generation,route,json.dumps(evidence,sort_keys=True),utc_now_iso()))
         conn.commit()
+    return event_id
 
 
-def failed(generation, intent, route, payload, *, now=None, scope_key=None):
+def failed(generation, intent, route, payload, *, now=None, scope_key=None, transport_event_id=None):
     with storage.db_connection() as conn:
         conn.execute('BEGIN IMMEDIATE');row=pending(conn);at=utc_now_iso()
         failures=1 if row is None else row['failures']+1
@@ -118,8 +131,8 @@ def failed(generation, intent, route, payload, *, now=None, scope_key=None):
             conn.execute('UPDATE hook_read_retry SET failures=?,next_at=?,state=?,updated_at=? WHERE event_id=?',
                          (failures,next_at,state,at,row['event_id']))
         else:
-            conn.execute('INSERT INTO hook_read_retry VALUES (?,?,?,?,?,?,?,?,?,?,NULL,?)',
-                (str(uuid.uuid4()),generation,fingerprint(route,payload),route,failures,next_at,state,intent,at,at,scope_key))
+            conn.execute('INSERT INTO hook_read_retry VALUES (?,?,?,?,?,?,?,?,?,?,NULL,?,?)',
+                (str(uuid.uuid4()),generation,fingerprint(route,payload),route,failures,next_at,state,intent,at,at,scope_key,transport_event_id))
         conn.commit()
     raise ReadRetryWait('HOOK_READ_RETRY_WAIT' if state=='waiting' else 'HOOK_READ_RETRY_EXHAUSTED')
 

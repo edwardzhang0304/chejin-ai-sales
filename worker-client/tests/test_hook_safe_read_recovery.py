@@ -319,3 +319,42 @@ def test_retention_keeps_open_retry_and_unknown_call_evidence(lab,refused):
         assert conn.execute('SELECT COUNT(*) FROM hook_read_retry').fetchone()[0]==0
         rows=conn.execute('SELECT action_id FROM hook_transport_events').fetchall()
         assert [r[0] for r in rows]==['unknown']
+
+
+def test_current_retry_evidence_precedes_resolved_refusals(lab,refused,monkeypatch,tmp_path):
+    import zipfile
+    from chejin_worker_client import diagnostic_bundle
+    _,gateway,process,*_=lab;clock,_,real=refused
+    failing=hook_transport.connection
+    for _ in range(3):
+        monkeypatch.setattr(hook_transport,'connection',failing)
+        attempt(gateway,process,'RETRY_WAIT');clock[0]+=1
+        monkeypatch.setattr(hook_transport,'connection',real)
+        assert gateway.login_status(process).logged_in and retry.pending() is None
+    monkeypatch.setattr(hook_transport,'connection',failing)
+    attempt(gateway,process,'RETRY_WAIT')
+    first=retry.pending()['first_transport_event_id']
+    clock[0]+=1;attempt(gateway,process,'RETRY_WAIT')
+    clock[0]+=5;attempt(gateway,process,'RETRY_EXHAUSTED')
+    before=protected_update_snapshot(data_dir=storage.APP_DIR,digest_key='synthetic')
+    monkeypatch.setattr(diagnostic_bundle,'MAX_ROWS',2)
+    output=diagnostic_bundle.export_bundle(storage.APP_DIR,tmp_path/'bounded.zip')
+    with zipfile.ZipFile(output) as archive:
+        data=json.loads(archive.read('state/hook_transport_events.json'))
+        assert data['truncated'] and len(data['rows'])==2
+        assert data['rows'][0]['event_id']==first
+        assert all(json.loads(row['evidence'])['delivery']=='not_sent' for row in data['rows'])
+        manifest=archive.read('export.json').decode()
+        assert 'critical_rows_limit' in manifest
+        assert 'synthetic reply' not in manifest
+    assert_protected_update_snapshot(before,data_dir=storage.APP_DIR,digest_key='synthetic')
+
+
+def test_missing_transport_proof_cannot_authorize_another_read(lab,refused):
+    _,gateway,process,*_=lab;clock,calls,_=refused
+    attempt(gateway,process,'RETRY_WAIT');clock[0]+=1
+    with storage.db_connection() as conn:
+        conn.execute('DELETE FROM hook_transport_events');conn.commit()
+    with pytest.raises(RuntimeError,match='RETRY_EVIDENCE_UNCONFIRMED'):
+        gateway.login_status(process)
+    assert len(calls)==1 and retry.pending()['failures']==1

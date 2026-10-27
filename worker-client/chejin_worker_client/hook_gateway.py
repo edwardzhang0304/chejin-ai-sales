@@ -273,7 +273,8 @@ class HookGateway:
             subject=getattr(reader,'retry_subject',None) if route=='QueryDB' else None
             hook_read_retry.failed(self._call_context.generation,self.retry_intent(),route,
                 subject if subject is not None else payload,
-                scope_key=hook_read_retry.fingerprint(route,subject) if subject is not None else None)
+                scope_key=hook_read_retry.fingerprint(route,subject) if subject is not None else None,
+                transport_event_id=error.transport_event_id)
 
     def _response_http(self, route: str, payload: dict, *, uncertain_on_failure: bool = False) -> HookLocalResponse:
         if route not in {"IsLoginStatus", "ConfigureMsgReciveFullURL", "GetDBHandleAndPath", "QueryDB", "SendTextMsg", "GetFriendAndChatRoomList", "Voice2Text"}:
@@ -295,10 +296,11 @@ class HookGateway:
             return result
         except hook_transport.TransportFailure as exc:
             exc.evidence.update(request_evidence)
-            hook_read_retry.record_transport(generation,action_id,route,exc.evidence)
+            event_id=hook_read_retry.record_transport(generation,action_id,route,exc.evidence)
             error=HookLocalError(exc.code,outcome_unknown=uncertain_on_failure and exc.evidence['delivery']!='not_sent')
             error.operation=route
             error.delivery=exc.evidence['delivery']
+            error.transport_event_id=event_id
             error.transport_kind=exc.evidence.get('transport_kind')
             raise error from None
         except (ValueError,RecursionError):
