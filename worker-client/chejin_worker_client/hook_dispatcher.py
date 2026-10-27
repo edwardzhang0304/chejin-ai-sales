@@ -347,20 +347,10 @@ class HookBusinessDispatcher:
                     or original.get('peer_wxid')!=binding['peer_wxid'] or original.get('flow_id')!=metadata['flow_id']
                     or original.get('lease_fencing_token')!=metadata['lease_fencing_token']):
                 raise ValueError('HOOK_RETAINED_NO_TRIGGER_IDENTITY_MISMATCH')
-            path=root/'not-triggered.json'
-            if path.exists():proof=rules.loads(path.read_bytes())
-            else:
-                intent=root/'intent.json'
-                proof={'reply_action_id':metadata['reply_action_id'],'task_id':metadata['task_id'],'phase':'not_triggered',
-                    'reason_code':'HOOK_RUNTIME_NOT_RUNNING','intent_sha256':hashlib.sha256(intent.read_bytes()).hexdigest() if intent.exists() else None,
-                    'observed_at':rt.clock.now().isoformat()}
-                _save(path,proof)
-            result=self.client.call(rt.credentials,'POST',f"/workers/{rt.credentials.worker_id}/wechat/native-replies/{metadata['reply_action_id']}/not-triggered",
-                {**{k:original[k] for k in ('self_wxid','account_epoch','process_generation')},'task_id':metadata['task_id'],
-                    'send_token':original['send_token'],'proof':proof,'proof_digest':rules.digest(proof)},
-                task_id=metadata['task_id'],token=metadata['lease_fencing_token'],flow_id=metadata['flow_id'])
-            saved=self.private_root/'send-receipts'/f"{metadata['reply_action_id']}.json"
-            if not saved.exists():_save(saved,result)
+            from .hook_recovery import settle_untriggered
+            from .hook_sender import NativeSendPermit
+            permit=NativeSendPermit.capture(original,clock=rt.clock)
+            settle_untriggered(rt,permit,root,'HOOK_RUNTIME_NOT_RUNNING')
             rt._finish_note='not_sent';rt._send_result_pending=False
             emit_progress(getattr(self,'_progress_runner',None),metadata['task_id'],'send_confirm','done','not_sent')
             return True
@@ -368,8 +358,8 @@ class HookBusinessDispatcher:
         permit,outcome=RetainedNativeSendPermit.load(self.private_root/'sends',rt.credentials,original,binding,metadata)
         synced=rt.sync(binding,reconciliation=permit)
         from .shared_rules import hook_history_rules
-        if not hook_history_rules.retained_send_history_ready(synced):
-            raise ValueError(synced.get('reason_code') or 'HOOK_HISTORY_COVERAGE_REQUIRED')
+        from .hook_history_wait import require_retained_history
+        require_retained_history(synced)
         observation=self.client.observe_send(rt.credentials,permit,outcome)
         if observation.get('settlement'):
             settled=observation['settlement']['result']
@@ -417,6 +407,8 @@ class HookBusinessDispatcher:
                     rt.discover(task_id)
                     self._binding_conflicts.discard(task_id)
                 except ApiError as exc:
+                    if exc.status_code==409 and exc.code in {'HOOK_BINDING_PAUSED','HOOK_BINDING_REVISION_STALE'}:
+                        continue  # Next inventory refresh removes this customer's stale work.
                     if exc.status_code==409 and exc.code=='HOOK_INVITE_AUTHORIZATION_RETIRED':
                         emit_progress(runner,invite['source_task_id'],'bind','done','invite_replaced')
                         continue
@@ -501,6 +493,13 @@ class HookBusinessDispatcher:
             if not binding:raise ValueError('HOOK_RETAINED_BINDING_NOT_AUTHORIZED')
             if not self._recover_send(binding,metadata):return
         current=inventory.get('inflight_task')
+        if current and current.get('task_type')=='chat_reply':
+            request=self.private_root/'recovery'/'send_unpermitted'/current['id']/'request.json'
+            if request.exists():
+                saved=rules.loads(request.read_bytes())
+                rt.close_unpermitted_reply(current,{'id':saved['reply_action_id']},saved['flow_id'],
+                    saved['conversation_id'],saved.get('lease_fencing_token'))
+                return
         if current and current['task_type']=='add_friend':
             self._recover_invitation(current);return
         if self._observation_query_version!=1:
@@ -651,7 +650,8 @@ class HookBusinessDispatcher:
                     # Do not reuse this local receipt for another batch either.
                     break
             except ApiError as exc:
-                if exc.status_code==409 and exc.code in {'HOOK_AUTHORIZATION_RETIRED','HOOK_CONTACT_REMARK_CHANGED'}:
+                if exc.status_code==409 and exc.code in {'HOOK_AUTHORIZATION_RETIRED','HOOK_CONTACT_REMARK_CHANGED',
+                        'HOOK_BINDING_PAUSED','HOOK_BINDING_REVISION_STALE'}:
                     # Inventory can race an explicit operator retirement. Only
                     # this customer's new work stops; original sends stay in
                     # retained_sends and are reconciled on the next pass.

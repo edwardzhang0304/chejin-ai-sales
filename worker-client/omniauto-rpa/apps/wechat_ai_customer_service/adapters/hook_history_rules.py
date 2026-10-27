@@ -12,6 +12,13 @@ FIELDS = {'localId','CreateTime','Sequence','MsgServerSeq','MsgSequence','MsgSvr
 NUMBERS = FIELDS - {'StrTalker','StrContent'}
 MAX_ROWS = 10000
 OUTGOING_ID_PENDING = 'HOOK_HISTORY_OUTGOING_ID_PENDING'
+# Only successfully validated coverage can produce these incomplete states.
+COVERAGE_PENDING_REASONS = frozenset({
+    'HOOK_HISTORY_CROSS_DATABASE_ORDER_UNVERIFIED', 'HOOK_REVOKE_FIELDS_UNCONFIRMED',
+    'HOOK_NATIVE_MEDIA_OR_SYSTEM_PENDING', 'HOOK_HISTORY_BOUNDARY_SECOND_UNRESOLVED',
+    'HOOK_HISTORY_ORDER_UNRESOLVED', 'HOOK_HISTORY_TEXT_UNRESOLVED', OUTGOING_ID_PENDING,
+})
+
 
 
 def retained_send_history_ready(result):
@@ -20,7 +27,7 @@ def retained_send_history_ready(result):
             or result.get('reason_code') == 'HOOK_NATIVE_SEND_ACTOR_PENDING'
             or (result.get('reconciliation_only') is True
                 and result.get('recovery_settlement_allowed') is True
-                and result.get('reason_code') == OUTGOING_ID_PENDING))
+                and result.get('reason_code') in COVERAGE_PENDING_REASONS))
 
 
 class HistoryIdentityError(ValueError):

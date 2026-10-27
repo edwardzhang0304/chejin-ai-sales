@@ -152,6 +152,8 @@ def bind_friend(db, authenticated, instance, payload):
                 or (existing[0].native_context or {}).get('source_task_id') != task.id):
             raise AppError('HOOK_BINDING_CONFLICT', '客户或微信身份已有其他绑定，不自动覆盖', 409)
         binding = existing[0]
+        from app.services.hook_relationship_service import require_current_binding_read
+        require_current_binding_read(binding,w.id,payload)
         if not binding.allow_listening or binding.listen_status not in {'listening', 'degraded'}:
             raise AppError('HOOK_BINDING_NOT_AUTHORIZED', '原客户绑定已暂停，不自动恢复', 409)
     else:

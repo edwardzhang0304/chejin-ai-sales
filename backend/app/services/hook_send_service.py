@@ -256,7 +256,8 @@ def settle_no_trigger(db,worker,instance,action_id,payload,flow,token):
             or set(proof)!={'reply_action_id','task_id','phase','reason_code','intent_sha256','observed_at'}
             or proof.get('reply_action_id')!=action_id or proof.get('task_id')!=task.id or proof.get('phase')!='not_triggered'
             or proof.get('reason_code') not in {'HOOK_SEND_LATEST_CONTEXT_STALE','HOOK_RUNTIME_NOT_RUNNING','HOOK_SEND_SYNC_PENDING',
-                'HOOK_SEND_PERMIT_EXPIRED_OR_CHANGED','HOOK_ORIGINAL_FLOW_CONTINUATION_BLOCKED'}
+                'HOOK_SEND_PERMIT_EXPIRED_OR_CHANGED','HOOK_SEND_PERMIT_EXPIRED','HOOK_SEND_NEW_OBSERVATION',
+                'HOOK_ORIGINAL_FLOW_CONTINUATION_BLOCKED'}
             or rules.digest(proof)!=payload.proof_digest
             or (attempt and proof.get('intent_sha256')!=attempt.get('journal_sha256'))):
         raise AppError('HOOK_SEND_NO_TRIGGER_PROOF_INVALID','未触发发送的原日志核验未通过',409)

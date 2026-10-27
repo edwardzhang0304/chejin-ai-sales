@@ -18,6 +18,21 @@ TRANSIENT_HISTORY = frozenset({
 
 def is_history_wait(error: Exception) -> bool:
     """Only classified read holds may wait; uncertain actions retain fault handling."""
-    return (isinstance(error, (ValueError, HookLocalError))
-            and not getattr(error, "outcome_unknown", False)
-            and str(error) in TRANSIENT_HISTORY)
+    return (not getattr(error, "outcome_unknown", False)
+            and (isinstance(error, HistoryCoveragePending)
+                 or (isinstance(error, (ValueError, HookLocalError))
+                     and str(error) in TRANSIENT_HISTORY)))
+
+
+class HistoryCoveragePending(ValueError):
+    """A valid coverage response is incomplete; it is not a broken journal."""
+
+
+def require_retained_history(result):
+    from .shared_rules import hook_history_rules
+    if hook_history_rules.retained_send_history_ready(result):
+        return
+    reason = result.get('reason_code') or 'HOOK_HISTORY_COVERAGE_REQUIRED'
+    if result.get('history_ready') is False and reason in hook_history_rules.COVERAGE_PENDING_REASONS:
+        raise HistoryCoveragePending(reason)
+    raise ValueError(reason)

@@ -13,6 +13,7 @@ from pathlib import Path
 import time
 import uuid
 from .api import ApiError
+from .hook_gateway import HookLocalError
 from .c1_receipts import clear_confirmed_add_friend_receipt
 from . import storage,ui_lock
 from .models import Binding,Task,utc_now_iso
@@ -315,7 +316,7 @@ class HookFormalRuntime:
                     {**self.account,'binding_id':binding['binding_id'],'binding_revision':binding['binding_revision'],
                      'friend_list':friends,'raw_evidence_digest':rules.digest(friends)})
             except ApiError as exc:
-                if exc.status_code!=409 or exc.code!='HOOK_BINDING_NOT_AUTHORIZED':raise
+                if exc.status_code!=409 or exc.code not in {'HOOK_BINDING_PAUSED','HOOK_BINDING_REVISION_STALE'}:raise
                 # The operator may retire this exact inventory entry concurrently.
                 continue
 
@@ -643,9 +644,9 @@ class HookFormalRuntime:
             self.credentials,original_scope,binding,metadata)
         synced=self.sync(binding,show_progress=False,reconciliation=permit)
         from .shared_rules import hook_history_rules
-        if not hook_history_rules.retained_send_history_ready(synced):
-            raise ValueError(synced['reason_code'] or 'HOOK_HISTORY_COVERAGE_REQUIRED')
-        if synced.get('reason_code') == hook_history_rules.OUTGOING_ID_PENDING:
+        from .hook_history_wait import require_retained_history
+        require_retained_history(synced)
+        if synced.get('reason_code') in hook_history_rules.COVERAGE_PENDING_REASONS:
             observed=self.client.observe_send(self.credentials,permit,outcome)
             if not send_observation_can_settle(observed,outcome):
                 raise ValueError('HOOK_SEND_CONFIRMATION_PENDING')
@@ -657,6 +658,16 @@ class HookFormalRuntime:
         return settled
 
 
+
+    def close_unpermitted_reply(self,task,action,flow,conversation,token=None):
+        from .hook_recovery import reconcile
+        intent={'task_id':task['id'],'reply_action_id':action['id'],'flow_id':flow,
+            'flow_kind':'chat_reply','conversation_id':conversation,
+            'original_process_generation':self.scope.process_generation,'lease_fencing_token':token}
+        result=reconcile(self,'send_unpermitted',intent,evidence=intent)
+        self._finish_note='not_sent';self._send_result_pending=False
+        self.finish(task['id'],flow,token,conversation)
+        return result
 
     def reply_once(self,binding,data,*,history=None):
         """One ready physical segment; it never waits for a customer's model.
@@ -684,20 +695,19 @@ class HookFormalRuntime:
         task=latest_task
 
         flow=self.active_flow_id or self.start_flow(task,binding['conversation_id'])
-        claimed=self.claim(task,flow,binding['conversation_id'])
+        try:
+            claimed=self.claim(task,flow,binding['conversation_id'])
+        except ApiError as exc:
+            if exc.status_code!=409:raise
+            return self.close_unpermitted_reply(task,action,flow,binding['conversation_id'])
         with self.task_guard(claimed,flow) as check:
             try:
                 self.progress(task['id'],'send_conditions')
                 native_permit=self.client.native_send_claim(self.credentials,self.account,
                     task['id'],action['id'],claimed['lease_fencing_token'],synced['history_state_digest'],flow_id=flow)
             except ApiError as exc:
-                if exc.code not in {'HOOK_SEND_CONTEXT_STALE','HOOK_HISTORY_COVERAGE_REQUIRED','REPLY_ACTION_EXPIRED','REPLY_ACTION_NOT_SENDABLE'}:raise
-                self.client.call(self.credentials,'POST',f"/tasks/{task['id']}/fail",
-                    {'error_code':'C3_CONTEXT_CHANGED_BEFORE_SEND','failure_step':'hook_pre_send'},
-                    task_id=task['id'],flow_id=flow,token=claimed['lease_fencing_token'])
-                self._finish_note='not_sent'
-                self.finish(task['id'],flow,claimed['lease_fencing_token'],binding['conversation_id'])
-                return {'status':'not_triggered','automatic_resend_allowed':False}
+                if exc.status_code!=409:raise
+                return self.close_unpermitted_reply(task,action,flow,binding['conversation_id'],claimed['lease_fencing_token'])
             permit=NativeSendPermit.capture(native_permit,clock=self.clock)
             self.progress(task['id'],'send_conditions','done')
             permit_file=self.private_root/'sends'/permit.worker_id/permit.account_epoch/permit.reply_action_id/'permit.json'
@@ -717,33 +727,25 @@ class HookFormalRuntime:
                 timing_context=self.timing_context(latest),diagnostic_root=self.private_root.parent.parent)
             try:
                 outcome=sender.execute(permit,self.process,self.scope,Refresh())
-            except (ValueError,ApiError) as exc:
+            except (ValueError,ApiError,HookLocalError) as exc:
+                if getattr(exc,'outcome_unknown',False):raise
                 if isinstance(exc,ApiError):
                     # A definite customer restriction before trigger reuses the
                     # original no-trigger receipt. Network/identity/other 409s
                     # remain errors, and an existing trigger always forbids this.
-                    if exc.status_code!=409 or exc.code not in {'HOOK_FRIEND_VERIFICATION_REQUIRED','HOOK_CONTACT_REMARK_CHANGED','HOOK_AUTHORIZATION_RETIRED'}:raise
+                    if exc.status_code!=409 or exc.code not in {'HOOK_FRIEND_VERIFICATION_REQUIRED','HOOK_CONTACT_REMARK_CHANGED','HOOK_AUTHORIZATION_RETIRED',
+                        'REPLY_ACTION_EXPIRED','HUMAN_REPLY_OWNERSHIP_REQUIRED',
+                        'CONVERSATION_NOT_ELIGIBLE','REPLY_THEN_HANDOFF_NOT_ELIGIBLE',
+                        'REPLY_ACTION_VEHICLE_FACT_STALE','HISTORICAL_TEXT_CONTEXT_STALE','LEAD_INVALID',
+                        'HOOK_BINDING_PAUSED','HOOK_BINDING_REVISION_STALE'}:raise
                     code='HOOK_SEND_LATEST_CONTEXT_STALE'
                 else:code=str(exc)
                 allowed={'HOOK_SEND_LATEST_CONTEXT_STALE','HOOK_RUNTIME_NOT_RUNNING','HOOK_SEND_SYNC_PENDING',
-                    'HOOK_SEND_PERMIT_EXPIRED_OR_CHANGED','HOOK_ORIGINAL_FLOW_CONTINUATION_BLOCKED'}
+                    'HOOK_SEND_PERMIT_EXPIRED','HOOK_SEND_NEW_OBSERVATION','HOOK_ORIGINAL_FLOW_CONTINUATION_BLOCKED'}
                 root=self.private_root/'sends'/permit.worker_id/permit.account_epoch/permit.reply_action_id
                 if code not in allowed or (root/'trigger.json').exists():raise
-                intent=root/'intent.json'
-                proof={'reply_action_id':permit.reply_action_id,'task_id':permit.task_id,'phase':'not_triggered',
-                    'reason_code':code,'intent_sha256':hashlib.sha256(intent.read_bytes()).hexdigest() if intent.exists() else None,
-                    'observed_at':self.clock.now().isoformat()}
-                saved=root/'not-triggered.json'
-                if saved.exists():
-                    proof=rules.loads(saved.read_bytes())
-                else:_save(saved,proof)
-                result=self.client.call(self.credentials,'POST',f'/workers/{self.credentials.worker_id}/wechat/native-replies/{permit.reply_action_id}/not-triggered',
-                    {**permit.account(),'task_id':permit.task_id,'send_token':permit.send_token,'proof':proof,'proof_digest':rules.digest(proof)},
-                    task_id=permit.task_id,token=permit.lease_fencing_token,flow_id=permit.flow_id)
-                receipt_path=self.private_root/'send-receipts'/f'{permit.reply_action_id}.json'
-                if receipt_path.exists():
-                    if rules.loads(receipt_path.read_bytes())!=result:raise ValueError('HOOK_SEND_SETTLEMENT_CONFLICT')
-                else:_save(receipt_path,result)
+                from .hook_recovery import settle_untriggered
+                settle_untriggered(self,permit,root,code)
                 self._finish_note='not_sent'
                 self.finish(permit.task_id,flow,permit.lease_fencing_token,binding['conversation_id'])
                 return {'status':'not_triggered','automatic_resend_allowed':False}

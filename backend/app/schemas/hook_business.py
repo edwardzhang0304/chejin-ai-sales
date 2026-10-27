@@ -128,7 +128,7 @@ class HookNativeNoTrigger(HookAccountAction):
 
 class HookRecoveryRequest(HookAccountAction):
     """Terminal reconciliation only; never a new work/send permission."""
-    kind: Literal['flow_start', 'send_claim']
+    kind: Literal['flow_start', 'send_claim', 'send_unpermitted']
     task_id: str = Field(min_length=36, max_length=36)
     flow_id: str = Field(min_length=36, max_length=36)
     flow_kind: Literal['task', 'chat_reply']

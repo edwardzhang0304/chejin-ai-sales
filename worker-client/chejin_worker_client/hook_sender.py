@@ -59,9 +59,10 @@ class NativeSendPermit:
 
     def validate_scope(self,process,scope):
         if (self.process_generation!=process.generation or self.process_generation!=scope.process_generation
-                or self.self_wxid!=scope.self_wxid or self.account_epoch!=scope.account_epoch
-                or datetime.fromisoformat(self.expire_at)<=(self.clock.upper_now() if self.clock else datetime.now(timezone.utc))):
+                or self.self_wxid!=scope.self_wxid or self.account_epoch!=scope.account_epoch):
             raise HookLocalError('HOOK_SEND_PERMIT_EXPIRED_OR_CHANGED')
+        if datetime.fromisoformat(self.expire_at)<=(self.clock.upper_now() if self.clock else datetime.now(timezone.utc)):
+            raise HookLocalError('HOOK_SEND_PERMIT_EXPIRED')
 
 
 @dataclass(frozen=True)

@@ -46,6 +46,9 @@ def dispatch_facts(db, authenticated, instance, event_uuid, *, current_account=N
     if not retired:
         # Active business admission retains its original process-generation fence.
         account(db,authenticated,instance,original_account)
+    if not retired:
+        from app.services.hook_relationship_service import require_current_binding_read
+        require_current_binding_read(binding,w.id,payload)
     if (binding is None or binding.deleted_at or binding.worker_id!=w.id or (not retired and (binding.bind_status!='bound'
             or not binding.allow_listening or binding.listen_status not in {'listening','degraded'}))
             or binding.native_self_wxid!=payload['self_wxid'] or binding.native_peer_wxid!=payload['peer_wxid']

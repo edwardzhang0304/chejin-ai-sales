@@ -16,6 +16,28 @@ REMARK_CHANGED = 'HOOK_CONTACT_REMARK_CHANGED'
 REINVITE_REASON = 'operator_reinvite'
 
 
+def require_current_binding_read(binding, worker_id, payload):
+    """Classify an obsolete customer read only after its identity is matched.
+
+    Refusal never admits evidence or mutates authorization. Original-send
+    reconciliation has its own authority and does not call this guard.
+    """
+    value = payload if isinstance(payload, dict) else payload.model_dump()
+    ctx = (binding.native_context or {}) if binding else {}
+    if (binding is None or binding.deleted_at or binding.worker_id != worker_id
+            or binding.native_self_wxid != value.get('self_wxid')
+            or ctx.get('account_epoch') != value.get('account_epoch')
+            or ('peer_wxid' in value and binding.native_peer_wxid != value['peer_wxid'])):
+        raise AppError('HOOK_BINDING_NOT_AUTHORIZED', '客户绑定身份不一致', 409)
+    revision = value.get('binding_revision', binding.authorization_revision)
+    if type(revision) is not int or revision < 1 or revision > binding.authorization_revision:
+        raise AppError('HOOK_BINDING_NOT_AUTHORIZED', '客户授权修订不正确', 409)
+    if binding.bind_status == 'bound' and (not binding.allow_listening or binding.listen_status == 'paused'):
+        raise AppError('HOOK_BINDING_PAUSED', '该客户已暂停托管，保留记录，不启动新动作', 409)
+    if revision < binding.authorization_revision:
+        raise AppError('HOOK_BINDING_REVISION_STALE', '该客户授权已变化，请刷新库存', 409)
+
+
 def observe(db, authenticated, instance, payload):
     from app.services.hook_business_service import account
     from app.services import c3_service
@@ -25,6 +47,7 @@ def observe(db, authenticated, instance, payload):
     binding=db.scalar(select(WechatSessionBinding).where(WechatSessionBinding.id==payload.binding_id)
                       .with_for_update().execution_options(populate_existing=True))
     ctx=dict(binding.native_context or {}) if binding else {}
+    require_current_binding_read(binding,w.id,payload)
     if (binding is None or binding.deleted_at or binding.worker_id!=w.id
             or binding.native_self_wxid!=payload.self_wxid or ctx.get('account_epoch')!=payload.account_epoch
             or binding.authorization_revision!=payload.binding_revision or binding.replacement_binding_id):

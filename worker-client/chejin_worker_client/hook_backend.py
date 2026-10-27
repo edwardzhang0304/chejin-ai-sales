@@ -255,7 +255,9 @@ class HookIdentityClient:
             if not isinstance(result, dict):
                 raise ValueError()
             if status != 200 or result.get('code') != 'OK':
-                raise ApiError('HOOK_DELIVERY_REQUEST_REJECTED', '消息上报未通过，请检查连接状态', status)
+                code=result.get('code')
+                if not isinstance(code,str) or not _bounded(code,128):code='HOOK_DELIVERY_REQUEST_REJECTED'
+                raise ApiError(code, '消息上报未通过，原记录保留', status)
             return rules.validate_receipt(envelope, result['data'])
         except (ValueError, KeyError, TypeError, RecursionError):
             raise ApiError('HOOK_DELIVERY_RESPONSE_INVALID', '消息上报回执异常', 502) from None

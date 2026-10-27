@@ -4114,7 +4114,7 @@ def claim_send(
 
 def _settle_customer_interruption(
     db: Session, *, action: ReplyAction, binding: WechatSessionBinding,
-    conversation: Conversation, followup_cancelled: bool,
+    conversation: Conversation, followup_cancelled: bool, cancellation_reason: str | None = None,
 ) -> None:
     """Cancel only the unsent action and durably schedule the existing reader."""
     action.status = "superseded"
@@ -4128,7 +4128,7 @@ def _settle_customer_interruption(
         batch.retryable = False
         batch.error_code = "MESSAGE_BATCH_SUPERSEDED"
         batch.suggested_action = "regenerate"
-    _cancel_task_for_action(db, action, reason="客户追加消息，尚未发送的旧回复作废，重新读取后生成回复。")
+    _cancel_task_for_action(db, action, reason=cancellation_reason or "客户追加消息，尚未发送的旧回复作废，重新读取后生成回复。")
     # A receipt is not new read permission. Never undo pause, human takeover,
     # a disabled binding, or a concurrently revoked/closed conversation.
     if (

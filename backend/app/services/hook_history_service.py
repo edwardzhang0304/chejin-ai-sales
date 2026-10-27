@@ -152,6 +152,9 @@ def accept_coverage(db,authenticated,instance,payload):
             and ctx.get('account_epoch')==payload.account_epoch and binding.disable_reason=='operator_reinvite'
             and binding.bind_status=='disabled' and payload.binding_revision < binding.authorization_revision):
         raise AppError('HOOK_AUTHORIZATION_RETIRED','旧托管已结束，仅保留原发送核对',409)
+    if reconciliation is None:
+        from app.services.hook_relationship_service import require_current_binding_read
+        require_current_binding_read(binding,w.id,payload)
     if reconciliation is None and (binding is None or binding.deleted_at or binding.worker_id!=w.id or binding.bind_status!='bound'
             or not binding.allow_listening or binding.listen_status not in {'listening','degraded'}
             or binding.authorization_revision!=payload.binding_revision or ctx.get('business_enabled') is not True
@@ -381,7 +384,9 @@ def accept_coverage(db,authenticated,instance,payload):
         'reconciliation_only':reconciliation is not None,
         # This admits only original unknown-result settlement, never new work
         # or a positive send proof. The raw two-pass snapshot is retained.
-        'recovery_settlement_allowed':reconciliation is not None and checked['reason_code']==history.OUTGOING_ID_PENDING}
+        # Admission of incomplete but valid coverage permits observing the original
+        # send deadline, never positive matching or a new physical call.
+        'recovery_settlement_allowed':reconciliation is not None and checked['reason_code'] in history.COVERAGE_PENDING_REASONS}
     result=jsonable_encoder(result)
     receipt.result_json=result;db.flush()
     return result
