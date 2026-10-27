@@ -187,6 +187,22 @@ def test_native_schema_defaults_optional_fields_and_rejects_missing_phone_or_inv
         assert {contact.contact_type for contact in contacts} == {"phone"}
 
 
+def test_feiyu_contract_rejects_fields_not_sent_by_receiver():
+    response = client.post(
+        FEIYU_LEADS_URL,
+        headers=_headers(),
+        json={
+            "customer_name": "王先生",
+            "phones": ["13896676678"],
+            "remark": "unexpected integration field",
+        },
+    )
+
+    assert response.status_code == 400
+    assert response.json()["code"] == "VALIDATION_ERROR"
+    assert _lead_count() == 0
+
+
 def test_endpoint_calls_native_create_lead(monkeypatch):
     calls = []
     native_create = lead_service.create_lead

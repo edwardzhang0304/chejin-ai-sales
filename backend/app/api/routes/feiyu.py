@@ -1,7 +1,9 @@
 import hmac
+from typing import Any
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, Header, Request
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 from sqlalchemy.orm import Session
 
 from app.api.response import ok
@@ -18,6 +20,24 @@ router = APIRouter(tags=["feiyu"])
 
 FEIYU_INTEGRATION_ACTOR_ID = UUID("00000000-0000-0000-0000-00000000f001")
 FEIYU_INTEGRATION_ACTOR_NAME = "Feiyu integration"
+
+
+class FeiyuLeadCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    customer_name: str = Field(min_length=1, max_length=50)
+    phones: list[str] = Field(min_length=1, max_length=5)
+    wechats: list[str] = Field(default_factory=list, max_length=5)
+    emails: list[str] = Field(default_factory=list, max_length=5)
+    custom_fields: dict[str, Any] = Field(default_factory=dict)
+
+    @field_validator("customer_name")
+    @classmethod
+    def strip_customer_name(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("请输入客户名称")
+        return value
 
 
 def require_feiyu_forward_secret(
@@ -38,7 +58,7 @@ def require_feiyu_forward_secret(
 
 @router.post("/integrations/feiyu/leads", dependencies=[Depends(require_feiyu_forward_secret)])
 def create_feiyu_lead(
-    payload: LeadCreate,
+    payload: FeiyuLeadCreate,
     request: Request,
     db: Session = Depends(get_db),
 ):
@@ -51,7 +71,7 @@ def create_feiyu_lead(
         request_id=getattr(request.state, "request_id", None) or get_request_id(),
     )
     try:
-        data = lead_service.create_lead(db, payload, actor)
+        data = lead_service.create_lead(db, LeadCreate(**payload.model_dump()), actor)
         db.commit()
         return ok(data)
     except DuplicateLeadError:

@@ -46,7 +46,8 @@ http://localhost:8000/api/operation-logs
 
 ## 飞鱼线索机器接入
 
-`POST /api/integrations/feiyu/leads` 接收已映射为 `LeadCreate` 的 JSON，请求头使用
+`POST /api/integrations/feiyu/leads` 只接受已映射的 `customer_name`、`phones`，以及可选的
+`wechats`、`emails`、`custom_fields`；其他字段会被拒绝。请求头使用
 `X-Feiyu-Forward-Secret`。运行环境通过 `FEIYU_FORWARD_SECRET` 配置专用共享密钥；
 应在部署环境外生成并安全分发，不要提交密钥值。此入口调用原生线索创建服务，沿用手机号去重、
 销售轮询分配和后续任务行为；重复手机号保留原线索及销售归属，并返回原生 409。
