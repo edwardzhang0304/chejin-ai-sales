@@ -103,6 +103,7 @@ def test_restart_before_call_finish_keeps_budget_and_barrier(lab,refused,monkeyp
     b'',
     b'HTTP/1.1 200 OK\r\nContent-Length: 40\r\n\r\n{}',
     b'HTTP/1.1 302 Found\r\nContent-Length: 0\r\nLocation: /elsewhere\r\n\r\n',
+    b'HTTP/1.1 200 OK\r\nContent-Length: 4097\r\n\r\n'+b'x'*4097,
 ])
 def test_received_request_dropped_truncated_or_redirected_is_never_retryable(lab,monkeypatch,reply):
     _,gateway,process,*_=lab
@@ -120,9 +121,8 @@ def test_received_request_dropped_truncated_or_redirected_is_never_retryable(lab
         with pytest.raises(HookLocalError):gateway.login_status(process)
         thread.join(2)
         assert not thread.is_alive() and observed and retry.pending() is None
-        if not reply or b'Content-Length: 40' in reply:
-            assert unresolved(process.generation)
-            with pytest.raises(HookLocalError,match='QUARANTINED'):gateway.login_status(process)
+        assert unresolved(process.generation)
+        with pytest.raises(HookLocalError,match='QUARANTINED'):gateway.login_status(process)
     finally:
         listener.close()
 

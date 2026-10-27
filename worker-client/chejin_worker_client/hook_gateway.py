@@ -263,7 +263,7 @@ class HookGateway:
 
     @staticmethod
     def _unfinished(error):
-        return error.outcome_unknown or (error.code == 'HOOK_LOCAL_TRANSPORT_FAILED'
+        return error.outcome_unknown or getattr(error,'delivery',None)=='unknown' or (error.code == 'HOOK_LOCAL_TRANSPORT_FAILED'
             and getattr(error,'delivery',None) != 'not_sent')
 
     def _read_failure(self,route,payload,error):
