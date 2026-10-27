@@ -82,6 +82,7 @@ def test_other_identity_or_incomplete_coverage_cannot_close_old(setup,variant):
 @pytest.mark.parametrize('field,value',[
     ('event_uuid',str(uuid.uuid4())),('raw_source_event_uuid',str(uuid.uuid4())),
     ('dispatch_status','pending'),('can_send',True),('message_event_ids',[]),
+    ('message_event_ids',['00000000-0000-0000-0000-000000000001']*2),
 ])
 def test_wrong_dispatch_receipt_rolls_back_both_deliveries(setup,field,value):
     root,box,old,new,current=prepare(setup)

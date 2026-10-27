@@ -31,8 +31,9 @@ def validate_dispatch(envelope, dispatched):
             or dispatched.get('dispatch_status') != 'facts_stored'
             or dispatched.get('can_send') is not False
             or not isinstance(ids, list)
-            or len(ids) != len(envelope['messages'])
-            or any(not rules.identifier(i) for i in ids)):
+            or len(ids) != len(rules.unique_message_facts(envelope))
+            or any(not rules.identifier(i) for i in ids)
+            or len(set(ids)) != len(ids)):
         raise ValueError('HOOK_DELIVERY_DISPATCH_MISMATCH')
 
 

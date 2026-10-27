@@ -159,6 +159,26 @@ def validate_envelope(value):
     return value
 
 
+def unique_message_facts(envelope):
+    """One peer/account envelope, same business identity as native message_key.
+
+    Preserve all original entries in the envelope/transport receipt. Only the
+    domain dispatch view deduplicates; same ID with conflicting facts is invalid.
+    """
+    seen = {}
+    messages = []
+    for message in envelope['messages']:
+        key = message['native_msg_id']
+        signature = (message['direction'], message['message_type'], message['content'])
+        if key in seen:
+            if seen[key] != signature:
+                raise ValueError('HOOK_MESSAGE_ID_CONFLICT')
+            continue
+        seen[key] = signature
+        messages.append(message)
+    return messages
+
+
 def receipt(envelope):
     # Durable transport receipt only. No global coverage or AI-processing claim.
     return {"transport": "hook", "schema_version": SCHEMA_VERSION, "status": "stored",

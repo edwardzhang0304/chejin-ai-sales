@@ -15,6 +15,7 @@ from app.models.wechat import MessageEvent, WechatSessionBinding
 from app.models.task import TaskEvidence
 from app.services.followup_eligibility import lock_leads, require_followup
 from app.services.hook_business_service import account
+from app.contracts.shared_rules import shared_adapter
 
 
 def message_key(self_wxid, peer_wxid, mid):
@@ -67,17 +68,16 @@ def dispatch_facts(db, authenticated, instance, event_uuid, *, current_account=N
             'ai_dispatch':'authorization_retired','can_send':False}
     require_followup(db,binding.lead_id)
     # Validate every existing ID before inserting any member of this envelope.
-    pairs=[]; seen={}
-    for message in payload['messages']:
+    try:
+        messages=shared_adapter('hook_contract_rules').unique_message_facts(payload)
+    except ValueError as exc:
+        raise AppError('HOOK_MESSAGE_ID_CONFLICT','同一原生消息 ID 的事实不一致',409) from exc
+    pairs=[]
+    for message in messages:
         key=message_key(payload['self_wxid'],payload['peer_wxid'],message['native_msg_id'])
         old=db.scalar(select(MessageEvent).where(MessageEvent.conversation_id==binding.conversation_id,
             MessageEvent.dedupe_key==key))
         role='customer' if message['direction']=='incoming' else 'self'
-        signature=(role,message['message_type'],message['content'])
-        if key in seen:
-            if seen[key]!=signature:raise AppError('HOOK_MESSAGE_ID_CONFLICT','同一原生消息 ID 的事实不一致',409)
-            continue
-        seen[key]=signature
         if old and (old.sender_role!=role or old.message_type!=message['message_type'] or (message['message_type']=='text' and old.content!=message['content'])):
             raise AppError('HOOK_MESSAGE_ID_CONFLICT','同一原生消息 ID 的事实不一致，停止处理',409)
         pairs.append((message,key,role,old))

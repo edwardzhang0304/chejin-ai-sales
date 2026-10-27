@@ -231,3 +231,73 @@ def test_paused_delivery_restart_requires_real_current_dispatch(case,monkeypatch
         assert any('hook-delivery-coverage-v1' in s for s in content)
     assert retire_inbox(c.rt.private_root,retention_days=1,now=datetime.now(timezone.utc)+timedelta(days=2))['retired_rows']==1
     assert not any(r[0]=='/SendTextMsg' for r in c.server.requests)
+
+
+@pytest.mark.parametrize('restored',[False,True])
+@pytest.mark.parametrize('kind',['duplicate','multiple','conflict'])
+@pytest.mark.parametrize('lose_reply',[False,True])
+def test_duplicate_same_native_message_is_one_fact_and_can_close_delivery(case,restored,kind,lose_reply,monkeypatch):
+    import json
+    from chejin_worker_client.hook_inbox import NativeInbox
+    from chejin_worker_client import storage
+    from app.models.wechat import WechatSessionBinding
+    from app.services.wechat_service import _set_binding_state
+    c=case;scope=c.rt.scope
+    message={'msgsvrid':'9000000000000000010','msgtype':'1','fromtype':'1',
+        'fromid':c.binding['peer_wxid'],'toid':scope.self_wxid,
+        'msg':'synthetic repeated callback item','time':datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+    second=dict(message)
+    if kind=='multiple':second['msgsvrid']='9000000000000000011'
+    if kind=='conflict':second['msg']='synthetic conflicting text'
+    raw=json.dumps({'ServerPort':str(scope.hook_api_port),'selfwxid':scope.self_wxid,
+        'sendorrecv':'2','msgnumber':'2','msglist':[message,second]}).encode()
+    NativeInbox(max_body_bytes=65536,max_inbox_bytes=1048576).persist(raw,scope)
+    def change(enabled):
+        with SessionLocal() as db:
+            b=db.get(WechatSessionBinding,c.binding['binding_id'])
+            _set_binding_state(b,status='bound',listen_status='listening' if enabled else 'paused',
+                allow_listening=enabled,preserve_lead=True,remark_code=b.remark_code);db.commit()
+    current=c.binding
+    if restored:
+        change(False)
+        with pytest.raises(ApiError):c.rt.drain(current)
+        change(True)
+        inventory=c.rt.client.call(c.rt.credentials,'POST',f'/workers/{c.w["id"]}/wechat/native-work',c.rt.account)
+        current=next(b for b in inventory['bindings'] if b['binding_id']==c.binding['binding_id'])
+    if kind=='conflict':
+        with pytest.raises(ApiError) as err:c.rt.drain(current)
+        assert err.value.code=='HOOK_MESSAGE_ID_CONFLICT'
+        assert storage.hook_update_business_blockers(scope.process_generation)['hook_pending_delivery']==(2 if restored else 1)
+        with SessionLocal() as db:
+            from app.models.wechat import MessageEvent
+            facts=list(db.scalars(select(MessageEvent).where(MessageEvent.conversation_id==c.binding['conversation_id'])))
+            assert not any((m.raw_payload or {}).get('native_msg_id')==message['msgsvrid'] for m in facts)
+        return
+    if lose_reply:
+        original=HookFormalClient.call
+        def lost(client,credentials,method,path,body=None,**kw):
+            result=original(client,credentials,method,path,body,**kw)
+            if path.endswith('/dispatch'):raise ApiError('HOOK_BACKEND_NETWORK_FAILED','synthetic reply loss',0)
+            return result
+        with monkeypatch.context() as patch:
+            patch.setattr(HookFormalClient,'call',lost)
+            with pytest.raises(ApiError):c.rt.drain(current)
+        assert storage.hook_update_business_blockers(scope.process_generation)['hook_pending_delivery']==(2 if restored else 1)
+        import chejin_worker_client.hook_formal_runtime as runtime_module
+        future=(datetime.now(timezone.utc)+timedelta(minutes=2)).isoformat()
+        monkeypatch.setattr(runtime_module,'utc_now_iso',lambda:future)
+        previous=c.rt
+        c.rt=runtime_module.HookFormalRuntime(previous.client,previous.credentials,previous.gateway,previous.prepared,previous.private_root,wait=lambda _:None)
+    c.rt.drain(current)
+    assert storage.hook_update_business_blockers(scope.process_generation)['hook_pending_delivery']==0
+    with storage.db_connection() as db:
+        rows=[dict(r) for r in db.execute('SELECT * FROM hook_delivery_outbox ORDER BY binding_revision')]
+        assert rows[-1]['status']=='stored'
+        assert len(json.loads(rows[-1]['payload_json'])['messages'])==2
+        if restored:
+            proof=json.loads(rows[0]['receipt_json'])
+            assert len(proof['replacement_dispatch']['message_event_ids'])==(1 if kind=='duplicate' else 2)
+        assert db.execute('SELECT raw_body FROM hook_raw_inbox').fetchone()[0]==raw
+    assert not any(r[0]=='/SendTextMsg' for r in c.server.requests)
+    from chejin_worker_client.hook_retention import retire_inbox
+    assert retire_inbox(c.rt.private_root,retention_days=1,now=datetime.now(timezone.utc)+timedelta(days=2))['retired_rows']==1

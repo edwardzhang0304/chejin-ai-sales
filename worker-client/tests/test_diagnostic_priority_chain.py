@@ -322,6 +322,8 @@ def test_drain_interruption_preserves_unacknowledged_projection_chain(local_db, 
     constructor = SnapshotPriority.__init__
     class OldQueries:
         def __init__(self, db): self.db = db
+        def create_function(self, *args, **kwargs):
+            return self.db.create_function(*args, **kwargs)
         def execute(self, query, *args):
             if query.startswith('WITH projections AS'):
                 return iter(())

@@ -9,7 +9,6 @@ import time
 
 CHAIN = ('hook_raw_inbox', 'hook_observation_projection', 'hook_delivery_outbox')
 STATE_COLUMNS = {
-    'hook_delivery_outbox': ('status', ('stored',)),
     'hook_voice_attempts': ('state', ('transcribed', 'failed')),
     'hook_active_calls': ('state', ('completed',)),
 }
@@ -56,6 +55,42 @@ class SnapshotPriority:
         self.columns = {r[0]: {c['name'] for c in db.execute(f'PRAGMA table_info("{r[0]}")')}
                         for r in db.execute("SELECT name FROM sqlite_master WHERE type='table'")
                         if r[0] in (*CHAIN, *STATE_COLUMNS, 'local_logs', 'hook_voice_interruptions')}
+        self.delivery_pending = "(status IS NULL OR status!='stored')"
+        delivery_fields = ('status','event_uuid','payload_digest','payload_json','receipt_json')
+        if set(delivery_fields) <= self.columns.get('hook_delivery_outbox', set()):
+            from .hook_delivery_lifecycle import terminal_delivery
+            reported = set()
+
+            def delivery_terminal(*values):
+                row = dict(zip(delivery_fields, values))
+                if row['status'] != 'covered_by_new_authorization':
+                    return int(row['status'] == 'stored')
+                reason = None
+                if time.monotonic() >= deadline:
+                    reason = 'delivery_proof_time_limit'
+                elif row['payload_json'] is None or row['receipt_json'] is None:
+                    reason = 'delivery_proof_unavailable_or_size_limit'
+                else:
+                    try:
+                        return int(terminal_delivery(row))
+                    except (ValueError, TypeError, KeyError, AttributeError, RecursionError):
+                        reason = 'delivery_coverage_proof_invalid'
+                # Bounded diagnostic reporting; an unverified terminal label
+                # stays important. Never change business data during export.
+                if reason not in reported:
+                    record('hook_delivery_outbox', 'read_failed', reason=reason,
+                           event_uuid=row['event_uuid'])
+                    reported.add(reason)
+                return 0
+
+            db.create_function('diagnostic_delivery_terminal', len(delivery_fields), delivery_terminal)
+            # Match the exporter's existing per-cell bound, including damaged
+            # or oversized legacy rows. Unverifiable proof remains prioritized.
+            arguments = ','.join(f'CASE WHEN length({f})<=65536 THEN {f} END'
+                                if f.endswith('_json') else f for f in delivery_fields)
+            self.delivery_pending = ("(CASE WHEN status='stored' THEN 0 "
+                "WHEN status='covered_by_new_authorization' THEN "
+                f'NOT diagnostic_delivery_terminal({arguments}) ELSE 1 END)')
         roots = {}
 
         def collect(label, sql, priority):
@@ -118,7 +153,7 @@ class SnapshotPriority:
                          if 'receive_seq' in projection else '1')
             collect('hook_raw_inbox', f'SELECT r.receive_seq FROM hook_raw_inbox r WHERE {condition} ORDER BY r.receive_seq', 1)
         if {'receive_seq', 'status'} <= self.columns.get('hook_delivery_outbox', set()):
-            collect('hook_delivery_outbox', "SELECT DISTINCT receive_seq FROM hook_delivery_outbox WHERE status IS NULL OR status!='stored' ORDER BY receive_seq", 1)
+            collect('hook_delivery_outbox', f"SELECT DISTINCT receive_seq FROM hook_delivery_outbox WHERE {self.delivery_pending} ORDER BY receive_seq", 1)
         if {'receive_seq', 'projection_json'} <= projection:
             document = _object_sql('projection_json')
             collect('hook_observation_projection', f"SELECT receive_seq FROM hook_observation_projection WHERE coalesce(json_extract({document},'$.status'),'')!='projected' ORDER BY receive_seq", 1)
@@ -177,7 +212,9 @@ class SnapshotPriority:
         if table == 'hook_voice_attempts' and self.voice_rows:
             parts.append(f'rowid IN ({",".join(map(str,self.voice_rows))})')
         state = STATE_COLUMNS.get(table)
-        if state and state[0] in cols:
+        if table == 'hook_delivery_outbox' and 'status' in cols:
+            parts.append(self.delivery_pending)
+        elif state and state[0] in cols:
             column, terminal = state
             labels = ','.join("'"+x+"'" for x in terminal)
             parts.append(f'({column} IS NULL OR {column} NOT IN ({labels}))')

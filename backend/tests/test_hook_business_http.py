@@ -244,7 +244,7 @@ def test_saved_transport_receipt_does_not_bypass_revoked_business_authority():
     with SessionLocal() as db:
         db.get(WechatSessionBinding,grant['binding_id']).authorization_revision+=1;db.commit()
     r=post(w,f"/workers/{w['id']}/wechat/native-events/{p['event_uuid']}/dispatch",None)
-    assert r.status_code==409 and r.json()['code']=='HOOK_BINDING_NOT_AUTHORIZED'
+    assert r.status_code==409 and r.json()['code']=='HOOK_BINDING_REVISION_STALE'
     with SessionLocal() as db:assert db.scalar(select(func.count()).select_from(MessageEvent))==0
 
 
