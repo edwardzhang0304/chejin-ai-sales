@@ -162,7 +162,7 @@ def test_begin_preserves_history_identity_and_content_guards(monkeypatch,damage)
   elif damage=='binding_epoch':binding.native_context={**binding.native_context,'account_epoch':'different-epoch'}
   elif damage=='history_generation':binding.native_context={**binding.native_context,'coverage_process_generation':'different-generation'}
   db.commit()
- request={**p,'task_id':permit['task_id'],'history_state_digest':b['history_state_digest'],
+ request={**p,'task_id':permit['task_id'],'history_state_digest':b['history_state_digest'],'clock_protocol_version':1,
           'send_token':permit['send_token'],'journal_sha256':'d'*64,'attempted_at':datetime.now(timezone.utc).isoformat()}
  response=post(w,f"/workers/{w['id']}/wechat/native-replies/{permit['reply_action_id']}/begin",request,h)
  assert response.status_code==409 and response.json()['code']=='HOOK_HISTORY_COVERAGE_REQUIRED',response.text

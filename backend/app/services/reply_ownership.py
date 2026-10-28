@@ -17,6 +17,19 @@ def aware(value):
     return value.replace(tzinfo=timezone.utc) if value and value.tzinfo is None else value
 
 
+def business_time(message):
+    """Native order stays in Sequence/CreateTime; timers stay on the server clock.
+
+    The first durable server receipt is used, never re-read/replay time. It may be
+    later than physical occurrence after an outage, so reminders never start
+    early because a customer's machine clock is ahead or behind.
+    """
+    if (message.raw_payload or {}).get('transport') == 'hook':
+        from app.services.hook_business_time import received_at
+        return received_at(message)
+    return aware(message.occurred_at)
+
+
 def state(conversation):
     return dict(conversation.reply_ownership or {'owner':'legacy','revision':0,'recall_streak':0})
 
@@ -59,7 +72,7 @@ def _start_round(db,conversation,message,*,not_before=None,effective_at=None):
     value=state(conversation)
     if value.get('round_id'):
         return
-    start=aware(effective_at or message.occurred_at)
+    start=aware(effective_at) if effective_at else business_time(message)
     if start is None:
         return
     if not_before:
@@ -92,9 +105,16 @@ def apply_message(db,conversation,message,*,orders=None,effective_at=None):
     if value['owner']=='legacy':
         # User explicitly excluded retroactive migration/reminders. New post-
         # upgrade facts begin new cycles; old evidence remains untouched.
-        since=aware(value.get('since'))
-        if not since or not message.occurred_at or aware(message.occurred_at)<since:
-            return False
+        if (message.raw_payload or {}).get('transport') == 'hook':
+            from app.models.wechat import WechatSessionBinding
+            from app.services.hook_history_review import needs_review
+            binding = db.get(WechatSessionBinding, message.binding_id)
+            if not binding or not (binding.native_context or {}).get('native_admission_anchor') or needs_review(message):
+                return False
+        else:
+            since=aware(value.get('since'))
+            if not since or not message.occurred_at or aware(message.occurred_at)<since:
+                return False
         opened=db.scalar(select(HandoffEvent.id).where(HandoffEvent.conversation_id==conversation.conversation_id,
             HandoffEvent.closed_at.is_(None),HandoffEvent.deleted_at.is_(None)))
         value.update(owner='human' if opened else 'ai',revision=0,recall_streak=0)
@@ -113,7 +133,7 @@ def apply_message(db,conversation,message,*,orders=None,effective_at=None):
         value['owner']='human'
     conversation.reply_ownership=value
     conversation.recall_cycle_id=conversation.recall_origin_status=conversation.next_recall_at=None
-    at=aware(effective_at or message.occurred_at)
+    at=aware(effective_at) if effective_at else business_time(message)
     if human:
         close_round(db,conversation)
         conversation.last_sales_reply_at=at
@@ -141,9 +161,10 @@ def take_handoff(db,conversation,event,*,created):
     if not state(conversation).get('round_id'):
         messages=list(db.scalars(select(MessageEvent).where(MessageEvent.id.in_(event.trigger_message_event_ids or []),
             MessageEvent.conversation_id==conversation.conversation_id,MessageEvent.sender_role=='customer')))
-        messages=[m for m in messages if m.occurred_at]
+        messages=[m for m in messages if business_time(m)]
         if messages:
-            _start_round(db,conversation,min(messages,key=lambda m:aware(m.occurred_at)),not_before=event.created_at)
+            first=min(messages,key=business_time)
+            _start_round(db,conversation,first,not_before=(None if (first.raw_payload or {}).get('transport')=='hook' else event.created_at))
     conversation.next_recall_at=None
     # A reply-then-handoff boundary remains bound to its own newly created gate.
     batch=db.get(MessageBatch,event.batch_id) if event.batch_id else None

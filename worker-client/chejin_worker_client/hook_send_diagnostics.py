@@ -115,7 +115,8 @@ def record_submission(root, permit, process, outcome, journal_root, elapsed_seco
             'hook_return': flag if isinstance(flag, (str, int, bool)) and len(str(flag)) <= 64 else None,
             'hook_return_available': 'SendTextMsg' in response,
             'outcome': {k: outcome[k] for k in ('call_completed', 'hook_submission_flag',
-                'response_sha256', 'journal_sha256', 'error_code', 'quarantined') if k in outcome},
+                'response_sha256', 'journal_sha256', 'error_code', 'quarantined',
+                'local_call_window', 'local_clock_error') if k in outcome},
         }
         _append(root, permit.task_id, permit.reply_action_id, event, outcome['completed_at'])
     _best_effort(write, task_id=permit.task_id, action_id=permit.reply_action_id)

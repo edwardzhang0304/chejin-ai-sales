@@ -266,12 +266,12 @@ def retained_scenario(identity_client, tmp_path, monkeypatch, *, invalidate=True
         _save(root/'intent.json', intent)
         digest = hashlib.sha256((root/'intent.json').read_bytes()).hexdigest()
         begin = post(w, f"/workers/{w['id']}/wechat/native-replies/{permit['reply_action_id']}/begin",
-            {**account,'task_id':permit['task_id'],'history_state_digest':b['history_state_digest'],
+            {**account,'task_id':permit['task_id'],'history_state_digest':b['history_state_digest'],'clock_protocol_version':1,
              'send_token':permit['send_token'],'journal_sha256':digest,'attempted_at':now(40)},h)
         assert begin.status_code == 200, begin.text
         _save(root/'trigger.json', {'phase':'trigger_attempted','intent_sha256':digest})
         _save(root/'outcome.json', {'task_id':permit['task_id'],'reply_action_id':permit['reply_action_id'],
-            'call_completed':outgoing,'automatic_resend_allowed':False,'journal_sha256':digest,'completed_at':now(41)})
+            'call_completed':outgoing,'automatic_resend_allowed':False,'journal_sha256':digest,'completed_at':now(41), 'local_call_window':{'source':'physical_call_v1','started_at':now(40),'completed_at':now(41),'elapsed_seconds':1.0}})
     if outgoing:
         for scan in value['scans']:
             d = scan['databases'][0];rows = d['pages'][0]

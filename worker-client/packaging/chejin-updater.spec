@@ -38,8 +38,8 @@ a = Analysis(
         for name in (
             "contract_rules", "message_contract", "read_settlement", "send_interruption",
             "historical_text_correction", "historical_text_alignment", "text_correspondence",
-            "hook_contract_rules", "hook_contact_rules", "hook_history_rules", "hook_event_rules",
-            "hook_observability_rules", "client_release_rules",
+            "hook_contract_rules", "hook_contact_rules", "hook_history_rules", "hook_time_rules", "hook_event_rules",
+            "hook_observability_rules", "client_release_rules", "hook_window_layout",
         )
     ]],
     hookspath=[],

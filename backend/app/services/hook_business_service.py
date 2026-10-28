@@ -94,7 +94,9 @@ def submit_invite(db, authenticated, instance, task_id, payload, flow_id, token,
             or any(getattr(payload, key) != value for key, value in expected.items())):
         raise AppError('HOOK_INVITE_PROOF_MISMATCH', '提交记录与原正式任务不一致', 409)
     try:
-        attempted = shared_adapter('hook_history_rules').utc(payload.attempted_at)
+        attempted = shared_adapter('hook_time_rules').utc(payload.attempted_at)
+        if payload.local_attempted_at is not None:
+            shared_adapter('hook_time_rules').utc(payload.local_attempted_at)
         prepared = prep.created_at.replace(tzinfo=timezone.utc) if prep.created_at.tzinfo is None else prep.created_at
         if attempted < prepared or attempted > utcnow():
             raise ValueError('HOOK_INVITE_CLOCK_INVALID')
@@ -161,13 +163,22 @@ def bind_friend(db, authenticated, instance, payload):
                 TaskEvidence.evidence_type=='hook_reinvite_authorization')):
             from app.services.hook_relationship_service import replacement_predecessor
             predecessor=replacement_predecessor(db,w,task,peer,existing)
+        review_reason = ('profile_succession' if authorization.get('reuse_previous_invitation')
+                         else 'legacy_invitation_clock' if not proof.get('local_attempted_at') else None)
+        try:
+            # A server authorization timestamp cannot bound native CreateTime.
+            # Missing original local time uses a full conservative native fence.
+            boundary = None if review_reason else shared_adapter('hook_time_rules').utc(proof['local_attempted_at'])
+        except (ValueError, TypeError, KeyError):
+            raise AppError('HOOK_INVITE_CLOCK_INVALID', '原申请时间证据无效，保留记录等待核对', 409) from None
         binding = WechatSessionBinding(lead_id=task.lead_id, sales_id=task.sales_id, worker_id=w.id,
             display_name=proof['shortcode'], remark_code=proof['shortcode'],
             native_self_wxid=w.hook_self_wxid, native_peer_wxid=peer,
             bind_status='bound', listen_status='listening', allow_listening=True,
             native_context={'account_epoch': w.hook_account_epoch, 'source_task_id': task.id,
                 'invite_evidence_id': proof_row.id, 'business_enabled': True,
-                'history_since_create_time': str(int(shared_adapter('hook_history_rules').utc(authorization['authorized_at'] if authorization.get('reuse_previous_invitation') else proof['attempted_at']).timestamp())),
+                'history_since_create_time': str(int(boundary.timestamp())) if boundary else '0',
+                **({'native_boundary_review_reason': review_reason} if review_reason else {}),
                 'history_ready': False,
                 'binding_evidence_digest': payload.raw_evidence_digest, 'bound_process_generation': payload.process_generation})
         db.add(binding); db.flush()

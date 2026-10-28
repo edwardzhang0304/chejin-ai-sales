@@ -81,10 +81,15 @@ def dispatch_facts(db, authenticated, instance, event_uuid, *, current_account=N
         if old and (old.sender_role!=role or old.message_type!=message['message_type'] or (message['message_type']=='text' and old.content!=message['content'])):
             raise AppError('HOOK_MESSAGE_ID_CONFLICT','同一原生消息 ID 的事实不一致，停止处理',409)
         pairs.append((message,key,role,old))
-    ids=[]; inserted=[]
-    observed=datetime.fromisoformat(payload['observed_at'].replace('Z','+00:00'))
+    ids=[]; inserted=[]; clock_changed=False
+    observed=receipt.created_at  # server clock; original client observation remains in the immutable envelope
     for message,key,role,old in pairs:
         if old:
+            from app.services.hook_business_time import stamp_receipt, received_at
+            previous_received = received_at(old)
+            if stamp_receipt(old, receipt) < previous_received:
+                ctx.pop('business_clock_version', None)
+                clock_changed=True
             ids.append(old.id);continue
         event=MessageEvent(conversation_id=binding.conversation_id,binding_id=binding.id,
             lead_id=binding.lead_id,sales_id=binding.sales_id,worker_id=w.id,
@@ -104,10 +109,15 @@ def dispatch_facts(db, authenticated, instance, event_uuid, *, current_account=N
             occurred_at=None,observed_at=observed,observation_order=None)
         # Provider time is retained verbatim. It never becomes a global ordering
         # key and receipt sequence/entry index is never disguised as screen order.
-        db.add(event);db.flush();ids.append(event.id);inserted.append(event.id)
+        db.add(event);db.flush()
+        from app.services.hook_business_time import stamp_receipt
+        stamp_receipt(event, receipt)
+        ids.append(event.id);inserted.append(event.id)
     if inserted:
         ctx['history_ready']=False
         ctx['history_reason_code']='HOOK_HISTORY_NEW_FACTS_PENDING'
+        binding.native_context=ctx
+    elif clock_changed:
         binding.native_context=ctx
     receipt.dispatch_status='facts_stored'
     db.flush()

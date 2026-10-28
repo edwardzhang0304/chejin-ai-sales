@@ -7,6 +7,7 @@ business order. Only the verified one-database text scope is admitted here.
 from datetime import datetime, timezone
 import re
 from . import hook_contract_rules as rules
+from . import hook_time_rules
 
 FIELDS = {'localId','CreateTime','Sequence','MsgServerSeq','MsgSequence','MsgSvrID','Type','IsSender','StrTalker','StrContent'}
 NUMBERS = FIELDS - {'StrTalker','StrContent'}
@@ -89,9 +90,17 @@ def utc(value):
 
 
 def validate_scan(scan, peer, since):
-    if not isinstance(scan,dict) or set(scan)!={'catalog_fingerprint','databases','observed_at'}:
+    fields={'catalog_fingerprint','databases','observed_at'}
+    if not isinstance(scan,dict) or set(scan) not in (fields,fields|{'local_clock'}):
         raise ValueError('HOOK_HISTORY_SCAN_INVALID')
-    utc(scan['observed_at'])
+    upper_time=int(utc(scan['observed_at']).timestamp())
+    if 'local_clock' in scan:
+        clock=scan['local_clock']
+        if not isinstance(clock,dict) or set(clock)!={'backend_started_at','window'}:
+            raise ValueError('HOOK_HISTORY_CLOCK_INVALID')
+        hook_time_rules.call_window(clock['window'],clock['backend_started_at'],scan['observed_at'])
+        if clock['window']['source']!='physical_call_v1':raise ValueError('HOOK_HISTORY_CLOCK_INVALID')
+        upper_time=int(utc(clock['window']['completed_at']).timestamp())
     if not is_hash(scan['catalog_fingerprint']):raise ValueError('HOOK_HISTORY_CATALOG_INVALID')
     databases=scan['databases']
     if not isinstance(databases,list) or not 1<=len(databases)<=256:
@@ -119,7 +128,7 @@ def validate_scan(scan, peer, since):
             for row in page:
                 if not isinstance(row,dict) or set(row)!=FIELDS:raise ValueError('HOOK_HISTORY_ROW_INVALID')
                 values={key:integer(row[key]) for key in NUMBERS}
-                if not local<values['localId']<=upper or row['StrTalker']!=peer or values['CreateTime']<since or values['CreateTime']>int(utc(scan['observed_at']).timestamp()):
+                if not local<values['localId']<=upper or row['StrTalker']!=peer or values['CreateTime']<since or values['CreateTime']>upper_time:
                     raise ValueError('HOOK_HISTORY_ROW_SCOPE_INVALID')
                 if values['IsSender'] not in {0,1} or row['StrContent'] is not None and not isinstance(row['StrContent'],str):
                     raise ValueError('HOOK_HISTORY_ROW_INVALID')
@@ -152,6 +161,13 @@ def validate_coverage(payload, peer, since):
     if not isinstance(scans,list) or len(scans)!=2:raise ValueError('HOOK_HISTORY_TWO_SCANS_REQUIRED')
     first,active=validate_scan(scans[0],peer,since); second,other=validate_scan(scans[1],peer,since)
     if utc(scans[1]['observed_at'])<utc(scans[0]['observed_at']):raise ValueError('HOOK_HISTORY_OBSERVATION_ORDER_INVALID')
+    clocks=[scan.get('local_clock') for scan in scans]
+    if any(clocks):
+        if not all(clocks):raise ValueError('HOOK_HISTORY_CLOCK_INVALID')
+        local_gap=(utc(clocks[1]['window']['started_at'])-utc(clocks[0]['window']['completed_at'])).total_seconds()
+        backend_gap=(utc(clocks[1]['backend_started_at'])-utc(scans[0]['observed_at'])).total_seconds()
+        if local_gap<0 or backend_gap<0 or abs(local_gap-backend_gap)>.2:
+            raise ValueError('HOOK_HISTORY_CLOCK_INVALID')
     if scans[0]['catalog_fingerprint']!=scans[1]['catalog_fingerprint'] or first!=second or active!=other:
         raise ValueError('HOOK_HISTORY_CHANGED_DURING_READ')
     ready=True; reason=None

@@ -4234,6 +4234,9 @@ def sent_ack(db: Session, *, reply_action_id: str, payload: Any, native_verified
     before = task.status
     binding = _binding_or_404(db, action.conversation_id)
     conversation = _conversation_for_binding(db, binding)
+    if binding.native_self_wxid:
+        from app.services.hook_business_time import restore_business_clock
+        restore_business_clock(db, binding, conversation)
     if payload.send_result == "sent":
         action.status = "sent"
         action.sent_at = payload.sent_at or utcnow()

@@ -10,6 +10,8 @@ from app.core.database import SessionLocal
 from app.core.config import get_settings
 from app.contracts.shared_rules import shared_adapter
 from app.models.c3 import Conversation, MessageBatch, HandoffEvent, ReplyAction
+from app.models.wechat import MessageEvent
+from app.services.hook_business_time import received_at
 from app.services import hook_history_service, wechat_service, c3_service
 from app.services.ai_adapter import RealOmniAutoAIEngineAdapter
 from test_hook_business_http import clean, post
@@ -27,7 +29,9 @@ def recall_input(monkeypatch, case='due', origin='sales_replied_waiting_user'):
         assert conv.status=='sales_replied_waiting_user'
         due=conv.next_recall_at.replace(tzinfo=timezone.utc)
         self_at=int(value['scans'][0]['databases'][0]['pages'][0][1]['CreateTime'])
-        assert int(due.timestamp())==self_at+get_settings().c3_recall_after_hours*3600
+        outgoing=db.scalar(select(MessageEvent).where(MessageEvent.binding_id==b['binding_id'], MessageEvent.sender_role=='self'))
+        assert due==received_at(outgoing)+timedelta(hours=get_settings().c3_recall_after_hours)
+        assert int(outgoing.occurred_at.replace(tzinfo=timezone.utc).timestamp())==self_at
         # Next UTC 02:00 (Shanghai 10:00), safely after the real scheduled due time.
         future=(due+timedelta(days=1)).replace(hour=2,minute=0,second=0,microsecond=0)
         if case=='not_due':future=due-timedelta(seconds=1)

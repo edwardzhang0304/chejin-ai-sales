@@ -10,6 +10,7 @@ class HookAccountAction(BaseModel):
     process_generation: str = Field(min_length=1, max_length=128)
 
 class HookInviteSubmission(HookAccountAction):
+    local_attempted_at: str | None = Field(default=None, pattern=r'^\d{4}-\d{2}-\d{2}T.*\+00:00$')
     # Optional for original durable proofs created before dashboard instrumentation.
     submitted_at: str | None = Field(default=None, pattern=r'^\d{4}-\d{2}-\d{2}T.*\+00:00$')
     attempted_at: str = Field(pattern=r'^\d{4}-\d{2}-\d{2}T.*\+00:00$')
@@ -24,6 +25,14 @@ class HookInviteSubmission(HookAccountAction):
     confirm_click_calls: Literal[1]
     form_closed: Literal[True]
     submit_journal_sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
+
+    @field_validator('attempted_at', 'submitted_at', 'local_attempted_at')
+    @classmethod
+    def valid_utc_time(cls, value):
+        if value is not None:
+            from app.contracts.shared_rules import shared_adapter
+            shared_adapter('hook_time_rules').utc(value)
+        return value
 
     @model_validator(mode="before")
     @classmethod
@@ -62,6 +71,7 @@ class HookHistoryCoverage(HookAccountAction):
 
 
 class HookNativeSendClaim(HookAccountAction):
+    clock_protocol_version: Literal[1] | None = None
     task_id: str = Field(min_length=36,max_length=36)
     history_state_digest: str = Field(pattern=r"^[a-f0-9]{64}$")
 
@@ -76,6 +86,7 @@ class HookNativeSendSettlement(HookAccountAction):
     journal_sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
     completed_at: str = Field(pattern=r"^\d{4}-\d{2}-\d{2}T.*\+00:00$")
     call_completed: bool
+    local_call_window: dict | None = None
 
 
 class HookVoiceResult(HookAccountAction):
@@ -163,3 +174,9 @@ class HookReinviteRequest(BaseModel):
 
 class HookBindingTransferRequest(HookReinviteRequest):
     source_task_id: str = Field(min_length=36, max_length=36)
+
+
+class HistoryReviewResolution(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    revision: int = Field(ge=1)
+    note: str = Field(min_length=1, max_length=2000)

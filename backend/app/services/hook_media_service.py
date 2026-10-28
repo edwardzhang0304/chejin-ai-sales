@@ -38,6 +38,7 @@ def finish_voice(db,authenticated,instance,payload):
             or parent.id not in ctx.get('history_message_event_ids',[])
             or (parent.raw_payload or {}).get('account_epoch')!=payload.account_epoch):
         raise AppError('HOOK_VOICE_PARENT_NOT_FOUND','没有已核验的客户语音父消息',409)
+    from app.services.hook_history_review import needs_review
     rules=shared_adapter('hook_contract_rules')
     saved={key:getattr(payload,key) for key in ('self_wxid','account_epoch','native_msg_id','peer_wxid',
         'process_generation','audio_sha256','audio_bytes','state','attempted_at','completed_at','response_sha256','text','error_code')}
@@ -50,9 +51,10 @@ def finish_voice(db,authenticated,instance,payload):
         HookVoiceReceipt.message_event_id==parent.id))
     if old:
         if old.payload_digest!=digest:raise AppError('HOOK_VOICE_RESULT_CONFLICT','原语音结果不可覆盖',409)
-        if not retired and parent.item_state=='uncertain':_handoff_uncertain_voice(db,binding,parent)
+        if not retired and not needs_review(parent) and parent.item_state=='uncertain':_handoff_uncertain_voice(db,binding,parent)
         return old.result_json
     from app.services.hook_history_service import human_covered_voice_ids
+    archived = needs_review(parent)
     covered=parent.id in human_covered_voice_ids(db,binding)
     prior_history_state={'content':parent.content,'item_state':parent.item_state} if covered else None
     receipt=HookVoiceReceipt(worker_id=w.id,message_event_id=parent.id,payload_digest=digest,payload_json=value,result_json={})
@@ -65,21 +67,24 @@ def finish_voice(db,authenticated,instance,payload):
         'attempt_digest':payload.attempt_digest,'response_sha256':payload.response_sha256,
         **({'human_covered_history_state':prior_history_state} if covered else {})}}
     parent.evidence={**(parent.evidence or {}),'native_voice_receipt_id':receipt.id}
+    if archived:
+        from app.services.hook_history_review import record_archived_voice_result
+        record_archived_voice_result(db,parent,receipt.id)
     # Original native order/ID/timestamps remain; transcript is not a new input.
     # A proven old voice changes archival facts, not the customer's later turn.
     # Keep its pre-result checkpoint projection so the next history read cannot
     # invalidate the same generation/send indirectly through the full digest.
-    if not covered and not retired:
+    if not covered and not retired and not archived:
         ctx['history_ready']=False;ctx['history_reason_code']='HOOK_VOICE_RESULT_REQUIRES_HISTORY'
         binding.native_context=ctx
         from app.services import c3_service
         c3_service.cancel_active_batches_for_conversation_change(db,binding.conversation_id,reason='原语音消息的转写结果已更新')
         c3_service.supersede_open_reply_actions_for_new_inbound(db,binding.conversation_id)
     result={'native_msg_id':payload.native_msg_id,'message_event_id':parent.id,'voice_receipt_id':receipt.id,
-        'state':payload.state,'history_coverage_required':not covered and not retired,'ai_dispatch':False,
+        'state':payload.state,'history_coverage_required':not covered and not retired and not archived,'ai_dispatch':False,
         **({'disposition':'authorization_retired'} if retired else {})}
     receipt.result_json=result
-    if not retired and parent.item_state=='uncertain':_handoff_uncertain_voice(db,binding,parent)
+    if not retired and not needs_review(parent) and parent.item_state=='uncertain':_handoff_uncertain_voice(db,binding,parent)
     db.flush();return result
 
 

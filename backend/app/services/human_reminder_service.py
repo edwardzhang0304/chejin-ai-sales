@@ -47,6 +47,9 @@ def _facts_ready(binding,row,now):
     after=max(filter(None,[aware(row.next_attempt_at),aware(worker.reply_history_required_after)]))
     if binding.native_self_wxid:
         ctx=binding.native_context or {}
+        from app.services.hook_business_time import timers_ready
+        if not timers_ready(binding):
+            return False
         try:
             ensure_history_context(binding)
         except AppError:
@@ -184,6 +187,9 @@ def recover_reminders_once(*,adapter=None,limit=20):
     cutoff = notification_cutoff(now)
     limit = max(1, int(limit))
     with SessionLocal() as db:
+        from app.services.hook_business_time import restore_pending_clocks
+        restore_pending_clocks(db, limit=limit)
+        db.commit()
         stale_ids = list(db.scalars(select(HumanReplyReminder.id).where(_stale_reminder_clause(cutoff))
             .order_by(HumanReplyReminder.attempted_at, HumanReplyReminder.id).limit(limit)))
         ids=list(db.scalars(select(HumanReplyReminder.id).where(HumanReplyReminder.closed_at.is_(None),

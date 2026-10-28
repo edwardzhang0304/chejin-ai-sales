@@ -53,7 +53,7 @@ def test_restriction_closure_uses_original_identity_complete_history_and_open_ha
         if case=='paused':db.get(Worker,w['id']).run_status='paused'
         original=deepcopy(action.ai_payload);db.commit()
     payload={**p,'task_id':permit['task_id'],'send_token':permit['send_token'],
-        'journal_sha256':start['journal_sha256'],'completed_at':now(41),'call_completed':case!='call_pending'}
+        'journal_sha256':start['journal_sha256'],'completed_at':now(41), 'local_call_window':{'source':'physical_call_v1','started_at':now(40),'completed_at':now(41),'elapsed_seconds':1.0},'call_completed':case!='call_pending'}
     if case=='incomplete':
         with pytest.raises(ValueError,match='HOOK_HISTORY_LOCAL_PENDING'):post(w,path+'/observe',payload,h)
         with SessionLocal() as db:

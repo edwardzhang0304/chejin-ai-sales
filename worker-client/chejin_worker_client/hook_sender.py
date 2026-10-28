@@ -8,6 +8,8 @@ from pathlib import Path
 from .hook_formal_c1 import _save
 from .shared_rules import hook_contract_rules as rules
 from .hook_gateway import HookLocalError
+from .shared_rules import hook_time_rules
+from .hook_send_time import retained_call_window
 from .hook_active_calls import reserve,finish
 from .hook_timing import timed_call
 
@@ -109,6 +111,7 @@ class RetainedNativeSendPermit:
                 raise ValueError()
         except (OSError,KeyError,TypeError,ValueError):
             raise ValueError('HOOK_SEND_RETAINED_JOURNAL_INVALID') from None
+        outcome = retained_call_window(intent, outcome)
         return cls(credentials.worker_id,credentials.client_instance_id,metadata['task_id'],metadata['reply_action_id'],
             scope.self_wxid,scope.account_epoch,scope.process_generation,metadata['lease_fencing_token'],metadata['flow_id'],
             intent['send_token'],digest,root),outcome
@@ -160,14 +163,16 @@ class HookNativeSender:
             digest=hashlib.sha256(journal.read_bytes()).hexdigest()
             response=self.client.native_send_begin(self.credentials,permit,
                 {**permit.account(),'task_id':permit.task_id,'history_state_digest':permit.history_state_digest,
-                 'send_token':permit.send_token,'journal_sha256':digest,'attempted_at':attempted})
+                 'send_token':permit.send_token,'journal_sha256':digest,'attempted_at':attempted,'clock_protocol_version':1})
             if response.get('may_call_hook') is not True or response.get('duplicated') is not False:
                 raise HookLocalError('HOOK_SEND_BEGIN_NOT_CONFIRMED')
+        physical = {}
         def mark_trigger():
             reserve(process.generation,permit.reply_action_id,'send_text')
             _save(trigger,{'phase':'trigger_attempted','time_utc':self.now().isoformat(),
                 'intent_sha256':hashlib.sha256(journal.read_bytes()).hexdigest()})
             self._progress('send_submit','current')
+            physical.update(started_at=datetime.now(timezone.utc).isoformat(), monotonic=time.monotonic())
         call_started=time.perf_counter()
         try:
             response=timed_call('hook.send_call',
@@ -185,9 +190,18 @@ class HookNativeSender:
             self._progress('send_submit','waiting','send_wait')
             if exc.outcome_unknown:
                 _save(quarantine,{'reply_action_id':permit.reply_action_id,'reason_code':exc.code,'process_generation':process.generation,'automatic_clear':False})
+        physical_end = datetime.now(timezone.utc).isoformat()
+        physical_elapsed = time.monotonic()-physical['monotonic']
         outcome.update({'reply_action_id':permit.reply_action_id,'task_id':permit.task_id,
             'journal_sha256':hashlib.sha256(journal.read_bytes()).hexdigest(),
             'completed_at':self.now().isoformat(),'automatic_resend_allowed':False})
+        local_window = {'source':'physical_call_v1', 'started_at':physical['started_at'],
+            'completed_at':physical_end, 'elapsed_seconds':physical_elapsed}
+        try:
+            hook_time_rules.call_window(local_window, rules.loads(journal.read_bytes())['attempted_at'], outcome['completed_at'])
+            outcome['local_call_window'] = local_window
+        except ValueError:
+            outcome['local_clock_error'] = 'HOOK_SEND_LOCAL_CLOCK_INVALID'
         _save(root/'outcome.json',outcome)
         if self.diagnostic_root is not None:
             from .hook_send_diagnostics import record_submission

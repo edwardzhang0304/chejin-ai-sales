@@ -60,7 +60,13 @@ def identity(db,worker,instance,action_id,payload,flow,token,*,current=True):
     return w,binding,action,task
 
 
+def require_clock_protocol(payload):
+    if type(payload.clock_protocol_version) is not int or payload.clock_protocol_version != 1:
+        raise AppError('HOOK_CLOCK_PROTOCOL_UPGRADE_REQUIRED', '请更新客户端后再发送；原发送记录保留并继续核对', 409)
+
+
 def claim_native(db,worker,instance,action_id,payload,flow,token):
+    require_clock_protocol(payload)
     w,binding,action,task=identity(db,worker,instance,action_id,payload,flow,token)
     from app.services.hook_relationship_service import ensure_send_authorization
     ensure_send_authorization(binding)
@@ -105,10 +111,11 @@ def begin_native(db,worker,instance,action_id,payload,flow,token):
     attempted=shared_adapter('hook_history_rules').utc(payload.attempted_at)
     claimed=action.sending_claimed_at.replace(tzinfo=timezone.utc) if action.sending_claimed_at.tzinfo is None else action.sending_claimed_at
     if attempted<claimed or attempted>utcnow():raise AppError('HOOK_SEND_CLOCK_INVALID','发送时钟核验未通过',409)
-    value=payload.model_dump();old=(action.ai_payload or {}).get('native_send_attempt')
+    value=payload.model_dump(exclude_none=True);old=(action.ai_payload or {}).get('native_send_attempt')
     if old:
         if old!=value:raise AppError('HOOK_SEND_ALREADY_ATTEMPTED','原发送尝试不能覆盖',409)
         return {'attempt_registered':True,'duplicated':True,'may_call_hook':False}
+    require_clock_protocol(payload)  # Old in-flight attempts above remain reconciliation-only.
     action.ai_payload={**(action.ai_payload or {}),'native_send_attempt':value}
     db.flush()
     return {'attempt_registered':True,'duplicated':False,'may_call_hook':True}
@@ -132,12 +139,44 @@ def original_send_history(db,action,binding,*,allow_pending_outgoing=False):
     return data if (data['ready'] or (allow_pending_outgoing and data['reason_code']==rules.OUTGOING_ID_PENDING)) else None
 
 
+def retain_send_clock(action, payload):
+    value = payload.local_call_window
+    saved = (action.ai_payload or {}).get('native_send_local_clock')
+    if value is None:
+        return
+    attempt = action.ai_payload['native_send_attempt']
+    if isinstance(value, dict) and value.get('source') == 'retained_completed_call_v1' and payload.call_completed is not True:
+        raise AppError('HOOK_SEND_LOCAL_CLOCK_INVALID', '旧调用未完成，不能补认本机时间', 409)
+    try:
+        shared_adapter('hook_time_rules').call_window(value, attempt['attempted_at'], payload.completed_at)
+    except (ValueError, TypeError, KeyError):
+        raise AppError('HOOK_SEND_LOCAL_CLOCK_INVALID', '原发送本机时间证据不完整或发生跳变', 409) from None
+    proof = {'window':value, 'journal_sha256':payload.journal_sha256, 'completed_at':payload.completed_at}
+    if saved and saved != proof:
+        raise AppError('HOOK_SEND_SETTLEMENT_CONFLICT', '原发送时间证据不可覆盖', 409)
+    action.ai_payload = {**action.ai_payload, 'native_send_local_clock':proof}
+
+
+def original_call_window(action, completed_at):
+    saved = (action.ai_payload or {}).get('native_send_local_clock')
+    attempt = (action.ai_payload or {}).get('native_send_attempt', {})
+    if (not isinstance(saved, dict) or saved.get('journal_sha256') != attempt.get('journal_sha256')
+            or saved.get('completed_at') != completed_at):
+        return None
+    try:
+        return shared_adapter('hook_time_rules').call_window(saved['window'], attempt['attempted_at'], completed_at)
+    except (ValueError, TypeError, KeyError):
+        return None  # Damaged timing cannot become positive send evidence.
+
+
 def candidate_events(db,action,binding,completed_at):
     native=(action.ai_payload or {}).get('native_send_identity',{});attempt=(action.ai_payload or {}).get('native_send_attempt',{})
     data=original_send_history(db,action,binding)
     if data is None:return []
     rules=shared_adapter('hook_history_rules')
-    lower=int(rules.utc(attempt['attempted_at']).timestamp());upper=int(rules.utc(completed_at).timestamp())+1
+    window = original_call_window(action, completed_at)
+    if window is None: return []
+    lower, upper = window
     ids=[]
     for row in data['text_rows']:
         if (row['IsSender']=='1' and row['StrContent']==action.reply_text
@@ -171,8 +210,11 @@ def reconcile_native(db,worker,instance,action_id,payload,flow,token):
         raise AppError('HOOK_SEND_CLOCK_INVALID','调用完成时钟核验未通过',409)
     old=(action.ai_payload or {}).get('native_send_settlement')
     if old:
-        if old['request']!=payload.model_dump():raise AppError('HOOK_SEND_SETTLEMENT_CONFLICT','已结算回执不可覆盖',409)
+        replay=payload.model_dump(exclude_none=True)
+        if 'local_call_window' not in old['request']:replay.pop('local_call_window',None)
+        if old['request']!=replay:raise AppError('HOOK_SEND_SETTLEMENT_CONFLICT','已结算回执不可覆盖',409)
         return old['result']
+    retain_send_clock(action, payload)
     candidates=candidate_events(db,action,binding,payload.completed_at)
     confirmed=len(candidates)==1
     event=candidates[0] if confirmed else None
@@ -181,7 +223,7 @@ def reconcile_native(db,worker,instance,action_id,payload,flow,token):
             'native_association_method':'body_time_unique_history'}
     report=SimpleNamespace(task_id=task.id,worker_id=w.id,client_instance_id=instance,send_token=payload.send_token,
         send_result='sent' if confirmed else 'unknown',action_phase='confirmed' if confirmed else 'trigger_attempted',
-        reply_text_hash=action.reply_text_hash,sidecar_run_id=None,sent_at=event.occurred_at if event else None,
+        reply_text_hash=action.reply_text_hash,sidecar_run_id=None,sent_at=shared_adapter('hook_history_rules').utc(payload.completed_at) if event else None,
         error_code=None if confirmed else 'HOOK_NATIVE_SEND_UNCONFIRMED',remark='原生历史唯一正文与时间关联' if confirmed else '保留原发送尝试，不自动重发',
         evidence={'transport':'hook','journal_sha256':payload.journal_sha256,
             'native_msg_id':(event.raw_payload or {}).get('native_msg_id') if event else None,
@@ -204,7 +246,7 @@ def reconcile_native(db,worker,instance,action_id,payload,flow,token):
     from fastapi.encoders import jsonable_encoder
     result=jsonable_encoder({**result,'native_msg_id':report.evidence['native_msg_id'],'local_send_observed':confirmed,
         'recipient_delivery_confirmed':False,'automatic_resend_allowed':False})
-    action.ai_payload={**(action.ai_payload or {}),'native_send_settlement':{'request':payload.model_dump(),'result':result}}
+    action.ai_payload={**(action.ai_payload or {}),'native_send_settlement':{'request':payload.model_dump(exclude_none=True),'result':result}}
     db.flush();return result
 
 
@@ -219,7 +261,9 @@ def restricted_send_closure_reason(db,action,binding,payload):
           for key in (event.ai_payload or {}).get('native_friend_verification_notice_keys',[])}
     native=action.ai_payload['native_send_identity'];attempt=action.ai_payload['native_send_attempt']
     baseline=native.get('baseline_friend_notice_keys')
-    lower=int(shared_adapter('hook_history_rules').utc(attempt['attempted_at']).timestamp())
+    window = original_call_window(action, payload.completed_at)
+    if window is None: return None
+    lower = window[0]
     for row in checked['friend_verification_notices']:
         key=notice_key(row,binding.native_context or {})
         # Old permits have no notice baseline. Same-second ordering is then
@@ -237,6 +281,7 @@ def observe_original_send(db,worker,instance,action_id,payload,flow,token):
     completed=shared_adapter('hook_history_rules').utc(payload.completed_at)
     if completed<shared_adapter('hook_history_rules').utc(attempt['attempted_at']) or completed>utcnow():
         raise AppError('HOOK_SEND_CLOCK_INVALID','原发送观察时钟不正确',409)
+    retain_send_clock(action, payload)
     candidates=candidate_events(db,action,binding,payload.completed_at)
     from app.core.config import get_settings
     from datetime import timedelta

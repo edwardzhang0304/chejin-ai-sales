@@ -80,3 +80,19 @@ def test_hook_transport_unknown_quarantines_account_and_never_repeats(lab,tmp_pa
     another=replace(permit,reply_action_id=str(uuid.uuid4()),task_id=str(uuid.uuid4()))
     with pytest.raises(ValueError,match='QUARANTINED'):sender.execute(another,process,scope,refresh)
     assert calls==[1]
+
+
+def test_send_captures_both_clocks_at_original_call(lab,tmp_path):
+    server,gateway,process,scope,sender,permit,client,refresh,_=setup(lab,tmp_path)
+    class BackendClock:
+        def now(self):return datetime.now(timezone.utc)-timedelta(seconds=2)
+    sender.clock=BackendClock()
+    # HookNativeSender stores now at construction; use the same injected boundary.
+    sender.now=sender.clock.now
+    outcome=sender.execute(permit,process,scope,refresh)
+    window=outcome['local_call_window']
+    assert window['source']=='physical_call_v1'
+    gap=(datetime.fromisoformat(window['completed_at'])-datetime.fromisoformat(outcome['completed_at'])).total_seconds()
+    assert 1.8<gap<2.1
+    assert window['elapsed_seconds']>=0
+    assert len([r for r in server.requests if r[0]=='/SendTextMsg'])==1

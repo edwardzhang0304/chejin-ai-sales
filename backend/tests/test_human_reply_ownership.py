@@ -186,7 +186,7 @@ def test_legacy_history_does_not_backfill_but_new_message_starts_new_cycle(monke
         assert db.scalar(select(HumanReplyReminder)) is None
 
 
-def test_initial_handoff_clamps_reminder_start_and_merged_cause_keeps_round(monkeypatch):
+def test_initial_handoff_uses_first_server_receipt_and_merged_cause_keeps_round(monkeypatch):
     from test_hook_native_media import media_coverage
     from app.models.c3 import HandoffEvent
     w,t,p,b=bound();value=media_coverage(b,'3')
@@ -194,7 +194,7 @@ def test_initial_handoff_clamps_reminder_start_and_merged_cause_keeps_round(monk
     with SessionLocal() as db:
         event=db.scalar(select(HandoffEvent));row=db.scalar(select(HumanReplyReminder))
         message=db.get(MessageEvent,row.first_message_id)
-        assert reminders.aware(row.started_at)==max(reminders.aware(message.occurred_at),reminders.aware(event.created_at))
+        assert reminders.aware(row.started_at)==reply_ownership.business_time(message)
         assert reminders.aware(row.next_attempt_at)-reminders.aware(row.started_at)==timedelta(hours=1)
         rid=row.id;start=row.started_at
     append_row(value,kind='3',text='<msg><img md5="second"/></msg>')
@@ -304,3 +304,16 @@ def test_late_success_accounting_does_not_enter_new_customer_silence_epoch(monke
         action.segment_index=2
         reply_ownership.record_recall_success(conv,action,batch)
         assert conv.recall_count==1 and conv.recall_daily_count==1
+
+
+def test_hook_business_timer_uses_first_ingestion_not_skewed_native_time():
+    from types import SimpleNamespace
+    captured=datetime(2026,10,28,12,0,tzinfo=timezone.utc)
+    for offset in (-3600,3600):
+        message=SimpleNamespace(raw_payload={'transport':'hook'},ingested_at=captured,
+            occurred_at=captured+timedelta(seconds=offset))
+        assert reply_ownership.business_time(message)==captured
+        # Native chronology is preserved for ordering, not rewritten for timers.
+        assert message.occurred_at==captured+timedelta(seconds=offset)
+        message.raw_payload={'transport':'ocr'}
+        assert reply_ownership.business_time(message)==message.occurred_at

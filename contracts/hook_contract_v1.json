@@ -2,7 +2,7 @@
   "product_version": "0.10.24",
   "transport": "hook",
   "schema_version": "hook-v1",
-  "revision": "2026-10-22-native-identity-1",
+  "revision": "2026-10-28-dual-clock-1",
   "rules_source": "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/adapters/hook_contract_rules.py",
   "rules_source_sha256": "bdec9434d9f2b109cf614aa74b52300ecf17f99f874bff15ed89f42a7d71f772",
   "limits": {
@@ -427,7 +427,6 @@
         "additionalProperties": false,
         "properties": {
           "self_wxid": {
-            "pattern": "^(?!(?:[aA][pP][pP][bB][rR][aA][nN][dD][cC][uU][sS][tT][oO][mM][eE][rR][sS][eE][rR][vV][iI][cC][eE][mM][sS][gG]|[bB][rR][aA][nN][dD][sS][eE][sS][sS][iI][oO][nN][hH][oO][lL][dD][eE][rR]|[fF][iI][lL][eE][hH][eE][lL][pP][eE][rR]|[fF][lL][oO][aA][tT][bB][oO][tT][tT][lL][eE]|[fF][mM][eE][sS][sS][aA][gG][eE]|[mM][eE][dD][iI][aA][nN][oO][tT][eE]|[mM][pP][hH][eE][lL][pP][eE][rR]|[nN][eE][wW][sS][aA][pP][pP]|[nN][oO][tT][iI][fF][iI][cC][aA][tT][iI][oO][nN]_[mM][eE][sS][sS][aA][gG][eE][sS]|[qQ][mM][eE][sS][sS][aA][gG][eE]|[qQ][qQ][mM][aA][iI][lL]|[qQ][qQ][sS][aA][fF][eE]|[qQ][qQ][sS][yY][nN][cC]|[tT][mM][eE][sS][sS][aA][gG][eE]|[wW][eE][iI][bB][oO]|[wW][eE][iI][xX][iI][nN]|[wW][eE][iI][xX][iI][nN][rR][eE][mM][iI][nN][dD][eE][rR])(?![\\s\\S]))(?:wxid_[A-Za-z0-9_]{1,59}|(?!(?:[wW][xX][iI][dD]_|[gG][hH]_))[A-Za-z][A-Za-z0-9_-]{5,63})(?![\\s\\S])",
             "title": "Self Wxid",
             "type": "string"
           },
@@ -442,6 +441,32 @@
             "minLength": 1,
             "title": "Process Generation",
             "type": "string"
+          },
+          "local_attempted_at": {
+            "anyOf": [
+              {
+                "pattern": "^\\d{4}-\\d{2}-\\d{2}T.*\\+00:00$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Local Attempted At"
+          },
+          "submitted_at": {
+            "anyOf": [
+              {
+                "pattern": "^\\d{4}-\\d{2}-\\d{2}T.*\\+00:00$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Submitted At"
           },
           "attempted_at": {
             "pattern": "^\\d{4}-\\d{2}-\\d{2}T.*\\+00:00$",
@@ -646,7 +671,6 @@
         "additionalProperties": false,
         "properties": {
           "self_wxid": {
-            "pattern": "^(?!(?:[aA][pP][pP][bB][rR][aA][nN][dD][cC][uU][sS][tT][oO][mM][eE][rR][sS][eE][rR][vV][iI][cC][eE][mM][sS][gG]|[bB][rR][aA][nN][dD][sS][eE][sS][sS][iI][oO][nN][hH][oO][lL][dD][eE][rR]|[fF][iI][lL][eE][hH][eE][lL][pP][eE][rR]|[fF][lL][oO][aA][tT][bB][oO][tT][tT][lL][eE]|[fF][mM][eE][sS][sS][aA][gG][eE]|[mM][eE][dD][iI][aA][nN][oO][tT][eE]|[mM][pP][hH][eE][lL][pP][eE][rR]|[nN][eE][wW][sS][aA][pP][pP]|[nN][oO][tT][iI][fF][iI][cC][aA][tT][iI][oO][nN]_[mM][eE][sS][sS][aA][gG][eE][sS]|[qQ][mM][eE][sS][sS][aA][gG][eE]|[qQ][qQ][mM][aA][iI][lL]|[qQ][qQ][sS][aA][fF][eE]|[qQ][qQ][sS][yY][nN][cC]|[tT][mM][eE][sS][sS][aA][gG][eE]|[wW][eE][iI][bB][oO]|[wW][eE][iI][xX][iI][nN]|[wW][eE][iI][xX][iI][nN][rR][eE][mM][iI][nN][dD][eE][rR])(?![\\s\\S]))(?:wxid_[A-Za-z0-9_]{1,59}|(?!(?:[wW][xX][iI][dD]_|[gG][hH]_))[A-Za-z][A-Za-z0-9_-]{5,63})(?![\\s\\S])",
             "title": "Self Wxid",
             "type": "string"
           },
@@ -661,6 +685,19 @@
             "minLength": 1,
             "title": "Process Generation",
             "type": "string"
+          },
+          "clock_protocol_version": {
+            "anyOf": [
+              {
+                "const": 1,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Clock Protocol Version"
           },
           "task_id": {
             "maxLength": 36,
@@ -688,7 +725,6 @@
         "additionalProperties": false,
         "properties": {
           "self_wxid": {
-            "pattern": "^(?!(?:[aA][pP][pP][bB][rR][aA][nN][dD][cC][uU][sS][tT][oO][mM][eE][rR][sS][eE][rR][vV][iI][cC][eE][mM][sS][gG]|[bB][rR][aA][nN][dD][sS][eE][sS][sS][iI][oO][nN][hH][oO][lL][dD][eE][rR]|[fF][iI][lL][eE][hH][eE][lL][pP][eE][rR]|[fF][lL][oO][aA][tT][bB][oO][tT][tT][lL][eE]|[fF][mM][eE][sS][sS][aA][gG][eE]|[mM][eE][dD][iI][aA][nN][oO][tT][eE]|[mM][pP][hH][eE][lL][pP][eE][rR]|[nN][eE][wW][sS][aA][pP][pP]|[nN][oO][tT][iI][fF][iI][cC][aA][tT][iI][oO][nN]_[mM][eE][sS][sS][aA][gG][eE][sS]|[qQ][mM][eE][sS][sS][aA][gG][eE]|[qQ][qQ][mM][aA][iI][lL]|[qQ][qQ][sS][aA][fF][eE]|[qQ][qQ][sS][yY][nN][cC]|[tT][mM][eE][sS][sS][aA][gG][eE]|[wW][eE][iI][bB][oO]|[wW][eE][iI][xX][iI][nN]|[wW][eE][iI][xX][iI][nN][rR][eE][mM][iI][nN][dD][eE][rR])(?![\\s\\S]))(?:wxid_[A-Za-z0-9_]{1,59}|(?!(?:[wW][xX][iI][dD]_|[gG][hH]_))[A-Za-z][A-Za-z0-9_-]{5,63})(?![\\s\\S])",
             "title": "Self Wxid",
             "type": "string"
           },
@@ -703,6 +739,19 @@
             "minLength": 1,
             "title": "Process Generation",
             "type": "string"
+          },
+          "clock_protocol_version": {
+            "anyOf": [
+              {
+                "const": 1,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Clock Protocol Version"
           },
           "task_id": {
             "maxLength": 36,
@@ -749,7 +798,6 @@
         "additionalProperties": false,
         "properties": {
           "self_wxid": {
-            "pattern": "^(?!(?:[aA][pP][pP][bB][rR][aA][nN][dD][cC][uU][sS][tT][oO][mM][eE][rR][sS][eE][rR][vV][iI][cC][eE][mM][sS][gG]|[bB][rR][aA][nN][dD][sS][eE][sS][sS][iI][oO][nN][hH][oO][lL][dD][eE][rR]|[fF][iI][lL][eE][hH][eE][lL][pP][eE][rR]|[fF][lL][oO][aA][tT][bB][oO][tT][tT][lL][eE]|[fF][mM][eE][sS][sS][aA][gG][eE]|[mM][eE][dD][iI][aA][nN][oO][tT][eE]|[mM][pP][hH][eE][lL][pP][eE][rR]|[nN][eE][wW][sS][aA][pP][pP]|[nN][oO][tT][iI][fF][iI][cC][aA][tT][iI][oO][nN]_[mM][eE][sS][sS][aA][gG][eE][sS]|[qQ][mM][eE][sS][sS][aA][gG][eE]|[qQ][qQ][mM][aA][iI][lL]|[qQ][qQ][sS][aA][fF][eE]|[qQ][qQ][sS][yY][nN][cC]|[tT][mM][eE][sS][sS][aA][gG][eE]|[wW][eE][iI][bB][oO]|[wW][eE][iI][xX][iI][nN]|[wW][eE][iI][xX][iI][nN][rR][eE][mM][iI][nN][dD][eE][rR])(?![\\s\\S]))(?:wxid_[A-Za-z0-9_]{1,59}|(?!(?:[wW][xX][iI][dD]_|[gG][hH]_))[A-Za-z][A-Za-z0-9_-]{5,63})(?![\\s\\S])",
             "title": "Self Wxid",
             "type": "string"
           },
@@ -790,6 +838,19 @@
           "call_completed": {
             "title": "Call Completed",
             "type": "boolean"
+          },
+          "local_call_window": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Local Call Window"
           }
         },
         "required": [
@@ -857,14 +918,18 @@
       "Invitation values come from the original server task rules; clipboard copy/paste and confirm counts must be exact integer 1.",
       "First account binds automatically to authenticated Worker; account changes stop work and require original rebind.",
       "New customer binding requires a submitted system invitation, complete remark shortcode and one native peer wxid in the same friend object.",
-      "History starts at actual system invitation submission; same-second boundary ambiguity, unknown ordering or incomplete coverage blocks AI sends.",
+      "History uses the original local invitation time, never server authorization time. Missing legacy time or profile succession freezes a complete native-order fence; ambiguous rows require manual history review and cannot trigger AI, reminders or recall. Proven newer rows retain all existing permission and handoff gates.",
       "Raw persistence alone is not semantic dispatch, history completeness or recipient delivery.",
       "New raw facts invalidate ready history before dispatch; replay of the same event is idempotent.",
       "Native send permit binds Worker, instance, epoch, process generation, customer binding revision, task lease and original Flow.",
       "Each native send attempt is journaled before the physical call; unknown or ambiguous outcomes are held without automatic resend.",
       "A unique historical self message matched by exact text and bounded time provides local send evidence only; it is not recipient delivery.",
       "Original C3 Brain/Guard, reply sequence and sent acknowledgement remain authoritative; no parallel business state machine.",
-      "Native private-account identities retain the provider value exactly, including supported legacy usernames without wxid_; syntax never replaces exact account, unique shortcode, direction, lease or binding checks."
+      "Native private-account identities retain the provider value exactly, including supported legacy usernames without wxid_; syntax never replaces exact account, unique shortcode, direction, lease or binding checks.",
+      "New physical send claim/begin requires clock_protocol_version=1; old in-flight recovery remains available and never authorizes another physical call.",
+      "Local call windows match native CreateTime using original physical evidence; backend heartbeat time governs leases and deadlines. Missing or jumping local time cannot prove success.",
+      "Hook business timers start at the earliest durable backend receipt. Replays and offline backlog do not refresh or backdate that receipt.",
+      "History review completion stores actor, note and revision only; it never changes original receipts, reply ownership, sending authority or delivery status."
     ]
   },
   "observability": {
@@ -883,5 +948,10 @@
     ],
     "clock": "execution durations use one process monotonic clock; no synthetic end-to-end sum",
     "authority": "backend issued process id; observation never grants execution"
+  },
+  "time_rules": {
+    "version": 1,
+    "rules_source": "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/adapters/hook_time_rules.py",
+    "rules_source_sha256": "0821b4038249f6b87bc6ee61b7031a93319117d6157d32f9dafe46f2a7758ce9"
   }
 }

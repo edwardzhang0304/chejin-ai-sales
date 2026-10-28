@@ -49,7 +49,7 @@ def claimed(process_generation="process-1",pending=False):
     return w,t,p,h,prep.json()['data']
 
 def proof(p,prep):
-    return {**p,'attempted_at':datetime.now(timezone.utc).isoformat(),'preparation_id':prep['preparation_id'],'form_verified':True,
+    return {**p,'attempted_at':datetime.now(timezone.utc).isoformat(),'local_attempted_at':datetime.now(timezone.utc).isoformat(),'preparation_id':prep['preparation_id'],'form_verified':True,
         'greeting_sha256':hashlib.sha256(prep['verify_message'].encode()).hexdigest(),
         'remark_sha256':hashlib.sha256(prep['remark_name'].encode()).hexdigest(),
         'greeting_copy_calls':1,'greeting_paste_calls':1,'remark_copy_calls':1,'remark_paste_calls':1,
@@ -271,3 +271,41 @@ def test_old_client_receipt_cannot_be_dispatched_under_another_instance():
         with pytest.raises(AppError) as error:
             dispatch_facts(db,db.get(Worker,w['id']),'another-instance',payload['event_uuid'])
         assert error.value.code=='HOOK_REQUEST_IDENTITY_MISMATCH'
+
+
+def test_new_invitation_history_boundary_uses_original_machine_time():
+    from datetime import timedelta
+    w,t,p,h,prep=claimed();payload=proof(p,prep)
+    local=datetime.fromisoformat(payload['attempted_at'])-timedelta(hours=1)
+    payload['local_attempted_at']=local.isoformat()
+    r=post(w,f"/tasks/{t['id']}/hook-invite/submitted",payload,h);assert r.status_code==200,r.text
+    r=post(w,f"/workers/{w['id']}/wechat/native-bindings",body(t,p,prep));assert r.status_code==200,r.text
+    assert r.json()['data']['history_since_create_time']==str(int(local.timestamp()))
+    with SessionLocal() as db:
+        saved=db.scalar(select(TaskEvidence).where(TaskEvidence.evidence_type=='hook_invite_submission'))
+        assert saved.extra_metadata['attempted_at']==payload['attempted_at']
+        assert saved.extra_metadata['local_attempted_at']==payload['local_attempted_at']
+
+
+@pytest.mark.parametrize('stamp', ['2026-10-28Tnot-a-date+00:00', '2026-02-30T00:00:00+00:00', '2026-10-28T00:00:00+08:00'])
+def test_invalid_local_invite_clock_rejected_before_success(stamp):
+    w,t,p,h,prep=claimed();payload=proof(p,prep)
+    payload['local_attempted_at']=stamp
+    r=post(w,f"/tasks/{t['id']}/hook-invite/submitted",payload,h)
+    assert r.status_code==400 and r.json()['code']=='VALIDATION_ERROR',r.text
+    with SessionLocal() as db:
+        assert db.get(Task,t['id']).status=='running'
+        assert db.scalar(select(TaskEvidence).where(TaskEvidence.evidence_type=='hook_invite_submission')) is None
+
+
+def test_invalid_persisted_invite_clock_keeps_original_evidence():
+    w,t,p,h,prep=submitted()
+    with SessionLocal() as db:
+        row=db.scalar(select(TaskEvidence).where(TaskEvidence.evidence_type=='hook_invite_submission'))
+        original={**row.extra_metadata,'local_attempted_at':'2026-10-28Tnot-a-date+00:00'}
+        row.extra_metadata=original;db.commit()
+    r=post(w,f"/workers/{w['id']}/wechat/native-bindings",body(t,p,prep))
+    assert r.status_code==409 and r.json()['code']=='HOOK_INVITE_CLOCK_INVALID'
+    with SessionLocal() as db:
+        assert db.scalar(select(TaskEvidence).where(TaskEvidence.evidence_type=='hook_invite_submission')).extra_metadata==original
+        assert db.scalar(select(WechatSessionBinding)) is None

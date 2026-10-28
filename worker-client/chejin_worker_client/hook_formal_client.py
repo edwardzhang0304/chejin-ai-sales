@@ -79,7 +79,7 @@ class HookFormalClient:
 
     def native_send_claim(self,credentials,account,task_id,action_id,token,state_digest,flow_id=None):
         return self.call(credentials,'POST',f'/workers/{credentials.worker_id}/wechat/native-replies/{action_id}/claim',
-            {**account,'task_id':task_id,'history_state_digest':state_digest},task_id=task_id,token=token,flow_id=flow_id)
+            {**account,'task_id':task_id,'history_state_digest':state_digest,'clock_protocol_version':1},task_id=task_id,token=token,flow_id=flow_id)
 
     def native_send_begin(self,credentials,permit,payload):
         return self.call(credentials,'POST',f'/workers/{credentials.worker_id}/wechat/native-replies/{permit.reply_action_id}/begin',
@@ -90,6 +90,8 @@ class HookFormalClient:
             **permit.account(), 'task_id': permit.task_id, 'send_token': permit.send_token,
             **{key: outcome[key] for key in ('journal_sha256', 'completed_at', 'call_completed')},
         }
+        if outcome.get('local_call_window') is not None:
+            payload['local_call_window'] = outcome['local_call_window']
         return self.call(
             credentials, 'POST',
             f'/workers/{credentials.worker_id}/wechat/native-replies/{permit.reply_action_id}/{operation}',

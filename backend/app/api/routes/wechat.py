@@ -790,3 +790,24 @@ def authorize_native_transfer(lead_id: str, payload: HookBindingTransferRequest,
         data=authorize(db,lead_id,payload,actor);db.commit();return ok(data)
     except Exception:
         db.rollback();raise
+
+
+from app.schemas.hook_business import HistoryReviewResolution
+
+@router.get('/leads/{lead_id}/wechat/history-reviews', dependencies=[Depends(require_admin_auth)])
+def list_history_reviews(lead_id: str, db: Session = Depends(get_db)):
+    from app.services.hook_history_review import list_reviews
+    return ok(list_reviews(db, lead_id))
+
+
+@router.post('/leads/{lead_id}/wechat/history-reviews/{review_id}/resolve', dependencies=[Depends(require_admin_auth)])
+def resolve_history_review(lead_id: str, review_id: str, payload: HistoryReviewResolution,
+        db: Session = Depends(get_db), actor: ActorContext = Depends(get_actor_context)):
+    from app.services.hook_history_review import resolve
+    try:
+        result = resolve(db, lead_id, review_id, payload, actor)
+        db.commit()
+        return ok(result)
+    except Exception:
+        db.rollback()
+        raise

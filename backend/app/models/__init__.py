@@ -1,3 +1,4 @@
+from app.models.history_review import HistoryReview
 from app.models.ai_capacity import AIGenerationGate, AIGenerationSlot
 from app.models.audit import ExportTask, OperationLog
 from app.models.message_text_correction import MessageTextCorrection

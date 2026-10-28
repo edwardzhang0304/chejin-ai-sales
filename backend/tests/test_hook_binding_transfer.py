@@ -94,9 +94,20 @@ def test_confirm_reverify_bind_history_ai_and_preserve_pause(monkeypatch,submitt
         w['id'],w['instance'],p['account_epoch'],new['binding_id'],new['binding_revision'])
     intake=post(w,f"/workers/{w['id']}/wechat/messages/native-observations",callback)
     assert intake.status_code==200,intake.text
-    result,_=upload(w,p,new,coverage(new),monkeypatch)
+    clock_binding = {**new, 'history_since_create_time': b['history_since_create_time']} if not submitted else new
+    value = coverage(clock_binding)
+    value['since_create_time'] = new['history_since_create_time']
+    result,_=upload(w,p,clock_binding,value,monkeypatch)
     assert result.status_code==200,result.text
     assert result.json()['data']['history_ready']
+    if not submitted:
+        assert result.json()['data']['message_batch'] is None
+        from test_hook_history_review import add_message
+        value = add_message(value)
+        result,_=upload(w,p,clock_binding,value,monkeypatch)
+        assert result.status_code==200,result.text
+        assert result.json()['data']['message_batch']
+
     assert post(w,f"/workers/{w['id']}/run-status",{'client_instance_id':w['instance'],'run_status':'running'}).status_code==200
     from app.services import c3_service
     with SessionLocal() as db:
@@ -110,26 +121,27 @@ def test_confirm_reverify_bind_history_ai_and_preserve_pause(monkeypatch,submitt
     r=post(w,f'/tasks/{tid}/claim',{'worker_id':w['id'],'claim_source':'hook_conversation_flow','conversation_id':new['conversation_id']},h);assert r.status_code==200,r.text
     h['X-Task-Lease-Fencing-Token']=str(r.json()['data']['lease_fencing_token'])
     path=f"/workers/{w['id']}/wechat/native-replies/{aid}"
-    r=post(w,path+'/claim',{**p,'task_id':tid,'history_state_digest':result.json()['data']['history_state_digest']},h);assert r.status_code==200,r.text
-    permit=r.json()['data'];since=int(new['history_since_create_time'])
+    r=post(w,path+'/claim',{**p,'task_id':tid,'clock_protocol_version':1,'history_state_digest':result.json()['data']['history_state_digest']},h);assert r.status_code==200,r.text
+    permit=r.json()['data'];since=int(clock_binding['history_since_create_time'])
     now=lambda seconds:datetime.fromtimestamp(since+seconds,timezone.utc).isoformat()
     monkeypatch.setattr(hook_send_service,'utcnow',lambda:datetime.fromisoformat(now(60)))
-    start={**p,'task_id':tid,'history_state_digest':permit['history_state_digest'],
+    start={**p,'clock_protocol_version':1,'task_id':tid,'history_state_digest':permit['history_state_digest'],
         'send_token':permit['send_token'],'journal_sha256':'d'*64,'attempted_at':now(40)}
     r=post(w,path+'/begin',start,h);assert r.status_code==200 and r.json()['data']['may_call_hook'],r.text
     assert not post(w,path+'/begin',start,h).json()['data']['may_call_hook']
-    evidence=coverage(new)
+    evidence=deepcopy(value)
     for scan in evidence['scans']:
         d=scan['databases'][0];rows=d['pages'][0]
-        rows.append({**rows[0],'localId':'7803','MsgSvrID':'8000000000000000003','IsSender':'1',
-            'CreateTime':str(since+40),'Sequence':str((since+40)*1000),'MsgSequence':'780013','StrContent':permit['reply_text']})
-        d['row_count']=d['count_after']='3';d['upper_local_id']='7803';scan['observed_at']=now(50)
+        rows.append({**rows[0],'localId':'7804','MsgSvrID':'8000000000000000004','IsSender':'1',
+            'CreateTime':str(since+40),'Sequence':str((since+40)*1000),'MsgSequence':'780014','StrContent':permit['reply_text']})
+        d['row_count']=d['count_after']=str(len(rows));d['upper_local_id']='7804';scan['observed_at']=now(50)
     monkeypatch.setattr(hook_history_service,'utcnow',lambda:datetime.fromisoformat(now(60)))
     request={**p,'binding_id':new['binding_id'],'binding_revision':new['binding_revision'],
         'capture_id':str(uuid.uuid4()),'coverage':evidence,'coverage_digest':shared_adapter('hook_contract_rules').digest(evidence)}
-    assert post(w,f"/workers/{w['id']}/wechat/native-history/coverage",request).status_code==200
+    history=post(w,f"/workers/{w['id']}/wechat/native-history/coverage",request)
+    assert history.status_code==200,history.text
     r=post(w,path+'/settle',{**p,'task_id':tid,'send_token':permit['send_token'],'journal_sha256':start['journal_sha256'],
-        'completed_at':now(41),'call_completed':True},h);assert r.status_code==200,r.text
+        'completed_at':now(41), 'local_call_window':{'source':'physical_call_v1','started_at':now(40),'completed_at':now(41),'elapsed_seconds':1.0},'call_completed':True},h);assert r.status_code==200,r.text
     assert r.json()['data']['local_send_observed'] and not r.json()['data']['recipient_delivery_confirmed']
     r=post(w,f"/workers/{w['id']}/inflight-flow/finish",{'flow_id':tid,'terminal_kind':'task_terminal','conversation_id':new['conversation_id']},h);assert r.status_code==200,r.text
     with SessionLocal() as db:
@@ -203,7 +215,7 @@ def test_transfer_preserves_original_send_identity_and_pause(monkeypatch):
     monkeypatch.setattr(hook_history_service,'utcnow',lambda:datetime.fromisoformat(now(60)))
     observed=post(w,f"/workers/{w['id']}/wechat/native-history/coverage",request);assert observed.status_code==200,observed.text
     result=post(w,path+'/settle',{**p,'task_id':permit['task_id'],'send_token':permit['send_token'],
-        'journal_sha256':start['journal_sha256'],'completed_at':now(41),'call_completed':True},h)
+        'journal_sha256':start['journal_sha256'],'completed_at':now(41), 'local_call_window':{'source':'physical_call_v1','started_at':now(40),'completed_at':now(41),'elapsed_seconds':1.0},'call_completed':True},h)
     assert result.status_code==200,result.text
     assert result.json()['data']['local_send_observed'] and not result.json()['data']['automatic_resend_allowed']
     with SessionLocal() as db:

@@ -49,6 +49,8 @@ def invitation_proof(preparation, outcome, ui, journal):
         raise ValueError('HOOK_FORMAL_JOURNAL_MISMATCH')
     return {key:preparation[key] for key in ('self_wxid','account_epoch','process_generation','preparation_id')} | {
         **expected,'attempted_at':datetime.fromtimestamp(saved['time_utc'],timezone.utc).isoformat(),
+        **({'local_attempted_at':datetime.fromtimestamp(saved['local_time_utc'],timezone.utc).isoformat()}
+           if saved.get('clock_source')=='authenticated_backend_heartbeat' and 'local_time_utc' in saved else {}),
         'form_verified':True,'form_closed':True,
         'greeting_copy_calls':1,'greeting_paste_calls':1,'remark_copy_calls':1,'remark_paste_calls':1,
         'confirm_click_calls':1,'submit_journal_sha256':hashlib.sha256(journal.path.read_bytes()).hexdigest()}

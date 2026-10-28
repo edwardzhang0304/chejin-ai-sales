@@ -87,3 +87,23 @@ def test_missing_new_callback_does_not_get_excluded_as_old(history_lab):
     sync=HookHistorySynchronizer(gateway,lambda _:None,lambda:(0,0),media_enabled=True)
     with pytest.raises(ValueError,match='CALLBACK_NOT_LANDED'):
         sync.capture(process,scope,delivery,'1791543600',callback_ids={'999999'})
+
+
+def test_scan_records_local_bounds_separately_from_backend_clock(history_lab):
+    from datetime import datetime,timezone,timedelta
+    _,gateway,process,scope,delivery,_,db=history_lab
+    db.execute('DELETE FROM MSG WHERE Type=34')
+    sync=HookHistorySynchronizer(gateway,lambda _:None,lambda:(0,0),
+        now=lambda:datetime.now(timezone.utc)-timedelta(hours=1))
+    _,coverage=sync.capture(process,scope,delivery,'1791543600')
+    for scan in coverage['scans']:
+        local=datetime.fromisoformat(scan['local_clock']['window']['completed_at'])
+        backend=datetime.fromisoformat(scan['observed_at'])
+        assert 3599<(local-backend).total_seconds()<3601
+    assert hook_history_rules.validate_coverage(coverage,delivery.peer_wxid,1791543600)['ready']
+    # A clock jump between scans is rejected even if each individual duration is valid.
+    clock=coverage['scans'][1]['local_clock']['window']
+    for name in ('started_at','completed_at'):
+        clock[name]=(datetime.fromisoformat(clock[name])+timedelta(seconds=10)).isoformat()
+    with pytest.raises(ValueError,match='CLOCK_INVALID'):
+        hook_history_rules.validate_coverage(coverage,delivery.peer_wxid,1791543600)

@@ -3,6 +3,7 @@ import { DetailDrawer } from '../../../shared/ui/ManagementLayout';
 import { useEffect, useState } from "react";
 
 import { CloseIcon } from "../../../shared/ui/Icons";
+import { HistoryReviewPanel } from "./HistoryReviewPanel";
 import { HookReinviteAction } from "./HookReinviteAction";
 import type { LeadDetail } from "../types";
 
@@ -31,10 +32,11 @@ const contactText: Record<string, string> = {
   email: "邮箱",
 };
 
-type DetailTab = "overview" | "notes" | "duplicates" | "assignments";
+type DetailTab = "overview" | "notes" | "duplicates" | "assignments" | "history";
 
 const detailTabs: Array<{ key: DetailTab; label: string }> = [
   { key: "overview", label: "概览" },
+  { key: "history", label: "历史核对" },
   { key: "notes", label: "备注" },
   { key: "duplicates", label: "重复记录" },
   { key: "assignments", label: "分配记录" },
@@ -169,6 +171,8 @@ export function LeadDetailDrawer({ promptTransfer = false, detail, loading, erro
               </section>
               </>
             ) : null}
+
+            {activeTab === "history" ? <HistoryReviewPanel key={detail.id} leadId={detail.id} /> : null}
 
             {activeTab === "notes" ? (
             <section className="detail-block">

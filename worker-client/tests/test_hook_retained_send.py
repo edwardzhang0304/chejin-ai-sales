@@ -50,3 +50,28 @@ def test_damaged_or_relabelled_original_send_cannot_be_settled(retained,case):
     if case=='metadata_path':m['reply_action_id']='../other'
     if case=='task':m['task_id']='55555555-5555-4555-8555-555555555555'
     with pytest.raises(ValueError,match='HOOK_SEND_RETAINED_'):RetainedNativeSendPermit.load(root,c,s,b,m)
+
+@pytest.mark.parametrize('case',['match','generation','kind','uncertain','long_duration','reverse','missing'])
+def test_old_completed_call_supplies_original_local_clock_without_rewriting(retained,monkeypatch,tmp_path,case):
+    from chejin_worker_client import storage
+    from chejin_worker_client.hook_active_calls import ensure
+    root,c,s,b,m,folder=retained
+    monkeypatch.setattr(storage,'APP_DIR',tmp_path/'isolated-home')
+    monkeypatch.setattr(storage,'DB_FILE',tmp_path/'isolated-home'/'worker_client.sqlite3')
+    if case!='missing':
+        with storage.db_connection() as conn:
+            ensure(conn)
+            conn.execute('INSERT INTO hook_active_calls VALUES(?,?,?,?,?,?)',(
+                'other' if case=='generation' else s.process_generation,m['reply_action_id'],
+                'QueryDB' if case=='kind' else 'send_text','uncertain' if case=='uncertain' else 'completed',
+                '2026-10-11T11:47:14+00:00',
+                '2026-10-11T11:47:20+00:00' if case=='long_duration' else
+                '2026-10-11T11:47:13+00:00' if case=='reverse' else '2026-10-11T11:47:15+00:00'))
+            conn.commit()
+    before={p.name:p.read_bytes() for p in folder.iterdir()}
+    _,outcome=RetainedNativeSendPermit.load(root,c,s,b,m)
+    assert ('local_call_window' in outcome)==(case=='match')
+    if case=='match':
+        assert outcome['local_call_window']['started_at']=='2026-10-11T11:47:14+00:00'
+        assert outcome['completed_at']=='2026-10-11T11:47:13+00:00'
+    assert {p.name:p.read_bytes() for p in folder.iterdir()}==before

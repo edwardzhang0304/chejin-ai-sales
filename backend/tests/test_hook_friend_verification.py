@@ -180,8 +180,8 @@ def test_original_send_settles_through_history_and_releases_flow(restart,monkeyp
     if expected_run!='running':
         r=post(w,f"/workers/{w['id']}/run-status",{'run_status':expected_run,'client_instance_id':w['instance']});assert r.status_code==200
     settle={**p,'task_id':permit['task_id'],'send_token':permit['send_token'],
-        'journal_sha256':start['journal_sha256'],'completed_at':now(41),'call_completed':True}
-    reconciliation={**{k:v for k,v in settle.items() if k not in {'completed_at','call_completed'}},'reply_action_id':permit['reply_action_id'],'flow_id':permit['flow_id'],
+        'journal_sha256':start['journal_sha256'],'completed_at':now(41), 'local_call_window':{'source':'physical_call_v1','started_at':now(40),'completed_at':now(41),'elapsed_seconds':1.0},'call_completed':True}
+    reconciliation={**{k:v for k,v in settle.items() if k not in {'completed_at','call_completed','local_call_window'}},'reply_action_id':permit['reply_action_id'],'flow_id':permit['flow_id'],
         'lease_fencing_token':permit['lease_fencing_token']}
     # The authenticated original-flow recovery uses the same full coverage route.
     body={**p,'binding_id':b['binding_id'],'binding_revision':b['binding_revision'],
@@ -267,7 +267,7 @@ def test_notice_never_substitutes_for_missing_or_ambiguous_send_proof(count,monk
         'capture_id':str(uuid.uuid4()),'coverage':value,'coverage_digest':shared_adapter('hook_contract_rules').digest(value)}
     r=post(w,f"/workers/{w['id']}/wechat/native-history/coverage",body);assert r.status_code==200,r.text
     payload={**p,'task_id':permit['task_id'],'send_token':permit['send_token'],
-        'journal_sha256':start['journal_sha256'],'completed_at':now(41),'call_completed':True}
+        'journal_sha256':start['journal_sha256'],'completed_at':now(41), 'local_call_window':{'source':'physical_call_v1','started_at':now(40),'completed_at':now(41),'elapsed_seconds':1.0},'call_completed':True}
     r=post(w,path+'/observe',payload,h);assert r.status_code==200,r.text
     assert not r.json()['data']['unique_local_send_observed']
     assert not r.json()['data']['deadline_elapsed']

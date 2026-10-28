@@ -408,9 +408,11 @@ class HookFormalRuntime:
     def verify_legacy_invitation_gap(self,binding,prepared_at,original_attempted_at):
         # An old wall-clock journal stays immutable. Never guess a corrected
         # click time from a clock offset measured hours later. Its backend
-        # preparation and pause bound the real click; inspect that entire gap.
+        # preparation time is on the server clock, not a native query boundary.
+        # Without an original local lower bound only a complete retained-history
+        # scan can prove absence; any earlier message requires manual review.
         self.heartbeat()
-        since=str(int(datetime.fromisoformat(prepared_at).timestamp()))
+        since='0'
         cutoff=int(datetime.fromisoformat(original_attempted_at).timestamp())+1
         def save(capture):
             _save(self.private_root/'legacy-boundary-captures'/f'{uuid.uuid4()}.json',{

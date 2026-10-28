@@ -43,7 +43,8 @@ def ordered_messages(db,binding):
     rows={m.id:m for m in db.scalars(select(MessageEvent).where(MessageEvent.id.in_(ids),
         MessageEvent.conversation_id==binding.conversation_id))}
     if len(rows)!=len(ids):raise AppError('HOOK_HISTORY_FACTS_MISSING','历史事实尚未可靠入库',409)
-    return [rows[mid] for mid in ids]
+    from app.services.hook_history_review import needs_review
+    return [rows[mid] for mid in ids if not needs_review(rows[mid])]
 
 
 def _apply_history_actors(db, binding, conv, rows, ctx, checked):
@@ -53,6 +54,8 @@ def _apply_history_actors(db, binding, conv, rows, ctx, checked):
     This settles human business replies only; it never completes a native call.
     """
     from app.services import c3_service
+    from app.services.hook_business_time import restore_business_clock
+    restore_business_clock(db, binding, conv, ctx)
     applied=set(ctx.get('actor_applied_message_ids',[]))
     from app.services.hook_customer_notice_service import handoff_history_orders
     positions={r['MsgSvrID']:int(r['Sequence']) for r in checked['semantic_rows']}
@@ -60,17 +63,17 @@ def _apply_history_actors(db, binding, conv, rows, ctx, checked):
     handoff_orders=handoff_history_orders(db,binding,checked,ctx)
     for message in rows:
         if message.id in applied:continue
-        at=c3_service._aware_datetime(message.occurred_at)
-        from app.services.reply_ownership import apply_message
+        from app.services.reply_ownership import apply_message, business_time
+        at=business_time(message)
         if message.sender_role=='customer':
-            if apply_message(db,conv,message,orders=native_orders):
+            if apply_message(db,conv,message,orders=native_orders,effective_at=at):
                 conv.last_inbound_at=max(filter(None,[c3_service._aware_datetime(conv.last_inbound_at),at]))
         else:
             raw=dict(message.raw_payload or {})
             conv.last_outbound_at=max(filter(None,[c3_service._aware_datetime(conv.last_outbound_at),at]))
             if raw.get('sender_source') in {'unresolved','human'}:
                 raw['sender_source']='human';message.raw_payload=raw
-                applied_owner=apply_message(db,conv,message,orders=native_orders)
+                applied_owner=apply_message(db,conv,message,orders=native_orders,effective_at=at)
                 resolution=c3_service.close_open_handoffs_for_human_sales(db,
                     conversation_id=binding.conversation_id,sales_message=message,native_history_orders=native_orders,
                     native_handoff_orders=handoff_orders)
@@ -212,7 +215,7 @@ def accept_coverage(db,authenticated,instance,payload):
                 lead_id=binding.lead_id,sales_id=binding.sales_id,
                 rpa_session_key='hook:'+binding.id,read_run_id=payload.capture_id,source_message_key=key,dedupe_key=key,
                 sender_role=role,message_type=kind,content=content,raw_payload={},evidence={},
-                item_state='text_ready' if kind=='text' else 'metadata_observed',flow_state='stored',occurred_at=at,observed_at=history.utc(checked['observed_at']))
+                item_state='text_ready' if kind=='text' else 'metadata_observed',flow_state='stored',occurred_at=at,observed_at=receipt.created_at)
             db.add(event);db.flush();new_ids.append(event.id)
         raw=dict(event.raw_payload or {})
         raw.update({'transport':'hook','native_msg_id':row['MsgSvrID'],'self_wxid':payload.self_wxid,
@@ -224,6 +227,10 @@ def accept_coverage(db,authenticated,instance,payload):
         if row['Type']=='49':raw['native_quote']=checked['quote_links'][row['MsgSvrID']]
         if kind!='text':raw['native_media_xml']=row['StrContent']
         event.raw_payload=raw
+        from app.services.hook_business_time import stamp_receipt, received_at
+        previous_received = received_at(event)
+        if stamp_receipt(event, receipt) < previous_received:
+            ctx.pop('business_clock_version', None)
         # This time is provider CreateTime, never callback arrival or OCR position.
         event.occurred_at=at
         event.evidence={**(event.evidence or {}),'native_history_receipt_id':receipt.id}
@@ -273,12 +280,25 @@ def accept_coverage(db,authenticated,instance,payload):
             not in {'unresolved','human','ai'} for m in rows_by_id.values()):
         reason=reason or 'HOOK_NATIVE_SEND_ACTOR_PENDING'
     facts_ready=checked['ready'] and reason is None
-    covered=human_covered_voice_ids(db,binding,verified_rows=[rows_by_id[mid] for mid in ids]) if facts_ready else set()
+    business_rows = [rows_by_id[mid] for mid in ids]
+    if reconciliation is None:
+        from app.services.hook_history_review import admit
+        conv = db.get(Conversation, binding.conversation_id)
+        business_rows, boundary_reason = admit(db, binding, conv, ctx, checked, receipt,
+            business_rows, facts_ready=facts_ready)
+        reason = reason or boundary_reason
+        facts_ready = facts_ready and boundary_reason is None
+        binding.native_context = dict(ctx)
+    business_ids = [m.id for m in business_rows]
+    business_id_set = set(business_ids)
+    last_self = max((i for i,m in enumerate(business_rows) if m.sender_role == 'self'), default=-1)
+    tail = [m for m in business_rows[last_self+1:] if m.sender_role == 'customer']
+    covered=human_covered_voice_ids(db,binding,verified_rows=business_rows) if facts_ready else set()
     from app.services.hook_customer_notice_service import notice_key
     notice_keys=sorted(notice_key(row,ctx) for row in checked['friend_verification_notices'])
     state_digest=rules.digest([payload.account_epoch,payload.process_generation,payload.binding_revision,
         checked['revoked_native_ids'],checked['system_notice_native_ids'],[[r['MsgSvrID'],r['Type'],r['IsSender'],r['StrContent'],r['Sequence'],r['MsgSequence'],
-          *_reply_history_state(rows_by_id[ids[i]],covered)] for i,r in enumerate(checked['semantic_rows'])]]
+          *_reply_history_state(rows_by_id[ids[i]],covered)] for i,r in enumerate(checked['semantic_rows']) if ids[i] in business_id_set]]
           + ([checked['unresolved_outgoing_rows']] if checked['unresolved_outgoing_rows'] else [])
           + ([['friend_verification_notices',notice_keys]] if notice_keys else []))
     changed=ctx.get('history_state_digest')!=state_digest
@@ -289,16 +309,16 @@ def accept_coverage(db,authenticated,instance,payload):
         binding.native_context=ctx
         from app.services import c3_service
         previous_ids=set(ctx.get('previous_history_message_ids',[]))
-        additions=[db.get(MessageEvent,mid) for mid in ids if mid not in previous_ids]
+        additions=[db.get(MessageEvent,mid) for mid in business_ids if mid not in previous_ids]
         native_attempts=[a for a in unresolved if (a.ai_payload or {}).get('native_send_attempt')]
-        only_own_outgoing=bool(additions) and previous_ids.issubset(ids) and all(
+        only_own_outgoing=bool(additions) and previous_ids.issubset(business_ids) and all(
             m.sender_role=='self' and ((m.raw_payload or {}).get('sender_source')=='ai' or native_attempts)
             for m in additions)
-        ctx['previous_history_message_ids']=list(ids);binding.native_context=dict(ctx)
+        ctx['previous_history_message_ids']=list(business_ids);binding.native_context=dict(ctx)
         if changed and not only_own_outgoing:
             c3_service.cancel_active_batches_for_conversation_change(db,binding.conversation_id,reason='原生历史事实或顺序已更新')
             c3_service.supersede_open_reply_actions_for_new_inbound(db,binding.conversation_id)
-    rows=[rows_by_id[mid] for mid in ids]
+    rows=business_rows
     if facts_ready and reconciliation is None:
         conv=db.get(Conversation,binding.conversation_id)
         if conv and conv.status not in {'closed','rejected'}:
@@ -374,7 +394,7 @@ def accept_coverage(db,authenticated,instance,payload):
                     batch=c3_service.create_control_message_batch(db,conversation_id=binding.conversation_id,
                         trigger_type='recall',trigger_key=cycle,recall_cycle_id=cycle)
                     conv.status='ai_active';conv.next_recall_at=None
-            elif not rows and conv.ai_enabled and not open_handoffs and allows_batch(conv):
+            elif not rows and not ctx.get('native_boundary_review_reason') and conv.ai_enabled and not open_handoffs and allows_batch(conv):
                 batch=c3_service.create_control_message_batch(db,conversation_id=binding.conversation_id,
                     trigger_type='friend_welcome',trigger_key='hook-invite:'+ctx['source_task_id'])
     result={'process_run_id':process_run_id,'conversation_id':binding.conversation_id,'capture_id':payload.capture_id,'history_receipt_id':receipt.id,'binding_id':binding.id,

@@ -83,7 +83,21 @@ def drive_reply(runtime, binding, batch_id, *, max_wait_seconds=30):
 
 @pytest.mark.parametrize('peer',['wxid_customer_A','nativecustomer2468','Legacy-Customer_42'])
 @pytest.mark.parametrize('segments',[1,2])
-def test_coordinator_pulls_formal_invite_binds_history_generates_and_sends(identity_client,lab,tmp_path,monkeypatch,segments,peer):
+def test_coordinator_pulls_formal_invite_binds_history_generates_and_sends(identity_client,lab,tmp_path,monkeypatch,segments,peer,clock_offset=0):
+    if clock_offset:
+        from datetime import datetime, timedelta
+        from chejin_worker_client import hook_sender, hook_history_sync
+        from apps.wechat_ai_customer_service.adapters.wechat_win32_ocr import hook_c1_flow
+        class LocalClock(datetime):
+            @classmethod
+            def now(cls, tz=None):
+                return datetime.now(tz)+timedelta(seconds=clock_offset)
+        monkeypatch.setattr(hook_sender, 'datetime', LocalClock)
+        monkeypatch.setattr(hook_history_sync, 'datetime', LocalClock)
+        monkeypatch.setattr(hook_c1_flow, 'time', SimpleNamespace(
+            **{k:getattr(time,k) for k in dir(time) if not k.startswith('_')},
+        ))
+        monkeypatch.setattr(hook_c1_flow.time, 'time', lambda:time.time()+clock_offset)
     if segments==2:
         from app.services import c3_service
         from app.services.ai_adapter import AIEngineDecision
@@ -125,7 +139,7 @@ def test_coordinator_pulls_formal_invite_binds_history_generates_and_sends(ident
         server.raw_override=None
         if path=='/GetFriendAndChatRoomList':server.raw_override=json.dumps({'code':0,'data':[{'wxid':peer,'markname':code}]}).encode()
         if path=='/SendTextMsg':
-            text=server.requests[-1][1]['msg'];created=int(time.time());seq=table.execute('SELECT COUNT(*) FROM MSG').fetchone()[0]+1
+            text=server.requests[-1][1]['msg'];created=int(time.time()+clock_offset);seq=table.execute('SELECT COUNT(*) FROM MSG').fetchone()[0]+1
             table.execute('INSERT INTO MSG VALUES(?,?,?,?,?,?,?,?,?,?)',(seq,str(8000000000000000000+seq),1,1,created,created*1000+seq,0,seq,peer,text))
             server.raw_override=b'{"SendTextMsg":"1"}'
     server.on_request=on_request
@@ -143,3 +157,9 @@ def test_coordinator_pulls_formal_invite_binds_history_generates_and_sends(ident
         assert all(m.raw_payload['sender_source']=='ai' for m in messages)
     assert list((tmp_path/'coordinator'/'finished').glob('*.json'))
     table.close()
+
+
+@pytest.mark.parametrize('clock_offset',[-3600,-2,2,3600])
+def test_actual_invite_send_history_ack_with_separate_clocks(identity_client,lab,tmp_path,monkeypatch,clock_offset):
+    test_coordinator_pulls_formal_invite_binds_history_generates_and_sends(
+        identity_client,lab,tmp_path,monkeypatch,segments=1,peer='wxid_customer_A',clock_offset=clock_offset)

@@ -164,7 +164,7 @@ def test_lost_claim_response_closes_without_permit_or_send_then_resumes(identity
     resume(w,p,identity_client)
     # Delayed old permit cannot pass begin after negative settlement.
     r=post(w,f"/workers/{w['id']}/wechat/native-replies/{permit['reply_action_id']}/begin",
-        {**p,'task_id':permit['task_id'],'send_token':permit['send_token'],'history_state_digest':b['history_state_digest'],
+        {**p,'task_id':permit['task_id'],'send_token':permit['send_token'],'history_state_digest':b['history_state_digest'],'clock_protocol_version':1,
         'journal_sha256':'a'*64,'attempted_at':__import__('datetime').datetime.now(__import__('datetime').timezone.utc).isoformat()},h)
     assert r.status_code==409,r.text
 

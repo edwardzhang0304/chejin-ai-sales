@@ -2998,6 +2998,12 @@ def _prepare_due_recall(
     worker: Worker | None = None,
     db: Session | None = None,
 ) -> None:
+    if binding is not None and binding.native_self_wxid:
+        from app.services.hook_business_time import restore_business_clock, timers_ready
+        if db is not None:
+            restore_business_clock(db, binding, conversation)
+        if not timers_ready(binding):
+            return
     from app.services.followup_eligibility import followup_block_reason
     if db is not None and followup_block_reason(db, conversation.lead_id):
         return

@@ -8,6 +8,7 @@ import uuid
 import time
 from .hook_history import HookHistoryQuery, schema_has_send_status
 from .shared_rules import hook_history_rules as rules
+from .shared_rules import hook_time_rules
 from . import hook_read_retry
 
 
@@ -20,6 +21,8 @@ class HookHistorySynchronizer:
         self.now=now or (lambda:datetime.now(timezone.utc))
 
     def scan(self,process,scope,delivery,since,*,reader):
+        backend_start=self.now().isoformat()
+        local_start=datetime.now(timezone.utc).isoformat(); tick=time.monotonic()
         catalog=reader.history_catalog(process,scope); databases=[];total=0
         for database in catalog.databases:
             include_status=False
@@ -45,7 +48,12 @@ class HookHistorySynchronizer:
             databases.append({'name':database.name,'generation':database.generation,'upper_local_id':upper,
                 'row_count':bound['row_count'],'count_after':after,'pages':pages})
         if reader.history_catalog(process,scope)!=catalog:raise ValueError('HOOK_HISTORY_CATALOG_CHANGED')
-        return {'catalog_fingerprint':catalog.fingerprint,'databases':databases,'observed_at':self.now().isoformat()}
+        local_end=datetime.now(timezone.utc).isoformat(); elapsed=time.monotonic()-tick
+        observed=self.now().isoformat()
+        window={'source':'physical_call_v1','started_at':local_start,'completed_at':local_end,'elapsed_seconds':elapsed}
+        hook_time_rules.call_window(window,backend_start,observed)
+        return {'catalog_fingerprint':catalog.fingerprint,'databases':databases,'observed_at':observed,
+            'local_clock':{'backend_started_at':backend_start,'window':window}}
 
     def capture(self,process,scope,delivery,since,*,callback_ids=()):
         rules.integer(since)

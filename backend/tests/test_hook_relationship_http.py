@@ -140,7 +140,7 @@ def test_explicit_reinvite_full_c1_new_binding_chain_and_old_proof_retained(monk
         'capture_id':str(uuid.uuid4()),'coverage':evidence,'coverage_digest':shared_adapter('hook_contract_rules').digest(evidence)}
     assert post(w,f"/workers/{w['id']}/wechat/native-history/coverage",request).status_code==200
     r=post(w,path+'/settle',{**p,'task_id':tid,'send_token':permit['send_token'],'journal_sha256':start['journal_sha256'],
-        'completed_at':now(41),'call_completed':True},h);assert r.status_code==200,r.text
+        'completed_at':now(41), 'local_call_window':{'source':'physical_call_v1','started_at':now(40),'completed_at':now(41),'elapsed_seconds':1.0},'call_completed':True},h);assert r.status_code==200,r.text
     assert r.json()['data']['local_send_observed'] and not r.json()['data']['recipient_delivery_confirmed']
     r=post(w,f"/workers/{w['id']}/inflight-flow/finish",{'flow_id':tid,'terminal_kind':'task_terminal','conversation_id':b['conversation_id']},h);assert r.status_code==200,r.text
     with SessionLocal() as db:
@@ -168,7 +168,7 @@ def test_remark_review_blocks_both_send_branches_before_trigger(decision,monkeyp
     with SessionLocal() as db:
         action=db.get(ReplyAction,permit['reply_action_id']);action.decision=decision;db.commit()
     r=observation(w,p,b,{'code':0,'data':[{'wxid':b['peer_wxid'],'markname':'改备注'}]});assert r.status_code==200,r.text
-    start={**p,'task_id':permit['task_id'],'history_state_digest':b['history_state_digest'],
+    start={**p,'task_id':permit['task_id'],'history_state_digest':b['history_state_digest'],'clock_protocol_version':1,
         'send_token':permit['send_token'],'journal_sha256':'c'*64,'attempted_at':datetime.now(timezone.utc).isoformat()}
     r=post(w,f"/workers/{w['id']}/wechat/native-replies/{permit['reply_action_id']}/begin",start,h)
     assert r.status_code==409 and r.json()['code']=='HOOK_CONTACT_REMARK_CHANGED',r.text
@@ -196,7 +196,7 @@ def test_retirement_keeps_actual_send_original_reconciliation_and_pause(monkeypa
     monkeypatch.setattr(hook_history_service,'utcnow',lambda:datetime.fromisoformat(now(60)))
     observed=post(w,f"/workers/{w['id']}/wechat/native-history/coverage",request);assert observed.status_code==200,observed.text
     result=post(w,path+'/settle',{**p,'task_id':permit['task_id'],'send_token':permit['send_token'],
-        'journal_sha256':start['journal_sha256'],'completed_at':now(41),'call_completed':True},h)
+        'journal_sha256':start['journal_sha256'],'completed_at':now(41), 'local_call_window':{'source':'physical_call_v1','started_at':now(40),'completed_at':now(41),'elapsed_seconds':1.0},'call_completed':True},h)
     assert result.status_code==200,result.text
     assert result.json()['data']['local_send_observed'] and not result.json()['data']['automatic_resend_allowed']
     with SessionLocal() as db:
@@ -224,7 +224,7 @@ def test_retirement_before_physical_begin_uses_original_no_trigger_receipt(monke
     w,p,b,h,permit,value=permitted(monkeypatch)
     assert reinvite(b).status_code==200
     path=f"/workers/{w['id']}/wechat/native-replies/{permit['reply_action_id']}"
-    start={**p,'task_id':permit['task_id'],'history_state_digest':b['history_state_digest'],
+    start={**p,'task_id':permit['task_id'],'history_state_digest':b['history_state_digest'],'clock_protocol_version':1,
         'send_token':permit['send_token'],'journal_sha256':'c'*64,'attempted_at':datetime.now(timezone.utc).isoformat()}
     r=post(w,path+'/begin',start,h);assert r.status_code==409 and r.json()['code']=='HOOK_AUTHORIZATION_RETIRED',r.text
     no_trigger={'reply_action_id':permit['reply_action_id'],'task_id':permit['task_id'],'phase':'not_triggered',

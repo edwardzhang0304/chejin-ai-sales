@@ -25,7 +25,7 @@ def permitted(monkeypatch):
     r=post(w,f'/tasks/{task_id}/claim',{'worker_id':w['id'],'claim_source':'hook_conversation_flow','conversation_id':b['conversation_id']},h)
     assert r.status_code==200,r.text
     h['X-Task-Lease-Fencing-Token']=str(r.json()['data']['lease_fencing_token'])
-    claim={**p,'task_id':task_id,'history_state_digest':b['history_state_digest']}
+    claim={**p,'task_id':task_id,'history_state_digest':b['history_state_digest'],'clock_protocol_version':1}
     r=post(w,f"/workers/{w['id']}/wechat/native-replies/{action_id}/claim",claim,h);assert r.status_code==200,r.text
     permit=r.json()['data'];assert permit['native_send_ready']
     return w,p,b,h,permit,value
@@ -35,7 +35,7 @@ def beginning(monkeypatch):
     w,p,b,h,permit,value=permitted(monkeypatch)
     since=int(b['history_since_create_time']);now=lambda sec:datetime.fromtimestamp(since+sec,timezone.utc).isoformat()
     monkeypatch.setattr(hook_send_service,'utcnow',lambda:datetime.fromtimestamp(since+60,timezone.utc))
-    start={**p,'task_id':permit['task_id'],'history_state_digest':b['history_state_digest'],
+    start={**p,'task_id':permit['task_id'],'history_state_digest':b['history_state_digest'],'clock_protocol_version':1,
         'send_token':permit['send_token'],'journal_sha256':'c'*64,'attempted_at':now(40)}
     path=f"/workers/{w['id']}/wechat/native-replies/{permit['reply_action_id']}"
     r=post(w,path+'/begin',start,h);assert r.status_code==200,r.text
@@ -60,7 +60,7 @@ def test_one_native_history_match_settles_original_reply_without_resend(kind,mon
           'coverage':value,'coverage_digest':shared_adapter('hook_contract_rules').digest(value)}
     observed=post(w,f"/workers/{w['id']}/wechat/native-history/coverage",body);assert observed.status_code==200,observed.text
     payload={**p,'task_id':permit['task_id'],'send_token':permit['send_token'],'journal_sha256':start['journal_sha256'],
-        'completed_at':now(41),'call_completed':kind!='timeout_but_observed'}
+        'completed_at':now(41), 'local_call_window':{'source':'physical_call_v1','started_at':now(40),'completed_at':now(41),'elapsed_seconds':1.0},'call_completed':kind!='timeout_but_observed'}
     result=post(w,path+'/settle',payload,h);assert result.status_code==200,result.text
     confirmed=count==1
     data=result.json()['data'];assert data['local_send_observed']==confirmed and not data['automatic_resend_allowed']
@@ -75,14 +75,14 @@ def test_one_native_history_match_settles_original_reply_without_resend(kind,mon
             message=db.scalar(select(MessageEvent).where(MessageEvent.sender_role=='self'))
             assert message.raw_payload['sender_source']=='ai'
             assert message.raw_payload['ai_reply_action_id']==action.id
-    assert post(w,path+'/claim',{**p,'task_id':permit['task_id'],'history_state_digest':b['history_state_digest']},h).status_code==409
+    assert post(w,path+'/claim',{**p,'task_id':permit['task_id'],'history_state_digest':b['history_state_digest'],'clock_protocol_version':1},h).status_code==409
 
 
 @pytest.mark.parametrize('wrong',['token','generation','digest','clock'])
 def test_native_begin_denies_changed_authority_before_hook_call(wrong,monkeypatch):
     w,p,b,h,permit,value=permitted(monkeypatch);since=int(b['history_since_create_time'])
     monkeypatch.setattr(hook_send_service,'utcnow',lambda:datetime.fromtimestamp(since+60,timezone.utc))
-    request={**p,'task_id':permit['task_id'],'history_state_digest':b['history_state_digest'],
+    request={**p,'task_id':permit['task_id'],'history_state_digest':b['history_state_digest'],'clock_protocol_version':1,
         'send_token':permit['send_token'],'journal_sha256':'d'*64,'attempted_at':datetime.fromtimestamp(since+40,timezone.utc).isoformat()}
     if wrong=='token':request['send_token']='wrong-token'
     if wrong=='generation':request['process_generation']='process-2'
@@ -97,7 +97,7 @@ def test_settlement_cannot_switch_the_registered_flow(monkeypatch):
     w,p,b,h,permit,value,path,now,start=beginning(monkeypatch)
     headers={**h,'X-Inflight-Flow-Id':str(uuid.uuid4())}
     payload={**p,'task_id':permit['task_id'],'send_token':permit['send_token'],
-        'journal_sha256':start['journal_sha256'],'completed_at':now(41),'call_completed':True}
+        'journal_sha256':start['journal_sha256'],'completed_at':now(41), 'local_call_window':{'source':'physical_call_v1','started_at':now(40),'completed_at':now(41),'elapsed_seconds':1.0},'call_completed':True}
     r=post(w,path+'/settle',payload,headers)
     assert r.status_code==409,r.text
     with SessionLocal() as db:
@@ -111,7 +111,7 @@ def test_late_unique_history_classifies_actor_without_overwriting_unknown_ack(mo
     w,p,b,h,permit,value,path,now,start=beginning(monkeypatch)
     since=int(b['history_since_create_time'])
     body={**p,'task_id':permit['task_id'],'send_token':permit['send_token'],'journal_sha256':start['journal_sha256'],
-        'completed_at':now(41),'call_completed':True}
+        'completed_at':now(41), 'local_call_window':{'source':'physical_call_v1','started_at':now(40),'completed_at':now(41),'elapsed_seconds':1.0},'call_completed':True}
     old=post(w,path+'/settle',body,h);assert old.status_code==200 and not old.json()['data']['local_send_observed']
     with SessionLocal() as db:
         action=db.get(ReplyAction,permit['reply_action_id']);immutable=deepcopy(action.ai_payload['native_send_settlement'])
@@ -149,3 +149,101 @@ def test_native_context_change_before_any_trigger_cancels_without_handoff(monkey
         assert db.scalar(select(HandoffEvent)) is None
         assert db.scalar(select(SentAck).where(SentAck.reply_action_id==action.id)).action_phase=='not_attempted'
     assert post(w,path,body,h).json()['data']==result.json()['data']
+
+
+@pytest.mark.parametrize('offset,count', [(2,1),(-2,1),(3600,1),(2,2),(2,0)])
+def test_local_clock_window_settles_skewed_history_without_resending(offset,count,monkeypatch):
+    w,p,b,h,permit,value,path,now,start=beginning(monkeypatch)
+    since=int(b['history_since_create_time'])
+    # Keep negative-clock samples inside the authorized history range.
+    local=40+offset
+    for scan in value['scans']:
+        d=scan['databases'][0];rows=d['pages'][0]
+        for index in range(count):
+            rows.append({**rows[0],'localId':str(7803+index),'CreateTime':str(since+local),
+                'Sequence':str((since+local)*1000+index),'MsgSequence':str(780013+index),
+                'MsgSvrID':str(8000000000000000003+index),'IsSender':'1','StrContent':permit['reply_text']})
+        d['row_count']=d['count_after']=str(len(rows));d['upper_local_id']=rows[-1]['localId'];scan['observed_at']=now(50)
+        scan['local_clock']={'backend_started_at':now(50),'window':{'source':'physical_call_v1',
+            'started_at':now(50+offset),'completed_at':now(50+offset),'elapsed_seconds':0}}
+    body={**p,'binding_id':b['binding_id'],'binding_revision':b['binding_revision'],'capture_id':str(uuid.uuid4()),
+        'coverage':value,'coverage_digest':shared_adapter('hook_contract_rules').digest(value)}
+    monkeypatch.setattr(hook_history_service,'utcnow',lambda:datetime.fromtimestamp(since+60,timezone.utc))
+    assert post(w,f"/workers/{w['id']}/wechat/native-history/coverage",body).status_code==200
+    payload={**p,'task_id':permit['task_id'],'send_token':permit['send_token'],'journal_sha256':start['journal_sha256'],
+        'completed_at':now(41),'call_completed':True,'local_call_window':{'source':'physical_call_v1',
+        'started_at':now(local),'completed_at':now(local+1),'elapsed_seconds':1.0}}
+    observation=post(w,path+'/observe',payload,h)
+    assert observation.status_code==200,observation.text
+    assert observation.json()['data']['candidate_count']==count
+    result=post(w,path+'/settle',payload,h);assert result.status_code==200,result.text
+    assert result.json()['data']['local_send_observed']==(count==1)
+    assert result.json()['data']['automatic_resend_allowed'] is False
+    assert post(w,path+'/settle',payload,h).json()['data']==result.json()['data']
+    changed={**payload,'local_call_window':{**payload['local_call_window'],'started_at':now(local-1)}}
+    assert post(w,path+'/observe',changed,h).status_code==409
+
+
+def test_missing_local_call_clock_cannot_confirm_from_backend_time(monkeypatch):
+    w,p,b,h,permit,value,path,now,start=beginning(monkeypatch)
+    for scan in value['scans']:
+        d=scan['databases'][0];rows=d['pages'][0]
+        rows.append({**rows[0],'localId':'7803','CreateTime':str(int(b['history_since_create_time'])+40),
+            'Sequence':str((int(b['history_since_create_time'])+40)*1000),'MsgSequence':'780013',
+            'MsgSvrID':'8000000000000000003','IsSender':'1','StrContent':permit['reply_text']})
+        d['row_count']=d['count_after']='3';d['upper_local_id']='7803';scan['observed_at']=now(50)
+    monkeypatch.setattr(hook_history_service,'utcnow',lambda:datetime.fromisoformat(now(60)))
+    coverage={**p,'binding_id':b['binding_id'],'binding_revision':b['binding_revision'],'capture_id':str(uuid.uuid4()),
+        'coverage':value,'coverage_digest':shared_adapter('hook_contract_rules').digest(value)}
+    assert post(w,f"/workers/{w['id']}/wechat/native-history/coverage",coverage).status_code==200
+    payload={**p,'task_id':permit['task_id'],'send_token':permit['send_token'],'journal_sha256':start['journal_sha256'],
+        'completed_at':now(41),'call_completed':True}
+    result=post(w,path+'/observe',payload,h)
+    assert result.status_code==200,result.text
+    assert result.json()['data']['unique_local_send_observed'] is False
+    assert result.json()['data']['may_call_hook'] is False
+
+
+def test_old_terminal_receipt_is_not_rewritten_by_new_clock_supplement(monkeypatch):
+    w,p,b,h,permit,value,path,now,start=beginning(monkeypatch)
+    payload={**p,'task_id':permit['task_id'],'send_token':permit['send_token'],'journal_sha256':start['journal_sha256'],
+        'completed_at':now(41),'call_completed':True}
+    first=post(w,path+'/settle',payload,h);assert first.status_code==200,first.text
+    with SessionLocal() as db:
+        saved=db.get(ReplyAction,permit['reply_action_id']).ai_payload['native_send_settlement']
+    payload['local_call_window']={'source':'retained_completed_call_v1','started_at':now(42),
+        'completed_at':now(43),'elapsed_seconds':None}
+    again=post(w,path+'/settle',payload,h);assert again.status_code==200,again.text
+    assert again.json()['data']==first.json()['data']
+    with SessionLocal() as db:
+        assert db.get(ReplyAction,permit['reply_action_id']).ai_payload['native_send_settlement']==saved
+
+
+@pytest.mark.parametrize('phase', ['claim','begin'])
+def test_old_client_cannot_start_new_physical_send(phase, monkeypatch):
+    w,p,b,h,permit,value=permitted(monkeypatch)
+    path=f"/workers/{w['id']}/wechat/native-replies/{permit['reply_action_id']}"
+    request={**p,'task_id':permit['task_id'],'history_state_digest':b['history_state_digest']}
+    if phase=='begin':
+        since=int(b['history_since_create_time'])
+        monkeypatch.setattr(hook_send_service,'utcnow',lambda:datetime.fromtimestamp(since+60,timezone.utc))
+        request.update(send_token=permit['send_token'],journal_sha256='d'*64,
+                       attempted_at=datetime.fromtimestamp(since+40,timezone.utc).isoformat())
+    r=post(w,path+'/'+phase,request,h)
+    assert r.status_code==409 and r.json()['code']=='HOOK_CLOCK_PROTOCOL_UPGRADE_REQUIRED'
+    with SessionLocal() as db:
+        action=db.get(ReplyAction,permit['reply_action_id'])
+        assert not action.ai_payload.get('native_send_attempt')
+        assert db.scalar(select(SentAck)) is None
+
+
+def test_old_registered_attempt_replay_remains_no_call(monkeypatch):
+    w,p,b,h,permit,value,path,now,start=beginning(monkeypatch)
+    old={k:v for k,v in start.items() if k!='clock_protocol_version'}
+    with SessionLocal() as db:
+        action=db.get(ReplyAction,permit['reply_action_id'])
+        action.ai_payload={**action.ai_payload,'native_send_attempt':old};db.commit()
+    r=post(w,path+'/begin',old,h)
+    assert r.status_code==200 and r.json()['data']['may_call_hook'] is False
+    with SessionLocal() as db:
+        assert db.get(ReplyAction,permit['reply_action_id']).ai_payload['native_send_attempt']==old
