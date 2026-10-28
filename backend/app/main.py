@@ -147,11 +147,12 @@ def create_app() -> FastAPI:
                 cleanup["pending"],
             )
         feishu_recovery = recover_handoff_notifications()
-        if feishu_recovery["unknown_settled"] or feishu_recovery["pending_attempted"]:
+        if any(feishu_recovery.values()):
             logger.info(
-                "Feishu handoff recovery unknown_settled=%s pending_attempted=%s",
+                "Feishu handoff recovery unknown_settled=%s pending_attempted=%s failed=%s",
                 feishu_recovery["unknown_settled"],
                 feishu_recovery["pending_attempted"],
+                feishu_recovery["failed"],
             )
         recovery = C3BatchRecoveryLoop()
         recovery.start()

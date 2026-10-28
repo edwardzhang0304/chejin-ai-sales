@@ -3,6 +3,24 @@ import logging
 from pathlib import PurePath
 
 
+def recover_items(items, operation, *, logger, stage, identity):
+    """Isolate item transactions, not discovery/global database failures.
+
+    The operation owns and closes its sessions. Its evidence dict may gain IDs
+    already read from the database, never private payloads or exception text.
+    Failed items are not returned as completed/attempted work.
+    """
+    results, errors = [], 0
+    for item in items:
+        evidence = identity(item)
+        try:
+            results.append(operation(item, evidence))
+        except Exception as exc:
+            errors += 1
+            recovery_failure(logger, stage, exc, **evidence)
+    return results, errors
+
+
 def recovery_log(logger: logging.Logger, level: int, message: str, *args: object) -> None:
     # A broken logging handler must not prevent another recovery stage. Do not
     # catch BaseException: shutdown and process-control exceptions still escape.

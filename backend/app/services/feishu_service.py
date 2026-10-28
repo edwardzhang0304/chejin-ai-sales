@@ -4,10 +4,11 @@ import logging
 import re
 import time
 import uuid
+from datetime import datetime
 from typing import Any
 from zoneinfo import ZoneInfo
 
-from sqlalchemy import select, update
+from sqlalchemy import func, select, update
 from sqlalchemy.orm import Session
 
 from app.core.database import SessionLocal
@@ -17,7 +18,8 @@ from app.models.lead import Lead, LeadContact
 from app.models.sales import Sales
 from app.models.wechat import WechatSessionBinding
 from app.services.audit_service import write_system_log
-from app.services.recovery_logging import recovery_failure
+from app.services.recovery_logging import recovery_failure, recover_items
+from app.services.notification_recovery import notification_cutoff
 from app.services.feishu_adapter import FeishuAdapter, FeishuAdapterError, get_feishu_adapter
 
 
@@ -69,11 +71,10 @@ def run_post_commit_effects(db: Session) -> None:
             sync_sales_open_id(sales_id, normalized_phone)
         except Exception as exc:
             recovery_failure(logger, "sales_feishu_sync", exc, sales_id=sales_id)
-    for handoff_event_id in handoff_ids:
-        try:
-            dispatch_handoff_notification(handoff_event_id)
-        except Exception as exc:
-            recovery_failure(logger, "handoff_notifications", exc, handoff_event_id=handoff_event_id)
+    recover_items(handoff_ids,
+        lambda event_id, evidence: dispatch_handoff_notification(event_id, evidence=evidence),
+        logger=logger, stage="handoff_notifications",
+        identity=lambda event_id: {"handoff_event_id": event_id})
 
 
 def _safe_error_summary(value: str | None) -> str:
@@ -185,70 +186,76 @@ def backfill_sales_open_ids(*, adapter: FeishuAdapter | None = None) -> dict[str
 def _settle_notification(
     handoff_event_id: str,
     *,
+    db: Session,
+    attempted_at: datetime,
     status: str,
     error_code: str | None,
     error_summary: str | None,
     duration_ms: int,
 ) -> None:
-    with SessionLocal() as db:
-        event = db.scalar(
-            select(HandoffEvent)
-            .where(HandoffEvent.id == handoff_event_id)
-            .with_for_update()
-        )
-        if not event or event.notify_status != NOTIFY_SENDING:
-            return
-        event.notify_status = status
-        event.notify_completed_at = utcnow()
-        event.notify_error_code = error_code
-        event.notify_error_summary = _safe_error_summary(error_summary) if error_summary else None
-        from app.services.observability_service import (
-            process_run_id_for_handoff_event,
-            record_server_stage_best_effort,
-        )
+    event = db.scalar(
+        select(HandoffEvent)
+        .where(HandoffEvent.id == handoff_event_id,
+               HandoffEvent.notify_attempted_at == attempted_at)
+        .with_for_update()
+    )
+    if not event or event.notify_status != NOTIFY_SENDING:
+        return
+    event.notify_status = status
+    event.notify_completed_at = utcnow()
+    event.notify_error_code = error_code
+    event.notify_error_summary = _safe_error_summary(error_summary) if error_summary else None
+    # Do not let the telemetry savepoint implicitly flush a failed business
+    # update and log SQL exception text. Let the item boundary handle it safely.
+    db.flush()
+    from app.services.observability_service import (
+        process_run_id_for_handoff_event,
+        record_server_stage_best_effort,
+    )
 
-        record_server_stage_best_effort(
-            db,
-            process_run_id=process_run_id_for_handoff_event(db, event),
-            conversation_id=event.conversation_id,
-            stage_name="handoff.feishu_notify",
-            component="backend",
-            duration_ms=duration_ms,
-            status=(
-                "succeeded"
-                if status == NOTIFY_SUCCEEDED
-                else "failed"
-            ),
-            error_code=error_code,
-            trace_id=str(uuid.uuid4()),
-            stable_key=event.id,
-        )
-        write_system_log(
-            db,
-            event_type=(
-                "handoff_feishu_notify_succeeded"
-                if status == NOTIFY_SUCCEEDED
-                else "handoff_feishu_notify_failed"
-            ),
-            module="c3",
-            target_type="handoff_event",
-            target_id=event.id,
-            lead_id=(
-                db.scalar(
-                    select(Conversation.lead_id).where(
-                        Conversation.conversation_id == event.conversation_id
-                    )
+    record_server_stage_best_effort(
+        db,
+        process_run_id=process_run_id_for_handoff_event(db, event),
+        conversation_id=event.conversation_id,
+        stage_name="handoff.feishu_notify",
+        component="backend",
+        duration_ms=duration_ms,
+        status=(
+            "succeeded"
+            if status == NOTIFY_SUCCEEDED
+            else "failed"
+        ),
+        error_code=error_code,
+        trace_id=str(uuid.uuid4()),
+        stable_key=event.id,
+    )
+    write_system_log(
+        db,
+        event_type=(
+            "handoff_feishu_notify_succeeded"
+            if status == NOTIFY_SUCCEEDED
+            else "handoff_feishu_notify_failed"
+        ),
+        module="c3",
+        target_type="handoff_event",
+        target_id=event.id,
+        lead_id=(
+            db.scalar(
+                select(Conversation.lead_id).where(
+                    Conversation.conversation_id == event.conversation_id
                 )
-            ),
-            metadata={
-                "notify_status": status,
-                "error_code": error_code,
-            },
-        )
-        db.commit()
+            )
+        ),
+        metadata={
+            "notify_status": status,
+            "error_code": error_code,
+        },
+    )
+    db.commit()
 
 
-def _claim_notification(handoff_event_id: str) -> bool:
+def _claim_notification(handoff_event_id: str) -> datetime | None:
+    attempted_at = utcnow()
     with SessionLocal() as db:
         result = db.execute(
             update(HandoffEvent)
@@ -261,14 +268,14 @@ def _claim_notification(handoff_event_id: str) -> bool:
             )
             .values(
                 notify_status=NOTIFY_SENDING,
-                notify_attempted_at=utcnow(),
+                notify_attempted_at=attempted_at,
                 notify_completed_at=None,
                 notify_error_code=None,
                 notify_error_summary=None,
             )
         )
         db.commit()
-        return result.rowcount == 1
+        return attempted_at if result.rowcount == 1 else None
 
 
 def _notification_context(handoff_event_id: str) -> tuple[str, str]:
@@ -341,94 +348,102 @@ def dispatch_handoff_notification(
     handoff_event_id: str,
     *,
     adapter: FeishuAdapter | None = None,
+    evidence: dict | None = None,
 ) -> str:
-    if not _claim_notification(handoff_event_id):
+    attempted_at = _claim_notification(handoff_event_id)
+    if attempted_at is None:
         return "not_claimed"
-    started_at = time.perf_counter()
-    try:
-        open_id, message = _notification_context(handoff_event_id)
-        (adapter or get_feishu_adapter()).send_text_message(open_id, message)
-    except FeishuAdapterError as exc:
-        error_code = "FEISHU_NOTIFY_RESULT_UNKNOWN" if exc.result_unknown else exc.code
-        _settle_notification(
-            handoff_event_id,
-            status=NOTIFY_FAILED,
-            error_code=error_code,
-            error_summary=exc.summary,
-            duration_ms=int(round((time.perf_counter() - started_at) * 1000)),
-        )
-        return error_code
-    except Exception as exc:
-        _settle_notification(
-            handoff_event_id,
-            status=NOTIFY_FAILED,
-            error_code="FEISHU_NOTIFY_RESULT_UNKNOWN",
-            error_summary=f"unexpected_exception={type(exc).__name__}",
-            duration_ms=int(round((time.perf_counter() - started_at) * 1000)),
-        )
-        return "FEISHU_NOTIFY_RESULT_UNKNOWN"
+    if evidence is None:
+        evidence = {}
+    evidence.update(attempt=1, attempted_at=attempted_at.isoformat())
+    # Keep the original attempt locked from the last check through the provider
+    # call and settlement. Another instance's recovery skips it even if a slow
+    # socket/token lock exceeds the age horizon. If the process dies, DB releases
+    # the lock and the durable sending claim can be closed as unknown.
+    with SessionLocal() as db:
+        event = db.scalar(select(HandoffEvent).where(
+            HandoffEvent.id == handoff_event_id,
+            HandoffEvent.notify_status == NOTIFY_SENDING,
+            HandoffEvent.notify_attempted_at == attempted_at).with_for_update())
+        if event is None:
+            return "not_claimed"
+        evidence['conversation_id'] = event.conversation_id
+        evidence['lead_id'] = db.scalar(select(Conversation.lead_id).where(
+            Conversation.conversation_id == event.conversation_id))
+        started_at = time.perf_counter()
+        status, error_code, summary = NOTIFY_SUCCEEDED, None, None
+        try:
+            open_id, message = _notification_context(handoff_event_id)
+            try:
+                (adapter or get_feishu_adapter()).send_text_message(open_id, message)
+            except FeishuAdapterError:
+                raise
+            except Exception as exc:
+                # Only an external-call failure has uncertain delivery here.
+                # Database/context failures must reach the per-item boundary.
+                raise FeishuAdapterError("FEISHU_NOTIFY_RESULT_UNKNOWN",
+                    f"unexpected_exception={type(exc).__name__}", result_unknown=True) from exc
+        except FeishuAdapterError as exc:
+            status = NOTIFY_FAILED
+            error_code = "FEISHU_NOTIFY_RESULT_UNKNOWN" if exc.result_unknown else exc.code
+            summary = exc.summary
+        _settle_notification(handoff_event_id, db=db, attempted_at=attempted_at,
+            status=status, error_code=error_code, error_summary=summary,
+            duration_ms=int(round((time.perf_counter() - started_at) * 1000)))
+        return error_code or status
 
-    _settle_notification(
-        handoff_event_id,
-        status=NOTIFY_SUCCEEDED,
-        error_code=None,
-        error_summary=None,
-        duration_ms=int(round((time.perf_counter() - started_at) * 1000)),
-    )
-    return NOTIFY_SUCCEEDED
+
+def _stale_notification_clause(cutoff):
+    # Older releases could leave sending without attempted_at. Use the persisted
+    # creation time in that case, never treat a fresh legacy row as dead.
+    return (HandoffEvent.notify_status == NOTIFY_SENDING) & (
+        func.coalesce(HandoffEvent.notify_attempted_at, HandoffEvent.created_at) < cutoff)
+
+
+def _recover_handoff_attempt(event_id, evidence, *, cutoff):
+    with SessionLocal() as db:
+        event = db.scalar(select(HandoffEvent).where(HandoffEvent.id == event_id,
+            _stale_notification_clause(cutoff)).with_for_update(skip_locked=True))
+        if event is None:
+            return False
+        evidence.update(conversation_id=event.conversation_id, attempt=1,
+                        attempted_at=event.notify_attempted_at)
+        event.notify_status = NOTIFY_FAILED
+        event.notify_completed_at = utcnow()
+        event.notify_error_code = "FEISHU_NOTIFY_RESULT_UNKNOWN"
+        event.notify_error_summary = "send_claim_expired_without_completion"
+        db.commit()
+        return True
 
 
 def recover_handoff_notifications(*, adapter: FeishuAdapter | None = None) -> dict[str, int]:
-    now = utcnow()
-    with SessionLocal() as db:
-        unknown = db.execute(
-            update(HandoffEvent)
-            .where(HandoffEvent.notify_status == NOTIFY_SENDING)
-            .values(
-                notify_status=NOTIFY_FAILED,
-                notify_completed_at=now,
-                notify_error_code="FEISHU_NOTIFY_RESULT_UNKNOWN",
-                notify_error_summary="service_restarted_after_send_claim",
-            )
-        ).rowcount
-        db.commit()
-    pending = recover_pending_handoff_notifications_once(adapter=adapter)
-    return {
-        "unknown_settled": int(unknown or 0),
-        "pending_attempted": int(pending["attempted"]),
-    }
+    # Startup and periodic recovery share the same live-attempt protection.
+    result = recover_pending_handoff_notifications_once(adapter=adapter)
+    return {"unknown_settled": result["recovered"],
+            "pending_attempted": result["attempted"], "failed": result["failed"]}
 
 
 def recover_pending_handoff_notifications_once(
-    *,
-    adapter: FeishuAdapter | None = None,
-    limit: int = 20,
+    *, adapter: FeishuAdapter | None = None, limit: int = 20,
 ) -> dict[str, int]:
-    """Drain durable, never-attempted notifications without a service restart."""
-
+    """Bounded discovery; each claimed or expired item owns its transaction."""
+    cutoff = notification_cutoff(utcnow())
+    limit = max(1, int(limit))
     with SessionLocal() as db:
-        pending_ids = list(
-            db.scalars(
-                select(HandoffEvent.id)
-                .where(
-                    HandoffEvent.notify_status == NOTIFY_PENDING,
-                    HandoffEvent.notify_attempted_at.is_(None),
-                    HandoffEvent.closed_at.is_(None),
-                    HandoffEvent.deleted_at.is_(None),
-                )
-                .order_by(HandoffEvent.created_at.asc(), HandoffEvent.id.asc())
-                .limit(max(1, int(limit)))
-            ).all()
-        )
-
-    attempted = 0
-    for handoff_event_id in pending_ids:
-        if (
-            dispatch_handoff_notification(
-                handoff_event_id,
-                adapter=adapter,
-            )
-            != "not_claimed"
-        ):
-            attempted += 1
-    return {"examined": len(pending_ids), "attempted": attempted}
+        stale_ids = list(db.scalars(select(HandoffEvent.id).where(
+            _stale_notification_clause(cutoff)).order_by(
+                HandoffEvent.notify_attempted_at, HandoffEvent.id).limit(limit)))
+        pending_ids = list(db.scalars(select(HandoffEvent.id).where(
+            HandoffEvent.notify_status == NOTIFY_PENDING,
+            HandoffEvent.notify_attempted_at.is_(None),
+            HandoffEvent.closed_at.is_(None), HandoffEvent.deleted_at.is_(None))
+            .order_by(HandoffEvent.created_at, HandoffEvent.id).limit(limit)))
+    identity = lambda event_id: {"handoff_event_id": event_id}
+    recovered, recovery_errors = recover_items(stale_ids,
+        lambda event_id, evidence: _recover_handoff_attempt(event_id, evidence, cutoff=cutoff),
+        logger=logger, stage="handoff_attempt_recovery", identity=identity)
+    results, send_errors = recover_items(pending_ids,
+        lambda event_id, evidence: dispatch_handoff_notification(event_id, adapter=adapter, evidence=evidence),
+        logger=logger, stage="handoff_notifications", identity=identity)
+    return {"examined": len(pending_ids), "attempted": sum(r != "not_claimed" for r in results),
+            "recovered": sum(recovered), "failed": recovery_errors + send_errors}

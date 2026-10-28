@@ -1,7 +1,8 @@
 """Durable, per-unanswered-round reminders through the existing Feishu adapter."""
+import logging
 from datetime import timedelta, timezone
 from zoneinfo import ZoneInfo
-from sqlalchemy import select
+from sqlalchemy import func, select
 from app.core.database import SessionLocal
 from app.errors import AppError
 from app.models.base import utcnow
@@ -11,6 +12,10 @@ from app.models.sales import Sales
 from app.services.reply_ownership import aware, state
 from app.services.feishu_adapter import get_feishu_adapter, FeishuAdapterError
 from app.services.audit_service import write_system_log
+from app.services.recovery_logging import recover_items
+from app.services.notification_recovery import notification_cutoff
+
+logger = logging.getLogger(__name__)
 
 
 def next_daytime(now):
@@ -65,7 +70,9 @@ def _followup_allowed(db,conversation):
         raise
 
 
-def dispatch_reminder(reminder_id,*,adapter=None):
+def dispatch_reminder(reminder_id,*,adapter=None,evidence=None):
+    if evidence is None:
+        evidence = {}
     # Conversation lock serializes human replies/reinvites against the final
     # pre-send check. No Worker or model work is triggered by a reminder.
     with SessionLocal() as db:
@@ -73,10 +80,12 @@ def dispatch_reminder(reminder_id,*,adapter=None):
         if not hint:
             return 'missing'
         conversation_id=hint.conversation_id
+        evidence.update(conversation_id=conversation_id, attempt=hint.attempt_count, attempted_at=hint.attempted_at)
         conversation=db.scalar(select(Conversation).where(Conversation.conversation_id==conversation_id).with_for_update().execution_options(populate_existing=True))
         row=db.scalar(select(HumanReplyReminder).where(HumanReplyReminder.id==reminder_id).with_for_update().execution_options(populate_existing=True))
         binding=db.scalar(select(WechatSessionBinding).where(WechatSessionBinding.conversation_id==row.conversation_id,
             WechatSessionBinding.deleted_at.is_(None)))
+        evidence["lead_id"] = conversation.lead_id if conversation else None
         now=utcnow()
         if not _current(conversation,row,binding) or not _followup_allowed(db,conversation):
             if row.closed_at is None:
@@ -101,6 +110,8 @@ def dispatch_reminder(reminder_id,*,adapter=None):
         row.status='sending'
         row.attempt_count+=1
         row.attempted_at=now
+        attempt, attempted_at = row.attempt_count, now
+        evidence.update(attempt=attempt, attempted_at=attempted_at)
         db.commit()  # crash after this point is unknown, never retried blindly
     with SessionLocal() as db:
         from app.services.followup_eligibility import lock_leads
@@ -111,7 +122,7 @@ def dispatch_reminder(reminder_id,*,adapter=None):
         binding=db.scalar(select(WechatSessionBinding).where(WechatSessionBinding.conversation_id==row.conversation_id,
             WechatSessionBinding.deleted_at.is_(None)))
         now=utcnow()
-        if row.status!='sending':
+        if row.status!='sending' or row.attempt_count != attempt or aware(row.attempted_at) != attempted_at:
             return 'not_claimed'
         if (not _current(conversation,row,binding) or not _followup_allowed(db,conversation)
                 or not _facts_ready(binding,row,now) or next_daytime(now)>now):
@@ -147,23 +158,45 @@ def dispatch_reminder(reminder_id,*,adapter=None):
         return result
 
 
-def recover_reminders_once(*,adapter=None,limit=20):
-    now=utcnow()
-    from app.core.config import get_settings
-    # A bounded provider request may still be running in another server. Do
-    # not recover a fresh claim as unknown while its owner is inside the call.
-    cutoff=now-timedelta(seconds=max(120,4*get_settings().feishu_http_timeout_seconds))
+def _stale_reminder_clause(cutoff):
+    return (HumanReplyReminder.status == 'sending') & (
+        func.coalesce(HumanReplyReminder.attempted_at, HumanReplyReminder.created_at) < cutoff)
+
+
+def _recover_reminder_attempt(reminder_id, evidence, *, cutoff):
     with SessionLocal() as db:
-        for row in db.scalars(select(HumanReplyReminder).where(HumanReplyReminder.status=='sending',
-                HumanReplyReminder.attempted_at<cutoff).with_for_update(skip_locked=True)):
-            row.status='unknown'
-            row.error_code='FEISHU_NOTIFY_RESULT_UNKNOWN'
-            row.attempts=[*(row.attempts or []),{'number':row.attempt_count,'at':now.isoformat(),'result':'unknown','error_code':row.error_code}]
+        row = db.scalar(select(HumanReplyReminder).where(HumanReplyReminder.id == reminder_id,
+            _stale_reminder_clause(cutoff)).with_for_update(skip_locked=True))
+        if row is None:
+            return False
+        evidence.update(conversation_id=row.conversation_id, attempt=row.attempt_count,
+                        attempted_at=row.attempted_at)
+        row.status = 'unknown'
+        row.error_code = 'FEISHU_NOTIFY_RESULT_UNKNOWN'
+        row.attempts = [*(row.attempts or []), {'number': row.attempt_count,
+            'at': utcnow().isoformat(), 'result': 'unknown', 'error_code': row.error_code}]
+        db.commit()
+        return True
+
+
+def recover_reminders_once(*,adapter=None,limit=20):
+    now = utcnow()
+    cutoff = notification_cutoff(now)
+    limit = max(1, int(limit))
+    with SessionLocal() as db:
+        stale_ids = list(db.scalars(select(HumanReplyReminder.id).where(_stale_reminder_clause(cutoff))
+            .order_by(HumanReplyReminder.attempted_at, HumanReplyReminder.id).limit(limit)))
         ids=list(db.scalars(select(HumanReplyReminder.id).where(HumanReplyReminder.closed_at.is_(None),
             HumanReplyReminder.status.in_({'pending','failed'}),HumanReplyReminder.attempt_count<3,
             HumanReplyReminder.next_attempt_at<=now).order_by(
                 HumanReplyReminder.last_checked_at.asc().nullsfirst(),
                 HumanReplyReminder.next_attempt_at,HumanReplyReminder.id).limit(limit)))
-        db.commit()
-    results=[dispatch_reminder(mid,adapter=adapter) for mid in ids]
-    return {'examined':len(ids),'attempted':sum(r in {'succeeded','failed','unknown'} for r in results)}
+    identity = lambda mid: {'reminder_id': mid}
+    recovered, recovery_errors = recover_items(stale_ids,
+        lambda mid, evidence: _recover_reminder_attempt(mid, evidence, cutoff=cutoff),
+        logger=logger, stage='human_reminder_attempt_recovery', identity=identity)
+    results, send_errors = recover_items(ids,
+        lambda mid, evidence: dispatch_reminder(mid, adapter=adapter, evidence=evidence),
+        logger=logger, stage='human_reminders', identity=identity)
+    return {'examined':len(ids),'attempted':sum(r in {'succeeded','failed','unknown'} for r in results),
+            'recovered':sum(recovered), 'failed': recovery_errors+send_errors}

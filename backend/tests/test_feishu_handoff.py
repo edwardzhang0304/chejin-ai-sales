@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from datetime import timedelta
 import threading
 import uuid
 from types import SimpleNamespace
@@ -541,7 +542,7 @@ def test_periodic_recovery_sends_committed_pending_without_restart(monkeypatch):
         adapter=fake,
     )
 
-    assert result == {"examined": 1, "attempted": 1}
+    assert result == {"examined": 1, "attempted": 1, "recovered": 0, "failed": 0}
     assert len(fake.send_calls) == 1
     with SessionLocal() as db:
         settled = db.get(HandoffEvent, event_id)
@@ -798,6 +799,7 @@ def test_restart_sends_unattempted_pending_but_never_resends_sending(monkeypatch
             status="created",
             handoff_reason_code="HANDOFF_REQUIRED",
             notify_status="sending",
+            created_at=feishu_service.utcnow()-timedelta(hours=1),
         )
         db.add_all([pending, sending])
         db.commit()
@@ -805,7 +807,7 @@ def test_restart_sends_unattempted_pending_but_never_resends_sending(monkeypatch
         sending_id = sending.id
 
     result = feishu_service.recover_handoff_notifications(adapter=fake)
-    assert result == {"unknown_settled": 1, "pending_attempted": 1}
+    assert result == {"unknown_settled": 1, "pending_attempted": 1, "failed": 0}
     assert len(fake.send_calls) == 1
     with SessionLocal() as db:
         assert db.get(HandoffEvent, pending_id).notify_status == "succeeded"
@@ -963,8 +965,12 @@ def test_send_settlement_crash_is_unknown_after_restart_and_never_resends(monkey
         assert db.get(HandoffEvent, event_id).notify_status == "sending"
 
     monkeypatch.setattr(feishu_service, "_settle_notification", original_settle)
+    # A fresh claim could belong to another live server; startup must leave it.
+    assert feishu_service.recover_handoff_notifications(adapter=fake)["unknown_settled"] == 0
+    later = feishu_service.utcnow()+timedelta(hours=1)
+    monkeypatch.setattr(feishu_service, "utcnow", lambda: later)
     result = feishu_service.recover_handoff_notifications(adapter=fake)
-    assert result == {"unknown_settled": 1, "pending_attempted": 0}
+    assert result == {"unknown_settled": 1, "pending_attempted": 0, "failed": 0}
     assert len(fake.send_calls) == 1
     with SessionLocal() as db:
         event = db.get(HandoffEvent, event_id)

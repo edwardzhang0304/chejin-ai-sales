@@ -22,6 +22,7 @@ from .evidence_paths import artifacts, incident_roots, update_root
 from .incident_evidence import _sanitize, _SECRET_KEY_RE, _FORBIDDEN_FILE_RE
 from . import __version__
 from .diagnostic_selection import SnapshotPriority, json_shape_invalid
+from .diagnostic_callback import summarize_callback
 
 MAX_BYTES = 100 * 1024 * 1024
 MAX_FILE_BYTES = 8 * 1024 * 1024
@@ -292,6 +293,7 @@ class Collector:
             self.record(name, "read_failed", error_type=type(exc).__name__)
             return
         snapshots = []
+        callback_packets = []
         snapshot_at = datetime.now(timezone.utc).isoformat()
         snapshot_deadline = min(self.deadline, time.monotonic() + DATABASE_SECONDS)
         try:
@@ -328,8 +330,11 @@ class Collector:
                     for row in rows:
                         if len(payload) >= MAX_ROWS or self.limited() or time.monotonic() >= snapshot_deadline:
                             truncated = True
-                            if row["diagnostic_priority"]:
-                                self.record(table, "omitted", reason="critical_rows_limit", omitted_at_least=1)
+                            self.record(table, "omitted", reason=("critical_rows_limit" if row["diagnostic_priority"]
+                                        else "row_or_time_limit"), omitted_at_least=1,
+                                        receive_seq=dict(row).get('receive_seq'),
+                                        **({'original_count':None, 'collected_count':0, 'omitted_count':None}
+                                           if table == 'hook_raw_inbox' else {}))
                             break
                         record = dict(row)
                         important = record.pop("diagnostic_priority", False)
@@ -337,30 +342,19 @@ class Collector:
                             self.priority_voices.append(tuple(record.get(k) for k in
                                 ('self_wxid', 'account_epoch', 'native_msg_id')))
                         callback = record.pop("diagnostic_callback", None)
-                        if callback is not None:
-                            try:
-                                raw = json.loads(callback)
-                                messages = raw.get("msglist", [])
-                                if isinstance(messages, dict):
-                                    messages = [messages]
-                                record["callback_messages"] = []
-                                for message in messages[:100] if isinstance(messages, list) else []:
-                                    if not isinstance(message, dict):
-                                        continue
-                                    entry = {k: message[k] for k in (
-                                        "msgtype", "msgsvrid", "createtime", "timestamp", "clientmsgid",
-                                        "localid") if isinstance(message.get(k), (str, int, float))}
-                                    text = message.get("msg")
-                                    if isinstance(text, str):
-                                        entry["message_bytes"] = len(text.encode("utf-8"))
-                                        entry["message_sha256"] = hashlib.sha256(text.encode("utf-8")).hexdigest()
-                                        entry["friend_added_notice"] = "现在可以开始聊天了" in text
-                                    record["callback_messages"].append(entry)
-                            except (ValueError, TypeError, AttributeError):
-                                record["callback_summary_unavailable"] = True
+                        if table == 'hook_raw_inbox':
+                            entries, summary = summarize_callback(callback, raw_bytes=record.get('raw_body_bytes'),
+                                expired=lambda: self.limited() or time.monotonic() >= snapshot_deadline)
+                            record['callback_messages'] = entries
+                            record['callback_summary'] = summary
+                            for reason in summary['reasons']:
+                                self.record(table, 'omitted', reason=reason, receive_seq=record.get('receive_seq'),
+                                    original_count=summary['original_count'], collected_count=summary['collected_count'],
+                                    omitted_count=summary['omitted_count'])
                         for k, v in record.items():
                             if v == "[OMITTED: cell_size_limit]":
-                                self.record(table, "omitted", reason="cell_size_limit", field=k)
+                                self.record(table, "omitted", reason="cell_size_limit", field=k,
+                                            receive_seq=record.get('receive_seq'))
                             if isinstance(v, str) and (k.endswith("_json") or k in {"metadata", "value"}):
                                 try:
                                     record[k] = json.loads(v)
@@ -377,10 +371,15 @@ class Collector:
                         size = len(_json(cleaned))
                         if table_bytes + size > MAX_FILE_BYTES:
                             truncated = True
-                            self.record(table, "omitted", reason="table_size_limit")
+                            summary = record.get('callback_summary', {})
+                            self.record(table, "omitted", reason="table_size_limit", receive_seq=record.get('receive_seq'),
+                                        original_count=summary.get('original_count'), collected_count=0,
+                                        omitted_count=summary.get('original_count'))
                             break
                         table_bytes += size
                         payload.append(cleaned)
+                        if table == 'hook_raw_inbox':
+                            callback_packets.append((record.get('receive_seq'), record['callback_summary']['original_count']))
                     rows.close()
                     if priority:
                         priority.captured_chain(table, payload)
@@ -406,6 +405,10 @@ class Collector:
             db.close()  # Release the read snapshot before compression or file collection.
         for member, data, source in snapshots:
             self.add(archive, member, data, source)
+            if source == 'hook_raw_inbox' and member not in self.members:
+                for seq, original_count in callback_packets:
+                    self.record(source, 'omitted', reason='callback_snapshot_total_size_limit', receive_seq=seq,
+                                original_count=original_count, collected_count=0, omitted_count=original_count)
 
     def priority_recovery(self, archive):
         """Find unresolved journals independently of age, then follow their index.

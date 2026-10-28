@@ -3340,10 +3340,10 @@ def append_log(
     stored_metadata = dict(metadata or {})
     # A failure remains evidence-worthy even when its caller can recover and
     # deliberately logs WARN/INFO. Log severity is not the capture contract.
-    capture_incident = bool(
-        force_incident or error_code
-        or str(level or "").upper() in {"ERROR", "WARN", "WARNING"}
-    )
+    from .log_evidence_rules import is_fault_evidence
+    capture_incident = is_fault_evidence(level, error_code, force_incident=force_incident)
+    if force_incident:
+        stored_metadata["force_incident"] = True
     if not include_exception_text:
         # Filtering is a caller policy, not a missing-field default to fill in.
         stored_metadata.pop("traceback", None)

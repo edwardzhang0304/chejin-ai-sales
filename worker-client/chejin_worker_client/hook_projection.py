@@ -10,12 +10,13 @@ from . import storage
 from .hook_facts import callback_observations
 from .hook_inbox import HookReceiveScope
 from .models import utc_now_iso
+from .hook_callback_contract import MAX_CALLBACK_ENTRIES
 
 PROJECTION_VERSION = "hook-observation-projection-v3"
 READABLE_PROJECTION_VERSIONS = frozenset({"hook-observation-projection-v2", PROJECTION_VERSION})
 # Both intake and business recovery write the same SQLite projection table.
 PROJECTION_MAX_BYTES = 128 * 1024 * 1024
-PROJECTION_MAX_ENTRIES = 200
+PROJECTION_MAX_ENTRIES = MAX_CALLBACK_ENTRIES
 
 
 def create_projection_store() -> "NativeProjectionStore":

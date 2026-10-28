@@ -6,6 +6,7 @@ priority; it never authorizes deletion, replay, delivery, or recovery.
 import json
 import sqlite3
 import time
+from .log_evidence_rules import stored_fault_evidence
 
 CHAIN = ('hook_raw_inbox', 'hook_observation_projection', 'hook_delivery_outbox')
 STATE_COLUMNS = {
@@ -111,7 +112,17 @@ class SnapshotPriority:
         # Explicit identifiers in recent faults outrank unrelated unfinished work.
         if {'metadata', 'level'} <= self.columns.get('local_logs', set()):
             try:
-                for row in db.execute("SELECT CASE WHEN length(metadata)<=65536 THEN metadata END FROM local_logs WHERE lower(level) IN ('error','critical','warning') ORDER BY rowid DESC LIMIT 50"):
+                def fault(level, code, metadata):
+                    try:
+                        value = json.loads(metadata) if isinstance(metadata, str) else None
+                    except (ValueError, RecursionError):
+                        value = None
+                    return int(stored_fault_evidence(level, code, value))
+
+                db.create_function('diagnostic_fault', 3, fault)
+                code = 'error_code' if 'error_code' in self.columns['local_logs'] else 'NULL'
+                meta = 'CASE WHEN length(metadata)<=65536 THEN metadata END'
+                for row in db.execute(f"SELECT {meta} FROM local_logs WHERE diagnostic_fault(level,{code},{meta}) ORDER BY rowid DESC LIMIT 50"):
                     try:
                         value = json.loads(row[0]) if isinstance(row[0], str) and len(row[0]) <= 65536 else None
                     except (ValueError, RecursionError):
@@ -201,7 +212,8 @@ class SnapshotPriority:
         ordered = sorted(roots, key=lambda seq: (roots[seq], seq))
         self.sequences = ordered[:limit]
         if len(ordered) > limit:
-            record('hook_receive_chain', 'omitted', reason='critical_chain_limit', omitted_at_least=len(ordered)-limit)
+            record('hook_receive_chain', 'omitted', reason='critical_chain_limit', omitted_at_least=len(ordered)-limit,
+                   receive_sequences=ordered[limit:limit+50], identifiers_truncated=len(ordered)>limit+50)
         self.captured = {}
 
     def query(self, table, expressions):
