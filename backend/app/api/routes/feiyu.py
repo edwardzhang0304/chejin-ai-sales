@@ -73,7 +73,23 @@ def create_feiyu_lead(
     try:
         data = lead_service.create_lead(db, LeadCreate(**payload.model_dump()), actor)
         db.commit()
-        return ok(data)
+        # The Feiyu receiver only needs a compact, unambiguous acknowledgement.
+        # In particular, do not include the potentially large cross-channel
+        # potential_duplicates list in this machine-to-machine response.
+        acknowledgement = {
+            key: data[key]
+            for key in (
+                "created",
+                "id",
+                "status",
+                "assign_status",
+                "sales_id",
+                "sales_name",
+                "assignment",
+            )
+            if key in data
+        }
+        return ok(acknowledgement)
     except DuplicateLeadError:
         db.commit()
         raise

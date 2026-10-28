@@ -3,7 +3,7 @@ from datetime import datetime, timedelta, timezone
 import time
 from typing import Any
 
-from sqlalchemy import and_, func, or_, select
+from sqlalchemy import and_, func, or_, select, text
 from sqlalchemy.orm import Session, selectinload
 
 from app.core.request_context import ActorContext
@@ -16,6 +16,22 @@ from app.schemas.lead import LeadCreate, LeadUpdate, MarkInvalidRequest
 from app.services import contact_utils
 from app.services.assignment_service import assign_lead_round_robin
 from app.services.audit_service import write_log
+
+
+# Shared transaction-scoped lock for native lead creation. It serializes the
+# check-and-create path across API workers without imposing a unique constraint
+# that would also prevent re-entry of invalid/deleted leads.
+_LEAD_CREATE_LOCK_NAMESPACE = 1128811086
+_LEAD_CREATE_LOCK_KEY = 1
+
+
+def _lock_lead_creation(db: Session) -> None:
+    if db.get_bind().dialect.name != "postgresql":
+        return
+    db.execute(
+        text("SELECT pg_advisory_xact_lock(:namespace, :lock_key)"),
+        {"namespace": _LEAD_CREATE_LOCK_NAMESPACE, "lock_key": _LEAD_CREATE_LOCK_KEY},
+    )
 
 
 def _normalize_payload_contacts(payload: LeadCreate | LeadUpdate) -> dict[str, list[contact_utils.NormalizedContact]]:
@@ -194,6 +210,7 @@ def _record_duplicate(
 def create_lead(db: Session, payload: LeadCreate, actor: ActorContext) -> dict:
     lead_received_started = time.perf_counter()
     normalized = _normalize_payload_contacts(payload)
+    _lock_lead_creation(db)
     phone_hashes = [c.contact_hash for c in normalized["phones"]]
     existing = _find_existing_active_by_phone_hashes(db, phone_hashes)
 

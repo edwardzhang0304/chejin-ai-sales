@@ -1,3 +1,4 @@
+import json
 from types import SimpleNamespace
 
 import pytest
@@ -6,7 +7,9 @@ from sqlalchemy import func, select
 
 from app.core.database import Base, SessionLocal, engine
 from app.main import app
-from app.models.lead import Lead, LeadContact, LeadDuplicateEvent
+from app.enums import TaskBlockCode, TaskStatus, TaskType
+from app.models.lead import AssignmentRoundRobinState, Lead, LeadAssignment, LeadContact, LeadDuplicateEvent
+from app.models.task import Task
 from app.services import lead_service
 
 
@@ -57,6 +60,19 @@ def _lead_count() -> int:
         return db.scalar(select(func.count()).select_from(Lead)) or 0
 
 
+def _manual_create(name: str, phone: str):
+    return client.post(
+        "/api/leads",
+        json={"customer_name": name, "phones": [phone]},
+    )
+
+
+def _round_robin_cursor() -> str | None:
+    with SessionLocal() as db:
+        state = db.get(AssignmentRoundRobinState, 1)
+        return state.current_sales_id if state else None
+
+
 def test_valid_secret_creates_native_lead_with_optional_fields_and_assignment():
     sales_ids = _create_sales("张伟")
 
@@ -83,6 +99,8 @@ def test_valid_secret_creates_native_lead_with_optional_fields_and_assignment():
         lead = db.get(Lead, data["id"])
         contacts = list(db.scalars(select(LeadContact).where(LeadContact.lead_id == data["id"])))
         assert lead is not None
+        assert lead.source_type == "manual"
+        assert lead.source_name_snapshot == "人工录入"
         assert lead.custom_fields["feiyu"] == {"id": "clue-123", "adv_id": "ad-456"}
         assert isinstance(lead.custom_fields.get("remark_code"), str)
         assert {contact.contact_type for contact in contacts} == {"phone", "wechat", "email"}
@@ -220,3 +238,410 @@ def test_endpoint_calls_native_create_lead(monkeypatch):
 
     assert response.status_code == 200
     assert calls == [("王先生", "00000000-0000-0000-0000-00000000f001", "Feiyu integration")]
+
+
+def test_manual_then_feiyu_duplicate_keeps_original_lead_and_assignment():
+    sales_ids = _create_sales("张伟", "李娜")
+    manual = _manual_create("手工线索", "13896676678")
+    assert manual.status_code == 200
+    original = manual.json()["data"]
+    cursor_before_duplicate = _round_robin_cursor()
+
+    duplicate = client.post(
+        FEIYU_LEADS_URL,
+        headers=_headers(),
+        json={"customer_name": "飞鱼重复线索", "phones": ["13896676678"]},
+    )
+
+    assert duplicate.status_code == 409
+    assert duplicate.json()["code"] == "LEAD_PHONE_DUPLICATED"
+    assert duplicate.json()["data"]["duplicate_lead"]["id"] == original["id"]
+    assert duplicate.json()["data"]["duplicate_lead"]["sales_id"] == original["sales_id"] == sales_ids[0]
+    assert _lead_count() == 1
+    assert _round_robin_cursor() == cursor_before_duplicate
+    with SessionLocal() as db:
+        lead = db.get(Lead, original["id"])
+        assert lead is not None
+        assert lead.source_type == "manual"
+        assert lead.duplicate_count == 1
+        assert db.scalar(select(func.count()).select_from(LeadDuplicateEvent)) == 1
+
+
+def test_feiyu_then_manual_duplicate_keeps_original_lead_and_assignment():
+    sales_ids = _create_sales("张伟", "李娜")
+    feiyu = client.post(
+        FEIYU_LEADS_URL,
+        headers=_headers(),
+        json={"customer_name": "飞鱼线索", "phones": ["13896676678"]},
+    )
+    assert feiyu.status_code == 200
+    original = feiyu.json()["data"]
+    cursor_before_duplicate = _round_robin_cursor()
+
+    duplicate = _manual_create("手工重复线索", "13896676678")
+
+    assert duplicate.status_code == 409
+    assert duplicate.json()["code"] == "LEAD_PHONE_DUPLICATED"
+    assert duplicate.json()["data"]["duplicate_lead"]["id"] == original["id"]
+    assert duplicate.json()["data"]["duplicate_lead"]["sales_id"] == original["sales_id"] == sales_ids[0]
+    assert _lead_count() == 1
+    assert _round_robin_cursor() == cursor_before_duplicate
+    with SessionLocal() as db:
+        lead = db.get(Lead, original["id"])
+        assert lead is not None
+        assert lead.source_type == "manual"
+        assert lead.duplicate_count == 1
+        assert db.scalar(select(func.count()).select_from(LeadDuplicateEvent)) == 1
+
+
+def test_interleaved_manual_and_feiyu_creates_share_round_robin_and_duplicates_do_not_advance_it():
+    sales_ids = _create_sales("张伟", "李娜")
+    first_manual = _manual_create("手工一", "13896676671")
+    assert first_manual.status_code == 200
+    assert first_manual.json()["data"]["sales_id"] == sales_ids[0]
+    cursor_after_manual = _round_robin_cursor()
+    assert cursor_after_manual == sales_ids[1]
+
+    first_feiyu = client.post(
+        FEIYU_LEADS_URL,
+        headers=_headers(),
+        json={"customer_name": "飞鱼一", "phones": ["13896676672"]},
+    )
+    assert first_feiyu.status_code == 200
+    assert first_feiyu.json()["data"]["sales_id"] == sales_ids[1]
+    cursor_after_feiyu = _round_robin_cursor()
+    assert cursor_after_feiyu == sales_ids[0]
+
+    repeated = client.post(
+        FEIYU_LEADS_URL,
+        headers=_headers(),
+        json={"customer_name": "飞鱼重复手工一", "phones": ["13896676671"]},
+    )
+    assert repeated.status_code == 409
+    assert _round_robin_cursor() == cursor_after_feiyu
+
+    second_manual = _manual_create("手工二", "13896676673")
+    assert second_manual.status_code == 200
+    assert second_manual.json()["data"]["sales_id"] == sales_ids[0]
+    second_feiyu = client.post(
+        FEIYU_LEADS_URL,
+        headers=_headers(),
+        json={"customer_name": "飞鱼二", "phones": ["13896676674"]},
+    )
+    assert second_feiyu.status_code == 200
+    assert second_feiyu.json()["data"]["sales_id"] == sales_ids[1]
+
+    with SessionLocal() as db:
+        assignments = list(
+            db.scalars(select(LeadAssignment).order_by(LeadAssignment.created_at.asc()))
+        )
+        assert len(assignments) == 4
+        assert [item.to_sales_id for item in assignments] == [
+            sales_ids[0], sales_ids[1], sales_ids[0], sales_ids[1]
+        ]
+        assert db.scalar(select(func.count()).select_from(LeadDuplicateEvent)) == 1
+    assert _lead_count() == 4
+
+
+def test_feiyu_create_generates_native_add_friend_task():
+    sales_ids = _create_sales("张伟")
+    response = client.post(
+        FEIYU_LEADS_URL,
+        headers=_headers(),
+        json={"customer_name": "飞鱼线索", "phones": ["13896676678"]},
+    )
+
+    assert response.status_code == 200
+    lead_id = response.json()["data"]["id"]
+    with SessionLocal() as db:
+        lead = db.get(Lead, lead_id)
+        task = db.scalar(
+            select(Task).where(Task.lead_id == lead_id, Task.task_type == TaskType.add_friend.value)
+        )
+        assert lead is not None
+        assert task is not None
+        assert task.sales_id == sales_ids[0]
+        assert task.status == TaskStatus.blocked.value
+        assert task.block_code == TaskBlockCode.SALES_WORKER_NOT_BOUND.value
+
+
+def test_feiyu_lead_without_sales_can_be_natively_assigned_later():
+    created = client.post(
+        FEIYU_LEADS_URL,
+        headers=_headers(),
+        json={"customer_name": "先入池线索", "phones": ["13896676678"]},
+    )
+    assert created.status_code == 200
+    data = created.json()["data"]
+    assert data["status"] == "unassigned"
+    assert data["assign_status"] == "assign_failed"
+    assert data["assignment"]["status"] == "failed"
+    lead_id = data["id"]
+
+    sales_ids = _create_sales("张伟")
+    retried = client.post("/api/leads/retry-auto-assign", json={"lead_ids": [lead_id]})
+
+    assert retried.status_code == 200
+    assert retried.json()["data"]["succeeded"] == 1
+    assert retried.json()["data"]["items"][0]["sales_id"] == sales_ids[0]
+    with SessionLocal() as db:
+        lead = db.get(Lead, lead_id)
+        assert lead is not None
+        assert lead.status == "assigned"
+        assert lead.assign_status == "assigned"
+
+
+def test_feiyu_ack_is_compact_when_full_native_result_has_many_cross_channel_suggestions(monkeypatch):
+    _create_sales("张伟")
+    shared_wechat = "same-wechat-contact"
+    shared_email = "same-contact@example.test"
+    for index in range(10):
+        response = client.post(
+            "/api/leads",
+            json={
+                "customer_name": ("客户" * 22) + f"{index:02d}",
+                "phones": [f"138966700{index:02d}"],
+                "wechats": [shared_wechat],
+                "emails": [shared_email],
+            },
+        )
+        assert response.status_code == 200
+
+    original_create = lead_service.create_lead
+    full_results = []
+
+    def capture_native_result(db, payload, actor):
+        result = original_create(db, payload, actor)
+        full_results.append(result)
+        return result
+
+    monkeypatch.setattr(lead_service, "create_lead", capture_native_result)
+    response = client.post(
+        FEIYU_LEADS_URL,
+        headers=_headers(),
+        json={
+            "customer_name": "最终飞鱼线索",
+            "phones": ["13896679999"],
+            "wechats": [shared_wechat],
+            "emails": [shared_email],
+        },
+    )
+
+    assert response.status_code == 200
+    assert len(full_results) == 1
+    assert len(full_results[0]["potential_duplicates"]["wechat"]) == 10
+    assert len(full_results[0]["potential_duplicates"]["email"]) == 10
+    assert len(json.dumps(full_results[0], ensure_ascii=False, separators=(",", ":")).encode("utf-8")) > 4096
+    assert len(response.content) < 4096
+    body = response.json()
+    assert body["code"] == "OK"
+    assert body["data"]["created"] is True
+    assert body["data"]["status"] == "assigned"
+    assert body["data"]["assign_status"] == "assigned"
+    assert body["data"]["assignment"]["status"] == "succeeded"
+    assert "potential_duplicates" not in body["data"]
+
+
+def test_create_lead_acquires_shared_creation_lock_before_phone_dedup(monkeypatch):
+    order = []
+    original_find = lead_service._find_existing_active_by_phone_hashes
+
+    def record_find(*args, **kwargs):
+        order.append("dedup")
+        return original_find(*args, **kwargs)
+
+    monkeypatch.setattr(lead_service, "_lock_lead_creation", lambda _db: order.append("lock"))
+    monkeypatch.setattr(lead_service, "_find_existing_active_by_phone_hashes", record_find)
+
+    response = _manual_create("顺序核验", "13896676678")
+
+    assert response.status_code == 200
+    assert order[:2] == ["lock", "dedup"]
+
+
+def test_postgresql_create_lock_uses_stable_transaction_advisory_key():
+    calls = []
+    db = SimpleNamespace(
+        get_bind=lambda: SimpleNamespace(dialect=SimpleNamespace(name="postgresql")),
+        execute=lambda statement, params: calls.append((str(statement), params)),
+    )
+
+    lead_service._lock_lead_creation(db)
+
+    assert calls == [
+        (
+            "SELECT pg_advisory_xact_lock(:namespace, :lock_key)",
+            {"namespace": 1128811086, "lock_key": 1},
+        )
+    ]
+
+
+def test_non_postgresql_create_lock_is_a_noop():
+    calls = []
+    db = SimpleNamespace(
+        get_bind=lambda: SimpleNamespace(dialect=SimpleNamespace(name="sqlite")),
+        execute=lambda *args, **kwargs: calls.append((args, kwargs)),
+    )
+
+    lead_service._lock_lead_creation(db)
+
+    assert calls == []
+
+
+def _postgresql_actor():
+    from uuid import UUID
+
+    from app.core.request_context import ActorContext
+
+    return ActorContext(
+        operator_id=UUID("00000000-0000-0000-0000-000000000001"),
+        operator_name="PostgreSQL concurrency test",
+        role="authenticated",
+        ip_address=None,
+        user_agent=None,
+        request_id="postgresql-concurrency-test",
+    )
+
+
+def _postgresql_payload(name: str, *phones: str):
+    from app.schemas.lead import LeadCreate
+
+    return LeadCreate(customer_name=name, phones=list(phones))
+
+
+def _postgresql_concurrent_create(payload, state):
+    from sqlalchemy import text
+
+    from app.errors import DuplicateLeadError
+
+    with SessionLocal() as db:
+        state["pid"] = db.scalar(text("SELECT pg_backend_pid()"))
+        state["started"].set()
+        try:
+            data = lead_service.create_lead(db, payload, _postgresql_actor())
+            db.commit()
+            return {"kind": "created", "data": data}
+        except DuplicateLeadError as exc:
+            # The Feiyu and native lead routes commit duplicate audit events.
+            db.commit()
+            return {"kind": "duplicate", "data": exc.data}
+        except Exception:
+            db.rollback()
+            raise
+
+
+def _postgresql_waiting_on_creation_lock(pid: int, timeout_seconds: float = 5.0) -> bool:
+    from time import monotonic, sleep
+
+    from sqlalchemy import text
+
+    deadline = monotonic() + timeout_seconds
+    statement = text(
+        "SELECT wait_event_type, query FROM pg_stat_activity WHERE pid = :pid"
+    )
+    with SessionLocal() as db:
+        while monotonic() < deadline:
+            row = db.execute(statement, {"pid": pid}).one_or_none()
+            if (
+                row
+                and row.wait_event_type == "Lock"
+                and "pg_advisory_xact_lock" in row.query.lower()
+            ):
+                return True
+            sleep(0.025)
+    return False
+
+
+def _postgresql_finish_contender(owner, payload, *, commit_owner: bool):
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Event
+
+    state = {"started": Event()}
+    executor = ThreadPoolExecutor(max_workers=1)
+    future = executor.submit(_postgresql_concurrent_create, payload, state)
+    try:
+        assert state["started"].wait(5), "contending connection did not start"
+        waited = _postgresql_waiting_on_creation_lock(state["pid"])
+        if commit_owner:
+            owner.commit()
+        else:
+            owner.rollback()
+        outcome = future.result(timeout=10)
+        assert waited, "contending connection never waited on pg_advisory_xact_lock"
+        return outcome
+    finally:
+        if owner.in_transaction():
+            owner.rollback()
+        executor.shutdown(wait=True, cancel_futures=True)
+
+
+@pytest.mark.skipif(
+    engine.dialect.name != "postgresql",
+    reason="requires independent PostgreSQL connections; SQLite is not concurrency evidence",
+)
+def test_postgresql_create_lock_reads_committed_state_after_wait():
+
+    with engine.connect() as connection:
+        isolation = connection.exec_driver_sql("SHOW transaction_isolation").scalar_one()
+    assert isolation.lower() == "read committed"
+
+    payload = _postgresql_payload("同号并发先到", "13896679991")
+    owner = SessionLocal()
+    try:
+        original = lead_service.create_lead(owner, payload, _postgresql_actor())
+        outcome = _postgresql_finish_contender(owner, payload, commit_owner=True)
+    finally:
+        owner.close()
+
+    assert outcome["kind"] == "duplicate"
+    assert outcome["data"]["duplicate_lead"]["id"] == original["id"]
+    assert _lead_count() == 1
+    with SessionLocal() as db:
+        assert db.scalar(select(func.count()).select_from(LeadDuplicateEvent)) == 1
+
+
+@pytest.mark.skipif(
+    engine.dialect.name != "postgresql",
+    reason="requires independent PostgreSQL connections; SQLite is not concurrency evidence",
+)
+def test_postgresql_create_lock_serializes_overlapping_multi_phone_payloads():
+    owner = SessionLocal()
+    try:
+        original = lead_service.create_lead(
+            owner,
+            _postgresql_payload("多手机号先到", "13896679992", "13896679993"),
+            _postgresql_actor(),
+        )
+        outcome = _postgresql_finish_contender(
+            owner,
+            _postgresql_payload("共享手机号后来", "13896679993", "13896679994"),
+            commit_owner=True,
+        )
+    finally:
+        owner.close()
+
+    assert outcome["kind"] == "duplicate"
+    assert outcome["data"]["duplicate_lead"]["id"] == original["id"]
+    assert _lead_count() == 1
+    with SessionLocal() as db:
+        assert db.scalar(select(func.count()).select_from(LeadDuplicateEvent)) == 1
+
+
+@pytest.mark.skipif(
+    engine.dialect.name != "postgresql",
+    reason="requires independent PostgreSQL connections; SQLite is not concurrency evidence",
+)
+def test_postgresql_create_lock_is_released_when_owner_transaction_rolls_back():
+    payload = _postgresql_payload("回滚后重建", "13896679995")
+    owner = SessionLocal()
+    try:
+        original = lead_service.create_lead(owner, payload, _postgresql_actor())
+        outcome = _postgresql_finish_contender(owner, payload, commit_owner=False)
+    finally:
+        owner.close()
+
+    assert outcome["kind"] == "created"
+    assert outcome["data"]["id"] != original["id"]
+    assert _lead_count() == 1
+    with SessionLocal() as db:
+        assert db.scalar(select(func.count()).select_from(LeadDuplicateEvent)) == 0
