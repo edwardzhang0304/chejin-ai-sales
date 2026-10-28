@@ -2,6 +2,9 @@
 from copy import deepcopy
 from datetime import timedelta, datetime, timezone
 import logging
+import json
+import subprocess
+import sys
 import pytest
 from sqlalchemy import event, select
 from sqlalchemy.exc import OperationalError
@@ -16,8 +19,8 @@ from test_human_reply_ownership import unanswered, daytime_after, Adapter, send_
 from test_hook_handoff_history import append_row
 
 
-def second_binding(w, p):
-    r=client.post('/api/leads',json={'customer_name':'Synthetic healthy customer','phones':['13800000004']})
+def second_binding(w, p, index=4):
+    r=client.post('/api/leads',json={'customer_name':'Synthetic healthy customer','phones':[f'1390000{index:04d}']})
     assert r.status_code==200,r.text
     r=client.get(f"/api/workers/{w['id']}/tasks/pull",headers={'X-Worker-Token':w['worker_token'],'X-Client-Instance-Id':w['instance']})
     t=r.json()['data']['task'];assert t
@@ -29,7 +32,7 @@ def second_binding(w, p):
     prep=r.json()['data']
     assert post(w,f"/tasks/{t['id']}/hook-invite/submitted",proof(p,prep),h).status_code==200
     assert post(w,f"/workers/{w['id']}/inflight-flow/finish",{'flow_id':t['id'],'terminal_kind':'task_terminal'},h).status_code==200
-    r=post(w,f"/workers/{w['id']}/wechat/native-bindings",body(t,p,prep,('wxid_healthy',)))
+    r=post(w,f"/workers/{w['id']}/wechat/native-bindings",body(t,p,prep,(f'wxid_healthy_{index}',)))
     assert r.status_code==200,r.text
     return r.json()['data']
 
@@ -220,3 +223,87 @@ def test_old_saved_system_notice_updates_review_without_invalidating_new_reply(m
     r,_=upload(w,p,b,newer,monkeypatch)
     assert r.json()['data']['message_batch']['batch_id']==batch_id
     assert client.get(review_url(b)).json()['data'][0]['revision']==updated['revision']
+
+
+@pytest.mark.parametrize('limit',[1,20])
+def test_failed_prefix_cannot_starve_healthy_clock_repair_after_restart(monkeypatch,limit):
+    from app.services.hook_business_time import restore_pending_clocks
+    w,p,b,value,rid,start=unanswered(monkeypatch)
+    bad_ids=[second_binding(w,p,index=10+i)['binding_id'] for i in range(limit)]
+    with SessionLocal() as db:
+        original=db.get(WechatSessionBinding,b['binding_id'])
+        original.native_context={**{k:v for k,v in original.native_context.items() if k!='business_clock_version'},
+            'business_clock_repair_checked_at':'2000-01-01T00:00:00+00:00'}
+        db.commit()
+    def fail(conn,cursor,statement,params,ctx,many):
+        if 'FROM message_events' in statement and 'message_events.binding_id =' in statement and any(bid in params for bid in bad_ids):
+            raise OperationalError(statement,params,Exception('synthetic damaged projection'))
+    event.listen(engine,'before_cursor_execute',fail)
+    try:
+        assert restore_pending_clocks(limit=limit)=={'examined':limit,'recovered':0,'failed':limit}
+        with SessionLocal() as db:
+            for bid in bad_ids:
+                ctx=db.get(WechatSessionBinding,bid).native_context
+                assert ctx.get('business_clock_repair_checked_at') and 'business_clock_version' not in ctx
+            assert 'business_clock_version' not in db.get(WechatSessionBinding,b['binding_id']).native_context
+        # A new interpreter has no recovery cursor or inherited SQLAlchemy events.
+        script = """
+import json, sys
+from sqlalchemy import event
+from sqlalchemy.exc import OperationalError
+from app.core.database import engine
+from app.services.hook_business_time import restore_pending_clocks
+bad_ids=json.loads(sys.argv[1])
+def fail(conn,cursor,statement,params,ctx,many):
+    if 'FROM message_events' in statement and 'message_events.binding_id =' in statement and any(bid in params for bid in bad_ids):
+        raise OperationalError(statement,params,Exception('synthetic damaged projection'))
+event.listen(engine,'before_cursor_execute',fail)
+print(json.dumps(restore_pending_clocks(limit=int(sys.argv[2]))))
+"""
+        child=subprocess.run([sys.executable,'-c',script,json.dumps(bad_ids),str(limit)],
+            capture_output=True,text=True,timeout=30,check=True)
+        result=json.loads(child.stdout.strip().splitlines()[-1])
+        assert result=={'examined':limit,'recovered':1,'failed':limit-1}
+        with SessionLocal() as db:
+            assert db.get(WechatSessionBinding,b['binding_id']).native_context['business_clock_version']==1
+            assert reminders.aware(db.get(HumanReplyReminder,rid).started_at)==start
+        now=daytime_after(start);monkeypatch.setattr(reminders,'utcnow',lambda:now)
+        send_history(w,p,b,value,monkeypatch,now)
+        adapter=Adapter()
+        reminders.recover_reminders_once(limit=limit,adapter=adapter)
+        assert len(adapter.calls)==1
+        with SessionLocal() as db:assert db.get(HumanReplyReminder,rid).status=='succeeded'
+    finally:event.remove(engine,'before_cursor_execute',fail)
+
+
+@pytest.mark.parametrize('repair_fails',[False,True])
+def test_concurrent_discovery_snapshot_cannot_repeat_same_repair(monkeypatch,repair_fails):
+    from app.services import hook_business_time as clocks
+    w,p,b,value,rid,start=unanswered(monkeypatch)
+    with SessionLocal() as db:
+        binding=db.get(WechatSessionBinding,b['binding_id'])
+        binding.native_context={k:v for k,v in binding.native_context.items() if k!='business_clock_version'}
+        db.commit()
+    original=clocks.restore_business_clock;calls=[]
+    def observed(*args,**kwargs):
+        calls.append(1)
+        result=original(*args,**kwargs)
+        if repair_fails:
+            raise RuntimeError('synthetic failure after projection update')
+        return result
+    monkeypatch.setattr(clocks,'restore_business_clock',observed)
+    snapshot=(b['binding_id'],None)
+    if repair_fails:
+        with pytest.raises(RuntimeError,match='synthetic failure'):
+            clocks._restore_binding_clock(snapshot,{})
+        with SessionLocal() as db:
+            ctx=db.get(WechatSessionBinding,b['binding_id']).native_context
+            assert ctx.get('business_clock_repair_claim') and 'business_clock_version' not in ctx
+    else:
+        assert clocks._restore_binding_clock(snapshot,{})
+    # A second recovery loop selected the same old token before the first claim.
+    assert not clocks._restore_binding_clock(snapshot,{})
+    assert calls==[1]
+    if repair_fails:
+        monkeypatch.setattr(clocks,'restore_business_clock',original)
+        assert clocks.restore_pending_clocks()=={'examined':1,'recovered':1,'failed':0}
