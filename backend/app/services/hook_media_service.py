@@ -68,8 +68,8 @@ def finish_voice(db,authenticated,instance,payload):
         **({'human_covered_history_state':prior_history_state} if covered else {})}}
     parent.evidence={**(parent.evidence or {}),'native_voice_receipt_id':receipt.id}
     if archived:
-        from app.services.hook_history_review import record_archived_voice_result
-        record_archived_voice_result(db,parent,receipt.id)
+        from app.services.hook_history_review import record_archived_change
+        record_archived_change(db,parent,evidence_key='latest_voice_receipt_id',receipt_id=receipt.id)
     # Original native order/ID/timestamps remain; transcript is not a new input.
     # A proven old voice changes archival facts, not the customer's later turn.
     # Keep its pre-result checkpoint projection so the next history read cannot

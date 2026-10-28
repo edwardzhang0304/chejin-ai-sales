@@ -241,9 +241,15 @@ def accept_coverage(db,authenticated,instance,payload):
             if item['native_msg_id'] not in seen_native and item['native_msg_id'] not in checked['excluded_native_ids'] and item['native_msg_id'] not in checked['revoked_native_ids'] and item['native_msg_id'] not in checked['system_notice_native_ids']:
                 reason=reason or 'HOOK_HISTORY_CALLBACK_NOT_COVERED'
                 notice_ready = False
+    from app.services.hook_history_review import needs_review, record_archived_change
+    archived_system_ids = set()
     withdrawn=set(checked['revoked_native_ids'])|set(checked['system_notice_native_ids'])
     for message in db.scalars(select(MessageEvent).where(MessageEvent.binding_id==binding.id)):
         if (message.raw_payload or {}).get('native_msg_id') in withdrawn and message.id not in ids:
+            if needs_review(message):
+                archived_system_ids.add(message.raw_payload['native_msg_id'])
+                if not message.raw_payload.get('native_withdrawn'):
+                    record_archived_change(db, message, evidence_key='latest_withdrawn_receipt_id', receipt_id=receipt.id)
             message.item_state='withdrawn'
             message.raw_payload={**message.raw_payload,'native_withdrawn':True,
                 **({'native_system_notice':True} if (message.raw_payload or {}).get('native_msg_id') in checked['system_notice_native_ids'] else {})}
@@ -285,7 +291,10 @@ def accept_coverage(db,authenticated,instance,payload):
         from app.services.hook_history_review import admit
         conv = db.get(Conversation, binding.conversation_id)
         business_rows, boundary_reason = admit(db, binding, conv, ctx, checked, receipt,
-            business_rows, facts_ready=facts_ready)
+            # Native ordering may already be proven while an invoked send still
+            # awaits actor settlement. Keep the same old/new classification;
+            # facts_ready remains false and continues to block new business work.
+            business_rows, facts_ready=checked['ready'] and reason in {None, 'HOOK_NATIVE_SEND_ACTOR_PENDING'})
         reason = reason or boundary_reason
         facts_ready = facts_ready and boundary_reason is None
         binding.native_context = dict(ctx)
@@ -297,7 +306,8 @@ def accept_coverage(db,authenticated,instance,payload):
     from app.services.hook_customer_notice_service import notice_key
     notice_keys=sorted(notice_key(row,ctx) for row in checked['friend_verification_notices'])
     state_digest=rules.digest([payload.account_epoch,payload.process_generation,payload.binding_revision,
-        checked['revoked_native_ids'],checked['system_notice_native_ids'],[[r['MsgSvrID'],r['Type'],r['IsSender'],r['StrContent'],r['Sequence'],r['MsgSequence'],
+        [mid for mid in checked['revoked_native_ids'] if mid not in archived_system_ids],
+        [mid for mid in checked['system_notice_native_ids'] if mid not in archived_system_ids],[[r['MsgSvrID'],r['Type'],r['IsSender'],r['StrContent'],r['Sequence'],r['MsgSequence'],
           *_reply_history_state(rows_by_id[ids[i]],covered)] for i,r in enumerate(checked['semantic_rows']) if ids[i] in business_id_set]]
           + ([checked['unresolved_outgoing_rows']] if checked['unresolved_outgoing_rows'] else [])
           + ([['friend_verification_notices',notice_keys]] if notice_keys else []))

@@ -187,22 +187,31 @@ def recover_reminders_once(*,adapter=None,limit=20):
     cutoff = notification_cutoff(now)
     limit = max(1, int(limit))
     with SessionLocal() as db:
-        from app.services.hook_business_time import restore_pending_clocks
-        restore_pending_clocks(db, limit=limit)
-        db.commit()
         stale_ids = list(db.scalars(select(HumanReplyReminder.id).where(_stale_reminder_clause(cutoff))
             .order_by(HumanReplyReminder.attempted_at, HumanReplyReminder.id).limit(limit)))
+    identity = lambda mid: {'reminder_id': mid}
+    recovered, recovery_errors = recover_items(stale_ids,
+        lambda mid, evidence: _recover_reminder_attempt(mid, evidence, cutoff=cutoff),
+        logger=logger, stage='human_reminder_attempt_recovery', identity=identity)
+    # Independent unknown-attempt closure must finish before timer projection
+    # repair. An item failure rolls back only that binding; discovery errors also
+    # cannot suppress otherwise eligible reminder recovery.
+    from app.services.hook_business_time import restore_pending_clocks
+    from app.services.recovery_logging import recovery_failure
+    clock_errors = 0
+    try:
+        clock_errors = restore_pending_clocks(limit=limit)['failed']
+    except Exception as exc:
+        clock_errors = 1
+        recovery_failure(logger, 'hook_business_clock_discovery', exc)
+    with SessionLocal() as db:
         ids=list(db.scalars(select(HumanReplyReminder.id).where(HumanReplyReminder.closed_at.is_(None),
             HumanReplyReminder.status.in_({'pending','failed'}),HumanReplyReminder.attempt_count<3,
             HumanReplyReminder.next_attempt_at<=now).order_by(
                 HumanReplyReminder.last_checked_at.asc().nullsfirst(),
                 HumanReplyReminder.next_attempt_at,HumanReplyReminder.id).limit(limit)))
-    identity = lambda mid: {'reminder_id': mid}
-    recovered, recovery_errors = recover_items(stale_ids,
-        lambda mid, evidence: _recover_reminder_attempt(mid, evidence, cutoff=cutoff),
-        logger=logger, stage='human_reminder_attempt_recovery', identity=identity)
     results, send_errors = recover_items(ids,
         lambda mid, evidence: dispatch_reminder(mid, adapter=adapter, evidence=evidence),
         logger=logger, stage='human_reminders', identity=identity)
     return {'examined':len(ids),'attempted':sum(r in {'succeeded','failed','unknown'} for r in results),
-            'recovered':sum(recovered), 'failed': recovery_errors+send_errors}
+            'recovered':sum(recovered), 'failed': recovery_errors+send_errors+clock_errors}

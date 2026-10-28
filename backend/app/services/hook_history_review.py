@@ -23,16 +23,16 @@ def _reopen(review):
     review.note = review.resolved_by = review.resolved_at = None
 
 
-def record_archived_voice_result(db, message, receipt_id):
+def record_archived_change(db, message, *, evidence_key, receipt_id):
     review_id = (message.raw_payload or {}).get('history_review_id')
     review = db.scalar(select(HistoryReview).where(HistoryReview.id == review_id,
         HistoryReview.binding_id == message.binding_id).with_for_update())
     if review is None or message.id not in review.message_ids:
-        raise AppError('HISTORY_REVIEW_NOT_FOUND', '原语音历史核对记录不存在', 409)
+        raise AppError('HISTORY_REVIEW_NOT_FOUND', '原消息历史核对记录不存在', 409)
     # A new immutable receipt changes what the operator is reviewing. Duplicate
     # receipt delivery returns upstream before this function and stays idempotent.
     _reopen(review)
-    review.evidence = {**review.evidence, 'latest_voice_receipt_id': receipt_id}
+    review.evidence = {**review.evidence, evidence_key: receipt_id}
 
 
 def _record(db, binding, ctx, rows, receipt, reason):
@@ -117,6 +117,9 @@ def list_reviews(db, lead_id):
             'note': review.note, 'resolved_at': review.resolved_at,
             'messages': [{'id': mid, 'content': messages[mid].content,
                 'message_type': messages[mid].message_type, 'sender_role': messages[mid].sender_role,
+                'withdrawn': bool((messages[mid].raw_payload or {}).get('native_withdrawn'))
+                    and not bool((messages[mid].raw_payload or {}).get('native_system_notice')),
+                'system_notice': bool((messages[mid].raw_payload or {}).get('native_system_notice')),
                 'occurred_at': messages[mid].occurred_at} for mid in review.message_ids if mid in messages]})
     return result
 

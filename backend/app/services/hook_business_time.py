@@ -97,24 +97,37 @@ def timers_ready(binding):
         and not ctx.get('business_clock_missing_sources'))
 
 
-def restore_pending_clocks(db, *, limit=20):
-    """Bounded upgrade pass before timer selection, including future-poisoned rows.
-
-    Selecting only already-due timers would never find a clock set far ahead.
-    Unprovable summaries are checkpointed and left for history/manual review.
-    """
-    bindings = list(db.scalars(select(WechatSessionBinding).where(
-        WechatSessionBinding.native_self_wxid.is_not(None),
-        WechatSessionBinding.native_context['business_clock_version'].as_integer().is_distinct_from(1))
-        .order_by(WechatSessionBinding.id).limit(limit)))
-    for hint in bindings:
-        from app.services.followup_eligibility import lock_leads
+def _restore_binding_clock(binding_id, evidence):
+    from app.core.database import SessionLocal
+    from app.services.followup_eligibility import lock_leads
+    with SessionLocal() as db:
+        hint = db.get(WechatSessionBinding, binding_id)
+        if hint is None:
+            return False
+        evidence.update(conversation_id=hint.conversation_id)
         lock_leads(db, [hint.lead_id] if hint.lead_id else [])
-        binding = db.scalar(select(WechatSessionBinding).where(WechatSessionBinding.id == hint.id)
+        binding = db.scalar(select(WechatSessionBinding).where(WechatSessionBinding.id == binding_id)
             .with_for_update().execution_options(populate_existing=True))
         conv = db.scalar(select(Conversation).where(
             Conversation.conversation_id == binding.conversation_id).with_for_update())
-        if conv:
-            restore_business_clock(db, binding, conv)
-    db.flush()
-    return len(bindings)
+        if conv is None:
+            return False
+        restore_business_clock(db, binding, conv)
+        db.commit()
+        return True
+
+
+def restore_pending_clocks(*, limit=20):
+    """Bounded discovery; each binding owns an isolated recovery transaction."""
+    import logging
+    from app.core.database import SessionLocal
+    from app.services.recovery_logging import recover_items
+    with SessionLocal() as db:
+        ids = list(db.scalars(select(WechatSessionBinding.id).where(
+            WechatSessionBinding.native_self_wxid.is_not(None),
+            WechatSessionBinding.native_context['business_clock_version'].as_integer().is_distinct_from(1))
+            .order_by(WechatSessionBinding.id).limit(limit)))
+    results, errors = recover_items(ids, _restore_binding_clock,
+        logger=logging.getLogger(__name__), stage='hook_business_clock_repair',
+        identity=lambda bid: {'binding_id': bid})
+    return {'examined': len(ids), 'recovered': sum(results), 'failed': errors}

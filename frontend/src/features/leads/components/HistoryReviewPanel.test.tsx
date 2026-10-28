@@ -38,3 +38,16 @@ it("does not replace another customer's results with a late load", async () => {
   finish([row]);
   await waitFor(() => expect(screen.queryByText("旧测试消息")).not.toBeInTheDocument());
 });
+it("shows withdrawn evidence while retaining its original content", async () => {
+  api.mockResolvedValueOnce([{ ...row, messages: [{ ...row.messages[0], withdrawn: true }] }]);
+  render(<HistoryReviewPanel leadId="lead" />);
+  expect(await screen.findByText("已撤回（原记录保留）")).toBeVisible();
+  expect(screen.getByText("旧测试消息")).toBeVisible();
+});
+
+it("distinguishes an old system notice from a withdrawn customer message", async () => {
+  api.mockResolvedValueOnce([{ ...row, messages: [{ ...row.messages[0], system_notice: true, withdrawn: false }] }]);
+  render(<HistoryReviewPanel leadId="lead" />);
+  expect(await screen.findByText("系统提示（原记录保留）")).toBeVisible();
+  expect(screen.queryByText("已撤回（原记录保留）")).not.toBeInTheDocument();
+});

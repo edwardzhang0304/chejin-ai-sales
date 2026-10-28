@@ -4,7 +4,7 @@ import { request } from "../../../shared/api/client";
 type Review = {
   id: string; reason: string; status: string; revision: number; note: string | null;
   created_at: string; resolved_at: string | null;
-  messages: Array<{ id: string; content: string | null; message_type: string; sender_role: string; occurred_at: string | null }>;
+  messages: Array<{ id: string; content: string | null; message_type: string; sender_role: string; withdrawn?: boolean; system_notice?: boolean; occurred_at: string | null }>;
 };
 const reasons: Record<string, string> = {
   profile_succession: "客户档案切换前后归属待核对",
@@ -47,6 +47,8 @@ export function HistoryReviewPanel({ leadId }: { leadId: string }) {
         <strong>{row.status === "processed" ? "已处理" : "待核对"} · {reasons[row.reason] || "历史归属待核对"}</strong>
         {row.messages.length === 0 ? <p>此边界尚无可列出的聊天消息</p> : row.messages.map((message) => <div key={message.id}>
           <p>{message.sender_role === "customer" ? "客户" : "发出记录"} · {message.occurred_at ? new Date(message.occurred_at).toLocaleString("zh-CN") : "时间未确认"}</p>
+          {message.system_notice ? <strong>系统提示（原记录保留）</strong> : null}
+          {message.withdrawn ? <strong>已撤回（原记录保留）</strong> : null}
           <p style={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}>{message.content || ({ voice: "[语音]", image: "[图片]" }[message.message_type] || "[非文字消息]")}</p>
         </div>)}
         {row.status === "processed" ? <p>核对说明：{row.note}</p> : <>

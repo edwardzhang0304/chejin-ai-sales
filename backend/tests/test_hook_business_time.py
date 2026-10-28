@@ -70,12 +70,11 @@ def test_upgrade_pass_finds_future_timer_before_due_selection(monkeypatch):
         reminder.next_attempt_at=start+timedelta(days=365)
         binding.native_context={k:v for k,v in binding.native_context.items() if k!='business_clock_version'}
         db.commit()
+    assert restore_pending_clocks()=={'examined':1,'recovered':1,'failed':0}
     with SessionLocal() as db:
-        assert restore_pending_clocks(db)==1
-        db.commit()
         assert aware(db.get(HumanReplyReminder,rid).next_attempt_at)==start+timedelta(hours=1)
         assert timers_ready(db.get(WechatSessionBinding,b['binding_id']))
-        assert restore_pending_clocks(db)==0
+        assert restore_pending_clocks()=={'examined':0,'recovered':0,'failed':0}
 
 
 def test_unprovable_old_summary_retained_and_cannot_start_recall(monkeypatch):
