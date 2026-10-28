@@ -3,9 +3,9 @@
   "repository": "edwardzhang0304/chejin-ai-sales",
   "transport": "hook",
   "reuse_mode": "reviewed_delta",
-  "approval": "User authorized all latest reviewed fixes. SOP18.0.4 metadata synchronization; existing button/data gates retained.",
-  "reviewed_commit": "241c8034e1a21557630ed5aab76ea16ae6f4390a",
-  "target_version": "0.10.21",
+  "approval": "User authorized latest reviewed pushes; SOP18.0.4 version synchronization. Original installed version requested; original frozen upgrade acceptance pending.",
+  "reviewed_commit": "5bee8863ee9242d4ab9f8c6aa7674d026959dcef",
+  "target_version": "0.10.23",
   "source_sha256": {
     ".dockerignore": "953c4ae7fbf88d1f9655d96aac647bb20157d4531062155de4922562c924cc6c",
     ".gitattributes": "c3fb393b0b0757bb56c2aa4c733114aa8d394be2ca0d60bf11fc5cba47dfaf3a",
@@ -15,7 +15,7 @@
     "backend/.env.example": "b05297fc521cdca87a13002e4d8b531cf869a69b4dd63fed474d92e9b55e53b2",
     "backend/.gitignore": "8b318bea4f5c746fe6ca7be41e98f0bf331e7325f63141bb90609e23b54e6dfc",
     "backend/Dockerfile": "04085e37fc190b6e6b0124fb240cc2d54cefad329921e994bfbaf8a4d78c95c4",
-    "backend/README.md": "8e91412eac3c30731d1559c90991da9bcb6d0b063f90390e42f68291e08e0d13",
+    "backend/README.md": "677e95db1ae3f68408c18d5d750bcf081a3216d8542c9687e15ee7ee3190f0b6",
     "backend/alembic.ini": "10ec633dfef6fbfb3e27a073d6d7dd4e18e6acc668794811364e042585721651",
     "backend/alembic/env.py": "f5be2904c022729043ff3b310708dce49b4a9ea148f4061f41b9f8232c15593a",
     "backend/alembic/versions/20260603_0001_initial_schema.py": "1fe592366e724473b586a2ea6a5f5ec4062194bda80f10c340c922d7e3b84b11",
@@ -114,7 +114,7 @@
     "backend/app/schemas/c3.py": "22432d766d71d1788873c434cf188b222e759045db71f28bc52e951e8dc965ab",
     "backend/app/schemas/client_release.py": "1fd3221108dce9724c0709d224a53897648c8e7adc28c67c1c7cab3c501f0572",
     "backend/app/schemas/common.py": "0b4e82eedb4ab19cdb202cbba0cd003f9f11950abdbf03ce99ee3217614428c9",
-    "backend/app/schemas/hook_business.py": "dfb8814eb1dd6acf4268e0de36004bcd55600e79d5713de39ef995668323bffe",
+    "backend/app/schemas/hook_business.py": "61037460178434a229a4b68fce6bf7fcb2ee981a6748730bde6adb6bd98ea310",
     "backend/app/schemas/hook_identity.py": "50140651be6b27c939db6ccabbaa30f04be22c62098a33a4e30b42b0738bdc46",
     "backend/app/schemas/knowledge_management.py": "4aaedb259a7478ff43e70117017d6d18825181d03c9f3c51f23d09f0278c69e8",
     "backend/app/schemas/lead.py": "85058a5404d71c00f1bb3741508d9ec081b9faaa1621f711350c9597949a5488",
@@ -136,7 +136,7 @@
     "backend/app/services/audit_service.py": "0ce89dd8540fc3b59e3c6b7403c491e9ef72bd803bfb294b18e76ac1c34cdb7b",
     "backend/app/services/auth_service.py": "9ac5c2ed21a561175448e1d6753a97bb074e37822c56da0310fe5c0de4619952",
     "backend/app/services/c3_recovery.py": "c7c41be484735ce6f767c3480750ea889465bd655e253c6749ca5ab7e27dcd97",
-    "backend/app/services/c3_service.py": "f1124450211036f0245288bd38cb41f9a7ca963a418468c8409e1fc2d91e50b3",
+    "backend/app/services/c3_service.py": "6df5477eb3ef83b8f27bbe7051f825df23474d9e8fb6dd641b44f478c0ec3f78",
     "backend/app/services/chejin_knowledge_seed.py": "e317cd422548343c5c9d15f849c2bae1930c02bd5d0ea0487a60d27bec878b90",
     "backend/app/services/client_release_service.py": "d5a7d3294d703cd7398c621d26cb8ff7126e02b37b4639080dcafbae2db7e736",
     "backend/app/services/contact_utils.py": "1922fa49070cb2fb3db186b5573f27e52d85664657ad1cec8e3fa595cce2950c",
@@ -146,21 +146,21 @@
     "backend/app/services/dashboard/service.py": "98c58ab2cbef78837e6bf15e3ee029be9c22b9f954c102c928d3ddaeca7f45aa",
     "backend/app/services/export_service.py": "122d25105f58e70446507566d931d639d73da41ba955071935a6935cf96ff118",
     "backend/app/services/feishu_adapter.py": "98add02a4a73e3fb1ac440a45ad9c671e47183886bdaef9125caa1d1bbde19c6",
-    "backend/app/services/feishu_service.py": "f248a763e3fb15b5da8edb822cfa5d1a58ab32998a82770ad403b0f8006bdfef",
+    "backend/app/services/feishu_service.py": "58405753bcfa0df3686f30565b65829520108122b85fd8b7b1e417b6b15284ce",
     "backend/app/services/followup_eligibility.py": "f1a88ec05f6d2f587a56aad092de6110663cc48582d7ac09e24f78ea58924483",
     "backend/app/services/historical_text_alignment.py": "f706755b632fb46153387c8f768e57e1e7e29cdb9b90ed1b782ca5eaeff2ec33",
     "backend/app/services/hook_account_service.py": "4d2ba79657ccc05ae98617d591e0dbf8730078129d11abaf8cb77cffc2a1de5e",
     "backend/app/services/hook_binding_transfer.py": "d79c71f84debe5beb0f40f244d1e2df7036d52d9ab7e2b96ec5c3e3156b435c3",
-    "backend/app/services/hook_business_service.py": "9cc6feb343a0f9275217bff749f74dfeb71e89df85e9fb1382df54fd6258e3b7",
+    "backend/app/services/hook_business_service.py": "1218d9bb35dd75cc97a4edca6c79c60771d81a3ae9ddbd1a8232ca3d18c926a7",
     "backend/app/services/hook_customer_notice_service.py": "cd1bac97319a56db32a2578952204552497afcd0266bb9e734018b727aaf2d53",
-    "backend/app/services/hook_history_service.py": "c36a2ddd8c2a1179229b318eb2dea9761d1b175fc65dfafe36228d603da2f85b",
+    "backend/app/services/hook_history_service.py": "fc3c2c425b46181663fa60a9df2db803f14703cc14ed446e4bcdeb1e899278f3",
     "backend/app/services/hook_media_service.py": "148ba0255fbb6de09fa04abc2293905c9846fb7f69679806bd1cfeabd5bb4024",
-    "backend/app/services/hook_message_service.py": "b638c1011954b1f6a1368682a9d304fee6daddb18f997bbdc03f6d6fd89f4329",
-    "backend/app/services/hook_native_service.py": "9572c9302d4581ad9ae2c979ddaf001dc188bc976c69e6a6e2929a72f3ff358e",
-    "backend/app/services/hook_recovery_service.py": "055e255fc595e14835a7d6cfa856bb24618d6a675b9c91c15020b4ce7fb7c9d5",
-    "backend/app/services/hook_relationship_service.py": "efc89b0d095210604849a5d7dea85fb5fb1b46d5710977285e9b7f7573d5fcf5",
-    "backend/app/services/hook_send_service.py": "80d6ff7b140adf5eb0f312774b749c16b9cbca8274f8898c6f2ab1fd9b04b2a9",
-    "backend/app/services/hook_work_service.py": "9b60b66b346b7241a26997c43677ecfcaabfbd6edffa84bccd7827dac7de4e04",
+    "backend/app/services/hook_message_service.py": "eae9fe3a32df1f0d72943c72d8d5710187b33e4eff87ff6475895ecf5cbca7a0",
+    "backend/app/services/hook_native_service.py": "e7596afb552f599ca0a00dfbdf3a875c048d30e80f668546d1e6e885de543b5b",
+    "backend/app/services/hook_recovery_service.py": "2359bc2727948ccd7701a2d84349208ecd62249e5861903276ed339a00a1fb1c",
+    "backend/app/services/hook_relationship_service.py": "38d32f07cc3adc5b6f434f74a848084333396be9056b7bf60a107c02dc0cf59d",
+    "backend/app/services/hook_send_service.py": "d19a6e739cfd582f3297e367bf327604800099edc7a1f16fcd0e51f7dfe651d8",
+    "backend/app/services/hook_work_service.py": "b2c1ef9ea9100dfbaec90bd3d3ee6312e4664caf73e68dc06f019df639a83d90",
     "backend/app/services/human_reminder_service.py": "080340d499d2b8eb7a3f46a7ccf5d4f73e8b6f20bdc5ce508655eef24373e06b",
     "backend/app/services/knowledge_management_service.py": "dcfcd1c622f788821f2cfe4998b1374b49be0b7d6a76b7da13a9c8f4d5acacb5",
     "backend/app/services/lead_service.py": "764ba123205fde866d709b1504921a740b2d5c6cb1af0eb5ec65fb1f354b4cc5",
@@ -193,11 +193,11 @@
     "backend/app/services/worker_token_service.py": "afe266c745229920a75c836415469437b51891ebe03b1b63c3ff50b3b58b9142",
     "backend/app/services/worker_vision_credential_service.py": "6d427532d9e56f6cf9da8845f0ad6fb184fce066f5cac30c6302c3dc199f6f3c",
     "backend/compose.uat.yml": "58bf77325c1667295eab1bbaa5d42f4b81032f1a82e2104467a0371cb2a076f0",
-    "backend/compose.web.yml": "20df54cba3c3ed86e2bda1ac258280bd71147eae116cc457d1b82edb8747cb73",
+    "backend/compose.web.yml": "9dc1f4325027699aef4724c014ad77214235a947c9ab12306523f1f95fc15b5a",
     "backend/configs/chejin_c3_brain.json": "e83598ec354a4fc5ed6ca8b82c3b0866f2171f76b33d1647de37e905fe1ef5ba",
-    "backend/docker-compose.yml": "78d8dc9d44df8227c5dbe7fe60935492f83420c90b990cde6b62feca39b66357",
+    "backend/docker-compose.yml": "7884d1257d31c7a24f624e6a23fd48a6c846930e56d8bba6ef22958e5ae6645b",
     "backend/docker/entrypoint.sh": "2db4def08af9248f4d4215154ce20ca474b7188a7c985a8458be1035e2a3509d",
-    "backend/pyproject.toml": "29ceba260104c535f4b8e11159f4f9cae14bf6cb88edf67046a5568ff477c13b",
+    "backend/pyproject.toml": "20bf85bf85e020645064b339fd34b463594f09a9d7d3ea5af00838299b0575cc",
     "backend/requirements.lock": "e50b91f6bf1794bf7cd589604c8c6adba248fa97762da3f2b981d21731b4d573",
     "backend/requirements.txt": "158c8f61c1b48f2473561cc8543fe5b55b62fc45d9c34e46286ac015384c7117",
     "backend/scripts/admin_accounts.py": "8d142e4d7ce889b19ff05b4d1a3816110ca47c8fa7b87a8cc1c7e3da281d8f6b",
@@ -224,7 +224,7 @@
     "backend/tests/test_brain_completion_integrity.py": "5e0b4958df53d432fd46a6b527e5f106a9d0f0dd44f992710966d5ac5bc844c4",
     "backend/tests/test_brain_current_intent_provider.py": "adad4ea00c1d96f49604478f7e46791cc2c940acf7bda1b84a1de99811b45e38",
     "backend/tests/test_brain_current_intent_scope.py": "36e4682510fccb45deb527fa4d486723dfdbe2cdedfa6838116f4da8064f147a",
-    "backend/tests/test_brain_fact_guidance_regression.py": "b184ef04a174bac6427fc0450f5e20926cd83d6205ac133fdbad70805ac7dc47",
+    "backend/tests/test_brain_fact_guidance_regression.py": "afbd538d69b626d390dfdcc0fd910556db55149b6aad6e7cf3178d5624450987",
     "backend/tests/test_brain_versioned_knowledge_sources.py": "9c5823dcf724116cf976a43d1105c1252721e7f0e6d0526c60442095ba560d22",
     "backend/tests/test_brain_warning_contract.py": "641f8213e190e8e5cf4cdc27cee25a6104aee3d5cad3bd2c7d1b62c8cc3b6de5",
     "backend/tests/test_c1_existing_contact_ocr_http.py": "f0ba164f57317072c773706cc516c749c33034f81cff61787fce49f79ace8be0",
@@ -238,7 +238,7 @@
     "backend/tests/test_c2_identity_gate_settlement.py": "a9b9414018906f6d2c5ede56ac973d6134a4ebf24f29d2c9c332d9e8d9257aac",
     "backend/tests/test_c2_ocr_attribution.py": "f5d9fe823038ba884ff47a9bb88b69ff48e11d6496bcf0a175609228e537c8c1",
     "backend/tests/test_c2_transaction_contract.py": "f211b7ab79d20f5cbc3b0b7bd107861778b1f14435e453c1d4cd825f05e863fd",
-    "backend/tests/test_c3_api.py": "481d5abf703e70981ef0025c0486e8689ed6aa9b7909bdf0eaff7b93369626b6",
+    "backend/tests/test_c3_api.py": "5e447122b7f7f99e037179b92da58cacfac679141be53f1f8c144a54eef28094",
     "backend/tests/test_c3_brain_context_bridge.py": "a1b27db8ba72b0c555a4f9d3ae7d7a426d7a12e2fd320bec42609d59c7b62817",
     "backend/tests/test_c3_recovery_chain.py": "cf0fef4783cb7673848e7ffcdd336350d547b8f46115cc85694e64779d8e2a38",
     "backend/tests/test_c3_recovery_isolation.py": "e713ab5fc6a24a4d3e0a17247b173d705b366729975898fee2db1f608f63b8f6",
@@ -275,9 +275,12 @@
     "backend/tests/test_hook_account_http.py": "d0970e8fe2d4650a6890de71a320caa07d14ecea25e00e6ba33d8b5df31f94ca",
     "backend/tests/test_hook_account_migration.py": "914c90f8db5ef0e946d21b70ae652519be8047b425c999a6ff4fd9bf87e4c7d7",
     "backend/tests/test_hook_binding_transfer.py": "87ddc81c725a9681d567f3cb5fe4202bf21a24fb76a5a8707c245de89a67a0ff",
-    "backend/tests/test_hook_business_http.py": "818b375007e0c99920829b7d8017859d04faf810373e95ad58f3ac86e4ce8959",
+    "backend/tests/test_hook_business_http.py": "5c8390547494bed506b3fd94dc90f7722d19f3767a16ec1870d9d44fe852a172",
     "backend/tests/test_hook_callback_recovery.py": "ef1d75ee8eb8ac6d43a0e94741c1c72efba958594930ab8a27f1dc8ab57041bb",
     "backend/tests/test_hook_continuous_dispatch.py": "201f2f3d111dc518525abcde6f3e5c8f3a1d8e282a5564361c1090f0755791ee",
+    "backend/tests/test_hook_customer_pause_dispatch.py": "9615a9196a649d76a8499e9b96629283b4e6a1c56eb7ee853bfd82cb33931c70",
+    "backend/tests/test_hook_customer_refusal_closure.py": "e5490b0c3d3d5b41f3bef957e08a72c3cc979a6d975bbe31c0c3d483d99045e9",
+    "backend/tests/test_hook_delivery_diagnostic_priority.py": "b8d67d7c905894d0928a8ad5785ce52116bd2d05773bf3f8b4bc6ee1979d4fd4",
     "backend/tests/test_hook_fault_recovery_http.py": "f02585363cb7f3c885878ee77bdebd1aea8df86a49ea715d33cc21493f9a9499",
     "backend/tests/test_hook_formal_end_to_end.py": "dc4a717774f786fd7d1dab1db1e1edae87bb3712ab14bb67a39ade2516c191ba",
     "backend/tests/test_hook_formal_runtime.py": "141f6f34295a73a6d053aefce1374a7e4d36d2348af037f60462c6df4a2801d9",
@@ -310,6 +313,7 @@
     "backend/tests/test_hook_release_publication.py": "4508c1d6f5ffc6abc9b16629a3e8dbf6873c7a9e01ea29193d941e1945a937f8",
     "backend/tests/test_hook_restricted_send_closure.py": "5440a215a2e978cf3188c3404eb6c6dbf1758cdef346ff98cf91cc3ccd4fe00d",
     "backend/tests/test_hook_search_query_receipt.py": "6e99146f2cd63f3870aaffeee9496ab1ed68956dbb6600dbcc5019903820e108",
+    "backend/tests/test_hook_segment_refusal_recovery.py": "87f6f95625924bb41af880bb663a9dced723f1046ed27b7b34f4d49092fd4b81",
     "backend/tests/test_hook_transfer_archival.py": "bbf97625522f0836c9b234c8debf82b2d863672550ad63bc6cd5c60d5f101b4c",
     "backend/tests/test_hook_welcome_notice.py": "5a77fb5c63436619470d5d190dbdfc3c7dd7cd30e7e8c4f8eacd4e2ba1114144",
     "backend/tests/test_hook_zero_outgoing_recovery.py": "88f0b9f0a91122bd499631f4c30ea92407408165b8295988936ff5f6d9f65e7d",
@@ -349,6 +353,7 @@
     "backend/tests/test_read_recovery_review_regressions.py": "9ebf57a7980b7bbf02a3e13dcd77807b5dab36553869b8df0fc34f536f592ea8",
     "backend/tests/test_rejected_correction_recheck.py": "99abfba54ee1bb1cbc3aa626c8926784f88742b95fbc3f6bc2f73ff7f3b494d3",
     "backend/tests/test_release_readiness.py": "5b9133480edf8e4a17e2ea84e78f3d89f01bfbabf3f2b23b7bcb2b48efb9f97a",
+    "backend/tests/test_reply_authority_arbitration.py": "8e4fffc54c335e24e12ebadef31fd300ebffe323b4ae6260a92b4b9d272d3112",
     "backend/tests/test_reply_ownership_migration.py": "3248b0982cd4c1a5e72ed4c6caf7012058cf566249c4b69a98bc051ae08cc2de",
     "backend/tests/test_reply_read_failure_restart.py": "63257d3195baf493361dceb285af01f0a8aab5c2c6f2c8cca8a1c2d5339b52bd",
     "backend/tests/test_reply_sequence_after_read_pixels.py": "eb070f883f97921be30a92f2af427885ea09a4795e569b3cabe844c96b955cff",
@@ -396,9 +401,9 @@
     "backend/tests/worker_media_recovery_probe.py": "cec15755d5c7d0aee1aef709e675bc3251f01cddf9895815e504c079752c3783",
     "backend/tests/worker_partition_recovery_probe.py": "c94d000b8cd179da6091c87a90806d1aeed3fc1d40495c69340e2aff91c66af2",
     "backend/tests/worker_sequence_recovery_probe.py": "89402c39e79193530cb17dacd9bf9e1c55873e84baf744a7eb541ab8441c2a01",
-    "contracts/c2_contract_v3.json": "f510d75d74dae841ef6994efa56627a7365c152af59d6f2d3b113c09cfee88bf",
+    "contracts/c2_contract_v3.json": "d189153555e4e2456045350ec69daee0254084460bb6e7e88b42e9d72b347e40",
     "contracts/examples/c2_v3_mixed_roundtrip.json": "0e9023e920627328c49eac031c34fd3ce77d504195d5ef6f7a9848ccf1e4f98f",
-    "contracts/hook_contract_v1.json": "0718d8920397df825d2c3e6f0f999a1cf5eff72da82999fc9cd0df078661efd5",
+    "contracts/hook_contract_v1.json": "f38b8e48c6c4309ce6025fdb838e71dce02edc202c41f96e257dbd241548ebed",
     "contracts/recovery/c2_contract_v3_0.9.75.json": "b7b4b2ab04d2feca8766c84bc4655ccf56170d2fc645e3e161e9b5a0fdf47f51",
     "contracts/recovery/c2_contract_v3_0.9.78.json": "c17c82e54ab5f1736f74384e3720f7dc158af058dc46673230cbf87d074792d5",
     "contracts/recovery/c2_contract_v3_0.9.80.json": "52c984a290e9029c3eb6f475ce5a05581502b04c3cd0c4a5f3b44a1fb194e585",
@@ -412,7 +417,7 @@
     "frontend/.gitignore": "23b7ede583be8ca215ffe4f491ec44e1953f381aba0aea67d8d1b077d667655a",
     "frontend/Dockerfile": "b504d18db2c1129e366f2831f7e6859b732779ef84212f1c7adcaf003de2fda7",
     "frontend/Dockerfile.dockerignore": "52e40f48dd3e7170465825714aa94570ef1d7960d9ec5d4f1673f52a697613d2",
-    "frontend/README.md": "41f81f173cd991226555a22762922b17c21ee1f1e6bc0cefa9bc4ced3c2b7fef",
+    "frontend/README.md": "c8d7806263b6eb610a636c16437546edbf2e723fe5ec077bfe3904bd83feaf5b",
     "frontend/design-evidence/knowledge-common-button-sizing-1280x720.png": "33587f04fdf6476483a9e73a0bdf99cd7718f0139f27cd7a4e877cbb34a21f1b",
     "frontend/design-evidence/knowledge-common-components-1280x720.png": "e91c998bc1f7b4e365e4514ccbb1766ac41ae62973d8b34a369760a252f1f268",
     "frontend/design-evidence/knowledge-common-drawer-1280x720.png": "f76d57207b1e07a779ab40f307312abe615d5fa11702a28d2acf25619bc1cfb9",
@@ -444,8 +449,8 @@
     "frontend/design-evidence/knowledge-title-only-list-1280x720.png": "0aba9e306baa1b8689364ce9d4ba461231394e0ed3dcdfd8c86ba271b7c99e16",
     "frontend/docker/default.conf": "9c1da4ae99181da52716e57611b9db46c8411e9cdefb3a63fce48181eb6f058c",
     "frontend/index.html": "3e106d2519d0b3ad9a6bc94da7ce98280758330ba6ad7a7ce304804296908e56",
-    "frontend/package-lock.json": "cd627e0e5ee8d2e59dc7e588397141fdf74bb9503e5c827590225ae147f6dd27",
-    "frontend/package.json": "022342dcfe0f4a465a87cb82e2c98b20722ba1a304032af9890d44e358c29fc3",
+    "frontend/package-lock.json": "7d7c40c3d20f0de4d309188e3acced48e38813697ba4475aebf7901a75d4e9de",
+    "frontend/package.json": "67d335f0fe69961ace89346ad71850dbb4c837ef82ad18d16ae3396862ee0e11",
     "frontend/scripts/run-unit-tests.mjs": "6f2855f6cb9e7cab5c55277f5982dbb18f336de409b33f3699de3378cb3b0f2d",
     "frontend/src/App.test.tsx": "1ab020138232217c8b19d55ebca8b714c943206c939b9071724cc1d66911fbb7",
     "frontend/src/App.tsx": "570df29154f664be4bd8009459f1d1c7ca17f041821bc8a27f96ff7c0f5e1693",
@@ -542,14 +547,14 @@
     "packages/worker-ui-baseline/preview.tsx": "2e0e0cd9bd9bb9238b17073d6cb405a33f2c72d50c84b346b1a5e70f3d4f3ea4",
     "packages/worker-ui-baseline/scripts/build-preview.mjs": "f3185d9e6d99dbb99ff6b6bad76db4369d7606b1e0eb0427d8e76a0e61048907",
     "packages/worker-ui-baseline/scripts/build-worker-assets.mjs": "e9d0388de88c6617a178ff6ef96638195c7c380afdfa44080bc7d54ca861161f",
-    "packages/worker-ui-baseline/src/WorkerClientBaseline.tsx": "df3a41ed9e8b27fa188ca7d6a023cd1f36c74dab278aff97fdc5c57b9c8e73f4",
+    "packages/worker-ui-baseline/src/WorkerClientBaseline.tsx": "26c32b558519f7bf7859744b70eae7ab5d563722dabac7b99e0d70e68a4bf8cb",
     "packages/worker-ui-baseline/src/WorkerClientRuntimeApp.tsx": "9bf25796668a6268bb75d2ed2946cddc60f23916afe792752c7a7f9d4ee009aa",
     "packages/worker-ui-baseline/src/index.ts": "5114c6a8e5eb7ea346596e55fd84397fc4b4622fb1cf59fac2abe18cc2ff1b66",
     "packages/worker-ui-baseline/src/mockData.ts": "cde2aba171dfd6803bc52ab8bfc487304244aa3f5eafad7e2eb2d63a83566576",
     "packages/worker-ui-baseline/src/runtimeBridgeState.d.mts": "357fed53735af29f3a640ca422450e8c8b49618203243ebdd7212e3cf20d4df7",
     "packages/worker-ui-baseline/src/runtimeBridgeState.mjs": "bb1bc832e3d3aa34c26a8bea37c68a48393c8fe3d44b1e674a3cd719f44469f5",
     "packages/worker-ui-baseline/src/runtimeFailureEvidence.mjs": "0e31c6df840f7b0c8bdc38103727fbac09d025ac8353b7d8684807897b17acba",
-    "packages/worker-ui-baseline/src/types.ts": "27e2916fa9a355785a9d6fe8124bef4c779880dedd01999c8258e34b492014d5",
+    "packages/worker-ui-baseline/src/types.ts": "c3db5448a1f0fcb9fa1ee0c876d35a5f352fc963528400cb1d290ba8e1c51753",
     "packages/worker-ui-baseline/src/worker-presentation.css": "cfbaed57e82595549c8e0f30ca45202b8ab775712075ea5b682d44d501f6cb3c",
     "packages/worker-ui-baseline/src/worker-ui.css": "18c8eff4399dca953f59ffffaed0b58a0f4efd0ceaa7c3afa015d39c32bc8691",
     "packages/worker-ui-baseline/src/worker-ui.tokens.css": "081ce7cc992c9bdb55f010752cdd29a70dfe749a37d5970419d034e63075d323",
@@ -558,7 +563,7 @@
     "packages/worker-ui-baseline/tests/runtime-failure-evidence.test.mjs": "a2e685c83bf55c5708ea3a92d4dfc6c302a5838159d507a970ec593e3683ab9a",
     "packages/worker-ui-baseline/tests/runtime-hook-recovery-display.test.mjs": "e73133eacd6aa8174a51f5fa00927f0d45edd81b763835bf50fda41b68176e3c",
     "packages/worker-ui-baseline/tests/runtime-layout-recovery.test.mjs": "4f352f94e7a0ea3cb32e9b9ab92f00b6e217b8e4114b0d7b80ee44c431816654",
-    "packages/worker-ui-baseline/tests/runtime-startup-checks.test.mjs": "23487a85d934e601dba4cbf536230524886406dab80d58a7cdb9af78f69d9cf8",
+    "packages/worker-ui-baseline/tests/runtime-startup-checks.test.mjs": "83470d03957e0fcdc436514024ca99b21fd8f8ed5d6861df58441ffb2fc3b7af",
     "packages/worker-ui-baseline/tests/runtime-waterfall.test.mjs": "4df16d97688daddbc7f6ffbb9f068fd4f93a47905fa6e216c1ad20e837e356c5",
     "website/assets/hero-product.png": "f4ef9f9d5badbac0799b7923538ff8d9b15506d7d096649fc978edc6aec047e5",
     "website/assets/vehicles/vehicle-01.jpg": "e305195d6cf39b2848b2e10a57e4f386827957ed38294afc69125410c078a542",
@@ -580,7 +585,7 @@
     "website/worker-workbench.html": "2f36ee72bfd4d3cafe13cc5caf17a49150d2ca7fcb94412fd1fc02891258d7ad",
     "website/worker-workbench.js": "b6530e214ab5e7870c1f6621dd1c1438c053c0442cdad46791fc9830055820d7",
     "worker-client/README.md": "f520827f23bd8eb1b109f9febfeda199c70a90e720a8f4bb0e12e0b116a8d0af",
-    "worker-client/chejin_worker_client/__init__.py": "18afa67e4d7f38a3ab5701e7956fbcc366eac4b1f010ed5c6e8c9352c6cf42c1",
+    "worker-client/chejin_worker_client/__init__.py": "5baf68e49511dba04af7472a6a679de58184710208fd79bfe8d6e0ea22792fda",
     "worker-client/chejin_worker_client/action_journal.py": "e9cfb2fc0158a7d619fa6390a35f5a4a62cbfb227512d29f6e1b4efcaacd1f6c",
     "worker-client/chejin_worker_client/api.py": "34d1b77833f868edeee47feb1671400735074f3c8db0115ba2313f060da980d4",
     "worker-client/chejin_worker_client/artifact_retention.py": "0b7859a3d9b1e125ca321509b3d193ad560c84f6ed081bbed7180ac2bb370223",
@@ -589,10 +594,10 @@
     "worker-client/chejin_worker_client/c2_contract.py": "ef4f4176ae66c115c6b078806f163c097a42cf4141f78a2b9dd4738bda4c1702",
     "worker-client/chejin_worker_client/c2_outbox_recovery.py": "d8cc7bb79dcca2a7df158b0957719048a1a723e01938955d7ed1f7b378f3db37",
     "worker-client/chejin_worker_client/chejin_updater.py": "5004c75c7a54ea827b97f685c16005b82d199e63700476a836c3aa0f792ad4c7",
-    "worker-client/chejin_worker_client/client_update.py": "39df774fe505110fda4bf98aa0e3eb4ac3d193f41cece73e488b9f5145d27ffb",
+    "worker-client/chejin_worker_client/client_update.py": "7fe4e15aaac02aae5424773f089bb3399fbafe1231c212905a51c32bc56743a2",
     "worker-client/chejin_worker_client/config.py": "679f4b46501ccfea01a194dc7e03e60d4c608869c41679e090aa14e93282655f",
-    "worker-client/chejin_worker_client/diagnostic_bundle.py": "a8474e7755d8e66bd9c69ade94b999527ffa11e07a876c9c301528cb0314669e",
-    "worker-client/chejin_worker_client/diagnostic_selection.py": "08377b6bc115d51a84e3cf8b5ebb01b1976fd809f77715a7670270eb6b1dbb4c",
+    "worker-client/chejin_worker_client/diagnostic_bundle.py": "60edb735cc905740d6a84ab760738681389a8731a8d5c365698d981e72f95a00",
+    "worker-client/chejin_worker_client/diagnostic_selection.py": "7a5aa0a906bdef2460bdc2b49347a5f43bafaee1bfaeda296f99a72bd978174c",
     "worker-client/chejin_worker_client/diagnostic_ui.py": "1a9340232c42637731551de86b70ebff0f38094b9380e9d00bae75a08dc3cb78",
     "worker-client/chejin_worker_client/emergency_stop.py": "8292e0db94566260d251e60e914c06e27789165f33bc1f9a0e83852041af80c6",
     "worker-client/chejin_worker_client/evidence_paths.py": "4cd854a3f1eca7c41681214e9d3678771a0346b1f7aa7ebe5f5f2ea66329bbb9",
@@ -600,39 +605,43 @@
     "worker-client/chejin_worker_client/historical_alignment.py": "3ad9cf686d9f046b836c5b8f83ebb8463cedc7906e6eefa27580b7844a32f971",
     "worker-client/chejin_worker_client/historical_correction_recovery.py": "ffab8f6b2c435fc9f1a93057cd8ecbaace211e707e8e00b24d67a43d6a6a42bc",
     "worker-client/chejin_worker_client/hook_account_issues.py": "eb6403720d3efa31b0900a6a99728ca16a1043fa409038d6f2e473b8c566d004",
-    "worker-client/chejin_worker_client/hook_active_calls.py": "04e7c393bf032f97089473d1ea86bc27cd6d1d5b474eb0b6dc83ac0c52b0a806",
-    "worker-client/chejin_worker_client/hook_backend.py": "4ea4d80a20fd2b24fa013824ea59474820f4241b6905371585a968c4a5756247",
+    "worker-client/chejin_worker_client/hook_active_calls.py": "c921a4ba25c93d68e6590c5897c81c7c1551751b6c7e09a717893c29e67434ee",
+    "worker-client/chejin_worker_client/hook_backend.py": "cc8b1485de2872119e4910d5602b66f3a2ef2b2d972c443bf151efd27bcbffca",
     "worker-client/chejin_worker_client/hook_clock.py": "1097a43397efb40d4e259d31171359d549872571990499caefdd3d062599acc0",
     "worker-client/chejin_worker_client/hook_component_update.py": "e2a7aec1825f2a1742b7e0e64ef1a92f45dc186ad8817c20a2b801c059ee200d",
     "worker-client/chejin_worker_client/hook_config.py": "5af083e19aa36eec9653ea00be54bee724f37ec70e33b39a261ff60acf6d2599",
-    "worker-client/chejin_worker_client/hook_connection.py": "9a4acb774aac5da8cf2c93e229a22006d1a62aab34cc2f581b4c600a100a781c",
+    "worker-client/chejin_worker_client/hook_connection.py": "a3f3324b9d70f27ca9150c5d8b4b5fce6bdb15754e89ea865ff12def61236b4f",
     "worker-client/chejin_worker_client/hook_contacts.py": "22efc9ae3af547ff6ba0980b5ac4ba6a7288223262bc89331220d48b48791f85",
+    "worker-client/chejin_worker_client/hook_delivery_lifecycle.py": "621d6b9666d9f0f95e9e5d008222eef54dd6c3ace8e75fa0923c861928f7c51f",
     "worker-client/chejin_worker_client/hook_diagnostics.py": "7ec48f8b0e2558504960dd39759efc441914cdaa9141ba1bb28c9d98b33dca8e",
-    "worker-client/chejin_worker_client/hook_dispatcher.py": "1d04e84c51e19ed1697f79a13299e464369034998f6ad3a95ff81b48ef4dd4a9",
-    "worker-client/chejin_worker_client/hook_factory.py": "c67af85fb00853e58e1969f80f44a1ce982a8ac2026493e3bcf66055f4cf4d7b",
+    "worker-client/chejin_worker_client/hook_dispatcher.py": "9872d20faa6b7b9ba71124a734a0d88e4f39f7049bceaf903127a0f1eb7adb76",
+    "worker-client/chejin_worker_client/hook_factory.py": "a9a5a2a6b05bea46f89d98fc1351782fa08881b4758092aef3c950948998d120",
     "worker-client/chejin_worker_client/hook_facts.py": "360b092ee30f7c37e94dc0d43851fe6401fbbba9b08f7356df40984ba9a54397",
     "worker-client/chejin_worker_client/hook_formal_c1.py": "7d3013ea3bde819a10a8d5d8cf39f34c6285c07dcd1e012201add61e17ff63e4",
     "worker-client/chejin_worker_client/hook_formal_client.py": "04ccafac6a0d8622b8108f73b257791f1fb51df36c70941a2925e196593ffd78",
-    "worker-client/chejin_worker_client/hook_formal_runtime.py": "94be10cf23f40f3cb5d227746bc74ea5f9c1130a61fe30bfd5937b6f61dece1e",
-    "worker-client/chejin_worker_client/hook_gateway.py": "12b5b01b9d932251b9527f15d127c37412874477976328f7f16acde764d3d81d",
+    "worker-client/chejin_worker_client/hook_formal_runtime.py": "5f1d8d8b725318319747458ddebb697578321f49fde2082970611ff066508afd",
+    "worker-client/chejin_worker_client/hook_gateway.py": "b726718ffc046be99c62cd9c2523c57c8b7923237f254ae2053c3b746803e73d",
     "worker-client/chejin_worker_client/hook_history.py": "7ae7d69f47e8ccc0a3392aa920e0807a0a068d6edefec5e54a7bb5f9a9e2397b",
     "worker-client/chejin_worker_client/hook_history_store.py": "da80456569b0af21b7c28a13b113da1e259c3833e2757d4cffb9b119cb13df5c",
-    "worker-client/chejin_worker_client/hook_history_sync.py": "d61f9cf48faa34d93e156146a21878da60516a643cc5c87af04a5f029790f603",
+    "worker-client/chejin_worker_client/hook_history_sync.py": "f28199c7e8ef332b0d89110522a9af23f36f9a5925e48483150dca44f6af0aa9",
+    "worker-client/chejin_worker_client/hook_history_wait.py": "ea7a8e59a5e3988cda89681304449069b0ab8dad88f6e0780306e6c0c367c4a8",
     "worker-client/chejin_worker_client/hook_inbox.py": "4b4873cc5977d677a70f6293d8e17a223c8134fb4f16de7fe5f2b86332f3c37d",
     "worker-client/chejin_worker_client/hook_installation.py": "fe8211d36c8c451c4a4b45d4cdbb234ae7ae115b7912273d79e937c711c038be",
-    "worker-client/chejin_worker_client/hook_outbox.py": "cd92de285b914ce32f061827887b3218cbffa7dced3a0d108b280da9d8e93072",
+    "worker-client/chejin_worker_client/hook_outbox.py": "d2db8cf25e18ccbcb5173a07bd4087d9612f49f68da11a570033e489e5edfe59",
     "worker-client/chejin_worker_client/hook_process.py": "2274f5ecc7a081f9d86843fd1861bdcebca9af58e07439afbf4d7f05d0bb7ab8",
-    "worker-client/chejin_worker_client/hook_progress.py": "1d4d2855ca9ed326c38fea4505ff8284a561b8488debdd9dc392bab17b90ca10",
+    "worker-client/chejin_worker_client/hook_progress.py": "89f5eea493c456b4b6b88755b1b352a62e58bf0c7811cdedad2704f27514208a",
     "worker-client/chejin_worker_client/hook_projection.py": "4a6b1eba15cac81a8454fd666ed77cf63a2ea8cbaeb5e27fbb5d13ded89e146c",
+    "worker-client/chejin_worker_client/hook_read_retry.py": "2481775c3357ceae5ebe7c7ceaf9a5ccf3651113280b312ac620557918d3b3df",
     "worker-client/chejin_worker_client/hook_receiver.py": "83b7786d89989a03f9d8a6705bc66bf3845d8fed263925aa72e1e6a7a2a197ec",
-    "worker-client/chejin_worker_client/hook_recovery.py": "31bf9f8513e558172a38678a6958b03d1fcfc85ba2c71f838ed316917be1521d",
-    "worker-client/chejin_worker_client/hook_retention.py": "aa67378ba686b559e9a66da7841ae084fcd48ee53f87b3077f713c463567badc",
+    "worker-client/chejin_worker_client/hook_recovery.py": "9c4e268cee29b75e701ccbcd50f23e1f878344f14b7980ddec593d5c92a50bde",
+    "worker-client/chejin_worker_client/hook_retention.py": "ccb60fe1b08ee9d4b7f6ea1adc9c274abd23364ab62849c1ce974a1d9b0ec33c",
     "worker-client/chejin_worker_client/hook_send_diagnostics.py": "f54428d3664e5d9ccbd5e012af6b89eec8377e6c0a1195ecbb4529bdf9acd7ab",
-    "worker-client/chejin_worker_client/hook_sender.py": "9e4f167c4b23b6b83cbdc334e251a2b0cc63445af2958786f56f142f808b589a",
+    "worker-client/chejin_worker_client/hook_sender.py": "9fb506dbd391557db6ed7811db4cb4e791bc6812ddd03261cde0dd1770983e4b",
     "worker-client/chejin_worker_client/hook_startup_window.py": "60458efc4bc76693f544fa489534ce02629ec9f62bcfec11a98a98d0671bff65",
     "worker-client/chejin_worker_client/hook_timing.py": "d3f41c37a3be70a9c981b0fe5bdc3c0cf4b4fc5448a60be060e30fdce52adde6",
+    "worker-client/chejin_worker_client/hook_transport.py": "9b46b4c33dfc39a8f81a29243cccde348e691be8c78c611e99a1e73e37289a55",
     "worker-client/chejin_worker_client/hook_voice.py": "e45248392e0e8e7e8177d58cb02dca380c99adf2692fe8af64a0c394549ae3b7",
-    "worker-client/chejin_worker_client/hook_worker_services.py": "dfad6b46b41afef2b71a96193e64070476237443474bce5957de19fa624ae616",
+    "worker-client/chejin_worker_client/hook_worker_services.py": "f8fe41b82503540500805a7db86b8f847a84b5cc10552120c114c810853cd023",
     "worker-client/chejin_worker_client/image_phase.py": "0beb081b9cb4acbce3400847c34caa301d789de2a57d2d74f2cda62510a328e8",
     "worker-client/chejin_worker_client/incident_evidence.py": "8821582ea3ddbf25decd782bd03fe13a6d005b472875ad39cf9112565605efcb",
     "worker-client/chejin_worker_client/layout_recovery.py": "0c851e0bd087f60f28fae75d45129cf040c8054718669d15c7ceafcfd2be3da8",
@@ -657,7 +666,7 @@
     "worker-client/chejin_worker_client/reply_read_failure.py": "06ac7be80fa077f02e44542bee60e48ad0b4a2ac94beee9989a0db54835eef54",
     "worker-client/chejin_worker_client/reply_sequence_runtime.py": "61ef3e0a3a74cc37396b04b8f0fe1f43a3b6e13366adf630ebcea4bdd18eaed9",
     "worker-client/chejin_worker_client/rpa_bridge.py": "36b520b972ef1bc378cf205a3b59833f30c7d68c2e38fd4eec210212af27517e",
-    "worker-client/chejin_worker_client/runtime_process_timeline.py": "fd958bb821be9999a107274b50d82853c57bb92fd09336a7192dd2ce2f47c3c6",
+    "worker-client/chejin_worker_client/runtime_process_timeline.py": "ec7a5b758c8cb48187062b69d326e4969f62e4f3ab12d8538dd787dbf38cdd2e",
     "worker-client/chejin_worker_client/runtime_startup.py": "65faed29fb538515b1f61f115c6421f40c0b5c0bef734edc03510a200fc9dc06",
     "worker-client/chejin_worker_client/runtime_supervision.py": "d1777466816ba1e5877a04f8ba670a118330cafbe8c349de29640cc3096bd1d9",
     "worker-client/chejin_worker_client/send_request_evidence.py": "c024d02e0f5b000d67412fc2df4a1cbb6e4e2469e06eb2183c0755ab11846bd9",
@@ -665,12 +674,12 @@
     "worker-client/chejin_worker_client/sequence_alignment.py": "761526bae59cbe04e83756ead28812d9eb9c33c348a88433473080cd5dbc2480",
     "worker-client/chejin_worker_client/shared_rules.py": "4768fb42d0eb1474d3764a57376c0f38faf38cecdeb5a872a4b2006cd43fd25b",
     "worker-client/chejin_worker_client/single_instance.py": "00f35e84d610a04f3ed2fddd118e5f5ea02bb904ddf43867b146a3c3a25e1844",
-    "worker-client/chejin_worker_client/startup_check_state.py": "e5c552efa19723cfe0309859b48011e52a434048d1f80d509972277db1aeb425",
+    "worker-client/chejin_worker_client/startup_check_state.py": "bbc10cc83d57b5a0957a876ec233ae96f96988953fea7f20133f5c77ffc33f38",
     "worker-client/chejin_worker_client/startup_window_position.py": "6c801bac499225a2548aa58edbfade80dadd8d2fb1d5127f885686476e6ffac0",
-    "worker-client/chejin_worker_client/storage.py": "331ffe03a3ae884cce36c3ef396e02c7e36539aa55f60a4be9c12c1276d7db5e",
+    "worker-client/chejin_worker_client/storage.py": "1187381accc258c25a024351e9c2bed1cbb8c9912ddb2c546238bb297ab88fef",
     "worker-client/chejin_worker_client/storage_maintenance.py": "dff6e905c530389d92e7a87b2f21e7d72721434c9c7899d22d1c9d6c070b035a",
     "worker-client/chejin_worker_client/subprocess_protocol.py": "3e67610ee91a7943ef48fc3650a597f067726072cb622e8ba7da57262d0bcbf6",
-    "worker-client/chejin_worker_client/task_runner.py": "c7938bd418fefaf94a09e03aac61536c73aecb30dfc16f7872b59fbf78ecbec3",
+    "worker-client/chejin_worker_client/task_runner.py": "a691d64310b77bf521be221dc58b3c2715cbdafdbbe968f69850dc796d78c177",
     "worker-client/chejin_worker_client/telemetry.py": "1f0645527f5f1867c0d0391429324e839bba60674ab707f101d4928d83d0e017",
     "worker-client/chejin_worker_client/text_correction_outbox.py": "93aabb370948e1c4e9682180995fb1d925f7466858a69e0066895af511c21f64",
     "worker-client/chejin_worker_client/text_recheck.py": "23f37bae9362ea2e3bbbf4e80acf66648f8f30f193513efe850b48af32e19fab",
@@ -678,9 +687,9 @@
     "worker-client/chejin_worker_client/ui.py": "6a976c539a8c61e2072bb61c8be612ee43f790c688de431d7284309563c6d453",
     "worker-client/chejin_worker_client/ui_lock.py": "112995575d2f72801d2527ff6bc982812229eb372513b1bfb57f43d6e66f541e",
     "worker-client/chejin_worker_client/ui_state_mapping.py": "484ae54a9c552d2f52518ca21e385902a7b82beb46c57f543cd88f40010e7879",
-    "worker-client/chejin_worker_client/update_coordinator.py": "a68b90dce20f6bbb255c74673c08e8d22fd9ae071673ce93c0d289073cd8511e",
+    "worker-client/chejin_worker_client/update_coordinator.py": "743347b65e0c4fce322f9527907369e2c2a7dc41942e02799f0a15bdee9cbca4",
     "worker-client/chejin_worker_client/update_data_access.py": "eedad0bea47ce72795a5d5b0ff1f8cb5ef0392ff1daa2d23b135ea7747a496b5",
-    "worker-client/chejin_worker_client/update_data_snapshot.py": "11b7c1a1213f2804968c3e01407600832367866e779fe8db46a4cb419bfcb24a",
+    "worker-client/chejin_worker_client/update_data_snapshot.py": "0e07c6b7c7beb3a618f9ad1a6d58f31ebf06ffbb280954e95a341cc5a9b43155",
     "worker-client/chejin_worker_client/update_diagnostics.py": "7ee54c751f381a918481c8f5713686d88d0c4df2a1c61aa15de50a2dbd38bd0a",
     "worker-client/chejin_worker_client/update_filesystem.py": "13b808260440b40ad0d90d63aea45e2bacb78acec5bb3a40ceb580d75ec17260",
     "worker-client/chejin_worker_client/update_progress.py": "0b78b804ab3a3b9ae88cd4bedcba80d636c994fdfad96dac09d5805463fce0f4",
@@ -698,11 +707,11 @@
     "worker-client/chejin_worker_client/web_assets/worker-presentation.css": "cfbaed57e82595549c8e0f30ca45202b8ab775712075ea5b682d44d501f6cb3c",
     "worker-client/chejin_worker_client/web_assets/worker-ui.css": "18c8eff4399dca953f59ffffaed0b58a0f4efd0ceaa7c3afa015d39c32bc8691",
     "worker-client/chejin_worker_client/web_assets/worker-ui.tokens.css": "081ce7cc992c9bdb55f010752cdd29a70dfe749a37d5970419d034e63075d323",
-    "worker-client/chejin_worker_client/web_assets/worker-web-app.js": "31467d5aba1c1b31c68ebc0fd2173c031b1b00b1574d3c4d8c5b209a93a19404",
-    "worker-client/chejin_worker_client/web_ui.py": "f994ecdb56325302329724fea19a1175e95e8f37a25a974614067f47faf13390",
+    "worker-client/chejin_worker_client/web_assets/worker-web-app.js": "f7c1e9761f9bdec153823280abd7d0639bfa6543211208f6f4fb1785d58f1140",
+    "worker-client/chejin_worker_client/web_ui.py": "5f404f68dcb3296c861348ebeef619e904550dbb6ea1b708f75477d6894b07a3",
     "worker-client/chejin_worker_client/wechat_c2.py": "3b441f8a68c0e4efabf6f6970149e26af84f51097e9a43809759cad60d12f8f7",
     "worker-client/chejin_worker_client/window_render_evidence.py": "1c6764c970f685d337df338e7d39147f475a49ce96c1699ebac5419736b3e8c8",
-    "worker-client/omniauto-rpa/.chejin-source.json": "39277eba173641351f5cbcfcd7bb7ae4e82b12941938752dcb29472127a9cfb2",
+    "worker-client/omniauto-rpa/.chejin-source.json": "5c4ffc62bf118cf033306bd99e891aaab4ec6a39af1745e5f6151fc2ed27e610",
     "worker-client/omniauto-rpa/PROJECT_STRUCTURE.md": "ca9b8b2d1bf0c59c88fc1ff9fd86fbd1cafa500b06ee60f00c910bfef6f5c486",
     "worker-client/omniauto-rpa/README.md": "b8c509514efd339d87ea2e515a9bccf761426a29804b1076854e30d15cffe11a",
     "worker-client/omniauto-rpa/START_HERE.md": "372e6fdcefcc012da3f554af9227781cf05181d9b733b933671f17ee25e73b89",
@@ -728,7 +737,7 @@
     "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/adapters/add_friend_routes.py": "8c93cc66252318df0885109ab05961bf33b88d84d34d5e25527e0f7e42ac5b7d",
     "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/adapters/add_friend_screenshot.py": "60bf1a90a13ed86ecfe85065337c3ac8979e2c379fc03bfc71bf42c262571eb2",
     "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/adapters/business_viewport_continuity.py": "82ffb5747acb753d20f4e70cb5ae5254f7e4ba51f2858307613e36e61c9a23e7",
-    "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/adapters/chejin_c2_observation_schema.generated.json": "6b48b4c540230eb7597bcc319a743924f0bea2f0eb18799d27fb41fca3ae0d03",
+    "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/adapters/chejin_c2_observation_schema.generated.json": "56a54097b96aeeffc7ef427aca780670e8ad92dc2e94a5ae9cc633371bdaf7e9",
     "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/adapters/circle_plus_icon.py": "2367e83de1dfd25508a560657cb7efd93d9e2e8bafa5d1edeadd155d57734d6f",
     "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/adapters/client_release_rules.py": "f2d1a4077f5d10064158dae89050020e7a2a21a4e786ff2f8fa85bc6e222efd5",
     "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/adapters/confirmed_sent_history.py": "d2371d89dbbd41f215440ed01a54ebbbf960cd3f344d7627e9d70313ffcb0d89",
@@ -737,9 +746,9 @@
     "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/adapters/historical_text_alignment.py": "562b4ea1d561589b71483bfd034a424341a96beeb62c2549295fed38915fa97e",
     "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/adapters/historical_text_correction.py": "ac3af2d08638d259cdbb8dcb87de638912cd1a50bc30ca1daf8a44ae089ed3d0",
     "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/adapters/hook_contact_rules.py": "cc3072ea75f4015fd0b7554c5e91a740b52834559f10c0291494bb51cef0e9e2",
-    "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/adapters/hook_contract_rules.py": "bdec9434d9f2b109cf614aa74b52300ecf17f99f874bff15ed89f42a7d71f772",
+    "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/adapters/hook_contract_rules.py": "11ffbfad750add6cecd4db53ffdd02eb1b15b4ef13b804110d89d20d10a462c3",
     "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/adapters/hook_event_rules.py": "389e93a387951ce4f0f8ab5a76f6d876fec3b0bf68c1faba0637831a4c8a2165",
-    "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/adapters/hook_history_rules.py": "da9c87d2176c902e59ccab43f0e1637eca38c0b19c4d5a33a96615cf8e1c0d9f",
+    "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/adapters/hook_history_rules.py": "d07e4b2374972042a36928ed4587fbbaec5c879f1969f3cbda250430ed02bd04",
     "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/adapters/hook_observability_rules.py": "984501805ee51bbfba4bded9eedbf5ada7eb789163f284bdfebd06cad7e639d6",
     "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/adapters/hook_window_layout.py": "e50876a2648d16727db3a1187ad5955dd57f54920aafe0e9fe30f68cf52547d2",
     "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/adapters/icon_similarity.py": "830c7248bd208b43b623a9e0ab33057655e3b6d7a165ffe7ad93feef3177a36d",
@@ -773,7 +782,7 @@
     "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/adapters/wechat_win32_ocr/frame_avatars.py": "d9cd9ed4a9bedea751cb41810c20a7021f436b06782f48359149b370de2ea63a",
     "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/adapters/wechat_win32_ocr/geometry.py": "8480576b33ce32a3e7c28ff81a99d6b27d57320aa45409b1bab57d865d26f2f9",
     "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/adapters/wechat_win32_ocr/hook_c1.py": "5968f1c6f958becaf0c8482afca18f72a0a2604a322cebeeab25fb92febfc452",
-    "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/adapters/wechat_win32_ocr/hook_c1_flow.py": "3f1d4fda29bd290eb59934caae1af1e0830bd470402988213f0a06f75e0306ab",
+    "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/adapters/wechat_win32_ocr/hook_c1_flow.py": "ffba6efa0cfb2288d1f942bc7e9c77facca0e982138649389d91c420b9e1d1f8",
     "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/adapters/wechat_win32_ocr/humanized_input.py": "d4efec719b77ce5acab386358cc5efca32606ba1ad80697a3fc63b3a2398ab20",
     "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/adapters/wechat_win32_ocr/interaction_evidence.py": "b3104f469663f2dbb2302608939b1c3e7a9ad9c6cea8a94ed1ee7d84cc7f4c33",
     "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/adapters/wechat_win32_ocr/ocr_engine.py": "6bf6cae49610812f998364e33e3bb1629e8e5481cc4787361e8a3866ec415db2",
@@ -1072,7 +1081,7 @@
     "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/tests/run_cloud_auth_required_checks.py": "67a72a5a3412983ef37397c25e6627ce359958a16ab5968924e85917c8177ae4",
     "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/tests/run_cloud_gate_lock_checks.py": "0500e1c72fbf85d1450247476108065b926a292940673c8a5458c3ba1253607f",
     "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/tests/run_customer_service_brain_boundary_matrix.py": "0aa897c89cbde3b8e736d028ac4646b7ce6b7a4cf33a6911b15181668583b946",
-    "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/tests/run_customer_service_brain_contract_checks.py": "c7502223d05a30432b9a838528389559edca014daeeae17c43891a6a2b1f6f98",
+    "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/tests/run_customer_service_brain_contract_checks.py": "c57b8e27d74b986420baffaef8cd47d00bb15cbbf19a55eb40069bba16103b79",
     "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/tests/run_customer_service_diverse_long_checks.py": "f2761a056b695a9b63d231236a1933fb74490287f5afc920cb9d61cf013918f9",
     "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/tests/run_customer_service_multi_session_scheduler_checks.py": "a2bfd3f4484785cae04ba332e9cade67637f9f4467617a431d6837e9bb182f90",
     "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/tests/run_customer_service_real_wechat_comprehensive_live_checks.py": "47449ce66508774dbc8f84dd54497888cc56c74d6288b24dc714025337d3213c",
@@ -1185,7 +1194,7 @@
     "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/tests/test_invite_legacy_rules.py": "0aea3f47c6a2655c86bb06d142a1f38f0e331bc5493f3190ba1cd991d413542a",
     "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/tests/test_post_send_customer_suffix.py": "598cb68668a6de6a062217e57638aa227890b990ef52c27a330ec4002973126c",
     "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/tests/test_pre_send_read_cleanup_contract.py": "f06d862fa7276afc0792c198f9a35934143fb7cb60cb63c24e4bfe63b5db9ac5",
-    "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/tests/test_search_control_icons.py": "5ff87824c6e72dbfee41e1d47ced2a03a28d1c436041d5f934b739d50c5500b0",
+    "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/tests/test_search_control_icons.py": "fd6b7467629b02a082594da69191028cb8cbaf6b5cc58800267e50d712068a5e",
     "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/tests/test_send_history_confidence.py": "486d3d55dd3fe5f44a291a957f1ff990b07ba4a026e650336c3f88079128d4d5",
     "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/tests/test_send_input_lifecycle.py": "43b2e58bbe02dc8020e57b06e092c7ce0cf2e79fe951837c6725dfeade143a6d",
     "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/tests/test_send_interruption.py": "b36f795283898b4e7279904d0dbc7582e1c7d9361122eea83524e7ad21d3c251",
@@ -1218,11 +1227,11 @@
     "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/workflows/customer_data_capture.py": "a94a2794f58583d82bba3d0452b6bad92aaf35b32795ea1646aa9dae9b8783eb",
     "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/workflows/customer_image_turn_router.py": "6e42465326690040d910d2117a29582ccc7cd717cada2da3c25ec33bbb6d69fa",
     "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/workflows/customer_intent_assist.py": "df3152dde47b76d3d02aa416adc3d8a7962db0209d09276f0a7713a430ab3fcc",
-    "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/workflows/customer_service_brain.py": "dfd6ae1c22fcd58ae3640193f1f998942932b5a230e46be8daaf6bf8590de520",
-    "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/workflows/customer_service_brain_contract.py": "6a890888db6f116e1ed292ea54a72842e1956723823b220b5f2f05ed585cfdde",
+    "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/workflows/customer_service_brain.py": "fb717761552e9ca11e9f75c67fe3f75a88ccf664f47a0905d84d991a76018773",
+    "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/workflows/customer_service_brain_contract.py": "1675f6ad4f05b481f2033f8ae39e4ce31d6193e7cdb9aef7d1a8d1a4d401e2e6",
     "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/workflows/customer_service_conversation_strategy.py": "c47805e4a646c9e3eeb854b0b99a408226dc1f5f647abaf31da5f30395b5ea81",
     "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/workflows/customer_service_loop.py": "0a1b4c1ac28208032fabaaaaf1fdffac8c273ce822f3f3b1684d22a9c9e34f11",
-    "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/workflows/customer_service_quality_reviewer.py": "eb6adaea5d517f36547bc070808d8f8c03981cfbeabc08cea0ba71417b6e3f5a",
+    "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/workflows/customer_service_quality_reviewer.py": "7c8c9e3d94b6974ceaf3edf83e8f09af300398a6f5895b528ae034da8a1b87af",
     "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/workflows/customer_service_review_queue.py": "2668925232c70a8f28f17d2fea7e1026fc6fbb07586e86a1f644bbcf5e36c4d7",
     "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/workflows/evidence_authority.py": "74444dd82096e9e4e5870c1dc6919c3191ef472c64d9d38c3ab1a451bef4280e",
     "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/workflows/evidence_resolver.py": "4dad3e850a57718efd1b5b84088cd08f2c4fa74605f54e12b65f219affe900aa",
@@ -1269,7 +1278,7 @@
     "worker-client/packaging/chejin-updater.spec": "f1b67f60ae2a5fb5a6de3f55276639a50ccf2e79ecce346cf510cdda3a65a4d5",
     "worker-client/packaging/chejin-worker-client.spec": "66cab3bb85b28db08c39642d3de8d98a192e2c84324c3786884dd64c3aad35f0",
     "worker-client/packaging/chejin_updater_entry.py": "0fe85c173c3c6f6e74cb8bc42a98698b6479bef0dde0dfb90cc851439bc0e4da",
-    "worker-client/packaging/chejin_worker_client_entry.py": "11ccfa65bef701623df7bb9c1f9ae344b109ad823209a9ed65c99a03a998c570",
+    "worker-client/packaging/chejin_worker_client_entry.py": "f041a588c7a6786e33012689eb08d020f5dd72cef9d3f477ccebbb2a8282d7bd",
     "worker-client/packaging/collect-uat-evidence.ps1": "f7a84bce02dc1b04eb148139a371755d85966d57bd794d10d100ff11334f9fce",
     "worker-client/packaging/collect_uat_evidence.py": "f6feda78c4c6a45b7c367a9416b17c0145019ac7d314dd1d9216a8992b4e61ae",
     "worker-client/packaging/release-signing-public-keys.json": "2be8440e9e3f564d5f1a5e930aa9e75f15fe492145cefd8804b5b12cbb0a6924",
@@ -1338,7 +1347,7 @@
     "worker-client/tests/test_avatar_text_rows.py": "b41d6e36513d6ed94752287050ff76b1c894284734a51b2511a6770551fa672b",
     "worker-client/tests/test_avatar_top_margin.py": "568bd140f764f3ff66be8419af5bf39ccc2d4f1c81a756e112e071005e05c9df",
     "worker-client/tests/test_avatar_top_margin_replay.py": "a3d1e0a8cf557fddcc47eabbee98a711f0ba77d03b9b547f2c95c3b364724895",
-    "worker-client/tests/test_brain_handoff_presentation.py": "ac93dea0b67f81455d7d459f7d81834997a8987cd1b4ffde6fec3e252efdb553",
+    "worker-client/tests/test_brain_handoff_presentation.py": "636ad3a8fb30decf39638034557e158b16ba1543c31f51f6fa5c71617605b445",
     "worker-client/tests/test_business_viewport_continuity.py": "24a078f750dcdaf6f216d4193191b62f77a24184d47175fab4f67641f9ea1cb3",
     "worker-client/tests/test_c1_evidence_chain.py": "dcf62faeb7f069e5c920d555d58b0628ca069e5f1d889a4f64f2f6f6e83e24e9",
     "worker-client/tests/test_c1_failure_receipt.py": "3a48069c9b91abf1b10cc2d12e048fe8c3b510905e7cf8c3b82795c76395cd49",
@@ -1358,7 +1367,7 @@
     "worker-client/tests/test_config.py": "2789f80d0faa2b2aa14644038c36cccc7ade56adcd98434b7ca9b970ac11b33c",
     "worker-client/tests/test_current_context_history_confidence.py": "04fbf680ac36ae26def5790097d4ef557f138bbd876213bae79701e3bcad1655",
     "worker-client/tests/test_diagnostic_bundle.py": "c0d556cfc426c5b35be84fd3db7e3cb9160f1ba96ad9690a8f91b8fcf3344f96",
-    "worker-client/tests/test_diagnostic_priority_chain.py": "da89492f53259f3bb7430ab502af158a0923aa32f70d5b1d81e8fecfdf51b84f",
+    "worker-client/tests/test_diagnostic_priority_chain.py": "dea54b02bc4edd357bb8ec93bb080b4c322a506151e6ba2bca7bd341068e98a0",
     "worker-client/tests/test_emergency_status_settlement.py": "a51b45dc5657d4c38d69379b0878c51d31d3635029061c1b8497c02ddaf1244a",
     "worker-client/tests/test_equivalent_contract_handoff.py": "57c86d216999780e7fc245112a17043f0b3b3eb20e5a920aa616667f61cc8597",
     "worker-client/tests/test_evidence_review_regressions.py": "79835595b138ce14ba5e5cb97809775df771e873119473309bd2b4a393991719",
@@ -1390,6 +1399,8 @@
     "worker-client/tests/test_hook_component_update.py": "3e25782910d55b95b258a3d19d9c68f0f938cf0b0a0dcbb614001ddca8d07601",
     "worker-client/tests/test_hook_connection.py": "f32417c357dec51f0979bf09da632ce8330edc94d12769a40ab77df252231c7c",
     "worker-client/tests/test_hook_contacts.py": "4d9bebac2d64243e7377e0da8c88902ac0dcffea1f8934f2a6f4be4d46519b03",
+    "worker-client/tests/test_hook_coverage_recovery_wait.py": "649f0580657cabf50e8a6a3eb554b01f8225accdc9cb7012f0640f27f774894f",
+    "worker-client/tests/test_hook_delivery_lifecycle.py": "0e3182f775c3b5d3ed5d90f52a8318cc4367f03c50fa6f39e58c1b4f292d70cf",
     "worker-client/tests/test_hook_diagnostics.py": "88356d9ec13d76b6fe35a2409ddac15e6bc686e66158367fd769d20866f13d3b",
     "worker-client/tests/test_hook_dispatcher.py": "b992e3ceec32ac2a1b934245f518611344cd42530c60b29c92cd55933db4ec51",
     "worker-client/tests/test_hook_facts.py": "127f5bcad84fcf4280dcff3fab5f2621b92d92dd7d30d5e31563f4f1672bc69b",
@@ -1401,10 +1412,11 @@
     "worker-client/tests/test_hook_history.py": "889527f3e1022baa92f7e0b47dff1c12142c4ff65263124784bfdfe755eb56eb",
     "worker-client/tests/test_hook_history_checkpoint.py": "a4641cf28974bd51ddfe28a523c1af0958cd01b3c1b5d80ac7dd5f7a49b4559d",
     "worker-client/tests/test_hook_history_retention.py": "517bf0b77a5b89af9528831a34fb59904ec32fd78a55295ca22881c74e52ae2a",
-    "worker-client/tests/test_hook_history_send_recovery.py": "32054f18a79832b4f26216def7f8b25cf69511f0202752994cffac867e9262f1",
+    "worker-client/tests/test_hook_history_send_recovery.py": "518d6089d852a050497dc53e3483ca2263fabf81e3679ad528e0776a57c316a3",
     "worker-client/tests/test_hook_history_session.py": "9562003f3497faae906ec600639abb4895ba5c1041698c18fe80dbc6ab806010",
     "worker-client/tests/test_hook_history_store.py": "46476a8627077edec34d8c832a4ebcaee1267bbf4097ad12721c3dd361b4d6b5",
     "worker-client/tests/test_hook_history_sync.py": "88d4140ff95cdb50f4d9f0a1d88d9cbda9a4c12fe9aa69e54e48409a569cf480",
+    "worker-client/tests/test_hook_history_wait.py": "04da3d8b5d26b77fdea03c1a34c15b153c16225938010d53177a0cf254cbc6b3",
     "worker-client/tests/test_hook_installation.py": "6941697629a870b19c16859009ce320937e61ad67a40a648774c0e21c589caf9",
     "worker-client/tests/test_hook_intake.py": "20a335965c1f5757abbcab56e495046cf53a53d23688ca3375aa91486b45d36c",
     "worker-client/tests/test_hook_invite_recovery.py": "5e4fc739502a990948e68019c780177405641609ac6c0a126935c68564ca23e2",
@@ -1424,17 +1436,19 @@
     "worker-client/tests/test_hook_remark_caret.py": "3ccbf24a9818726c10747746e76b00d3685f94dd0a34201b8e13d8cf57e1b15d",
     "worker-client/tests/test_hook_retained_send.py": "ec7e0e578af47c6f9de6c9b1e0fe9bc9142601b52953fa27708cbbea6db6e8bc",
     "worker-client/tests/test_hook_retention.py": "060c5259bcb5cba6882944f45c8509979308d12e3e2cf7d0b69da0029c9fe478",
+    "worker-client/tests/test_hook_safe_read_recovery.py": "5abf30829e438e8801c7c5aeea95df471cc13b3b5179be333d43e8b521ca200b",
     "worker-client/tests/test_hook_search_cache_consumer.py": "6a045a67cbd7eb5a00c497879d11bae0601a6bb2fdf0b8173414c01e2ab2c9be",
-    "worker-client/tests/test_hook_search_startup_cache.py": "ed1e4a58205a48f30adde0d0787baa7b4911d4d109913d6dc567ef777fd2778a",
+    "worker-client/tests/test_hook_search_startup_cache.py": "4e51ed0bb878b911f091b3cf15047dd8b63941b51d3be90e93009392019182fa",
     "worker-client/tests/test_hook_segment_progress_stability.py": "ae1df807dadcdfa9c5685809c2b2172fd54d457246e11ecb84bfa8ad4b860db3",
     "worker-client/tests/test_hook_send_diagnostics.py": "ceccb638d04e5a86569ea3c8833d9aa52da43ed55a2036aadb4f554af836b961",
     "worker-client/tests/test_hook_shared_clock.py": "4757269344d7d3973439fa3651611f2b2661d1f7d28c1e9ea0fc1dc5bdee1ec3",
     "worker-client/tests/test_hook_startup_focus.py": "711fa162099ac14430f70908411cef607a76035f7749edca3129a82ff7b01374",
-    "worker-client/tests/test_hook_startup_order.py": "5e71fee8caa3615e56fd448d319b5e4e3ee37587fe421d00ba2f64fbb2c24105",
+    "worker-client/tests/test_hook_startup_order.py": "6b09a57da56c75f8ea2d1e6b27fe7fbd72076f9a7cd49b4e15b7d04d1191672b",
     "worker-client/tests/test_hook_state_contract.py": "f7fc5f3beec52b807e7e255d32c83bebd6fce10fbb0fced6f596a77d1b8bf951",
-    "worker-client/tests/test_hook_storage_failure.py": "8ea19b8c0853c04a9caa76e0cd778cad00ffca029f61bc0c5ea052bf71a6a154",
+    "worker-client/tests/test_hook_storage_failure.py": "a361632b15297b9e42f8b7274556e955e61e82d6063a689dd19251408cca3f1a",
     "worker-client/tests/test_hook_task_display.py": "29409eb2741da6951bec68cfce25f7a8653b1d3e176207f0a334e721b07da87d",
     "worker-client/tests/test_hook_timing.py": "3c24a6bf6fbcf779aff6dd3efce6d74207be663b523c555ebfb055cfc3900512",
+    "worker-client/tests/test_hook_transport_diagnostics.py": "ba97d231f737dfab7f381fc06e9717e356317f21385beec0362d61832b2606c9",
     "worker-client/tests/test_hook_voice.py": "c0c4fb4adbfa4fc39f58eeddc6c944133870556bc599cd18e9068fe9b5aa5a08",
     "worker-client/tests/test_hook_waterfall.py": "c3d41587f345867534d70994444068b45f649995c744916218255be2a8447e90",
     "worker-client/tests/test_hook_window_layout_chain.py": "12bbeec0c9f3495d5f1e78d9349dd0c3d6d31f39cd730d69e13485cf48067fcc",
@@ -1500,15 +1514,17 @@
     "worker-client/tests/test_update_admission.py": "8aff8e176c564d6a03f91e9494909b72bf3cd1da0fcbb72131d4ac13eafe422f",
     "worker-client/tests/test_update_coordinator.py": "4257e309058608901f6980969a99e5d64f2fec6ccb1779477368649d4d484655",
     "worker-client/tests/test_update_data_snapshot.py": "cd2952b1b06ce18171c7998dbb9e8df71c50bda5933c948fbe4b9a6465a7ee3a",
-    "worker-client/tests/test_update_download_progress.py": "d1e4c3baef4192b67c3946438bdcb53e19f34bc8a49dc4b406b64592e6781992",
+    "worker-client/tests/test_update_download_progress.py": "dba4900f152f590a9e903879cbde70e44316d5556b49602ef550f94ae3d6c7e0",
     "worker-client/tests/test_update_exit_regression.py": "9a348edbb9676c3b7135be68a3fe39de1689c6d2b3b4872db7edede0a0d14c0b",
     "worker-client/tests/test_update_handoff_baseline.py": "8bbb74f228e336caaf550dfa121a9f08ec7de6387151013f0d7fd48aef9587b3",
     "worker-client/tests/test_update_handoff_process.py": "b6d146a16e7faf09f7fdd751d6218a2e238a5c6e9d021b8ca8147a5bb9499544",
-    "worker-client/tests/test_update_long_paths.py": "910870ff3c6db2f63c6abfb9095bce3807bc503c65fd001f99efcbe3d25ebfec",
+    "worker-client/tests/test_update_long_paths.py": "89afb194c5eba9fb713a59e0052a771a6d77b37807c4ad33a24b9c28050b8069",
+    "worker-client/tests/test_update_preparation_retry.py": "e378d430d7e9432065eb2326b191fc41378d452de13f4d37c2eafd03b7a6a08e",
     "worker-client/tests/test_update_progress_window.py": "deb12bbd1252a9de980ed4002311880734083e248579fe86891aa3826c99a8d6",
     "worker-client/tests/test_update_restart_progress.py": "a6103860824ac07e87ae8fff9494a91f6eea7acb718ec4b4ffd32ba8aff41c60",
     "worker-client/tests/test_update_safety_boundary.py": "fc7fd91c131f2208722a17d9be7ac45df26da70acba9b75cf5d69c26c32c082d",
     "worker-client/tests/test_update_shutdown_ui.py": "4f46fa73852223b011f847cb05909b6f59693602ad1d0ef776c28b360eb4a289",
+    "worker-client/tests/test_update_stop_confirmation.py": "96306ce9c8136b18823fc13c62a2d589743194bdcfc5cfef166130bcbbdac392",
     "worker-client/tests/test_update_storage_gate.py": "cfe4bc0b898db2e110f7a2adec624a72cc9bb3c1d79b4ad906540422a60e89d7",
     "worker-client/tests/test_vision_credentials.py": "d57ebc04e2230a44bb2df11021a0a7276f6adcd41de516ce67e02df9f78a7510",
     "worker-client/tests/test_vision_delivery.py": "63314059cb3930a9eac2c9530a39989d265eda1d5d1563d5f05a8c2d97d872b6",
@@ -1567,7 +1583,7 @@
       ]
     }
   ],
-  "environment": "Four exact source reviews reused; original EXE upgrade and production acceptance pending; no real WeChat/AI claim.",
+  "environment": "Two exact final source audits reused. Real loopback/synthetic local chains; original Windows upgrade and actual services are separate pending acceptance.",
   "checks": [
     {
       "original_xml_sha256": "b6885c699eb9ae772a196e9124a3fe9aef1e7b15235a1a6aa761c04f06a56855",
@@ -15315,11 +15331,460 @@
         }
       ],
       "nonpassing_not_counted": 0
+    },
+    {
+      "report": "hook-safe-recovery-review-20261027/cb8-final.xml",
+      "original_xml_sha256": "d52fc3c88224cdb2a9ee3654a35be137be0464d1f11f5a033a2e5edfed5d1213",
+      "count": 10,
+      "cases": [
+        {
+          "classname": "Users.zhangwentao.Documents.车金.output.hook-safe-recovery-review-20261027.test_review_edges",
+          "name": "test_current_unknown_transport_precedes_resolved_refusals",
+          "result": "passed"
+        },
+        {
+          "classname": "Users.zhangwentao.Documents.车金.output.hook-safe-recovery-review-20261027.test_review_edges",
+          "name": "test_successful_connection_recheck_does_not_release_unresolved_business_barrier",
+          "result": "passed"
+        },
+        {
+          "classname": "Users.zhangwentao.Documents.车金.output.hook-safe-recovery-review-20261027.test_review_edges",
+          "name": "test_original_unknown_voice_transport_is_kept_after_recovery_reads[2-3]",
+          "result": "passed"
+        },
+        {
+          "classname": "Users.zhangwentao.Documents.车金.output.hook-safe-recovery-review-20261027.test_review_edges",
+          "name": "test_original_unknown_voice_transport_is_kept_after_recovery_reads[1000-1001]",
+          "result": "passed"
+        },
+        {
+          "classname": "Users.zhangwentao.Documents.车金.output.hook-safe-recovery-review-20261027.test_review_edges",
+          "name": "test_recheck_original_button_persists_stop_without_auto_start[running]",
+          "result": "passed"
+        },
+        {
+          "classname": "Users.zhangwentao.Documents.车金.output.hook-safe-recovery-review-20261027.test_review_edges",
+          "name": "test_recheck_original_button_persists_stop_without_auto_start[paused]",
+          "result": "passed"
+        },
+        {
+          "classname": "Users.zhangwentao.Documents.车金.output.hook-safe-recovery-review-20261027.test_review_edges",
+          "name": "test_recheck_original_button_persists_stop_without_auto_start[faulted]",
+          "result": "passed"
+        },
+        {
+          "classname": "private.tmp.chejin-safe-recovery-review-cb8fe41.worker-client.tests.test_hook_transport_diagnostics",
+          "name": "test_history_failure_precedes_successful_prefix_of_same_call",
+          "result": "passed"
+        },
+        {
+          "classname": "private.tmp.chejin-safe-recovery-review-cb8fe41.worker-client.tests.test_hook_safe_read_recovery",
+          "name": "test_current_retry_evidence_precedes_resolved_refusals",
+          "result": "passed"
+        },
+        {
+          "classname": "private.tmp.chejin-safe-recovery-review-cb8fe41.worker-client.tests.test_hook_safe_read_recovery",
+          "name": "test_missing_transport_proof_cannot_authorize_another_read",
+          "result": "passed"
+        }
+      ],
+      "scope": "Architect final source/local controlled checks; cases overlap and are not unique product scenarios. Original report retained, not rerun in release."
+    },
+    {
+      "report": "hook-safe-recovery-review-20261027/cb8-retry.xml",
+      "original_xml_sha256": "55b6d8a987191cf779d3c5b6ed980deb2d25c1080a5ba6f6022c53215595360a",
+      "count": 24,
+      "cases": [
+        {
+          "classname": "worker-client.tests.test_hook_safe_read_recovery",
+          "name": "test_real_refusal_two_retries_durable_budget_and_explicit_reset",
+          "result": "passed"
+        },
+        {
+          "classname": "worker-client.tests.test_hook_safe_read_recovery",
+          "name": "test_intent_change_cancels_durably_without_http[restart]",
+          "result": "passed"
+        },
+        {
+          "classname": "worker-client.tests.test_hook_safe_read_recovery",
+          "name": "test_intent_change_cancels_durably_without_http[pause]",
+          "result": "passed"
+        },
+        {
+          "classname": "worker-client.tests.test_hook_safe_read_recovery",
+          "name": "test_intent_change_cancels_durably_without_http[update]",
+          "result": "passed"
+        },
+        {
+          "classname": "worker-client.tests.test_hook_safe_read_recovery",
+          "name": "test_intent_change_cancels_durably_without_http[new_process]",
+          "result": "passed"
+        },
+        {
+          "classname": "worker-client.tests.test_hook_safe_read_recovery",
+          "name": "test_failed_retry_journal_cannot_release_call_barrier",
+          "result": "passed"
+        },
+        {
+          "classname": "worker-client.tests.test_hook_safe_read_recovery",
+          "name": "test_restart_before_call_finish_keeps_budget_and_barrier",
+          "result": "passed"
+        },
+        {
+          "classname": "worker-client.tests.test_hook_safe_read_recovery",
+          "name": "test_received_request_dropped_truncated_or_redirected_is_never_retryable[]",
+          "result": "passed"
+        },
+        {
+          "classname": "worker-client.tests.test_hook_safe_read_recovery",
+          "name": "test_received_request_dropped_truncated_or_redirected_is_never_retryable[HTTP/1.1 200 OK\\r\\nContent-Length: 40\\r\\n\\r\\n{}]",
+          "result": "passed"
+        },
+        {
+          "classname": "worker-client.tests.test_hook_safe_read_recovery",
+          "name": "test_received_request_dropped_truncated_or_redirected_is_never_retryable[HTTP/1.1 302 Found\\r\\nContent-Length: 0\\r\\nLocation: /elsewhere\\r\\n\\r\\n]",
+          "result": "passed"
+        },
+        {
+          "classname": "worker-client.tests.test_hook_safe_read_recovery",
+          "name": "test_received_request_dropped_truncated_or_redirected_is_never_retryable[HTTP/1.1 200 OK\\r\\nContent-Length: 4097\\r\\n\\r\\nxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx]",
+          "result": "passed"
+        },
+        {
+          "classname": "worker-client.tests.test_hook_safe_read_recovery",
+          "name": "test_non_read_control_never_gets_retry_budget",
+          "result": "passed"
+        },
+        {
+          "classname": "worker-client.tests.test_hook_safe_read_recovery",
+          "name": "test_old_generation_requires_death_proof_and_preserves_unknown",
+          "result": "passed"
+        },
+        {
+          "classname": "worker-client.tests.test_hook_safe_read_recovery",
+          "name": "test_retry_evidence_survives_update_and_deletion_is_detected",
+          "result": "passed"
+        },
+        {
+          "classname": "worker-client.tests.test_hook_safe_read_recovery",
+          "name": "test_connection_retry_preserves_receiver_and_gui_recheck_never_starts",
+          "result": "passed"
+        },
+        {
+          "classname": "worker-client.tests.test_hook_safe_read_recovery",
+          "name": "test_history_retry_uses_new_capture_and_preserves_scope_checks[IsLoginStatus]",
+          "result": "passed"
+        },
+        {
+          "classname": "worker-client.tests.test_hook_safe_read_recovery",
+          "name": "test_history_retry_uses_new_capture_and_preserves_scope_checks[GetDBHandleAndPath]",
+          "result": "passed"
+        },
+        {
+          "classname": "worker-client.tests.test_hook_safe_read_recovery",
+          "name": "test_history_retry_uses_new_capture_and_preserves_scope_checks[QueryDB]",
+          "result": "passed"
+        },
+        {
+          "classname": "worker-client.tests.test_hook_safe_read_recovery",
+          "name": "test_changed_page_is_settled_only_by_full_same_customer_history",
+          "result": "passed"
+        },
+        {
+          "classname": "worker-client.tests.test_hook_safe_read_recovery",
+          "name": "test_retired_customer_query_requires_explicit_new_round",
+          "result": "passed"
+        },
+        {
+          "classname": "worker-client.tests.test_hook_safe_read_recovery",
+          "name": "test_real_desktop_collector_exports_transport_budget_and_exit_proof",
+          "result": "passed"
+        },
+        {
+          "classname": "worker-client.tests.test_hook_safe_read_recovery",
+          "name": "test_retention_keeps_open_retry_and_unknown_call_evidence",
+          "result": "passed"
+        },
+        {
+          "classname": "worker-client.tests.test_hook_safe_read_recovery",
+          "name": "test_current_retry_evidence_precedes_resolved_refusals",
+          "result": "passed"
+        },
+        {
+          "classname": "worker-client.tests.test_hook_safe_read_recovery",
+          "name": "test_missing_transport_proof_cannot_authorize_another_read",
+          "result": "passed"
+        }
+      ],
+      "scope": "Architect final source/local controlled checks; cases overlap and are not unique product scenarios. Original report retained, not rerun in release."
+    },
+    {
+      "report": "reply-authority-review-20261027/final-5bee.xml",
+      "original_xml_sha256": "b1250ee4fc0a80740f04cb5ddb784d586d0f9d479aa69a46f370fdc3ecd5a521",
+      "count": 51,
+      "cases": [
+        {
+          "classname": "",
+          "name": "test_incomplete_config_review_cannot_create_send_task[missing-semantic_reviewer_result]",
+          "result": "passed"
+        },
+        {
+          "classname": "",
+          "name": "test_incomplete_config_review_cannot_create_send_task[missing-semantic_reviewer_response_text]",
+          "result": "passed"
+        },
+        {
+          "classname": "",
+          "name": "test_incomplete_config_review_cannot_create_send_task[error-semantic_reviewer_result]",
+          "result": "passed"
+        },
+        {
+          "classname": "",
+          "name": "test_incomplete_config_review_cannot_create_send_task[error-semantic_reviewer_response_text]",
+          "result": "passed"
+        },
+        {
+          "classname": "",
+          "name": "test_http_semantic_no_clearance_never_creates_send_task[factual]",
+          "result": "passed"
+        },
+        {
+          "classname": "",
+          "name": "test_http_semantic_no_clearance_never_creates_send_task[uncertain]",
+          "result": "passed"
+        },
+        {
+          "classname": "",
+          "name": "test_http_semantic_no_clearance_never_creates_send_task[None]",
+          "result": "passed"
+        },
+        {
+          "classname": "",
+          "name": "test_repaired_budget_preserves_actual_source_and_single_task[source]",
+          "result": "passed"
+        },
+        {
+          "classname": "",
+          "name": "test_repaired_budget_preserves_actual_source_and_single_task[empty]",
+          "result": "passed"
+        },
+        {
+          "classname": "tests.test_reply_authority_arbitration",
+          "name": "test_budget_echo_requires_complete_semantic_classification_once[reply0]",
+          "result": "passed"
+        },
+        {
+          "classname": "tests.test_reply_authority_arbitration",
+          "name": "test_budget_echo_requires_complete_semantic_classification_once[reply1]",
+          "result": "passed"
+        },
+        {
+          "classname": "tests.test_reply_authority_arbitration",
+          "name": "test_uncertain_or_failed_review_cannot_relax_missing_authority[bad0]",
+          "result": "passed"
+        },
+        {
+          "classname": "tests.test_reply_authority_arbitration",
+          "name": "test_uncertain_or_failed_review_cannot_relax_missing_authority[bad1]",
+          "result": "passed"
+        },
+        {
+          "classname": "tests.test_reply_authority_arbitration",
+          "name": "test_uncertain_or_failed_review_cannot_relax_missing_authority[bad2]",
+          "result": "passed"
+        },
+        {
+          "classname": "tests.test_reply_authority_arbitration",
+          "name": "test_uncertain_or_failed_review_cannot_relax_missing_authority[bad3]",
+          "result": "passed"
+        },
+        {
+          "classname": "tests.test_reply_authority_arbitration",
+          "name": "test_uncertain_or_failed_review_cannot_relax_missing_authority[bad4]",
+          "result": "passed"
+        },
+        {
+          "classname": "tests.test_reply_authority_arbitration",
+          "name": "test_uncertain_or_failed_review_cannot_relax_missing_authority[bad5]",
+          "result": "passed"
+        },
+        {
+          "classname": "tests.test_reply_authority_arbitration",
+          "name": "test_uncertain_or_failed_review_cannot_relax_missing_authority[bad6]",
+          "result": "passed"
+        },
+        {
+          "classname": "tests.test_reply_authority_arbitration",
+          "name": "test_uncertain_or_failed_review_cannot_relax_missing_authority[bad7]",
+          "result": "passed"
+        },
+        {
+          "classname": "tests.test_reply_authority_arbitration",
+          "name": "test_disabled_or_shadow_review_cannot_clear_authority[settings0]",
+          "result": "passed"
+        },
+        {
+          "classname": "tests.test_reply_authority_arbitration",
+          "name": "test_disabled_or_shadow_review_cannot_clear_authority[settings1]",
+          "result": "passed"
+        },
+        {
+          "classname": "tests.test_reply_authority_arbitration",
+          "name": "test_real_quote_at_same_customer_budget_is_not_an_echo",
+          "result": "passed"
+        },
+        {
+          "classname": "tests.test_reply_authority_arbitration",
+          "name": "test_explicit_product_mode_and_missing_sources_still_block",
+          "result": "passed"
+        },
+        {
+          "classname": "tests.test_reply_authority_arbitration",
+          "name": "test_real_api_child_brain_keeps_budget_reply_without_rewrite[reply0]",
+          "result": "passed"
+        },
+        {
+          "classname": "tests.test_reply_authority_arbitration",
+          "name": "test_real_api_child_brain_keeps_budget_reply_without_rewrite[reply1]",
+          "result": "passed"
+        },
+        {
+          "classname": "tests.test_reply_authority_arbitration",
+          "name": "test_changed_draft_must_not_reuse_non_factual_clearance",
+          "result": "passed"
+        },
+        {
+          "classname": "tests.test_reply_authority_arbitration",
+          "name": "test_config_review_contract_reaches_real_task_boundary[missing_verdict-semantic_reviewer_result]",
+          "result": "passed"
+        },
+        {
+          "classname": "tests.test_reply_authority_arbitration",
+          "name": "test_config_review_contract_reaches_real_task_boundary[missing_verdict-semantic_reviewer_response_text]",
+          "result": "passed"
+        },
+        {
+          "classname": "tests.test_reply_authority_arbitration",
+          "name": "test_config_review_contract_reaches_real_task_boundary[missing_errors-semantic_reviewer_result]",
+          "result": "passed"
+        },
+        {
+          "classname": "tests.test_reply_authority_arbitration",
+          "name": "test_config_review_contract_reaches_real_task_boundary[missing_errors-semantic_reviewer_response_text]",
+          "result": "passed"
+        },
+        {
+          "classname": "tests.test_reply_authority_arbitration",
+          "name": "test_config_review_contract_reaches_real_task_boundary[invalid_errors-semantic_reviewer_result]",
+          "result": "passed"
+        },
+        {
+          "classname": "tests.test_reply_authority_arbitration",
+          "name": "test_config_review_contract_reaches_real_task_boundary[invalid_errors-semantic_reviewer_response_text]",
+          "result": "passed"
+        },
+        {
+          "classname": "tests.test_reply_authority_arbitration",
+          "name": "test_config_review_contract_reaches_real_task_boundary[error-semantic_reviewer_result]",
+          "result": "passed"
+        },
+        {
+          "classname": "tests.test_reply_authority_arbitration",
+          "name": "test_config_review_contract_reaches_real_task_boundary[error-semantic_reviewer_response_text]",
+          "result": "passed"
+        },
+        {
+          "classname": "tests.test_reply_authority_arbitration",
+          "name": "test_config_review_contract_reaches_real_task_boundary[skipped-semantic_reviewer_result]",
+          "result": "passed"
+        },
+        {
+          "classname": "tests.test_reply_authority_arbitration",
+          "name": "test_config_review_contract_reaches_real_task_boundary[skipped-semantic_reviewer_response_text]",
+          "result": "passed"
+        },
+        {
+          "classname": "tests.test_reply_authority_arbitration",
+          "name": "test_config_review_contract_reaches_real_task_boundary[missing_claim_kind-semantic_reviewer_result]",
+          "result": "passed"
+        },
+        {
+          "classname": "tests.test_reply_authority_arbitration",
+          "name": "test_config_review_contract_reaches_real_task_boundary[missing_claim_kind-semantic_reviewer_response_text]",
+          "result": "passed"
+        },
+        {
+          "classname": "tests.test_reply_authority_arbitration",
+          "name": "test_config_review_contract_reaches_real_task_boundary[invalid_claim_kind-semantic_reviewer_result]",
+          "result": "passed"
+        },
+        {
+          "classname": "tests.test_reply_authority_arbitration",
+          "name": "test_config_review_contract_reaches_real_task_boundary[invalid_claim_kind-semantic_reviewer_response_text]",
+          "result": "passed"
+        },
+        {
+          "classname": "tests.test_reply_authority_arbitration",
+          "name": "test_config_review_contract_reaches_real_task_boundary[factual-semantic_reviewer_result]",
+          "result": "passed"
+        },
+        {
+          "classname": "tests.test_reply_authority_arbitration",
+          "name": "test_config_review_contract_reaches_real_task_boundary[factual-semantic_reviewer_response_text]",
+          "result": "passed"
+        },
+        {
+          "classname": "tests.test_reply_authority_arbitration",
+          "name": "test_config_review_contract_reaches_real_task_boundary[uncertain-semantic_reviewer_result]",
+          "result": "passed"
+        },
+        {
+          "classname": "tests.test_reply_authority_arbitration",
+          "name": "test_config_review_contract_reaches_real_task_boundary[uncertain-semantic_reviewer_response_text]",
+          "result": "passed"
+        },
+        {
+          "classname": "tests.test_reply_authority_arbitration",
+          "name": "test_config_review_contract_reaches_real_task_boundary[valid-semantic_reviewer_result]",
+          "result": "passed"
+        },
+        {
+          "classname": "tests.test_reply_authority_arbitration",
+          "name": "test_config_review_contract_reaches_real_task_boundary[valid-semantic_reviewer_response_text]",
+          "result": "passed"
+        },
+        {
+          "classname": "tests.test_reply_authority_arbitration",
+          "name": "test_http_review_contract_reaches_real_task_boundary[missing_verdict]",
+          "result": "passed"
+        },
+        {
+          "classname": "tests.test_reply_authority_arbitration",
+          "name": "test_http_review_contract_reaches_real_task_boundary[missing_errors]",
+          "result": "passed"
+        },
+        {
+          "classname": "tests.test_reply_authority_arbitration",
+          "name": "test_http_review_contract_reaches_real_task_boundary[error]",
+          "result": "passed"
+        },
+        {
+          "classname": "tests.test_reply_authority_arbitration",
+          "name": "test_http_review_contract_reaches_real_task_boundary[missing_claim_kind]",
+          "result": "passed"
+        },
+        {
+          "classname": "tests.test_reply_authority_arbitration",
+          "name": "test_unvalidated_cache_entry_cannot_clear_authority",
+          "result": "passed"
+        }
+      ],
+      "scope": "Architect final source/local controlled checks; cases overlap and are not unique product scenarios. Original report retained, not rerun in release."
     }
   ],
   "packaging_reviewed_commit": "ffc6a97718d4d75f58b9fa90ae601a3132331101",
   "reviewed_delta_sha256": {
-    "backend/README.md": "8e91412eac3c30731d1559c90991da9bcb6d0b063f90390e42f68291e08e0d13",
+    "backend/README.md": "677e95db1ae3f68408c18d5d750bcf081a3216d8542c9687e15ee7ee3190f0b6",
     "backend/alembic/versions/20261022_0042_reply_ownership.py": "89f604cd391984c723bf2d02528a5af1cb2c495fab2433ca1d2c7d7a15e82e2f",
     "backend/app/api/routes/dashboard.py": "dad33624be3ae577789efa755559137f0e319b1c8b16465ee71e5cfd6d4e5a96",
     "backend/app/api/routes/wechat.py": "1e763fd849528fb11bf13737bcdff8af51349e850bf10fdc22de3a92ca1efb2a",
@@ -15327,30 +15792,30 @@
     "backend/app/main.py": "c4381fa36be0ca487b4b9d9a0375de67bcad7d0d3287c71247cb1a4703f84316",
     "backend/app/models/c3.py": "5a431597c0b2495c51ff4c4f93f91fd380e60341b24ad582aa928f3c1f035bde",
     "backend/app/models/worker.py": "590345f877b6bc65acf27de4b6f5878cced8ae132ca0ea6c4794e838e97f5e6d",
-    "backend/app/schemas/hook_business.py": "dfb8814eb1dd6acf4268e0de36004bcd55600e79d5713de39ef995668323bffe",
+    "backend/app/schemas/hook_business.py": "61037460178434a229a4b68fce6bf7fcb2ee981a6748730bde6adb6bd98ea310",
     "backend/app/schemas/hook_identity.py": "50140651be6b27c939db6ccabbaa30f04be22c62098a33a4e30b42b0738bdc46",
     "backend/app/schemas/worker.py": "18159de3ebfd2a0266a0a5f378474a878205f03d85438e27727272a628aa29af",
     "backend/app/services/ai_adapter.py": "c6d357b2201e1a5ebdc228f72d32e78777728704abf86c95c8664b72e05b8366",
     "backend/app/services/ai_capacity_service.py": "c6fb0d5d75df193bb873d7ad55825307c8045d84559f6cb99c0eafb437e8c218",
     "backend/app/services/c3_recovery.py": "c7c41be484735ce6f767c3480750ea889465bd655e253c6749ca5ab7e27dcd97",
-    "backend/app/services/c3_service.py": "f1124450211036f0245288bd38cb41f9a7ca963a418468c8409e1fc2d91e50b3",
+    "backend/app/services/c3_service.py": "6df5477eb3ef83b8f27bbe7051f825df23474d9e8fb6dd641b44f478c0ec3f78",
     "backend/app/services/dashboard/__init__.py": "caa0c716b30686d33e5c6ad151e4ac9b92bb27528fc022e99d6702196330ab5f",
     "backend/app/services/dashboard/calculations.py": "d2a7f1ff296f7ddd39e8f8b99784d2ed206a8730932a03e0ac66032e1c4b9259",
     "backend/app/services/dashboard/facts.py": "1f62fde4afc7c3a6d5b219c188a8dcf6672cda68eca3295b490b66b4a6a172a9",
     "backend/app/services/dashboard/service.py": "98c58ab2cbef78837e6bf15e3ee029be9c22b9f954c102c928d3ddaeca7f45aa",
-    "backend/app/services/feishu_service.py": "f248a763e3fb15b5da8edb822cfa5d1a58ab32998a82770ad403b0f8006bdfef",
+    "backend/app/services/feishu_service.py": "58405753bcfa0df3686f30565b65829520108122b85fd8b7b1e417b6b15284ce",
     "backend/app/services/hook_account_service.py": "4d2ba79657ccc05ae98617d591e0dbf8730078129d11abaf8cb77cffc2a1de5e",
     "backend/app/services/hook_binding_transfer.py": "d79c71f84debe5beb0f40f244d1e2df7036d52d9ab7e2b96ec5c3e3156b435c3",
-    "backend/app/services/hook_business_service.py": "9cc6feb343a0f9275217bff749f74dfeb71e89df85e9fb1382df54fd6258e3b7",
+    "backend/app/services/hook_business_service.py": "1218d9bb35dd75cc97a4edca6c79c60771d81a3ae9ddbd1a8232ca3d18c926a7",
     "backend/app/services/hook_customer_notice_service.py": "cd1bac97319a56db32a2578952204552497afcd0266bb9e734018b727aaf2d53",
-    "backend/app/services/hook_history_service.py": "c36a2ddd8c2a1179229b318eb2dea9761d1b175fc65dfafe36228d603da2f85b",
+    "backend/app/services/hook_history_service.py": "fc3c2c425b46181663fa60a9df2db803f14703cc14ed446e4bcdeb1e899278f3",
     "backend/app/services/hook_media_service.py": "148ba0255fbb6de09fa04abc2293905c9846fb7f69679806bd1cfeabd5bb4024",
-    "backend/app/services/hook_message_service.py": "b638c1011954b1f6a1368682a9d304fee6daddb18f997bbdc03f6d6fd89f4329",
-    "backend/app/services/hook_native_service.py": "9572c9302d4581ad9ae2c979ddaf001dc188bc976c69e6a6e2929a72f3ff358e",
-    "backend/app/services/hook_recovery_service.py": "055e255fc595e14835a7d6cfa856bb24618d6a675b9c91c15020b4ce7fb7c9d5",
-    "backend/app/services/hook_relationship_service.py": "efc89b0d095210604849a5d7dea85fb5fb1b46d5710977285e9b7f7573d5fcf5",
-    "backend/app/services/hook_send_service.py": "80d6ff7b140adf5eb0f312774b749c16b9cbca8274f8898c6f2ab1fd9b04b2a9",
-    "backend/app/services/hook_work_service.py": "9b60b66b346b7241a26997c43677ecfcaabfbd6edffa84bccd7827dac7de4e04",
+    "backend/app/services/hook_message_service.py": "eae9fe3a32df1f0d72943c72d8d5710187b33e4eff87ff6475895ecf5cbca7a0",
+    "backend/app/services/hook_native_service.py": "e7596afb552f599ca0a00dfbdf3a875c048d30e80f668546d1e6e885de543b5b",
+    "backend/app/services/hook_recovery_service.py": "2359bc2727948ccd7701a2d84349208ecd62249e5861903276ed339a00a1fb1c",
+    "backend/app/services/hook_relationship_service.py": "38d32f07cc3adc5b6f434f74a848084333396be9056b7bf60a107c02dc0cf59d",
+    "backend/app/services/hook_send_service.py": "d19a6e739cfd582f3297e367bf327604800099edc7a1f16fcd0e51f7dfe651d8",
+    "backend/app/services/hook_work_service.py": "b2c1ef9ea9100dfbaec90bd3d3ee6312e4664caf73e68dc06f019df639a83d90",
     "backend/app/services/human_reminder_service.py": "080340d499d2b8eb7a3f46a7ccf5d4f73e8b6f20bdc5ce508655eef24373e06b",
     "backend/app/services/lead_service.py": "764ba123205fde866d709b1504921a740b2d5c6cb1af0eb5ec65fb1f354b4cc5",
     "backend/app/services/read_recovery_service.py": "be595405be07c50dbea51e31cdd349831050af42280f6955736067830917e202",
@@ -15361,12 +15826,14 @@
     "backend/app/services/vehicle_service.py": "430aa16c058fe990c78106e1eacb428083a65af120b0e3ba70155a36fe01eb34",
     "backend/app/services/wechat_service.py": "d4a5feb75496f04138fadffbd7b4ad8f2cf0a7122bfa40f8a50f04e52e498dde",
     "backend/app/services/worker_service.py": "d24a4dbf22b60aa269e5de0e20f3a37ef1f4c12ab53b00b75ae4d5998596e944",
-    "backend/compose.web.yml": "20df54cba3c3ed86e2bda1ac258280bd71147eae116cc457d1b82edb8747cb73",
-    "backend/docker-compose.yml": "78d8dc9d44df8227c5dbe7fe60935492f83420c90b990cde6b62feca39b66357",
-    "backend/pyproject.toml": "29ceba260104c535f4b8e11159f4f9cae14bf6cb88edf67046a5568ff477c13b",
+    "backend/compose.web.yml": "9dc1f4325027699aef4724c014ad77214235a947c9ab12306523f1f95fc15b5a",
+    "backend/docker-compose.yml": "7884d1257d31c7a24f624e6a23fd48a6c846930e56d8bba6ef22958e5ae6645b",
+    "backend/pyproject.toml": "20bf85bf85e020645064b339fd34b463594f09a9d7d3ea5af00838299b0575cc",
     "backend/tests/maintenance_recovery_fixture.py": "4f2df35463f04bb1cd361cf4bc106478e2b9c923a5a6f04dfbae6a7aad5d296c",
     "backend/tests/test_auth_api.py": "e3fd2a9023945ed27c9b3954fdb54928e0708e79bda1dfc1ce41ccd1b311b2a4",
+    "backend/tests/test_brain_fact_guidance_regression.py": "afbd538d69b626d390dfdcc0fd910556db55149b6aad6e7cf3178d5624450987",
     "backend/tests/test_brain_warning_contract.py": "641f8213e190e8e5cf4cdc27cee25a6104aee3d5cad3bd2c7d1b62c8cc3b6de5",
+    "backend/tests/test_c3_api.py": "5e447122b7f7f99e037179b92da58cacfac679141be53f1f8c144a54eef28094",
     "backend/tests/test_c3_recovery_chain.py": "cf0fef4783cb7673848e7ffcdd336350d547b8f46115cc85694e64779d8e2a38",
     "backend/tests/test_c3_recovery_isolation.py": "e713ab5fc6a24a4d3e0a17247b173d705b366729975898fee2db1f608f63b8f6",
     "backend/tests/test_catalog_fact_references.py": "7cbc31c2746d529da1b75b3c084808aa294e8aa5b1eb6dfa5b8e68a95c8fee88",
@@ -15378,9 +15845,12 @@
     "backend/tests/test_friend_welcome_provider.py": "0067a97f23474e5d47e650ea399c8fe022dde87854a10ad00b11891a2da61bf0",
     "backend/tests/test_hook_account_client.py": "761a21cab01c77fabc0d122e5e066e3d90dad5a95c1b2a0fac3b813f8ad487f2",
     "backend/tests/test_hook_binding_transfer.py": "87ddc81c725a9681d567f3cb5fe4202bf21a24fb76a5a8707c245de89a67a0ff",
-    "backend/tests/test_hook_business_http.py": "818b375007e0c99920829b7d8017859d04faf810373e95ad58f3ac86e4ce8959",
+    "backend/tests/test_hook_business_http.py": "5c8390547494bed506b3fd94dc90f7722d19f3767a16ec1870d9d44fe852a172",
     "backend/tests/test_hook_callback_recovery.py": "ef1d75ee8eb8ac6d43a0e94741c1c72efba958594930ab8a27f1dc8ab57041bb",
     "backend/tests/test_hook_continuous_dispatch.py": "201f2f3d111dc518525abcde6f3e5c8f3a1d8e282a5564361c1090f0755791ee",
+    "backend/tests/test_hook_customer_pause_dispatch.py": "9615a9196a649d76a8499e9b96629283b4e6a1c56eb7ee853bfd82cb33931c70",
+    "backend/tests/test_hook_customer_refusal_closure.py": "e5490b0c3d3d5b41f3bef957e08a72c3cc979a6d975bbe31c0c3d483d99045e9",
+    "backend/tests/test_hook_delivery_diagnostic_priority.py": "b8d67d7c905894d0928a8ad5785ce52116bd2d05773bf3f8b4bc6ee1979d4fd4",
     "backend/tests/test_hook_formal_runtime.py": "141f6f34295a73a6d053aefce1374a7e4d36d2348af037f60462c6df4a2801d9",
     "backend/tests/test_hook_friend_restriction_boundaries.py": "070e49e77af8975a65a1ecf52092c4342b319ac23858244f966a46a632c22407",
     "backend/tests/test_hook_friend_verification.py": "4e82e4d798fd630623b0e7495ec60102c6e62659c42989ca92828a1a7549369b",
@@ -15399,19 +15869,21 @@
     "backend/tests/test_hook_relationship_stale_inputs.py": "da5873cb37012120306c6e0dcdf7231e5f2a7de4dd6be52ea07947af88aebf93",
     "backend/tests/test_hook_restricted_send_closure.py": "5440a215a2e978cf3188c3404eb6c6dbf1758cdef346ff98cf91cc3ccd4fe00d",
     "backend/tests/test_hook_search_query_receipt.py": "6e99146f2cd63f3870aaffeee9496ab1ed68956dbb6600dbcc5019903820e108",
+    "backend/tests/test_hook_segment_refusal_recovery.py": "87f6f95625924bb41af880bb663a9dced723f1046ed27b7b34f4d49092fd4b81",
     "backend/tests/test_hook_transfer_archival.py": "bbf97625522f0836c9b234c8debf82b2d863672550ad63bc6cd5c60d5f101b4c",
     "backend/tests/test_hook_zero_outgoing_recovery.py": "88f0b9f0a91122bd499631f4c30ea92407408165b8295988936ff5f6d9f65e7d",
     "backend/tests/test_human_ownership_runtime.py": "90623034aec2314d7d5240a3359b8c5cf7dc6c8c5970f0e659575064476e817e",
     "backend/tests/test_human_reply_ownership.py": "fa2cc7f3e883d6b6ce7c09b231351be21ed692415a18fcdaa0d8b8e6e83251d7",
     "backend/tests/test_lead_followup_p1_regressions.py": "e94f4abd89528de45638f73ab7f584cc60573f69fa5dd67828956705323e4350",
     "backend/tests/test_partial_reply_recovery_provider.py": "61c7a3bf8056b2efde7ccf8b9858eff1916e876e56699c232a68c83e3f39258d",
+    "backend/tests/test_reply_authority_arbitration.py": "8e4fffc54c335e24e12ebadef31fd300ebffe323b4ae6260a92b4b9d272d3112",
     "backend/tests/test_reply_ownership_migration.py": "3248b0982cd4c1a5e72ed4c6caf7012058cf566249c4b69a98bc051ae08cc2de",
     "backend/tests/test_wechat_c2_api.py": "18634f624d0ea0148abc287b924c46ecd5397349b8a30f5f9355a37501c0d0cf",
-    "contracts/c2_contract_v3.json": "f510d75d74dae841ef6994efa56627a7365c152af59d6f2d3b113c09cfee88bf",
-    "contracts/hook_contract_v1.json": "0718d8920397df825d2c3e6f0f999a1cf5eff72da82999fc9cd0df078661efd5",
-    "frontend/README.md": "41f81f173cd991226555a22762922b17c21ee1f1e6bc0cefa9bc4ced3c2b7fef",
-    "frontend/package-lock.json": "cd627e0e5ee8d2e59dc7e588397141fdf74bb9503e5c827590225ae147f6dd27",
-    "frontend/package.json": "022342dcfe0f4a465a87cb82e2c98b20722ba1a304032af9890d44e358c29fc3",
+    "contracts/c2_contract_v3.json": "d189153555e4e2456045350ec69daee0254084460bb6e7e88b42e9d72b347e40",
+    "contracts/hook_contract_v1.json": "f38b8e48c6c4309ce6025fdb838e71dce02edc202c41f96e257dbd241548ebed",
+    "frontend/README.md": "c8d7806263b6eb610a636c16437546edbf2e723fe5ec077bfe3904bd83feaf5b",
+    "frontend/package-lock.json": "7d7c40c3d20f0de4d309188e3acced48e38813697ba4475aebf7901a75d4e9de",
+    "frontend/package.json": "67d335f0fe69961ace89346ad71850dbb4c837ef82ad18d16ae3396862ee0e11",
     "frontend/src/App.test.tsx": "1ab020138232217c8b19d55ebca8b714c943206c939b9071724cc1d66911fbb7",
     "frontend/src/App.tsx": "570df29154f664be4bd8009459f1d1c7ca17f041821bc8a27f96ff7c0f5e1693",
     "frontend/src/features/auth/LoginPage.tsx": "b81b9d6acb4ceef34e15206b9bbdaf3c8ec2687b36487e2a66d1b1e4c2cfa572",
@@ -15459,57 +15931,65 @@
     "packages/worker-ui-baseline/package.json": "c10802653eee837eb44a07b18eefa1287eaa6a391d5de479c9f5008d6abb3d85",
     "packages/worker-ui-baseline/preview.html": "795346b20b33335858775724b0315ab5ac53810c712f1da33943d29263c1c3eb",
     "packages/worker-ui-baseline/scripts/build-worker-assets.mjs": "e9d0388de88c6617a178ff6ef96638195c7c380afdfa44080bc7d54ca861161f",
-    "packages/worker-ui-baseline/src/WorkerClientBaseline.tsx": "df3a41ed9e8b27fa188ca7d6a023cd1f36c74dab278aff97fdc5c57b9c8e73f4",
+    "packages/worker-ui-baseline/src/WorkerClientBaseline.tsx": "26c32b558519f7bf7859744b70eae7ab5d563722dabac7b99e0d70e68a4bf8cb",
+    "packages/worker-ui-baseline/src/types.ts": "c3db5448a1f0fcb9fa1ee0c876d35a5f352fc963528400cb1d290ba8e1c51753",
     "packages/worker-ui-baseline/src/worker-presentation.css": "cfbaed57e82595549c8e0f30ca45202b8ab775712075ea5b682d44d501f6cb3c",
     "packages/worker-ui-baseline/src/worker-ui.css": "18c8eff4399dca953f59ffffaed0b58a0f4efd0ceaa7c3afa015d39c32bc8691",
     "packages/worker-ui-baseline/static/index.html": "d00e80a135909161cc4ec9d2b3e852fb5c7ee0c349d16b7e621d9d7aa9acc1ff",
-    "packages/worker-ui-baseline/tests/runtime-startup-checks.test.mjs": "23487a85d934e601dba4cbf536230524886406dab80d58a7cdb9af78f69d9cf8",
+    "packages/worker-ui-baseline/tests/runtime-startup-checks.test.mjs": "83470d03957e0fcdc436514024ca99b21fd8f8ed5d6861df58441ffb2fc3b7af",
     "worker-client/README.md": "f520827f23bd8eb1b109f9febfeda199c70a90e720a8f4bb0e12e0b116a8d0af",
-    "worker-client/chejin_worker_client/__init__.py": "18afa67e4d7f38a3ab5701e7956fbcc366eac4b1f010ed5c6e8c9352c6cf42c1",
+    "worker-client/chejin_worker_client/__init__.py": "5baf68e49511dba04af7472a6a679de58184710208fd79bfe8d6e0ea22792fda",
     "worker-client/chejin_worker_client/c1_diagnostics.py": "1a5137c8ba2e4954a46151e0ff970d8e9e4cd2fd0c6a4f8a08954d3b4ad23c68",
     "worker-client/chejin_worker_client/chejin_updater.py": "5004c75c7a54ea827b97f685c16005b82d199e63700476a836c3aa0f792ad4c7",
-    "worker-client/chejin_worker_client/client_update.py": "39df774fe505110fda4bf98aa0e3eb4ac3d193f41cece73e488b9f5145d27ffb",
-    "worker-client/chejin_worker_client/diagnostic_bundle.py": "a8474e7755d8e66bd9c69ade94b999527ffa11e07a876c9c301528cb0314669e",
-    "worker-client/chejin_worker_client/diagnostic_selection.py": "08377b6bc115d51a84e3cf8b5ebb01b1976fd809f77715a7670270eb6b1dbb4c",
+    "worker-client/chejin_worker_client/client_update.py": "7fe4e15aaac02aae5424773f089bb3399fbafe1231c212905a51c32bc56743a2",
+    "worker-client/chejin_worker_client/diagnostic_bundle.py": "60edb735cc905740d6a84ab760738681389a8731a8d5c365698d981e72f95a00",
+    "worker-client/chejin_worker_client/diagnostic_selection.py": "7a5aa0a906bdef2460bdc2b49347a5f43bafaee1bfaeda296f99a72bd978174c",
     "worker-client/chejin_worker_client/diagnostic_ui.py": "1a9340232c42637731551de86b70ebff0f38094b9380e9d00bae75a08dc3cb78",
     "worker-client/chejin_worker_client/evidence_paths.py": "4cd854a3f1eca7c41681214e9d3678771a0346b1f7aa7ebe5f5f2ea66329bbb9",
     "worker-client/chejin_worker_client/failure_evidence.py": "6857f458e9f6684c539fd03d16afb566a34516befa228d93d242ed96eced6ed8",
     "worker-client/chejin_worker_client/hook_account_issues.py": "eb6403720d3efa31b0900a6a99728ca16a1043fa409038d6f2e473b8c566d004",
-    "worker-client/chejin_worker_client/hook_backend.py": "4ea4d80a20fd2b24fa013824ea59474820f4241b6905371585a968c4a5756247",
+    "worker-client/chejin_worker_client/hook_active_calls.py": "c921a4ba25c93d68e6590c5897c81c7c1551751b6c7e09a717893c29e67434ee",
+    "worker-client/chejin_worker_client/hook_backend.py": "cc8b1485de2872119e4910d5602b66f3a2ef2b2d972c443bf151efd27bcbffca",
     "worker-client/chejin_worker_client/hook_component_update.py": "e2a7aec1825f2a1742b7e0e64ef1a92f45dc186ad8817c20a2b801c059ee200d",
-    "worker-client/chejin_worker_client/hook_connection.py": "9a4acb774aac5da8cf2c93e229a22006d1a62aab34cc2f581b4c600a100a781c",
-    "worker-client/chejin_worker_client/hook_dispatcher.py": "1d04e84c51e19ed1697f79a13299e464369034998f6ad3a95ff81b48ef4dd4a9",
-    "worker-client/chejin_worker_client/hook_factory.py": "c67af85fb00853e58e1969f80f44a1ce982a8ac2026493e3bcf66055f4cf4d7b",
+    "worker-client/chejin_worker_client/hook_connection.py": "a3f3324b9d70f27ca9150c5d8b4b5fce6bdb15754e89ea865ff12def61236b4f",
+    "worker-client/chejin_worker_client/hook_delivery_lifecycle.py": "621d6b9666d9f0f95e9e5d008222eef54dd6c3ace8e75fa0923c861928f7c51f",
+    "worker-client/chejin_worker_client/hook_dispatcher.py": "9872d20faa6b7b9ba71124a734a0d88e4f39f7049bceaf903127a0f1eb7adb76",
+    "worker-client/chejin_worker_client/hook_factory.py": "a9a5a2a6b05bea46f89d98fc1351782fa08881b4758092aef3c950948998d120",
     "worker-client/chejin_worker_client/hook_facts.py": "360b092ee30f7c37e94dc0d43851fe6401fbbba9b08f7356df40984ba9a54397",
     "worker-client/chejin_worker_client/hook_formal_c1.py": "7d3013ea3bde819a10a8d5d8cf39f34c6285c07dcd1e012201add61e17ff63e4",
-    "worker-client/chejin_worker_client/hook_formal_runtime.py": "94be10cf23f40f3cb5d227746bc74ea5f9c1130a61fe30bfd5937b6f61dece1e",
-    "worker-client/chejin_worker_client/hook_gateway.py": "12b5b01b9d932251b9527f15d127c37412874477976328f7f16acde764d3d81d",
+    "worker-client/chejin_worker_client/hook_formal_runtime.py": "5f1d8d8b725318319747458ddebb697578321f49fde2082970611ff066508afd",
+    "worker-client/chejin_worker_client/hook_gateway.py": "b726718ffc046be99c62cd9c2523c57c8b7923237f254ae2053c3b746803e73d",
     "worker-client/chejin_worker_client/hook_history.py": "7ae7d69f47e8ccc0a3392aa920e0807a0a068d6edefec5e54a7bb5f9a9e2397b",
     "worker-client/chejin_worker_client/hook_history_store.py": "da80456569b0af21b7c28a13b113da1e259c3833e2757d4cffb9b119cb13df5c",
-    "worker-client/chejin_worker_client/hook_history_sync.py": "d61f9cf48faa34d93e156146a21878da60516a643cc5c87af04a5f029790f603",
-    "worker-client/chejin_worker_client/hook_outbox.py": "cd92de285b914ce32f061827887b3218cbffa7dced3a0d108b280da9d8e93072",
+    "worker-client/chejin_worker_client/hook_history_sync.py": "f28199c7e8ef332b0d89110522a9af23f36f9a5925e48483150dca44f6af0aa9",
+    "worker-client/chejin_worker_client/hook_history_wait.py": "ea7a8e59a5e3988cda89681304449069b0ab8dad88f6e0780306e6c0c367c4a8",
+    "worker-client/chejin_worker_client/hook_outbox.py": "d2db8cf25e18ccbcb5173a07bd4087d9612f49f68da11a570033e489e5edfe59",
     "worker-client/chejin_worker_client/hook_process.py": "2274f5ecc7a081f9d86843fd1861bdcebca9af58e07439afbf4d7f05d0bb7ab8",
-    "worker-client/chejin_worker_client/hook_progress.py": "1d4d2855ca9ed326c38fea4505ff8284a561b8488debdd9dc392bab17b90ca10",
+    "worker-client/chejin_worker_client/hook_progress.py": "89f5eea493c456b4b6b88755b1b352a62e58bf0c7811cdedad2704f27514208a",
     "worker-client/chejin_worker_client/hook_projection.py": "4a6b1eba15cac81a8454fd666ed77cf63a2ea8cbaeb5e27fbb5d13ded89e146c",
-    "worker-client/chejin_worker_client/hook_recovery.py": "31bf9f8513e558172a38678a6958b03d1fcfc85ba2c71f838ed316917be1521d",
-    "worker-client/chejin_worker_client/hook_retention.py": "aa67378ba686b559e9a66da7841ae084fcd48ee53f87b3077f713c463567badc",
+    "worker-client/chejin_worker_client/hook_read_retry.py": "2481775c3357ceae5ebe7c7ceaf9a5ccf3651113280b312ac620557918d3b3df",
+    "worker-client/chejin_worker_client/hook_recovery.py": "9c4e268cee29b75e701ccbcd50f23e1f878344f14b7980ddec593d5c92a50bde",
+    "worker-client/chejin_worker_client/hook_retention.py": "ccb60fe1b08ee9d4b7f6ea1adc9c274abd23364ab62849c1ce974a1d9b0ec33c",
     "worker-client/chejin_worker_client/hook_send_diagnostics.py": "f54428d3664e5d9ccbd5e012af6b89eec8377e6c0a1195ecbb4529bdf9acd7ab",
-    "worker-client/chejin_worker_client/hook_sender.py": "9e4f167c4b23b6b83cbdc334e251a2b0cc63445af2958786f56f142f808b589a",
+    "worker-client/chejin_worker_client/hook_sender.py": "9fb506dbd391557db6ed7811db4cb4e791bc6812ddd03261cde0dd1770983e4b",
     "worker-client/chejin_worker_client/hook_startup_window.py": "60458efc4bc76693f544fa489534ce02629ec9f62bcfec11a98a98d0671bff65",
+    "worker-client/chejin_worker_client/hook_transport.py": "9b46b4c33dfc39a8f81a29243cccde348e691be8c78c611e99a1e73e37289a55",
     "worker-client/chejin_worker_client/hook_voice.py": "e45248392e0e8e7e8177d58cb02dca380c99adf2692fe8af64a0c394549ae3b7",
-    "worker-client/chejin_worker_client/hook_worker_services.py": "dfad6b46b41afef2b71a96193e64070476237443474bce5957de19fa624ae616",
+    "worker-client/chejin_worker_client/hook_worker_services.py": "f8fe41b82503540500805a7db86b8f847a84b5cc10552120c114c810853cd023",
     "worker-client/chejin_worker_client/incident_evidence.py": "8821582ea3ddbf25decd782bd03fe13a6d005b472875ad39cf9112565605efcb",
     "worker-client/chejin_worker_client/main.py": "b4fb60e9164e56c6486ed5157e0e289037bcc09a3fa46b8db4562f423547419c",
     "worker-client/chejin_worker_client/post_update_health.py": "cf3b58082e6a1ebc1a8883f75427f7fd085b480ea6732ccbd6153caceb89e7ad",
+    "worker-client/chejin_worker_client/runtime_process_timeline.py": "ec7a5b758c8cb48187062b69d326e4969f62e4f3ab12d8538dd787dbf38cdd2e",
     "worker-client/chejin_worker_client/runtime_startup.py": "65faed29fb538515b1f61f115c6421f40c0b5c0bef734edc03510a200fc9dc06",
     "worker-client/chejin_worker_client/shared_rules.py": "4768fb42d0eb1474d3764a57376c0f38faf38cecdeb5a872a4b2006cd43fd25b",
-    "worker-client/chejin_worker_client/startup_check_state.py": "e5c552efa19723cfe0309859b48011e52a434048d1f80d509972277db1aeb425",
+    "worker-client/chejin_worker_client/startup_check_state.py": "bbc10cc83d57b5a0957a876ec233ae96f96988953fea7f20133f5c77ffc33f38",
     "worker-client/chejin_worker_client/startup_window_position.py": "6c801bac499225a2548aa58edbfade80dadd8d2fb1d5127f885686476e6ffac0",
-    "worker-client/chejin_worker_client/storage.py": "331ffe03a3ae884cce36c3ef396e02c7e36539aa55f60a4be9c12c1276d7db5e",
+    "worker-client/chejin_worker_client/storage.py": "1187381accc258c25a024351e9c2bed1cbb8c9912ddb2c546238bb297ab88fef",
     "worker-client/chejin_worker_client/storage_maintenance.py": "dff6e905c530389d92e7a87b2f21e7d72721434c9c7899d22d1c9d6c070b035a",
-    "worker-client/chejin_worker_client/task_runner.py": "c7938bd418fefaf94a09e03aac61536c73aecb30dfc16f7872b59fbf78ecbec3",
+    "worker-client/chejin_worker_client/task_runner.py": "a691d64310b77bf521be221dc58b3c2715cbdafdbbe968f69850dc796d78c177",
     "worker-client/chejin_worker_client/ui.py": "6a976c539a8c61e2072bb61c8be612ee43f790c688de431d7284309563c6d453",
-    "worker-client/chejin_worker_client/update_coordinator.py": "a68b90dce20f6bbb255c74673c08e8d22fd9ae071673ce93c0d289073cd8511e",
+    "worker-client/chejin_worker_client/update_coordinator.py": "743347b65e0c4fce322f9527907369e2c2a7dc41942e02799f0a15bdee9cbca4",
+    "worker-client/chejin_worker_client/update_data_snapshot.py": "0e07c6b7c7beb3a618f9ad1a6d58f31ebf06ffbb280954e95a341cc5a9b43155",
     "worker-client/chejin_worker_client/update_diagnostics.py": "7ee54c751f381a918481c8f5713686d88d0c4df2a1c61aa15de50a2dbd38bd0a",
     "worker-client/chejin_worker_client/update_progress.py": "0b78b804ab3a3b9ae88cd4bedcba80d636c994fdfad96dac09d5805463fce0f4",
     "worker-client/chejin_worker_client/update_progress_design.py": "0766b0908e66882461ff4eb52340e49026270839fca85038f85cc41875576f71",
@@ -15521,41 +16001,45 @@
     "worker-client/chejin_worker_client/web_assets/update-brand.provenance.txt": "61f6d6d0c1fdb02bfacafd564132fdc6dbe6cede43ffb94b6a8c8f080df26d93",
     "worker-client/chejin_worker_client/web_assets/worker-presentation.css": "cfbaed57e82595549c8e0f30ca45202b8ab775712075ea5b682d44d501f6cb3c",
     "worker-client/chejin_worker_client/web_assets/worker-ui.css": "18c8eff4399dca953f59ffffaed0b58a0f4efd0ceaa7c3afa015d39c32bc8691",
-    "worker-client/chejin_worker_client/web_assets/worker-web-app.js": "31467d5aba1c1b31c68ebc0fd2173c031b1b00b1574d3c4d8c5b209a93a19404",
-    "worker-client/chejin_worker_client/web_ui.py": "f994ecdb56325302329724fea19a1175e95e8f37a25a974614067f47faf13390",
+    "worker-client/chejin_worker_client/web_assets/worker-web-app.js": "f7c1e9761f9bdec153823280abd7d0639bfa6543211208f6f4fb1785d58f1140",
+    "worker-client/chejin_worker_client/web_ui.py": "5f404f68dcb3296c861348ebeef619e904550dbb6ea1b708f75477d6894b07a3",
     "worker-client/chejin_worker_client/window_render_evidence.py": "1c6764c970f685d337df338e7d39147f475a49ce96c1699ebac5419736b3e8c8",
-    "worker-client/omniauto-rpa/.chejin-source.json": "39277eba173641351f5cbcfcd7bb7ae4e82b12941938752dcb29472127a9cfb2",
+    "worker-client/omniauto-rpa/.chejin-source.json": "5c4ffc62bf118cf033306bd99e891aaab4ec6a39af1745e5f6151fc2ed27e610",
     "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/adapters/add_friend_layout.py": "2978fdb588bd256f6a91958e9dd17088d0cf584b5a6a338c28a123941997369f",
     "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/adapters/add_friend_ocr.py": "92b8c5f66499c86d4e60f2c2559dcdbaa433abd1e532feb07affe3704e13b6a7",
-    "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/adapters/chejin_c2_observation_schema.generated.json": "6b48b4c540230eb7597bcc319a743924f0bea2f0eb18799d27fb41fca3ae0d03",
+    "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/adapters/chejin_c2_observation_schema.generated.json": "56a54097b96aeeffc7ef427aca780670e8ad92dc2e94a5ae9cc633371bdaf7e9",
     "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/adapters/hook_contact_rules.py": "cc3072ea75f4015fd0b7554c5e91a740b52834559f10c0291494bb51cef0e9e2",
-    "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/adapters/hook_contract_rules.py": "bdec9434d9f2b109cf614aa74b52300ecf17f99f874bff15ed89f42a7d71f772",
-    "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/adapters/hook_history_rules.py": "da9c87d2176c902e59ccab43f0e1637eca38c0b19c4d5a33a96615cf8e1c0d9f",
+    "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/adapters/hook_contract_rules.py": "11ffbfad750add6cecd4db53ffdd02eb1b15b4ef13b804110d89d20d10a462c3",
+    "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/adapters/hook_history_rules.py": "d07e4b2374972042a36928ed4587fbbaec5c879f1969f3cbda250430ed02bd04",
     "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/adapters/hook_window_layout.py": "e50876a2648d16727db3a1187ad5955dd57f54920aafe0e9fe30f68cf52547d2",
     "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/adapters/icon_similarity.py": "830c7248bd208b43b623a9e0ab33057655e3b6d7a165ffe7ad93feef3177a36d",
     "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/adapters/search_control_icons.py": "3f9f8c5aad61cd55928f33150e852ca55c2c6c2de8e5ca321de6dc972bcdbb8c",
     "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/adapters/search_query_ocr.py": "e7b47ac12737e4935c383baf7a10986c3782128f0ef1274963015dfa8e2dd179",
     "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/adapters/wechat_win32_ocr/c1_layout.py": "e24d450bd0a9714294c755748325303f39804b709fda463bff212f2cb7b00ac5",
     "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/adapters/wechat_win32_ocr/hook_c1.py": "5968f1c6f958becaf0c8482afca18f72a0a2604a322cebeeab25fb92febfc452",
-    "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/adapters/wechat_win32_ocr/hook_c1_flow.py": "3f1d4fda29bd290eb59934caae1af1e0830bd470402988213f0a06f75e0306ab",
+    "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/adapters/wechat_win32_ocr/hook_c1_flow.py": "ffba6efa0cfb2288d1f942bc7e9c77facca0e982138649389d91c420b9e1d1f8",
     "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/adapters/wechat_win32_ocr/window_action_planning.py": "54fd8e05e07e85250836383b6f99baacb35f030e4744e5f9a696e45591a3f380",
+    "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/tests/run_customer_service_brain_contract_checks.py": "c57b8e27d74b986420baffaef8cd47d00bb15cbbf19a55eb40069bba16103b79",
     "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/tests/test_c1_layout_reuse.py": "3cb4f88033b9ad1df9dd0bc038100bbef7107c201e057454b8db7345ae670eb5",
     "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/tests/test_hook_c1_flow.py": "f89fc75114505e3fff935b5d78db5a6aceac6e096df060db09757261c1e5d652",
     "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/tests/test_hook_c1_startup.py": "1778f4b803c3b4a281adecd4c66e44a9d5cb7977fa83231f3f5e2d491afaed64",
-    "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/tests/test_search_control_icons.py": "5ff87824c6e72dbfee41e1d47ced2a03a28d1c436041d5f934b739d50c5500b0",
-    "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/workflows/customer_service_brain_contract.py": "6a890888db6f116e1ed292ea54a72842e1956723823b220b5f2f05ed585cfdde",
+    "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/tests/test_search_control_icons.py": "fd6b7467629b02a082594da69191028cb8cbaf6b5cc58800267e50d712068a5e",
+    "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/workflows/customer_service_brain.py": "fb717761552e9ca11e9f75c67fe3f75a88ccf664f47a0905d84d991a76018773",
+    "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/workflows/customer_service_brain_contract.py": "1675f6ad4f05b481f2033f8ae39e4ce31d6193e7cdb9aef7d1a8d1a4d401e2e6",
+    "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/workflows/customer_service_quality_reviewer.py": "7c8c9e3d94b6974ceaf3edf83e8f09af300398a6f5895b528ae034da8a1b87af",
     "worker-client/packaging/Diagnose-CheJin.cmd": "3c00362034cefab35ddf887818373cf87cf5bd2e6246529bf5c0ebceef340541",
     "worker-client/packaging/Rollback-CheJin-Hook.cmd": "510f5d6b45003efb9f2801bb04154789f67a50abbf4ccba7fc4011c6792ed8ad",
     "worker-client/packaging/Update-CheJin-Hook.cmd": "46e00b1f8f78d9a02e78449466100610d40bb4eeb7d6a7827dc0634796363ac1",
     "worker-client/packaging/chejin-updater.spec": "f1b67f60ae2a5fb5a6de3f55276639a50ccf2e79ecce346cf510cdda3a65a4d5",
-    "worker-client/packaging/chejin_worker_client_entry.py": "11ccfa65bef701623df7bb9c1f9ae344b109ad823209a9ed65c99a03a998c570",
+    "worker-client/packaging/chejin_worker_client_entry.py": "f041a588c7a6786e33012689eb08d020f5dd72cef9d3f477ccebbb2a8282d7bd",
     "worker-client/packaging/start-hook.ps1": "1a9f543993fa90b3acd1265f3fc2f4fd2faf1061ba98cb40b925d9ca01fb4080",
     "worker-client/packaging/update-hook-component.ps1": "39a288d057967a2d3dc62d7d2d1bbc9fb63501fb833d2e200cc51649da25721a",
     "worker-client/scripts/run-windows-hook-preserve-install.py": "c7a2bf31c1af8f9b47b546b5d5317dcdd2ee7be3b38d63592c10c9c60a4ce5ab",
     "worker-client/tests/fixtures/update_handoff/worker_actor.py": "557f4b2c432971ce6cf481cf8a0a8ca31b2d0667905360fde0732b00587648c4",
+    "worker-client/tests/test_brain_handoff_presentation.py": "636ad3a8fb30decf39638034557e158b16ba1543c31f51f6fa5c71617605b445",
     "worker-client/tests/test_c1_evidence_chain.py": "dcf62faeb7f069e5c920d555d58b0628ca069e5f1d889a4f64f2f6f6e83e24e9",
     "worker-client/tests/test_diagnostic_bundle.py": "c0d556cfc426c5b35be84fd3db7e3cb9160f1ba96ad9690a8f91b8fcf3344f96",
-    "worker-client/tests/test_diagnostic_priority_chain.py": "da89492f53259f3bb7430ab502af158a0923aa32f70d5b1d81e8fecfdf51b84f",
+    "worker-client/tests/test_diagnostic_priority_chain.py": "dea54b02bc4edd357bb8ec93bb080b4c322a506151e6ba2bca7bd341068e98a0",
     "worker-client/tests/test_evidence_review_regressions.py": "79835595b138ce14ba5e5cb97809775df771e873119473309bd2b4a393991719",
     "worker-client/tests/test_failure_evidence_boundaries.py": "97b8746f6d4da394b376dc15e30336b395da5c89db54493eb9d0ea3e406d9b7d",
     "worker-client/tests/test_hook_backend.py": "d39b9f3565d22f539966933a61e7a87f644abf7712f9c6b4f24872ed5be51c5e",
@@ -15566,12 +16050,15 @@
     "worker-client/tests/test_hook_component_update.py": "3e25782910d55b95b258a3d19d9c68f0f938cf0b0a0dcbb614001ddca8d07601",
     "worker-client/tests/test_hook_connection.py": "f32417c357dec51f0979bf09da632ce8330edc94d12769a40ab77df252231c7c",
     "worker-client/tests/test_hook_contacts.py": "4d9bebac2d64243e7377e0da8c88902ac0dcffea1f8934f2a6f4be4d46519b03",
+    "worker-client/tests/test_hook_coverage_recovery_wait.py": "649f0580657cabf50e8a6a3eb554b01f8225accdc9cb7012f0640f27f774894f",
+    "worker-client/tests/test_hook_delivery_lifecycle.py": "0e3182f775c3b5d3ed5d90f52a8318cc4367f03c50fa6f39e58c1b4f292d70cf",
     "worker-client/tests/test_hook_dispatcher.py": "b992e3ceec32ac2a1b934245f518611344cd42530c60b29c92cd55933db4ec51",
     "worker-client/tests/test_hook_gateway.py": "0549c71bd0a9569a8029ab6c8db6b71e894e0163b3f0a584f6c7711fa7efa243",
     "worker-client/tests/test_hook_handoff_progress.py": "10f63716b2eeb32644de43b5f35d63eba23b2cda3552e87712f405d316d0946c",
     "worker-client/tests/test_hook_history.py": "889527f3e1022baa92f7e0b47dff1c12142c4ff65263124784bfdfe755eb56eb",
-    "worker-client/tests/test_hook_history_send_recovery.py": "32054f18a79832b4f26216def7f8b25cf69511f0202752994cffac867e9262f1",
+    "worker-client/tests/test_hook_history_send_recovery.py": "518d6089d852a050497dc53e3483ca2263fabf81e3679ad528e0776a57c316a3",
     "worker-client/tests/test_hook_history_sync.py": "88d4140ff95cdb50f4d9f0a1d88d9cbda9a4c12fe9aa69e54e48409a569cf480",
+    "worker-client/tests/test_hook_history_wait.py": "04da3d8b5d26b77fdea03c1a34c15b153c16225938010d53177a0cf254cbc6b3",
     "worker-client/tests/test_hook_installation.py": "6941697629a870b19c16859009ce320937e61ad67a40a648774c0e21c589caf9",
     "worker-client/tests/test_hook_invite_recovery.py": "5e4fc739502a990948e68019c780177405641609ac6c0a126935c68564ca23e2",
     "worker-client/tests/test_hook_native_identity.py": "5a2fa0ef2bcbd45bbc9350f9a04d7b34406dde437a54e82c50ef344413c1277b",
@@ -15581,12 +16068,15 @@
     "worker-client/tests/test_hook_projection_policy.py": "4653178098b95f5e755b55f7f9c4cd12a6139ea45bf419cb95ad6784f8393aab",
     "worker-client/tests/test_hook_relationship_runtime.py": "71292ff58a85948af7a1eb6a7473f5d70437dc6bc1a80c4e6b59796d230fbd54",
     "worker-client/tests/test_hook_remark_caret.py": "3ccbf24a9818726c10747746e76b00d3685f94dd0a34201b8e13d8cf57e1b15d",
+    "worker-client/tests/test_hook_safe_read_recovery.py": "5abf30829e438e8801c7c5aeea95df471cc13b3b5179be333d43e8b521ca200b",
     "worker-client/tests/test_hook_search_cache_consumer.py": "6a045a67cbd7eb5a00c497879d11bae0601a6bb2fdf0b8173414c01e2ab2c9be",
-    "worker-client/tests/test_hook_search_startup_cache.py": "ed1e4a58205a48f30adde0d0787baa7b4911d4d109913d6dc567ef777fd2778a",
+    "worker-client/tests/test_hook_search_startup_cache.py": "4e51ed0bb878b911f091b3cf15047dd8b63941b51d3be90e93009392019182fa",
     "worker-client/tests/test_hook_segment_progress_stability.py": "ae1df807dadcdfa9c5685809c2b2172fd54d457246e11ecb84bfa8ad4b860db3",
     "worker-client/tests/test_hook_send_diagnostics.py": "ceccb638d04e5a86569ea3c8833d9aa52da43ed55a2036aadb4f554af836b961",
     "worker-client/tests/test_hook_startup_focus.py": "711fa162099ac14430f70908411cef607a76035f7749edca3129a82ff7b01374",
-    "worker-client/tests/test_hook_startup_order.py": "5e71fee8caa3615e56fd448d319b5e4e3ee37587fe421d00ba2f64fbb2c24105",
+    "worker-client/tests/test_hook_startup_order.py": "6b09a57da56c75f8ea2d1e6b27fe7fbd72076f9a7cd49b4e15b7d04d1191672b",
+    "worker-client/tests/test_hook_storage_failure.py": "a361632b15297b9e42f8b7274556e955e61e82d6063a689dd19251408cca3f1a",
+    "worker-client/tests/test_hook_transport_diagnostics.py": "ba97d231f737dfab7f381fc06e9717e356317f21385beec0362d61832b2606c9",
     "worker-client/tests/test_hook_waterfall.py": "c3d41587f345867534d70994444068b45f649995c744916218255be2a8447e90",
     "worker-client/tests/test_hook_window_layout_chain.py": "12bbeec0c9f3495d5f1e78d9349dd0c3d6d31f39cd730d69e13485cf48067fcc",
     "worker-client/tests/test_hook_window_position.py": "585535ac95345ebfbf43207ba4fbbfc5aae62e1521164d2ee69897887b259cdd",
@@ -15599,23 +16089,25 @@
     "worker-client/tests/test_storage_maintenance.py": "cb667fbd937c26d088ca2de98c0e0b6a1f18d1fae6efd7ce192ab5f00039ab22",
     "worker-client/tests/test_update_admission.py": "8aff8e176c564d6a03f91e9494909b72bf3cd1da0fcbb72131d4ac13eafe422f",
     "worker-client/tests/test_update_coordinator.py": "4257e309058608901f6980969a99e5d64f2fec6ccb1779477368649d4d484655",
-    "worker-client/tests/test_update_download_progress.py": "d1e4c3baef4192b67c3946438bdcb53e19f34bc8a49dc4b406b64592e6781992",
+    "worker-client/tests/test_update_download_progress.py": "dba4900f152f590a9e903879cbde70e44316d5556b49602ef550f94ae3d6c7e0",
     "worker-client/tests/test_update_exit_regression.py": "9a348edbb9676c3b7135be68a3fe39de1689c6d2b3b4872db7edede0a0d14c0b",
     "worker-client/tests/test_update_handoff_process.py": "b6d146a16e7faf09f7fdd751d6218a2e238a5c6e9d021b8ca8147a5bb9499544",
-    "worker-client/tests/test_update_long_paths.py": "910870ff3c6db2f63c6abfb9095bce3807bc503c65fd001f99efcbe3d25ebfec",
+    "worker-client/tests/test_update_long_paths.py": "89afb194c5eba9fb713a59e0052a771a6d77b37807c4ad33a24b9c28050b8069",
+    "worker-client/tests/test_update_preparation_retry.py": "e378d430d7e9432065eb2326b191fc41378d452de13f4d37c2eafd03b7a6a08e",
     "worker-client/tests/test_update_progress_window.py": "deb12bbd1252a9de980ed4002311880734083e248579fe86891aa3826c99a8d6",
     "worker-client/tests/test_update_restart_progress.py": "a6103860824ac07e87ae8fff9494a91f6eea7acb718ec4b4ffd32ba8aff41c60",
     "worker-client/tests/test_update_shutdown_ui.py": "4f46fa73852223b011f847cb05909b6f59693602ad1d0ef776c28b360eb4a289",
+    "worker-client/tests/test_update_stop_confirmation.py": "96306ce9c8136b18823fc13c62a2d589743194bdcfc5cfef166130bcbbdac392",
     "worker-client/tests/test_web_ui_binding_behavior.py": "43147376a88965d31025f5bfbb55be07fa27ad47e232759bc0bcebbe04958320",
     "worker-client/tests/test_window_render_evidence.py": "cdb8276f6dbd1ae9a4f2be6ac0ba0264aa5ae5693210e7a7f6fecc1fa4499538"
   },
   "delta_review": {
-    "commit": "241c8034e1a21557630ed5aab76ea16ae6f4390a",
+    "commit": "5bee8863ee9242d4ab9f8c6aa7674d026959dcef",
     "result": "passed for source push",
     "thread_id": "01a0d26f-f47a-7343-9ad8-cda8320d7c86",
-    "turn_id": "review-report-search-query-fix-20261026",
-    "review_file_sha256": "80f5da4b6c40fa8914493887adf0e8b48e1493576ed9419b4b1266b50b2a9ae9",
-    "scope": "Cumulative exact source reviews; latest changes bound to approved source hashes. Release metadata only differs."
+    "turn_id": "review-report-reply-authority-20261027-final",
+    "review_file_sha256": "fbfc756cce1828a258f01336f9d96358afc851e6797709b6cce50613e20f5913",
+    "scope": "Final 5bee886 semantic contract review plus unchanged cb8fe41 startup/recovery final review. Runtime bytes unchanged after version normalization; original Windows acceptance remains separate."
   },
   "historical_baseline_tests": 1371,
   "reviewed_delta_deleted_sha256": {
@@ -15663,7 +16155,8 @@
     "Native Windows DPI, Hook/OCR new friend and diagnostic cases pending; local reviews do not establish real-device pass.",
     "Reviewed new test logs are retained by hash in cumulative_source_reviews; not counted as prior XML executions.",
     "Native Windows updater visual first delivery pending; old updater controls first upgrade.",
-    "PostgreSQL concurrency skipped local test remains explicit; isolated PG verification required."
+    "PostgreSQL concurrency skipped local test remains explicit; isolated PG verification required.",
+    "0.10.23: original Windows realWeChat/AI/Feishu pending; four earlier dispatcher fixtures and two hand-constructed state fixtures remain separate baseline failures; final reports do not claim project-wide green."
   ],
   "prior_recovery_review": {
     "commit": "a1de7f317d600b65650eb44c16d404067e22ef58",
@@ -15738,7 +16231,19 @@
     "4a3b3dcc2f0dd297a2f8c0ab55e8eecb967612bd",
     "e313a926d52765badb7a2072ccc02c56096956ed",
     "3e6301584c4b46b5959e95d26181d13f7cf7d4f8",
-    "241c8034e1a21557630ed5aab76ea16ae6f4390a"
+    "241c8034e1a21557630ed5aab76ea16ae6f4390a",
+    "f39c568506b820b566d8ff13d52618700a305b47",
+    "287db0112c1f927803bcff34e17d9026f88deca3",
+    "922734f63ce0c12d5681b17af313872143498cc7",
+    "5265bccc993f83d2e04e52abeac07f6f9b92fe39",
+    "8bcb55872faf5589621633ffe13c179f29a281d2",
+    "850dd792b99c422d93d4712d7f0daf79d86c4d6d",
+    "e1c64f1c368ad30a59555a59728f0c1d6259e1f7",
+    "193b045f08858d9abf4b5b17b3c992e15f4f14a8",
+    "5263026a8cef0b34aad8a3a5e064a6aa2da10717",
+    "cb8fe411faf6f3441c09a1e3406b55799dd6080d",
+    "390f03c479077c86622dff189c7d5429e20bbbce",
+    "5bee8863ee9242d4ab9f8c6aa7674d026959dcef"
   ],
   "cumulative_source_reviews": [
     {
@@ -16163,6 +16668,71 @@
       "sha256": "80f5da4b6c40fa8914493887adf0e8b48e1493576ed9419b4b1266b50b2a9ae9",
       "candidate": "241c8034e1a21557630ed5aab76ea16ae6f4390a",
       "decision": "PASS_SOURCE_AND_AFFECTED_LOCAL_CHAIN"
+    },
+    {
+      "report": "/Users/zhangwentao/Documents/车金/output/update-preparation-reliability-20261026/architect-review.json",
+      "sha256": "7eb8d8087e278ca0632b882963d2a63cf73c2ed5270674138dc6a8a6b2b63680",
+      "candidate": "f39c568506b820b566d8ff13d52618700a305b47",
+      "decision": "PASS_SOURCE_AND_AFFECTED_LOCAL_CHAIN",
+      "limits": [
+        "No actual Windows sharing violation/antivirus/native file lock validation or original holder diagnosis. Cannot promise all access-denied causes resolved.",
+        "No production inspection, packaging, deployment, message forwarding or Git push. Existing 0.10.21 package not touched.",
+        "Source review and local tests do not certify updater installation, rollback or sales-machine acceptance. Existing delivery gates still apply.",
+        "Housekeeping retention and status races were reviewed at affected boundaries; unrelated full-business suites were not rerun."
+      ]
+    },
+    {
+      "report": "/Users/zhangwentao/Documents/车金/output/history-wait-fix-20261027/architect-r2/architect-review.json",
+      "sha256": "39f1bc73907b1b11504eedd0d73d25051b015b6dab4bc674aecb325d8e5738f6",
+      "candidate": "922734f63ce0c12d5681b17af313872143498cc7",
+      "decision": "PASS_SOURCE_AND_AFFECTED_LOCAL_CHAIN",
+      "limits": [
+        "No Windows real WeChat/DLL validation",
+        "No real AI/backend/Feishu operations",
+        "No package rebuild/deployment/push by architect",
+        "Separate voice callback/download root cause remains unresolved",
+        "Historical first-round sandbox setup errors and HW-1 raw failure retained"
+      ]
+    },
+    {
+      "report": "/Users/zhangwentao/Documents/车金/output/global-fault-audit-20261027/architect-r3/architect-review.json",
+      "sha256": "362063e064bd3ae33739a949e5013ae6c7d9652fc1ca14431e83674fc7b89a8e",
+      "candidate": "850dd792b99c422d93d4712d7f0daf79d86c4d6d",
+      "decision": "SOURCE_AND_LOCAL_AFFECTED_CHAIN_PASS",
+      "limits": [
+        "本地HTTP/SQLite和正式Worker/导出函数；Hook、模型及窗口使用替身。",
+        "真实AI、Windows/DLL、飞书及生产未验；Windows按用户要求暂停。",
+        "历史文本更正专项变更路径仅静态核查，未宣称所有业务拒绝组合均动态覆盖。",
+        "本轮无源码推送、打包、部署；不能代表销售电脑已更新。"
+      ]
+    },
+    {
+      "report": "/Users/zhangwentao/Documents/车金/output/hook-safe-recovery-review-20261027/architect-review.json",
+      "sha256": "c8588e66842023ed0af85cc139043b69b8d021ae123930ef85f51c32020b4297",
+      "candidate": "cb8fe411faf6f3441c09a1e3406b55799dd6080d",
+      "decision": "SOURCE_AND_LOCAL_CONTROLLED_REVIEW_PASS_WINDOWS_PAUSED",
+      "limits": [
+        "Windows实机继续暂停；未验证原生进程死亡探测、快捷方式/真实DLL/销售电脑物理操作。",
+        "无真实AI、飞书、生产操作，无打包部署。",
+        "本地HTTP为回环测试peer，业务数据为合成夹具，OS进程/实际窗口和人工停单负例有明确替身；不将其作为真实微信证据。",
+        "完整端到端Windows验收仍待用户恢复授权；4项旧基线失败未消除，不声称项目全绿。",
+        "PlantUML仅文本/结构核对，无渲染器，未声称图形渲染验证。",
+        "pytest私有脚本跨目录运行有只读根缓存警告，不影响10项执行。"
+      ]
+    },
+    {
+      "report": "/Users/zhangwentao/Documents/车金/output/reply-authority-review-20261027/architect-review.json",
+      "sha256": "fbfc756cce1828a258f01336f9d96358afc851e6797709b6cce50613e20f5913",
+      "candidate": "5bee8863ee9242d4ab9f8c6aa7674d026959dcef",
+      "decision": "SOURCE_AND_LOCAL_CONTROLLED_REVIEW_PASS",
+      "limits": [
+        "No actual model judgment-quality test; fake provider outputs explicitly scripted.",
+        "No Windows/realHook/physical send/actual Feishu/production actions; Windows remains paused.",
+        "API test admin-auth fixture and synthetic provider configuration used; no assertion of production auth/security end-to-end coverage.",
+        "No current customer ownership changes or automatic resend/return to AI.",
+        "PlantUML reviewed as text only; no available renderer, no rendered-visual validation claim.",
+        "Source approval does not mean packaged, deployed or used by sales."
+      ]
     }
   ],
   "prior_release_delta_review_01011": {
