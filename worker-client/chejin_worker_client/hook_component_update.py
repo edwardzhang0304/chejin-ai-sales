@@ -22,10 +22,22 @@ from .hook_process import pe_machine
 from .models import utc_now_iso
 
 # Provider-supplied binary stays private; public source pins only its identity.
-NEW_HASH = 'eaab817334789b23cc788ea1dd14a84485d3776bb98d3114662384d3665110a7'
-OLD_HASH = '9d6447c7c614d3218878f8790f901f326133c08aac02b7c58903dacc9ff2c24a'
-REVISION = 'hook-component-20261022-' + NEW_HASH[:12]
+NEW_HASH = '095ca929f43fd59eeac654a955bab72c2b08148ffdfec31537f689d66895c91e'
+OLD_HASH = 'eaab817334789b23cc788ea1dd14a84485d3776bb98d3114662384d3665110a7'
+REVISION = 'hook-component-20261028-' + NEW_HASH[:12]
+LEGACY_OLD_HASH = '9d6447c7c614d3218878f8790f901f326133c08aac02b7c58903dacc9ff2c24a'
+LEGACY_NEW_HASH = 'eaab817334789b23cc788ea1dd14a84485d3776bb98d3114662384d3665110a7'
+LEGACY_REVISION = 'hook-component-20261022-' + LEGACY_NEW_HASH[:12]
 KEYS = (INSTALLATION_KEY, TRANSPORT_KEY, DEPLOYMENT_KEY, VOICE_SETTING_KEY)
+
+
+def _component_release(rollback):
+    # A previous release's durable transaction still owns its rollback. Never
+    # rewrite it as a new release or discard a partially written current intent.
+    roots = storage.APP_DIR/'transactions'/'hook'/'components'
+    if rollback and not (roots/NEW_HASH).exists() and (roots/LEGACY_NEW_HASH/'intent.json').is_file():
+        return LEGACY_NEW_HASH, LEGACY_REVISION, (LEGACY_OLD_HASH,)
+    return NEW_HASH, REVISION, (OLD_HASH, LEGACY_OLD_HASH)
 
 
 def assert_wechat_stopped():
@@ -74,20 +86,21 @@ def _validate_settings(rows):
     return deployment
 
 
-def _state(target, current, intent):
+def _state(target, current, intent, old_hash, new_hash):
     # Settings unrelated to deployment must remain byte-for-byte intact.
     if current not in (intent['before'],intent['after']):
         raise ValueError('HOOK_COMPONENT_SETTINGS_CHANGED')
     actual=_hash(target)
-    if actual not in (OLD_HASH,NEW_HASH):raise ValueError('HOOK_COMPONENT_INSTALLED_HASH_MISMATCH')
+    if actual not in (old_hash,new_hash):raise ValueError('HOOK_COMPONENT_INSTALLED_HASH_MISMATCH')
     return actual
 
 
 def update_component(candidate=None, *, rollback=False, automatic_text_disabled=False, diagnostics=None):
     """Called only by the guarded offline CLI; no process kill or account reset."""
+    new_hash, revision, accepted_sources = _component_release(rollback)
     evidence = diagnostics if diagnostics is not None else {}
     evidence.update(operation='rollback' if rollback else 'update', phase='preconditions',
-                    journal_id=NEW_HASH, file_replacement_attempted=False,
+                    journal_id=new_hash, file_replacement_attempted=False,
                     file_outcome='unchanged', config_outcome='unchanged',
                     rollback_attempted=False, rollback_errors={})
     if automatic_text_disabled is not True:raise ValueError('HOOK_AUTO_TEXT_CONFIRMATION_REQUIRED')
@@ -97,10 +110,10 @@ def update_component(candidate=None, *, rollback=False, automatic_text_disabled=
         raise ValueError('HOOK_COMPONENT_PAUSE_REQUIRED')
     source=Path(candidate) if candidate is not None else None
     if not rollback:
-        if source is None or source.is_symlink() or not source.is_file() or _hash(source)!=NEW_HASH:
+        if source is None or source.is_symlink() or not source.is_file() or _hash(source)!=new_hash:
             raise ValueError('HOOK_COMPONENT_CANDIDATE_HASH_MISMATCH')
         if pe_machine(source)!=0x14c:raise ValueError('HOOK_COMPONENT_VERSION_MISMATCH')
-    root=storage.APP_DIR/'transactions'/'hook'/'components'/NEW_HASH
+    root=storage.APP_DIR/'transactions'/'hook'/'components'/new_hash
     journal=root/'intent.json';backup=root/'original-version.dll'
     evidence['phase']='database_open'
     with storage.db_connection() as db:
@@ -115,32 +128,34 @@ def update_component(candidate=None, *, rollback=False, automatic_text_disabled=
                     or intent['target']!=str(target)):
                 raise ValueError('HOOK_COMPONENT_JOURNAL_INVALID')
             before=_validate_settings(intent['before']);after=_validate_settings(intent['after'])
-            if (before.dll_sha256!=OLD_HASH or after!=replace(before,dll_sha256=NEW_HASH,revision=REVISION)
+            if (before.dll_sha256 not in accepted_sources or after!=replace(before,dll_sha256=new_hash,revision=revision)
                     or any(intent['before'][k]!=intent['after'][k] for k in (INSTALLATION_KEY,TRANSPORT_KEY))):
                 raise ValueError('HOOK_COMPONENT_JOURNAL_INVALID')
         else:
             if rollback:raise ValueError('HOOK_COMPONENT_BACKUP_MISSING')
-            if deployment.dll_sha256!=OLD_HASH or _hash(target)!=OLD_HASH:
+            if deployment.dll_sha256 not in accepted_sources or _hash(target)!=deployment.dll_sha256:
                 raise ValueError('HOOK_COMPONENT_INSTALLED_HASH_MISMATCH')
+            old_hash=deployment.dll_sha256
             if root.exists() and any(root.iterdir()):
                 # A durable backup may precede the intent on interruption.
-                if set(root.iterdir())!={backup} or _hash(backup)!=OLD_HASH:
+                if set(root.iterdir())!={backup} or _hash(backup)!=old_hash:
                     raise ValueError('HOOK_COMPONENT_JOURNAL_INVALID')
             evidence['phase']='backup_original'
             _atomic(backup,target.read_bytes())
-            after_deployment=replace(deployment,dll_sha256=NEW_HASH,revision=REVISION)
+            after_deployment=replace(deployment,dll_sha256=new_hash,revision=revision)
             after=dict(current);timestamp=utc_now_iso()
             after[DEPLOYMENT_KEY]={'value':_json(asdict(after_deployment)).decode(),'updated_at':timestamp}
-            after[VOICE_SETTING_KEY]={'value':_json({'deployment_revision':REVISION,'disabled':True,'operator_confirmed':True}).decode(),'updated_at':timestamp}
+            after[VOICE_SETTING_KEY]={'value':_json({'deployment_revision':revision,'disabled':True,'operator_confirmed':True}).decode(),'updated_at':timestamp}
             intent={'schema_version':1,'target':str(target),'before':current,'after':after}
             evidence['phase']='persist_intent'
             _atomic(journal,_json(intent))
+        old_hash=_validate_settings(intent['before']).dll_sha256
         evidence['phase']='validate_recovery'
-        if not backup.is_file() or backup.is_symlink() or _hash(backup)!=OLD_HASH:
+        if not backup.is_file() or backup.is_symlink() or _hash(backup)!=old_hash:
             raise ValueError('HOOK_COMPONENT_BACKUP_INVALID')
-        actual=_state(target,current,intent)
+        actual=_state(target,current,intent,old_hash,new_hash)
         desired=intent['before'] if rollback else intent['after']
-        desired_hash=OLD_HASH if rollback else NEW_HASH
+        desired_hash=old_hash if rollback else new_hash
         # Stopped WeChat permits component replacement, not deletion of any
         # unresolved call, send, media, identity or business recovery evidence.
         assert_wechat_stopped()

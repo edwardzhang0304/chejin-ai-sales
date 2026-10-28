@@ -200,3 +200,66 @@ def test_full_cli_owns_worker_and_data_guards_and_writes_diagnostic(installation
     assert events==['worker_lock','data_lock','data_unlock','worker_unlock']
     assert json.loads(report.read_text())['status']=='installed_pending_validation'
     assert snapshot()['binding']==before['binding'] and snapshot()['hook_active_calls']==before['hook_active_calls']
+
+
+def test_new_component_accepts_original_release_and_rolls_back_to_exact_source(installation, monkeypatch):
+    candidate,target,pending,activation=installation
+    original=update.OLD_HASH
+    monkeypatch.setattr(update,'LEGACY_OLD_HASH',original)
+    monkeypatch.setattr(update,'OLD_HASH',hashlib.sha256(pe(b'other approved predecessor')).hexdigest())
+    before=snapshot()
+    assert apply(candidate)['dll_sha256']==update.NEW_HASH
+    assert update.update_component(rollback=True,automatic_text_disabled=True)['dll_sha256']==original
+    assert snapshot()==before and update._hash(target)==original
+    assert pending.read_bytes()==b'original unresolved send proof'
+    assert activation.read_bytes()==b'synthetic existing activation'
+
+
+@pytest.mark.parametrize('interrupted',[False,True])
+def test_previous_release_journal_still_rolls_back_without_rewriting_it(installation, monkeypatch, interrupted):
+    candidate,target,_,_=installation
+    before=snapshot();old_hash=update.OLD_HASH;previous_hash=update.NEW_HASH;previous_revision=update.REVISION
+    real_atomic=update._atomic
+    if interrupted:
+        def atomic(path,data):
+            real_atomic(path,data)
+            if path==target:raise SystemExit('synthetic interruption')
+        monkeypatch.setattr(update,'_atomic',atomic)
+        with pytest.raises(SystemExit):apply(candidate)
+        monkeypatch.setattr(update,'_atomic',real_atomic)
+    else:
+        apply(candidate)
+    journal=storage.APP_DIR/'transactions'/'hook'/'components'/previous_hash/'intent.json'
+    journal_before=journal.read_bytes()
+    monkeypatch.setattr(update,'LEGACY_OLD_HASH',old_hash)
+    monkeypatch.setattr(update,'LEGACY_NEW_HASH',previous_hash)
+    monkeypatch.setattr(update,'LEGACY_REVISION',previous_revision)
+    monkeypatch.setattr(update,'OLD_HASH',previous_hash)
+    monkeypatch.setattr(update,'NEW_HASH',hashlib.sha256(pe(b'new release')).hexdigest())
+    monkeypatch.setattr(update,'REVISION','new-release')
+    result=update.update_component(rollback=True,automatic_text_disabled=True)
+    assert result['dll_sha256']==old_hash and update._hash(target)==old_hash
+    assert snapshot()==before and journal.read_bytes()==journal_before
+    assert not (journal.parent.parent/update.NEW_HASH).exists()
+
+
+def test_two_component_releases_preserve_previous_receipts_and_rollback_only_latest(installation, monkeypatch):
+    candidate,target,pending,activation=installation
+    first_old=update.OLD_HASH;first_new=update.NEW_HASH;first_revision=update.REVISION
+    apply(candidate);before=snapshot();previous_bytes=target.read_bytes()
+    previous_root=storage.APP_DIR/'transactions'/'hook'/'components'/first_new
+    previous_files={p.name:p.read_bytes() for p in previous_root.iterdir()}
+    monkeypatch.setattr(update,'LEGACY_OLD_HASH',first_old)
+    monkeypatch.setattr(update,'LEGACY_NEW_HASH',first_new)
+    monkeypatch.setattr(update,'LEGACY_REVISION',first_revision)
+    monkeypatch.setattr(update,'OLD_HASH',first_new)
+    candidate.write_bytes(pe(b'new release'))
+    monkeypatch.setattr(update,'NEW_HASH',hashlib.sha256(candidate.read_bytes()).hexdigest())
+    monkeypatch.setattr(update,'REVISION','new-release')
+    apply(candidate)
+    assert update.update_component(rollback=True,automatic_text_disabled=True)['dll_sha256']==first_new
+    assert snapshot()==before and target.read_bytes()==previous_bytes
+    assert {p.name:p.read_bytes() for p in previous_root.iterdir()}==previous_files
+    assert update.update_component(rollback=True,automatic_text_disabled=True)['dll_sha256']==first_new
+    assert pending.read_bytes()==b'original unresolved send proof'
+    assert activation.read_bytes()==b'synthetic existing activation'
