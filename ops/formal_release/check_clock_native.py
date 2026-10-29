@@ -98,8 +98,13 @@ def require(value, code):
     if not value:
         raise NativeFailure(code)
 
+def rule_query(name, store):
+    # Filter in the native provider; enumerating every hosted-runner rule can time out.
+    return "try { @(Get-NetFirewallRule -PolicyStore " + store + " -DisplayName " + quote(name) + " -ErrorAction Stop) } catch { if ($_.FullyQualifiedErrorId -ne 'CmdletizationQuery_NotFound_DisplayName,Get-NetFirewallRule') { throw } }"
+
+
 def firewall_facts(name):
-    script = "$rules=@(Get-NetFirewallRule -PolicyStore ActiveStore -ErrorAction Stop | Where-Object {$_.DisplayName -eq " + quote(name) + "}); $profiles=@(Get-NetFirewallProfile -PolicyStore ActiveStore -ErrorAction Stop); $svc=Get-Service MpsSvc -ErrorAction Stop; $items=@($rules | ForEach-Object {$r=$_; $a=$r | Get-NetFirewallAddressFilter -ErrorAction Stop; $p=$r | Get-NetFirewallPortFilter -ErrorAction Stop; @{enabled=[string]$r.Enabled;direction=[string]$r.Direction;action=[string]$r.Action;profile=[string]$r.Profile;protocol=[string]$p.Protocol;remote_port=@($p.RemotePort);remote_address=@($a.RemoteAddress)}}); @{rules=$items;profiles=@($profiles | ForEach-Object {@{name=[string]$_.Name;enabled=[bool]$_.Enabled}});service=[string]$svc.Status} | ConvertTo-Json -Depth 5 -Compress"
+    script = "$rules=@(& {" + rule_query(name, "ActiveStore") + "}); $profiles=@(Get-NetFirewallProfile -PolicyStore ActiveStore -ErrorAction Stop); $svc=Get-Service MpsSvc -ErrorAction Stop; $items=@($rules | ForEach-Object {$r=$_; $a=$r | Get-NetFirewallAddressFilter -ErrorAction Stop; $p=$r | Get-NetFirewallPortFilter -ErrorAction Stop; @{enabled=[string]$r.Enabled;direction=[string]$r.Direction;action=[string]$r.Action;profile=[string]$r.Profile;protocol=[string]$p.Protocol;remote_port=@($p.RemotePort);remote_address=@($a.RemoteAddress)}}); @{rules=$items;profiles=@($profiles | ForEach-Object {@{name=[string]$_.Name;enabled=[bool]$_.Enabled}});service=[string]$svc.Status} | ConvertTo-Json -Depth 5 -Compress"
     return json.loads(ps(script).stdout)
 
 
@@ -126,10 +131,10 @@ def verify_block(evidence, name, addresses, stage):
 
 
 def cleanup_firewall(evidence, name):
-    ps("$r=@(Get-NetFirewallRule -PolicyStore PersistentStore -ErrorAction Stop | Where-Object {$_.DisplayName -eq " + quote(name) + "}); $r | Remove-NetFirewallRule -ErrorAction Stop")
+    ps("$r=@(& {" + rule_query(name, "PersistentStore") + "}); $r | Remove-NetFirewallRule -ErrorAction Stop")
     facts = firewall_facts(name)
     evidence.data['firewall_after_cleanup'] = facts
-    count = int(ps("@(Get-NetFirewallRule -PolicyStore PersistentStore -ErrorAction Stop | Where-Object {$_.DisplayName -eq " + quote(name) + "}).Count").stdout.strip())
+    count = int(ps("@(& {" + rule_query(name, "PersistentStore") + "}).Count").stdout.strip())
     require(not facts['rules'] and count == 0, 'FIREWALL_CLEANUP_NOT_CONFIRMED')
 
 
@@ -138,6 +143,23 @@ def restore_timezone(evidence, zone):
     actual = ps('(Get-TimeZone).Id').stdout.strip()
     evidence.data['timezone_after_cleanup'] = actual
     require(actual == zone, 'TIMEZONE_RESTORE_NOT_CONFIRMED')
+
+
+VMIC_PATH = r'HKLM:\SYSTEM\CurrentControlSet\Services\W32Time\TimeProviders\VMICTimeProvider'
+
+
+def vmic_enabled():
+    value = int(ps('(Get-ItemProperty -LiteralPath ' + quote(VMIC_PATH) + ' -Name Enabled -ErrorAction Stop).Enabled').stdout.strip())
+    require(value in (0, 1), 'UNEXPECTED_VM_TIME_PROVIDER_VALUE')
+    return value
+
+
+def set_vmic(evidence, value, key):
+    # This is a test precondition on a guarded disposable VM, never product policy.
+    ps('Set-ItemProperty -LiteralPath ' + quote(VMIC_PATH) + ' -Name Enabled -Value ' + str(value) + ' -ErrorAction Stop; Restart-Service W32Time -ErrorAction Stop')
+    actual = vmic_enabled()
+    evidence.data[key] = actual
+    require(actual == value, 'VM_TIME_PROVIDER_STATE_MISMATCH')
 
 
 def run():
@@ -149,6 +171,7 @@ def run():
     evidence = Evidence(root)
     evidence.data['reused_unchanged_lock_checks'] = {'run_id': 40819454895, 'scope': 'msvcrt/.NET lock and revocation; not rerun'}
     before_zone = None
+    before_vmic = None
     ticket = None
     firewall = 'CheJinClockAcceptance-' + str(uuid.uuid4())
     try:
@@ -161,6 +184,11 @@ def run():
             actual = (ROOT / name).read_bytes()
             require(original == actual, 'PRODUCT_INPUT_MISMATCH')
             evidence.data['product_files'][name] = hashlib.sha256(actual).hexdigest()
+        evidence.stage('isolate_vm_time_provider')
+        before_vmic = vmic_enabled()
+        evidence.data['vm_time_provider_before'] = before_vmic
+        evidence.save()
+        set_vmic(evidence, 0, 'vm_time_provider_during_test')
         evidence.stage('primary_unavailable_fallback')
         before_zone = ps('(Get-TimeZone).Id').stdout.strip()
         # Only an ephemeral GitHub VM: force the primary unreachable without editing product policy.
@@ -206,6 +234,8 @@ def run():
         evidence.cleanup('firewall_removed', lambda: cleanup_firewall(evidence, firewall))
         if ticket:
             evidence.cleanup('ticket_revoked', ticket.revoke)
+        if before_vmic is not None:
+            evidence.cleanup('vm_time_provider_restored', lambda: set_vmic(evidence, before_vmic, 'vm_time_provider_after_cleanup'))
         if before_zone is not None:
             evidence.cleanup('timezone_restored', lambda: restore_timezone(evidence, before_zone))
         failed = bool(evidence.data['primary_error'] or evidence.data['cleanup_errors'] or evidence.data['report_errors'])
