@@ -74,7 +74,7 @@ class Evidence:
         try:
             action()
         except BaseException as exc:
-            self.data['cleanup_errors'].append(failure(exc, 'cleanup_' + name))
+            self.data['cleanup_errors'].append(failure(exc, self.data['stage']))
             self.data['status'] = 'failed'
         else:
             self.data['checks'][name] = True
@@ -132,9 +132,13 @@ def verify_block(evidence, name, addresses, stage):
 
 
 def cleanup_firewall(evidence, name):
+    evidence.data['stage'] = 'cleanup_firewall_remove_rule'
     ps("$r=@(& {" + rule_query(name, "PersistentStore") + "}); $r | Remove-NetFirewallRule -ErrorAction Stop")
+    evidence.data['firewall_remove_command_completed'] = True
+    evidence.data['stage'] = 'cleanup_firewall_read_active'
     facts = firewall_facts(name)
     evidence.data['firewall_after_cleanup'] = facts
+    evidence.data['stage'] = 'cleanup_firewall_read_persistent'
     count = int(ps("@(& {" + rule_query(name, "PersistentStore") + "}).Count").stdout.strip())
     require(not facts['rules'] and count == 0, 'FIREWALL_CLEANUP_NOT_CONFIRMED')
 
@@ -176,8 +180,27 @@ def synchronized_fallback(facts):
             age is not None and 0 <= float(age.group(1)) <= 30)
 
 
+def observe_native_details(evidence, label):
+    """Read only on disposable CI; a diagnostic error never changes acceptance."""
+    observations = {}
+    evidence.data.setdefault('native_details', {})[label] = observations
+    commands = {
+        'configuration': r"$w=Join-Path ([Environment]::GetFolderPath('System')) 'w32tm.exe'; & $w /query /configuration /verbose; exit $LASTEXITCODE",
+        'peers': r"$w=Join-Path ([Environment]::GetFolderPath('System')) 'w32tm.exe'; & $w /query /peers /verbose; exit $LASTEXITCODE",
+        'time_service_events': r"$events=@(); try {$events=@(Get-WinEvent -FilterHashtable @{LogName='System';ProviderName='Microsoft-Windows-Time-Service';StartTime=(Get-Date).AddMinutes(-10)} -MaxEvents 30 -ErrorAction Stop)} catch {if ($_.FullyQualifiedErrorId -ne 'NoMatchingEventsFound,Microsoft.PowerShell.Commands.GetWinEventCommand') {throw}}; ConvertTo-Json -InputObject @($events | ForEach-Object {@{id=$_.Id;time=$_.TimeCreated.ToUniversalTime().ToString('o');message=$_.Message}}) -Depth 4 -Compress",
+    }
+    for name, command in commands.items():
+        try:
+            result = ps(command, timeout=15)
+            observations[name] = {'output': result.stdout[:32768], 'truncated': len(result.stdout) > 32768}
+        except Exception as exc:
+            observations[name] = {'error': failure(exc, label + '_' + name)}
+        evidence.save()
+
+
 def observe_failed_source(evidence):
     # Read-only diagnostics AFTER failure. Observations never change the verdict.
+    observe_native_details(evidence, 'failed_fallback')
     try:
         probe = ps(r"""$w=Join-Path ([Environment]::GetFolderPath('System')) 'w32tm.exe'; $text=(& $w /stripchart /computer:time.windows.com /dataonly /samples:2 | Out-String); @{exit_code=$LASTEXITCODE;output=$text} | ConvertTo-Json -Compress""", timeout=20)
         evidence.data['fallback_readonly_stripchart'] = json.loads(probe.stdout)
