@@ -13,6 +13,9 @@ sys.path.insert(0, str(ROOT / 'worker-client'))
 from chejin_worker_client.clock_sync_ticket import ClockSyncTicket
 from chejin_worker_client.windows_clock_sync import powershell_path, encoded, helper_script, synchronize_windows
 PRODUCT = '79fcf01691ff23fbabbf2f3d91d38d5a9f7af220'
+# OS source selection is not ClockSync's 30s backend-comparison UI window.
+# Run40869643554 observed native fallback only after about278s, without resync.
+NATIVE_SELECTION_SECONDS = 360
 
 class NativeFailure(RuntimeError):
     def __init__(self, code, returncode=None):
@@ -133,7 +136,7 @@ def verify_block(evidence, name, addresses, stage):
 
 def cleanup_firewall(evidence, name):
     evidence.data['stage'] = 'cleanup_firewall_remove_rule'
-    ps("$r=@(& {" + rule_query(name, "PersistentStore") + "}); $r | Remove-NetFirewallRule -ErrorAction Stop")
+    ps("$fw=New-Object -ComObject HNetCfg.FwPolicy2; $fw.Rules.Remove(" + quote(name) + ")")
     evidence.data['firewall_remove_command_completed'] = True
     evidence.data['stage'] = 'cleanup_firewall_read_active'
     facts = firewall_facts(name)
@@ -202,34 +205,6 @@ def observe_native_details(evidence, label):
         evidence.save()
 
 
-def observe_delayed_selection(evidence):
-    # Diagnosis only: the 30s acceptance has ALREADY failed and stays failed.
-    # No new resync, configuration, authorization, or retry of the helper.
-    samples = []
-    evidence.data['post_failure_selection'] = {'scope': 'readonly diagnosis, never acceptance',
-                                              'max_seconds': 360, 'samples': samples}
-    start = time.monotonic()
-    deadline = start + 360
-    while True:
-        remaining = deadline - time.monotonic()
-        if remaining <= 0:
-            break
-        try:
-            facts = native_facts(min(15, remaining))
-            samples.append({'elapsed_after_failure_seconds': time.monotonic()-start, 'facts': facts})
-            evidence.save()
-            if synchronized_fallback(facts):
-                evidence.data['post_failure_selection']['synchronized_later'] = True
-                evidence.save()
-                break
-        except Exception as exc:
-            samples.append({'elapsed_after_failure_seconds': time.monotonic()-start,
-                            'error': failure(exc, 'post_failure_selection')})
-            evidence.save()
-            break
-        time.sleep(max(0, min(30, deadline-time.monotonic())))
-
-
 def observe_failed_source(evidence):
     # Read-only diagnostics AFTER failure. Observations never change the verdict.
     observe_native_details(evidence, 'failed_fallback')
@@ -239,7 +214,6 @@ def observe_failed_source(evidence):
     except Exception as exc:
         evidence.data['fallback_readonly_stripchart'] = {'error': failure(exc, 'stripchart')}
     evidence.save()
-    observe_delayed_selection(evidence)
 
 
 def run():
@@ -258,6 +232,7 @@ def run():
         evidence.data['product_files'] = {}
         for name in ['worker-client/chejin_worker_client/clock_sync_ticket.py',
                      'worker-client/chejin_worker_client/windows_clock_sync.py',
+                     'worker-client/chejin_worker_client/clock_sync.py',
                      'worker-client/chejin_worker_client/shared_rules.py',
                      'worker-client/omniauto-rpa/apps/wechat_ai_customer_service/adapters/hook_time_rules.py']:
             original = subprocess.check_output(['git', 'show', PRODUCT + ':' + name], cwd=ROOT, timeout=15)
@@ -289,7 +264,13 @@ def run():
         samples = []
         evidence.data['native_samples'] = samples
         observed_start = time.monotonic()
-        deadline = observed_start + 30
+        deadline = observed_start + NATIVE_SELECTION_SECONDS
+        evidence.data['verification_scope'] = {
+            'native_selection_max_seconds': NATIVE_SELECTION_SECONDS,
+            'client_confirmation_seconds': 30,
+            'client_confirmation_basis': 'Unchanged ClockSync._verify requires fresh backend comparison and reference, not native source text. Existing reviewed unconfirmed/pause controls reused.',
+            'previous_failed_runs_preserved': [40867497328, 40868625711, 40869643554],
+        }
         while True:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
@@ -303,8 +284,10 @@ def run():
             if time.monotonic() > deadline:
                 raise NativeFailure('FALLBACK_NOT_SYNCHRONIZED')
             if synchronized_fallback(facts):
+                evidence.data['native_convergence_seconds'] = time.monotonic() - observed_start
+                evidence.save()
                 break
-            if time.monotonic() - observed_start >= 30:
+            if time.monotonic() - observed_start >= NATIVE_SELECTION_SECONDS:
                 raise NativeFailure('FALLBACK_NOT_SYNCHRONIZED')
             time.sleep(max(0, min(5, deadline - time.monotonic())))
         after_addresses = primary_addresses()
@@ -316,6 +299,12 @@ def run():
         evidence.stage('all_sources_unavailable')
         ps('Set-NetFirewallRule -Name ' + quote(firewall) + ' -RemoteAddress Any -ErrorAction Stop')
         verify_block(evidence, firewall, ['Any'], 'all_sources')
+        # A fresh W32Time session prevents the successful prior case's cached
+        # samples from masquerading as newly available time during an outage.
+        ps('Restart-Service W32Time -ErrorAction Stop')
+        evidence.data['all_unavailable_initial_facts'] = native_facts(15)
+        evidence.save()
+        require(not synchronized_fallback(evidence.data['all_unavailable_initial_facts']), 'OUTAGE_FIXTURE_RETAINED_FALLBACK')
         op2 = 'clock-sync-' + str(uuid.uuid4())
         ticket.authorize(op2)
         result2 = synchronize_windows(op2, ticket.path)

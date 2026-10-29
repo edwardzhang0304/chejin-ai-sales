@@ -9,7 +9,7 @@ permissions:
 jobs:
   native-clock:
     runs-on: windows-2022
-    timeout-minutes: 12  # Includes bounded post-failure diagnosis; acceptance stays 30 seconds.
+    timeout-minutes: 12  # Native source selection <=360s; product confirmation window unchanged.
     steps:
       - name: Preserve sealed source bytes on disposable runner
         run: git config --global core.autocrlf false
