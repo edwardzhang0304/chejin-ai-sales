@@ -162,6 +162,29 @@ def set_vmic(evidence, value, key):
     require(actual == value, 'VM_TIME_PROVIDER_STATE_MISMATCH')
 
 
+def observe_failed_source(evidence):
+    # Read-only diagnostics AFTER failure. Observations never change the verdict.
+    evidence.data['post_failure_observations'] = []
+    started = time.monotonic()
+    for delay in (0, 15, 30):
+        remaining = started + delay - time.monotonic()
+        if remaining > 0:
+            time.sleep(remaining)
+        row = {'elapsed_seconds': time.monotonic() - started}
+        try:
+            row['facts'] = json.loads(ps(r"""$w=Join-Path ([Environment]::GetFolderPath('System')) 'w32tm.exe'; $source=(& $w /query /source | Out-String).Trim(); $sourceExit=$LASTEXITCODE; $status=(& $w /query /status /verbose | Out-String); $statusExit=$LASTEXITCODE; $peers=(& $w /query /peers /verbose | Out-String); @{source=$source;source_exit=$sourceExit;status=$status;status_exit=$statusExit;peers=$peers;peers_exit=$LASTEXITCODE} | ConvertTo-Json -Compress""").stdout)
+        except Exception as exc:
+            row['error'] = failure(exc, 'post_failure_observation')
+        evidence.data['post_failure_observations'].append(row)
+        evidence.save()
+    try:
+        probe = ps(r"""$w=Join-Path ([Environment]::GetFolderPath('System')) 'w32tm.exe'; $text=(& $w /stripchart /computer:time.windows.com /dataonly /samples:2 | Out-String); @{exit_code=$LASTEXITCODE;output=$text} | ConvertTo-Json -Compress""", timeout=20)
+        evidence.data['fallback_readonly_stripchart'] = json.loads(probe.stdout)
+    except Exception as exc:
+        evidence.data['fallback_readonly_stripchart'] = {'error': failure(exc, 'stripchart')}
+    evidence.save()
+
+
 def run():
     require(sys.platform == 'win32' and os.environ.get('GITHUB_ACTIONS') == 'true', 'GITHUB_WINDOWS_ONLY')
     require(os.environ.get('RUNNER_ENVIRONMENT') == 'github-hosted', 'HOSTED_EPHEMERAL_RUNNER_ONLY')
@@ -230,6 +253,11 @@ def run():
         evidence.passed('all_sources_unavailable_not_success')
     except BaseException as exc:
         evidence.data['primary_error'] = failure(exc, evidence.data['stage'])
+        if isinstance(exc, NativeFailure) and exc.code == 'FALLBACK_SOURCE_NOT_SELECTED':
+            try:
+                observe_failed_source(evidence)
+            except Exception as diagnostic_error:
+                evidence.data['post_failure_diagnostic_error'] = failure(diagnostic_error, 'post_failure_diagnostics')
     finally:
         evidence.cleanup('firewall_removed', lambda: cleanup_firewall(evidence, firewall))
         if ticket:
