@@ -44,6 +44,23 @@ http://localhost:8000/api/sales
 http://localhost:8000/api/operation-logs
 ```
 
+## 飞鱼线索机器接入
+
+`POST /api/integrations/feiyu/leads` 只接受已映射的 `customer_name`、`phones`，以及可选的
+`wechats`、`emails`、`remark`、`custom_fields`；其他字段会被拒绝。`custom_fields.feiyu.id`
+（或兼容别名 `custom_fields.feiyu.clue_id`）为必填线索编号；缺失时返回
+`FEIYU_CLUE_ID_REQUIRED`，不会进入线索创建流程。请求头使用
+`X-Feiyu-Forward-Secret`。运行环境通过 `FEIYU_FORWARD_SECRET` 配置专用共享密钥；
+应在部署环境外生成并安全分发，不要提交密钥值。此入口调用原生线索创建服务，沿用手机号去重、
+销售轮询分配和后续任务行为；重复手机号保留原线索及销售归属，并返回原生 409。
+
+`FEIYU_ACCOUNT_ID` 默认是 `default`，必须包含在后端 `FEIYU_ACCOUNT_IDS` 允许列表中；自定义账号也必须加入该列表。共享转发密钥用于识别转发客户端，账号 ID 仅作幂等命名空间，不构成强认证边界。
+
+同一账号、同一线索编号、资料完全相同的重试会重放原响应，不重复建档或追加备注。联系方式变化返回
+`FEIYU_CLUE_IDENTITY_CONFLICT`；联系方式未变但客户资料发生变化时返回
+`FEIYU_CLUE_UPDATE_REQUIRES_REVIEW`，并明确 `update_applied=false`、`manual_review_required=true`，由人工核对，不会静默覆盖或丢弃。
+新建飞鱼客户的来源显示为“飞鱼线索”；已有客户的首次来源保持不变。
+
 ## 本地 Python 启动
 
 ```bash

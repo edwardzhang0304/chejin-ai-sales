@@ -8,6 +8,7 @@ from app.models.c3 import (
     ReplyActionVehicleFact,
     SentAck,
 )
+from app.models.feiyu import FeiyuLeadReceipt
 from app.models.lead import (
     AssignmentRoundRobinState,
     Lead,
@@ -41,6 +42,7 @@ __all__ = [
     "AdminSession",
     "AssignmentRoundRobinState",
     "ExportTask",
+    "FeiyuLeadReceipt",
     "Conversation",
     "Lead",
     "LeadAssignment",

@@ -45,6 +45,9 @@ class Settings(BaseSettings):
     admin_login_block_base_seconds: int = 30
     admin_login_block_max_seconds: int = 15 * 60
     internal_service_token: str = "dev-only-internal-service-token-change-before-production"
+    feiyu_forward_secret: str | None = None
+    feiyu_account_id: str = "default"
+    feiyu_account_ids: str = "default"
     c3_ai_adapter_mode: str = "real"
     c3_reply_action_ttl_seconds: int = 300
     c3_omniauto_root: str = "/app/omniauto-rpa"
