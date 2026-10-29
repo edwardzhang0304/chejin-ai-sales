@@ -952,6 +952,6 @@
   "time_rules": {
     "version": 1,
     "rules_source": "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/adapters/hook_time_rules.py",
-    "rules_source_sha256": "0821b4038249f6b87bc6ee61b7031a93319117d6157d32f9dafe46f2a7758ce9"
+    "rules_source_sha256": "6541618bd9222e30850e44bfe108649b283364f9927b30ee8dcae741cfd7157d"
   }
 }

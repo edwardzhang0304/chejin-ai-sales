@@ -179,8 +179,12 @@ class HookIdentityClient:
             if receipt is None: self.clock_diagnostics.failed()
             else: self.clock_diagnostics.observe(receipt)
         except Exception as exc:
-            from .failure_evidence import record_capture_failure
-            record_capture_failure('heartbeat_clock_diagnostics', exc)
+            # Diagnostics must not delay an authenticated receipt or replace
+            # the original network exception, including its own error path.
+            try:
+                self.clock_diagnostics.capture_failure(exc)
+            except Exception:
+                pass  # Best effort under allocation/thread failure; no disk I/O here.
 
     def _heartbeat(self, credentials, identity, state):
         # No shared Session, inherited Flow header, mutable lease map, retry or redirect.

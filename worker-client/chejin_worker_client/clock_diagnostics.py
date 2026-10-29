@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 import copy
 import json
+import hashlib
 import math
 import os
 import sys
@@ -120,57 +121,154 @@ class ClockDiagnostics:
         self.monotonic, self.zone_reader = monotonic, zone_reader
         self.session = str(uuid.uuid4())
         self._lock, self._write_lock = threading.Lock(), threading.Lock()
+        self._pending_write = None
+        self._writer_running = False
+        self._rotation_next = 3
+        self._previous_files = []
+        self._omitted_checks = 0
+        self._coalesced_writes = 0
+        self._accepting = True
+        self._write_status = "pending"
+        self._idle = threading.Event()
+        self._idle.set()
         self._latest = {}
         self._history = []
         self._last_saved = float('-inf')
         self._signature = None
         self._received = self.monotonic()
         self._publish({'comparison_status': 'pending', 'reason': 'startup_waiting_for_heartbeat',
-                       'timezone': zone_reader(), 'backend_reference': {'status': 'unconfirmed'}}, force=True)
-        self._startup = copy.deepcopy(self._latest)
+                       'timezone': self._read_timezone(), 'backend_reference': {'status': 'unconfirmed'}}, force=True)
+
+    def _read_timezone(self):
+        try:
+            return self.zone_reader()
+        except Exception:
+            return {'beijing_timezone': None, 'status': 'unconfirmed'}
 
     def observe(self, receipt):
-        self._publish(compare_clock(receipt, self.zone_reader()))
+        self._publish(compare_clock(receipt, self._read_timezone()))
 
     def failed(self):
         self._publish({'comparison_status': 'unconfirmed', 'reason': 'heartbeat_failed',
-            'timezone': self.zone_reader(), 'backend_reference': {'status': 'unconfirmed'}})
+            'timezone': self._read_timezone(), 'backend_reference': {'status': 'unconfirmed'}})
+
+    def capture_failure(self, exc):
+        self._publish({'comparison_status': 'unconfirmed',
+            'reason': 'diagnostic_observation_failed', 'exception_type': type(exc).__name__,
+            'timezone': {'beijing_timezone': None},
+            'backend_reference': {'status': 'unconfirmed'}}, force=True)
 
     def _publish(self, value, *, force=False):
-        # Serialize evidence writers without putting file I/O under the GUI lock.
-        with self._write_lock:
-            self._publish_serialized(value, force=force)
-
-    def _publish_serialized(self, value, *, force=False):
         now = self.monotonic()
         value = {**value, 'observed_at_utc': datetime.now(timezone.utc).isoformat(),
                  'observed_monotonic': now, 'business_timezone': 'Asia/Shanghai'}
         signature = (value.get('comparison_status'), value.get('reason'),
                      value['timezone'].get('beijing_timezone'), value['backend_reference'].get('status'))
         with self._lock:
+            if not self._accepting:
+                return
             self._latest, self._received = value, now
+            if not hasattr(self, '_startup'):
+                self._startup = copy.deepcopy(value)
             save = force or signature != self._signature or now-self._last_saved >= 60
             if not save: return
+            self._omitted_checks += int(len(self._history) == 32)
             self._history = (self._history+[value])[-32:]
             self._last_saved, self._signature = now, signature
             output = {'schema_version': 1, 'session_id': self.session,
                       'startup': getattr(self, '_startup', value), 'latest': value,
                       'recent_checks': self._history, 'changes_system_clock': False,
-                      'permission_source': 'existing_authenticated_backend_monotonic_clock'}
-        # Only startup/heartbeat threads write; GUI snapshot never performs I/O.
+                      'permission_source': 'existing_authenticated_backend_monotonic_clock',
+                      'persistence': {'mode': 'async_bounded', 'history_limit': 32,
+                          'omitted_checks': self._omitted_checks, 'prior_session_limit': 3,
+                          'crash_limit': 'unflushed_observations_may_be_missing'}}
+            self._schedule_write(output)
+
+    def _schedule_write(self, output):
+        # One pending snapshot contains the full bounded history; a slow disk
+        # cannot grow a queue or hold the heartbeat/GUI thread. Called in publish
+        # order under _lock; disk I/O never holds either lock.
+        with self._write_lock:
+            self._coalesced_writes += int(self._pending_write is not None)
+            output["persistence"]["coalesced_snapshots"] = self._coalesced_writes
+            self._pending_write = output
+            self._idle.clear()
+            if self._writer_running:
+                return
+            self._writer_running = True
+            writer = threading.Thread(target=self._drain_writes,
+                                      name='clock-evidence', daemon=True)
+            try:
+                writer.start()
+            except RuntimeError:
+                self._writer_running = False
+                self._idle.set()
+                self._write_status = 'writer_unavailable'
+
+    def _drain_writes(self):
+        while True:
+            with self._write_lock:
+                output = self._pending_write
+                self._pending_write = None
+                if output is None:
+                    self._writer_running = False
+                    self._idle.set()
+                    return
+            self._write_output(output)
+
+    def flush(self, timeout=2):
+        """Bounded test/shutdown aid; never called from heartbeat or GUI paths."""
+        return self._idle.wait(timeout)
+
+    def _write_output(self, output):
         try:
             self.path.parent.mkdir(parents=True, exist_ok=True)
+            while self._rotation_next:
+                index = self._rotation_next
+                source = self.path if index == 1 else self.path.with_name(
+                    f'clock-check.previous-{index-1}.json')
+                destination = self.path.with_name(f'clock-check.previous-{index}.json')
+                if source.exists():
+                    entry = {'file': destination.name}
+                    if source.stat().st_size <= 65536:
+                        raw = source.read_bytes()
+                        entry['sha256'] = hashlib.sha256(raw).hexdigest()
+                        try:
+                            json.loads(raw)
+                            entry['status'] = 'preserved'
+                        except (ValueError, UnicodeError):
+                            entry['status'] = 'invalid_json_preserved'
+                    else:
+                        entry['status'] = 'preserved_validation_size_limit'
+                    os.replace(source, destination)
+                    self._previous_files.append(entry)
+                self._rotation_next -= 1  # resume a failed rotation without shifting twice
+            output['persistence']['previous_files'] = self._previous_files
             temporary = self.path.with_suffix('.tmp')
             temporary.write_text(json.dumps(output, ensure_ascii=False, allow_nan=False), encoding='utf-8')
             os.replace(temporary, self.path)
-        except (OSError, ValueError) as exc:
+            with self._lock:
+                self._write_status = 'written'
+        except Exception as exc:
+            with self._lock:
+                self._write_status = 'failed'
             from .failure_evidence import record_capture_failure
             record_capture_failure('clock_diagnostics', exc)
+
+    def stop(self, timeout=2):
+        with self._lock:
+            self._accepting = False
+        drained = self.flush(timeout)
+        if not drained:
+            with self._lock:
+                self._write_status = 'drain_timeout'
+        return drained
 
     def snapshot(self):
         with self._lock:
             value = copy.deepcopy(self._latest)
             age = self.monotonic()-self._received
+            value["evidence_write_status"] = self._write_status
         value['sample_age_seconds'] = age
         if not 0 <= age <= MAX_SAMPLE_AGE_SECONDS:
             value['comparison_status'] = 'stale'

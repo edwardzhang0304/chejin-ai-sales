@@ -67,6 +67,7 @@ def test_desktop_zip_contains_startup_failure_recovery_and_latest_without_touchi
     monitor.failed()
     tick[0] = 10.05; monitor.observe(receipt(16))
     tick[0] = 70.05; monitor.observe(receipt())
+    assert monitor.flush()
     output = export_bundle(root, tmp_path/'evidence.zip')
     with zipfile.ZipFile(output) as archive:
         result = json.loads(archive.read('logs/runtime/clock-check.json'))
@@ -80,12 +81,22 @@ def test_desktop_zip_contains_startup_failure_recovery_and_latest_without_touchi
     assert monitor.snapshot()['backend_reference']['status'] == 'unconfirmed'
     new = ClockDiagnostics(root, monotonic=lambda:tick[0], zone_reader=lambda:ZONE)
     assert new.snapshot()['comparison_status'] == 'pending'  # no old success on restart
+    assert new.flush()
+    restarted_zip = export_bundle(root, tmp_path/'restarted.zip')
+    with zipfile.ZipFile(restarted_zip) as archive:
+        previous = json.loads(archive.read('logs/runtime/clock-check.previous-1.json'))
+        current = json.loads(archive.read('logs/runtime/clock-check.json'))
+    assert previous['session_id'] == monitor.session
+    assert 'skewed' in [r['comparison_status'] for r in previous['recent_checks']]
+    assert current['session_id'] == new.session and current['latest']['comparison_status'] == 'pending'
+    assert journal.read_text() == '{"state":"unknown"}'
 
 
 def test_evidence_is_bounded_and_ui_snapshot_does_not_read_disk(tmp_path, monkeypatch):
     tick = [0]; monitor = ClockDiagnostics(tmp_path, monotonic=lambda:tick[0], zone_reader=lambda:ZONE)
     for i in range(100):
         tick[0] += 61; monitor.observe(receipt(i % 2 * 10))
+    assert monitor.flush()
     value = json.loads(monitor.path.read_text())
     assert len(value['recent_checks']) == 32
     assert monitor.path.stat().st_size < 65536
@@ -109,11 +120,11 @@ def test_real_heartbeat_feeds_monitor_and_failures_do_not_change_error_contract(
     assert monitor.snapshot()['reason'] == 'heartbeat_failed'
     def diagnostic_failure(*args): raise OSError('synthetic')
     monkeypatch.setattr(monitor, 'observe', diagnostic_failure)
-    failures=[]
-    monkeypatch.setattr('chejin_worker_client.failure_evidence.record_capture_failure',lambda *a,**kw:failures.append(a))
     monkeypatch.setattr(HookIdentityClient, '_heartbeat',lambda *args:sample)
     assert client.heartbeat(None,None,None) is sample
-    assert len(failures)==1
+    assert monitor.flush()
+    assert monitor.snapshot()['reason']=='diagnostic_observation_failed'
+    assert json.loads(monitor.path.read_text())['latest']['exception_type']=='OSError'
 
 
 def test_hook_display_always_beijing_even_when_computer_timezone_is_utc(monkeypatch):
@@ -132,3 +143,150 @@ def test_hook_display_always_beijing_even_when_computer_timezone_is_utc(monkeypa
         if old is None: __import__('os').environ.pop('TZ',None)
         else: __import__('os').environ['TZ']=old
         time.tzset()
+
+
+def test_slow_evidence_writer_never_delays_heartbeat_and_queue_is_bounded(tmp_path, monkeypatch):
+    import threading
+    from chejin_worker_client.hook_backend import HookIdentityClient
+    entered, release, returned = threading.Event(), threading.Event(), threading.Event()
+    original = ClockDiagnostics._write_output
+    def slow(self, output):
+        entered.set()
+        release.wait(5)
+        original(self, output)
+    monkeypatch.setattr(ClockDiagnostics, '_write_output', slow)
+    tick = [0]
+    monitor = ClockDiagnostics(tmp_path, monotonic=lambda:tick[0], zone_reader=lambda:ZONE)
+    assert entered.wait(1)
+    client = HookIdentityClient('http://127.0.0.1/api', 2, 65536, monitor)
+    sample = receipt()
+    monkeypatch.setattr(HookIdentityClient, '_heartbeat', lambda *args:sample)
+    results=[]
+    def heartbeat():
+        results.append(client.heartbeat(None,None,None))
+        returned.set()
+    thread=threading.Thread(target=heartbeat)
+    thread.start()
+    try:
+        assert returned.wait(.5), 'disk write held authenticated heartbeat'
+        assert results == [sample]
+        from chejin_worker_client.api import ApiError
+        error=ApiError('HOOK_BACKEND_NETWORK_FAILED','synthetic-offline',0)
+        def failed(*args): raise error
+        monkeypatch.setattr(HookIdentityClient, '_heartbeat', failed)
+        failures=[]
+        def failed_heartbeat():
+            try: client.heartbeat(None,None,None)
+            except ApiError as exc: failures.append(exc)
+        failed_thread=threading.Thread(target=failed_heartbeat)
+        failed_thread.start(); failed_thread.join(.5)
+        assert failures == [error], 'disk write delayed original network error'
+        assert monitor.snapshot()['reason']=='heartbeat_failed'
+        business=HookBackendClock(monotonic=lambda:10.05)
+        business.observe(results[0])
+        assert abs(business.now().timestamp()-STAMP.timestamp()) < .01
+        for i in range(100):
+            tick[0] += 61
+            monitor.observe(receipt(i % 2 * 16))
+        assert monitor.snapshot()['comparison_status']=='skewed'
+        assert len(monitor._pending_write['recent_checks']) == 32
+        assert monitor._pending_write['persistence']['omitted_checks'] > 0
+        assert monitor._pending_write['persistence']['coalesced_snapshots'] > 0
+        assert not monitor.stop(timeout=0)
+        assert monitor.snapshot()['evidence_write_status']=='drain_timeout'
+    finally:
+        release.set(); thread.join(2)
+        assert monitor.flush()
+    saved=json.loads(monitor.path.read_text())
+    assert saved['latest']['comparison_status']=='skewed'
+    assert saved['startup']['comparison_status']=='pending'
+
+
+def test_restart_evidence_retention_is_bounded(tmp_path):
+    sessions=[]
+    for _ in range(6):
+        monitor=ClockDiagnostics(tmp_path,zone_reader=lambda:ZONE)
+        monitor.observe(receipt(16)); assert monitor.flush()
+        sessions.append(monitor.session)
+    files=list(monitor.path.parent.glob('clock-check*.json'))
+    assert len(files)==4
+    assert {json.loads(f.read_text())['session_id'] for f in files} == set(sessions[-4:])
+
+
+def test_bad_previous_json_preserved_with_hash_and_export_gap(tmp_path):
+    import hashlib
+    root=tmp_path/'home'
+    path=root/'artifacts/runtime/clock-check.json'
+    path.parent.mkdir(parents=True)
+    raw=b'{corrupt clock evidence'
+    path.write_bytes(raw)
+    monitor=ClockDiagnostics(root,zone_reader=lambda:ZONE)
+    assert monitor.flush()
+    assert path.with_name('clock-check.previous-1.json').read_bytes()==raw
+    output=export_bundle(root,tmp_path/'evidence.zip')
+    with zipfile.ZipFile(output) as archive:
+        value=json.loads(archive.read('logs/runtime/clock-check.json'))
+    prior=value['persistence']['previous_files']
+    assert prior==[{'file':'clock-check.previous-1.json','status':'invalid_json_preserved',
+                   'sha256':hashlib.sha256(raw).hexdigest()}]
+
+
+def test_failed_rotation_preserves_previous_and_retry_recovers(tmp_path, monkeypatch):
+    import os,hashlib
+    original=ClockDiagnostics(tmp_path,zone_reader=lambda:ZONE)
+    original.observe(receipt(16)); assert original.flush()
+    raw=original.path.read_bytes(); digest=hashlib.sha256(raw).hexdigest()
+    real_replace=os.replace; failures=[]
+    blocked=[True]
+    def replace(source,destination):
+        if blocked[0] and source==original.path: raise OSError('synthetic write failure')
+        return real_replace(source,destination)
+    monkeypatch.setattr('chejin_worker_client.clock_diagnostics.os.replace',replace)
+    monkeypatch.setattr('chejin_worker_client.failure_evidence.record_capture_failure',lambda *a:failures.append(a))
+    tick=[0]
+    monitor=ClockDiagnostics(tmp_path,monotonic=lambda:tick[0],zone_reader=lambda:ZONE)
+    assert monitor.flush()
+    assert failures and monitor.snapshot()['evidence_write_status']=='failed'
+    assert hashlib.sha256(monitor.path.read_bytes()).hexdigest()==digest
+    blocked[0]=False; tick[0]=61; monitor.observe(receipt()); assert monitor.flush()
+    assert monitor.snapshot()['evidence_write_status']=='written'
+    assert monitor.path.with_name('clock-check.previous-1.json').read_bytes()==raw
+
+
+def test_bad_timezone_read_does_not_prevent_monitor_start(tmp_path):
+    def failed(): raise OSError('synthetic registry failure')
+    monitor=ClockDiagnostics(tmp_path,zone_reader=failed)
+    monitor.observe(receipt()); assert monitor.flush()
+    assert monitor.snapshot()['timezone']=={'beijing_timezone':None,'status':'unconfirmed'}
+    assert not monitor.snapshot()['notice']
+
+
+def test_failed_write_reports_gap_without_replacing_last_good_file(tmp_path, monkeypatch):
+    from pathlib import Path
+    monitor=ClockDiagnostics(tmp_path,zone_reader=lambda:ZONE)
+    assert monitor.flush(); before=monitor.path.read_bytes()
+    real_write=Path.write_text; failures=[]
+    def failed_write(path,*args,**kwargs):
+        if path==monitor.path.with_suffix('.tmp'): raise OSError('synthetic disk full')
+        return real_write(path,*args,**kwargs)
+    monkeypatch.setattr(Path,'write_text',failed_write)
+    monkeypatch.setattr('chejin_worker_client.failure_evidence.record_capture_failure',lambda *a:failures.append(a))
+    monitor.observe(receipt(16)); assert monitor.flush()
+    assert monitor.path.read_bytes()==before
+    assert monitor.snapshot()['evidence_write_status']=='failed' and failures
+
+
+def test_update_close_preserves_existing_writer_gate_and_drains_diagnostics(tmp_path):
+    import time
+    from chejin_worker_client.hook_worker_services import HookWorkerServices
+    monitor=ClockDiagnostics(tmp_path,zone_reader=lambda:ZONE)
+    calls=[]
+    service=SimpleNamespace(connection=SimpleNamespace(
+        backend=SimpleNamespace(clock_diagnostics=monitor),close=lambda **kw:calls.append(kw)))
+    HookWorkerServices.close(service,deadline=time.monotonic()+2)
+    assert calls and monitor.flush(0) and not monitor._accepting
+    assert service._credentials is None
+    # A still-running diagnostic writer prevents taking update ownership.
+    service.connection.backend.clock_diagnostics=SimpleNamespace(stop=lambda **kw:False)
+    with pytest.raises(RuntimeError,match='UPDATE_WRITERS_NOT_STOPPED'):
+        HookWorkerServices.close(service,deadline=time.monotonic()+.01)

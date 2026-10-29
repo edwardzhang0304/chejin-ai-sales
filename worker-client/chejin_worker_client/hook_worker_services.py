@@ -13,6 +13,7 @@ import math
 import re
 import sqlite3
 import threading
+import time
 import uuid
 from . import hook_read_retry
 from typing import Callable
@@ -460,6 +461,11 @@ class HookWorkerServices:
 
     def close(self, *, deadline: float | None = None) -> None:
         self.connection.close(deadline=deadline)  # Wait for the actual callback SQLite commit.
+        diagnostics = getattr(getattr(self.connection, "backend", None), "clock_diagnostics", None)
+        if diagnostics is not None:
+            budget = 2 if deadline is None else max(0, deadline-time.monotonic())
+            if not diagnostics.stop(timeout=budget) and deadline is not None:
+                raise RuntimeError("UPDATE_WRITERS_NOT_STOPPED")
         self._credentials = None
         self._failure = None
         self._startup_position_payload = None
