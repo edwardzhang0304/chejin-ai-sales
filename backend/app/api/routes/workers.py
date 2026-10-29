@@ -119,6 +119,9 @@ def heartbeat_worker(
         data = worker_service.heartbeat_worker(db, worker_id, x_worker_token, payload,
             actor=worker_actor_context(request, worker_id=worker_id, worker_name="客户端操作"))
         db.commit()
+        reference = getattr(request.app.state, "clock_reference", None)
+        if reference is not None:
+            data["clock_reference"] = reference.snapshot()
         return ok(data)
     except Exception:
         db.rollback()

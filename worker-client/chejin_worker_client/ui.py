@@ -87,7 +87,8 @@ def _format_time(value: str | None, *, backend_utc: bool = False) -> str:
         dt = datetime.fromisoformat(normalized)
         if backend_utc:
             if dt.tzinfo is None:dt=dt.replace(tzinfo=timezone.utc)
-            dt=dt.astimezone()
+            from chejin_worker_client.shared_rules import hook_time_rules
+            dt=dt.astimezone(hook_time_rules.BEIJING_TIMEZONE)
         return dt.strftime("%H:%M:%S")
     except ValueError:
         return value[-8:] if len(value) >= 8 else value

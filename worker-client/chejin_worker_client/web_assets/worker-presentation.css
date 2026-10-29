@@ -834,3 +834,18 @@
     animation: none;
   }
 }
+
+/* Clock warnings occupy their own row; never cover timeline or start/pause. */
+.cw-window .cw-clock-warning {
+  flex: 0 0 auto;
+  padding: 10px 20px;
+  color: #815b1b;
+  background: #fff8e8;
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+.cw-window[data-clock-warning="true"] { display: flex; flex-direction: column; }
+.cw-window[data-clock-warning="true"] > .cw-client-bar,
+.cw-window[data-clock-warning="true"] > .cw-titlebar { flex-shrink: 0; }
+.cw-window[data-clock-warning="true"] > .cw-app-body { flex: 1; height: auto; min-height: 0; }

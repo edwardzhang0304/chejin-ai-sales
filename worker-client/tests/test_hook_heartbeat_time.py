@@ -44,3 +44,16 @@ def test_real_worker_model_only_hook_heartbeat_gets_utc_normalization(local_shan
    assert w._state()['model']['status']['lastHeartbeat']=='09:19:09'
    w.runner.hook_services=None
    assert w._state()['model']['status']['lastHeartbeat']=='01:19:09'
+
+
+@pytest.mark.parametrize('name',['web_ui.py','ui.py'])
+def test_hook_heartbeat_is_beijing_even_if_os_zone_is_utc(name,monkeypatch):
+ if not hasattr(time,'tzset'):pytest.skip('tzset unavailable')
+ old=os.environ.get('TZ');monkeypatch.setenv('TZ','UTC');time.tzset()
+ try:
+  assert formatter(name)('2026-10-13T01:19:09Z',backend_utc=True)=='09:19:09'
+  assert formatter(name)('2026-10-13T01:19:09')=='01:19:09'
+ finally:
+  if old is None:os.environ.pop('TZ',None)
+  else:os.environ['TZ']=old
+  time.tzset()

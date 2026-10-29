@@ -149,13 +149,15 @@ def _deliver(runner,event):
 
 def emit_progress(runner, context, phase, state='current', note=None, *, occurred_at=None, description=None, affected_group=None):
     if runner is None or phase not in PHASES or state not in {'current','done','waiting','error'}: return
-    shown_time=datetime.now().strftime('%H:%M:%S')
+    from .shared_rules import hook_time_rules
+    beijing = hook_time_rules.BEIJING_TIMEZONE
+    shown_time=datetime.now(beijing).strftime('%H:%M:%S')
     if occurred_at is not None:
         try:
             value=datetime.fromisoformat(str(occurred_at).replace('Z','+00:00'))
             if value.tzinfo is None:value=value.replace(tzinfo=timezone.utc)
-            value=value.astimezone()
-            shown_time=value.strftime('%H:%M:%S' if value.date()==datetime.now().date() else '%m-%d %H:%M')
+            value=value.astimezone(beijing)
+            shown_time=value.strftime('%H:%M:%S' if value.date()==datetime.now(beijing).date() else '%m-%d %H:%M')
         except (TypeError,ValueError,OverflowError):shown_time=''
     event={'event':'hook_progress','context':str(context),'phase':phase,'state':state,
            'time':shown_time,'note':note if note in NOTES else None}

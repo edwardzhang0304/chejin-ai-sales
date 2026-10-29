@@ -1005,12 +1005,15 @@ function renderScreen(props: WorkerClientBaselineProps) {
 
 export function WorkerClientBaseline(props: WorkerClientBaselineProps) {
   return (
-    <section className="cw-window app-window" data-active-screen={props.screen} aria-label="车金 Worker 客户端">
+    <section className="cw-window app-window" data-active-screen={props.screen} data-clock-warning={Boolean(props.model.startupCheck?.clockCheck?.notice)} aria-label="车金 Worker 客户端">
       <Header screen={props.screen} onScreenChange={props.onScreenChange} onBack={props.onBack} />
       {props.notice ? (
         <div className="cw-toast cw-toast-success" role="status" aria-live="polite">
           {props.notice}
         </div>
+      ) : null}
+      {props.model.startupCheck?.clockCheck?.notice ? (
+        <div className="cw-clock-warning" role="status">{props.model.startupCheck.clockCheck.notice}</div>
       ) : null}
       <div className="cw-app-body">
         {renderScreen(props)}

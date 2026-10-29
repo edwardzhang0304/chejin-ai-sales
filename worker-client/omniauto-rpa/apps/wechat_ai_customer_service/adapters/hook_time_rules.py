@@ -1,7 +1,15 @@
 """Pure rules for local physical-call evidence; never substitute it for lease time."""
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 import math
 
+
+# Diagnostic policy, independent of physical-send authorization tolerances.
+CLOCK_WARNING_SECONDS = 5
+CLOCK_DIAGNOSTIC_MAX_RTT = 1
+BEIJING_UTC_OFFSET_SECONDS = 28800
+BEIJING_TIMEZONE = timezone(timedelta(seconds=BEIJING_UTC_OFFSET_SECONDS), "Asia/Shanghai")
+ALIYUN_REFERENCE_MAX_AGE = 300
+ALIYUN_REFERENCE_HOSTS = frozenset({"ntp.aliyun.com", "ntp.cloud.aliyuncs.com"})
 
 def utc(value):
     if not isinstance(value, str): raise ValueError('HOOK_SEND_LOCAL_CLOCK_INVALID')

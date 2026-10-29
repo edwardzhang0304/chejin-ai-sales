@@ -433,6 +433,9 @@ class HookWorkerServices:
         if self._display_fault:
             value['faultTitle'] = self._display_fault['title']
             value['faultMessage'] = self._display_fault['message']
+        diagnostics = getattr(getattr(self.connection, "backend", None), "clock_diagnostics", None)
+        if diagnostics is not None:
+            value["clockCheck"] = diagnostics.snapshot()
         return value
 
     @staticmethod

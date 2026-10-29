@@ -37,7 +37,9 @@ def create_hook_services(api):
     deployment=load_hook_deployment()
     private=CONFIG.app_dir/'transactions'/'hook'
     gateway=HookGateway(deployment,timeout_seconds=60,max_response_bytes=2*1024*1024,lock_timeout_seconds=20)
-    backend=HookIdentityClient(api.base_url,CONFIG.api_timeout_seconds,2*1024*1024)
+    from .clock_diagnostics import ClockDiagnostics
+    backend=HookIdentityClient(api.base_url,CONFIG.api_timeout_seconds,2*1024*1024,
+        clock_diagnostics=ClockDiagnostics(CONFIG.app_dir))
     connection=HookConnectionManager(gateway,backend,
         NativeInbox(max_body_bytes=2*1024*1024,max_inbox_bytes=128*1024*1024),
         receiver_timeout_seconds=10,on_persistence_failure=lambda:None)

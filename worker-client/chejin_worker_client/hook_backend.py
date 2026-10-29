@@ -124,6 +124,10 @@ class HookAccountReceipt:
     response_received_monotonic: float | None = None
     worker_profile_json: str | None = field(default=None, repr=False)
 
+    request_started_wall: float | None = None
+    response_received_wall: float | None = None
+    clock_reference: dict | None = field(default=None, repr=False)
+
     def worker_profile(self):
         from .models import WorkerProfile
         if self.worker_profile_json is None:
@@ -149,6 +153,7 @@ class HookIdentityClient:
     base_url: str
     timeout_seconds: float
     max_response_bytes: int
+    clock_diagnostics: object | None = field(default=None, repr=False, compare=False)
 
     def __post_init__(self) -> None:
         url = urlsplit(self.base_url)
@@ -160,6 +165,24 @@ class HookIdentityClient:
 
     def heartbeat(self, credentials: HookWorkerCredentials, identity: HookHeartbeatIdentity,
                   state: HookHeartbeatState) -> HookAccountReceipt:
+        try:
+            receipt = self._heartbeat(credentials, identity, state)
+        except Exception:
+            self._record_clock(None)
+            raise
+        self._record_clock(receipt)
+        return receipt
+
+    def _record_clock(self, receipt):
+        if self.clock_diagnostics is None: return
+        try:
+            if receipt is None: self.clock_diagnostics.failed()
+            else: self.clock_diagnostics.observe(receipt)
+        except Exception as exc:
+            from .failure_evidence import record_capture_failure
+            record_capture_failure('heartbeat_clock_diagnostics', exc)
+
+    def _heartbeat(self, credentials, identity, state):
         # No shared Session, inherited Flow header, mutable lease map, retry or redirect.
         headers = {"X-Worker-Token": credentials.worker_token,
                    "X-Client-Instance-Id": credentials.client_instance_id}
@@ -167,6 +190,7 @@ class HookIdentityClient:
                 "hook_context": identity.payload()}
         path = f"/workers/{credentials.worker_id}/heartbeat"
         started = time.monotonic()
+        started_wall = time.time()
         try:
             with requests.Session() as session:
                 session.trust_env=False
@@ -180,6 +204,7 @@ class HookIdentityClient:
                         if len(raw) > self.max_response_bytes:
                             raise ApiError("HOOK_BACKEND_RESPONSE_TOO_LARGE", "后台响应异常", 502)
                     status = response.status_code
+            received_wall = time.time()
             received = time.monotonic()
         except requests.RequestException:
             raise ApiError("HOOK_BACKEND_NETWORK_FAILED", "后台连接失败，请检查网络", 0) from None
@@ -221,7 +246,8 @@ class HookIdentityClient:
                 hook["self_wxid"], hook["account_epoch"], hook["sales_id"], identity.process_generation,
                 hook["blocked"], hook["rebind_required"], reason, data["run_status"],
                 data.get("last_heartbeat_at"), started, received,
-                json.dumps(data, ensure_ascii=False, separators=(",", ":")))
+                json.dumps(data, ensure_ascii=False, separators=(",", ":")),
+                started_wall, received_wall, data.get("clock_reference"))
         except (ValueError, KeyError, TypeError, RecursionError):
             raise ApiError("HOOK_ACCOUNT_RESPONSE_INVALID", "工作微信账号核验响应异常", 502) from None
 

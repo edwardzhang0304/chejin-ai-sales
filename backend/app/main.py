@@ -154,13 +154,18 @@ def create_app() -> FastAPI:
                 feishu_recovery["pending_attempted"],
                 feishu_recovery["failed"],
             )
+        from app.services.clock_reference import ClockReference
+        clock_reference = ClockReference(settings.clock_reference_host)
+        app.state.clock_reference = clock_reference
         recovery = C3BatchRecoveryLoop()
         recovery.start()
         app.state.c3_batch_recovery = recovery
         try:
+            clock_reference.start()
             yield
         finally:
             recovery.stop()
+            clock_reference.stop()
 
     from app.contracts.c2 import contract_revision
 

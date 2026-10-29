@@ -143,3 +143,24 @@ def test_receipt_scope_and_connection_share_confirmation_reason(blocked,rebind,r
         assert error.value.code==expected
     else:
         assert receipt.receive_scope(30001).self_wxid=='wxid_test'
+
+
+def test_clock_metadata_uses_real_response_boundaries_and_no_identity_leaks(peer, tmp_path):
+    from chejin_worker_client.clock_diagnostics import ClockDiagnostics
+    client, credentials, identity, state = values(peer)
+    monitor = ClockDiagnostics(tmp_path)
+    client = replace(client, clock_diagnostics=monitor)
+    peer.live_heartbeat_time = True
+    peer.body = json.dumps({'code':'OK','data':{
+        'id':credentials.worker_id,'client_instance_id':credentials.client_instance_id,'run_status':'paused',
+        'clock_reference':{'source':'untrusted','secret':'must-not-be-exported'},
+        'hook_context':{**identity.payload(),'observed_self_wxid':identity.self_wxid,
+            'self_wxid':identity.self_wxid,'account_epoch':str(uuid.uuid4()),'sales_id':str(uuid.uuid4()),
+            'blocked':False,'rebind_required':False,'reason_code':None}}}).encode()
+    receipt = client.heartbeat(credentials,identity,state)
+    assert receipt.request_started_wall <= receipt.response_received_wall
+    assert receipt.request_started_monotonic <= receipt.response_received_monotonic
+    evidence = monitor.path.read_text()
+    assert monitor.snapshot()['comparison_status'] == 'aligned'
+    assert monitor.snapshot()['backend_reference']['status'] == 'unconfirmed'
+    assert 'must-not-be-exported' not in evidence and credentials.worker_token not in evidence

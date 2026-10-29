@@ -59,7 +59,8 @@ def _format_time(value: str | None, *, backend_utc: bool = False) -> str:
         parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
         if backend_utc:
             if parsed.tzinfo is None:parsed=parsed.replace(tzinfo=timezone.utc)
-            parsed=parsed.astimezone()
+            from chejin_worker_client.shared_rules import hook_time_rules
+            return parsed.astimezone(hook_time_rules.BEIJING_TIMEZONE).strftime("%H:%M:%S")
         return parsed.astimezone().strftime("%H:%M:%S")
     except ValueError:
         return value[-8:] if len(value) >= 8 else value

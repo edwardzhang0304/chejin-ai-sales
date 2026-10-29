@@ -1,6 +1,6 @@
 import json
 from functools import lru_cache
-from typing import Annotated
+from typing import Annotated, Literal
 
 from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
@@ -21,6 +21,7 @@ PRODUCTION_ENVIRONMENTS = {"production", "prod"}
 
 
 class Settings(BaseSettings):
+    clock_reference_host: Literal["ntp.aliyun.com", "ntp.cloud.aliyuncs.com"] = "ntp.aliyun.com"
     app_name: str = "Chejin Leads Backend"
     environment: str = "development"
     api_prefix: str = "/api"
