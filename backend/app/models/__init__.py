@@ -16,6 +16,7 @@ from app.models.client_release import (
     WorkerClientReleaseDownloadLease,
     WorkerClientReleaseQueryThrottle,
 )
+from app.models.feiyu import FeiyuLeadReceipt
 from app.models.lead import (
     AssignmentRoundRobinState,
     Lead,
@@ -52,6 +53,7 @@ from app.models.vehicle import (
 )
 
 __all__ = [
+    "FeiyuLeadReceipt",
     "AIGenerationGate",
     "AIGenerationSlot",
     "HookNativeReceipt", "HookHistoryReceipt", "HookVoiceReceipt",
