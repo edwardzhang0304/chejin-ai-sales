@@ -2,7 +2,7 @@ name: Isolated Windows clock release checks
 on:
   push:
     branches: ['codex/release-native-clock-01026']
-    paths: ['ops/formal_release/check_clock_native.py', '.github/workflows/clock-native-release.yml']
+    paths: ['ops/formal_release/check_clock_native.py', 'ops/formal_release/diagnose_clock_exit.py', '.github/workflows/clock-native-release.yml']
   workflow_dispatch:
 permissions:
   contents: read
@@ -17,11 +17,11 @@ jobs:
         with: {fetch-depth: 0, persist-credentials: false}
       - uses: actions/setup-python@v5
         with: {python-version: '3.12.10'}
-      - name: Verify native ticket locking and shipped time helper on disposable runner
-        run: python ops/formal_release/check_clock_native.py
+      - name: Diagnose revoked-ticket elevated exit propagation only
+        run: python ops/formal_release/diagnose_clock_exit.py
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: clock-native-release-evidence
-          path: ${{ runner.temp }}/clock-native-01026/result.json
+          name: clock-native-exit-evidence
+          path: ${{ runner.temp }}/clock-native-exit-01026/result.json
           if-no-files-found: error
