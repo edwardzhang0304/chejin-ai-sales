@@ -23,6 +23,7 @@ interface CheJinBridge {
   pauseAccepting(): void;
   updateAcceptSchedule(enabled: boolean, start: string, end: string): void;
   checkForUpdates?(): void;
+  syncComputerTime?(): void;
   exportLatestIncident?(): void;
   exportIncident?(incidentId: string): void;
   openIncidentDirectory?(): void;
@@ -254,6 +255,7 @@ function App() {
       onPauseAccepting={() => bridge?.pauseAccepting()}
       onUpdateAcceptSchedule={updateAcceptSchedule}
       onCheckForUpdates={() => bridge?.checkForUpdates?.()}
+      onSyncComputerTime={() => bridge?.syncComputerTime?.()}
       onExportLatestIncident={() => bridge?.exportLatestIncident?.()}
       onExportIncident={(incidentId) => bridge?.exportIncident?.(incidentId)}
       onOpenIncidentDirectory={() => bridge?.openIncidentDirectory?.()}

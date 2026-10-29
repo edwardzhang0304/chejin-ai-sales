@@ -203,6 +203,10 @@ class WorkerWebBridge(QObject):
     def checkForUpdates(self) -> None:
         self.window.check_for_updates()
 
+    @Slot()
+    def syncComputerTime(self) -> None:
+        self.window.sync_computer_time()
+
     @Slot(bool, str, str)
     def updateAcceptSchedule(self, enabled: bool, start: str, end: str) -> None:
         self.window.update_accept_schedule(enabled, start, end)
@@ -259,6 +263,7 @@ class WorkerWebWindow(QMainWindow):
     fault_recovery_signal = Signal(object)
     update_state_signal = Signal(object)
     update_exit_signal = Signal()
+    clock_sync_signal = Signal()
 
     def __init__(self, *, auto_start_runtime: bool = True) -> None:
         super().__init__()
@@ -323,6 +328,9 @@ class WorkerWebWindow(QMainWindow):
             request_normal_exit=lambda: self.update_exit_signal.emit(),
         )
         self.update_state = self.update_coordinator.state()
+        from .clock_sync import ClockSync
+        self.clock_sync = ClockSync(self.runner, CONFIG.app_dir,
+                                    on_change=self.clock_sync_signal.emit)
 
         self.bridge = WorkerWebBridge(self)
         self.channel = QWebChannel(self)
@@ -358,7 +366,16 @@ class WorkerWebWindow(QMainWindow):
             self.start_runtime_services()
 
     def start_runtime_services(self) -> None:
+        if not self._runtime_services_started and not self.clock_sync.runtime_ready(self.binding):
+            if not getattr(self, '_clock_recovery_scheduled', False):
+                self._clock_recovery_scheduled = True
+                QTimer.singleShot(500, self._retry_clock_startup)
+            return
         runtime_startup.start_runtime_services(self)
+
+    def _retry_clock_startup(self) -> None:
+        self._clock_recovery_scheduled = False
+        self.start_runtime_services()
 
     def post_update_runtime_health_snapshot(self) -> dict[str, Any]:
         return runtime_startup.post_update_runtime_health_snapshot(self)
@@ -542,6 +559,7 @@ class WorkerWebWindow(QMainWindow):
         self.fault_recovery_signal.connect(lambda _state: self._publish())
         self.update_state_signal.connect(self.on_update_state)
         self.update_exit_signal.connect(self._quit_for_update)
+        self.clock_sync_signal.connect(self._publish)
 
     def _load_web_assets(self) -> None:
         index_file = Path(__file__).resolve().parent / "web_assets" / "index.html"
@@ -630,6 +648,12 @@ class WorkerWebWindow(QMainWindow):
 
     def _startup_check_state(self) -> dict[str, Any]:
         # Projection only: GUI must not call a DLL, take a screenshot or wait on HTTP.
+        sync = getattr(self, 'clock_sync', None)
+        if sync is not None:
+            state = sync.snapshot()
+            if state['busy'] or state['state'] in {'stop_failed', 'restart_failed', 'evidence_failed'}:
+                return {'state': 'checking', 'title': state['message'], 'message': '',
+                        'canStart': False, 'canRecheck': False}
         if self.connection_status in {'offline', 'connecting'}:
             if self.connection_status == 'offline':
                 return startup_check_state.failed('HOOK_BACKEND_NETWORK_FAILED')
@@ -780,6 +804,7 @@ class WorkerWebWindow(QMainWindow):
             "update": dict(self.update_state),
             "faultRecovery": recovery,
             "startupCheck": self._startup_check_state(),
+            "clockSync": self.clock_sync.snapshot() if hasattr(self, 'clock_sync') and getattr(self.runner, 'hook_services', None) is not None else None,
             "hookProcessSteps": self.hook_progress_timeline.model(historical=False) if hasattr(self, "hook_progress_timeline") else [],
             "layoutRecovery": self.runner.layout_recovery_state(),
         }
@@ -1003,6 +1028,8 @@ class WorkerWebWindow(QMainWindow):
         self._publish()
 
     def bind_worker(self, worker_id: str, worker_token: str) -> None:
+        if self._clock_blocks_actions():
+            return
         worker_id = worker_id.strip()
         worker_token = worker_token.strip()
         if not worker_id or not worker_token:
@@ -1028,6 +1055,8 @@ class WorkerWebWindow(QMainWindow):
             self._publish()
 
     def set_accepting(self, accepting: bool) -> None:
+        if self._clock_blocks_actions():
+            return
         if not self.binding:
             return
         services=getattr(self.runner,'hook_services',None)
@@ -1044,7 +1073,23 @@ class WorkerWebWindow(QMainWindow):
         self.runner.set_run_status(next_status)
         self._publish()
 
+    def _clock_blocks_actions(self) -> bool:
+        sync = getattr(self, 'clock_sync', None)
+        if sync is not None and sync.blocks_actions():
+            self.notice = sync.snapshot()['message'] or '电脑对时尚未结束'
+            self._publish()
+            return True
+        return False
+
+    def sync_computer_time(self) -> None:
+        if getattr(self, '_shutdown_in_progress', False) or not self._runtime_services_started:
+            return
+        self.update_coordinator.note_operator_pause()
+        self.clock_sync.start()
+
     def check_for_updates(self) -> None:
+        if self._clock_blocks_actions():
+            return
         self.update_coordinator.check_for_updates()
         self._publish()
 
@@ -1058,6 +1103,8 @@ class WorkerWebWindow(QMainWindow):
         self._publish()
 
     def trigger_wechat_scan(self) -> None:
+        if self._clock_blocks_actions():
+            return
         self.runner.request_immediate_scan()
         append_log("INFO", "c2_manual_scan_requested", "已触发手动立即扫描。")
         self._publish()
@@ -1206,6 +1253,11 @@ class WorkerWebWindow(QMainWindow):
         request_update_close(self)
 
     def closeEvent(self, event: Any) -> None:
+        if self.clock_sync.snapshot()['busy']:
+            self.notice = '对时尚未结束，请先处理 Windows 授权提示'
+            self._publish()
+            event.ignore()
+            return
         from .update_shutdown import prepare_window_close
         if not prepare_window_close(self):
             event.ignore()

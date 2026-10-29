@@ -16,6 +16,7 @@ interface WorkerClientBaselineProps {
   onPauseAccepting?: () => void;
   onUpdateAcceptSchedule?: (enabled: boolean, start: string, end: string) => void;
   onCheckForUpdates?: () => void;
+  onSyncComputerTime?: () => void;
   onExportLatestIncident?: () => void;
   onExportIncident?: (incidentId: string) => void;
   onOpenIncidentDirectory?: () => void;
@@ -726,7 +727,7 @@ function ClientFaultedScreen({ model, onStartAccepting }: Pick<WorkerClientBasel
   );
 }
 
-function SettingsScreen({ model, onScreenChange, onCheckForUpdates }: Pick<WorkerClientBaselineProps, "model" | "onScreenChange" | "onCheckForUpdates">) {
+function SettingsScreen({ model, onScreenChange, onCheckForUpdates, onSyncComputerTime }: Pick<WorkerClientBaselineProps, "model" | "onScreenChange" | "onCheckForUpdates" | "onSyncComputerTime">) {
   const update = model.update || {};
   return (
     <section className="cw-screen screen active" data-screen-view="settings">
@@ -742,6 +743,16 @@ function SettingsScreen({ model, onScreenChange, onCheckForUpdates }: Pick<Worke
             <span><strong>自动接单时段</strong><em>{model.schedule.enabled ? "开启" : "关闭"} · {model.schedule.start} 至 {model.schedule.end}</em></span>
             <Icon name="chevron" />
           </button>
+          {model.clockSync ? (
+            <div className="cw-settings-row settings-row">
+              <span><strong>电脑时间</strong></span>
+              <button className="cw-settings-action" type="button"
+                disabled={model.clockSync.busy || update.in_progress}
+                onClick={onSyncComputerTime}>
+                {model.clockSync.busy ? "同步中" : "同步电脑时间"}
+              </button>
+            </div>
+          ) : null}
           <div className="cw-settings-row cw-version-settings-row settings-row">
             <span>
               <strong>客户端版本号</strong>
@@ -751,7 +762,7 @@ function SettingsScreen({ model, onScreenChange, onCheckForUpdates }: Pick<Worke
             <button
               className="cw-settings-action"
               type="button"
-              disabled={update.in_progress || update.available === false}
+              disabled={update.in_progress || update.available === false || model.clockSync?.busy}
               onClick={onCheckForUpdates}
             >
               {update.in_progress ? "更新中" : "检查更新"}
@@ -917,7 +928,7 @@ function HookWaterfallWorkbench({ screen, model, onStartAccepting, onPauseAccept
           <TaskTimeline steps={steps} followLatest />
         </section>
         </section>
-        <Dock state={accepting ? "接单中" : model.status.receiveState} recheck={model.startupCheck?.canRecheck} disabled={model.startupCheck?.canRecheck ? false : disabled} onStartAccepting={onStartAccepting} onPauseAccepting={onPauseAccepting} />
+        <Dock state={accepting ? "接单中" : model.status.receiveState} recheck={model.startupCheck?.canRecheck} disabled={model.clockSync?.busy || (model.startupCheck?.canRecheck ? false : disabled)} onStartAccepting={onStartAccepting} onPauseAccepting={onPauseAccepting} />
       </div>
     </section>
   );
@@ -991,7 +1002,7 @@ function renderScreen(props: WorkerClientBaselineProps) {
   if (screen === "ai-reply-failed") {
     return <BackgroundProcessScreen screen={screen} model={model} steps={customerProcessSteps} dockState={model.status.receiveState} onPauseAccepting={onPauseAccepting} />;
   }
-  if (screen === "settings") return <SettingsScreen model={model} onScreenChange={onScreenChange} onCheckForUpdates={props.onCheckForUpdates} />;
+  if (screen === "settings") return <SettingsScreen model={model} onScreenChange={onScreenChange} onCheckForUpdates={props.onCheckForUpdates} onSyncComputerTime={props.onSyncComputerTime} />;
   if (screen === "schedule-settings") return <ScheduleSettingsScreen model={model} onUpdateAcceptSchedule={onUpdateAcceptSchedule} />;
   return (
     <LogsScreen
@@ -1005,15 +1016,21 @@ function renderScreen(props: WorkerClientBaselineProps) {
 
 export function WorkerClientBaseline(props: WorkerClientBaselineProps) {
   return (
-    <section className="cw-window app-window" data-active-screen={props.screen} data-clock-warning={Boolean(props.model.startupCheck?.clockCheck?.notice)} aria-label="车金 Worker 客户端">
+    <section className="cw-window app-window" data-active-screen={props.screen} data-clock-warning={Boolean(props.model.clockSync?.message || props.model.startupCheck?.clockCheck?.notice)} aria-label="车金 Worker 客户端">
       <Header screen={props.screen} onScreenChange={props.onScreenChange} onBack={props.onBack} />
       {props.notice ? (
         <div className="cw-toast cw-toast-success" role="status" aria-live="polite">
           {props.notice}
         </div>
       ) : null}
-      {props.model.startupCheck?.clockCheck?.notice ? (
-        <div className="cw-clock-warning" role="status">{props.model.startupCheck.clockCheck.notice}</div>
+      {props.model.clockSync?.message || props.model.startupCheck?.clockCheck?.notice ? (
+        <div className="cw-clock-warning" role="status">
+          <span>{props.model.clockSync?.message || props.model.startupCheck?.clockCheck?.notice}</span>
+          {props.model.clockSync && !props.model.clockSync.busy && props.model.clockSync.state !== "verified" ? (
+            <button type="button" className="cw-settings-action" disabled={props.model.update?.in_progress}
+              onClick={props.onSyncComputerTime}>同步电脑时间</button>
+          ) : null}
+        </div>
       ) : null}
       <div className="cw-app-body">
         {renderScreen(props)}

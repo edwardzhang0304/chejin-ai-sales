@@ -4718,6 +4718,24 @@ class TaskRunner:
         finally:
             self._new_work_admission_lock.release()
 
+    def begin_clock_sync(self, operation_id: str) -> str | None:
+        """Reserve the same admission gate; clock repair never settles a Flow."""
+        from .clock_sync_ticket import valid_operation
+        if not valid_operation(operation_id):
+            raise ValueError("CLOCK_OPERATION_INVALID")
+        with self._new_work_admission_lock:
+            if self.binding is None or self.hook_services is None:
+                return None
+            control = load_runtime_control()
+            active = str(control.get("update_request_id") or "")
+            if control.get("update_no_new_work"):
+                # Only an explicitly retried clock operation may reuse its gate.
+                if not active.startswith("clock-sync-") or not valid_operation(active):
+                    return None
+                return active
+            set_update_new_work_gate(True, update_request_id=operation_id)
+            return operation_id
+
     def begin_update_check(self, begin_request: Callable[[], dict]) -> tuple[dict, dict | None]:
         """Check and reserve intake under the SAME lock used by new Flow admission."""
         if not self._new_work_admission_lock.acquire(blocking=False):

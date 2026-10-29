@@ -849,3 +849,6 @@
 .cw-window[data-clock-warning="true"] > .cw-client-bar,
 .cw-window[data-clock-warning="true"] > .cw-titlebar { flex-shrink: 0; }
 .cw-window[data-clock-warning="true"] > .cw-app-body { flex: 1; height: auto; min-height: 0; }
+
+.cw-window .cw-clock-warning { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.cw-window .cw-clock-warning > span { flex: 1 1 200px; }

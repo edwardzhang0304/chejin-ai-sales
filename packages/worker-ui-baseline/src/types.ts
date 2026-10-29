@@ -88,6 +88,7 @@ export interface WorkerLogRow {
 }
 
 export interface WorkerClientModel {
+  clockSync?: { state: string; message: string; busy: boolean } | null;
   hookProcessSteps?: TimelineStepModel[];
   startupCheck?: { clockCheck?: { notice?: string }; state: "checking" | "passed" | "failed"; title: string; message: string; canStart: boolean; canRecheck?: boolean; faultTitle?: string; faultMessage?: string };
   layoutRecovery?: { blocked: boolean; attempts: number; message: string };
