@@ -464,7 +464,9 @@ class HookWorkerServices:
         diagnostics = getattr(getattr(self.connection, "backend", None), "clock_diagnostics", None)
         if diagnostics is not None:
             budget = 2 if deadline is None else max(0, deadline-time.monotonic())
-            if not diagnostics.stop(timeout=budget) and deadline is not None:
+            # close also runs after binding loss; the same service can be
+            # attached again. Drain current writes without disabling observation.
+            if not diagnostics.flush(timeout=budget) and deadline is not None:
                 raise RuntimeError("UPDATE_WRITERS_NOT_STOPPED")
         self._credentials = None
         self._failure = None

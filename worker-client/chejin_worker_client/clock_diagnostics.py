@@ -127,7 +127,6 @@ class ClockDiagnostics:
         self._previous_files = []
         self._omitted_checks = 0
         self._coalesced_writes = 0
-        self._accepting = True
         self._write_status = "pending"
         self._idle = threading.Event()
         self._idle.set()
@@ -165,24 +164,28 @@ class ClockDiagnostics:
         signature = (value.get('comparison_status'), value.get('reason'),
                      value['timezone'].get('beijing_timezone'), value['backend_reference'].get('status'))
         with self._lock:
-            if not self._accepting:
-                return
             self._latest, self._received = value, now
             if not hasattr(self, '_startup'):
                 self._startup = copy.deepcopy(value)
             save = force or signature != self._signature or now-self._last_saved >= 60
             if not save: return
-            self._omitted_checks += int(len(self._history) == 32)
-            self._history = (self._history+[value])[-32:]
-            self._last_saved, self._signature = now, signature
-            output = {'schema_version': 1, 'session_id': self.session,
-                      'startup': getattr(self, '_startup', value), 'latest': value,
-                      'recent_checks': self._history, 'changes_system_clock': False,
-                      'permission_source': 'existing_authenticated_backend_monotonic_clock',
-                      'persistence': {'mode': 'async_bounded', 'history_limit': 32,
-                          'omitted_checks': self._omitted_checks, 'prior_session_limit': 3,
-                          'crash_limit': 'unflushed_observations_may_be_missing'}}
-            self._schedule_write(output)
+            self._signature = signature
+            self._save_latest(now)
+
+    def _save_latest(self, now):
+        # Caller holds _lock; persistence is always delegated to the one writer.
+        value = self._latest
+        self._omitted_checks += int(len(self._history) == 32)
+        self._history = (self._history+[value])[-32:]
+        self._last_saved = now
+        output = {'schema_version': 1, 'session_id': self.session,
+                  'startup': getattr(self, '_startup', value), 'latest': value,
+                  'recent_checks': self._history, 'changes_system_clock': False,
+                  'permission_source': 'existing_authenticated_backend_monotonic_clock',
+                  'persistence': {'mode': 'async_bounded', 'history_limit': 32,
+                      'omitted_checks': self._omitted_checks, 'prior_session_limit': 3,
+                      'crash_limit': 'unflushed_observations_may_be_missing'}}
+        self._schedule_write(output)
 
     def _schedule_write(self, output):
         # One pending snapshot contains the full bounded history; a slow disk
@@ -218,7 +221,14 @@ class ClockDiagnostics:
 
     def flush(self, timeout=2):
         """Bounded test/shutdown aid; never called from heartbeat or GUI paths."""
-        return self._idle.wait(timeout)
+        with self._lock:
+            if self._history[-1] != self._latest:
+                self._save_latest(self.monotonic())
+        drained = self._idle.wait(timeout)
+        if not drained:
+            with self._lock:
+                self._write_status = 'drain_timeout'
+        return drained
 
     def _write_output(self, output):
         try:
@@ -254,15 +264,6 @@ class ClockDiagnostics:
                 self._write_status = 'failed'
             from .failure_evidence import record_capture_failure
             record_capture_failure('clock_diagnostics', exc)
-
-    def stop(self, timeout=2):
-        with self._lock:
-            self._accepting = False
-        drained = self.flush(timeout)
-        if not drained:
-            with self._lock:
-                self._write_status = 'drain_timeout'
-        return drained
 
     def snapshot(self):
         with self._lock:

@@ -192,7 +192,7 @@ def test_slow_evidence_writer_never_delays_heartbeat_and_queue_is_bounded(tmp_pa
         assert len(monitor._pending_write['recent_checks']) == 32
         assert monitor._pending_write['persistence']['omitted_checks'] > 0
         assert monitor._pending_write['persistence']['coalesced_snapshots'] > 0
-        assert not monitor.stop(timeout=0)
+        assert not monitor.flush(timeout=0)
         assert monitor.snapshot()['evidence_write_status']=='drain_timeout'
     finally:
         release.set(); thread.join(2)
@@ -284,9 +284,13 @@ def test_update_close_preserves_existing_writer_gate_and_drains_diagnostics(tmp_
     service=SimpleNamespace(connection=SimpleNamespace(
         backend=SimpleNamespace(clock_diagnostics=monitor),close=lambda **kw:calls.append(kw)))
     HookWorkerServices.close(service,deadline=time.monotonic()+2)
-    assert calls and monitor.flush(0) and not monitor._accepting
+    assert calls and monitor.flush(0)
     assert service._credentials is None
+    # Binding loss can close a service that will be reused by the next binding.
+    monitor.observe(receipt(16)); assert monitor.flush()
+    assert monitor.snapshot()['comparison_status']=='skewed'
+    assert json.loads(monitor.path.read_text())['latest']['comparison_status']=='skewed'
     # A still-running diagnostic writer prevents taking update ownership.
-    service.connection.backend.clock_diagnostics=SimpleNamespace(stop=lambda **kw:False)
+    service.connection.backend.clock_diagnostics=SimpleNamespace(flush=lambda **kw:False)
     with pytest.raises(RuntimeError,match='UPDATE_WRITERS_NOT_STOPPED'):
         HookWorkerServices.close(service,deadline=time.monotonic()+.01)
