@@ -17,11 +17,11 @@ jobs:
         with: {fetch-depth: 0, persist-credentials: false}
       - uses: actions/setup-python@v5
         with: {python-version: '3.12.10'}
-      - name: Diagnose revoked-ticket elevated exit propagation only
-        run: python ops/formal_release/diagnose_clock_exit.py
+      - name: Verify native fallback and failure states on disposable Windows
+        run: python ops/formal_release/check_clock_native.py
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: clock-native-exit-evidence
-          path: ${{ runner.temp }}/clock-native-exit-01026/result.json
+          name: clock-native-release-evidence
+          path: ${{ runner.temp }}/clock-native-01026/result.json
           if-no-files-found: error

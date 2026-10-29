@@ -100,7 +100,7 @@ def require(value, code):
 
 def rule_query(name, store):
     # Filter in the native provider; enumerating every hosted-runner rule can time out.
-    return "try { @(Get-NetFirewallRule -PolicyStore " + store + " -DisplayName " + quote(name) + " -ErrorAction Stop) } catch { if ($_.FullyQualifiedErrorId -ne 'CmdletizationQuery_NotFound_DisplayName,Get-NetFirewallRule') { throw } }"
+    return "try { @(Get-NetFirewallRule -PolicyStore " + store + " -Name " + quote(name) + " -ErrorAction Stop) } catch { if ($_.FullyQualifiedErrorId -ne 'CmdletizationQuery_NotFound_Name,Get-NetFirewallRule') { throw } }"
 
 
 def firewall_facts(name):
@@ -116,6 +116,7 @@ def primary_addresses():
 
 
 def verify_block(evidence, name, addresses, stage):
+    evidence.stage('verify_firewall_' + stage)
     facts = firewall_facts(name)
     evidence.data.setdefault('firewall_states', {})[stage] = facts
     evidence.save()
@@ -162,21 +163,21 @@ def set_vmic(evidence, value, key):
     require(actual == value, 'VM_TIME_PROVIDER_STATE_MISMATCH')
 
 
+def synchronized_fallback(facts):
+    # Hosted windows-2022 emits English w32tm output. Missing/unknown fields fail closed.
+    import re
+    def number(label):
+        match = re.search(r'^' + re.escape(label) + r':\s*(\d+)', facts['status'], re.MULTILINE)
+        return int(match.group(1)) if match else None
+    leap, stratum, error = (number(x) for x in ('Leap Indicator', 'Stratum', 'Last Sync Error'))
+    age = re.search(r'^Time since Last Good Sync Time:\s*([0-9.]+)s', facts['status'], re.MULTILINE)
+    return ('time.windows.com' in facts['source'].lower() and leap == 0 and
+            stratum is not None and 1 <= stratum <= 15 and error == 0 and
+            age is not None and 0 <= float(age.group(1)) <= 30)
+
+
 def observe_failed_source(evidence):
     # Read-only diagnostics AFTER failure. Observations never change the verdict.
-    evidence.data['post_failure_observations'] = []
-    started = time.monotonic()
-    for delay in (0, 15, 30):
-        remaining = started + delay - time.monotonic()
-        if remaining > 0:
-            time.sleep(remaining)
-        row = {'elapsed_seconds': time.monotonic() - started}
-        try:
-            row['facts'] = json.loads(ps(r"""$w=Join-Path ([Environment]::GetFolderPath('System')) 'w32tm.exe'; $source=(& $w /query /source | Out-String).Trim(); $sourceExit=$LASTEXITCODE; $status=(& $w /query /status /verbose | Out-String); $statusExit=$LASTEXITCODE; $peers=(& $w /query /peers /verbose | Out-String); @{source=$source;source_exit=$sourceExit;status=$status;status_exit=$statusExit;peers=$peers;peers_exit=$LASTEXITCODE} | ConvertTo-Json -Compress""").stdout)
-        except Exception as exc:
-            row['error'] = failure(exc, 'post_failure_observation')
-        evidence.data['post_failure_observations'].append(row)
-        evidence.save()
     try:
         probe = ps(r"""$w=Join-Path ([Environment]::GetFolderPath('System')) 'w32tm.exe'; $text=(& $w /stripchart /computer:time.windows.com /dataonly /samples:2 | Out-String); @{exit_code=$LASTEXITCODE;output=$text} | ConvertTo-Json -Compress""", timeout=20)
         evidence.data['fallback_readonly_stripchart'] = json.loads(probe.stdout)
@@ -219,7 +220,7 @@ def run():
         evidence.data['primary_addresses_before'] = addresses
         evidence.data['primary_coverage_basis'] = 'Exact product hostname; all resolved addresses blocked; DNS answers checked before and after helper. No packet capture claim; changed answers fail acceptance.'
         evidence.save()
-        ps('New-NetFirewallRule -DisplayName ' + quote(firewall) + ' -Direction Outbound -Action Block -Enabled True -Profile Any -Protocol UDP -RemotePort 123 -RemoteAddress @(' + ','.join(quote(x) for x in addresses) + ') -ErrorAction Stop | Out-Null')
+        ps('New-NetFirewallRule -Name ' + quote(firewall) + ' -DisplayName ' + quote(firewall) + ' -Direction Outbound -Action Block -Enabled True -Profile Any -Protocol UDP -RemotePort 123 -RemoteAddress @(' + ','.join(quote(x) for x in addresses) + ') -ErrorAction Stop | Out-Null')
         verify_block(evidence, firewall, addresses, 'primary_only')
         ticket = ClockSyncTicket(root)
         op = 'clock-sync-' + str(uuid.uuid4())
@@ -228,12 +229,28 @@ def run():
         evidence.data['clock_sync'] = {k: result.get(k) for k in ('result', 'exit_code', 'resync_completed', 'helper_exit_confirmed', 'requested_peers')}
         evidence.save()
         require(result.get('result') == 'requested' and result.get('resync_completed') and result.get('helper_exit_confirmed'), 'FALLBACK_SYNC_NOT_CONFIRMED')
-        facts = json.loads(ps(r"""$p=Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Services\W32Time\Parameters'; $s=Get-CimInstance Win32_Service -Filter "Name='W32Time'"; $w=Join-Path ([Environment]::GetFolderPath('System')) 'w32tm.exe'; $source=(& $w /query /source | Out-String).Trim(); if($LASTEXITCODE -ne 0){throw 'source query failed'}; $status=(& $w /query /status /verbose | Out-String); if($LASTEXITCODE -ne 0){throw 'status query failed'}; @{peers=$p.NtpServer;startup=$s.StartMode;source=$source;status=$status;zone=(Get-TimeZone).Id} | ConvertTo-Json -Compress""").stdout)
-        evidence.data['native_facts'] = facts
-        evidence.save()
-        require(facts['peers'] == result['requested_peers'], 'PEER_CONFIGURATION_MISMATCH')
-        require(facts['startup'] == 'Auto' and facts['zone'] == 'China Standard Time', 'SERVICE_OR_ZONE_MISMATCH')
-        require('time.windows.com' in facts['source'].lower(), 'FALLBACK_SOURCE_NOT_SELECTED')
+        evidence.stage('native_fallback_convergence')
+        samples = []
+        evidence.data['native_samples'] = samples
+        observed_start = time.monotonic()
+        deadline = observed_start + 30
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise NativeFailure('FALLBACK_NOT_SYNCHRONIZED')
+            facts = json.loads(ps(r"""$p=Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Services\W32Time\Parameters'; $s=Get-CimInstance Win32_Service -Filter "Name='W32Time'"; $w=Join-Path ([Environment]::GetFolderPath('System')) 'w32tm.exe'; $source=(& $w /query /source | Out-String).Trim(); if($LASTEXITCODE -ne 0){throw 'source query failed'}; $status=(& $w /query /status /verbose | Out-String); if($LASTEXITCODE -ne 0){throw 'status query failed'}; @{peers=$p.NtpServer;startup=$s.StartMode;source=$source;status=$status;zone=(Get-TimeZone).Id} | ConvertTo-Json -Compress""", timeout=remaining).stdout)
+            evidence.data['native_facts'] = facts
+            samples.append({'elapsed_seconds': time.monotonic() - observed_start, 'facts': facts})
+            evidence.save()
+            require(facts['peers'] == result['requested_peers'], 'PEER_CONFIGURATION_MISMATCH')
+            require(facts['startup'] == 'Auto' and facts['zone'] == 'China Standard Time', 'SERVICE_OR_ZONE_MISMATCH')
+            if time.monotonic() > deadline:
+                raise NativeFailure('FALLBACK_NOT_SYNCHRONIZED')
+            if synchronized_fallback(facts):
+                break
+            if time.monotonic() - observed_start >= 30:
+                raise NativeFailure('FALLBACK_NOT_SYNCHRONIZED')
+            time.sleep(max(0, min(5, deadline - time.monotonic())))
         after_addresses = primary_addresses()
         evidence.data['primary_addresses_after'] = after_addresses
         evidence.save()
@@ -241,19 +258,21 @@ def run():
         verify_block(evidence, firewall, addresses, 'primary_after_helper')
         evidence.passed('primary_unavailable_native_fallback_selected')
         evidence.stage('all_sources_unavailable')
-        ps('Set-NetFirewallRule -DisplayName ' + quote(firewall) + ' -RemoteAddress Any -ErrorAction Stop')
+        ps('Set-NetFirewallRule -Name ' + quote(firewall) + ' -RemoteAddress Any -ErrorAction Stop')
         verify_block(evidence, firewall, ['Any'], 'all_sources')
         op2 = 'clock-sync-' + str(uuid.uuid4())
         ticket.authorize(op2)
         result2 = synchronize_windows(op2, ticket.path)
         evidence.data['all_unavailable'] = {k: result2.get(k) for k in ('result', 'exit_code', 'resync_completed', 'helper_exit_confirmed')}
         evidence.save()
+        evidence.data['all_unavailable_native_status'] = ps(r"$w=Join-Path ([Environment]::GetFolderPath('System')) 'w32tm.exe'; & $w /query /status /verbose; exit $LASTEXITCODE").stdout
+        evidence.save()
         require(result2.get('result') == 'resync_failed' and not result2.get('resync_completed') and result2.get('helper_exit_confirmed'), 'ALL_UNAVAILABLE_FALSE_SUCCESS')
         verify_block(evidence, firewall, ['Any'], 'all_sources_after_helper')
         evidence.passed('all_sources_unavailable_not_success')
     except BaseException as exc:
         evidence.data['primary_error'] = failure(exc, evidence.data['stage'])
-        if isinstance(exc, NativeFailure) and exc.code == 'FALLBACK_SOURCE_NOT_SELECTED':
+        if isinstance(exc, NativeFailure) and exc.code == 'FALLBACK_NOT_SYNCHRONIZED':
             try:
                 observe_failed_source(evidence)
             except Exception as diagnostic_error:
