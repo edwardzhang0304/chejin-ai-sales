@@ -1,0 +1,32 @@
+name: Isolated Windows clock release checks
+on:
+  # Manual authorization only; branch consolidation must not trigger native changes.
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  native-clock:
+    runs-on: windows-2022
+    timeout-minutes: 12  # Native source selection <=360s; product confirmation window unchanged.
+    steps:
+      - name: Preserve sealed source bytes on disposable runner
+        run: git config --global core.autocrlf false
+      - uses: actions/checkout@v4
+        with: {fetch-depth: 0, persist-credentials: false}
+      - uses: actions/setup-python@v5
+        with: {python-version: '3.12.10'}
+      - name: Install existing Worker dependency for consumer checks
+        run: python -m pip install --disable-pip-version-check psutil==5.9.8
+      - name: Verify consumer imports before native changes
+        env:
+          PYTHONPATH: worker-client
+          CHEJIN_WORKER_HOME: ${{ runner.temp }}/clock-consumer-import
+        run: python -c "from chejin_worker_client.clock_sync import ClockSync; from chejin_worker_client.clock_diagnostics import ClockDiagnostics"
+      - name: Verify native fallback and failure states on disposable Windows
+        run: python ops/formal_release/check_clock_native.py --case outage-only
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: clock-native-release-evidence
+          path: ${{ runner.temp }}/clock-native-01026/result.json
+          if-no-files-found: error
