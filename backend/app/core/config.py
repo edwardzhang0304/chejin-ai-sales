@@ -53,6 +53,9 @@ class Settings(BaseSettings):
     client_release_public_base_url: str = "https://127.0.0.1:8000/api"
     client_release_artifact_root: str = "/app/data/client-releases"
     internal_service_token: str = "dev-only-internal-service-token-change-before-production"
+    feiyu_forward_secret: str | None = None
+    feiyu_account_id: str = "default"
+    feiyu_account_ids: str = "default"
     c3_ai_adapter_mode: str = "real"
     c3_reply_action_ttl_seconds: int = 300
     c3_reply_segment_max_chars: int = 108
