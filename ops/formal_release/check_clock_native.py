@@ -281,6 +281,9 @@ def verify_client_confirmation(evidence, root):
             clock_reference={**reference, 'status': status})
         monitor.observe(receipt)
         sample = monitor.snapshot()
+        evidence.data.setdefault('client_confirmation_inputs', []).append(
+            {'reference': status, 'completed_monotonic': completed, 'sample': sample})
+        evidence.save()
         require(sample['comparison_status'] == 'aligned' and
                 sample['observed_monotonic'] > completed and
                 sample['timezone']['beijing_timezone'] is True, 'CLIENT_CONSUMER_FIXTURE_INVALID')
