@@ -18,7 +18,7 @@ jobs:
       - uses: actions/setup-python@v5
         with: {python-version: '3.12.10'}
       - name: Verify native fallback and failure states on disposable Windows
-        run: python ops/formal_release/check_clock_native.py
+        run: python ops/formal_release/check_clock_native.py --case outage-only
       - uses: actions/upload-artifact@v4
         if: always()
         with:

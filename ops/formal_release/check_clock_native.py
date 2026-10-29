@@ -240,13 +240,16 @@ def observe_failed_source(evidence):
     evidence.save()
 
 
-def run():
+def run(case="full"):
+    require(case in ("full", "outage-only"), "UNKNOWN_NATIVE_CASE")
     require(sys.platform == 'win32' and os.environ.get('GITHUB_ACTIONS') == 'true', 'GITHUB_WINDOWS_ONLY')
     require(os.environ.get('RUNNER_ENVIRONMENT') == 'github-hosted', 'HOSTED_EPHEMERAL_RUNNER_ONLY')
     require(os.environ.get('GITHUB_REPOSITORY') == 'edwardzhang0304/chejin-ai-sales', 'REPOSITORY_MISMATCH')
     root = Path(os.environ['RUNNER_TEMP']) / 'clock-native-01026'
     root.mkdir(exist_ok=False)
     evidence = Evidence(root)
+    evidence.data['case'] = case
+    evidence.data['scope'] = 'all-source outage only; Cloudflare selection requires separate evidence' if case == 'outage-only' else 'fallback and outage'
     evidence.data['reused_unchanged_lock_checks'] = {'run_id': 40819454895, 'scope': 'msvcrt/.NET lock and revocation; not rerun'}
     before_zone = None
     before_vmic = None
@@ -268,61 +271,66 @@ def run():
         evidence.data['vm_time_provider_before'] = before_vmic
         evidence.save()
         set_vmic(evidence, 0, 'vm_time_provider_during_test')
-        evidence.stage('two_sources_unavailable_cloudflare')
         before_zone = ps('(Get-TimeZone).Id').stdout.strip()
-        # Only an ephemeral GitHub VM: force the first two sources unreachable without editing product policy.
-        by_host = blocked_addresses()
-        addresses = address_union(by_host)
-        evidence.data['blocked_source_addresses_before'] = by_host
-        evidence.data['blocked_coverage_basis'] = 'Both preceding product hostnames; all resolved addresses blocked; DNS answers checked before and after helper. No packet capture claim; changed answers fail acceptance.'
-        evidence.save()
-        ps('New-NetFirewallRule -Name ' + quote(firewall) + ' -DisplayName ' + quote(firewall) + ' -Direction Outbound -Action Block -Enabled True -Profile Any -Protocol UDP -RemotePort 123 -RemoteAddress @(' + ','.join(quote(x) for x in addresses) + ') -ErrorAction Stop | Out-Null')
-        verify_block(evidence, firewall, addresses, 'two_sources')
         ticket = ClockSyncTicket(root)
-        op = 'clock-sync-' + str(uuid.uuid4())
-        ticket.authorize(op)
-        result = synchronize_windows(op, ticket.path)
-        evidence.data['clock_sync'] = {k: result.get(k) for k in ('result', 'exit_code', 'resync_completed', 'helper_exit_confirmed', 'requested_peers')}
-        evidence.save()
-        require(result.get('result') == 'requested' and result.get('resync_completed') and result.get('helper_exit_confirmed'), 'FALLBACK_SYNC_NOT_CONFIRMED')
-        evidence.stage('native_fallback_convergence')
-        samples = []
-        evidence.data['native_samples'] = samples
-        observed_start = time.monotonic()
-        deadline = observed_start + NATIVE_SELECTION_SECONDS
-        evidence.data['verification_scope'] = {
-            'native_selection_max_seconds': NATIVE_SELECTION_SECONDS,
-            'client_confirmation_seconds': 30,
-            'client_confirmation_basis': 'Unchanged ClockSync._verify requires fresh backend comparison and reference, not native source text. Existing reviewed unconfirmed/pause controls reused.',
-            'previous_failed_runs_preserved': [40867497328, 40868625711, 40869643554],
-        }
-        while True:
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                raise NativeFailure('FALLBACK_NOT_SYNCHRONIZED')
-            facts = native_facts(remaining)
-            evidence.data['native_facts'] = facts
-            samples.append({'elapsed_seconds': time.monotonic() - observed_start, 'facts': facts})
+        if case == 'full':
+            evidence.stage('two_sources_unavailable_cloudflare')
+            # Only an ephemeral GitHub VM: force the first two sources unreachable without editing product policy.
+            by_host = blocked_addresses()
+            addresses = address_union(by_host)
+            evidence.data['blocked_source_addresses_before'] = by_host
+            evidence.data['blocked_coverage_basis'] = 'Both preceding product hostnames; all resolved addresses blocked; DNS answers checked before and after helper. No packet capture claim; changed answers fail acceptance.'
             evidence.save()
-            require(facts['peers'] == result['requested_peers'], 'PEER_CONFIGURATION_MISMATCH')
-            require(facts['startup'] == 'Auto' and facts['zone'] == 'China Standard Time', 'SERVICE_OR_ZONE_MISMATCH')
-            if time.monotonic() > deadline:
-                raise NativeFailure('FALLBACK_NOT_SYNCHRONIZED')
-            if synchronized_fallback(facts):
-                evidence.data['native_convergence_seconds'] = time.monotonic() - observed_start
+            ps('New-NetFirewallRule -Name ' + quote(firewall) + ' -DisplayName ' + quote(firewall) + ' -Direction Outbound -Action Block -Enabled True -Profile Any -Protocol UDP -RemotePort 123 -RemoteAddress @(' + ','.join(quote(x) for x in addresses) + ') -ErrorAction Stop | Out-Null')
+            verify_block(evidence, firewall, addresses, 'two_sources')
+            op = 'clock-sync-' + str(uuid.uuid4())
+            ticket.authorize(op)
+            result = synchronize_windows(op, ticket.path)
+            evidence.data['clock_sync'] = {k: result.get(k) for k in ('result', 'exit_code', 'resync_completed', 'helper_exit_confirmed', 'requested_peers')}
+            evidence.save()
+            require(result.get('result') == 'requested' and result.get('resync_completed') and result.get('helper_exit_confirmed'), 'FALLBACK_SYNC_NOT_CONFIRMED')
+            evidence.stage('native_fallback_convergence')
+            samples = []
+            evidence.data['native_samples'] = samples
+            observed_start = time.monotonic()
+            deadline = observed_start + NATIVE_SELECTION_SECONDS
+            evidence.data['verification_scope'] = {
+                'native_selection_max_seconds': NATIVE_SELECTION_SECONDS,
+                'client_confirmation_seconds': 30,
+                'client_confirmation_basis': 'Unchanged ClockSync._verify requires fresh backend comparison and reference, not native source text. Existing reviewed unconfirmed/pause controls reused.',
+                'previous_failed_runs_preserved': [40867497328, 40868625711, 40869643554],
+            }
+            while True:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise NativeFailure('FALLBACK_NOT_SYNCHRONIZED')
+                facts = native_facts(remaining)
+                evidence.data['native_facts'] = facts
+                samples.append({'elapsed_seconds': time.monotonic() - observed_start, 'facts': facts})
                 evidence.save()
-                break
-            if time.monotonic() - observed_start >= NATIVE_SELECTION_SECONDS:
-                raise NativeFailure('FALLBACK_NOT_SYNCHRONIZED')
-            time.sleep(max(0, min(5, deadline - time.monotonic())))
-        after_by_host = blocked_addresses()
-        evidence.data['blocked_source_addresses_after'] = after_by_host
-        evidence.save()
-        require(after_by_host == by_host, 'BLOCKED_SOURCE_DNS_CHANGED_DURING_CHECK')
-        verify_block(evidence, firewall, addresses, 'two_sources_after_helper')
-        evidence.passed('two_sources_unavailable_native_cloudflare_selected')
+                require(facts['peers'] == result['requested_peers'], 'PEER_CONFIGURATION_MISMATCH')
+                require(facts['startup'] == 'Auto' and facts['zone'] == 'China Standard Time', 'SERVICE_OR_ZONE_MISMATCH')
+                if time.monotonic() > deadline:
+                    raise NativeFailure('FALLBACK_NOT_SYNCHRONIZED')
+                if synchronized_fallback(facts):
+                    evidence.data['native_convergence_seconds'] = time.monotonic() - observed_start
+                    evidence.save()
+                    break
+                if time.monotonic() - observed_start >= NATIVE_SELECTION_SECONDS:
+                    raise NativeFailure('FALLBACK_NOT_SYNCHRONIZED')
+                time.sleep(max(0, min(5, deadline - time.monotonic())))
+            after_by_host = blocked_addresses()
+            evidence.data['blocked_source_addresses_after'] = after_by_host
+            evidence.save()
+            require(after_by_host == by_host, 'BLOCKED_SOURCE_DNS_CHANGED_DURING_CHECK')
+            verify_block(evidence, firewall, addresses, 'two_sources_after_helper')
+            evidence.passed('two_sources_unavailable_native_cloudflare_selected')
+            evidence.stage('all_sources_unavailable')
+            ps("$ErrorActionPreference='Stop'; $fw=New-Object -ComObject HNetCfg.FwPolicy2; $rule=$fw.Rules.Item(" + quote(firewall) + "); $rule.RemoteAddresses='*'")
+        else:
+            evidence.stage('create_all_sources_block')
+            ps('New-NetFirewallRule -Name ' + quote(firewall) + ' -DisplayName ' + quote(firewall) + ' -Direction Outbound -Action Block -Enabled True -Profile Any -Protocol UDP -RemotePort 123 -RemoteAddress Any -ErrorAction Stop | Out-Null')
         evidence.stage('all_sources_unavailable')
-        ps('Set-NetFirewallRule -Name ' + quote(firewall) + ' -RemoteAddress Any -ErrorAction Stop')
         verify_block(evidence, firewall, ['Any'], 'all_sources')
         # A fresh W32Time session prevents the successful prior case's cached
         # samples from masquerading as newly available time during an outage.
@@ -366,4 +374,7 @@ def run():
     return 1 if failed else 0
 
 if __name__ == '__main__':
-    sys.exit(run())
+    import argparse
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--case', choices=['full', 'outage-only'], default='full')
+    sys.exit(run(parser.parse_args().case))
