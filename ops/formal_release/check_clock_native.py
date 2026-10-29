@@ -126,6 +126,22 @@ def address_union(by_host):
     return sorted({address for values in by_host.values() for address in values})
 
 
+def single_firewall_address(value):
+    import ipaddress
+    if value == '*':
+        return 'Any'
+    if '-' in value:
+        first, last = value.split('-', 1)
+        start, end = ipaddress.ip_address(first), ipaddress.ip_address(last)
+        require(start == end, 'NON_SINGLETON_FIREWALL_RANGE')
+        return str(start)
+    if '/' in value:
+        network = ipaddress.ip_network(value, strict=False)
+        require(network.num_addresses == 1, 'NON_SINGLETON_FIREWALL_NETWORK')
+        return str(network.network_address)
+    return str(ipaddress.ip_address(value))
+
+
 def verify_block(evidence, name, addresses, stage):
     evidence.stage('verify_firewall_' + stage)
     facts = firewall_facts(name)
@@ -140,7 +156,7 @@ def verify_block(evidence, name, addresses, stage):
     require(rule['enabled'] is True and rule['direction'] == 2 and
             rule['action'] == 0 and rule['profile'] == 2147483647 and
             rule['protocol'] == 17 and rule['remote_port'] == '123', 'FIREWALL_SCOPE_MISMATCH')
-    actual = sorted('Any' if x == '*' else x.removesuffix('/32').removesuffix('/128') for x in rule['remote_address'])
+    actual = sorted(single_firewall_address(x) for x in rule['remote_address'])
     require(actual == sorted(addresses), 'FIREWALL_ADDRESS_MISMATCH')
 
 
