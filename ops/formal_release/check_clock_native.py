@@ -103,13 +103,12 @@ def require(value, code):
     if not value:
         raise NativeFailure(code)
 
-def rule_query(name, store):
-    # Filter in the native provider; enumerating every hosted-runner rule can time out.
-    return "try { @(Get-NetFirewallRule -PolicyStore " + store + " -Name " + quote(name) + " -ErrorAction Stop) } catch { if ($_.FullyQualifiedErrorId -ne 'CmdletizationQuery_NotFound_Name,Get-NetFirewallRule') { throw } }"
-
-
 def firewall_facts(name):
-    script = "$rules=@(& {" + rule_query(name, "ActiveStore") + "}); $profiles=@(Get-NetFirewallProfile -PolicyStore ActiveStore -ErrorAction Stop); $svc=Get-Service MpsSvc -ErrorAction Stop; $items=@($rules | ForEach-Object {$r=$_; $a=$r | Get-NetFirewallAddressFilter -ErrorAction Stop; $p=$r | Get-NetFirewallPortFilter -ErrorAction Stop; @{enabled=[string]$r.Enabled;direction=[string]$r.Direction;action=[string]$r.Action;profile=[string]$r.Profile;protocol=[string]$p.Protocol;remote_port=@($p.RemotePort);remote_address=@($a.RemoteAddress)}}); @{rules=$items;profiles=@($profiles | ForEach-Object {@{name=[string]$_.Name;enabled=[bool]$_.Enabled}});service=[string]$svc.Status} | ConvertTo-Json -Depth 5 -Compress"
+    # COM reads the effective local policy without slow CIM filter associations.
+    # A single active profile is required: COM automation can hide S_FALSE
+    # (partial applicability across profiles). Multi-profile fixtures fail closed.
+    # The exact persistent key is checked too.
+    script = r"""$ErrorActionPreference='Stop'; $fw=New-Object -ComObject HNetCfg.FwPolicy2; $name=__NAME__; $items=@($fw.Rules | Where-Object {$_.Name -eq $name} | ForEach-Object {@{enabled=[bool]$_.Enabled;direction=[int]$_.Direction;action=[int]$_.Action;profile=[int]$_.Profiles;protocol=[int]$_.Protocol;remote_port=[string]$_.RemotePorts;remote_address=@(([string]$_.RemoteAddresses).Split(','))}}); $key=Get-Item -LiteralPath 'HKLM:\SYSTEM\CurrentControlSet\Services\SharedAccess\Parameters\FirewallPolicy\FirewallRules' -ErrorAction Stop; @{rules=$items;profiles=@(1,2,4 | ForEach-Object {@{id=$_;enabled=[bool]$fw.FirewallEnabled($_)}});service=[string](Get-Service MpsSvc -ErrorAction Stop).Status;active_profile_types=[int]$fw.CurrentProfileTypes;local_policy_modify_state=[int]$fw.LocalPolicyModifyState;persistent_rule_exists=($null -ne $key.GetValue($name,$null))} | ConvertTo-Json -Depth 5 -Compress""".replace('__NAME__', quote(name))
     return json.loads(ps(script).stdout)
 
 
@@ -133,13 +132,15 @@ def verify_block(evidence, name, addresses, stage):
     evidence.data.setdefault('firewall_states', {})[stage] = facts
     evidence.save()
     require(facts['service'] == 'Running' and len(facts['profiles']) == 3 and
-            all(x['enabled'] is True for x in facts['profiles']), 'FIREWALL_NOT_ACTIVE')
+            all(x['enabled'] is True for x in facts['profiles']) and
+            facts['active_profile_types'] in (1, 2, 4) and
+            facts['local_policy_modify_state'] == 0 and facts['persistent_rule_exists'] is True, 'FIREWALL_NOT_ACTIVE')
     require(len(facts['rules']) == 1, 'UNIQUE_FIREWALL_RULE_MISSING')
     rule = facts['rules'][0]
-    require(rule['enabled'] == 'True' and rule['direction'] == 'Outbound' and
-            rule['action'] == 'Block' and rule['profile'] == 'Any' and
-            rule['protocol'] in ('UDP', '17') and rule['remote_port'] == ['123'], 'FIREWALL_SCOPE_MISMATCH')
-    actual = sorted(x.removesuffix('/32').removesuffix('/128') for x in rule['remote_address'])
+    require(rule['enabled'] is True and rule['direction'] == 2 and
+            rule['action'] == 0 and rule['profile'] == 2147483647 and
+            rule['protocol'] == 17 and rule['remote_port'] == '123', 'FIREWALL_SCOPE_MISMATCH')
+    actual = sorted('Any' if x == '*' else x.removesuffix('/32').removesuffix('/128') for x in rule['remote_address'])
     require(actual == sorted(addresses), 'FIREWALL_ADDRESS_MISMATCH')
 
 
@@ -150,9 +151,7 @@ def cleanup_firewall(evidence, name):
     evidence.data['stage'] = 'cleanup_firewall_read_active'
     facts = firewall_facts(name)
     evidence.data['firewall_after_cleanup'] = facts
-    evidence.data['stage'] = 'cleanup_firewall_read_persistent'
-    count = int(ps("@(& {" + rule_query(name, "PersistentStore") + "}).Count").stdout.strip())
-    require(not facts['rules'] and count == 0, 'FIREWALL_CLEANUP_NOT_CONFIRMED')
+    require(not facts['rules'] and facts['persistent_rule_exists'] is False, 'FIREWALL_CLEANUP_NOT_CONFIRMED')
 
 
 def restore_timezone(evidence, zone):
