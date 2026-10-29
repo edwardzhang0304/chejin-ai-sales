@@ -167,6 +167,10 @@ def set_vmic(evidence, value, key):
     require(actual == value, 'VM_TIME_PROVIDER_STATE_MISMATCH')
 
 
+def native_facts(timeout):
+    return json.loads(ps(r"""$p=Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Services\W32Time\Parameters'; $s=Get-CimInstance Win32_Service -Filter "Name='W32Time'"; $w=Join-Path ([Environment]::GetFolderPath('System')) 'w32tm.exe'; $source=(& $w /query /source | Out-String).Trim(); if($LASTEXITCODE -ne 0){throw 'source query failed'}; $status=(& $w /query /status /verbose | Out-String); if($LASTEXITCODE -ne 0){throw 'status query failed'}; @{peers=$p.NtpServer;startup=$s.StartMode;source=$source;status=$status;zone=(Get-TimeZone).Id} | ConvertTo-Json -Compress""", timeout=timeout).stdout)
+
+
 def synchronized_fallback(facts):
     # Hosted windows-2022 emits English w32tm output. Missing/unknown fields fail closed.
     import re
@@ -198,6 +202,34 @@ def observe_native_details(evidence, label):
         evidence.save()
 
 
+def observe_delayed_selection(evidence):
+    # Diagnosis only: the 30s acceptance has ALREADY failed and stays failed.
+    # No new resync, configuration, authorization, or retry of the helper.
+    samples = []
+    evidence.data['post_failure_selection'] = {'scope': 'readonly diagnosis, never acceptance',
+                                              'max_seconds': 360, 'samples': samples}
+    start = time.monotonic()
+    deadline = start + 360
+    while True:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+        try:
+            facts = native_facts(min(15, remaining))
+            samples.append({'elapsed_after_failure_seconds': time.monotonic()-start, 'facts': facts})
+            evidence.save()
+            if synchronized_fallback(facts):
+                evidence.data['post_failure_selection']['synchronized_later'] = True
+                evidence.save()
+                break
+        except Exception as exc:
+            samples.append({'elapsed_after_failure_seconds': time.monotonic()-start,
+                            'error': failure(exc, 'post_failure_selection')})
+            evidence.save()
+            break
+        time.sleep(max(0, min(30, deadline-time.monotonic())))
+
+
 def observe_failed_source(evidence):
     # Read-only diagnostics AFTER failure. Observations never change the verdict.
     observe_native_details(evidence, 'failed_fallback')
@@ -207,6 +239,7 @@ def observe_failed_source(evidence):
     except Exception as exc:
         evidence.data['fallback_readonly_stripchart'] = {'error': failure(exc, 'stripchart')}
     evidence.save()
+    observe_delayed_selection(evidence)
 
 
 def run():
@@ -261,7 +294,7 @@ def run():
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 raise NativeFailure('FALLBACK_NOT_SYNCHRONIZED')
-            facts = json.loads(ps(r"""$p=Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Services\W32Time\Parameters'; $s=Get-CimInstance Win32_Service -Filter "Name='W32Time'"; $w=Join-Path ([Environment]::GetFolderPath('System')) 'w32tm.exe'; $source=(& $w /query /source | Out-String).Trim(); if($LASTEXITCODE -ne 0){throw 'source query failed'}; $status=(& $w /query /status /verbose | Out-String); if($LASTEXITCODE -ne 0){throw 'status query failed'}; @{peers=$p.NtpServer;startup=$s.StartMode;source=$source;status=$status;zone=(Get-TimeZone).Id} | ConvertTo-Json -Compress""", timeout=remaining).stdout)
+            facts = native_facts(remaining)
             evidence.data['native_facts'] = facts
             samples.append({'elapsed_seconds': time.monotonic() - observed_start, 'facts': facts})
             evidence.save()
