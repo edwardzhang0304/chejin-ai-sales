@@ -284,17 +284,6 @@ export function DashboardPage() {
   // Share the existing visible-page refresh scheduler; failures retain the
   // last successful snapshot and its timestamp, without clearing the page.
   useAutoRefresh(refresh, !loading && !invalidDates && data !== null);
-  const coverage = [
-    ...new Set(
-      [
-        ...(data?.coverage || []),
-        ...metrics
-          .map((m) => data?.metrics[m.key].reason)
-          .filter((s): s is string => !!s),
-        data?.vehicles.amount.reason,
-      ].filter((s): s is string => !!s),
-    ),
-  ];
   return (
     <div
       className={`dashboard ${loading ? "is-loading" : ""}`}
@@ -502,7 +491,7 @@ export function DashboardPage() {
               </ResponsiveContainer>
             ) : (
               <div className="state-box">
-                {loading ? "正在加载趋势" : "趋势数据不可用，详见统计覆盖说明"}
+                {loading ? "正在加载趋势" : "趋势数据暂不可用"}
               </div>
             )}
           </div>
@@ -602,19 +591,6 @@ export function DashboardPage() {
           )}
         </div>
       </section>
-      <details className="dashboard-coverage">
-        <summary>统计覆盖说明</summary>
-        {coverage.map((message) => (
-          <p key={message}>{message}</p>
-        ))}
-        {data && (
-          <p>
-            人工已回复轮次：{data.metrics.human_replied_rounds ?? "—"}
-            ；待人工响应轮次：{data.metrics.human_pending_rounds ?? "—"}
-            。
-          </p>
-        )}
-      </details>
     </div>
   );
 }
