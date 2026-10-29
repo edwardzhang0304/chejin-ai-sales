@@ -12,7 +12,9 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / 'worker-client'))
 from chejin_worker_client.clock_sync_ticket import ClockSyncTicket
 from chejin_worker_client.windows_clock_sync import powershell_path, encoded, helper_script, synchronize_windows
-PRODUCT = '79fcf01691ff23fbabbf2f3d91d38d5a9f7af220'
+PRODUCT = '38118627933b917cc35e988937ede1cd7c23b849'
+BLOCKED_HOSTS = ('ntp.aliyun.com', 'time.windows.com')
+FALLBACK_HOST = 'time.cloudflare.com'
 # OS source selection is not ClockSync's 30s backend-comparison UI window.
 # Run40869643554 observed native fallback only after about278s, without resync.
 NATIVE_SELECTION_SECONDS = 360
@@ -111,11 +113,18 @@ def firewall_facts(name):
     return json.loads(ps(script).stdout)
 
 
-def primary_addresses():
-    value = json.loads(ps("ConvertTo-Json -InputObject @([Net.Dns]::GetHostAddresses('ntp.aliyun.com') | ForEach-Object {$_.IPAddressToString}) -Compress").stdout)
-    require(isinstance(value, list) and bool(value), 'PRIMARY_DNS_EMPTY')
+def blocked_addresses():
     import ipaddress
-    return sorted({str(ipaddress.ip_address(x)) for x in value})
+    result = {}
+    for host in BLOCKED_HOSTS:
+        value = json.loads(ps("ConvertTo-Json -InputObject @([Net.Dns]::GetHostAddresses(" + quote(host) + ") | ForEach-Object {$_.IPAddressToString}) -Compress").stdout)
+        require(isinstance(value, list) and bool(value), 'BLOCKED_SOURCE_DNS_EMPTY')
+        result[host] = sorted({str(ipaddress.ip_address(x)) for x in value})
+    return result
+
+
+def address_union(by_host):
+    return sorted({address for values in by_host.values() for address in values})
 
 
 def verify_block(evidence, name, addresses, stage):
@@ -182,7 +191,7 @@ def synchronized_fallback(facts):
         return int(match.group(1)) if match else None
     leap, stratum, error = (number(x) for x in ('Leap Indicator', 'Stratum', 'Last Sync Error'))
     age = re.search(r'^Time since Last Good Sync Time:\s*([0-9.]+)s', facts['status'], re.MULTILINE)
-    return ('time.windows.com' in facts['source'].lower() and leap == 0 and
+    return (facts['source'].lower().split(',', 1)[0].strip() == FALLBACK_HOST and leap == 0 and
             stratum is not None and 1 <= stratum <= 15 and error == 0 and
             age is not None and 0 <= float(age.group(1)) <= 30)
 
@@ -209,7 +218,7 @@ def observe_failed_source(evidence):
     # Read-only diagnostics AFTER failure. Observations never change the verdict.
     observe_native_details(evidence, 'failed_fallback')
     try:
-        probe = ps(r"""$w=Join-Path ([Environment]::GetFolderPath('System')) 'w32tm.exe'; $text=(& $w /stripchart /computer:time.windows.com /dataonly /samples:2 | Out-String); @{exit_code=$LASTEXITCODE;output=$text} | ConvertTo-Json -Compress""", timeout=20)
+        probe = ps(r"""$w=Join-Path ([Environment]::GetFolderPath('System')) 'w32tm.exe'; $text=(& $w /stripchart /computer:time.cloudflare.com /dataonly /samples:2 | Out-String); @{exit_code=$LASTEXITCODE;output=$text} | ConvertTo-Json -Compress""", timeout=20)
         evidence.data['fallback_readonly_stripchart'] = json.loads(probe.stdout)
     except Exception as exc:
         evidence.data['fallback_readonly_stripchart'] = {'error': failure(exc, 'stripchart')}
@@ -244,15 +253,16 @@ def run():
         evidence.data['vm_time_provider_before'] = before_vmic
         evidence.save()
         set_vmic(evidence, 0, 'vm_time_provider_during_test')
-        evidence.stage('primary_unavailable_fallback')
+        evidence.stage('two_sources_unavailable_cloudflare')
         before_zone = ps('(Get-TimeZone).Id').stdout.strip()
-        # Only an ephemeral GitHub VM: force the primary unreachable without editing product policy.
-        addresses = primary_addresses()
-        evidence.data['primary_addresses_before'] = addresses
-        evidence.data['primary_coverage_basis'] = 'Exact product hostname; all resolved addresses blocked; DNS answers checked before and after helper. No packet capture claim; changed answers fail acceptance.'
+        # Only an ephemeral GitHub VM: force the first two sources unreachable without editing product policy.
+        by_host = blocked_addresses()
+        addresses = address_union(by_host)
+        evidence.data['blocked_source_addresses_before'] = by_host
+        evidence.data['blocked_coverage_basis'] = 'Both preceding product hostnames; all resolved addresses blocked; DNS answers checked before and after helper. No packet capture claim; changed answers fail acceptance.'
         evidence.save()
         ps('New-NetFirewallRule -Name ' + quote(firewall) + ' -DisplayName ' + quote(firewall) + ' -Direction Outbound -Action Block -Enabled True -Profile Any -Protocol UDP -RemotePort 123 -RemoteAddress @(' + ','.join(quote(x) for x in addresses) + ') -ErrorAction Stop | Out-Null')
-        verify_block(evidence, firewall, addresses, 'primary_only')
+        verify_block(evidence, firewall, addresses, 'two_sources')
         ticket = ClockSyncTicket(root)
         op = 'clock-sync-' + str(uuid.uuid4())
         ticket.authorize(op)
@@ -290,12 +300,12 @@ def run():
             if time.monotonic() - observed_start >= NATIVE_SELECTION_SECONDS:
                 raise NativeFailure('FALLBACK_NOT_SYNCHRONIZED')
             time.sleep(max(0, min(5, deadline - time.monotonic())))
-        after_addresses = primary_addresses()
-        evidence.data['primary_addresses_after'] = after_addresses
+        after_by_host = blocked_addresses()
+        evidence.data['blocked_source_addresses_after'] = after_by_host
         evidence.save()
-        require(after_addresses == addresses, 'PRIMARY_DNS_CHANGED_DURING_CHECK')
-        verify_block(evidence, firewall, addresses, 'primary_after_helper')
-        evidence.passed('primary_unavailable_native_fallback_selected')
+        require(after_by_host == by_host, 'BLOCKED_SOURCE_DNS_CHANGED_DURING_CHECK')
+        verify_block(evidence, firewall, addresses, 'two_sources_after_helper')
+        evidence.passed('two_sources_unavailable_native_cloudflare_selected')
         evidence.stage('all_sources_unavailable')
         ps('Set-NetFirewallRule -Name ' + quote(firewall) + ' -RemoteAddress Any -ErrorAction Stop')
         verify_block(evidence, firewall, ['Any'], 'all_sources')
