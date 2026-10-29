@@ -208,7 +208,7 @@ def test_fixed_helper_guards_policy_before_changes_and_uses_safe_literals(monkey
     assert script.index('PartOfDomain') < script.index('Set-TimeZone')
     assert script.index("'Disabled'") < script.index('Set-TimeZone')
     assert "quotes''$(bad).ticket'" in script
-    assert "'/manualpeerlist:ntp.aliyun.com,0x8 time.windows.com,0xa'" in script
+    assert "'/manualpeerlist:ntp.aliyun.com,0x8 time.windows.com,0xa time.cloudflare.com,0xa'" in script
     assert 'China Standard Time' in script
     assert script.index("'Disabled'") < script.index('Set-Service W32Time -StartupType Automatic')
     assert '/nowait' not in script and '& $exe /resync /rediscover | Out-Null' in script

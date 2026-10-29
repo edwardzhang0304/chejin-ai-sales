@@ -125,8 +125,30 @@ def test_all_sources_fail_is_unknown_not_skew_and_vpc_is_explicit():
         calls.append(host); raise TimeoutError()
     reference = ClockReference('ntp.cloud.aliyuncs.com', query=query)
     reference.refresh()
-    assert calls == ['ntp.cloud.aliyuncs.com', 'ntp.aliyun.com', 'time.windows.com']
+    assert calls == ['ntp.cloud.aliyuncs.com', 'ntp.aliyun.com', 'time.windows.com', 'time.cloudflare.com']
     sample = reference.snapshot()
     assert sample['status'] == 'unconfirmed'
-    assert len(sample['attempts']) == 3
+    assert len(sample['attempts']) == 4
     assert 'offset_lower_seconds' not in sample
+
+
+@pytest.mark.parametrize('offset,status', [(0, 'aligned'), (30, 'skewed')])
+def test_two_outages_reach_cloudflare_without_hiding_valid_skew(offset, status):
+    calls = []
+    recovered = [False]
+    def query(host):
+        calls.append(host)
+        if host != 'time.cloudflare.com' and not recovered[0]:
+            raise TimeoutError('private transport error')
+        return decode_sample(packet(1793232000 + offset), b'12345678',
+                             1793232000-.01, 1793232000+.01, .02)
+    reference = ClockReference(query=query)
+    reference.refresh()
+    sample = reference.snapshot()
+    assert calls == ['ntp.aliyun.com', 'time.windows.com', 'time.cloudflare.com']
+    assert sample['status'] == status and sample['source'] == 'cloudflare_ntp'
+    assert sample['host'] == 'time.cloudflare.com' and sample['authenticated'] is False
+    assert [x['reason'] for x in sample['attempts'][:2]] == ['timeout', 'timeout']
+    assert 'private transport error' not in str(sample)
+    recovered[0] = True; calls.clear(); reference.refresh()
+    assert calls == ['ntp.aliyun.com'] and reference.snapshot()['status'] == status

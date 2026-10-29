@@ -68,7 +68,7 @@ def test_reference_attempt_evidence_is_bounded_and_ignores_arbitrary_fields():
         {**good, 'reason': {'private': 'secret'}, 'body': 'secret'}, *([good] * 100)]}
     result = reference_summary(value)
     assert result['status'] == 'aligned'
-    assert result['attempts'] == [{'host': good['host'], 'status': good['status'], 'elapsed_seconds': 2}]
+    assert result['attempts'] == [{'host': good['host'], 'status': good['status'], 'elapsed_seconds': 2}, good]
     assert 'secret' not in str(result)
 
 
@@ -346,3 +346,29 @@ def test_update_close_preserves_existing_writer_gate_and_drains_diagnostics(tmp_
     service.connection.backend.clock_diagnostics=SimpleNamespace(flush=lambda **kw:False)
     with pytest.raises(RuntimeError,match='UPDATE_WRITERS_NOT_STOPPED'):
         HookWorkerServices.close(service,deadline=time.monotonic()+.01)
+
+
+def test_cloudflare_reference_reaches_worker_export_without_bypassing_safety(tmp_path):
+    from app.services.clock_reference import ClockReference
+    def query(host):
+        if host != 'time.cloudflare.com':
+            raise TimeoutError()
+        return {'status': 'aligned', 'offset_lower_seconds': -.01,
+                'offset_upper_seconds': .01, 'round_trip_seconds': .02}
+    reference = ClockReference(query=query); reference.refresh()
+    sample = receipt(); sample.clock_reference = reference.snapshot()
+    monitor = ClockDiagnostics(tmp_path, zone_reader=lambda: ZONE)
+    monitor.observe(sample); assert monitor.flush()
+    assert monitor.snapshot()['verification']['status'] == 'verified'
+    with zipfile.ZipFile(export_bundle(tmp_path, tmp_path/'third-source.zip')) as bundle:
+        exported = json.loads(bundle.read('logs/runtime/clock-check.json'))
+    item = exported['recent_checks'][-1]['backend_reference']
+    assert item['host'] == 'time.cloudflare.com' and item['source'] == 'cloudflare_ntp'
+    assert len(item['attempts']) == 3 and exported['changes_system_clock'] is False
+    assert verification_view(compare_clock(sample, {**ZONE, 'beijing_timezone': False}))['status'] == 'warning'
+    skew = receipt(30); skew.clock_reference = sample.clock_reference
+    assert verification_view(compare_clock(skew, ZONE))['status'] == 'warning'
+    for change in ({'source': 'windows_ntp'}, {'sample_age_seconds': 301}, {'host': 'unapproved.example'}):
+        assert reference_summary({**sample.clock_reference, **change}) == {'status': 'unconfirmed'}
+    sample.clock_reference = {**sample.clock_reference, 'status': 'unconfirmed'}
+    assert verification_view(compare_clock(sample, ZONE))['status'] == 'unconfirmed'

@@ -11,11 +11,12 @@ BEIJING_TIMEZONE = timezone(timedelta(seconds=BEIJING_UTC_OFFSET_SECONDS), "Asia
 CLOCK_REFERENCE_MAX_AGE = 300
 # One allowlist for backend observations, Worker validation and Windows repair.
 # The VPC endpoint is only used when explicitly configured on the backend.
-CLOCK_PUBLIC_NTP_HOSTS = ("ntp.aliyun.com", "time.windows.com")
+CLOCK_PUBLIC_NTP_HOSTS = ("ntp.aliyun.com", "time.windows.com", "time.cloudflare.com")
 CLOCK_REFERENCE_SOURCES = {
     "ntp.aliyun.com": "aliyun_ntp",
     "ntp.cloud.aliyuncs.com": "aliyun_ntp",
     "time.windows.com": "windows_ntp",
+    "time.cloudflare.com": "cloudflare_ntp",
 }
 
 
