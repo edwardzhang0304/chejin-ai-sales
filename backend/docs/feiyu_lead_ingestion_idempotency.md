@@ -24,9 +24,13 @@ The endpoint's shared secret and compact response are useful and remain in place
 
 ## Transaction and recovery behavior
 
-For identified clues, the receiver's account/clue receipt and the native business operation are committed in one database transaction. The receipt stores keyed fingerprints of normalized contact identities and the canonicalized accepted payload, the associated lead, the HTTP status, and the compact response body. It does not store raw phone values or payload contents.
+For identified clues, the receiver's account/clue receipt and the native business operation are committed in one database transaction. New receipts store keyed fingerprints of normalized contact identities and the canonicalized accepted payload, the associated lead, the HTTP status, and the compact response body. They do not store raw phone values or payload contents.
 
 The receipt lookup and identity lock happen before calling the native create path. An existing receipt with matching contact and payload fingerprints replays its stored response. A changed phone, WeChat ID, or email for the same identity returns an identity conflict. A same-contact request with changed name, remark, or source details returns an explicit update-review error and makes no changes; updates are not silently discarded or applied. A new clue ID that hits the native phone duplicate path commits the one native duplicate event and the receipt together. This lets the receiver safely retry after the database committed but the acknowledgement was lost.
+
+Revision `20261029_0031` reconciles databases where revision `20261029_0030` was applied before or after payload fingerprints were added to that revision. It adds the column as nullable when absent and relaxes `NOT NULL` when present. Existing rows with a null payload fingerprint are legacy receipts: contact changes still return an identity conflict, while same-contact retries return the existing manual-review response because the stored data cannot prove whether the full payload is unchanged. They are never assigned a fingerprint from a retry. New receipts always store a computed 64-character payload fingerprint. Downgrading revision `0031` intentionally retains the nullable column and receipt data, since the prior revision had two deployed schema shapes and removing the column would discard computed fingerprints or make one prior schema incompatible.
+
+When rolling back the application, keep the database at revision `0030` or later; do not downgrade to `0029`, which drops the receipt table.
 
 PostgreSQL uses a transaction-scoped identity lock and a unique `(account_id, clue_id)` constraint. The existing native lead-creation lock still protects phone deduplication and is acquired inside the same transaction. A database/commit error rolls back all business and receipt writes; the receiver can retry the request.
 

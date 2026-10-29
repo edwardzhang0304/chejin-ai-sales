@@ -161,10 +161,10 @@ def process_feiyu_lead(
                 409,
                 {"lead_id": existing.lead_id},
             )
-        if existing.payload_fingerprint != payload_fingerprint:
+        if existing.payload_fingerprint is None or existing.payload_fingerprint != payload_fingerprint:
             raise AppError(
                 "FEIYU_CLUE_UPDATE_REQUIRES_REVIEW",
-                "同一飞鱼线索编号的资料已变化，本次更新未应用，请人工核对处理",
+                "同一飞鱼线索编号的资料无法验证或已变化，本次更新未应用，请人工核对处理",
                 409,
                 {
                     "lead_id": existing.lead_id,

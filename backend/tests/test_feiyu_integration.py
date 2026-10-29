@@ -547,6 +547,75 @@ def test_same_feiyu_clue_with_changed_details_returns_manual_review_without_muta
         assert db.scalar(select(func.count()).select_from(Task).where(Task.lead_id == lead_id)) == 1
 
 
+def test_legacy_feiyu_receipt_without_payload_fingerprint_requires_review():
+    sales_ids = _create_sales("张伟")
+    headers = _headers(account_id="account-a")
+    original_payload = {
+        "customer_name": "旧版本飞鱼客户",
+        "phones": ["13896676895"],
+        "remark": "旧版资料备注",
+        "custom_fields": {"feiyu": {"id": "legacy-receipt-review", "adv_id": "legacy-ad"}},
+    }
+    first = client.post(FEIYU_LEADS_URL, headers=headers, json=original_payload)
+    assert first.status_code == 200
+    lead_id = first.json()["data"]["id"]
+    cursor_after_create = _round_robin_cursor()
+
+    with SessionLocal() as db:
+        receipt = db.scalar(
+            select(FeiyuLeadReceipt).where(
+                FeiyuLeadReceipt.account_id == "account-a",
+                FeiyuLeadReceipt.clue_id == "legacy-receipt-review",
+            )
+        )
+        assert receipt is not None
+        assert receipt.payload_fingerprint is not None
+        assert len(receipt.payload_fingerprint) == 64
+        receipt.payload_fingerprint = None
+        db.commit()
+
+    same_payload = client.post(FEIYU_LEADS_URL, headers=headers, json=original_payload)
+    changed_payload = {
+        **original_payload,
+        "remark": "重试中无法验证的更新备注",
+        "custom_fields": {"feiyu": {"id": "legacy-receipt-review", "adv_id": "changed-ad"}},
+    }
+    changed_details = client.post(FEIYU_LEADS_URL, headers=headers, json=changed_payload)
+    changed_contact = {
+        **original_payload,
+        "phones": ["13896676896"],
+    }
+    contact_conflict = client.post(FEIYU_LEADS_URL, headers=headers, json=changed_contact)
+
+    for response in (same_payload, changed_details):
+        assert response.status_code == 409
+        assert response.json()["code"] == "FEIYU_CLUE_UPDATE_REQUIRES_REVIEW"
+        assert response.json()["data"]["lead_id"] == lead_id
+        assert response.json()["data"]["update_applied"] is False
+        assert response.json()["data"]["manual_review_required"] is True
+        assert "无法验证或已变化" in response.json()["message"]
+    assert contact_conflict.status_code == 409
+    assert contact_conflict.json()["code"] == "FEIYU_CLUE_IDENTITY_CONFLICT"
+    assert _round_robin_cursor() == cursor_after_create
+    with SessionLocal() as db:
+        lead = db.get(Lead, lead_id)
+        receipt = db.scalar(
+            select(FeiyuLeadReceipt).where(
+                FeiyuLeadReceipt.account_id == "account-a",
+                FeiyuLeadReceipt.clue_id == "legacy-receipt-review",
+            )
+        )
+        assert lead is not None and lead.sales_id == sales_ids[0]
+        assert lead.duplicate_count == 0
+        assert receipt is not None and receipt.payload_fingerprint is None
+        assert db.scalar(select(func.count()).select_from(Lead)) == 1
+        assert db.scalar(select(func.count()).select_from(FeiyuLeadReceipt)) == 1
+        assert db.scalar(select(func.count()).select_from(LeadNote)) == 1
+        assert db.scalar(select(func.count()).select_from(LeadDuplicateEvent)) == 0
+        assert db.scalar(select(func.count()).select_from(LeadAssignment)) == 1
+        assert db.scalar(select(func.count()).select_from(Task)) == 1
+
+
 def test_feiyu_clue_id_alias_replays_the_same_canonical_identity():
     _create_sales("张伟")
     headers = _headers(account_id="account-a")
