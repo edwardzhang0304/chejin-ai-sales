@@ -6,14 +6,13 @@ from fastapi import APIRouter, Depends, Header, Request
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 from sqlalchemy.orm import Session
 
-from app.api.response import ok
 from app.core.config import get_settings
 from app.core.database import get_db
 from app.core.request_context import ActorContext
 from app.core.request_id import get_request_id
-from app.errors import AppError, DuplicateLeadError
+from app.errors import AppError
 from app.schemas.lead import LeadCreate
-from app.services import lead_service
+from app.services.feiyu_lead_service import process_feiyu_lead
 
 
 router = APIRouter(tags=["feiyu"])
@@ -29,6 +28,7 @@ class FeiyuLeadCreate(BaseModel):
     phones: list[str] = Field(min_length=1, max_length=5)
     wechats: list[str] = Field(default_factory=list, max_length=5)
     emails: list[str] = Field(default_factory=list, max_length=5)
+    remark: str | None = Field(default=None, max_length=1000)
     custom_fields: dict[str, Any] = Field(default_factory=dict)
 
     @field_validator("customer_name")
@@ -61,6 +61,7 @@ def create_feiyu_lead(
     payload: FeiyuLeadCreate,
     request: Request,
     db: Session = Depends(get_db),
+    account_id: str | None = Header(default=None, alias="X-Feiyu-Account-ID"),
 ):
     actor = ActorContext(
         operator_id=FEIYU_INTEGRATION_ACTOR_ID,
@@ -71,28 +72,28 @@ def create_feiyu_lead(
         request_id=getattr(request.state, "request_id", None) or get_request_id(),
     )
     try:
-        data = lead_service.create_lead(db, LeadCreate(**payload.model_dump()), actor)
-        db.commit()
-        # The Feiyu receiver only needs a compact, unambiguous acknowledgement.
-        # In particular, do not include the potentially large cross-channel
-        # potential_duplicates list in this machine-to-machine response.
-        acknowledgement = {
-            key: data[key]
-            for key in (
-                "created",
-                "id",
-                "status",
-                "assign_status",
-                "sales_id",
-                "sales_name",
-                "assignment",
+        if "remark_code" in payload.custom_fields:
+            raise AppError(
+                "FEIYU_RESERVED_FIELD",
+                "飞鱼资料不能指定系统内部备注短码",
+                400,
             )
-            if key in data
+        settings = get_settings()
+        configured_default = getattr(settings, "feiyu_account_id", "default")
+        selected_account_id = account_id or configured_default
+        allowed_account_ids = {
+            value.strip()
+            for value in getattr(settings, "feiyu_account_ids", configured_default).split(",")
+            if value.strip()
         }
-        return ok(acknowledgement)
-    except DuplicateLeadError:
-        db.commit()
-        raise
+        if selected_account_id not in allowed_account_ids:
+            raise AppError(
+                "FEIYU_ACCOUNT_ID_UNAUTHORIZED",
+                "该飞鱼来源账号未在服务端配置",
+                403,
+            )
+        lead_payload = LeadCreate(**payload.model_dump())
+        return process_feiyu_lead(db, lead_payload, actor, selected_account_id)
     except Exception:
         db.rollback()
         raise

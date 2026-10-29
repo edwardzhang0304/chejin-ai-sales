@@ -8,7 +8,8 @@ from sqlalchemy import func, select
 from app.core.database import Base, SessionLocal, engine
 from app.main import app
 from app.enums import TaskBlockCode, TaskStatus, TaskType
-from app.models.lead import AssignmentRoundRobinState, Lead, LeadAssignment, LeadContact, LeadDuplicateEvent
+from app.models.feiyu import FeiyuLeadReceipt
+from app.models.lead import AssignmentRoundRobinState, Lead, LeadAssignment, LeadContact, LeadDuplicateEvent, LeadNote
 from app.models.task import Task
 from app.services import lead_service
 
@@ -25,7 +26,11 @@ def configure_feiyu_secret(monkeypatch):
     monkeypatch.setattr(
         feiyu,
         "get_settings",
-        lambda: SimpleNamespace(feiyu_forward_secret=TEST_SECRET),
+        lambda: SimpleNamespace(
+            feiyu_forward_secret=TEST_SECRET,
+            feiyu_account_id="default",
+            feiyu_account_ids="default,account-a,account-b",
+        ),
     )
 
 
@@ -34,8 +39,11 @@ def setup_function():
     Base.metadata.create_all(bind=engine)
 
 
-def _headers(secret: str = TEST_SECRET) -> dict[str, str]:
-    return {"X-Feiyu-Forward-Secret": secret}
+def _headers(secret: str = TEST_SECRET, account_id: str | None = None) -> dict[str, str]:
+    headers = {"X-Feiyu-Forward-Secret": secret}
+    if account_id:
+        headers["X-Feiyu-Account-ID"] = account_id
+    return headers
 
 
 def _create_sales(*names: str) -> list[str]:
@@ -99,8 +107,8 @@ def test_valid_secret_creates_native_lead_with_optional_fields_and_assignment():
         lead = db.get(Lead, data["id"])
         contacts = list(db.scalars(select(LeadContact).where(LeadContact.lead_id == data["id"])))
         assert lead is not None
-        assert lead.source_type == "manual"
-        assert lead.source_name_snapshot == "人工录入"
+        assert lead.source_type == "feiyu"
+        assert lead.source_name_snapshot == "飞鱼线索"
         assert lead.custom_fields["feiyu"] == {"id": "clue-123", "adv_id": "ad-456"}
         assert isinstance(lead.custom_fields.get("remark_code"), str)
         assert {contact.contact_type for contact in contacts} == {"phone", "wechat", "email"}
@@ -205,14 +213,14 @@ def test_native_schema_defaults_optional_fields_and_rejects_missing_phone_or_inv
         assert {contact.contact_type for contact in contacts} == {"phone"}
 
 
-def test_feiyu_contract_rejects_fields_not_sent_by_receiver():
+def test_feiyu_contract_rejects_unknown_fields():
     response = client.post(
         FEIYU_LEADS_URL,
         headers=_headers(),
         json={
             "customer_name": "王先生",
             "phones": ["13896676678"],
-            "remark": "unexpected integration field",
+            "internal_actor_id": "forged",
         },
     )
 
@@ -221,13 +229,76 @@ def test_feiyu_contract_rejects_fields_not_sent_by_receiver():
     assert _lead_count() == 0
 
 
+def test_feiyu_rejects_external_internal_remark_code_before_writes():
+    for index in range(2):
+        response = client.post(
+            FEIYU_LEADS_URL,
+            headers=_headers(),
+            json={
+                "customer_name": f"外部线索{index}",
+                "phones": [f"1389667699{index}"],
+                "custom_fields": {"remark_code": "SAME-CODE"},
+            },
+        )
+        assert response.status_code == 400
+        assert response.json()["code"] == "FEIYU_RESERVED_FIELD"
+    assert _lead_count() == 0
+
+
+def test_feiyu_rejects_account_id_outside_server_allowlist():
+    response = client.post(
+        FEIYU_LEADS_URL,
+        headers=_headers(account_id="unconfigured-account"),
+        json={"customer_name": "未授权账号", "phones": ["13896676998"]},
+    )
+    assert response.status_code == 403
+    assert response.json()["code"] == "FEIYU_ACCOUNT_ID_UNAUTHORIZED"
+    assert _lead_count() == 0
+
+
+@pytest.mark.parametrize(
+    ("allowed_ids", "request_account_id", "expected_status"),
+    [
+        ("acct-a", None, 403),
+        ("acct-a", "default", 403),
+        ("acct-a", "acct-a", 200),
+        ("default,acct-a", None, 200),
+        ("default,acct-a", "default", 200),
+    ],
+)
+def test_feiyu_default_account_must_be_in_allowlist(
+    monkeypatch, allowed_ids, request_account_id, expected_status
+):
+    from app.api.routes import feiyu
+
+    monkeypatch.setattr(
+        feiyu,
+        "get_settings",
+        lambda: SimpleNamespace(
+            feiyu_forward_secret=TEST_SECRET,
+            feiyu_account_id="default",
+            feiyu_account_ids=allowed_ids,
+        ),
+    )
+    response = client.post(
+        FEIYU_LEADS_URL,
+        headers=_headers(account_id=request_account_id),
+        json={"customer_name": "允许列表回归", "phones": ["13896676997"]},
+    )
+
+    assert response.status_code == expected_status
+    assert _lead_count() == (1 if expected_status == 200 else 0)
+    if expected_status == 403:
+        assert response.json()["code"] == "FEIYU_ACCOUNT_ID_UNAUTHORIZED"
+
+
 def test_endpoint_calls_native_create_lead(monkeypatch):
     calls = []
     native_create = lead_service.create_lead
 
-    def observe_create(db, payload, actor):
+    def observe_create(db, payload, actor, **kwargs):
         calls.append((payload.customer_name, str(actor.operator_id), actor.operator_name))
-        return native_create(db, payload, actor)
+        return native_create(db, payload, actor, **kwargs)
 
     monkeypatch.setattr(lead_service, "create_lead", observe_create)
     response = client.post(
@@ -289,7 +360,7 @@ def test_feiyu_then_manual_duplicate_keeps_original_lead_and_assignment():
     with SessionLocal() as db:
         lead = db.get(Lead, original["id"])
         assert lead is not None
-        assert lead.source_type == "manual"
+        assert lead.source_type == "feiyu"
         assert lead.duplicate_count == 1
         assert db.scalar(select(func.count()).select_from(LeadDuplicateEvent)) == 1
 
@@ -365,6 +436,140 @@ def test_feiyu_create_generates_native_add_friend_task():
         assert task.block_code == TaskBlockCode.SALES_WORKER_NOT_BOUND.value
 
 
+def test_same_feiyu_clue_replayed_ten_times_reuses_committed_ack_and_side_effects():
+    sales_ids = _create_sales("张伟")
+    headers = _headers(account_id="account-a")
+    payload = {
+        "customer_name": "飞鱼客户",
+        "phones": ["13896676881"],
+        "remark": "预算：10-15万；意向：SUV",
+        "custom_fields": {"feiyu": {"id": "clue-retry-1", "adv_id": "adv-1"}},
+    }
+
+    first = client.post(FEIYU_LEADS_URL, headers=headers, json=payload)
+    assert first.status_code == 200
+    # Treat the first committed response as lost; subsequent receiver retries
+    # must get the same acknowledgement without entering native create again.
+    for _ in range(9):
+        replay = client.post(FEIYU_LEADS_URL, headers=headers, json=payload)
+        assert replay.status_code == 200
+        assert replay.content == first.content
+
+    lead_id = first.json()["data"]["id"]
+    with SessionLocal() as db:
+        lead = db.get(Lead, lead_id)
+        assert lead is not None
+        assert lead.source_type == "feiyu"
+        assert lead.source_name_snapshot == "飞鱼线索"
+        assert lead.duplicate_count == 0
+        assert db.scalar(select(func.count()).select_from(FeiyuLeadReceipt)) == 1
+        assert db.scalar(select(func.count()).select_from(LeadDuplicateEvent)) == 0
+        assert db.scalar(select(func.count()).select_from(LeadNote).where(LeadNote.lead_id == lead_id)) == 1
+        assert db.scalar(select(func.count()).select_from(Task).where(Task.lead_id == lead_id)) == 1
+        assert db.scalar(select(func.count()).select_from(LeadAssignment).where(LeadAssignment.lead_id == lead_id)) == 1
+        assert lead.sales_id == sales_ids[0]
+        assert "10-15万" in db.scalar(select(LeadNote.content).where(LeadNote.lead_id == lead_id))
+
+
+def test_same_feiyu_identity_with_changed_contact_is_blocked_without_business_writes():
+    _create_sales("张伟")
+    headers = _headers(account_id="account-a")
+    first = client.post(
+        FEIYU_LEADS_URL,
+        headers=headers,
+        json={
+            "customer_name": "原始客户",
+            "phones": ["13896676882"],
+            "custom_fields": {"feiyu": {"id": "clue-conflict-1"}},
+        },
+    )
+    assert first.status_code == 200
+    original_id = first.json()["data"]["id"]
+
+    conflict = client.post(
+        FEIYU_LEADS_URL,
+        headers=headers,
+        json={
+            "customer_name": "被替换客户",
+            "phones": ["13896676883"],
+            "remark": "不得追加",
+            "custom_fields": {"feiyu": {"id": "clue-conflict-1"}},
+        },
+    )
+
+    assert conflict.status_code == 409
+    assert conflict.json()["code"] == "FEIYU_CLUE_IDENTITY_CONFLICT"
+    with SessionLocal() as db:
+        assert db.scalar(select(func.count()).select_from(Lead)) == 1
+        assert db.scalar(select(func.count()).select_from(FeiyuLeadReceipt)) == 1
+        assert db.scalar(select(func.count()).select_from(LeadDuplicateEvent)) == 0
+        assert db.scalar(select(func.count()).select_from(LeadNote).where(LeadNote.lead_id == original_id)) == 0
+        assert db.scalar(select(func.count()).select_from(Task).where(Task.lead_id == original_id)) == 1
+
+
+def test_new_feiyu_clue_for_existing_customer_records_one_repeat_and_note_then_replays():
+    _create_sales("张伟")
+    headers = _headers(account_id="account-a")
+    original = client.post(
+        FEIYU_LEADS_URL,
+        headers=headers,
+        json={
+            "customer_name": "首次飞鱼客户",
+            "phones": ["13896676884"],
+            "remark": "首次预算：8万",
+            "custom_fields": {"feiyu": {"id": "clue-first"}},
+        },
+    )
+    assert original.status_code == 200
+    lead_id = original.json()["data"]["id"]
+    repeat_payload = {
+        "customer_name": "再次留资客户",
+        "phones": ["13896676884"],
+        "remark": "本次意向：轿车",
+        "custom_fields": {"feiyu": {"id": "clue-second", "adv_id": "adv-current"}},
+    }
+    repeat = client.post(FEIYU_LEADS_URL, headers=headers, json=repeat_payload)
+    assert repeat.status_code == 409
+    assert repeat.json()["code"] == "LEAD_PHONE_DUPLICATED"
+    replay = client.post(FEIYU_LEADS_URL, headers=headers, json=repeat_payload)
+    assert replay.status_code == 409
+    assert replay.content == repeat.content
+
+    with SessionLocal() as db:
+        lead = db.get(Lead, lead_id)
+        events = list(db.scalars(select(LeadDuplicateEvent).where(LeadDuplicateEvent.lead_id == lead_id)))
+        notes = list(db.scalars(select(LeadNote).where(LeadNote.lead_id == lead_id).order_by(LeadNote.created_at)))
+        assert lead is not None
+        assert lead.source_type == "feiyu"
+        assert lead.source_name_snapshot == "飞鱼线索"
+        assert lead.duplicate_count == 1
+        assert len(events) == 1
+        assert events[0].submitted_payload["custom_fields"]["feiyu"]["id"] == "clue-second"
+        assert len(notes) == 2
+        assert "首次预算：8万" in notes[0].content
+        assert "本次意向：轿车" in notes[1].content
+        assert db.scalar(select(func.count()).select_from(FeiyuLeadReceipt)) == 2
+        assert db.scalar(select(func.count()).select_from(Task).where(Task.lead_id == lead_id)) == 1
+
+
+def test_same_clue_id_is_scoped_by_configured_account():
+    _create_sales("张伟")
+    payload = {
+        "customer_name": "同编号线索",
+        "phones": ["13896676885"],
+        "custom_fields": {"feiyu": {"id": "shared-clue-id"}},
+    }
+    first = client.post(FEIYU_LEADS_URL, headers=_headers(account_id="account-a"), json=payload)
+    second = client.post(FEIYU_LEADS_URL, headers=_headers(account_id="account-b"), json=payload)
+
+    assert first.status_code == 200
+    assert second.status_code == 409
+    assert second.json()["code"] == "LEAD_PHONE_DUPLICATED"
+    with SessionLocal() as db:
+        assert db.scalar(select(func.count()).select_from(FeiyuLeadReceipt)) == 2
+        assert db.scalar(select(func.count()).select_from(LeadDuplicateEvent)) == 1
+
+
 def test_feiyu_lead_without_sales_can_be_natively_assigned_later():
     created = client.post(
         FEIYU_LEADS_URL,
@@ -410,8 +615,8 @@ def test_feiyu_ack_is_compact_when_full_native_result_has_many_cross_channel_sug
     original_create = lead_service.create_lead
     full_results = []
 
-    def capture_native_result(db, payload, actor):
-        result = original_create(db, payload, actor)
+    def capture_native_result(db, payload, actor, **kwargs):
+        result = original_create(db, payload, actor, **kwargs)
         full_results.append(result)
         return result
 

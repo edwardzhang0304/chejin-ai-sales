@@ -207,7 +207,14 @@ def _record_duplicate(
         )
 
 
-def create_lead(db: Session, payload: LeadCreate, actor: ActorContext) -> dict:
+def create_lead(
+    db: Session,
+    payload: LeadCreate,
+    actor: ActorContext,
+    *,
+    source_type: str = "manual",
+    source_name_snapshot: str = "人工录入",
+) -> dict:
     lead_received_started = time.perf_counter()
     normalized = _normalize_payload_contacts(payload)
     _lock_lead_creation(db)
@@ -238,8 +245,8 @@ def create_lead(db: Session, payload: LeadCreate, actor: ActorContext) -> dict:
     lead = Lead(
         customer_name=payload.customer_name,
         status=LeadStatus.unassigned.value,
-        source_type="manual",
-        source_name_snapshot="人工录入",
+        source_type=source_type,
+        source_name_snapshot=source_name_snapshot,
         assign_status=AssignStatus.unassigned.value,
         remark=payload.remark,
         custom_fields=payload.custom_fields,
