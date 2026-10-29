@@ -464,3 +464,53 @@ def test_large_clock_correction_uses_new_heartbeat_not_old_wall_time(runtime,bac
     assert sync.snapshot()['state']=='verified'
     assert monitor.snapshot()['observed_monotonic']>old
     assert binding.run_status=='paused'
+
+
+def test_real_clock_producer_to_qt_and_shipped_ui_unknown_states_then_recovery(runtime,backend_peer,tmp_path):
+    from test_web_ui_binding_behavior import _headless_web_ui_module
+    runner,services,binding,profiles,errors,statuses,*_=runtime
+    body=json.loads(backend_peer.body);body['data']['clock_reference']=REFERENCE
+    backend_peer.body=json.dumps(body).encode()
+    monitor=monitor_for(services,tmp_path)
+    runner.start(binding);until(lambda:services.connection.prepared is not None)
+    sync=ClockSync(runner,tmp_path,repair=lambda *a:{'result':'requested','helper_exit_confirmed':True,'resync_completed':True},verify_seconds=3)
+    sync.start();finish(sync);assert sync.snapshot()['state']=='verified'
+    observed=[]
+    def collect(case,expected):
+        with _headless_web_ui_module() as ui:
+            projection=ui.WorkerWebWindow._startup_check_state(SimpleNamespace(clock_sync=sync,connection_status=statuses[-1],runner=runner))
+        assert projection['clockCheck']['verification']['status']==expected
+        assert projection['clockCheck']['notice']==''
+        observed.append({'case':case,'clockSync':sync.snapshot(),'startupCheck':projection})
+    collect('verified','verified')
+    try:
+        backend_peer.status=503
+        until(lambda:monitor.snapshot().get('reason')=='heartbeat_failed' and statuses[-1]=='connecting')
+        collect('http_failure','unconfirmed')
+        backend_peer.status=200
+        until(lambda:monitor.snapshot()['comparison_status']=='aligned')
+        collect('network_recovered','verified')
+        runner.stop_for_update(5)
+        age=[0]
+        monitor=ClockDiagnostics(tmp_path,zone_reader=lambda:ZONE,monotonic=lambda:time.monotonic()+age[0])
+        services.connection.backend=replace(services.connection.backend,clock_diagnostics=monitor)
+        collect('startup_pending','pending')
+        runner.start(binding);until(lambda:monitor.snapshot()['comparison_status']=='aligned')
+        runner.stop_for_update(5);age[0]=121
+        collect('sample_expired','stale')
+        age[0]=0
+        body['data'].pop('clock_reference');backend_peer.body=json.dumps(body).encode()
+        runner.start(binding)
+        until(lambda:monitor.snapshot()['comparison_status']=='aligned' and monitor.snapshot()['backend_reference']['status']=='unconfirmed')
+        collect('reference_unknown','unconfirmed')
+        body['data']['clock_reference']=REFERENCE;backend_peer.body=json.dumps(body).encode()
+        until(lambda:monitor.snapshot()['backend_reference']['status']=='aligned')
+        collect('reference_recovered','verified')
+        data=tmp_path/'producer-ui.json';data.write_text(json.dumps(observed,ensure_ascii=False))
+        repo=Path(__file__).resolve().parents[2]
+        probe=repo/'packages/worker-ui-baseline/tests/clock-producer-ui.mjs'
+        result=subprocess.run(['node',str(probe),str(data)],capture_output=True,text=True,timeout=15)
+        assert result.returncode==0,result.stdout+result.stderr
+        assert '"actions":0' in result.stdout
+        assert binding.run_status=='paused'
+    finally:backend_peer.status=200

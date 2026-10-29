@@ -115,6 +115,29 @@ def clock_notice(value):
     return '；'.join(notices)
 
 
+def verification_view(value):
+    """Current clock health for every UI consumer, never a business permission.
+
+    Uses already-classified diagnostics; no second thresholds or wall-clock
+    rules in the frontend. A past repair result cannot certify a stale sample.
+    """
+    comparison = value.get('comparison_status')
+    zone = value.get('timezone', {}).get('beijing_timezone')
+    reference = value.get('backend_reference', {}).get('status')
+    notice = clock_notice(value)
+    if notice:
+        return {'status': 'warning', 'message': notice}
+    if comparison == 'pending':
+        return {'status': 'pending', 'message': '正在核验当前电脑时间'}
+    if comparison == 'stale':
+        return {'status': 'stale', 'message': '时间核验已过期，请检查网络或等待重新核验'}
+    if comparison != 'aligned' or zone is not True:
+        return {'status': 'unconfirmed', 'message': '暂时无法核验电脑时间，请检查网络或等待重新核验'}
+    if reference != 'aligned':
+        return {'status': 'unconfirmed', 'message': '后台授时尚未确认，等待重新核验'}
+    return {'status': 'verified', 'message': '当前电脑时间已核验'}
+
+
 class ClockDiagnostics:
     def __init__(self, root: Path, *, monotonic=time.monotonic, zone_reader=local_timezone):
         self.path = Path(root)/'artifacts'/'runtime'/'clock-check.json'
@@ -275,4 +298,5 @@ class ClockDiagnostics:
             value['comparison_status'] = 'stale'
             value['backend_reference'] = {'status': 'unconfirmed'}
         value['notice'] = clock_notice(value)
+        value['verification'] = verification_view(value)
         return value

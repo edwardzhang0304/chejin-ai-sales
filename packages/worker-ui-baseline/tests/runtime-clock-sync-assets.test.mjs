@@ -9,7 +9,7 @@ async function until(fn){for(let i=0;i<100;i++){if(fn())return;await delay();}as
 test('shipped asset retains live warning after prior sync and invokes only explicit repair',async()=>{
  const dom=new JSDOM('<div id="root"></div>',{url:'http://localhost',runScripts:'outside-only'});
  const w=dom.window;let update,revision=0,syncs=0,starts=0;
- const model={workerId:'synthetic',workerToken:'',version:'test',schedule:{enabled:false,start:'09:00',end:'21:00'},status:{sellerName:'测试',receiveState:'暂停接单',connectionState:'连接正常',lastHeartbeat:'暂无',automationState:'可用',wechatState:'已连接'},task:{id:'-',title:'暂无任务',statusText:'',customerName:'',phone:'',sellerName:'',noteCode:''},runningSteps:[],completedSteps:[],failedSteps:[],logs:[],update:{},clockSync:{state:'verified',busy:false,message:'电脑时间已核验'},startupCheck:{state:'passed',canStart:true,clockCheck:{notice:''}}};
+ const model={workerId:'synthetic',workerToken:'',version:'test',schedule:{enabled:false,start:'09:00',end:'21:00'},status:{sellerName:'测试',receiveState:'暂停接单',connectionState:'连接正常',lastHeartbeat:'暂无',automationState:'可用',wechatState:'已连接'},task:{id:'-',title:'暂无任务',statusText:'',customerName:'',phone:'',sellerName:'',noteCode:''},runningSteps:[],completedSteps:[],failedSteps:[],logs:[],update:{},clockSync:{state:'verified',busy:false,message:'电脑时间已核验'},startupCheck:{state:'passed',canStart:true,clockCheck:{notice:'',verification:{status:'verified',message:'当前电脑时间已核验'}}}};
  const payload=()=>JSON.stringify({revision:++revision,screen:'settings',model});
  const bridge={initialState:cb=>cb(payload()),stateChanged:{connect:cb=>update=cb},syncComputerTime:()=>syncs++,startAccepting:()=>starts++};
  w.qt={webChannelTransport:{}};w.QWebChannel=function(_,cb){cb({objects:{chejinBridge:bridge}})};

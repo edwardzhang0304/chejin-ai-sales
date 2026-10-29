@@ -1016,9 +1016,12 @@ function renderScreen(props: WorkerClientBaselineProps) {
 
 export function WorkerClientBaseline(props: WorkerClientBaselineProps) {
   const sync = props.model.clockSync;
-  const liveClockWarning = props.model.startupCheck?.clockCheck?.notice;
+  const clockCheck = props.model.startupCheck?.clockCheck;
+  const liveClockWarning = clockCheck?.notice;
+  const currentVerification = clockCheck?.verification;
+  const priorSuccessMessage = currentVerification?.message || "暂时无法核验电脑时间，请检查网络或等待重新核验";
   // A completed operation is history; current diagnostics remain authoritative.
-  const clockMessage = sync?.busy ? sync.message : liveClockWarning || sync?.message;
+  const clockMessage = sync?.busy ? sync.message : liveClockWarning || (sync?.state === "verified" ? priorSuccessMessage : sync?.message);
   const canSyncClock = sync && !sync.busy && (liveClockWarning || sync.state !== "verified");
   return (
     <section className="cw-window app-window" data-active-screen={props.screen} data-clock-warning={Boolean(clockMessage)} aria-label="车金 Worker 客户端">
