@@ -6,6 +6,7 @@ import subprocess
 import sys
 
 from .clock_sync_ticket import valid_operation
+from .shared_rules import hook_time_rules as policy
 
 # No executable or NTP host is supplied by the UI/backend. The helper only
 # reads its authorization ticket; it never executes user-writable script files.
@@ -26,9 +27,10 @@ try {
   $service = Get-Service W32Time
   if ($service.StartType -eq 'Disabled') { exit 21 }
   Set-TimeZone -Id 'China Standard Time'
+  Set-Service W32Time -StartupType Automatic
   Start-Service W32Time
   $exe = Join-Path ([Environment]::GetFolderPath('System')) 'w32tm.exe'
-  & $exe /config /manualpeerlist:ntp.aliyun.com,0x8 /syncfromflags:manual /update | Out-Null
+  & $exe /config NTP_PEERS /syncfromflags:manual /update | Out-Null
   if ($LASTEXITCODE -ne 0) { exit 22 }
   & $exe /resync /rediscover | Out-Null
   if ($LASTEXITCODE -ne 0) { exit 23 }
@@ -58,7 +60,8 @@ def helper_script(operation, ticket_path):
     # Single-quoted PowerShell literals: paths containing quotes/$() cannot
     # become executable expressions, even in a nonstandard deployment folder.
     quote = lambda value: "'" + str(value).replace("'", "''") + "'"
-    return HELPER.replace('TICKET_PATH', quote(ticket_path)).replace('OPERATION_ID', quote(operation))
+    return (HELPER.replace('NTP_PEERS', quote('/manualpeerlist:' + policy.windows_time_peers()))
+            .replace('TICKET_PATH', quote(ticket_path)).replace('OPERATION_ID', quote(operation)))
 
 
 def synchronize_windows(operation, ticket_path):
@@ -86,6 +89,7 @@ try {
             22: 'configure_failed', 23: 'resync_failed', 24: 'windows_failed',
             25: 'cancelled', 26: 'elevation_failed', 27: 'revoked'}.get(result.returncode, 'windows_failed'),
             'exit_code': result.returncode,
+            'requested_peers': policy.windows_time_peers(),
             'resync_completed': result.returncode == 0,
             'helper_exit_confirmed': result.returncode in {0, 20, 21, 22, 23, 24, 27},
             'partial_change_possible': result.returncode not in {20, 21, 25, 27}}

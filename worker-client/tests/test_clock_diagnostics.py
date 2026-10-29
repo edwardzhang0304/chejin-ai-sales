@@ -3,7 +3,7 @@ from types import SimpleNamespace
 import json
 import zipfile
 import pytest
-from chejin_worker_client.clock_diagnostics import ClockDiagnostics, compare_clock, clock_notice, reference_summary
+from chejin_worker_client.clock_diagnostics import ClockDiagnostics, compare_clock, clock_notice, reference_summary, verification_view
 from chejin_worker_client.hook_clock import HookBackendClock
 from chejin_worker_client.diagnostic_bundle import export_bundle
 
@@ -18,6 +18,58 @@ def receipt(offset=0, rtt=.05):
     return SimpleNamespace(server_time_utc=STAMP.isoformat(), request_started_monotonic=10,
         response_received_monotonic=10+rtt, request_started_wall=STAMP.timestamp()+offset,
         response_received_wall=STAMP.timestamp()+offset+rtt, clock_reference=REFERENCE)
+
+
+def test_actual_backend_fallback_to_worker_and_export_is_verified_without_repair(tmp_path):
+    from app.services.clock_reference import ClockReference
+    down = [True]
+    def query(host):
+        if host == 'ntp.aliyun.com' and down[0]: raise TimeoutError()
+        return {'status': 'aligned', 'offset_lower_seconds': -.01,
+                'offset_upper_seconds': .01, 'round_trip_seconds': .02}
+    reference = ClockReference(query=query)
+    reference.refresh()
+    sample = receipt(); sample.clock_reference = reference.snapshot()
+    monitor = ClockDiagnostics(tmp_path, zone_reader=lambda: ZONE)
+    monitor.observe(sample)
+    view = monitor.snapshot()
+    assert view['verification']['status'] == 'verified' and view['notice'] == ''
+    assert view['backend_reference']['host'] == 'time.windows.com'
+    # Source changes must be persisted even with the same aligned verdict.
+    down[0] = False; reference.refresh(); sample.clock_reference = reference.snapshot()
+    monitor.observe(sample); assert monitor.flush()
+    with zipfile.ZipFile(export_bundle(tmp_path, tmp_path/'result.zip')) as bundle:
+        data = json.loads(bundle.read('logs/runtime/clock-check.json'))
+    checks = data['recent_checks']
+    assert checks[-2]['backend_reference']['attempts'][0]['reason'] == 'timeout'
+    assert checks[-2]['backend_reference']['source'] == 'windows_ntp'
+    assert checks[-1]['backend_reference']['source'] == 'aliyun_ntp'
+    assert data['changes_system_clock'] is False
+
+
+def test_fallback_cannot_certify_wrong_zone_skew_stale_or_spoofed_source():
+    sample = receipt(); sample.clock_reference = {**REFERENCE, 'source': 'windows_ntp', 'host': 'time.windows.com'}
+    assert verification_view(compare_clock(sample, ZONE))['status'] == 'verified'
+    assert verification_view(compare_clock(sample, {**ZONE, 'beijing_timezone': False}))['status'] == 'warning'
+    skew = receipt(1800); skew.clock_reference = sample.clock_reference
+    assert verification_view(compare_clock(skew, ZONE))['status'] == 'warning'
+    for change in ({'source': 'aliyun_ntp'}, {'sample_age_seconds': 301}, {'host': 'other.example'}):
+        assert reference_summary({**sample.clock_reference, **change}) == {'status': 'unconfirmed'}
+    sample.clock_reference = {**sample.clock_reference, 'status': 'unconfirmed'}
+    value = compare_clock(sample, ZONE)
+    assert clock_notice(value) == ''
+    assert verification_view(value)['status'] == 'unconfirmed'
+
+
+def test_reference_attempt_evidence_is_bounded_and_ignores_arbitrary_fields():
+    good = {'host': 'ntp.aliyun.com', 'status': 'unconfirmed', 'reason': 'timeout', 'elapsed_seconds': 2}
+    value = {**REFERENCE, 'attempts': [
+        {**good, 'host': ['bad']}, {**good, 'status': {}},
+        {**good, 'reason': {'private': 'secret'}, 'body': 'secret'}, *([good] * 100)]}
+    result = reference_summary(value)
+    assert result['status'] == 'aligned'
+    assert result['attempts'] == [{'host': good['host'], 'status': good['status'], 'elapsed_seconds': 2}]
+    assert 'secret' not in str(result)
 
 
 @pytest.mark.parametrize('offset', [0, 16, -16, 28800, -28800])
