@@ -680,17 +680,17 @@
     "recall_author_and_reviewer_shared_trigger_context"
   ],
   "current_release": {
-    "version": "0.10.25",
+    "version": "0.10.26",
     "source_commit": "209f7fb66a01a05736fdd32e54808e54a9b66ce3",
     "source_state": "gray_release_candidate",
     "published": false,
-    "contract_revision": "0.10.25",
-    "contract_sha256": "922f174d94ac27ba5c497a902b7116714eb9900bb4e3eb8cc77e4608dbb9d27f",
+    "contract_revision": "0.10.26",
+    "contract_sha256": "959728c7869f01650391e029cb347ba9d2a6dc08e35bdebbbf2c01a87c280b75",
     "scope": [
       "native_hook_state_and_release_preparation",
       "schema_revision_sync"
     ],
-    "note": "0.10.25 reviewed clock domains, receipt timers, history review, isolated fair recovery, clock diagnostics and explicit Windows synchronization. Preserve bindings and unknown records."
+    "note": "0.10.26 reviewed fallback time sources, Feiyu native lead intake and dashboard footer cleanup. Preserve bindings and unknown records."
   },
   "historical_integrations": [
     {
