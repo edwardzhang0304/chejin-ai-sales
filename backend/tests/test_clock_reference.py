@@ -152,3 +152,60 @@ def test_two_outages_reach_cloudflare_without_hiding_valid_skew(offset, status):
     assert 'private transport error' not in str(sample)
     recovered[0] = True; calls.clear(); reference.refresh()
     assert calls == ['ntp.aliyun.com'] and reference.snapshot()['status'] == status
+
+
+@pytest.mark.parametrize('outcomes,expected,attempts', [
+    (['timeout', 0], 'aligned', 2),
+    (['timeout', 30], 'skewed', 2),
+    ([30, 0], 'skewed', 1),
+    (['invalid', 0], 'aligned', 2),
+    (['timeout'] * 5, 'unconfirmed', 4),
+])
+def test_one_source_multiple_addresses_are_bounded_and_keep_valid_evidence(monkeypatch, outcomes, expected, attempts):
+    import socket
+    from app.services import clock_reference as module
+    now = 1793232000
+    addresses = ['192.0.2.1', '192.0.2.1', '192.0.2.2', '192.0.2.3', '192.0.2.4', '192.0.2.5']
+    monkeypatch.setattr(module.socket, 'getaddrinfo', lambda *args: [
+        (socket.AF_INET, socket.SOCK_DGRAM, 17, '', (ip, 123)) for ip in addresses])
+    monkeypatch.setattr(module.time, 'time', lambda: now)
+    monkeypatch.setattr(module.time, 'monotonic', lambda: 0)
+    connected = []
+    class Socket:
+        def __enter__(self): return self
+        def __exit__(self, *args): self.closed = True
+        def settimeout(self, seconds): assert seconds == 2
+        def connect(self, endpoint):
+            connected.append(endpoint)
+            self.outcome = outcomes[len(connected)-1]
+        def send(self, data): self.nonce = data[40:48]
+        def recv(self, size):
+            assert size == 512
+            if self.outcome == 'timeout': raise TimeoutError('private error')
+            result = packet(now + (self.outcome if isinstance(self.outcome, int) else 0))
+            result[24:32] = self.nonce
+            if self.outcome == 'invalid': result[0] |= 0xc0
+            return result
+    monkeypatch.setattr(module.socket, 'socket', lambda *args: Socket())
+    reference = ClockReference(query=module.probe)
+    if expected == 'unconfirmed':
+        # Test one hostname; cross-host fallback is covered by unchanged tests.
+        reference.hosts = ('ntp.aliyun.com',)
+    reference.refresh()
+    assert reference.snapshot()['status'] == expected
+    assert connected == [(f'192.0.2.{i}', 123) for i in range(1, attempts+1)]
+    assert 'private error' not in str(reference.snapshot())
+
+
+def test_dns_failure_and_empty_answer_fail_closed(monkeypatch):
+    from app.services import clock_reference as module
+    monkeypatch.setattr(module.socket, 'socket', lambda *args: pytest.fail('socket opened without address'))
+    for answer in ([], None):
+        def lookup(*args):
+            if answer is None: raise OSError('private dns error')
+            return answer
+        monkeypatch.setattr(module.socket, 'getaddrinfo', lookup)
+        reference = ClockReference(query=module.probe)
+        reference.refresh()
+        assert reference.snapshot()['status'] == 'unconfirmed'
+        assert 'private dns error' not in str(reference.snapshot())

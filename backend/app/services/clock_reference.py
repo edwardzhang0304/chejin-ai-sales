@@ -46,20 +46,33 @@ def decode_sample(packet, nonce, started_wall, ended_wall, elapsed):
 
 
 def probe(host):
-    nonce = struct.pack("!II", int(time.time()+NTP_EPOCH) % 2**32, secrets.randbits(32))
-    packet = bytearray(48)
-    packet[0] = 0x23  # NTPv4 client; random echoed origin binds this response.
-    packet[40:48] = nonce
-    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as connection:
-        connection.settimeout(2)
-        connection.connect((host, 123))
-        start = time.monotonic()
-        wall = time.time()
-        connection.send(packet)
-        response = connection.recv(512)
-        ended_wall = time.time()
-        elapsed = time.monotonic()-start
-    return decode_sample(response, nonce, wall, ended_wall, elapsed)
+    # A hostname may have several IPv4 endpoints. A dead first DNS answer must
+    # not hide another usable endpoint; keep work bounded on the background thread.
+    addresses = list(dict.fromkeys(row[4][0] for row in
+        socket.getaddrinfo(host, 123, socket.AF_INET, socket.SOCK_DGRAM)))[:4]
+    if not addresses:
+        raise OSError('no_ntp_address')
+    last_error = None
+    for address in addresses:
+        nonce = struct.pack("!II", int(time.time()+NTP_EPOCH) % 2**32, secrets.randbits(32))
+        packet = bytearray(48)
+        packet[0] = 0x23
+        packet[40:48] = nonce
+        try:
+            with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as connection:
+                connection.settimeout(2)
+                connection.connect((address, 123))
+                start = time.monotonic()
+                wall = time.time()
+                connection.send(packet)
+                response = connection.recv(512)
+                ended_wall = time.time()
+                elapsed = time.monotonic()-start
+            # Valid skew/uncertainty is returned immediately, never shopped away.
+            return decode_sample(response, nonce, wall, ended_wall, elapsed)
+        except (OSError, ValueError) as exc:
+            last_error = exc
+    raise last_error
 
 
 class ClockReference:
