@@ -697,5 +697,5 @@
       ]
     }
   ],
-  "unaffected_scope_review": "0.10.24 metadata and source evidence descriptor only; tools unchanged. Reuse original executions including 40332019222 failure-evidence checks; execute only changed descriptor checks and actual Windows parser/gui."
+  "unaffected_scope_review": "0.10.25 metadata and source evidence descriptor only; tools unchanged. Reuse original executions including 40332019222 failure-evidence checks; execute only changed descriptor checks and actual Windows parser/gui."
 }

@@ -680,17 +680,17 @@
     "recall_author_and_reviewer_shared_trigger_context"
   ],
   "current_release": {
-    "version": "0.10.24",
+    "version": "0.10.25",
     "source_commit": "209f7fb66a01a05736fdd32e54808e54a9b66ce3",
     "source_state": "gray_release_candidate",
     "published": false,
-    "contract_revision": "0.10.24",
-    "contract_sha256": "080fa196c2b31cad89ab84f6253f2bc1c5df23e4883adf29c7f3659b87b471d3",
+    "contract_revision": "0.10.25",
+    "contract_sha256": "922f174d94ac27ba5c497a902b7116714eb9900bb4e3eb8cc77e4608dbb9d27f",
     "scope": [
       "native_hook_state_and_release_preparation",
       "schema_revision_sync"
     ],
-    "note": "0.10.24 reviewed U1-U4 notification and diagnostic fixes plus provider component maintenance. Preserve bindings and unknown records; new DLL independently maintained."
+    "note": "0.10.25 reviewed clock domains, receipt timers, history review, isolated fair recovery, clock diagnostics and explicit Windows synchronization. Preserve bindings and unknown records."
   },
   "historical_integrations": [
     {
