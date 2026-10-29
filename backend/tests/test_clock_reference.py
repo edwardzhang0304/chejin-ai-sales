@@ -84,3 +84,49 @@ def test_authenticated_heartbeat_response_includes_only_cached_reference(monkeyp
     result=heartbeat_worker('synthetic-worker',None,request,db,'synthetic-token')
     assert result['data']['clock_reference']['status']=='unconfirmed'
     assert calls==['authenticated-service','commit']
+
+
+def test_primary_timeout_uses_fallback_then_recovers_primary():
+    calls = []; primary_down = [True]
+    def query(host):
+        calls.append(host)
+        if host == 'ntp.aliyun.com' and primary_down[0]: raise TimeoutError('private-network-details')
+        return decode_sample(packet(), b'12345678', 1793232000-.01, 1793232000+.01, .02)
+    reference = ClockReference(query=query)
+    reference.refresh()
+    sample = reference.snapshot()
+    assert calls == ['ntp.aliyun.com', 'time.windows.com']
+    assert sample['status'] == 'aligned' and sample['source'] == 'windows_ntp'
+    assert sample['host'] == 'time.windows.com'
+    assert sample['attempts'][0]['reason'] == 'timeout'
+    assert 'private-network-details' not in str(sample)
+    primary_down[0] = False; calls.clear()
+    reference.refresh()
+    assert calls == ['ntp.aliyun.com']
+    assert reference.snapshot()['source'] == 'aliyun_ntp'
+    assert len(reference.snapshot()['attempts']) == 1
+
+
+@pytest.mark.parametrize('offset', [30, -30])
+def test_real_skew_is_not_hidden_by_trying_another_source(offset):
+    calls = []
+    def query(host):
+        calls.append(host)
+        return decode_sample(packet(1793232000+offset), b'12345678', 1793232000-.01, 1793232000+.01, .02)
+    reference = ClockReference(query=query)
+    reference.refresh()
+    assert reference.snapshot()['status'] == 'skewed'
+    assert calls == ['ntp.aliyun.com']
+
+
+def test_all_sources_fail_is_unknown_not_skew_and_vpc_is_explicit():
+    calls = []
+    def query(host):
+        calls.append(host); raise TimeoutError()
+    reference = ClockReference('ntp.cloud.aliyuncs.com', query=query)
+    reference.refresh()
+    assert calls == ['ntp.cloud.aliyuncs.com', 'ntp.aliyun.com', 'time.windows.com']
+    sample = reference.snapshot()
+    assert sample['status'] == 'unconfirmed'
+    assert len(sample['attempts']) == 3
+    assert 'offset_lower_seconds' not in sample

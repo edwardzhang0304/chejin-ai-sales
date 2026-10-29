@@ -48,13 +48,16 @@ def finish(sync):
 
 
 @pytest.mark.parametrize('status', ['paused', 'faulted', 'running'])
-def test_real_runner_stops_repairs_reconnects_fresh_time_keeps_unknown_and_pause(runtime, backend_peer, tmp_path, status):
+@pytest.mark.parametrize('reference_source', ['primary', 'fallback'])
+def test_real_runner_stops_repairs_reconnects_fresh_time_keeps_unknown_and_pause(runtime, backend_peer, tmp_path, status, reference_source):
     runner, services, binding, _, _, _, posted, _ = runtime
     root = tmp_path/'home'
     journal = root/'transactions/original.json'; journal.parent.mkdir(parents=True)
     journal.write_bytes(b'{"state":"unknown","do_not_resend":true}')
     digest = hashlib.sha256(journal.read_bytes()).hexdigest()
-    body = json.loads(backend_peer.body); body['data']['clock_reference'] = REFERENCE
+    reference = REFERENCE if reference_source == 'primary' else {
+        **REFERENCE, 'source': 'windows_ntp', 'host': 'time.windows.com'}
+    body = json.loads(backend_peer.body); body['data']['clock_reference'] = reference
     backend_peer.body = json.dumps(body).encode()
     monitor = monitor_for(services, root)
     runner.start(binding)
@@ -110,6 +113,25 @@ def test_missing_reference_is_unconfirmed_even_when_helper_succeeded(runtime, tm
     sync.start();finish(sync)
     assert sync.snapshot()['state']=='unconfirmed'
     assert binding.run_status=='paused'
+
+
+def test_reference_outage_does_not_fault_startup_or_run_clock_repair(runtime, backend_peer, tmp_path, monkeypatch):
+    runner, services, binding, _, errors, _, posted, _ = runtime
+    body = json.loads(backend_peer.body)
+    body['data']['clock_reference'] = {**REFERENCE, 'status': 'unconfirmed', 'attempts': [
+        {'host': host, 'status': 'unconfirmed', 'reason': 'timeout', 'elapsed_seconds': 2}
+        for host in ('ntp.aliyun.com', 'time.windows.com')]}
+    backend_peer.body = json.dumps(body).encode()
+    monkeypatch.setattr(windows.subprocess, 'run', lambda *a, **k: pytest.fail('startup launched repair'))
+    monitor_for(services, tmp_path)
+    runner.binding = binding
+    services.attach(binding, runner._hook_persistence_failed)
+    runner.tick_once()
+    state = services.startup_check_state()
+    assert state['canStart']
+    assert state['clockCheck']['verification']['status'] == 'unconfirmed'
+    assert state['clockCheck']['notice'] == ''
+    assert binding.run_status == 'paused' and not errors and not posted
 
 
 def test_competing_update_and_duplicate_click_cannot_launch_helpers(runtime, tmp_path):
@@ -186,7 +208,9 @@ def test_fixed_helper_guards_policy_before_changes_and_uses_safe_literals(monkey
     assert script.index('PartOfDomain') < script.index('Set-TimeZone')
     assert script.index("'Disabled'") < script.index('Set-TimeZone')
     assert "quotes''$(bad).ticket'" in script
-    assert 'ntp.aliyun.com,0x8' in script and 'China Standard Time' in script
+    assert "'/manualpeerlist:ntp.aliyun.com,0x8 time.windows.com,0xa'" in script
+    assert 'China Standard Time' in script
+    assert script.index("'Disabled'") < script.index('Set-Service W32Time -StartupType Automatic')
     assert '/nowait' not in script and '& $exe /resync /rediscover | Out-Null' in script
     assert '-ExecutionPolicy' not in script and 'Set-Date' not in script
     assert not valid_operation('clock-sync-invalid')

@@ -1,4 +1,4 @@
-"""Read-only Aliyun SNTP cross-check; never sets the host or business clock.
+"""Read-only SNTP cross-check with fallback; never sets the host/business clock.
 
 UDP NTP is not authenticated. This is operational evidence, not authorization
 for a send. Heartbeats only read a cached snapshot and never wait for UDP/DNS.
@@ -13,8 +13,7 @@ import time
 NTP_EPOCH = 2208988800
 from app.contracts.shared_rules import shared_adapter
 _policy = shared_adapter('hook_time_rules')
-HOSTS = _policy.ALIYUN_REFERENCE_HOSTS
-MAX_AGE = _policy.ALIYUN_REFERENCE_MAX_AGE
+MAX_AGE = _policy.CLOCK_REFERENCE_MAX_AGE
 MAX_RTT = _policy.CLOCK_DIAGNOSTIC_MAX_RTT
 SKEW_WARNING = _policy.CLOCK_WARNING_SECONDS
 
@@ -65,7 +64,7 @@ def probe(host):
 
 class ClockReference:
     def __init__(self, host='ntp.aliyun.com', *, query=probe, monotonic=time.monotonic):
-        if host not in HOSTS: raise ValueError('unsupported_time_reference')
+        self.hosts = _policy.clock_reference_hosts(host)
         self.host, self.query, self.monotonic = host, query, monotonic
         self._result = {'status': 'unconfirmed', 'reason': 'not_checked'}
         self._received = None
@@ -74,12 +73,32 @@ class ClockReference:
         self._thread = None
 
     def refresh(self):
-        try:
-            result = self.query(self.host)
-        except (OSError, ValueError, OverflowError):
-            result = {'status': 'unconfirmed', 'reason': 'reference_unavailable_or_invalid'}
+        attempts = []
+        result = {'status': 'unconfirmed', 'reason': 'reference_unavailable_or_invalid'}
+        selected = self.host
+        for host in self.hosts:
+            if self._stop.is_set():
+                return
+            started = self.monotonic()
+            try:
+                result = self.query(host)
+            except (OSError, ValueError, OverflowError) as exc:
+                reason = ('timeout' if isinstance(exc, TimeoutError) else
+                          'network_unavailable' if isinstance(exc, OSError) else 'invalid_sample')
+                attempts.append({'host': host, 'status': 'unconfirmed', 'reason': reason,
+                                 'elapsed_seconds': max(0, self.monotonic()-started)})
+                result = {'status': 'unconfirmed', 'reason': 'reference_unavailable_or_invalid'}
+                continue
+            selected = host
+            attempts.append({'host': host, 'status': result['status'],
+                             'elapsed_seconds': max(0, self.monotonic()-started)})
+            # A valid skew/uncertainty is evidence, not an outage. Never try
+            # another source just to obtain a more favourable verdict.
+            break
         with self._lock:
-            self._result = {**result, 'checked_at_utc': datetime.now(timezone.utc).isoformat()}
+            self._result = {**result, 'host': selected,
+                'source': _policy.CLOCK_REFERENCE_SOURCES[selected], 'attempts': attempts,
+                'checked_at_utc': datetime.now(timezone.utc).isoformat()}
             self._received = self.monotonic()
 
     def snapshot(self):
@@ -88,7 +107,7 @@ class ClockReference:
             age = None if self._received is None else self.monotonic()-self._received
         if age is not None and not 0 <= age <= MAX_AGE:
             result['status'] = 'stale'
-        return {**result, 'source': 'aliyun_ntp', 'host': self.host,
+        return {'source': _policy.CLOCK_REFERENCE_SOURCES[self.host], 'host': self.host, **result,
                 'authenticated': False, 'sample_age_seconds': age,
                 'business_timezone': 'Asia/Shanghai', 'utc_offset_seconds': 28800}
 

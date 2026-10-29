@@ -48,25 +48,42 @@ def reference_summary(value):
     """Allowlisted protocol projection; never copy arbitrary upstream text."""
     unknown = {'status': 'unconfirmed'}
     if not isinstance(value, dict): return unknown
-    if (value.get('source') != 'aliyun_ntp' or value.get('host') not in
-            policy.ALIYUN_REFERENCE_HOSTS or value.get('business_timezone') != 'Asia/Shanghai'
+    if (not isinstance(value.get('host'), str) or value.get('host') not in policy.CLOCK_REFERENCE_SOURCES
+            or value.get('source') != policy.CLOCK_REFERENCE_SOURCES[value['host']]
+            or value.get('business_timezone') != 'Asia/Shanghai'
             or value.get('utc_offset_seconds') != 28800 or value.get('authenticated') is not False):
         return unknown
     status = value.get('status')
     age = value.get('sample_age_seconds')
     if status not in {'aligned', 'skewed', 'uncertain', 'unconfirmed', 'stale'}: return unknown
-    result = {'status': status, 'source': 'aliyun_ntp', 'host': value['host'], 'authenticated': False}
+    result = {'status': status, 'source': value['source'], 'host': value['host'], 'authenticated': False}
     if finite(age): result['sample_age_seconds'] = age
     if status in {'aligned', 'skewed', 'uncertain'}:
         low, high, rtt = (value.get(key) for key in
             ('offset_lower_seconds', 'offset_upper_seconds', 'round_trip_seconds'))
-        if not (finite(age) and 0 <= age <= policy.ALIYUN_REFERENCE_MAX_AGE and all(finite(v) for v in (low, high, rtt))
+        if not (finite(age) and 0 <= age <= policy.CLOCK_REFERENCE_MAX_AGE and all(finite(v) for v in (low, high, rtt))
                 and low <= high and 0 <= rtt <= MAX_RTT_SECONDS):
             return unknown
         # Derive classification rather than trusting a contradictory label.
         result['status'] = ('skewed' if low > SKEW_WARNING_SECONDS or high < -SKEW_WARNING_SECONDS else
                             'aligned' if -SKEW_WARNING_SECONDS <= low <= high <= SKEW_WARNING_SECONDS else 'uncertain')
         result.update(offset_lower_seconds=low, offset_upper_seconds=high, round_trip_seconds=rtt)
+    # Only bounded, allowlisted evidence enters diagnostics. Old servers may
+    # omit attempts; their existing valid Aliyun sample remains compatible.
+    attempts = value.get('attempts')
+    if isinstance(attempts, list):
+        result['attempts'] = []
+        for attempt in attempts[:len(policy.CLOCK_REFERENCE_SOURCES)]:
+            if not isinstance(attempt, dict): continue
+            host, state, elapsed = (attempt.get(key) for key in ('host', 'status', 'elapsed_seconds'))
+            if (not isinstance(host, str) or host not in policy.CLOCK_REFERENCE_SOURCES or
+                    not isinstance(state, str) or state not in {'aligned', 'skewed', 'uncertain', 'unconfirmed'} or
+                    not finite(elapsed) or elapsed < 0): continue
+            item = {'host': host, 'status': state, 'elapsed_seconds': elapsed}
+            if (isinstance(attempt.get('reason'), str) and
+                    attempt['reason'] in {'timeout', 'network_unavailable', 'invalid_sample'}):
+                item['reason'] = attempt['reason']
+            result['attempts'].append(item)
     return result
 
 
@@ -111,7 +128,7 @@ def clock_notice(value):
     elif value.get('reason') == 'computer_clock_changed_during_request':
         notices.append('电脑时间发生变化，等待重新对时')
     if value.get('backend_reference', {}).get('status') == 'skewed':
-        notices.append('后台时间与阿里授时不一致，请联系管理员')
+        notices.append('后台时间与标准时间源不一致，请联系管理员')
     return '；'.join(notices)
 
 
@@ -185,7 +202,8 @@ class ClockDiagnostics:
         value = {**value, 'observed_at_utc': datetime.now(timezone.utc).isoformat(),
                  'observed_monotonic': now, 'business_timezone': 'Asia/Shanghai'}
         signature = (value.get('comparison_status'), value.get('reason'),
-                     value['timezone'].get('beijing_timezone'), value['backend_reference'].get('status'))
+                     value['timezone'].get('beijing_timezone'), value['backend_reference'].get('status'),
+                     value['backend_reference'].get('host'))
         with self._lock:
             self._latest, self._received = value, now
             if not hasattr(self, '_startup'):

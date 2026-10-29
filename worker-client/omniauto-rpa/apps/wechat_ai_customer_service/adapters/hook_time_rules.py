@@ -8,8 +8,28 @@ CLOCK_WARNING_SECONDS = 5
 CLOCK_DIAGNOSTIC_MAX_RTT = 1
 BEIJING_UTC_OFFSET_SECONDS = 28800
 BEIJING_TIMEZONE = timezone(timedelta(seconds=BEIJING_UTC_OFFSET_SECONDS), "Asia/Shanghai")
-ALIYUN_REFERENCE_MAX_AGE = 300
-ALIYUN_REFERENCE_HOSTS = frozenset({"ntp.aliyun.com", "ntp.cloud.aliyuncs.com"})
+CLOCK_REFERENCE_MAX_AGE = 300
+# One allowlist for backend observations, Worker validation and Windows repair.
+# The VPC endpoint is only used when explicitly configured on the backend.
+CLOCK_PUBLIC_NTP_HOSTS = ("ntp.aliyun.com", "time.windows.com")
+CLOCK_REFERENCE_SOURCES = {
+    "ntp.aliyun.com": "aliyun_ntp",
+    "ntp.cloud.aliyuncs.com": "aliyun_ntp",
+    "time.windows.com": "windows_ntp",
+}
+
+
+def clock_reference_hosts(primary):
+    if primary not in CLOCK_REFERENCE_SOURCES:
+        raise ValueError('unsupported_time_reference')
+    return tuple(dict.fromkeys((primary, *CLOCK_PUBLIC_NTP_HOSTS)))
+
+
+def windows_time_peers():
+    # 0x8 = client; 0xa = client + UseAsFallbackOnly. W32Time owns periodic
+    # synchronization and fallback, not a second application retry loop.
+    return ' '.join(f'{host},{"0x8" if index == 0 else "0xa"}'
+                    for index, host in enumerate(CLOCK_PUBLIC_NTP_HOSTS))
 
 def utc(value):
     if not isinstance(value, str): raise ValueError('HOOK_SEND_LOCAL_CLOCK_INVALID')

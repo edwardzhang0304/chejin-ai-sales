@@ -21,7 +21,7 @@ MESSAGES = {
     'unconfirmed': '同步已发起，但尚未核验成功，请检查网络后重试',
     'managed': '电脑授时由单位管理，请联系管理员同步时间',
     'service_disabled': 'Windows 时间服务被禁用，请联系管理员启用',
-    'configure_failed': '阿里授时配置失败，时区可能已调整，请导出故障证据',
+    'configure_failed': '自动对时配置失败，时区可能已调整，请导出故障证据',
     'resync_failed': '对时请求未成功，时区可能已调整，请检查网络和时间服务',
     'windows_failed': 'Windows 对时未完成，可能已部分修改，请导出故障证据',
     'cancelled': '已取消 Windows 授权，未完成对时',
