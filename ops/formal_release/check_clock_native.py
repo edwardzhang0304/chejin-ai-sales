@@ -240,6 +240,60 @@ def observe_failed_source(evidence):
     evidence.save()
 
 
+def native_unsynchronized(facts):
+    # English hosted-runner evidence only; unknown/localized output fails closed.
+    import re
+    def number(label):
+        match = re.search(r'^' + re.escape(label) + r':\s*(\d+)', facts['status'], re.MULTILINE)
+        return int(match.group(1)) if match else None
+    return (facts['source'].strip() == 'Local CMOS Clock' and
+            number('Leap Indicator') == 3 and number('Stratum') == 0 and
+            number('Last Sync Error') not in (None, 0))
+
+
+def verify_client_confirmation(evidence, root):
+    """Real consumer, synthetic backend reference; not a real backend/UI test."""
+    from datetime import datetime, timezone
+    from types import SimpleNamespace
+    os.environ['CHEJIN_WORKER_HOME'] = str(root / 'consumer-home')
+    from chejin_worker_client.clock_diagnostics import ClockDiagnostics
+    from chejin_worker_client.clock_sync import ClockSync
+    reference = {'source': 'cloudflare_ntp', 'host': FALLBACK_HOST,
+                 'status': 'aligned', 'sample_age_seconds': 0,
+                 'offset_lower_seconds': -.001, 'offset_upper_seconds': .001,
+                 'round_trip_seconds': .002, 'business_timezone': 'Asia/Shanghai',
+                 'utc_offset_seconds': 28800, 'authenticated': False}
+    monitor = ClockDiagnostics(root / 'consumer')  # Actual Windows timezone reader.
+    runner = SimpleNamespace(hook_services=SimpleNamespace(
+        connection=SimpleNamespace(backend=SimpleNamespace(clock_diagnostics=monitor)),
+        startup_check_state=lambda: {'synthetic_no_business': True}))
+    sync = ClockSync(runner, root / 'consumer')  # Unchanged default30seconds.
+    results = []
+    for status in ('aligned', 'unconfirmed'):
+        completed = time.monotonic()
+        wall = time.time()
+        stamp = datetime.fromtimestamp(wall, timezone.utc).isoformat()
+        # Local receipt is intentionally synthetic: positively aligned local/server
+        # comparison isolates the real consumer's backend-reference requirement.
+        receipt = SimpleNamespace(request_started_monotonic=completed,
+            response_received_monotonic=completed, request_started_wall=wall,
+            response_received_wall=wall, server_time_utc=stamp,
+            clock_reference={**reference, 'status': status})
+        monitor.observe(receipt)
+        sample = monitor.snapshot()
+        require(sample['comparison_status'] == 'aligned' and
+                sample['observed_monotonic'] > completed and
+                sample['timezone']['beijing_timezone'] is True, 'CLIENT_CONSUMER_FIXTURE_INVALID')
+        result = sync._verify(completed)
+        results.append({'reference': status, 'result': result, 'sample': sample})
+        evidence.data['client_confirmation_controls'] = results
+        evidence.data['client_confirmation_scope'] = 'Actual ClockDiagnostics and default30s ClockSync._verify on Windows; synthetic heartbeat/reference and runner shell. No real backend heartbeat, Qt UI, Hook, send or pause lifecycle claim; reviewed unchanged lifecycle controls reused.'
+        evidence.save()
+        require(result == ('verified' if status == 'aligned' else 'unconfirmed'), 'CLIENT_CONFIRMATION_FALSE_SUCCESS')
+    require(monitor.flush(), 'CLIENT_DIAGNOSTICS_NOT_FLUSHED')
+    evidence.passed('client_reference_outage_stays_unconfirmed')
+
+
 def capture_native(command, timeout=20):
     """Direct child process: native stderr never becomes a PowerShell exception."""
     def output(value):
@@ -297,6 +351,7 @@ def run(case="full"):
         for name in ['worker-client/chejin_worker_client/clock_sync_ticket.py',
                      'worker-client/chejin_worker_client/windows_clock_sync.py',
                      'worker-client/chejin_worker_client/clock_sync.py',
+                     'worker-client/chejin_worker_client/clock_diagnostics.py',
                      'worker-client/chejin_worker_client/shared_rules.py',
                      'worker-client/omniauto-rpa/apps/wechat_ai_customer_service/adapters/hook_time_rules.py']:
             original = subprocess.check_output(['git', 'show', PRODUCT + ':' + name], cwd=ROOT, timeout=15)
@@ -383,25 +438,19 @@ def run(case="full"):
         evidence.save()
         evidence.data['all_unavailable_native_status'] = ps(r"$w=Join-Path ([Environment]::GetFolderPath('System')) 'w32tm.exe'; & $w /query /status /verbose; exit $LASTEXITCODE").stdout
         evidence.save()
-        require(result2.get('result') == 'resync_failed' and not result2.get('resync_completed') and result2.get('helper_exit_confirmed'), 'ALL_UNAVAILABLE_FALSE_SUCCESS')
+        # Native evidence40880515151: w32tm itself returned0 while explicitly
+        # reporting no time data. A command acknowledgement is not clock verification.
+        require(result2.get('helper_exit_confirmed') is True and
+                ((result2.get('result') == 'resync_failed' and result2.get('resync_completed') is False) or
+                 (result2.get('result') == 'requested' and result2.get('resync_completed') is True)), 'OUTAGE_HELPER_RESULT_UNEXPECTED')
+        evidence.data['all_unavailable_final_facts'] = native_facts(15)
+        evidence.save()
+        require(native_unsynchronized(evidence.data['all_unavailable_final_facts']), 'OUTAGE_NATIVE_STATE_UNEXPECTED')
         verify_block(evidence, firewall, ['Any'], 'all_sources_after_helper')
-        evidence.passed('all_sources_unavailable_not_success')
+        verify_client_confirmation(evidence, root)
+        evidence.passed('all_sources_unavailable_native_unsynchronized')
     except BaseException as exc:
         evidence.data['primary_error'] = failure(exc, evidence.data['stage'])
-        if isinstance(exc, NativeFailure) and exc.code == 'ALL_UNAVAILABLE_FALSE_SUCCESS':
-            # Diagnostic only AFTER a failed verdict; never changes acceptance.
-            try:
-                verify_block(evidence, firewall, ['Any'], 'outage_failure_diagnostics')
-                evidence.stage('diagnose_outage_command')
-                detail = capture_native([str(powershell_path().parents[2] / 'w32tm.exe'), '/resync', '/rediscover'])
-                evidence.data['outage_direct_command'] = detail
-                evidence.save()  # Keep command evidence even if the later query fails.
-                require(detail['status'] == 'completed', 'DIAGNOSTIC_NATIVE_COMMAND_INCOMPLETE')
-                evidence.data['outage_after_direct_facts'] = native_facts(15)
-                verify_block(evidence, firewall, ['Any'], 'outage_after_direct_diagnostics')
-                observe_native_details(evidence, 'outage_failure')
-            except Exception as diagnostic_error:
-                evidence.data['outage_diagnostic_error'] = failure(diagnostic_error, 'outage_failure_diagnostics')
         if isinstance(exc, NativeFailure) and exc.code == 'FALLBACK_NOT_SYNCHRONIZED':
             try:
                 observe_failed_source(evidence)
