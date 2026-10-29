@@ -142,7 +142,7 @@ def test_duplicate_phone_commits_native_duplicate_event_without_changing_origina
     original = client.post(
         FEIYU_LEADS_URL,
         headers=_headers(),
-        json={"customer_name": "王先生", "phones": ["13896676678"]},
+        json={"customer_name": "王先生", "phones": ["13896676678"], "custom_fields": {"feiyu": {"id": "dup-original"}}},
     )
     assert original.status_code == 200
     original_data = original.json()["data"]
@@ -152,7 +152,7 @@ def test_duplicate_phone_commits_native_duplicate_event_without_changing_origina
     duplicate = client.post(
         FEIYU_LEADS_URL,
         headers=_headers(),
-        json={"customer_name": "王先生二次提交", "phones": ["13896676678"]},
+        json={"customer_name": "王先生二次提交", "phones": ["13896676678"], "custom_fields": {"feiyu": {"id": "dup-new"}}},
     )
 
     assert duplicate.status_code == 409
@@ -176,7 +176,7 @@ def test_new_leads_keep_native_round_robin_distribution():
         response = client.post(
             FEIYU_LEADS_URL,
             headers=_headers(),
-            json={"customer_name": f"客户{index + 1}", "phones": [phone]},
+            json={"customer_name": f"客户{index + 1}", "phones": [phone], "custom_fields": {"feiyu": {"id": f"round-robin-{index}"}}},
         )
         assert response.status_code == 200
         assigned_ids.append(response.json()["data"]["sales_id"])
@@ -188,7 +188,7 @@ def test_native_schema_defaults_optional_fields_and_rejects_missing_phone_or_inv
     accepted = client.post(
         FEIYU_LEADS_URL,
         headers=_headers(),
-        json={"customer_name": "王先生", "phones": ["13896676678"]},
+        json={"customer_name": "王先生", "phones": ["13896676678"], "custom_fields": {"feiyu": {"id": "optional-fields"}}},
     )
     missing_phone = client.post(
         FEIYU_LEADS_URL,
@@ -209,7 +209,7 @@ def test_native_schema_defaults_optional_fields_and_rejects_missing_phone_or_inv
         lead = db.get(Lead, accepted.json()["data"]["id"])
         contacts = list(db.scalars(select(LeadContact).where(LeadContact.lead_id == lead.id)))
         assert lead is not None
-        assert lead.custom_fields == {}
+        assert lead.custom_fields["feiyu"] == {"id": "optional-fields"}
         assert {contact.contact_type for contact in contacts} == {"phone"}
 
 
@@ -283,7 +283,7 @@ def test_feiyu_default_account_must_be_in_allowlist(
     response = client.post(
         FEIYU_LEADS_URL,
         headers=_headers(account_id=request_account_id),
-        json={"customer_name": "允许列表回归", "phones": ["13896676997"]},
+        json={"customer_name": "允许列表回归", "phones": ["13896676997"], "custom_fields": {"feiyu": {"id": "allowlist-case"}}},
     )
 
     assert response.status_code == expected_status
@@ -304,7 +304,7 @@ def test_endpoint_calls_native_create_lead(monkeypatch):
     response = client.post(
         FEIYU_LEADS_URL,
         headers=_headers(),
-        json={"customer_name": "王先生", "phones": ["13896676678"]},
+        json={"customer_name": "王先生", "phones": ["13896676678"], "custom_fields": {"feiyu": {"id": "native-create"}}},
     )
 
     assert response.status_code == 200
@@ -321,7 +321,7 @@ def test_manual_then_feiyu_duplicate_keeps_original_lead_and_assignment():
     duplicate = client.post(
         FEIYU_LEADS_URL,
         headers=_headers(),
-        json={"customer_name": "飞鱼重复线索", "phones": ["13896676678"]},
+        json={"customer_name": "飞鱼重复线索", "phones": ["13896676678"], "custom_fields": {"feiyu": {"id": "manual-then-feiyu"}}},
     )
 
     assert duplicate.status_code == 409
@@ -343,7 +343,7 @@ def test_feiyu_then_manual_duplicate_keeps_original_lead_and_assignment():
     feiyu = client.post(
         FEIYU_LEADS_URL,
         headers=_headers(),
-        json={"customer_name": "飞鱼线索", "phones": ["13896676678"]},
+        json={"customer_name": "飞鱼线索", "phones": ["13896676678"], "custom_fields": {"feiyu": {"id": "feiyu-then-manual"}}},
     )
     assert feiyu.status_code == 200
     original = feiyu.json()["data"]
@@ -376,7 +376,7 @@ def test_interleaved_manual_and_feiyu_creates_share_round_robin_and_duplicates_d
     first_feiyu = client.post(
         FEIYU_LEADS_URL,
         headers=_headers(),
-        json={"customer_name": "飞鱼一", "phones": ["13896676672"]},
+        json={"customer_name": "飞鱼一", "phones": ["13896676672"], "custom_fields": {"feiyu": {"id": "interleave-1"}}},
     )
     assert first_feiyu.status_code == 200
     assert first_feiyu.json()["data"]["sales_id"] == sales_ids[1]
@@ -386,7 +386,7 @@ def test_interleaved_manual_and_feiyu_creates_share_round_robin_and_duplicates_d
     repeated = client.post(
         FEIYU_LEADS_URL,
         headers=_headers(),
-        json={"customer_name": "飞鱼重复手工一", "phones": ["13896676671"]},
+        json={"customer_name": "飞鱼重复手工一", "phones": ["13896676671"], "custom_fields": {"feiyu": {"id": "interleave-duplicate"}}},
     )
     assert repeated.status_code == 409
     assert _round_robin_cursor() == cursor_after_feiyu
@@ -397,7 +397,7 @@ def test_interleaved_manual_and_feiyu_creates_share_round_robin_and_duplicates_d
     second_feiyu = client.post(
         FEIYU_LEADS_URL,
         headers=_headers(),
-        json={"customer_name": "飞鱼二", "phones": ["13896676674"]},
+        json={"customer_name": "飞鱼二", "phones": ["13896676674"], "custom_fields": {"feiyu": {"id": "interleave-2"}}},
     )
     assert second_feiyu.status_code == 200
     assert second_feiyu.json()["data"]["sales_id"] == sales_ids[1]
@@ -419,7 +419,7 @@ def test_feiyu_create_generates_native_add_friend_task():
     response = client.post(
         FEIYU_LEADS_URL,
         headers=_headers(),
-        json={"customer_name": "飞鱼线索", "phones": ["13896676678"]},
+        json={"customer_name": "飞鱼线索", "phones": ["13896676678"], "custom_fields": {"feiyu": {"id": "task-create"}}},
     )
 
     assert response.status_code == 200
@@ -469,6 +469,116 @@ def test_same_feiyu_clue_replayed_ten_times_reuses_committed_ack_and_side_effect
         assert db.scalar(select(func.count()).select_from(LeadAssignment).where(LeadAssignment.lead_id == lead_id)) == 1
         assert lead.sales_id == sales_ids[0]
         assert "10-15万" in db.scalar(select(LeadNote.content).where(LeadNote.lead_id == lead_id))
+
+
+def test_feiyu_clue_id_is_required_before_native_create_or_duplicate_processing():
+    _create_sales("张伟")
+    payload = {"customer_name": "缺编号线索", "phones": ["13896676890"]}
+
+    responses = [
+        client.post(FEIYU_LEADS_URL, headers=_headers(), json=payload)
+        for _ in range(10)
+    ]
+
+    assert all(response.status_code == 400 for response in responses)
+    assert all(response.json()["code"] == "FEIYU_CLUE_ID_REQUIRED" for response in responses)
+    assert _lead_count() == 0
+    assert _round_robin_cursor() is None
+    with SessionLocal() as db:
+        assert db.scalar(select(func.count()).select_from(FeiyuLeadReceipt)) == 0
+        assert db.scalar(select(func.count()).select_from(LeadDuplicateEvent)) == 0
+        assert db.scalar(select(func.count()).select_from(LeadNote)) == 0
+        assert db.scalar(select(func.count()).select_from(LeadAssignment)) == 0
+        assert db.scalar(select(func.count()).select_from(Task)) == 0
+
+
+def test_same_feiyu_clue_with_changed_details_returns_manual_review_without_mutation():
+    sales_ids = _create_sales("张伟")
+    headers = _headers(account_id="account-a")
+    original_payload = {
+        "customer_name": "飞鱼客户",
+        "phones": ["13896676891"],
+        "remark": "预算：10万",
+        "custom_fields": {
+            "feiyu": {
+                "id": "clue-details-change",
+                "business": [{"field_name": "座位数", "value": "五座"}],
+            }
+        },
+    }
+    first = client.post(FEIYU_LEADS_URL, headers=headers, json=original_payload)
+    assert first.status_code == 200
+    lead_id = first.json()["data"]["id"]
+    cursor_after_create = _round_robin_cursor()
+
+    changed_payload = {
+        **original_payload,
+        "remark": "预算：20万；七座",
+        "custom_fields": {
+            "feiyu": {
+                "id": "clue-details-change",
+                "business": [{"field_name": "座位数", "value": "七座"}],
+            }
+        },
+    }
+    changed = client.post(FEIYU_LEADS_URL, headers=headers, json=changed_payload)
+    replay = client.post(FEIYU_LEADS_URL, headers=headers, json=changed_payload)
+
+    for response in (changed, replay):
+        assert response.status_code == 409
+        assert response.json()["code"] == "FEIYU_CLUE_UPDATE_REQUIRES_REVIEW"
+        assert response.json()["data"]["lead_id"] == lead_id
+        assert response.json()["data"]["update_applied"] is False
+        assert response.json()["data"]["manual_review_required"] is True
+        assert "未应用" in response.json()["message"]
+    assert _round_robin_cursor() == cursor_after_create
+    with SessionLocal() as db:
+        lead = db.get(Lead, lead_id)
+        notes = list(db.scalars(select(LeadNote).where(LeadNote.lead_id == lead_id)))
+        assert lead is not None
+        assert lead.sales_id == sales_ids[0]
+        assert lead.duplicate_count == 0
+        assert len(notes) == 1
+        assert "预算：10万" in notes[0].content
+        assert "预算：20万" not in notes[0].content
+        assert db.scalar(select(func.count()).select_from(FeiyuLeadReceipt)) == 1
+        assert db.scalar(select(func.count()).select_from(LeadDuplicateEvent)) == 0
+        assert db.scalar(select(func.count()).select_from(LeadAssignment).where(LeadAssignment.lead_id == lead_id)) == 1
+        assert db.scalar(select(func.count()).select_from(Task).where(Task.lead_id == lead_id)) == 1
+
+
+def test_feiyu_clue_id_alias_replays_the_same_canonical_identity():
+    _create_sales("张伟")
+    headers = _headers(account_id="account-a")
+    first = client.post(
+        FEIYU_LEADS_URL,
+        headers=headers,
+        json={
+            "customer_name": "编号别名客户",
+            "phones": ["13896676892"],
+            "remark": "预算：15万",
+            "custom_fields": {"feiyu": {"id": "alias-clue-1", "adv_id": "adv-1"}},
+        },
+    )
+    replay = client.post(
+        FEIYU_LEADS_URL,
+        headers=headers,
+        json={
+            "customer_name": "编号别名客户",
+            "phones": ["13896676892"],
+            "remark": "预算：15万",
+            "custom_fields": {"feiyu": {"clue_id": "alias-clue-1", "adv_id": "adv-1"}},
+        },
+    )
+
+    assert first.status_code == 200
+    assert replay.status_code == 200
+    assert replay.content == first.content
+    with SessionLocal() as db:
+        assert db.scalar(select(func.count()).select_from(FeiyuLeadReceipt)) == 1
+        assert db.scalar(select(func.count()).select_from(Lead)) == 1
+        assert db.scalar(select(func.count()).select_from(LeadNote)) == 1
+        assert db.scalar(select(func.count()).select_from(Task)) == 1
 
 
 def test_same_feiyu_identity_with_changed_contact_is_blocked_without_business_writes():
@@ -574,7 +684,7 @@ def test_feiyu_lead_without_sales_can_be_natively_assigned_later():
     created = client.post(
         FEIYU_LEADS_URL,
         headers=_headers(),
-        json={"customer_name": "先入池线索", "phones": ["13896676678"]},
+        json={"customer_name": "先入池线索", "phones": ["13896676678"], "custom_fields": {"feiyu": {"id": "unassigned-retry"}}},
     )
     assert created.status_code == 200
     data = created.json()["data"]
@@ -629,6 +739,7 @@ def test_feiyu_ack_is_compact_when_full_native_result_has_many_cross_channel_sug
             "phones": ["13896679999"],
             "wechats": [shared_wechat],
             "emails": [shared_email],
+            "custom_fields": {"feiyu": {"id": "compact-ack"}},
         },
     )
 

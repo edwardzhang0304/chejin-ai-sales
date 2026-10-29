@@ -22,6 +22,7 @@ def upgrade() -> None:
         sa.Column("clue_id", sa.String(length=128), nullable=False),
         sa.Column("lead_id", sa.String(length=36), nullable=False),
         sa.Column("contact_fingerprint", sa.String(length=64), nullable=False),
+        sa.Column("payload_fingerprint", sa.String(length=64), nullable=False),
         sa.Column("response_status", sa.Integer(), nullable=False),
         sa.Column("response_body", sa.JSON(), nullable=False),
         sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),

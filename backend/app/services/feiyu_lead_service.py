@@ -1,4 +1,5 @@
 import hashlib
+import hmac
 import json
 import re
 from typing import Any
@@ -8,6 +9,7 @@ from sqlalchemy import select, text
 from sqlalchemy.orm import Session
 
 from app.api.response import error_response, ok
+from app.core.config import get_settings
 from app.core.request_context import ActorContext
 from app.core.request_id import get_request_id
 from app.errors import AppError, DuplicateLeadError
@@ -60,6 +62,25 @@ def _contact_fingerprint(payload: LeadCreate) -> str:
     return hashlib.sha256(encoded).hexdigest()
 
 
+def _payload_fingerprint(payload: LeadCreate, clue_id: str) -> str:
+    canonical = payload.model_dump(mode="json")
+    custom_fields = canonical.get("custom_fields")
+    feiyu = custom_fields.get("feiyu") if isinstance(custom_fields, dict) else None
+    if isinstance(feiyu, dict):
+        normalized_feiyu = dict(feiyu)
+        normalized_feiyu.pop("clue_id", None)
+        normalized_feiyu["id"] = clue_id
+        custom_fields["feiyu"] = normalized_feiyu
+    encoded = json.dumps(
+        canonical,
+        sort_keys=True,
+        ensure_ascii=False,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    secret = get_settings().phone_hash_secret.encode("utf-8")
+    return hmac.new(secret, b"feiyu-payload-v1\0" + encoded, hashlib.sha256).hexdigest()
+
+
 def _lock_identity(db: Session, account_id: str, clue_id: str) -> None:
     if db.get_bind().dialect.name != "postgresql":
         return
@@ -86,6 +107,7 @@ def _save_receipt(
     clue_id: str,
     lead_id: str,
     contact_fingerprint: str,
+    payload_fingerprint: str,
     response: JSONResponse,
 ) -> JSONResponse:
     body = json.loads(response.body.decode("utf-8"))
@@ -95,6 +117,7 @@ def _save_receipt(
             clue_id=clue_id,
             lead_id=lead_id,
             contact_fingerprint=contact_fingerprint,
+            payload_fingerprint=payload_fingerprint,
             response_status=response.status_code,
             response_body=body,
         )
@@ -115,21 +138,14 @@ def process_feiyu_lead(
 
     clue_id = _clue_identity(payload.custom_fields)
     if not clue_id:
-        try:
-            data = lead_service.create_lead(
-                db,
-                payload,
-                actor,
-                source_type="feiyu",
-                source_name_snapshot="飞鱼线索",
-            )
-            db.commit()
-            return JSONResponse(status_code=200, content=_compact_success(data))
-        except DuplicateLeadError:
-            db.commit()
-            raise
+        raise AppError(
+            "FEIYU_CLUE_ID_REQUIRED",
+            "飞鱼线索缺少编号，已拒绝写入；请配置接收器线索编号字段后重试",
+            400,
+        )
 
     fingerprint = _contact_fingerprint(payload)
+    payload_fingerprint = _payload_fingerprint(payload, clue_id)
     _lock_identity(db, account_id, clue_id)
     existing = db.scalar(
         select(FeiyuLeadReceipt).where(
@@ -144,6 +160,17 @@ def process_feiyu_lead(
                 "同一飞鱼线索编号对应的联系方式发生变化，已拦截本次处理",
                 409,
                 {"lead_id": existing.lead_id},
+            )
+        if existing.payload_fingerprint != payload_fingerprint:
+            raise AppError(
+                "FEIYU_CLUE_UPDATE_REQUIRES_REVIEW",
+                "同一飞鱼线索编号的资料已变化，本次更新未应用，请人工核对处理",
+                409,
+                {
+                    "lead_id": existing.lead_id,
+                    "update_applied": False,
+                    "manual_review_required": True,
+                },
             )
         return _response_from_receipt(existing)
 
@@ -162,6 +189,7 @@ def process_feiyu_lead(
             clue_id=clue_id,
             lead_id=data["id"],
             contact_fingerprint=fingerprint,
+            payload_fingerprint=payload_fingerprint,
             response=response,
         )
     except DuplicateLeadError as exc:
@@ -181,5 +209,6 @@ def process_feiyu_lead(
             clue_id=clue_id,
             lead_id=lead_id,
             contact_fingerprint=fingerprint,
+            payload_fingerprint=payload_fingerprint,
             response=response,
         )
