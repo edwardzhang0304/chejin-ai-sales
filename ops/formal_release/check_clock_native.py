@@ -251,6 +251,17 @@ def native_unsynchronized(facts):
             number('Last Sync Error') not in (None, 0))
 
 
+def fresh_fixture_tick(completed):
+    # Real Windows monotonic ticks may repeat across adjacent synthetic calls.
+    # Wait at most 100 short intervals; never fabricate a newer receipt time.
+    for _ in range(100):
+        observed = time.monotonic()
+        if observed > completed:
+            return observed
+        time.sleep(.01)
+    raise NativeFailure('CLIENT_FIXTURE_CLOCK_DID_NOT_ADVANCE')
+
+
 def verify_client_confirmation(evidence, root):
     """Real consumer, synthetic backend reference; not a real backend/UI test."""
     from datetime import datetime, timezone
@@ -271,12 +282,13 @@ def verify_client_confirmation(evidence, root):
     results = []
     for status in ('aligned', 'unconfirmed'):
         completed = time.monotonic()
+        receipt_monotonic = fresh_fixture_tick(completed)
         wall = time.time()
         stamp = datetime.fromtimestamp(wall, timezone.utc).isoformat()
         # Local receipt is intentionally synthetic: positively aligned local/server
         # comparison isolates the real consumer's backend-reference requirement.
-        receipt = SimpleNamespace(request_started_monotonic=completed,
-            response_received_monotonic=completed, request_started_wall=wall,
+        receipt = SimpleNamespace(request_started_monotonic=receipt_monotonic,
+            response_received_monotonic=receipt_monotonic, request_started_wall=wall,
             response_received_wall=wall, server_time_utc=stamp,
             clock_reference={**reference, 'status': status})
         monitor.observe(receipt)
