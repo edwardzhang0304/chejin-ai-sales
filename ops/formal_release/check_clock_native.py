@@ -240,6 +240,43 @@ def observe_failed_source(evidence):
     evidence.save()
 
 
+def capture_native(command, timeout=20):
+    """Direct child process: native stderr never becomes a PowerShell exception."""
+    def output(value):
+        return value.decode('utf-8', errors='replace') if isinstance(value, bytes) else (value or '')
+    try:
+        result = subprocess.run(command, capture_output=True, text=True,
+                                encoding='utf-8', errors='replace', timeout=timeout, check=False)
+        return {'status': 'completed', 'exit_code': result.returncode,
+                'stdout': result.stdout, 'stderr': result.stderr}
+    except subprocess.TimeoutExpired as exc:
+        # subprocess.run kills and waits for this direct child before raising.
+        return {'status': 'timeout', 'timeout_seconds': timeout,
+                'stdout': output(exc.stdout), 'stderr': output(exc.stderr)}
+    except OSError as exc:
+        return {'status': 'start_failed', 'errno': exc.errno, 'winerror': getattr(exc, 'winerror', None)}
+
+
+def verify_native_capture(evidence):
+    # New OS-bound capture primitive, synthetic commands only on guarded CI.
+    cases = [
+        ("import sys; print('out'); print('err',file=sys.stderr); sys.exit(7)", 10, 'completed', 7),
+        ("print('ok')", 10, 'completed', 0),
+        ("import time; print('before-timeout',flush=True); time.sleep(30)", 2, 'timeout', None),
+    ]
+    evidence.data['native_capture_controls'] = []
+    for script, limit, status, code in cases:
+        result = capture_native([sys.executable, '-c', script], limit)
+        evidence.data['native_capture_controls'].append(result)
+        evidence.save()
+        require(result['status'] == status and result.get('exit_code') == code, 'NATIVE_CAPTURE_CONTROL_FAILED')
+        if code == 7:
+            require(result['stdout'].strip() == 'out' and result['stderr'].strip() == 'err', 'NATIVE_CAPTURE_STREAMS_LOST')
+        if status == 'timeout':
+            require('before-timeout' in result['stdout'], 'NATIVE_CAPTURE_TIMEOUT_OUTPUT_LOST')
+    evidence.passed('native_capture_controls')
+
+
 def run(case="full"):
     require(case in ("full", "outage-only"), "UNKNOWN_NATIVE_CASE")
     require(sys.platform == 'win32' and os.environ.get('GITHUB_ACTIONS') == 'true', 'GITHUB_WINDOWS_ONLY')
@@ -266,6 +303,7 @@ def run(case="full"):
             actual = (ROOT / name).read_bytes()
             require(original == actual, 'PRODUCT_INPUT_MISMATCH')
             evidence.data['product_files'][name] = hashlib.sha256(actual).hexdigest()
+        verify_native_capture(evidence)
         evidence.stage('isolate_vm_time_provider')
         before_vmic = vmic_enabled()
         evidence.data['vm_time_provider_before'] = before_vmic
@@ -350,6 +388,20 @@ def run(case="full"):
         evidence.passed('all_sources_unavailable_not_success')
     except BaseException as exc:
         evidence.data['primary_error'] = failure(exc, evidence.data['stage'])
+        if isinstance(exc, NativeFailure) and exc.code == 'ALL_UNAVAILABLE_FALSE_SUCCESS':
+            # Diagnostic only AFTER a failed verdict; never changes acceptance.
+            try:
+                verify_block(evidence, firewall, ['Any'], 'outage_failure_diagnostics')
+                evidence.stage('diagnose_outage_command')
+                detail = capture_native([str(powershell_path().parents[2] / 'w32tm.exe'), '/resync', '/rediscover'])
+                evidence.data['outage_direct_command'] = detail
+                evidence.save()  # Keep command evidence even if the later query fails.
+                require(detail['status'] == 'completed', 'DIAGNOSTIC_NATIVE_COMMAND_INCOMPLETE')
+                evidence.data['outage_after_direct_facts'] = native_facts(15)
+                verify_block(evidence, firewall, ['Any'], 'outage_after_direct_diagnostics')
+                observe_native_details(evidence, 'outage_failure')
+            except Exception as diagnostic_error:
+                evidence.data['outage_diagnostic_error'] = failure(diagnostic_error, 'outage_failure_diagnostics')
         if isinstance(exc, NativeFailure) and exc.code == 'FALLBACK_NOT_SYNCHRONIZED':
             try:
                 observe_failed_source(evidence)
