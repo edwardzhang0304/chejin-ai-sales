@@ -11,6 +11,7 @@ from . import storage
 from .clock_diagnostics import local_timezone
 from .clock_sync_ticket import ClockSyncTicket, valid_operation
 from .windows_clock_sync import synchronize_windows
+from .failure_evidence import exception_details, record_capture_failure
 
 MESSAGES = {
     'idle': '', 'stopping': '正在暂停运行并保留原记录',
@@ -47,6 +48,7 @@ class ClockSync:
         self._lock = threading.Lock()
         self._state = {'state': 'idle', 'message': '', 'busy': False}
         self._events, self._sequence, self._operation = [], 0, None
+        self._attempt, self._stage, self._first_failure = None, "idle", None
 
     def snapshot(self):
         with self._lock:
@@ -80,7 +82,8 @@ class ClockSync:
             return True
         except BlockingIOError:
             self._publish('recovering', True)
-        except Exception:
+        except Exception as exc:
+            self._failure("startup_recovery", exc)
             self._publish('evidence_failed', False)
         return False
 
@@ -98,7 +101,23 @@ class ClockSync:
             self._state = {'state': state, 'message': MESSAGES[state], 'busy': busy}
         self.on_change()
 
+    def _failure(self, stage, exc):
+        failure = {'stage': stage, **exception_details(exc)}
+        if self._first_failure is None:
+            self._first_failure = failure
+        record_capture_failure('clock_sync.' + stage, exc,
+            error_code='CLOCK_SYNC_FAILED', safe_context={
+                'operation_id': self._operation, 'attempt_id': self._attempt,
+                'stage': stage, 'first_failure': self._first_failure})
+
     def _record(self, state, *, busy=True, publish=True, **details):
+        try:
+            self._write_record(state, busy=busy, publish=publish, **details)
+        except Exception as exc:
+            self._failure('record_' + state, exc)
+            raise
+
+    def _write_record(self, state, *, busy=True, publish=True, **details):
         path = self.root / 'artifacts/runtime/clock-sync.json'
         if not self._events and path.exists():
             if path.stat().st_size > 256 * 1024:
@@ -107,7 +126,8 @@ class ClockSync:
             self._events = previous.get('events', [])[-31:]
         self._sequence = max([self._sequence] + [int(e.get('sequence', 0))
             for e in self._events if e.get('operation_id') == self._operation]) + 1
-        value = {'operation_id': self._operation, 'sequence': self._sequence,
+        value = {'operation_id': self._operation, 'attempt_id': self._attempt,
+                 'first_failure': self._first_failure, 'sequence': self._sequence,
                  'state': state, 'busy': busy, **details,
                  'observed_monotonic': self.monotonic(),
                  'observed_at_utc': datetime.now(timezone.utc).isoformat()}
@@ -137,6 +157,11 @@ class ClockSync:
         reserved = stopped = ticket_open = False
         result = 'failed'
         helper = {}
+        # Maintenance may retain its owner across failures, but every elevated
+        # attempt gets a fresh ticket. A revoked authorization is never reused.
+        self._attempt = 'clock-sync-' + str(uuid.uuid4())
+        self._first_failure = None
+        self._stage = 'admission'
         try:
             self._operation = self.runner.begin_clock_sync('clock-sync-' + str(uuid.uuid4()))
             if not self._operation:
@@ -147,45 +172,61 @@ class ClockSync:
                          timezone_before=local_timezone())
             # This keeps an existing fault and persists a local pause even when
             # the backend is offline. The admission gate already blocks new work.
+            self._stage = 'pause'
             self.runner.set_run_status('paused')
             saved = storage.load_binding()
             if (saved is None or saved.run_status not in {'paused', 'faulted'}
                     or self.runner.binding.run_status not in {'paused', 'faulted'}):
                 result = 'stop_failed'
                 return
+            self._stage = 'drain'
             try:
                 self.runner.stop_for_update(25)
                 if self.runner.bridge.sidecar_active():
                     raise RuntimeError('CLOCK_SIDECAR_NOT_STOPPED')
-            except Exception:
+            except Exception as exc:
+                self._failure('drain', exc)
                 result = 'stop_failed'
                 return
             stopped = True
             self._record('repairing', writers_stopped=True)
-            self.ticket.authorize(self._operation)
+            self._stage = 'ticket_authorize'
+            self.ticket.authorize(self._attempt)
             ticket_open = True
             try:
-                helper = self.repair(self._operation, self.ticket.path)
+                self._stage = 'helper'
+                helper = self.repair(self._attempt, self.ticket.path)
                 result = helper['result']
             except Exception as exc:
+                self._failure('helper', exc)
                 helper = {'result': 'failed', 'exception_type': type(exc).__name__,
                           'helper_exit_confirmed': False}
                 result = 'failed'
             finally:
+                self._stage = 'ticket_revoke'
                 self._revoke_when_finished()
                 ticket_open = False
+            if result == 'requested' and not (helper.get('helper_exit_confirmed')
+                                                  and helper.get('resync_completed')):
+                # An accepted asynchronous request is not completed repair.
+                # Keep writers stopped until a subsequent explicit recovery.
+                result = 'unconfirmed'
+                return
             completed = self.monotonic()
             self._record('verifying', helper=helper, ticket_revoked=True,
                          timezone_after=local_timezone())
+            self._stage = 'restart'
             try:
                 self.runner.start(self.runner.binding)
                 stopped = False
-            except Exception:
+            except Exception as exc:
+                self._failure('restart', exc)
                 result = 'restart_failed'
                 return
             if result == 'requested':
                 result = self._verify(completed)
-        except Exception:
+        except Exception as exc:
+            self._failure(self._stage, exc)
             # A missing durable record is not permission to continue repair or
             # forget ownership. Restart can revoke the ticket under its lock.
             result = 'evidence_failed'
@@ -199,7 +240,8 @@ class ClockSync:
                 if reserved and not retain:
                     self.runner.set_update_new_work_gate(False, update_request_id=self._operation)
                 self._publish(result, False)
-            except Exception:
+            except Exception as exc:
+                self._failure('finalize', exc)
                 self._publish('evidence_failed', False)
 
     def _verify(self, completed):

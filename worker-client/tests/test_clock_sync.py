@@ -63,14 +63,15 @@ def test_real_runner_stops_repairs_reconnects_fresh_time_keeps_unknown_and_pause
     initial = monitor.snapshot()['observed_monotonic']
     repaired = []
     def repair(op, ticket):
-        assert storage.load_runtime_control()['update_request_id'] == op
+        assert valid_operation(storage.load_runtime_control()['update_request_id'])
+        assert storage.load_runtime_control()['update_request_id'] != op
         assert runner.stop_event.is_set()
         assert all(t is None or not t.is_alive() for t in (runner.thread, runner.hook_intake_thread, runner.hook_business_thread, runner.thread_monitor))
         assert services.connection.prepared is None
         assert Path(ticket).read_text() == op
         assert binding.run_status == ('faulted' if status == 'faulted' else 'paused')
         repaired.append(op)
-        return {'result':'requested', 'helper_exit_confirmed':True}
+        return {'resync_completed':True,'helper_exit_confirmed':True,'result':'requested'}
     sync = ClockSync(runner, root, repair=repair, verify_seconds=3)
     assert sync.start(); finish(sync)
     assert sync.snapshot()['state'] == 'verified'
@@ -105,7 +106,7 @@ def test_missing_reference_is_unconfirmed_even_when_helper_succeeded(runtime, tm
     runner,services,binding,*_=runtime
     monitor_for(services,tmp_path)
     runner.start(binding); until(lambda:services.connection.prepared is not None)
-    sync=ClockSync(runner,tmp_path,repair=lambda *args:{'result':'requested'},verify_seconds=.25)
+    sync=ClockSync(runner,tmp_path,repair=lambda *args:{'resync_completed':True,'helper_exit_confirmed':True,'result':'requested'},verify_seconds=.25)
     sync.start();finish(sync)
     assert sync.snapshot()['state']=='unconfirmed'
     assert binding.run_status=='paused'
@@ -148,7 +149,7 @@ def test_undrained_writer_never_changes_clock_and_explicit_retry_can_finish(runt
     assert owned.startswith('clock-sync-') and binding.run_status=='paused'
     monkeypatch.setattr(runner,'stop_for_update',original)
     sync.start();finish(sync)
-    assert len(called)==1 and called[0][0]==owned
+    assert len(called)==1 and called[0][0]!=owned and valid_operation(called[0][0])
     assert not storage.load_runtime_control()['update_no_new_work']
 
 
@@ -186,6 +187,7 @@ def test_fixed_helper_guards_policy_before_changes_and_uses_safe_literals(monkey
     assert script.index("'Disabled'") < script.index('Set-TimeZone')
     assert "quotes''$(bad).ticket'" in script
     assert 'ntp.aliyun.com,0x8' in script and 'China Standard Time' in script
+    assert '/nowait' not in script and '& $exe /resync /rediscover | Out-Null' in script
     assert '-ExecutionPolicy' not in script and 'Set-Date' not in script
     assert not valid_operation('clock-sync-invalid')
     with pytest.raises(ValueError):windows.helper_script("';anything",path)
@@ -236,7 +238,7 @@ def test_offline_after_repair_does_not_claim_verified(runtime,backend_peer,tmp_p
     runner.start(binding);until(lambda:services.connection.prepared is not None)
     def repaired(*args):
         backend_peer.status=503
-        return {'result':'requested'}
+        return {'resync_completed':True,'helper_exit_confirmed':True,'result':'requested'}
     sync=ClockSync(runner,tmp_path,repair=repaired,verify_seconds=.2)
     try:
         sync.start();finish(sync)
@@ -278,3 +280,187 @@ def test_qt_bridge_blocks_update_rebind_resume_and_close_during_sync():
         event=SimpleNamespace(ignore=Mock())
         window.closeEvent(event);event.ignore.assert_called_once()
         assert window._startup_check_state()['canStart'] is False
+
+
+@pytest.mark.parametrize('result', ['requested', 'resync_failed'])
+def test_delayed_resync_keeps_writers_stopped_until_synchronous_result(runtime, backend_peer, tmp_path, result):
+    runner,services,binding,*_=runtime
+    body=json.loads(backend_peer.body);body['data']['clock_reference']=REFERENCE
+    backend_peer.body=json.dumps(body).encode()
+    monitor_for(services,tmp_path)
+    runner.start(binding);until(lambda:services.connection.prepared is not None)
+    entered=threading.Event();release=threading.Event()
+    def repair(attempt,ticket):
+        # External command stands for the blocking w32tm contract, not /nowait.
+        with ClockSyncTicket(tmp_path).locked():
+            entered.set();assert release.wait(5)
+        return {'result':result,'helper_exit_confirmed':True,'resync_completed':result=='requested'}
+    sync=ClockSync(runner,tmp_path,repair=repair,verify_seconds=3)
+    try:
+        sync.start();assert entered.wait(5)
+        assert sync.snapshot()['busy'] and sync.snapshot()['state']=='repairing'
+        assert not runner.thread.is_alive() and services.connection.prepared is None
+        assert storage.load_runtime_control()['update_no_new_work']
+        assert sync.blocks_actions() and not sync.start()
+    finally:release.set();finish(sync)
+    assert sync.snapshot()['state']==('verified' if result=='requested' else result)
+    assert binding.run_status=='paused'
+
+
+def test_asynchronous_acceptance_is_never_treated_as_completed_sync(runtime,tmp_path):
+    runner,services,binding,*_=runtime
+    runner.start(binding);until(lambda:services.connection.prepared is not None)
+    sync=ClockSync(runner,tmp_path,repair=lambda *a:{'result':'requested','helper_exit_confirmed':True})
+    sync.start();finish(sync)
+    assert sync.snapshot()['state']=='unconfirmed'
+    assert not runner.thread.is_alive() and storage.load_runtime_control()['update_no_new_work']
+
+
+@pytest.mark.parametrize('failure_stage', ['record','restart'])
+def test_retry_keeps_owner_but_never_reauthorizes_late_old_helper(runtime,tmp_path,monkeypatch,failure_stage):
+    runner,services,binding,*_=runtime
+    runner.start(binding);until(lambda:services.connection.prepared is not None)
+    release=threading.Event();done=threading.Event();attempts=[];old_authorized=[];threads=[]
+    def late_helper(old_attempt):
+        assert release.wait(8)
+        with ClockSyncTicket(tmp_path).locked() as stream:
+            stream.seek(0);old_authorized.append(stream.read(128).decode()==old_attempt)
+        done.set()
+    def repair(attempt,ticket):
+        attempts.append(attempt)
+        if len(attempts)==1:
+            t=threading.Thread(target=late_helper,args=(attempt,),daemon=True);t.start();threads.append(t)
+            return {'result':'elevation_failed','helper_exit_confirmed':False}
+        release.set();assert done.wait(3)
+        return {'result':'cancelled','helper_exit_confirmed':True}
+    sync=ClockSync(runner,tmp_path,repair=repair)
+    original_write=sync._write_record;original_start=runner.start;fail=[True]
+    def write(state,**kwargs):
+        if failure_stage=='record' and state=='verifying' and fail[0]:
+            fail[0]=False;raise PermissionError(13,'private-secret')
+        return original_write(state,**kwargs)
+    def restart(*args,**kwargs):
+        if failure_stage=='restart' and fail[0]:
+            fail[0]=False;raise OSError('private-secret')
+        return original_start(*args,**kwargs)
+    monkeypatch.setattr(sync,'_write_record',write);monkeypatch.setattr(runner,'start',restart)
+    try:
+        sync.start();finish(sync)
+        owner=storage.load_runtime_control()['update_request_id']
+        assert storage.load_runtime_control()['update_no_new_work']
+        assert sync.ticket.path.read_text()=='revoked'
+        sync.start();finish(sync)
+        assert len(set(attempts))==2 and owner not in attempts
+        assert old_authorized==[False]
+        assert sync.snapshot()['state']=='cancelled'
+        assert not storage.load_runtime_control()['update_no_new_work']
+    finally:
+        release.set()
+        for t in threads:t.join(3)
+
+
+def fallback_in_zip(root,target):
+    with zipfile.ZipFile(export_bundle(root,target)) as archive:
+        files=[name for name in archive.namelist() if name.endswith('evidence-recorder-failures.jsonl')]
+        assert files
+        raw=archive.read(files[0]).decode()
+    assert 'private-secret' not in raw
+    return [json.loads(line) for line in raw.splitlines()]
+
+
+@pytest.mark.parametrize('kind', ['permission','full','serialization'])
+def test_actual_evidence_write_errors_reach_export_and_preserve_first_cause(runtime,tmp_path,monkeypatch,kind):
+    runner,services,binding,*_=runtime
+    runner.start(binding);until(lambda:services.connection.prepared is not None)
+    target=tmp_path/'artifacts/runtime/clock-sync.tmp';original=Path.open
+    def fail(path,*args,**kwargs):
+        if path==target:
+            if kind=='permission':raise PermissionError(13,'private-secret')
+            if kind=='full':raise OSError(28,'private-secret')
+        return original(path,*args,**kwargs)
+    monkeypatch.setattr(Path,'open',fail)
+    if kind=='serialization':
+        import chejin_worker_client.clock_sync as module
+        monkeypatch.setattr(module.json,'dump',lambda *a,**k:(_ for _ in ()).throw(TypeError('private-secret')))
+    called=[];sync=ClockSync(runner,tmp_path,repair=lambda *a:called.append(a))
+    sync.start();finish(sync)
+    assert sync.snapshot()['state']=='evidence_failed' and not called
+    assert storage.load_runtime_control()['update_no_new_work']
+    records=fallback_in_zip(tmp_path,tmp_path/'errors.zip')
+    assert any(r['context']['stage']=='record_stopping' for r in records)
+    assert all(r['context']['first_failure']['stage']=='record_stopping' for r in records)
+    assert all(valid_operation(r['context']['attempt_id']) for r in records)
+
+
+@pytest.mark.parametrize('stage', ['drain','restart','ticket_authorize','ticket_revoke','helper'])
+def test_lifecycle_exceptions_use_safe_fallback_in_actual_zip(runtime,tmp_path,monkeypatch,stage):
+    runner,services,binding,*_=runtime
+    runner.start(binding);until(lambda:services.connection.prepared is not None)
+    def failure(*a,**k):raise OSError(5,'private-secret')
+    sync=ClockSync(runner,tmp_path,repair=lambda *a:{'result':'cancelled'})
+    with monkeypatch.context() as patch:
+        if stage=='drain':patch.setattr(runner,'stop_for_update',failure)
+        elif stage=='restart':patch.setattr(runner,'start',failure)
+        elif stage=='ticket_authorize':patch.setattr(sync.ticket,'authorize',failure)
+        elif stage=='ticket_revoke':patch.setattr(sync.ticket,'revoke',failure)
+        else:sync.repair=failure
+        sync.start();finish(sync)
+    records=fallback_in_zip(tmp_path,tmp_path/'lifecycle.zip')
+    assert any(r['context']['stage']==stage for r in records)
+    assert all(r['context']['first_failure']['stage']==stage for r in records)
+    assert binding.run_status=='paused'
+
+
+def test_completely_unwritable_disk_has_bounded_safe_stderr_fallback(tmp_path,monkeypatch,capsys):
+    sync=ClockSync(SimpleNamespace(),tmp_path)
+    sync._operation=operation();sync._attempt=operation()
+    def fail(*a,**k):raise OSError(28,'private-secret')
+    monkeypatch.setattr(Path,'open',fail)
+    with pytest.raises(OSError):sync._record('stopping')
+    err=capsys.readouterr().err
+    assert len(err)<8192 and 'private-secret' not in err
+    assert json.loads(err)['context']['stage']=='record_stopping'
+
+
+def test_actual_uncertain_hook_call_is_not_settled_or_replayed_by_clock_sync(runtime,tmp_path):
+    from chejin_worker_client import hook_active_calls
+    runner,services,binding,*_=runtime
+    monitor_for(services,tmp_path)
+    runner.start(binding);until(lambda:services.connection.prepared is not None)
+    generation=services.connection.prepared.process.generation
+    hook_active_calls.reserve(generation,'synthetic-original-send','send_text')
+    hook_active_calls.finish(generation,'synthetic-original-send',False)
+    def row():
+        with storage.db_connection() as conn:
+            return dict(conn.execute('SELECT * FROM hook_active_calls WHERE action_id=?',('synthetic-original-send',)).fetchone())
+    before=row();calls=[]
+    sync=ClockSync(runner,tmp_path,repair=lambda *args:calls.append(args) or {'result':'requested','helper_exit_confirmed':True,'resync_completed':True},verify_seconds=.3)
+    sync.start();finish(sync)
+    assert len(calls)==1
+    assert row()==before and hook_active_calls.unresolved(generation)
+    assert sync.snapshot()['state']=='unconfirmed'
+    assert not services.startup_check_state()['canStart']
+    assert binding.run_status in {'paused','faulted'}
+
+
+@pytest.mark.parametrize('offset', [-86400,86400])
+def test_large_clock_correction_uses_new_heartbeat_not_old_wall_time(runtime,backend_peer,tmp_path,monkeypatch,offset):
+    from chejin_worker_client import hook_backend
+    runner,services,binding,*_=runtime
+    body=json.loads(backend_peer.body);body['data']['clock_reference']=REFERENCE
+    backend_peer.body=json.dumps(body).encode()
+    delta=[offset]
+    monkeypatch.setattr(hook_backend,'time',SimpleNamespace(time=lambda:time.time()+delta[0],monotonic=time.monotonic))
+    monitor=monitor_for(services,tmp_path)
+    runner.start(binding)
+    until(lambda:monitor.snapshot().get('comparison_status')=='skewed')
+    old=monitor.snapshot()['observed_monotonic']
+    def repair(*args):
+        assert not runner.thread.is_alive()
+        delta[0]=0
+        return {'result':'requested','helper_exit_confirmed':True,'resync_completed':True}
+    sync=ClockSync(runner,tmp_path,repair=repair,verify_seconds=3)
+    sync.start();finish(sync)
+    assert sync.snapshot()['state']=='verified'
+    assert monitor.snapshot()['observed_monotonic']>old
+    assert binding.run_status=='paused'

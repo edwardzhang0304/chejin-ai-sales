@@ -30,7 +30,7 @@ try {
   $exe = Join-Path ([Environment]::GetFolderPath('System')) 'w32tm.exe'
   & $exe /config /manualpeerlist:ntp.aliyun.com,0x8 /syncfromflags:manual /update | Out-Null
   if ($LASTEXITCODE -ne 0) { exit 22 }
-  & $exe /resync /rediscover /nowait | Out-Null
+  & $exe /resync /rediscover | Out-Null
   if ($LASTEXITCODE -ne 0) { exit 23 }
   exit 0
 } catch { exit 24 }
@@ -86,5 +86,6 @@ try {
             22: 'configure_failed', 23: 'resync_failed', 24: 'windows_failed',
             25: 'cancelled', 26: 'elevation_failed', 27: 'revoked'}.get(result.returncode, 'windows_failed'),
             'exit_code': result.returncode,
+            'resync_completed': result.returncode == 0,
             'helper_exit_confirmed': result.returncode in {0, 20, 21, 22, 23, 24, 27},
             'partial_change_possible': result.returncode not in {20, 21, 25, 27}}

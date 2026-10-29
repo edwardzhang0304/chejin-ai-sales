@@ -1015,18 +1015,23 @@ function renderScreen(props: WorkerClientBaselineProps) {
 }
 
 export function WorkerClientBaseline(props: WorkerClientBaselineProps) {
+  const sync = props.model.clockSync;
+  const liveClockWarning = props.model.startupCheck?.clockCheck?.notice;
+  // A completed operation is history; current diagnostics remain authoritative.
+  const clockMessage = sync?.busy ? sync.message : liveClockWarning || sync?.message;
+  const canSyncClock = sync && !sync.busy && (liveClockWarning || sync.state !== "verified");
   return (
-    <section className="cw-window app-window" data-active-screen={props.screen} data-clock-warning={Boolean(props.model.clockSync?.message || props.model.startupCheck?.clockCheck?.notice)} aria-label="车金 Worker 客户端">
+    <section className="cw-window app-window" data-active-screen={props.screen} data-clock-warning={Boolean(clockMessage)} aria-label="车金 Worker 客户端">
       <Header screen={props.screen} onScreenChange={props.onScreenChange} onBack={props.onBack} />
       {props.notice ? (
         <div className="cw-toast cw-toast-success" role="status" aria-live="polite">
           {props.notice}
         </div>
       ) : null}
-      {props.model.clockSync?.message || props.model.startupCheck?.clockCheck?.notice ? (
+      {clockMessage ? (
         <div className="cw-clock-warning" role="status">
-          <span>{props.model.clockSync?.message || props.model.startupCheck?.clockCheck?.notice}</span>
-          {props.model.clockSync && !props.model.clockSync.busy && props.model.clockSync.state !== "verified" ? (
+          <span>{clockMessage}</span>
+          {canSyncClock ? (
             <button type="button" className="cw-settings-action" disabled={props.model.update?.in_progress}
               onClick={props.onSyncComputerTime}>同步电脑时间</button>
           ) : null}

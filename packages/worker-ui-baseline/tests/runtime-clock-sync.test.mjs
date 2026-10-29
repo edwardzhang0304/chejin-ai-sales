@@ -17,7 +17,7 @@ test('settings and warning call explicit sync; busy prevents duplicate clicks an
  const dir=mkdtempSync(resolve(tmpdir(),'chejin-clock-sync-dom-'));
  try{
   const output=resolve(dir,'render.mjs');
-  buildSync({stdin:{contents:`import React,{act} from 'react';import{createRoot}from'react-dom/client';import{WorkerClientBaseline}from'./WorkerClientBaseline';import{workerClientMock}from'./mockData';const root=createRoot(document.getElementById('root'));export let syncs=0,starts=0;export async function render(busy=false,state='idle',screen='settings'){const model={...workerClientMock,clockSync:{busy,state,message:state==='verified'?'电脑时间已核验':''},startupCheck:{state:'passed',title:'',message:'',canStart:true,clockCheck:{notice:'电脑时间有偏差'}},update:{}};await act(async()=>root.render(<WorkerClientBaseline screen={screen} model={model} onSyncComputerTime={()=>syncs++} onStartAccepting={()=>starts++}/>));}export async function click(button){await act(async()=>button.click());}export async function dispose(){await act(async()=>root.unmount());}`,resolveDir:fileURLToPath(new URL('../src/',import.meta.url)),loader:'tsx'},bundle:true,platform:'browser',format:'esm',outfile:output,nodePaths:[fileURLToPath(new URL('../../../frontend/node_modules/',import.meta.url))],logLevel:'silent'});
+  buildSync({stdin:{contents:`import React,{act} from 'react';import{createRoot}from'react-dom/client';import{WorkerClientBaseline}from'./WorkerClientBaseline';import{workerClientMock}from'./mockData';const root=createRoot(document.getElementById('root'));export let syncs=0,starts=0;export async function render(busy=false,state='idle',screen='settings',notice='电脑时间有偏差'){const model={...workerClientMock,clockSync:{busy,state,message:state==='verified'?'电脑时间已核验':''},startupCheck:{state:'passed',title:'',message:'',canStart:true,clockCheck:{notice}},update:{}};await act(async()=>root.render(<WorkerClientBaseline screen={screen} model={model} onSyncComputerTime={()=>syncs++} onStartAccepting={()=>starts++}/>));}export async function click(button){await act(async()=>button.click());}export async function dispose(){await act(async()=>root.unmount());}`,resolveDir:fileURLToPath(new URL('../src/',import.meta.url)),loader:'tsx'},bundle:true,platform:'browser',format:'esm',outfile:output,nodePaths:[fileURLToPath(new URL('../../../frontend/node_modules/',import.meta.url))],logLevel:'silent'});
   const view=await import(pathToFileURL(output));await view.render();
   let button=[...document.querySelectorAll('.cw-settings-list button')].find(b=>b.textContent==='同步电脑时间');
   assert(button);await view.click(button);assert.equal(view.syncs,1);
@@ -28,7 +28,16 @@ test('settings and warning call explicit sync; busy prevents duplicate clicks an
   button=document.querySelector('.cw-clock-warning button');assert(button);
   await view.click(button);assert.equal(view.syncs,2);
   await view.render(false,'verified');assert.equal(view.starts,0);
+  for(const notice of ['电脑时间有偏差','请设置北京时间','后台授时异常','暂时无法核验电脑时间']) {
+   await view.render(false,'verified','paused-empty',notice);
+   assert(document.querySelector('.cw-clock-warning').textContent.includes(notice));
+   assert(!document.querySelector('.cw-clock-warning').textContent.includes('电脑时间已核验'));
+   assert(document.querySelector('.cw-clock-warning button'));
+  }
+  await view.render(false,'verified','paused-empty','');
   assert(!document.querySelector('.cw-clock-warning button'));
+  assert(document.querySelector('.cw-clock-warning').textContent.includes('电脑时间已核验'));
+  assert.equal(view.starts,0);
   await view.dispose();
  }finally{for(const c of channels){c.port1.close();c.port2.close();}dom.window.close();for(const key of keys){const descriptor=old.get(key);if(descriptor)Object.defineProperty(globalThis,key,descriptor);else delete globalThis[key];}rmSync(dir,{recursive:true,force:true});}
 });

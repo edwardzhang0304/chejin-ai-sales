@@ -1099,10 +1099,10 @@ CRM由运营后台展示和后端服务承接，Worker继续负责授权消息�
 用户明确要求加入实际修复入口，替代只提示用户自行处理。Hook 设置页保留“同步电脑时间”，时钟警告处可直接点击；自动启动、心跳仍仅检查，不弹 UAC 或偷偷修改系统。
 
 - 点击后复用新工作准入锁和持久门禁，先按原暂停入口保存暂停（故障保留故障），排空原 TaskRunner、Hook 回调/落库、证据写线程及 Sidecar；没有证明停止时不运行对时。原未知发送、在途凭证不删除、不变成功、不补发。更新、绑定、恢复接单和退出与对时互斥。
-- 普通权限 Worker 启动系统目录内的 PowerShell；固定助手通过 Windows UAC 获取一次权限，设置 `China Standard Time`，调用 Windows 时间服务 `/config /manualpeerlist:ntp.aliyun.com,0x8 /syncfromflags:manual /update` 和 `/resync /rediscover /nowait`。域成员或 W32Time 组策略管理的电脑不覆盖配置；被禁用的时间服务不擅自启用。命令不接收界面/后台提供的可执行文本。
-- 一次操作有唯一编号；提权助手在全部系统修改期间持有对应授权文件的 Windows 字节锁。Worker 崩溃后在开启业务线程前等待该锁释放、撤销旧授权，再重新检查。延迟点击旧 UAC 也不能在下一轮业务中修改时钟。普通父进程等待实际提权助手退出；父进程异常时也必须收回授权后才能启动连接。运行控制门禁是恢复事实，诊断文件不能替代业务凭证。
-- 命令返回成功只代表发起请求。恢复原连接入口并取得本次修复后的认证心跳，电脑偏差、北京时间时区和后台阿里参考均已确认才显示“电脑时间已核验”；网络/后台授时未知显示未核验，连接或业务恢复门禁照常。保持原暂停或故障，由销售明确开始接单。
-- `artifacts/runtime/clock-sync.json` 保存最近 32 个操作阶段，包括编号、递增阶段序号、单调时刻、UTC 观察时刻、原状态、排空、UAC/退出结果、可能部分修改、前后时区和新心跳核验。通过现有诊断收集进入 ZIP 的 `logs/runtime/clock-sync.json`。中断不猜测命令成功，不把对时成功等同业务恢复成功。
+- 普通权限 Worker 启动系统目录内的 PowerShell；固定助手通过 Windows UAC 获取一次权限，设置 `China Standard Time`，调用 Windows 时间服务 `/config /manualpeerlist:ntp.aliyun.com,0x8 /syncfromflags:manual /update` 和 `/resync /rediscover`。域成员或 W32Time 组策略管理的电脑不覆盖配置；被禁用的时间服务不擅自启用。命令不接收界面/后台提供的可执行文本。
+- 维护操作有唯一编号，每次重试另生成永不复用的助手授权编号；提权助手在全部系统修改期间持有对应授权文件的 Windows 字节锁。Worker 崩溃后在开启业务线程前等待该锁释放、撤销旧授权，再重新检查。延迟点击旧 UAC 也不能在下一轮业务中修改时钟。普通父进程等待实际提权助手退出；父进程异常时也必须收回授权后才能启动连接。运行控制门禁是恢复事实，诊断文件不能替代业务凭证。
+- 助手同步等待对时命令结束（禁用 `/nowait`）；仅请求已接受但未完成时继续停写并保留门禁，不提前恢复线程。命令结束后还须核验实际时间，恢复原连接入口并取得本次修复后的认证心跳，电脑偏差、北京时间时区和后台阿里参考均已确认才显示“电脑时间已核验”；网络/后台授时未知显示未核验，连接或业务恢复门禁照常。保持原暂停或故障，由销售明确开始接单。
+- `artifacts/runtime/clock-sync.json` 保存最近 32 个操作阶段，包括维护编号、助手授权编号、递增阶段序号、单调时刻、UTC 观察时刻、原状态、排空、UAC/退出结果、可能部分修改、前后时区和新心跳核验。通过现有诊断收集进入 ZIP 的 `logs/runtime/clock-sync.json`。中断不猜测命令成功，不把对时成功等同业务恢复成功。诊断写入或生命周期异常复用 `exception_details` 和 `record_capture_failure`，保存安全错误类型、阶段及首个错误；整个磁盘不可写时只剩有界标准错误输出。上次对时成功不能遮住后续实时偏差、时区或后台授时警告。
 - 本地验收使用真实 TaskRunner/HTTP/SQLite 和模拟 Windows 命令；Windows UAC、Windows 字节锁与 .NET 锁互通、实际 NTP 同步、取消授权和断电恢复仍需正式实机验收。本次不打包或部署。
 
 Windows 命令依据：https://learn.microsoft.com/en-us/windows-server/networking/windows-time-service/windows-time-service-tools-and-settings
