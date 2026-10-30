@@ -61,6 +61,8 @@ def values(peer, limit=65536):
 
 
 @pytest.mark.parametrize('status,body,code', [
+    (401, b'{"code":"WORKER_TOKEN_INVALID"}', 'WORKER_CLIENT_BINDING_INVALID'),
+    (403, b'{"code":"FORBIDDEN"}', 'HOOK_ACCOUNT_REQUEST_REJECTED'),
     (302, b'{}', 'HOOK_BACKEND_REDIRECT_REJECTED'),
     (503, b'{"message":"secret-worker-token"}', 'HOOK_BACKEND_TEMPORARILY_UNAVAILABLE'),
     (200, b'not json: secret-worker-token', 'HOOK_ACCOUNT_RESPONSE_INVALID'),
@@ -114,7 +116,7 @@ def test_invalid_identity_fails_before_network(peer):
 @pytest.mark.parametrize('status,upstream,expected',[
     (400,'WORKER_DISABLED','HOOK_WORKER_DISABLED'),
     (400,'SOME_UNKNOWN_REASON','HOOK_ACCOUNT_REQUEST_REJECTED'),
-    (401,'WORKER_DISABLED','HOOK_ACCOUNT_REQUEST_REJECTED'),
+    (401,'WORKER_DISABLED','WORKER_CLIENT_BINDING_INVALID'),
 ])
 def test_only_explicit_disabled_response_gets_disabled_message(peer,status,upstream,expected):
     peer.status=status
@@ -160,6 +162,8 @@ def test_clock_metadata_uses_real_response_boundaries_and_no_identity_leaks(peer
     receipt = client.heartbeat(credentials,identity,state)
     assert receipt.request_started_wall <= receipt.response_received_wall
     assert receipt.request_started_monotonic <= receipt.response_received_monotonic
+    # Evidence writing is asynchronous; join its real writer before inspecting.
+    assert monitor.flush(timeout=2)
     evidence = monitor.path.read_text()
     assert monitor.snapshot()['comparison_status'] == 'aligned'
     assert monitor.snapshot()['backend_reference']['status'] == 'unconfirmed'

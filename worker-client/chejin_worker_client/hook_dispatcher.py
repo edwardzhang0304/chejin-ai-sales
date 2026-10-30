@@ -39,6 +39,13 @@ class HookBusinessDispatcher:
         self._startup_layout_check=startup_layout_check
         self._startup_retry_check=startup_retry_check
         self.interval_seconds,self.runtime_factory=interval_seconds,runtime_factory
+        self.reset_binding_session()
+
+    def reset_binding_session(self):
+        """Reset memory only, after the old runner and its writers have stopped.
+
+        Disk journals retain their original worker/account scope for recovery.
+        """
         self.runtime=None
         self.voice=HookVoiceTranscriber(max_audio_bytes=1024*1024,max_text_bytes=65536)
         self._started_generations=set()

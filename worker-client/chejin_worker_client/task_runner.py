@@ -4199,7 +4199,9 @@ class TaskRunner:
             reason = exc.code if isinstance(exc, ApiError) else "VISION_CREDENTIAL_FETCH_FAILED"
             accepted = complete_credential_refresh(generation, failure_reason=reason)
             if accepted:
-                if isinstance(exc, ApiError) and exc.status_code in {401, 404}:
+                if self._handle_binding_invalid(exc, binding):
+                    pass
+                elif isinstance(exc, ApiError) and exc.status_code == 404:
                     self.on_status("invalid")
                     self.on_error("绑定已失效，请重新绑定。")
                 append_log("WARN", "vision_credential_fetch_failed", "Vision 配置获取失败，新 C2 读取等待配置。", error_code=reason)
@@ -4211,7 +4213,40 @@ class TaskRunner:
             self._c2_vision_ready_before_scan()
         return accepted
 
+    def _handle_binding_invalid(self, exc, binding) -> bool:
+        """Share OCR/Hook revocation handling; never erase action evidence."""
+        if not isinstance(exc, ApiError) or exc.status_code != 401:
+            return False
+        with self._run_status_intent_lock:
+            if self.binding is not binding:
+                return True  # A late response cannot invalidate a newer binding.
+            identity = (binding.worker_id, binding.worker_token, binding.client_instance_id)
+            if getattr(self, "_invalid_binding_identity", None) == identity:
+                return True
+            self._invalid_binding_identity = identity
+            self.stop()  # Close admission before the queued UI event is consumed.
+        self.on_status("invalid")
+        self.on_error("绑定已失效，请重新绑定。")
+        append_log("ERROR", "binding_invalid", "绑定已失效，请重新绑定。",
+                   error_code=exc.code, include_exception_text=False)
+        return True
+
+    def ensure_binding_restart_ready(self) -> None:
+        """Do not replace credentials while old writers are still draining."""
+        if getattr(self, "_invalid_binding_identity", None) is None:
+            return
+        for thread in (self.thread, self.c2_thread, self.hook_intake_thread,
+                       self.hook_business_thread, self.thread_monitor):
+            if thread is not None and thread.is_alive():
+                raise RuntimeError("正在保存原任务记录，请稍后重新绑定。")
+        if self.hook_services is not None:
+            self.hook_services.close()
+            if self.hook_services.dispatcher is not None:
+                self.hook_services.dispatcher.reset_binding_session()
+
     def start(self, binding: Binding) -> None:
+        self.ensure_binding_restart_ready()
+        self._invalid_binding_identity = None
         self._managed_shutdown = False
         self.binding = binding
         if self.hook_services is None and not self._refresh_vision_credential(binding):
@@ -7098,6 +7133,8 @@ class TaskRunner:
                 self.run_status_sync_error = None
                 self.on_profile(profile)
         except Exception as exc:
+            if self._handle_binding_invalid(exc, binding):
+                return
             self.run_status_sync_error = str(exc)
             pending_label = (
                 "客户端故障状态"
@@ -7480,10 +7517,7 @@ class TaskRunner:
             mark_incident_recovered("heartbeat_failed")
         except ApiError as exc:
             self._recovery_heartbeat_at = 0.0
-            if exc.status_code == 401:
-                self.on_status("invalid")
-                self.on_error("绑定已失效，请重新绑定。")
-                append_log("ERROR", "binding_invalid", str(exc), error_code=exc.code)
+            if self._handle_binding_invalid(exc, binding):
                 return
             self.on_status("offline")
             self.on_error(str(exc))

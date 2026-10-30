@@ -126,6 +126,9 @@ class _Runner:
     def start(self, binding) -> None:
         self.started_with = binding
 
+    def ensure_binding_restart_ready(self):
+        pass
+
     def stop(self) -> None:
         pass
 
@@ -137,6 +140,24 @@ class _Runner:
 
 
 class WebUiBindingBehaviorTest(unittest.TestCase):
+    def test_revocation_opens_binding_and_draining_prevents_new_bind_request(self):
+        with _headless_web_ui_module() as module, patch.object(module, "clear_binding") as clear, patch.object(module, "append_log"):
+            window = self._window(module, Binding("worker", "old-token", "old-instance", run_status="paused"))
+            window._position_next_to_wechat_once = Mock()
+            window._publish = Mock()
+            window.runner.stop = Mock()
+            window.on_status("invalid")
+            clear.assert_called_once()
+            window.runner.stop.assert_called_once()
+            self.assertIsNone(window.binding)
+            self.assertEqual(window._screen(), "bind")
+            self.assertEqual(window.bind_error, "绑定已失效，请重新绑定。")
+            window.api = Mock()
+            window.runner.ensure_binding_restart_ready = Mock(side_effect=RuntimeError("正在保存原任务记录，请稍后重新绑定。"))
+            window.bind_worker("worker", "new-token")
+            window.api.bind.assert_not_called()
+            self.assertIn("正在保存原任务记录", window.bind_error)
+
     def test_pending_finish_uses_existing_timeline_until_confirmation(self):
         with _headless_web_ui_module() as module:
             window = self._window(module, Binding("worker", "token", "client", run_status="running"))
