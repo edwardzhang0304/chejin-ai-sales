@@ -175,6 +175,24 @@
             "ops/formal_release/tests/test_upgrade_stop_evidence.py",
             "gui-driver"
           ]
+        },
+        "ops/formal_release/check_clock_native.py": {
+          "reason": "Standalone native clock workflow only; exact approved inputs already validated in 40885733300 and local consolidation 16c307d3. Not executed by Hook packaging/preserve-install; reviewed native evidence retained unchanged.",
+          "covered_by": [
+            "windows-parser"
+          ]
+        },
+        ".github/workflows/clock-native-release.yml": {
+          "reason": "Standalone native clock workflow only; exact approved inputs already validated in 40885733300 and local consolidation 16c307d3. Not executed by Hook packaging/preserve-install; reviewed native evidence retained unchanged.",
+          "covered_by": [
+            "windows-parser"
+          ]
+        },
+        "ops/formal_release/diagnose_clock_exit.py": {
+          "reason": "Standalone native clock workflow only; exact approved inputs already validated in 40885733300 and local consolidation 16c307d3. Not executed by Hook packaging/preserve-install; reviewed native evidence retained unchanged.",
+          "covered_by": [
+            "windows-parser"
+          ]
         }
       },
       "parameter_expansions": [
@@ -305,6 +323,24 @@
             "ops/formal_release/tests/test_upgrade_stop_evidence.py",
             "gui-driver"
           ]
+        },
+        "ops/formal_release/check_clock_native.py": {
+          "reason": "Standalone native clock workflow only; exact approved inputs already validated in 40885733300 and local consolidation 16c307d3. Not executed by Hook packaging/preserve-install; reviewed native evidence retained unchanged.",
+          "covered_by": [
+            "windows-parser"
+          ]
+        },
+        ".github/workflows/clock-native-release.yml": {
+          "reason": "Standalone native clock workflow only; exact approved inputs already validated in 40885733300 and local consolidation 16c307d3. Not executed by Hook packaging/preserve-install; reviewed native evidence retained unchanged.",
+          "covered_by": [
+            "windows-parser"
+          ]
+        },
+        "ops/formal_release/diagnose_clock_exit.py": {
+          "reason": "Standalone native clock workflow only; exact approved inputs already validated in 40885733300 and local consolidation 16c307d3. Not executed by Hook packaging/preserve-install; reviewed native evidence retained unchanged.",
+          "covered_by": [
+            "windows-parser"
+          ]
         }
       }
     },
@@ -397,6 +433,24 @@
             "ops/formal_release/tests/test_upgrade_stop_evidence.py",
             "gui-driver"
           ]
+        },
+        "ops/formal_release/check_clock_native.py": {
+          "reason": "Standalone native clock workflow only; exact approved inputs already validated in 40885733300 and local consolidation 16c307d3. Not executed by Hook packaging/preserve-install; reviewed native evidence retained unchanged.",
+          "covered_by": [
+            "windows-parser"
+          ]
+        },
+        ".github/workflows/clock-native-release.yml": {
+          "reason": "Standalone native clock workflow only; exact approved inputs already validated in 40885733300 and local consolidation 16c307d3. Not executed by Hook packaging/preserve-install; reviewed native evidence retained unchanged.",
+          "covered_by": [
+            "windows-parser"
+          ]
+        },
+        "ops/formal_release/diagnose_clock_exit.py": {
+          "reason": "Standalone native clock workflow only; exact approved inputs already validated in 40885733300 and local consolidation 16c307d3. Not executed by Hook packaging/preserve-install; reviewed native evidence retained unchanged.",
+          "covered_by": [
+            "windows-parser"
+          ]
         }
       }
     },
@@ -440,6 +494,24 @@
             "ops/formal_release/tests/test_upgrade_stop_evidence.py",
             "gui-driver"
           ]
+        },
+        "ops/formal_release/check_clock_native.py": {
+          "reason": "Standalone native clock workflow only; exact approved inputs already validated in 40885733300 and local consolidation 16c307d3. Not executed by Hook packaging/preserve-install; reviewed native evidence retained unchanged.",
+          "covered_by": [
+            "windows-parser"
+          ]
+        },
+        "ops/formal_release/diagnose_clock_exit.py": {
+          "reason": "Standalone native clock workflow only; exact approved inputs already validated in 40885733300 and local consolidation 16c307d3. Not executed by Hook packaging/preserve-install; reviewed native evidence retained unchanged.",
+          "covered_by": [
+            "windows-parser"
+          ]
+        },
+        ".github/workflows/clock-native-release.yml": {
+          "reason": "Standalone native clock workflow only; exact approved inputs already validated in 40885733300 and local consolidation 16c307d3. Not executed by Hook packaging/preserve-install; reviewed native evidence retained unchanged.",
+          "covered_by": [
+            "windows-parser"
+          ]
         }
       }
     },
@@ -468,6 +540,24 @@
           "reason": "SOP18.0.4 metadata.",
           "covered_by": [
             "ops/formal_release/tests/test_tooling_handoff.py"
+          ]
+        },
+        "ops/formal_release/check_clock_native.py": {
+          "reason": "Standalone native clock workflow only; exact approved inputs already validated in 40885733300 and local consolidation 16c307d3. Not executed by Hook packaging/preserve-install; reviewed native evidence retained unchanged.",
+          "covered_by": [
+            "windows-parser"
+          ]
+        },
+        "ops/formal_release/diagnose_clock_exit.py": {
+          "reason": "Standalone native clock workflow only; exact approved inputs already validated in 40885733300 and local consolidation 16c307d3. Not executed by Hook packaging/preserve-install; reviewed native evidence retained unchanged.",
+          "covered_by": [
+            "windows-parser"
+          ]
+        },
+        ".github/workflows/clock-native-release.yml": {
+          "reason": "Standalone native clock workflow only; exact approved inputs already validated in 40885733300 and local consolidation 16c307d3. Not executed by Hook packaging/preserve-install; reviewed native evidence retained unchanged.",
+          "covered_by": [
+            "windows-parser"
           ]
         }
       }
@@ -687,6 +777,24 @@
         "ops/formal_release/tests/test_upgrade_stop_evidence.py",
         "gui-driver"
       ]
+    },
+    "ops/formal_release/check_clock_native.py": {
+      "reason": "Standalone native clock workflow only; exact approved inputs already validated in 40885733300 and local consolidation 16c307d3. Not executed by Hook packaging/preserve-install; reviewed native evidence retained unchanged.",
+      "covered_by": [
+        "windows-parser"
+      ]
+    },
+    ".github/workflows/clock-native-release.yml": {
+      "reason": "Standalone native clock workflow only; exact approved inputs already validated in 40885733300 and local consolidation 16c307d3. Not executed by Hook packaging/preserve-install; reviewed native evidence retained unchanged.",
+      "covered_by": [
+        "windows-parser"
+      ]
+    },
+    "ops/formal_release/diagnose_clock_exit.py": {
+      "reason": "Standalone native clock workflow only; exact approved inputs already validated in 40885733300 and local consolidation 16c307d3. Not executed by Hook packaging/preserve-install; reviewed native evidence retained unchanged.",
+      "covered_by": [
+        "windows-parser"
+      ]
     }
   },
   "pytest": [
@@ -697,5 +805,5 @@
       ]
     }
   ],
-  "unaffected_scope_review": "0.10.26 metadata and source evidence descriptor only; tools unchanged. Reuse original executions including 40332019222 failure-evidence checks; execute only changed descriptor checks and actual Windows parser/gui."
+  "unaffected_scope_review": "0.10.27 metadata and source evidence descriptor only; packaging tools unchanged; previously reviewed standalone native diagnostic consolidation retained. Reuse original executions including 40332019222 failure-evidence checks; execute only changed descriptor checks and actual Windows parser/gui."
 }

@@ -3,9 +3,9 @@
   "repository": "edwardzhang0304/chejin-ai-sales",
   "transport": "hook",
   "reuse_mode": "reviewed_delta",
-  "approval": "User explicitly approved shared Cloudflare fallback and regeneration of affected0.10.26 artifacts, preserving old outputs and unchanged evidence. Publish after time acceptance passes.",
-  "reviewed_commit": "38118627933b917cc35e988937ede1cd7c23b849",
-  "target_version": "0.10.26",
+  "approval": "User authorized PR18 release and manual WeChat plus Worker package; SOP18.0.4 metadata synchronization.",
+  "reviewed_commit": "8f702c0d52e42f02ee4ae5972de78e2db11a3a4b",
+  "target_version": "0.10.27",
   "source_sha256": {
     ".dockerignore": "953c4ae7fbf88d1f9655d96aac647bb20157d4531062155de4922562c924cc6c",
     ".gitattributes": "c3fb393b0b0757bb56c2aa4c733114aa8d394be2ca0d60bf11fc5cba47dfaf3a",
@@ -144,7 +144,7 @@
     "backend/app/services/c3_service.py": "55ac100b149f1c132d0bb4dae28bd8811b7ed510dd9bcfbcb0a2a26d7cb8b521",
     "backend/app/services/chejin_knowledge_seed.py": "e317cd422548343c5c9d15f849c2bae1930c02bd5d0ea0487a60d27bec878b90",
     "backend/app/services/client_release_service.py": "d5a7d3294d703cd7398c621d26cb8ff7126e02b37b4639080dcafbae2db7e736",
-    "backend/app/services/clock_reference.py": "c748bbc6da5e4429f2fe2d3eb529a74c281ca99ee0f866751276116940735954",
+    "backend/app/services/clock_reference.py": "011ea5f6679d9e54c5a34a5a08e878c0672e28f096ac9de147412e4df8016411",
     "backend/app/services/contact_utils.py": "1922fa49070cb2fb3db186b5573f27e52d85664657ad1cec8e3fa595cce2950c",
     "backend/app/services/dashboard/__init__.py": "caa0c716b30686d33e5c6ad151e4ac9b92bb27528fc022e99d6702196330ab5f",
     "backend/app/services/dashboard/calculations.py": "d2a7f1ff296f7ddd39e8f8b99784d2ed206a8730932a03e0ac66032e1c4b9259",
@@ -258,7 +258,7 @@
     "backend/tests/test_cj35_frame_recovery.py": "e7b460cb95a137f901b28a93b752a76592c6e0018224cbdaa04d598dffcd29bc",
     "backend/tests/test_client_release_registration.py": "c18bcb66699f0d4e65e5fecbfbcf020472e678132b7a64e1718bb62cdaa30c34",
     "backend/tests/test_client_releases_api.py": "852db05f27b1ee02eb7a41a12f308b49d35fcbbc9cc821fdca4d60901114e6b8",
-    "backend/tests/test_clock_reference.py": "12329a783f630761f6a080bd4751afea17e43fae8d7e1d4e81ee4b11d4e8b5cb",
+    "backend/tests/test_clock_reference.py": "8c96da75145fdbc9891ca85f325216eeb41aa931fd8b8e11fb896c99dc376738",
     "backend/tests/test_closed_read_receipts.py": "5acbcb194bbc363c9c04f5a6941f5f53b80402473cd58d46d1c92d8108cc8af3",
     "backend/tests/test_config_safety.py": "b9378344ff7d4b6eaed6098eb2fe4bd46fced61c6d35a494ec40335ceee129c7",
     "backend/tests/test_confirmed_sent_history_http.py": "1e6b718db6abb746792ae437052c1ef662d94a20b721e9dbeb9a6c825d8a52bc",
@@ -329,6 +329,7 @@
     "backend/tests/test_hook_relationship_http.py": "4927a80ef4b58542e2c46170d4b45662793e45290047d88dcdf40dbbe02549f7",
     "backend/tests/test_hook_relationship_stale_inputs.py": "da5873cb37012120306c6e0dcdf7231e5f2a7de4dd6be52ea07947af88aebf93",
     "backend/tests/test_hook_release_publication.py": "4508c1d6f5ffc6abc9b16629a3e8dbf6873c7a9e01ea29193d941e1945a937f8",
+    "backend/tests/test_hook_reset_rebind_client.py": "b0ae729ea32e4a15dd378af2e0e3c076196fae264ff71f865e67b212392538e5",
     "backend/tests/test_hook_restricted_send_closure.py": "fd441cb9b4a192fd0b5de0e14622a212fec721577d32549ecfbc01b16eb472ca",
     "backend/tests/test_hook_search_query_receipt.py": "6e99146f2cd63f3870aaffeee9496ab1ed68956dbb6600dbcc5019903820e108",
     "backend/tests/test_hook_segment_refusal_recovery.py": "87f6f95625924bb41af880bb663a9dced723f1046ed27b7b34f4d49092fd4b81",
@@ -637,7 +638,7 @@
     "worker-client/chejin_worker_client/historical_correction_recovery.py": "ffab8f6b2c435fc9f1a93057cd8ecbaace211e707e8e00b24d67a43d6a6a42bc",
     "worker-client/chejin_worker_client/hook_account_issues.py": "eb6403720d3efa31b0900a6a99728ca16a1043fa409038d6f2e473b8c566d004",
     "worker-client/chejin_worker_client/hook_active_calls.py": "c921a4ba25c93d68e6590c5897c81c7c1551751b6c7e09a717893c29e67434ee",
-    "worker-client/chejin_worker_client/hook_backend.py": "3e6e95cd5b31ec67565737a9447f8a826a040f060b62edca892da40b0ea1ae45",
+    "worker-client/chejin_worker_client/hook_backend.py": "1f4dd8d2434b06e7d06842f9fd8fdf847eb658160329217efa242cf3e92d5c9b",
     "worker-client/chejin_worker_client/hook_callback_contract.py": "f35dbc6e97e227f3115c95db3309221887b47ec5318d3c6502cfbb5508296f79",
     "worker-client/chejin_worker_client/hook_clock.py": "1097a43397efb40d4e259d31171359d549872571990499caefdd3d062599acc0",
     "worker-client/chejin_worker_client/hook_component_update.py": "1bb0d2aa0a12490af5126f3481aa4b960c62befaa3117809c3ac36b16a4825e7",
@@ -646,7 +647,7 @@
     "worker-client/chejin_worker_client/hook_contacts.py": "22efc9ae3af547ff6ba0980b5ac4ba6a7288223262bc89331220d48b48791f85",
     "worker-client/chejin_worker_client/hook_delivery_lifecycle.py": "621d6b9666d9f0f95e9e5d008222eef54dd6c3ace8e75fa0923c861928f7c51f",
     "worker-client/chejin_worker_client/hook_diagnostics.py": "7ec48f8b0e2558504960dd39759efc441914cdaa9141ba1bb28c9d98b33dca8e",
-    "worker-client/chejin_worker_client/hook_dispatcher.py": "9872d20faa6b7b9ba71124a734a0d88e4f39f7049bceaf903127a0f1eb7adb76",
+    "worker-client/chejin_worker_client/hook_dispatcher.py": "571e7ee0eb1d93d76de0127a1a2a2e8ac161c5eea31a733d1796dcf5db513ec0",
     "worker-client/chejin_worker_client/hook_factory.py": "a28aea457d7c78709c5ed079fc5d06396e2f720c83e23d7d0c6bf702f33a1683",
     "worker-client/chejin_worker_client/hook_facts.py": "360b092ee30f7c37e94dc0d43851fe6401fbbba9b08f7356df40984ba9a54397",
     "worker-client/chejin_worker_client/hook_formal_c1.py": "12fb41795ec095f177e11768dfd361df88ac4faaa9e5c67aa50f90e5ee7bde80",
@@ -674,7 +675,7 @@
     "worker-client/chejin_worker_client/hook_timing.py": "d3f41c37a3be70a9c981b0fe5bdc3c0cf4b4fc5448a60be060e30fdce52adde6",
     "worker-client/chejin_worker_client/hook_transport.py": "9b46b4c33dfc39a8f81a29243cccde348e691be8c78c611e99a1e73e37289a55",
     "worker-client/chejin_worker_client/hook_voice.py": "e45248392e0e8e7e8177d58cb02dca380c99adf2692fe8af64a0c394549ae3b7",
-    "worker-client/chejin_worker_client/hook_worker_services.py": "ea4c9669b2d08e518839225d692f4d001d538fdd4900422fcae28654ed7fc8d7",
+    "worker-client/chejin_worker_client/hook_worker_services.py": "71f95e23c73afa2e13896b019daadc709e061f47a62ce29906d1abbd07a5cecc",
     "worker-client/chejin_worker_client/image_phase.py": "0beb081b9cb4acbce3400847c34caa301d789de2a57d2d74f2cda62510a328e8",
     "worker-client/chejin_worker_client/incident_evidence.py": "8821582ea3ddbf25decd782bd03fe13a6d005b472875ad39cf9112565605efcb",
     "worker-client/chejin_worker_client/layout_recovery.py": "0c851e0bd087f60f28fae75d45129cf040c8054718669d15c7ceafcfd2be3da8",
@@ -713,12 +714,12 @@
     "worker-client/chejin_worker_client/storage.py": "b630845a3c128c0ff3449d541533e38f47220f2150e878f79860b1bb9ce5b7da",
     "worker-client/chejin_worker_client/storage_maintenance.py": "dff6e905c530389d92e7a87b2f21e7d72721434c9c7899d22d1c9d6c070b035a",
     "worker-client/chejin_worker_client/subprocess_protocol.py": "3e67610ee91a7943ef48fc3650a597f067726072cb622e8ba7da57262d0bcbf6",
-    "worker-client/chejin_worker_client/task_runner.py": "50c9cfbe2bb956cc4eaf188e2e339ecf01d886b4895bd2a0fc2c20465c77c6be",
+    "worker-client/chejin_worker_client/task_runner.py": "5aad39b217416e21065aa8d1cbcd134b74676c19d3c0897e285266ff136ac427",
     "worker-client/chejin_worker_client/telemetry.py": "1f0645527f5f1867c0d0391429324e839bba60674ab707f101d4928d83d0e017",
     "worker-client/chejin_worker_client/text_correction_outbox.py": "93aabb370948e1c4e9682180995fb1d925f7466858a69e0066895af511c21f64",
     "worker-client/chejin_worker_client/text_recheck.py": "23f37bae9362ea2e3bbbf4e80acf66648f8f30f193513efe850b48af32e19fab",
     "worker-client/chejin_worker_client/transaction_outcomes.py": "349f909154a59b282a72a6a7545207a9ab568d5582362585fa820540aa55a800",
-    "worker-client/chejin_worker_client/ui.py": "cbf269e91bbae32b4d5609a1a27405d85a05a7b209d489d762ccbe0d25460ff9",
+    "worker-client/chejin_worker_client/ui.py": "59ce8710593b2f443498a0bfc7cbd1be6b56e6e2c1311b0b26d3aa553542217b",
     "worker-client/chejin_worker_client/ui_lock.py": "112995575d2f72801d2527ff6bc982812229eb372513b1bfb57f43d6e66f541e",
     "worker-client/chejin_worker_client/ui_state_mapping.py": "484ae54a9c552d2f52518ca21e385902a7b82beb46c57f543cd88f40010e7879",
     "worker-client/chejin_worker_client/update_coordinator.py": "743347b65e0c4fce322f9527907369e2c2a7dc41942e02799f0a15bdee9cbca4",
@@ -742,7 +743,7 @@
     "worker-client/chejin_worker_client/web_assets/worker-ui.css": "18c8eff4399dca953f59ffffaed0b58a0f4efd0ceaa7c3afa015d39c32bc8691",
     "worker-client/chejin_worker_client/web_assets/worker-ui.tokens.css": "081ce7cc992c9bdb55f010752cdd29a70dfe749a37d5970419d034e63075d323",
     "worker-client/chejin_worker_client/web_assets/worker-web-app.js": "430b4fb79de60835cb304577daf0911da31b6aa907e02fbccf33f010499384d8",
-    "worker-client/chejin_worker_client/web_ui.py": "d62aebcbb8a9cbe794eee3dde5d62182363947a34afbf68298c776a8aac1d3fa",
+    "worker-client/chejin_worker_client/web_ui.py": "e1cd494a088a4d50cfbee41bc2bd1a24e0024b5d9c69d2a132bea0e9274a29c4",
     "worker-client/chejin_worker_client/wechat_c2.py": "3b441f8a68c0e4efabf6f6970149e26af84f51097e9a43809759cad60d12f8f7",
     "worker-client/chejin_worker_client/window_render_evidence.py": "1c6764c970f685d337df338e7d39147f475a49ce96c1699ebac5419736b3e8c8",
     "worker-client/chejin_worker_client/windows_clock_sync.py": "c07b32861bfa8bfc9fc865d3b96515aa2d30e201d90d8a00747e2a8cd1f562dc",
@@ -1426,7 +1427,7 @@
     "worker-client/tests/test_history_punctuation_handoff.py": "bf4b5fe18bac48edb3b4ef95463a53396c446007a096de7d046b9138fcc7081a",
     "worker-client/tests/test_history_suffix_continuity.py": "eb6c465fb8cb34311290cc4b04ae39cdc5597cd320673190afe21ff00d58d284",
     "worker-client/tests/test_hook_active_calls.py": "498ae485d7445bac6788bce9ab0ac151fcfd28fb9d098b3d491583cd007c4656",
-    "worker-client/tests/test_hook_backend.py": "da7aab1826f07c1edf1d1156ceddaa884a1812046bf19795cca937566abf72b3",
+    "worker-client/tests/test_hook_backend.py": "698b9e3707bf0b2620a9c506c8517b009afa55bd7c181f63dc79fe137c56b648",
     "worker-client/tests/test_hook_backend_wait.py": "280308f02576b355d1a73673c7d018b5ae596c6cf316d3d39002a085645536a5",
     "worker-client/tests/test_hook_bound_upgrade_gate.py": "b282efa6dfba511307e970b00a8873656f6d92ce842024aaaae842cc26de9cba",
     "worker-client/tests/test_hook_business_barrier.py": "bf009021c942985eb47466933e89ff1b526b9646b013a8d0fcb6e17a4b875265",
@@ -1494,7 +1495,7 @@
     "worker-client/tests/test_hook_waterfall.py": "c3d41587f345867534d70994444068b45f649995c744916218255be2a8447e90",
     "worker-client/tests/test_hook_window_layout_chain.py": "12bbeec0c9f3495d5f1e78d9349dd0c3d6d31f39cd730d69e13485cf48067fcc",
     "worker-client/tests/test_hook_window_position.py": "585535ac95345ebfbf43207ba4fbbfc5aae62e1521164d2ee69897887b259cdd",
-    "worker-client/tests/test_hook_worker_services.py": "bd8eff756de534576644a08e16597a176ad6ad70149783f80fd595f9633c1d19",
+    "worker-client/tests/test_hook_worker_services.py": "64cae9b1a90d3f503d32a121a5ad50488749887923e13a96fccf00388dc3e806",
     "worker-client/tests/test_image_prefix_boundary.py": "cebcfcd6f0fd90ef24e003418dfd8d604a7ae4211667a34ff402feb3fd317134",
     "worker-client/tests/test_incident_evidence.py": "39dcbb54f6d9ab09e78eac43b614051040afad80afbf22f92efd35bf8c78d427",
     "worker-client/tests/test_layout_recovery.py": "3052cef5a3b71bd79b94b4fa35c42e508446a77d49461b245b1e9105c27f11d8",
@@ -1577,7 +1578,7 @@
     "worker-client/tests/test_voice_proof_envelope.py": "14956ccab9f865effcac55c9f3a0179244b234472ada3d9361b7503c1962dfea",
     "worker-client/tests/test_voice_transcript_handoff.py": "2255a4b0f4ddace2a6175d406e019e1d0002c7ccc5f95197920e82b13ca90c8b",
     "worker-client/tests/test_voice_transcript_marker_geometry.py": "fa8dd58e6a92516de4b437aa1256b4e618429027c1a0a99ffd791fcf3987f565",
-    "worker-client/tests/test_web_ui_binding_behavior.py": "43147376a88965d31025f5bfbb55be07fa27ad47e232759bc0bcebbe04958320",
+    "worker-client/tests/test_web_ui_binding_behavior.py": "837e6d625feaff0b93dcacbc538798a6e98a6c3c3b0b3efd29ca5b4dbbb24bf6",
     "worker-client/tests/test_web_ui_state_mapping.py": "a4868e7bf9ea417a7dd0efef294ea496ec247578bf6a14575e9bc438bfa5f691",
     "worker-client/tests/test_wechat_c2.py": "a2ea3a54a32c5e376b569cebbe56807f7c63c94b381a8946ed95185fe31a75d1",
     "worker-client/tests/test_wechat_send_safety.py": "2a0569b98ee6a7b6bade9801e6d534ad970b7fdcd5b4a40c58f9682956a606e0",
@@ -1624,7 +1625,7 @@
       ]
     }
   ],
-  "environment": "Prior reviewed sources and tests retained; six targeted Cloudflare local controls and independent source audit passed. Windows native fallback and regenerated package acceptance separate; real WeChat and Feiyu ingress not claimed.",
+  "environment": "Reuse exact a102c827 source review and real local HTTP reset/rebind tests; Windows/DLL parts are fixtures; field acceptance pending.",
   "checks": [
     {
       "original_xml_sha256": "b6885c699eb9ae772a196e9124a3fe9aef1e7b15235a1a6aa761c04f06a56855",
@@ -17800,6 +17801,108 @@
         }
       ],
       "scope": "Only affected Cloudflare controls; previous unchanged source tests reused."
+    },
+    {
+      "report": "reset-rebind-review-20261030/formal-affected.xml",
+      "original_xml_sha256": "4ddc51b4b9181d5dffd4171584b215fde7d034f3873d64f6e567d9f288509219",
+      "count": 9,
+      "cases": [
+        {
+          "classname": "tests.test_hook_reset_rebind_client",
+          "name": "test_reset_a_returns_to_bind_then_b_connects_without_losing_original_evidence[False]",
+          "result": "passed"
+        },
+        {
+          "classname": "tests.test_hook_reset_rebind_client",
+          "name": "test_reset_a_returns_to_bind_then_b_connects_without_losing_original_evidence[True]",
+          "result": "passed"
+        },
+        {
+          "classname": "tests.test_hook_account_client",
+          "name": "test_worker_receives_server_epoch_and_change_stays_blocked_until_original_reset",
+          "result": "passed"
+        },
+        {
+          "classname": "tests.test_hook_account_client",
+          "name": "test_disabled_reason_preserves_binding_and_requires_explicit_recovery[sales]",
+          "result": "passed"
+        },
+        {
+          "classname": "tests.test_hook_account_client",
+          "name": "test_disabled_reason_preserves_binding_and_requires_explicit_recovery[worker]",
+          "result": "passed"
+        },
+        {
+          "classname": "",
+          "name": "test_only_explicit_disabled_response_gets_disabled_message[400-WORKER_DISABLED-HOOK_WORKER_DISABLED]",
+          "result": "passed"
+        },
+        {
+          "classname": "",
+          "name": "test_only_explicit_disabled_response_gets_disabled_message[400-SOME_UNKNOWN_REASON-HOOK_ACCOUNT_REQUEST_REJECTED]",
+          "result": "passed"
+        },
+        {
+          "classname": "",
+          "name": "test_only_explicit_disabled_response_gets_disabled_message[401-WORKER_DISABLED-WORKER_CLIENT_BINDING_INVALID]",
+          "result": "passed"
+        },
+        {
+          "classname": "",
+          "name": "test_late_status_ack_and_draining_fault_cannot_restore_revoked_binding",
+          "result": "passed"
+        }
+      ],
+      "scope": "Exact original reviewed local execution; excluded failed/skipped cases retained in original report. Not Windows acceptance."
+    },
+    {
+      "report": "reset-rebind-review-20261030/independent.xml",
+      "original_xml_sha256": "1ba04d00688c9e91a400aa3eb99a0310bfe9fe59257bb7204c4df3afba968c8c",
+      "count": 3,
+      "cases": [
+        {
+          "classname": "output.reset-rebind-review-20261030.test_independent_chain",
+          "name": "test_reset_a_returns_to_bind_then_b_connects_without_losing_original_evidence[heartbeat]",
+          "result": "passed"
+        },
+        {
+          "classname": "output.reset-rebind-review-20261030.test_independent_chain",
+          "name": "test_reset_a_returns_to_bind_then_b_connects_without_losing_original_evidence[business]",
+          "result": "passed"
+        },
+        {
+          "classname": "output.reset-rebind-review-20261030.test_independent_chain",
+          "name": "test_reset_a_returns_to_bind_then_b_connects_without_losing_original_evidence[status_sync]",
+          "result": "passed"
+        }
+      ],
+      "scope": "Exact original reviewed local execution; excluded failed/skipped cases retained in original report. Not Windows acceptance."
+    },
+    {
+      "report": "reset-rebind-review-20261030/edges.xml",
+      "original_xml_sha256": "c8f7525c1dccd9cfa34b7e11878d53e3efe9fa1a6815174a461baa3d8366852d",
+      "count": 1,
+      "cases": [
+        {
+          "classname": "output.reset-rebind-review-20261030.test_independent_chain",
+          "name": "test_reset_a_returns_to_bind_then_b_connects_without_losing_original_evidence[late_status]",
+          "result": "passed"
+        }
+      ],
+      "scope": "Exact original reviewed local execution; excluded failed/skipped cases retained in original report. Not Windows acceptance."
+    },
+    {
+      "report": "reset-rebind-review-20261030/unknown-protection.xml",
+      "original_xml_sha256": "02b445b77d2ef637dd8e19477635d6aa64e8aa776d4e88db1d4f0bf322154a27",
+      "count": 1,
+      "cases": [
+        {
+          "classname": "output.reset-rebind-review-20261030.test_independent_chain",
+          "name": "test_reset_a_returns_to_bind_then_b_connects_without_losing_original_evidence[unknown_send]",
+          "result": "passed"
+        }
+      ],
+      "scope": "Exact original reviewed local execution; excluded failed/skipped cases retained in original report. Not Windows acceptance."
     }
   ],
   "packaging_reviewed_commit": "ffc6a97718d4d75f58b9fa90ae601a3132331101",
@@ -17828,7 +17931,7 @@
     "backend/app/services/ai_capacity_service.py": "c6fb0d5d75df193bb873d7ad55825307c8045d84559f6cb99c0eafb437e8c218",
     "backend/app/services/c3_recovery.py": "c7c41be484735ce6f767c3480750ea889465bd655e253c6749ca5ab7e27dcd97",
     "backend/app/services/c3_service.py": "55ac100b149f1c132d0bb4dae28bd8811b7ed510dd9bcfbcb0a2a26d7cb8b521",
-    "backend/app/services/clock_reference.py": "c748bbc6da5e4429f2fe2d3eb529a74c281ca99ee0f866751276116940735954",
+    "backend/app/services/clock_reference.py": "011ea5f6679d9e54c5a34a5a08e878c0672e28f096ac9de147412e4df8016411",
     "backend/app/services/dashboard/__init__.py": "caa0c716b30686d33e5c6ad151e4ac9b92bb27528fc022e99d6702196330ab5f",
     "backend/app/services/dashboard/calculations.py": "d2a7f1ff296f7ddd39e8f8b99784d2ed206a8730932a03e0ac66032e1c4b9259",
     "backend/app/services/dashboard/facts.py": "1f62fde4afc7c3a6d5b219c188a8dcf6672cda68eca3295b490b66b4a6a172a9",
@@ -17872,7 +17975,7 @@
     "backend/tests/test_c3_recovery_isolation.py": "e713ab5fc6a24a4d3e0a17247b173d705b366729975898fee2db1f608f63b8f6",
     "backend/tests/test_catalog_fact_references.py": "7cbc31c2746d529da1b75b3c084808aa294e8aa5b1eb6dfa5b8e68a95c8fee88",
     "backend/tests/test_catalog_hook_chain.py": "718f750b1ad7bc12d88304ec53390747e8f11abc8153bc6a1f158e82a833b12c",
-    "backend/tests/test_clock_reference.py": "12329a783f630761f6a080bd4751afea17e43fae8d7e1d4e81ee4b11d4e8b5cb",
+    "backend/tests/test_clock_reference.py": "8c96da75145fdbc9891ca85f325216eeb41aa931fd8b8e11fb896c99dc376738",
     "backend/tests/test_dashboard_api.py": "78821e5bcbb88ab101081fec501e38a09b7632e6a4d166a0351882fdc81280a4",
     "backend/tests/test_dashboard_history_http.py": "492189c82b1bced98aa0b459109976d00728bf80d627e4cee4b7a9680546e32d",
     "backend/tests/test_dashboard_metrics.py": "c140a31d636f60248138593df5a9395fab6f8ccc2400c0e5031b053317fab219",
@@ -17911,6 +18014,7 @@
     "backend/tests/test_hook_recovery_closure.py": "1fa0ade8bcd8ea852f84bc6db4f1a0b558d7ef5e3927a70be9c02bf956340fd9",
     "backend/tests/test_hook_relationship_http.py": "4927a80ef4b58542e2c46170d4b45662793e45290047d88dcdf40dbbe02549f7",
     "backend/tests/test_hook_relationship_stale_inputs.py": "da5873cb37012120306c6e0dcdf7231e5f2a7de4dd6be52ea07947af88aebf93",
+    "backend/tests/test_hook_reset_rebind_client.py": "b0ae729ea32e4a15dd378af2e0e3c076196fae264ff71f865e67b212392538e5",
     "backend/tests/test_hook_restricted_send_closure.py": "fd441cb9b4a192fd0b5de0e14622a212fec721577d32549ecfbc01b16eb472ca",
     "backend/tests/test_hook_search_query_receipt.py": "6e99146f2cd63f3870aaffeee9496ab1ed68956dbb6600dbcc5019903820e108",
     "backend/tests/test_hook_segment_refusal_recovery.py": "87f6f95625924bb41af880bb663a9dced723f1046ed27b7b34f4d49092fd4b81",
@@ -18007,12 +18111,12 @@
     "worker-client/chejin_worker_client/failure_evidence.py": "6857f458e9f6684c539fd03d16afb566a34516befa228d93d242ed96eced6ed8",
     "worker-client/chejin_worker_client/hook_account_issues.py": "eb6403720d3efa31b0900a6a99728ca16a1043fa409038d6f2e473b8c566d004",
     "worker-client/chejin_worker_client/hook_active_calls.py": "c921a4ba25c93d68e6590c5897c81c7c1551751b6c7e09a717893c29e67434ee",
-    "worker-client/chejin_worker_client/hook_backend.py": "3e6e95cd5b31ec67565737a9447f8a826a040f060b62edca892da40b0ea1ae45",
+    "worker-client/chejin_worker_client/hook_backend.py": "1f4dd8d2434b06e7d06842f9fd8fdf847eb658160329217efa242cf3e92d5c9b",
     "worker-client/chejin_worker_client/hook_callback_contract.py": "f35dbc6e97e227f3115c95db3309221887b47ec5318d3c6502cfbb5508296f79",
     "worker-client/chejin_worker_client/hook_component_update.py": "1bb0d2aa0a12490af5126f3481aa4b960c62befaa3117809c3ac36b16a4825e7",
     "worker-client/chejin_worker_client/hook_connection.py": "a3f3324b9d70f27ca9150c5d8b4b5fce6bdb15754e89ea865ff12def61236b4f",
     "worker-client/chejin_worker_client/hook_delivery_lifecycle.py": "621d6b9666d9f0f95e9e5d008222eef54dd6c3ace8e75fa0923c861928f7c51f",
-    "worker-client/chejin_worker_client/hook_dispatcher.py": "9872d20faa6b7b9ba71124a734a0d88e4f39f7049bceaf903127a0f1eb7adb76",
+    "worker-client/chejin_worker_client/hook_dispatcher.py": "571e7ee0eb1d93d76de0127a1a2a2e8ac161c5eea31a733d1796dcf5db513ec0",
     "worker-client/chejin_worker_client/hook_factory.py": "a28aea457d7c78709c5ed079fc5d06396e2f720c83e23d7d0c6bf702f33a1683",
     "worker-client/chejin_worker_client/hook_facts.py": "360b092ee30f7c37e94dc0d43851fe6401fbbba9b08f7356df40984ba9a54397",
     "worker-client/chejin_worker_client/hook_formal_c1.py": "12fb41795ec095f177e11768dfd361df88ac4faaa9e5c67aa50f90e5ee7bde80",
@@ -18036,7 +18140,7 @@
     "worker-client/chejin_worker_client/hook_startup_window.py": "60458efc4bc76693f544fa489534ce02629ec9f62bcfec11a98a98d0671bff65",
     "worker-client/chejin_worker_client/hook_transport.py": "9b46b4c33dfc39a8f81a29243cccde348e691be8c78c611e99a1e73e37289a55",
     "worker-client/chejin_worker_client/hook_voice.py": "e45248392e0e8e7e8177d58cb02dca380c99adf2692fe8af64a0c394549ae3b7",
-    "worker-client/chejin_worker_client/hook_worker_services.py": "ea4c9669b2d08e518839225d692f4d001d538fdd4900422fcae28654ed7fc8d7",
+    "worker-client/chejin_worker_client/hook_worker_services.py": "71f95e23c73afa2e13896b019daadc709e061f47a62ce29906d1abbd07a5cecc",
     "worker-client/chejin_worker_client/incident_evidence.py": "8821582ea3ddbf25decd782bd03fe13a6d005b472875ad39cf9112565605efcb",
     "worker-client/chejin_worker_client/log_evidence_rules.py": "906090f4faf387194daf5a9a3c6186e4a89676fff49f4a45a2b7c0553b110dcb",
     "worker-client/chejin_worker_client/main.py": "b4fb60e9164e56c6486ed5157e0e289037bcc09a3fa46b8db4562f423547419c",
@@ -18048,8 +18152,8 @@
     "worker-client/chejin_worker_client/startup_window_position.py": "6c801bac499225a2548aa58edbfade80dadd8d2fb1d5127f885686476e6ffac0",
     "worker-client/chejin_worker_client/storage.py": "b630845a3c128c0ff3449d541533e38f47220f2150e878f79860b1bb9ce5b7da",
     "worker-client/chejin_worker_client/storage_maintenance.py": "dff6e905c530389d92e7a87b2f21e7d72721434c9c7899d22d1c9d6c070b035a",
-    "worker-client/chejin_worker_client/task_runner.py": "50c9cfbe2bb956cc4eaf188e2e339ecf01d886b4895bd2a0fc2c20465c77c6be",
-    "worker-client/chejin_worker_client/ui.py": "cbf269e91bbae32b4d5609a1a27405d85a05a7b209d489d762ccbe0d25460ff9",
+    "worker-client/chejin_worker_client/task_runner.py": "5aad39b217416e21065aa8d1cbcd134b74676c19d3c0897e285266ff136ac427",
+    "worker-client/chejin_worker_client/ui.py": "59ce8710593b2f443498a0bfc7cbd1be6b56e6e2c1311b0b26d3aa553542217b",
     "worker-client/chejin_worker_client/update_coordinator.py": "743347b65e0c4fce322f9527907369e2c2a7dc41942e02799f0a15bdee9cbca4",
     "worker-client/chejin_worker_client/update_data_snapshot.py": "0e07c6b7c7beb3a618f9ad1a6d58f31ebf06ffbb280954e95a341cc5a9b43155",
     "worker-client/chejin_worker_client/update_diagnostics.py": "7ee54c751f381a918481c8f5713686d88d0c4df2a1c61aa15de50a2dbd38bd0a",
@@ -18064,7 +18168,7 @@
     "worker-client/chejin_worker_client/web_assets/worker-presentation.css": "d302154c5451f00bcb0ab067d5e497364a527f5f601d8a8a831c1fcee1877a21",
     "worker-client/chejin_worker_client/web_assets/worker-ui.css": "18c8eff4399dca953f59ffffaed0b58a0f4efd0ceaa7c3afa015d39c32bc8691",
     "worker-client/chejin_worker_client/web_assets/worker-web-app.js": "430b4fb79de60835cb304577daf0911da31b6aa907e02fbccf33f010499384d8",
-    "worker-client/chejin_worker_client/web_ui.py": "d62aebcbb8a9cbe794eee3dde5d62182363947a34afbf68298c776a8aac1d3fa",
+    "worker-client/chejin_worker_client/web_ui.py": "e1cd494a088a4d50cfbee41bc2bd1a24e0024b5d9c69d2a132bea0e9274a29c4",
     "worker-client/chejin_worker_client/window_render_evidence.py": "1c6764c970f685d337df338e7d39147f475a49ce96c1699ebac5419736b3e8c8",
     "worker-client/chejin_worker_client/windows_clock_sync.py": "c07b32861bfa8bfc9fc865d3b96515aa2d30e201d90d8a00747e2a8cd1f562dc",
     "worker-client/omniauto-rpa/.chejin-source.json": "20cc4881424d9610a1c1e87bdb61c87b7ffd43374df2b5d13ef1a88c35b1777e",
@@ -18110,7 +18214,7 @@
     "worker-client/tests/test_diagnostic_priority_chain.py": "dea54b02bc4edd357bb8ec93bb080b4c322a506151e6ba2bca7bd341068e98a0",
     "worker-client/tests/test_evidence_review_regressions.py": "79835595b138ce14ba5e5cb97809775df771e873119473309bd2b4a393991719",
     "worker-client/tests/test_failure_evidence_boundaries.py": "97b8746f6d4da394b376dc15e30336b395da5c89db54493eb9d0ea3e406d9b7d",
-    "worker-client/tests/test_hook_backend.py": "da7aab1826f07c1edf1d1156ceddaa884a1812046bf19795cca937566abf72b3",
+    "worker-client/tests/test_hook_backend.py": "698b9e3707bf0b2620a9c506c8517b009afa55bd7c181f63dc79fe137c56b648",
     "worker-client/tests/test_hook_bound_upgrade_gate.py": "b282efa6dfba511307e970b00a8873656f6d92ce842024aaaae842cc26de9cba",
     "worker-client/tests/test_hook_c1_flow_timing.py": "fcdc4161969c2f19b7a5bccda188fa02007b05ba7c8ddd02ea3219152dd553ba",
     "worker-client/tests/test_hook_c1_merged_review.py": "9bc42fa957091af5dc4f539e55a01c3c0c216729878b5f7cd01dca01394ce5bf",
@@ -18152,7 +18256,7 @@
     "worker-client/tests/test_hook_waterfall.py": "c3d41587f345867534d70994444068b45f649995c744916218255be2a8447e90",
     "worker-client/tests/test_hook_window_layout_chain.py": "12bbeec0c9f3495d5f1e78d9349dd0c3d6d31f39cd730d69e13485cf48067fcc",
     "worker-client/tests/test_hook_window_position.py": "585535ac95345ebfbf43207ba4fbbfc5aae62e1521164d2ee69897887b259cdd",
-    "worker-client/tests/test_hook_worker_services.py": "bd8eff756de534576644a08e16597a176ad6ad70149783f80fd595f9633c1d19",
+    "worker-client/tests/test_hook_worker_services.py": "64cae9b1a90d3f503d32a121a5ad50488749887923e13a96fccf00388dc3e806",
     "worker-client/tests/test_packaging_entry.py": "f5723b8761917643f1afcdaf5ea2c4297077b55b816f533b03800fcc3f4b1a84",
     "worker-client/tests/test_runtime_startup.py": "ca92d21924151f20ed699f42ded228c228c9dd2e9bad220a50626c4ffb421b19",
     "worker-client/tests/test_search_query_ocr.py": "6e92c9a430e849c890338c437a62b1db60805b5695a9b542ef27ea87e14cf1c3",
@@ -18170,16 +18274,16 @@
     "worker-client/tests/test_update_restart_progress.py": "a6103860824ac07e87ae8fff9494a91f6eea7acb718ec4b4ffd32ba8aff41c60",
     "worker-client/tests/test_update_shutdown_ui.py": "4f46fa73852223b011f847cb05909b6f59693602ad1d0ef776c28b360eb4a289",
     "worker-client/tests/test_update_stop_confirmation.py": "96306ce9c8136b18823fc13c62a2d589743194bdcfc5cfef166130bcbbdac392",
-    "worker-client/tests/test_web_ui_binding_behavior.py": "43147376a88965d31025f5bfbb55be07fa27ad47e232759bc0bcebbe04958320",
+    "worker-client/tests/test_web_ui_binding_behavior.py": "837e6d625feaff0b93dcacbc538798a6e98a6c3c3b0b3efd29ca5b4dbbb24bf6",
     "worker-client/tests/test_window_render_evidence.py": "cdb8276f6dbd1ae9a4f2be6ac0ba0264aa5ae5693210e7a7f6fecc1fa4499538"
   },
   "delta_review": {
-    "commit": "38118627933b917cc35e988937ede1cd7c23b849",
+    "commit": "8f702c0d52e42f02ee4ae5972de78e2db11a3a4b",
     "result": "passed for source push",
     "thread_id": "01a0d26f-f47a-7343-9ad8-cda8320d7c86",
-    "turn_id": "cloudflare-source-review-20261029",
-    "review_file_sha256": "a072e9845d2ac054e6e1f88f4058f50e58681aea51231ea56b0787d2dd5a8635",
-    "scope": "Prior reviewed fixes and metadata retained; only shared Cloudflare source and affected tests added. Exact four source hashes independently reviewed. Native and regenerated artifact checks separate."
+    "turn_id": "report-reset-rebind-a102c827",
+    "review_file_sha256": "59f1b98411a163c71c3a169bdfd1461eb3fb3f87f7c283b911819c7c9d82510c",
+    "scope": "Merge tree identical to reviewed a102c827; prior production runtime retained. Metadata normalization checked under SOP18.0.4."
   },
   "historical_baseline_tests": 1371,
   "reviewed_delta_deleted_sha256": {
@@ -18232,7 +18336,8 @@
     "0.10.24: native Windows/realWeChat/newDLL/AI/Feishu pending; source audit native junction skip retained, original PG concurrency skip separately passed exact case. Prior baseline failures retained; no full-project-green claim.",
     "0.10.25: actual Windows UAC/NTP/.NET-msvcrt lock interaction, WeChat/DLL and customer delivery pending; legacy baseline failures retained. PG release probes separate.",
     "0.10.26: actual Windows UAC/NTP/.NET-msvcrt lock interaction, WeChat/DLL and customer delivery pending; legacy baseline failures retained. PG release probes separate.",
-    "Cloudflare old consumers fail closed until upgraded. Native Windows fallback peers are selected by W32Time; list ordering does not force Microsoft-before-Cloudflare."
+    "Cloudflare old consumers fail closed until upgraded. Native Windows fallback peers are selected by W32Time; list ordering does not force Microsoft-before-Cloudflare.",
+    "0.10.27 Windows reset/rebind and first-sales real WeChat/DLL acceptance pending. Four unchanged baseline failures remain recorded in PR18 review, not counted as passed."
   ],
   "prior_recovery_review": {
     "commit": "a1de7f317d600b65650eb44c16d404067e22ef58",
@@ -18336,7 +18441,10 @@
     "4ff81849efd8fc9e0268d4186961d681a17ee69b",
     "09538923675a6b8b2486335014900954c8c0ff6b",
     "118d87b19eb37a864de065a078a1adb92d6bd176",
-    "38118627933b917cc35e988937ede1cd7c23b849"
+    "38118627933b917cc35e988937ede1cd7c23b849",
+    "0a24b1570cc22b5168b22287053e2cd7532df38e",
+    "a102c827fccb09da9347c6682c94ad1ca9302bf5",
+    "8f702c0d52e42f02ee4ae5972de78e2db11a3a4b"
   ],
   "cumulative_source_reviews": [
     {
@@ -18889,6 +18997,12 @@
       "sha256": "a072e9845d2ac054e6e1f88f4058f50e58681aea51231ea56b0787d2dd5a8635",
       "candidate": "38118627933b917cc35e988937ede1cd7c23b849",
       "decision": "PASS_SOURCE_INCREMENT_ONLY_NATIVE_AND_BUILT_ARTIFACTS_PENDING"
+    },
+    {
+      "report": "/Users/zhangwentao/Documents/车金/output/reset-rebind-review-20261030/architect-review.json",
+      "sha256": "59f1b98411a163c71c3a169bdfd1461eb3fb3f87f7c283b911819c7c9d82510c",
+      "candidate": "a102c827fccb09da9347c6682c94ad1ca9302bf5",
+      "decision": "SOURCE_REVIEW_PASS"
     }
   ],
   "prior_release_delta_review_01011": {
