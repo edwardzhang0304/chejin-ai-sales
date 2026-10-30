@@ -144,6 +144,23 @@ def test_drained_rebind_resets_dispatcher_memory_but_keeps_disk_journals(runtime
     assert evidence.read_text() == '{"account_epoch":"epoch-A","result":"unknown"}'
 
 
+def test_late_status_ack_and_draining_fault_cannot_restore_revoked_binding(runtime):
+    from chejin_worker_client.api import ApiError
+    runner, _, binding, profiles, _, statuses, *_ = runtime
+    runner.binding = binding
+    def delayed_ack(*args, **kwargs):
+        runner._handle_binding_invalid(ApiError('WORKER_TOKEN_INVALID', 'invalid', 401), binding)
+        storage.clear_binding()  # Existing GUI invalid handler.
+        return WorkerProfile(binding.worker_id, 'Synthetic', 'paused')
+    runner.api.set_run_status = delayed_ack
+    runner._pending_run_status_sync = 'paused'
+    runner._sync_pending_run_status(force=True)
+    runner._preserve_stopped_run_status('faulted')
+    assert storage.load_binding() is None
+    assert statuses == ['invalid'] and not profiles
+    assert runner.stop_event.is_set()
+
+
 def test_original_supervisor_receives_and_projects_while_paused_without_ocr_or_business(runtime, lab):
     runner, services, binding, profiles, errors, _, posted, _ = runtime
     runner.start(binding)

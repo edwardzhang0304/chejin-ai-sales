@@ -4224,6 +4224,7 @@ class TaskRunner:
             if getattr(self, "_invalid_binding_identity", None) == identity:
                 return True
             self._invalid_binding_identity = identity
+            self._run_status_revision += 1  # Fence acknowledgements already in flight.
             self.stop()  # Close admission before the queued UI event is consumed.
         self.on_status("invalid")
         self.on_error("绑定已失效，请重新绑定。")
@@ -6898,6 +6899,9 @@ class TaskRunner:
         if not self.binding:
             return
         with self._run_status_intent_lock:
+            if getattr(self, "_invalid_binding_identity", None) == (
+                    self.binding.worker_id, self.binding.worker_token, self.binding.client_instance_id):
+                return  # A draining writer must not recreate the revoked binding row.
             # The caller can have checked before waiting for this lock. Resolve
             # fault priority at the same boundary that persists the intention.
             if run_status == "paused" and self.binding.run_status == "faulted":
