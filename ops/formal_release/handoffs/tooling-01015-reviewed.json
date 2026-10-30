@@ -1,7 +1,7 @@
 {
   "schema_version": 2,
   "repository": "edwardzhang0304/chejin-ai-sales",
-  "reviewed_commit": "901c0e35d9b5a30a5be5713bda6d171f34dc90a8",
+  "reviewed_commit": "7afb2a803b56647940e52c9555b086c6d8b13bb4",
   "scope_file": "ops/formal_release/handoffs/tooling-01015-scope.json",
   "reviewed_inputs": {
     ".github/actions/worker-release-checks/action.yml": "100644 blob d52d02ca82a127917695e0d80c5ab1f6697b7d62",
@@ -74,7 +74,7 @@
     "ops/formal_release/handoffs/tooling-01013-scope.json": "100644 blob 9fb8f418276b2e195289b304eb358c1d9189008e",
     "ops/formal_release/handoffs/tooling-01014-reviewed.json": "100644 blob 4ed9be107759c576dfc865b4d6368b16bfd3e9bc",
     "ops/formal_release/handoffs/tooling-01014-scope.json": "100644 blob a265f852acaf4c891ee5c9b13cb9ff4444d3b714",
-    "ops/formal_release/handoffs/tooling-01015-scope.json": "100644 blob 85a1145a0a79b8a01090eaf099bf087e351a6441",
+    "ops/formal_release/handoffs/tooling-01015-scope.json": "100644 blob f50406c8d1583824f620e0408f357f510e520d57",
     "ops/formal_release/handoffs/tooling-gui-recovery-reviewed.json": "100644 blob aa928cc4a2b780683270bbea9fd06e6340dca724",
     "ops/formal_release/handoffs/tooling-gui-recovery-scope.json": "100644 blob a294688798685d49198fc2fe7772a90811a3cc9d",
     "ops/formal_release/handoffs/unified-recovery-58c90b3.json": "100644 blob aa8688d1777a4e68fe2a382493de1cff25dc10e1",
@@ -95,7 +95,7 @@
     "ops/formal_release/release_plan.py": "100644 blob 1fc9466522a6a047383dbdc18f95d5d1d586d4fa",
     "ops/formal_release/release_profiles.py": "100644 blob b13b7732e7d95a1571ccd2072a2da180f59e5693",
     "ops/formal_release/reviewed_handoff.py": "100644 blob c059281d55613e77da1c26a085631da96a2a778c",
-    "ops/formal_release/run_evidence_checks.py": "100644 blob 83c8cc1f9034304b297e7dedb548002cb95e6312",
+    "ops/formal_release/run_evidence_checks.py": "100644 blob c45bd7df3e97d04f228882f983d071fc7ff9861f",
     "ops/formal_release/select_artifact.py": "100644 blob 02e76a3d74fed26091a39dfabc3ba8fa7a96d2ee",
     "ops/formal_release/sign_existing_hook.py": "100644 blob eaeb90f36fd23b7dbdf0f99f95d587bf86c33355",
     "ops/formal_release/source_check_reuse.py": "100644 blob ea2a387344a37fc3dd2458894a1a7f876302e30d",
@@ -123,7 +123,7 @@
     "ops/formal_release/tests/test_reviewed_handoff.py": "100644 blob 0d06dddf3e59206f4222741a182cf3fd9e133ef4",
     "ops/formal_release/tests/test_source_check_reuse.py": "100644 blob 8b4fbfb9137e1a38ceff395713b3f8ce52a8d1c9",
     "ops/formal_release/tests/test_source_evidence.py": "100644 blob 302dee6734c26c58cb7e3c0a4b79e61c51f8dec1",
-    "ops/formal_release/tests/test_tooling_handoff.py": "100644 blob 80e615677bc2d758d3858a706dd67ed18c390f05",
+    "ops/formal_release/tests/test_tooling_handoff.py": "100644 blob f3b25bf2579f557668d3a0a512f4ff8884cdbe0e",
     "ops/formal_release/tests/test_updater_repair_reporting.py": "100644 blob 89f8b471727d60a7d3f5782a273961250a016a27",
     "ops/formal_release/tests/test_upgrade_observation_io.py": "100644 blob ef3377e360352b45b5ef329b651e5e133040d85b",
     "ops/formal_release/tests/test_upgrade_state_poll.py": "100644 blob dee78e1b60603126a3300ad2e3ff469b9ee24901",
@@ -165,6 +165,17 @@
       "files": {
         "worker-client/scripts/run-windows-client-upgrade-test.py": "3aec49a8e959d49e946e3f41909b2a1d4f2e795626926f83e76565e02be0fd5f",
         "ops/formal_release/tests/test_upgrade_stop_evidence.py": "511c029c11f1b11ccc992ccef7017ca7e054bb723622e5ac32a3f7695f3486c0"
+      }
+    },
+    {
+      "commit": "7afb2a803b56647940e52c9555b086c6d8b13bb4",
+      "report": "/Users/zhangwentao/Documents/车金/output/release-01027-evidence-size-20261030/architect-review.json",
+      "sha256": "1a63e79b0a7b56a0e91932713a02ad7b9e60420493d3fcaed9708a9915255ed3",
+      "decision": "PASS",
+      "files": {
+        "ops/formal_release/run_evidence_checks.py": "6ef8e3745aeb84823056aa4cba9e34b277d30a4b4a110805a81ecd48996a4b06",
+        "ops/formal_release/tests/test_tooling_handoff.py": "d4cf2c8a6599b0552b5bf93e405f614b3b80bd4101907e89dfc839d0a2d6192f",
+        "ops/formal_release/source_evidence.py": "1fafa09f6d0c311a49f11e5532926a6ad4a3b16908b4cf62d2486982c1b307ae"
       }
     }
   ]
