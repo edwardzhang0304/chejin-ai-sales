@@ -215,6 +215,8 @@ class HookIdentityClient:
         # Heartbeat is idempotent reconciliation, not a physical send. A server
         # failure is unavailable evidence; it is not an identity rejection.
         require_backend_available(status)
+        if status == 401:
+            raise ApiError("WORKER_CLIENT_BINDING_INVALID", "绑定已失效，请重新绑定。", status)
         try:
             envelope = json.loads(raw)
             if not isinstance(envelope, dict):

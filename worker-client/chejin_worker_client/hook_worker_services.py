@@ -100,7 +100,7 @@ class HookWorkerServices:
         if binding is None or runner.stop_event.is_set():
             return
         runner._sync_pending_run_status()
-        if emergency_stop_requested():
+        if runner.stop_event.is_set() or emergency_stop_requested():
             return  # Existing approved receiver still persists independently.
         with runner._run_status_intent_lock:
             revision = runner._run_status_revision
@@ -136,6 +136,8 @@ class HookWorkerServices:
         try:
             prepared = self.connection.prepare(captured, state)
         except ApiError as exc:
+            if runner._handle_binding_invalid(exc, binding):
+                return
             if exc.code in BACKEND_WAIT_CODES:
                 self._startup_check = startup_check_state.failed(exc.code)
                 emit_progress(runner,"connection","connection_wait","waiting","connection_wait")
@@ -157,6 +159,8 @@ class HookWorkerServices:
                 code = "HOOK_CONNECTION_CHECK_FAILED"
             self._fault(runner, code, local_error=exc, startup_phase="environment")
             return
+        if runner.stop_event.is_set():
+            return  # Another loop may have received revocation during this heartbeat.
         runner.last_rpa_component_status = "ready"
         runner.last_wechat_status = "logged_in" if prepared else "logged_out"
         if prepared is None:
@@ -332,7 +336,8 @@ class HookWorkerServices:
     def business_loop(self, runner, entered) -> None:
         entered('hook_business')
         while not runner.stop_event.is_set():
-            if runner.binding is not None:
+            binding = runner.binding
+            if binding is not None:
                 try:
                     self.dispatcher.tick(runner,self)
                 except HookRuntimeStopping:
@@ -344,6 +349,8 @@ class HookWorkerServices:
                 except hook_read_retry.ReadRetryWait as exc:
                     self._wait_for_local_query(runner,exc.code)
                 except ApiError as exc:
+                    if runner._handle_binding_invalid(exc, binding):
+                        return
                     if exc.code in BACKEND_WAIT_CODES:
                         self.dispatcher._report_wait(exc.code)
                     else:self._fault(runner,exc.code,http_status=exc.status_code)

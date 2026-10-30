@@ -1039,6 +1039,7 @@ class WorkerWebWindow(QMainWindow):
             return
         client_instance_id = self.binding.client_instance_id if self.binding else new_client_instance_id()
         try:
+            self.runner.ensure_binding_restart_ready()
             profile = self.api.bind(worker_id, worker_token, client_instance_id)
             self.binding = Binding(worker_id=worker_id, worker_token=worker_token, client_instance_id=client_instance_id, run_status=profile.run_status)
             save_binding(self.binding)

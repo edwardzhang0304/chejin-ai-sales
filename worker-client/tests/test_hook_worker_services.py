@@ -68,6 +68,99 @@ def projected_count():
         return conn.execute('SELECT COUNT(*) FROM hook_observation_projection').fetchone()[0]
 
 
+@pytest.mark.parametrize('entry', ['heartbeat', 'business', 'status_sync'])
+def test_revoked_binding_stops_once_keeps_evidence_and_late_error_cannot_clear_new_binding(runtime, backend_peer, entry):
+    from chejin_worker_client.api import ApiError
+    runner, services, binding, _, errors, statuses, *_ = runtime
+    runner.binding = binding
+    services.attach(binding, runner._hook_persistence_failed)
+    runner.tick_once()
+    callback(services.connection)
+    with storage.db_connection() as db:
+        original = tuple(db.execute('SELECT * FROM hook_raw_inbox').fetchone())
+    def revoked(*args, **kwargs):
+        raise ApiError('WORKER_TOKEN_INVALID', 'invalid', 401)
+    if entry == 'heartbeat':
+        backend_peer.status, backend_peer.body = 401, b'{"code":"WORKER_TOKEN_INVALID"}'
+        runner.tick_once()
+    elif entry == 'business':
+        services.dispatcher = SimpleNamespace(tick=revoked, interval_seconds=.01)
+        services.business_loop(runner, lambda _: None)
+    else:
+        runner.api.set_run_status = revoked
+        runner._pending_run_status_sync = 'paused'
+        runner._sync_pending_run_status(force=True)
+    assert statuses.count('invalid') == 1 and runner.stop_event.is_set()
+    assert errors[-1] == '绑定已失效，请重新绑定。'
+    assert not runner._can_start_new_flow()
+    assert runner._handle_binding_invalid(ApiError('WORKER_TOKEN_INVALID', 'invalid', 401), binding)
+    assert statuses.count('invalid') == 1
+    with storage.db_connection() as db:
+        assert tuple(db.execute('SELECT * FROM hook_raw_inbox').fetchone()) == original
+    runner.binding = Binding(binding.worker_id, 'new-token', 'new-instance', 'paused')
+    runner.stop_event.clear()
+    assert runner._handle_binding_invalid(ApiError('WORKER_TOKEN_INVALID', 'invalid', 401), binding)
+    assert not runner.stop_event.is_set() and statuses.count('invalid') == 1
+
+
+def test_rebind_waits_for_old_writer_before_resetting_runtime(runtime):
+    from chejin_worker_client.api import ApiError
+    runner, services, binding, *_ = runtime
+    runner.binding = binding
+    services.attach(binding, runner._hook_persistence_failed)
+    runner._handle_binding_invalid(ApiError('WORKER_TOKEN_INVALID', 'invalid', 401), binding)
+    release = threading.Event()
+    writer = threading.Thread(target=lambda: release.wait(3))
+    runner.hook_business_thread = writer
+    writer.start()
+    try:
+        with pytest.raises(RuntimeError, match='正在保存原任务记录'):
+            runner.ensure_binding_restart_ready()
+        assert services._credentials is not None
+    finally:
+        release.set()
+        writer.join(3)
+    runner.ensure_binding_restart_ready()
+    assert services._credentials is None
+
+
+def test_drained_rebind_resets_dispatcher_memory_but_keeps_disk_journals(runtime, tmp_path):
+    from chejin_worker_client.api import ApiError
+    from chejin_worker_client.hook_dispatcher import HookBusinessDispatcher
+    runner, services, binding, *_ = runtime
+    dispatcher = HookBusinessDispatcher(None, tmp_path, None, None,
+        automatic_transcription_disabled=lambda: True)
+    services.dispatcher = dispatcher
+    dispatcher.runtime = SimpleNamespace(account={'self_wxid':'wxid_A', 'account_epoch':'epoch-A'})
+    dispatcher._reconciled = True
+    dispatcher._sync_cache['A'] = 'old message'
+    evidence = tmp_path / 'permit.json'
+    evidence.write_text('{"account_epoch":"epoch-A","result":"unknown"}')
+    runner.binding = binding
+    services.attach(binding, runner._hook_persistence_failed)
+    runner._handle_binding_invalid(ApiError('WORKER_TOKEN_INVALID', 'invalid', 401), binding)
+    runner.ensure_binding_restart_ready()
+    assert dispatcher.runtime is None and not dispatcher._reconciled and not dispatcher._sync_cache
+    assert evidence.read_text() == '{"account_epoch":"epoch-A","result":"unknown"}'
+
+
+def test_late_status_ack_and_draining_fault_cannot_restore_revoked_binding(runtime):
+    from chejin_worker_client.api import ApiError
+    runner, _, binding, profiles, _, statuses, *_ = runtime
+    runner.binding = binding
+    def delayed_ack(*args, **kwargs):
+        runner._handle_binding_invalid(ApiError('WORKER_TOKEN_INVALID', 'invalid', 401), binding)
+        storage.clear_binding()  # Existing GUI invalid handler.
+        return WorkerProfile(binding.worker_id, 'Synthetic', 'paused')
+    runner.api.set_run_status = delayed_ack
+    runner._pending_run_status_sync = 'paused'
+    runner._sync_pending_run_status(force=True)
+    runner._preserve_stopped_run_status('faulted')
+    assert storage.load_binding() is None
+    assert statuses == ['invalid'] and not profiles
+    assert runner.stop_event.is_set()
+
+
 def test_original_supervisor_receives_and_projects_while_paused_without_ocr_or_business(runtime, lab):
     runner, services, binding, profiles, errors, _, posted, _ = runtime
     runner.start(binding)
