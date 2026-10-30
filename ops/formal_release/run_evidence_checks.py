@@ -115,7 +115,7 @@ def main():
                 "reviewed_handoff": reused, "tooling_reuse": tooling_reuse}
     if reused:
         evidence["scope"].append({"reused_engineering_checks": reused})
-    (output / "evidence.json").write_text(json.dumps(evidence, indent=2), encoding="utf-8")
+    (output / "evidence.json").write_text(json.dumps(evidence, separators=(",", ":")), encoding="utf-8")
     print(json.dumps({"kind": kind, "results": results, "scope": scope}))
 
 

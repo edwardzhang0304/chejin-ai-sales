@@ -149,13 +149,21 @@ def test_resume_without_handoff_fails_instead_of_running_all_tests(tmp_path,monk
         execute.assert_not_called()
 
 
-def test_resume_reports_reused_and_executed_separately_and_runs_only_selection(tmp_path,monkeypatch,origin,handoff):
+@pytest.mark.parametrize("large_report", [False, True])
+def test_resume_reports_reused_and_executed_separately_and_runs_only_selection(tmp_path,monkeypatch,origin,handoff,large_report):
     import run_evidence_checks as runner
     monkeypatch.setenv('CHECK_KIND','tooling');monkeypatch.setenv('EVIDENCE_DIR',str(tmp_path))
     monkeypatch.setenv('TOOLING_REUSE_REQUIRED','true');monkeypatch.setenv('TOOLING_HANDOFF','reviewed.json')
     monkeypatch.setenv('CHEJIN_RELEASE_TRANSPORT','ocr')
     node='ops/formal_release/tests/test_tooling_handoff.py'
     reuse={'count':7,'cases':[{'mode':'reused'}], 'original':{'run_id':42,'attempt':1},'pytest':[{'cwd':'.','nodes':[node]}]}
+    if large_report:
+        # Synthetic evidence with many reused identities; no customer/CI contents.
+        reuse['cases'] = [{'mode':'reused','name':f'test_case_{i}',
+                           'origin':{'run_id':42,'attempt':1,'commit':'a'*40,
+                                     'changed_inputs':{'synthetic.py':{'reason':'unchanged reviewed input','covered_by':['test_synthetic.py']}}}}
+                          for i in range(1800)]
+        reuse['count'] = len(reuse['cases'])
     def execute(argv,cwd,path,environment):
         assert argv[3:-3]==[node]  # sys.executable -m pytest <only selected> -q --junitxml path
         Path(argv[-1]).write_text('<testsuites><testsuite><testcase classname="ops.formal_release.tests.test_tooling_handoff" name="test_new"/></testsuite></testsuites>')
@@ -163,8 +171,13 @@ def test_resume_reports_reused_and_executed_separately_and_runs_only_selection(t
     with patch.object(runner,'identity',return_value={'commit':'a'*40,'run_id':'42','attempt':'1'}),patch.object(h,'validate',return_value=reuse),patch.object(runner,'fingerprint',return_value='f'*64),patch.object(runner,'execute',side_effect=execute):
         runner.main()
     report=json.loads((tmp_path/'evidence.json').read_text())
+    if large_report:
+        assert len(json.dumps(report, indent=2).encode()) > 1_000_000
+        assert (tmp_path/'evidence.json').stat().st_size < 1_000_000
+        assert report['tooling_reuse'] == reuse
+        assert report['scope'][0]['cases'] == reuse['cases']
     assert report['results'][0]['type']=='original_ci_evidence_reuse'
-    assert report['results'][0]['passed']==7 and report['results'][0]['tests_executed']==0
+    assert report['results'][0]['passed']==reuse['count'] and report['results'][0]['tests_executed']==0
     assert report['results'][1]['passed']==1
     assert report['tooling_reuse']['original']=={'run_id':42,'attempt':1}
     assert report['scope'][1]['report_xml']=='pytest-0.xml'

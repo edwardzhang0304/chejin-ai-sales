@@ -110,7 +110,7 @@
           ]
         },
         "ops/formal_release/run_evidence_checks.py": {
-          "reason": "Prior approved impact retained.",
+          "reason": "5-reviewed JSON whitespace-only emission; exact contents and 1 MB limit retained.",
           "covered_by": [
             "ops/formal_release/tests/test_tooling_handoff.py"
           ]
@@ -124,7 +124,7 @@
           ]
         },
         "ops/formal_release/tests/test_tooling_handoff.py": {
-          "reason": "Prior approved impact retained.",
+          "reason": "5-reviewed JSON whitespace-only emission; exact contents and 1 MB limit retained.",
           "covered_by": [
             "ops/formal_release/tests/test_tooling_handoff.py"
           ]
@@ -341,6 +341,18 @@
           "covered_by": [
             "windows-parser"
           ]
+        },
+        "ops/formal_release/run_evidence_checks.py": {
+          "reason": "5-reviewed JSON whitespace-only emission; exact contents and 1 MB limit retained.",
+          "covered_by": [
+            "ops/formal_release/tests/test_tooling_handoff.py"
+          ]
+        },
+        "ops/formal_release/tests/test_tooling_handoff.py": {
+          "reason": "5-reviewed JSON whitespace-only emission; exact contents and 1 MB limit retained.",
+          "covered_by": [
+            "ops/formal_release/tests/test_tooling_handoff.py"
+          ]
         }
       }
     },
@@ -451,6 +463,18 @@
           "covered_by": [
             "windows-parser"
           ]
+        },
+        "ops/formal_release/run_evidence_checks.py": {
+          "reason": "5-reviewed JSON whitespace-only emission; exact contents and 1 MB limit retained.",
+          "covered_by": [
+            "ops/formal_release/tests/test_tooling_handoff.py"
+          ]
+        },
+        "ops/formal_release/tests/test_tooling_handoff.py": {
+          "reason": "5-reviewed JSON whitespace-only emission; exact contents and 1 MB limit retained.",
+          "covered_by": [
+            "ops/formal_release/tests/test_tooling_handoff.py"
+          ]
         }
       }
     },
@@ -512,6 +536,18 @@
           "covered_by": [
             "windows-parser"
           ]
+        },
+        "ops/formal_release/run_evidence_checks.py": {
+          "reason": "5-reviewed JSON whitespace-only emission; exact contents and 1 MB limit retained.",
+          "covered_by": [
+            "ops/formal_release/tests/test_tooling_handoff.py"
+          ]
+        },
+        "ops/formal_release/tests/test_tooling_handoff.py": {
+          "reason": "5-reviewed JSON whitespace-only emission; exact contents and 1 MB limit retained.",
+          "covered_by": [
+            "ops/formal_release/tests/test_tooling_handoff.py"
+          ]
         }
       }
     },
@@ -558,6 +594,18 @@
           "reason": "Standalone native clock workflow only; exact approved inputs already validated in 40885733300 and local consolidation 16c307d3. Not executed by Hook packaging/preserve-install; reviewed native evidence retained unchanged.",
           "covered_by": [
             "windows-parser"
+          ]
+        },
+        "ops/formal_release/run_evidence_checks.py": {
+          "reason": "5-reviewed JSON whitespace-only emission; exact contents and 1 MB limit retained.",
+          "covered_by": [
+            "ops/formal_release/tests/test_tooling_handoff.py"
+          ]
+        },
+        "ops/formal_release/tests/test_tooling_handoff.py": {
+          "reason": "5-reviewed JSON whitespace-only emission; exact contents and 1 MB limit retained.",
+          "covered_by": [
+            "ops/formal_release/tests/test_tooling_handoff.py"
           ]
         }
       }
@@ -706,7 +754,7 @@
       ]
     },
     "ops/formal_release/run_evidence_checks.py": {
-      "reason": "Prior approved impact retained.",
+      "reason": "5-reviewed JSON whitespace-only emission; exact contents and 1 MB limit retained.",
       "covered_by": [
         "ops/formal_release/tests/test_tooling_handoff.py"
       ]
@@ -726,7 +774,7 @@
       ]
     },
     "ops/formal_release/tests/test_tooling_handoff.py": {
-      "reason": "Prior approved impact retained.",
+      "reason": "5-reviewed JSON whitespace-only emission; exact contents and 1 MB limit retained.",
       "covered_by": [
         "ops/formal_release/tests/test_tooling_handoff.py"
       ]
