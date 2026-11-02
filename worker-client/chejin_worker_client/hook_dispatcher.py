@@ -21,6 +21,7 @@ from .hook_sender import RetainedNativeSendPermit,send_observation_can_settle
 from .hook_voice import HookVoiceTranscriber, capture_voice_audio
 from .shared_rules import hook_contract_rules as rules
 from .hook_timing import timed_call
+from .performance_evidence import emit, measurement
 from .hook_gateway import HookLocalError
 from .hook_history_wait import is_history_wait
 
@@ -207,6 +208,8 @@ class HookBusinessDispatcher:
             self._reply_owners_by_binding[key]=signature
 
     def _publish_batch_progress(self,runner,bid,data):
+        emit('observation', name='batch_state', batch_id=bid, status=data.get('batch_status'),
+             waiting='ai' if data.get('processing') else None)
         action=data.get('reply_action') or {}
         task=data.get('task') or {}
         live=bool(data.get('processing') or action.get('status') in {'queued','sending','unknown_send_result'}
@@ -279,7 +282,7 @@ class HookBusinessDispatcher:
                 if path.exists():
                     if rules.loads(path.read_bytes())!=value:raise ValueError('HOOK_VOICE_RECEIPT_CONFLICT')
                 else:_save(path,value)
-                self._sync_cache.pop((rt.scope.process_generation,binding['binding_id'],binding['binding_revision']),None)
+                self._invalidate_history_cache((rt.scope.process_generation,binding['binding_id'],binding['binding_revision']))
                 return True
         return False
 
@@ -440,10 +443,14 @@ class HookBusinessDispatcher:
             self.resolve_wait('business')
         return result
 
+    def _invalidate_history_cache(self, key):
+        if self._sync_cache.pop(key, None) is not None:
+            emit('counter', name='history_cache_invalidated', count=1)
+
     def _read_history(self,binding,*,barrier=None):
         rt=self.runtime
         key=(rt.scope.process_generation,binding['binding_id'],binding['binding_revision'])
-        self._sync_cache.pop(key,None)
+        self._invalidate_history_cache(key)
         before=rt.barrier(binding) if barrier is None else barrier
         synced=rt.sync(binding)
         # Never label an older receipt with a callback that landed during
@@ -479,6 +486,10 @@ class HookBusinessDispatcher:
                 or any(inventory.get(k)!=v for k,v in rt.account.items())):
             raise ValueError('HOOK_WORK_INVENTORY_INVALID')
         self.resolve_wait('business',phase='connection_wait')
+        # Counts come from the inventory already read by business, no extra query.
+        emit('gauge', name='inventory.retained_sends', count=len(inventory['retained_sends']))
+        emit('gauge', name='inventory.invitations', count=len(inventory['invitations']))
+        emit('gauge', name='inventory.voice_jobs', count=sum(len(b.get('voice_jobs',[])) for b in inventory['bindings']))
         from . import hook_read_retry
         if hook_read_retry.pending():
             recovery_bindings=[m['reconciliation_binding'] for m in inventory['retained_sends'] if m.get('reconciliation_binding')]
@@ -504,7 +515,8 @@ class HookBusinessDispatcher:
         for metadata in inventory['retained_sends']:
             binding=metadata.get('reconciliation_binding') or byid.get(metadata['binding_id'])
             if not binding:raise ValueError('HOOK_RETAINED_BINDING_NOT_AUTHORIZED')
-            if not self._recover_send(binding,metadata):return
+            with measurement('recovery.send', metadata):
+                if not self._recover_send(binding,metadata):return
         current=inventory.get('inflight_task')
         for metadata in inventory.get('inflight_unpermitted_tasks',[]):
             # Only the server's original Flow/batch may select a local request.
@@ -523,7 +535,9 @@ class HookBusinessDispatcher:
                 metadata['flow_id'],metadata['conversation_id'],metadata['lease_fencing_token'])
             return
         if current and current['task_type']=='add_friend':
-            self._recover_invitation(current);return
+            with measurement('recovery.invitation', {'task_id':current.get('id')}):
+                self._recover_invitation(current)
+            return
         if self._observation_query_version!=1:
             self._report_wait('HOOK_MODEL_OBSERVATION_UNSUPPORTED');return
         if current and current['status'] in {'completed','failed','cancelled','canceled'}:
@@ -580,7 +594,9 @@ class HookBusinessDispatcher:
                 cached=self._sync_cache.get(key)
                 if cached and cached[0]==barrier and time.monotonic()-cached[1]<30 and binding.get('history_ready',True):
                     synced=cached[2]
+                    emit('counter', name='history_cache_hit')
                 else:
+                    emit('counter', name='history_cache_miss')
                     synced=self._read_history(binding,barrier=barrier)
                 if not self.history_storage_ready():
                     raise ValueError('HOOK_HISTORY_STORAGE_CAPACITY_EXCEEDED')
@@ -616,13 +632,13 @@ class HookBusinessDispatcher:
                             except Exception:
                                 saved=self.voice._read(audio)
                                 if saved and saved['state']=='uncertain':
-                                    self._sync_cache.pop(key,None)
+                                    self._invalidate_history_cache(key)
                                     self.client.voice_result(rt.credentials,rt.account,binding,saved)
                                 raise
                     emit_progress(runner,job['native_msg_id'],'voice','done' if result['state']=='transcribed' else 'error' if result['state']=='failed' else 'waiting',None if result['state']=='transcribed' else 'voice_wait',occurred_at=result.get('completed_at'))
                     # Publishing a transcript changes the admitted history even
                     # when no additional WeChat callback arrives.
-                    self._sync_cache.pop(key,None)
+                    self._invalidate_history_cache(key)
                     receipt=self.client.voice_result(rt.credentials,rt.account,binding,result)
                     path=self.private_root/'voice-receipts'/scope.self_wxid/scope.account_epoch/f"{job['native_msg_id']}.json"
                     value={'attempt_digest':rules.digest(result),'receipt':receipt}
@@ -668,7 +684,7 @@ class HookBusinessDispatcher:
                         # Pre/post-send reconciliation can advance the receipt
                         # without an inbox callback (including cancelled sends).
                         # The next segment must obtain a fresh dispatch receipt.
-                        self._sync_cache.pop(key,None)
+                        self._invalidate_history_cache(key)
                     runner.api.inflight_flow_id=rt.active_flow_id
                     if result:return
                     # Do not reuse this local receipt for another batch either.
@@ -679,7 +695,7 @@ class HookBusinessDispatcher:
                     # Inventory can race an explicit operator retirement. Only
                     # this customer's new work stops; original sends stay in
                     # retained_sends and are reconciled on the next pass.
-                    self._sync_cache.pop(key,None)
+                    self._invalidate_history_cache(key)
                     continue
                 raise
             except (ValueError, HookLocalError) as exc:

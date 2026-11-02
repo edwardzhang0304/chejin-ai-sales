@@ -8,6 +8,7 @@ import re
 import time
 import uuid
 from . import telemetry
+from .performance_evidence import measurement
 
 
 def _error_code(error):
@@ -48,7 +49,8 @@ def timed_call(stage, operation, *, context=None, result_context=False):
     started_at = datetime.now(timezone.utc)
     started = time.perf_counter()
     try:
-        result = operation()
+        with measurement(stage, context, waiting='random_delay' if stage=='hook.send_delay' else 'operation_return'):
+            result = operation()
     except Exception as error:
         _record(stage, started_at, time.perf_counter() - started, context or {}, 'failed', _error_code(error))
         raise

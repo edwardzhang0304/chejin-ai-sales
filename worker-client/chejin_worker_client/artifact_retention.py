@@ -1,4 +1,5 @@
 from __future__ import annotations
+from .performance_evidence import cleanup_measurement
 
 import json
 import re
@@ -151,6 +152,7 @@ def record_artifact_outcome(artifact_dir: Path | None, result: dict) -> bool:
     return True
 
 
+@cleanup_measurement
 def cleanup_artifacts(
     *,
     app_dir: Path,

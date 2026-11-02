@@ -33,6 +33,7 @@ def _restore_frozen_worker_stdio() -> None:
         return
     mode = sys.argv[1]
     supported_modes = {
+        "--performance-sampler",
         "--omniauto-ocr-worker",
         "--vision-provider-worker",
         "--omniauto-vision-wechat-worker",

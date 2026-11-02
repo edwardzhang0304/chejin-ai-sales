@@ -84,6 +84,12 @@ class CancellableOmniAutoOcr:
                 getattr(subprocess, "CREATE_NO_WINDOW", 0)
             )
         self.process = subprocess.Popen(self.command(), **popen_kwargs)
+        try:
+            import psutil
+            from .performance_evidence import emit
+            emit('process', role='ocr', pid=self.process.pid, created=psutil.Process(self.process.pid).create_time())
+        except (OSError, psutil.Error):
+            pass
         return self.process
 
     def _exchange(self, payload: dict[str, Any]) -> dict[str, Any]:

@@ -2042,6 +2042,8 @@ class WorkerWindow(QMainWindow):
 
 def run_app() -> int:
     app = GuardedQApplication([])
+    from .performance_evidence import attach_ui
+    performance_timer = attach_ui(app)
     startup_update = take_update_startup_context()
     is_post_update = bool(
         startup_update and startup_update.get("mode") == "updated"

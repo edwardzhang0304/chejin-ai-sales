@@ -41,6 +41,8 @@ class HookHistorySynchronizer:
             lower='0';pages=[];seen=0
             while lower!=upper:
                 rows=query('page',lower,upper)['data']
+                from .performance_evidence import emit
+                emit('counter', name='history_rows', count=len(rows))
                 pages.append(rows);seen+=len(rows);lower=rows[-1]['localId']
                 if seen>count:raise ValueError('HOOK_HISTORY_BOUND_CHANGED')
             if seen!=count:raise ValueError('HOOK_HISTORY_PAGINATION_INCOMPLETE')

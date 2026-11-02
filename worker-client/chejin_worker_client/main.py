@@ -129,6 +129,9 @@ def run_bundled_omniauto_vision_wechat_worker(argv: list[str]) -> int:
 
 
 def _main(resources: ExitStack) -> int:
+    if len(sys.argv) >= 2 and sys.argv[1] == "--performance-sampler":
+        from .performance_sampler import main as sampler_main
+        return sampler_main(sys.argv[2:])
     if len(sys.argv) >= 2 and sys.argv[1] == "--omniauto-sidecar":
         return run_bundled_omniauto_sidecar(sys.argv[2:])
     if len(sys.argv) >= 2 and sys.argv[1] == "--vision-provider-worker":
@@ -276,6 +279,9 @@ def _main(resources: ExitStack) -> int:
     )
 
     install_runtime_supervision()
+    from .performance_evidence import install as install_performance
+    from .config import CONFIG
+    performance = install_performance(CONFIG.app_dir) if packaged_transport() == 'hook' else None
     try:
         if os.environ.get("CHEJIN_WORKER_UI_MODE") == "pyside":
             from .ui import run_app
@@ -284,8 +290,10 @@ def _main(resources: ExitStack) -> int:
 
         exit_code = run_app()
         mark_runtime_clean_exit(exit_code)
+        if performance:performance.close(clean=exit_code == 0)
         return exit_code
     finally:
+        if performance and not performance.stop.is_set():performance.close(clean=False)
         from .update_data_access import clear_update_writer
         clear_update_writer()
 

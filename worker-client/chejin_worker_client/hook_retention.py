@@ -1,4 +1,5 @@
 """Retire only old acknowledged raw bytes; preserve pending/unknown journals."""
+from .performance_evidence import cleanup_measurement
 import hashlib,json,re
 from datetime import datetime,timedelta,timezone
 from pathlib import Path
@@ -10,6 +11,7 @@ from .hook_delivery_lifecycle import terminal_delivery
 FIELDS=('receive_seq','event_uuid','self_wxid','account_epoch','process_generation','raw_digest','retired_at')
 
 
+@cleanup_measurement
 def retire_inbox(private_root,*,retention_days,now=None,limit=100):
     if type(retention_days) is not int or retention_days<1 or not 1<=limit<=1000:raise ValueError('HOOK_RETENTION_POLICY_INVALID')
     now=now or datetime.now(timezone.utc);cutoff=now-timedelta(days=retention_days)
@@ -75,6 +77,7 @@ def retire_inbox(private_root,*,retention_days,now=None,limit=100):
     return {'retired_rows':count,'released_bytes':released,'pending_records_deleted':False}
 
 
+@cleanup_measurement
 def retire_c1_roi(private_root,*,retention_days,now=None,artifact_root=None):
     now=now or datetime.now(timezone.utc);root=Path(private_root);cutoff=(now-timedelta(days=retention_days)).timestamp();removed=0
     areas=[root/'roi']
@@ -93,6 +96,7 @@ def retire_c1_roi(private_root,*,retention_days,now=None,artifact_root=None):
     return removed
 
 
+@cleanup_measurement
 def retire_history_artifacts(private_root, *, retention_days, now=None, limit=100, settled_send_root=None):
     """Retire acknowledged raw files, keeping receipts and exact file hashes.
 

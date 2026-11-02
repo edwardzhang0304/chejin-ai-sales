@@ -135,6 +135,9 @@ class HookWorkerServices:
         emit_progress(runner,'startup','environment')
         try:
             prepared = self.connection.prepare(captured, state)
+            from .performance_evidence import register_process
+            if prepared is not None:
+                register_process('wechat', prepared.process.pid, prepared.process.started_at)
         except ApiError as exc:
             if runner._handle_binding_invalid(exc, binding):
                 return
@@ -325,17 +328,22 @@ class HookWorkerServices:
 
     def intake_loop(self, stop: threading.Event, entered: Callable[[str], None]) -> None:
         entered("hook_intake")
+        from .performance_evidence import emit
         while not stop.is_set():
+            emit('loop', name='intake')
             prepared = self.connection.prepared
             if prepared is not None:
                 for _ in range(self.projection_batch_size):
                     if stop.is_set() or self.projection.project_next(prepared.registration.scope) is None:
                         break
+            emit('loop', name='intake', waiting='interval')
             stop.wait(self.intake_interval_seconds)
 
     def business_loop(self, runner, entered) -> None:
         entered('hook_business')
+        from .performance_evidence import emit
         while not runner.stop_event.is_set():
+            emit('loop', name='business')
             binding = runner.binding
             if binding is not None:
                 try:
@@ -372,6 +380,7 @@ class HookWorkerServices:
                     code=getattr(exc,'code',None)
                     if not isinstance(code,str) or not code.startswith('HOOK_'):raise
                     self._fault(runner,code,local_error=exc)
+            emit('loop', name='business', waiting='interval')
             runner.stop_event.wait(self.dispatcher.interval_seconds)
 
     def fault_recovery_check(self) -> dict:

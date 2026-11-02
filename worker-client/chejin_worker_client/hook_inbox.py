@@ -74,6 +74,8 @@ class NativeInbox:
         started = time.perf_counter()
         result = self._persist(raw, scope)
         duration_ms = max(0, round((time.perf_counter() - started) * 1000))
+        from .performance_evidence import emit
+        emit('counter', name='received_packages', count=1, bytes=len(raw), duration_ms=duration_ms)
         try:
             storage.append_log('INFO', 'hook_callback_saved', '原生消息已保存。',
                 metadata={'event_uuid': result['event_uuid'], 'receive_seq': result['receive_seq'],

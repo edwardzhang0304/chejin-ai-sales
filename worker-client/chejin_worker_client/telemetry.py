@@ -349,6 +349,11 @@ def enqueue_stage_event(
 ) -> bool:
     """Persist telemetry best-effort. This function never raises into business code."""
 
+    from .performance_evidence import emit
+    from .performance_contract import correlations
+    if _valid_event(event):
+        emit('stage', name=event.get('stage_name'), status=event.get('status'),
+             duration_ms=event.get('execution_duration_ms'), **correlations(event))
     if not CONFIG.observability_enabled or not _valid_event(event):
         return False
     try:

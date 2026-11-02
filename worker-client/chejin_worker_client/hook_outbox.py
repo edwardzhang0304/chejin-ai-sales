@@ -1,4 +1,5 @@
 """Durable delivery of authorized native observations, never physical sends."""
+from .performance_evidence import emit
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 import hashlib
@@ -92,9 +93,12 @@ class HookDeliveryOutbox:
                 try:
                     conn.execute('BEGIN IMMEDIATE')
                     self._schema(conn)
+                    before = conn.total_changes
                     for seq in sequences[offset:offset+128]:
                         result.append(self._enqueue_projection(conn, seq, scope, instant, allowed_native_ids))
+                    inserted = conn.total_changes-before
                     conn.commit()
+                    emit('counter', name='outbox_created', count=inserted)
                 except Exception:
                     conn.rollback()
                     raise
@@ -185,6 +189,7 @@ class HookDeliveryOutbox:
                 conn.execute("UPDATE hook_delivery_outbox SET status='attempting',lease_id=?,lease_expires_at=?,attempt_count=?,updated_at=? WHERE event_uuid=?",
                     (lease, (instant + timedelta(seconds=lease_seconds)).isoformat(), claim.attempt_count, instant.isoformat(), claim.event_uuid))
                 conn.commit()
+                emit('counter', name='outbox_attempts', count=1)
                 return claim
             except Exception:
                 conn.rollback()
@@ -202,8 +207,11 @@ class HookDeliveryOutbox:
                 if row is None or row['payload_digest'] != claim.payload_digest:
                     raise RuntimeError("HOOK_OUTBOX_CLAIM_MISMATCH")
                 if row['status'] == 'stored' and row['receipt_json'] == encoded:
+                    before_coverage = conn.total_changes
                     self._close_covered(conn, row, receipt, dispatched, instant)
+                    covered = conn.total_changes-before_coverage
                     conn.commit()
+                    emit('counter', name='outbox_covered', count=covered)
                     return True
                 if row['status'] != 'attempting' or row['lease_id'] != claim.lease_id:
                     conn.rollback()
@@ -213,8 +221,12 @@ class HookDeliveryOutbox:
                     raise RuntimeError("HOOK_OUTBOX_CAPACITY_EXCEEDED")
                 conn.execute("UPDATE hook_delivery_outbox SET status='stored',receipt_json=?,lease_id=NULL,lease_expires_at=NULL,last_error=NULL,updated_at=? WHERE event_uuid=?",
                     (encoded, instant, claim.event_uuid))
+                before_coverage = conn.total_changes
                 self._close_covered(conn, row, receipt, dispatched, instant)
+                covered = conn.total_changes-before_coverage
                 conn.commit()
+                emit('counter', name='outbox_receipts_stored', count=1)
+                emit('counter', name='outbox_covered', count=covered)
                 return True
             except Exception:
                 conn.rollback()

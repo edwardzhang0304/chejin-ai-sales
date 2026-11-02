@@ -404,7 +404,11 @@ class HookGateway:
             raise HookLocalError("HOOK_HISTORY_CATALOG_CHANGED")
         lease.raise_if_lost()
         process_check(process)
+        query_started = time.monotonic()
         response = self._response("QueryDB", query.payload())
+        from .performance_evidence import emit
+        emit('history', name='history_reads', count=1, bytes=len(response.raw_body),
+             duration_ms=(time.monotonic()-query_started)*1000)
         after = HookHistoryCatalog.capture(catalog.scope, self._post("GetDBHandleAndPath", {}))
         if after != catalog:
             raise HookLocalError("HOOK_HISTORY_CATALOG_CHANGED")

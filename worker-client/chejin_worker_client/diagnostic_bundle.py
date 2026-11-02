@@ -649,7 +649,7 @@ class Collector:
                             }:
                                 continue
                             if folder == artifacts(self.root) and entry.name in {
-                                "tasks", "runtime", "incidents", "ui_failures", "wechat_c2",
+                                "tasks", "runtime", "incidents", "ui_failures", "wechat_c2", "performance",
                             }:
                                 continue
                             if entry.name in {"exports", "download", "staging", "backup", "control", "failed-program", "roi"}:
@@ -766,6 +766,9 @@ class Collector:
                     self.emit(25 + int(index * 65 / len(sources)), "收集现场和关联凭证")
                     self.tree(folder, prefix, archive, update_only=updates, allowed_root=boundary, ocr=ocr,
                               task_priority=False if prefix == "tasks" else None)
+                    if prefix == "receipts":
+                        from .performance_export import collect as collect_performance
+                        collect_performance(self, archive)
                 issues = [e for e in self.entries if e["status"] in {"read_failed", "omitted"}]
                 manifest = {"schema_version": 1, "exported_at": datetime.now(timezone.utc).isoformat(),
                             "build": build_identity(),
@@ -798,7 +801,13 @@ class Collector:
                     + ("部分材料未收集，请先查看收集清单中的缺项。\n" if issues else "已完成本次收集，请查看收集清单。\n")
                     + "state 内的任务、消息及动作编号可用于查询后台记录。\n"
                     + "本包含本机现场，仅用于授权排查，不应提交公开仓库。\n").encode("utf-8"))
-            os.replace(temporary, self.destination)
+            # Publish the completed ZIP exclusively: never replace an earlier
+            # diagnostic package, including when two exports choose one name.
+            # The temporary file is in this same destination directory.
+            if os.name == 'nt':
+                os.rename(temporary, self.destination)  # Windows refuses existing destinations.
+            else:
+                os.link(temporary, self.destination)
             self.emit(100, "导出完成" if not issues else "导出完成，部分证据缺失")
             return self.destination
         finally:

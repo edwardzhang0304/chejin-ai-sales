@@ -337,6 +337,8 @@ class WorkerWebWindow(QMainWindow):
         self.channel.registerObject("chejinBridge", self.bridge)
 
         self.view = QWebEngineView(self)
+        from .performance_evidence import attach_renderer
+        attach_renderer(self.view.page())
         from .window_render_evidence import WindowRenderEvidence
         self._render_evidence = WindowRenderEvidence(CONFIG.app_dir)
         QGuiApplication.instance().aboutToQuit.connect(self._render_evidence.close)
@@ -1268,6 +1270,8 @@ class WorkerWebWindow(QMainWindow):
 
 def run_app() -> int:
     app = GuardedQApplication(sys.argv)
+    from .performance_evidence import attach_ui
+    performance_timer = attach_ui(app)
     app.setApplicationName("车金 Worker 客户端")
     startup_update = take_update_startup_context()
     is_post_update = bool(

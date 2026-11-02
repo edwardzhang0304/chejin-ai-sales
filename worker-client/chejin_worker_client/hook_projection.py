@@ -83,6 +83,8 @@ class NativeProjectionStore:
                 conn.execute("INSERT INTO hook_observation_projection VALUES (?,?,?,?,?)",
                     (row["receive_seq"], PROJECTION_VERSION, hashlib.sha256(encoded.encode("utf-8")).hexdigest(), encoded, utc_now_iso()))
                 conn.commit()
+                from .performance_evidence import emit
+                emit('counter', name='projected_packages', count=1, rows=len(payload['observations']), status=payload['status'])
                 return payload
             except Exception:
                 conn.rollback()
