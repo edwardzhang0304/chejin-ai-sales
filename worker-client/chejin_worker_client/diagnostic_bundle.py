@@ -116,6 +116,7 @@ class Collector:
         self.latest_logs = []
         self.priority_tasks = set()
         self.priority_voices = []
+        self.priority_incident_paths = set()
         self.tree_usage = {}
         self.source_deadline = self.deadline
         self.source_end = MAX_FILES
@@ -590,6 +591,70 @@ class Collector:
             except ValueError:
                 self.record('send_diagnostics', 'omitted', reason='invalid_send_identifier')
 
+    def priority_incidents(self, archive):
+        """Current/related fault facts only, before optional performance detail.
+
+        Resolve bounded authoritative IDs, not the whole incident directory.
+        Historical incident traversal keeps its existing separate source budget.
+        """
+        selected = []
+        roots = tuple(zip(incident_roots(self.root), ('current', 'legacy')))
+
+        def select(value):
+            if not isinstance(value, str) or not value.startswith('INC-') or len(value) > 128 or not all(c.isalnum() or c in '-_' for c in value):
+                self.record('priority_incidents', 'omitted', reason='invalid_incident_reference')
+            elif value not in selected:
+                if len(selected) < 32:
+                    selected.append(value)
+                else:
+                    self.record('priority_incidents/'+value, 'omitted', reason='priority_selection_limit')
+
+        for root, _ in roots:
+            latest = root/'latest.json'
+            if not latest.exists():
+                continue
+            if not self.source_allowed(latest):
+                self.record('priority_incidents/latest', 'omitted', reason='source_boundary')
+                continue
+            try:
+                with latest.open('rb') as stream:
+                    raw = stream.read(65537)
+                if len(raw) > 65536:
+                    raise ValueError('latest_index_size')
+                select(json.loads(raw)['incident_id'])
+            except (OSError, ValueError, KeyError, TypeError) as exc:
+                self.record('priority_incidents/latest', 'read_failed', error_type=type(exc).__name__)
+        for number, row in enumerate(self.latest_logs):
+            if number >= 50 and row.get('task_id') not in self.priority_tasks:
+                continue
+            metadata = row.get('metadata')
+            if isinstance(metadata, dict) and metadata.get('incident_id'):
+                select(metadata['incident_id'])
+
+        previous = self.source_end, self.source_deadline
+        self.source_end = min(MAX_FILES, self.visited + 400)
+        self.source_deadline = min(self.deadline, time.monotonic() + 4)
+        try:
+            for incident in selected:
+                found = False
+                for root, label in roots:
+                    for suffix in ('.zip', '.incident.json'):
+                        path = root/(incident + suffix)
+                        if not path.exists():
+                            continue
+                        found = True
+                        member = 'incidents/'+label+'/'+path.name
+                        if self.limited():
+                            self.record(member, 'omitted', reason='priority_time_or_file_limit')
+                            continue
+                        self.visited += 1
+                        self.file(path, member, archive, allowed_root=self.root)
+                        self.priority_incident_paths.add(path)
+                if not found:
+                    self.record('priority_incidents/'+incident, 'read_failed', reason='referenced_incident_unavailable_or_pending')
+        finally:
+            self.source_end, self.source_deadline = previous
+
     def tree(self, folder, prefix, archive, *, update_only=False, allowed_root=None, ocr=False, task_priority=None):
         if not folder.exists():
             self.record(prefix, "absent")
@@ -659,6 +724,8 @@ class Collector:
                             walk(Path(entry.path), rel, depth+1)
                         elif entry.is_file(follow_symlinks=False):
                             path = Path(entry.path)
+                            if path in self.priority_incident_paths:
+                                continue
                             if path.resolve() == self.destination.resolve() or path.name.endswith(".tmp"):
                                 continue
                             if update_only and path.name not in UPDATE_DIAGNOSTICS:
@@ -739,6 +806,7 @@ class Collector:
                     "telemetry_stage_events", "telemetry_process_links",
                     "telemetry_stage_attempts", "telemetry_authority_snapshots"))
                 self.priority_recovery(archive)
+                self.priority_incidents(archive)
                 self.file(self.root/"storage-maintenance.json", "logs/storage-maintenance.json",
                           archive, allowed_root=self.root)
                 # A failed task diagnostic may exist only in this bounded
