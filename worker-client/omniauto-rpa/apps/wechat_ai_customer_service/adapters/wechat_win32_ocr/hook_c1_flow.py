@@ -15,7 +15,8 @@ from pathlib import Path
 from typing import Any
 from ..add_friend_contract import validate_add_friend_entry_click_contract
 from ..add_friend_ocr import normalize_shortcode_caret
-from .c1_layout import MAIN_REGIONS, main_regions, form_regions, valid_rect, main_key
+from .c1_layout import (MAIN_REGIONS, main_regions, form_regions, valid_rect, main_key,
+                        main_key_changes, layout_comparison)
 
 
 class FlowStop(RuntimeError):
@@ -419,6 +420,8 @@ def run_flow(ui, *, phone: str, verify_message: str, remark_name: str,
             report['cleanup_control_match'] = ui.cleanup_control_match
         if getattr(ui, 'guard_failures', None):
             report['guard_failures'] = list(ui.guard_failures)
+        if getattr(ui, 'layout_reuse', None):
+            report['layout_reuse'] = ui.layout_reuse
         if getattr(ui, 'evidence_state', None) is not None:
             report['evidence'] = ui.evidence_state
         recorder = getattr(ui, 'record_outcome_diagnostic', None)
@@ -516,6 +519,7 @@ class NativeUI:
         snapshot is sampled afterwards and may already reflect a changed window.
         No titles, chat text, process paths, screenshots or Hook calls are read.
         """
+        cache_key = getattr(self, 'search_control_cache', {}).get('key')
         if (condition in {'main_window_missing','main_geometry_changed','main_process_changed','main_dpi_changed'}
                 or (self.current == self.main and condition in {'capture_geometry_changed','frame_geometry_changed'})):
             cache = getattr(self, 'search_control_cache', None)
@@ -531,6 +535,7 @@ class NativeUI:
                          'time_utc': time.time(), 'observed': observed or {},
                          'expected': {'main_hwnd': self.main, 'current_hwnd': self.current,
                                       'pid': self.pid, 'main_geometry': dict(self.initial),
+                                      'startup_layout_key': cache_key,
                                       'dpi': getattr(self, 'dpi', None)},
                          'snapshot': {}, 'read_errors': []}
                 failures.append(event)
@@ -610,12 +615,8 @@ class NativeUI:
                 cache = self.search_control_cache
                 geometry = self.ops.get_window_client_geometry(self.main)
                 key = main_key(self.main, self.pid, geometry, self.dpi)
-                regions = cache.get('regions', {})
-                if (cache.get('key') != key or set(regions) != set(MAIN_REGIONS)
-                        or any(not valid_rect(r, w, h) for r in regions.values())):
-                    cache.clear()
-                    raise FlowStop('SEARCH_STARTUP_LAYOUT_INVALIDATED')
-                return tuple(regions[label])
+                self._check_search_cache(key, w, h)
+                return tuple(cache['regions'][label])
             return main_regions(w, h)[label]  # Startup calibration / standalone replay.
         if label == 'search_empty':return tuple(self.search_empty_bounds)
         if label.startswith('fields') or label == 'footer':
@@ -624,6 +625,34 @@ class NativeUI:
             key = 'review' if label == 'fields_filled' else ('fields' if label.startswith('fields') else 'footer')
             return self._invite_regions[key]
         raise ValueError(label)
+
+    def _check_search_cache(self, key, width, height, *, check_regions=True):
+        cache = self.search_control_cache
+        regions = cache.get('regions', {})
+        reasons = []
+        comparison = layout_comparison(cache.get('key'), key)
+        if not comparison['accepted']:
+            reasons.append('key_mismatch')
+        if not valid_rect(cache.get('bounds'), width, height):
+            reasons.append('search_bounds_missing_or_invalid')
+        if check_regions and (set(regions) != set(MAIN_REGIONS)
+                              or any(not valid_rect(r, width, height) for r in regions.values())):
+            reasons.append('regions_missing_or_invalid')
+        if not reasons:
+            # Retain the original map: successive small changes cannot ratchet
+            # the tolerance. Coordinates are projected from the current client.
+            self.layout_reuse = {**comparison, 'bounds': cache['bounds'],
+                                 'screenshot_calls_added': 0, 'ocr_calls_added': 0}
+            return
+        # Snapshot before clearing: the same failure evidence is exported with
+        # the original task outcome, even when capture has not yet started.
+        observed = {**comparison, 'reasons': reasons, 'expected_key': cache.get('key'),
+                    'observed_key': key, 'changed_fields': main_key_changes(cache.get('key'), key),
+                    'cached_bounds': cache.get('bounds'), 'cached_regions': dict(regions),
+                    'client_size': [width, height]}
+        cache.clear()
+        self._guard_stop('startup_search_layout_invalidated',
+                         code='SEARCH_STARTUP_LAYOUT_INVALIDATED', observed=observed)
 
     def visible_wechat_windows(self):
         gui = self.ops.win32gui
@@ -959,16 +988,12 @@ class NativeUI:
                'dpi': getattr(self, 'dpi', None)}
         if cache is None:
             cache = self.search_control_cache = {}
+        if getattr(self, 'require_startup_search_cache', False):
+            self._check_search_cache(key, frame.image.width, frame.image.height, check_regions=False)
+            return cache.get('bounds')
         if cache.get('key') != key:
             cache.clear()
-            if getattr(self, 'require_startup_search_cache', False):
-                raise FlowStop('SEARCH_STARTUP_LAYOUT_INVALIDATED')
             cache['key'] = key
-        if getattr(self, 'require_startup_search_cache', False):
-            bounds = cache.get('bounds')
-            if not valid_rect(bounds, frame.image.width, frame.image.height):
-                cache.clear()
-                raise FlowStop('SEARCH_STARTUP_LAYOUT_INVALIDATED')
         return cache.get('bounds')
 
     def lookup_target(self, frame, query):
