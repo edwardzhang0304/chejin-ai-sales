@@ -2,6 +2,7 @@
 
 import json
 from pathlib import Path
+from .performance_contract import export_order
 
 
 def collect(collector, archive):
@@ -38,6 +39,7 @@ def collect(collector, archive):
             or not all(isinstance(e.get("session"), str) for e in index["events"])
         ):
             raise ValueError("index_schema")
+        segments = export_order(index)
     except (OSError, ValueError, KeyError, TypeError) as exc:
         collector.record(
             "performance",
@@ -58,13 +60,6 @@ def collect(collector, archive):
             "performance", "read_failed", reason="sampler_reported_capture_gap"
         )
     sessions = index.get("sessions", {})
-    anomalous = {e.get("session") for e in index.get("events", [])}
-    # Prior abnormal launches survive rapid restarts. Then newest tail/startup.
-    segments = sorted(
-        segments,
-        key=lambda m: (m.get("session") in anomalous, m.get("last", 0)),
-        reverse=True,
-    )
     for meta in segments:
         name = meta.get("name", "")
         if (
@@ -103,6 +98,14 @@ def collect(collector, archive):
             segments=index["retired"],
             last_range=index.get("retired_last_range"),
         )
+    for kind in ("events", "sessions"):
+        if index.get("retired_" + kind):
+            collector.record(
+                "performance/" + kind,
+                "retired",
+                reason="index_lifecycle_policy",
+                count=index["retired_" + kind],
+            )
     for gap in index.get("gaps", []):
         collector.record("performance", "omitted", reason="capture_gap", details=gap)
     for sid, session in sessions.items():

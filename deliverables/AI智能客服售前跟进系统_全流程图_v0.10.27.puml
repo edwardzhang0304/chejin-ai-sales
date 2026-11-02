@@ -587,3 +587,33 @@ endif
 :释放更新状态锁；Worker退出时停止维护线程;
 stop
 @enduml
+
+
+@startuml performance_evidence_pe01
+!pragma layout smetana
+skinparam defaultFontName "PingFang SC"
+title PE-01 长时间运行性能取证（2026-11-02 源码候选，复审及完整验收待完成）
+start
+:Worker启动，生成本轮启动ID
+保留上一轮记录;
+:启动唯一轻量独立采样进程
+低频采样资源，接收统一任务/阶段/积压快照;
+if (发现持续性能异常?) then (是)
+  :合并性能事件，保护可用前后窗口
+关联任务与有限线程现场，缺项记原因;
+else (否)
+  :限量滚动记录普通样本;
+endif
+:异步分段落盘
+容量/写盘/采样失败留下缺口，不改变业务状态;
+:Worker退出或重启
+原会话记录保留，采样进程有界退出
+未确认正常退出明确标注;
+:销售打开桌面“车金故障诊断”
+无需Worker响应，无需命令或脚本;
+:正式Collector优先收旧异常会话与重启前后记录
+关联原凭证，共用总预算与脱敏规则;
+:生成一个ZIP及缺件/省略清单
+不补造旧版本没有的性能数据;
+stop
+@enduml

@@ -21,11 +21,19 @@ class Resources:
         self.previous = {}
 
     def sample(self, role, pid, created, mono):
-        result = {"pid": pid, "created": created, "unavailable": {}}
+        result = {
+            "pid": pid,
+            "created": created,
+            "role": role,
+            "identity_valid": False,
+            "unavailable": {},
+        }
         try:
             process = psutil.Process(pid)
             if process.create_time() != created:
                 return {**result, "unavailable": {"process": "pid_reused"}}
+
+            result["identity_valid"] = True
 
             def read(name, fn):
                 try:
@@ -283,6 +291,7 @@ def main(argv=None):
             if request:
                 print(json.dumps({"stack_event": request}), flush=True)
             sample["anomalies"] = reasons
+            sample["anomaly_details"] = detector.details
             sample["capture_seconds"] = time.monotonic() - started
             sample["ipc_invalid"] = inbox["bad"]
             for reason, count in (

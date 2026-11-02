@@ -30,7 +30,7 @@ def emit(kind, **values):
 def measurement(name, context=None, *, waiting=None):
     # Diagnostic invocation id is separate from server-issued task/Flow ids.
     if _ACTIVE is None:
-        yield
+        yield {}
         return
     invocation = uuid.uuid4().hex
     started = time.monotonic()
@@ -41,11 +41,12 @@ def measurement(name, context=None, *, waiting=None):
         status="running",
         measurement_id=invocation,
         waiting=waiting,
-        **fields
+        **fields,
     )
     status = "failed"
+    metrics = {}
     try:
-        yield
+        yield metrics
         status = "completed"
     finally:
         emit(
@@ -54,8 +55,34 @@ def measurement(name, context=None, *, waiting=None):
             status=status,
             measurement_id=invocation,
             duration_ms=round((time.monotonic() - started) * 1000),
-            **fields
+            **{
+                k: v
+                for k, v in metrics.items()
+                if k in {"rows", "bytes", "validated_rows"}
+                and type(v) is int
+                and v >= 0
+            },
+            **fields,
         )
+
+
+def measured_rows(metrics, rows, fields):
+    """Count already-fetched payloads only; no extra DB reads or evidence bodies."""
+    if _ACTIVE is None:
+        return
+    try:
+        metrics["rows"] = len(rows)
+        metrics["bytes"] = sum(
+            len(v if isinstance(v, bytes) else v.encode("utf-8"))
+            for row in rows
+            for key in fields
+            if isinstance((v := row[key]), (bytes, str))
+        )
+        metrics["validated_rows"] = 0
+    except Exception:
+        # A diagnostic encoding/count failure must not replace a business
+        # validation result; omit unknown metrics and record the evidence gap.
+        emit("counter", name="local_scan_metrics_unavailable", count=1)
 
 
 def cleanup_measurement(operation):
@@ -195,6 +222,7 @@ class Monitor:
                 "process_run_id",
                 "conversation_id",
                 "task_id",
+                "binding_id",
                 "flow_id",
                 "batch_id",
                 "action_id",
@@ -203,6 +231,7 @@ class Monitor:
                 "created",
                 "role",
                 "rows",
+                "validated_rows",
                 "bytes",
                 "duration_ms",
                 "delta",

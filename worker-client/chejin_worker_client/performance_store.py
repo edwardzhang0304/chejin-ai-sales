@@ -5,7 +5,7 @@ import os
 from pathlib import Path
 import time
 
-from .performance_contract import POLICY
+from .performance_contract import POLICY, expired, protected, window_overlaps
 
 
 def encoded(value):
@@ -70,6 +70,7 @@ class Store:
                 # Do not overwrite unindexed evidence. Fail closed for capture,
                 # while the business process remains unaffected.
                 raise ValueError("performance_index_unreadable")
+        self.index["policy"] = self.policy.payload()
         indexed = {m["name"] for m in self.index["segments"]}
         # One startup-only reconciliation, bounded even if the folder is corrupt.
         for number, path in enumerate(self.root.iterdir()):
@@ -108,49 +109,72 @@ class Store:
             )
 
     def save_index(self):
+        clock = self.index.get("retention_clock", {})
+        self._compact_index(clock.get("wall", time.time()), clock.get("mono"))
+        limit = min(256 * 1024, self.policy.budget_bytes // 8)
         data = encoded(self.index)
-        if len(data) > min(256 * 1024, self.policy.budget_bytes // 8):
+        if len(data) > limit - min(8192, limit // 4):
+            self._compact_index(
+                clock.get("wall", time.time()), clock.get("mono"), capacity=True
+            )
+            data = encoded(self.index)
+        if len(data) > limit:
             raise ValueError("performance_index_capacity")
         temp = self.root / "index.tmp"
         temp.write_bytes(data)
         os.replace(temp, self.index_path)
 
     def _expired(self, meta, now, mono=None):
-        if (
-            meta.get("session") == self.session
-            and mono is not None
-            and "last_mono" in meta
-        ):
-            return mono - meta["last_mono"] >= self.policy.retention_seconds
-        # An earlier launch cannot be aged reliably across a detected wall-clock
-        # correction. Keep capacity-based ordinary retirement, not guessed age.
-        if self.index.get("retention_clock_uncertain"):
-            return False
-        return now - meta["last"] >= self.policy.retention_seconds
+        return expired(
+            meta,
+            session=self.session,
+            now=now,
+            mono=mono,
+            policy=self.policy,
+            clock_uncertain=self.index.get("retention_clock_uncertain", False),
+        )
 
     def _protected(self, meta, now, mono=None):
-        for event in self.index["events"]:
-            if event["session"] != meta["session"]:
-                continue
-            if event.get("end") is not None and self._expired(event, now, mono):
-                continue
-            # Within a launch, use monotonic boundaries even after clock sync.
-            suffix = (
-                "_mono"
-                if all(
-                    k + "_mono" in meta and k + "_mono" in event
-                    for k in ("first", "last")
-                )
-                else ""
-            )
-            if (
-                meta["last" + suffix]
-                >= event["first" + suffix] - self.policy.window_seconds
-                and meta["first" + suffix]
-                <= event["last" + suffix] + self.policy.window_seconds
+        return protected(
+            meta,
+            self.index,
+            session=self.session,
+            now=now,
+            mono=mono,
+            policy=self.policy,
+        )
+
+    def _compact_index(self, now, mono=None, *, capacity=False):
+        # Retire only concluded, expired events with no retained window. Never
+        # discard an unresolved event or metadata needed to explain a segment.
+        events = self.index["events"]
+        for event in list(events):
+            if event.get("end") is None or (
+                not capacity and not self._expired(event, now, mono)
             ):
-                return True
-        return False
+                continue
+            if any(
+                window_overlaps(m, event, self.policy) for m in self.index["segments"]
+            ):
+                continue
+            events.remove(event)
+            self.index["retired_events"] = self.index.get("retired_events", 0) + 1
+            self.index["retired_event_last_range"] = [event["first"], event["last"]]
+        referenced = {m["session"] for m in self.index["segments"]} | {
+            e["session"] for e in events
+        }
+        for sid, meta in list(self.index["sessions"].items()):
+            if (
+                sid == self.session
+                or sid in referenced
+                or meta.get("status") == "running"
+            ):
+                continue
+            # A session with no retained samples/events is only an empty index
+            # shell after policy retirement; its aggregate remains explicit.
+            del self.index["sessions"][sid]
+            self.index["retired_sessions"] = self.index.get("retired_sessions", 0) + 1
+            self.index["retired_session_last_end"] = meta.get("end")
 
     def append(self, value, now=None):
         now = time.time() if now is None else now
@@ -174,6 +198,11 @@ class Store:
                 self.index["retention_clock_uncertain"] = True
         if isinstance(mono, (float, int)):
             self.last_clock = (now, mono)
+        self.index["retention_clock"] = {
+            "session": self.session,
+            "wall": now,
+            "mono": mono,
+        }
         for m in list(metas):
             if used + len(data) <= p.budget_bytes - reserve and not self._expired(
                 m, now, mono
@@ -187,6 +216,11 @@ class Store:
             metas.remove(m)
             self.index["retired"] += 1
             self.index["retired_last_range"] = [m["first"], m["last"]]
+        self._compact_index(now, mono)
+        if self.index.get("event_capture_degraded"):
+            self.gap("new_sample_omitted_without_event_protection")
+            self.save_index()
+            return False
         if used + len(data) > p.budget_bytes - reserve:
             self.gap("protected_or_active_capacity_exhausted")
             self.save_index()
@@ -233,10 +267,23 @@ class Store:
             ),
             None,
         )
+        if not reasons and self.index.get("event_capture_degraded"):
+            self._compact_index(now, mono, capacity=True)
+            limit = min(256 * 1024, self.policy.budget_bytes // 8)
+            if len(encoded(self.index)) <= limit - min(8192, limit // 4):
+                self.index.pop("event_capture_degraded", None)
+                self.gap("event_capture_resumed")
         if reasons:
             if active is None:
+                self._compact_index(now, mono, capacity=True)
+                limit = min(256 * 1024, self.policy.budget_bytes // 8)
+                if len(encoded(self.index)) > limit - min(8192, limit // 4):
+                    self.gap("protected_index_capacity_exhausted")
+                    self.index["event_capture_degraded"] = True
+                    return None
+                self.index.pop("event_capture_degraded", None)
                 active = {
-                    "id": f"{self.session}-{len(events)+1}",
+                    "id": f"{self.session}-{self.index.get('event_serial',0)+1}",
                     "session": self.session,
                     "first": now,
                     "last": now,
@@ -248,6 +295,7 @@ class Store:
                     "stacks_received": 0,
                     "stack_status": "not_requested",
                 }
+                self.index["event_serial"] = self.index.get("event_serial", 0) + 1
                 events.append(active)
             active["last"] = now
             active["last_mono"] = mono
