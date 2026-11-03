@@ -93,6 +93,9 @@ def test_human_reply_unblocks_later_customer_through_actual_pipeline(
         with pytest.raises(HookLocalError,match='QUARANTINED'):gateway.login_status(prepared.process)
         manager.close()
         server.current_process=replace(prepared.process,started_at=prepared.process.started_at+1)
+        # The simulator explicitly replaced this process. Supply that exact OS
+        # observation; never weaken the production process-generation check.
+        monkeypatch.setattr(gateway,'generation_exited',lambda generation: generation==old_generation and server.current_process.generation!=generation)
         manager,credentials,prepared=connection_factory(w)
         runtime=HookFormalRuntime(runtime.client,credentials,gateway,prepared,tmp_path/'runtime')
         assert runtime.sync(binding)['reply_ownership']['owner']=='human'
@@ -142,7 +145,7 @@ def test_human_reply_unblocks_later_customer_through_actual_pipeline(
     root=str(Path(__file__).resolve().parents[2]/'worker-client/omniauto-rpa')
     monkeypatch.setenv('C3_OMNIAUTO_ROOT',root);monkeypatch.setattr(get_settings(),'c3_omniauto_root',root)
     monkeypatch.setattr(c3_service,'get_ai_engine_adapter',RealOmniAutoAIEngineAdapter)
-    recovery_provider_factory('之前聊过购车的事情，您最近还有想了解的吗？可以按您的节奏慢慢聊。')
+    recovery_provider_factory('之前聊过购车的事情，您最近还有想了解的吗？可以按您的节奏慢慢聊。',catalog_claim_kind='non_inventory')
     recall=runtime.sync(binding);assert recall['message_batch'],recall
     recalled=drive_reply(runtime,binding,recall['message_batch']['batch_id'])
     assert len(recalled['sends'])==1 and recalled['sends'][0]['local_send_observed'],recalled
@@ -151,7 +154,7 @@ def test_human_reply_unblocks_later_customer_through_actual_pipeline(
     append(1,0,'现在想先了解十五万元左右的车型，暂时不预约看车。')
     incoming=runtime.sync(binding);assert incoming['history_ready'] and incoming['message_batch']
     bid=incoming['message_batch']['batch_id']
-    requests=recovery_provider_factory('好的，先按十五万元左右的预算了解，您更喜欢轿车还是SUV？')
+    requests=recovery_provider_factory('好的，先按十五万元左右的预算了解，您更喜欢轿车还是SUV？',catalog_claim_kind='non_inventory')
     root=str(Path(__file__).resolve().parents[2]/'worker-client/omniauto-rpa')
     monkeypatch.setenv('C3_OMNIAUTO_ROOT',root);monkeypatch.setattr(get_settings(),'c3_omniauto_root',root)
     monkeypatch.setattr(c3_service,'get_ai_engine_adapter',RealOmniAutoAIEngineAdapter)

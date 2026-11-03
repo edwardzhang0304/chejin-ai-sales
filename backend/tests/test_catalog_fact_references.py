@@ -155,3 +155,30 @@ def test_archived_vehicle_edits_preserve_unchanged_active_catalog(monkeypatch,mu
         assert a.ai_payload['vehicle_catalog_snapshot']['vehicle_ids']==[active]
     response=claim_send(w,r,claim(w,b,r))
     assert response.status_code==200,response.text
+
+
+class QueryReceiptAdapter(CatalogAdapter):
+    def generate_reply_decision(self,**kwargs):
+        decision=super().generate_reply_decision(**kwargs)
+        brain=decision.raw_payload['omniauto_brain_result']
+        brain['brain_plan']['facts_claimed']=[{'fact_type':'catalog_match_count','value':0,'source_level':'catalog_query','source_id':'synthetic-query'}]
+        brain['audit_summary']={'catalog_selection':{'protocol':'vehicle_query_v1','scan_complete':True}}
+        return decision
+
+
+@pytest.mark.parametrize('mutation',[None,'price','new_listing'])
+def test_query_receipt_aggregate_uses_real_catalog_send_gate(monkeypatch,mutation):
+    vid=api._create_listed_vehicle()
+    w,b,r=generate(monkeypatch,QueryReceiptAdapter())
+    assert r['decision']=='send_reply',r
+    claimed=claim(w,b,r)
+    if mutation=='price':
+        assert api.client.put(f'/api/vehicles/{vid}',json={'public_price':9.99},headers=api.HEADERS).status_code==200
+    elif mutation=='new_listing':api._create_listed_vehicle()
+    response=claim_send(w,r,claimed)
+    assert response.status_code==(200 if mutation is None else 409),response.text
+    with SessionLocal() as db:
+        action=db.get(ReplyAction,r['reply_action_id'])
+        assert action.ai_payload['vehicle_catalog_snapshot']['vehicle_ids']==[vid]
+        assert not list(db.scalars(select(HandoffEvent)))
+        if mutation:assert action.send_token is None

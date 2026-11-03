@@ -719,8 +719,14 @@ def _brain_plan_vehicle_references(payload: dict[str, Any]) -> tuple[list[str], 
     evidence = plan.get("evidence_used") if isinstance(plan.get("evidence_used"), dict) else {}
     values = evidence.get("product_ids") if isinstance(evidence.get("product_ids"), list) else []
     vehicle_ids = {str(value).strip() for value in values if str(value).strip()}
-    catalog_reference = False
+    # Query selection/aggregates depend on the complete generation inventory,
+    # including a zero result. Keep the existing final-send snapshot gate.
+    selection = (result.get("audit_summary") or {}).get("catalog_selection") or {}
+    catalog_reference = selection.get("protocol") == "vehicle_query_v1" and selection.get("scan_complete") is True
     for fact in plan.get("facts_claimed") or []:
+        if isinstance(fact, dict) and fact.get("source_level") == "catalog_query":
+            catalog_reference = True
+            continue
         if not isinstance(fact, dict) or str(fact.get("source_level") or "") != "product_master":
             continue
         source_id = str(fact.get("source_id") or "").strip()

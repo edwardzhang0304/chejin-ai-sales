@@ -929,7 +929,7 @@ def normalize_fact_claims(value: Any) -> list[dict[str, Any]]:
             or item.get("knowledge_id")
             or ""
         ).strip()
-        value_text = str(item.get("value") or item.get("claim") or item.get("text") or "").strip()
+        value_text = str(item["value"] if item.get("value") is not None else item.get("claim") or item.get("text") or "").strip()
         if source_level in STYLE_ONLY_LEVELS and style_only_fact_claim_is_non_authoritative_note(
             fact_type=fact_type,
             value_text=value_text,

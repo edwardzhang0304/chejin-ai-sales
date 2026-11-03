@@ -921,12 +921,14 @@ def _maybe_run_customer_service_brain_within_time_budget(
         query_text=managed_knowledge_query,
         current_query_text=evidence_combined,
     )
-    apply_server_validated_image_products(batch, evidence_pack)
+    if target_state.get("history_authority") != CHEJIN_HISTORY_AUTHORITY:
+        apply_server_validated_image_products(batch, evidence_pack)
     attach_conversation_runtime_hints_to_evidence_pack(evidence_pack, target_state)
     if target_state.get("history_authority") == CHEJIN_HISTORY_AUTHORITY:
-        from apps.wechat_ai_customer_service.workflows.catalog_query import PROTOCOL, message_sources
+        from apps.wechat_ai_customer_service.workflows.catalog_query import PROTOCOL, message_sources, trusted_image_ids
         evidence_pack["catalog_protocol"] = {"protocol": PROTOCOL, "phase": "not_queried",
-                                             "sources": message_sources(evidence_pack)}
+                                             "sources": message_sources(evidence_pack),
+                                             "known_ids": trusted_image_ids(target_state, batch, raw_conversation_id(raw_capture))}
     if str(evidence_pack.get("knowledge_error") or "").strip():
         payload.update(
             {
@@ -1406,6 +1408,7 @@ def _maybe_run_customer_service_brain_within_time_budget(
                 }
             if repaired_validation.get("ok") and repaired_quality.get("ok") and (
                 quality.get("source") == "semantic_reviewer"
+                or bool(evidence_pack.get("catalog_protocol"))
                 or repaired_quality.get("authority_review_required")
                 or repaired_soft_pass.get("ok")
                 or str(settings.get("semantic_reviewer_mode") or "").strip().lower() == "always"
@@ -3835,6 +3838,7 @@ def compact_semantic_review(review: dict[str, Any]) -> dict[str, Any]:
             "verdict",
             "shadow_verdict",
             "claim_kind",
+            "catalog_claim_kind",
             "authority_review_required",
             "confidence",
             "semantic_errors",
@@ -4035,6 +4039,8 @@ def repaired_deterministic_quality_soft_pass_decision(
     authorship.
     """
 
+    if evidence_pack.get("catalog_protocol"):
+        return {"ok": False, "reason": "catalog_review_must_not_soft_pass"}
     if not bool(settings.get("deterministic_quality_post_repair_soft_pass_enabled", True)):
         return {"ok": False, "reason": "post_repair_deterministic_soft_pass_disabled"}
     if not isinstance(quality, dict) or quality.get("ok"):
@@ -4121,6 +4127,8 @@ def original_brain_quality_soft_pass_after_failed_repair(
     must not swallow an otherwise usable customer reply.
     """
 
+    if evidence_pack.get("catalog_protocol"):
+        return {"ok": False, "reason": "catalog_review_must_not_soft_pass"}
     if not bool(settings.get("original_brain_soft_quality_pass_after_failed_repair_enabled", True)):
         return {"ok": False, "reason": "original_brain_soft_pass_disabled"}
     if not isinstance(validation, dict) or not validation.get("ok"):
@@ -4204,6 +4212,8 @@ def semantic_handoff_quality_soft_pass_decision(
     leakage, illegal content, or other hard answer defects.
     """
 
+    if evidence_pack.get("catalog_protocol"):
+        return {"ok": False, "reason": "catalog_review_must_not_soft_pass"}
     if not bool(settings.get("semantic_reviewer_brain_handoff_soft_pass_enabled", True)):
         return {"ok": False, "reason": "brain_handoff_soft_pass_disabled"}
     if not deterministic_quality.get("ok"):
@@ -4416,6 +4426,8 @@ def repaired_semantic_quality_soft_pass_decision(
     obvious non-answers still block.
     """
 
+    if evidence_pack.get("catalog_protocol"):
+        return {"ok": False, "reason": "catalog_review_must_not_soft_pass"}
     if not bool(settings.get("semantic_reviewer_post_repair_soft_pass_enabled", True)):
         return {"ok": False, "reason": "post_repair_soft_pass_disabled"}
     if not deterministic_quality.get("ok"):

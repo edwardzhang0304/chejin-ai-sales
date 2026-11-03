@@ -37,7 +37,7 @@ def evidence(text='总预算四万，首付一万'):
 
 
 def execute(raw,rows):
-    return cq.execute_query(cq.normalize_query(raw,cq.message_sources(evidence())),Runtime(rows),scope={'conversation_id':'c1'},limit=4)
+    return cq.execute_query(cq.normalize_query(raw,cq.message_sources(evidence()),known_ids={i:[{"source_id":"m1","conversation_id":"c1"}] for i in raw.get("reference_ids",[])+raw.get("exclude_ids",[])}),Runtime(rows),scope={'conversation_id':'c1'},limit=4)
 
 
 @pytest.mark.parametrize('reverse',[False,True])
@@ -153,7 +153,7 @@ def test_real_brain_entry_queries_then_replies_without_legacy_selection(monkeypa
     monkeypatch.setattr(runner,'call_llm_request_with_failover',transport)
     config=fixtures.base_config(plan)
     config['customer_service_brain'].update(mode='brain_first',provider='openai',low_authority_fast_enabled=False,
-        semantic_reviewer_result={'verdict':'pass','confidence':0.9,'semantic_errors':[],'hard_boundary_concerns':[], 'customer_visible_risk':'low','repair_instruction':'','reason':'四万总预算，价格有据'})
+        semantic_reviewer_result={'verdict':'pass','catalog_claim_kind':'vehicle_facts','confidence':0.9,'semantic_errors':[],'hard_boundary_concerns':[], 'customer_visible_risk':'low','repair_instruction':'','reason':'四万总预算，价格有据'})
     result=runner.maybe_run_customer_service_brain(config=config,target_name='合成客户',target_state={
         'history_authority':ev.CHEJIN_HISTORY_AUTHORITY,'chejin_brain_context':{'history_authority':ev.CHEJIN_HISTORY_AUTHORITY,'history':[],'history_text':'','current_batch_text':text}},
         batch=[{'id':'m1','sender':'customer','content':text}],combined=text,decision=fixtures.ReplyDecision('','',False,False,''),reply_text='',intent_assist={},rag_reply={},llm_reply={},product_knowledge={},data_capture={},raw_capture={'conversation':{'conversation_id':'synthetic-full','chat_type':'private'}},customer_profile=None)

@@ -125,6 +125,22 @@ def guard_synthesized_reply(
     candidate = normalized["candidate"]
     candidate["allow_ai_identity_exposure"] = not enforce_identity_guard
     reply = str(candidate.get("reply") or "").strip()
+    if evidence_pack.get("catalog_protocol"):
+        from apps.wechat_ai_customer_service.workflows.catalog_query import clearance_kind
+        if not clearance_kind(reply, evidence_pack):
+            return repair_decision("catalog_semantic_clearance_missing_or_stale", candidate,
+                                   repair_instruction="当前正文必须通过同一库存需求和事实审核；不能复用其他草稿审核。")
+        receipt = (evidence_pack.get("catalog_protocol") or {}).get("receipt")
+        if receipt:
+            from apps.wechat_ai_customer_service.workflows.catalog_query import inventory_snapshot, snapshot_id
+            from apps.wechat_ai_customer_service.workflows.reply_evidence_builder import KnowledgeRuntime
+            try:
+                current = snapshot_id(inventory_snapshot(KnowledgeRuntime()))
+            except Exception:
+                current = None
+            if current != receipt.get("snapshot_id"):
+                return repair_decision("catalog_changed_or_unavailable_before_guard", candidate,
+                                       repair_instruction="库存版本已变或无法读取，旧查询不能授权发送。")
     safety = evidence_pack.get("safety", {}) or {}
     if isinstance(safety, dict) and safety.get("must_handoff"):
         reasons = {str(item) for item in safety.get("reasons", []) or [] if str(item)}
@@ -838,19 +854,30 @@ def validate_reply_fact_authority(reply: str, evidence_pack: dict[str, Any]) -> 
     text = str(reply or "")
     if not text:
         return {"ok": True}
+    catalog_summary = False
+    aggregate_prices = set()
+    if evidence_pack.get("catalog_protocol"):
+        from apps.wechat_ai_customer_service.workflows.catalog_query import clearance_kind
+        kind = clearance_kind(text, evidence_pack)
+        if not kind:
+            return {"ok": False, "reason": "catalog_semantic_clearance_missing_or_stale"}
+        catalog_summary = kind == "query_summary"
+        if catalog_summary:
+            receipt = evidence_pack["catalog_protocol"].get("receipt") or {}
+            aggregate_prices = {format_wan_price(float(receipt[k])) for k in ("price_min", "price_max") if receipt.get(k) is not None}
     product_items = collect_product_evidence_items(evidence_pack)
     current_message = customer_context_text(evidence_pack)
     reply_prices = set(extract_price_mentions(text))
     customer_prices = set(extract_price_mentions(current_message))
     non_customer_prices = sorted(price for price in reply_prices if not price_matches_any(price, customer_prices))
-    if non_customer_prices and not product_items:
+    if non_customer_prices and not product_items and not aggregate_prices:
         return {
             "ok": False,
             "reason": "unsupported_price_without_product_master",
             "unsupported_prices": non_customer_prices,
         }
-    if non_customer_prices and product_items:
-        authorized_prices = collect_product_authorized_price_mentions(product_items)
+    if non_customer_prices and (product_items or aggregate_prices):
+        authorized_prices = collect_product_authorized_price_mentions(product_items) | aggregate_prices
         conflicting_prices = sorted(price for price in non_customer_prices if not price_matches_any(price, authorized_prices))
         if conflicting_prices:
             return {
@@ -859,6 +886,8 @@ def validate_reply_fact_authority(reply: str, evidence_pack: dict[str, Any]) -> 
                 "unsupported_prices": conflicting_prices,
                 "authorized_prices": sorted(authorized_prices),
             }
+    if catalog_summary:
+        return {"ok": True, "reason": "scoped_catalog_semantic_and_fact_contract_verified"}
     fact_terms = ("现车", "库存", "表显", "公里", "车况", "检测报告", "原版原漆", "一手车", "到店可看")
     if any(term in text for term in fact_terms) and not product_items:
         if reply_is_safe_trade_in_valuation_boundary(text, evidence_pack=evidence_pack):

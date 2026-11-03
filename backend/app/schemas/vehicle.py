@@ -3,12 +3,16 @@ import re
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from app.contracts.shared_rules import shared_adapter
+
 
 YEAR_MONTH_RE = re.compile(r"^(19|20)\d{2}-(0[1-9]|1[0-2])$")
-ENERGY_TYPES = {"fuel": "燃油", "hybrid": "新能源混动", "range_extended": "新能源增程", "electric": "新能源纯电"}
-SERIES_OPTIONS = ("国产新能源", "合资新能源", "国产车", "德系车", "日系车", "美系车", "韩系车", "法系车", "其他")
-DRIVE_TYPES = {"front_wheel_drive": "前驱", "rear_wheel_drive": "后驱", "four_wheel_drive": "四驱"}
-BATTERY_DECIMAL_RE = re.compile(r"^[0-9]+(?:\.[0-9]+)?$")
+
+_vehicle_fields = shared_adapter("vehicle_fields")
+ENERGY_TYPES = _vehicle_fields.ENERGY_TYPES
+SERIES_OPTIONS = _vehicle_fields.SERIES_OPTIONS
+DRIVE_TYPES = _vehicle_fields.DRIVE_TYPES
+BATTERY_DECIMAL_RE = _vehicle_fields.BATTERY_DECIMAL_RE
 
 
 class VehicleFields(BaseModel):

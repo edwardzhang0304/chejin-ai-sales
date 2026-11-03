@@ -243,7 +243,9 @@ def review_brain_reply_semantics(
     """
 
     cfg = effective_reviewer_settings(settings)
-    catalog_required = bool((evidence_pack.get("catalog_protocol") or {}).get("receipt"))
+    catalog_required = bool(evidence_pack.get("catalog_protocol"))
+    if catalog_required:
+        evidence_pack.pop("_catalog_clearance", None)
     if catalog_required and (not cfg["enabled"] or cfg["mode"] == "shadow"):
         return {"ok": False, "status": "error", "verdict": "block", "enforced": True,
                 "errors": ["catalog_semantic_review_unavailable"], "unavailable": True,
@@ -274,7 +276,7 @@ def review_brain_reply_semantics(
         deterministic_quality=deterministic_quality or {},
     )
     cache_key = quality_review_cache_key(request)
-    if cfg["cache_enabled"] and cache_key in _REVIEW_CACHE:
+    if not catalog_required and cfg["cache_enabled"] and cache_key in _REVIEW_CACHE:
         cached = dict(_REVIEW_CACHE[cache_key])
         if not authority_required or cached.get("authority_contract_validated") is True:
             cached["cache_hit"] = True
@@ -290,12 +292,16 @@ def review_brain_reply_semantics(
     ):
         return authority_review_failure("authority_review_invalid_contract")
     review = normalize_quality_review_result(raw_result)
-    if catalog_required and not authority_required:
+    if catalog_required:
         # Need interpretation must be checked against its message evidence. Do
         # not turn a budget/finance semantic rejection into a low-risk soft pass.
         review.update(cache_key=cache_key, cache_hit=False, invoked=True, mode=mode,
                       soft_pass_low_risk=False)
-        return apply_review_mode(review, mode=mode)
+        if authority_required and review.get("claim_kind") != "non_factual":
+            return authority_review_failure("authority_claim_not_cleared", review)
+        from apps.wechat_ai_customer_service.workflows.catalog_query import record_semantic_clearance
+        return record_semantic_clearance(evidence_pack, plan, raw_result,
+                                         apply_review_mode(review, mode=mode))
     if authority_required:
         # No shadow/outage/low-risk relaxation may decide that a factual claim
         # is merely a customer preference. A fresh changed draft is a new key.
@@ -1091,7 +1097,14 @@ def build_quality_reviewer_prompt(request: dict[str, Any]) -> tuple[str, str]:
                    "当前要求优先于已否定或过去预算，未提预算不等于明确不限。核对拒绝旧车、品牌、比较意图。"
                    "需求理解错误必须repair，不能仅因报价真实放行；你不能自行修改查询需求或回执。"
                    "未查询不能宣称当前库存事实；匹配数量只对应列出的已支持条件，字段未知或不支持条件必须如实表达。"
-                   "references可用于点名比较，recommendations是推荐集合；不能用高价比较对象替代预算内推荐。")
+                   "references可用于点名比较，recommendations是推荐集合；不能用高价比较对象替代预算内推荐。"
+                   "必须另返回catalog_claim_kind：non_inventory=整份正文没有当前库存断言；vehicle_facts=存在具体车辆事实；"
+                   "query_summary=只有查询范围内数量/最低最高价等聚合事实，没有额外车辆细节；uncertain=无法确定。"
+                   "即使facts_claimed为空也逐句判断正文，否定的库存断言同样是事实，不可判non_inventory。"
+                   "query_summary须核对facts_claimed的catalog_match_count/catalog_price_min/catalog_price_max，"
+                   "这些是catalog_query程序回执提供的限定范围权威，无需虚构product_master车辆ID；"
+                   "未知/未查/查询失败不能断言零匹配；完整且条件明确的零匹配可以准确回复。"
+                   "name_results未找到仅代表称呼未定位，重名不可擅选或排除；核对来源与客户所指一致。")
     user = json.dumps({"task": "审稿候选Brain回复，不要生成客户回复。", "review_request": request}, ensure_ascii=False)
     return system, user
 
@@ -1128,7 +1141,7 @@ def build_quality_review_request(
         "conversation_facts": compact_mapping(conversation.get("context") or {}, max_text_chars=160),
         "brain_plan_summary": compact_brain_plan_for_review(plan),
         "draft_segments": [str(item).strip() for item in plan.get("reply_segments", []) or [] if str(item).strip()],
-        "draft_reply": reply if deterministic_quality.get("authority_review_required") else clip(reply, int(settings.get("semantic_reviewer_reply_chars") or 520)),
+        "draft_reply": reply if evidence_pack.get("catalog_protocol") or deterministic_quality.get("authority_review_required") else clip(reply, int(settings.get("semantic_reviewer_reply_chars") or 520)),
         "authority_evidence_summary": compact_authority_evidence_for_review(evidence_pack),
         "deterministic_quality": {
             "ok": bool(deterministic_quality.get("ok", True)),
@@ -1333,6 +1346,7 @@ def normalize_quality_review_result(result: dict[str, Any] | None) -> dict[str, 
         "verdict": verdict,
         "confidence": confidence,
         "claim_kind": payload.get("claim_kind"),
+        "catalog_claim_kind": payload.get("catalog_claim_kind"),
         "semantic_errors": semantic_errors,
         "hard_boundary_concerns": hard_concerns,
         "errors": errors,

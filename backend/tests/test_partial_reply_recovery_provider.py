@@ -18,7 +18,7 @@ from app.services.reply_sequence_policy import sequence_policy
 
 
 @contextmanager
-def controlled_recovery_provider(monkeypatch, answer, requests, *, review_verdict="pass", malformed_review=False, review_envelope_error=None, review_envelope_after=0, require_welcome_context=False):
+def controlled_recovery_provider(monkeypatch, answer, requests, *, review_verdict="pass", malformed_review=False, review_envelope_error=None, review_envelope_after=0, require_welcome_context=False, catalog_claim_kind=None):
     plan = {"can_answer": True, "answer_mode": "collect_customer_info",
         "evidence_used": {"common_sense_topics": ["购车注意事项"]}, "facts_claimed": [], "reply_segments": list(answer) if isinstance(answer, (list, tuple)) else [answer],
         "risk": {"risk_level": "low", "risk_tags": [], "needs_handoff": False},
@@ -34,6 +34,8 @@ def controlled_recovery_provider(monkeypatch, answer, requests, *, review_verdic
                 "semantic_errors": [] if review_verdict == "pass" else ["unapproved_commitment"],
                 "hard_boundary_concerns": [], "repair_instruction": "" if review_verdict == "pass" else "Remove unapproved commitments", "reason": "Synthetic review"}
                 if payload["model"] == "recovery-reviewer" else deepcopy(plan))
+            if catalog_claim_kind is not None and payload["model"] == "recovery-reviewer":
+                result["catalog_claim_kind"] = catalog_claim_kind
             if require_welcome_context:
                 user = next(m["content"] for m in payload["messages"] if m["role"] == "user")
                 request, _ = json.JSONDecoder().raw_decode(user.lstrip())
@@ -88,10 +90,10 @@ def controlled_recovery_provider(monkeypatch, answer, requests, *, review_verdic
 def recovery_provider_factory(monkeypatch, tmp_path):
     logs = []
     with ExitStack() as stack:
-        def start(answer):
+        def start(answer, *, catalog_claim_kind=None):
             requests = []
             logs.append(requests)
-            stack.enter_context(controlled_recovery_provider(monkeypatch, answer, requests))
+            stack.enter_context(controlled_recovery_provider(monkeypatch, answer, requests, catalog_claim_kind=catalog_claim_kind))
             return requests
         try:
             yield start
