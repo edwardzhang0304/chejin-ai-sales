@@ -9,6 +9,7 @@ that product master, formal knowledge and current conversation facts actually pa
 from __future__ import annotations
 
 from hashlib import sha256
+import math
 import json
 import re
 from typing import Any
@@ -16,6 +17,10 @@ import unicodedata
 
 from apps.wechat_ai_customer_service.platform_understanding_rules import intent_group
 from apps.wechat_ai_customer_service.workflows.vehicle_public_facts import vehicle_specs_for_evidence
+from apps.wechat_ai_customer_service.workflows.catalog_budget import (
+    parse_catalog_budget, resolve_catalog_budget, extract_catalog_budget_upper, extract_catalog_budget_target,
+    catalog_budget_around_upper,
+)
 from admin_backend.services.raw_message_store import RawMessageStore
 from apps.wechat_ai_customer_service.admin_backend.services.conversation_history import assemble_conversation_history
 from knowledge_loader import (
@@ -921,6 +926,7 @@ def build_reply_evidence_pack(
         "ai_experience_pool": compact_knowledge.get("ai_experience_pool", {}),
         "rag": compact_knowledge.get("rag_evidence", {}),
         "audit_summary": {
+            "catalog_selection": (compact_knowledge.get("product_master") or {}).get("catalog_selection", {}),
             "structured_evidence_count": structured_evidence_count(compact_knowledge),
             "runtime_rag_hit_count": len((compact_knowledge.get("rag_evidence", {}) or {}).get("hits", []) or []),
             "rag_hit_count": len((compact_knowledge.get("rag_evidence", {}) or {}).get("hits", []) or []),
@@ -1040,7 +1046,8 @@ def compact_knowledge_pack(
         context = context_override
     else:
         context = pack.get("conversation_context") if isinstance(pack.get("conversation_context"), dict) else {}
-    catalog_candidates = catalog_product_candidates(text, limit=max_catalog_candidates, context=context)
+    catalog_selection: dict[str, Any] = {}
+    catalog_candidates = catalog_product_candidates(text, limit=max_catalog_candidates, context=context, selection_audit=catalog_selection)
     item_limit = max(1, max_catalog_candidates)
     products = []
     for item in (evidence.get("products", []) or [])[:item_limit]:
@@ -1055,18 +1062,11 @@ def compact_knowledge_pack(
         for item in catalog_candidates
         if isinstance(item, dict)
     ]
-    context_recent_candidates = [item for item in catalog_candidates if is_context_recent_product_candidate(item)]
-    if context_recent_candidates:
-        other_catalog_candidates = [item for item in catalog_candidates if not is_context_recent_product_candidate(item)]
-        product_master = dedupe_authoritative_products(context_recent_candidates, products, other_catalog_candidates)[:item_limit]
-    elif any(is_context_need_catalog_candidate(item) for item in catalog_candidates):
-        products_for_merge = [item for item in products if not is_weak_catalog_only_product_candidate(item)]
-        product_master = dedupe_authoritative_products(catalog_candidates, products_for_merge)[:item_limit]
-    elif any(is_explicit_catalog_candidate(item) for item in catalog_candidates):
-        products_for_merge = [item for item in products if not is_context_only_product_candidate(item)]
-        product_master = dedupe_authoritative_products(catalog_candidates, products_for_merge)[:item_limit]
-    else:
-        product_master = dedupe_authoritative_products(products, catalog_candidates)[:item_limit]
+    # A completed scan is authoritative, including a genuine zero-match result.
+    # Only a failed scan may retain existing retrieval evidence; its incomplete
+    # coverage is carried to the prompt and must not authorize absence claims.
+    product_master = (catalog_candidates if catalog_selection.get("scan_complete")
+                      else dedupe_authoritative_products(products))[:item_limit]
     # The catalog reads the same authoritative rows. Restore backend-authored,
     # field-bounded vehicle specs if an earlier retrieval projection clipped them.
     vehicle_specs = {str(item.get("id")): item["specs"] for item in catalog_candidates if item.get("source_type") == "chejin_backend"}
@@ -1108,6 +1108,7 @@ def compact_knowledge_pack(
             "authority_level": "product_master",
             "can_authorize_product_facts": True,
             "items": product_master,
+            "catalog_selection": catalog_selection,
         },
         "formal_knowledge": {
             "authority_level": "formal_knowledge",
@@ -1685,98 +1686,110 @@ def product_has_price_or_stock(item: dict[str, Any]) -> bool:
     return data.get("price") not in (None, "") or data.get("inventory") not in (None, "")
 
 
-def catalog_product_candidates(text: str, *, limit: int, context: dict[str, Any] | None = None) -> list[dict[str, Any]]:
+def catalog_product_candidates(
+    text: str, *, limit: int, context: dict[str, Any] | None = None,
+    selection_audit: dict[str, Any] | None = None,
+) -> list[dict[str, Any]]:
+    """Select from the entire tenant catalog; only the final projection is bounded.
+
+    UI pagination and retrieval top-k are not inventory boundaries. Keep named
+    vehicles as factual comparison context, but never let them or stale history
+    displace matching vehicles for a fresh budget/list request.
+    """
+    audit = selection_audit if selection_audit is not None else {}
+    audit.update({"scan_complete": False, "scope": "active_tenant_product_master",
+                  "candidate_limit": max(0, limit)})
     try:
         runtime = KnowledgeRuntime()
-        items = runtime.list_items("products")
-    except Exception:
+        all_items = runtime.list_items("products")
+    except Exception as exc:
+        audit["error_type"] = type(exc).__name__
         return []
+    items = [item for item in all_items if isinstance(item, dict)
+             and str(item.get("status") or "active") in {"active", "approved", "published"}]
     context = context if isinstance(context, dict) else {}
-    semantic_text = semantic_text_for_catalog_matching(text)
-    context_products = context_product_candidates(runtime, context, semantic_text, items=items)
-    context_product = context_products[0] if context_products else None
+    normalized = semantic_text_for_catalog_matching(text).lower()
+    mode = detect_catalog_request_mode(normalized)
     scored = []
-    normalized = semantic_text.lower()
-    catalog_request_mode = detect_catalog_request_mode(normalized)
     for item in items:
-        if not isinstance(item, dict):
-            continue
         data = item.get("data", {}) or {}
-        if str(item.get("status") or "active") not in {"active", "approved", "published"}:
-            continue
-        matched_aliases = collect_catalog_product_aliases(data, normalized)
-        searchable = product_searchable_text(data)
-        score = catalog_alias_match_score(matched_aliases)
+        aliases = collect_catalog_product_aliases(data, normalized)
         preference_score, preference_labels = catalog_preference_match_score(data, normalized)
-        if preference_score:
-            score += preference_score
-        for token in tokenize_for_catalog(normalized):
-            if token and token in searchable:
-                score += 2 if len(token) >= 2 else 1
+        score = catalog_alias_match_score(aliases) + preference_score
+        searchable = product_searchable_text(data)
+        score += sum(2 if len(token) >= 2 else 1 for token in tokenize_for_catalog(normalized) if token and token in searchable)
         if score <= 0:
             score = fallback_catalog_score(data, normalized)
         payload = catalog_product_payload(item)
-        if matched_aliases:
-            payload["matched_aliases"] = matched_aliases[:8]
-            payload["match_reason"] = "product_name_alias_or_semantic_match"
-        if preference_score > 0 and not matched_aliases:
-            payload["matched_aliases"] = list(dict.fromkeys(preference_labels))[:8]
-            payload["match_reason"] = "catalog_preference_match"
-        scored.append((score, max_catalog_alias_length(matched_aliases), payload))
-    scored.sort(key=lambda pair: (pair[0], pair[1]), reverse=True)
-    ranked = [payload for score, _alias_len, payload in scored[: max(0, limit)] if score > 0]
-    if catalog_request_mode == "price_desc":
-        ranked = catalog_request_candidates(items, limit=limit, mode=catalog_request_mode, preference_text=normalized)
-    elif catalog_request_mode == "price_list" and not any(is_explicit_catalog_candidate(item) for item in ranked):
-        ranked = catalog_request_candidates(items, limit=limit, mode=catalog_request_mode, preference_text=normalized)
-    budget_upper = extract_catalog_budget_upper(normalized)
-    budget_target = extract_catalog_budget_target(normalized)
-    context_need_active = should_apply_context_need_candidates(normalized, ranked, context)
-    if budget_upper is None and context_need_active:
-        context_need_text = str(context.get("last_customer_need_text") or "").lower()
-        budget_upper = extract_catalog_budget_upper(context_need_text)
-        budget_target = extract_catalog_budget_target(context_need_text)
-    if budget_upper is not None:
-        preference_text = " ".join(
-            item
-            for item in (
-                normalized,
-                str(context.get("last_customer_need_text") or "").lower(),
-            )
-            if item
-        )
-        budget_fit_candidates = budget_alternative_catalog_candidates(
-            items,
-            limit=limit,
-            budget_upper=budget_upper,
-            budget_target=budget_target,
-            target=ranked[0] if ranked and is_explicit_catalog_candidate(ranked[0]) else None,
-            preference_text=preference_text,
-        )
-        if should_attach_budget_alternatives(normalized, ranked):
-            ranked = merge_catalog_ranked_candidates(ranked, budget_fit_candidates, limit=limit)
-        elif should_attach_budget_fit_candidates(normalized, context_need_active):
-            ranked = merge_catalog_priority_candidates(
-                budget_fit_candidates,
-                ranked,
-                limit=limit,
-            )
-    if should_apply_context_need_candidates(normalized, ranked, context):
-        ranked = merge_catalog_ranked_candidates(
-            context_need_catalog_candidates(
-                items,
-                context_text=str(context.get("last_customer_need_text") or ""),
-                limit=limit,
-            ),
-            ranked,
-            limit=limit,
-        )
-    if context_products:
-        context_ids = {str(item.get("id") or "") for item in context_products if str(item.get("id") or "")}
-        ranked = [*context_products, *[item for item in ranked if str(item.get("id") or "") not in context_ids]]
-        if should_focus_context_product(semantic_text):
-            ranked = ranked[: max(1, min(limit, len(context_products)))]
-    return ranked[: max(0, limit)]
+        if aliases:
+            payload.update(matched_aliases=aliases[:8], match_reason="product_name_alias_or_semantic_match")
+        elif preference_score:
+            payload.update(matched_aliases=preference_labels, match_reason="catalog_preference_match")
+        scored.append((score, max_catalog_alias_length(aliases), payload))
+    scored.sort(key=lambda pair: (pair[0], pair[1], str(pair[2].get("id") or "")), reverse=True)
+    ranked = [payload for score, _length, payload in scored if score > 0]
+    explicit = [item for item in ranked if is_explicit_catalog_candidate(item)]
+    # All intermediate stages retain the full set. A late row may be the only
+    # exact model, affordable vehicle or match for the current preference.
+    full_limit = len(items)
+    if mode in {"price_desc", "price_asc"} or (mode == "price_list" and not explicit):
+        ranked = catalog_request_candidates(items, limit=full_limit, mode=mode, preference_text=normalized)
+    if not ranked and is_catalog_recommendation_question({}, text=normalized):
+        ranked = catalog_request_candidates(items, limit=full_limit, mode="price_list", preference_text=normalized)
+    context_products = context_product_candidates(runtime, context, normalized, items=items)
+    context_need = should_apply_context_need_candidates(normalized, ranked, context)
+    budget, budget_source = resolve_catalog_budget(
+        normalized, str(context.get("last_customer_need_text") or ""))
+    rejects_previous = any(term in normalized for term in (
+        "太贵", "超预算", "换几", "换一", "别的", "其他", "不要刚才", "不考虑刚才", "重新推荐"))
+    if rejects_previous:
+        context_products = []
+    if context_need:
+        ranked = merge_catalog_priority_candidates(
+            context_need_catalog_candidates(items, context_text=str(context.get("last_customer_need_text") or ""), limit=full_limit),
+            ranked, limit=full_limit)
+    if context_products and budget_source != "current_message":
+        ranked = merge_catalog_priority_candidates(context_products, ranked, limit=full_limit)
+        if should_focus_context_product(normalized):
+            ranked = context_products
+    all_payloads = [catalog_product_payload(item) for item in items]
+    priced = [item for item in all_payloads if catalog_price_value(item) > 0]
+    audit.update(scan_complete=True, scanned_count=len(all_items), eligible_count=len(items),
+                 priced_count=len(priced), unknown_price_count=len(items)-len(priced),
+                 budget=budget.as_dict() if budget else None, budget_source=budget_source,
+                 request_mode=mode, match_scope="price_budget_only" if budget else "ranked_catalog",
+                 catalog_price_min=min((catalog_price_value(item) for item in priced), default=None),
+                 catalog_price_max=max((catalog_price_value(item) for item in priced), default=None))
+    if budget:
+        fits = [item for item in all_payloads if budget.contains(catalog_price_value(item))]
+        # Rank the complete budget-fit set by current model/brand/preference,
+        # then proximity. Old model mentions cannot override a new budget.
+        scores = {str(item.get("id")): (score, length) for score, length, item in scored}
+        preference_text = normalized + " " + str(context.get("last_customer_need_text") or "")
+        fits.sort(key=lambda item: (
+            catalog_preference_rank(item, preference_text),
+            -scores.get(str(item.get("id")), (0, 0))[0],
+            abs(catalog_price_value(item)-budget.target), str(item.get("id") or "")))
+        for item in fits:
+            item["match_reason"] = "budget_fit_catalog"
+            item["selection_role"] = "budget_match"
+        audit["budget_match_count"] = len(fits)
+        # A direct question about a named/relative vehicle still needs that
+        # vehicle's facts even if it is over budget. Mark its role explicitly.
+        focus = explicit or (context_products if budget_source != "current_message" else [])
+        for item in focus:
+            item["selection_role"] = "budget_match" if budget.contains(catalog_price_value(item)) else "referenced_vehicle_outside_budget"
+        if (not explicit and budget_source != "current_message" and not rejects_previous) or (len(focus) == 1 and any(term in normalized for term in ("多少钱", "价格", "这台", "那台", "这款", "那款"))):
+            ranked = merge_catalog_priority_candidates(focus, fits, limit=full_limit)
+        else:
+            ranked = merge_catalog_priority_candidates(fits, focus, limit=full_limit)
+    selected = ranked[:max(0, limit)]
+    audit.update(ranked_count=len(ranked), selected_count=len(selected),
+                 selected_ids=[str(item.get("id") or "") for item in selected],
+                 truncated=len(selected) < len(ranked),
+                 absence_claim_policy="Never infer whole-inventory absence/minimum from displayed items. "
+                 "Budget counts cover price only, not unverified preferences; unknown prices or a failed scan are not absence.")
+    return selected
 
 
 def semantic_text_for_catalog_matching(text: str) -> str:
@@ -1784,43 +1797,6 @@ def semantic_text_for_catalog_matching(text: str) -> str:
     if callable(strip_nonsemantic_runtime_markers):
         return str(strip_nonsemantic_runtime_markers(raw) or "").strip()
     return raw.strip()
-
-
-def should_attach_budget_alternatives(normalized_text: str, ranked: list[dict[str, Any]]) -> bool:
-    if not ranked or not any(is_explicit_catalog_candidate(item) for item in ranked):
-        return False
-    compact = compact_match_text(normalized_text)
-    return any(compact_match_text(term) in compact for term in ("预算", "替代", "备选", "够不到", "超预算"))
-
-
-def should_attach_budget_fit_candidates(normalized_text: str, context_need_active: bool) -> bool:
-    compact = compact_match_text(normalized_text)
-    if not compact:
-        return False
-    recommendation_terms = (
-        "推荐",
-        "挑",
-        "选",
-        "合适",
-        "靠谱",
-        "省油",
-        "省心",
-        "别太费油",
-        "帮我筛",
-        "给我筛",
-        "直接给我",
-        "先看",
-        "方向",
-        "两三个",
-        "几个方向",
-        "后备厢",
-        "后备箱",
-        "物料",
-        "装载",
-        "不只看轿车",
-        "不想只看轿车",
-    )
-    return context_need_active or any(compact_match_text(term) in compact for term in recommendation_terms)
 
 
 def should_apply_context_need_candidates(
@@ -1886,42 +1862,6 @@ def context_need_catalog_candidates(
     return [payload for _score, _alias_len, payload in scored[: max(0, int(limit or 0))]]
 
 
-def budget_alternative_catalog_candidates(
-    items: list[dict[str, Any]],
-    *,
-    limit: int,
-    budget_upper: float,
-    target: dict[str, Any] | None = None,
-    budget_target: float | None = None,
-    preference_text: str = "",
-) -> list[dict[str, Any]]:
-    target_id = str((target or {}).get("id") or "").strip()
-    target_category = catalog_category_label(target or {})
-    candidates: list[tuple[int, int, float, float, dict[str, Any]]] = []
-    for item in items:
-        if not isinstance(item, dict):
-            continue
-        if str(item.get("status") or "active") not in {"active", "approved", "published"}:
-            continue
-        payload = catalog_product_payload(item)
-        if str(payload.get("id") or "") == target_id:
-            continue
-        price = catalog_price_value(payload)
-        if price <= 0 or price > budget_upper + 0.03:
-            continue
-        preference_rank = catalog_preference_rank(payload, preference_text)
-        if preference_rank == 0 and is_cargo_space_need(preference_text):
-            payload["match_reason"] = "budget_alternative_cargo_fit"
-            payload["matched_aliases"] = list(dict.fromkeys([*payload.get("matched_aliases", []), "cargo_space_fit"]))
-        same_category_rank = 0 if target_category and catalog_category_label(payload) == target_category else 1
-        payload["matched_aliases"] = list(dict.fromkeys([*payload.get("matched_aliases", []), "budget_alternative"]))
-        payload.setdefault("match_reason", "budget_alternative_price_fit")
-        target_price = budget_target if budget_target is not None and budget_target > 0 else budget_upper
-        candidates.append((preference_rank, same_category_rank, abs(target_price - price), -price, payload))
-    candidates.sort(key=lambda item: (item[0], item[1], item[2], item[3]))
-    return [payload for _pref_rank, _same_rank, _gap, _neg_price, payload in candidates[: max(0, int(limit or 0))]]
-
-
 def catalog_preference_rank(item: dict[str, Any], preference_text: str) -> int:
     if not is_cargo_space_need(preference_text):
         return 0
@@ -1980,21 +1920,6 @@ def is_cargo_space_need(text: str) -> bool:
     return any(compact_match_text(term) in compact for term in CARGO_SPACE_NEED_TERMS)
 
 
-def merge_catalog_ranked_candidates(primary: list[dict[str, Any]], additions: list[dict[str, Any]], *, limit: int) -> list[dict[str, Any]]:
-    merged: list[dict[str, Any]] = []
-    seen: set[str] = set()
-    for item in [*(primary[:1] if primary else []), *additions, *(primary[1:] if len(primary) > 1 else [])]:
-        item_id = str(item.get("id") or "")
-        if item_id and item_id in seen:
-            continue
-        if item_id:
-            seen.add(item_id)
-        merged.append(item)
-        if len(merged) >= max(0, int(limit or 0)):
-            break
-    return merged
-
-
 def merge_catalog_priority_candidates(primary: list[dict[str, Any]], additions: list[dict[str, Any]], *, limit: int) -> list[dict[str, Any]]:
     merged: list[dict[str, Any]] = []
     seen: set[str] = set()
@@ -2019,162 +1944,12 @@ def catalog_category_label(item: dict[str, Any]) -> str:
     return category.strip()
 
 
-def extract_catalog_budget_upper(text: str) -> float | None:
-    raw = str(text or "")
-    range_match = re.search(r"(\d+(?:\.\d+)?)\s*(?:到|-|~|至|—|－)\s*(\d+(?:\.\d+)?)\s*万", raw)
-    if range_match:
-        return max(float(range_match.group(1)), float(range_match.group(2)))
-    around_matches = [
-        catalog_budget_around_upper(float(item))
-        for item in re.findall(r"(\d+(?:\.\d+)?)\s*(?:万|w|W)\s*(?:左右|上下|附近|出头)", raw)
-    ]
-    if around_matches:
-        return max(around_matches)
-    chinese_around_matches = [
-        catalog_budget_around_upper(value)
-        for value in (
-            chinese_wan_budget_to_float(match.group(1))
-            for match in re.finditer(
-                r"([零〇一二两三四五六七八九十百]+(?:点[零〇一二两三四五六七八九]+)?)\s*万\s*(?:左右|上下|附近|出头)",
-                raw,
-            )
-        )
-        if value is not None
-    ]
-    if chinese_around_matches:
-        return max(chinese_around_matches)
-    matches = [float(item) for item in re.findall(r"(\d+(?:\.\d+)?)\s*(?:万|w|W)", raw)]
-    if matches:
-        return max(matches)
-    chinese_matches = [
-        value
-        for value in (chinese_wan_budget_to_float(match.group(0)) for match in re.finditer(r"[零〇一二两三四五六七八九十百]+(?:点[零〇一二两三四五六七八九]+)?\s*万", raw))
-        if value is not None
-    ]
-    if chinese_matches:
-        return max(chinese_matches)
-    return None
-
-
-def extract_catalog_budget_target(text: str) -> float | None:
-    raw = str(text or "")
-    range_match = re.search(r"(\d+(?:\.\d+)?)\s*(?:到|-|~|至|—|－)\s*(\d+(?:\.\d+)?)\s*万", raw)
-    if range_match:
-        left = float(range_match.group(1))
-        right = float(range_match.group(2))
-        return (left + right) / 2
-    around_matches = [float(item) for item in re.findall(r"(\d+(?:\.\d+)?)\s*(?:万|w|W)\s*(?:左右|上下|附近|出头)", raw)]
-    if around_matches:
-        return max(around_matches)
-    chinese_around_matches = [
-        value
-        for value in (
-            chinese_wan_budget_to_float(match.group(1))
-            for match in re.finditer(
-                r"([零〇一二两三四五六七八九十百]+(?:点[零〇一二两三四五六七八九]+)?)\s*万\s*(?:左右|上下|附近|出头)",
-                raw,
-            )
-        )
-        if value is not None
-    ]
-    if chinese_around_matches:
-        return max(chinese_around_matches)
-    matches = [float(item) for item in re.findall(r"(\d+(?:\.\d+)?)\s*(?:万|w|W)", raw)]
-    if matches:
-        return max(matches)
-    chinese_matches = [
-        value
-        for value in (chinese_wan_budget_to_float(match.group(0)) for match in re.finditer(r"[零〇一二两三四五六七八九十百]+(?:点[零〇一二两三四五六七八九]+)?\s*万", raw))
-        if value is not None
-    ]
-    if chinese_matches:
-        return max(chinese_matches)
-    return None
-
-
-def catalog_budget_around_upper(value: float) -> float:
-    """Treat "X万左右" as a real-world shopping band, not a hard ceiling."""
-
-    if value <= 0:
-        return value
-    if value <= 6:
-        return value + 1.0
-    if value <= 15:
-        return value + 1.5
-    return value * 1.12
-
-
-def chinese_wan_budget_to_float(text: str) -> float | None:
-    token = re.sub(r"\s*万.*$", "", str(text or "").strip())
-    if not token:
-        return None
-    if "点" in token:
-        integer_text, decimal_text = token.split("点", 1)
-        integer_value = chinese_integer_to_int(integer_text)
-        digits = []
-        digit_map = chinese_digit_map()
-        for char in decimal_text:
-            if char not in digit_map:
-                return None
-            digits.append(str(digit_map[char]))
-        if integer_value is None or not digits:
-            return None
-        return float(f"{integer_value}.{''.join(digits)}")
-    integer_value = chinese_integer_to_int(token)
-    return float(integer_value) if integer_value is not None else None
-
-
-def chinese_integer_to_int(text: str) -> int | None:
-    token = str(text or "").strip()
-    if not token:
-        return None
-    digit_map = chinese_digit_map()
-    total = 0
-    current = 0
-    has_unit = False
-    for char in token:
-        if char in digit_map:
-            current = digit_map[char]
-            continue
-        if char == "十":
-            has_unit = True
-            total += (current or 1) * 10
-            current = 0
-            continue
-        if char == "百":
-            has_unit = True
-            total += (current or 1) * 100
-            current = 0
-            continue
-        return None
-    if has_unit:
-        return total + current
-    if len(token) == 1 and token in digit_map:
-        return digit_map[token]
-    return None
-
-
-def chinese_digit_map() -> dict[str, int]:
-    return {
-        "零": 0,
-        "〇": 0,
-        "一": 1,
-        "二": 2,
-        "两": 2,
-        "三": 3,
-        "四": 4,
-        "五": 5,
-        "六": 6,
-        "七": 7,
-        "八": 8,
-        "九": 9,
-    }
-
-
 def detect_catalog_request_mode(normalized_text: str) -> str:
     compact = compact_match_text(normalized_text)
     if not compact:
         return ""
+    if any(term in compact for term in ("最便宜", "最低价", "价格最低")):
+        return "price_asc"
     if any(compact_match_text(term) in compact for term in CATALOG_PRICE_SUPERLATIVE_TERMS):
         return "price_desc"
     if any(compact_match_text(term) in compact for term in CATALOG_LIST_REQUEST_TERMS):
@@ -2217,20 +1992,22 @@ def catalog_request_candidates(
             payload["match_reason"] = "catalog_price_superlative" if mode == "price_desc" else "catalog_price_list_request"
         candidates.append((preference_score, price, payload))
     if any(preference_score > 0 for preference_score, _price, _payload in candidates):
-        candidates.sort(key=lambda pair: (pair[0], pair[1]), reverse=True)
+        candidates.sort(key=lambda pair: (-pair[0], -pair[1] if mode == "price_desc" else pair[1], str(pair[2].get("id") or "")))
     else:
-        candidates.sort(key=lambda pair: pair[1], reverse=True)
+        candidates.sort(key=lambda pair: (-pair[1] if mode == "price_desc" else pair[1], str(pair[2].get("id") or "")))
     return [payload for _preference_score, _price, payload in candidates[: max(0, int(limit or 0))]]
 
 
 def catalog_price_value(item: dict[str, Any]) -> float:
     raw = item.get("price")
     try:
-        return float(raw)
+        value = float(raw)
+        return value if math.isfinite(value) and value > 0 else 0.0
     except (TypeError, ValueError):
         digits = re.sub(r"[^0-9.]+", "", str(raw or ""))
         try:
-            return float(digits) if digits else 0.0
+            value = float(digits) if digits else 0.0
+            return value if math.isfinite(value) and value > 0 else 0.0
         except ValueError:
             return 0.0
 
@@ -2278,7 +2055,11 @@ def is_explicit_catalog_candidate(item: dict[str, Any]) -> bool:
     aliases = [str(alias) for alias in item.get("matched_aliases", []) or [] if str(alias)]
     if not aliases or item.get("context_used") is True:
         return False
-    return any(alias != "conversation_context" and is_concrete_catalog_alias(alias) for alias in aliases)
+    reason = str(item.get("match_reason") or "")
+    if reason and reason != "product_name_alias_or_semantic_match":
+        return False
+    return any(not alias.startswith(("catalog", "preference:", "conversation_context", "budget_"))
+               and is_concrete_catalog_alias(alias) for alias in aliases)
 
 
 def is_context_only_product_candidate(item: dict[str, Any]) -> bool:
@@ -2314,7 +2095,7 @@ def context_product_candidate(
     if text_has_unresolved_explicit_product_reference(text, items=items):
         return None
     try:
-        item = runtime.get_item("products", product_id)
+        item = next((row for row in items if str(row.get("id") or "") == product_id), None) if items is not None else runtime.get_item("products", product_id)
     except Exception:
         return None
     if not isinstance(item, dict):
@@ -2350,7 +2131,7 @@ def context_product_candidates(
             continue
         seen.add(product_id)
         try:
-            item = runtime.get_item("products", product_id)
+            item = next((row for row in items if str(row.get("id") or "") == product_id), None) if items is not None else runtime.get_item("products", product_id)
         except Exception:
             continue
         if not isinstance(item, dict):

@@ -3030,6 +3030,12 @@ def build_brain_prompt_pack(*, settings: dict[str, Any], brain_input: dict[str, 
             "常识性建议：facts_claimed=[]，recommended_action=send_reply，answer_mode用direct_answer或compare_options。"
             "遵守runtime_principles；它不授权事实。只输出裸JSON对象，不要Markdown，不要```json代码块，不要解释。"
         )
+    system += (
+        "车辆候选是筛选后的展示片段，不等于全部库存。先依据product_master.catalog_selection核对查询范围："
+        "scan_complete=false表示查库失败，不能说没有车；budget_match_count只证明价格范围内的数量，"
+        "不证明车况等其他条件。不得从展示的几辆车推断全店最低价、全部没有某车型或预算内无车。"
+        "有预算内候选时应优先介绍；selection_role为referenced_vehicle_outside_budget的车仅用于回答客户点名的车，须说明超出预算。"
+    )
     conversation = (
         brain_input.get("conversation")
         if isinstance(brain_input.get("conversation"), dict)
@@ -3694,11 +3700,16 @@ def build_brain_user_content(prompt_pack: dict[str, Any]) -> str:
     return json.dumps(prompt_pack.get("user", {}), ensure_ascii=False) + "\n\n" + str(prompt_pack.get("response_schema") or BRAIN_RESPONSE_SCHEMA_PROMPT)
 
 
-def estimate_prompt_pack(prompt_pack: dict[str, Any], *, user_content: str | None = None) -> dict[str, int]:
+def estimate_prompt_pack(prompt_pack: dict[str, Any], *, user_content: str | None = None) -> dict[str, Any]:
     system = str(prompt_pack.get("system") or "")
     user = user_content if user_content is not None else build_brain_user_content(prompt_pack)
     text = system + "\n" + str(user or "")
-    return {"prompt_chars": len(text), "rough_prompt_tokens": max(1, len(text) // 2)}
+    estimate = {"prompt_chars": len(text), "rough_prompt_tokens": max(1, len(text) // 2)}
+    basis = ((prompt_pack.get("user") or {}).get("brain_input") or {}).get("content_basis") or {}
+    selection = (basis.get("product_master") or {}).get("catalog_selection")
+    if selection:
+        estimate["catalog_selection"] = dict(selection)
+    return estimate
 
 
 def clip(text: str, limit: int) -> str:
@@ -4891,6 +4902,12 @@ def compact_product_master_for_prompt(payload: dict[str, Any], *, max_items: int
         for item in (payload.get("items", []) or [])[:max_items]
         if isinstance(item, dict)
     ]
+    selection = payload.get("catalog_selection")
+    if isinstance(selection, dict) and selection:
+        data["catalog_selection"] = {**selection,
+            "prompt_count": len(data["items"]),
+            "prompt_ids": [str(item.get("id") or "") for item in data["items"]],
+            "prompt_truncated": len(data["items"]) < len(payload.get("items") or [])}
     return data
 
 
@@ -4917,6 +4934,7 @@ def compact_product_item_for_brain_prompt(item: dict[str, Any], *, max_text_char
         "availability",
         "authority_level",
         "match_reason",
+        "selection_role",
         "context_used",
     ):
         value = item.get(key)
