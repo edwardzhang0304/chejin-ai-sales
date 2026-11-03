@@ -840,6 +840,7 @@ def build_reply_evidence_pack(
         max_rag_text_chars=int(settings.get("max_rag_text_chars", DEFAULT_MAX_TEXT_CHARS) or DEFAULT_MAX_TEXT_CHARS),
         max_catalog_candidates=int(settings.get("max_catalog_candidates", 8) or 8),
         context_override=context,
+        defer_catalog=target_state.get("history_authority") == CHEJIN_HISTORY_AUTHORITY,
     )
     compact_knowledge["conversation_context"] = context
     common_sense = common_sense_prompt_fragment(
@@ -1039,6 +1040,7 @@ def compact_knowledge_pack(
     max_rag_text_chars: int,
     max_catalog_candidates: int,
     context_override: dict[str, Any] | None = None,
+    defer_catalog: bool = False,
 ) -> dict[str, Any]:
     evidence = pack.get("evidence", {}) or {}
     rag_evidence = pack.get("rag_evidence", {}) or {}
@@ -1047,7 +1049,9 @@ def compact_knowledge_pack(
     else:
         context = pack.get("conversation_context") if isinstance(pack.get("conversation_context"), dict) else {}
     catalog_selection: dict[str, Any] = {}
-    catalog_candidates = catalog_product_candidates(text, limit=max_catalog_candidates, context=context, selection_audit=catalog_selection)
+    catalog_candidates = [] if defer_catalog else catalog_product_candidates(text, limit=max_catalog_candidates, context=context, selection_audit=catalog_selection)
+    if defer_catalog:
+        catalog_selection.update(scan_complete=False, status="not_queried")
     item_limit = max(1, max_catalog_candidates)
     products = []
     for item in (evidence.get("products", []) or [])[:item_limit]:
@@ -1067,6 +1071,8 @@ def compact_knowledge_pack(
     # coverage is carried to the prompt and must not authorize absence claims.
     product_master = (catalog_candidates if catalog_selection.get("scan_complete")
                       else dedupe_authoritative_products(products))[:item_limit]
+    if defer_catalog:
+        product_master = []  # Historic/RAG hits cannot certify current inventory.
     # The catalog reads the same authoritative rows. Restore backend-authored,
     # field-bounded vehicle specs if an earlier retrieval projection clipped them.
     vehicle_specs = {str(item.get("id")): item["specs"] for item in catalog_candidates if item.get("source_type") == "chejin_backend"}
@@ -1090,7 +1096,7 @@ def compact_knowledge_pack(
         "intent_tags": list(pack.get("intent_tags", []) or []),
         "selected_items": [
             compact_mapping(item, max_text_chars=400)
-            for item in (pack.get("selected_items", []) or [])[:item_limit]
+            for item in ([] if defer_catalog else (pack.get("selected_items", []) or []))[:item_limit]
             if isinstance(item, dict)
         ],
         "evidence": {

@@ -923,6 +923,10 @@ def _maybe_run_customer_service_brain_within_time_budget(
     )
     apply_server_validated_image_products(batch, evidence_pack)
     attach_conversation_runtime_hints_to_evidence_pack(evidence_pack, target_state)
+    if target_state.get("history_authority") == CHEJIN_HISTORY_AUTHORITY:
+        from apps.wechat_ai_customer_service.workflows.catalog_query import PROTOCOL, message_sources
+        evidence_pack["catalog_protocol"] = {"protocol": PROTOCOL, "phase": "not_queried",
+                                             "sources": message_sources(evidence_pack)}
     if str(evidence_pack.get("knowledge_error") or "").strip():
         payload.update(
             {
@@ -979,6 +983,13 @@ def _maybe_run_customer_service_brain_within_time_budget(
 
     stage_started = time.time()
     result = run_brain_llm(settings=settings, brain_input=brain_input)
+    if evidence_pack.get("catalog_protocol"):
+        from apps.wechat_ai_customer_service.workflows.catalog_query import run_catalog_round
+        from apps.wechat_ai_customer_service.workflows.reply_evidence_builder import KnowledgeRuntime
+        result = run_catalog_round(first_result=result, settings=settings, brain_input=brain_input,
+                                   run_llm=run_brain_llm, runtime_factory=KnowledgeRuntime)
+        payload["catalog_stages"] = result.get("catalog_stages", {})
+        payload["audit_summary"] = evidence_pack.get("audit_summary", {})
     record_stage("brain_llm", stage_started)
     payload["llm_status"] = {
         key: result.get(key)
@@ -3053,6 +3064,10 @@ def build_brain_prompt_pack(*, settings: dict[str, Any], brain_input: dict[str, 
             max_segments=int(settings["reply_sequence_max_segments"]),
         )
     response_schema = BRAIN_RESPONSE_SCHEMA_PROMPT
+    if evidence.get("catalog_protocol"):
+        from apps.wechat_ai_customer_service.workflows.catalog_query import QUERY_INSTRUCTION
+        system += QUERY_INSTRUCTION
+        response_schema += " 首轮需要车辆事实时允许仅返回 catalog_query 对象，以车辆查询合同为准。"
     if settings.get("reply_sequence_version") == 1:
         response_schema = response_schema.replace(
             "最多3条且每条不超过96个中文字符",
@@ -3068,6 +3083,11 @@ def build_brain_prompt_pack(*, settings: dict[str, Any], brain_input: dict[str, 
             "authority_order": compact_authority_order_for_prompt(evidence.get("authority_order", [])),
         },
     }
+
+
+def catalog_prompt_protocol(evidence):
+    from apps.wechat_ai_customer_service.workflows.catalog_query import prompt_protocol
+    return prompt_protocol(evidence)
 
 
 def slim_brain_input_for_prompt(brain_input: dict[str, Any], *, settings: dict[str, Any]) -> dict[str, Any]:
@@ -3089,6 +3109,10 @@ def slim_brain_input_for_prompt(brain_input: dict[str, Any], *, settings: dict[s
     for duplicated_key in ("products", "catalog_candidates", "faq", "policies", "product_scoped"):
         content_evidence.pop(duplicated_key, None)
     max_product_items = max(0, int(settings.get("max_prompt_product_items", 5) or 0))
+    if (evidence.get("catalog_protocol") or {}).get("receipt"):
+        # The query has already bounded recommendations/references after a full
+        # scan. Do not silently truncate its selected facts a second time.
+        max_product_items = len((knowledge.get("product_master") or {}).get("items") or [])
     max_formal_items = max(0, int(settings.get("max_prompt_formal_items", 4) or 0))
     max_style_examples = 0 if routine_product_fast else max(0, int(settings.get("max_prompt_style_examples") or 1))
     max_rag_hits = 0 if routine_product_fast else max(0, int(settings.get("max_prompt_rag_hits") or 2))
@@ -3140,6 +3164,7 @@ def slim_brain_input_for_prompt(brain_input: dict[str, Any], *, settings: dict[s
     audit_summary = evidence.get("audit_summary", {}) if isinstance(evidence.get("audit_summary"), dict) else {}
     return {
         "target": brain_input.get("target", {}),
+        "catalog_protocol": catalog_prompt_protocol(evidence),
         "current_message": current_message,
         "conversation": {
             "context": conversation.get("context", {}),
@@ -4585,7 +4610,8 @@ def validate_plan_against_evidence(plan: dict[str, Any], evidence_pack: dict[str
     formal_ids = collect_formal_ids(evidence_pack)
     normalized_product_ids = normalize_source_id_set(product_ids)
     normalized_formal_ids = normalize_source_id_set(formal_ids)
-    errors: list[str] = []
+    from apps.wechat_ai_customer_service.workflows.catalog_query import query_plan_errors
+    errors: list[str] = query_plan_errors(plan, evidence_pack)
     evidence = plan.get("evidence_used") if isinstance(plan.get("evidence_used"), dict) else {}
     # Guidance may be cited without facts, but its source must still exist.
     # Otherwise an invented citation can masquerade as formal grounding later.
@@ -4904,7 +4930,7 @@ def compact_product_master_for_prompt(payload: dict[str, Any], *, max_items: int
     ]
     selection = payload.get("catalog_selection")
     if isinstance(selection, dict) and selection:
-        data["catalog_selection"] = {**selection,
+        data["catalog_selection"] = {**{k: v for k, v in selection.items() if k not in {"recommendations", "references", "unknown_fields", "query"}},
             "prompt_count": len(data["items"]),
             "prompt_ids": [str(item.get("id") or "") for item in data["items"]],
             "prompt_truncated": len(data["items"]) < len(payload.get("items") or [])}
@@ -5104,6 +5130,8 @@ def augment_evidence_pack_with_plan_product_ids(evidence_pack: dict[str, Any], p
     this cannot authorize hallucinated product facts.
     """
 
+    if evidence_pack.get("catalog_protocol"):
+        return []  # Every Hook phase, including repair, uses the frozen query receipt.
     requested_ids = collect_plan_product_ids(plan)
     for product_id in collect_context_product_ids_for_current_conversation_product_facts(plan, evidence_pack):
         if product_id not in requested_ids:

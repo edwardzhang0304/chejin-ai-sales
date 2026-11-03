@@ -243,6 +243,11 @@ def review_brain_reply_semantics(
     """
 
     cfg = effective_reviewer_settings(settings)
+    catalog_required = bool((evidence_pack.get("catalog_protocol") or {}).get("receipt"))
+    if catalog_required and (not cfg["enabled"] or cfg["mode"] == "shadow"):
+        return {"ok": False, "status": "error", "verdict": "block", "enforced": True,
+                "errors": ["catalog_semantic_review_unavailable"], "unavailable": True,
+                "soft_pass_low_risk": False}
     authority_required = bool((deterministic_quality or {}).get("authority_review_required"))
     if authority_required and (not cfg["enabled"] or cfg["mode"] == "shadow"):
         return authority_review_failure("authority_review_unavailable")
@@ -251,7 +256,7 @@ def review_brain_reply_semantics(
     mode = str(cfg["mode"] or "suspicious_only")
     if mode not in REVIEWER_MODES:
         mode = "suspicious_only"
-    suspicious = authority_required or force or should_invoke_semantic_reviewer(
+    suspicious = catalog_required or authority_required or force or should_invoke_semantic_reviewer(
         plan=plan,
         current_message=current_message_text(brain_input, fallback=str(evidence_pack.get("current_message") or "")),
         evidence_pack=evidence_pack,
@@ -280,11 +285,17 @@ def review_brain_reply_semantics(
     raw_result = reviewer_from_settings(cfg)
     if raw_result is None:
         raw_result = run_quality_reviewer_llm(settings=cfg, request=request)
-    if authority_required and not quality_reviewer_contract_is_complete(
-        raw_result or {}, authority_required=True,
+    if (catalog_required or authority_required) and not quality_reviewer_contract_is_complete(
+        raw_result or {}, authority_required=authority_required,
     ):
         return authority_review_failure("authority_review_invalid_contract")
     review = normalize_quality_review_result(raw_result)
+    if catalog_required and not authority_required:
+        # Need interpretation must be checked against its message evidence. Do
+        # not turn a budget/finance semantic rejection into a low-risk soft pass.
+        review.update(cache_key=cache_key, cache_hit=False, invoked=True, mode=mode,
+                      soft_pass_low_risk=False)
+        return apply_review_mode(review, mode=mode)
     if authority_required:
         # No shadow/outage/low-risk relaxation may decide that a factual claim
         # is merely a customer preference. A fresh changed draft is a new key.
@@ -1075,8 +1086,19 @@ def build_quality_reviewer_prompt(request: dict[str, Any]) -> tuple[str, str]:
         "此审核只分类，不能授权缺失的事实；factual必须交Brain补齐声明及真实来源再走原核验。"
         "只输出裸JSON对象，不要Markdown，不要```json代码块，不要解释。字段：claim_kind(non_factual/factual/uncertain), verdict(pass/repair/block/handoff_suggest), confidence(0-1), semantic_errors(list), hard_boundary_concerns(list), repair_instruction(str), customer_visible_risk(low/medium/high), reason(str)。"
     )
+    if request.get("catalog_protocol"):
+        system += ("核对catalog_protocol中的结构化需求与source_evidence原文是否一致：总预算不是首付/月供，"
+                   "当前要求优先于已否定或过去预算，未提预算不等于明确不限。核对拒绝旧车、品牌、比较意图。"
+                   "需求理解错误必须repair，不能仅因报价真实放行；你不能自行修改查询需求或回执。"
+                   "未查询不能宣称当前库存事实；匹配数量只对应列出的已支持条件，字段未知或不支持条件必须如实表达。"
+                   "references可用于点名比较，recommendations是推荐集合；不能用高价比较对象替代预算内推荐。")
     user = json.dumps({"task": "审稿候选Brain回复，不要生成客户回复。", "review_request": request}, ensure_ascii=False)
     return system, user
+
+
+def catalog_prompt_protocol(evidence):
+    from apps.wechat_ai_customer_service.workflows.catalog_query import prompt_protocol
+    return prompt_protocol(evidence)
 
 
 def build_quality_review_request(
@@ -1098,6 +1120,7 @@ def build_quality_review_request(
             "chat_type": str(target.get("chat_type") or ""),
         },
         "reply_trigger": reply_trigger_context(current_message.get("trigger_type")),
+        "catalog_protocol": catalog_prompt_protocol(evidence_pack),
         "authority_review_required": bool(deterministic_quality.get("authority_review_required")),
         "current_user_messages": [current_message_text(brain_input, fallback=str(evidence_pack.get("current_message") or ""))],
         "conversation_summary": clip(str(conversation.get("summary") or ""), int(settings.get("semantic_reviewer_summary_chars") or 260)),

@@ -1125,6 +1125,11 @@ def normalize_brain_plan(raw_plan: dict[str, Any] | None, *, max_segments: int =
         "self_check": normalize_mapping(plan.get("self_check")),
         "hard_opt_out": normalize_mapping(plan.get("hard_opt_out")),
     }
+    # Preserve forbidden intermediate fields so validation cannot erase a query
+    # or a model-authored receipt and accidentally turn it into a sendable plan.
+    for field in ("catalog_query", "catalog_receipt"):
+        if field in plan:
+            normalized[field] = plan[field]
     return normalized
 
 
@@ -1282,6 +1287,15 @@ def verify_brain_reply_quality(
     product_terms = collect_quality_product_terms(plan, evidence_pack or {})
     has_product_evidence = bool(collect_authoritative_product_ids(evidence_pack or {}))
     budget_upper = extract_quality_budget_upper(question, evidence_pack or {})
+    catalog_protocol = (evidence_pack or {}).get("catalog_protocol")
+    if catalog_protocol:
+        query = ((catalog_protocol.get("receipt") or {}).get("query") or {})
+        price_question = query.get("operation") == "details"
+        recommendation_question = query.get("operation") == "search"
+        contextual_recommendation_question = direct_decision_question = False
+        concrete_question = bool(query) or bool(plan.get("facts_claimed"))
+        if query:
+            warnings.append("catalog_need_and_reply_require_semantic_review")
 
     delay_followup_state = extract_conversation_interaction_state(evidence_pack or {})
     delay_followup_posture = str(delay_followup_state.get("suggested_reply_posture") or "") == "acknowledge_delay_then_continue"
@@ -1366,7 +1380,7 @@ def verify_brain_reply_quality(
             )
             if price_uncertainty_check.get("error"):
                 errors.append(str(price_uncertainty_check["error"]))
-        multi_check = check_multi_product_recommendation_count(
+        multi_check = {} if catalog_protocol else check_multi_product_recommendation_count(
             clean_reply,
             evidence_pack or {},
             current_message=question,
@@ -1375,7 +1389,7 @@ def verify_brain_reply_quality(
         if multi_check.get("error"):
             errors.append(str(multi_check["error"]))
 
-    if has_product_evidence and is_ambiguous_product_followup(question, evidence_pack or {}):
+    if not catalog_protocol and has_product_evidence and is_ambiguous_product_followup(question, evidence_pack or {}):
         ambiguous_followup_check = check_ambiguous_followup_product_binding(clean_reply, evidence_pack or {})
         if ambiguous_followup_check.get("error"):
             errors.append(str(ambiguous_followup_check["error"]))
@@ -3250,6 +3264,10 @@ def quality_product_identity(item: dict[str, Any]) -> str:
 
 
 def extract_quality_budget_upper(question: str, evidence_pack: dict[str, Any]) -> float | None:
+    protocol = evidence_pack.get("catalog_protocol")
+    if protocol:
+        bounds = ((protocol.get("receipt") or {}).get("query") or {}).get("budget_bounds")
+        return bounds["upper"] if bounds else None
     texts = [str(question or "")]
     conversation = evidence_pack.get("conversation") if isinstance(evidence_pack.get("conversation"), dict) else {}
     context = conversation.get("context") if isinstance(conversation.get("context"), dict) else {}
