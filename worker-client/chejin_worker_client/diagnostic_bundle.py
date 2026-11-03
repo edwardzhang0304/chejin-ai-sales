@@ -17,6 +17,7 @@ import time
 import uuid
 import zipfile
 from datetime import datetime, timezone
+from contextlib import contextmanager
 
 from .evidence_paths import artifacts, incident_roots, update_root
 from .incident_evidence import _sanitize, _SECRET_KEY_RE, _FORBIDDEN_FILE_RE
@@ -129,6 +130,18 @@ class Collector:
 
     def limited(self):
         return time.monotonic() >= min(self.deadline, self.source_deadline) or self.visited >= min(MAX_FILES, self.source_end)
+
+    @contextmanager
+    def source_budget(self, *, files=400, seconds=4):
+        """A source allowance cannot leak into the next collector, even on error."""
+        previous = self.source_end, self.source_deadline
+        self.source_end = min(previous[0], self.visited + max(0, files))
+        self.source_deadline = min(previous[1], self.deadline,
+                                   time.monotonic() + max(0, seconds))
+        try:
+            yield
+        finally:
+            self.source_end, self.source_deadline = previous
 
     def clean(self, value, *, ocr=False):
         return _sanitize(_content_safe(value, ocr=ocr), self.secrets)
@@ -631,10 +644,7 @@ class Collector:
             if isinstance(metadata, dict) and metadata.get('incident_id'):
                 select(metadata['incident_id'])
 
-        previous = self.source_end, self.source_deadline
-        self.source_end = min(MAX_FILES, self.visited + 400)
-        self.source_deadline = min(self.deadline, time.monotonic() + 4)
-        try:
+        with self.source_budget():
             for incident in selected:
                 found = False
                 for root, label in roots:
@@ -652,8 +662,6 @@ class Collector:
                         self.priority_incident_paths.add(path)
                 if not found:
                     self.record('priority_incidents/'+incident, 'read_failed', reason='referenced_incident_unavailable_or_pending')
-        finally:
-            self.source_end, self.source_deadline = previous
 
     def tree(self, folder, prefix, archive, *, update_only=False, allowed_root=None, ocr=False, task_priority=None):
         if not folder.exists():
@@ -667,8 +675,6 @@ class Collector:
         # essential and historical evidence must not double its allowance.
         used_count, used_seconds = self.tree_usage.get(prefix, (0, 0))
         started, first_visited = time.monotonic(), self.visited
-        self.source_end = self.visited + max(0, 400-used_count)
-        self.source_deadline = min(self.deadline, started + max(0, 4-used_seconds))
         def walk(directory, relative, depth=0):
             if self.limited() or depth > 32:
                 self.record(prefix, "omitted", reason="time_or_file_limit")
@@ -734,11 +740,12 @@ class Collector:
                                       ocr=ocr or (prefix == "tasks" and "ocr" in Path(rel).parts))
             except OSError as exc:
                 self.record(f"{prefix}/{relative}", "read_failed", error_type=type(exc).__name__)
-        try:
-            walk(folder, "")
-        finally:
-            self.tree_usage[prefix] = (used_count+self.visited-first_visited,
-                                       used_seconds+time.monotonic()-started)
+        with self.source_budget(files=400-used_count, seconds=4-used_seconds):
+            try:
+                walk(folder, "")
+            finally:
+                self.tree_usage[prefix] = (used_count+self.visited-first_visited,
+                                           used_seconds+time.monotonic()-started)
 
     def file(self, path, member, archive, *, allowed_root=None, ocr=False):
         if not self.source_allowed(path, allowed_root):
@@ -837,6 +844,8 @@ class Collector:
                     if prefix == "receipts":
                         from .performance_export import collect as collect_performance
                         collect_performance(self, archive)
+                        from .windows_exit_evidence import collect as collect_windows_events
+                        collect_windows_events(self, archive)
                 issues = [e for e in self.entries if e["status"] in {"read_failed", "omitted"}]
                 manifest = {"schema_version": 1, "exported_at": datetime.now(timezone.utc).isoformat(),
                             "build": build_identity(),

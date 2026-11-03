@@ -589,6 +589,7 @@ stop
 @enduml
 
 
+' 2026-11-03 文档修订 r1：预算隔离与Windows事件候选，实机待验，未发布。
 @startuml performance_evidence_pe01
 !pragma layout smetana
 skinparam defaultFontName "PingFang SC"
@@ -613,6 +614,10 @@ endif
 无需Worker响应，无需命令或脚本;
 :正式Collector优先收旧异常会话与重启前后记录
 关联原凭证，共用总预算与脱敏规则;
+:每个来源结束恢复局部预算，原ZIP全局额度不变;
+:有界只读收集Windows相关崩溃与资源不足事件
+白名单投影，查询失败/无记录/超限明确记录
+不读取完整正文或转储;
 :生成一个ZIP及缺件/省略清单
 不补造旧版本没有的性能数据;
 stop
