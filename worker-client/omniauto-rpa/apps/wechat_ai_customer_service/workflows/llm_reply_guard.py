@@ -312,7 +312,7 @@ def guard_synthesized_reply(
             ),
         )
 
-    has_structured = has_structured_evidence(evidence_pack)
+    has_structured = has_structured_evidence(evidence_pack) or has_catalog_summary_authority(reply, evidence_pack)
     rag_used = bool(candidate.get("rag_used"))
     structured_used = bool(candidate.get("structured_used"))
     require_structured = settings.get("require_structured_for_authority", True) is not False
@@ -836,6 +836,13 @@ def normalize_candidate(candidate: dict[str, Any]) -> dict[str, Any]:
     return {"ok": not errors, "candidate": normalized, "errors": errors}
 
 
+def has_catalog_summary_authority(reply: str, evidence_pack: dict[str, Any]) -> bool:
+    """A verified scoped query is authority even when its product set is empty."""
+    from apps.wechat_ai_customer_service.workflows.catalog_query import aggregate_ready, clearance_kind
+    receipt = (evidence_pack.get("catalog_protocol") or {}).get("receipt") or {}
+    return clearance_kind(reply, evidence_pack) == "query_summary" and aggregate_ready(receipt)
+
+
 def has_structured_evidence(evidence_pack: dict[str, Any]) -> bool:
     knowledge = evidence_pack.get("knowledge", {}) or {}
     evidence = knowledge.get("evidence", {}) or {}
@@ -1006,7 +1013,8 @@ def existing_safety_can_be_cleared_by_authoritative_reply(
     used = {str(item) for item in candidate.get("used_evidence", []) or [] if str(item)}
     has_product_authority = any(item.startswith("product:") for item in used) or bool(collect_product_evidence_items(evidence_pack))
     has_formal_authority = any(item.startswith(("faq:", "policy:", "formal:", "product_scoped:")) for item in used)
-    if not (has_product_authority or has_formal_authority):
+    has_catalog_authority = has_catalog_summary_authority(reply, evidence_pack)
+    if not (has_product_authority or has_formal_authority or has_catalog_authority):
         return False
     soft_authority_reasons = {
         "matched_faq_requires_handoff",
@@ -1017,7 +1025,7 @@ def existing_safety_can_be_cleared_by_authoritative_reply(
     if reasons <= soft_authority_reasons and (has_product_authority or has_formal_authority):
         return True
     soft_no_evidence_reasons = {"no_relevant_business_evidence", "auto_reply_disabled"}
-    if reasons <= soft_no_evidence_reasons and (has_product_authority or has_formal_authority):
+    if reasons <= soft_no_evidence_reasons and (has_product_authority or has_formal_authority or has_catalog_authority):
         return True
     soft_finance_process_reasons = {"matched_faq_requires_handoff", "finance_details_need_human"}
     if reasons <= soft_finance_process_reasons and has_formal_authority and reply_is_qualified_finance_process_explanation(reply):

@@ -1705,6 +1705,20 @@ def _maybe_run_customer_service_brain_within_time_budget(
                             "warnings": guard_quality_retry_soft_pass.get("warnings", []),
                             "repair_instruction": "",
                         }
+                    if guard_quality_retry_validation.get("ok") and guard_quality_retry_quality.get("ok"):
+                        # This draft replaced the first guard-repair draft. Its
+                        # text must receive its own review/receipt clearance.
+                        retry_semantic_review = review_brain_reply_semantics(
+                            settings=settings,
+                            brain_input=brain_input,
+                            evidence_pack=evidence_pack,
+                            plan=guard_quality_retry_plan,
+                            deterministic_quality=guard_quality_retry_quality,
+                            force=should_force_semantic_review_after_repair(settings, repaired_quality),
+                        )
+                        payload["post_guard_quality_gate_v2"] = compact_semantic_review(retry_semantic_review)
+                        if not retry_semantic_review.get("ok"):
+                            guard_quality_retry_quality = semantic_review_to_quality(retry_semantic_review)
                     payload["post_guard_quality_brain_plan"] = compact_brain_plan(guard_quality_retry_plan)
                     payload["post_guard_quality_plan_validation"] = guard_quality_retry_validation
                     payload["post_guard_quality_verification"] = compact_quality_verification(guard_quality_retry_quality)

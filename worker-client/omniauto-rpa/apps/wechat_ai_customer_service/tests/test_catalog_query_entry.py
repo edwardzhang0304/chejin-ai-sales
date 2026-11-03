@@ -175,3 +175,43 @@ def test_missing_empty_budget_source_normalizes_only_not_mentioned():
     assert r['query']['budget']['source_ids']==[] and r['match_count']==1
     for state in ('specified','unlimited','uncertain'):
         with pytest.raises(cq.CatalogQueryError):execute(query(budget={'state':state,'unit':'万元'}),[])
+
+
+@pytest.mark.parametrize('initial_failure',['confidence','price'])
+@pytest.mark.parametrize('final_review',['pass','reject','unavailable','changed_reply','changed_receipt'])
+def test_second_guard_repair_gets_fresh_semantic_review(monkeypatch, initial_failure, final_review):
+    runner=fixtures.brain_module
+    original=runner.review_brain_reply_semantics
+    observed=[]
+    final_text='合成车fit报价3.58万，您可以先了解一下。'
+    def audited(**kwargs):
+        final=kwargs['plan']['reply_segments']==[final_text]
+        if final and final_review in ('reject','unavailable'):
+            kwargs['settings']={**kwargs['settings'],'semantic_reviewer_result':
+                review(verdict='repair',semantic_errors=['合成审核拒绝']) if final_review=='reject' else {'status':'error','error':'synthetic timeout'}}
+        result=original(**kwargs)
+        observed.append((kwargs['plan']['reply_segments'][:], result.get('ok')))
+        if final and final_review=='changed_reply':
+            kwargs['plan']['reply_segments']=['合成车fit报价3.58万，欢迎了解。']
+        if final and final_review=='changed_receipt':
+            kwargs['evidence_pack']['catalog_protocol']['receipt']['match_count']+=1
+        return result
+    monkeypatch.setattr(runner,'review_brain_reply_semantics',audited)
+    produced=[]
+    def plan(_):
+        n=len(produced)
+        p=fixtures.base_plan()
+        text=final_text if n>=2 else ('可以先看合成车fit，报价3.58万，建议' if n==1 else
+              '可以先看合成车fit，报价9万。' if initial_failure=='price' else '可以先看合成车fit，报价3.58万。')
+        p.update(answer_mode='recommend_from_catalog',confidence=.1 if n==0 and initial_failure=='confidence' else .95,
+                 reply_segments=[text],evidence_used={'product_ids':['fit']},
+                 facts_claimed=[{'fact_type':'price','value':'3.58万','source_level':'product_master','source_id':'fit'}])
+        produced.append(p);return deepcopy(p)
+    result,calls=run_entry(monkeypatch, rows=[row('fit',3.58)],make_plan=plan,raw_query=query(),semantic=review())
+    assert len(produced)==3 and len(calls)==4
+    assert any(text==[final_text] for text,ok in observed),observed
+    assert bool(result.get('adoptable')) is (final_review=='pass'),result
+    if final_review in ('reject','unavailable'):
+        assert result['post_guard_quality_gate_v2']['ok'] is False
+    elif final_review.startswith('changed_'):
+        assert result['guard_repaired_guard']['reason']=='catalog_semantic_clearance_missing_or_stale'
