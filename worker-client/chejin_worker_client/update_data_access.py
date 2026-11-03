@@ -4,6 +4,8 @@ Normal connections hold a shared OS lock. The updater holds the exclusive
 lock until its authenticated child has completed startup. No token is stored.
 """
 from __future__ import annotations
+import ctypes
+from ctypes import wintypes
 import hashlib
 import hmac
 import json
@@ -57,16 +59,17 @@ def lock_path(data_dir: Path) -> Path:
     return directory.parent / ("." + directory.name + ".update-access.lock")
 
 
+# A fresh OVERLAPPED value belongs to each lock. Its ctypes POINTER type must
+# be shared: constructing a new class per DB connection permanently caches it.
+class Overlapped(ctypes.Structure):
+    _fields_ = [("Internal", ctypes.c_size_t), ("InternalHigh", ctypes.c_size_t),
+                ("Offset", wintypes.DWORD), ("OffsetHigh", wintypes.DWORD),
+                ("hEvent", wintypes.HANDLE)]
+
+
 class _WindowsRangeLock:
     def __init__(self, file, exclusive: bool):
-        import ctypes
-        from ctypes import wintypes
         import msvcrt
-
-        class Overlapped(ctypes.Structure):
-            _fields_ = [("Internal", ctypes.c_size_t), ("InternalHigh", ctypes.c_size_t),
-                        ("Offset", wintypes.DWORD), ("OffsetHigh", wintypes.DWORD),
-                        ("hEvent", wintypes.HANDLE)]
 
         self.api = ctypes.WinDLL("kernel32", use_last_error=True)
         self.api.LockFileEx.argtypes = [wintypes.HANDLE, wintypes.DWORD, wintypes.DWORD,
