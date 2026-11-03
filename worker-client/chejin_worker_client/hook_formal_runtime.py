@@ -21,7 +21,7 @@ from .hook_backend import HookIdentityClient,HookHeartbeatIdentity,HookHeartbeat
 from .hook_formal_c1 import HookFormalC1,HookC1ResultReceipts,_save
 from .hook_progress import emit_progress,register_progress,complete_send_progress
 from .hook_timing import timed_call, record_raw_delivery
-from .performance_evidence import measurement, measured_rows, iter_measured_rows
+from .performance_evidence import measurement, iter_measured_rows
 from .hook_history_sync import HookHistorySynchronizer
 from .hook_outbox import HookDeliveryScope,HookDeliveryOutbox
 from .hook_projection import create_projection_store
@@ -463,23 +463,22 @@ class HookFormalRuntime:
             with storage.db_connection() as conn:
                 exists=conn.execute("SELECT 1 FROM sqlite_master WHERE name='hook_raw_inbox'").fetchone()
                 rows=conn.execute('SELECT receive_seq,raw_body,raw_digest,received_at FROM hook_raw_inbox WHERE self_wxid=? AND account_epoch=? AND process_generation=? ORDER BY receive_seq',
-                    (self.scope.self_wxid,self.scope.account_epoch,self.scope.process_generation)).fetchall() if exists else []
-            measured_rows(metrics,rows,('raw_body',))
-            for row in rows:
-                if hashlib.sha256(row['raw_body']).hexdigest()!=row['raw_digest']:
-                    raise ValueError('HOOK_RAW_EVIDENCE_CHANGED')
-                event=rules.loads(row['raw_body'])
-                metrics['validated_rows'] = metrics.get('validated_rows',0)+1
-                if str(event.get('sendorrecv'))!='2':continue
-                for message in event.get('msglist',[]):
-                    mid=str(message.get('msgsvrid') or '')
-                    if (message.get('fromid')!=binding['peer_wxid'] or message.get('toid')!=self.scope.self_wxid
-                            or str(message.get('fromtype'))!='1' or not re.fullmatch(r'[1-9][0-9]{0,19}',mid)
-                            or str(message.get('msgtype')) not in {'1','3','34','49'}
-                            or any(isinstance(message.get(field),str) and message[field].endswith('@chatroom') for field in ('fromid','toid','fromgid'))):continue
-                    if hook_history_rules.is_friend_acceptance_notice({'Type':str(message.get('msgtype')),'IsSender':'0','StrContent':message.get('msg')}):continue
-                    incoming.setdefault(mid,row['receive_seq'])
-                    times.setdefault(mid,row['received_at'])
+                    (self.scope.self_wxid,self.scope.account_epoch,self.scope.process_generation)) if exists else []
+                for row in iter_measured_rows(metrics,rows,('raw_body',)):
+                    if hashlib.sha256(row['raw_body']).hexdigest()!=row['raw_digest']:
+                        raise ValueError('HOOK_RAW_EVIDENCE_CHANGED')
+                    event=rules.loads(row['raw_body'])
+                    metrics['validated_rows'] = metrics.get('validated_rows',0)+1
+                    if str(event.get('sendorrecv'))!='2':continue
+                    for message in event.get('msglist',[]):
+                        mid=str(message.get('msgsvrid') or '')
+                        if (message.get('fromid')!=binding['peer_wxid'] or message.get('toid')!=self.scope.self_wxid
+                                or str(message.get('fromtype'))!='1' or not re.fullmatch(r'[1-9][0-9]{0,19}',mid)
+                                or str(message.get('msgtype')) not in {'1','3','34','49'}
+                                or any(isinstance(message.get(field),str) and message[field].endswith('@chatroom') for field in ('fromid','toid','fromgid'))):continue
+                        if hook_history_rules.is_friend_acceptance_notice({'Type':str(message.get('msgtype')),'IsSender':'0','StrContent':message.get('msg')}):continue
+                        incoming.setdefault(mid,row['receive_seq'])
+                        times.setdefault(mid,row['received_at'])
         if not incoming:return f"{binding['binding_id']}:initial",False
         parent=max(incoming,key=incoming.get)
         self._incoming_occurred_at=times.get(parent)

@@ -102,6 +102,53 @@ def test_unrelated_corrupt_record_is_still_rejected_after_streaming(callbacks):
         rt.barrier({'peer_wxid':'wxid_peer','voice_jobs':[]})
 
 
+@pytest.mark.parametrize('consumer',['voice','progress'])
+def test_raw_scan_bounds_temporary_memory_and_checks_evidence_after_match(callbacks,consumer):
+    import hashlib
+    import tracemalloc
+    from chejin_worker_client.hook_voice import capture_voice_audio
+    rt,put,_=callbacks
+    scope=rt.scope
+    audio=b'\x02#!SILK_V3'+bytes(range(32))
+    inbox=NativeInbox(max_body_bytes=256*1024,max_inbox_bytes=16*1024*1024)
+    message={'msgsvrid':'9001','msgtype':'34','fromid':'wxid_peer',
+             'toid':scope.self_wxid,'fromtype':'1',
+             'msg':f'<msg><voicemsg length="{len(audio)}"/></msg>',
+             'voice_data':audio.hex(),'voice_len':str(len(audio))}
+    event={'ServerPort':str(scope.hook_api_port),'selfwxid':scope.self_wxid,
+           'sendorrecv':'2','msgnumber':'1','msglist':[message]}
+    inbox.persist(json.dumps(event).encode(),scope)
+    for i in range(80):
+        put(peer='wxid_other',mid=str(10000+i),text='x'*32768)
+    def read():
+        if consumer=='voice':
+            return capture_voice_audio(scope,'wxid_peer','9001',max_audio_bytes=4096)
+        return rt._history_progress_context({'binding_id':'synthetic','peer_wxid':'wxid_peer'})
+    tracemalloc.start()
+    try:
+        result=read()
+        _,peak=tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+    if consumer=='voice':
+        assert result.audio==audio and result.native_msg_id=='9001'
+    else:
+        assert result==('synthetic:9001',True) and rt._incoming_occurred_at
+    # Wide margin over one decoded row; the former fetchall retains >2.5 MiB.
+    assert peak<1024*1024
+    assert read()==result  # A fresh scan still resolves the durable parent.
+    with storage.db_connection() as db:
+        assert db.execute('SELECT COUNT(*) FROM hook_raw_inbox').fetchone()[0]==81
+        assert all(hashlib.sha256(row['raw_body']).hexdigest()==row['raw_digest']
+                   for row in db.execute('SELECT raw_body,raw_digest FROM hook_raw_inbox'))
+        db.execute("UPDATE hook_raw_inbox SET raw_body=? WHERE receive_seq=81",(b'{}',))
+        db.commit()
+    with pytest.raises(ValueError,match='RAW_EVIDENCE_CHANGED'):
+        read()
+    # Error must close the cursor/connection too; a following write can complete.
+    put(peer='wxid_other',mid='99999')
+
+
 def test_display_retirement_drops_finished_rounds_but_keeps_work_and_open_handoff(tmp_path):
     from chejin_worker_client.hook_progress import register_progress,forget_completed_progress_group
     dispatcher=HookBusinessDispatcher(None,tmp_path,None,None,automatic_transcription_disabled=lambda:True)
