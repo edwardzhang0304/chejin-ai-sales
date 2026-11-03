@@ -287,6 +287,46 @@ def test_sampler_crash_does_not_change_producers(tmp_path, monitors):
     assert index["sessions"][m.session]["status"] == "end_unconfirmed"
 
 
+@pytest.mark.parametrize('exit_point',['normal','before_poll','after_poll'])
+def test_sampler_owned_pipes_close_on_normal_exit_and_exit_write_race(
+    tmp_path, monitors, monkeypatch, exit_point
+):
+    import threading
+    m=start(tmp_path,monitors)
+    if exit_point=='normal':
+        m.close()
+    else:
+        original=m.process.poll
+        injected=[]
+        def poll():
+            result=original()
+            if threading.current_thread() is m.thread and result is None and not injected:
+                injected.append(True)
+                m.process.kill()
+                m.process.wait(timeout=3)
+                # Force both branches with a real child: exit observed before
+                # poll returns, or immediately after the last alive observation.
+                return None if exit_point=='after_poll' else m.process.returncode
+            return result
+        monkeypatch.setattr(m.process,'poll',poll)
+        wait_until(lambda:(m.root/'capture-gap.json').exists())
+        assert injected
+        gap=json.loads((m.root/'capture-gap.json').read_text())
+        assert gap['reason']==('BrokenPipeError' if exit_point=='after_poll' else 'sampler_exited')
+        pe.emit('counter',name='still_safe')
+        assert any(item[1].get('name')=='still_safe' for item in m.pending)
+        m.close(clean=False)
+    wait_until(lambda:not m.thread.is_alive() and not m.reader.is_alive())
+    assert m.process.stdin.closed and m.process.stdout.closed
+    # Same durable directory can start a fresh collector; failed capture is
+    # retained as incomplete, never promoted to a successful old session.
+    new=start(tmp_path,monitors)
+    new.close()
+    index=json.loads((m.root/'index.json').read_text())
+    if exit_point!='normal':
+        assert index['sessions'][m.session]['status']=='end_unconfirmed'
+
+
 def test_duplicate_sampler_lock_and_release(tmp_path):
     lock = acquire(tmp_path)
     try:
