@@ -853,5 +853,5 @@
       ]
     }
   ],
-  "unaffected_scope_review": "0.10.27 metadata and source evidence descriptor only; packaging tools unchanged; previously reviewed standalone native diagnostic consolidation retained. Reuse original executions including 40332019222 failure-evidence checks; execute only changed descriptor checks and actual Windows parser/gui."
+  "unaffected_scope_review": "0.10.28 metadata and source evidence descriptor only; packaging tools unchanged; previously reviewed standalone native diagnostic consolidation retained. Reuse original executions including 40332019222 failure-evidence checks; execute only changed descriptor checks and actual Windows parser/gui."
 }

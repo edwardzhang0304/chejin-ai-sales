@@ -1,6 +1,6 @@
 {
   "contract_version": 3,
-  "contract_revision": "0.10.27",
+  "contract_revision": "0.10.28",
   "observation_schema_version": 3,
   "control_schema_version": 1,
   "client_update_contract": {

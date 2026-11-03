@@ -680,17 +680,17 @@
     "recall_author_and_reviewer_shared_trigger_context"
   ],
   "current_release": {
-    "version": "0.10.27",
+    "version": "0.10.28",
     "source_commit": "209f7fb66a01a05736fdd32e54808e54a9b66ce3",
     "source_state": "gray_release_candidate",
     "published": false,
-    "contract_revision": "0.10.27",
-    "contract_sha256": "455ba2718adb3a1bc4321dcedce837cc566d1b3ded426fa2ad8698ac6227f51f",
+    "contract_revision": "0.10.28",
+    "contract_sha256": "d34c456715ad3fc3d2201a70f02c486c7e4a1928b63fec2cb9658746d671dc10",
     "scope": [
       "native_hook_state_and_release_preparation",
       "schema_revision_sync"
     ],
-    "note": "0.10.27 reviewed PR18 reset/rebind lifecycle; preserve records and unknown sends; manual user start only."
+    "note": "0.10.28 reviewed layout tolerance and PE-01 evidence; source 8a327340; preserve unknown-send proofs and manual pause. Windows button upgrade and actual endurance separately verified."
   },
   "historical_integrations": [
     {
