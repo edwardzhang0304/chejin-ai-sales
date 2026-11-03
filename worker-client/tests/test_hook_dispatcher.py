@@ -126,7 +126,12 @@ def test_transcript_receipt_replaces_pending_cache_without_new_callback(lab,back
     binding={'binding_id':str(uuid.uuid4()),'binding_revision':1,'peer_wxid':'wxid_customer_A',
         'conversation_id':str(uuid.uuid4()),'history_since_create_time':'1','history_ready':False,
         'voice_jobs':[{'native_msg_id':'123'}],'batch_ids':[str(uuid.uuid4())]}
-    reads=[];attempts=[];views=[]
+    from test_hook_voice import persist, AUDIO
+    from chejin_worker_client.hook_voice import HookVoiceTranscriber
+    persist(lab,metadata=True,mid='123',scope=scope)
+    persist(lab,audio=True,mid='123',scope=scope)
+    lab[0].voice_response={'status':1,'text':'synthetic transcript'}
+    reads=[];attempts=[];views=[];failures={'remaining':fault};published=[]
     class Client:
         def call(self,credentials,method,path,body=None,**kwargs):
             if path.endswith('native-work'):
@@ -138,17 +143,20 @@ def test_transcript_receipt_replaces_pending_cache_without_new_callback(lab,back
             if len(views)==1:return {'processing':True}
             return {'reply_action':{'status':'queued'},'task':{'id':str(uuid.uuid4())}}
         def voice_result(self,*args):
-            if fault=='publish':raise ValueError('synthetic_transcript_failure')
+            assert not dispatcher._sync_cache  # Pending pre-transcript receipt cannot reach publication.
+            if failures['remaining']=='publish':raise ValueError('synthetic_transcript_failure')
+            published.append(args[-1])
             binding['history_ready']=True;binding['voice_jobs']=[]
             return {'accepted':True}
     class Runtime:
         def __init__(self,*args,**kwargs):
             self.credentials=credentials;self.account=account;self.scope=scope
             self.active_flow_id=None;self.active_task_id=None;self.clock=SimpleNamespace(observe=lambda x:None)
+        def timing_context(self,b):return {}
         def barrier(self,b):return (0,0)
         def sync(self,b):
             reads.append(b['history_ready'])
-            if fault=='sync' and b['history_ready']:raise ValueError('synthetic_transcript_failure')
+            if failures['remaining']=='sync' and b['history_ready']:raise ValueError('synthetic_transcript_failure')
             return {'history_ready':b['history_ready'],'history_state_digest':'transcribed' if b['history_ready'] else 'pending'}
         def reply_once(self,b,data,*,history):
             attempts.append(history['history_state_digest']);return {'status':'sent'}
@@ -158,16 +166,29 @@ def test_transcript_receipt_replaces_pending_cache_without_new_callback(lab,back
     services=SimpleNamespace(connection=manager,_credentials=credentials,startup_window_ready_for=lambda _:True)
     dispatcher=HookBusinessDispatcher(Client(),tmp_path/'continuous',lambda *a:None,lambda *a:None,
         automatic_transcription_disabled=lambda:True,runtime_factory=Runtime)
-    dispatcher.voice=SimpleNamespace(saved_parent=lambda *args:{'state':'transcribed','text':'synthetic transcript'})
+    assert isinstance(dispatcher.voice,HookVoiceTranscriber)
+    def saved():return dispatcher.voice.saved_parent(scope,binding['peer_wxid'],'123')
     try:
         if fault:
             with pytest.raises(ValueError,match='synthetic_transcript_failure'):dispatcher.tick(runner,services)
             assert not dispatcher._sync_cache and not attempts
-            return
-        dispatcher.tick(runner,services)
-        dispatcher.tick(runner,services)
-        assert reads==[False,True]
+            assert saved()['state']=='transcribed'  # Original attempt is durable despite publication/read failure.
+            failures['remaining']=None
+        for _ in range(4):
+            dispatcher.tick(runner,services)
+            if attempts:break
+        assert reads==([False,True,True] if fault=='sync' else [False,True])
         assert attempts==['transcribed']
+        assert published==[saved()]
+        assert saved()['text']=='synthetic transcript'
+        # Restart uses the original completed attempt; recovery never retranscribes.
+        restarted=HookVoiceTranscriber(max_audio_bytes=1024*1024,max_text_bytes=65536)
+        assert restarted.saved_parent(scope,binding['peer_wxid'],'123')==saved()
+        assert [body for path,body,_ in lab[0].requests if path=='/Voice2Text']==[
+            {'voice_hex':AUDIO.hex().upper(),'msgsvrid':'123'}]
+        receipt=tmp_path/'continuous'/'voice-receipts'/scope.self_wxid/scope.account_epoch/'123.json'
+        assert json.loads(receipt.read_text())['receipt']=={'accepted':True}
+        assert not dispatcher._sync_cache
     finally:manager.close()
 
 

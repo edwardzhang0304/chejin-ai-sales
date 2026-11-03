@@ -1,6 +1,7 @@
 """Read-only Windows instance inspection. Never launch, focus or kill WeChat."""
 from __future__ import annotations
 
+import ctypes
 import hashlib
 import math
 import ntpath
@@ -87,6 +88,18 @@ class HookProcessSnapshot:
         return self.visible_window_count == 1 and not self.minimized
 
 
+# ctypes caches POINTER types for the process lifetime. Define this ABI once,
+# never once per inspection; the entry INSTANCE and OS snapshot remain per call.
+class PROCESSENTRY32W(ctypes.Structure):
+    _fields_ = [
+        ("dwSize", ctypes.c_uint32), ("cntUsage", ctypes.c_uint32),
+        ("th32ProcessID", ctypes.c_uint32), ("th32DefaultHeapID", ctypes.c_size_t),
+        ("th32ModuleID", ctypes.c_uint32), ("cntThreads", ctypes.c_uint32),
+        ("th32ParentProcessID", ctypes.c_uint32), ("pcPriClassBase", ctypes.c_int32),
+        ("dwFlags", ctypes.c_uint32), ("szExeFile", ctypes.c_wchar * 260),
+    ]
+
+
 def _wechat_process_ids(kernel32=None) -> tuple[int, ...]:
     """Enumerate names in one OS snapshot, then inspect only matching processes.
 
@@ -94,17 +107,6 @@ def _wechat_process_ids(kernel32=None) -> tuple[int, ...]:
     its creation time) for every unrelated process. No cached identity is used.
     A failed/incomplete enumeration is an inspection failure, never an empty list.
     """
-    import ctypes
-
-    class PROCESSENTRY32W(ctypes.Structure):
-        _fields_ = [
-            ("dwSize", ctypes.c_uint32), ("cntUsage", ctypes.c_uint32),
-            ("th32ProcessID", ctypes.c_uint32), ("th32DefaultHeapID", ctypes.c_size_t),
-            ("th32ModuleID", ctypes.c_uint32), ("cntThreads", ctypes.c_uint32),
-            ("th32ParentProcessID", ctypes.c_uint32), ("pcPriClassBase", ctypes.c_int32),
-            ("dwFlags", ctypes.c_uint32), ("szExeFile", ctypes.c_wchar * 260),
-        ]
-
     if kernel32 is None:
         kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
     snapshot = kernel32.CreateToolhelp32Snapshot

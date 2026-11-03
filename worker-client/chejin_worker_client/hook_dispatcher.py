@@ -14,7 +14,7 @@ from . import storage
 from .api import ApiError
 from .c1_receipts import clear_confirmed_add_friend_receipt
 from .models import Task
-from .hook_progress import emit_progress,register_progress,complete_send_progress,has_progress_context
+from .hook_progress import emit_progress,register_progress,complete_send_progress,has_progress_context,retained_progress_groups
 from .hook_formal_c1 import _save
 from .hook_formal_runtime import HookFormalRuntime, publish_current_task,read_batch_view
 from .hook_sender import RetainedNativeSendPermit,send_observation_can_settle
@@ -24,6 +24,7 @@ from .hook_timing import timed_call
 from .performance_evidence import emit, measurement
 from .hook_gateway import HookLocalError
 from .hook_history_wait import is_history_wait
+from .hook_history_cache import HistoryReceiptCache, TTL_SECONDS
 
 
 class HookBusinessDispatcher:
@@ -57,7 +58,7 @@ class HookBusinessDispatcher:
         self._relationship_read_due=0
         self._reconciled=False
         self._last_wait_codes={}
-        self._sync_cache={}
+        self._sync_cache=HistoryReceiptCache()
         self.diagnostic_context={}
         self._wait_events=0
         self._pending_wait_phases={}
@@ -68,6 +69,7 @@ class HookBusinessDispatcher:
         self._business_cycle_verified=False
         self._housekeeping_due=0
         self._presented_batches=set()
+        self._ever_presented_batch=False
         self._batch_stages={}
         self._live_batches_by_binding={}
         self._open_handoffs_by_binding={}
@@ -148,6 +150,33 @@ class HookBusinessDispatcher:
             emit_progress(runner,context,'decision','done',occurred_at=occurred_at)
         emit_progress(runner,context,'handoff','done','handoff',occurred_at=occurred_at)
 
+    def _mark_batch_presented(self,bid):
+        self._ever_presented_batch=True
+        self._presented_batches.add(bid)
+
+    def _prune_presentation_state(self,runner,inventory):
+        """Release only display bookkeeping absent from work AND retained UI.
+
+        No journal, delivery cursor, hold, or server ownership is changed here.
+        Unfinished batches remain protected until the normal consumer closes them.
+        """
+        visible={b['binding_id'] for b in inventory['bindings']}
+        for mapping in (self._live_batches_by_binding,self._open_handoffs_by_binding,
+                        self._friend_holds_by_binding,self._reply_owners_by_binding):
+            for key in list(mapping):
+                if key not in visible:mapping.pop(key,None)
+        retained=retained_progress_groups(runner)
+        retained.add(inventory.get('inflight_batch_id'))
+        for binding in inventory['bindings']:
+            retained.update(binding.get('batch_ids',[]))
+        for events in self._open_handoffs_by_binding.values():retained.update(events.values())
+        for batches in self._live_batches_by_binding.values():retained.update(batches)
+        # Compatibility for already-presented state in this running dispatcher.
+        self._ever_presented_batch=self._ever_presented_batch or bool(self._presented_batches)
+        self._presented_batches.intersection_update(retained)
+        for bid in list(self._batch_stages):
+            if bid not in retained:self._batch_stages.pop(bid,None)
+
     def _publish_open_handoffs(self,runner,binding):
         # This field is an authoritative read-only snapshot, not a new work
         # item. Older servers omitting it cannot prove that a hold was closed.
@@ -227,7 +256,7 @@ class HookBusinessDispatcher:
         elif live or bid in self._presented_batches:
             # Completed old replies are still polled for bookkeeping, but
             # are not presented as a new AI operation after restart.
-            self._presented_batches.add(bid)
+            self._mark_batch_presented(bid)
             state='current' if data.get('processing') else 'error' if data.get('error_code') else 'done'
             note='model_wait' if data.get('processing') else 'failed' if data.get('error_code') else 'no_reply' if data.get('decision') in {'no_reply','skip','ignore'} else None
             status=data.get('batch_status')
@@ -256,7 +285,7 @@ class HookBusinessDispatcher:
         return live
 
     def _publish_initial_read_finished(self,runner,inventory,*,history_ready,pending):
-        if (self._initial_read_finished or self._presented_batches or not history_ready or pending
+        if (self._initial_read_finished or self._ever_presented_batch or self._presented_batches or not history_ready or pending
                 or inventory.get('inflight_task') or inventory.get('inflight_flow',{}).get('flow_id')):return
         self._initial_read_finished=True
         emit_progress(runner,'startup_reconciliation','sync_finished','done')
@@ -457,6 +486,8 @@ class HookBusinessDispatcher:
         # capture or publication. Failed reads leave no reusable cache.
         if before[1]==0 and rt.barrier(binding)==before:
             self._sync_cache[key]=(before,time.monotonic(),synced)
+        emit('gauge',name='history_cache.entries',count=len(self._sync_cache))
+        emit('gauge',name='history_cache.payload_bytes',count=self._sync_cache.payload_bytes)
         return synced
 
     def _tick(self,runner,services):
@@ -468,6 +499,7 @@ class HookBusinessDispatcher:
         if key!=old:
             if self.runtime and self.runtime.scope.account_epoch!=scope.account_epoch:
                 raise ValueError('HOOK_RUNTIME_ACCOUNT_CHANGED')
+            self._sync_cache.clear()
             self.runtime=self.runtime_factory(self.client,services._credentials,services.connection.gateway,
                 prepared,self.private_root,stop_check=lambda:runner.stop_event.is_set(),
                 wait=lambda seconds: runner.stop_event.wait(seconds))
@@ -485,6 +517,8 @@ class HookBusinessDispatcher:
         if (inventory.get('schema_version')!='hook-native-work-v1'
                 or any(inventory.get(k)!=v for k,v in rt.account.items())):
             raise ValueError('HOOK_WORK_INVENTORY_INVALID')
+        self._sync_cache.prune({(scope.process_generation,b['binding_id'],b['binding_revision'])
+                                for b in inventory['bindings']})
         self.resolve_wait('business',phase='connection_wait')
         # Counts come from the inventory already read by business, no extra query.
         emit('gauge', name='inventory.retained_sends', count=len(inventory['retained_sends']))
@@ -502,6 +536,7 @@ class HookBusinessDispatcher:
         # original fault gate forbids all customer/business reconciliation.
         for binding in inventory['bindings']:
             self._publish_open_handoffs(runner,binding)
+        self._prune_presentation_state(runner,inventory)
         if runner.binding.run_status=='faulted':
             self._observe_clock(rt,prepared.account)
             self.resolve_wait('business',phase='clock_wait')
@@ -573,11 +608,6 @@ class HookBusinessDispatcher:
                     db.execute("DELETE FROM hook_active_calls WHERE state='completed' AND completed_at<?",(cutoff,));db.commit()
             self._housekeeping_due=time.monotonic()+CONFIG.artifact_cleanup_interval_seconds
         bindings=inventory['bindings']
-        visible={b.get('binding_id') for b in bindings}
-        for key in list(self._live_batches_by_binding):
-            if key not in visible:self._live_batches_by_binding.pop(key,None)
-        for key in list(self._open_handoffs_by_binding):
-            if key not in visible:self._open_handoffs_by_binding.pop(key)
         if bindings:
             start=self._next_customer%len(bindings)
             bindings=bindings[start:]+bindings[:start]
@@ -592,7 +622,7 @@ class HookBusinessDispatcher:
                 key=(rt.scope.process_generation,binding['binding_id'],binding['binding_revision'])
                 barrier=rt.barrier(binding)
                 cached=self._sync_cache.get(key)
-                if cached and cached[0]==barrier and time.monotonic()-cached[1]<30 and binding.get('history_ready',True):
+                if cached and cached[0]==barrier and time.monotonic()-cached[1]<TTL_SECONDS and binding.get('history_ready',True):
                     synced=cached[2]
                     emit('counter', name='history_cache_hit')
                 else:
@@ -653,7 +683,7 @@ class HookBusinessDispatcher:
                 if synced.get('message_batch'):
                     bid=synced['message_batch']['batch_id']
                     if bid not in batches:batches.append(bid)
-                    if synced['message_batch'].get('next_step')=='generate':self._presented_batches.add(bid)
+                    if synced['message_batch'].get('next_step')=='generate':self._mark_batch_presented(bid)
                 # Keep polling all customers while any model is generating.
                 for bid in batches:
                     data = read_batch_view(

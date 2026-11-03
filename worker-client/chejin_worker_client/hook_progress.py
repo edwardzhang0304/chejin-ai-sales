@@ -137,6 +137,12 @@ def forget_completed_progress_group(runner, group):
                 del registry[context]
 
 
+def retained_progress_groups(runner):
+    """Copy display IDs under the same lock used by UI retirement."""
+    with _REGISTRY_LOCK:
+        return {value.get('group') for value in getattr(runner, '_hook_progress_contexts', {}).values()}
+
+
 def _deliver(runner,event):
     try:
         emit=getattr(runner,'_emit_runtime_process',None)

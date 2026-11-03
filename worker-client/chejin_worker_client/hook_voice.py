@@ -59,59 +59,61 @@ def capture_voice_audio(scope: HookReceiveScope, peer_wxid: str, native_msg_id: 
     with storage.db_connection() as conn:
         if conn.execute("SELECT 1 FROM sqlite_master WHERE name='hook_raw_inbox'").fetchone() is None:
             return None
+        # Scan the retained evidence in place; do not copy the whole account's
+        # raw inbox into RAM for one voice. Validate every row, even after a match.
         rows=conn.execute("SELECT raw_body,raw_digest FROM hook_raw_inbox WHERE self_wxid=? AND account_epoch=? AND process_generation=? ORDER BY receive_seq",
-            (scope.self_wxid,scope.account_epoch,scope.process_generation)).fetchall()
-    lengths,audios=set(),{}
-    if verified_metadata_xml is not None:
-        # Only the dispatcher may supply XML from the authenticated native-work
-        # inventory for this exact authorized parent. It contains no audio.
-        try:
-            node=ET.fromstring(verified_metadata_xml).find('voicemsg')
-            length=int(node.attrib['length'])
-            if not 0<length<=max_audio_bytes:raise ValueError()
-            lengths.add(length)
-        except (ValueError,TypeError,ET.ParseError,AttributeError,KeyError):
-            raise ValueError('HOOK_VOICE_METADATA_INVALID') from None
-    for row in rows:
-        raw=row['raw_body']
-        if not isinstance(raw,bytes) or hashlib.sha256(raw).hexdigest()!=row['raw_digest']:
-            raise ValueError("HOOK_RAW_EVIDENCE_CHANGED")
-        event=decode_callback(raw,scope)
-        if str(event.get('sendorrecv'))!='2':continue
-        for message in event['msglist']:
-            if str(message.get('msgtype'))!='34' or str(message.get('msgsvrid'))!=native_msg_id:continue
-            if message.get('msg'):
-                if (message.get('fromid')!=peer_wxid or message.get('toid')!=scope.self_wxid
-                        or str(message.get('fromtype','1'))!='1'):
-                    raise ValueError("HOOK_VOICE_PARENT_IDENTITY_CONFLICT")
-                try:
-                    root=ET.fromstring(message['msg'])
-                    node=root.find('voicemsg')
-                    value=node.attrib['length']
-                    if not re.fullmatch(r'[1-9][0-9]*',value):raise ValueError()
-                    length=int(value)
-                except (ET.ParseError,KeyError,AttributeError,TypeError,ValueError):
-                    raise ValueError("HOOK_VOICE_METADATA_INVALID") from None
-                if length>max_audio_bytes:raise ValueError("HOOK_VOICE_AUDIO_TOO_LARGE")
+            (scope.self_wxid,scope.account_epoch,scope.process_generation))
+        lengths,audios=set(),{}
+        if verified_metadata_xml is not None:
+            # Only the dispatcher may supply XML from the authenticated native-work
+            # inventory for this exact authorized parent. It contains no audio.
+            try:
+                node=ET.fromstring(verified_metadata_xml).find('voicemsg')
+                length=int(node.attrib['length'])
+                if not 0<length<=max_audio_bytes:raise ValueError()
                 lengths.add(length)
-            if message.get('voice_data'):
-                # The tested audio supplement has empty from/to/fromtype. Its
-                # authority comes from this exact scoped parent metadata, never
-                # from an empty field or the currently selected conversation.
-                encoded=message['voice_data']
-                if (message.get('fromid') not in (None,'',peer_wxid)
-                        or message.get('toid') not in (None,'',scope.self_wxid)
-                        or (message.get('fromtype') not in (None,'') and str(message['fromtype'])!='1')
-                        or any(isinstance(message.get(field),str) and message[field].endswith('@chatroom')
-                            for field in ('fromid','toid','fromgid'))):
-                    raise ValueError("HOOK_VOICE_AUDIO_IDENTITY_CONFLICT")
-                if (not isinstance(encoded,str) or len(encoded)>max_audio_bytes*2
-                        or not re.fullmatch(r'(?:[0-9a-fA-F]{2})+',encoded)):
-                    raise ValueError("HOOK_VOICE_AUDIO_INVALID")
-                audio=bytes.fromhex(encoded)
-                if str(message.get('voice_len'))!=str(len(audio)) or not audio.startswith(b"\x02#!SILK_V3"):
-                    raise ValueError("HOOK_VOICE_AUDIO_INVALID")
-                audios[hashlib.sha256(audio).hexdigest()]=audio
+            except (ValueError,TypeError,ET.ParseError,AttributeError,KeyError):
+                raise ValueError('HOOK_VOICE_METADATA_INVALID') from None
+        for row in rows:
+            raw=row['raw_body']
+            if not isinstance(raw,bytes) or hashlib.sha256(raw).hexdigest()!=row['raw_digest']:
+                raise ValueError("HOOK_RAW_EVIDENCE_CHANGED")
+            event=decode_callback(raw,scope)
+            if str(event.get('sendorrecv'))!='2':continue
+            for message in event['msglist']:
+                if str(message.get('msgtype'))!='34' or str(message.get('msgsvrid'))!=native_msg_id:continue
+                if message.get('msg'):
+                    if (message.get('fromid')!=peer_wxid or message.get('toid')!=scope.self_wxid
+                            or str(message.get('fromtype','1'))!='1'):
+                        raise ValueError("HOOK_VOICE_PARENT_IDENTITY_CONFLICT")
+                    try:
+                        root=ET.fromstring(message['msg'])
+                        node=root.find('voicemsg')
+                        value=node.attrib['length']
+                        if not re.fullmatch(r'[1-9][0-9]*',value):raise ValueError()
+                        length=int(value)
+                    except (ET.ParseError,KeyError,AttributeError,TypeError,ValueError):
+                        raise ValueError("HOOK_VOICE_METADATA_INVALID") from None
+                    if length>max_audio_bytes:raise ValueError("HOOK_VOICE_AUDIO_TOO_LARGE")
+                    lengths.add(length)
+                if message.get('voice_data'):
+                    # The tested audio supplement has empty from/to/fromtype. Its
+                    # authority comes from this exact scoped parent metadata, never
+                    # from an empty field or the currently selected conversation.
+                    encoded=message['voice_data']
+                    if (message.get('fromid') not in (None,'',peer_wxid)
+                            or message.get('toid') not in (None,'',scope.self_wxid)
+                            or (message.get('fromtype') not in (None,'') and str(message['fromtype'])!='1')
+                            or any(isinstance(message.get(field),str) and message[field].endswith('@chatroom')
+                                for field in ('fromid','toid','fromgid'))):
+                        raise ValueError("HOOK_VOICE_AUDIO_IDENTITY_CONFLICT")
+                    if (not isinstance(encoded,str) or len(encoded)>max_audio_bytes*2
+                            or not re.fullmatch(r'(?:[0-9a-fA-F]{2})+',encoded)):
+                        raise ValueError("HOOK_VOICE_AUDIO_INVALID")
+                    audio=bytes.fromhex(encoded)
+                    if str(message.get('voice_len'))!=str(len(audio)) or not audio.startswith(b"\x02#!SILK_V3"):
+                        raise ValueError("HOOK_VOICE_AUDIO_INVALID")
+                    audios[hashlib.sha256(audio).hexdigest()]=audio
     if len(lengths)>1 or len(audios)>1:raise ValueError("HOOK_VOICE_AUDIO_AMBIGUOUS")
     if not lengths or not audios:return None
     audio=next(iter(audios.values()))

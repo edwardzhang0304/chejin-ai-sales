@@ -85,6 +85,28 @@ def measured_rows(metrics, rows, fields):
         emit("counter", name="local_scan_metrics_unavailable", count=1)
 
 
+def iter_measured_rows(metrics, rows, fields):
+    """Measure a live cursor without retaining its payloads or querying again."""
+    measuring = _ACTIVE is not None
+    if measuring:
+        metrics.update(rows=0, bytes=0, validated_rows=0)
+    for row in rows:
+        if measuring:
+            try:
+                metrics["rows"] += 1
+                metrics["bytes"] += sum(
+                    len(v if isinstance(v, bytes) else v.encode("utf-8"))
+                    for key in fields
+                    if isinstance((v := row[key]), (bytes, str))
+                )
+            except Exception:
+                metrics.pop("rows", None)
+                metrics.pop("bytes", None)
+                measuring = False
+                emit("counter", name="local_scan_metrics_unavailable", count=1)
+        yield row
+
+
 def cleanup_measurement(operation):
     @wraps(operation)
     def measured(*args, **kwargs):
@@ -296,6 +318,13 @@ class Monitor:
                     self.stack_requests.append(event[:128])
         except (OSError, ValueError):
             pass
+        finally:
+            # The reader owns this end. EOF/error must release its OS handle
+            # even while Monitor still retains the Popen for exit accounting.
+            try:
+                self.process.stdout.close()
+            except (OSError, ValueError):
+                pass
 
     def _drain(self):
         with self.lock:
@@ -475,10 +504,11 @@ class Monitor:
     def _pump(self):
         from .performance_sampler import fallback
 
+        failure = None
         try:
             while not self.stop.is_set():
                 if self.process.poll() is not None:
-                    fallback(self.root, self.session, "sampler_exited", 1)
+                    failure = "sampler_exited"
                     return
                 self._send_snapshot()
                 self.stop.wait(self.policy.snapshot_seconds)
@@ -486,9 +516,17 @@ class Monitor:
             if self.clean:
                 self.process.stdin.write(b'{"end":"normal"}\n')
                 self.process.stdin.flush()
-            self.process.stdin.close()
         except Exception as exc:
-            fallback(self.root, self.session, type(exc).__name__, 1)
+            failure = type(exc).__name__
+        finally:
+            # Only this writer closes stdin; the UI/producer never closes a
+            # pipe concurrently with a blocked write. Keep the first failure.
+            try:
+                self.process.stdin.close()
+            except (OSError, ValueError) as exc:
+                failure = failure or type(exc).__name__
+            if failure is not None:
+                fallback(self.root, self.session, failure, 1)
 
     def close(self, *, clean=True):
         global _ACTIVE

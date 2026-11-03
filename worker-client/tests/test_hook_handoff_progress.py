@@ -120,7 +120,9 @@ def test_actual_faulted_dispatcher_tick_restores_handoff_before_clock_gate(tmp_p
   def call(self,credentials,method,path,body=None,**kwargs):
    calls.append((method,path))
    assert method=='POST' and path.endswith('/native-work')
-   return {'schema_version':'hook-native-work-v1','observation_query_version':1,**account,'run_status':'faulted','inflight_flow':{},'bindings':[{'binding_id':'binding','open_handoffs':[fact()]}],'invitations':[],'retained_sends':[],'inflight_task':None}
+   return {'schema_version':'hook-native-work-v1','observation_query_version':1,**account,'run_status':'faulted','inflight_flow':{},'bindings':[{'binding_id':'binding','binding_revision':1,'peer_wxid':'wxid_synthetic_customer',
+    'conversation_id':'synthetic-conversation','history_since_create_time':'0',
+    'voice_jobs':[],'batch_ids':[],'open_handoffs':[fact()]}],'invitations':[],'retained_sends':[],'inflight_task':None}
  class Clock:
   def observe(self,_):
    if clock_error:raise ValueError(clock_error)
@@ -219,7 +221,9 @@ def test_handoff_inventory_published_before_retained_send_pending_return(tmp_pat
  prepared=SimpleNamespace(registration=SimpleNamespace(scope=scope),account=None)
  timeline=HookProgressTimeline()
  inventory={'schema_version':'hook-native-work-v1','observation_query_version':1,**account,
-  'run_status':run_status,'bindings':[{'binding_id':'binding','open_handoffs':[fact()]}],
+  'run_status':run_status,'bindings':[{'binding_id':'binding','binding_revision':1,'peer_wxid':'wxid_synthetic_customer',
+    'conversation_id':'synthetic-conversation','history_since_create_time':'0',
+    'voice_jobs':[],'batch_ids':[],'open_handoffs':[fact()]}],
   'inflight_flow':{},'invitations':[],'retained_sends':[{'binding_id':'binding'}]}
  client=SimpleNamespace(call=lambda *a,**kw:inventory)
  d=HookBusinessDispatcher(client,tmp_path,None,None,automatic_transcription_disabled=lambda:True)
