@@ -3,9 +3,9 @@
   "repository": "edwardzhang0304/chejin-ai-sales",
   "transport": "hook",
   "reuse_mode": "reviewed_delta",
-  "approval": "User authorized reviewed PE-01 and layout release via check updates from confirmed 0.10.27; SOP18.0.4 metadata synchronization.",
-  "reviewed_commit": "8a327340c0bb43de0271417acd7a5aab2ba6c9ed",
-  "target_version": "0.10.28",
+  "approval": "User authorized publishing both audited fixes and collecting existing evidence via original diagnostic ZIP. Prefer original 0.10.28 check updates.",
+  "reviewed_commit": "c62e59a97a76b2fa1f6a140cea9134edc81fd9a5",
+  "target_version": "0.10.29",
   "source_sha256": {
     ".dockerignore": "953c4ae7fbf88d1f9655d96aac647bb20157d4531062155de4922562c924cc6c",
     ".gitattributes": "c3fb393b0b0757bb56c2aa4c733114aa8d394be2ca0d60bf11fc5cba47dfaf3a",
@@ -15,7 +15,7 @@
     "backend/.env.example": "ed7c5734c98665f2da1e6d4d6918be0529dbb4609560eb5851a60db60f9c9336",
     "backend/.gitignore": "8b318bea4f5c746fe6ca7be41e98f0bf331e7325f63141bb90609e23b54e6dfc",
     "backend/Dockerfile": "04085e37fc190b6e6b0124fb240cc2d54cefad329921e994bfbaf8a4d78c95c4",
-    "backend/README.md": "72afa73ab3c2912b7ab747d535c27f94e0b8784b57434058ac33b0c51c3b2479",
+    "backend/README.md": "568fb3bb2ce56dcf6d02efe3cb9ea84c2ed4bf30ddcbd65bef18e6a2688ff1da",
     "backend/alembic.ini": "10ec633dfef6fbfb3e27a073d6d7dd4e18e6acc668794811364e042585721651",
     "backend/alembic/env.py": "f5be2904c022729043ff3b310708dce49b4a9ea148f4061f41b9f8232c15593a",
     "backend/alembic/versions/20260603_0001_initial_schema.py": "1fe592366e724473b586a2ea6a5f5ec4062194bda80f10c340c922d7e3b84b11",
@@ -127,7 +127,7 @@
     "backend/app/schemas/observability.py": "8b8b4c4e40888ca09291e7bb5f9c70a38b38c037ea0bc8227687ec606addbe6d",
     "backend/app/schemas/sales.py": "5f702f2b91faba20577f121f953fc9615cc647ffe44947a8fc052eb405446198",
     "backend/app/schemas/task.py": "78c54c33f53502fc5daa25b288912a5ff4c28e1588b16e27dc00b29d3dc3d342",
-    "backend/app/schemas/vehicle.py": "27a6e86f14fcea1d1f2a81dd654741f68fad9498fe5429b583fbce78f8ae8a07",
+    "backend/app/schemas/vehicle.py": "b4fa6a129514ebc7153d95ccf69879d316959a8008cb5a39eaa9ff4e3695b6e7",
     "backend/app/schemas/wechat.py": "2ef76444649224d28ca82711e05c173f72a91cce63721a3db23e4962e48b4b8b",
     "backend/app/schemas/worker.py": "18159de3ebfd2a0266a0a5f378474a878205f03d85438e27727272a628aa29af",
     "backend/app/scripts/__init__.py": "e816f4193128191bde1cd5c9cecef251266ebd44905d1b4e40858ee652f4daad",
@@ -141,7 +141,7 @@
     "backend/app/services/audit_service.py": "0ce89dd8540fc3b59e3c6b7403c491e9ef72bd803bfb294b18e76ac1c34cdb7b",
     "backend/app/services/auth_service.py": "9ac5c2ed21a561175448e1d6753a97bb074e37822c56da0310fe5c0de4619952",
     "backend/app/services/c3_recovery.py": "c7c41be484735ce6f767c3480750ea889465bd655e253c6749ca5ab7e27dcd97",
-    "backend/app/services/c3_service.py": "55ac100b149f1c132d0bb4dae28bd8811b7ed510dd9bcfbcb0a2a26d7cb8b521",
+    "backend/app/services/c3_service.py": "f08398b654df7baedb5f7ae7a44b10c2d08ea475690e7090fd9c0013be748f82",
     "backend/app/services/chejin_knowledge_seed.py": "e317cd422548343c5c9d15f849c2bae1930c02bd5d0ea0487a60d27bec878b90",
     "backend/app/services/client_release_service.py": "d5a7d3294d703cd7398c621d26cb8ff7126e02b37b4639080dcafbae2db7e736",
     "backend/app/services/clock_reference.py": "011ea5f6679d9e54c5a34a5a08e878c0672e28f096ac9de147412e4df8016411",
@@ -203,11 +203,11 @@
     "backend/app/services/worker_token_service.py": "afe266c745229920a75c836415469437b51891ebe03b1b63c3ff50b3b58b9142",
     "backend/app/services/worker_vision_credential_service.py": "6d427532d9e56f6cf9da8845f0ad6fb184fce066f5cac30c6302c3dc199f6f3c",
     "backend/compose.uat.yml": "58bf77325c1667295eab1bbaa5d42f4b81032f1a82e2104467a0371cb2a076f0",
-    "backend/compose.web.yml": "b1e6b349d023a1fc1f20d93f710026cf16f32cbf4608a58fff5dae1533cfa419",
+    "backend/compose.web.yml": "f60da28829edc8de8d3ce65645c4b7bb408188563e2dc2dbb3aad7de7b90055a",
     "backend/configs/chejin_c3_brain.json": "e83598ec354a4fc5ed6ca8b82c3b0866f2171f76b33d1647de37e905fe1ef5ba",
-    "backend/docker-compose.yml": "c29751e350c86a86f31f68a19ea136cf0c29cca717718b70d854fa5669d58442",
+    "backend/docker-compose.yml": "9a20b5d26d4638a5c97fabfa2f9d94d908f7581d9be65a29b12180babbb45818",
     "backend/docker/entrypoint.sh": "2db4def08af9248f4d4215154ce20ca474b7188a7c985a8458be1035e2a3509d",
-    "backend/pyproject.toml": "e0f24454f0c1ac5ac0d1f9cb6e92bcd22c9f2f5652db34b9a81bee56adee9aab",
+    "backend/pyproject.toml": "8cdbc46716c3afb0f056a9fcb6bebb9f95af34af19e71ef91f707b1c407ee25f",
     "backend/requirements.lock": "e50b91f6bf1794bf7cd589604c8c6adba248fa97762da3f2b981d21731b4d573",
     "backend/requirements.txt": "158c8f61c1b48f2473561cc8543fe5b55b62fc45d9c34e46286ac015384c7117",
     "backend/scripts/admin_accounts.py": "8d142e4d7ce889b19ff05b4d1a3816110ca47c8fa7b87a8cc1c7e3da281d8f6b",
@@ -252,7 +252,8 @@
     "backend/tests/test_c3_brain_context_bridge.py": "a1b27db8ba72b0c555a4f9d3ae7d7a426d7a12e2fd320bec42609d59c7b62817",
     "backend/tests/test_c3_recovery_chain.py": "cf0fef4783cb7673848e7ffcdd336350d547b8f46115cc85694e64779d8e2a38",
     "backend/tests/test_c3_recovery_isolation.py": "e713ab5fc6a24a4d3e0a17247b173d705b366729975898fee2db1f608f63b8f6",
-    "backend/tests/test_catalog_fact_references.py": "7cbc31c2746d529da1b75b3c084808aa294e8aa5b1eb6dfa5b8e68a95c8fee88",
+    "backend/tests/test_catalog_brain_joined.py": "e865fed9fd816f50781961108163fe081be41dae3c410d523052f98ebaac3aa4",
+    "backend/tests/test_catalog_fact_references.py": "f673921aa12bbfb50273be923c678dde95a116bce908e26927a6720cb05480db",
     "backend/tests/test_catalog_hook_chain.py": "718f750b1ad7bc12d88304ec53390747e8f11abc8153bc6a1f158e82a833b12c",
     "backend/tests/test_chejin_knowledge_seed.py": "57edb8ca14f21b95554628aec6e4063410a8d9c6863a204af0eccba510d59a65",
     "backend/tests/test_cj35_frame_recovery.py": "e7b460cb95a137f901b28a93b752a76592c6e0018224cbdaa04d598dffcd29bc",
@@ -307,7 +308,7 @@
     "backend/tests/test_hook_gray_multiworker.py": "d8eeca2a6e15e0f8814ba5d5b2a8e3eed55e90adad109b0b95d4bde30dab8ac9",
     "backend/tests/test_hook_handoff_history.py": "c4bb897264f8fd8150ca74177d3b7f9495f7fc72124499b6f768512cf5f20f8f",
     "backend/tests/test_hook_handoff_inventory.py": "777690b3417f3e8a1a6d2e14726cf8246d519441de81159919e990e6a92636ed",
-    "backend/tests/test_hook_handoff_runtime.py": "2a9e545c63eeadf1746c7821ee2740e4f330fc366dfbe207b62fb6cf7c4fb2bb",
+    "backend/tests/test_hook_handoff_runtime.py": "93de66f3b6288b5b203aa5ccd5d2f9d1928a899924e46238da779d873d548500",
     "backend/tests/test_hook_history_business_http.py": "c195b5c851f23fc93b20dc1f157ae3614dbb001870f3fc3d3e024e8b3370fa59",
     "backend/tests/test_hook_history_receipt_migration.py": "29ff6a8e72594a9bc55eab035f874cb262b60ef913b99a124775b734657d0b82",
     "backend/tests/test_hook_history_review.py": "29a9c84dd89b62a88143541f00a1b538da250b545014b66352105bfacbebc687",
@@ -357,7 +358,7 @@
     "backend/tests/test_observability.py": "de5e1543985fb5849aec60e7036816e07ec5f80c2847bce658f98370a2a7a239",
     "backend/tests/test_omniauto_knowledge_integration.py": "321e9c029f81756b7795dd88ed8a5a2f7a08983353c75eadd52e34f165a73f4b",
     "backend/tests/test_partial_reply_recovery_boundaries.py": "bf64e3f4c9beb7e50117cf9042f0b1ce10bf1b09b4a9375fc5d400160e30152b",
-    "backend/tests/test_partial_reply_recovery_provider.py": "61c7a3bf8056b2efde7ccf8b9858eff1916e876e56699c232a68c83e3f39258d",
+    "backend/tests/test_partial_reply_recovery_provider.py": "292f554b2bdac3e48969e8b6efbf7a86fb593c61f476f28df029aa64ecf39b84",
     "backend/tests/test_partial_reply_recovery_worker.py": "32d64fabef821abd855c16aa6135ca3d41cf9ac9742bd60e576c163da8147642",
     "backend/tests/test_pending_read_upgrade_recovery.py": "89028e06e6b6d1c1f5fa4f6c6ccac1ba75136fcb7729086a8de815962c1c0b43",
     "backend/tests/test_phone_format.py": "0492846e1f4ccdbb557884828661dbd490edb7e099764eb7f6025c5d869e7cdd",
@@ -422,10 +423,10 @@
     "backend/tests/worker_media_recovery_probe.py": "cec15755d5c7d0aee1aef709e675bc3251f01cddf9895815e504c079752c3783",
     "backend/tests/worker_partition_recovery_probe.py": "c94d000b8cd179da6091c87a90806d1aeed3fc1d40495c69340e2aff91c66af2",
     "backend/tests/worker_sequence_recovery_probe.py": "89402c39e79193530cb17dacd9bf9e1c55873e84baf744a7eb541ab8441c2a01",
-    "contracts/c2_contract_v3.json": "8ca60fca294de8955bb05f7fe9b4017d19796f788d7194aa6466f57f607877c5",
+    "contracts/c2_contract_v3.json": "32868d07aca5d02bf3e73a6f3d7355147ecf7d15c8428c227834183ab94d835b",
     "contracts/examples/c2_v3_mixed_roundtrip.json": "0e9023e920627328c49eac031c34fd3ce77d504195d5ef6f7a9848ccf1e4f98f",
     "contracts/feiyu-hook-integration.md": "68bd149bb7616fe12afc74776755ea1ed60c158028db97a1f8e8b555f72dd04b",
-    "contracts/hook_contract_v1.json": "20c6bbc95a4cbd316befba90e24f99f55041595c855ff9c9549e0f7d5629d3a2",
+    "contracts/hook_contract_v1.json": "b2d7169e6035949e98f2b0778e888c0dfbbc65e7a0f65155e47612f6d635789c",
     "contracts/recovery/c2_contract_v3_0.9.75.json": "b7b4b2ab04d2feca8766c84bc4655ccf56170d2fc645e3e161e9b5a0fdf47f51",
     "contracts/recovery/c2_contract_v3_0.9.78.json": "c17c82e54ab5f1736f74384e3720f7dc158af058dc46673230cbf87d074792d5",
     "contracts/recovery/c2_contract_v3_0.9.80.json": "52c984a290e9029c3eb6f475ce5a05581502b04c3cd0c4a5f3b44a1fb194e585",
@@ -439,7 +440,7 @@
     "frontend/.gitignore": "23b7ede583be8ca215ffe4f491ec44e1953f381aba0aea67d8d1b077d667655a",
     "frontend/Dockerfile": "b504d18db2c1129e366f2831f7e6859b732779ef84212f1c7adcaf003de2fda7",
     "frontend/Dockerfile.dockerignore": "52e40f48dd3e7170465825714aa94570ef1d7960d9ec5d4f1673f52a697613d2",
-    "frontend/README.md": "a60151c21d74a76d07cc3998aedcc7cffccb20c4680dbbddd90f65cbf329cc63",
+    "frontend/README.md": "eba8078ded75beed52f931bc26039cc7bf2a7a231ddfbcf3f19fde12d078cce9",
     "frontend/design-evidence/knowledge-common-button-sizing-1280x720.png": "33587f04fdf6476483a9e73a0bdf99cd7718f0139f27cd7a4e877cbb34a21f1b",
     "frontend/design-evidence/knowledge-common-components-1280x720.png": "e91c998bc1f7b4e365e4514ccbb1766ac41ae62973d8b34a369760a252f1f268",
     "frontend/design-evidence/knowledge-common-drawer-1280x720.png": "f76d57207b1e07a779ab40f307312abe615d5fa11702a28d2acf25619bc1cfb9",
@@ -471,8 +472,8 @@
     "frontend/design-evidence/knowledge-title-only-list-1280x720.png": "0aba9e306baa1b8689364ce9d4ba461231394e0ed3dcdfd8c86ba271b7c99e16",
     "frontend/docker/default.conf": "9c1da4ae99181da52716e57611b9db46c8411e9cdefb3a63fce48181eb6f058c",
     "frontend/index.html": "3e106d2519d0b3ad9a6bc94da7ce98280758330ba6ad7a7ce304804296908e56",
-    "frontend/package-lock.json": "87c6735973478a5d1a42b6103693961f42e7b807c28ece8e8546d01f311c600e",
-    "frontend/package.json": "961bed7c3bf98ea124aa1738fc2073e320d27da0370b80e7223f8819509aae30",
+    "frontend/package-lock.json": "7ceb36de1213a8f1a4786442618607f1bd1146f6150f49b2ce09163b1e20029f",
+    "frontend/package.json": "b56d8c168b9fb99549c0cdd1b8e902e3b2e95046c9d6382c519eccf69f0affc9",
     "frontend/scripts/run-unit-tests.mjs": "6f2855f6cb9e7cab5c55277f5982dbb18f336de409b33f3699de3378cb3b0f2d",
     "frontend/src/App.test.tsx": "1ab020138232217c8b19d55ebca8b714c943206c939b9071724cc1d66911fbb7",
     "frontend/src/App.tsx": "570df29154f664be4bd8009459f1d1c7ca17f041821bc8a27f96ff7c0f5e1693",
@@ -613,7 +614,7 @@
     "website/worker-workbench.html": "2f36ee72bfd4d3cafe13cc5caf17a49150d2ca7fcb94412fd1fc02891258d7ad",
     "website/worker-workbench.js": "b6530e214ab5e7870c1f6621dd1c1438c053c0442cdad46791fc9830055820d7",
     "worker-client/README.md": "c512311ca588a301dcb8db8d07260f1505853bed8dc4b023dd17c197793b97aa",
-    "worker-client/chejin_worker_client/__init__.py": "b678ee7f40cb40dad7ff6aae3aefdf26d93bc6c49ab0ce9dc0d77cbf423fd4c3",
+    "worker-client/chejin_worker_client/__init__.py": "b5265953ef2c2beaa96d7791485cede2c024dcc906b1707656787768cb8dad6a",
     "worker-client/chejin_worker_client/action_journal.py": "e9cfb2fc0158a7d619fa6390a35f5a4a62cbfb227512d29f6e1b4efcaacd1f6c",
     "worker-client/chejin_worker_client/api.py": "34d1b77833f868edeee47feb1671400735074f3c8db0115ba2313f060da980d4",
     "worker-client/chejin_worker_client/artifact_retention.py": "f931d724041b160908485feb41a9c93dac273d0db8a8fe878369890b23f3fc65",
@@ -627,7 +628,7 @@
     "worker-client/chejin_worker_client/clock_sync.py": "680fc30c9c7b770ea566c39265ebbc56a7da679efb46946dd0adaf565e7ec366",
     "worker-client/chejin_worker_client/clock_sync_ticket.py": "a4d08690e9eeff6678af187a81d248595c4c7db3b543d5b105f2c051cde87513",
     "worker-client/chejin_worker_client/config.py": "679f4b46501ccfea01a194dc7e03e60d4c608869c41679e090aa14e93282655f",
-    "worker-client/chejin_worker_client/diagnostic_bundle.py": "7ef75f003449d81e1a4b9f7a95ec43dc441bf9be56b8db969ad7e33ec02dcdb3",
+    "worker-client/chejin_worker_client/diagnostic_bundle.py": "4eb5487ad529e575cf80e239e0418c13d0787b94a7b5826afdb42e0caa430b97",
     "worker-client/chejin_worker_client/diagnostic_callback.py": "3621448c2947b393955d69350ac71f5e4b12013fa1fb7094f30a862a85d21390",
     "worker-client/chejin_worker_client/diagnostic_selection.py": "4e6cf8f021ec385ed0e68c86e6e7e91f18d327d028bfce0a115c22ffb9161e7f",
     "worker-client/chejin_worker_client/diagnostic_ui.py": "1a9340232c42637731551de86b70ebff0f38094b9380e9d00bae75a08dc3cb78",
@@ -752,7 +753,8 @@
     "worker-client/chejin_worker_client/wechat_c2.py": "3b441f8a68c0e4efabf6f6970149e26af84f51097e9a43809759cad60d12f8f7",
     "worker-client/chejin_worker_client/window_render_evidence.py": "1c6764c970f685d337df338e7d39147f475a49ce96c1699ebac5419736b3e8c8",
     "worker-client/chejin_worker_client/windows_clock_sync.py": "c07b32861bfa8bfc9fc865d3b96515aa2d30e201d90d8a00747e2a8cd1f562dc",
-    "worker-client/omniauto-rpa/.chejin-source.json": "82fb0a6b661f1496d1bcdcc1d87d0e41255d4852ed406442d939c660581f665b",
+    "worker-client/chejin_worker_client/windows_exit_evidence.py": "ca6b6e6c9e2a38011247e6fd4426f611af562dd8648d1d3e8b402a468ca27cae",
+    "worker-client/omniauto-rpa/.chejin-source.json": "4e2e9b6e522ee61d492ef2d79151de1a0645633b4f9df069b106e4e420929a2a",
     "worker-client/omniauto-rpa/PROJECT_STRUCTURE.md": "ca9b8b2d1bf0c59c88fc1ff9fd86fbd1cafa500b06ee60f00c910bfef6f5c486",
     "worker-client/omniauto-rpa/README.md": "b8c509514efd339d87ea2e515a9bccf761426a29804b1076854e30d15cffe11a",
     "worker-client/omniauto-rpa/START_HERE.md": "372e6fdcefcc012da3f554af9227781cf05181d9b733b933671f17ee25e73b89",
@@ -778,7 +780,7 @@
     "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/adapters/add_friend_routes.py": "8c93cc66252318df0885109ab05961bf33b88d84d34d5e25527e0f7e42ac5b7d",
     "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/adapters/add_friend_screenshot.py": "60bf1a90a13ed86ecfe85065337c3ac8979e2c379fc03bfc71bf42c262571eb2",
     "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/adapters/business_viewport_continuity.py": "82ffb5747acb753d20f4e70cb5ae5254f7e4ba51f2858307613e36e61c9a23e7",
-    "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/adapters/chejin_c2_observation_schema.generated.json": "56eb65a382f8d0e070036cd69f1c11bd6a3dbfdec319c2ee56e06db5f01ed570",
+    "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/adapters/chejin_c2_observation_schema.generated.json": "31cf5f959572b6d0328ec0d055de3e967b0761727a6fb45f3cf04a580c491dd6",
     "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/adapters/circle_plus_icon.py": "2367e83de1dfd25508a560657cb7efd93d9e2e8bafa5d1edeadd155d57734d6f",
     "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/adapters/client_release_rules.py": "f2d1a4077f5d10064158dae89050020e7a2a21a4e786ff2f8fa85bc6e222efd5",
     "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/adapters/confirmed_sent_history.py": "d2371d89dbbd41f215440ed01a54ebbbf960cd3f344d7627e9d70313ffcb0d89",
@@ -809,6 +811,7 @@
     "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/adapters/send_request_file.py": "95ed43c40f380313571f081baeb446bfb8c17b2bb2f9aa76be3a917b450652de",
     "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/adapters/send_setup_contract.py": "53a46af801b90239905f42146bf6fb2c6886e8cc1edf17473a8a57791afd29c3",
     "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/adapters/text_correspondence.py": "b436a88106868b9a584a3641d4e1686868c502bd2907e1fcde434f9433e7bd7e",
+    "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/adapters/vehicle_fields.py": "89eb3fd21d516176e17cdc1685b1f3fa445a800a71974c3fd49f457a143c4dad",
     "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/adapters/wechat_connector.py": "472dfb69c5459665aab9c35f6b58e419133b5ad814a4725ede1cde1275293dc3",
     "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/adapters/wechat_pr28_runtime_adapter.py": "fc3b67cac2d3cc182fd35f890be6861742f188dd59cea4a89326cbb71a6feaca",
     "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/adapters/wechat_sidecar_runner.py": "e165d95f1ec78124512995eb132a607e4d1c5781b425222d97ef43681c72652e",
@@ -1217,6 +1220,9 @@
     "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/tests/test_c1_layout_reuse.py": "3cb4f88033b9ad1df9dd0bc038100bbef7107c201e057454b8db7345ae670eb5",
     "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/tests/test_cargo_brain_runtime.py": "9c8d995c43d57afb85da0b803a942aee6a9b66002e0db421f1e042c13b95efe4",
     "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/tests/test_cargo_claim_scope.py": "9fa491427ec6c2729ad4abd07ade0b5541469a91441592927d29483fb35224a8",
+    "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/tests/test_catalog_query.py": "dd19ec0b8338a87da628ad2d66614c954dfee5de5dc7eb66635625751213a152",
+    "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/tests/test_catalog_query_entry.py": "ed38ca44248fd3d848c76938246ead9dddd2bc50ffe3c8b4700c10331c4a7c00",
+    "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/tests/test_catalog_selection_complete.py": "35b15526eea1d8f5897765b404c97e62ce5290b82e136061cbac13b71963e44c",
     "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/tests/test_complete_text_bubble_recheck.py": "0aa5bb7a3153e1c5939373f3cd9520f58f2254c8cd2406cf6215546ea3d3fd39",
     "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/tests/test_composer_desktop_fixture.py": "02f1837a8adad2850d9fd026ba9e6da99596d93825df7f29e665583e104fc45f",
     "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/tests/test_confirmed_sent_history.py": "f627eb95285c72d504606208b17508be63c8c2f7b2170c41a6051fa5f5aa1978",
@@ -1264,16 +1270,18 @@
     "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/workflows/approved_outbound_send.py": "ff3160027299129c8b78a39e13b6b3f0e5cd4f6c53a64bd5fa6b5b9bd593dc71",
     "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/workflows/build_evidence_pack.py": "7e4a82ba9356da1818a19d9ce867a8039ce5ee36757f1fec2b03348f9a23bc63",
     "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/workflows/cargo_claim_scope.py": "94a0686fe7831a86bbb12e740c671ad87bf4ca93023ba3632bae21fd67969e74",
+    "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/workflows/catalog_budget.py": "077e494657561921c809f2291c5aa30826c8814fcef5b829524fbfa65308a754",
+    "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/workflows/catalog_query.py": "1b637b7b1926a1855a2eeef4b1640b3b8cce3222b003c0a658386a5489bb5950",
     "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/workflows/chejin_brain_context_bridge.py": "3c8605e840ee9d3bfae7b3e13846db0eaf4b545c661e67b07ee4c773fac475af",
     "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/workflows/compile_knowledge_bases.py": "91ab897f60d099caa911c666668d6c40971a25d45daafe9a9a8004cecde1fdca",
     "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/workflows/customer_data_capture.py": "a94a2794f58583d82bba3d0452b6bad92aaf35b32795ea1646aa9dae9b8783eb",
     "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/workflows/customer_image_turn_router.py": "6e42465326690040d910d2117a29582ccc7cd717cada2da3c25ec33bbb6d69fa",
     "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/workflows/customer_intent_assist.py": "df3152dde47b76d3d02aa416adc3d8a7962db0209d09276f0a7713a430ab3fcc",
-    "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/workflows/customer_service_brain.py": "fb717761552e9ca11e9f75c67fe3f75a88ccf664f47a0905d84d991a76018773",
-    "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/workflows/customer_service_brain_contract.py": "1675f6ad4f05b481f2033f8ae39e4ce31d6193e7cdb9aef7d1a8d1a4d401e2e6",
+    "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/workflows/customer_service_brain.py": "5f80cad847992f698f37e05814a71253ef13c579e51719492ef63ced495dd27e",
+    "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/workflows/customer_service_brain_contract.py": "dd6dff07288bea51b50320f2417fb66a8b3d65bff2b5dca3055188add1a8ac4c",
     "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/workflows/customer_service_conversation_strategy.py": "c47805e4a646c9e3eeb854b0b99a408226dc1f5f647abaf31da5f30395b5ea81",
     "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/workflows/customer_service_loop.py": "0a1b4c1ac28208032fabaaaaf1fdffac8c273ce822f3f3b1684d22a9c9e34f11",
-    "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/workflows/customer_service_quality_reviewer.py": "7c8c9e3d94b6974ceaf3edf83e8f09af300398a6f5895b528ae034da8a1b87af",
+    "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/workflows/customer_service_quality_reviewer.py": "582e3fc17472c8925d35a908ed9aa814d67c9c4f3cd68e2f691430f2cd64c021",
     "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/workflows/customer_service_review_queue.py": "2668925232c70a8f28f17d2fea7e1026fc6fbb07586e86a1f644bbcf5e36c4d7",
     "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/workflows/evidence_authority.py": "74444dd82096e9e4e5870c1dc6919c3191ef472c64d9d38c3ab1a451bef4280e",
     "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/workflows/evidence_resolver.py": "4dad3e850a57718efd1b5b84088cd08f2c4fa74605f54e12b65f219affe900aa",
@@ -1288,7 +1296,7 @@
     "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/workflows/llm_intent_router.py": "2a25a191b3c056ec3fcbf5faf109dcbb47a81a414ead54b702e279a3badfd5da",
     "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/workflows/llm_output_adapter.py": "690ab69aeb65cfaad5b23ce5b12e09de5a38b37951f62231cfbf5f13fc5ea17a",
     "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/workflows/llm_product_name_matcher.py": "76a9ff76fa7b9a34976322c103529874a90b536837d3f91572e85b0248379a0b",
-    "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/workflows/llm_reply_guard.py": "a3363696107f292a15f7ccfda41e165bb6e3136493c1a473389ebc6885213003",
+    "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/workflows/llm_reply_guard.py": "a410fa73edbcc8b5c01a2bd7d822d3965106a99ad4edb65caea995b3c494edd8",
     "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/workflows/llm_reply_synthesis.py": "a04fe969bb880f0d1741b3b07cd23346027acbb0fe4aa74cd747b56fb0a0320f",
     "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/workflows/migrate_file_storage_to_postgres.py": "3055aaef55f7ea4f274c166602cd82f90119d53a43e77c64f05efc434c934803",
     "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/workflows/migrate_structured_to_knowledge_bases.py": "a33fd42d720fcd123d309b87fb113e95e2a48bb4430d051657e48121ea85ffb2",
@@ -1305,7 +1313,7 @@
     "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/workflows/real_chat_learning.py": "f2c22571edf31c043e68e0c6763a25c30d5f51c092a6c6f3c4cda4a204a5f4d9",
     "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/workflows/realtime_reply_router.py": "36e1accfcc1507523df737439e516022e965a0376b941db2ac89d90b707693d3",
     "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/workflows/recorder_loop.py": "a7734715cc78c01304a9705ae730795ba4a8af0a91967b5722cad88c4360b9e8",
-    "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/workflows/reply_evidence_builder.py": "2f88e7e229680e6fafe778875a080a8dc2ab785525850cf41d16b4bce830a6fe",
+    "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/workflows/reply_evidence_builder.py": "2e4def86fc9cfc3fc9bbcc585ca529cdcae4b805b1d670c8aad5e71b2443282d",
     "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/workflows/reply_style_adapter.py": "8db41a53a38255467e7f8a59b9da83a045942f2e65396696a2f3000b19259701",
     "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/workflows/style_memory_store.py": "f5cc0391b33bfa8ad3a096b282f81772838c105c0c79a88f8cc5ff8b53df0958",
     "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/workflows/vehicle_public_facts.py": "1c3b6a2fb85478a119eeb00a5df56e91de4f8c693cc2547da9626f6c1b16dca6",
@@ -1320,7 +1328,7 @@
     "worker-client/packaging/chejin-updater.spec": "494684136967d5da2eb1b039cfae84dc226571f071faf5b7dba6828bf5a74062",
     "worker-client/packaging/chejin-worker-client.spec": "66cab3bb85b28db08c39642d3de8d98a192e2c84324c3786884dd64c3aad35f0",
     "worker-client/packaging/chejin_updater_entry.py": "0fe85c173c3c6f6e74cb8bc42a98698b6479bef0dde0dfb90cc851439bc0e4da",
-    "worker-client/packaging/chejin_worker_client_entry.py": "246128101ba43e1b83a1230abdd8d06b57fa0cf064e090b4051640800762239d",
+    "worker-client/packaging/chejin_worker_client_entry.py": "45f83171d6c755971d957f5930789b6d10553e805a223d8f4c1a68f4745b0654",
     "worker-client/packaging/collect-uat-evidence.ps1": "f7a84bce02dc1b04eb148139a371755d85966d57bd794d10d100ff11334f9fce",
     "worker-client/packaging/collect_uat_evidence.py": "f6feda78c4c6a45b7c367a9416b17c0145019ac7d314dd1d9216a8992b4e61ae",
     "worker-client/packaging/release-signing-public-keys.json": "2be8440e9e3f564d5f1a5e930aa9e75f15fe492145cefd8804b5b12cbb0a6924",
@@ -1414,6 +1422,7 @@
     "worker-client/tests/test_diagnostic_bundle.py": "c0d556cfc426c5b35be84fd3db7e3cb9160f1ba96ad9690a8f91b8fcf3344f96",
     "worker-client/tests/test_diagnostic_contract_boundaries.py": "a3bd656fcfdb3005b4073569267ad6fe393956787c9e4004183f2b880cf2aecb",
     "worker-client/tests/test_diagnostic_priority_chain.py": "dea54b02bc4edd357bb8ec93bb080b4c322a506151e6ba2bca7bd341068e98a0",
+    "worker-client/tests/test_diagnostic_source_budget.py": "dbaaecd2ca7fb149aba241c1d694afb46fd41413702215b0e779de231edbe0ae",
     "worker-client/tests/test_emergency_status_settlement.py": "a51b45dc5657d4c38d69379b0878c51d31d3635029061c1b8497c02ddaf1244a",
     "worker-client/tests/test_equivalent_contract_handoff.py": "57c86d216999780e7fc245112a17043f0b3b3eb20e5a920aa616667f61cc8597",
     "worker-client/tests/test_evidence_review_regressions.py": "79835595b138ce14ba5e5cb97809775df771e873119473309bd2b4a393991719",
@@ -1594,6 +1603,7 @@
     "worker-client/tests/test_wechat_win32_ocr_sidecar_sessions.py": "43fde4436b36d197c57b536ee1da0f4b6ad4bae1c84b26e3ab978d97f7bedc9b",
     "worker-client/tests/test_wechat_win32_ocr_sidecar_voice.py": "96096c6b159db4a02b65b9a4b6b1cd454c2ae68d6f4e78227f66a285d287e6cc",
     "worker-client/tests/test_window_render_evidence.py": "cdb8276f6dbd1ae9a4f2be6ac0ba0264aa5ae5693210e7a7f6fecc1fa4499538",
+    "worker-client/tests/test_windows_exit_evidence.py": "fe0f293bc3a11dd1f40a2f288f61111364860ef73a86dbe00b006374a096aeeb",
     "worker-client/tests/test_windows_wheelhouse.py": "c301e09b029baaaa9da37d750098ce2d58cd3eb030af88ef5d09796db2822f3d",
     "worker-client/tests/voice_icon_fixtures.py": "5bfc31b3b65d875005f0311926d0e30429f94e39180fcc3e004734208686ee2f"
   },
@@ -1634,7 +1644,7 @@
       ]
     }
   ],
-  "environment": "Reuse architect final 8a327340 and preceding closed R2/R3/R4/local layout evidence; no repeated unchanged business tests. Frozen Windows, real WeChat and 48-hour endurance are separate pending acceptance.",
+  "environment": "Exact union of two reviewed runtime inputs; only documentation merge and SOP18.0.4 metadata. Unchanged local tests reused; frozen Windows and original machine acceptance separate.",
   "checks": [
     {
       "original_xml_sha256": "b6885c699eb9ae772a196e9124a3fe9aef1e7b15235a1a6aa761c04f06a56855",
@@ -17917,7 +17927,7 @@
   "packaging_reviewed_commit": "ffc6a97718d4d75f58b9fa90ae601a3132331101",
   "reviewed_delta_sha256": {
     "backend/.env.example": "ed7c5734c98665f2da1e6d4d6918be0529dbb4609560eb5851a60db60f9c9336",
-    "backend/README.md": "72afa73ab3c2912b7ab747d535c27f94e0b8784b57434058ac33b0c51c3b2479",
+    "backend/README.md": "568fb3bb2ce56dcf6d02efe3cb9ea84c2ed4bf30ddcbd65bef18e6a2688ff1da",
     "backend/alembic/versions/20261022_0042_reply_ownership.py": "89f604cd391984c723bf2d02528a5af1cb2c495fab2433ca1d2c7d7a15e82e2f",
     "backend/alembic/versions/20261028_0043_history_review.py": "bf09e7e446f207ce776b84ea15a2fc25d6006db79c20e26a155144c48a282024",
     "backend/alembic/versions/20261029_0044_feiyu_lead_receipts.py": "133383c8dcfb0c4a9c6bd5ce4dcd1c3cf5afc4722d2d24452dee86bb0a531733",
@@ -17935,11 +17945,12 @@
     "backend/app/models/worker.py": "590345f877b6bc65acf27de4b6f5878cced8ae132ca0ea6c4794e838e97f5e6d",
     "backend/app/schemas/hook_business.py": "7d6c5c054ab2531ae771fb32ba6dee5cbd88bfd89f736c7d159d0e9d816a0e5d",
     "backend/app/schemas/hook_identity.py": "50140651be6b27c939db6ccabbaa30f04be22c62098a33a4e30b42b0738bdc46",
+    "backend/app/schemas/vehicle.py": "b4fa6a129514ebc7153d95ccf69879d316959a8008cb5a39eaa9ff4e3695b6e7",
     "backend/app/schemas/worker.py": "18159de3ebfd2a0266a0a5f378474a878205f03d85438e27727272a628aa29af",
     "backend/app/services/ai_adapter.py": "c6d357b2201e1a5ebdc228f72d32e78777728704abf86c95c8664b72e05b8366",
     "backend/app/services/ai_capacity_service.py": "c6fb0d5d75df193bb873d7ad55825307c8045d84559f6cb99c0eafb437e8c218",
     "backend/app/services/c3_recovery.py": "c7c41be484735ce6f767c3480750ea889465bd655e253c6749ca5ab7e27dcd97",
-    "backend/app/services/c3_service.py": "55ac100b149f1c132d0bb4dae28bd8811b7ed510dd9bcfbcb0a2a26d7cb8b521",
+    "backend/app/services/c3_service.py": "f08398b654df7baedb5f7ae7a44b10c2d08ea475690e7090fd9c0013be748f82",
     "backend/app/services/clock_reference.py": "011ea5f6679d9e54c5a34a5a08e878c0672e28f096ac9de147412e4df8016411",
     "backend/app/services/dashboard/__init__.py": "caa0c716b30686d33e5c6ad151e4ac9b92bb27528fc022e99d6702196330ab5f",
     "backend/app/services/dashboard/calculations.py": "d2a7f1ff296f7ddd39e8f8b99784d2ed206a8730932a03e0ac66032e1c4b9259",
@@ -17972,9 +17983,9 @@
     "backend/app/services/vehicle_service.py": "430aa16c058fe990c78106e1eacb428083a65af120b0e3ba70155a36fe01eb34",
     "backend/app/services/wechat_service.py": "dbcb46e5ed0c79f6e17b866ec18253210ed160f770115b8bce2e2672177955be",
     "backend/app/services/worker_service.py": "d24a4dbf22b60aa269e5de0e20f3a37ef1f4c12ab53b00b75ae4d5998596e944",
-    "backend/compose.web.yml": "b1e6b349d023a1fc1f20d93f710026cf16f32cbf4608a58fff5dae1533cfa419",
-    "backend/docker-compose.yml": "c29751e350c86a86f31f68a19ea136cf0c29cca717718b70d854fa5669d58442",
-    "backend/pyproject.toml": "e0f24454f0c1ac5ac0d1f9cb6e92bcd22c9f2f5652db34b9a81bee56adee9aab",
+    "backend/compose.web.yml": "f60da28829edc8de8d3ce65645c4b7bb408188563e2dc2dbb3aad7de7b90055a",
+    "backend/docker-compose.yml": "9a20b5d26d4638a5c97fabfa2f9d94d908f7581d9be65a29b12180babbb45818",
+    "backend/pyproject.toml": "8cdbc46716c3afb0f056a9fcb6bebb9f95af34af19e71ef91f707b1c407ee25f",
     "backend/tests/maintenance_recovery_fixture.py": "4f2df35463f04bb1cd361cf4bc106478e2b9c923a5a6f04dfbae6a7aad5d296c",
     "backend/tests/test_auth_api.py": "e3fd2a9023945ed27c9b3954fdb54928e0708e79bda1dfc1ce41ccd1b311b2a4",
     "backend/tests/test_brain_fact_guidance_regression.py": "afbd538d69b626d390dfdcc0fd910556db55149b6aad6e7cf3178d5624450987",
@@ -17982,7 +17993,8 @@
     "backend/tests/test_c3_api.py": "5e447122b7f7f99e037179b92da58cacfac679141be53f1f8c144a54eef28094",
     "backend/tests/test_c3_recovery_chain.py": "cf0fef4783cb7673848e7ffcdd336350d547b8f46115cc85694e64779d8e2a38",
     "backend/tests/test_c3_recovery_isolation.py": "e713ab5fc6a24a4d3e0a17247b173d705b366729975898fee2db1f608f63b8f6",
-    "backend/tests/test_catalog_fact_references.py": "7cbc31c2746d529da1b75b3c084808aa294e8aa5b1eb6dfa5b8e68a95c8fee88",
+    "backend/tests/test_catalog_brain_joined.py": "e865fed9fd816f50781961108163fe081be41dae3c410d523052f98ebaac3aa4",
+    "backend/tests/test_catalog_fact_references.py": "f673921aa12bbfb50273be923c678dde95a116bce908e26927a6720cb05480db",
     "backend/tests/test_catalog_hook_chain.py": "718f750b1ad7bc12d88304ec53390747e8f11abc8153bc6a1f158e82a833b12c",
     "backend/tests/test_clock_reference.py": "8c96da75145fdbc9891ca85f325216eeb41aa931fd8b8e11fb896c99dc376738",
     "backend/tests/test_dashboard_api.py": "78821e5bcbb88ab101081fec501e38a09b7632e6a4d166a0351882fdc81280a4",
@@ -18010,7 +18022,7 @@
     "backend/tests/test_hook_friend_verification.py": "05c73f4ce7762a945d49cdd6dd6bd4639caef483b52533289eccd6fa303f3181",
     "backend/tests/test_hook_friend_verification_runtime.py": "3663b6dcc74a382f2180a0bd70c026fe2e4f18df02b0f3531e3e171b57689a80",
     "backend/tests/test_hook_handoff_history.py": "c4bb897264f8fd8150ca74177d3b7f9495f7fc72124499b6f768512cf5f20f8f",
-    "backend/tests/test_hook_handoff_runtime.py": "2a9e545c63eeadf1746c7821ee2740e4f330fc366dfbe207b62fb6cf7c4fb2bb",
+    "backend/tests/test_hook_handoff_runtime.py": "93de66f3b6288b5b203aa5ccd5d2f9d1928a899924e46238da779d873d548500",
     "backend/tests/test_hook_history_review.py": "29a9c84dd89b62a88143541f00a1b538da250b545014b66352105bfacbebc687",
     "backend/tests/test_hook_late_voice_active_batch.py": "3511004c2f0b5df661697b0c65c2e6c275e8799f74d6f146cbba68e4c1426881",
     "backend/tests/test_hook_late_voice_handoff.py": "95407668e9794f4a766f76005ca2271691ead96fabd6e0541c323b973515204e",
@@ -18034,16 +18046,16 @@
     "backend/tests/test_human_reply_ownership.py": "13c361f10cc3ad2cedce5f200ef2449d857af2ee0a07adb7e5a07b310fad9641",
     "backend/tests/test_lead_followup_p1_regressions.py": "e94f4abd89528de45638f73ab7f584cc60573f69fa5dd67828956705323e4350",
     "backend/tests/test_notification_recovery_boundaries.py": "4baba99ff7f1a4fcedcbf6a49cf2968767a638e66d23d113e634ad82a9c3c155",
-    "backend/tests/test_partial_reply_recovery_provider.py": "61c7a3bf8056b2efde7ccf8b9858eff1916e876e56699c232a68c83e3f39258d",
+    "backend/tests/test_partial_reply_recovery_provider.py": "292f554b2bdac3e48969e8b6efbf7a86fb593c61f476f28df029aa64ecf39b84",
     "backend/tests/test_reply_authority_arbitration.py": "8e4fffc54c335e24e12ebadef31fd300ebffe323b4ae6260a92b4b9d272d3112",
     "backend/tests/test_reply_ownership_migration.py": "3248b0982cd4c1a5e72ed4c6caf7012058cf566249c4b69a98bc051ae08cc2de",
     "backend/tests/test_wechat_c2_api.py": "18634f624d0ea0148abc287b924c46ecd5397349b8a30f5f9355a37501c0d0cf",
-    "contracts/c2_contract_v3.json": "8ca60fca294de8955bb05f7fe9b4017d19796f788d7194aa6466f57f607877c5",
+    "contracts/c2_contract_v3.json": "32868d07aca5d02bf3e73a6f3d7355147ecf7d15c8428c227834183ab94d835b",
     "contracts/feiyu-hook-integration.md": "68bd149bb7616fe12afc74776755ea1ed60c158028db97a1f8e8b555f72dd04b",
-    "contracts/hook_contract_v1.json": "20c6bbc95a4cbd316befba90e24f99f55041595c855ff9c9549e0f7d5629d3a2",
-    "frontend/README.md": "a60151c21d74a76d07cc3998aedcc7cffccb20c4680dbbddd90f65cbf329cc63",
-    "frontend/package-lock.json": "87c6735973478a5d1a42b6103693961f42e7b807c28ece8e8546d01f311c600e",
-    "frontend/package.json": "961bed7c3bf98ea124aa1738fc2073e320d27da0370b80e7223f8819509aae30",
+    "contracts/hook_contract_v1.json": "b2d7169e6035949e98f2b0778e888c0dfbbc65e7a0f65155e47612f6d635789c",
+    "frontend/README.md": "eba8078ded75beed52f931bc26039cc7bf2a7a231ddfbcf3f19fde12d078cce9",
+    "frontend/package-lock.json": "7ceb36de1213a8f1a4786442618607f1bd1146f6150f49b2ce09163b1e20029f",
+    "frontend/package.json": "b56d8c168b9fb99549c0cdd1b8e902e3b2e95046c9d6382c519eccf69f0affc9",
     "frontend/src/App.test.tsx": "1ab020138232217c8b19d55ebca8b714c943206c939b9071724cc1d66911fbb7",
     "frontend/src/App.tsx": "570df29154f664be4bd8009459f1d1c7ca17f041821bc8a27f96ff7c0f5e1693",
     "frontend/src/features/auth/LoginPage.tsx": "b81b9d6acb4ceef34e15206b9bbdaf3c8ec2687b36487e2a66d1b1e4c2cfa572",
@@ -18105,7 +18117,7 @@
     "packages/worker-ui-baseline/tests/runtime-clock-warning.test.mjs": "8894be8370cbf84f7056697152a1190342afe8695900f4db7541faa00f960c5f",
     "packages/worker-ui-baseline/tests/runtime-startup-checks.test.mjs": "83470d03957e0fcdc436514024ca99b21fd8f8ed5d6861df58441ffb2fc3b7af",
     "worker-client/README.md": "c512311ca588a301dcb8db8d07260f1505853bed8dc4b023dd17c197793b97aa",
-    "worker-client/chejin_worker_client/__init__.py": "b678ee7f40cb40dad7ff6aae3aefdf26d93bc6c49ab0ce9dc0d77cbf423fd4c3",
+    "worker-client/chejin_worker_client/__init__.py": "b5265953ef2c2beaa96d7791485cede2c024dcc906b1707656787768cb8dad6a",
     "worker-client/chejin_worker_client/artifact_retention.py": "f931d724041b160908485feb41a9c93dac273d0db8a8fe878369890b23f3fc65",
     "worker-client/chejin_worker_client/c1_diagnostics.py": "1a5137c8ba2e4954a46151e0ff970d8e9e4cd2fd0c6a4f8a08954d3b4ad23c68",
     "worker-client/chejin_worker_client/chejin_updater.py": "5004c75c7a54ea827b97f685c16005b82d199e63700476a836c3aa0f792ad4c7",
@@ -18113,7 +18125,7 @@
     "worker-client/chejin_worker_client/clock_diagnostics.py": "d88d450cdb38e378491423e2bfd4321b7ec6479f47243cb2464e1766204e3694",
     "worker-client/chejin_worker_client/clock_sync.py": "680fc30c9c7b770ea566c39265ebbc56a7da679efb46946dd0adaf565e7ec366",
     "worker-client/chejin_worker_client/clock_sync_ticket.py": "a4d08690e9eeff6678af187a81d248595c4c7db3b543d5b105f2c051cde87513",
-    "worker-client/chejin_worker_client/diagnostic_bundle.py": "7ef75f003449d81e1a4b9f7a95ec43dc441bf9be56b8db969ad7e33ec02dcdb3",
+    "worker-client/chejin_worker_client/diagnostic_bundle.py": "4eb5487ad529e575cf80e239e0418c13d0787b94a7b5826afdb42e0caa430b97",
     "worker-client/chejin_worker_client/diagnostic_callback.py": "3621448c2947b393955d69350ac71f5e4b12013fa1fb7094f30a862a85d21390",
     "worker-client/chejin_worker_client/diagnostic_selection.py": "4e6cf8f021ec385ed0e68c86e6e7e91f18d327d028bfce0a115c22ffb9161e7f",
     "worker-client/chejin_worker_client/diagnostic_ui.py": "1a9340232c42637731551de86b70ebff0f38094b9380e9d00bae75a08dc3cb78",
@@ -18190,10 +18202,11 @@
     "worker-client/chejin_worker_client/web_ui.py": "72fdcb8beb2c4b5dc6ca59232ee091b13e72a03cdb493487c418c311e5bad566",
     "worker-client/chejin_worker_client/window_render_evidence.py": "1c6764c970f685d337df338e7d39147f475a49ce96c1699ebac5419736b3e8c8",
     "worker-client/chejin_worker_client/windows_clock_sync.py": "c07b32861bfa8bfc9fc865d3b96515aa2d30e201d90d8a00747e2a8cd1f562dc",
-    "worker-client/omniauto-rpa/.chejin-source.json": "82fb0a6b661f1496d1bcdcc1d87d0e41255d4852ed406442d939c660581f665b",
+    "worker-client/chejin_worker_client/windows_exit_evidence.py": "ca6b6e6c9e2a38011247e6fd4426f611af562dd8648d1d3e8b402a468ca27cae",
+    "worker-client/omniauto-rpa/.chejin-source.json": "4e2e9b6e522ee61d492ef2d79151de1a0645633b4f9df069b106e4e420929a2a",
     "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/adapters/add_friend_layout.py": "2978fdb588bd256f6a91958e9dd17088d0cf584b5a6a338c28a123941997369f",
     "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/adapters/add_friend_ocr.py": "92b8c5f66499c86d4e60f2c2559dcdbaa433abd1e532feb07affe3704e13b6a7",
-    "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/adapters/chejin_c2_observation_schema.generated.json": "56eb65a382f8d0e070036cd69f1c11bd6a3dbfdec319c2ee56e06db5f01ed570",
+    "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/adapters/chejin_c2_observation_schema.generated.json": "31cf5f959572b6d0328ec0d055de3e967b0761727a6fb45f3cf04a580c491dd6",
     "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/adapters/hook_contact_rules.py": "cc3072ea75f4015fd0b7554c5e91a740b52834559f10c0291494bb51cef0e9e2",
     "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/adapters/hook_contract_rules.py": "11ffbfad750add6cecd4db53ffdd02eb1b15b4ef13b804110d89d20d10a462c3",
     "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/adapters/hook_history_rules.py": "c74ceb4b976f981bb544082492ad338d4e1f5258d42a0f17400a74fb34597d64",
@@ -18202,23 +18215,31 @@
     "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/adapters/icon_similarity.py": "830c7248bd208b43b623a9e0ab33057655e3b6d7a165ffe7ad93feef3177a36d",
     "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/adapters/search_control_icons.py": "3f9f8c5aad61cd55928f33150e852ca55c2c6c2de8e5ca321de6dc972bcdbb8c",
     "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/adapters/search_query_ocr.py": "e7b47ac12737e4935c383baf7a10986c3782128f0ef1274963015dfa8e2dd179",
+    "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/adapters/vehicle_fields.py": "89eb3fd21d516176e17cdc1685b1f3fa445a800a71974c3fd49f457a143c4dad",
     "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/adapters/wechat_win32_ocr/c1_layout.py": "39c9c34254a5a6ec7c498f63aa73eabdd4f8bd16b32859e37879386c2c44c815",
     "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/adapters/wechat_win32_ocr/hook_c1.py": "5968f1c6f958becaf0c8482afca18f72a0a2604a322cebeeab25fb92febfc452",
     "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/adapters/wechat_win32_ocr/hook_c1_flow.py": "f407bd14cc733391b23fac011e1215f3c6089b3fc7f15805c4294724003c6960",
     "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/adapters/wechat_win32_ocr/window_action_planning.py": "54fd8e05e07e85250836383b6f99baacb35f030e4744e5f9a696e45591a3f380",
     "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/tests/run_customer_service_brain_contract_checks.py": "c57b8e27d74b986420baffaef8cd47d00bb15cbbf19a55eb40069bba16103b79",
     "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/tests/test_c1_layout_reuse.py": "3cb4f88033b9ad1df9dd0bc038100bbef7107c201e057454b8db7345ae670eb5",
+    "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/tests/test_catalog_query.py": "dd19ec0b8338a87da628ad2d66614c954dfee5de5dc7eb66635625751213a152",
+    "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/tests/test_catalog_query_entry.py": "ed38ca44248fd3d848c76938246ead9dddd2bc50ffe3c8b4700c10331c4a7c00",
+    "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/tests/test_catalog_selection_complete.py": "35b15526eea1d8f5897765b404c97e62ce5290b82e136061cbac13b71963e44c",
     "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/tests/test_hook_c1_flow.py": "f89fc75114505e3fff935b5d78db5a6aceac6e096df060db09757261c1e5d652",
     "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/tests/test_hook_c1_startup.py": "1778f4b803c3b4a281adecd4c66e44a9d5cb7977fa83231f3f5e2d491afaed64",
     "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/tests/test_search_control_icons.py": "fd6b7467629b02a082594da69191028cb8cbaf6b5cc58800267e50d712068a5e",
-    "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/workflows/customer_service_brain.py": "fb717761552e9ca11e9f75c67fe3f75a88ccf664f47a0905d84d991a76018773",
-    "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/workflows/customer_service_brain_contract.py": "1675f6ad4f05b481f2033f8ae39e4ce31d6193e7cdb9aef7d1a8d1a4d401e2e6",
-    "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/workflows/customer_service_quality_reviewer.py": "7c8c9e3d94b6974ceaf3edf83e8f09af300398a6f5895b528ae034da8a1b87af",
+    "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/workflows/catalog_budget.py": "077e494657561921c809f2291c5aa30826c8814fcef5b829524fbfa65308a754",
+    "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/workflows/catalog_query.py": "1b637b7b1926a1855a2eeef4b1640b3b8cce3222b003c0a658386a5489bb5950",
+    "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/workflows/customer_service_brain.py": "5f80cad847992f698f37e05814a71253ef13c579e51719492ef63ced495dd27e",
+    "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/workflows/customer_service_brain_contract.py": "dd6dff07288bea51b50320f2417fb66a8b3d65bff2b5dca3055188add1a8ac4c",
+    "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/workflows/customer_service_quality_reviewer.py": "582e3fc17472c8925d35a908ed9aa814d67c9c4f3cd68e2f691430f2cd64c021",
+    "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/workflows/llm_reply_guard.py": "a410fa73edbcc8b5c01a2bd7d822d3965106a99ad4edb65caea995b3c494edd8",
+    "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/workflows/reply_evidence_builder.py": "2e4def86fc9cfc3fc9bbcc585ca529cdcae4b805b1d670c8aad5e71b2443282d",
     "worker-client/packaging/Diagnose-CheJin.cmd": "3c00362034cefab35ddf887818373cf87cf5bd2e6246529bf5c0ebceef340541",
     "worker-client/packaging/Rollback-CheJin-Hook.cmd": "510f5d6b45003efb9f2801bb04154789f67a50abbf4ccba7fc4011c6792ed8ad",
     "worker-client/packaging/Update-CheJin-Hook.cmd": "46e00b1f8f78d9a02e78449466100610d40bb4eeb7d6a7827dc0634796363ac1",
     "worker-client/packaging/chejin-updater.spec": "494684136967d5da2eb1b039cfae84dc226571f071faf5b7dba6828bf5a74062",
-    "worker-client/packaging/chejin_worker_client_entry.py": "246128101ba43e1b83a1230abdd8d06b57fa0cf064e090b4051640800762239d",
+    "worker-client/packaging/chejin_worker_client_entry.py": "45f83171d6c755971d957f5930789b6d10553e805a223d8f4c1a68f4745b0654",
     "worker-client/packaging/start-hook.ps1": "1a9f543993fa90b3acd1265f3fc2f4fd2faf1061ba98cb40b925d9ca01fb4080",
     "worker-client/packaging/update-hook-component.ps1": "39a288d057967a2d3dc62d7d2d1bbc9fb63501fb833d2e200cc51649da25721a",
     "worker-client/scripts/run-windows-hook-preserve-install.py": "c7a2bf31c1af8f9b47b546b5d5317dcdd2ee7be3b38d63592c10c9c60a4ce5ab",
@@ -18231,6 +18252,7 @@
     "worker-client/tests/test_diagnostic_bundle.py": "c0d556cfc426c5b35be84fd3db7e3cb9160f1ba96ad9690a8f91b8fcf3344f96",
     "worker-client/tests/test_diagnostic_contract_boundaries.py": "a3bd656fcfdb3005b4073569267ad6fe393956787c9e4004183f2b880cf2aecb",
     "worker-client/tests/test_diagnostic_priority_chain.py": "dea54b02bc4edd357bb8ec93bb080b4c322a506151e6ba2bca7bd341068e98a0",
+    "worker-client/tests/test_diagnostic_source_budget.py": "dbaaecd2ca7fb149aba241c1d694afb46fd41413702215b0e779de231edbe0ae",
     "worker-client/tests/test_evidence_review_regressions.py": "79835595b138ce14ba5e5cb97809775df771e873119473309bd2b4a393991719",
     "worker-client/tests/test_failure_evidence_boundaries.py": "97b8746f6d4da394b376dc15e30336b395da5c89db54493eb9d0ea3e406d9b7d",
     "worker-client/tests/test_hook_backend.py": "698b9e3707bf0b2620a9c506c8517b009afa55bd7c181f63dc79fe137c56b648",
@@ -18298,15 +18320,29 @@
     "worker-client/tests/test_update_shutdown_ui.py": "4f46fa73852223b011f847cb05909b6f59693602ad1d0ef776c28b360eb4a289",
     "worker-client/tests/test_update_stop_confirmation.py": "96306ce9c8136b18823fc13c62a2d589743194bdcfc5cfef166130bcbbdac392",
     "worker-client/tests/test_web_ui_binding_behavior.py": "837e6d625feaff0b93dcacbc538798a6e98a6c3c3b0b3efd29ca5b4dbbb24bf6",
-    "worker-client/tests/test_window_render_evidence.py": "cdb8276f6dbd1ae9a4f2be6ac0ba0264aa5ae5693210e7a7f6fecc1fa4499538"
+    "worker-client/tests/test_window_render_evidence.py": "cdb8276f6dbd1ae9a4f2be6ac0ba0264aa5ae5693210e7a7f6fecc1fa4499538",
+    "worker-client/tests/test_windows_exit_evidence.py": "fe0f293bc3a11dd1f40a2f288f61111364860ef73a86dbe00b006374a096aeeb"
   },
   "delta_review": {
-    "commit": "8a327340c0bb43de0271417acd7a5aab2ba6c9ed",
+    "commit": "c62e59a97a76b2fa1f6a140cea9134edc81fd9a5",
     "result": "passed for source push",
     "thread_id": "01a0d26f-f47a-7343-9ad8-cda8320d7c86",
-    "turn_id": "report-performance-evidence-pe01-review-20261103-final",
-    "review_file_sha256": "52d06a63805c4d86e6d46505622070acc11c359b323cf0daa58ca96b12cfbc33",
-    "scope": "Final source review closes R1 and docs; preceding R2/R3/R4 and layout conclusions reused. User explicitly authorized release. Not Windows/endurance approval; metadata normalized under SOP18.0.4."
+    "turn_id": "composite-catalog-r4-and-diagnostic-memory-20261103",
+    "scope": "Exact per-file union of separately reviewed candidates; no claim architect reviewed merge commit anew. Runtime hash identity verified by release; only documentation conflicts merged. User authorized both.",
+    "source_reviews": [
+      {
+        "report": "catalog-query-r4-review-20261103/review.json",
+        "sha256": "b3fb597ce2406697990374fd0b3790069d1d3ccad69bbf191143bb003113e5c5",
+        "candidate": "d45b485fa15159d04dbd21c060c5b1213b088b23",
+        "decision": "source_and_local_integration_pass"
+      },
+      {
+        "report": "diagnostic-memory-review-20261103/review.json",
+        "sha256": "ffa677893703ed73f422f5fb2f081c408c39b2d050f2a1354165da481391b399",
+        "candidate": "39359af69f345445e600f422be55308b304fc476",
+        "decision": "source_and_local_export_chain_pass"
+      }
+    ]
   },
   "historical_baseline_tests": 1371,
   "reviewed_delta_deleted_sha256": {
@@ -18472,7 +18508,13 @@
     "e699bc9c72ff3420570819b756acb1828b35179e",
     "62a0695f595e4413b3e75ef2ba837cb234be8ddf",
     "34590e22f86368d80f3e84f40c275ecb6fa282f9",
-    "8a327340c0bb43de0271417acd7a5aab2ba6c9ed"
+    "8a327340c0bb43de0271417acd7a5aab2ba6c9ed",
+    "cbdb9385aa62bc0494ab71f27aa23e9c70d11cd0",
+    "362433ebbee97ae910e8770885b3775ec411ae32",
+    "d55f3f6a7767f05fdfaffb7ddbd7a16e97190bd6",
+    "d45b485fa15159d04dbd21c060c5b1213b088b23",
+    "39359af69f345445e600f422be55308b304fc476",
+    "c62e59a97a76b2fa1f6a140cea9134edc81fd9a5"
   ],
   "cumulative_source_reviews": [
     {
@@ -19055,6 +19097,18 @@
       "sha256": "e1996dd5bebf7be4eccdb98c1c43e2816fbc8d0236259f73c77201a214228999",
       "candidate": "8a327340c0bb43de0271417acd7a5aab2ba6c9ed",
       "decision": "source_review_passed_local_verified_48h_windows_pending"
+    },
+    {
+      "report": "catalog-query-r4-review-20261103/review.json",
+      "sha256": "b3fb597ce2406697990374fd0b3790069d1d3ccad69bbf191143bb003113e5c5",
+      "candidate": "d45b485fa15159d04dbd21c060c5b1213b088b23",
+      "decision": "source_and_local_integration_pass"
+    },
+    {
+      "report": "diagnostic-memory-review-20261103/review.json",
+      "sha256": "ffa677893703ed73f422f5fb2f081c408c39b2d050f2a1354165da481391b399",
+      "candidate": "39359af69f345445e600f422be55308b304fc476",
+      "decision": "source_and_local_export_chain_pass"
     }
   ],
   "prior_release_delta_review_01011": {
@@ -19145,16 +19199,154 @@
     }
   ],
   "incremental_review_evidence": {
-    "report_sha256": "e1996dd5bebf7be4eccdb98c1c43e2816fbc8d0236259f73c77201a214228999",
-    "layout": "46 passed plus 1 added boundary; original execution reused",
-    "final_priority": "3 targeted tests passed, 69 passed / 1 skipped regression; architect 1 independent controlled producer/export probe passed",
-    "fresh_tests_executed_by_release": 0,
-    "counting": "Historical XML checks below remain historical; these JSON/log-based checks are not fabricated as XML or counted as re-executed.",
+    "reviews": [
+      {
+        "report": "catalog-query-r4-review-20261103/review.json",
+        "sha256": "b3fb597ce2406697990374fd0b3790069d1d3ccad69bbf191143bb003113e5c5",
+        "candidate": "d45b485fa15159d04dbd21c060c5b1213b088b23",
+        "decision": "source_and_local_integration_pass"
+      },
+      {
+        "report": "diagnostic-memory-review-20261103/review.json",
+        "sha256": "ffa677893703ed73f422f5fb2f081c408c39b2d050f2a1354165da481391b399",
+        "candidate": "39359af69f345445e600f422be55308b304fc476",
+        "decision": "source_and_local_export_chain_pass"
+      }
+    ],
+    "fresh_business_tests_executed_by_release": 0,
     "limits": [
-      "4 existing dispatcher baseline failures",
-      "shared contract rules_source_sha256 mismatch pre-existing",
-      "48h elapsed run pending",
-      "Windows frozen EXE and physical machine pending"
-    ]
+      "Windows event log execution/permissions and actual frozen export pending",
+      "No confirmed OOM/leak/WeChat crash causation",
+      "48-hour endurance separate"
+    ],
+    "counts": "Reuse original review logs; do not sum overlapping tests or relabel as fresh runs"
+  },
+  "reviewed_union": {
+    "backend/app/schemas/vehicle.py": {
+      "sha256": "b4fa6a129514ebc7153d95ccf69879d316959a8008cb5a39eaa9ff4e3695b6e7",
+      "reviewed_candidates": [
+        "d45b485fa15159d04dbd21c060c5b1213b088b23"
+      ]
+    },
+    "backend/app/services/c3_service.py": {
+      "sha256": "f08398b654df7baedb5f7ae7a44b10c2d08ea475690e7090fd9c0013be748f82",
+      "reviewed_candidates": [
+        "d45b485fa15159d04dbd21c060c5b1213b088b23"
+      ]
+    },
+    "backend/tests/test_catalog_brain_joined.py": {
+      "sha256": "e865fed9fd816f50781961108163fe081be41dae3c410d523052f98ebaac3aa4",
+      "reviewed_candidates": [
+        "d45b485fa15159d04dbd21c060c5b1213b088b23"
+      ]
+    },
+    "backend/tests/test_catalog_fact_references.py": {
+      "sha256": "f673921aa12bbfb50273be923c678dde95a116bce908e26927a6720cb05480db",
+      "reviewed_candidates": [
+        "d45b485fa15159d04dbd21c060c5b1213b088b23"
+      ]
+    },
+    "backend/tests/test_hook_handoff_runtime.py": {
+      "sha256": "93de66f3b6288b5b203aa5ccd5d2f9d1928a899924e46238da779d873d548500",
+      "reviewed_candidates": [
+        "d45b485fa15159d04dbd21c060c5b1213b088b23"
+      ]
+    },
+    "backend/tests/test_partial_reply_recovery_provider.py": {
+      "sha256": "292f554b2bdac3e48969e8b6efbf7a86fb593c61f476f28df029aa64ecf39b84",
+      "reviewed_candidates": [
+        "d45b485fa15159d04dbd21c060c5b1213b088b23"
+      ]
+    },
+    "worker-client/chejin_worker_client/diagnostic_bundle.py": {
+      "sha256": "4eb5487ad529e575cf80e239e0418c13d0787b94a7b5826afdb42e0caa430b97",
+      "reviewed_candidates": [
+        "39359af69f345445e600f422be55308b304fc476"
+      ]
+    },
+    "worker-client/chejin_worker_client/windows_exit_evidence.py": {
+      "sha256": "ca6b6e6c9e2a38011247e6fd4426f611af562dd8648d1d3e8b402a468ca27cae",
+      "reviewed_candidates": [
+        "39359af69f345445e600f422be55308b304fc476"
+      ]
+    },
+    "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/adapters/vehicle_fields.py": {
+      "sha256": "89eb3fd21d516176e17cdc1685b1f3fa445a800a71974c3fd49f457a143c4dad",
+      "reviewed_candidates": [
+        "d45b485fa15159d04dbd21c060c5b1213b088b23"
+      ]
+    },
+    "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/tests/test_catalog_query.py": {
+      "sha256": "dd19ec0b8338a87da628ad2d66614c954dfee5de5dc7eb66635625751213a152",
+      "reviewed_candidates": [
+        "d45b485fa15159d04dbd21c060c5b1213b088b23"
+      ]
+    },
+    "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/tests/test_catalog_query_entry.py": {
+      "sha256": "ed38ca44248fd3d848c76938246ead9dddd2bc50ffe3c8b4700c10331c4a7c00",
+      "reviewed_candidates": [
+        "d45b485fa15159d04dbd21c060c5b1213b088b23"
+      ]
+    },
+    "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/tests/test_catalog_selection_complete.py": {
+      "sha256": "35b15526eea1d8f5897765b404c97e62ce5290b82e136061cbac13b71963e44c",
+      "reviewed_candidates": [
+        "d45b485fa15159d04dbd21c060c5b1213b088b23"
+      ]
+    },
+    "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/workflows/catalog_budget.py": {
+      "sha256": "077e494657561921c809f2291c5aa30826c8814fcef5b829524fbfa65308a754",
+      "reviewed_candidates": [
+        "d45b485fa15159d04dbd21c060c5b1213b088b23"
+      ]
+    },
+    "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/workflows/catalog_query.py": {
+      "sha256": "1b637b7b1926a1855a2eeef4b1640b3b8cce3222b003c0a658386a5489bb5950",
+      "reviewed_candidates": [
+        "d45b485fa15159d04dbd21c060c5b1213b088b23"
+      ]
+    },
+    "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/workflows/customer_service_brain.py": {
+      "sha256": "5f80cad847992f698f37e05814a71253ef13c579e51719492ef63ced495dd27e",
+      "reviewed_candidates": [
+        "d45b485fa15159d04dbd21c060c5b1213b088b23"
+      ]
+    },
+    "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/workflows/customer_service_brain_contract.py": {
+      "sha256": "dd6dff07288bea51b50320f2417fb66a8b3d65bff2b5dca3055188add1a8ac4c",
+      "reviewed_candidates": [
+        "d45b485fa15159d04dbd21c060c5b1213b088b23"
+      ]
+    },
+    "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/workflows/customer_service_quality_reviewer.py": {
+      "sha256": "582e3fc17472c8925d35a908ed9aa814d67c9c4f3cd68e2f691430f2cd64c021",
+      "reviewed_candidates": [
+        "d45b485fa15159d04dbd21c060c5b1213b088b23"
+      ]
+    },
+    "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/workflows/llm_reply_guard.py": {
+      "sha256": "a410fa73edbcc8b5c01a2bd7d822d3965106a99ad4edb65caea995b3c494edd8",
+      "reviewed_candidates": [
+        "d45b485fa15159d04dbd21c060c5b1213b088b23"
+      ]
+    },
+    "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/workflows/reply_evidence_builder.py": {
+      "sha256": "2e4def86fc9cfc3fc9bbcc585ca529cdcae4b805b1d670c8aad5e71b2443282d",
+      "reviewed_candidates": [
+        "d45b485fa15159d04dbd21c060c5b1213b088b23"
+      ]
+    },
+    "worker-client/tests/test_diagnostic_source_budget.py": {
+      "sha256": "dbaaecd2ca7fb149aba241c1d694afb46fd41413702215b0e779de231edbe0ae",
+      "reviewed_candidates": [
+        "39359af69f345445e600f422be55308b304fc476"
+      ]
+    },
+    "worker-client/tests/test_windows_exit_evidence.py": {
+      "sha256": "fe0f293bc3a11dd1f40a2f288f61111364860ef73a86dbe00b006374a096aeeb",
+      "reviewed_candidates": [
+        "39359af69f345445e600f422be55308b304fc476"
+      ]
+    }
   }
 }
