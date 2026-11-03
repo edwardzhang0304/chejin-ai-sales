@@ -133,7 +133,8 @@ def test_drained_rebind_resets_dispatcher_memory_but_keeps_disk_journals(runtime
     services.dispatcher = dispatcher
     dispatcher.runtime = SimpleNamespace(account={'self_wxid':'wxid_A', 'account_epoch':'epoch-A'})
     dispatcher._reconciled = True
-    dispatcher._sync_cache['A'] = 'old message'
+    import time
+    dispatcher._sync_cache['A'] = ((0,0), time.monotonic(), {'synthetic': 'old message'})
     evidence = tmp_path / 'permit.json'
     evidence.write_text('{"account_epoch":"epoch-A","result":"unknown"}')
     runner.binding = binding

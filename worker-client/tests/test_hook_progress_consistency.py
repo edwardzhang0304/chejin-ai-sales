@@ -93,7 +93,7 @@ def test_runtime_read_completes_before_transcription_and_internal_rescans_are_si
  runtime.credentials=SimpleNamespace(worker_id='worker');runtime.account={}
  runtime.heartbeat=Mock();runtime.barrier=Mock(return_value=(2,0))
  runtime.projection=SimpleNamespace(project_next=lambda _:None)
- runtime.clock=SimpleNamespace(now=lambda:datetime.now(timezone.utc));runtime.history_retry_events=[]
+ runtime.clock=SimpleNamespace(now=lambda:datetime.now(timezone.utc))
  runtime.delivery=lambda _:SimpleNamespace();runtime.drain=Mock()
  runtime.client=SimpleNamespace(history_coverage=Mock(return_value={'history_ready':False,'reason_code':'HOOK_VOICE_PENDING'}))
  binding={'binding_id':'binding','peer_wxid':PEER,'history_since_create_time':'0'}
@@ -255,7 +255,7 @@ def test_repeated_failed_history_checks_keep_waiting_without_transient_current(l
  runtime.active_flow_id=None
  runtime.history_budget=HistoryArtifactBudget(runtime.private_root,maximum_bytes=1024*1024,retention_days=30)
  runtime.heartbeat=Mock();runtime.projection=SimpleNamespace(project_next=lambda _:None)
- runtime.clock=SimpleNamespace(now=lambda:datetime.now(timezone.utc));runtime.history_retry_events=[]
+ runtime.clock=SimpleNamespace(now=lambda:datetime.now(timezone.utc))
  runtime.delivery=lambda _:SimpleNamespace()
  binding={'binding_id':'binding','peer_wxid':PEER,'history_since_create_time':'0'}
  persist(lab,metadata=True)

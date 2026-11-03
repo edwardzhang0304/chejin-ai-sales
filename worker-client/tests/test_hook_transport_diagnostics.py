@@ -34,13 +34,19 @@ def test_history_failure_precedes_successful_prefix_of_same_call(history_lab,mon
     finally:listener.close()
     with storage.db_connection() as db:
         failure=dict(db.execute('SELECT * FROM hook_transport_events ORDER BY rowid DESC LIMIT 1').fetchone())
-        assert json.loads(failure['evidence'])['delivery']=='unknown'
+        details=json.loads(failure['evidence'])
+        assert details['delivery']=='unknown'
+        assert details['request_bytes']>0 and details['response_bytes']==0
+        assert details['duration_ms']>=0
+        success=json.loads(db.execute("SELECT evidence FROM hook_transport_events WHERE route='GetDBHandleAndPath' ORDER BY rowid DESC LIMIT 1").fetchone()[0])
+        assert success['response_complete'] and success['response_bytes']>0 and success['request_bytes']==2
         assert db.execute('SELECT COUNT(*) FROM hook_transport_events WHERE action_id=?',(failure['action_id'],)).fetchone()[0]>2
     monkeypatch.setattr(diagnostic_bundle,'MAX_ROWS',2)
     path=diagnostic_bundle.export_bundle(storage.APP_DIR,tmp_path/'history-failure.zip')
     with zipfile.ZipFile(path) as archive:
         rows=json.loads(archive.read('state/hook_transport_events.json'))['rows']
         assert rows[0]['event_id']==failure['event_id']
+        assert json.loads(rows[0]['evidence'])['request_bytes']==details['request_bytes']
 
 
 @pytest.mark.parametrize('budget,reads',[(2,3),(1000,1001)])

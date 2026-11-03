@@ -21,7 +21,7 @@ from .hook_backend import HookIdentityClient,HookHeartbeatIdentity,HookHeartbeat
 from .hook_formal_c1 import HookFormalC1,HookC1ResultReceipts,_save
 from .hook_progress import emit_progress,register_progress,complete_send_progress
 from .hook_timing import timed_call, record_raw_delivery
-from .performance_evidence import measurement, measured_rows
+from .performance_evidence import measurement, measured_rows, iter_measured_rows
 from .hook_history_sync import HookHistorySynchronizer
 from .hook_outbox import HookDeliveryScope,HookDeliveryOutbox
 from .hook_projection import create_projection_store
@@ -98,7 +98,6 @@ class HookFormalRuntime:
         self.identity_client=HookIdentityClient(client.base_url,client.timeout_seconds,client.max_response_bytes)
         self.projection=create_projection_store()
         self.outbox=HookDeliveryOutbox(max_storage_bytes=32*1024*1024)
-        self.history_retry_events=[]
         self._history_checkpoint=None
         self._history_pending_contexts={}
         self._history_cycle_token=None
@@ -333,13 +332,15 @@ class HookFormalRuntime:
                 names={r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
                 if 'hook_raw_inbox' not in names:return (0,0)
                 scope=(self.scope.self_wxid,self.scope.account_epoch,self.scope.process_generation)
-                rows=conn.execute('SELECT receive_seq FROM hook_raw_inbox WHERE self_wxid=? AND account_epoch=? AND process_generation=?',scope).fetchall()
-                measured_rows(metrics,rows,())
-                if not rows:return (0,0)
-                if 'hook_observation_projection' not in names:return (rows[-1][0],len(rows))
-                value=conn.execute('''SELECT COALESCE(MAX(i.receive_seq),0),SUM(CASE WHEN p.receive_seq IS NULL THEN 1 ELSE 0 END)
+                # The account barrier needs counts, never the complete ID list.
+                if 'hook_observation_projection' not in names:
+                    value=conn.execute('SELECT COALESCE(MAX(receive_seq),0),COUNT(*) FROM hook_raw_inbox WHERE self_wxid=? AND account_epoch=? AND process_generation=?',scope).fetchone()
+                    metrics.update(rows=value[1],bytes=0)
+                    return (value[0],value[1])
+                value=conn.execute('''SELECT COALESCE(MAX(i.receive_seq),0),SUM(CASE WHEN p.receive_seq IS NULL THEN 1 ELSE 0 END),COUNT(*)
                     FROM hook_raw_inbox i LEFT JOIN hook_observation_projection p ON p.receive_seq=i.receive_seq
                     WHERE i.self_wxid=? AND i.account_epoch=? AND i.process_generation=?''',scope).fetchone()
+                metrics.update(rows=value[2],bytes=0)
                 return (value[0],value[1] or 0)
 
     def _binding_barrier(self,binding):
@@ -352,32 +353,43 @@ class HookFormalRuntime:
                 rows=conn.execute("SELECT i.receive_seq,i.raw_body,i.raw_digest,"+('p.projection_json,p.projection_digest' if projected else 'NULL AS projection_json,NULL AS projection_digest')+
                     " FROM hook_raw_inbox i "+('LEFT JOIN hook_observation_projection p ON p.receive_seq=i.receive_seq ' if projected else '')+
                     "WHERE i.self_wxid=? AND i.account_epoch=? AND i.process_generation=? ORDER BY i.receive_seq",
-                    (self.scope.self_wxid,self.scope.account_epoch,self.scope.process_generation)).fetchall()
-            measured_rows(metrics,rows,('raw_body','projection_json'))
-            known={job['native_msg_id'] for job in binding.get('voice_jobs',[])}
-            facts=[]
-            for row in rows:
-                if hashlib.sha256(row['raw_body']).hexdigest()!=row['raw_digest']:
-                    raise ValueError('HOOK_RAW_EVIDENCE_CHANGED')
-                if row['projection_json']:
-                    if hashlib.sha256(row['projection_json'].encode()).hexdigest()!=row['projection_digest']:
-                        raise ValueError('HOOK_PROJECTION_EVIDENCE_CHANGED')
-                    value=rules.loads(row['projection_json']);items=value.get('observations',[])
-                    known.update(o['native_msg_id'] for o in items if o.get('peer_wxid')==peer and o.get('native_msg_id'))
-                    facts.append((row['receive_seq'],items,False,value.get('status')!='projected'))
-                else:
-                    value=rules.loads(row['raw_body']);items=[]
-                    for message in value.get('msglist',[]):
-                        matches=(message.get('fromid')==peer or message.get('toid')==peer) and str(message.get('fromtype','1'))!='2'
-                        mid=str(message.get('msgsvrid') or '')
-                        if matches and mid:known.add(mid)
-                        items.append({'peer_wxid':peer if matches else None,'native_msg_id':mid,
-                            'media_stage':'audio_observed' if message.get('voice_data') else None})
-                    facts.append((row['receive_seq'],items,True,False))
-                metrics['validated_rows'] = metrics.get('validated_rows',0)+1
-            relevant=[(seq,pending) for seq,items,pending,bad in facts if bad or any(
-                o.get('peer_wxid')==peer or (o.get('media_stage')=='audio_observed' and o.get('native_msg_id') in known) for o in items)]
-            return (max((seq for seq,_ in relevant),default=0),sum(pending for _,pending in relevant))
+                    (self.scope.self_wxid,self.scope.account_epoch,self.scope.process_generation))
+                known={job['native_msg_id'] for job in binding.get('voice_jobs',[])}
+                audio_facts=[]
+                newest,pending_count=0,0
+                for row in iter_measured_rows(metrics,rows,('raw_body','projection_json')):
+                    if hashlib.sha256(row['raw_body']).hexdigest()!=row['raw_digest']:
+                        raise ValueError('HOOK_RAW_EVIDENCE_CHANGED')
+                    if row['projection_json']:
+                        if hashlib.sha256(row['projection_json'].encode()).hexdigest()!=row['projection_digest']:
+                            raise ValueError('HOOK_PROJECTION_EVIDENCE_CHANGED')
+                        value=rules.loads(row['projection_json']);items=value.get('observations',[])
+                        known.update(o['native_msg_id'] for o in items if o.get('peer_wxid')==peer and o.get('native_msg_id'))
+                        pending,bad=False,value.get('status')!='projected'
+                    else:
+                        value=rules.loads(row['raw_body']);items=[]
+                        for message in value.get('msglist',[]):
+                            matches=(message.get('fromid')==peer or message.get('toid')==peer) and str(message.get('fromtype','1'))!='2'
+                            mid=str(message.get('msgsvrid') or '')
+                            if matches and mid:known.add(mid)
+                            items.append({'peer_wxid':peer if matches else None,'native_msg_id':mid,
+                                'media_stage':'audio_observed' if message.get('voice_data') else None})
+                        pending,bad=True,False
+                    matches=any(o.get('peer_wxid')==peer for o in items)
+                    audio_ids={o.get('native_msg_id') for o in items if o.get('media_stage')=='audio_observed'}
+                    if bad or matches:
+                        newest=max(newest,row['receive_seq'])
+                        pending_count+=pending
+                    elif audio_ids:
+                        # A peerless audio callback can precede its parent. Keep
+                        # only IDs until the entire original scope was checked.
+                        audio_facts.append((row['receive_seq'],pending,audio_ids))
+                    metrics['validated_rows'] = metrics.get('validated_rows',0)+1
+                for seq,pending,audio_ids in audio_facts:
+                    if not known.isdisjoint(audio_ids):
+                        newest=max(newest,seq)
+                        pending_count+=pending
+                return (newest,pending_count)
 
     def drain(self,binding,*,allowed_native_ids=None):
         # Only delivery retries are safe; physical actions have their own journals.
@@ -389,13 +401,14 @@ class HookFormalRuntime:
                 rows=conn.execute('''SELECT p.receive_seq,p.projection_json FROM hook_observation_projection p
                     JOIN hook_raw_inbox i ON i.receive_seq=p.receive_seq
                     WHERE i.self_wxid=? AND i.account_epoch=? AND i.process_generation=? ORDER BY p.receive_seq''',
-                    (self.scope.self_wxid,self.scope.account_epoch,self.scope.process_generation)).fetchall()
-            measured_rows(metrics,rows,('projection_json',))
-            for seq,raw in rows:
-                projection=rules.loads(raw)
-                if projection['status']!='projected':raise ValueError('HOOK_CALLBACK_PROJECTION_QUARANTINED')
-                metrics['validated_rows'] = metrics.get('validated_rows',0)+1
-        self.outbox.enqueue_projections([seq for seq, _ in rows],delivery,
+                    (self.scope.self_wxid,self.scope.account_epoch,self.scope.process_generation))
+                sequences=[]
+                for seq,raw in iter_measured_rows(metrics,rows,('projection_json',)):
+                    projection=rules.loads(raw)
+                    if projection['status']!='projected':raise ValueError('HOOK_CALLBACK_PROJECTION_QUARANTINED')
+                    sequences.append(seq)
+                    metrics['validated_rows'] = metrics.get('validated_rows',0)+1
+        self.outbox.enqueue_projections(sequences,delivery,
                                         now=utc_now_iso(),allowed_native_ids=allowed_native_ids)
         self.drain_pending(binding)
 
@@ -575,11 +588,12 @@ class HookFormalRuntime:
                 while self.projection.project_next(self.scope) is not None:pass
                 with storage.db_connection() as conn:
                     rows=conn.execute('SELECT p.projection_json FROM hook_observation_projection p JOIN hook_raw_inbox i ON i.receive_seq=p.receive_seq WHERE i.self_wxid=? AND i.account_epoch=? AND i.process_generation=?',
-                        (self.scope.self_wxid,self.scope.account_epoch,self.scope.process_generation)).fetchall() if conn.execute("SELECT 1 FROM sqlite_master WHERE name='hook_observation_projection'").fetchone() else []
-                measured_rows(metrics,rows,('projection_json',))
-                callback_ids={o['native_msg_id'] for row in rows for o in rules.loads(row[0]).get('observations',[])
-                    if o.get('peer_wxid')==binding['peer_wxid'] and o.get('disposition')=='message_candidate'}
-                metrics['validated_rows'] = len(rows)
+                        (self.scope.self_wxid,self.scope.account_epoch,self.scope.process_generation)) if conn.execute("SELECT 1 FROM sqlite_master WHERE name='hook_observation_projection'").fetchone() else []
+                    callback_ids=set()
+                    for row in iter_measured_rows(metrics,rows,('projection_json',)):
+                        callback_ids.update(o['native_msg_id'] for o in rules.loads(row[0]).get('observations',[])
+                            if o.get('peer_wxid')==binding['peer_wxid'] and o.get('disposition')=='message_candidate')
+                        metrics['validated_rows']=metrics.get('validated_rows',0)+1
             budget.begin_capture(allow_retire=reconciliation is None and not self.active_flow_id)
             capture_files=set()
             send_diagnostic=None
@@ -609,7 +623,6 @@ class HookFormalRuntime:
                 event={'reason_code':str(exc),'attempt':attempt+1,'retry_allowed':attempt<2,
                     'observed_at':self.clock.now().isoformat(),'physical_send_retried':False}
                 _save(evidence_root/'history-retries'/f'{uuid.uuid4()}.json',event)
-                self.history_retry_events.append(event)
                 if attempt==2:raise
                 self.wait(.5)
                 continue
