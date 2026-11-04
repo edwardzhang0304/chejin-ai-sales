@@ -2417,6 +2417,7 @@ def run_brain_llm(*, settings: dict[str, Any], brain_input: dict[str, Any]) -> d
         json_mode=True,
         progress_stage="brain_llm",
     )
+    response["generation_stage"] = "primary"
     response["primary_provider"] = provider
     response["primary_model"] = model
     response["primary_base_url"] = base_url
@@ -2443,7 +2444,7 @@ def run_brain_llm(*, settings: dict[str, Any], brain_input: dict[str, Any]) -> d
             retry["primary_base_url"] = base_url
             retry["prompt_estimate"] = prompt_estimate
             retry["same_capture_retry"] = True
-            retry["previous_llm_status"] = compact_retry_previous_llm_status(response, {})
+            retry.setdefault("previous_llm_status", compact_retry_previous_llm_status(response, {}))
             retry.setdefault("retry_reason", "brain_llm_unavailable_same_capture_retry")
             return retry
         return response
@@ -2486,7 +2487,7 @@ def run_brain_llm(*, settings: dict[str, Any], brain_input: dict[str, Any]) -> d
             retry["primary_base_url"] = base_url
             retry["prompt_estimate"] = prompt_estimate
             retry["same_capture_retry"] = True
-            retry["previous_llm_status"] = compact_retry_previous_llm_status(response, repair)
+            retry.setdefault("previous_llm_status", compact_retry_previous_llm_status(response, repair))
             return retry
         response["ok"] = False
         response["error_kind"] = "brain_output_parse"
@@ -2556,6 +2557,8 @@ def maybe_retry_brain_llm_after_unavailable_response(
         json_mode=True,
         progress_stage="brain_llm_unavailable_retry",
     )
+    retry["generation_stage"] = "unavailable_retry"
+    retry["previous_llm_status"] = compact_retry_previous_llm_status(previous_response, {})
     retry["attempted"] = True
     retry["retry_reason"] = "brain_llm_unavailable"
     retry["retry_max_tokens"] = retry_tokens
@@ -2602,7 +2605,6 @@ def maybe_retry_brain_llm_after_unavailable_response(
     if parse_retry.get("ok") and isinstance(parse_retry.get("brain_plan"), dict):
         parse_retry["same_capture_retry"] = True
         parse_retry["retry_reason"] = "brain_llm_unavailable_parse_retry"
-        parse_retry["previous_llm_status"] = compact_retry_previous_llm_status(previous_response, repair)
         return parse_retry
     retry["ok"] = False
     retry["error_kind"] = "brain_output_parse"
@@ -2726,6 +2728,8 @@ def compact_invalid_plan_retry_result(result: dict[str, Any] | None) -> dict[str
             "status",
             "error",
             "error_kind",
+            "generation_stage",
+            "previous_llm_status",
             "json_structure_repair",
             "same_capture_parse_retry_after_unavailable",
             "fallback",
@@ -2753,6 +2757,8 @@ def compact_llm_unavailable_retry_result(result: dict[str, Any] | None) -> dict[
             "status",
             "error",
             "error_kind",
+            "generation_stage",
+            "previous_llm_status",
             "json_structure_repair",
             "same_capture_parse_retry_after_unavailable",
             "fallback",
@@ -2820,6 +2826,8 @@ def maybe_retry_brain_llm_after_unparseable_response(
         json_mode=True,
         progress_stage="brain_llm_parse_retry",
     )
+    retry["generation_stage"] = "parse_retry"
+    retry["previous_llm_status"] = compact_retry_previous_llm_status(previous_response, previous_repair)
     retry["attempted"] = True
     retry["retry_reason"] = "brain_unparseable_or_empty_response"
     retry["retry_max_tokens"] = retry_tokens
@@ -2855,16 +2863,23 @@ def maybe_retry_brain_llm_after_unparseable_response(
 
 
 def compact_retry_previous_llm_status(response: dict[str, Any], repair: dict[str, Any]) -> dict[str, Any]:
-    return {
+    result = {
         "ok": bool(response.get("ok")),
         "provider": response.get("provider"),
         "model": response.get("model"),
         "status": response.get("status"),
         "error": response.get("error"),
+        "error_kind": response.get("error_kind"),
+        "generation_stage": response.get("generation_stage"),
         "response_text_empty": not bool(str(response.get("response_text") or "").strip()),
         "json_structure_repair": compact_json_structure_repair_result(repair),
         "failover": response.get("failover"),
     }
+    # Each caller links one real predecessor. Depth is bounded by the existing
+    # single transport retry and single parse retry; no model text is included.
+    if isinstance(response.get("previous_llm_status"), dict):
+        result["previous_llm_status"] = copy.deepcopy(response["previous_llm_status"])
+    return result
 
 
 def brain_from_manual_json(settings: dict[str, Any]) -> dict[str, Any]:

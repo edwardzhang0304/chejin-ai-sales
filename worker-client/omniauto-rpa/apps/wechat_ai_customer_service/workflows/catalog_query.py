@@ -477,6 +477,20 @@ def clearance_kind(reply, evidence):
     return None
 
 
+def catalog_generation_audit(result: dict) -> dict:
+    """One metadata-only projection for understanding and completion stages.
+
+    Recovery summaries are already bounded by Brain's existing retry policy.
+    Keep those summaries, never the model response body or full prompt.
+    """
+    return {key: deepcopy(result[key]) for key in (
+        "ok", "usage", "prompt_estimate", "provider", "model", "status", "elapsed_ms",
+        "error", "error_kind", "http_status", "generation_stage", "json_structure_repair",
+        "json_structure_repaired", "same_capture_retry", "same_capture_parse_retry_after_unavailable",
+        "previous_llm_status", "retry_reason",
+    ) if key in result}
+
+
 def run_catalog_round(*, first_result: dict, settings: dict, brain_input: dict, run_llm, runtime_factory) -> dict:
     """At most one read-only query then one completion, inside Brain's time budget."""
     evidence = brain_input["evidence"]
@@ -484,7 +498,7 @@ def run_catalog_round(*, first_result: dict, settings: dict, brain_input: dict, 
     query_without_wrapper = "catalog_query" not in first and "operation" in first and ("budget" in first or "filters" in first)
     if not first_result.get("ok") or ("catalog_query" not in first and not query_without_wrapper):
         return first_result
-    audit = {"understanding": {k: first_result.get(k) for k in ("usage", "prompt_estimate", "provider", "model", "status", "elapsed_ms")}}
+    audit = {"understanding": catalog_generation_audit(first_result)}
     started = time.monotonic()
     phase = "validation"
     try:
@@ -504,7 +518,7 @@ def run_catalog_round(*, first_result: dict, settings: dict, brain_input: dict, 
         audit["query_seconds"] = time.monotonic() - started
         phase = "completion"
         final = run_llm(settings=settings, brain_input=brain_input)
-        audit["completion"] = {k: final.get(k) for k in ("usage", "prompt_estimate", "provider", "model")}
+        audit["completion"] = catalog_generation_audit(final)
         if final.get("ok") and query_plan_errors(final.get("brain_plan") or {}, evidence):
             raise CatalogQueryError("catalog_second_query_or_forged_receipt")
         # A reply based on a stale catalog must not bypass existing backend invalidation.
