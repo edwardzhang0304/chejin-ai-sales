@@ -40,6 +40,7 @@ from .storage import (
 )
 from .task_runner import TaskRunner
 from .update_coordinator import UpdateCoordinator
+from .update_controls_preview import UpdateControlsPreview
 from .update_startup_context import take_update_startup_context
 from .ui_lock import lock_summary
 from .ui_state_mapping import runtime_process_screen, runtime_step_title
@@ -562,6 +563,21 @@ class WorkerWebWindow(QMainWindow):
         self.update_state_signal.connect(self.on_update_state)
         self.update_exit_signal.connect(self._quit_for_update)
         self.clock_sync_signal.connect(self._publish)
+        self._update_preview = UpdateControlsPreview(self.update_coordinator.check_admission, self)
+        self._update_preview.changed.connect(self._publish)
+
+    def _settings_update_model(self) -> dict[str, Any]:
+        preview = getattr(self, '_update_preview', None)
+        return self.update_coordinator.controls_state(
+            self.update_state, preview.admission if preview is not None else None)
+
+    def _sync_update_preview(self) -> None:
+        preview = getattr(self, '_update_preview', None)
+        if preview is None:
+            return
+        preview.set_context(
+            self.active_page == 'settings' and not getattr(self, '_shutdown_in_progress', False),
+            self.update_state, clock_busy=self.clock_sync.snapshot()['busy'])
 
     def _load_web_assets(self) -> None:
         index_file = Path(__file__).resolve().parent / "web_assets" / "index.html"
@@ -629,7 +645,8 @@ class WorkerWebWindow(QMainWindow):
                         "customerProcessSteps": [],
                         "logs": [],
                         "latestIncident": {},
-                        "update": dict(self.update_state),
+                        "update": {**self.update_state, "check_allowed": False,
+                                   "status_text": "状态刷新暂不可用，无法确认更新条件"},
                     },
                     "bindError": self.bind_error,
                 },
@@ -803,7 +820,7 @@ class WorkerWebWindow(QMainWindow):
             ),
             "logs": _log_rows(),
             "latestIncident": latest_incident() or {},
-            "update": dict(self.update_state),
+            "update": self._settings_update_model() if self.active_page == 'settings' else dict(self.update_state),
             "faultRecovery": recovery,
             "startupCheck": self._startup_check_state(),
             "clockSync": self.clock_sync.snapshot() if hasattr(self, 'clock_sync') and getattr(self.runner, 'hook_services', None) is not None else None,
@@ -1015,6 +1032,7 @@ class WorkerWebWindow(QMainWindow):
         return steps
 
     def _publish(self) -> None:
+        self._sync_update_preview()
         self.state_revision += 1
         self.bridge.emit_state()
 
@@ -1262,9 +1280,15 @@ class WorkerWebWindow(QMainWindow):
             event.ignore()
             return
         from .update_shutdown import prepare_window_close
+        preview = getattr(self, '_update_preview', None)
+        if preview is not None:
+            preview.set_context(False, {})
         if not prepare_window_close(self):
+            self._sync_update_preview()
             event.ignore()
             return
+        if preview is not None:
+            preview.stop()
         super().closeEvent(event)
 
 

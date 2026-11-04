@@ -372,9 +372,15 @@ class UpdateCoordinator:
             "available": self.formal_package,
         }
 
-    def _publish(self, state: dict[str, Any]) -> None:
+    def _publish(self, state: dict[str, Any], *, rejection: dict[str, Any] | None = None) -> None:
         try:
-            self.on_state(self._present(state))
+            presented = self._present(state)
+            if rejection is not None:
+                presented.update(check_allowed=False,
+                                 check_reason_code=str(rejection.get('reason_code') or ''),
+                                 check_reason_text=str(rejection.get('reason_text') or ''))
+                presented['status_text'] = presented['check_reason_text']
+            self.on_state(presented)
         except Exception as exc:
             _safe_update_log(
                 "WARN",
@@ -383,6 +389,36 @@ class UpdateCoordinator:
                 error_code="UPDATE_UI_PROJECTION_FAILED",
                 metadata={"error_type": type(exc).__name__},
             )
+
+    def controls_state(self, state: dict[str, Any], admission: dict[str, Any] | None = None) -> dict[str, Any]:
+        """Project a completed preview only; rendering never scans business records."""
+        presented = self._present(state)
+        if admission is None and state.get('check_allowed') is False and state.get('check_reason_text'):
+            admission = {'allowed': False, 'reason_code': state.get('check_reason_code'),
+                         'reason_text': state['check_reason_text']}
+        admission = admission or {"allowed": False, "reason_code": "UPDATE_SAFETY_CHECK_PENDING",
+                                  "reason_text": "正在核对更新条件，请稍候"}
+        presented.update(check_allowed=not presented["in_progress"] and admission.get('allowed') is True,
+                         check_reason_code=str(admission.get('reason_code') or ''),
+                         check_reason_text=str(admission.get('reason_text') or ''))
+        if not presented['in_progress']:
+            # A manual install preserves the old updater receipt. It is history,
+            # not the current installed version or current update attempt.
+            if (state.get('state') == 'succeeded' and state.get('target_version')
+                    and state['target_version'] != __version__):
+                presented['status_text'] = ''
+            if not presented['check_allowed']:
+                presented['status_text'] = presented['check_reason_text']
+        return presented
+
+    def _publish_rejected_check(self, admission: dict[str, Any]) -> None:
+        # Keep the durable updater result untouched. Only publish this click's
+        # rejection, including the atomic recheck race, and retain a diagnostic.
+        state = self.state()
+        _safe_update_log('INFO', 'client_update_check_rejected',
+                         str(admission.get('reason_text') or ''),
+                         error_code=str(admission.get('reason_code') or ''))
+        self._publish(state, rejection=admission)
 
     def _set_new_work_gate(self, blocked: bool, request_id: str) -> None:
         setter = getattr(self.runner, "set_update_new_work_gate", None)
@@ -493,7 +529,7 @@ class UpdateCoordinator:
             try:
                 admission = self.check_admission()
                 if not admission['allowed']:
-                    self._publish(self.store.load())
+                    self._publish_rejected_check(admission)
                     return False
                 def begin_request():
                     nonlocal state
@@ -504,7 +540,7 @@ class UpdateCoordinator:
                     return state
                 admission, state = self.runner.begin_update_check(begin_request)
                 if state is None:
-                    self._publish(self.store.load())
+                    self._publish_rejected_check(admission)
                     return False
                 self._stop.clear()
                 self._operator_pause_after_request = False

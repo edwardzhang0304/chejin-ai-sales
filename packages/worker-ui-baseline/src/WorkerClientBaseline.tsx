@@ -762,7 +762,8 @@ function SettingsScreen({ model, onScreenChange, onCheckForUpdates, onSyncComput
             <button
               className="cw-settings-action"
               type="button"
-              disabled={update.in_progress || update.available === false || model.clockSync?.busy}
+              disabled={update.in_progress || update.available === false || update.check_allowed !== true || model.clockSync?.busy}
+              title={update.check_reason_text || undefined}
               onClick={onCheckForUpdates}
             >
               {update.in_progress ? "更新中" : "检查更新"}
