@@ -159,6 +159,8 @@ def _main(resources: ExitStack) -> int:
     hook_commands.add_argument("--hook-component-update", type=Path, help="保留原数据更新已核准的 Hook 组件。")
     hook_commands.add_argument("--hook-component-rollback", action="store_true", help="恢复本次组件更新的原 DLL 和配置。")
     parser.add_argument("--confirm-auto-text-disabled", action="store_true", help="确认微信自动语音转文字已关闭。")
+    parser.add_argument("--python-memory-profile-seconds", type=int, choices=[30, 60, 120], default=0,
+                        help="仅本次启动限时采集 Python 分配位置，不采集对象内容，默认关闭。")
     args = parser.parse_args()
     if (args.hook_component_update or args.hook_component_rollback) and (
             args.preflight or args.wechat_diagnostics or args.post_update_plan or args.post_rollback_plan or args.post_update_token):
@@ -282,6 +284,8 @@ def _main(resources: ExitStack) -> int:
     from .performance_evidence import install as install_performance
     from .config import CONFIG
     performance = install_performance(CONFIG.app_dir) if packaged_transport() == 'hook' else None
+    from .python_memory_profile import start_profile
+    memory_profile = start_profile(CONFIG.app_dir, args.python_memory_profile_seconds) if packaged_transport() == 'hook' else None
     try:
         if os.environ.get("CHEJIN_WORKER_UI_MODE") == "pyside":
             from .ui import run_app
@@ -293,6 +297,7 @@ def _main(resources: ExitStack) -> int:
         if performance:performance.close(clean=exit_code == 0)
         return exit_code
     finally:
+        if memory_profile:memory_profile.close()
         if performance and not performance.stop.is_set():performance.close(clean=False)
         from .update_data_access import clear_update_writer
         clear_update_writer()

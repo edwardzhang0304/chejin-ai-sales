@@ -149,6 +149,15 @@ class Collector:
     def evidence_issues(self, value, source):
         if not isinstance(value, dict):
             return
+        if value.get('evidence_kind') == 'python_allocations':
+            state = value.get('status')
+            if state != 'finished':
+                self.record(source, 'read_failed' if state == 'capture_failed' else 'incomplete',
+                            reason='python_profile_not_completed', capture_status=self.clean(state))
+            samples = value.get('samples')
+            if value.get('omitted_samples') or (isinstance(samples, list) and any(
+                    isinstance(item, dict) and item.get('omitted_sites') for item in samples)):
+                self.record(source, 'omitted', reason='python_profile_detail_budget')
         if value.get('event') == 'evidence_capture_failed':
             self.record(source, 'read_failed', reason='source_evidence_capture_failed',
                         context=self.clean(value.get('context', {})))
@@ -808,6 +817,8 @@ class Collector:
         try:
             with zipfile.ZipFile(temporary, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=1) as archive:
                 self.emit(15, "读取最新状态")
+                from .memory_evidence_coverage import coverage
+                self.add(archive, "memory/coverage.json", json.dumps(coverage()).encode(), "generated-memory-coverage")
                 self.database(archive)
                 self.database(archive, name="worker_telemetry.sqlite3", tables=(
                     "telemetry_stage_events", "telemetry_process_links",
@@ -819,6 +830,8 @@ class Collector:
                 # A failed task diagnostic may exist only in this bounded
                 # fallback log. Keep it with current proofs before old images.
                 self.tree(artifacts(self.root)/"runtime", "logs/runtime", archive)
+                if not (artifacts(self.root)/"runtime"/"python-memory").exists():
+                    self.record("python_allocations", "missing", reason="not_enabled_or_no_capture")
                 self.tree(artifacts(self.root)/"tasks", "tasks", archive, task_priority=True)
                 updates_root = update_root(self.root).absolute()
                 # Current recovery proofs first; legacy incident volume cannot starve them.
