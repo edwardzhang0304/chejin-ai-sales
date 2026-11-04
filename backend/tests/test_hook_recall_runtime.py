@@ -12,7 +12,7 @@ from app.core.config import get_settings
 from app.models.c3 import ReplyAction, SentAck
 
 @pytest.mark.parametrize('result_mode',['sent','unknown'])
-def test_recall_through_actual_worker_sender_and_ack(identity_client,lab,tmp_path,monkeypatch,recovery_provider_factory,result_mode):
+def test_recall_through_actual_worker_sender_and_ack(identity_client,lab,tmp_path,monkeypatch,recovery_provider_factory,result_mode,catalog_classification="non_inventory"):
     monkeypatch.setattr(get_settings(), "c3_recall_after_hours", 0.001)
     monkeypatch.setattr(get_settings(), "c3_recall_quiet_start_hour", 0)
     monkeypatch.setattr(get_settings(), "c3_recall_quiet_end_hour", 0)
@@ -85,10 +85,18 @@ def test_recall_through_actual_worker_sender_and_ack(identity_client,lab,tmp_pat
         assert row.trigger_type=='recall' and row.message_event_ids==[]
         assert db.get(Conversation,binding['conversation_id']).recall_count==0
     monkeypatch.setenv('C3_OMNIAUTO_ROOT',str(Path(__file__).resolve().parents[2]/'worker-client/omniauto-rpa'))
-    requests=recovery_provider_factory('之前聊过购车的事情，您最近还有想了解的吗？可以按您的节奏慢慢聊。')
+    requests=recovery_provider_factory('之前聊过购车的事情，您最近还有想了解的吗？可以按您的节奏慢慢聊。', catalog_claim_kind=catalog_classification)
     monkeypatch.setattr(get_settings(),'c3_omniauto_root',str(Path(__file__).resolve().parents[2]/'worker-client/omniauto-rpa'))
     monkeypatch.setattr(c3_service,'get_ai_engine_adapter',RealOmniAutoAIEngineAdapter)
     recalled=drive_reply(runtime,binding,recall_batch,max_wait_seconds=30)
+    if catalog_classification is None:
+        assert recalled['decision']=='handoff' and recalled['sends']==[]
+        with SessionLocal() as db:
+            failed=db.get(MessageBatch,recall_batch)
+            assert failed.error_code=='AI_ENGINE_RETRY_EXHAUSTED'
+            assert 'catalog_claim_classification_required' in json.dumps(failed.ai_response_snapshot)
+        assert len([r for r in server.requests if r[0]=='/SendTextMsg'])==1
+        return
     confirmed=result_mode=='sent'
     if confirmed:
         assert len(recalled['sends'])==1 and recalled['sends'][0]['local_send_observed'],recalled
@@ -153,3 +161,8 @@ def test_recall_through_actual_worker_sender_and_ack(identity_client,lab,tmp_pat
     assert len([r for r in server.requests if r[0]=='/SendTextMsg'])==2
     assert all(server.lock_observations[i]['locked'] for i,r in enumerate(server.requests) if r[0]=='/SendTextMsg')
     table.close()
+
+
+def test_missing_reviewer_classification_remains_blocked(identity_client,lab,tmp_path,monkeypatch,recovery_provider_factory):
+    test_recall_through_actual_worker_sender_and_ack(identity_client,lab,tmp_path,monkeypatch,
+        recovery_provider_factory,'sent',catalog_classification=None)

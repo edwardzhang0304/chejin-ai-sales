@@ -102,7 +102,11 @@ def test_capture_time_budget_records_failure_and_frees_tracer(tmp_path, monkeypa
     profile = module.Profile(tmp_path, 1)
     profile._run()
     assert not tracemalloc.is_tracing()
-    assert json.loads(profile.path.read_text())['capture_failed'] == 'profile_capture_time_budget'
+    report = json.loads(profile.path.read_text())
+    assert report['capture_failed'] == 'profile_capture_time_budget'
+    assert report['last_attempt']['trace_count'] > 0
+    assert report['last_attempt']['elapsed_ms'] >= 0
+    assert report['last_attempt']['processed_traces'] == 0
 
 
 def test_report_volume_omissions_are_explicit(tmp_path, monkeypatch):
@@ -158,9 +162,15 @@ def test_real_main_profile_option_and_exit_do_not_replace_business_gates(tmp_pat
     monkeypatch.setattr(release_transport, 'packaged_transport', lambda: 'hook')
     monkeypatch.setattr(hook_installation, 'launch_information', lambda: guards.append('deployment') or {'api_base_url': 'https://synthetic.invalid'})
     monkeypatch.setattr(main, 'bootstrap_qt_plugins', lambda: None)
-    monkeypatch.setattr(runtime_supervision, 'install_runtime_supervision', lambda: None)
+    def install_runtime():
+        import os
+        (tmp_path / 'runtime').mkdir(exist_ok=True)
+        (tmp_path / 'runtime/session.json').write_text(json.dumps({
+            'session_id': 'synthetic-main', 'pid': os.getpid(), 'status': 'running'}))
+    monkeypatch.setattr(runtime_supervision, 'install_runtime_supervision', install_runtime)
     monkeypatch.setattr(runtime_supervision, 'mark_runtime_clean_exit', lambda code: None)
-    monkeypatch.setattr(performance_evidence, 'install', lambda root: None)
+    monkeypatch.setattr(performance_evidence, 'install', lambda root: SimpleNamespace(
+        capture_pressure=lambda: None, close=lambda **kwargs: None, stop=SimpleNamespace(is_set=lambda: True)))
     def app():
         assert guards == ['instance', 'data', 'deployment']
         if enabled:

@@ -1,6 +1,7 @@
 """Nonblocking, bounded producer API; one owned independent sampler per Worker."""
 
 import json
+import math
 import os
 from pathlib import Path
 import subprocess
@@ -224,6 +225,7 @@ class Monitor:
         self.reader = None
         self.stack_requests = deque(maxlen=3)
         self.last_stack = -1e12
+        self.capture_load = None
 
     def offer(self, kind, values):
         # No disk, Hook call, wait or unbounded serialization in producer code.
@@ -313,6 +315,9 @@ class Monitor:
                 if len(line) > 1024:
                     break
                 request = json.loads(line)
+                load = request.get("capture_load")
+                if isinstance(load, dict):
+                    self.capture_load = {k: load.get(k) for k in ("cpu_percent", "at")}
                 event = request.get("stack_event")
                 if isinstance(event, str):
                     self.stack_requests.append(event[:128])
@@ -325,6 +330,29 @@ class Monitor:
                 self.process.stdout.close()
             except (OSError, ValueError):
                 pass
+
+    def capture_pressure(self):
+        """Read existing PE-01 signals; only diagnostic tracing may be stopped."""
+        now = time.monotonic()
+        load = self.capture_load
+        if (not load or type(load.get("at")) not in (int, float)
+                or not math.isfinite(load["at"]) or not 0 <= now - load["at"] <= self.policy.sample_seconds * 2
+                or type(load.get("cpu_percent")) not in (int, float)
+                or not math.isfinite(load["cpu_percent"]) or load["cpu_percent"] < 0):
+            return {"reason": "load_unavailable"}
+        if load["cpu_percent"] >= self.policy.cpu_percent:
+            return {"reason": "cpu_pressure", "value": load["cpu_percent"], "threshold": self.policy.cpu_percent}
+        ui = self.state.get("ui_monotonic")
+        if ui is None:
+            return {"reason": "ui_signal_unavailable"}
+        if now - ui > self.policy.ui_delay_seconds:
+            return {"reason": "ui_response_gap", "value": now - ui, "threshold": self.policy.ui_delay_seconds}
+        for loop in list(self.state["loops"].values()):
+            if loop.get("waiting") is None and now - loop["at"] > self.policy.loop_delay_seconds:
+                return {"reason": "loop_progress_gap", "value": now - loop["at"], "threshold": self.policy.loop_delay_seconds}
+        if len(self.pending) >= self.pending.maxlen:
+            return {"reason": "observer_queue_full", "value": len(self.pending), "threshold": self.pending.maxlen}
+        return None
 
     def _drain(self):
         with self.lock:

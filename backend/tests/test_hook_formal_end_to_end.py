@@ -17,6 +17,7 @@ from app.services import c3_service
 from test_hook_business_http import clean, claimed
 from test_hook_account_client import identity_client
 from test_hook_gateway import lab
+from test_hook_formal_runtime import calibrated_clock
 from chejin_worker_client import ui_lock
 from chejin_worker_client.hook_backend import HookWorkerCredentials
 from chejin_worker_client.hook_formal_client import HookFormalClient
@@ -27,12 +28,14 @@ from chejin_worker_client.hook_sender import HookNativeSender, NativeSendPermit
 from apps.wechat_ai_customer_service.tests.test_hook_c1_flow import ReplayUI
 
 
-def test_formal_c1_binding_original_ai_native_send_history_receipt(identity_client,lab,tmp_path):
+@pytest.mark.parametrize('authenticated_clock', [True, False])
+def test_formal_c1_binding_original_ai_native_send_history_receipt(identity_client,lab,tmp_path,authenticated_clock):
     server,gateway,process,scope,*_=lab
     w,t,p,h,initial=claimed(process_generation=process.generation)
     api=HookFormalClient(identity_client.base_url,5)
     credentials=HookWorkerCredentials(w['id'],w['worker_token'],w['instance'])
-    c1=HookFormalC1(api,credentials,tmp_path/'formal')
+    clock=calibrated_clock(identity_client,credentials,gateway,process,replace(scope,account_epoch=p['account_epoch']))
+    c1=HookFormalC1(api,credentials,tmp_path/'formal',clock=clock if authenticated_clock else None)
     token=int(h['X-Task-Lease-Fencing-Token']);prep=c1.prepare(t['id'],token,p)
     class ClipboardReplay(ReplayUI):
         def __init__(self):super().__init__();self.clipboard_field_events=[]
@@ -67,6 +70,14 @@ def test_formal_c1_binding_original_ai_native_send_history_receipt(identity_clie
     capture,value=sync.capture(process,scope,delivery,binding['history_since_create_time'])
     observed=api.history_coverage(credentials,p,binding,capture,value)
     assert observed['history_ready']
+    if not authenticated_clock:
+        from app.models.wechat import WechatSessionBinding
+        assert observed['message_batch'] is None
+        with SessionLocal() as db:
+            context=db.get(WechatSessionBinding,binding['binding_id']).native_context
+            assert context['native_boundary_review_reason']=='legacy_invitation_clock'
+        assert not [r for r in server.requests if r[0]=='/SendTextMsg']
+        return
     with SessionLocal() as db:
         generated=c3_service.generate_for_batch(db,batch_id=observed['message_batch']['batch_id'],native_client_admitted=True);db.commit()
     assert generated['decision']=='send_reply'

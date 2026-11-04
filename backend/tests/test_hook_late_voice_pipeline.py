@@ -117,7 +117,7 @@ def test_new_turn_survives_old_voice_result_at_actual_pipeline_boundary(
     monkeypatch.setattr(get_settings(), 'c3_omniauto_root', engine)
     monkeypatch.setattr(c3_service, 'get_ai_engine_adapter', RealOmniAutoAIEngineAdapter)
     recall_requests = []
-    with controlled_recovery_provider(monkeypatch, '之前聊过购车的事情，您最近还有想了解的吗？', recall_requests):
+    with controlled_recovery_provider(monkeypatch, '之前聊过购车的事情，您最近还有想了解的吗？', recall_requests, catalog_claim_kind='non_inventory'):
         recalled = drive_reply(runtime, binding, recall_batch)
     assert len(recalled['sends']) == 1 and recalled['sends'][0]['local_send_observed'], recalled
     with SessionLocal() as db:
@@ -183,7 +183,7 @@ def test_new_turn_survives_old_voice_result_at_actual_pipeline_boundary(
     engine = str(Path(__file__).resolve().parents[2] / 'worker-client/omniauto-rpa')
     monkeypatch.setenv('C3_OMNIAUTO_ROOT', engine); monkeypatch.setattr(get_settings(), 'c3_omniauto_root', engine)
     monkeypatch.setattr(c3_service, 'get_ai_engine_adapter', RealOmniAutoAIEngineAdapter)
-    with controlled_recovery_provider(monkeypatch, '好的，先按十五万元左右了解，您更喜欢轿车还是SUV？', requests):
+    with controlled_recovery_provider(monkeypatch, '好的，先按十五万元左右了解，您更喜欢轿车还是SUV？', requests, catalog_claim_kind='non_inventory'):
         sent = drive_reply(runtime, binding, batch_id)
     assert len(sent['sends']) == 1 and sent['sends'][0]['local_send_observed'], sent
     if phase == 'settled': deliver()

@@ -284,8 +284,8 @@ def _main(resources: ExitStack) -> int:
     from .performance_evidence import install as install_performance
     from .config import CONFIG
     performance = install_performance(CONFIG.app_dir) if packaged_transport() == 'hook' else None
-    from .python_memory_profile import start_profile
-    memory_profile = start_profile(CONFIG.app_dir, args.python_memory_profile_seconds) if packaged_transport() == 'hook' else None
+    from .memory_capture import install as install_memory_capture
+    memory_profile = install_memory_capture(CONFIG.app_dir, performance, args.python_memory_profile_seconds) if packaged_transport() == 'hook' else None
     try:
         if os.environ.get("CHEJIN_WORKER_UI_MODE") == "pyside":
             from .ui import run_app

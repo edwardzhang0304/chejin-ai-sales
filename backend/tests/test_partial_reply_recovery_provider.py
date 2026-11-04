@@ -10,6 +10,7 @@ import json
 import os
 from pathlib import Path
 import threading
+import time
 
 import pytest
 
@@ -18,7 +19,7 @@ from app.services.reply_sequence_policy import sequence_policy
 
 
 @contextmanager
-def controlled_recovery_provider(monkeypatch, answer, requests, *, review_verdict="pass", malformed_review=False, review_envelope_error=None, review_envelope_after=0, require_welcome_context=False, catalog_claim_kind=None):
+def controlled_recovery_provider(monkeypatch, answer, requests, *, review_verdict="pass", malformed_review=False, review_envelope_error=None, review_envelope_after=0, require_welcome_context=False, catalog_claim_kind=None, exchange_observer=None, answer_factory=None):
     plan = {"can_answer": True, "answer_mode": "collect_customer_info",
         "evidence_used": {"common_sense_topics": ["购车注意事项"]}, "facts_claimed": [], "reply_segments": list(answer) if isinstance(answer, (list, tuple)) else [answer],
         "risk": {"risk_level": "low", "risk_tags": [], "needs_handoff": False},
@@ -27,6 +28,7 @@ def controlled_recovery_provider(monkeypatch, answer, requests, *, review_verdic
     class Provider(BaseHTTPRequestHandler):
         def log_message(self, *_args): pass
         def do_POST(self):
+            started=time.monotonic()
             payload = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
             requests.append(payload)
             result = ({"verdict": review_verdict, "confidence": .99,
@@ -34,6 +36,8 @@ def controlled_recovery_provider(monkeypatch, answer, requests, *, review_verdic
                 "semantic_errors": [] if review_verdict == "pass" else ["unapproved_commitment"],
                 "hard_boundary_concerns": [], "repair_instruction": "" if review_verdict == "pass" else "Remove unapproved commitments", "reason": "Synthetic review"}
                 if payload["model"] == "recovery-reviewer" else deepcopy(plan))
+            if answer_factory is not None and payload["model"] != "recovery-reviewer":
+                result["reply_segments"] = list(answer_factory(payload))
             if catalog_claim_kind is not None and payload["model"] == "recovery-reviewer":
                 result["catalog_claim_kind"] = catalog_claim_kind
             if require_welcome_context:
@@ -67,6 +71,8 @@ def controlled_recovery_provider(monkeypatch, answer, requests, *, review_verdic
                     body = b'{"choices":'
             self.send_response(200); self.send_header("Content-Type", "application/json")
             self.send_header("Content-Length", str(len(body))); self.end_headers(); self.wfile.write(body)
+            if exchange_observer is not None:
+                exchange_observer({'started':started,'ended':time.monotonic(),'request':payload,'response':json.loads(body)})
 
     server = ThreadingHTTPServer(("127.0.0.1", 0), Provider)
     thread = threading.Thread(target=server.serve_forever, daemon=True); thread.start()

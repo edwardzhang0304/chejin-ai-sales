@@ -290,6 +290,9 @@ def main(argv=None):
             request = store.event(reasons, now, mono)
             if request:
                 print(json.dumps({"stack_event": request}), flush=True)
+            # Bounded health feedback for optional in-process diagnostics.
+            print(json.dumps({"capture_load": {"at": mono,
+                "cpu_percent": sample["resources"].get("worker", {}).get("cpu_percent")}}), flush=True)
             sample["anomalies"] = reasons
             sample["anomaly_details"] = detector.details
             sample["capture_seconds"] = time.monotonic() - started

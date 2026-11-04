@@ -29,14 +29,21 @@ class ExportJob(QObject):
 
         def collect():
             try:
-                result = export_bundle(self.root, destination, self.progress.emit)
+                from .memory_capture import request_capture
+                capture = request_capture(self.root, self.progress.emit)
+                result = export_bundle(self.root, destination, self.progress.emit, capture_request=capture)
                 outcome = (True, str(result))
             except Exception as exc:
                 # Exception text can contain credentials or customer data.
                 outcome = (False, type(exc).__name__)
             self.running = False
             (self.completed if outcome[0] else self.failed).emit(outcome[1])
-        threading.Thread(target=collect, name="diagnostic-export", daemon=True).start()
+        try:
+            threading.Thread(target=collect, name="diagnostic-export", daemon=True).start()
+        except Exception as exc:
+            self.running = False
+            self.failed.emit(type(exc).__name__)
+            return False
         return True
 
 
@@ -73,7 +80,7 @@ class DiagnosticDialog(QDialog):
             self.partial = False
             self.button.setEnabled(False)
             self.folder_button.setEnabled(False)
-            self.label.setText("正在导出，不影响正常接单……")
+            self.label.setText("正在采集并导出故障证据……")
             self.bar.setValue(0)
 
     def _progress(self, value):
