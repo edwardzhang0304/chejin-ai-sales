@@ -87,7 +87,9 @@ def ai_failure_category(result: dict) -> str:
     """Shared diagnostic classification; it never grants retry/send permission."""
     kind = result.get("error_kind")
     kind = kind if isinstance(kind, str) else None
-    if kind in {"transport", "configuration"} or result.get("wall_timeout"):
+    # HTTPError is the real producer kind for provider refusal (including
+    # throttling/5xx); retain its status/reason, without granting any retry.
+    if kind in {"http", "transport", "configuration"} or result.get("wall_timeout"):
         return "service_unavailable"
     if kind in {"protocol", "brain_output_parse"}:
         return "output_format"
