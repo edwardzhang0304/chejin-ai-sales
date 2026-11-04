@@ -53,7 +53,7 @@ def configure_partial(monkeypatch,state,mutation='normal'):
         else:
             receipt=state['receipt'];user,_=json.JSONDecoder().raw_decode(kw['messages'][1]['content'])
             authority=user['brain_input']['content_basis'];state['authority_blocks'].append(deepcopy(authority))
-            assert authority['catalog_protocol']['receipt']['match_count']==receipt['match_count']
+            assert authority['catalog_protocol']['receipt']['match_count']==pipeline.joined.cq.receipt_view(receipt)['match_count']
             value=pipeline.joined.fixtures.base_plan();value.pop('facts_claimed',None);value.pop('evidence_used',None)
             text='年份还需按具体车源核实，先给您两台：'+'，'.join(f"{c['name']}报价{c['price']}万" for c in receipt.get('known_condition_facts',[])[:2])+'。'
             if mutation in {'scan_count','facts_clarification','false_year'}:value['answer_mode']='ask_clarifying_question';text+='您希望哪一年之后的车？'
@@ -133,3 +133,45 @@ def test_partial_context_inventory_change_during_review_cannot_send(monkeypatch,
     with SessionLocal() as db:
         assert not list(db.scalars(select(ReplyAction)))
         assert db.get(MessageBatch,bid).error_code
+
+
+@pytest.mark.parametrize('text,kind,allowed',[
+    ('不是没有车，只是年份还需核实。您希望哪一年之后的新能源车？','non_inventory',True),
+    ('并非没有车，但是年份还需核实。您希望哪一年之后的车？','non_inventory',True),
+    ('不能说没有车，但是目前没有新能源车。您希望哪一年之后的车？','non_inventory',False),
+    ('不是没有车但目前没有新能源车。您希望哪一年之后的车？','non_inventory',False),
+    ('没有新能源车您要看看别的吗？','non_inventory',False),
+    ('目前这8台在售车源的年份还需核实。您希望哪一年之后的车？','query_summary',True),
+    ('目前这6台在售车源的年份还需核实。您希望哪一年之后的车？','query_summary',False),
+    ('按新能源条件查到6台车，年份还需核实。您希望哪一年之后的车？','query_summary',True),
+    ('按新能源条件查到8台车，年份还需核实。您希望哪一年之后的车？','query_summary',False),
+    ('按已核实的条件查到6台车，年份还需核实。您希望哪一年之后的车？','query_summary',True),
+    ('全部条件都符合的有6台车，年份还需核实。','query_summary',False),
+    ('按新能源条件查到2台车，年份还需核实。','query_summary',False),
+    ('先给您两台在售车源：合成车1报价5.2万，合成车2报价5.6万。年份待核实，您希望哪一年之后的车？','vehicle_facts',True),
+    ('先给您六台在售车源：合成车1报价5.2万，合成车2报价5.6万。年份待核实，您希望哪一年之后的车？','vehicle_facts',False),
+])
+def test_stock_known_scope_and_display_have_independent_authority(monkeypatch,actual_brain,text,kind,allowed):
+    state=actual_brain;configure_partial(monkeypatch,state,'normal')
+    api=pipeline.joined.api
+    for i in range(2):
+        key=listed(f'合成燃油车{i}',3.0+i)
+        result=api.client.put(f'/api/vehicles/{key}',json={'energy_type':'fuel'},headers=api.HEADERS)
+        assert result.status_code==200,result.text
+    original=llm_config.call_llm_request_once_with_wall_timeout
+    def transport(**kw):
+        response=original(**kw);value=json.loads(response['response_text'])
+        if kw['model']=='synthetic-reviewer':value=pipeline.joined.review(kind)
+        elif 'catalog_query' not in value:
+            value.update(answer_mode='ask_clarifying_question',reply_segments=[text]);state['drafts'][-1]=value
+        response['response_text']=json.dumps(value,ensure_ascii=False)
+        return response
+    monkeypatch.setattr(llm_config,'call_llm_request_once_with_wall_timeout',transport)
+    if allowed:
+        pipeline.native.test_one_native_history_match_settles_original_reply_without_resend('unique',monkeypatch)
+    else:
+        _,_,_,bid=pipeline.created(monkeypatch);result=pipeline.generate(bid)
+        assert result['decision']=='retry_later',result
+        with SessionLocal() as db:assert not list(db.scalars(select(ReplyAction)))
+    receipt=state['receipts'][-1]
+    assert receipt['scanned_count']==8 and receipt['known_condition_match_count']==6 and receipt['match_count'] is None

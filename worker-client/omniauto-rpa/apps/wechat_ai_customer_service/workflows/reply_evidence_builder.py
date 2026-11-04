@@ -85,14 +85,14 @@ def reply_authority_snapshot(evidence_pack: dict[str, Any]) -> dict[str, Any]:
     Selection occurs in catalog_query before this projection. A consumer must
     never perform another top-N or text clipping operation on this block.
     """
-    from apps.wechat_ai_customer_service.workflows.catalog_query import fingerprint, message_sources, receipt_view
+    from apps.wechat_ai_customer_service.workflows.catalog_query import fingerprint, message_sources, receipt_view, receipt_products
     knowledge = evidence_pack.get("knowledge") or {}
     protocol = evidence_pack.get("catalog_protocol") or {}
     protocol = deepcopy(protocol)
     receipt = protocol.get("receipt") or {}
     if receipt:
         receipt = protocol["receipt"] = receipt_view(receipt)
-    products = deepcopy((knowledge.get("product_master") or {}).get("items") or [])
+    products = receipt_products(receipt) if receipt else deepcopy((knowledge.get("product_master") or {}).get("items") or [])
     public_keys = {"id", "sku", "name", "category", "aliases", "specs", "price", "unit", "stock",
                    "public_details", "version", "source_type", "authority_level", "selection_role", "within_budget"}
     products = [{key: value for key, value in product.items() if key in public_keys} for product in products]

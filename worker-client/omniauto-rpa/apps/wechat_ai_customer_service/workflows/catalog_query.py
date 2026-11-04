@@ -524,11 +524,25 @@ def _selection_blockers(query: dict, names: list[dict], available_ids: set[str])
     return reasons
 
 
+def _known_conditions_evaluable(query: dict, blockers: list[str]) -> bool:
+    hard = [reason for reason in blockers if reason not in {"uncertainty_scope_unresolved", "unsupported_scope_unresolved"}]
+    return not hard and (not blockers or bool(query["filters"] or query["budget_bounds"] or query["exclude_ids"]))
+
+
+def _receipt_query_blockers(receipt: dict) -> list[str] | None:
+    query = receipt.get("query") or {}
+    if not {"requirement_state", "budget", "budget_bounds", "filters", "reference_ids", "exclude_ids", "unsupported_requirements"} <= set(query):
+        return None  # Older non-query/OCR projections retain their own contract.
+    known_ids = set(query["reference_ids"] + query["exclude_ids"])
+    known_ids -= set(receipt.get("missing_reference_ids", []) + receipt.get("missing_exclude_ids", []))
+    return _selection_blockers(query, receipt.get("name_results", []), known_ids)
+
+
 def receipt_state(receipt: dict) -> str:
     """One interpretation for new and persisted receipts; unknown never means zero."""
     if receipt.get("scan_complete") is not True:
         return "unavailable"
-    if (receipt.get("clarification_reasons") or receipt.get("missing_reference_ids")
+    if (_receipt_query_blockers(receipt) or receipt.get("clarification_reasons") or receipt.get("missing_reference_ids")
             or receipt.get("missing_exclude_ids")
             or any(n.get("status") != "unique" for n in receipt.get("name_results", []))):
         return "clarification_required"
@@ -536,8 +550,9 @@ def receipt_state(receipt: dict) -> str:
     # cannot acquire authority merely by being loaded by a newer consumer.
     if receipt.get("requirement_uncertain") and receipt.get("evaluation_version") != 1:
         return "clarification_required"
-    if (receipt.get("unsupported_requirements") or receipt.get("unknown_field_count")
-            or receipt.get("unknown_fields")):
+    if receipt.get("unsupported_requirements"):
+        return "clarification_required"
+    if receipt.get("unknown_field_count") or receipt.get("unknown_fields"):
         return "partial"
     if receipt.get("requirement_uncertain"):
         return "clarification_required"
@@ -548,12 +563,27 @@ def receipt_view(receipt: dict) -> dict:
     """Sanitize a copy for consumers without rewriting historical evidence."""
     result = deepcopy(receipt)
     state = receipt_state(receipt)
+    # Old clear queries really evaluated their supported conditions. Retain
+    # those immutable facts for clarification, never their full-match license.
+    query = receipt.get("query") or {}
+    old_blockers = _receipt_query_blockers(receipt)
+    legacy_evaluated = (receipt.get("evaluation_version") is None and receipt.get("scan_complete") is True
+                        and old_blockers is not None and _known_conditions_evaluable(query, old_blockers)
+                        and query["requirement_state"] == "clear" and not receipt.get("requirement_uncertain"))
+    if legacy_evaluated and state == "clarification_required" and "known_conditions_evaluated" not in receipt:
+        result.update(known_conditions_evaluated=True, known_condition_match_count=receipt.get("match_count"),
+                      known_condition_facts=deepcopy(receipt.get("recommendations", [])),
+                      known_condition_scope={"budget": deepcopy(query["budget"]), "filters": deepcopy(query.get("filters", [])),
+                                             "exclude_ids": deepcopy(query.get("exclude_ids", [])), "evaluated": True,
+                                             "scan_complete": True, "derived_from": "legacy_executed_query"})
+        for product in result["known_condition_facts"]:
+            product["selection_role"] = "known_condition_context"
     result["evaluation_state"] = state
     if state != "complete":
         result.update(match_count=None, price_min=None, price_max=None)
     if state in {"clarification_required", "unavailable"}:
         result["recommendations"] = []
-        if not receipt.get("known_conditions_evaluated") or state == "unavailable":
+        if not result.get("known_conditions_evaluated") or state == "unavailable":
             result.update(known_condition_match_count=None, known_condition_facts=[])
     return result
 
@@ -576,8 +606,7 @@ def execute_query(query: dict, runtime, *, scope: dict, limit: int = 8) -> dict:
     bounds = query["budget_bounds"]
     name_results = resolve_names(query["name_queries"], rows)
     blockers = _selection_blockers(query, name_results, {r["id"] for r in rows})
-    hard_blockers = [reason for reason in blockers if reason not in {"uncertainty_scope_unresolved", "unsupported_scope_unresolved"}]
-    can_evaluate = not hard_blockers and (not blockers or bool(query["filters"] or bounds or query["exclude_ids"]))
+    can_evaluate = _known_conditions_evaluable(query, blockers)
     matches, references, unknown = [], [], {}
     excluded = set(query["exclude_ids"])
     ref_ids = set(query["reference_ids"])
@@ -664,6 +693,15 @@ def execute_query(query: dict, runtime, *, scope: dict, limit: int = 8) -> dict:
     return receipt_view(receipt)
 
 
+def receipt_products(receipt: dict) -> list[dict]:
+    """Project allowed vehicle materials once, including persisted receipts."""
+    view = receipt_view(receipt)
+    items = [*view.get("recommendations", []), *view.get("known_condition_facts", [])]
+    known = {p["id"] for p in items}
+    items.extend(p for p in view.get("references", []) if p["id"] not in known)
+    return items
+
+
 def attach_receipt(evidence: dict, receipt: dict) -> None:
     receipt = receipt_view(receipt)
     preparation = (evidence.get("catalog_protocol") or {}).get("preparation")
@@ -671,9 +709,7 @@ def attach_receipt(evidence: dict, receipt: dict) -> None:
                                     "model_query_contract": model_contract(evidence.get("catalog_protocol") or {})}
     if preparation is not None:
         evidence["catalog_protocol"]["preparation"] = deepcopy(preparation)
-    items = [*receipt["recommendations"], *receipt.get("known_condition_facts", [])]
-    known = {p["id"] for p in items}
-    items.extend(p for p in receipt["references"] if p["id"] not in known)
+    items = receipt_products(receipt)
     knowledge = evidence["knowledge"]
     knowledge["product_master"] = {"items": items, "catalog_selection": receipt,
                                    "authority_level": "product_master", "can_authorize_product_facts": True}
@@ -727,7 +763,7 @@ def query_plan_errors(plan: dict, evidence: dict) -> list[str]:
         return []  # OCR compatibility retains its existing contract.
     if any(k in plan for k in ("catalog_query", "catalog_receipt")):
         return ["catalog_intermediate_or_forged_receipt_not_sendable"]
-    receipt = protocol.get("receipt") or {}
+    receipt = receipt_view(protocol.get("receipt") or {})
     # Real product facts still pass the existing fact/ID validator as well.
     products = (plan.get("evidence_used") or {}).get("product_ids") or []
     facts = [f for f in plan.get("facts_claimed", []) if f.get("source_level") == "product_master"]
@@ -752,7 +788,7 @@ def query_plan_errors(plan: dict, evidence: dict) -> list[str]:
 
 
 AGGREGATES = {"catalog_match_count": "match_count", "catalog_price_min": "price_min", "catalog_price_max": "price_max",
-              "catalog_scanned_count": "scanned_count"}
+              "catalog_scanned_count": "scanned_count", "catalog_known_condition_count": "known_condition_match_count"}
 
 
 def aggregate_ready(receipt):
@@ -760,7 +796,13 @@ def aggregate_ready(receipt):
 
 
 def aggregate_fact_ready(receipt, field):
-    return receipt.get("scan_complete") is True if field == "scanned_count" else aggregate_ready(receipt)
+    if field == "scanned_count":
+        return receipt.get("scan_complete") is True
+    if field == "known_condition_match_count":
+        view = receipt_view(receipt)
+        return bool(view.get("scan_complete") is True and view.get("known_conditions_evaluated")
+                    and not view.get("unknown_field_count") and view.get("known_condition_match_count") is not None)
+    return aggregate_ready(receipt)
 
 
 def record_semantic_clearance(evidence, plan, raw_review, review):

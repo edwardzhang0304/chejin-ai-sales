@@ -649,3 +649,27 @@ def test_partial_scan_never_recovers_full_authority_on_reload():
     assert result['match_count'] is None and result['known_condition_match_count'] is None
     assert not result['recommendations'] and not result['known_condition_facts']
     assert receipt==original
+
+
+@pytest.mark.parametrize('scope,count,allowed',[
+    ('新能源条件',6,True),('新能源条件',8,False),('全部条件',6,False),
+    ('燃油条件',6,False),('已核实的条件',6,True),
+])
+def test_known_count_requires_matching_scope_not_only_equal_value(scope,count,allowed):
+    rows=[row(str(i),5+i/10,energy_type='electric') for i in range(1,7)]+[row('f1',3,energy_type='fuel'),row('f2',4,energy_type='fuel')]
+    pack,_,receipt=partial_year_pack(rows=rows)
+    assert receipt['scanned_count']==8 and receipt['known_condition_match_count']==6
+    result=validate_reply_public_facts({'answer_mode':'ask_clarifying_question','reply_segments':[f'按{scope}查到{count}台车，年份还需核实。您希望哪一年之后的车？']},pack)
+    assert result['ok']==allowed,result
+    if allowed:assert cq.query_plan_errors({'facts_claimed':result['facts_claimed']},pack)==[]
+
+
+@pytest.mark.parametrize('text,allowed',[
+    ('按预算8万以内的新能源条件查到6台车，年份尚未核实。',True),
+    ('按预算6万以内的新能源条件查到6台车，年份尚未核实。',False),
+    ('按新能源条件查到6台车，年份尚未核实。',False),
+])
+def test_known_count_does_not_drop_budget_scope(text,allowed):
+    pack,_,_=partial_year_pack(changes={'budget':{'state':'specified','mode':'upper','value':8,'source_ids':['m1']}})
+    result=validate_reply_public_facts({'answer_mode':'ask_clarifying_question','reply_segments':[text]},pack)
+    assert result['ok']==allowed,result
