@@ -215,3 +215,74 @@ def test_engineering_probe_rejects_running_worker_before_any_hook_call(lab, monk
     with pytest.raises(SingleInstanceAlreadyRunning):
         hook_memory_probe.main(['stats'])
     assert server.requests == []
+
+@pytest.mark.parametrize('session', [False, True])
+def test_pre_call_evidence_failure_is_unsent_and_connection_closed(lab, monkeypatch, tmp_path, session):
+    import sqlite3
+    from chejin_worker_client import hook_transport, hook_read_retry
+    server, gateway, process, *_ = lab
+    connections = []
+    original = hook_transport.connection
+    def connection(*args):
+        conn = original(*args)
+        close = conn.close
+        conn.closed_for_test = False
+        def closed():
+            conn.closed_for_test = True
+            return close()
+        conn.close = closed
+        connections.append(conn)
+        return conn
+    monkeypatch.setattr(hook_transport, 'connection', connection)
+    with storage.db_connection() as db:
+        hook_read_retry.ensure(db)
+        db.execute("CREATE TRIGGER fail_observation BEFORE INSERT ON hook_transport_events BEGIN SELECT RAISE(ABORT, 'observation_failed'); END")
+        db.commit()
+    with pytest.raises(sqlite3.IntegrityError):
+        if session:
+            with gateway.history_session(process, None):
+                gateway._response('IsLoginStatus', {})
+        else:
+            gateway.login_status(process)
+    assert not server.requests and not unresolved(process.generation)
+    assert connections and all(c.closed_for_test for c in connections)
+    gap = json.loads((storage.APP_DIR / 'artifacts/runtime/hook-memory-gap.json').read_text())
+    assert gap['delivery'] == 'not_attempted'
+    with storage.db_connection() as db:
+        assert db.execute('SELECT state FROM hook_active_calls ORDER BY rowid DESC LIMIT 1').fetchone()[0] == 'completed'
+        db.execute('DROP TRIGGER fail_observation'); db.commit()
+    assert gateway.login_status(process).logged_in
+
+
+@pytest.mark.parametrize('session', [False, True])
+def test_post_call_evidence_failure_still_protects_unknown(lab, session):
+    import sqlite3
+    from chejin_worker_client import hook_read_retry
+    server, gateway, process, *_ = lab
+    with storage.db_connection() as db:
+        hook_read_retry.ensure(db)
+        db.execute("CREATE TRIGGER fail_result BEFORE UPDATE ON hook_transport_events BEGIN SELECT RAISE(ABORT, 'result_failed'); END")
+        db.commit()
+    with pytest.raises(sqlite3.IntegrityError):
+        if session:
+            with gateway.history_session(process, None):gateway._response('IsLoginStatus', {})
+        else:gateway.login_status(process)
+    assert len(server.requests) == 1 and unresolved(process.generation)
+    assert json.loads(rows()[-1]['evidence'])['phase'] == 'in_flight'
+    with pytest.raises(HookLocalError, match='QUARANTINED'):gateway.login_status(process)
+    assert len(server.requests) == 1
+
+
+def test_pre_call_failure_core_settlement_failure_keeps_barrier(lab):
+    import sqlite3
+    from chejin_worker_client import hook_read_retry
+    server, gateway, process, *_ = lab
+    with storage.db_connection() as db:
+        hook_read_retry.ensure(db)
+        db.execute("CREATE TRIGGER fail_observation BEFORE INSERT ON hook_transport_events BEGIN SELECT RAISE(ABORT, 'observation_failed'); END")
+        from chejin_worker_client.hook_active_calls import ensure
+        ensure(db)
+        db.execute("CREATE TRIGGER fail_settlement BEFORE UPDATE ON hook_active_calls BEGIN SELECT RAISE(ABORT, 'settlement_failed'); END")
+        db.commit()
+    with pytest.raises(sqlite3.IntegrityError):gateway.login_status(process)
+    assert not server.requests and unresolved(process.generation)

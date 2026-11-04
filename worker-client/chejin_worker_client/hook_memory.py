@@ -113,3 +113,19 @@ def provider_summary(route, raw):
                 result['omitted_fields'] += 1
     visit(value)
     return result
+
+
+def record_gap(route, error):
+    """One bounded fallback for unavailable pre-call telemetry, no raw payload."""
+    from . import storage
+    try:
+        root = storage.APP_DIR / 'artifacts' / 'runtime'
+        root.mkdir(parents=True, exist_ok=True)
+        path = root / 'hook-memory-gap.json'
+        temporary = path.with_suffix('.tmp')
+        temporary.write_text(json.dumps({'status': 'pre_call_evidence_failed',
+            'delivery': 'not_attempted', 'route': route, 'reason': type(error).__name__,
+            'at': time.time(), 'pid': os.getpid(), 'retention': 'latest_failure_only'}))
+        os.replace(temporary, path)
+    except Exception:
+        pass  # Active-call settlement still must persist, or stays fail-closed.

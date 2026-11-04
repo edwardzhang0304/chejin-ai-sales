@@ -194,10 +194,11 @@ class HookGateway:
             # leaves calling; an unknown HTTP outcome leaves uncertain. Neither
             # can expire or authorize a later action in this process generation.
             reserve(process.generation, call_id, 'history_capture')
-            reader.http_session = hook_transport.connection(self.deployment.hook_api_port,self.timeout_seconds)
+            reader.http_session = None
             reader.call_id=call_id
             self._call_context.history_reader = reader
             try:
+                reader.http_session = hook_transport.connection(self.deployment.hook_api_port,self.timeout_seconds)
                 yield reader
                 reader.check_budget()
                 if reader.failed:
@@ -205,8 +206,10 @@ class HookGateway:
             finally:
                 reader.closed = True
                 self._call_context.history_reader = None
-                reader.http_session.close()
-                finish(process.generation, call_id, not reader.uncertain)
+                try:
+                    if reader.http_session is not None:reader.http_session.close()
+                finally:
+                    finish(process.generation, call_id, not reader.uncertain)
 
     def _response(self,route,payload,*,uncertain_on_failure=False):
         reader = getattr(self._call_context, 'history_reader', None)
@@ -223,7 +226,8 @@ class HookGateway:
                 return self._response_http(route,payload,uncertain_on_failure=uncertain_on_failure)
             except BaseException as exc:
                 reader.failed = True
-                reader.uncertain = not isinstance(exc, HookLocalError) or self._unfinished(exc)
+                reader.uncertain = (not getattr(exc, '_hook_request_not_attempted', False)
+                    and (not isinstance(exc, HookLocalError) or self._unfinished(exc)))
                 if isinstance(exc,HookLocalError):
                     try:
                         self._read_failure(route,payload,exc)
@@ -258,8 +262,8 @@ class HookGateway:
                 raise
             finish(generation,call_id,not self._unfinished(exc))
             raise
-        except BaseException:
-            finish(generation,call_id,False)
+        except BaseException as exc:
+            finish(generation,call_id,bool(getattr(exc, '_hook_request_not_attempted', False)))
             raise
         finish(generation,call_id,True)
         return result
@@ -287,19 +291,27 @@ class HookGateway:
                 or getattr(self._call_context, 'generation', None) is None or payload != {}):
             raise HookLocalError("HOOK_MEMORY_PROBE_NOT_AUTHORIZED")
         reader = getattr(self._call_context,'history_reader',None)
-        conn = reader.http_session if reader else hook_transport.connection(self.deployment.hook_api_port,self.timeout_seconds)
-        generation = getattr(self._call_context,'generation',None)
-        action_id = reader.call_id if reader else getattr(self._call_context,'action_id',None)
-        process = getattr(self._call_context, 'process', None)
-        memory_before = hook_memory.sample_pair(process)
-        request_evidence={'request_sha256':hook_read_retry.fingerprint(route,payload),
-                          'operation':getattr(self._call_context,'step',None)}
-        event_id = hook_read_retry.record_transport(generation, action_id, route, {
-            **request_evidence, 'phase': 'in_flight', 'delivery': 'unknown',
-            'memory': {'schema': 1, 'before': memory_before, 'after': None,
-                       'delta_bytes': None, 'attribution': 'process_net_change_not_dll_allocation',
-                       'peak_measured': False, 'delayed_release_measured': False}})
+        conn = None
         try:
+            try:
+                conn = reader.http_session if reader else hook_transport.connection(self.deployment.hook_api_port,self.timeout_seconds)
+                generation = getattr(self._call_context,'generation',None)
+                action_id = reader.call_id if reader else getattr(self._call_context,'action_id',None)
+                process = getattr(self._call_context, 'process', None)
+                memory_before = hook_memory.sample_pair(process)
+                request_evidence={'request_sha256':hook_read_retry.fingerprint(route,payload),
+                                  'operation':getattr(self._call_context,'step',None)}
+                event_id = hook_read_retry.record_transport(generation, action_id, route, {
+                    **request_evidence, 'phase': 'in_flight', 'delivery': 'unknown',
+                    'memory': {'schema': 1, 'before': memory_before, 'after': None,
+                               'delta_bytes': None, 'attribution': 'process_net_change_not_dll_allocation',
+                               'peak_measured': False, 'delayed_release_measured': False}})
+            except BaseException as exc:
+                # No transport invocation occurred. Keep the original exception
+                # and record a gap independently; never invent a DLL unknown.
+                exc._hook_request_not_attempted = True
+                hook_memory.record_gap(route, exc)
+                raise
             raw,evidence=hook_transport.post(conn,route,payload,self.max_response_bytes)
             evidence.update(request_evidence, phase='finished')
             evidence['memory'] = hook_memory.comparison(memory_before, hook_memory.sample_pair(process))
@@ -324,10 +336,11 @@ class HookGateway:
             error.transport_event_id=event_id
             error.transport_kind=exc.evidence.get('transport_kind')
             raise error from None
-        except (ValueError,RecursionError):
+        except (ValueError,RecursionError) as exc:
+            if getattr(exc, '_hook_request_not_attempted', False):raise
             raise HookLocalError('HOOK_LOCAL_RESPONSE_INVALID',outcome_unknown=uncertain_on_failure) from None
         finally:
-            if reader is None:conn.close()
+            if reader is None and conn is not None:conn.close()
 
     def _post(self, route: str, payload: dict, *, uncertain_on_failure: bool = False) -> dict:
         return self._response(route, payload, uncertain_on_failure=uncertain_on_failure).payload
