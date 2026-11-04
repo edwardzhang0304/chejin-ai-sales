@@ -12,7 +12,10 @@ from app.models.worker import Worker
 from app.contracts.shared_rules import shared_adapter
 from app.services import hook_history_service
 from test_hook_business_http import clean, post, body, proof, client
-from test_hook_history_business_http import bound, coverage, upload
+from test_hook_history_business_http import bound as checked_bound, coverage, upload
+
+def bound():
+    return checked_bound(confirm_initial=False)
 from test_hook_native_send_http import beginning, permitted
 
 
@@ -109,6 +112,7 @@ def test_explicit_reinvite_full_c1_new_binding_chain_and_old_proof_retained(monk
             old_prep={'remark_name':original['remark_code']}
             assert post(w,f"/workers/{w['id']}/wechat/native-bindings",body(t,p,old_prep)).status_code==409
         b=new
+    assert observation(w,p,b,{'code':0,'data':[{'wxid':b['peer_wxid'],'markname':b['remark_code']}]}).status_code==200
     result,_=upload(w,p,b,coverage(b),monkeypatch);assert result.status_code==200,result.text
     assert result.json()['data']['history_ready'] and result.json()['data']['message_batch']
     # Follow the replacement all the way through a new reply and durable task finish.
@@ -165,18 +169,23 @@ def test_failed_reinvite_round_can_be_explicitly_replaced_not_late_bound():
 
 
 @pytest.mark.parametrize('decision',['send_reply','reply_then_handoff'])
-def test_remark_review_blocks_both_send_branches_before_trigger(decision,monkeypatch):
+def test_established_remark_change_preserves_original_send_eligibility(decision,monkeypatch):
     w,p,b,h,permit,value=permitted(monkeypatch)
     with SessionLocal() as db:
         action=db.get(ReplyAction,permit['reply_action_id']);action.decision=decision;db.commit()
     friends={'code':0,'data':[{'wxid':b['peer_wxid'],'markname':'改备注'}]}
     first=observation(w,p,b,friends).json()['data']
-    r=observation(w,p,b,friends,{'confirmation_token':first['confirmation_token']});assert r.status_code==200,r.text
+    assert first['state']=='established' and not first['initial_check_pending']
     start={**p,'task_id':permit['task_id'],'history_state_digest':b['history_state_digest'],'clock_protocol_version':1,
         'send_token':permit['send_token'],'journal_sha256':'c'*64,'attempted_at':datetime.now(timezone.utc).isoformat()}
     r=post(w,f"/workers/{w['id']}/wechat/native-replies/{permit['reply_action_id']}/begin",start,h)
-    assert r.status_code==409 and r.json()['code']=='HOOK_CONTACT_REMARK_CHANGED',r.text
-    with SessionLocal() as db:assert 'native_send_attempt' not in db.get(ReplyAction,permit['reply_action_id']).ai_payload
+    if decision=='send_reply':
+        assert r.status_code==200 and r.json()['data']['may_call_hook'],r.text
+    else:
+        # Setting the decision alone does not create human-handoff authority.
+        assert r.status_code==409 and r.json()['code']=='REPLY_THEN_HANDOFF_NOT_ELIGIBLE',r.text
+    with SessionLocal() as db:
+        assert ('native_send_attempt' in db.get(ReplyAction,permit['reply_action_id']).ai_payload)==(decision=='send_reply')
 
 
 def test_retirement_keeps_actual_send_original_reconciliation_and_pause(monkeypatch):
@@ -292,7 +301,7 @@ from test_hook_account_client import identity_client
 @pytest.mark.parametrize('claimed',['before','after'])
 def test_operator_retirement_during_claim_finishes_original_flow_without_worker_fault(claimed,monkeypatch,identity_client,tmp_path):
     from app.services import c3_service
-    w,t,p,b=bound();r,_=upload(w,p,b,coverage(b),monkeypatch)
+    w,t,p,b=checked_bound();r,_=upload(w,p,b,coverage(b),monkeypatch)
     with SessionLocal() as db:
         made=c3_service.generate_for_batch(db,batch_id=r.json()['data']['message_batch']['batch_id'],native_client_admitted=True);db.commit()
     tid=made['task_id'];h={'X-Inflight-Flow-Id':tid}
@@ -508,20 +517,16 @@ def test_expired_confirmation_never_mutates_and_new_cycle_rearms(monkeypatch):
     with SessionLocal() as db:assert not db.scalar(select(HandoffEvent))
 
 
-def test_pending_confirmation_denies_physical_begin_without_cancelling_original(monkeypatch):
+def test_established_relationship_cannot_reenter_pending_before_begin(monkeypatch):
     w,p,b,h,permit,value=permitted(monkeypatch)
     first=observation(w,p,b,{'code':0,'data':[{'wxid':b['peer_wxid'],'markname':'changed'}]}).json()['data']
-    with SessionLocal() as db:
-        action=db.get(ReplyAction,permit['reply_action_id']);before=deepcopy(action.ai_payload)
-        status=action.status
-    start={**p,'task_id':permit['task_id'],'history_state_digest':b['history_state_digest'],'clock_protocol_version':1,
-        'send_token':permit['send_token'],'journal_sha256':'c'*64,'attempted_at':datetime.now(timezone.utc).isoformat()}
-    r=post(w,f"/workers/{w['id']}/wechat/native-replies/{permit['reply_action_id']}/begin",start,h)
-    assert r.status_code==409 and r.json()['code']=='HOOK_CONTACT_REMARK_CONFIRMATION_PENDING',r.text
+    assert first['state']=='established' and not first['initial_check_pending']
+    inventory=post(w,f"/workers/{w['id']}/wechat/native-work",p).json()['data']
+    assert not inventory['relationship_bindings']
     with SessionLocal() as db:
         action=db.get(ReplyAction,permit['reply_action_id'])
-        assert action.status==status and action.ai_payload==before
-        assert 'native_send_attempt' not in action.ai_payload
+        assert action.status=='sending' and 'native_send_attempt' not in action.ai_payload
+        assert not db.get(WechatSessionBinding,b['binding_id']).native_context.get('relationship_confirmation')
         assert not db.scalar(select(HandoffEvent))
 
 
@@ -534,3 +539,127 @@ def test_intervening_normal_poll_cannot_confirm_old_changed_read():
     third=observation(w,p,b,changed,{'confirmation_token':normal['confirmation_token']}).json()['data']
     assert not third['review_required'] and third['recheck_required']
     with SessionLocal() as db:assert not db.scalar(select(HandoffEvent))
+
+
+def test_initial_check_guards_flow_before_any_send_claim_then_reuses_same_reply(monkeypatch):
+    from app.services import c3_service
+    w,t,p,b=bound()
+    r,_=upload(w,p,b,coverage(b),monkeypatch);assert r.status_code==200,r.text
+    result=r.json()['data']
+    with SessionLocal() as db:
+        made=c3_service.generate_for_batch(db,batch_id=result['message_batch']['batch_id'],native_client_admitted=True)
+        db.commit()
+    assert made['decision']=='send_reply',made
+    flow={'flow_id':made['task_id'],'flow_kind':'chat_reply','conversation_id':b['conversation_id']}
+    changed={'code':0,'data':[{'wxid':b['peer_wxid'],'markname':''}]}
+    first=observation(w,p,b,changed).json()['data']
+    for _ in range(2):  # Same behavior on the next polling/restart request.
+        blocked=post(w,f"/workers/{w['id']}/inflight-flow/start",flow)
+        assert blocked.status_code==409 and blocked.json()['code']=='HOOK_CONTACT_REMARK_CONFIRMATION_PENDING',blocked.text
+        with SessionLocal() as db:
+            assert not (db.get(Worker,w['id']).inflight_flow_state or {}).get('flow_id')
+            assert db.get(ReplyAction,made['reply_action_id']).status=='queued'
+            assert not db.get(ReplyAction,made['reply_action_id']).send_token
+    good={'code':0,'data':[{'wxid':b['peer_wxid'],'markname':b['remark_code']}]}
+    done=observation(w,p,b,good,{'confirmation_token':first['confirmation_token']})
+    assert done.status_code==200 and not done.json()['data']['initial_check_pending'],done.text
+    assert post(w,f"/workers/{w['id']}/inflight-flow/start",flow).status_code==200
+    headers={'X-Inflight-Flow-Id':made['task_id']}
+    r=post(w,f"/tasks/{made['task_id']}/claim",{'worker_id':w['id'],'claim_source':'hook_conversation_flow','conversation_id':b['conversation_id']},headers)
+    assert r.status_code==200,r.text
+    headers['X-Task-Lease-Fencing-Token']=str(r.json()['data']['lease_fencing_token'])
+    r=post(w,f"/workers/{w['id']}/wechat/native-replies/{made['reply_action_id']}/claim",
+        {**p,'task_id':made['task_id'],'history_state_digest':result['history_state_digest'],'clock_protocol_version':1},headers)
+    assert r.status_code==200 and r.json()['data']['reply_action_id']==made['reply_action_id'],r.text
+    # Late old observations never put an admitted send back into the initial hold.
+    assert observation(w,p,b,changed).json()['data']['state']=='established'
+    with SessionLocal() as db:
+        assert db.get(ReplyAction,made['reply_action_id']).status=='sending'
+        assert not db.scalar(select(HandoffEvent))
+
+
+@pytest.mark.parametrize('existing_other_flow',[False,True])
+def test_initial_pending_inventory_allows_other_customer_actual_dispatch(monkeypatch,tmp_path,existing_other_flow):
+    """Real API inventory/batches/Flow/claim/begin; synthetic model and physical Hook boundary."""
+    import threading,time
+    from types import SimpleNamespace
+    from app.services import c3_service
+    from chejin_worker_client import storage
+    from chejin_worker_client.hook_dispatcher import HookBusinessDispatcher
+    from chejin_worker_client.hook_formal_runtime import HookFormalRuntime
+    from chejin_worker_client.api import ApiError
+    w,t,p,a=bound()
+    newlead=client.post('/api/leads',json={'customer_name':'synthetic second customer','phones':['13800000004']})
+    assert newlead.status_code==200,newlead.text
+    pull=client.get(f"/api/workers/{w['id']}/tasks/pull",headers={'X-Worker-Token':w['worker_token'],'X-Client-Instance-Id':w['instance']})
+    task=pull.json()['data']['task'];assert task
+    prep=finish_invite(w,p,task)
+    r=post(w,f"/workers/{w['id']}/wechat/native-bindings",body(task,p,prep,('wxid_customer_B',)))
+    assert r.status_code==200,r.text
+    b=r.json()['data']
+    good={'code':0,'data':[{'wxid':b['peer_wxid'],'markname':b['remark_code']}]}
+    assert observation(w,p,b,good).status_code==200
+    histories={};made={}
+    for offset,binding in enumerate([a,b]):
+        value=coverage(binding)
+        for scan in value['scans']:
+            for row in scan['databases'][0]['pages'][0]:
+                row['MsgSvrID']=str(int(row['MsgSvrID'])+offset*100)
+        r,_=upload(w,p,binding,value,monkeypatch);assert r.status_code==200,r.text
+        histories[binding['binding_id']]=r.json()['data']
+        with SessionLocal() as db:
+            result=c3_service.generate_for_batch(db,batch_id=r.json()['data']['message_batch']['batch_id'],native_client_admitted=True)
+            db.commit()
+        assert result['decision']=='send_reply',result
+        made[binding['binding_id']]=result
+    observation(w,p,a,{'code':0,'data':[{'wxid':a['peer_wxid'],'markname':''}]})
+    scope=SimpleNamespace(**p);credentials=SimpleNamespace(worker_id=w['id'],client_instance_id=w['instance'])
+    monkeypatch.setattr(storage,'APP_DIR',tmp_path)
+    monkeypatch.setattr(storage,'DB_FILE',tmp_path/'worker_client.sqlite3')
+    class LocalClient:
+        def call(self,creds,method,path,data=None,**kw):
+            headers={}
+            if kw.get('flow_id'):headers['X-Inflight-Flow-Id']=kw['flow_id']
+            if kw.get('token'):headers['X-Task-Lease-Fencing-Token']=str(kw['token'])
+            r=(post(w,path,data,headers) if method=='POST' else client.get('/api'+path,headers={
+                'X-Worker-Token':w['worker_token'],'X-Client-Instance-Id':w['instance'],**headers}))
+            if r.status_code>=400:raise ApiError(r.json()['code'],r.text,r.status_code)
+            return r.json()['data']
+    api=LocalClient();sends=[]
+    class Runtime:
+        def __init__(self,*args,**kw):
+            self.credentials=credentials;self.account=p;self.scope=scope;self.active_flow_id=None;self.active_task_id=None
+            self.client=api;self.private_root=tmp_path/'transactions'/'hook';self.clock=SimpleNamespace(observe=lambda x:None)
+        def heartbeat(self,**kw):pass
+        def barrier(self,binding):return (0,0)
+        def sync(self,binding):return histories[binding['binding_id']]
+        def reply_once(self,binding,data,*,history):
+            task=data['task'];action=data['reply_action']
+            flow=self.active_flow_id or HookFormalRuntime.start_flow(self,task,binding['conversation_id'])
+            claimed=HookFormalRuntime.claim(self,task,flow,binding['conversation_id'])
+            permit=api.call(credentials,'POST',f"/workers/{w['id']}/wechat/native-replies/{action['id']}/claim",
+                {**p,'task_id':task['id'],'history_state_digest':history['history_state_digest'],'clock_protocol_version':1},
+                flow_id=flow,token=claimed['lease_fencing_token'])
+            began=api.call(credentials,'POST',f"/workers/{w['id']}/wechat/native-replies/{action['id']}/begin",
+                {**p,'task_id':task['id'],'history_state_digest':history['history_state_digest'],'clock_protocol_version':1,
+                 'send_token':permit['send_token'],'journal_sha256':'c'*64,'attempted_at':datetime.now(timezone.utc).isoformat()},
+                flow_id=flow,token=claimed['lease_fencing_token'])
+            assert began['may_call_hook'];sends.append(binding['binding_id'])
+            return {'status':'synthetic_physical_boundary'}
+    runtime=Runtime()
+    if existing_other_flow:HookFormalRuntime.start_flow(runtime,{'id':made[b['binding_id']]['task_id']},b['conversation_id'])
+    runner=SimpleNamespace(binding=SimpleNamespace(run_status='running'),stop_event=threading.Event(),api=SimpleNamespace(),
+        _can_start_new_flow=lambda:True,_worker_transaction_barrier_ready=lambda *a,**kw:True)
+    prepared=SimpleNamespace(registration=SimpleNamespace(scope=scope),account=None)
+    services=SimpleNamespace(connection=SimpleNamespace(prepared=prepared,gateway=None),_credentials=credentials,startup_window_ready_for=lambda _:True)
+    dispatcher=HookBusinessDispatcher(api,runtime.private_root,lambda *a:None,lambda *a:None,
+        automatic_transcription_disabled=lambda:True,runtime_factory=lambda *a,**kw:runtime)
+    # A remains waiting after an already attempted second read failed. No test-created inventory.
+    dispatcher._relationship_read_due=time.monotonic()+60
+    dispatcher._housekeeping_due=time.monotonic()+60
+    dispatcher.tick(runner,services)
+    assert sends==[b['binding_id']]
+    with SessionLocal() as db:
+        assert db.get(ReplyAction,made[a['binding_id']]['reply_action_id']).status=='queued'
+        assert not db.get(ReplyAction,made[a['binding_id']]['reply_action_id']).send_token
+        assert not db.get(WechatSessionBinding,b['binding_id']).native_context.get('relationship_confirmation')

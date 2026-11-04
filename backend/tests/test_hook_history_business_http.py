@@ -12,10 +12,17 @@ from app.contracts.shared_rules import shared_adapter
 from test_hook_business_http import clean, submitted, body, post
 
 
-def bound():
+def bound(*, confirm_initial=True):
     w,t,p,h,prep=submitted()
     r=post(w,f"/workers/{w['id']}/wechat/native-bindings",body(t,p,prep));assert r.status_code==200,r.text
-    return w,t,p,r.json()['data']
+    binding=r.json()['data']
+    if confirm_initial:
+        friends={'code':0,'data':[{'wxid':binding['peer_wxid'],'markname':binding['remark_code']}]}
+        checked=post(w,f"/workers/{w['id']}/wechat/native-relationships/observe",{
+            **p,'binding_id':binding['binding_id'],'binding_revision':binding['binding_revision'],
+            'friend_list':friends,'raw_evidence_digest':shared_adapter('hook_contract_rules').digest(friends)})
+        assert checked.status_code==200 and not checked.json()['data']['initial_check_pending'],checked.text
+    return w,t,p,binding
 
 
 def coverage(binding,changes=None):

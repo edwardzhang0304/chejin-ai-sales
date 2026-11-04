@@ -60,6 +60,17 @@ def observe(db, authenticated, instance, payload):
     rules=shared_adapter('hook_contract_rules')
     if rules.digest(payload.friend_list)!=payload.raw_evidence_digest:
         raise AppError('HOOK_FRIEND_EVIDENCE_MISMATCH','联系人证据摘要不一致',409)
+    # Shortcode is only an initial binding check. Established customers use
+    # the immutable peer wxid plus existing account/revision/authorization gates.
+    # Legacy bindings are not retrospectively suspended or implicitly restored.
+    if not initial_check_pending(binding):
+        if payload.confirmation_token:
+            raise AppError('HOOK_RELATIONSHIP_CONFIRMATION_STALE','初始备注核验已结束，旧确认标识不能复用',409)
+        return {'binding_id':binding.id,'state':'established',
+                'review_required':bool(ctx.get('relationship_review_required')),
+                'initial_check_pending':False,'recheck_required':False,
+                'confirmation_token':None,'comparison_evidence':None,
+                'authorization_changed':False,'deletion_confirmed':False}
     observed = shared_adapter('hook_contact_rules').contact_observation(payload.friend_list,
         binding.remark_code, payload.self_wxid, binding.native_peer_wxid)
     observed.update(observed_at=utcnow().isoformat(), process_generation=payload.process_generation,
@@ -85,6 +96,7 @@ def observe(db, authenticated, instance, payload):
             ctx['relationship_last_review'] = evidence
             if state == 'matched':
                 ctx.pop('relationship_confirmation', None)
+                ctx['relationship_initial_check'] = 'verified'
             elif state == 'remark_changed' and pending['first']['state'] == 'remark_changed':
                 confirmed = True
                 ctx.pop('relationship_confirmation', None)
@@ -100,6 +112,8 @@ def observe(db, authenticated, instance, payload):
                 pending = {'token': uuid.uuid4().hex, 'first': observed}
                 ctx['relationship_confirmation'] = pending
             evidence = {'first': pending['first']}
+        if state == 'matched' and not pending and not payload.confirmation_token:
+            ctx['relationship_initial_check'] = 'verified'
         if evidence:
             ctx['relationship_last_review'] = evidence
     if confirmed:
@@ -124,10 +138,12 @@ def observe(db, authenticated, instance, payload):
             conversation.recall_cycle_id=conversation.recall_origin_status=conversation.next_recall_at=None
             c3_service.cancel_active_batches_for_conversation_change(db,binding.conversation_id,reason=REMARK_CHANGED)
             ctx['relationship_review_required']=True
+            ctx['relationship_initial_check']='review_required'
     binding.native_context=ctx
     db.flush()
     pending = ctx.get('relationship_confirmation') if active and not ctx.get('relationship_review_required') else None
     return {'binding_id':binding.id,'state':state,'review_required':bool(ctx.get('relationship_review_required')),
+            'initial_check_pending':ctx.get('relationship_initial_check')=='pending',
             'recheck_required':bool(pending), 'confirmation_token':pending['token'] if pending else None,
             'comparison_evidence': evidence or (ctx.get('relationship_last_review') if ctx.get('relationship_review_required') else None),
             'authorization_changed':False,'deletion_confirmed':False}
@@ -257,9 +273,13 @@ def require_binding_chain(existing, current):
         raise AppError('HOOK_BINDING_CONFLICT','仍有其他客户或账号绑定，不能覆盖',409)
 
 
+def initial_check_pending(binding):
+    return (binding.native_context or {}).get('relationship_initial_check') == 'pending'
+
+
 def ensure_send_authorization(binding):
     """Customer-scoped refusal shared by permit claim and physical begin."""
-    if (binding.native_context or {}).get('relationship_confirmation'):
+    if initial_check_pending(binding):
         raise AppError('HOOK_CONTACT_REMARK_CONFIRMATION_PENDING','客户备注正在复核，暂缓新发送',409,{'suggested_action':'wait_for_relationship_confirmation'})
     if (binding.native_context or {}).get('relationship_review_required'):
         raise AppError(REMARK_CHANGED,'客户识别信息待核对，不能自动发送',409,{'suggested_action':'do_not_send'})

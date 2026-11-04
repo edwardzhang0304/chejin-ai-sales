@@ -1,6 +1,5 @@
 """Target-only relationship check evidence for the existing diagnostic ZIP."""
 from pathlib import Path
-from . import storage
 from .incident_evidence import _atomic_write_json
 from .shared_rules import hook_contract_rules as rules
 
@@ -20,7 +19,12 @@ def save_review(root, account, binding, attempts, result=None):
         if result and result.get('review_required'):
             _atomic_write_json(folder / 'confirmed.json', value)
     except OSError as exc:
-        storage.append_log('WARNING', 'hook_relationship_evidence_write_failed',
-            '联系人复核证据写入失败，故障包中请核对此缺口。',
-            metadata={'binding_id': binding['binding_id'], 'error_type': type(exc).__name__},
-            include_exception_text=False)
+        # Reuse the independent bounded recorder already included in the ZIP.
+        # Do not call the SQLite logger from an optional evidence failure path.
+        from .failure_evidence import record_capture_failure
+        last = attempts[-1] if attempts else {}
+        record_capture_failure('hook_relationship_review',exc,
+            error_code=last.get('reason_code','HOOK_RELATIONSHIP_EVIDENCE_WRITE_FAILED'),
+            safe_context={'account':account,'binding_id':binding['binding_id'],
+                'binding_revision':binding['binding_revision'],'attempts':attempts[-2:],
+                'missing_target':str(folder.name)+'/latest.json','result':result})
