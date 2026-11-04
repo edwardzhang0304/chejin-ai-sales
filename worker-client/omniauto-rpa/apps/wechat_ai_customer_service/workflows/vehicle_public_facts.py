@@ -88,6 +88,8 @@ def validate_reply_public_facts(plan: dict, evidence: dict, *, formal_validation
                       for n in factual_number_spans(source["content"])]
 
     def policy_number(number, segment_index):
+        if number["unit"] == "万元" and amount_role(plan["reply_segments"][segment_index], number["start"]) in (None, "预算", "车价"):
+            return False  # Neither an unassigned amount nor a car price borrows a policy fee.
         if formal_validation is not None:
             return any(n["segment_index"] == segment_index and n["start"] == number["start"] and n["end"] == number["end"]
                        for n in formal_validation.get("covered_numbers", []))
@@ -125,7 +127,7 @@ def validate_reply_public_facts(plan: dict, evidence: dict, *, formal_validation
             for n in factual_number_spans(source["content"]):
                 source_role = amount_role(source["content"], n["start"])
                 if (n["unit"] == number["unit"] and value is not None and value == public_number(n["value"])
-                        and (source_role == role or (role == "预算" and source_role is None))):
+                        and (source_role == role or (role == "预算" and source_role in (None, "车价")))):
                     add("customer_requirement", number["text"], "current_conversation", source["id"])
                     return True
         return False
@@ -136,7 +138,7 @@ def validate_reply_public_facts(plan: dict, evidence: dict, *, formal_validation
         customer_positions = set()
         for n in numbers:
             clause_start = max((m.end() for m in re.finditer(r"[，,。；;！？!?]", segment[:n["start"]])), default=0)
-            if amount_role(segment, n["start"]) and not any(clause_start <= e["start"] < n["start"] for e in entities):
+            if amount_role(segment, n["start"]) not in (None, "车价") and not any(clause_start <= e["start"] < n["start"] for e in entities):
                 customer_positions.add(n["start"])
         customer_numbers = {n["start"] for n in numbers if n["start"] in customer_positions and customer_amount(segment, n)}
         for clause in re.finditer(r"[^，,。；;！？!?]+", segment):
@@ -167,10 +169,11 @@ def validate_reply_public_facts(plan: dict, evidence: dict, *, formal_validation
             for number in (n for n in numbers if entity["end"] <= n["start"] < end):
                 if number["start"] in customer_numbers:
                     continue
-                if number["start"] in customer_positions:
+                if (number["start"] in customer_positions or
+                        (number["unit"] == "万元" and amount_role(segment, number["start"]) not in (None, "车价"))):
                     valid = policy_number(number, segment_index)
                     if not valid:
-                        errors.append("unverified_customer_amount")
+                        errors.append("unverified_reply_monetary_role")
                     occurrences.append({"segment_index": segment_index, **number, "verified": valid and formal_validation is not None,
                                         "pending_policy_review": valid and formal_validation is None})
                     continue
@@ -237,17 +240,40 @@ def validate_reply_public_facts(plan: dict, evidence: dict, *, formal_validation
             for product in recommendations[:len(actual_recommendations)]:
                 if product.get("price") is not None and str(product["id"]) not in priced_ids:
                     errors.append("answer_known_price_omitted")
+        if (preparation.get("answer_goal") == "uncertain" and aggregate_ready(receipt) and recommendations
+                and not actual_recommendations and any(f["source_level"] == "catalog_query" for f in facts)):
+            errors.append("answer_goal_unresolved_for_summary")
     # A model-supplied true ID with a wrong value remains a conflict; do not
     # quietly replace its declaration and hide the failure.
     for declared in plan.get("facts_claimed") or []:
         if declared.get("fact_type") in ("price", "product_price"):
             product = by_id.get(str(declared.get("source_id")))
             values = factual_number_spans(str(declared.get("value")))
-            value = public_number(values[0]["value"]) if len(values) == 1 else public_number(declared.get("value"))
+            value = public_number(declared.get("value"))
+            if value is None and len(values) == 1 and values[0]["unit"] == "万元":
+                value = public_number(values[0]["value"])
             if not product or value is None or value != public_number(product.get("price")):
                 errors.append("model_declared_fact_conflict")
     return {"ok": not errors, "errors": list(dict.fromkeys(errors)), "facts_claimed": facts,
             "product_ids": actual_ids, "occurrences": occurrences, "customer_statements": customer_statements}
+
+
+def validate_reviewed_reply_facts(plan: dict, evidence: dict, *, refs: dict, mapping: dict) -> dict:
+    """One actual-text check used by semantic clearance and final Guard.
+
+    Policy selections can support only their actual monetary roles. Vehicle
+    prices, customer amounts and query aggregates retain independent authority.
+    """
+    from apps.wechat_ai_customer_service.workflows.customer_service_brain_contract import validate_policy_refs
+    preliminary = validate_reply_public_facts(plan, evidence)
+    formal = validate_policy_refs(refs, segments=plan.get("reply_segments") or [], mapping=mapping,
+                                  customer_statements=preliminary["customer_statements"])
+    validated = validate_reply_public_facts(plan, evidence, formal_validation=formal)
+    validated["facts_claimed"].extend(formal["facts_claimed"])
+    validated["formal_source_ids"] = formal["source_ids"]
+    validated["errors"] = list(dict.fromkeys([*formal["errors"], *validated["errors"]]))
+    validated["ok"] = not validated["errors"]
+    return validated
 
 
 def derive_reviewed_fact_fields(plan: dict, validated: dict) -> None:

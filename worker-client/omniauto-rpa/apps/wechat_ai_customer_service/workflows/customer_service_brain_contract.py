@@ -68,6 +68,7 @@ def validate_policy_refs(refs: Any, *, segments: list[str], mapping: dict,
             role = amount_role(text, number["start"])
             matches = any(number["unit"] is not None and number["unit"] == n["unit"]
                           and public_number(number["value"]) == public_number(n["value"])
+                          and (number["unit"] != "万元" or role not in (None, "预算", "车价"))
                           and (role is None or role == amount_role(content, n["start"]))
                           for n, content in source_numbers)
             if matches:
@@ -1403,10 +1404,14 @@ def verify_brain_reply_quality(
     has_product_evidence = bool(collect_authoritative_product_ids(evidence_pack or {}))
     budget_upper = extract_quality_budget_upper(question, evidence_pack or {})
     catalog_protocol = (evidence_pack or {}).get("catalog_protocol")
+    resolved_inventory_goal = False
     if catalog_protocol:
         query = ((catalog_protocol.get("receipt") or {}).get("query") or {})
+        preparation = catalog_protocol.get("preparation") or {}
+        resolved_inventory_goal = bool(query and preparation.get("answer_goal") in {"recommendation", "summary"})
         price_question = query.get("operation") == "details"
-        recommendation_question = query.get("operation") == "search"
+        recommendation_question = (bool(preparation.get("requires_recommendation")) if preparation
+                                   else query.get("operation") == "search")
         contextual_recommendation_question = direct_decision_question = False
         concrete_question = bool(query) or bool(plan.get("facts_claimed"))
         if query:
@@ -1415,7 +1420,7 @@ def verify_brain_reply_quality(
     delay_followup_state = extract_conversation_interaction_state(evidence_pack or {})
     delay_followup_posture = str(delay_followup_state.get("suggested_reply_posture") or "") == "acknowledge_delay_then_continue"
 
-    if is_social_only_message(question):
+    if not resolved_inventory_goal and is_social_only_message(question):
         if contains_any(clean_reply, UNSUPPORTED_INFO_COLLECTION_TERMS):
             if not delay_followup_posture or not check_delay_followup_context_continuity(question, clean_reply, evidence_pack or {}) == {}:
                 errors.append("unsupported_info_collection_for_social_message")

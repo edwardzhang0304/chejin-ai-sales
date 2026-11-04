@@ -821,6 +821,8 @@ def prepared_draft_instructions(system: str, evidence: dict) -> str:
         "以content_basis完整公开依据及catalog_protocol冻结条件回答；不能新增、删掉或改变客户条件。"
         "已查询时只生成回复，不再次查询。客户需要推荐且有合格车，必须按recommendations顺序给具体车型和已知价格，"
         "不能只说有几辆/价格范围或重新问已知预算来过审；客户仅问数量则正常回答数量。"
+        "catalog_protocol.preparation.answer_goal区分推荐、统计及未明；推荐与统计兼有时都须回答。"
+        "未明目标不能擅自降成只报数量；依据原问题补充理解，确实仍不明确则按原规则澄清。"
         "所有具体事实必须真实，有未知或未支持条件如实说明，不假称满足全部条件。"
     )
 
@@ -1639,7 +1641,8 @@ def _maybe_run_customer_service_brain_within_time_budget(
     guard_settings["brain_first_guard"] = True
     if brain_plan_allows_soft_evidence_override(plan):
         guard_settings["advisor_mode"] = "clear_common_sense_recommendation"
-    guard = guard_synthesized_reply(candidate=candidate, evidence_pack=evidence_pack, settings=guard_settings)
+    guard = guard_synthesized_reply(candidate=candidate, evidence_pack=evidence_pack, settings=guard_settings,
+        **({"reviewed_plan": plan} if (evidence_pack.get("catalog_protocol") or {}).get("preparation") else {}))
     record_stage("guard", stage_started)
     payload["guard"] = compact_guard(guard)
     if guard_requires_brain_repair(guard):
@@ -1848,6 +1851,7 @@ def _maybe_run_customer_service_brain_within_time_budget(
                     candidate=repaired_candidate,
                     evidence_pack=evidence_pack,
                     settings=repaired_guard_settings,
+                    **({"reviewed_plan": repaired_plan} if (evidence_pack.get("catalog_protocol") or {}).get("preparation") else {}),
                 )
             else:
                 repaired_guard = {"allowed": False, "reason": "guard_repair_validation_or_quality_failed"}

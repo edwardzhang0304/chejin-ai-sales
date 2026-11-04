@@ -32,6 +32,16 @@ def listed(name,price):
     return vid
 
 
+def publish_policy(content):
+    api=pipeline.joined.api
+    r=api.client.post('/api/knowledge/items',json={'title':'合成正式说明','content':content},headers=api.HEADERS)
+    assert r.status_code==200,r.text
+    item=r.json()['data']
+    preview=api.client.post('/api/knowledge/releases/preview',json={'operation':'create','item_id':item['id']},headers=api.HEADERS).json()['data']
+    r=api.client.post('/api/knowledge/releases',json={'preview_id':preview['preview_id'],'content_digest':preview['content_digest']},headers=api.HEADERS)
+    assert r.status_code==200,r.text
+
+
 def configure(monkeypatch,state,case,mutation):
     # The shared fixture has one unrelated listed high-price car. Preserve it:
     # the real query must filter it out, not a test-side pre-filter.
@@ -158,14 +168,9 @@ def test_serialized_approved_result_cannot_change_content_or_drop_review(monkeyp
 
 @pytest.mark.parametrize('mutation',['normal','unknown_knowledge','unknown_statement','omitted','wrong_fee','extra_promise','mixed_false_promise'])
 def test_published_policy_paraphrase_through_model_parse_review_and_native_chain(monkeypatch,actual_brain,mutation):
-    state=actual_brain;api=pipeline.joined.api
+    state=actual_brain
     content='预约看车需提前一天联系，需要核实车源状态和门店排期，确认后再答复客户。'
-    r=api.client.post('/api/knowledge/items',json={'title':'预约看车说明','content':content},headers=api.HEADERS)
-    assert r.status_code==200,r.text
-    item=r.json()['data']
-    preview=api.client.post('/api/knowledge/releases/preview',json={'operation':'create','item_id':item['id']},headers=api.HEADERS).json()['data']
-    r=api.client.post('/api/knowledge/releases',json={'preview_id':preview['preview_id'],'content_digest':preview['content_digest']},headers=api.HEADERS)
-    assert r.status_code==200,r.text
+    publish_policy(content)
     def coverage(binding):
         value=original_coverage(binding)
         for scan in value['scans']:
@@ -232,3 +237,98 @@ def test_year_followup_retains_energy_and_repairs_format_before_final_clarificat
         assert '哪一年之后的新能源车' in n['reply_text']
         assert n['catalog_stages']['understanding']['json_structure_repaired']
         assert n['candidate_history'] and n['review_history']
+
+
+@pytest.mark.parametrize('separator',['comma','sentence','segment','same_vehicle_clause'])
+@pytest.mark.parametrize('source,tail,allowed',[
+    ('预约服务费为0.2万元，最终以门店确认为准。','预约服务费0.2万元，最终以门店确认为准。',True),
+    ('预约服务费为6.8万元，最终以门店确认为准。','预约服务费6.8万元，最终以门店确认为准。',True),
+    ('预约服务费为0.2万元，最终以门店确认为准。','实际售价0.2万元。',False),
+    ('预约服务费为0.2万元，最终以门店确认为准。','报价0.2万元。',False),
+    (None,'预约服务费6.8万元，最终以门店确认为准。',False),
+    ('预约定金为0.2万元，最终以门店确认为准。','预约服务费0.2万元，最终以门店确认为准。',False),
+])
+def test_vehicle_and_policy_amount_roles_reach_same_final_guard(monkeypatch,actual_brain,separator,source,tail,allowed):
+    state=actual_brain
+    configure(monkeypatch,state,'M02','normal')
+    if source:publish_policy(source)
+    underlying=llm_config.call_llm_request_once_with_wall_timeout
+    def transport(**kw):
+        response=underlying(**kw)
+        value=json.loads(response['response_text'])
+        if kw['model']=='synthetic-reviewer':
+            request=json.loads(kw['messages'][1]['content'])['review_request']
+            mapping=request['policy_reference_map']
+            # Deliberately wrong semantic pass/citation for the negative cases:
+            # the actual fact owner must still reject a price/fee substitution.
+            value['policy_refs']={sid:[next(iter(mapping['knowledge']))]
+                for sid,s in mapping['statements'].items()
+                if mapping['knowledge'] and ('服务费' in s['text'] or '售价' in s['text'] or s['text'].startswith('报价'))}
+        else:
+            first=value['reply_segments'][0]
+            if separator=='same_vehicle_clause':
+                value['reply_segments']=[first.rstrip('。')+'，'+state['receipt']['recommendations'][1]['name']+tail]
+            else:
+                value['reply_segments']=([first,tail] if separator=='segment' else
+                    [first.rstrip('。')+('，' if separator=='comma' else '。')+tail])
+        response['response_text']=json.dumps(value,ensure_ascii=False)
+        return response
+    monkeypatch.setattr(llm_config,'call_llm_request_once_with_wall_timeout',transport)
+    if allowed:
+        pipeline.native.test_one_native_history_match_settles_original_reply_without_resend('unique',monkeypatch)
+        assert len(state['wire'])==2
+    else:
+        _,_,_,bid=pipeline.created(monkeypatch);result=pipeline.generate(bid)
+        assert result['decision']=='retry_later',result
+        with SessionLocal() as db:
+            assert not list(db.scalars(select(ReplyAction)))
+            n=db.get(MessageBatch,bid).ai_response_snapshot['raw_payload']['omniauto_brain_result']
+            assert not n.get('_catalog_clearance')
+
+
+@pytest.mark.parametrize('question,answer,allowed',[
+    ('五到八万左右有什么合适的车？','summary',False),
+    ('五到八万左右有什么合适的？','summary',False),
+    ('五到八万左右有什么合适的？','recommend',True),
+    ('五到八万左右有哪些可以看看？','summary',False),
+    ('五到八万左右有哪些可以看看？','recommend',True),
+    ('5—8万总共多少台？','summary',True),
+    ('5—8万有几辆，推荐两台。','summary',False),
+    ('5—8万有几辆，推荐两台。','recommend',True),
+    ('5—8万只告诉我数量，不用推荐。','summary',True),
+    ('5—8万的情况呢？','summary',False),
+])
+def test_answer_goal_survives_semantic_query_and_complete_consumers(monkeypatch,actual_brain,question,answer,allowed):
+    state=actual_brain
+    configure(monkeypatch,state,'M02','normal')
+    def coverage(binding):
+        value=original_coverage(binding)
+        for scan in value['scans']:
+            for row,text in zip(scan['databases'][0]['pages'][0],['您好',question]):row['StrContent']=text
+        return value
+    monkeypatch.setattr(pipeline,'coverage',coverage);monkeypatch.setattr(pipeline.native,'coverage',coverage)
+    def transport(**kw):
+        state['wire'].append(kw)
+        if kw['model']=='synthetic-reviewer':
+            value=pipeline.joined.review('query_summary' if answer=='summary' else 'vehicle_facts')
+        elif not state.get('receipt'):
+            mid=state['invocations'][-1]['batch'][-1]['id']
+            q=pipeline.joined.query(source_ids=[mid]);q.pop('version',None);q.pop('sort',None)
+            q['budget']={'state':'specified','mode':'range','lower':5,'upper':8,'source_ids':[mid]}
+            q['interpretation']='客户询问五到八万元的车辆'
+            value={'catalog_query':q}
+        else:
+            value=pipeline.joined.fixtures.base_plan()
+            text=f"符合条件的车有{state['receipt']['match_count']}辆。"
+            if answer=='recommend':
+                text+='，'.join(f"{p['name']}报价{p['price']}万元" for p in state['receipt']['recommendations'][:2])+'。'
+            value.update(answer_mode='direct_answer',understanding={'user_intent':'查车'},reply_segments=[text])
+            value.pop('facts_claimed',None);value.pop('evidence_used',None)
+        return {'ok':True,'status':200,'response_text':json.dumps(value,ensure_ascii=False)}
+    monkeypatch.setattr(llm_config,'call_llm_request_once_with_wall_timeout',transport)
+    if allowed:
+        pipeline.native.test_one_native_history_match_settles_original_reply_without_resend('unique',monkeypatch)
+    else:
+        _,_,_,bid=pipeline.created(monkeypatch);result=pipeline.generate(bid)
+        assert result['decision']=='retry_later',result
+        with SessionLocal() as db:assert not list(db.scalars(select(ReplyAction)))

@@ -76,11 +76,13 @@ def _wan(token: str, unit: str) -> float | None:
 def amount_role(text: str, start: int) -> str | None:
     """Explicit monetary role in the current clause, shared with reply checks."""
     prefix = re.split(r"[，,。；;！？!?]", text[:start])[-1]
-    roles = list(re.finditer(r"首付|月供|定金|订金|手续费|服务费|利息|利率|总预算|预算|车价|总价", prefix))
+    roles = list(re.finditer(r"首付|月供|定金|订金|手续费|服务费|利息|利率|总预算|预算|车价|总价|售价|报价|价格", prefix))
     if not roles:
         return None
     role = roles[-1].group()
-    return "预算" if role in {"总预算", "车价", "总价"} else "定金" if role == "订金" else role
+    if role in {"车价", "总价", "售价", "报价", "价格"}:
+        return "车价"
+    return "预算" if role == "总预算" else "定金" if role == "订金" else role
 
 
 def _is_non_budget_amount(text: str, start: int) -> bool:

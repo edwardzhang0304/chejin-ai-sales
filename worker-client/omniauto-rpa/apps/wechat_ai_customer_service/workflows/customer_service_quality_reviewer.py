@@ -1159,6 +1159,7 @@ def build_quality_reviewer_prompt(request: dict[str, Any]) -> tuple[str, str]:
         system += ("本轮程序已准备同一完整公开依据authority_evidence_summary，facts_claimed/evidence_used只是模型自报，"
                    "缺省不能单独判不通过；声明完整也不能替代核对正文。核对每辆车对应的实际价格、单位、配置以及全部段落。"
                    "catalog_protocol.preparation中的明确需求已冻结。客户要推荐且有合格车必须具体给车和已知价格、遵守候选顺序；"
+                   "回答目标未明不能直接视为只需统计；同时要数量和推荐须都完成，明确不要推荐只问数量应尊重。"
                    "不能删成汇总或机械追问过审。客户仅问数量/区间可以按完整查询回答；年份未知、未支持条件必须如实说明。"
                    "同一回复存在未解决错误时不得pass；无需改写客户正文或额外填写另一套证明。")
     user = json.dumps({"task": "审稿候选Brain回复，不要生成客户回复。", "review_request": request}, ensure_ascii=False)

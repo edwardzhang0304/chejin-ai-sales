@@ -294,3 +294,17 @@ def test_format_repair_capacity_stops_retry_and_keeps_full_failed_attempt(monkey
     history=pack['model_response_history']
     assert len(history)==2 and history[0]['response']['response_text']==original
     assert 'synthetic-key' not in json.dumps(history)
+
+
+@pytest.mark.parametrize('mutation',['none','missing_plan','plan','text','mapping'])
+def test_final_fact_guard_rechecks_exact_approved_plan_and_mapping(mutation):
+    from apps.wechat_ai_customer_service.workflows.llm_reply_guard import validate_reply_fact_authority
+    pack,_=policy_pack();plan,result=clear_policy(pack,policy_review())
+    assert result['ok']
+    text=POLICY_TEXT
+    if mutation=='missing_plan':plan=None
+    if mutation=='plan':plan['policy_refs']={'S1':['K2']}
+    if mutation=='text':text=text.replace('1天','2天')
+    if mutation=='mapping':pack['policy_reference_map']['knowledge']['K1']['content']='改过的内容'
+    final=validate_reply_fact_authority(text,pack,reviewed_plan=plan)
+    assert final['ok']==(mutation=='none'),final

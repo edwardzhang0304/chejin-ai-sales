@@ -218,11 +218,30 @@ def prepare_catalog_need(evidence: dict) -> dict:
     result = _prepare_catalog_need(evidence)
     current = " ".join(m["content"] for m in message_sources({"current_batch": evidence.get("current_batch") or []})
                        if m["sender"] in ("customer", "client"))
-    summary = bool(re.search(r"多少台|多少辆|几台|几辆|价格区间|最低价|最高价", current))
-    result["asks_summary"] = summary
-    result["requires_recommendation"] = bool("推荐" in current or (not summary and (
-        result["route"] == "direct" or re.search(r"有什么车|有哪些车|有什么合适的车", current))))
+    result.update(catalog_answer_goal(current, non_inventory=result["route"] == "non_inventory"))
     return result
+
+
+def catalog_answer_goal(current: str, *, non_inventory: bool = False) -> dict:
+    """Freeze what an answer must deliver, independently of query routing.
+
+    A request for choices does not depend on an explicit noun (车). Count and
+    recommendation requests can coexist; negated requests are not obligations.
+    Unrecognized intent remains unknown, never a permission to answer counts.
+    """
+    summary = recommendation = False
+    choice = r"推荐|介绍|挑选|挑几|选几|看看|给我看|给我发|有哪些|有什么|哪(?:些|款|辆|台)|有没有[^，,。；;！？!?]*(?:合适|适合)"
+    statistics = r"多少(?:台|辆|款)|几(?:台|辆|款)|数量|价格区间|最低价|最高价"
+    for clause in re.split(r"[，,。；;！？!?]", current):
+        # Limit negation to its requested action, not the whole utterance.
+        clean = re.sub(r"(?:不用|不要|不必|无需|别)(?:再|给我|帮我|只)?(?:" + choice + r")", "", clause)
+        recommendation |= bool(re.search(choice, clean))
+        clean = re.sub(r"(?:不用|不要|不必|无需|别)(?:只)?(?:告诉我|报|说|统计)?(?:" + statistics + r")", "", clause)
+        summary |= bool(re.search(statistics, clean))
+    goal = "non_inventory" if non_inventory or not current.strip() else (
+        "recommendation" if recommendation else "summary" if summary else "uncertain")
+    return {"answer_goal": goal, "asks_summary": summary,
+            "requires_recommendation": True if goal == "recommendation" else None if goal == "uncertain" else False}
 
 
 def _prepare_catalog_need(evidence: dict) -> dict:
@@ -655,8 +674,8 @@ def record_semantic_clearance(evidence, plan, raw_review, review):
     if prepared:
         if review.get("customer_visible_risk") == "high":
             errors.append("semantic_reviewer_high_risk")
-        from apps.wechat_ai_customer_service.workflows.vehicle_public_facts import validate_reply_public_facts, derive_reviewed_fact_fields
-        from apps.wechat_ai_customer_service.workflows.customer_service_brain_contract import validate_policy_refs, policy_ref_errors
+        from apps.wechat_ai_customer_service.workflows.vehicle_public_facts import validate_reviewed_reply_facts, derive_reviewed_fact_fields
+        from apps.wechat_ai_customer_service.workflows.customer_service_brain_contract import policy_ref_errors
         from apps.wechat_ai_customer_service.workflows.reply_evidence_builder import prepare_policy_reference_map
         mapping = prepare_policy_reference_map(plan, evidence)
         contract_errors = policy_ref_errors(raw_review.get("policy_refs"), mapping=mapping)
@@ -664,14 +683,7 @@ def record_semantic_clearance(evidence, plan, raw_review, review):
             return {**review, "ok": False, "status": "error", "verdict": "block", "error_kind": "protocol",
                     "contract_errors": contract_errors, "errors": contract_errors, "enforced": True,
                     "reason": "policy_refs_invalid_contract", "soft_pass_low_risk": False}
-        preliminary = validate_reply_public_facts(plan, evidence)
-        formal = validate_policy_refs(raw_review.get("policy_refs"),
-            segments=plan.get("reply_segments") or [], mapping=mapping,
-            customer_statements=preliminary["customer_statements"])
-        errors.extend(formal["errors"])
-        validated = validate_reply_public_facts(plan, evidence, formal_validation=formal)
-        validated["facts_claimed"].extend(formal["facts_claimed"])
-        validated["formal_source_ids"] = formal["source_ids"]
+        validated = validate_reviewed_reply_facts(plan, evidence, refs=raw_review["policy_refs"], mapping=mapping)
         errors.extend(validated["errors"])
         if validated["product_ids"] and kind != "vehicle_facts":
             errors.append("catalog_claim_classification_conflict")

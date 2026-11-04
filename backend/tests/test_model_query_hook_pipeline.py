@@ -57,7 +57,7 @@ def actual_brain(monkeypatch):
             request=json.loads(kw['messages'][1]['content'])['review_request']
             state['reviews'].append(request)
             result=joined.review('query_summary')
-            if mode.startswith('case_budget') or mode=='case_energy':result=joined.review('vehicle_facts')
+            if mode not in {'legacy','case_year'}:result=joined.review('vehicle_facts')
             if mode=='case_year':result=joined.review('non_inventory')
             if mode=='case_budget_timeout' and len(state['invocations'])==1:
                 if len(state['reviews'])==1:
@@ -98,7 +98,11 @@ def actual_brain(monkeypatch):
         else:
             r=state['receipt'];result=joined.summary_plan(r);result['facts_claimed'][0]['value']=r['match_count']
             result['reply_segments']=[f"按当前已明确的条件，符合条件的在售车辆有{r['match_count']}辆。"]
-            if mode.startswith('case_budget') or mode=='case_energy':
+            # The shared real inbound fixture asks to see a BMW, then gives a
+            # budget. A bare count no longer satisfies that request. Preserve
+            # all retry/accounting/native recovery assertions with a valid
+            # concrete answer; the explicit legacy fixture keeps its old form.
+            if mode not in {'legacy','case_year'}:
                 cars=r['recommendations']
                 result['answer_mode']='recommend_from_catalog'
                 result['evidence_used']={'product_ids':[c['id'] for c in cars]}
