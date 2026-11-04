@@ -1135,6 +1135,8 @@ def build_quality_reviewer_prompt(request: dict[str, Any]) -> tuple[str, str]:
         "只输出裸JSON对象，不要Markdown，不要```json代码块，不要解释。字段：claim_kind(non_factual/factual/uncertain), verdict(pass/repair/block/handoff_suggest), confidence(0-1), semantic_errors(list), hard_boundary_concerns(list), repair_instruction(str), customer_visible_risk(low/medium/high), reason(str)。"
     )
     if request.get("catalog_protocol"):
+        from apps.wechat_ai_customer_service.workflows.catalog_query import RECEIPT_INSTRUCTION
+        system += RECEIPT_INSTRUCTION
         system += ("核对catalog_protocol中的结构化需求与source_evidence原文是否一致：总预算不是首付/月供，"
                    "当前要求优先于已否定或过去预算，未提预算不等于明确不限。核对拒绝旧车、品牌、比较意图。"
                    "需求理解错误必须repair，不能仅因报价真实放行；你不能自行修改查询需求或回执。"

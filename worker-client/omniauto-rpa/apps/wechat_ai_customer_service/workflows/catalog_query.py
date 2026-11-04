@@ -495,14 +495,89 @@ def snapshot_id(rows: list[dict]) -> str:
     return fingerprint(sorted(rows, key=lambda r: str(r.get("id") or "")))
 
 
+def _selection_blockers(query: dict, names: list[dict], available_ids: set[str]) -> list[str]:
+    """Locate uncertainty from validated conditions, never from interpretation prose."""
+    reasons = []
+    if query["budget"]["state"] == "uncertain":
+        reasons.append("budget_uncertain")
+    if any(n["status"] != "unique" for n in names):
+        reasons.append("name_unresolved")
+    for field in ("reference_ids", "exclude_ids"):
+        if set(query[field]) - available_ids:
+            reasons.append("missing_" + field)
+    if query["requirement_state"] == "uncertain":
+        reasons.append("uncertainty_scope_unresolved")
+    if query["unsupported_requirements"]:
+        reasons.append("unsupported_scope_unresolved")
+    # Contradictory supported conditions cannot be interpreted as real zero stock.
+    for field in sorted(TEXT_FIELDS | NUMBER_FIELDS):
+        filters = [f for f in query["filters"] if f["field"] == field]
+        if field in TEXT_FIELDS and filters:
+            sets = [{str(v).strip().casefold() for v in ([f["value"]] if f["op"] == "eq" else f["value"])} for f in filters]
+            if not set.intersection(*sets):
+                reasons.append("conflicting_filter:" + field)
+        elif filters:
+            lower = max((f["value"] for f in filters if f["op"] == "gte"), default=0)
+            upper = min((f["value"] for f in filters if f["op"] == "lte"), default=math.inf)
+            if lower > upper:
+                reasons.append("conflicting_filter:" + field)
+    return reasons
+
+
+def receipt_state(receipt: dict) -> str:
+    """One interpretation for new and persisted receipts; unknown never means zero."""
+    if receipt.get("scan_complete") is not True:
+        return "unavailable"
+    if (receipt.get("clarification_reasons") or receipt.get("missing_reference_ids")
+            or receipt.get("missing_exclude_ids")
+            or any(n.get("status") != "unique" for n in receipt.get("name_results", []))):
+        return "clarification_required"
+    # Older uncertain receipts skipped every row. Their numeric zero/candidates
+    # cannot acquire authority merely by being loaded by a newer consumer.
+    if receipt.get("requirement_uncertain") and receipt.get("evaluation_version") != 1:
+        return "clarification_required"
+    if (receipt.get("unsupported_requirements") or receipt.get("unknown_field_count")
+            or receipt.get("unknown_fields")):
+        return "partial"
+    if receipt.get("requirement_uncertain"):
+        return "clarification_required"
+    return "complete"
+
+
+def receipt_view(receipt: dict) -> dict:
+    """Sanitize a copy for consumers without rewriting historical evidence."""
+    result = deepcopy(receipt)
+    state = receipt_state(receipt)
+    result["evaluation_state"] = state
+    if state != "complete":
+        result.update(match_count=None, price_min=None, price_max=None)
+    if state in {"clarification_required", "unavailable"}:
+        result["recommendations"] = []
+        if not receipt.get("known_conditions_evaluated") or state == "unavailable":
+            result.update(known_condition_match_count=None, known_condition_facts=[])
+    return result
+
+
+RECEIPT_INSTRUCTION = (
+    "查询回执evaluation_state=complete才表示全部条件核实，match_count=0才是真零匹配。"
+    "partial表示仅核实known_condition_scope；match_count=null不是0。可以介绍recommendations里的具体车型和真实价格，"
+    "必须说明pending_conditions尚未核实，不得称候选满足全部条件或给全条件最低价。"
+    "clarification_required表示关键条件不明确，必须用ask_clarifying_question针对原话中的实际未知点澄清，不能从空列表推断无车。"
+    "known_condition_facts仅是已执行条件下的事实材料，供说明和澄清，不能当作符合全部条件的推荐许可。"
+    "如年份近一点基准不明，询问具体年份范围；不要绕开实际未知点机械询问预算。"
+    "scanned_count只表示读取库存行数，不是匹配数或正文展示数；已知条件数量见known_condition_match_count，"
+    "不得扩大其范围。依据、版本、来源均由程序维护，无需复制来源表。"
+)
+
+
 def execute_query(query: dict, runtime, *, scope: dict, limit: int = 8) -> dict:
     from apps.wechat_ai_customer_service.workflows.reply_evidence_builder import catalog_product_payload
     rows = inventory_snapshot(runtime)
     bounds = query["budget_bounds"]
-    uncertain = query["requirement_state"] == "uncertain" or query["budget"]["state"] == "uncertain"
     name_results = resolve_names(query["name_queries"], rows)
-    unresolved = any(n["status"] != "unique" for n in name_results)
-    uncertain |= unresolved or bool(set(query["exclude_ids"]) - {r["id"] for r in rows})
+    blockers = _selection_blockers(query, name_results, {r["id"] for r in rows})
+    hard_blockers = [reason for reason in blockers if reason not in {"uncertainty_scope_unresolved", "unsupported_scope_unresolved"}]
+    can_evaluate = not hard_blockers and (not blockers or bool(query["filters"] or bounds or query["exclude_ids"]))
     matches, references, unknown = [], [], {}
     excluded = set(query["exclude_ids"])
     ref_ids = set(query["reference_ids"])
@@ -521,7 +596,7 @@ def execute_query(query: dict, runtime, *, scope: dict, limit: int = 8) -> dict:
             payload["selection_role"] = "referenced_vehicle"
             payload["within_budget"] = (bounds["lower"] <= price <= bounds["upper"]) if bounds and price_valid else None
             references.append(deepcopy(payload))
-        if row["id"] in excluded or uncertain:
+        if row["id"] in excluded or not can_evaluate:
             continue
         missing = []
         fits = True
@@ -544,7 +619,7 @@ def execute_query(query: dict, runtime, *, scope: dict, limit: int = 8) -> dict:
                 else:
                     expected = Decimal(str(f["value"]))
                     fits &= numeric <= expected if f["op"] == "lte" else numeric >= expected
-        if missing:
+        if missing and fits:
             unknown[row["id"]] = missing
         if fits and not missing:
             payload["selection_role"] = "budget_match" if bounds else "query_match"
@@ -567,22 +642,36 @@ def execute_query(query: dict, runtime, *, scope: dict, limit: int = 8) -> dict:
                "unknown_fields": unknown, "unknown_field_count": len(unknown),
                "unsupported_requirements": query["unsupported_requirements"],
                "missing_reference_ids": sorted(ref_ids - {r["id"] for r in references}),
-               "requirement_uncertain": uncertain, "name_results": name_results,
+               "requirement_uncertain": query["requirement_state"] == "uncertain" or bool(blockers), "name_results": name_results,
+               "evaluation_version": 1, "clarification_reasons": blockers,
+               "known_conditions_evaluated": can_evaluate,
+               "known_condition_match_count": len(matches) if can_evaluate else None,
+               "known_condition_facts": [],
+               "known_condition_scope": {"budget": deepcopy(query["budget"]), "filters": deepcopy(query["filters"]),
+                                         "exclude_ids": sorted(excluded), "scan_complete": True, "evaluated": can_evaluate},
+               "pending_conditions": {"unsupported_requirements": deepcopy(query["unsupported_requirements"]),
+                                      "unknown_fields": deepcopy(unknown), "clarification_reasons": blockers},
                "missing_exclude_ids": sorted(excluded - {r["id"] for r in rows}),
                "price_unknown_count": len(matches) - len(prices),
                "price_min": min(prices) if prices else None, "price_max": max(prices) if prices else None,
                "recommendations": matches[:max(0, limit)], "references": references,
                "truncated": len(matches) > limit, "created_at": time.time()}
-    return receipt
+    if blockers and can_evaluate:
+        receipt["known_condition_facts"] = receipt["recommendations"]
+        for product in receipt["known_condition_facts"]:
+            product["selection_role"] = "known_condition_context"
+        receipt["recommendations"] = []
+    return receipt_view(receipt)
 
 
 def attach_receipt(evidence: dict, receipt: dict) -> None:
+    receipt = receipt_view(receipt)
     preparation = (evidence.get("catalog_protocol") or {}).get("preparation")
     evidence["catalog_protocol"] = {"protocol": PROTOCOL, "phase": "queried", "receipt": receipt,
                                     "model_query_contract": model_contract(evidence.get("catalog_protocol") or {})}
     if preparation is not None:
         evidence["catalog_protocol"]["preparation"] = deepcopy(preparation)
-    items = list(receipt["recommendations"])
+    items = [*receipt["recommendations"], *receipt.get("known_condition_facts", [])]
     known = {p["id"] for p in items}
     items.extend(p for p in receipt["references"] if p["id"] not in known)
     knowledge = evidence["knowledge"]
@@ -618,12 +707,17 @@ def prompt_protocol(evidence: dict) -> dict | None:
     result = deepcopy(protocol)
     receipt = result.get("receipt")
     if receipt:
+        receipt = result["receipt"] = receipt_view(receipt)
         receipt.pop("unknown_fields", None)
+        pending = receipt.get("pending_conditions") or {}
+        if "unknown_fields" in pending:
+            pending["unknown_field_count"] = len(pending.pop("unknown_fields"))
         receipt.pop("created_at", None)
         for match in receipt.get("name_results", []):
             match["matched_ids"] = match["matched_ids"][:20]
-        for key in ("recommendations", "references"):
-            receipt[key] = [p["id"] for p in receipt[key]]
+        for key in ("recommendations", "references", "known_condition_facts"):
+            if key in receipt:
+                receipt[key] = [p["id"] for p in receipt[key]]
     return result
 
 
@@ -643,9 +737,9 @@ def query_plan_errors(plan: dict, evidence: dict) -> list[str]:
     for fact in plan.get("facts_claimed", []):
         if fact.get("source_level") == "catalog_query" or fact.get("fact_type") in AGGREGATES:
             field = AGGREGATES.get(fact.get("fact_type"))
-            if (not field or fact.get("source_level") != "catalog_query" or not aggregate_ready(receipt)
+            if (not field or fact.get("source_level") != "catalog_query" or not aggregate_fact_ready(receipt, field)
                     or fact.get("source_id") != receipt.get("query_id") or receipt.get(field) is None
-                    or (field != "match_count" and receipt.get("price_unknown_count"))):
+                    or (field in {"price_min", "price_max"} and receipt.get("price_unknown_count"))):
                 errors.append("invalid_catalog_aggregate_source")
                 continue
             try:
@@ -657,13 +751,16 @@ def query_plan_errors(plan: dict, evidence: dict) -> list[str]:
     return errors
 
 
-AGGREGATES = {"catalog_match_count": "match_count", "catalog_price_min": "price_min", "catalog_price_max": "price_max"}
+AGGREGATES = {"catalog_match_count": "match_count", "catalog_price_min": "price_min", "catalog_price_max": "price_max",
+              "catalog_scanned_count": "scanned_count"}
 
 
 def aggregate_ready(receipt):
-    return bool(receipt.get("scan_complete") and not receipt.get("requirement_uncertain")
-                and not receipt.get("unsupported_requirements") and not receipt.get("unknown_field_count")
-                and not receipt.get("missing_reference_ids") and not receipt.get("missing_exclude_ids"))
+    return receipt_state(receipt) == "complete"
+
+
+def aggregate_fact_ready(receipt, field):
+    return receipt.get("scan_complete") is True if field == "scanned_count" else aggregate_ready(receipt)
 
 
 def record_semantic_clearance(evidence, plan, raw_review, review):
@@ -696,7 +793,7 @@ def record_semantic_clearance(evidence, plan, raw_review, review):
         errors.append("current_inventory_not_queried")
     if kind == "query_summary":
         aggregates = [f for f in (validated["facts_claimed"] if validated else plan.get("facts_claimed", [])) if f.get("fact_type") in AGGREGATES]
-        if not aggregates or not aggregate_ready(receipt):
+        if not aggregates or any(not aggregate_fact_ready(receipt, AGGREGATES[f["fact_type"]]) for f in aggregates):
             errors.append("catalog_summary_requires_complete_scoped_facts")
     if kind == "vehicle_facts" and not any(f.get("source_level") == "product_master" for f in (validated["facts_claimed"] if validated else plan.get("facts_claimed", []))):
         errors.append("catalog_vehicle_facts_must_be_declared")

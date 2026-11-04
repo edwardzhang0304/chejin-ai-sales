@@ -85,10 +85,13 @@ def reply_authority_snapshot(evidence_pack: dict[str, Any]) -> dict[str, Any]:
     Selection occurs in catalog_query before this projection. A consumer must
     never perform another top-N or text clipping operation on this block.
     """
-    from apps.wechat_ai_customer_service.workflows.catalog_query import fingerprint, message_sources
+    from apps.wechat_ai_customer_service.workflows.catalog_query import fingerprint, message_sources, receipt_view
     knowledge = evidence_pack.get("knowledge") or {}
     protocol = evidence_pack.get("catalog_protocol") or {}
+    protocol = deepcopy(protocol)
     receipt = protocol.get("receipt") or {}
+    if receipt:
+        receipt = protocol["receipt"] = receipt_view(receipt)
     products = deepcopy((knowledge.get("product_master") or {}).get("items") or [])
     public_keys = {"id", "sku", "name", "category", "aliases", "specs", "price", "unit", "stock",
                    "public_details", "version", "source_type", "authority_level", "selection_role", "within_budget"}
@@ -104,7 +107,7 @@ def reply_authority_snapshot(evidence_pack: dict[str, Any]) -> dict[str, Any]:
     # Receipts are program-created but contain legacy product payloads. Project
     # their selected objects with the same public allowlist, not a second rule.
     for selection in (block["product_master"]["catalog_selection"], block["catalog_protocol"].get("receipt") or {}):
-        for key in ("recommendations", "references"):
+        for key in ("recommendations", "references", "known_condition_facts"):
             if key in selection:
                 selection[key] = [{k: v for k, v in p.items() if k in public_keys} for p in selection[key]]
     digest = fingerprint(block)

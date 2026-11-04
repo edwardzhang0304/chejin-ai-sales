@@ -516,3 +516,136 @@ def test_recognized_comparator_does_not_consume_intervening_vehicle_condition():
     assert '红色' in parsed['remainder']
     _,result,_,runtime=prepared(text)
     assert result['route']=='semantic' and not runtime.calls
+
+
+def partial_year_pack(*, changes=None, rows=None):
+    pack, preparation, inp, runtime = prepared('有年份近一点的吗', history=['有新能源吗'], rows=rows)
+    raw = {'operation':'search', 'requirement_state':'uncertain',
+           'budget':{'state':'not_mentioned','source_ids':[]},
+           'filters':[{'field':'energy_type','op':'in','value':['hybrid','range_extended','electric'],'source_ids':['h0']}],
+           'name_queries':[], 'reference_ids':[], 'exclude_ids':[], 'source_ids':['h0','m1'],
+           'unsupported_requirements':['车辆年份较近（车龄/上牌年份）需按实际车源核验'],
+           'interpretation':'先按新能源类型查全库，年份再据实际车源核验。'}
+    if changes:raw.update(changes)
+    if rows is None:
+        for item in runtime.rows:item['data']['additional_details']['energy_type']='electric'
+    query = cq.normalize_model_query(raw,cq.message_sources(pack),contract=cq.MODEL_QUERY_CONTRACT,
+                                    known_ids={k:[{'source_id':'m1'}] for k in raw['reference_ids']+raw['exclude_ids']})
+    receipt = cq.execute_query(query,runtime,scope={'conversation_id':'c1'},limit=8)
+    cq.attach_receipt(pack,receipt)
+    return pack,inp,receipt
+
+
+def test_partial_year_preserves_candidates_and_null_through_all_consumers():
+    pack,inp,receipt=partial_year_pack()
+    assert receipt['query']['requirement_state']=='uncertain'
+    assert receipt['evaluation_state']=='clarification_required'
+    assert receipt['match_count'] is None and receipt['price_min'] is None and receipt['price_max'] is None
+    assert receipt['known_condition_match_count']==6
+    assert receipt['recommendations']==[]
+    assert [p['id'] for p in receipt['known_condition_facts']]==['1','2','3','4','5','6']
+    assert len(pack['knowledge']['product_master']['items'])==6
+    expected=ev.reply_authority_snapshot(pack)
+    draft={'answer_mode':'ask_clarifying_question','reply_segments':['合成车1报价5.2万，年份还需核实，您希望哪一年之后的车？']}
+    for consumer in (
+        brain.build_brain_prompt_pack(settings={},brain_input=inp)['user']['brain_input']['content_basis'],
+        brain.build_brain_repair_prompt_pack(settings={},brain_input=inp,plan=draft,quality={})['user']['brain_input']['content_basis'],
+        reviewer.build_quality_review_request(settings={},brain_input=inp,evidence_pack=pack,plan=draft,deterministic_quality={})['authority_evidence_summary'],
+    ):
+        assert consumer==expected
+        restored=json.loads(json.dumps(consumer))
+        assert restored['catalog_protocol']['receipt']['match_count'] is None
+        assert restored['product_master']['catalog_selection']['known_condition_match_count']==6
+    assert validate_reply_public_facts(draft,pack)['ok']
+
+
+@pytest.mark.parametrize('changes,reason',[
+    ({'budget':{'state':'uncertain','source_ids':['m1']}},'budget_uncertain'),
+    ({'unsupported_requirements':[]},'uncertainty_scope_unresolved'),
+    ({'reference_ids':['gone']},'missing_reference_ids'),
+    ({'exclude_ids':['gone']},'missing_exclude_ids'),
+    ({'name_queries':[{'text':'不存在的车','kind':'reference','source_ids':['m1']}]},'name_unresolved'),
+    ({'filters':[{'field':'energy_type','op':'eq','value':v,'source_ids':['h0']} for v in ('electric','hybrid')]},'conflicting_filter:energy_type'),
+])
+def test_critical_uncertainty_is_clarification_not_partial_recommendation(changes,reason):
+    pack,_,receipt=partial_year_pack(changes=changes)
+    assert receipt['evaluation_state']=='clarification_required'
+    assert receipt['match_count'] is None
+    assert receipt['known_condition_match_count']==(6 if reason=='uncertainty_scope_unresolved' else None)
+    assert receipt['recommendations']==[] and reason in receipt['clarification_reasons']
+    assert not cq.aggregate_ready(receipt)
+
+
+@pytest.mark.parametrize('text,error',[
+    ('我按新能源类型查了目前这6台在售车源，暂时没有匹配到的车。年份需要核实。','inventory_absence_not_verified'),
+    ('目前没有新能源车。','inventory_absence_not_verified'),
+    ('符合全部条件的有6台。','unverified_reply_numeric_fact'),
+    ('符合条件最低价是5.2万。','unverified_reply_numeric_fact'),
+    ('我查了目前这5台在售车源，合成车1报价5.2万，年份待核实。','reply_scanned_count_mismatch'),
+    ('先给您两台：合成车1报价5.2万。年份待核实。','reply_display_count_mismatch'),
+])
+def test_partial_scope_does_not_authorize_false_zero_totals_prices_or_counts(text,error):
+    pack,_,_=partial_year_pack()
+    result=validate_reply_public_facts({'reply_segments':[text]},pack)
+    assert error in result['errors'],result
+
+
+@pytest.mark.parametrize('text',[
+    '我查了目前这6台在售车源，合成车1报价5.2万，年份还需核实。',
+    '先给您两台：合成车1报价5.2万，合成车2报价5.6万。年份还需核实。',
+    '先给您两台在售车源：合成车1报价5.2万，合成车2报价5.6万。年份还需核实。',
+])
+def test_partial_scope_stock_scan_and_display_counts_keep_distinct_roles(text):
+    pack,_,_=partial_year_pack()
+    result=validate_reply_public_facts({'answer_mode':'ask_clarifying_question','reply_segments':[text]},pack)
+    assert result['ok'],result
+    assert cq.query_plan_errors({'facts_claimed':result['facts_claimed']},pack)==[]
+
+
+def test_legacy_false_zero_is_sanitized_without_rewriting_history():
+    _,_,receipt=partial_year_pack()
+    legacy=deepcopy(receipt)
+    for key in ('evaluation_version','evaluation_state','clarification_reasons','known_condition_match_count','known_condition_scope','pending_conditions','known_conditions_evaluated','known_condition_facts'):
+        legacy.pop(key,None)
+    legacy.update(match_count=0,price_min=0,recommendations=[])
+    original=deepcopy(legacy)
+    view=cq.receipt_view(json.loads(json.dumps(legacy)))
+    assert view['match_count'] is None and view['price_min'] is None
+    assert view['evaluation_state']=='clarification_required'
+    assert legacy==original and not cq.aggregate_ready(legacy)
+    assert cq.query_plan_errors({'facts_claimed':[{'source_level':'catalog_query','fact_type':'catalog_match_count','source_id':legacy['query_id'],'value':0}]},
+                                {'catalog_protocol':{'receipt':legacy}})==['invalid_catalog_aggregate_source']
+
+
+def test_partial_missing_fields_do_not_become_definite_zero():
+    _,_,receipt=partial_year_pack(changes={'requirement_state':'clear','unsupported_requirements':[]},rows=[row('1',5.2),row('2',5.6,energy_type='electric')])
+    assert receipt['evaluation_state']=='partial'
+    assert receipt['match_count'] is None and receipt['known_condition_match_count']==1
+    assert receipt['unknown_fields']=={'1':['energy_type']}
+    assert [p['id'] for p in receipt['recommendations']]==['2']
+
+
+@pytest.mark.parametrize('unsupported',[
+    ['年份需核实；预算可能是首付而非总价'],
+    ['年份较近；客户说的刚才那辆尚未确定，不要它'],
+    ['年份近一点，但其他需求含糊，无法确定全部影响范围'],
+])
+def test_nonempty_model_unknown_description_never_grants_recommendation(unsupported):
+    pack,_,receipt=partial_year_pack(changes={'unsupported_requirements':unsupported})
+    assert receipt['evaluation_state']=='clarification_required'
+    assert receipt['match_count'] is None and not receipt['recommendations']
+    assert receipt['query']['budget']['state']=='not_mentioned'
+    assert receipt['known_condition_facts']  # Materials are not recommendation permission.
+    wrong={'answer_mode':'recommend_from_catalog','reply_segments':['合成车1报价5.2万，符合您的要求。']}
+    assert 'catalog_clarification_required' in validate_reply_public_facts(wrong,pack)['errors']
+
+
+def test_partial_scan_never_recovers_full_authority_on_reload():
+    _,_,receipt=partial_year_pack(changes={'requirement_state':'clear','unsupported_requirements':[]})
+    receipt['scan_complete']=False
+    original=deepcopy(receipt)
+    result=cq.receipt_view(json.loads(json.dumps(receipt)))
+    assert result['evaluation_state']=='unavailable'
+    assert result['match_count'] is None and result['known_condition_match_count'] is None
+    assert not result['recommendations'] and not result['known_condition_facts']
+    assert receipt==original

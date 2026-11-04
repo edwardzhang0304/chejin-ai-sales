@@ -3293,6 +3293,8 @@ def build_brain_prompt_pack(*, settings: dict[str, Any], brain_input: dict[str, 
             "常识性建议：facts_claimed=[]，recommended_action=send_reply，answer_mode用direct_answer或compare_options。"
             "遵守runtime_principles；它不授权事实。只输出裸JSON对象，不要Markdown，不要```json代码块，不要解释。"
         )
+    from apps.wechat_ai_customer_service.workflows.catalog_query import RECEIPT_INSTRUCTION
+    system += RECEIPT_INSTRUCTION
     system += (
         "车辆候选是筛选后的展示片段，不等于全部库存。先依据product_master.catalog_selection核对查询范围："
         "scan_complete=false表示查库失败，不能说没有车；budget_match_count只证明价格范围内的数量，"

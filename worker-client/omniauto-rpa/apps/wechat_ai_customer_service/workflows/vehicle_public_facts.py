@@ -203,6 +203,16 @@ def _customer_budget_spans(text: str, entities: list[dict], budget: dict) -> lis
     return spans
 
 
+
+def _scanned_count_scope(text: str, number: dict) -> bool:
+    """Distinguish explicit inventory/reading scope from a displayed car list."""
+    start = max((m.end() for m in re.finditer(r"[，,。；;！？!?\n]", text[:number["start"]])), default=0)
+    prefix, tail = text[start:number["start"]], text[number["end"]:]
+    read_scope = (re.search(r"(?:查了|读取了|看过)(?:目前|当前)?(?:这|那)?$", prefix)
+                  and re.match(r"(?:在售|库存)(?:车源|车辆|车)", tail))
+    total_scope = re.fullmatch(r"(?:目前|当前|全店)?(?:的)?(?:在售车源|在售车辆|库存)(?:一共|总共|共|有|是)?", prefix)
+    return bool(read_scope or total_scope)
+
 def _display_counts(segments: list[str], products: list[dict]) -> dict[tuple[int, int], dict]:
     """Resolve a displayed list's cardinality independently of stock counts."""
     text = "\n".join(segments)
@@ -214,7 +224,8 @@ def _display_counts(segments: list[str], products: list[dict]) -> dict[tuple[int
         prefix = text[start:number["start"]]
         retrospective = bool(re.search(r"(?:这|那|上述|以上)(?:共|一共)?\s*$", prefix))
         prospective = bool(re.search(r"(?:看|推荐|介绍|给|补|列|挑|选|说)", prefix))
-        inventory = bool(re.search(r"库存|在售|全店|一共|总共|仅有|只有|剩余|看到|查到|找到|匹配到", prefix))
+        inventory = bool(re.search(r"库存|在售|全店|一共|总共|仅有|只有|剩余|看到|查到|找到|匹配到", prefix)
+                         or _scanned_count_scope(text, number))
         if inventory or not (retrospective or prospective):
             continue
         if retrospective:
@@ -279,7 +290,7 @@ def validate_reply_public_facts(plan: dict, evidence: dict, *, formal_validation
     This verifies recognizable entities/numeric facts. Unstructured claims
     remain subject to the existing semantic reviewer, not string-based proof.
     """
-    from apps.wechat_ai_customer_service.workflows.catalog_query import aggregate_ready, message_sources
+    from apps.wechat_ai_customer_service.workflows.catalog_query import aggregate_ready, message_sources, receipt_state
     from apps.wechat_ai_customer_service.workflows.catalog_budget import amount_role
     from apps.wechat_ai_customer_service.workflows.reply_evidence_builder import formal_knowledge_source_table
     receipt = (evidence.get("catalog_protocol") or {}).get("receipt") or {}
@@ -352,6 +363,20 @@ def validate_reply_public_facts(plan: dict, evidence: dict, *, formal_validation
                 customer_positions.add(n["start"])
         customer_numbers = {n["start"] for n in numbers if customer_amount(segment, n, budget_spans)}
         display_positions = set()
+        for number in numbers:
+            if number["unit"] != "台":
+                continue
+            if not _scanned_count_scope(segment, number):
+                continue
+            valid = receipt.get("scan_complete") is True and public_number(number["value"]) == receipt.get("scanned_count")
+            display_positions.add(number["start"])
+            owners.pop(number["start"], None)
+            occurrences.append({"segment_index": segment_index, **number, "verified": valid,
+                                "role": "scanned_count", "expected": receipt.get("scanned_count")})
+            if valid:
+                add("catalog_scanned_count", receipt["scanned_count"], "catalog_query", receipt["query_id"])
+            else:
+                errors.append("reply_scanned_count_mismatch")
         for number in numbers:
             display = display_counts.get((segment_index, number["start"]))
             if display is not None:
@@ -449,17 +474,28 @@ def validate_reply_public_facts(plan: dict, evidence: dict, *, formal_validation
                                 "rejection_reason": None if valid else "no_matching_authority_for_role_and_scope"})
             if not valid:
                 errors.append("unverified_reply_numeric_fact")
+        # Negative inventory statements still assert a result, even with no
+        # digits. Unknown conditions or nonzero results cannot authorize them.
+        for clause in re.split(r"[。；;！？!?]", segment):
+            absence = re.search(r"(?:没有|暂无|暂时没有|暂时没|未|没)(?:找到|匹配到|筛到|筛出)?(?:的)?(?:符合[^。]*?|合适的?|匹配的?|在售的?|新能源|纯电)?(?:车|车源)", clause)
+            if absence and not re.search(r"不能(?:说|认定|判断)|不(?:代表|等于)|是否|有没有", clause[:absence.end()]):
+                if not aggregate_ready(receipt) or receipt.get("match_count") != 0:
+                    errors.append("inventory_absence_not_verified")
         if (not entities and aggregate_ready(receipt) and receipt.get("match_count") == 0
                 and re.search(r"(?:没有|暂无|未找到|没找到)(?:符合[^。！？]*|合适的?|匹配的?|在售的?)?(?:车|车源)", segment)):
             add("catalog_match_count", 0, "catalog_query", receipt["query_id"])
     preparation = (evidence.get("catalog_protocol") or {}).get("preparation") or {}
+    context_ids = {p["id"] for p in receipt.get("known_condition_facts", [])}
+    if (receipt_state(receipt) == "clarification_required" and context_ids.intersection(actual_ids)
+            and plan.get("answer_mode") != "ask_clarifying_question"):
+        errors.append("catalog_clarification_required")
     recommendations = receipt.get("recommendations") or []
     ordered_ids = [str(p["id"]) for p in recommendations]
     if receipt.get("query", {}).get("operation") == "search":
         actual_recommendations = [i for i in actual_ids if i in ordered_ids]
         if actual_recommendations != ordered_ids[:len(actual_recommendations)]:
             errors.append("reply_recommendation_order_mismatch")
-        if preparation.get("requires_recommendation") and aggregate_ready(receipt) and recommendations:
+        if preparation.get("requires_recommendation") and receipt_state(receipt) in {"complete", "partial"} and recommendations:
             if not actual_recommendations:
                 errors.append("answer_incomplete")
             for product in recommendations[:len(actual_recommendations)]:
