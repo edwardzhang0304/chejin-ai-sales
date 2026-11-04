@@ -3330,6 +3330,15 @@ def _schedule_retry_or_handoff(
     }
 
 
+def _require_normal_generation_request(force: bool) -> None:
+    if force:
+        raise AppError(
+            "MESSAGE_BATCH_FORCE_GENERATION_DISABLED",
+            "强制生成已禁用，请遵循正常生成与重试规则",
+            400,
+        )
+
+
 def claim_message_batch_generation(
     db: Session,
     *,
@@ -3339,6 +3348,7 @@ def claim_message_batch_generation(
     native_client_admitted: bool = False,
 ) -> dict[str, Any]:
     """Persist generation ownership before dispatching non-durable background work."""
+    _require_normal_generation_request(force)
     from app.services.followup_eligibility import require_conversation_followup
     followup_conversation_id = db.scalar(select(MessageBatch.conversation_id).where(MessageBatch.id == batch_id))
     if followup_conversation_id:
@@ -3358,7 +3368,7 @@ def claim_message_batch_generation(
         raise AppError("MESSAGE_BATCH_NOT_FOUND", "消息批次不存在", 404)
     if batch.status == "cancelled" and batch.suggested_action == "LEAD_INVALID":
         return {"run": False, "terminal": True, "decision": "no_action", "error_code": "LEAD_INVALID"}
-    if batch.status not in ACTIVE_BATCH_STATUSES and not force:
+    if batch.status not in ACTIVE_BATCH_STATUSES:
         return {"run": False, "terminal": True, "batch": _batch_to_dict(batch)}
 
     native_binding=db.scalar(select(WechatSessionBinding).where(
@@ -3375,14 +3385,14 @@ def claim_message_batch_generation(
     retry_due = message_batch_retry_is_due(batch)
     if stale_only and not stale and not retry_due:
         return {"run": False, "terminal": False, "batch": _batch_to_dict(batch)}
-    if batch.status == "retry_wait" and not retry_due and not force:
+    if batch.status == "retry_wait" and not retry_due:
         return {"run": False, "terminal": False, "batch": _batch_to_dict(batch)}
-    if batch.status == "generating" and not stale and not force:
+    if batch.status == "generating" and not stale:
         return {"run": False, "terminal": False, "batch": _batch_to_dict(batch)}
 
     max_attempts = max(1, int(get_settings().c3_batch_recovery_max_attempts))
     attempts = int(batch.generation_attempt_count or 0)
-    if stale and attempts - int(batch.generation_capacity_wait_count or 0) >= max_attempts and not force:
+    if attempts - int(batch.generation_capacity_wait_count or 0) >= max_attempts:
         _handoff_exhausted_generation(
             db,
             batch=batch,
@@ -3443,6 +3453,7 @@ def generate_for_batch(
     expected_generation_attempt: int | None = None,
     native_client_admitted: bool = False,
 ) -> dict[str, Any]:
+    _require_normal_generation_request(force)
     from app.services.followup_eligibility import require_conversation_followup
     followup_conversation_id = db.scalar(select(MessageBatch.conversation_id).where(MessageBatch.id == batch_id))
     if followup_conversation_id:
@@ -3474,7 +3485,7 @@ def generate_for_batch(
 
     existing_action = db.scalar(select(ReplyAction).where(ReplyAction.batch_id == batch.id, ReplyAction.current.is_(True)))
     existing_handoff = db.scalar(select(HandoffEvent).where(HandoffEvent.batch_id == batch.id, HandoffEvent.deleted_at.is_(None)))
-    if not force and batch.status in {"reply_action_created", "handoff_created", "no_action", "failed", "rejected"}:
+    if batch.status in {"reply_action_created", "handoff_created", "no_action", "failed", "rejected"}:
         existing_task = db.scalar(select(Task).where(Task.reply_action_id == existing_action.id, Task.deleted_at.is_(None))) if existing_action else None
         return {
             "decision": batch.decision,
@@ -3510,6 +3521,22 @@ def generate_for_batch(
             "error_code": exc.code,
             "suggested_action": "wait_for_business_gate",
         }
+
+    # Direct ordinary callers use the same durable attempt/eligibility gate as
+    # Worker/background dispatch. An executor already holding an expected
+    # attempt must not claim again.
+    if expected_generation_attempt is None:
+        claim = claim_message_batch_generation(
+            db, batch_id=batch.id, native_client_admitted=native_client_admitted,
+        )
+        if not claim.get("run"):
+            return {
+                "decision": batch.decision or ("retry_later" if batch.active else "no_action"),
+                "batch": _batch_to_dict(batch),
+                "error_code": claim.get("error_code", batch.error_code),
+                "suggested_action": claim.get("suggested_action", batch.suggested_action),
+            }
+        expected_generation_attempt = int(claim["attempt"])
 
     batch.status = "generating"
     try:

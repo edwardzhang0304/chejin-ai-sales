@@ -1,9 +1,11 @@
 """API -> isolated DB -> fresh provider subprocess -> full Brain + Guard."""
 import copy,json,threading
+from datetime import timedelta
 from http.server import BaseHTTPRequestHandler,ThreadingHTTPServer
 from sqlalchemy import select
 import pytest
 import test_brain_fact_guidance_regression as regression
+from test_generation_entry_admission import assert_force_rejected
 
 @pytest.mark.parametrize('review_case',['complete','closed_json_cutoff','missing_safety_field','http_429','http_503'])
 def test_review_result_controls_original_c3_task_creation(monkeypatch,review_case):
@@ -74,5 +76,46 @@ def test_review_result_controls_original_c3_task_creation(monkeypatch,review_cas
       audit=attempt['response']['raw_payload']['omniauto_brain_result']['model_call_accounting']
       assert audit['failure_category']=='service_unavailable'
       assert audit['logical_call_count']==audit['http_attempt_count']==2
+     original_snapshot=copy.deepcopy(saved.ai_response_snapshot)
+     original_retry_after=batch['batch']['retry_after']
+  if review_case=='complete':
+   assert_force_rejected(batch['batch_id'],lambda:len(requests))
+  if review_case.startswith('http_'):
+   assert_force_rejected(batch['batch_id'],lambda:len(requests))
+   # Regression: the ordinary internal endpoint used to call the model a
+   # second time under attempt 1, concealing two real HTTP calls in the totals.
+   for payload in ({},{'force':False}):
+    response=api.client.post(f"/api/internal/message-batches/{batch['batch_id']}/generate",
+     json=payload,headers=api.INTERNAL_HEADERS)
+    assert response.status_code==200
+    repeated=response.json()['data']
+    assert repeated['decision']=='retry_later'
+    assert repeated['batch']['retry_after']==original_retry_after
+    assert len(requests)==2
+   with api.SessionLocal() as db:
+    saved=db.get(MessageBatch,batch['batch_id'])
+    assert saved.generation_attempt_count==1
+    assert saved.ai_response_snapshot==original_snapshot
+    due=saved.generated_at+timedelta(seconds=get_settings().c3_batch_retry_delay_seconds+1)
+   from app.services import c3_service
+   monkeypatch.setattr(c3_service,'utcnow',lambda:due)
+   # A fresh request/session now claims the due second attempt through the
+   # production entry, then the existing retry limit hands off exactly once.
+   second=api._generate(batch['batch_id'])
+   assert second['decision']=='handoff'
+   terminal=api._generate(batch['batch_id'])
+   assert terminal['handoff_event_id']==second['handoff_event_id']
+   assert_force_rejected(batch['batch_id'],lambda:len(requests))
+   with api.SessionLocal() as db:
+    from app.models.c3 import HandoffEvent
+    saved=db.get(MessageBatch,batch['batch_id'])
+    totals=saved.ai_response_snapshot['generation_accounting_totals']
+    assert totals['recorded_attempt_count']==saved.generation_attempt_count==2
+    assert totals['http_attempt_count']==totals['logical_call_count']==len(requests)==4
+    assert totals['call_counts_complete']
+    assert [h['attempt'] for h in saved.ai_response_snapshot['generation_attempt_history']]==[1,2]
+    assert len(list(db.scalars(select(HandoffEvent).where(HandoffEvent.batch_id==saved.id))))==1
+    assert not list(db.scalars(select(ReplyAction)))
+    assert not list(db.scalars(select(Task).where(Task.task_type=='chat_reply')))
  finally:
   server.shutdown();server.server_close();thread.join();get_settings.cache_clear()
