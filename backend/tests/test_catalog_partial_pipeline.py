@@ -175,3 +175,27 @@ def test_stock_known_scope_and_display_have_independent_authority(monkeypatch,ac
         with SessionLocal() as db:assert not list(db.scalars(select(ReplyAction)))
     receipt=state['receipts'][-1]
     assert receipt['scanned_count']==8 and receipt['known_condition_match_count']==6 and receipt['match_count'] is None
+
+
+@pytest.mark.parametrize('segments,allowed',[
+    (['目前没有车辆的上牌年份资料，您希望哪一年之后的新能源车？'],True),
+    (['目前没有车款年份信息，您希望哪一年之后的新能源车？'],True),
+    (['车款年份信息目前还没有，您希望哪一年之后的新能源车？'],True),
+    (['目前没有车辆的年份资料。','您希望哪一年之后的新能源车？'],True),
+    (['没有车辆的年份资料，但是目前没有新能源车。您希望哪一年之后的车？'],False),
+    (['目前没有车款年份信息。','目前没有新能源车。您希望哪一年之后的车？'],False),
+    (['目前没有新能源车辆，您希望哪一年之后的车？'],False),
+    (['目前没有新能源车可供推荐，您希望哪一年之后的车？'],False),
+])
+def test_missing_vehicle_information_is_not_inventory_absence(monkeypatch,actual_brain,segments,allowed):
+    state=actual_brain;configure_partial(monkeypatch,state,'normal')
+    original=llm_config.call_llm_request_once_with_wall_timeout
+    def transport(**kw):
+        response=original(**kw);value=json.loads(response['response_text'])
+        if kw['model']=='synthetic-reviewer':value=pipeline.joined.review('non_inventory')
+        elif 'catalog_query' not in value:
+            value.update(answer_mode='ask_clarifying_question',reply_segments=segments);state['drafts'][-1]=value
+        response['response_text']=json.dumps(value,ensure_ascii=False);return response
+    monkeypatch.setattr(llm_config,'call_llm_request_once_with_wall_timeout',transport)
+    _,_,_,bid=pipeline.created(monkeypatch);result=pipeline.generate(bid)
+    with SessionLocal() as db:assert bool(list(db.scalars(select(ReplyAction))))==allowed,result

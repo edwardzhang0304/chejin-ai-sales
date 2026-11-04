@@ -259,13 +259,20 @@ def _known_count_scope(text: str, number: dict, receipt: dict) -> bool:
 
 def _inventory_absences(text: str):
     """Recognizable absence assertions with local polarity, not a semantic parser."""
-    pattern = re.compile(r"(?:没有|暂无|暂时没有|暂时没|未|没)(?:找到|匹配到|筛到|筛出)?(?:的)?(?:符合[^，,。；;！？!?]*?|合适的?|匹配的?|在售的?|新能源|纯电)?(?:车源|车)")
+    pattern = re.compile(r"(?:没有|暂无|暂时没有|暂时没|未|没)(?:找到|匹配到|筛到|筛出)?(?:的)?(?:符合[^，,。；;！？!?]*?|合适的?|匹配的?|在售的?|新能源|纯电)?(?:车源|车辆|车款|车型|车子|车)")
     for clause in re.finditer(r"[^，,。；;！？!?]+[，,。；;！？!?]?", text):
         previous_end = 0
         for match in pattern.finditer(clause.group()):
             prefix = clause.group()[previous_end:match.start()]
             suffix = clause.group()[match.end():]
             previous_end = match.end()
+            # A vehicle noun must be the absence object, not just the prefix
+            # of a longer object (车辆的上牌资料 / 车款年份信息). Only a noun
+            # boundary or a vehicle predicate makes this a stock assertion;
+            # other object phrases remain with the semantic reviewer.
+            vehicle_object = re.match(r"(?:的?库存)?(?:[，,。；;！？!?]|$)|(?:的)?(?:了|呢|啊|呀)(?:[，,。；;！？!?]|$)|(?:可|能|供|给|卖|推荐|符合|满足|适合|合适|在售|出售|您|你|我)", suffix)
+            if not vehicle_object:
+                continue
             # A denial/question governs only the immediately following
             # assertion. It cannot excuse a later claim after 但/可是/而是.
             denial = re.search(r"(?:并非|并不是|不是|不能说|不能认定|不能判断|不能断定|不代表|不等于)\s*[‘“\"']?\s*$", prefix)
